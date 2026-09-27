@@ -1,7 +1,7 @@
 # grain
 
 Aprende o **veio** (grain) de um codebase a partir do que **se repete** e o expõe
-como um **modelo rico** (`grain.model.json`) — e, por tarefa, uma **spec de
+como um **modelo rico** (o mapa `grain.db`, um banco SQLite) — e, por tarefa, uma **spec de
 implementação autossuficiente**. **Agnóstico a framework e a linguagem** — não
 conhece React, .NET, GraphQL nem nada. Ele descobre as convenções do *seu* projeto.
 
@@ -16,7 +16,7 @@ framework nenhum.
 ## Como funciona (o pipeline)
 
 ```
-ingest → extract → graph → mine → condense → grain.model.json → [grain spec]
+ingest → extract → graph → condense → grain.db → [grain spec]
 └──────────────── tudo determinístico, cego a framework e linguagem ──────────────┘
 ```
 
@@ -110,14 +110,14 @@ cargo build --release   # offline, determinístico
 ## Uso
 
 ```bash
-# o produto: minera e grava o modelo (JSON)
-grain scan ./meu-projeto --out grain.model.json
+# o produto: minera e grava o modelo (o banco SQLite do mapa)
+grain scan ./meu-projeto --out grain.db
 
 # por tarefa: compila uma SPEC de implementação autossuficiente a partir do modelo
 #   --entity: a entidade a criar    --like: entidade existente a espelhar
 #   --ops:    operações além do CRUD base (ex.: approve)
 grain spec ./meu-projeto --entity Invoice --like Order --ops create,approve --out invoice.spec.md
-# (aceita um diretório p/ escanear OU um grain.model.json pronto)
+# (aceita um diretório p/ escanear OU um grain.db pronto)
 ```
 
 > Tudo é determinístico e offline; **grain nunca chama um modelo**. A `spec` nasce
@@ -200,8 +200,9 @@ grep -rinE 'csharp|typescript|"\.cs"|"\.rs"|class_declaration|base_list' src/
 
 ## Fluxo, IA e confiança
 
-O **produto é o `grain.model.json`** — o mapa minerado (papéis, contratos, slices,
-shared_contracts, touchpoints de registro, tooling/codegen, quebra por projeto).
+O **produto é o `grain.db`** — o mapa minerado, um banco SQLite em blocos (censo,
+arquivos, declarações, grafo e história), que só regrava o bloco que mudou;
+`mustard-rt run map dump` o mostra tabela por tabela.
 Tudo no grain é **determinístico; o grain nunca chama IA**.
 
 São só **dois comandos**:

@@ -16,12 +16,12 @@ The project's thesis is **minimum AI, maximum determinism**: everything statisti
 
 ```mermaid
 flowchart LR
-    repo[("Repository")] -->|"census at the base gate (Rust, no AI)"| model[("grain.model.json")]
+    repo[("Repository")] -->|"census at the base gate (Rust, no AI)"| model[("grain.db")]
     model -->|map| anchors["files it points at"]
     anchors -->|"AI reads only these"| work["feature/bugfix pipeline"]
 ```
 
-1. The **census** mines the repository into a durable model (`grain.model.json`) — **deterministic, AI-free, language- and architecture-agnostic**: modules, declarations, dependency graph, roles, slices, contracts, and touchpoints. It is not a command: the **base gate** triggers it on its own whenever the census is stale and the tree is clean.
+1. The **census** mines the repository into a durable model (`grain.db`, a SQLite database in blocks that rewrites only the block that changed) — **deterministic, AI-free, language- and architecture-agnostic**: modules, declarations, dependency graph, roles, slices, contracts, and touchpoints. It is not a command: the **base gate** triggers it on its own whenever the census is stale and the tree is clean.
 2. The flow's commands query that model through the **map** (`mustard-rt run map`) and read only the files it points at.
 3. Result: **context economy** — the map finds *where to look*; it does not replace reading.
 
@@ -134,7 +134,7 @@ Mid-flight changes are auto-recorded (`change-requests.ndjson` + a readable `cha
 | Path | Crate/App | Stack | Role |
 |---|---|---|---|
 | `apps/rt` | `mustard-rt` | Rust | **Deterministic core** — scan, map, events, gates, hooks, pipeline commands. The engine. |
-| `apps/scan` | `scan` | Rust | Repository miner → `grain.model.json`. |
+| `apps/scan` | `scan` | Rust | Repository miner → `grain.db` (SQLite). |
 | `apps/cli` | `mustard` | Rust | Install & scaffold — `init`, grammars, git-flow, fonts. |
 | `packages/core` | `core` | Rust | Shared types and logic (e.g. `ProjectConfig`). |
 | `plugin/` | — | — | The Claude Code plugin: commands, hooks, agents and the `mustard-boot` bootstrap (downloads the binaries from the Release on the first session). |
@@ -193,7 +193,7 @@ packages/
 plugin/       Claude Code plugin (commands, hooks, agents, bootstrap)
 packaging/    Win/macOS/Linux installers + tutorials
 docs/         architecture analyses and redesigns
-.claude/      harness config (hooks, skills, refs, specs, grain.model.json)
+.claude/      harness config (hooks, skills, refs, specs, grain.db)
 install.ps1   development installer (build + scaffold)
 mustard.json  project configuration
 ```

@@ -1,9 +1,10 @@
 //! grain — learn the grain of a codebase from what recurs, and expose it as a
 //! rich, language-agnostic model. Framework- and language-agnostic.
 //!
-//! Pipeline: ingest -> extract -> graph -> mine -> condense. Fully deterministic
-//! and blind to any framework/language. `scan` writes the model; `facts`
-//! only projects it.
+//! Pipeline: ingest -> extract -> graph -> condense. Fully deterministic
+//! and blind to any framework/language. `scan` writes the model into the
+//! project map, the SQLite file the core port declares
+//! (`mustard_core::io::project_map`); `facts` only projects it.
 
 mod classify;
 mod condense;
@@ -12,7 +13,6 @@ mod extract;
 mod graph;
 mod ingest;
 mod manifests;
-mod mine;
 mod model;
 mod path_aliases;
 mod refresh;
@@ -21,6 +21,7 @@ mod testmap;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use model::{Module, ProjectModel};
+use mustard_core::io::project_map as store;
 use std::collections::{BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -33,13 +34,17 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Analyze a project and write the intermediate model as JSON (the product).
+    /// Analyze a project and write the model into the map database (the
+    /// product).
     ///
     /// When `--out` already holds a model of this project, only the files that
-    /// changed since that pass are read again (see `refresh`).
+    /// changed since that pass are read again (see `refresh`), and only the
+    /// blocks that changed are written again; with nothing changed, the file is
+    /// left alone. The map of before the database, in the same folder, is
+    /// deleted once the database is written.
     Scan {
         path: PathBuf,
-        #[arg(long, default_value = "grain.model.json")]
+        #[arg(long, default_value = store::MAP_FILE_NAME)]
         out: PathBuf,
         /// Read every file, ignoring the previous model.
         #[arg(long)]
@@ -51,7 +56,7 @@ enum Command {
     /// Emit the small, stable facts the orchestrator consumes, as JSON: the
     /// subproject list and the known declaration names. So a consumer never
     /// has to parse the (large) model itself. `path` is a project dir to scan, or a
-    /// model.json.
+    /// map database.
     Facts {
         path: PathBuf,
         #[arg(long)]
@@ -59,13 +64,26 @@ enum Command {
     },
 }
 
-/// Load a model: scan a project directory, or read a prebuilt grain.model.json.
+/// Load a model: scan a project directory, or read a map database.
 fn load_model(path: &Path) -> Result<ProjectModel> {
-    if path.extension().and_then(|e| e.to_str()) == Some("json") {
-        Ok(serde_json::from_str(&std::fs::read_to_string(path)?)?)
-    } else {
+    if path.is_dir() {
         // A projeção (facts) quer só o modelo.
         Ok(analyze(path, None)?.model)
+    } else {
+        ProjectModel::read(path)
+    }
+}
+
+/// Apaga o mapa de antes do banco, na pasta do banco em `out`, quando ele
+/// existe: o banco gravado o substitui.
+fn drop_legacy_map(out: &Path) -> Result<()> {
+    let legacy = out.with_file_name(store::LEGACY_MAP_FILE_NAME);
+    if legacy == out {
+        return Ok(());
+    }
+    match std::fs::remove_file(&legacy) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+        _ => Ok(()),
     }
 }
 
@@ -73,20 +91,11 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Scan { path, out, all, json } => {
-            let previous: Option<ProjectModel> = if all {
-                None
-            } else {
-                std::fs::read_to_string(&out).ok().and_then(|text| serde_json::from_str(&text).ok())
-            };
+            let previous: Option<ProjectModel> = if all { None } else { ProjectModel::load(&out) };
             let analysis = analyze(&path, previous.as_ref())?;
-            let model_json = serde_json::to_string_pretty(&analysis.model)?;
             // Nothing changed → the file is left alone (same bytes, same date).
-            if std::fs::read_to_string(&out).ok().as_deref() != Some(model_json.as_str()) {
-                if let Some(dir) = out.parent().filter(|d| !d.as_os_str().is_empty()) {
-                    std::fs::create_dir_all(dir)?;
-                }
-                std::fs::write(&out, &model_json)?;
-            }
+            let written = analysis.model.save(&out, refresh::FORMAT)?;
+            drop_legacy_map(&out)?;
             if json {
                 let report = serde_json::json!({
                     "ok": true,
@@ -98,7 +107,11 @@ fn main() -> Result<()> {
                 println!("{report}");
             } else {
                 print_summary(&analysis.model);
-                println!("\nModel written to {}", out.display());
+                if written {
+                    println!("\nMap written to {}", out.display());
+                } else {
+                    println!("\nMap unchanged at {}", out.display());
+                }
                 println!(
                     "Read {} file(s){}",
                     analysis.read.len(),
@@ -278,7 +291,6 @@ fn analyze(root: &Path, previous: Option<&ProjectModel>) -> Result<Analysis> {
     // module carries, so a pass that read only what changed links the same
     // declarations a full pass does.
     graph::link_declarations(&mut modules, &ing.go_module, &packages, &ing.manifests, &aliases);
-    let mined = mine::mine(&modules);
     let skeleton = condense::build_skeleton(&modules, &depth_by_path);
 
     // The git history: only the commits since the previous pass, when that
@@ -323,7 +335,6 @@ fn analyze(root: &Path, previous: Option<&ProjectModel>) -> Result<Analysis> {
     let dirty: Vec<String> =
         refresh::dirty(&ing.root).unwrap_or_default().into_iter().filter(|p| walked.contains(p.as_str())).collect();
     let state = model::ScanState {
-        format: refresh::FORMAT.to_string(),
         // Sem commit (fora do git, ou um repositório que ainda não tem
         // nenhum), o selo é distinto do vazio: o vazio continua significando
         // "nada para comparar, leia tudo de novo", reservado ao mapa de uma
@@ -345,9 +356,9 @@ fn analyze(root: &Path, previous: Option<&ProjectModel>) -> Result<Analysis> {
             graph: graph_stats,
             coverage: ing.coverage,
             projects,
-            shared_contracts: mined.shared_contracts,
             state,
             history,
+            marks: Default::default(),
         },
         read: ing.read,
         full,

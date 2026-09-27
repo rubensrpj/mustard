@@ -79,7 +79,11 @@ impl InstallMode {
 /// carrying the operator's own prompt titles stayed visible to the client's git.
 const HARNESS_CLAUDE_FILES: &[&str] = &[
     ".artifacts.json",
+    // O mapa, o diário que o SQLite deixa ao lado dele enquanto grava e o mapa
+    // em JSON de antes do banco, que o scan apaga.
     crate::io::project_map::MAP_FILE_NAME,
+    crate::io::project_map::MAP_JOURNAL_FILE_NAME,
+    crate::io::project_map::LEGACY_MAP_FILE_NAME,
     "scan-declined.json",
     "scan-map.md",
     // NOT `skills/`. The shelf is a directory a client may also author in; what
@@ -584,6 +588,8 @@ mod tests {
             ("settings.json", "{}\n"),
             ("scan-map.md", "Type: cargo\n"),
             (crate::io::project_map::MAP_FILE_NAME, "{}\n"),
+            (crate::io::project_map::MAP_JOURNAL_FILE_NAME, "{}\n"),
+            (crate::io::project_map::LEGACY_MAP_FILE_NAME, "{}\n"),
             ("scan-declined.json", "{}\n"),
             (".artifacts.json", "{}\n"),
             ("capabilities/cap.demo.md", "# cap\n"),

@@ -12,10 +12,12 @@
 //! - `search --query "<palavras>"`: a busca por conceito;
 //! - `summary`: o resumo do início da sessão, até 3 kB;
 //! - `skill --path <SKILL.md>`: confere os caminhos que a skill cita e o
-//!   tamanho dela.
+//!   tamanho dela;
+//! - `dump`: o banco do mapa tabela por tabela, em ordem fixa, para depurar.
 //!
-//! A regra mora em `mustard_core::domain::project_map`; aqui só se leem o
-//! mapa, a skill e o arquivo de onde sai o trecho, e se imprime o JSON.
+//! A regra mora em `mustard_core::domain::project_map`, e a leitura do banco
+//! na porta `mustard_core::io::project_map`; aqui só se leem o mapa, a skill e
+//! o arquivo de onde sai o trecho, e se imprime o JSON.
 
 use std::path::{Path, PathBuf};
 
@@ -37,6 +39,7 @@ pub enum Question {
     Skill,
     Slice,
     Users,
+    Dump,
 }
 
 impl Question {
@@ -50,6 +53,7 @@ impl Question {
             Self::Skill => "skill",
             Self::Slice => "slice",
             Self::Users => "users",
+            Self::Dump => "dump",
         }
     }
 }
@@ -88,10 +92,18 @@ pub(crate) fn map_at(opts: &MapOpts) -> Value {
     }
 }
 
+/// O banco do mapa tabela por tabela, como a porta o lê.
+fn dump(root: &Path) -> Result<Value, MapRefusal> {
+    Ok(json!({ "ok": true, "question": "dump", "tables": store::dump(root)? }))
+}
+
 fn answer(opts: &MapOpts, root: &Path, lang: Locale, languages: &Languages) -> Result<Value, MapRefusal> {
     let question = opts.question;
     if question == Question::Skill {
         return skill(opts, root);
+    }
+    if question == Question::Dump {
+        return dump(root);
     }
     let map = store::read(root)?;
     match question {
@@ -127,6 +139,7 @@ fn answer(opts: &MapOpts, root: &Path, lang: Locale, languages: &Languages) -> R
         Question::Users => users(opts, &map, lang),
         Question::Examples => examples(opts, &map, lang, languages),
         Question::Skill => skill(opts, root),
+        Question::Dump => dump(root),
     }
 }
 

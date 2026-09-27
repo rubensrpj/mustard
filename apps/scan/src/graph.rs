@@ -60,8 +60,8 @@ use petgraph::graph::{DiGraph, NodeIndex};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
-/// Catalog cap for `top_fan_in` / `top_fan_out`: a bounded list (~a few KB of
-/// model) ordered strongest first. The map's session summary reads the first
+/// Catalog cap for `top_fan_in`: a bounded list (~a few KB of model) ordered
+/// strongest first. The map's session summary reads the first
 /// hubs of `top_fan_in`.
 const TOP_DEGREE_CAP: usize = 64;
 
@@ -178,7 +178,7 @@ pub fn build(
         g.add_node(m.path.clone());
     }
 
-    // Fan-in / fan-out and centrality read the SAME resolved edges the PageRank
+    // Fan-in and centrality read the SAME resolved edges the PageRank
     // ranker does (`resolve_edges`): position i == the i-th added node ==
     // `NodeIndex::new(i)`. The published degree is specificity-weighted (see the
     // resolver): a bucket-broadcast target keeps its 1/N share instead of a
@@ -199,40 +199,30 @@ pub fn build(
     let self_loop = edge_set.iter().any(|(a, b)| a == b);
     let cyclic = has_multi_node_scc || self_loop;
 
-    // Fan-in / fan-out — specificity-weighted (see `edge_w`): the published
+    // Fan-in — specificity-weighted (see `edge_w`): the published
     // degree is the rounded sum of edge weights, i.e. "specific-import
     // equivalents". A bucket-broadcast target keeps a small honest degree (its
     // 1/N share of each broadcast import) instead of a minted full count, so
     // real hubs — modules imported by precise evidence — rank above diffuse glue.
     let mut win: HashMap<NodeIndex, u64> = HashMap::new();
-    let mut wout: HashMap<NodeIndex, u64> = HashMap::new();
-    for ((a, b), w) in &edge_w {
-        *wout.entry(*a).or_insert(0) += w;
+    for ((_, b), w) in &edge_w {
         *win.entry(*b).or_insert(0) += w;
     }
-    // Rounded units, floored at 1 for any node with at least one in/out edge
+    // Rounded units, floored at 1 for any node with at least one in edge
     // — "has dependents" must survive the rounding of a tiny diffuse weight.
     let units = |x: u64| (((x + 512) >> 10) as usize).max(1);
     let mut fan_in: Vec<(u64, NodeDegree)> = Vec::new();
-    let mut fan_out: Vec<(u64, NodeDegree)> = Vec::new();
     for n in g.node_indices() {
         let wi = win.get(&n).copied().unwrap_or(0);
-        let wo = wout.get(&n).copied().unwrap_or(0);
         if wi > 0 {
             fan_in.push((wi, NodeDegree { module: g[n].clone(), degree: units(wi) }));
-        }
-        if wo > 0 {
-            fan_out.push((wo, NodeDegree { module: g[n].clone(), degree: units(wo) }));
         }
     }
     // Order by the RAW weighted sum (full discrimination), path asc on ties —
     // deterministic regardless of HashMap iteration order.
     fan_in.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.module.cmp(&b.1.module)));
-    fan_out.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.module.cmp(&b.1.module)));
     let mut fan_in: Vec<NodeDegree> = fan_in.into_iter().map(|(_, d)| d).collect();
-    let mut fan_out: Vec<NodeDegree> = fan_out.into_iter().map(|(_, d)| d).collect();
     fan_in.truncate(TOP_DEGREE_CAP);
-    fan_out.truncate(TOP_DEGREE_CAP);
 
     // Emergent layering: condense cycles into a DAG, then depth = longest
     // dependency chain. No layer names — just the order the imports define.
@@ -286,7 +276,6 @@ pub fn build(
         edges: edge_set.len(),
         cyclic,
         top_fan_in: fan_in,
-        top_fan_out: fan_out,
         layers,
         touchpoints,
     };

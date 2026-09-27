@@ -307,6 +307,76 @@ fn o_mapa_devolve_quem_usa_uma_declaracao_pelo_nome() {
     assert!(hint.contains("Confira o nome"), "o texto de declaração desconhecida: {report}");
 }
 
+/// Pergunta ao mapa pelo comando que a pessoa roda, na raiz `root`: o JSON da
+/// resposta e se o comando saiu sem erro.
+fn ask_map(root: &Path, question: &str) -> (bool, serde_json::Value) {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+        .args(["run", "map", question, "--root"])
+        .arg(root)
+        .current_dir(root)
+        .output()
+        .expect("run map");
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout)
+        .unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&out.stdout)));
+    (out.status.success(), report)
+}
+
+/// Para depurar o mapa, `run map dump` mostra o banco tabela por tabela, numa
+/// ordem fixa: uma entrada por tabela, com as linhas dela.
+#[test]
+fn o_despejo_do_mapa_traz_uma_entrada_por_tabela() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    mustard_core::io::project_map::write_text(
+        root,
+        r#"{"modules": [
+             {"path": "src/preco.rs", "loc": 5, "declarations": [
+               {"kind": "function", "name": "total", "line": 1, "end_line": 3,
+                "used_by": ["src/pedido.rs:5:fechar"]}]},
+             {"path": "src/pedido.rs", "loc": 8, "deps": ["src/preco.rs"], "declarations": []}
+           ],
+           "graph": {"nodes": 2, "edges": 1, "top_fan_in": [{"module": "src/preco.rs", "degree": 1}]},
+           "state": {"head": "abc"}}"#,
+    )
+    .unwrap();
+
+    let (ok, report) = ask_map(root, "dump");
+    assert!(ok, "{report}");
+    assert_eq!(report["question"], "dump", "{report}");
+    let tables = report["tables"].as_array().unwrap();
+    let names: Vec<&str> = tables.iter().map(|table| table["table"].as_str().unwrap()).collect();
+    assert_eq!(
+        names,
+        [
+            "census", "projects", "languages", "manifests", "skeleton", "files", "decls", "links", "graph",
+            "fan_in", "layers", "touchpoints", "history_paths", "commits", "blocks"
+        ],
+        "uma entrada por tabela, na ordem fixa: {report}"
+    );
+    let rows = |name: &str| tables.iter().find(|table| table["table"] == name).unwrap()["rows"].clone();
+    assert_eq!(rows("files").as_array().unwrap().len(), 2, "{report}");
+    assert_eq!(rows("decls")[0]["file"], "src/preco.rs", "{report}");
+    assert_eq!(rows("decls")[0]["used_by"], serde_json::json!(["src/pedido.rs:5:fechar"]), "{report}");
+    assert_eq!(rows("census")[0]["head"], "abc", "{report}");
+    assert_eq!(rows("fan_in")[0]["degree"], 1, "{report}");
+}
+
+/// Perguntar a um projeto que ainda não tem mapa recusa com mapa ausente e não
+/// deixa um banco vazio no lugar: a pergunta seguinte recusa igual, e o scan é
+/// quem cria o mapa.
+#[test]
+fn perguntar_ao_projeto_sem_mapa_recusa_e_nao_cria_o_arquivo() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    for question in ["summary", "dump", "summary"] {
+        let (ok, report) = ask_map(root, question);
+        assert!(!ok, "{question}: {report}");
+        assert_eq!(report["reason"], "map-missing", "{question}: {report}");
+    }
+    assert!(!mustard_core::io::project_map::model_path(root).exists(), "a pergunta criou o mapa");
+    assert!(!root.join(".claude").exists(), "a pergunta criou a pasta do mapa");
+}
+
 /// A ajuda do `run pending`, como o usuário a pede, escreve o número de uma
 /// pendência como `P-N`, inteiro na linha da opção: nenhum `P-` fica partido
 /// por uma quebra no lugar do número.

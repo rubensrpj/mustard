@@ -16,12 +16,12 @@ A tese do projeto é **mínimo de IA, máximo de determinismo**: tudo que pode s
 
 ```mermaid
 flowchart LR
-    repo[("Repositório")] -->|"varredura no porteiro de base (Rust, sem IA)"| model[("grain.model.json")]
+    repo[("Repositório")] -->|"varredura no porteiro de base (Rust, sem IA)"| model[("grain.db")]
     model -->|mapa| anchors["arquivos apontados"]
     anchors -->|"IA lê só estes"| work["pipeline de feature/bugfix"]
 ```
 
-1. A **varredura** minera o repositório para um modelo durável (`grain.model.json`) — de forma **determinística, sem IA e agnóstica de linguagem/arquitetura**: módulos, declarações, grafo de dependências, *roles*, *slices*, contratos e *touchpoints*. Não é comando: o **porteiro de base** a dispara sozinho quando o censo está velho e a árvore limpa.
+1. A **varredura** minera o repositório para um modelo durável (`grain.db`, um banco SQLite em blocos que só regrava o bloco que mudou) — de forma **determinística, sem IA e agnóstica de linguagem/arquitetura**: módulos, declarações, grafo de dependências, *roles*, *slices*, contratos e *touchpoints*. Não é comando: o **porteiro de base** a dispara sozinho quando o censo está velho e a árvore limpa.
 2. Os comandos do fluxo consultam esse modelo pelo **mapa** (`mustard-rt run map`) e leem apenas os arquivos que ele aponta.
 3. Resultado: **economia de contexto** — o mapa acha *onde olhar*, não substitui ler.
 
@@ -134,7 +134,7 @@ Mudanças no meio do caminho são auto-registradas (`change-requests.ndjson` + `
 | Caminho | Crate/App | Stack | Papel |
 |---|---|---|---|
 | `apps/rt` | `mustard-rt` | Rust | **Núcleo determinístico** — scan, mapa, eventos, gates, hooks, comandos do pipeline. É o motor. |
-| `apps/scan` | `scan` | Rust | Minerador do repositório → `grain.model.json`. |
+| `apps/scan` | `scan` | Rust | Minerador do repositório → `grain.db` (SQLite). |
 | `apps/cli` | `mustard` | Rust | Instalação e *scaffold* — `init`, gramáticas, git-flow, fontes. |
 | `packages/core` | `core` | Rust | Tipos e lógica compartilhados (ex.: `ProjectConfig`). |
 | `plugin/` | — | — | O plugin do Claude Code: comandos, hooks, agentes e o bootstrap `mustard-boot` (baixa os binários do Release na primeira sessão). |
@@ -193,7 +193,7 @@ packages/
 plugin/       plugin do Claude Code (comandos, hooks, agentes, bootstrap)
 packaging/    instaladores Win/macOS/Linux + tutoriais
 docs/         análises e redesenhos arquiteturais
-.claude/      config do harness (hooks, skills, refs, specs, grain.model.json)
+.claude/      config do harness (hooks, skills, refs, specs, grain.db)
 install.ps1   instalador de desenvolvimento (build + scaffold)
 mustard.json  configuração do projeto
 ```

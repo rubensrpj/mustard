@@ -1,11 +1,12 @@
-//! `scan` — mine the workspace into `grain.model.json` via the bundled grain
+//! `scan` — mine the workspace into the project map via the bundled grain
 //! tool. This is THE scan now: it replaces the old in-tree scan engine
 //! (miner / ast / vocabulary / cluster discovery / skill+agent generation),
 //! which is removed. grain is deterministic and fully
 //! language-agnostic; Mustard never reads project source to understand a repo.
 //!
-//! The model lands at `<root>/.claude/grain.model.json` (the durable product,
-//! re-run when the codebase changes). Downstream commands consume it through the
+//! The model lands in the SQLite map at `<root>/.claude/grain.db` (the durable
+//! product, re-run when the codebase changes; only the blocks that changed are
+//! written again). Downstream commands consume it through the
 //! project map (`run map`) and the [`mustard_core::Scan`] client (`facts`),
 //! never by reading source. No skills or agents are produced; with `--full`, the one file
 //! written per subproject is its `.claude/scan-map.md`.
@@ -287,7 +288,7 @@ mod tests {
         let mut modules = Vec::new();
         walk(root, root, &mut modules);
         let files = modules.len();
-        write(model, &json!({ "modules": modules }).to_string());
+        store::write_text_at(model, &json!({ "modules": modules }).to_string())?;
         Ok(ScanReport { full: true, files, ..ScanReport::default() })
     }
 

@@ -19,7 +19,8 @@ use crate::commands::scan;
 #[derive(Debug, Subcommand)]
 #[allow(clippy::large_enum_variant)] // CLI parser enum - clap-Subcommand; boxing breaks derive
 pub enum ScanCmd {
-    /// Mine the workspace into `grain.model.json` with the bundled `scan` tool.
+    /// Mine the workspace into the SQLite map `grain.db` with the bundled `scan`
+    /// tool; only the blocks that changed are written again.
     /// This is the one scan of the project, and the model is the single
     /// durable artifact. It replaced the old in-tree miner and the per-project
     /// skill and agent generation.
@@ -28,7 +29,7 @@ pub enum ScanCmd {
         /// The workspace root to scan. Defaults to the current directory.
         #[arg(long, default_value = ".")]
         root: PathBuf,
-        /// Output path. Defaults to `<root>/.claude/grain.model.json`.
+        /// Output path. Defaults to `<root>/.claude/grain.db`.
         #[arg(long)]
         out: Option<PathBuf>,
         /// (Re)generate the mustard-owned `.claude/scan-map.md` for every
@@ -44,9 +45,10 @@ pub enum ScanCmd {
     /// own lines, without opening the file), `users --name <declaration>` (who
     /// uses it, as `file:line:caller`; `--file` keeps the one declared in that
     /// file), `search --query`, `summary` (the session-start summary, up to
-    /// 3 kB) or `skill --path <SKILL.md>` (every cited path exists and the
-    /// skill stays under 500 lines). Reads
-    /// `.claude/grain.model.json`; prints JSON and exits 1 on a refusal.
+    /// 3 kB), `skill --path <SKILL.md>` (every cited path exists and the
+    /// skill stays under 500 lines) or `dump` (the map database table by
+    /// table, in a fixed order, for debugging). Reads `.claude/grain.db`;
+    /// prints JSON and exits 1 on a refusal.
     #[command(display_order = 16)]
     Map {
         /// The question to ask.

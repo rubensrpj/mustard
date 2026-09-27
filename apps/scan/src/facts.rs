@@ -1,5 +1,5 @@
 //! Deterministic model FACTS — the small, stable projection the ORCHESTRATOR
-//! (Mustard) consumes instead of parsing `grain.model.json` itself.
+//! (Mustard) consumes instead of reading the map database itself.
 //!
 //! Two facts an orchestrator needs without reading source or the (large) model:
 //! the subproject list (one per build manifest) and the known declaration names

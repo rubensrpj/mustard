@@ -436,7 +436,7 @@ mod tests {
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 
-    /// A repo on `dev` whose `.claude/grain.model.json` is TRACKED and
+    /// A repo on `dev` whose project map (`.claude/grain.db`) is TRACKED and
     /// committed — the shape where a re-mined census shows up as a dirty tree
     /// at all.
     fn repo_tracking_the_census(root: &Path) {
@@ -691,7 +691,7 @@ mod tests {
     /// atrás do `origin` — e o commit do `origin` TOCANDO o modelo do censo,
     /// que é o caso que o commit vazio da fixture irmã contorna. Devolve o
     /// commit à frente e o conteúdo que o `origin` tem para o modelo.
-    fn origin_ahead_touching_the_census(root: &Path) -> (String, &'static str) {
+    fn origin_ahead_touching_the_census(root: &Path) -> (String, Vec<u8>) {
         let origin = root.parent().expect("tmp").join("origin.git");
         let origin_s = origin.to_string_lossy().to_string();
         std::fs::write(
@@ -706,6 +706,8 @@ mod tests {
         // A máquina A re-minerou e publicou.
         const ORIGINS_CENSUS: &str = "{\"projects\":[{\"dir\":\"apps/rt\"},{\"dir\":\"apps/cli\"}]}\n";
         project_map::write_text(root, ORIGINS_CENSUS).unwrap();
+        // O mapa é um banco: o que se compara são os bytes do arquivo.
+        let origins_census = std::fs::read(project_map::model_path(root)).unwrap();
         git(root, &["commit", "-q", "-am", "another machine re-mined the census"]);
         git(root, &["push", "-q", "origin", "dev"]);
         let ahead = git_out(root, &["rev-parse", "HEAD"]).expect("HEAD");
@@ -715,7 +717,7 @@ mod tests {
             !git_out(root, &["rev-list", "dev"]).expect("rev-list").contains(&ahead),
             "a fixture tem de começar com a base ATRÁS do origin",
         );
-        (ahead, ORIGINS_CENSUS)
+        (ahead, origins_census)
     }
 
     /// O censo sujo no caminho do avanço — o modelo que o `origin` também
@@ -753,7 +755,7 @@ mod tests {
             "a base avançou até o origin: o censo no caminho não a prendeu",
         );
         assert_eq!(
-            std::fs::read_to_string(project_map::model_path(root)).unwrap(),
+            std::fs::read(project_map::model_path(root)).unwrap(),
             origins_census,
             "o modelo é o do origin — o local velho foi posto de lado, não gravado por cima",
         );
@@ -1044,7 +1046,7 @@ mod tests {
             matches!(checkout_work(root), CheckoutWork::CensusOnly(_)),
             "precondição: só o censo (e um rascunho) está sujo",
         );
-        let ours = std::fs::read_to_string(project_map::model_path(root)).unwrap();
+        let ours = std::fs::read(project_map::model_path(root)).unwrap();
         let dirty_before = porcelain(root);
         let head_before = git_out(root, &["rev-parse", "HEAD"]).expect("HEAD");
 
@@ -1068,7 +1070,7 @@ mod tests {
             "o censo posto de lado voltou exatamente como estava — o modelo encenado inclusive",
         );
         assert_eq!(
-            std::fs::read_to_string(project_map::model_path(root)).unwrap(),
+            std::fs::read(project_map::model_path(root)).unwrap(),
             ours,
             "e com o conteúdo local, não o do origin",
         );
@@ -1112,7 +1114,7 @@ mod tests {
             git_out(root, &["rev-list", "dev"]).expect("rev-list").contains(&ahead),
             "a base avançou apesar do censo encenado",
         );
-        assert_eq!(std::fs::read_to_string(project_map::model_path(root)).unwrap(), origins_census);
+        assert_eq!(std::fs::read(project_map::model_path(root)).unwrap(), origins_census);
         assert_eq!(
             git_out(root, &["rev-parse", "dev"]).expect("dev"),
             ahead,
@@ -1200,7 +1202,7 @@ mod tests {
     /// Uma base PROTEGIDA com o censo re-minerado E uma edição do operador —
     /// a primeira unidade cortando no lugar, por desenho — cujo `origin` tocou
     /// o censo. Devolve o commit à frente e o conteúdo do origin para o modelo.
-    fn protected_main_behind_origin(root: &Path) -> (String, &'static str) {
+    fn protected_main_behind_origin(root: &Path) -> (String, Vec<u8>) {
         std::fs::write(
             root.join("mustard.json"),
             r#"{"git":{"flow":{"*":"main"},"protected":["main"]}}"#,
@@ -1217,11 +1219,13 @@ mod tests {
         git(root, &["push", "-q", "origin", "main"]);
         const ORIGINS_CENSUS: &str = "{\"projects\":[{\"dir\":\"apps/rt\"},{\"dir\":\"apps/cli\"}]}\n";
         project_map::write_text(root, ORIGINS_CENSUS).unwrap();
+        // O mapa é um banco: o que se compara são os bytes do arquivo.
+        let origins_census = std::fs::read(project_map::model_path(root)).unwrap();
         git(root, &["commit", "-q", "-am", "another machine re-mined the census"]);
         git(root, &["push", "-q", "origin", "main"]);
         let ahead = git_out(root, &["rev-parse", "HEAD"]).expect("HEAD");
         git(root, &["reset", "-q", "--hard", "HEAD~1"]);
-        (ahead, ORIGINS_CENSUS)
+        (ahead, origins_census)
     }
 
     /// `Holds` numa base protegida: o trabalho do operador segue para a
@@ -1255,7 +1259,7 @@ mod tests {
             git_out(root, &["rev-list", "main"]).expect("rev-list").contains(&ahead),
             "a base avançou",
         );
-        assert_eq!(std::fs::read_to_string(project_map::model_path(root)).unwrap(), origins_census);
+        assert_eq!(std::fs::read(project_map::model_path(root)).unwrap(), origins_census);
         assert_eq!(
             std::fs::read_to_string(root.join("theirs.txt")).unwrap(),
             "mine, not yours\n",

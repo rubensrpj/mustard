@@ -863,7 +863,10 @@ const HARNESS_SCRATCH_FILES: &[&str] = &[
 /// Os arquivos que o próprio Mustard escreve ao MAPEAR o projeto — o censo.
 /// Lidos diretamente sob um `.claude/`, em qualquer profundidade da árvore: o
 /// `scan-map.md` de cada subprojeto mora no `.claude/` dele, e o modelo, o
-/// dicionário e a lista de recusas moram no do raiz.
+/// dicionário e a lista de recusas moram no do raiz. O mapa entra com os
+/// nomes que a porta dele dá: o banco, o diário que o SQLite deixa ao lado
+/// enquanto grava e o mapa em JSON de antes do banco, que o scan apaga — o
+/// sumiço dele também é saída da ferramenta.
 ///
 /// Categoria PRÓPRIA, nem rascunho nem trabalho, e as duas leituras erradas
 /// custam coisas diferentes. Rascunho não serve: nenhuma regra de ignore os
@@ -876,7 +879,13 @@ const HARNESS_SCRATCH_FILES: &[&str] = &[
 /// FORA da base não há gravação nenhuma para fechar esse atrito, e aí a
 /// categoria continua nomeando os caminhos mas não libera nada: ver
 /// [`crate::commands::event::census_settlement`].
-const CENSUS_FILES: &[&str] = &[mustard_core::io::project_map::MAP_FILE_NAME, "scan-declined.json", "scan-map.md"];
+const CENSUS_FILES: &[&str] = &[
+    mustard_core::io::project_map::MAP_FILE_NAME,
+    mustard_core::io::project_map::MAP_JOURNAL_FILE_NAME,
+    mustard_core::io::project_map::LEGACY_MAP_FILE_NAME,
+    "scan-declined.json",
+    "scan-map.md",
+];
 
 /// A subárvore sob um `.claude/` onde os moldes `{papel}-pattern` do censo
 /// vivem, e o nome do arquivo que fecha cada um. A passagem de enriquecimento
@@ -2203,8 +2212,12 @@ mod tests {
         // Censo — escrito pela ferramenta, versionado de propósito. Nem
         // rascunho (seria descartado de todo commit) nem trabalho (recusaria o
         // corte pela saída da própria ferramenta).
+        let journal = format!(".claude/{}", mustard_core::io::project_map::MAP_JOURNAL_FILE_NAME);
+        let legacy = format!(".claude/{}", mustard_core::io::project_map::LEGACY_MAP_FILE_NAME);
         for census in [
             mustard_core::io::project_map::MAP_FILE,
+            journal.as_str(),
+            legacy.as_str(),
             ".claude/scan-declined.json",
             ".claude/scan-map.md",
             "apps/rt/.claude/scan-map.md",

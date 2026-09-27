@@ -17,15 +17,17 @@ pub fn build_skeleton(modules: &[Module], depth_by_path: &std::collections::Hash
         *counts.entry(dir.clone()).or_default() += 1;
         *depth_sum.entry(dir).or_default() += depth_by_path.get(&m.path).copied().unwrap_or(0);
     }
-    let mut entries: Vec<SkeletonEntry> = counts
+    let mut entries: Vec<(usize, SkeletonEntry)> = counts
         .iter()
         .map(|(dir, &files)| {
             let avg = depth_sum.get(dir).copied().unwrap_or(0) as f32 / files.max(1) as f32;
             // emergent tier (`L0` = most depended-upon / innermost)
-            SkeletonEntry { dir: dir.clone(), role: format!("L{}", avg.round() as usize), files }
+            (files, SkeletonEntry { dir: dir.clone(), role: format!("L{}", avg.round() as usize) })
         })
         .collect();
-    entries.sort_by_key(|a| std::cmp::Reverse(a.files));
+    // As pastas com mais arquivos primeiro; a contagem só ordena, e não se
+    // guarda no mapa.
+    entries.sort_by_key(|(files, _)| std::cmp::Reverse(*files));
     entries.truncate(25);
-    entries
+    entries.into_iter().map(|(_, entry)| entry).collect()
 }

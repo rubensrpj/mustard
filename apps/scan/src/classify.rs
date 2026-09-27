@@ -1,5 +1,5 @@
 //! File-class discovery — which files are MACHINE-WRITTEN. One module, one
-//! responsibility (mirrors graph.rs / extract.rs / mine.rs).
+//! responsibility (mirrors graph.rs / extract.rs).
 //!
 //! Everything that names a tool, ecosystem or convention lives in the catalog
 //! (`generated-markers.toml`, embedded at compile time like test-dirs.toml);

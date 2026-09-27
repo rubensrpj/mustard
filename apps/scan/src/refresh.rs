@@ -5,8 +5,9 @@
 //! one checked out now, the files not committed now, and the files that were
 //! not committed then (they may have been put back since). Everything else is
 //! taken from the previous map as it was. Outside git, without a previous
-//! map, or when the previous map was written by another scanner build, every
-//! file is read.
+//! map, or when a part of the previous map the pass takes from was written by
+//! another scanner build — or came back empty because its format changed —,
+//! every file is read.
 //!
 //! The history comes from the local repository (`git log`), never from the
 //! network: the first pass reads it whole, and the next ones read only the
@@ -18,14 +19,29 @@ use std::path::Path;
 use mustard_core::platform::git as git_exec;
 
 use mustard_core::domain::project_map::{History, RawCommit, MAX_COMMITS};
+use mustard_core::io::project_map::{MapBlock, CENSUS, DECLS, FILES, GRAPH};
 
 use crate::model::{Module, ProjectModel};
 
-/// The scanner build tag written into the map. A map written by another
-/// build is read again in full, because what a file yields may have changed.
-/// The part after `+map-` is a digest of the scan's own sources, worked out by
-/// the build script, so any change to the scan changes it.
+/// The scanner build tag written into the map, as the mark of every block the
+/// pass writes. A map written by another build is read again in full, because
+/// what a file yields may have changed. The part after `+map-` is a digest of
+/// the scan's own sources, worked out by the build script, so any change to
+/// the scan changes it.
 pub(crate) const FORMAT: &str = concat!(env!("CARGO_PKG_VERSION"), "+map-", env!("SCAN_MAP_DIGEST"));
+
+/// The blocks of the map a pass that reads only what changed takes from the
+/// previous one: the state and the manifests, the files, their declarations
+/// and their links. The history is read on its own, from the commits after
+/// the one the previous pass stopped at.
+const REUSED: [&MapBlock; 4] = [&CENSUS, &FILES, &DECLS, &GRAPH];
+
+/// The block `block` of the previous map was filled by this scanner build.
+/// A block rebuilt because its format changed comes back empty and without a
+/// mark, so it is never taken as fresh.
+fn fresh(prev: &ProjectModel, block: &MapBlock) -> bool {
+    prev.marks.get(block.name()).is_some_and(|mark| mark == FORMAT)
+}
 
 /// Files whose change alters how every other file is classified: when one of
 /// them changed, everything is read again. Os arquivos de configuração de
@@ -116,7 +132,9 @@ pub(crate) fn plan(root: &Path, prev: Option<&ProjectModel>) -> Plan {
         return Plan::Full;
     };
     let no_commit_before = prev.state.head == NO_COMMIT_HEAD;
-    if prev.state.format != FORMAT || (prev.state.head.is_empty() && !no_commit_before) || prev.root != canonical(root)
+    if !REUSED.iter().all(|block| fresh(prev, block))
+        || (prev.state.head.is_empty() && !no_commit_before)
+        || prev.root != canonical(root)
     {
         return Plan::Full;
     }
@@ -351,14 +369,50 @@ mod tests {
         assert_eq!(commits[1].added, vec!["src/with\"quote.rs".to_string()]);
     }
 
+    /// Todo bloco que a passada reaproveita, marcado por esta versão do scan.
+    fn marked_by_this_build() -> std::collections::BTreeMap<String, String> {
+        REUSED.iter().map(|block| (block.name().to_string(), FORMAT.to_string())).collect()
+    }
+
     #[test]
     fn without_a_previous_map_everything_is_read() {
         assert_eq!(plan(Path::new("."), None), Plan::Full);
         let other_build = ProjectModel {
-            state: crate::model::ScanState { format: "0.0.0+old".to_string(), head: "x".to_string(), ..Default::default() },
+            state: crate::model::ScanState { head: "x".to_string(), ..Default::default() },
+            marks: REUSED.iter().map(|block| (block.name().to_string(), "0.0.0+old".to_string())).collect(),
             ..Default::default()
         };
         assert_eq!(plan(Path::new("."), Some(&other_build)), Plan::Full);
+    }
+
+    /// Um repositório sem commit com o mapa anterior inteiro desta versão do
+    /// scan lê só o que estava aberto; basta um dos blocos reaproveitados sem
+    /// a marca desta versão — o que volta vazio quando o formato dele muda —
+    /// para a passada ler tudo de novo.
+    #[test]
+    fn a_block_not_filled_by_this_build_makes_the_pass_read_everything() {
+        let dir = tempfile::Builder::new().prefix("scan-refresh-stale-block-").tempdir().expect("pasta temporária");
+        let root = dir.path();
+        let _ = git_exec::run(root, &["init", "-q"]);
+        std::fs::write(root.join("a.rs"), "fn a() {}\n").expect("a.rs");
+        let prev = ProjectModel {
+            root: canonical(root),
+            state: crate::model::ScanState {
+                head: NO_COMMIT_HEAD.to_string(),
+                dirty: vec!["a.rs".to_string()],
+                ..Default::default()
+            },
+            marks: marked_by_this_build(),
+            ..Default::default()
+        };
+        assert_eq!(plan(root, Some(&prev)), Plan::Only(BTreeSet::from(["a.rs".to_string()])));
+        for block in REUSED {
+            let mut stale = prev.clone();
+            stale.marks.insert(block.name().to_string(), String::new());
+            assert_eq!(plan(root, Some(&stale)), Plan::Full, "{}", block.name());
+            stale.marks.remove(block.name());
+            assert_eq!(plan(root, Some(&stale)), Plan::Full, "{}", block.name());
+        }
     }
 
     /// Um repositório sem nenhum commit não relê o projeto inteiro para
@@ -377,11 +431,11 @@ mod tests {
         let prev = ProjectModel {
             root: canonical(root),
             state: crate::model::ScanState {
-                format: FORMAT.to_string(),
                 head: NO_COMMIT_HEAD.to_string(),
                 dirty: vec!["a.rs".to_string(), "b.rs".to_string()],
                 ..Default::default()
             },
+            marks: marked_by_this_build(),
             ..Default::default()
         };
         match plan(root, Some(&prev)) {

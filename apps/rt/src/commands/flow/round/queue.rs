@@ -2279,7 +2279,7 @@ mod tests {
         }
         let mut modules = Vec::new();
         walk(root, root, &mut modules);
-        std::fs::write(model, json!({ "modules": modules }).to_string()).unwrap();
+        mustard_core::io::project_map::write_text_at(model, &json!({ "modules": modules }).to_string()).unwrap();
         Ok(mustard_core::domain::scan::ScanReport { full: true, files: modules.len(), ..Default::default() })
     }
 
@@ -2424,9 +2424,9 @@ mod tests {
         assert_ne!(head_v1, head_v2, "o commit avançou");
 
         let mine_refreshed = move |_: &Path, out: &Path| {
-            std::fs::write(
+            mustard_core::io::project_map::write_text_at(
                 out,
-                json!({
+                &json!({
                     "modules": [{"path": "src/a.rs",
                         "declarations": [{"kind": "function", "name": "soma", "line": 13, "end_line": 15}]}],
                     "state": {"head": head_v2},

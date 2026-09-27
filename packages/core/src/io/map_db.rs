@@ -1,5 +1,6 @@
-//! `map_db` — o mapa do projeto como um arquivo SQLite só
-//! (`.claude/grain.db`), em blocos, como um banco de dados.
+//! `map_db` — o mapa do projeto como um arquivo SQLite só, em blocos, como um
+//! banco de dados. O nome e o lugar do arquivo moram na porta do mapa
+//! (`io::project_map`); aqui se abre o arquivo que ela der.
 //!
 //! Cada bloco é um grupo de tabelas com dono: o módulo que o declara diz o
 //! nome, a versão do formato, as tabelas, o esquema e o tipo ([`Block`]). A
@@ -13,6 +14,10 @@
 //! - o bloco escrito por agente ([`Kind::Written`]) nunca é apagado: a função
 //!   de conversão do dono leva as linhas da versão encontrada para a nova.
 //!
+//! A tabela de blocos guarda também a marca de quem encheu cada bloco: quem
+//! grava a põe junto das linhas ([`set_mark`]), e o bloco refeito volta sem
+//! ela. Assim quem lê sabe se o bloco foi enchido pela mesma versão dele.
+//!
 //! A tabela que o programa não conhece — de um bloco que um programa mais
 //! novo gravou — fica como está: não se apaga, e o resto do mapa se lê.
 //!
@@ -24,16 +29,12 @@
 //!
 //! Bloco novo se declara no módulo dono, e este módulo não muda.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 
 use crate::platform::error::{Error, Result};
-
-/// O nome do arquivo do mapa, na pasta `.claude/` do projeto — a mesma do
-/// mapa em JSON (`io::project_map::model_path`).
-pub const MAP_DB_FILE: &str = "grain.db";
 
 /// A tabela que guarda o nome e a versão do formato de cada bloco. Nenhum
 /// bloco pode usar este nome.
@@ -42,12 +43,6 @@ const BLOCKS_TABLE: &str = "blocks";
 /// Quanto uma gravação espera a trava de outra antes de desistir. O scan
 /// inteiro regrava o mapa em cerca de um segundo num projeto grande.
 const BUSY_WAIT: Duration = Duration::from_secs(10);
-
-/// Onde mora o mapa do projeto em `root`.
-#[must_use]
-pub fn db_path(root: &Path) -> PathBuf {
-    root.join(".claude").join(MAP_DB_FILE)
-}
 
 /// Refaz um bloco a partir do código, do git ou das specs do projeto em
 /// `root`. Roda dentro da transação que já apagou e recriou as tabelas do
@@ -101,21 +96,20 @@ pub struct MapDb {
 }
 
 impl MapDb {
-    /// Abre o mapa do projeto em `root`, criando o arquivo se faltar, e põe
-    /// em dia cada bloco de `blocks` cuja versão falta ou difere: só aquele
-    /// bloco, numa transação própria. O bloco que não está em `blocks` fica
-    /// como está.
-    pub fn open(root: &Path, blocks: &[Block]) -> Result<Self> {
+    /// Abre o mapa gravado em `path`, criando o arquivo se faltar, e põe em
+    /// dia cada bloco de `blocks` cuja versão falta ou difere: só aquele
+    /// bloco, numa transação própria, com `root` — a raiz do projeto — para o
+    /// bloco refeito. O bloco que não está em `blocks` fica como está.
+    pub fn open(path: &Path, root: &Path, blocks: &[Block]) -> Result<Self> {
         for block in blocks {
             if block.name == BLOCKS_TABLE || block.tables.contains(&BLOCKS_TABLE) {
                 return Err(Error::config(format!("map block `{}` uses the reserved name `{BLOCKS_TABLE}`", block.name)));
             }
         }
-        let path = db_path(root);
-        if let Some(dir) = path.parent() {
+        if let Some(dir) = path.parent().filter(|dir| !dir.as_os_str().is_empty()) {
             crate::io::fs::create_dir_all(dir)?;
         }
-        let mut conn = Connection::open(&path)?;
+        let mut conn = Connection::open(path)?;
         // A espera vem antes de tudo: até trocar o diário pede a trava.
         conn.busy_timeout(BUSY_WAIT)?;
         // Um mapa que outro programa tenha posto em outro diário volta ao
@@ -141,6 +135,20 @@ impl MapDb {
         stored_version(&self.conn, name)
     }
 
+    /// A marca de quem encheu o bloco `name` ([`set_mark`]): vazia quando
+    /// ninguém marcou depois que ele nasceu ou foi refeito; `None` quando o
+    /// bloco falta.
+    pub fn mark(&self, name: &str) -> Result<Option<String>> {
+        if !table_exists(&self.conn, BLOCKS_TABLE)? {
+            return Ok(None);
+        }
+        let mark = self
+            .conn
+            .query_row(&format!("SELECT mark FROM {BLOCKS_TABLE} WHERE name = ?1"), params![name], |row| row.get(0))
+            .optional()?;
+        Ok(mark)
+    }
+
     /// A porta de toda gravação: `write` roda numa transação só, que pega a
     /// trava de gravação logo no começo e espera a vez se outra gravação a
     /// segura. Com `Ok`, grava tudo; com erro, nada.
@@ -152,6 +160,14 @@ impl MapDb {
     }
 }
 
+/// Marca o bloco `name` como enchido por `mark`, dentro da transação da
+/// gravação ([`MapDb::write`]): a marca e as linhas entram juntas. O bloco
+/// tem de estar declarado na abertura; o que falta não ganha marca.
+pub fn set_mark(conn: &Connection, name: &str, mark: &str) -> Result<()> {
+    conn.execute(&format!("UPDATE {BLOCKS_TABLE} SET mark = ?2 WHERE name = ?1"), params![name, mark])?;
+    Ok(())
+}
+
 /// Põe `block` em dia, quando a versão gravada falta ou difere da do
 /// programa. A versão é conferida de novo depois de pegar a trava: outro
 /// processo pode ter feito o mesmo enquanto este esperava.
@@ -160,28 +176,39 @@ fn keep_up(conn: &mut Connection, block: &Block, root: &Path) -> Result<()> {
         return Ok(());
     }
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    tx.execute_batch(&format!("CREATE TABLE IF NOT EXISTS {BLOCKS_TABLE}(name TEXT PRIMARY KEY, version INTEGER NOT NULL)"))?;
+    tx.execute_batch(&format!(
+        "CREATE TABLE IF NOT EXISTS {BLOCKS_TABLE}(name TEXT PRIMARY KEY, version INTEGER NOT NULL, mark TEXT NOT NULL DEFAULT '')"
+    ))?;
     let found = stored_version(&tx, block.name)?;
     if found == Some(block.version) {
         return Ok(());
     }
-    match block.kind {
+    // O bloco refeito perde a marca de quem o encheu; o convertido guarda as
+    // linhas e a marca delas.
+    let keep_mark = match block.kind {
         Kind::Rebuilt(rebuild) => {
             for table in block.tables {
                 tx.execute_batch(&format!("DROP TABLE IF EXISTS {}", quoted(table)))?;
             }
             tx.execute_batch(block.schema)?;
             rebuild(&tx, root)?;
+            false
         }
-        Kind::Written(convert) => match found {
-            Some(from) => convert(&tx, from)?,
-            None if any_table_exists(&tx, block.tables)? => convert(&tx, 0)?,
-            None => tx.execute_batch(block.schema)?,
-        },
-    }
+        Kind::Written(convert) => {
+            match found {
+                Some(from) => convert(&tx, from)?,
+                None if any_table_exists(&tx, block.tables)? => convert(&tx, 0)?,
+                None => tx.execute_batch(block.schema)?,
+            }
+            true
+        }
+    };
     tx.execute(
-        &format!("INSERT INTO {BLOCKS_TABLE}(name, version) VALUES (?1, ?2) ON CONFLICT(name) DO UPDATE SET version = excluded.version"),
-        params![block.name, block.version],
+        &format!(
+            "INSERT INTO {BLOCKS_TABLE}(name, version) VALUES (?1, ?2) ON CONFLICT(name) DO UPDATE SET version = excluded.version, \
+             mark = CASE WHEN ?3 THEN mark ELSE '' END"
+        ),
+        params![block.name, block.version, keep_mark],
     )?;
     tx.commit()?;
     Ok(())
@@ -224,7 +251,17 @@ fn quoted(name: &str) -> String {
 mod tests {
     use super::*;
     use std::sync::{Arc, Barrier};
+    use std::path::PathBuf;
     use tempfile::tempdir;
+
+    /// O nome do mapa nos testes: qualquer um serve, o módulo abre o que
+    /// recebe.
+    const MAP_FILE_NAME: &str = "map.db";
+
+    /// Onde os testes gravam o mapa do projeto em `root`.
+    fn map_in(root: &Path) -> PathBuf {
+        root.join(".claude").join(MAP_FILE_NAME)
+    }
 
     fn rows(db: &MapDb, sql: &str) -> Vec<String> {
         let mut stmt = db.conn().prepare(sql).unwrap();
@@ -321,11 +358,11 @@ mod tests {
     #[test]
     fn a_rebuilt_block_with_an_old_version_is_redone_without_touching_the_others() {
         let dir = tempdir().unwrap();
-        let mut db = MapDb::open(dir.path(), &[DECLS_V1, HISTORY_V1]).unwrap();
+        let mut db = MapDb::open(&map_in(dir.path()), dir.path(), &[DECLS_V1, HISTORY_V1]).unwrap();
         put(&mut db, "INSERT INTO history VALUES ('written after the rebuild');");
         drop(db);
 
-        let db = MapDb::open(dir.path(), &[DECLS_V2, HISTORY_V1]).unwrap();
+        let db = MapDb::open(&map_in(dir.path()), dir.path(), &[DECLS_V2, HISTORY_V1]).unwrap();
         assert_eq!(rows(&db, "SELECT name || '|' || words FROM decls"), vec!["from code v2|from code"]);
         assert!(rows(&db, "SELECT name FROM decls_fts WHERE decls_fts MATCH 'pedido'").is_empty());
         assert_eq!(db.version("decls").unwrap(), Some(2));
@@ -334,14 +371,34 @@ mod tests {
         assert_eq!(db.version("history").unwrap(), Some(1));
     }
 
+    /// A marca entra com as linhas; o bloco refeito volta sem ela, e o outro
+    /// fica com a sua.
+    #[test]
+    fn a_rebuilt_block_loses_the_mark_of_who_filled_it_and_the_others_keep_theirs() {
+        let dir = tempdir().unwrap();
+        let mut db = MapDb::open(&map_in(dir.path()), dir.path(), &[DECLS_V1, HISTORY_V1]).unwrap();
+        assert_eq!(db.mark("decls").unwrap().as_deref(), Some(""), "a block that was just born has no mark");
+        assert_eq!(db.mark("routes").unwrap(), None, "a block that is not there has no mark either");
+        db.write(|tx| {
+            set_mark(tx, "decls", "scan 1")?;
+            set_mark(tx, "history", "scan 1")
+        })
+        .unwrap();
+        drop(db);
+
+        let db = MapDb::open(&map_in(dir.path()), dir.path(), &[DECLS_V2, HISTORY_V1]).unwrap();
+        assert_eq!(db.mark("decls").unwrap().as_deref(), Some(""), "the rebuilt block lost the mark");
+        assert_eq!(db.mark("history").unwrap().as_deref(), Some("scan 1"), "the other block kept it");
+    }
+
     #[test]
     fn an_agent_written_block_with_an_old_version_is_converted_and_its_rows_stay() {
         let dir = tempdir().unwrap();
-        let mut db = MapDb::open(dir.path(), &[NOTES_V1]).unwrap();
+        let mut db = MapDb::open(&map_in(dir.path()), dir.path(), &[NOTES_V1]).unwrap();
         put(&mut db, "INSERT INTO notes VALUES ('a.rs', 'reads the git log'), ('b.rs', 'writes the map');");
         drop(db);
 
-        let db = MapDb::open(dir.path(), &[NOTES_V2]).unwrap();
+        let db = MapDb::open(&map_in(dir.path()), dir.path(), &[NOTES_V2]).unwrap();
         assert_eq!(
             rows(&db, "SELECT path || '|' || note || '|' || stale FROM notes ORDER BY path"),
             vec!["a.rs|reads the git log|0", "b.rs|writes the map|0"]
@@ -352,12 +409,12 @@ mod tests {
     #[test]
     fn a_failed_conversion_leaves_the_agent_written_block_as_it_was() {
         let dir = tempdir().unwrap();
-        let mut db = MapDb::open(dir.path(), &[NOTES_V1]).unwrap();
+        let mut db = MapDb::open(&map_in(dir.path()), dir.path(), &[NOTES_V1]).unwrap();
         put(&mut db, "INSERT INTO notes VALUES ('a.rs', 'reads the git log');");
         drop(db);
 
-        assert!(MapDb::open(dir.path(), &[NOTES_BROKEN]).is_err());
-        let db = MapDb::open(dir.path(), &[]).unwrap();
+        assert!(MapDb::open(&map_in(dir.path()), dir.path(), &[NOTES_BROKEN]).is_err());
+        let db = MapDb::open(&map_in(dir.path()), dir.path(), &[]).unwrap();
         assert_eq!(rows(&db, "SELECT note FROM notes"), vec!["reads the git log"]);
         assert_eq!(db.version("notes").unwrap(), Some(1));
     }
@@ -365,10 +422,10 @@ mod tests {
     #[test]
     fn an_unknown_table_survives_a_rewrite() {
         let dir = tempdir().unwrap();
-        drop(MapDb::open(dir.path(), &[DECLS_V1, ROUTES_NEWER]).unwrap());
+        drop(MapDb::open(&map_in(dir.path()), dir.path(), &[DECLS_V1, ROUTES_NEWER]).unwrap());
 
         // Um programa que não conhece as rotas refaz as declarações e grava.
-        let mut db = MapDb::open(dir.path(), &[DECLS_V2]).unwrap();
+        let mut db = MapDb::open(&map_in(dir.path()), dir.path(), &[DECLS_V2]).unwrap();
         put(&mut db, "DELETE FROM decls; INSERT INTO decls VALUES ('rewritten', 'rewritten');");
         assert_eq!(rows(&db, "SELECT route FROM routes"), vec!["/orders"]);
         assert_eq!(db.version("routes").unwrap(), Some(1));
@@ -377,16 +434,16 @@ mod tests {
     #[test]
     fn a_reader_opens_a_map_with_a_block_it_does_not_know_and_reads_the_others() {
         let dir = tempdir().unwrap();
-        drop(MapDb::open(dir.path(), &[DECLS_V1, HISTORY_V1, ROUTES_NEWER]).unwrap());
+        drop(MapDb::open(&map_in(dir.path()), dir.path(), &[DECLS_V1, HISTORY_V1, ROUTES_NEWER]).unwrap());
 
-        let older = MapDb::open(dir.path(), &[DECLS_V1, HISTORY_V1]).unwrap();
+        let older = MapDb::open(&map_in(dir.path()), dir.path(), &[DECLS_V1, HISTORY_V1]).unwrap();
         assert_eq!(rows(&older, "SELECT name FROM decls"), vec!["from code v1"]);
         assert_eq!(rows(&older, "SELECT name FROM decls_fts WHERE decls_fts MATCH 'pedido'"), vec!["buscar pedido"]);
         assert_eq!(rows(&older, "SELECT commit_message FROM history"), vec!["from git"]);
         drop(older);
 
         // O programa mais novo acha o bloco dele como deixou.
-        let newer = MapDb::open(dir.path(), &[ROUTES_NEWER]).unwrap();
+        let newer = MapDb::open(&map_in(dir.path()), dir.path(), &[ROUTES_NEWER]).unwrap();
         assert_eq!(rows(&newer, "SELECT route FROM routes"), vec!["/orders"]);
         assert_eq!(newer.version("routes").unwrap(), Some(1));
     }
@@ -394,7 +451,7 @@ mod tests {
     #[test]
     fn two_writes_at_the_same_time_both_finish() {
         let dir = tempdir().unwrap();
-        drop(MapDb::open(dir.path(), &[NOTES_V1]).unwrap());
+        drop(MapDb::open(&map_in(dir.path()), dir.path(), &[NOTES_V1]).unwrap());
         let root = Arc::new(dir.path().to_path_buf());
         let start = Arc::new(Barrier::new(2));
         let writers: Vec<_> = ["a.rs", "b.rs"]
@@ -402,7 +459,7 @@ mod tests {
             .map(|path| {
                 let (root, start) = (Arc::clone(&root), Arc::clone(&start));
                 std::thread::spawn(move || {
-                    let mut db = MapDb::open(&root, &[NOTES_V1]).unwrap();
+                    let mut db = MapDb::open(&map_in(&root), &root, &[NOTES_V1]).unwrap();
                     start.wait();
                     db.write(|tx| {
                         tx.execute("INSERT INTO notes VALUES (?1, 'first')", params![path])?;
@@ -417,7 +474,7 @@ mod tests {
         for writer in writers {
             writer.join().unwrap().unwrap();
         }
-        let db = MapDb::open(dir.path(), &[]).unwrap();
+        let db = MapDb::open(&map_in(dir.path()), dir.path(), &[]).unwrap();
         assert_eq!(
             rows(&db, "SELECT path || '|' || note FROM notes ORDER BY path, rowid"),
             vec!["a.rs|first", "a.rs|second", "b.rs|first", "b.rs|second"]
@@ -429,12 +486,12 @@ mod tests {
         let dir = tempdir().unwrap();
         // Outro programa deixou o mapa num diário que fica ao lado do arquivo.
         std::fs::create_dir_all(dir.path().join(".claude")).unwrap();
-        let other = Connection::open(db_path(dir.path())).unwrap();
+        let other = Connection::open(map_in(dir.path())).unwrap();
         let mode: String = other.pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get(0)).unwrap();
         assert_eq!(mode, "wal");
         drop(other);
 
-        let mut db = MapDb::open(dir.path(), &[DECLS_V1, NOTES_V1]).unwrap();
+        let mut db = MapDb::open(&map_in(dir.path()), dir.path(), &[DECLS_V1, NOTES_V1]).unwrap();
         put(&mut db, "INSERT INTO notes VALUES ('a.rs', 'reads the git log');");
         // Com a conexão ainda aberta: um diário que ficasse estaria aqui.
         let mut files: Vec<String> = std::fs::read_dir(dir.path().join(".claude"))
@@ -442,6 +499,6 @@ mod tests {
             .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
         files.sort();
-        assert_eq!(files, vec![MAP_DB_FILE]);
+        assert_eq!(files, vec![MAP_FILE_NAME]);
     }
 }

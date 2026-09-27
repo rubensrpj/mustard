@@ -4,12 +4,19 @@
 //! projeções. Nada aqui codifica framework nenhum. Os grupos por sufixo do nome
 //! (`roles` e `conventions`) saíram do modelo: nenhum leitor sobrou, e era por
 //! eles que as skills fracas nasciam.
+//!
+//! O modelo se grava no mapa do projeto, o banco que a porta do núcleo
+//! declara (`mustard_core::io::project_map`), e se lê dele de volta: o que o
+//! banco não guarda — a cobertura além das pastas puladas e se o grafo tem
+//! ciclo — só serve ao resumo impresso da passada, e volta vazio.
 
 use mustard_core::domain::project_map::History;
 use mustard_core::domain::vocabulary::stacks::StackDetection;
+use mustard_core::io::project_map as store;
 use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(default)]
@@ -27,9 +34,6 @@ pub struct ProjectModel {
     /// Projects/compilation units in the workspace (a slice usually spans several).
     #[serde(default)]
     pub projects: Vec<ProjectUnit>,
-    /// Base types/interfaces many entities build on — the shared foundation.
-    #[serde(default)]
-    pub shared_contracts: Vec<SharedContract>,
     /// Stacks inferred by evidence convergence (manifest deps + path markers +
     /// code signatures). The engine and the registry live in `mustard-core` —
     /// stacks are DATA there, never names in this crate. Additive: older
@@ -42,6 +46,35 @@ pub struct ProjectModel {
     /// The git history, one entry per commit (created and changed files).
     #[serde(default, skip_serializing_if = "History::is_empty")]
     pub history: History,
+    /// A marca de cada bloco do mapa de onde o modelo foi lido, pelo nome do
+    /// bloco: a versão do scan que o encheu, ou vazia no bloco que voltou
+    /// vazio. Não se grava como chave: a marca desta passada vai à gravação.
+    #[serde(skip)]
+    pub marks: BTreeMap<String, String>,
+}
+
+impl ProjectModel {
+    /// O modelo gravado no mapa em `path`; `None` sem mapa, ou com um que não
+    /// se lê — a passada então lê tudo.
+    pub fn load(path: &Path) -> Option<Self> {
+        let stored = store::read_stored_at(path).ok()?;
+        let mut model: Self = serde_json::from_str(&stored.json).ok()?;
+        model.marks = stored.marks;
+        Some(model)
+    }
+
+    /// O modelo lido do mapa em `path`, com o motivo quando não se lê.
+    pub fn read(path: &Path) -> anyhow::Result<Self> {
+        let stored = store::read_stored_at(path).map_err(|refusal| anyhow::anyhow!("{}: {refusal:?}", path.display()))?;
+        Ok(serde_json::from_str(&stored.json)?)
+    }
+
+    /// Grava o modelo no mapa em `path`, com a marca `mark` em cada bloco.
+    /// Só os blocos que mudaram se regravam, numa transação só; com tudo
+    /// igual, nada se grava e a resposta é `false`.
+    pub fn save(&self, path: &Path, mark: &str) -> anyhow::Result<bool> {
+        Ok(store::save_at(path, &serde_json::to_value(self)?, mark)?)
+    }
 }
 
 /// What the scan actually visited — so "did you read everything?" is verifiable.
@@ -77,6 +110,7 @@ pub struct ProjectUnit {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(default)]
 pub struct Coverage {
     pub top_dirs: Vec<DirCoverage>,
     /// Build/dependency dirs skipped on purpose (from manifests.toml skip_dirs).
@@ -135,7 +169,6 @@ pub struct Manifest {
 pub struct SkeletonEntry {
     pub dir: String,
     pub role: String,
-    pub files: usize,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -313,11 +346,11 @@ fn is_false(b: &bool) -> bool {
 }
 
 /// Where the last pass read from, so the next one reads only what changed.
+/// Which scanner build wrote each part of the map is the mark of its block
+/// ([`ProjectModel::marks`]).
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 #[serde(default)]
 pub struct ScanState {
-    /// The scanner build that wrote the model; another build reads everything.
-    pub format: String,
     /// The commit checked out at the last pass (empty outside git).
     pub head: String,
     /// The files that were not committed at the last pass: they are read
@@ -345,7 +378,7 @@ pub struct Decl {
     pub end_line: usize,
     /// Names this declaration builds on — base classes, implemented interfaces,
     /// embedded structs, implemented traits. Language-specific to capture,
-    /// generic to mine: a base name shared by many entities is a shared contract.
+    /// generic to keep.
     #[serde(default)]
     pub supertypes: Vec<String>,
     /// The documentation comment written right above the declaration, cleaned
@@ -379,12 +412,12 @@ pub struct Decl {
 pub use mustard_core::domain::project_map::UseSite;
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(default)]
 pub struct GraphStats {
     pub nodes: usize,
     pub edges: usize,
     pub cyclic: bool,
     pub top_fan_in: Vec<NodeDegree>,
-    pub top_fan_out: Vec<NodeDegree>,
     pub layers: Vec<LayerInfo>,
     /// High fan-out hubs that import across many directories — the registration
     /// points (DI container, menu, barrels) you EDIT when adding an entity, not
@@ -414,13 +447,4 @@ pub struct NodeDegree {
 pub struct LayerInfo {
     pub name: String,
     pub modules: usize,
-}
-
-/// A base type / interface that many distinct entities build on — the shared
-/// foundation a slice plugs into (e.g. EntityBase, RepositoryBase). Mined by
-/// frequency over supertypes; never from a catalog.
-#[derive(Serialize, Deserialize, Clone, Debug, Default)]
-pub struct SharedContract {
-    pub name: String,
-    pub implementors: usize,
 }
