@@ -39,8 +39,12 @@ entende essas capturas e devolve a mesma forma para toda linguagem. De cada
 declaração fica o tipo, o nome, as linhas de começo e de fim, os **supertipos**
 — `class X : Base, IFoo` (C#), `impl Trait for T` (Rust), `extends`/`implements`
 (TS), `class Foo(Base)` (Python) —, a documentação (o comentário escrito acima
-dela ou, na linguagem que a escreve dentro, a docstring) e a assinatura (o
-cabeçalho, sem o corpo). De cada arquivo ficam também as
+dela ou, na linguagem que a escreve dentro, a docstring), a assinatura (o
+cabeçalho, sem o corpo), o **dono** — o tipo que a contém ou, quando a
+linguagem escreve o dono fora dela, o da captura `@owner`, como o tipo do bloco
+`impl` do Rust e o receptor do método do Go — e o **contrato**, a interface ou
+trait que ela cumpre por onde foi escrita (a captura `@owner.contract`, como o
+traço de `impl Traço for Tipo`). De cada arquivo ficam também as
 chamadas e as citações de nomes, com a linha, e os trechos de teste escritos
 dentro dele. **Detecção de linguagem** também é dado: vem da tabela de extensões
 do mesmo registro, não de um `match`.
@@ -65,7 +69,13 @@ chamada parte. Um nome só se liga às declarações que o arquivo que o escreve
 enxerga — as do próprio arquivo, as dos arquivos que ele importa, as que um
 import global da linguagem põe à vista e as do mesmo namespace na mesma
 linguagem. A chamada escrita num trecho de teste é do teste e não conta como
-uso.
+uso. Cada tipo guarda os **membros** dele, os métodos primeiro, e cada método
+guarda as **implementações**: o método do tipo diz qual método do contrato ele
+implementa (`implements`), e o método do contrato diz quem o implementa
+(`implemented_by`). Membros e implementações saem do dono e do contrato de
+cada declaração e, como os usos, se refazem do projeto inteiro a cada passada.
+A regra de quem é membro e de qual contrato vale está em
+[`queries/README.md`](queries/README.md#capturas), junto das capturas.
 
 **Testes de cada arquivo** (`testmap.rs`). Um arquivo é coberto pelo teste que o
 importa e pelo teste que muda junto com ele no git. O arquivo que traz o próprio
@@ -105,9 +115,19 @@ a história inteira; as seguintes, só os commits novos.
 scan relê só os arquivos que mudaram desde a passada anterior e toma o resto do
 mapa como estava; o resultado é o mesmo mapa que uma leitura completa daria. Só
 os blocos do banco que mudaram se regravam, numa transação só, e sem nada mudado
-o arquivo fica intocado. Um mapa gravado por um scan compilado de outras fontes
-(outro motor, outras consultas ou outras tabelas de dados) é relido inteiro.
-`--all` relê tudo.
+o arquivo fica intocado. O que mudou se decide pelo **blob do git** de cada
+arquivo: o do índice, para o arquivo comitado e intocado, ou calculado sobre o
+conteúdo de agora, quando o arquivo está sujo ou é novo. O arquivo cujo blob é
+o mesmo que a passada anterior leu é tomado do mapa como estava, em qualquer
+ramo, comitado ou não. Fora do git não há blob, e tudo se relê; tudo se relê
+também quando muda um arquivo que muda a leitura de todos os outros. Um mapa
+gravado por um scan compilado de outras fontes (outro motor, outras consultas
+ou outras tabelas de dados) é relido inteiro. `--all` relê tudo.
+
+O commit lido e a marca da listagem (uma marca curta de todos os pares caminho
+e blob daquela passada) moram no censo. Antes de cada pergunta ao mapa, o
+Mustard os confere com os de agora, sem ler o mapa inteiro, e, se um dos dois
+mudou, roda o scan, que relê só os arquivos de blob novo.
 
 **Relatório de cobertura.** Todo `scan` imprime o que foi lido por diretório de
 topo, quais pastas de build foram puladas (`bin`, `obj`…) e quais extensões
@@ -213,13 +233,17 @@ nome e toda pasta que o `languages.toml` declara.
 O **produto é o `grain.db`** — o mapa, um banco SQLite em blocos, cada bloco com
 as tabelas dele e a marca do scan que o gravou:
 
-- **census** — a raiz, o estado da leitura, as dependências, as pilhas
-  detectadas, as pastas puladas, os projetos, as linguagens, os manifestos e o
-  esqueleto das pastas;
-- **files** — cada arquivo, com a linguagem, as linhas, a classe de arquivo
-  gerado, os namespaces, os imports e os trechos de teste;
+- **census** — a raiz, o estado da leitura (o commit lido, a marca da listagem
+  e o blob dos arquivos que decidem a releitura sem ser código: os manifestos,
+  os que mudam a leitura de todos e os que não se decodificaram), as
+  dependências, as pilhas detectadas, as pastas puladas, os projetos, as
+  linguagens, os manifestos e o esqueleto das pastas;
+- **files** — cada arquivo, com o blob do git do conteúdo lido, a linguagem, as
+  linhas, a classe de arquivo gerado, os namespaces, os imports e os trechos
+  de teste;
 - **decls** — cada declaração, com o arquivo, o tipo, o nome, as linhas, a
-  assinatura, a documentação, os supertipos, o que ela chama e quem a usa;
+  assinatura, a documentação, os supertipos, o que ela chama, quem a usa, o
+  dono, o contrato, os membros (num tipo) e as implementações (num método);
 - **graph** — de cada arquivo, o que ele importa do projeto, os testes que o
   cobrem, as chamadas e as citações; e os números do grafo: o tamanho, os mais
   importados, as camadas e os pontos de registro;
