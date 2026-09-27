@@ -11,7 +11,6 @@ use ignore::WalkBuilder;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
 
 pub(crate) struct Ingested {
     pub root: PathBuf,
@@ -319,39 +318,6 @@ pub(crate) fn ingest(root: &Path, reuse: Option<&Reuse>) -> Result<Ingested> {
         read,
         non_utf8: non_utf8_paths,
     })
-}
-
-/// Conventional test/fixture directory segments. DATA, not logic: the list
-/// lives in `test-dirs.toml` (embedded at compile time, justified in its
-/// header) — tuning which trees count as test trees is a data change, never a
-/// code change. Parsed once per process; a malformed embedded file is a
-/// programmer error caught by any test run, same contract as
-/// `classify::catalog` over generated-markers.toml.
-fn test_dir_segments() -> &'static BTreeSet<String> {
-    static SET: OnceLock<BTreeSet<String>> = OnceLock::new();
-    SET.get_or_init(|| {
-        let raw: toml::Value = toml::from_str(include_str!("../test-dirs.toml")).expect("test-dirs.toml is not valid TOML");
-        raw.get("segments")
-            .and_then(|v| v.as_array())
-            .expect("test-dirs.toml must contain a `segments` array")
-            .iter()
-            .map(|w| w.as_str().expect("each segment must be a string").to_lowercase())
-            .collect()
-    })
-}
-
-/// True when `rel` — a `/`-normalized path RELATIVE TO THE SCANNED ROOT — has
-/// a directory component equal (ASCII case-insensitively) to a conventional
-/// test/fixture segment. Component-boundary match only: `src/contest/x` never
-/// matches `test`, and the trailing filename is not a directory segment.
-/// Because the path is relative to the scanned root, scanning a fixture
-/// directly as the root yields paths with no test segment — a root inside a
-/// test tree is never self-suppressed.
-pub(crate) fn under_test_dir(rel: &str) -> bool {
-    let segments = test_dir_segments();
-    let mut components = rel.split('/');
-    components.next_back(); // drop the filename — only directories qualify
-    components.any(|c| segments.contains(&c.to_ascii_lowercase()))
 }
 
 /// Map dependency names to framework labels. A framework strongly implies the

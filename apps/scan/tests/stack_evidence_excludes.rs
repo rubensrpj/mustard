@@ -1,5 +1,5 @@
-//! Stack-inference evidence must DISCOUNT test/fixture trees (data:
-//! test-dirs.toml). Measured defect this guards against: scanning a repo that
+//! Stack-inference evidence must DISCOUNT test/fixture trees (the core's
+//! `is_test_path`). Measured defect this guards against: scanning a repo that
 //! ships committed fixtures of another stack (e.g. a composer.json under
 //! tests/fixtures/) reported that stack at repo level — `dep:` from the
 //! fixture's own manifest, `path:` and `code:` from its files.

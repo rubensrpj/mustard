@@ -195,6 +195,85 @@ fn graph_resolution_php_cascade_layers_hubs_touchpoints() {
     assert_eq!(touchpoints[0]["breadth"].as_u64(), Some(2), "top hub spans two dirs: {touchpoints:?}");
 }
 
+/// Arquivo de teste importa de muitas pastas, mas não registra nada: nem o que
+/// mora numa pasta de dados de teste (`pkg/testdata/x.go`) nem o que só o nome
+/// marca como teste (`pkg/foo_test.go`) vira ponto de registro. O ponto de
+/// verdade ao lado (`cmd/app/main.go`, duas pastas) continua na lista.
+///
+/// Na divisa da pasta `spec`, que só marca teste perto do topo: na terceira
+/// pasta (`lib/core/spec/edge.go`) ainda é teste e sai; na quarta
+/// (`lib/core/deep/spec/past.go`) já é pasta do domínio e fica.
+#[test]
+fn a_test_file_by_folder_or_by_name_is_never_a_registration_point() {
+    let temp = tempfile::Builder::new().prefix("scan-graph-touchpoints-tests-").tempdir().unwrap();
+    let root = temp.path().join("repo");
+    let files: &[(&str, &str)] = &[
+        ("go.mod", "module example.test/hubs\n\ngo 1.22\n"),
+        ("a/a.go", "package a\n\nfunc A() int { return 1 }\n"),
+        ("b/b.go", "package b\n\nfunc B() int { return 2 }\n"),
+        ("c/c.go", "package c\n\nfunc C() int { return 3 }\n"),
+        (
+            "pkg/testdata/x.go",
+            "package testdata\n\nimport (\n\t\"example.test/hubs/a\"\n\t\"example.test/hubs/b\"\n\t\"example.test/hubs/c\"\n)\n\nfunc X() int { return a.A() + b.B() + c.C() }\n",
+        ),
+        (
+            "pkg/foo_test.go",
+            "package pkg\n\nimport (\n\t\"testing\"\n\n\t\"example.test/hubs/a\"\n\t\"example.test/hubs/b\"\n\t\"example.test/hubs/c\"\n)\n\nfunc TestFoo(t *testing.T) { _ = a.A() + b.B() + c.C() }\n",
+        ),
+        ("pkg/foo.go", "package pkg\n\nfunc Foo() int { return 0 }\n"),
+        (
+            "lib/core/spec/edge.go",
+            "package spec\n\nimport (\n\t\"example.test/hubs/a\"\n\t\"example.test/hubs/b\"\n)\n\nfunc Edge() int { return a.A() + b.B() }\n",
+        ),
+        (
+            "lib/core/deep/spec/past.go",
+            "package spec\n\nimport (\n\t\"example.test/hubs/a\"\n\t\"example.test/hubs/b\"\n)\n\nfunc Past() int { return a.A() + b.B() }\n",
+        ),
+        (
+            "cmd/app/main.go",
+            "package main\n\nimport (\n\t\"example.test/hubs/a\"\n\t\"example.test/hubs/b\"\n)\n\nfunc main() { _ = a.A() + b.B() }\n",
+        ),
+    ];
+    for (path, body) in files {
+        let file = root.join(path);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, body).unwrap();
+    }
+    let out = temp.path().join("out");
+    std::fs::create_dir_all(&out).unwrap();
+    let v = model::scan(&root, &out, &[]).0;
+
+    // Os dois arquivos de teste importam mesmo as três pastas: sem o desconto,
+    // seriam os pontos de registro mais largos do projeto.
+    for test_file in ["pkg/testdata/x.go", "pkg/foo_test.go"] {
+        assert_eq!(
+            deps_of(&v, test_file),
+            vec!["a/a.go".to_string(), "b/b.go".to_string(), "c/c.go".to_string()],
+            "{test_file} importa as três pastas"
+        );
+    }
+
+    let touchpoints: Vec<String> = v["graph"]["touchpoints"]
+        .as_array()
+        .expect("graph.touchpoints")
+        .iter()
+        .map(|t| t["module"].as_str().unwrap().to_string())
+        .collect();
+    for edge_file in ["lib/core/spec/edge.go", "lib/core/deep/spec/past.go"] {
+        assert_eq!(
+            deps_of(&v, edge_file),
+            vec!["a/a.go".to_string(), "b/b.go".to_string()],
+            "{edge_file} importa as duas pastas"
+        );
+    }
+    assert_eq!(
+        touchpoints,
+        vec!["cmd/app/main.go".to_string(), "lib/core/deep/spec/past.go".to_string()],
+        "só os pontos de verdade ficam: {}",
+        v["graph"]
+    );
+}
+
 /// Os arquivos do projeto que um módulo importa, como o mapa os grava.
 fn deps_of(v: &serde_json::Value, path: &str) -> Vec<String> {
     let module = v["modules"]

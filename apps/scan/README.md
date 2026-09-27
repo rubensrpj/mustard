@@ -83,8 +83,12 @@ projeto.
 **Pilhas detectadas.** As pilhas do projeto, e as de cada subprojeto, saem da
 convergência de três evidências — as dependências dos manifestos, os caminhos
 dos arquivos e as assinaturas no código —, pelo registro de pilhas do
-`mustard-core`. A evidência que mora sob uma pasta de teste ou de fixture
-(`test-dirs.toml`) não conta: ela diz o que o projeto testa, não o que ele é.
+`mustard-core`. A evidência de um arquivo de teste não conta: ela diz o que o
+projeto testa, não o que ele é. Arquivo de teste é o que a regra do núcleo
+(`is_test_path`, em `packages/core/src/domain/ast/conventions.rs`) diz que é —
+pela pasta (`tests/`, `fixtures/`, `testdata/`…) ou pelo nome (`foo_test.go`,
+`x.spec.ts`…) —, a mesma regra que o mapa de testes e os pontos de registro
+leem.
 
 **Arquivos escritos por máquina** (`classify.rs`). Cada arquivo gerado,
 vendorizado, lockfile ou minificado é marcado, com o marcador que decidiu. O

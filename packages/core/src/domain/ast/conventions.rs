@@ -3,9 +3,12 @@
 //!
 //! É um predicado puro de caminho, sem nenhuma noção de linguagem, framework
 //! ou arquitetura: uma convenção de segmento de pasta e uma convenção de nome
-//! de arquivo. Mora aqui para que todos os chamadores resolvam a mesma
-//! resposta num caminho público só, em vez de reimplementá-la em cada ponto
-//! de chamada.
+//! de arquivo. Este é o único lugar onde se declara o que é arquivo de teste;
+//! ninguém mantém lista própria. Quem lê a regra: o mapa de testes do scan
+//! (quais testes cobrem cada arquivo), os pontos de registro do grafo do scan
+//! (teste não conta), a evidência de pilha do scan, do projeto e de cada
+//! subprojeto (arquivo de teste não diz o que o projeto é) e o mapa do
+//! projeto (busca e exemplos).
 
 /// Path segments that, by widely-shared convention across communities, mark a
 /// directory as holding tests, specs, fixtures, or mocks. Compared

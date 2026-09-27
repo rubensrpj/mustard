@@ -9,7 +9,7 @@
 //! `generated_code`), which always beat the catalog in both directions.
 //!
 //! The verdict feeds the model additively (`Module::file_class` +
-//! `Module::marker`). The model itself stays complete — like the test-dirs
+//! `Module::marker`). The model itself stays complete — like the test-file
 //! discount, classification never hides a module from the miner; the map
 //! reads the class to leave machine-written files out of its search and of
 //! its examples.

@@ -56,6 +56,7 @@
 
 use crate::model::{CallSite, Decl, DeclAt, GraphStats, LayerInfo, Module, NodeDegree, Touchpoint, UseSite};
 use crate::path_aliases::PathAliases;
+use mustard_core::domain::ast::is_test_path;
 use petgraph::graph::{DiGraph, NodeIndex};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -255,7 +256,8 @@ pub fn build(
     // Touchpoints: hubs that import across many directories — the registration
     // points you edit when adding an entity (DI container, menu, barrels). Ranked
     // by breadth (distinct dirs imported) then fan-out; tests excluded because
-    // they import broadly but register nothing. Frequency-derived, no catalog.
+    // they import broadly but register nothing — recognised by the same rule
+    // the whole scan uses for a test file. Frequency-derived, no catalog.
     let mut src_targets: HashMap<&str, Vec<&str>> = HashMap::new();
     for (a, b) in &edge_set {
         src_targets.entry(g[*a].as_str()).or_default().push(g[*b].as_str());
@@ -1288,16 +1290,6 @@ fn parent_dir(path: &str) -> String {
         Some(i) => path[..i].to_string(),
         None => String::new(),
     }
-}
-
-/// Path-segment test detection (language-agnostic): a file under a test/mock/
-/// fixture folder, or named `*.test.*`/`*.spec.*`.
-fn is_test_path(p: &str) -> bool {
-    let l = p.to_lowercase();
-    if l.contains(".test.") || l.contains(".spec.") {
-        return true;
-    }
-    l.split('/').any(|s| matches!(s, "test" | "tests" | "__tests__" | "mocks" | "fixtures" | "spec" | "specs"))
 }
 
 /// The path without its last dotted part: the extension of a project file,

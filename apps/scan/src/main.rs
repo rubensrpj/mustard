@@ -21,6 +21,7 @@ mod testmap;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use model::{Module, ProjectModel};
+use mustard_core::domain::ast::is_test_path;
 use mustard_core::io::project_map::{self as store, Listing};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -324,18 +325,21 @@ fn analyze(root: &Path, previous: Option<&ProjectModel>) -> Result<Analysis> {
     // Stack inference: the three evidence classes — parsed dependency names,
     // file paths and the code signatures found in the sources. Which stacks
     // exist and what identifies them is DATA in mustard-core's registry.
-    // Evidence under a conventional test/fixture tree is discounted from all
-    // three: a committed fixture of another stack describes what the project
-    // tests, not what it is.
+    // Evidence from a test file — under a conventional test/fixture tree or
+    // named as a test — is discounted from all three: a committed fixture of
+    // another stack describes what the project tests, not what it is. The
+    // rule is the core's `is_test_path`, the one the whole scan reads. Paths
+    // are relative to the SCANNED ROOT, so a fixture scanned directly as the
+    // root carries no test segment and is not discounted.
     let evidence_deps: Vec<String> = ing
         .manifests
         .iter()
-        .filter(|m| !ingest::under_test_dir(&m.path))
+        .filter(|m| !is_test_path(&m.path))
         .flat_map(|m| m.dependencies.iter().cloned())
         .collect();
     let evidence_paths: Vec<String> =
-        ing.walk_paths.iter().filter(|p| !ingest::under_test_dir(p)).cloned().collect();
-    let evidence_code = code_evidence(modules.iter().filter(|m| !ingest::under_test_dir(&m.path)));
+        ing.walk_paths.iter().filter(|p| !is_test_path(p)).cloned().collect();
+    let evidence_code = code_evidence(modules.iter().filter(|m| !is_test_path(&m.path)));
     let detected_stacks = infer_stacks(&evidence_deps, &evidence_paths, &evidence_code);
 
     let mut projects = build_projects(&ing.manifests, &modules);
@@ -443,24 +447,24 @@ fn infer_unit_stacks(
     // Immutable snapshot for the longest-prefix ownership test while mutating.
     let snapshot: Vec<model::ProjectUnit> = projects.to_vec();
     for project in projects.iter_mut() {
-        // Same test-tree discount as the repo-wide inference in `ingest`:
-        // evidence whose path (relative to the SCANNED ROOT, not the unit dir)
-        // sits under a conventional test/fixture segment is excluded from all
-        // three classes — a unit that ships fixtures of another stack must not
-        // report that stack as its own.
+        // Same test-file discount as the repo-wide inference above: evidence
+        // whose path (relative to the SCANNED ROOT, not the unit dir) is a test
+        // file by the core's rule is excluded from all three classes — a unit
+        // that ships fixtures of another stack must not report that stack as
+        // its own.
         let owned = facts::owned_manifests(project, &snapshot, manifests);
         let deps: Vec<String> = owned
             .iter()
-            .filter(|m| !ingest::under_test_dir(&m.path))
+            .filter(|m| !is_test_path(&m.path))
             .flat_map(|m| m.dependencies.iter().cloned())
             .collect();
         let paths: Vec<String> = walk_paths
             .iter()
-            .filter(|p| facts::dir_contains(&project.dir, p) && !ingest::under_test_dir(p))
+            .filter(|p| facts::dir_contains(&project.dir, p) && !is_test_path(p))
             .cloned()
             .collect();
         let contents = code_evidence(
-            modules.iter().filter(|m| facts::dir_contains(&project.dir, &m.path) && !ingest::under_test_dir(&m.path)),
+            modules.iter().filter(|m| facts::dir_contains(&project.dir, &m.path) && !is_test_path(&m.path)),
         );
         project.detected_stacks = infer_stacks(&deps, &paths, &contents);
     }
