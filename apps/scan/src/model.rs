@@ -150,6 +150,23 @@ pub struct Module {
     /// this file alone. Written only when there is one.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub global_imports: Vec<String>,
+    /// Os imports escritos dentro de um trecho de teste do próprio arquivo,
+    /// como foram escritos. Não estão em `imports`: não são dependência do
+    /// arquivo, e por isso ficam fora de `deps` e do grafo. Written only when
+    /// there is one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub test_imports: Vec<String>,
+    /// Os arquivos do projeto que o trecho de teste deste importa, resolvidos
+    /// como os de `deps` e guardados à parte: dizem o que o teste cobre. O
+    /// próprio arquivo não entra.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub test_deps: Vec<String>,
+    /// As linhas, da primeira à última, de cada trecho de teste do arquivo. A
+    /// chamada e a citação escritas nelas são do teste, e não uso das
+    /// declarações que nomeiam. Guardadas com o módulo, para que a passada que
+    /// não relê o arquivo saiba o mesmo.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub test_lines: Vec<(usize, usize)>,
     pub namespaces: Vec<String>,
     pub declarations: Vec<Decl>,
     /// Machine-written class, when one applies: "generated" | "vendored" |
@@ -196,6 +213,13 @@ pub struct Module {
     /// same way.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cites: Vec<CallSite>,
+}
+
+impl Module {
+    /// A linha cai num trecho de teste do arquivo ([`Module::test_lines`]).
+    pub fn is_test_line(&self, line: usize) -> bool {
+        self.test_lines.iter().any(|&(first, last)| (first..=last).contains(&line))
+    }
 }
 
 /// One call or citation read out of a file: the name, the line, and the

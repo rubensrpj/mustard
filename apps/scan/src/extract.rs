@@ -40,6 +40,11 @@ pub(crate) struct Extracted {
     /// The imports the language puts in sight of more files than the one that
     /// writes them (`@import.global`).
     pub global_imports: Vec<String>,
+    /// Os imports escritos dentro de um trecho de teste (`@test_block`): ficam
+    /// fora de `imports` e de `global_imports`.
+    pub test_imports: Vec<String>,
+    /// As linhas, da primeira à última, de cada trecho de teste do arquivo.
+    pub test_lines: Vec<(usize, usize)>,
     pub namespaces: Vec<String>,
     pub declarations: Vec<Decl>,
     pub calls: Vec<CallSite>,
@@ -152,6 +157,12 @@ pub fn qualified_separators(lang: &str) -> Option<&'static [&'static str]> {
         .map(|(_, separators)| *separators)
 }
 
+/// O nome que, no começo de um caminho qualificado, sobe um módulo
+/// (`parent_alias` em languages.toml). `None` quando a língua não o declara.
+pub fn parent_alias(lang: &str) -> Option<&'static str> {
+    Some(text_field(LANG_PARENT_ALIAS, lang)).filter(|alias| !alias.is_empty())
+}
+
 /// Os separadores que ligam um nome ao qualificador escrito antes dele: os da
 /// língua ou, quando ela não os declara, `::` e `.`.
 fn qualifier_separators(lang: &str) -> &'static [&'static str] {
@@ -225,7 +236,7 @@ enum CapKind {
     Namespace,
     /// O caminho escrito antes do nome numa chamada qualificada (`crate::a`
     /// em `crate::a::f()`): vira import do arquivo só quando começa por um
-    /// dos `root_aliases` da língua.
+    /// dos `root_aliases` da língua ou pelo `parent_alias` dela.
     CallPath,
     Name,
     Supertype,
@@ -239,6 +250,9 @@ enum CapKind {
     /// The documentation the language writes inside the declaration rather
     /// than above it; the comment above, when there is one, is worth more.
     Doc,
+    /// Um trecho de teste escrito dentro do arquivo: o que se importa nele é
+    /// do teste, e o que se chama ou se cita nele não é uso do código.
+    TestBlock,
     Def(String),
     Ignore,
 }
@@ -256,6 +270,7 @@ fn classify(cap: &str) -> CapKind {
         "body" => CapKind::Body,
         "value" => CapKind::Value,
         "doc" => CapKind::Doc,
+        "test_block" => CapKind::TestBlock,
         other => match other.strip_prefix("definition.") {
             Some(kind) => CapKind::Def(kind.to_string()),
             None => CapKind::Ignore,
@@ -324,12 +339,17 @@ impl Analyzer {
         // there are the path of the import, not a use of what they name.
         let mut import_spans: Spans = BTreeSet::new();
         let mut supers_by_name: HashMap<String, BTreeSet<String>> = HashMap::new();
+        // Os trechos de teste do arquivo, e cada import com o byte em que foi
+        // escrito: só depois de todos os matches se sabe qual cai num trecho.
+        let mut test_blocks: Spans = BTreeSet::new();
+        let mut written: Vec<(String, bool, usize)> = Vec::new();
 
         // O import relativo por separador da língua, quando ela o declara.
         let relative = relative_import(&self.name);
         // O começo que faz do caminho de uma chamada qualificada um lugar do
         // próprio projeto, e o que separa as partes dele.
         let aliases = root_aliases(&self.name);
+        let parent = parent_alias(&self.name);
         let separators = qualifier_separators(&self.name);
 
         let mut matches = cursor.matches(&self.query, root, bytes);
@@ -342,9 +362,9 @@ impl Analyzer {
             let mut value_start: Option<usize> = None;
             let mut name_kind: &'static str = "";
             let mut doc_inside: Option<(usize, String)> = None;
-            // Os imports deste match e os nomes que o mesmo pattern diz que
-            // eles trazem.
-            let mut here_imports: Vec<(String, bool)> = Vec::new();
+            // Os imports deste match, com o byte em que cada um foi escrito, e
+            // os nomes que o mesmo pattern diz que eles trazem.
+            let mut here_imports: Vec<(String, bool, usize)> = Vec::new();
             let mut brought: Vec<String> = Vec::new();
 
             for cap in m.captures {
@@ -356,7 +376,7 @@ impl Analyzer {
                             let c = clean_import(t);
                             if !c.is_empty() {
                                 let global = matches!(self.cap_kinds[cap.index as usize], CapKind::ImportGlobal);
-                                here_imports.push((c, global));
+                                here_imports.push((c, global, node.start_byte()));
                             }
                         }
                     }
@@ -372,12 +392,14 @@ impl Analyzer {
                     CapKind::CallPath => {
                         // Só o caminho que começa no próprio projeto é import;
                         // qualquer outro (`Vec::new()`, `std::fs::read()`)
-                        // segue como uso, como antes.
+                        // segue como uso, como antes. Os argumentos de tipo
+                        // não são parte do lugar que o caminho nomeia.
                         if let Ok(t) = node.utf8_text(bytes) {
-                            let path: String = t.split_whitespace().collect();
-                            if aliases.contains(&first_segment(&path, separators)) {
+                            let path = without_type_arguments(&t.split_whitespace().collect::<String>(), separators);
+                            let first = first_segment(&path, separators);
+                            if aliases.contains(&first) || parent == Some(first) {
                                 import_spans.insert((node.start_byte(), node.end_byte()));
-                                here_imports.push((path, false));
+                                here_imports.push((path, false, node.start_byte()));
                             }
                         }
                     }
@@ -417,6 +439,10 @@ impl Analyzer {
                                 here_supers.push(n);
                             }
                     }
+                    CapKind::TestBlock => {
+                        test_blocks.insert((node.start_byte(), node.end_byte()));
+                        out.test_lines.push((node.start_position().row + 1, node.end_position().row + 1));
+                    }
                     CapKind::Def(kind) => {
                         def = Some((node, kind.as_str()));
                     }
@@ -428,18 +454,13 @@ impl Analyzer {
             // um arquivo: cada nome que o mesmo pattern diz que ele traz é um
             // arquivo dessa pasta, e o import vira o separador seguido do
             // nome. Qualquer outro import fica como foi escrito.
-            for (import, global) in here_imports {
+            for (import, global, at) in here_imports {
                 let folder_only =
                     relative.is_some_and(|rule| matches!(rule.leading(&import), (count, "") if count > 0));
-                let paths: Vec<String> = if folder_only && !brought.is_empty() {
-                    brought.iter().map(|name| format!("{import}{name}")).collect()
+                if folder_only && !brought.is_empty() {
+                    written.extend(brought.iter().map(|name| (format!("{import}{name}"), global, at)));
                 } else {
-                    vec![import]
-                };
-                if global {
-                    out.global_imports.extend(paths);
-                } else {
-                    out.imports.extend(paths);
+                    written.push((import, global, at));
                 }
             }
 
@@ -534,10 +555,25 @@ impl Analyzer {
         let quiet: Spans = decorations.union(&import_spans).copied().collect();
         (out.calls, out.cites) = use_sites(root, bytes, &quiet, &names_at, &name_kinds, &self.name);
 
+        // O import escrito dentro de um trecho de teste é do teste, e fica à
+        // parte dos do arquivo.
+        for (import, global, at) in written {
+            if test_blocks.iter().any(|&(start, end)| (start..end).contains(&at)) {
+                out.test_imports.push(import);
+            } else if global {
+                out.global_imports.push(import);
+            } else {
+                out.imports.push(import);
+            }
+        }
         out.imports.sort();
         out.imports.dedup();
         out.global_imports.sort();
         out.global_imports.dedup();
+        out.test_imports.sort();
+        out.test_imports.dedup();
+        out.test_lines.sort();
+        out.test_lines.dedup();
         out.namespaces.sort();
         out.namespaces.dedup();
         out
@@ -924,6 +960,35 @@ fn qualifier_before(node: Node, bytes: &[u8], separators: &[&str]) -> String {
 
 /// A primeira parte de um nome qualificado: o texto até o primeiro dos
 /// `separators`, ou o texto inteiro quando não há nenhum.
+/// O caminho sem os argumentos de tipo escritos nele (`<u8>` em
+/// `crate::a::Caixa::<u8>`): cada trecho entre `<` e o `>` que o fecha sai, e
+/// o separador que fica sem parte de um lado ou do outro sai junto.
+fn without_type_arguments(path: &str, separators: &[&str]) -> String {
+    if !path.contains('<') {
+        return path.to_string();
+    }
+    let mut out = String::with_capacity(path.len());
+    let mut depth = 0usize;
+    for ch in path.chars() {
+        match ch {
+            '<' => depth += 1,
+            '>' if depth > 0 => depth -= 1,
+            _ if depth == 0 => out.push(ch),
+            _ => {}
+        }
+    }
+    for sep in separators.iter().filter(|sep| !sep.is_empty()) {
+        let doubled = format!("{sep}{sep}");
+        while out.contains(&doubled) {
+            out = out.replace(&doubled, sep);
+        }
+        while let Some(rest) = out.strip_suffix(sep) {
+            out = rest.to_string();
+        }
+    }
+    out
+}
+
 fn first_segment<'a>(path: &'a str, separators: &[&str]) -> &'a str {
     let cut = separators.iter().filter_map(|sep| path.find(sep)).min().unwrap_or(path.len());
     &path[..cut]

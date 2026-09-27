@@ -1,6 +1,7 @@
 //! Which tests cover each file: a test that imports the file, or a test that
 //! keeps changing together with it in git. A file that carries its own tests
-//! (an inline marker from `test-dirs.toml`) says so on its own.
+//! (an inline marker from `test-dirs.toml`) says so on its own, and covers
+//! what its test block imports.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -39,14 +40,21 @@ enum Link {
     History,
 }
 
-/// Fill `tests` on every module from the resolved imports (`deps`) and the
-/// history. Test files themselves get none.
+/// Fill `tests` on every module from the resolved imports (`deps` of a test
+/// file, `test_deps` of any file) and the history. Test files themselves get
+/// none.
 pub(crate) fn assign(modules: &mut [Module], history: &History) {
     let tests: BTreeSet<String> = modules.iter().filter(|m| is_test_path(&m.path)).map(|m| m.path.clone()).collect();
     let mut found: BTreeMap<String, BTreeMap<String, Link>> = BTreeMap::new();
     for test in modules.iter().filter(|m| tests.contains(&m.path)) {
         for dep in test.deps.iter().filter(|d| !tests.contains(*d)) {
             link(&mut found, dep, &test.path, Link::Imports);
+        }
+    }
+    // O trecho de teste escrito dentro de um arquivo cobre o que ele importa.
+    for module in modules.iter() {
+        for dep in module.test_deps.iter().filter(|d| !tests.contains(*d)) {
+            link(&mut found, dep, &module.path, Link::Imports);
         }
     }
     let stats = history_stats(history);

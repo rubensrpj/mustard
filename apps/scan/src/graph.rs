@@ -35,9 +35,16 @@
 //!     da pasta de quem importa (cada separador a mais sobe uma pasta) e liga
 //!     ao arquivo com esse caminho ou ao arquivo que responde pela pasta; é
 //!     o primeiro caminho tentado, e nenhum outro responde por ele;
+//!   * apelido que sobe — só para a língua que o registro dá `parent_alias`:
+//!     o caminho que começa por ele é lido a partir da pasta dos módulos de
+//!     dentro de quem importa (cada repetição sobe uma pasta), tirando do fim
+//!     quantas partes for preciso até achar arquivo e, sem nenhuma, ligando
+//!     ao arquivo que responde pela pasta; como o import relativo, nenhum
+//!     outro caminho responde por ele;
 //!   * root-alias path — only for imports whose first segment is one of the
 //!     importer language's declared `root_aliases` (registry data): drop the
-//!     alias segment and probe the tail against the importer's ancestor dirs.
+//!     alias segment and probe the tail, and the tail cut from its end as far
+//!     as it takes to reach a file, against the importer's ancestor dirs.
 //!     Languages that declare no aliases never take this branch, so an external
 //!     package path can never be mistaken for an internal module.
 //!   * workspace package path — the longest leading run of segments that names
@@ -106,7 +113,7 @@ pub fn resolve_edges(
     let mut edge_w: HashMap<(usize, usize), u64> = HashMap::new();
     for (src, m) in modules.iter().enumerate() {
         for imp in &m.imports {
-            let targets = resolver.resolve(imp, m, Reach::Used);
+            let targets = resolver.resolve(imp, m, Reach::Used, 0);
             let w = (1024 / targets.len().max(1) as u64).max(1);
             for t in targets {
                 if let Some(&dst) = pos.get(t.as_str())
@@ -120,6 +127,35 @@ pub fn resolve_edges(
     let mut edges: Vec<(usize, usize, u64)> = edge_w.into_iter().map(|((a, b), w)| (a, b, w)).collect();
     edges.sort_unstable();
     edges
+}
+
+/// Os arquivos do projeto que o trecho de teste de cada módulo importa
+/// (`Module::test_imports`), pela mesma resolução dos imports do corpo, na
+/// ordem de `modules`. Guardados à parte: nenhum é aresta do grafo nem entra
+/// em `deps`. O trecho de teste é um módulo escrito dentro do arquivo, e o
+/// próprio arquivo não conta.
+pub fn resolve_test_deps(
+    modules: &[Module],
+    go_module: &Option<String>,
+    packages: &[(String, String)],
+    aliases: &PathAliases,
+) -> Vec<Vec<String>> {
+    if modules.iter().all(|m| m.test_imports.is_empty()) {
+        return vec![Vec::new(); modules.len()];
+    }
+    let resolver = Resolver::new(modules, go_module, packages, aliases);
+    modules
+        .iter()
+        .map(|m| {
+            let found: BTreeSet<String> = m
+                .test_imports
+                .iter()
+                .flat_map(|imp| resolver.resolve(imp, m, Reach::Used, 1))
+                .filter(|target| *target != m.path)
+                .collect();
+            found.into_iter().collect()
+        })
+        .collect()
 }
 
 /// O que uma varredura do grafo produz: as estatísticas gerais e a camada de
@@ -277,7 +313,9 @@ pub(crate) const CITED_KINDS: &[&str] =
 ///
 /// The call sites and the citations come from what each module carries
 /// (`Module::calls`, `Module::cites`), never from reading the file again — so a pass that read only the files that
-/// changed links exactly what a full pass links.
+/// changed links exactly what a full pass links. A chamada ou a citação
+/// escrita num trecho de teste do arquivo (`Module::test_lines`, guardado do
+/// mesmo jeito) é do teste: não entra em quem usa a declaração.
 ///
 /// A name is resolved only to the declarations that can be called and that the
 /// calling file sees: the ones in the file itself, in a file it imports, in a
@@ -453,7 +491,9 @@ fn resolve_declaration_links(
             if let Some(i) = cite_at {
                 linked[src].insert(i);
             }
-            if chosen.len() > MAX_SAME_NAME {
+            // O que se chama ou se cita num trecho de teste do arquivo não é
+            // uso do código.
+            if chosen.len() > MAX_SAME_NAME || m.is_test_line(site.line) {
                 continue;
             }
             let from_name = from.map_or(String::new(), |di| m.declarations[di].name.clone());
@@ -513,7 +553,7 @@ fn global_sight(
             .cloned()
             .unwrap_or_else(|| parent_dir(&g.path));
         let targets: HashSet<String> =
-            g.global_imports.iter().flat_map(|imp| resolver.resolve(imp, g, Reach::Whole)).collect();
+            g.global_imports.iter().flat_map(|imp| resolver.resolve(imp, g, Reach::Whole, 0)).collect();
         if targets.is_empty() {
             continue;
         }
@@ -626,8 +666,10 @@ impl<'a> Resolver<'a> {
 
     /// The project files one import of `importer` names. Empty when it names
     /// nothing inside the project: an external dependency. `reach` decide o
-    /// que a importação de um namespace alcança (veja [`Reach`]).
-    fn resolve(&self, imp: &str, importer: &Module, reach: Reach) -> Vec<String> {
+    /// que a importação de um namespace alcança (veja [`Reach`]); `nested`,
+    /// quantos módulos escritos dentro do arquivo separam o import do corpo
+    /// dele: zero no corpo, um no trecho de teste.
+    fn resolve(&self, imp: &str, importer: &Module, reach: Reach, nested: usize) -> Vec<String> {
         let from = importer.path.as_str();
         let lang = importer.language.as_str();
         let (stem_index, dir_index, module_paths) = (&self.stem_index, &self.dir_index, &self.module_paths);
@@ -644,6 +686,12 @@ impl<'a> Resolver<'a> {
         // path: its dots are the file's, not separators.
         let file_path = ends_in_own_extension(imp, crate::extract::extensions(&importer.language));
         let canon = if file_path { canon_file_path(imp, lang) } else { canon_segments(imp, lang) };
+        // O caminho que começa pelo apelido que sobe um módulo também nomeia
+        // um lugar a partir de quem importa, e nenhum outro caminho responde
+        // por ele.
+        if let Some(hits) = self.climbing(&canon, importer, nested) {
+            return hits;
+        }
         let cleaned = canon.strip_prefix("package:").unwrap_or(&canon);
         // 0) A file path is read first from the importer's own folder.
         if file_path && !cleaned.starts_with('.') {
@@ -714,23 +762,25 @@ impl<'a> Resolver<'a> {
         //    importer language's declared root aliases (registry data — the engine
         //    never spells one); any other first segment names an external
         //    package, never the project root. Drop the alias and probe the tail
-        //    (and, because the final segment may name an ITEM inside the module,
-        //    the tail minus its last segment) against the importer's ancestor
-        //    directories, nearest first. The fixed probe order keeps resolution
-        //    deterministic. No aliases declared -> this branch never runs.
+        //    against the importer's ancestor directories, nearest first — and,
+        //    because the path may end in an ITEM, a type and a method inside the
+        //    module, the tail cut from its end one segment at a time, as far as
+        //    it takes to reach a file. Each probe is exact: the root the alias
+        //    names is always one of the importer's ancestors, so a file found
+        //    only by the end of its path would be another place. The fixed
+        //    probe order keeps resolution deterministic. No aliases declared ->
+        //    this branch never runs.
         let root_aliases = crate::extract::root_aliases(&importer.language);
         if let Some((alias, tail)) = canon.split_once('/')
             && root_aliases.contains(&alias)
         {
-            let mut tails = vec![tail.to_string()];
-            if let Some((head, _)) = tail.rsplit_once('/') {
-                tails.push(head.to_string());
-            }
+            let parts: Vec<&str> = tail.split('/').collect();
+            let tails: Vec<String> = (1..=parts.len()).rev().map(|cut| parts[..cut].join("/")).collect();
             for t in &tails {
                 let mut dir = parent_dir(from);
                 loop {
                     let cand = if dir.is_empty() { t.clone() } else { format!("{dir}/{t}") };
-                    let hits = resolve_path_candidate(&cand, lang, stem_index, dir_index, module_paths);
+                    let hits = exact_path_candidate(&cand, lang, stem_index, module_paths);
                     if !hits.is_empty() {
                         return hits;
                     }
@@ -787,6 +837,45 @@ impl<'a> Resolver<'a> {
             })
             .cloned()
             .collect()
+    }
+
+    /// Os arquivos que um caminho aberto pelo `parent_alias` da língua cita.
+    /// Os módulos de dentro de um arquivo moram na pasta que leva o nome dele
+    /// ou, no arquivo que responde pela própria pasta, nela mesma; cada
+    /// repetição do apelido sobe uma pasta a partir dali, e as `nested`
+    /// primeiras só saem dos módulos escritos dentro do arquivo. O resto do
+    /// caminho é procurado nessa pasta, tirando do fim quantas partes for
+    /// preciso até achar arquivo; sem nenhuma, o alvo é o arquivo que responde
+    /// pela pasta. O que sobe além da raiz, ou não existe no projeto, não liga
+    /// a nada. `None` quando o caminho não começa pelo apelido ou a língua não
+    /// o declara: segue pelos outros caminhos.
+    fn climbing(&self, canon: &str, importer: &Module, nested: usize) -> Option<Vec<String>> {
+        let alias = crate::extract::parent_alias(&importer.language)?;
+        let segments: Vec<&str> = canon.split('/').collect();
+        let ups = segments.iter().take_while(|s| **s == alias).count();
+        if ups == 0 {
+            return None;
+        }
+        let mut base = inner_folder(&importer.path);
+        for _ in nested..ups {
+            if base.is_empty() {
+                return Some(Vec::new());
+            }
+            base = parent_dir(&base);
+        }
+        let rest = &segments[ups..];
+        for cut in (0..=rest.len()).rev() {
+            let place: Vec<&str> =
+                std::iter::once(base.as_str()).chain(rest[..cut].iter().copied()).filter(|s| !s.is_empty()).collect();
+            if place.is_empty() {
+                continue;
+            }
+            let hits = exact_path_candidate(&place.join("/"), &importer.language, &self.stem_index, &self.module_paths);
+            if !hits.is_empty() {
+                return Some(hits);
+            }
+        }
+        Some(Vec::new())
     }
 
     /// Os arquivos que um import relativo escrito com o separador da língua
@@ -955,13 +1044,26 @@ fn exact_path_candidate(
         return v.clone();
     }
     // directory import -> index file
-    for index in ["index", "main", "mod"] {
+    for index in INDEX_FILES {
         let probe = format!("{stem}/{index}");
         if let Some(v) = stem_index.get(&probe) {
             return v.clone();
         }
     }
     Vec::new()
+}
+
+/// Os nomes, sem extensão, do arquivo que responde pela própria pasta.
+const INDEX_FILES: [&str; 3] = ["index", "main", "mod"];
+
+/// A pasta em que moram os módulos escritos dentro de um arquivo: a que leva
+/// o nome dele ou, no arquivo que responde pela própria pasta, a pasta dele.
+fn inner_folder(path: &str) -> String {
+    if INDEX_FILES.contains(&file_stem(path).as_str()) {
+        parent_dir(path)
+    } else {
+        strip_ext(path)
+    }
 }
 
 fn parent_dir(path: &str) -> String {

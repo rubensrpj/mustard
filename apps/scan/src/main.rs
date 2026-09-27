@@ -177,6 +177,7 @@ fn read_modules(root: &Path, reuse: Option<&ingest::Reuse>) -> Result<Read> {
                 // and a pass that did not read it again resolves the same
                 // declaration links from them.
                 kept.deps.clear();
+                kept.test_deps.clear();
                 kept.tests.clear();
                 modules.push(*kept);
             }
@@ -196,6 +197,9 @@ fn read_modules(root: &Path, reuse: Option<&ingest::Reuse>) -> Result<Read> {
                     loc: sf.loc,
                     imports: extracted.imports,
                     global_imports: extracted.global_imports,
+                    test_imports: extracted.test_imports,
+                    test_deps: Vec::new(),
+                    test_lines: extracted.test_lines,
                     namespaces: extracted.namespaces,
                     declarations: extracted.declarations,
                     file_class,
@@ -228,6 +232,12 @@ fn read_modules(root: &Path, reuse: Option<&ingest::Reuse>) -> Result<Read> {
         let mut named: Vec<String> = targets.into_iter().map(|i| paths[i].clone()).collect();
         named.sort();
         m.deps = named;
+    }
+    // O que o trecho de teste de cada módulo importa, resolvido no mesmo passo
+    // e guardado à parte: não é dependência do arquivo, é o que o teste cobre.
+    let test_deps = graph::resolve_test_deps(&modules, &ing.go_module, &packages, &aliases);
+    for (m, found) in modules.iter_mut().zip(test_deps) {
+        m.test_deps = found;
     }
     Ok(Read { ing, modules, packages, aliases, graph })
 }

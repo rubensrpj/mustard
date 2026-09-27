@@ -12,8 +12,15 @@
 ; O caminho de uma chamada escrita pelo nome completo, sem `use`: `crate::a::b`
 ; em `crate::a::b::f()`, já sem o nome chamado. Preso à chamada, e nunca a um
 ; caminho solto, que casaria dentro do `use` e em cada pedaço do caminho. O
-; motor só o guarda como import quando ele começa por um dos `root_aliases`.
+; motor só o guarda como import quando ele começa por um dos `root_aliases` ou
+; pelo `parent_alias`.
 (call_expression function: (scoped_identifier path: (_) @call.path))
+
+; O módulo marcado como teste: o atributo `#[cfg(test)]` logo antes do `mod`.
+; O que se importa, se chama e se cita dentro dele é do teste, e não uso do
+; código do arquivo.
+((attribute_item) @_marker . (mod_item) @test_block
+  (#eq? @_marker "#[cfg(test)]"))
 
 (struct_item name: (type_identifier) @name) @definition.struct
 (enum_item name: (type_identifier) @name) @definition.enum

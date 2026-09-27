@@ -49,7 +49,7 @@ fn main() {
     ext_table.push_str("pub(crate) static LANG_EXTENSIONS: &[(&str, &[&str])] = &[\n");
 
     // (name, root_aliases) table — the OPTIONAL per-language import segments
-    // that alias the package root (e.g. Rust's `crate`/`self`/`super`). The
+    // that alias the package root (e.g. Rust's `crate`/`self`). The
     // graph's root-alias resolution branch only runs for imports whose first
     // segment is declared here; a language without the field gets an empty
     // slice and never takes that branch.
@@ -85,6 +85,12 @@ fn main() {
     // os separadores de sempre.
     let mut separators_table = String::new();
     separators_table.push_str("pub(crate) static LANG_QUALIFIED_SEPARATORS: &[(&str, &[&str])] = &[\n");
+
+    // (name, parent_alias) — o nome OPCIONAL que, no começo de um caminho
+    // qualificado, sobe um módulo. Sem o campo, texto vazio: nenhum caminho
+    // da língua é lido assim.
+    let mut parent_table = String::new();
+    parent_table.push_str("pub(crate) static LANG_PARENT_ALIAS: &[(&str, &str)] = &[\n");
 
     let alias_fields = ["alias_config", "alias_base", "alias_paths", "alias_extends"];
     let mut alias_field_tables: Vec<String> = alias_fields
@@ -172,6 +178,16 @@ fn main() {
                 || (!qualified_separators.is_empty() && qualified_separators.iter().all(|s| !s.is_empty())),
             "language.qualified_separators of `{name}` must list at least one non-empty separator"
         );
+        let parent_alias = tbl
+            .get("parent_alias")
+            .map(|v| v.as_str().expect("language.parent_alias must be a string").to_string())
+            .unwrap_or_default();
+        // O texto vazio na tabela quer dizer "sem o campo": declarado, ele
+        // não pode ser vazio.
+        assert!(
+            tbl.get("parent_alias").is_none() || !parent_alias.is_empty(),
+            "language.parent_alias of `{name}` must not be empty"
+        );
         let namespace_scope = tbl
             .get("namespace_scope")
             .map(|v| v.as_str().expect("language.namespace_scope must be a string").to_string())
@@ -212,6 +228,8 @@ fn main() {
             .expect("the generated table is a String, which never fails to write");
         writeln!(separators_table, "    ({name:?}, &[{separators}]),")
             .expect("the generated table is a String, which never fails to write");
+        writeln!(parent_table, "    ({name:?}, {parent_alias:?}),")
+            .expect("the generated table is a String, which never fails to write");
         for (table, value) in alias_field_tables.iter_mut().zip(&alias_values) {
             writeln!(table, "    ({name:?}, {value:?}),").expect("the generated table is a String, which never fails to write");
         }
@@ -230,6 +248,8 @@ fn main() {
     body.push_str(&relative_table);
     separators_table.push_str("];\n");
     body.push_str(&separators_table);
+    parent_table.push_str("];\n");
+    body.push_str(&parent_table);
     for table in &mut alias_field_tables {
         table.push_str("];\n");
         body.push_str(table);

@@ -21,7 +21,13 @@
 //!     quem usa um tipo, por quem não usa nada e pelo nome qualificado.
 //!     E `graph_rust_qualified/`: chamadas pelo caminho completo no corpo, sem
 //!     `use` — a partir de `crate`, a partir de `super` e por um caminho de
-//!     fora do projeto (`std::fs::read`).
+//!     fora do projeto (`std::fs::read`); subindo duas pastas
+//!     (`super::super::x::f()`), só o item depois do `super` (`super::soma()`),
+//!     com argumento de tipo (`crate::a::Caixa::<u8>::new()`), por um módulo
+//!     escrito dentro do arquivo (`crate::a::dentro::Pote::new()`), a partir
+//!     do arquivo que responde pela própria pasta (`src/k/mod.rs`) e por um
+//!     caminho que não nomeia nada do projeto (`crate::nada::f()`, ao lado de
+//!     um `src/a/nada.rs`).
 //!
 //! Characterization baseline (recorded on the code BEFORE the resolution fix):
 //! csharp, typescript and go already produced edges; python, rust and php
@@ -356,4 +362,57 @@ fn a_call_by_a_path_outside_the_project_is_not_an_import() {
     let module = v["modules"].as_array().unwrap().iter().find(|m| m["path"] == "src/main.rs").unwrap();
     let calls: Vec<&str> = module["calls"].as_array().unwrap().iter().map(|c| c.as_str().unwrap()).collect();
     assert!(calls.contains(&"fs.read:3"), "a chamada de fora segue como uso: {calls:?}");
+}
+
+/// Cada `super` a mais sobe uma pasta: `super::super::x::f()` em
+/// `src/a/c/d.rs` liga a `src/a/x.rs`.
+#[test]
+fn a_call_that_climbs_two_folders_links_to_the_file_there() {
+    let v = scan_fixture_labeled("rs-super-super", "graph_rust_qualified");
+    assert_eq!(deps_of(&v, "src/a/c/d.rs"), vec!["src/a/x.rs".to_string()]);
+}
+
+/// O `super` seguido só do item liga ao arquivo que responde pela pasta de
+/// cima: `super::soma()` em `src/a/y.rs` liga a `src/a.rs`.
+#[test]
+fn a_call_by_super_and_the_item_links_to_the_file_of_the_folder_above() {
+    let v = scan_fixture_labeled("rs-super-item", "graph_rust_qualified");
+    assert_eq!(deps_of(&v, "src/a/y.rs"), vec!["src/a.rs".to_string()]);
+}
+
+/// Os argumentos de tipo saem do caminho: `crate::a::Caixa::<u8>::new()` vira
+/// o import `crate::a::Caixa` e liga a `src/a.rs`, onde `Caixa` mora.
+#[test]
+fn a_call_with_type_arguments_in_the_path_links_to_the_file() {
+    let v = scan_fixture_labeled("rs-type-args", "graph_rust_qualified");
+    assert_eq!(imports_of(&v, "src/generico.rs"), vec!["crate::a::Caixa".to_string()]);
+    assert_eq!(deps_of(&v, "src/generico.rs"), vec!["src/a.rs".to_string()]);
+}
+
+/// O caminho que passa por um módulo escrito dentro do arquivo, e termina em
+/// tipo, perde do fim quantas partes for preciso até achar arquivo:
+/// `crate::a::dentro::Pote::new()` liga a `src/a.rs`.
+#[test]
+fn a_path_through_a_module_inside_the_file_links_to_the_file() {
+    let v = scan_fixture_labeled("rs-inner-module", "graph_rust_qualified");
+    assert_eq!(deps_of(&v, "src/interno.rs"), vec!["src/a.rs".to_string()]);
+}
+
+/// O arquivo que responde pela própria pasta já é o módulo dela, e o `super`
+/// dele sobe a partir da pasta de cima: `super::a::x::f()` em `src/k/mod.rs`
+/// liga a `src/a/x.rs`.
+#[test]
+fn the_file_that_answers_for_its_folder_climbs_from_the_folder_above() {
+    let v = scan_fixture_labeled("rs-index-super", "graph_rust_qualified");
+    assert_eq!(deps_of(&v, "src/k/mod.rs"), vec!["src/a/x.rs".to_string()]);
+}
+
+/// O caminho que não nomeia nada do projeto não liga a um arquivo de outro
+/// lugar só porque o caminho dele termina igual: `crate::nada::f()` em
+/// `src/sem_alvo.rs` não liga a `src/a/nada.rs`.
+#[test]
+fn a_crate_path_that_names_nothing_does_not_link_by_the_end_of_another_path() {
+    let v = scan_fixture_labeled("rs-no-target", "graph_rust_qualified");
+    assert_eq!(imports_of(&v, "src/sem_alvo.rs"), vec!["crate::nada".to_string()]);
+    assert_eq!(deps_of(&v, "src/sem_alvo.rs"), Vec::<String>::new());
 }
