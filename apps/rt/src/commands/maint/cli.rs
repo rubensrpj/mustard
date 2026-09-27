@@ -34,7 +34,9 @@ pub enum MaintCmd {
     ///
     /// Sem `--path`, lista também as cópias de obra do projeto da pasta
     /// atual: saem as de obra fechada, descartada ou que não existe mais, sem
-    /// regra de idade; a de obra aberta fica. A pasta principal nunca entra.
+    /// regra de idade; a de obra aberta fica. A cópia da página de um
+    /// descarte sai só com mais de um dia; a de descarte recém-feito fica. A
+    /// pasta principal nunca entra.
     #[command(name = "clean")]
     #[command(display_order = 18)]
     ScratchGc {

@@ -16,6 +16,12 @@
 //! - o lugar antigo dentro do projeto, `.claude/worktrees/mustard-<spec>-<n>`.
 //!   Pasta dali sem o prefixo não é do Mustard e nem entra na lista.
 //!
+//! A pasta das cópias de página dos descartes ([`DISCARD_COPIES`]) mora na
+//! pasta das cópias, mas não é cópia de obra e não entra na lista delas. Dela
+//! sai só a cópia de um descarte que passou do prazo, pela mesma varredura do
+//! descarte ([`sweep_old_discard_copies`]), numa linha própria do relatório;
+//! a de um descarte recém-feito fica.
+//!
 //! A pasta principal e a compilação dela nunca entram. Link não é seguido.
 
 use std::path::{Path, PathBuf};
@@ -27,6 +33,7 @@ use mustard_core::io::wave_prompt::{copies_dir, shown};
 use serde::Serialize;
 
 use super::scratch_gc::ErrorRecord;
+use crate::commands::flow::discard::{sweep_old_discard_copies, DISCARD_COPIES};
 use crate::commands::flow::round::{remove_copy, remove_spec_copies};
 
 /// O prefixo das cópias antigas dentro do projeto.
@@ -38,13 +45,18 @@ const FINAL_REVIEW_SUFFIX: &str = "-final-review";
 /// As fases de obra que acabou: a cópia dela sai.
 const FINISHED: [&str; 4] = ["closed", "pr_open", "delivered", "discarded"];
 
+/// O motivo, no relatório, da cópia de página de descarte que sai.
+const OLD_DISCARD_COPY: &str = "discard page copy older than a day";
+
 /// Uma cópia de obra achada, com a obra dela e o motivo de sair ou ficar.
 #[derive(Debug, Serialize)]
 pub(crate) struct CopyRecord {
     pub path: String,
     pub spec: String,
     /// `"spec <fase>"` ou `"spec missing"` para a que sai; `"spec still
-    /// open: <fase>"` ou o que impediu de ler a obra, para a que fica.
+    /// open: <fase>"` ou o que impediu de ler a obra, para a que fica. A
+    /// cópia de página de descarte que passou do prazo, sem obra, sai com
+    /// [`OLD_DISCARD_COPY`].
     pub reason: String,
     /// A pasta a tirar, fora do JSON.
     #[serde(skip)]
@@ -69,7 +81,9 @@ pub(crate) struct CopiesReport {
 }
 
 /// As cópias de obra do projeto em que `start` está: lista as que saem e as
-/// que ficam e, com `apply`, tira as que saem. `None` fora de projeto git.
+/// que ficam e, com `apply`, tira as que saem. As cópias de página de
+/// descarte que passaram do prazo entram entre as que saem, cada uma numa
+/// linha. `None` fora de projeto git.
 pub(crate) fn clean(start: &Path, apply: bool) -> Option<CopiesReport> {
     let root = crate::commands::spec_events::project(start).root;
     if !root.join(".git").exists() {
@@ -80,6 +94,19 @@ pub(crate) fn clean(start: &Path, apply: bool) -> Option<CopiesReport> {
     if apply {
         remove(&root, &mut report);
     }
+    for (dir, error) in sweep_old_discard_copies(&root, apply) {
+        let path = shown(&dir);
+        if apply {
+            match error {
+                None => report.removed.push(path.clone()),
+                Some(error) => report.errors.push(ErrorRecord { path: path.clone(), error }),
+            }
+        }
+        let reason = OLD_DISCARD_COPY.to_string();
+        report.candidates.push(CopyRecord { path, spec: String::new(), reason, dir, whole: false, leaves: true });
+    }
+    report.candidates.sort_by(|a, b| a.path.cmp(&b.path));
+    report.removed.sort();
     Some(report)
 }
 
@@ -116,11 +143,15 @@ fn remove(root: &Path, report: &mut CopiesReport) {
 }
 
 /// Toda cópia de obra dos dois lugares, em ordem de caminho, cada uma com o
-/// motivo de sair ou ficar.
+/// motivo de sair ou ficar. A pasta das cópias de página dos descartes não
+/// é cópia de obra e não entra.
 fn found(root: &Path) -> Vec<CopyRecord> {
     let mut records = Vec::new();
     for dir in folders(&copies_dir(root)) {
         let name = dir.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        if name == DISCARD_COPIES {
+            continue;
+        }
         let whole = !dir.join(".git").exists();
         let spec = if whole { Some(name) } else { old_spec(&name) };
         records.push(record(root, dir, spec, whole));
@@ -378,5 +409,100 @@ mod tests {
         assert_eq!(old_spec("x-final-review").as_deref(), Some("x"));
         assert_eq!(old_spec("sem-numero"), None);
         assert_eq!(old_spec("-3"), None);
+    }
+
+    /// Abre a obra `spec` e a descarta apagando a pasta dela, pelo caminho de
+    /// quem usa: a prévia e o sim com o código. Devolve a pasta da cópia da
+    /// página que o descarte deixou na pasta das cópias do projeto.
+    fn deleted(root: &Path, spec: &str) -> PathBuf {
+        use crate::commands::flow::discard::{discard_for, DiscardOpts};
+        assert_eq!(record_open(root, spec, &format!("feature/{spec}"), "dev"), Ok(true));
+        assert!(mustard_core::io::spec_index::rebuild(root).is_ok());
+        let opts = |confirm: Option<String>| DiscardOpts {
+            root: root.to_path_buf(),
+            spec: Some(spec.to_string()),
+            remote: false,
+            delete: true,
+            confirm,
+        };
+        let code = discard_for(&opts(None), None)["token"].as_str().unwrap_or_default().to_string();
+        let done = discard_for(&opts(Some(code)), None);
+        assert_eq!(done["ok"], json!(true), "{done}");
+        let folder = root.join(done["copy"]["folder"].as_str().unwrap_or_default());
+        assert!(folder.is_dir() && folder.starts_with(copies_dir(root).join(DISCARD_COPIES)), "{done}");
+        folder
+    }
+
+    /// Toda linha do relatório, das que saem e das que ficam.
+    fn every_record(report: &CopiesReport) -> impl Iterator<Item = &CopyRecord> {
+        report.candidates.iter().chain(&report.kept)
+    }
+
+    /// A cópia da página de um descarte recém-feito fica depois da limpeza
+    /// com a opção de apagar, com os lotes dela, e nem aparece no relatório.
+    #[test]
+    fn a_fresh_discard_page_copy_stays_after_clean_with_apply() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        project(root);
+        let fresh = deleted(root, "apagada");
+        let batches = std::fs::read_dir(&fresh).unwrap().count();
+        assert!(batches > 0, "{fresh:?}: the discard left no batch");
+
+        let applied = clean(root, true).expect("um projeto git");
+        assert!(fresh.is_dir(), "{fresh:?}: the fresh discard page copy left: {applied:?}");
+        assert_eq!(std::fs::read_dir(&fresh).unwrap().count(), batches, "{applied:?}");
+        assert!(applied.removed.is_empty() && applied.errors.is_empty(), "{applied:?}");
+        assert!(every_record(&applied).all(|record| !record.path.contains(DISCARD_COPIES)), "{applied:?}");
+    }
+
+    /// A pasta das cópias de página dos descartes não entra no relatório
+    /// como cópia de obra: nem como obra que não existe mais, nem como nome
+    /// que não é de spec, nem entre as que ficam.
+    #[test]
+    fn the_report_does_not_list_the_discard_copies_folder_as_a_work() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        project(root);
+        deleted(root, "apagada");
+        let place = shown(&copies_dir(root).join(DISCARD_COPIES));
+
+        let listed = clean(root, false).expect("um projeto git");
+        assert!(
+            every_record(&listed).all(|record| record.spec != DISCARD_COPIES && record.path != place),
+            "{listed:?}"
+        );
+        assert!(listed.candidates.is_empty() && listed.kept.is_empty(), "{listed:?}");
+    }
+
+    /// A cópia da página de um descarte que não muda há um dia e um minuto
+    /// ganha uma linha própria no relatório, com o motivo em palavras, e sai
+    /// só com a opção de apagar; a de um dia menos um minuto fica sempre.
+    #[test]
+    fn a_discard_page_copy_older_than_a_day_leaves_at_clean_with_apply() {
+        use crate::commands::flow::discard::DISCARD_COPY_KEPT;
+        use crate::commands::maint::scratch_gc::set_mtime;
+        use std::time::{Duration, SystemTime};
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        project(root);
+        let old = deleted(root, "velha");
+        let recent = deleted(root, "recente");
+        let now = SystemTime::now();
+        set_mtime(&old, now - DISCARD_COPY_KEPT - Duration::from_secs(60));
+        set_mtime(&recent, now - DISCARD_COPY_KEPT + Duration::from_secs(60));
+
+        let listed = clean(root, false).expect("um projeto git");
+        let lines: Vec<(&str, &str, &str)> =
+            listed.candidates.iter().map(|r| (r.path.as_str(), r.spec.as_str(), r.reason.as_str())).collect();
+        assert_eq!(lines, vec![(shown(&old).as_str(), "", OLD_DISCARD_COPY)], "{listed:?}");
+        assert!(listed.kept.is_empty() && listed.removed.is_empty(), "{listed:?}");
+        assert!(old.is_dir(), "{old:?}: without the option to remove, nothing leaves");
+
+        let applied = clean(root, true).expect("um projeto git");
+        assert!(applied.errors.is_empty(), "{applied:?}");
+        assert_eq!(applied.removed, vec![shown(&old)], "{applied:?}");
+        assert!(!old.exists(), "{old:?}: the copy older than a day stayed");
+        assert!(recent.is_dir(), "{recent:?}: the copy younger than a day left");
     }
 }

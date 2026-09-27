@@ -134,7 +134,7 @@ fn template(lang: &str, name: &str) -> String {
 /// que nada se perde antes de apagar ou mover alguma coisa no git, e o teste
 /// do caso em que o "antes" falha quando o critério diz "só depois de".
 #[test]
-fn the_project_receives_exactly_three_agents_in_its_text_language() {
+fn the_project_receives_exactly_two_agents_in_its_text_language() {
     for (lang, other) in [("pt-BR", "en-US"), ("en-US", "pt-BR")] {
         let dir = tempfile::tempdir().unwrap();
         let (root, _home) = installed(dir.path(), &format!(r#"{{"version":"1.0.0","language":{{"text":"{lang}"}}}}"#));

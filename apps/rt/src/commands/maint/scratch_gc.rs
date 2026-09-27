@@ -57,7 +57,8 @@
 //! Sem `--path`, a limpeza olha também as cópias de obra do projeto da pasta
 //! atual ([`super::work_copies`]): lista as de obra fechada, descartada ou
 //! que não existe mais, e deixa a de obra aberta, com o motivo. A regra de
-//! idade não vale para elas, e o `--apply` as tira pelo git.
+//! idade não vale para elas, e o `--apply` as tira pelo git. A cópia da
+//! página de um descarte não é cópia de obra: entra só a de mais de um dia.
 //!
 //! ## Compilação compartilhada
 //!

@@ -226,13 +226,14 @@ fn archive(spec: &str, folder: &Path) -> Option<PathBuf> {
 /// A pasta, dentro da pasta das cópias do projeto
 /// ([`mustard_core::io::wave_prompt::copies_dir`]), em que nasce a cópia da
 /// página de cada descarte que apaga a spec. O ponto do começo a separa das
-/// pastas das cópias das obras, que levam o nome de uma spec.
-const DISCARD_COPIES: &str = ".discard-copy";
+/// pastas das cópias das obras, que levam o nome de uma spec; a limpeza a
+/// deixa fora da lista das cópias de obra.
+pub(crate) const DISCARD_COPIES: &str = ".discard-copy";
 
 /// Por quanto tempo a cópia da página de um descarte fica depois dele. Os
 /// lotes saem logo depois da resposta; o dia de folga cobre outro descarte
 /// do mesmo projeto feito antes de os lotes do primeiro saírem.
-const DISCARD_COPY_KEPT: Duration = Duration::from_secs(24 * 60 * 60);
+pub(crate) const DISCARD_COPY_KEPT: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// A pasta só deste descarte para a cópia da página da spec `spec`, que vai
 /// ser apagada: fora do projeto, na pasta das cópias dele, com o nome da
@@ -242,25 +243,48 @@ const DISCARD_COPY_KEPT: Duration = Duration::from_secs(24 * 60 * 60);
 /// depois da resposta; antes de criá-la, sai a de cada descarte anterior do
 /// projeto que não muda há mais de [`DISCARD_COPY_KEPT`].
 fn discard_copy_folder(root: &Path, spec: &str) -> std::io::Result<PathBuf> {
-    let place = mustard_core::io::wave_prompt::copies_dir(root).join(DISCARD_COPIES);
-    sweep_old_discard_copies(&place);
+    sweep_old_discard_copies(root, true);
+    let place = discard_copies_place(root);
     std::fs::create_dir_all(&place)?;
     tempfile::Builder::new().prefix(&format!("{spec}-")).tempdir_in(&place).map(tempfile::TempDir::keep)
 }
 
-/// Tira de `place` a pasta de cada cópia de descarte que não muda há mais de
-/// [`DISCARD_COPY_KEPT`]. Link não é seguido, e a pasta que não sai fica para
-/// o próximo descarte, sem derrubar este.
-fn sweep_old_discard_copies(place: &Path) {
-    let Ok(entries) = std::fs::read_dir(place) else { return };
+/// A pasta das cópias de página dos descartes do projeto `root`.
+fn discard_copies_place(root: &Path) -> PathBuf {
+    mustard_core::io::wave_prompt::copies_dir(root).join(DISCARD_COPIES)
+}
+
+/// A pasta de cada cópia de página de descarte do projeto `root` que não
+/// muda há mais de [`DISCARD_COPY_KEPT`], em ordem de caminho; a mais nova
+/// nunca entra. Com `apply`, cada uma sai, e o texto ao lado dela diz por
+/// que não saiu; sem `apply`, nada sai. Link não é seguido, e a pasta que
+/// não sai fica para a próxima varredura, sem derrubar quem chamou. O
+/// descarte que apaga a spec varre antes de criar a pasta dele; a limpeza
+/// varre com a escolha dela de apagar ou só listar.
+pub(crate) fn sweep_old_discard_copies(root: &Path, apply: bool) -> Vec<(PathBuf, Option<String>)> {
+    let Ok(entries) = std::fs::read_dir(discard_copies_place(root)) else { return Vec::new() };
     let now = SystemTime::now();
-    for entry in entries.flatten() {
-        let Ok(meta) = entry.metadata() else { continue };
-        let old = meta.modified().ok().and_then(|at| now.duration_since(at).ok()).is_some_and(|age| age > DISCARD_COPY_KEPT);
-        if meta.is_dir() && old {
-            let _ = mustard_core::io::fs::remove_dir_all(entry.path());
-        }
-    }
+    let mut old: Vec<PathBuf> = entries
+        .flatten()
+        .filter(|entry| {
+            entry.metadata().is_ok_and(|meta| {
+                meta.is_dir()
+                    && meta
+                        .modified()
+                        .ok()
+                        .and_then(|at| now.duration_since(at).ok())
+                        .is_some_and(|age| age > DISCARD_COPY_KEPT)
+            })
+        })
+        .map(|entry| entry.path())
+        .collect();
+    old.sort();
+    old.into_iter()
+        .map(|dir| {
+            let error = apply.then(|| mustard_core::io::fs::remove_dir_all(&dir).err().map(|e| e.to_string())).flatten();
+            (dir, error)
+        })
+        .collect()
 }
 
 /// O código do descarte: ele muda com a spec, a branch e as duas escolhas, e
