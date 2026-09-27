@@ -746,3 +746,75 @@ fn two_files_that_pass_everything_on_to_each_other_keep_the_name_nobody_declares
     );
     assert_eq!(deps_of(&v, "web/src/usa.ts"), vec!["web/src/a/index.ts".to_string()]);
 }
+
+/// O import de uma pasta chega só ao arquivo de entrada da língua de quem
+/// importa: `./velho`, numa pasta que tem `main.ts` e nenhum `index.ts`, não
+/// liga a nada — o `main` não abre pasta nenhuma nessa língua.
+#[test]
+fn an_import_of_a_folder_does_not_reach_a_file_that_is_not_an_entry_of_its_language() {
+    let v = scan_files(
+        "entry-not-main",
+        &[
+            ("src/velho/main.ts", "export function ler() {\n  return 1;\n}\n"),
+            ("src/app.ts", "import { ler } from './velho';\n\nexport function app() {\n  return ler();\n}\n"),
+        ],
+    );
+    assert_eq!(deps_of(&v, "src/app.ts"), Vec::<String>::new());
+}
+
+/// Um crate com `Cargo.toml`, o módulo `a` e o arquivo raiz `root`, que
+/// declara `raiz`; `src/a.rs` chama `super::raiz()`.
+fn crate_with_root(root: &'static str, body: &'static str) -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("Cargo.toml", "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"),
+        (root, body),
+        ("src/a.rs", "pub fn f() -> u8 {\n    super::raiz()\n}\n"),
+    ]
+}
+
+/// O `super::` de um módulo de topo de um crate de biblioteca abre a raiz do
+/// crate: `super::raiz()` em `src/a.rs` liga a `src/lib.rs`, que declara
+/// `raiz`.
+#[test]
+fn super_from_a_top_module_of_a_library_crate_reaches_the_root_file() {
+    let files = crate_with_root("src/lib.rs", "pub mod a;\n\npub fn raiz() -> u8 {\n    1\n}\n");
+    let v = scan_files("entry-lib", &files);
+    assert_eq!(deps_of(&v, "src/a.rs"), vec!["src/lib.rs".to_string()]);
+}
+
+/// O mesmo crate, com a raiz no `src/main.rs`: o `super::raiz()` de
+/// `src/a.rs` segue ligando a ele.
+#[test]
+fn super_from_a_top_module_of_a_binary_crate_reaches_the_root_file() {
+    let files = crate_with_root("src/main.rs", "mod a;\n\npub fn raiz() -> u8 {\n    1\n}\n\nfn main() {}\n");
+    let v = scan_files("entry-main", &files);
+    assert_eq!(deps_of(&v, "src/a.rs"), vec!["src/main.rs".to_string()]);
+}
+
+/// `require('./pasta')` chega ao `index.js` da pasta.
+#[test]
+fn a_require_of_a_folder_reaches_its_index_file() {
+    let v = scan_files(
+        "entry-require",
+        &[
+            ("pasta/index.js", "function ler() {\n  return 1;\n}\n\nmodule.exports = { ler };\n"),
+            ("app.js", "const { ler } = require('./pasta');\n\nfunction app() {\n  return ler();\n}\n"),
+        ],
+    );
+    assert_eq!(deps_of(&v, "app.js"), vec!["pasta/index.js".to_string()]);
+}
+
+/// O import não relativo que nomeia uma pasta de pacote chega ao
+/// `__init__.py` dela: `from loja.servicos import cobrar` liga a
+/// `loja/servicos/__init__.py`.
+#[test]
+fn an_absolute_import_of_a_package_reaches_its_init_file() {
+    let v = scan_files(
+        "entry-init",
+        &[
+            ("loja/servicos/__init__.py", "def cobrar():\n    return 1\n"),
+            ("app.py", "from loja.servicos import cobrar\n\n\ndef app():\n    return cobrar()\n"),
+        ],
+    );
+    assert_eq!(deps_of(&v, "app.py"), vec!["loja/servicos/__init__.py".to_string()]);
+}

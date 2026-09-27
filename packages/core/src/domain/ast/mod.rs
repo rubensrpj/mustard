@@ -1,5 +1,6 @@
 //! `ast` — a única coisa que sobrou da camada de árvore de sintaxe: a
-//! pergunta "este caminho é de teste?" e, sendo, "que nome ele testa?".
+//! pergunta "este caminho é de teste?" e, sendo, "que nome ele testa?"; e a
+//! pergunta "este arquivo é o de entrada da pasta dele?".
 //!
 //! A camada nasceu em cima do `tree-sitter`, para o portão de regressão ler o
 //! corpo das funções tocadas. Esse portão saiu, e com ele o carregador de
@@ -10,13 +11,15 @@
 //! resumo do scan, o mapa do projeto e a prova de recuperação — e todos os
 //! quatro pedem a mesma função. O mapa de testes pede ainda o nome testado e
 //! os marcadores de teste dentro do arquivo, que saem dos mesmos dados de
-//! convenção (`test-files.toml`, ao lado do módulo). Por isso o módulo carrega só as
-//! três, e nada mais: nenhuma dependência de gramática, nenhum tipo público
-//! que ninguém constrói.
+//! convenção (`test-files.toml`, ao lado do módulo). A importação do scan e o
+//! padrão do projeto pedem os nomes do arquivo que responde pela pasta em cada
+//! língua, de outro arquivo de dados ao lado (`entry-files.toml`). Por isso o
+//! módulo carrega só essas cinco, e nada mais: nenhuma dependência de
+//! gramática, nenhum tipo público que ninguém constrói.
 
 pub mod conventions;
 
-pub use conventions::{inline_test_markers, is_test_path, tested_name};
+pub use conventions::{entry_file_names, inline_test_markers, is_entry_file, is_test_path, tested_name};
 
 #[cfg(test)]
 mod tests {

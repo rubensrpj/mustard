@@ -11,7 +11,12 @@
 //!    [`FOLDER_PARENTS`] pastas diferentes (`views.py`, `handler.go`);
 //!    senão, a pasta mais próxima cujo nome se repete sob [`FOLDER_PARENTS`]
 //!    pais diferentes; senão, a unidade de topo — o projeto do censo, ou a
-//!    pasta logo abaixo da pasta que guarda o código dele inteiro (`src/`);
+//!    pasta logo abaixo da pasta que guarda o código dele inteiro (`src/`).
+//!    O arquivo de entrada da pasta, pela língua do arquivo (o `index` que
+//!    responde pela pasta), nunca ganha papel pelo nome nem conta para achar
+//!    um: o nome dele é o mesmo em toda pasta por regra da língua, não por
+//!    escolha do time, e não diz camada. Ele fica com o papel da pasta ou da
+//!    unidade, como qualquer arquivo cujo nome não diz papel;
 //! 2. o arquivo que concentra a contramão vira papel próprio: das
 //!    importações de um lado que vai contra a maioria do par, ou de um lado
 //!    de um par sem direção, [`AGAINST_IMPORTS`] ou mais, com
@@ -32,7 +37,7 @@
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::domain::ast::is_test_path;
+use crate::domain::ast::{is_entry_file, is_test_path};
 use crate::domain::project_map::{MapModule, MapProject, ProjectMap};
 
 /// Em quantos arquivos do projeto o sufixo do nome se repete para virar
@@ -241,10 +246,13 @@ fn inner<'s>(segments: &'s [&'s str], common: usize) -> &'s [&'s str] {
 /// logo abaixo dela; o arquivo solto na pasta do projeto, como o de
 /// compilação, não conta para achar essa pasta. Com um projeto só, o nome
 /// dele não separa nada, e a unidade é sempre a pasta em que os arquivos se
-/// separam.
+/// separam. O nome do arquivo de entrada da pasta não dá papel: nem o fim
+/// dele, nem a palavra só.
 fn roles_of(files: &[&MapModule], projects: &[MapProject]) -> BTreeMap<String, String> {
     let groups = groups_of(files, projects);
     let several = groups.len() > 1;
+    let entries: BTreeSet<&str> =
+        files.iter().filter(|m| is_entry_file(&m.path, &m.language)).map(|m| m.path.as_str()).collect();
     let suffixes = repeated_suffixes(files);
     let single_words = repeated_single_words(files);
     let folders = repeated_folders(&groups);
@@ -255,7 +263,9 @@ fn roles_of(files: &[&MapModule], projects: &[MapProject]) -> BTreeMap<String, S
             let inner = inner(segments, group.common);
             let folder = || inner.iter().rev().map(|s| s.to_lowercase()).find(|s| folders.contains(s));
             let word = || single_word_of(path).filter(|w| single_words.contains(w));
-            let role = suffix_of(path).filter(|s| suffixes.contains(s)).or_else(word).or_else(folder);
+            let suffix = || suffix_of(path).filter(|s| suffixes.contains(s));
+            let by_name = if entries.contains(path) { None } else { suffix().or_else(word) };
+            let role = by_name.or_else(folder);
             let label = match (role, inner.first()) {
                 (Some(role), _) if named => format!("{}:{role}", group.name),
                 (Some(role), _) => role,
@@ -356,9 +366,11 @@ fn single_word_of(path: &str) -> Option<String> {
 /// Os nomes de uma palavra só que se repetem sob [`FOLDER_PARENTS`] pastas
 /// diferentes ou mais no mapa: o mesmo nome em pastas diferentes diz o papel
 /// do arquivo, como `views.py` em cada módulo ou `handler.go` em cada pacote.
+/// O arquivo de entrada da pasta, pela língua dele, não conta: o nome dele se
+/// repete em toda pasta por regra da língua.
 fn repeated_single_words(files: &[&MapModule]) -> BTreeSet<String> {
     let mut folders: BTreeMap<String, BTreeSet<&str>> = BTreeMap::new();
-    for module in files {
+    for module in files.iter().filter(|m| !is_entry_file(&m.path, &m.language)) {
         if let Some(word) = single_word_of(&module.path) {
             let folder = module.path.rsplit_once('/').map_or("", |(folder, _)| folder);
             folders.entry(word).or_default().insert(folder);
@@ -561,6 +573,61 @@ mod tests {
     fn roles_of_paths(paths: &[String]) -> BTreeMap<String, String> {
         let map = ProjectMap { modules: paths.iter().map(|path| module(path, &[])).collect(), ..ProjectMap::default() };
         learn(&map).roles
+    }
+
+    /// O papel de cada arquivo de `files`, dado pelo caminho e pela língua,
+    /// num mapa só com eles e sem importação nenhuma.
+    fn roles_of_files(files: &[(String, &str)]) -> BTreeMap<String, String> {
+        let modules = files
+            .iter()
+            .map(|(path, language)| MapModule {
+                path: path.clone(),
+                language: (*language).to_string(),
+                ..MapModule::default()
+            })
+            .collect();
+        learn(&ProjectMap { modules, ..ProjectMap::default() }).roles
+    }
+
+    /// Os arquivos `<pasta>/<pasta de módulo>/<nome>` de cada pasta de
+    /// módulo de `modules`, na língua `language`.
+    fn in_folders(folder: &str, modules: &[&str], name: &str, language: &'static str) -> Vec<(String, &'static str)> {
+        modules.iter().map(|m| (format!("{folder}/{m}/{name}"), language)).collect()
+    }
+
+    const FOLDERS: [&str; 5] = ["pedidos", "clientes", "produtos", "estoques", "faturas"];
+
+    #[test]
+    fn five_folder_entry_files_take_the_role_of_their_unit_and_never_their_name() {
+        let files = in_folders("src", &FOLDERS, "index.ts", "typescript");
+        let roles = roles_of_files(&files);
+        assert!(!roles.values().any(|role| role == "index"), "{roles:?}");
+        assert_eq!(roles["src/pedidos/index.ts"], "src/pedidos");
+    }
+
+    #[test]
+    fn module_and_package_entry_files_give_no_role_by_their_name() {
+        let files = [
+            in_folders("src", &FOLDERS, "mod.rs", "rust"),
+            in_folders("app", &FOLDERS[..3], "__init__.py", "python"),
+        ]
+        .concat();
+        let roles = roles_of_files(&files);
+        assert!(!roles.values().any(|role| role == "mod" || role == "init"), "{roles:?}");
+    }
+
+    #[test]
+    fn a_single_word_name_that_is_no_entry_file_of_its_language_keeps_its_role() {
+        let views = in_folders("app", &FOLDERS[..3], "views.py", "python");
+        assert_eq!(not_in_role(&roles_of_files(&views), &paths_of(&views), "views"), []);
+        // A língua sem arquivo de entrada dá papel ao `main` repetido.
+        let mains = in_folders("cmd", &FOLDERS[..3], "main.go", "go");
+        assert_eq!(not_in_role(&roles_of_files(&mains), &paths_of(&mains), "main"), []);
+    }
+
+    /// Os caminhos de `files`, sem a língua.
+    fn paths_of(files: &[(String, &str)]) -> Vec<String> {
+        files.iter().map(|(path, _)| path.clone()).collect()
     }
 
     /// Os caminhos de `paths` cujo papel não é `role`, com o papel que têm.

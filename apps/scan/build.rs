@@ -75,12 +75,12 @@ fn main() {
     // (name, alias_extends) — o arquivo de configuração OPCIONAL dos apelidos
     // de pasta e as três chaves lidas nele. Sem o campo, texto vazio: a
     // língua não tem apelido de pasta e a leitura nem começa.
-    // (name, separator, package_file) — o import relativo OPCIONAL que a
-    // língua escreve com um separador no lugar da barra, e o arquivo que
-    // responde pela pasta. Sem o campo, dois textos vazios: o import da
-    // língua nunca é lido assim.
+    // (name, separator) — o import relativo OPCIONAL que a língua escreve com
+    // um separador no lugar da barra. Sem o campo, texto vazio: o import da
+    // língua nunca é lido assim. O arquivo que responde pela pasta vem da
+    // lista do núcleo (`CORE_ENTRY_FILES`), pelo nome da língua.
     let mut relative_table = String::new();
-    relative_table.push_str("pub(crate) static LANG_RELATIVE_IMPORT: &[(&str, &str, &str)] = &[\n");
+    relative_table.push_str("pub(crate) static LANG_RELATIVE_IMPORT: &[(&str, &str)] = &[\n");
 
     // (name, qualified_separators) — os textos OPCIONAIS que juntam as partes
     // de um nome qualificado na língua. Sem o campo, lista vazia: o motor usa
@@ -188,16 +188,14 @@ fn main() {
                     .unwrap_or_default()
             })
             .collect();
-        let (separator, package_file) = tbl.get("relative_import").map_or((String::new(), String::new()), |v| {
+        let separator = tbl.get("relative_import").map_or_else(String::new, |v| {
             let rule = v.as_table().expect("language.relative_import must be a table");
-            let text = |key: &str| {
-                rule.get(key)
-                    .map(|v| v.as_str().unwrap_or_else(|| panic!("language.relative_import.{key} must be a string")).to_string())
-                    .unwrap_or_default()
-            };
-            let separator = text("separator");
+            let separator = rule
+                .get("separator")
+                .map(|v| v.as_str().expect("language.relative_import.separator must be a string").to_string())
+                .unwrap_or_default();
             assert!(!separator.is_empty(), "language.relative_import of `{name}` must declare a non-empty separator");
-            (separator, text("package_file"))
+            separator
         });
         let qualified_separators: Vec<String> = tbl
             .get("qualified_separators")
@@ -287,7 +285,7 @@ fn main() {
         writeln!(scope_table, "    ({name:?}, {namespace_scope:?}),").expect("the generated table is a String, which never fails to write");
         writeln!(import_ext_table, "    ({name:?}, &[{import_exts}]),")
             .expect("the generated table is a String, which never fails to write");
-        writeln!(relative_table, "    ({name:?}, {separator:?}, {package_file:?}),")
+        writeln!(relative_table, "    ({name:?}, {separator:?}),")
             .expect("the generated table is a String, which never fails to write");
         writeln!(separators_table, "    ({name:?}, &[{separators}]),")
             .expect("the generated table is a String, which never fails to write");
@@ -343,8 +341,25 @@ fn main() {
     fs::write(&out_path, body).expect("write langs_generated.rs");
 
     let names: Vec<&str> = languages.iter().filter_map(|entry| entry.get("name").and_then(|v| v.as_str())).collect();
+    check_entry_file_languages(Path::new(&manifest), &names);
     let routes = route_rules(Path::new(&manifest), &names);
     fs::write(Path::new(&out_dir).join("routes_generated.rs"), routes).expect("write routes_generated.rs");
+}
+
+/// Cada língua da lista do arquivo de entrada do núcleo (`CORE_ENTRY_FILES`)
+/// é uma do registro (`languages`): a chave que ele não declara nunca seria
+/// lida, e o erro para a compilação.
+fn check_entry_file_languages(crate_root: &Path, languages: &[&str]) {
+    let path = crate_root.join(CORE_ENTRY_FILES);
+    let src = fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+    let table: toml::value::Table =
+        toml::from_str(&src).unwrap_or_else(|e| panic!("{CORE_ENTRY_FILES} is not valid TOML: {e}"));
+    for lang in table.keys() {
+        assert!(
+            languages.contains(&lang.as_str()),
+            "{CORE_ENTRY_FILES} names the language `{lang}`, which languages.toml does not declare"
+        );
+    }
 }
 
 /// A tabela das regras de rota: uma por `routes/<framework>.toml`, em ordem de
@@ -510,8 +525,9 @@ fn read_queries(crate_root: &Path, root: &Path, dir: &str) -> String {
 
 /// A digest of the scan's own sources: every file under `src/`, `queries/` and
 /// `routes/`, every data `.toml` at the crate root (the package manifest apart, whose
-/// version already enters the format), and the core's test-file data, which
-/// decides what the scan keeps from each file it reads. Paths are relative and sorted, so the
+/// version already enters the format), the core's test-file data, which
+/// decides what the scan keeps from each file it reads, and the core's entry-file
+/// data, which decides where an import of a folder lands. Paths are relative and sorted, so the
 /// digest depends on the content only, never on where the crate is checked
 /// out. FNV-1a over 64 bits: stable across builds and toolchains, with no
 /// dependency to add.
@@ -520,9 +536,11 @@ fn source_digest(crate_root: &Path) -> String {
     collect_files(&crate_root.join("src"), &mut files);
     collect_files(&crate_root.join("queries"), &mut files);
     collect_files(&crate_root.join("routes"), &mut files);
-    let test_files = crate_root.join(CORE_TEST_FILES);
-    println!("cargo:rerun-if-changed={}", relative_to(crate_root, &test_files));
-    files.push(test_files);
+    for core_data in [CORE_TEST_FILES, CORE_ENTRY_FILES] {
+        let core_data = crate_root.join(core_data);
+        println!("cargo:rerun-if-changed={}", relative_to(crate_root, &core_data));
+        files.push(core_data);
+    }
     for entry in fs::read_dir(crate_root).expect("read the crate root").flatten() {
         let path = entry.path();
         let is_data_toml = path.extension().and_then(|e| e.to_str()) == Some("toml")
@@ -556,6 +574,10 @@ fn source_digest(crate_root: &Path) -> String {
 /// The core's test-file data, from the crate root: which files are tests and
 /// which content marks a file that holds its own tests.
 const CORE_TEST_FILES: &str = "../../packages/core/src/domain/ast/test-files.toml";
+
+/// The core's entry-file data, from the crate root: for each language of the
+/// registry, the names of the file that answers for its folder.
+const CORE_ENTRY_FILES: &str = "../../packages/core/src/domain/ast/entry-files.toml";
 
 /// `path` as cargo should record a watched file: relative to the crate root.
 ///

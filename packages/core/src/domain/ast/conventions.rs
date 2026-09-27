@@ -1,16 +1,24 @@
 //! `conventions` — as perguntas estruturais, agnósticas, que o scan faz sobre
-//! um caminho de arquivo: ele é de teste? E, sendo, que nome ele testa?
+//! um caminho de arquivo: ele é de teste? E, sendo, que nome ele testa? Ele é
+//! o arquivo de entrada da pasta em que mora?
 //!
 //! É um predicado puro de caminho, sem nenhuma noção de linguagem, framework
 //! ou arquitetura: uma convenção de pasta e uma convenção de nome de arquivo.
-//! As listas moram num arquivo de dados só, `test-files.toml`, embutido na
-//! compilação; ninguém mantém lista própria, e aqui não há nome de língua nem
-//! de ferramenta. Quem lê a regra: o mapa de testes do scan (quais testes
-//! cobrem cada arquivo), os pontos de registro do grafo do scan (teste não
-//! conta), a evidência de pilha do scan, do projeto e de cada subprojeto
+//! As listas de teste moram num arquivo de dados só, `test-files.toml`,
+//! embutido na compilação; ninguém mantém lista própria, e aqui não há nome de
+//! língua nem de ferramenta. Quem lê a regra: o mapa de testes do scan (quais
+//! testes cobrem cada arquivo), os pontos de registro do grafo do scan (teste
+//! não conta), a evidência de pilha do scan, do projeto e de cada subprojeto
 //! (arquivo de teste não diz o que o projeto é), o mapa do projeto (busca e
 //! exemplos) e o padrão do projeto.
+//!
+//! O arquivo de entrada — o que responde pela pasta, com o mesmo nome em toda
+//! pasta por regra da língua — mora noutro arquivo de dados, `entry-files.toml`,
+//! também embutido, com uma lista por língua. A língua entra só como chave: o
+//! código não conhece nenhuma. Quem lê: a importação do scan e o padrão do
+//! projeto.
 
+use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
 use serde::Deserialize;
@@ -45,6 +53,37 @@ struct TestFiles {
 fn data() -> &'static TestFiles {
     static DATA: OnceLock<TestFiles> = OnceLock::new();
     DATA.get_or_init(|| toml::from_str(include_str!("test-files.toml")).unwrap_or_default())
+}
+
+/// Os nomes do arquivo de entrada de cada língua, lidos de
+/// `entry-files.toml`, embutido na compilação: a chave é o nome da língua, e o
+/// valor, os nomes sem a extensão, na ordem em que a importação os procura.
+type EntryFiles = BTreeMap<String, Vec<String>>;
+
+/// Os dados do arquivo de entrada, lidos uma vez. Dado ilegível vira lista
+/// vazia, sem derrubar quem pergunta; o teste deste módulo garante que o
+/// arquivo embutido se lê.
+fn entry_data() -> &'static EntryFiles {
+    static DATA: OnceLock<EntryFiles> = OnceLock::new();
+    DATA.get_or_init(|| toml::from_str(include_str!("entry-files.toml")).unwrap_or_default())
+}
+
+/// Os nomes, sem a extensão, do arquivo que responde pela pasta na língua
+/// `language`, na ordem em que a importação os procura. Vazio na língua que
+/// não tem arquivo de entrada.
+#[must_use]
+pub fn entry_file_names(language: &str) -> &'static [String] {
+    entry_data().get(language).map_or(&[], Vec::as_slice)
+}
+
+/// Se o arquivo `rel`, escrito na língua `language`, é o arquivo de entrada
+/// da pasta em que mora: o nome dele sem a última extensão é, inteiro e com a
+/// caixa como está, um dos nomes de entrada da língua.
+#[must_use]
+pub fn is_entry_file(rel: &str, language: &str) -> bool {
+    let file = rel.rsplit(['/', '\\']).next().unwrap_or(rel);
+    let stem = stem_of(file);
+    entry_file_names(language).iter().any(|name| name == stem)
 }
 
 /// Os marcadores que, no conteúdo de um arquivo, dizem que ele guarda os
@@ -313,6 +352,22 @@ mod tests {
         }
         assert_eq!(data.ambiguous_max_depth, 2);
         assert_eq!(inline_test_markers(), ["#[cfg(test)]".to_string()]);
+    }
+
+    #[test]
+    fn the_embedded_entry_file_list_reads_and_no_language_comes_empty() {
+        let data = entry_data();
+        assert!(!data.is_empty(), "a lista dos arquivos de entrada saiu vazia do arquivo de dados");
+        for (language, names) in data {
+            assert!(!names.is_empty(), "a língua {language} veio sem nenhum nome de entrada");
+        }
+        assert_eq!(entry_file_names("typescript"), ["index".to_string()]);
+        assert!(is_entry_file("src/pasta/index.ts", "typescript"));
+        assert!(!is_entry_file("src/pasta/index.go", "go"));
+        // O nome se compara inteiro e com a caixa como está.
+        assert!(!is_entry_file("src/pasta/index.d.ts", "typescript"));
+        assert!(!is_entry_file("src/pasta/Index.ts", "typescript"));
+        assert!(!is_entry_file("src/pasta/reindex.ts", "typescript"));
     }
 
     #[test]

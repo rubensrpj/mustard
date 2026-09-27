@@ -171,9 +171,6 @@ pub struct RelativeImport {
     /// O texto entre as partes do caminho; repetido no começo, torna o import
     /// relativo à pasta de quem importa.
     pub separator: &'static str,
-    /// O nome, sem extensão, do arquivo que responde pela pasta; vazio quando
-    /// a língua não tem.
-    pub package_file: &'static str,
 }
 
 impl RelativeImport {
@@ -195,8 +192,8 @@ impl RelativeImport {
 pub fn relative_import(lang: &str) -> Option<RelativeImport> {
     LANG_RELATIVE_IMPORT
         .iter()
-        .find(|(name, separator, _)| *name == lang && !separator.is_empty())
-        .map(|(_, separator, package_file)| RelativeImport { separator, package_file })
+        .find(|(name, separator)| *name == lang && !separator.is_empty())
+        .map(|(_, separator)| RelativeImport { separator })
 }
 
 /// Os textos que juntam as partes de um nome qualificado na língua

@@ -65,6 +65,7 @@
 
 use crate::model::{CallSite, Decl, DeclAt, GraphStats, Module, NodeDegree, UseSite, RECEIVER};
 use crate::path_aliases::PathAliases;
+use mustard_core::domain::ast::{entry_file_names, is_entry_file};
 use petgraph::graph::{DiGraph, NodeIndex};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -1593,10 +1594,10 @@ impl<'a> Resolver<'a> {
     /// cita (`relative_import` no registro): o primeiro separador do começo é
     /// a pasta de quem importa, cada um a mais sobe uma pasta, e o resto,
     /// cortado no separador, é o caminho dentro dela. O alvo é o arquivo da
-    /// língua com esse caminho ou, sem ele, o arquivo que responde pela pasta;
-    /// o que não existe no projeto, ou sobe além da raiz dele, não liga a
-    /// nada. `None` quando o import não começa pelo separador ou a língua não
-    /// o declara: segue pelos outros caminhos.
+    /// língua com esse caminho ou, sem ele, o arquivo de entrada da pasta (a
+    /// lista do núcleo, pela língua); o que não existe no projeto, ou sobe
+    /// além da raiz dele, não liga a nada. `None` quando o import não começa
+    /// pelo separador ou a língua não o declara: segue pelos outros caminhos.
     fn separated_relative(&self, imp: &str, importer: &Module) -> Option<Vec<String>> {
         let rule = crate::extract::relative_import(&importer.language)?;
         let (ups, rest) = rule.leading(imp);
@@ -1628,11 +1629,13 @@ impl<'a> Resolver<'a> {
                 return Some(file);
             }
         }
-        if rule.package_file.is_empty() {
-            return Some(Vec::new());
-        }
-        let package = if place.is_empty() { rule.package_file.to_string() } else { format!("{place}/{}", rule.package_file) };
-        Some(of_language(&package))
+        // Sem arquivo com esse caminho, o alvo é o arquivo de entrada da
+        // pasta: o primeiro da lista da língua que existe.
+        let entry = entry_file_names(&importer.language)
+            .iter()
+            .map(|name| of_language(&join_dir(&place, name)))
+            .find(|hits| !hits.is_empty());
+        Some(entry.unwrap_or_default())
     }
 
     /// The files `tail` names inside the declared package `name` (resolution
@@ -1747,10 +1750,11 @@ fn resolve_path_candidate(
 }
 
 /// Os arquivos que um caminho candidato cita sem adivinhar: o próprio
-/// arquivo, o arquivo de mesmo nome sem a extensão ou o arquivo de índice da
-/// pasta. A extensão só sai quando é da língua de quem importa ou uma das que
-/// o import dela escreve no lugar (dado do registro), de modo que
-/// `x/pedido.service` cita `x/pedido.service.<ext>` e nunca `x/pedido.<ext>`.
+/// arquivo, o arquivo de mesmo nome sem a extensão ou o arquivo de entrada da
+/// pasta na língua de quem importa (a lista do núcleo, na ordem dela). A
+/// extensão só sai quando é da língua de quem importa ou uma das que o import
+/// dela escreve no lugar (dado do registro), de modo que `x/pedido.service`
+/// cita `x/pedido.service.<ext>` e nunca `x/pedido.<ext>`.
 fn exact_path_candidate(
     cand: &str,
     lang: &str,
@@ -1765,29 +1769,25 @@ fn exact_path_candidate(
     if let Some(v) = stem_index.get(&stem) {
         return v.clone();
     }
-    // directory import -> index file
-    for index in INDEX_FILES {
-        let probe = format!("{stem}/{index}");
-        if let Some(v) = stem_index.get(&probe) {
-            return v.clone();
-        }
-    }
-    Vec::new()
+    // O import que nomeia uma pasta chega ao arquivo de entrada dela: o
+    // primeiro da lista da língua que existe.
+    entry_file_names(lang)
+        .iter()
+        .find_map(|name| stem_index.get(&format!("{stem}/{name}")))
+        .cloned()
+        .unwrap_or_default()
 }
 
-/// Os nomes, sem extensão, do arquivo que responde pela própria pasta.
-const INDEX_FILES: [&str; 3] = ["index", "main", "mod"];
-
 /// A pasta em que moram os módulos escritos dentro de um arquivo: a que leva
-/// o nome dele ou, no arquivo que responde pela própria pasta e no arquivo
-/// raiz de um pacote (`package_entry` no registro, como `src/lib`), a pasta
-/// dele.
+/// o nome dele ou, no arquivo de entrada da própria pasta (a lista do núcleo,
+/// pela língua) e no arquivo raiz de um pacote (`package_entry` no registro,
+/// como `src/lib`), a pasta dele.
 fn inner_folder(path: &str, lang: &str) -> String {
     let stem = strip_ext(path);
     let entry = crate::extract::package_entry(lang)
         .iter()
         .any(|entry| stem == *entry || stem.strip_suffix(entry).is_some_and(|dir| dir.ends_with('/')));
-    if entry || INDEX_FILES.contains(&file_stem(path).as_str()) { parent_dir(path) } else { stem }
+    if entry || is_entry_file(path, lang) { parent_dir(path) } else { stem }
 }
 
 /// O caminho `rest` dentro da pasta `dir` (vazia na raiz do projeto).

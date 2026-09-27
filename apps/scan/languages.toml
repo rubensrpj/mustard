@@ -11,6 +11,9 @@
 # No change to grain's logic is ever required — build.rs reads this file and
 # embeds the queries; the engine stays generic.
 #
+# O arquivo que responde pela pasta (o de entrada) vem da lista do núcleo,
+# `packages/core/src/domain/ast/entry-files.toml`, pelo `name` daqui.
+#
 # Fields:
 #   name          display id, stored on each module (e.g. shown in the JSON model)
 #   extensions    file extensions that select this language (no leading dot)
@@ -84,7 +87,7 @@
 #                 vence todas. Só se segue caminho relativo dentro do projeto;
 #                 nome de pacote fica de fora.
 #   relative_import OPTIONAL — o import relativo que a língua escreve com um
-#                 separador no lugar da barra (`..core.models`). Duas chaves:
+#                 separador no lugar da barra (`..core.models`). Uma chave:
 #                   separator     o texto entre as partes do caminho. Repetido
 #                                 no começo, ele faz o import relativo: um só
 #                                 é a pasta de quem importa, e cada um a mais
@@ -92,14 +95,11 @@
 #                                 o caminho dentro dela. Quando o import é só
 #                                 esse começo, cada nome que ele traz
 #                                 (`@imported` no mesmo pattern) é um arquivo
-#                                 da pasta;
-#                   package_file  OPTIONAL — o nome, sem extensão, do arquivo
-#                                 que responde pela pasta quando o import
-#                                 relativo nomeia a pasta e não um arquivo.
+#                                 da pasta.
 #                 O alvo é o arquivo da língua com esse caminho ou, sem ele, o
-#                 `package_file` da pasta; o que não existe no projeto não
-#                 liga a nada. O import que não começa pelo separador segue
-#                 como os outros.
+#                 arquivo de entrada da pasta, da lista do núcleo; o que não
+#                 existe no projeto não liga a nada. O import que não começa
+#                 pelo separador segue como os outros.
 #   qualified_separators OPTIONAL — os textos que juntam as partes de um nome
 #                 qualificado na língua (`crate::a::b`). Cada um vira `/` na
 #                 forma única com que o grafo compara imports e namespaces,
@@ -230,7 +230,7 @@ name = "python"
 extensions = ["py", "pyi"]
 dir = "python"
 grammar = "grammar_py::LANGUAGE"
-relative_import = { separator = ".", package_file = "__init__" }
+relative_import = { separator = "." }
 self_receivers = ["self", "cls"]
 log_calls = ["print", "logging.*", "logger.*", "log.*"]
 error_forms = ["raise", "*Error", "*Exception"]
