@@ -33,12 +33,25 @@ impl LockedFile {
     /// [`Error::Io`] quando a pasta não pode ser criada, o arquivo não abre ou
     /// a trava falha.
     pub fn exclusive(path: &Path) -> Result<Self> {
-        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-            std::fs::create_dir_all(parent)?;
-        }
-        let file = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(path)?;
+        let file = open_creating(path)?;
         file.lock()?;
         Ok(Self { file })
+    }
+
+    /// Como [`LockedFile::exclusive`], mas sem esperar: `None` quando outro
+    /// manipulador segura a trava agora.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Io`] quando a pasta não pode ser criada, o arquivo não abre ou
+    /// a trava falha por outro motivo que não estar presa.
+    pub fn exclusive_if_free(path: &Path) -> Result<Option<Self>> {
+        let file = open_creating(path)?;
+        match file.try_lock() {
+            Ok(()) => Ok(Some(Self { file })),
+            Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+            Err(std::fs::TryLockError::Error(e)) => Err(e.into()),
+        }
     }
 
     /// Abre `path`, que precisa existir, para ler e escrever, e espera a trava
@@ -113,6 +126,15 @@ impl Drop for LockedFile {
     }
 }
 
+/// Abre `path` para ler e escrever, criando o arquivo e a pasta quando
+/// faltam, sem mexer no conteúdo.
+fn open_creating(path: &Path) -> Result<File> {
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent)?;
+    }
+    Ok(OpenOptions::new().read(true).write(true).create(true).truncate(false).open(path)?)
+}
+
 /// Lê `path` inteiro com a trava compartilhada: espera uma gravação em curso
 /// terminar, então nunca vê uma linha pela metade dela.
 ///
@@ -169,5 +191,19 @@ mod tests {
         LockedFile::exclusive(&path).unwrap().append_line("um").unwrap();
         let mut file = LockedFile::existing(&path).unwrap();
         assert_eq!(file.read_to_string().unwrap(), "um\n");
+    }
+
+    /// A trava pedida sem esperar volta vazia enquanto outro manipulador a
+    /// segura, sem esperar por ele, e volta presa depois que ele solta.
+    #[test]
+    fn the_lock_asked_without_waiting_is_empty_while_another_handle_holds_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a/round.lock");
+        let held = LockedFile::exclusive(&path).unwrap();
+        assert!(LockedFile::exclusive_if_free(&path).unwrap().is_none(), "held elsewhere: nothing");
+        drop(held);
+        let free = LockedFile::exclusive_if_free(&path).unwrap();
+        assert!(free.is_some(), "free: the lock is taken");
+        assert!(LockedFile::exclusive_if_free(&path).unwrap().is_none(), "and now it is held by the first");
     }
 }

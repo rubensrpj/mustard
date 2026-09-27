@@ -256,9 +256,13 @@ fn run_close(
 
     // Nada fica preso: todo processo que um agente deixou rodando — um laço
     // de espera, ou um comando na cópia de uma onda já apagada — é encerrado
-    // no fechamento, e a resposta diz qual.
-    let stuck_hint =
-        crate::commands::flow::stuck::report_line(&crate::commands::flow::stuck::end_stuck_processes(root), lang);
+    // no fechamento, e a resposta diz qual. A busca espera a trava do passo
+    // do git e a solta logo depois, antes de qualquer outro passo que a pega:
+    // uma rodada no meio do despacho termina de gravar o envio da vaga que
+    // preparou antes. Sem a trava, a busca não roda.
+    let stuck_hint = crate::commands::git_settle::git_step_lock(root).ok().and_then(|held| {
+        crate::commands::flow::stuck::report_line(&crate::commands::flow::stuck::end_stuck_processes(root, &held), lang)
+    });
 
     // O que voltou da última rodada entra antes das conferências, pela mesma
     // porta da rodada, com o commit: a volta que a última onda gravou na spec
@@ -1837,21 +1841,6 @@ mod tests {
         assert!(outside.join("arquivo").is_file(), "the link's target stays");
     }
 
-    /// `true` quando a lista de travas do sistema (`/proc/locks`) mostra este
-    /// processo esperando a trava do arquivo de número `inode`: a linha de
-    /// quem espera traz `->` antes do tipo da trava.
-    #[cfg(target_os = "linux")]
-    fn waiting_for_lock(inode: u64) -> bool {
-        let pid = std::process::id().to_string();
-        let inode = inode.to_string();
-        std::fs::read_to_string("/proc/locks").unwrap_or_default().lines().any(|line| {
-            let fields: Vec<&str> = line.split_whitespace().collect();
-            fields.get(1) == Some(&"->")
-                && fields.get(5) == Some(&pid.as_str())
-                && fields.get(6).and_then(|file| file.rsplit(':').next()) == Some(inode.as_str())
-        })
-    }
-
     /// A remoção espera a trava do passo do git, que a rodada segura ao
     /// compilar antes do commit: enquanto outra rodada a segura, a pasta fica;
     /// solta a trava, ela sai. Sem relógio: o teste segue quando a lista de
@@ -1860,6 +1849,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn the_removal_waits_for_the_git_step_lock() {
+        use crate::commands::git_settle::waiting_for_lock;
         use std::os::unix::fs::MetadataExt;
         use std::sync::mpsc;
         let dir = tempdir().unwrap();
@@ -1886,6 +1876,67 @@ mod tests {
             assert_eq!(done_rx.recv(), Ok(vec!["target".to_string()]));
         });
         assert!(!built.exists());
+    }
+
+    /// O fechamento procura processo preso só com a trava do passo do git
+    /// presa. Outra rodada, no meio do despacho, segura a trava e roda o git
+    /// numa vaga viva cujo envio ainda não gravou: o fechamento espera a
+    /// trava, e quando procura o envio daquela vaga já está gravado; o git da
+    /// outra rodada segue vivo. Sem relógio: o teste segue quando a lista de
+    /// travas do sistema mostra o fechamento parado na trava.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_close_never_ends_the_git_of_a_round_preparing_a_slot() {
+        use crate::commands::git_settle::{git_step_lock, waiting_for_lock};
+        use mustard_core::io::wave_prompt::{shown, slot_path};
+        use std::os::unix::fs::MetadataExt;
+        use std::process::{Command, Stdio};
+
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        ready_to_close(root, "x", &["git --version"]);
+        let slot = slot_path(root, "x", 1);
+        std::fs::create_dir_all(slot.join("src")).unwrap();
+        std::fs::write(slot.join(".git"), "gitdir: /nowhere\n").unwrap();
+
+        let held = git_step_lock(root).unwrap();
+        let inode = std::fs::metadata(root.join(".claude").join("spec").join("round-git.lock")).unwrap().ino();
+        let mut preparing = Command::new("sleep")
+            .arg("30")
+            .current_dir(slot.join("src"))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn the other round's git in the slot");
+
+        let out = std::thread::scope(|scope| {
+            let closing = scope.spawn(|| {
+                close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), ..Default::default() }, None)
+            });
+            while !waiting_for_lock(inode) {
+                assert!(!closing.is_finished(), "the close ran without waiting for the git step lock");
+                std::thread::yield_now();
+            }
+            // A outra rodada termina: grava o envio com a vaga que preparou e
+            // solta a trava.
+            crate::shared::spec_state::seed_event(
+                root,
+                "x",
+                "send",
+                json!({"role": "review", "text": "revise", "lines": 1, "chars": 6, "mustard": "0", "author": "binary",
+                    "copy": shown(&slot)}),
+            );
+            drop(held);
+            closing.join().unwrap()
+        });
+
+        let alive = preparing.try_wait().ok().flatten().is_none();
+        let _ = preparing.kill();
+        let _ = preparing.wait();
+        assert!(alive, "the other round's git in its slot must stay alive: {out}");
+        let warned = out["warnings"].as_array().cloned().unwrap_or_default();
+        assert!(!warned.iter().any(|w| w["reason"] == json!("stuck-ended")), "{out}");
     }
 
     /// A cópia do revisor final recebe os arquivos da lista de arquivos

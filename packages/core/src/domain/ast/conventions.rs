@@ -1,5 +1,5 @@
-//! `conventions` — a pergunta estrutural, agnóstica, que o scan faz sobre um
-//! caminho de arquivo: ele é de teste?
+//! `conventions` — as perguntas estruturais, agnósticas, que o scan faz sobre
+//! um caminho de arquivo: ele é de teste? E, sendo, que nome ele testa?
 //!
 //! É um predicado puro de caminho, sem nenhuma noção de linguagem, framework
 //! ou arquitetura: uma convenção de segmento de pasta e uma convenção de nome
@@ -127,10 +127,39 @@ pub fn is_test_path(rel: &str) -> bool {
     if TEST_STEM_PREFIXES.iter().any(|p| stem.starts_with(p)) {
         return true;
     }
-    if ends_with_camel_word(stem, stem_orig) {
+    if camel_suffix_len(stem, stem_orig).is_some() {
         return true;
     }
     false
+}
+
+/// O nome que um arquivo de teste testa: o nome dele sem a marca de teste, na
+/// caixa original — `foo.spec.ts` dá `foo`, `x.service.spec.ts` dá
+/// `x.service`, `FooTest.cs` dá `Foo`. A marca sai dos mesmos dados que
+/// [`is_test_path`] usa: os sufixos, os prefixos e a palavra camelCase.
+///
+/// Devolve `None` quando o caminho não é de teste, ou quando nada sobra depois
+/// de tirar a marca (`tests.rs`). O teste que só é teste pela pasta onde mora
+/// (`tests/foo.rs`) não traz marca no nome, e testa o nome que tem.
+#[must_use]
+pub fn tested_name(rel: &str) -> Option<&str> {
+    if !is_test_path(rel) {
+        return None;
+    }
+    let file = rel.rsplit(['/', '\\']).next()?;
+    let stem_orig = stem_of(file);
+    let stem = stem_orig.to_ascii_lowercase();
+    let cut_end = |len: usize| stem_orig[..stem_orig.len() - len].trim_end_matches(['.', '_', '-']);
+    let name = if let Some(suffix) = TEST_STEM_SUFFIXES.iter().find(|s| stem.ends_with(*s)) {
+        cut_end(suffix.len())
+    } else if let Some(prefix) = TEST_STEM_PREFIXES.iter().find(|p| stem.starts_with(*p)) {
+        stem_orig[prefix.len()..].trim_start_matches(['.', '_', '-'])
+    } else if let Some(len) = camel_suffix_len(&stem, stem_orig) {
+        cut_end(len)
+    } else {
+        stem_orig
+    };
+    (!name.is_empty()).then_some(name)
 }
 
 /// Strip the final extension from a filename to get its stem. A leading dot is
@@ -142,16 +171,16 @@ fn stem_of(file: &str) -> &str {
     }
 }
 
-/// `true` when `stem` (lowered) ends with one of [`TEST_CAMEL_SUFFIXES`] AND,
-/// in the original-case `stem_orig`, that suffix begins a capitalised word
-/// preceded by a lowercase letter or digit — the `FooSpec` / `OrderTest`
-/// convention. Rejects `latest` / `attest`, where the trailing letters are not
-/// a separate word.
-fn ends_with_camel_word(stem: &str, stem_orig: &str) -> bool {
+/// The length of the [`TEST_CAMEL_SUFFIXES`] entry that `stem` (lowered) ends
+/// with, when, in the original-case `stem_orig`, that suffix begins a
+/// capitalised word preceded by a lowercase letter or digit — the `FooSpec` /
+/// `OrderTest` convention. `None` for `latest` / `attest`, where the trailing
+/// letters are not a separate word.
+fn camel_suffix_len(stem: &str, stem_orig: &str) -> Option<usize> {
     if stem.len() != stem_orig.len() {
         // Lengths differ only under non-ASCII case folding; fall back to no
         // camel match rather than risk a byte-index mismatch.
-        return false;
+        return None;
     }
     for suffix in TEST_CAMEL_SUFFIXES {
         if !stem.ends_with(suffix) {
@@ -168,10 +197,10 @@ fn ends_with_camel_word(stem: &str, stem_orig: &str) -> bool {
         let prev = bytes[start - 1] as char;
         let first = bytes[start] as char;
         if (prev.is_ascii_lowercase() || prev.is_ascii_digit()) && first.is_ascii_uppercase() {
-            return true;
+            return Some(suffix.len());
         }
     }
-    false
+    None
 }
 
 #[cfg(test)]
@@ -255,4 +284,25 @@ mod tests {
         assert!(!is_test_path(r"src\models.rs"));
     }
 
+    #[test]
+    fn the_tested_name_is_the_test_name_without_its_mark() {
+        // Uma marca de cada forma: sufixo com ponto, sufixo com sublinhado,
+        // prefixo e a palavra camelCase.
+        assert_eq!(tested_name("src/foo.spec.ts"), Some("foo"));
+        assert_eq!(tested_name("pkg/foo_test.go"), Some("foo"));
+        assert_eq!(tested_name("tests/test_foo.py"), Some("foo"));
+        assert_eq!(tested_name("Orders/FooTest.cs"), Some("Foo"));
+        // O nome com ponto no meio perde só a marca do fim.
+        assert_eq!(tested_name("src/x.service.spec.ts"), Some("x.service"));
+        assert_eq!(tested_name("FooTests.cs"), Some("Foo"));
+        assert_eq!(tested_name(r"src\foo.test.ts"), Some("foo"));
+        // Teste só pela pasta: não há marca a tirar.
+        assert_eq!(tested_name("tests/foo.rs"), Some("foo"));
+        // Só a marca, nada sobra.
+        assert_eq!(tested_name("src/tests.rs"), None);
+        // Arquivo que não é teste não testa nome nenhum, nem quando termina
+        // nas mesmas letras da marca.
+        assert_eq!(tested_name("src/foo.ts"), None);
+        assert_eq!(tested_name("src/latest.rs"), None);
+    }
 }

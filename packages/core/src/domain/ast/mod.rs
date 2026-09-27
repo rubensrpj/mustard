@@ -1,5 +1,5 @@
 //! `ast` — a única coisa que sobrou da camada de árvore de sintaxe: a
-//! pergunta "este caminho é de teste?".
+//! pergunta "este caminho é de teste?" e, sendo, "que nome ele testa?".
 //!
 //! A camada nasceu em cima do `tree-sitter`, para o portão de regressão ler o
 //! corpo das funções tocadas. Esse portão saiu, e com ele o carregador de
@@ -8,13 +8,14 @@
 //!
 //! O que restou tem quatro chamadores vivos — o mapa de testes do scan, o
 //! resumo do scan, o mapa do projeto e a prova de recuperação — e todos os
-//! quatro pedem a mesma função. Por isso o módulo carrega só ela, e nada
-//! mais: nenhuma dependência de gramática, nenhum tipo público que ninguém
-//! constrói.
+//! quatro pedem a mesma função. O mapa de testes pede ainda o nome testado,
+//! que sai dos mesmos dados de convenção. Por isso o módulo carrega só as
+//! duas, e nada mais: nenhuma dependência de gramática, nenhum tipo público
+//! que ninguém constrói.
 
 pub mod conventions;
 
-pub use conventions::is_test_path;
+pub use conventions::{is_test_path, tested_name};
 
 #[cfg(test)]
 mod tests {

@@ -407,8 +407,21 @@ fn version_notice(probe: &Probe<'_>) -> Option<String> {
 /// Nada fica preso: os processos que um agente deixou rodando — um laço de
 /// espera, ou um comando na cópia de uma onda já apagada — são encerrados
 /// também aqui, não só a cada rodada e no fechamento.
+///
+/// A busca roda com a trava do passo do git presa, como na rodada, e só num
+/// projeto com o Mustard, onde a pasta da trava é dele. O início da sessão
+/// não espera a trava: presa por outra rodada, que pode estar no meio de um
+/// commit de minutos, a busca fica para essa rodada ou para a seguinte, e o
+/// gancho, que tem teto de segundos, não para atrás dela.
 fn stuck_notice(probe: &Probe<'_>) -> Option<String> {
-    crate::commands::flow::stuck::report_line(&crate::commands::flow::stuck::end_stuck_processes(probe.root), probe.lang)
+    if !mustard_core::ProjectConfig::exists(probe.root) {
+        return None;
+    }
+    let held = crate::commands::git_settle::git_step_lock_if_free(probe.root)?;
+    crate::commands::flow::stuck::report_line(
+        &crate::commands::flow::stuck::end_stuck_processes(probe.root, &held),
+        probe.lang,
+    )
 }
 
 /// A versão gravada no `mustard.json` não é a que roda. Sem `mustard.json`,
@@ -921,5 +934,70 @@ mod tests {
         let drift = stamp_drift(root.path(), &running, lang).unwrap();
         assert!(context.contains(&drift), "{context}");
         assert!(!context.contains("999.0.0"), "one version notice only: {context}");
+    }
+
+    /// O início da sessão procura processo preso só com a trava do passo do
+    /// git livre, e nunca espera por ela: presa por uma rodada, o aviso não
+    /// sai e o comando esquecido numa vaga sem onda fica; solta a trava, o
+    /// mesmo aviso o encerra e diz qual. Num projeto sem o Mustard, nada é
+    /// procurado e a pasta da trava não nasce.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_session_start_sweeps_only_with_the_git_step_lock_free_and_never_waits_for_it() {
+        use crate::commands::git_settle::{git_step_lock, waiting_for_lock};
+        use std::os::unix::fs::MetadataExt;
+        use std::process::{Command, Stdio};
+
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), "{}").unwrap();
+        crate::commands::flow::round::copies_leave_with_the_test(root);
+        let slot = mustard_core::io::wave_prompt::slot_path(root, "x", 0);
+        std::fs::create_dir_all(slot.join("src")).unwrap();
+        std::fs::write(slot.join(".git"), "gitdir: /nowhere\n").unwrap();
+        let mut idle = Command::new("sleep")
+            .arg("30")
+            .current_dir(slot.join("src"))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn a command left in a slot with no wave");
+        let probe = Probe {
+            root,
+            session: None,
+            lang: Locale::PtBr,
+            refreshed: false,
+            compacted: false,
+            installed: NO_REGISTRY,
+            scratch: NO_SCRATCH,
+            landing: None,
+        };
+
+        let held = git_step_lock(root).unwrap();
+        let inode = std::fs::metadata(root.join(".claude").join("spec").join("round-git.lock")).unwrap().ino();
+        let (waited, while_held) = std::thread::scope(|scope| {
+            let asked = scope.spawn(|| stuck_notice(&probe));
+            while !asked.is_finished() && !waiting_for_lock(inode) {
+                std::thread::yield_now();
+            }
+            let waited = waiting_for_lock(inode);
+            drop(held);
+            (waited, asked.join().unwrap())
+        });
+        let kept = idle.try_wait().ok().flatten().is_none();
+        let freed = stuck_notice(&probe);
+        let _ = idle.kill();
+        let _ = idle.wait();
+        assert!(!waited, "the session start never waits for the git step lock");
+        assert_eq!(while_held, None, "with the lock held by a round, nothing is swept");
+        assert!(kept, "the command in the slot waits for the round to sweep");
+        let line = freed.expect("with the lock free, the command left in the slot is ended");
+        assert!(line.contains(&idle.id().to_string()), "{line}");
+
+        let outside = tempdir().unwrap();
+        let foreign = Probe { root: outside.path(), ..probe };
+        assert_eq!(stuck_notice(&foreign), None);
+        assert!(!outside.path().join(".claude").exists(), "no lock folder in a project without the Mustard");
     }
 }

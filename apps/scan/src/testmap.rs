@@ -3,9 +3,10 @@
 //! (an inline marker from `test-dirs.toml`) says so on its own.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 use std::sync::OnceLock;
 
-use mustard_core::domain::ast::is_test_path;
+use mustard_core::domain::ast::{is_test_path, tested_name};
 use mustard_core::domain::project_map::{covers_by_history, history_stats, History};
 
 use crate::model::Module;
@@ -30,14 +31,22 @@ pub(crate) fn has_inline_tests(content: &str) -> bool {
     inline_markers().iter().any(|marker| content.contains(marker.as_str()))
 }
 
+/// Por que um teste cobre um arquivo, do mais forte ao mais fraco: ele importa
+/// o arquivo, ou só muda junto com ele no histórico.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Link {
+    Imports,
+    History,
+}
+
 /// Fill `tests` on every module from the resolved imports (`deps`) and the
 /// history. Test files themselves get none.
 pub(crate) fn assign(modules: &mut [Module], history: &History) {
     let tests: BTreeSet<String> = modules.iter().filter(|m| is_test_path(&m.path)).map(|m| m.path.clone()).collect();
-    let mut found: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut found: BTreeMap<String, BTreeMap<String, Link>> = BTreeMap::new();
     for test in modules.iter().filter(|m| tests.contains(&m.path)) {
         for dep in test.deps.iter().filter(|d| !tests.contains(*d)) {
-            found.entry(dep.clone()).or_default().insert(test.path.clone());
+            link(&mut found, dep, &test.path, Link::Imports);
         }
     }
     let stats = history_stats(history);
@@ -48,14 +57,34 @@ pub(crate) fn assign(modules: &mut [Module], history: &History) {
         };
         for (other, &together) in partners {
             if tests.contains(other) && covers_by_history(together, commits) {
-                found.entry(module.path.clone()).or_default().insert(other.clone());
+                link(&mut found, &module.path, other, Link::History);
             }
         }
     }
     for module in modules.iter_mut() {
-        module.tests =
-            found.remove(&module.path).map(|set| set.into_iter().take(MAX_TESTS).collect()).unwrap_or_default();
+        module.tests = found.remove(&module.path).map(|links| ranked(&module.path, links)).unwrap_or_default();
     }
+}
+
+/// Liga `test` a `file`; o teste que chega pelos dois caminhos fica com o mais
+/// forte.
+fn link(found: &mut BTreeMap<String, BTreeMap<String, Link>>, file: &str, test: &str, why: Link) {
+    let kept = found.entry(file.to_string()).or_default().entry(test.to_string()).or_insert(why);
+    *kept = (*kept).min(why);
+}
+
+/// Os testes de `file` em ordem, cortados em [`MAX_TESTS`]: primeiro o que tem
+/// o nome do arquivo, depois os que o importam, por último os que só mudam
+/// junto com ele; empate em ordem alfabética. O corte vem depois da ordem, para
+/// que o teste do próprio arquivo nunca perca a vaga para outro que só vem
+/// antes no alfabeto.
+fn ranked(file: &str, links: BTreeMap<String, Link>) -> Vec<String> {
+    let name = Path::new(file).file_stem().and_then(|stem| stem.to_str());
+    let same_name = |test: &str| name.is_some_and(|n| tested_name(test).is_some_and(|t| t.eq_ignore_ascii_case(n)));
+    let mut order: Vec<(bool, Link, String)> =
+        links.into_iter().map(|(test, why)| (!same_name(&test), why, test)).collect();
+    order.sort();
+    order.into_iter().take(MAX_TESTS).map(|(_, _, test)| test).collect()
 }
 
 #[cfg(test)]
@@ -75,12 +104,6 @@ mod tests {
             module("tests/a_test.rs", &["src/a.rs"]),
             module("tests/b_flow.rs", &[]),
         ];
-        let commit = |id: &str, files: &[&str]| RawCommit {
-            id: id.to_string(),
-            at: 1,
-            added: Vec::new(),
-            changed: files.iter().map(|f| (*f).to_string()).collect(),
-        };
         let history = History::from_raw(vec![
             commit("1", &["src/b.rs", "tests/b_flow.rs"]),
             commit("2", &["src/b.rs", "tests/b_flow.rs"]),
@@ -90,6 +113,42 @@ mod tests {
         assert_eq!(modules[0].tests, vec!["tests/a_test.rs".to_string()]);
         assert_eq!(modules[1].tests, vec!["tests/b_flow.rs".to_string()]);
         assert!(modules[2].tests.is_empty());
+    }
+
+    fn commit(id: &str, files: &[&str]) -> RawCommit {
+        RawCommit { id: id.to_string(), at: 1, added: Vec::new(), changed: files.iter().map(|f| (*f).to_string()).collect() }
+    }
+
+    #[test]
+    fn the_test_named_after_the_file_keeps_its_place_under_the_cap() {
+        // Doze testes importam o serviço; o de mesmo nome é o último no
+        // alfabeto, e o teto é dez.
+        let target = "src/order.service.ts";
+        let mut modules = vec![module(target, &[]), module("src/order.service.spec.ts", &[target])];
+        let others: Vec<String> = (1..=11).map(|i| format!("e2e/case-{i:02}.spec.ts")).collect();
+        modules.extend(others.iter().map(|path| module(path, &[target])));
+        assign(&mut modules, &History::from_raw(Vec::new()));
+        let mut expected = vec!["src/order.service.spec.ts".to_string()];
+        expected.extend(others.iter().take(9).cloned());
+        assert_eq!(modules[0].tests, expected, "o teste de mesmo nome fica, e os dois últimos no alfabeto saem");
+    }
+
+    #[test]
+    fn a_test_that_imports_comes_before_one_that_only_changes_together() {
+        // `src/b.rs` tem dez testes que o importam e um parceiro de histórico
+        // que vem antes deles no alfabeto; `src/c.rs`, um de cada.
+        let mut modules = vec![module("src/b.rs", &[]), module("src/c.rs", &[]), module("tests/a_flow.rs", &[])];
+        let importers: Vec<String> = (1..=10).map(|i| format!("tests/b_{i:02}.rs")).collect();
+        modules.extend(importers.iter().map(|path| module(path, &["src/b.rs"])));
+        modules.push(module("tests/z_flow.rs", &["src/c.rs"]));
+        let history = History::from_raw(vec![
+            commit("1", &["src/b.rs", "src/c.rs", "tests/a_flow.rs"]),
+            commit("2", &["src/b.rs", "src/c.rs", "tests/a_flow.rs"]),
+            commit("3", &["src/b.rs", "src/c.rs"]),
+        ]);
+        assign(&mut modules, &history);
+        assert_eq!(modules[0].tests, importers, "o parceiro de histórico perde a vaga para quem importa");
+        assert_eq!(modules[1].tests, vec!["tests/z_flow.rs".to_string(), "tests/a_flow.rs".to_string()]);
     }
 
     #[test]

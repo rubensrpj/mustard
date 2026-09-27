@@ -8,6 +8,13 @@
 //! da sessão, em cada rodada e no fechamento; a resposta de cada uma diz
 //! quais encerrou.
 //!
+//! A leitura só roda com a trava do passo do git presa: é com ela que a
+//! rodada e o fechamento preparam uma vaga e gravam o envio de quem vai
+//! trabalhar nela. Presa a trava, a vaga que alguém preparou já tem o envio
+//! gravado e conta como vaga com trabalho; sem ela, o git que outra rodada
+//! roda dentro de uma vaga ainda sem envio pareceria um comando esquecido e
+//! seria encerrado no meio da cópia.
+//!
 //! A leitura é a lista de processos do sistema operacional — `/proc`, só no
 //! Linux —, restrita aos do mesmo usuário [`current_uid`]. Num sistema sem
 //! essa lista (`/proc` ausente, ou fora do Linux) a função não acha nada e
@@ -16,6 +23,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
+use mustard_core::io::fs::lock::LockedFile;
 use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::{translate, Locale};
 
@@ -45,8 +53,10 @@ pub(crate) struct Snapshot {
 /// moram na pasta das cópias do projeto, fora dele
 /// ([`mustard_core::io::wave_prompt::copies_dir`]); ela é lida já resolvida
 /// quando existe, porque a pasta de trabalho que o sistema mostra de cada
-/// processo também vem resolvida.
-pub(crate) fn end_stuck_processes(root: &Path) -> Vec<Ended> {
+/// processo também vem resolvida. Roda com a trava do passo do git presa
+/// (`_held`, de [`crate::commands::git_settle::git_step_lock`]): nenhuma
+/// rodada está no meio de preparar uma vaga sem o envio gravado.
+pub(crate) fn end_stuck_processes(root: &Path, _held: &LockedFile) -> Vec<Ended> {
     let copies = mustard_core::io::wave_prompt::copies_dir(root);
     let copies = std::fs::canonicalize(&copies).unwrap_or(copies);
     let busy = busy_slots(root, &copies);
@@ -369,7 +379,8 @@ mod tests {
         wait_until_spawned(orphaned.id(), "sleep");
         wait_until_spawned(ordinary.id(), "sleep");
 
-        let ended = end_stuck_processes(root);
+        let held = crate::commands::git_settle::git_step_lock(root).expect("git step lock");
+        let ended = end_stuck_processes(root, &held);
         assert!(gone(&mut looping), "the waiting loop inside the project must be ended");
         assert!(gone(&mut orphaned), "the command in the deleted copy must be ended");
         assert!(
@@ -432,7 +443,8 @@ mod tests {
         std::fs::remove_dir_all(&copy).expect("remove the wave's copy");
         std::fs::remove_dir_all(&foreign).expect("remove the other project's copy");
 
-        let ended = end_stuck_processes(root);
+        let held = crate::commands::git_settle::git_step_lock(root).expect("git step lock");
+        let ended = end_stuck_processes(root, &held);
         assert!(gone(&mut orphaned), "the command in the deleted outside copy must be ended");
         assert!(gone(&mut looping), "the waiting loop in a live outside copy must be ended");
         assert!(foreign_orphan.try_wait().ok().flatten().is_none(), "another project's copy is left alone");
@@ -523,7 +535,8 @@ mod tests {
         wait_until_spawned(working.id(), "sleep");
         wait_until_spawned(legacy.id(), "sleep");
 
-        let ended = end_stuck_processes(root);
+        let held = crate::commands::git_settle::git_step_lock(root).expect("git step lock");
+        let ended = end_stuck_processes(root, &held);
         assert!(gone(&mut idle), "the command left in the slot with no wave running must be ended");
         assert!(working.try_wait().ok().flatten().is_none(), "the slot of the running wave is left alone");
         assert!(legacy.try_wait().ok().flatten().is_none(), "a copy at the old address is not a slot");
@@ -562,7 +575,8 @@ mod tests {
         wait_until_spawned(reviewing.id(), "sleep");
         wait_until_spawned(idle.id(), "sleep");
 
-        let ended = end_stuck_processes(root);
+        let held = crate::commands::git_settle::git_step_lock(root).expect("git step lock");
+        let ended = end_stuck_processes(root, &held);
         assert!(gone(&mut idle), "the command left in the slot with no work must be ended");
         assert!(reviewing.try_wait().ok().flatten().is_none(), "the slot of the open final review is left alone");
         let reasons: Vec<(u32, &str)> = ended.iter().map(|e| (e.pid, e.reason)).collect();

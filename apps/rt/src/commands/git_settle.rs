@@ -94,6 +94,30 @@ pub(crate) fn git_step_lock(root: &Path) -> Result<LockedFile, String> {
     LockedFile::exclusive(&paths.spec_dir().join(GIT_LOCK_FILE)).map_err(|e| e.to_string())
 }
 
+/// [`git_step_lock`] sem esperar: `None` quando outra rodada ou outra sessão
+/// segura a trava agora, ou quando ela não pode ser pega. É para quem tem
+/// teto curto e não pode ficar parado atrás do commit de uma rodada.
+pub(crate) fn git_step_lock_if_free(root: &Path) -> Option<LockedFile> {
+    let paths = ClaudePaths::for_project(root).ok()?;
+    LockedFile::exclusive_if_free(&paths.spec_dir().join(GIT_LOCK_FILE)).ok().flatten()
+}
+
+/// `true` quando a lista de travas do sistema (`/proc/locks`) mostra este
+/// processo esperando a trava do arquivo de número `inode`: a linha de quem
+/// espera traz `->` antes do tipo da trava. É como um teste sabe, sem
+/// relógio, que outra linha de execução parou na trava.
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) fn waiting_for_lock(inode: u64) -> bool {
+    let pid = std::process::id().to_string();
+    let inode = inode.to_string();
+    std::fs::read_to_string("/proc/locks").unwrap_or_default().lines().any(|line| {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        fields.get(1) == Some(&"->")
+            && fields.get(5) == Some(&pid.as_str())
+            && fields.get(6).and_then(|file| file.rsplit(':').next()) == Some(inode.as_str())
+    })
+}
+
 /// Run `git` in `dir`, returning stdout on success.
 pub(crate) fn git_out(dir: &Path, args: &[&str]) -> Option<String> {
     git::run(dir, args).out()

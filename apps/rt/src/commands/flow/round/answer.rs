@@ -585,19 +585,21 @@ pub(super) fn run_entered_round(
     let (given, unread) = analysis_lines(raw, lang);
     warnings.extend(unread);
 
-    // Nada fica preso: todo processo que um agente deixou rodando — um laço
-    // de espera, ou um comando na cópia de uma onda que o commit anterior já
-    // apagou — é encerrado a cada rodada, e a resposta diz qual.
-    let stuck_ended = crate::commands::flow::stuck::end_stuck_processes(root);
-    if let Some(hint) = crate::commands::flow::stuck::report_line(&stuck_ended, lang) {
-        warnings.push(json!({ "reason": "stuck-ended", "hint": hint }));
-    }
-
     // O despacho — a entrada na execução, a leitura da spec, a escolha das
     // ondas, a criação das cópias e a gravação dos envios — roda inteiro com a
     // trava do passo do git presa: a rodada que chega ao mesmo tempo só lê a
     // spec depois dos envios desta, e nunca solta a mesma onda de novo.
     let held_lock = git_lock(root)?;
+
+    // Nada fica preso: todo processo que um agente deixou rodando — um laço
+    // de espera, ou um comando na cópia de uma onda que o commit anterior já
+    // apagou — é encerrado a cada rodada, e a resposta diz qual. A busca vem
+    // depois da trava: a rodada que chegou antes já gravou o envio da vaga
+    // que preparou, e o git dela, lá dentro, nunca é tomado por esquecido.
+    let stuck_ended = crate::commands::flow::stuck::end_stuck_processes(root, &held_lock);
+    if let Some(hint) = crate::commands::flow::stuck::report_line(&stuck_ended, lang) {
+        warnings.push(json!({ "reason": "stuck-ended", "hint": hint }));
+    }
 
     // O mapa volta ao commit atual antes de montar os pedidos: um commit à
     // mão ou um pull podem ter mudado o código fora da rodada, e sem isto a
@@ -2140,5 +2142,73 @@ mod tests {
         let pid = orphaned.id().to_string();
         assert!(warned.iter().any(|w| w["reason"] == json!("stuck-ended") && w["hint"].as_str().unwrap_or_default().contains(&pid)), "{out}");
         let _ = orphaned.wait();
+    }
+
+    /// Outra rodada, no meio do despacho, segura a trava do passo do git e
+    /// roda o git dentro de uma vaga viva cujo envio ainda não gravou. A
+    /// rodada que já entrou — a leitura de entrada, que pega e solta a mesma
+    /// trava, veio antes do despacho da outra — espera a trava antes de
+    /// procurar processo preso: quando ela procura, o envio daquela vaga já
+    /// está gravado, e o git da outra rodada segue vivo, sem aviso de
+    /// processo encerrado. Sem relógio: o teste segue quando a lista de
+    /// travas do sistema mostra a rodada parada na trava.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_round_never_ends_the_git_of_a_round_preparing_a_slot() {
+        use crate::commands::git_settle::{git_step_lock, waiting_for_lock};
+        use mustard_core::io::wave_prompt::{shown, slot_path};
+        use std::os::unix::fs::MetadataExt;
+        use std::process::{Command, Stdio};
+
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        // A vaga viva: a pasta de código e o `.git` em arquivo, como a cópia
+        // ligada ao projeto que a outra rodada está preparando.
+        let slot = slot_path(root, "x", 0);
+        std::fs::create_dir_all(slot.join("src")).unwrap();
+        std::fs::write(slot.join(".git"), "gitdir: /nowhere\n").unwrap();
+
+        let entry = round_entry(root, None);
+        let held = git_step_lock(root).unwrap();
+        let lock = root.join(".claude").join("spec").join("round-git.lock");
+        let inode = std::fs::metadata(&lock).unwrap().ino();
+        let mut preparing = Command::new("sleep")
+            .arg("30")
+            .current_dir(slot.join("src"))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn the other round's git in the slot");
+
+        let out = std::thread::scope(|scope| {
+            let arriving = scope.spawn(|| round_from(root, None, entry));
+            while !waiting_for_lock(inode) {
+                assert!(!arriving.is_finished(), "the round ran without waiting for the git step lock");
+                std::thread::yield_now();
+            }
+            // A outra rodada termina o despacho: grava o envio da onda com a
+            // vaga que preparou, por um Claude Code vivo, e solta a trava.
+            let (claude_pid, claude_started) = crate::commands::flow::stuck::sender_process();
+            crate::shared::spec_state::seed_event(
+                root,
+                "x",
+                "send",
+                json!({"wave": 1, "role": "wave", "text": "pedido", "lines": 1, "chars": 6, "items": [],
+                    "mustard": "0", "author": "binary", "copy": shown(&slot),
+                    "claude_pid": claude_pid, "claude_started": claude_started}),
+            );
+            drop(held);
+            arriving.join().unwrap()
+        });
+
+        let alive = preparing.try_wait().ok().flatten().is_none();
+        let _ = preparing.kill();
+        let _ = preparing.wait();
+        assert!(alive, "the other round's git in its slot must stay alive: {out}");
+        assert_eq!(out["ok"], json!(true), "{out}");
+        let warned = out["warnings"].as_array().cloned().unwrap_or_default();
+        assert!(!warned.iter().any(|w| w["reason"] == json!("stuck-ended")), "{out}");
     }
 }
