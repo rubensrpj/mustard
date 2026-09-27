@@ -2,7 +2,7 @@
 name = "scan"
 version.workspace = true
 edition = "2024"
-description = "Mine a codebase's recurring conventions into a rich, language-agnostic model. Framework- and language-agnostic. (Mustard's scan engine.)"
+description = "Map a codebase (files, declarations, links, history and stacks) into a rich, language-agnostic model. Framework- and language-agnostic. (Mustard's scan engine.)"
 license = "MIT"
 build = "build.rs"
 

@@ -1250,7 +1250,7 @@ fn survey_report(
 fn unrecorded_points(root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> Vec<Value> {
     let kinds = survey::work_type(log).map(survey::kinds_of).unwrap_or_default();
     let goal = survey::goal(log);
-    let map = project_map::read(root).ok();
+    let map = |need: project_map::Need<'_>| project_map::read_for(root, need);
     let list = survey::build(&survey::Sources {
         kinds: &kinds,
         goal: goal.and_then(|g| g.str_field("text")).map(str::trim).unwrap_or_default(),
@@ -1259,7 +1259,7 @@ fn unrecorded_points(root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> Ve
         lessons_file: "",
         index: &[],
         prior: &[],
-        map: map.as_ref(),
+        map: Some(&map),
         condensed: survey::condensed(log),
         lang,
         languages: &mustard_core::domain::normalize::Languages::of_project(root),

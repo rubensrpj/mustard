@@ -91,16 +91,13 @@ pub struct ModelFacts {
     pub entities: Vec<String>,
 }
 
-/// Read the `projects[]` (subproject list) from a grain model — via the scan
-/// tool's `facts` command ([`Scan::facts`]), so this crate never parses the
-/// model's own schema. Fail-open: a missing model (no scan yet) or any
-/// spawn/parse error yields an empty list.
+/// Os subprojetos do mapa em `model_path`, lidos só da tabela deles pela
+/// porta do mapa ([`crate::io::project_map::projects_at`]), sem abrir outro
+/// processo nem ler o resto do mapa. Falha aberta: sem mapa (o scan ainda não
+/// rodou) ou com um que não se entende, a lista vem vazia.
 #[must_use]
 pub fn read_projects(model_path: &std::path::Path) -> Vec<Project> {
-    if !crate::io::project_map::exists_at(model_path) {
-        return Vec::new();
-    }
-    Scan::locate().facts(model_path).map(|f| f.projects).unwrap_or_default()
+    crate::io::project_map::projects_at(model_path).unwrap_or_default()
 }
 
 /// Read the distinct declaration names (entities / types / functions) from a
@@ -369,5 +366,38 @@ mod tests {
         assert!(projects[0].own_git_root, "a `.git` FILE marks a nested git root");
         assert!(!projects[1].own_git_root, "a plain subproject is not a nested git root");
         assert!(!projects[2].own_git_root, "the superproject root `.` is never flagged");
+    }
+
+    /// Um mapa em que uma coluna que a lista de projetos não lê guarda o tipo
+    /// errado: a leitura do mapa inteiro o recusa, e a lista, que lê só a
+    /// tabela dos projetos, vem com cada coluna dela.
+    #[test]
+    fn the_projects_come_from_their_table_even_when_another_column_is_broken() {
+        let dir = tempfile::tempdir().unwrap();
+        let model = crate::io::project_map::model_path(dir.path());
+        crate::io::project_map::write_text_at(
+            &model,
+            r#"{"modules": [{"path": "web/artisan", "deps": "um texto no lugar da lista"}],
+                "projects": [
+                  {"name": "web", "dir": "web", "kind": "composer", "code_files": 4, "frameworks": ["laravel/framework"],
+                   "dependencies": ["laravel/framework", "php"], "scripts": ["test"],
+                   "detected_stacks": [{"name": "laravel", "confidence": 0.9, "signals": ["path:artisan"]}]},
+                  {"name": "core", "dir": "packages/core", "kind": "cargo"}
+                ]}"#,
+        )
+        .unwrap();
+        assert!(crate::io::project_map::read_at(&model).is_err(), "the whole map refuses the broken column");
+        let projects = read_projects(&model);
+        assert_eq!(projects.len(), 2, "{projects:?}");
+        let web = &projects[0];
+        assert_eq!((web.name.as_str(), web.dir.as_str(), web.kind.as_str(), web.code_files), ("web", "web", "composer", 4));
+        assert_eq!(web.frameworks, ["laravel/framework"]);
+        assert_eq!(web.dependencies, ["laravel/framework", "php"]);
+        assert_eq!(web.scripts, ["test"]);
+        assert_eq!(web.detected_stacks.len(), 1);
+        assert_eq!(web.detected_stacks[0].signals, ["path:artisan"]);
+        assert!(!web.own_git_root);
+        assert_eq!((projects[1].name.as_str(), projects[1].code_files), ("core", 0));
+        assert!(projects[1].frameworks.is_empty() && projects[1].detected_stacks.is_empty());
     }
 }

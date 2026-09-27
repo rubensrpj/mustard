@@ -113,6 +113,94 @@ impl<'a> Reuse<'a> {
     }
 }
 
+/// As pastas de compilação e de dependências que existem na raiz `root`: as
+/// que a caminhada pula, pelo registro dos manifestos, e que a cobertura
+/// relata. Ordenadas.
+fn skipped_build_dirs(root: &Path) -> Vec<String> {
+    let skip = crate::manifests::skip_dirs();
+    let mut found: Vec<String> = fs::read_dir(root)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|n| skip.iter().any(|s| s == n))
+        .collect();
+    found.sort();
+    found
+}
+
+/// A caminhada pela pasta `root`: respeita o `.gitignore`, entra nas pastas
+/// escondidas e pula as de compilação e de dependências que o registro dos
+/// manifestos declara, nunca uma lista escrita aqui.
+fn walker(root: &Path) -> ignore::Walk {
+    let skip = crate::manifests::skip_dirs();
+    WalkBuilder::new(root)
+        .hidden(false)
+        .git_ignore(true)
+        .git_global(false)
+        .filter_entry(move |e| {
+            let name = e.file_name().to_string_lossy();
+            !skip.iter().any(|s| s.as_str() == name.as_ref())
+        })
+        .build()
+}
+
+/// O caminho de `path` relativo a `root`, com `/` entre as partes.
+fn relative(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root).unwrap_or(path).to_string_lossy().replace('\\', "/")
+}
+
+/// O que a caminhada vê sem abrir arquivo nenhum.
+pub(crate) struct Walk {
+    /// Cada arquivo que a caminhada visita, relativo à raiz e ordenado: os
+    /// mesmos caminhos que a leitura inteira guarda para as pilhas.
+    pub paths: Vec<String>,
+    /// As pastas de compilação que existem na raiz.
+    pub skipped_build_dirs: Vec<String>,
+}
+
+/// A caminhada pela pasta `root` que a leitura faz, sem abrir arquivo nenhum.
+pub(crate) fn walk(root: &Path) -> Walk {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let mut paths: Vec<String> = walker(&root)
+        .flatten()
+        .filter(|dent| dent.path().is_file())
+        .map(|dent| relative(&root, dent.path()))
+        .collect();
+    paths.sort();
+    Walk { paths, skipped_build_dirs: skipped_build_dirs(&root) }
+}
+
+/// A caminhada `paths` não traz arquivo que a leitura abriria sem que o mapa
+/// anterior `prev` o guarde, e o mapa não guarda arquivo que ela não traga:
+/// todo arquivo de código ou manifesto que ela visita é um módulo, um
+/// manifesto ou um arquivo que não se decodificou no mapa, e todo arquivo
+/// dele continua nela. Com o conteúdo de cada um igual ao que ele leu, a
+/// leitura inteira daria os mesmos módulos e manifestos; só o que depende
+/// dos outros caminhos muda.
+pub(crate) fn same_sources(paths: &[String], prev: &ProjectModel) -> bool {
+    let stored: HashSet<&str> = prev
+        .modules
+        .iter()
+        .map(|m| m.path.as_str())
+        .chain(prev.manifests.iter().map(|m| m.path.as_str()))
+        .chain(prev.state.non_utf8.iter().map(String::as_str))
+        .collect();
+    let mut seen = 0usize;
+    for rel in paths {
+        if stored.contains(rel.as_str()) {
+            seen += 1;
+            continue;
+        }
+        let name = rel.rsplit('/').next().unwrap_or(rel);
+        if crate::manifests::is_manifest(name) || crate::extract::detect_language(Path::new(rel)).is_some() {
+            return false;
+        }
+    }
+    seen == stored.len()
+}
+
 pub(crate) fn ingest(root: &Path, reuse: Option<&Reuse>) -> Result<Ingested> {
     let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let mut files: Vec<Walked> = Vec::new();
@@ -131,41 +219,14 @@ pub(crate) fn ingest(root: &Path, reuse: Option<&Reuse>) -> Result<Ingested> {
     let mut top_other: BTreeMap<String, usize> = BTreeMap::new();
     let mut unsupported: BTreeMap<String, usize> = BTreeMap::new();
     let mut non_utf8 = 0usize;
-    // Build/dependency directories to skip come from data (manifests.toml), not
-    // a hardcoded list — see crate::manifests.
-    let skip: Vec<String> = crate::manifests::skip_dirs().to_vec();
-    // Which skip-dirs actually exist at the root (so we report only real skips).
-    let mut skipped_build_dirs: Vec<String> = std::fs::read_dir(&root)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter(|e| e.path().is_dir())
-        .filter_map(|e| e.file_name().into_string().ok())
-        .filter(|n| skip.iter().any(|s| s == n))
-        .collect();
-    skipped_build_dirs.sort();
+    let skipped_build_dirs = skipped_build_dirs(&root);
 
-    let walk_skip = skip.clone();
-    let walker = WalkBuilder::new(&root)
-        .hidden(false)
-        .git_ignore(true)
-        .git_global(false)
-        .filter_entry(move |e| {
-            let name = e.file_name().to_string_lossy();
-            !walk_skip.iter().any(|s| s.as_str() == name.as_ref())
-        })
-        .build();
-
-    for dent in walker.flatten() {
+    for dent in walker(&root).flatten() {
         let path = dent.path();
         if !path.is_file() {
             continue;
         }
-        let rel = path
-            .strip_prefix(&root)
-            .unwrap_or(path)
-            .to_string_lossy()
-            .replace('\\', "/");
+        let rel = relative(&root, path);
         let fname = path.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
         let topdir = match rel.split_once('/') {
             Some((d, _)) => d.to_string(),

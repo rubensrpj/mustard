@@ -26,7 +26,9 @@ use serde_json::{Map, Value};
 use crate::domain::project_map::{
     Commit, History, MapDecl, MapDegree, MapLanguage, MapModule, MapProject, MapRefusal, MapSkeleton, ProjectMap,
 };
+use crate::domain::normalize::Languages;
 use crate::io::map_db::{self, Block, Kind, MapDb};
+use crate::io::map_search;
 use crate::platform::error::{Error, Result};
 
 /// A pasta do projeto onde o mapa mora.
@@ -184,22 +186,27 @@ macro_rules! key {
 /// Um bloco, declarado uma vez: o nome, a versão do formato e cada tabela,
 /// com o lugar dela no mapa em JSON e as colunas. O esquema SQL sai da mesma
 /// declaração.
+///
+/// O índice de busca do bloco, quando há, entra à parte: as tabelas dele e o
+/// esquema em SQL. Ele não mora no mapa em JSON, não se compara na gravação
+/// — a tabela sem o texto guardado não se lê de volta — e se refaz sempre
+/// que o bloco se regrava; na troca de versão, sai junto das outras.
 macro_rules! block {
     ($name:literal, version $version:literal, {
         $( $table:literal at $place:expr => [
             $first:literal $first_cell:ident $([$($first_key:literal),*])?
             $(, $column:literal $cell:ident $([$($key:literal),*])?)*
         ] ),+
-    }) => {
+    } $(, index [$($index_table:literal),+] $index_schema:literal)?) => {
         MapBlock {
             block: Block {
                 name: $name,
                 version: $version,
-                tables: &[$($table),+],
+                tables: &[$($table,)+ $($($index_table),+)?],
                 schema: concat!($(
                     "CREATE TABLE ", $table, "(", $first, " ", sql_type!($first_cell)
                     $(, ", ", $column, " ", sql_type!($cell))*, ");"
-                ),+),
+                ),+ $(, $index_schema)?),
                 kind: Kind::Rebuilt(filled_by_the_scan),
             },
             tables: &[$(Table {
@@ -264,13 +271,33 @@ pub const FILES: MapBlock = block!("files", version 2, {
 /// assinatura, a documentação e quem usa cada uma; o dono e o contrato
 /// escritos com ela; os membros de cada tipo e as implementações de cada
 /// método, que a passada refaz do projeto inteiro como refaz os usos.
-pub const DECLS: MapBlock = block!("decls", version 2, {
+///
+/// Junto delas mora o índice da busca do mapa ([`crate::io::map_search`]):
+/// uma tabela FTS5 por nível — a declaração e o arquivo —, uma coluna por
+/// campo e sem o texto guardado; a lista de cada forma pelo `fts5vocab`; o
+/// tamanho de cada campo, em palavras; os nomes das declarações numa tabela
+/// trigram, para o pedaço do nome; as línguas e as médias com que ele foi
+/// feito; e o índice do nome sem caixa. As listas saem antes das tabelas de
+/// que elas leem.
+pub const DECLS: MapBlock = block!("decls", version 3, {
     "decls" at Place::Decls => [
         "file" Owner ["path"], "kind" Text, "name" Text, "line" Int, "end_line" Int,
         "signature" Text, "doc" Text, "supertypes" Json, "calls" Json, "used_by" Json,
         "owner" Json, "contract" Json, "members" Json, "implements" Json, "implemented_by" Json
     ]
-});
+}, index [
+    "file_vocab", "decl_vocab", "file_fts", "decl_fts", "decl_trigram", "file_lengths", "decl_lengths", "search_meta"
+] "CREATE INDEX decls_name_nocase ON decls(name COLLATE NOCASE);\
+   CREATE VIRTUAL TABLE file_fts USING fts5(name, path, doc, content='', contentless_delete=1, \
+     tokenize='unicode61 remove_diacritics 2');\
+   CREATE VIRTUAL TABLE decl_fts USING fts5(name, path, signature, doc, content='', contentless_delete=1, \
+     tokenize='unicode61 remove_diacritics 2');\
+   CREATE VIRTUAL TABLE file_vocab USING fts5vocab(file_fts, instance);\
+   CREATE VIRTUAL TABLE decl_vocab USING fts5vocab(decl_fts, instance);\
+   CREATE VIRTUAL TABLE decl_trigram USING fts5(name, file UNINDEXED, tokenize='trigram');\
+   CREATE TABLE file_lengths(id INTEGER PRIMARY KEY, name INTEGER, path INTEGER, doc INTEGER);\
+   CREATE TABLE decl_lengths(id INTEGER PRIMARY KEY, name INTEGER, path INTEGER, signature INTEGER, doc INTEGER);\
+   CREATE TABLE search_meta(key TEXT PRIMARY KEY, value);");
 
 /// O grafo: as importações resolvidas, os testes que cobrem cada arquivo, as
 /// chamadas e as citações com a linha, e os arquivos mais importados.
@@ -339,8 +366,44 @@ pub struct StoredMap {
 /// de [`read`]: o que a passada seguinte do scan toma da anterior, e o que os
 /// testes dele conferem. Sem o arquivo, nada se cria.
 pub fn read_stored_at(model: &Path) -> std::result::Result<StoredMap, MapRefusal> {
+    stored_part(model, every_column)
+}
+
+/// O estado da leitura gravado em `model`, com as mesmas recusas de
+/// [`read`]: o censo inteiro, de cada arquivo só o caminho, o blob e os
+/// sinais de código, e a marca de cada bloco. É o que a passada do scan
+/// consulta para saber se tem arquivo a reler, sem as declarações, o grafo e
+/// a história, que ficam no banco. A coluna estragada que ela não lê não a
+/// recusa.
+pub fn read_state_at(model: &Path) -> std::result::Result<StoredMap, MapRefusal> {
+    stored_part(model, state_column)
+}
+
+/// Quais colunas de cada tabela uma leitura do mapa em JSON traz.
+type Pick = fn(&Table, &Column) -> bool;
+
+/// Toda coluna de toda tabela: o mapa inteiro.
+fn every_column(_: &Table, _: &Column) -> bool {
+    true
+}
+
+/// As colunas dos arquivos que o estado da leitura traz: o caminho, que
+/// identifica o arquivo, o blob, que diz se ele mudou, e os sinais de código,
+/// que as pilhas contam.
+const STATE_FILE_COLUMNS: [&str; 3] = ["path", "blob", "signals"];
+
+/// O estado da leitura: toda tabela do censo e, na dos arquivos, as colunas
+/// de [`STATE_FILE_COLUMNS`].
+fn state_column(table: &Table, column: &Column) -> bool {
+    CENSUS.tables.iter().any(|census| census.name == table.name)
+        || (FILES.tables.iter().any(|files| files.name == table.name) && STATE_FILE_COLUMNS.contains(&column.name))
+}
+
+/// O mapa gravado em `model` com só as colunas que `pick` escolhe, e a marca
+/// de cada bloco.
+fn stored_part(model: &Path, pick: Pick) -> std::result::Result<StoredMap, MapRefusal> {
     let db = open_existing(model)?;
-    let json = map_text(db.conn()).map_err(unreadable)?;
+    let json = map_text(db.conn(), pick).map_err(unreadable)?;
     let mut marks = BTreeMap::new();
     for block in &BLOCKS {
         if let Some(mark) = db.mark(block.name()).map_err(unreadable)? {
@@ -354,7 +417,9 @@ pub fn read_stored_at(model: &Path) -> std::result::Result<StoredMap, MapRefusal
 /// tabelas dos blocos, na ordem em que se declaram, e depois as outras do
 /// arquivo — a de blocos e as de um programa mais novo —, em ordem de nome.
 /// Cada entrada traz o nome da tabela e as linhas, uma por objeto, com a
-/// coluna vazia como `null` e o texto JSON já lido.
+/// coluna vazia como `null` e o texto JSON já lido. O índice de busca fica
+/// de fora, com as tabelas virtuais e as que o FTS5 guarda por trás delas:
+/// ele se refaz do mapa e não se lê de volta.
 pub fn dump(root: &Path) -> std::result::Result<Value, MapRefusal> {
     let db = open_existing(&model_path(root))?;
     dump_tables(db.conn()).map_err(unreadable)
@@ -376,8 +441,10 @@ fn dump_tables(conn: &Connection) -> Result<Value> {
             .map_err(Error::Parse)?;
         out.push(serde_json::json!({ "table": table.name, "rows": rows }));
     }
-    let declared: Vec<&str> = BLOCKS.iter().flat_map(|block| block.tables.iter().map(|table| table.name)).collect();
-    let mut stmt = conn.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")?;
+    let declared: Vec<&str> = DB_BLOCKS.iter().flat_map(|block| block.tables.iter().copied()).collect();
+    let mut stmt = conn.prepare(
+        "SELECT name FROM pragma_table_list WHERE schema = 'main' AND type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+    )?;
     let others: Vec<String> = stmt
         .query_map([], |row| row.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?
@@ -449,11 +516,44 @@ pub enum Need<'a> {
     Examples { words: bool },
 }
 
+/// Como quem pergunta ao mapa o lê: por [`read_for`], só as tabelas da
+/// pergunta. Um teste passa o mapa inteiro no lugar, para conferir que a
+/// resposta é a mesma.
+pub type MapReader<'r> = dyn Fn(Need<'_>) -> std::result::Result<ProjectMap, MapRefusal> + 'r;
+
 /// O mapa do projeto em `root` com só o que `need` pede, com as mesmas
 /// recusas de [`read`].
 pub fn read_for(root: &Path, need: Need<'_>) -> std::result::Result<ProjectMap, MapRefusal> {
-    let db = open_existing(&model_path(root))?;
+    read_for_at(&model_path(root), need)
+}
+
+/// O mapa gravado em `model` com só o que `need` pede, como [`read_for`]: é
+/// a leitura do mapa que o scan gravou num caminho escolhido por quem o
+/// chamou.
+pub fn read_for_at(model: &Path, need: Need<'_>) -> std::result::Result<ProjectMap, MapRefusal> {
+    let db = open_existing(model)?;
     part_of(db.conn(), need).map_err(unreadable)
+}
+
+/// Os subprojetos do mapa gravado em `model`, com todas as colunas da tabela
+/// deles, na ordem do mapa, sem ler outra tabela. Com as mesmas recusas de
+/// [`read`].
+pub fn projects_at(model: &Path) -> std::result::Result<Vec<crate::domain::scan::Project>, MapRefusal> {
+    let db = open_existing(model)?;
+    let table = declared_table("projects").map_err(unreadable)?;
+    let rows = rows_in(db.conn(), table).map_err(unreadable)?;
+    rows.iter()
+        .map(|row| {
+            let mut object = Map::new();
+            for (column, value) in table.columns.iter().zip(row) {
+                if let Some(value) = json_of(table, column, value)? {
+                    object.insert(column.name.to_string(), value);
+                }
+            }
+            serde_json::from_value(Value::Object(object)).map_err(|e| e.to_string())
+        })
+        .collect::<std::result::Result<Vec<_>, String>>()
+        .map_err(|detail| MapRefusal::MapUnreadable { detail })
 }
 
 fn part_of(conn: &Connection, need: Need<'_>) -> Result<ProjectMap> {
@@ -883,7 +983,7 @@ pub fn is_behind(root: &Path) -> bool {
 /// mapa ausente, e nada se cria. O arquivo que não começa como um banco —
 /// vazio, ou com o texto que não se entendeu — é recusado antes de abrir: o
 /// SQLite tomaria o arquivo curto por um banco novo e gravaria nele.
-fn open_existing(model: &Path) -> std::result::Result<MapDb, MapRefusal> {
+pub(crate) fn open_existing(model: &Path) -> std::result::Result<MapDb, MapRefusal> {
     if !exists_at(model) {
         return Err(MapRefusal::MapMissing);
     }
@@ -901,7 +1001,7 @@ fn open(model: &Path) -> Result<MapDb> {
     MapDb::open(model, root, &DB_BLOCKS)
 }
 
-fn unreadable(err: Error) -> MapRefusal {
+pub(crate) fn unreadable(err: Error) -> MapRefusal {
     MapRefusal::MapUnreadable { detail: err.to_string() }
 }
 
@@ -993,21 +1093,26 @@ struct ModuleText {
 
 /// O mapa em texto JSON, escrito direto das linhas de cada tabela, na ordem
 /// dos blocos: as chaves soltas, as listas e os arquivos com as declarações de
-/// cada um. A coluna em JSON entra como está; o texto que não se lê é recusado
-/// por quem lê o mapa inteiro.
-fn map_text(conn: &Connection) -> Result<String> {
+/// cada um, só com as colunas que `pick` escolhe. A coluna em JSON entra como
+/// está; o texto que não se lê é recusado por quem lê o mapa. A tabela por
+/// arquivo que fica traz sempre a primeira coluna, a que diz o arquivo.
+fn map_text(conn: &Connection, pick: Pick) -> Result<String> {
     let mut top: Object = Vec::new();
     let mut modules: Vec<ModuleText> = Vec::new();
     let mut by_path: HashMap<Option<String>, usize> = HashMap::new();
     let mut files_table: Option<&str> = None;
     for table in BLOCKS.iter().flat_map(|block| block.tables) {
-        let columns: Vec<String> = table.columns.iter().map(|column| quoted(column.name)).collect();
-        let mut stmt = conn.prepare(&format!("SELECT {} FROM {} ORDER BY rowid", columns.join(", "), quoted(table.name)))?;
+        let columns: Vec<&Column> = table.columns.iter().filter(|column| pick(table, column)).collect();
+        if columns.is_empty() {
+            continue;
+        }
+        let names: Vec<String> = columns.iter().map(|column| quoted(column.name)).collect();
+        let mut stmt = conn.prepare(&format!("SELECT {} FROM {} ORDER BY rowid", names.join(", "), quoted(table.name)))?;
         let mut rows = stmt.query([])?;
         match table.place {
             Place::One => {
                 while let Some(row) = rows.next()? {
-                    for (at, column) in table.columns.iter().enumerate() {
+                    for (at, column) in columns.iter().enumerate() {
                         let mut text = String::new();
                         if push_cell(&mut text, table, column, row.get_ref(at)?)? {
                             put(&mut top, column.key, Node::Raw(text));
@@ -1023,7 +1128,7 @@ fn map_text(conn: &Connection) -> Result<String> {
                         list.push(',');
                     }
                     empty = false;
-                    push_item(&mut list, table, row)?;
+                    push_item(&mut list, table, &columns, row)?;
                 }
                 list.push(']');
                 if keep || !empty {
@@ -1050,7 +1155,7 @@ fn map_text(conn: &Connection) -> Result<String> {
                     // arquivo; nas outras por arquivo, só diz a que arquivo a
                     // linha se junta.
                     let comma = !module.fields.is_empty();
-                    push_fields(&mut module.fields, table, row, usize::from(!first), comma)?;
+                    push_fields(&mut module.fields, table, &columns, row, usize::from(!first), comma)?;
                 }
             }
             Place::Decls => {
@@ -1061,7 +1166,7 @@ fn map_text(conn: &Connection) -> Result<String> {
                         declarations.push(',');
                     }
                     declarations.push('{');
-                    push_fields(declarations, table, row, 1, false)?;
+                    push_fields(declarations, table, &columns, row, 1, false)?;
                     declarations.push('}');
                 }
             }
@@ -1084,11 +1189,18 @@ fn owner_of(row: &rusqlite::Row<'_>) -> Result<Option<String>> {
 }
 
 /// Escreve em `out` as chaves de uma linha, sem as chaves em volta, a partir
-/// da coluna `skip`, separadas por vírgula; a primeira também, quando
-/// `comma`. As colunas de uma linha de lista ou de arquivo têm nome de um
-/// nível só.
-fn push_fields(out: &mut String, table: &Table, row: &rusqlite::Row<'_>, skip: usize, mut comma: bool) -> Result<()> {
-    for (at, column) in table.columns.iter().enumerate().skip(skip) {
+/// da coluna `skip` das lidas, `columns`, separadas por vírgula; a primeira
+/// também, quando `comma`. As colunas de uma linha de lista ou de arquivo
+/// têm nome de um nível só.
+fn push_fields(
+    out: &mut String,
+    table: &Table,
+    columns: &[&Column],
+    row: &rusqlite::Row<'_>,
+    skip: usize,
+    mut comma: bool,
+) -> Result<()> {
+    for (at, column) in columns.iter().enumerate().skip(skip) {
         let value = row.get_ref(at)?;
         if value == ValueRef::Null {
             continue;
@@ -1103,10 +1215,11 @@ fn push_fields(out: &mut String, table: &Table, row: &rusqlite::Row<'_>, skip: u
     Ok(())
 }
 
-/// Escreve em `out` um item de lista: o próprio valor, na tabela de uma
-/// coluna só com o caminho vazio; senão, o objeto das colunas.
-fn push_item(out: &mut String, table: &Table, row: &rusqlite::Row<'_>) -> Result<()> {
-    if let [column] = table.columns
+/// Escreve em `out` um item de lista, das colunas lidas `columns`: o próprio
+/// valor, na tabela de uma coluna só com o caminho vazio; senão, o objeto
+/// das colunas.
+fn push_item(out: &mut String, table: &Table, columns: &[&Column], row: &rusqlite::Row<'_>) -> Result<()> {
+    if let [column] = columns
         && column.key.is_empty()
     {
         if !push_cell(out, table, column, row.get_ref(0)?)? {
@@ -1115,7 +1228,7 @@ fn push_item(out: &mut String, table: &Table, row: &rusqlite::Row<'_>) -> Result
         return Ok(());
     }
     out.push('{');
-    push_fields(out, table, row, 0, false)?;
+    push_fields(out, table, columns, row, 0, false)?;
     out.push('}');
     Ok(())
 }
@@ -1226,27 +1339,54 @@ fn json_of(table: &Table, column: &Column, value: &Sql) -> std::result::Result<O
 /// mudaram se regrava, e todos os que mudaram numa transação só: quem lê
 /// nunca vê um pela metade. Devolve `true` quando gravou; com tudo igual,
 /// `false`, e o arquivo fica como estava. Um arquivo em `model` que não é um
-/// banco é trocado pelo mapa.
+/// banco é trocado pelo mapa. Regravados os arquivos ou as declarações, o
+/// índice de busca se refaz na mesma transação, com as palavras preparadas
+/// nas línguas `languages`.
 ///
 /// # Errors
 ///
 /// A chave que não cabe na coluna dela ([`Error::Parse`]) e a falha do banco.
-pub fn save_at(model: &Path, map: &Value, mark: &str) -> Result<bool> {
+pub fn save_at(model: &Path, map: &Value, mark: &str, languages: &Languages) -> Result<bool> {
     let fresh = rows_of(map).map_err(Error::Parse)?;
-    save_rows(model, &fresh, mark)
+    save_rows(model, BLOCKS.iter().zip(&fresh), mark, Some(languages))
+}
+
+/// Grava só o bloco `block` de `map` no banco em `model`, com a marca
+/// `mark`, como [`save_at`]; os outros blocos ficam como estão, com as marcas
+/// deles. É a passada do scan que só refaz o censo. Sem as línguas, o bloco
+/// dos arquivos ou das declarações gravado assim deixa o índice de busca
+/// para a primeira busca refazer.
+///
+/// # Errors
+///
+/// A chave que não cabe na coluna dela ([`Error::Parse`]) e a falha do banco.
+pub fn save_block_at(model: &Path, block: &MapBlock, map: &Value, mark: &str) -> Result<bool> {
+    let fresh: BlockRows =
+        block.tables.iter().map(|table| rows(table, map)).collect::<std::result::Result<_, _>>().map_err(Error::Parse)?;
+    save_rows(model, [(block, &fresh)], mark, None)
 }
 
 /// As linhas de cada tabela de cada bloco, na ordem de [`BLOCKS`].
 type BlockRows = Vec<Vec<Row>>;
 
-fn save_rows(model: &Path, fresh: &[BlockRows], mark: &str) -> Result<bool> {
+/// Grava as linhas `fresh` de cada bloco que elas trazem, com a marca
+/// `mark`; o bloco que ficou igual, com a mesma marca, não se regrava.
+/// Regravados os arquivos ou as declarações, o índice de busca se refaz nas
+/// línguas `languages`; sem elas, fica sem línguas, e a primeira busca o
+/// refaz nas dela.
+fn save_rows<'b>(
+    model: &Path,
+    fresh: impl IntoIterator<Item = (&'b MapBlock, &'b BlockRows)>,
+    mark: &str,
+    languages: Option<&Languages>,
+) -> Result<bool> {
     let head = head_of(model);
     if !head.is_empty() && head != SQLITE_HEADER {
         remove(model)?;
     }
     let mut db = open(model)?;
     let mut changed: Vec<(&MapBlock, &BlockRows)> = Vec::new();
-    for (block, tables) in BLOCKS.iter().zip(fresh) {
+    for (block, tables) in fresh {
         let mut same = db.mark(block.name())?.as_deref() == Some(mark);
         for (table, rows) in block.tables.iter().zip(tables) {
             if !same {
@@ -1274,6 +1414,12 @@ fn save_rows(model: &Path, fresh: &[BlockRows], mark: &str) -> Result<bool> {
                 }
             }
             map_db::set_mark(tx, block.name(), mark)?;
+        }
+        if changed.iter().any(|(block, _)| [FILES.name(), DECLS.name()].contains(&block.name())) {
+            match languages {
+                Some(languages) => map_search::rebuild(tx, languages)?,
+                None => map_search::forget(tx)?,
+            }
         }
         Ok(())
     })?;
@@ -1370,7 +1516,8 @@ pub fn write_text(root: &Path, text: &str) -> Result<()> {
 }
 
 /// Grava `text` como o mapa em `model`, como [`write_text`]. O mapa em JSON
-/// vai para o banco, sem marca em bloco nenhum; o texto que não se entende
+/// vai para o banco, sem marca em bloco nenhum e sem o índice de busca, que a
+/// primeira busca faz nas línguas dela; o texto que não se entende
 /// fica no arquivo como veio, que não é um banco: a leitura o recusa como
 /// mapa ilegível, como o mapa estragado.
 ///
@@ -1381,7 +1528,7 @@ pub fn write_text_at(model: &Path, text: &str) -> Result<()> {
     remove(model)?;
     let understood = serde_json::from_str::<Value>(text).ok().filter(Value::is_object).and_then(|map| rows_of(&map).ok());
     match understood {
-        Some(fresh) => save_rows(model, &fresh, "").map(|_| ()),
+        Some(fresh) => save_rows(model, BLOCKS.iter().zip(&fresh), "", None).map(|_| ()),
         None => crate::io::fs::write_atomic(model, text.as_bytes()),
     }
 }
@@ -1424,6 +1571,11 @@ mod tests {
     use crate::domain::project_map::{DeclAt, MapModule, MapState};
     use serde_json::json;
     use tempfile::tempdir;
+
+    /// As línguas de um projeto com o texto em português e o código em inglês.
+    fn languages() -> Languages {
+        Languages::new(["pt-BR", "en-US"])
+    }
 
     #[test]
     fn a_missing_map_and_a_broken_map_are_told_apart() {
@@ -1586,7 +1738,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let model = model_path(dir.path());
         let map = scan_map();
-        assert!(save_at(&model, &map, "scan 1").unwrap());
+        assert!(save_at(&model, &map, "scan 1", &languages()).unwrap());
         let stored = read_stored_at(&model).unwrap();
         let back: Value = serde_json::from_str(&stored.json).unwrap();
 
@@ -1626,18 +1778,67 @@ mod tests {
         let dir = tempdir().unwrap();
         let model = model_path(dir.path());
         let map = scan_map();
-        assert!(save_at(&model, &map, "scan 1").unwrap());
+        assert!(save_at(&model, &map, "scan 1", &languages()).unwrap());
         let before = std::fs::read(&model).unwrap();
-        assert!(!save_at(&model, &map, "scan 1").unwrap(), "nothing changed, nothing is written");
+        assert!(!save_at(&model, &map, "scan 1", &languages()).unwrap(), "nothing changed, nothing is written");
         assert_eq!(std::fs::read(&model).unwrap(), before);
 
         let mut changed = map.clone();
         changed["modules"][1]["loc"] = json!(21);
-        assert!(save_at(&model, &changed, "scan 1").unwrap());
+        assert!(save_at(&model, &changed, "scan 1", &languages()).unwrap());
         let back: Value = serde_json::from_str(&read_stored_at(&model).unwrap().json).unwrap();
         assert_eq!(back["modules"][1]["loc"], json!(21));
-        assert!(save_at(&model, &changed, "scan 2").unwrap(), "a new mark is written");
+        assert!(save_at(&model, &changed, "scan 2", &languages()).unwrap(), "a new mark is written");
         assert!(read_stored_at(&model).unwrap().marks.values().all(|mark| mark == "scan 2"));
+    }
+
+    /// O estado da leitura traz o censo inteiro e, de cada arquivo, só o
+    /// caminho, o blob e os sinais, com a marca de cada bloco, mesmo com uma
+    /// coluna estragada que ele não lê. A gravação de um bloco só troca as
+    /// linhas e a marca dele; os outros ficam como estavam.
+    #[test]
+    fn the_reading_state_is_read_alone_and_one_block_is_written_alone() {
+        let dir = tempdir().unwrap();
+        let model = model_path(dir.path());
+        let mut map = scan_map();
+        map["modules"][0]["signals"] = json!(["extends Controller"]);
+        save_at(&model, &map, "scan 1", &languages()).unwrap();
+        open(&model).unwrap().conn().execute("UPDATE \"links\" SET \"deps\" = '{broken'", []).unwrap();
+        assert!(read_at(&model).is_err(), "o mapa inteiro recusa a coluna estragada");
+
+        let state = read_state_at(&model).unwrap();
+        let back: Value = serde_json::from_str(&state.json).unwrap();
+        for key in ["root", "state", "manifests", "projects", "languages", "frameworks", "skeleton", "detected_stacks"] {
+            assert_eq!(back[key], map[key], "{key}");
+        }
+        assert_eq!(back["coverage"], json!({"skipped_build_dirs": ["target"]}));
+        assert_eq!(
+            back["modules"],
+            json!([
+                {"path": "src/a.rs", "blob": "a1", "signals": ["extends Controller"], "declarations": []},
+                {"path": "src/b.rs", "declarations": []}
+            ])
+        );
+        assert!(back.get("graph").is_none() && back.get("history").is_none(), "{back}");
+        assert_eq!(state.marks.len(), BLOCKS.len());
+
+        let mut census = back;
+        census["state"]["listing"] = json!("11aa-3");
+        census["detected_stacks"] = json!([{"name": "laravel", "confidence": 0.5, "signals": ["path:artisan"]}]);
+        assert!(save_block_at(&model, &CENSUS, &census, "scan 2").unwrap());
+        assert!(!save_block_at(&model, &CENSUS, &census, "scan 2").unwrap(), "o mesmo censo não se regrava");
+        let again = read_state_at(&model).unwrap();
+        let written: Value = serde_json::from_str(&again.json).unwrap();
+        assert_eq!(written["state"]["listing"], json!("11aa-3"));
+        assert_eq!(written["detected_stacks"][0]["name"], json!("laravel"));
+        assert_eq!(written["modules"], census["modules"], "os arquivos ficam como estavam");
+        for block in &BLOCKS {
+            let expected = if block.name() == CENSUS.name() { "scan 2" } else { "scan 1" };
+            assert_eq!(again.marks[block.name()], expected, "{}", block.name());
+        }
+        let deps: String =
+            open(&model).unwrap().conn().query_row("SELECT \"deps\" FROM \"links\" LIMIT 1", [], |row| row.get(0)).unwrap();
+        assert_eq!(deps, "{broken", "as ligações não se regravam");
     }
 
     /// O arquivo que não é um banco é trocado pelo mapa na gravação do scan.
@@ -1646,7 +1847,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let model = model_path(dir.path());
         write_text(dir.path(), "{not json").unwrap();
-        assert!(save_at(&model, &scan_map(), "scan 1").unwrap());
+        assert!(save_at(&model, &scan_map(), "scan 1", &languages()).unwrap());
         assert_eq!(read(dir.path()).unwrap().modules.len(), 2);
     }
 
@@ -1655,7 +1856,7 @@ mod tests {
     #[test]
     fn the_dump_has_one_entry_per_table() {
         let dir = tempdir().unwrap();
-        save_at(&model_path(dir.path()), &scan_map(), "scan 1").unwrap();
+        save_at(&model_path(dir.path()), &scan_map(), "scan 1", &languages()).unwrap();
         let dump = dump(dir.path()).unwrap();
         let names: Vec<&str> = dump.as_array().unwrap().iter().map(|entry| entry["table"].as_str().unwrap()).collect();
         assert_eq!(

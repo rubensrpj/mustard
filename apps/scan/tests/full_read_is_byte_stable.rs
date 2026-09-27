@@ -1,7 +1,6 @@
 //! Two full reads of the same tree give the same map, byte for byte. The
-//! fixtures tree is rich enough to mine roles and conventions, which is where
-//! an order taken from a hash map once named the same convention differently
-//! on each read.
+//! fixtures tree mixes many languages and manifests, so an order taken from a
+//! hash map anywhere in the pass would show up as a different map.
 
 #[path = "support/manifest_dir.rs"]
 mod manifest_dir;

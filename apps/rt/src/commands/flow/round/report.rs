@@ -2484,7 +2484,10 @@ mod tests {
         round(root, "x", None);
 
         let report = |wave: u64, proof: &str, summary: &str| {
-            std::fs::write(root.join("src/lib.rs"), format!("// onda {wave}\nfn soma_presente_aqui() {{}}\n")).unwrap();
+            // O comentário acima da função vira a documentação dela no mapa,
+            // e a busca lê essa documentação: ele não repete palavra da
+            // tarefa, para a onda seguinte sair sem sugestão de arquivo.
+            std::fs::write(root.join("src/lib.rs"), format!("// versão {wave}\nfn soma_presente_aqui() {{}}\n")).unwrap();
             let body = json!({"wave": wave, "text": "A prova muda.", "files": ["src/lib.rs"],
                 "commit": summary, "proofs": [{"criterion": uncovered, "proof": proof}]});
             assert_eq!(returned(root, body)["ok"], json!(true));

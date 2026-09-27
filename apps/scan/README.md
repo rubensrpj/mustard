@@ -119,8 +119,14 @@ o arquivo fica intocado. O que mudou se decide pelo **blob do git** de cada
 arquivo: o do índice, para o arquivo comitado e intocado, ou calculado sobre o
 conteúdo de agora, quando o arquivo está sujo ou é novo. O arquivo cujo blob é
 o mesmo que a passada anterior leu é tomado do mapa como estava, em qualquer
-ramo, comitado ou não. Fora do git não há blob, e tudo se relê; tudo se relê
-também quando muda um arquivo que muda a leitura de todos os outros. Um mapa
+ramo, comitado ou não. Com o mesmo commit, sem arquivo a reler e sem arquivo
+de código ou manifesto que entrou ou saiu — só um `README.md` editado, um
+`artisan` novo —, o scan nem abre o mapa inteiro: lê só o estado, caminha pela
+pasta sem abrir arquivo e regrava só o censo, com a marca da listagem nova, as
+pastas de build e as pilhas refeitas pelos caminhos de agora; as declarações,
+o grafo e a história ficam como estavam. Fora do git não há blob, e tudo se
+relê; tudo se relê também quando muda um arquivo que muda a leitura de todos
+os outros. Um mapa
 gravado por um scan compilado de outras fontes (outro motor, outras consultas
 ou outras tabelas de dados) é relido inteiro. `--all` relê tudo.
 
@@ -243,14 +249,20 @@ as tabelas dele e a marca do scan que o gravou:
   de teste;
 - **decls** — cada declaração, com o arquivo, o tipo, o nome, as linhas, a
   assinatura, a documentação, os supertipos, o que ela chama, quem a usa, o
-  dono, o contrato, os membros (num tipo) e as implementações (num método);
+  dono, o contrato, os membros (num tipo) e as implementações (num método); e
+  o índice da busca do mapa, refeito sempre que os arquivos ou as declarações
+  se regravam: as palavras de cada declaração e de cada arquivo, campo a
+  campo, preparadas nas línguas do `mustard.json` da raiz lida, e os nomes das
+  declarações para a busca por pedaço do nome. O arquivo escrito por máquina
+  fica fora dele;
 - **graph** — de cada arquivo, o que ele importa do projeto, os testes que o
   cobrem, as chamadas e as citações; e os números do grafo: o tamanho, os mais
   importados, as camadas e os pontos de registro;
 - **history** — os commits, cada um com a data e os arquivos que criou e mudou,
   e a tabela dos caminhos que eles citam.
 
-`mustard-rt run map dump` mostra o banco tabela por tabela. O comando `facts`
+`mustard-rt run map dump` mostra o banco tabela por tabela, fora o índice da
+busca, que se refaz do mapa. O comando `facts`
 projeta do mapa só o que o consumidor precisa (os subprojetos e os nomes
 declarados), para que ninguém leia o esquema do banco por conta própria.
 

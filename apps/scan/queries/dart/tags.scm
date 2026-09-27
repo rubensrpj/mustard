@@ -46,8 +46,8 @@
 ; wrapped — in `method_signature` (class and extension bodies) or in
 ; `declaration` (a mixin's abstract member). A node has one parent, so the three
 ; patterns are mutually exclusive and the recorded kind never depends on match
-; order. Before this, every library function was recorded as a member and the
-; miner never saw it.
+; order. Before this, every library function was recorded as a member, and the
+; map never listed it as a function.
 (program (function_signature name: (identifier) @name) @definition.function)
 (method_signature (function_signature name: (identifier) @name) @definition.method)
 (declaration (function_signature name: (identifier) @name) @definition.method)

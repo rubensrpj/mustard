@@ -18,6 +18,7 @@
 //! onda. A skill cujo arquivo citado mudou no git depois do arquivo dela sai
 //! marcada como a revisar.
 
+use std::cell::OnceCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -25,9 +26,10 @@ use serde_json::Value;
 
 use crate::domain::lessons::{in_scope, related_to_tasks, serving_wave, Scope};
 use crate::domain::normalize::Languages;
-use crate::domain::project_map::{check_skill, cited_paths, file_history, tests_for, MapRefusal, ProjectMap};
+use crate::domain::project_map::{check_skill, cited_paths, file_history, tests_for, History, MapRefusal, ProjectMap};
 use crate::domain::spec_events::{Block, BlockQuery, SpecEvent, SpecLog};
 use crate::domain::wave_prompt::{self, tasks_text, wave_files, Choice, Execution, Material, Skill, WaveCopy};
+use crate::io::project_map::{MapReader, Need};
 use crate::platform::i18n::Locale;
 
 /// O pedido de uma onda, como o disco o entrega.
@@ -70,16 +72,29 @@ pub struct Flight {
 /// que estão fora em `flight`.
 #[must_use]
 pub fn prompts(root: &Path, spec: &str, log: &SpecLog, lang: Locale, flight: &Flight) -> Vec<WavePrompt> {
+    prompts_reading(root, spec, log, lang, flight, &|need| crate::io::project_map::read_for(root, need))
+}
+
+/// Os pedidos de [`prompts`], com o mapa do projeto lido por `read`, cada
+/// parte pela pergunta dela.
+fn prompts_reading(
+    root: &Path,
+    spec: &str,
+    log: &SpecLog,
+    lang: Locale,
+    flight: &Flight,
+    read: &MapReader<'_>,
+) -> Vec<WavePrompt> {
     let bank = lesson_bank(root);
-    let map = crate::io::project_map::read(root).ok();
     let base = project_execution(root);
     let languages = Languages::of_project(root);
+    let map = MapParts { read, paths: OnceCell::new(), summary: OnceCell::new() };
     let context = Context {
         root,
         spec,
         log,
         bank: bank.as_ref(),
-        map: map.as_ref(),
+        map: &map,
         base: &base,
         flight,
         lang,
@@ -392,13 +407,45 @@ pub fn request_items<'a>(
     RequestItems { items, lessons }
 }
 
+/// O mapa do projeto como o pedido o lê: cada parte pela pergunta dela, sem
+/// o mapa inteiro. Os caminhos e a história se leem uma vez só por montagem;
+/// as declarações e os testes, a cada arquivo que pede. Um mapa que falta ou
+/// não se entende responde nada, como se não houvesse mapa.
+struct MapParts<'a> {
+    read: &'a MapReader<'a>,
+    paths: OnceCell<Option<ProjectMap>>,
+    summary: OnceCell<Option<ProjectMap>>,
+}
+
+impl MapParts<'_> {
+    /// O caminho de cada arquivo do mapa, na ordem dele.
+    fn paths(&self) -> Option<&ProjectMap> {
+        self.paths.get_or_init(|| (self.read)(Need::Paths).ok()).as_ref()
+    }
+
+    /// A história do git que o mapa guarda.
+    fn history(&self) -> Option<&History> {
+        self.summary.get_or_init(|| (self.read)(Need::Summary).ok()).as_ref().map(|map| &map.history)
+    }
+
+    /// As declarações chamadas `name` no arquivo `file`, com ele.
+    fn declarations(&self, file: &str, name: &str) -> Option<ProjectMap> {
+        (self.read)(Need::Declarations { file: Some(file), name }).ok()
+    }
+
+    /// O arquivo `file` com os testes que o cobrem.
+    fn tests(&self, file: &str) -> Option<ProjectMap> {
+        (self.read)(Need::Tests(file)).ok()
+    }
+}
+
 /// O que é igual para o pedido de todas as ondas de uma montagem.
 struct Context<'a> {
     root: &'a Path,
     spec: &'a str,
     log: &'a SpecLog,
     bank: Option<&'a SpecLog>,
-    map: Option<&'a ProjectMap>,
+    map: &'a MapParts<'a>,
     /// Os comandos do projeto.
     base: &'a Execution,
     flight: &'a Flight,
@@ -469,7 +516,7 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
             .unwrap_or_default()
             .iter()
             .filter_map(Value::as_str)
-            .filter(|file| cited_exists(root, file));
+            .filter(|file| cited_exists(root, map, file));
         task_reads.entry(task.id).or_default().extend(must_read.map(str::to_string));
     }
     for chosen in choice.as_ref().into_iter().flat_map(|c| c.tasks.iter()).filter(|t| !t.files.is_empty()) {
@@ -500,7 +547,7 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
             bad_skills.push((name.clone(), MapRefusal::SkillMissingPaths { paths: vec![skill_file(name)] }));
             continue;
         };
-        if let Err(refusal) = check_skill(&text, |cited| cited_exists(root, cited)) {
+        if let Err(refusal) = check_skill(&text, |cited| cited_exists(root, map, cited)) {
             bad_skills.push((name.clone(), refusal));
             continue;
         }
@@ -619,13 +666,12 @@ fn when_to_use(text: &str) -> String {
 /// existe? A conferência olha só a parte antes do `#`: a leitura obrigatória
 /// aceita `caminho#função`, e a função não é um arquivo. Pode citar só o fim
 /// do caminho, então a busca é pelo que o projeto tem.
-fn cited_exists(root: &Path, cited: &str) -> bool {
+fn cited_exists(root: &Path, map: &MapParts<'_>, cited: &str) -> bool {
     let cited = cited.split('#').next().unwrap_or(cited);
     if root.join(cited).exists() {
         return true;
     }
-    crate::io::project_map::read(root)
-        .is_ok_and(|map| map.modules.iter().any(|m| m.path.ends_with(cited)))
+    map.paths().is_some_and(|map| map.modules.iter().any(|m| m.path.ends_with(cited)))
 }
 
 /// Um arquivo de leitura obrigatória `caminho#função`, com as linhas atuais
@@ -636,7 +682,7 @@ fn cited_exists(root: &Path, cited: &str) -> bool {
 /// mudança: [`wave_prompt::WavePrompt::text`] então só manda ler a função
 /// pelo nome, como antes. Um caminho sozinho (sem `#`) também volta sem
 /// mudança.
-fn with_current_lines(map: Option<&ProjectMap>, file: String) -> String {
+fn with_current_lines(map: &MapParts<'_>, file: String) -> String {
     let Some((path, name)) = file.split_once('#') else { return file };
     if path.is_empty() || name.is_empty() {
         return file;
@@ -650,8 +696,7 @@ fn with_current_lines(map: Option<&ProjectMap>, file: String) -> String {
 /// citado pelas tarefas `tasks`, pelo caminho como a tarefa o escreve. Sem
 /// mapa, ou para um arquivo que ele não conhece ou sem teste externo
 /// conhecido, o arquivo fica de fora.
-fn task_file_tests(map: Option<&ProjectMap>, tasks: &[&SpecEvent]) -> BTreeMap<String, Vec<String>> {
-    let Some(map) = map else { return BTreeMap::new() };
+fn task_file_tests(map: &MapParts<'_>, tasks: &[&SpecEvent]) -> BTreeMap<String, Vec<String>> {
     let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for task in tasks {
         let paths = task.fields.get("files").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
@@ -659,7 +704,7 @@ fn task_file_tests(map: Option<&ProjectMap>, tasks: &[&SpecEvent]) -> BTreeMap<S
             if out.contains_key(path) {
                 continue;
             }
-            if let Ok(coverage) = tests_for(map, path)
+            if let Some(coverage) = map.tests(path).and_then(|map| tests_for(&map, path).ok())
                 && !coverage.files.is_empty()
             {
                 out.insert(path.to_string(), coverage.files);
@@ -670,11 +715,14 @@ fn task_file_tests(map: Option<&ProjectMap>, tasks: &[&SpecEvent]) -> BTreeMap<S
 }
 
 /// As faixas de linha (começo, fim) de cada declaração de nome `name` no
-/// módulo `path` — mais de uma quando o nome se repete no arquivo. `None`
-/// quando o mapa não tem o módulo, ou quando nenhuma ocorrência tem a linha
-/// final resolvida.
-fn decl_lines(map: Option<&ProjectMap>, path: &str, name: &str) -> Option<Vec<(u64, u64)>> {
-    let module = map?.modules.iter().find(|m| m.path == path || m.path.ends_with(path))?;
+/// módulo `path` — mais de uma quando o nome se repete no arquivo. O módulo é
+/// o primeiro do mapa com esse caminho, ou terminado nele. `None` quando o
+/// mapa não tem o módulo, ou quando nenhuma ocorrência tem a linha final
+/// resolvida.
+fn decl_lines(map: &MapParts<'_>, path: &str, name: &str) -> Option<Vec<(u64, u64)>> {
+    let found = map.paths()?.modules.iter().find(|m| m.path == path || m.path.ends_with(path))?.path.clone();
+    let named = map.declarations(&found, name)?;
+    let module = named.modules.iter().find(|m| m.path == found)?;
     let ranges: Vec<(u64, u64)> =
         module.declarations.iter().filter(|d| d.name == name && d.end_line > 0).map(|d| (d.line, d.end_line)).collect();
     (!ranges.is_empty()).then_some(ranges)
@@ -687,17 +735,17 @@ fn decl_lines(map: Option<&ProjectMap>, path: &str, name: &str) -> Option<Vec<(u
 /// só o fim do caminho, como a conferência aceita; a pasta citada não conta,
 /// porque não tem commit próprio. Sem mapa, ou sem a data do arquivo da
 /// skill, não há marca.
-fn cited_changed_after(map: Option<&ProjectMap>, text: &str, skill: &Path) -> bool {
-    let Some(map) = map else { return false };
+fn cited_changed_after(map: &MapParts<'_>, text: &str, skill: &Path) -> bool {
+    let Some(history) = map.history() else { return false };
     let Some(written) = modified_at(skill) else { return false };
     cited_paths(text)
         .iter()
         .filter(|cited| !cited.ends_with('/'))
         .flat_map(|cited| {
             let tail = format!("/{cited}");
-            map.history.paths.iter().filter(move |path| *path == cited || path.ends_with(&tail))
+            history.paths.iter().filter(move |path| *path == cited || path.ends_with(&tail))
         })
-        .any(|path| file_history(&map.history, path).is_some_and(|h| h.last_at > written))
+        .any(|path| file_history(history, path).is_some_and(|h| h.last_at > written))
 }
 
 /// A data da última escrita de um arquivo, em segundos desde 1970, a mesma
@@ -1559,6 +1607,82 @@ mod tests {
             );
         }
         prompts(root, "teste", &plan_log(), Locale::PtBr, &Flight::default()).remove(0)
+    }
+
+    /// Um projeto em que o pedido da onda usa cada parte do mapa: a leitura
+    /// obrigatória e a skill citam caminhos só pelo fim, que só o mapa acha;
+    /// a função citada tem as linhas no mapa, num arquivo cujo fim também
+    /// casa com outro, que vem antes e não a declara; o arquivo da tarefa tem
+    /// teste conhecido; e o arquivo que a skill cita mudou depois dela. Com
+    /// `broken`, cada arquivo guarda um texto onde o mapa guarda a lista das
+    /// importações, coluna que o pedido não lê. Devolve a pasta e o plano.
+    fn project_using_every_map_part(broken: bool) -> (tempfile::TempDir, SpecLog) {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let written: i64 = 1_789_000_000;
+        write_skill(root, "apps/rt", "somar", "# O molde\n\nExemplo usado: `src/exemplo.rs`.\n");
+        let skill = root.join("apps/rt/.claude/skills/somar/SKILL.md");
+        let at = std::time::UNIX_EPOCH + std::time::Duration::from_secs(u64::try_from(written).unwrap());
+        std::fs::File::options().write(true).open(&skill).unwrap().set_modified(at).unwrap();
+        let deps = if broken { json!("um texto no lugar da lista") } else { json!(["apps/rt/src/exemplo.rs"]) };
+        write_map(
+            root,
+            &json!({
+                "modules": [
+                    {"path": "lib/src/a.rs", "declarations": [{"kind": "function", "name": "outra", "line": 1, "end_line": 2}]},
+                    {"path": "apps/rt/src/a.rs", "tests": ["apps/rt/tests/a_test.rs"], "deps": deps,
+                     "declarations": [{"kind": "function", "name": "soma", "line": 3, "end_line": 5},
+                                      {"kind": "function", "name": "soma", "line": 9, "end_line": 12}]},
+                    {"path": "apps/rt/src/exemplo.rs", "deps": deps},
+                    {"path": "apps/rt/tests/a_test.rs", "deps": ["apps/rt/src/a.rs"]}
+                ],
+                "history": {
+                    "paths": ["apps/rt/src/a.rs", "apps/rt/src/exemplo.rs"],
+                    "commits": [{"id": "abc1234", "at": written - 7_200, "changed": [0]}, {"id": "def5678", "at": written + 3_600, "changed": [1]}]
+                }
+            }),
+        );
+        let log = log_of(&[
+            ("wave", json!({"n": 1, "text": "A onda", "criteria": [], "done_when": "passa"})),
+            ("task", json!({"wave": 1, "text": "Somar", "skill": "somar", "files": [{"path": "apps/rt/src/a.rs"}],
+                            "must_read": ["rt/src/a.rs#soma", "src/a.rs#soma", "lib/src/a.rs#outra"]})),
+        ]);
+        (dir, log)
+    }
+
+    /// O pedido da onda lê cada parte do mapa pela pergunta dela e sai igual,
+    /// byte a byte, ao que saía com o mapa inteiro lido.
+    #[test]
+    fn the_wave_request_reading_only_its_map_parts_is_the_one_the_whole_map_gave() {
+        let (dir, log) = project_using_every_map_part(false);
+        let root = dir.path();
+        let by_question = prompts(root, "teste", &log, Locale::PtBr, &Flight::default());
+        let whole = prompts_reading(root, "teste", &log, Locale::PtBr, &Flight::default(), &|_| {
+            crate::io::project_map::read(root)
+        });
+        assert_eq!(by_question, whole);
+        let text = &by_question[0].text;
+        assert!(text.contains("leia só as linhas 3-5, 9-12 de `soma` em `rt/src/a.rs`"), "{text}");
+        assert!(text.contains("leia só `soma` em `src/a.rs`"), "the first file ending in the path wins: {text}");
+        assert!(text.contains("quem testa `apps/rt/src/a.rs`: `apps/rt/tests/a_test.rs`"), "{text}");
+        assert_eq!(by_question[0].stale_skills, ["somar"]);
+    }
+
+    /// Um mapa em que uma coluna que o pedido não lê guarda o tipo errado: a
+    /// leitura do mapa inteiro o recusa, e o pedido, que lê só os caminhos,
+    /// as declarações com o nome, os testes do arquivo e a história, ainda
+    /// traz as linhas, os testes, a skill e a marca de revisar.
+    #[test]
+    fn the_wave_request_reads_its_map_parts_even_when_a_column_it_does_not_read_is_broken() {
+        let (dir, log) = project_using_every_map_part(true);
+        let root = dir.path();
+        assert!(crate::io::project_map::read(root).is_err(), "the whole map refuses the broken column");
+        let built = prompts(root, "teste", &log, Locale::PtBr, &Flight::default());
+        let text = &built[0].text;
+        assert!(built[0].bad_skills.is_empty(), "the map finds the path the skill cites: {:?}", built[0].bad_skills);
+        assert!(text.contains("leia só as linhas 3-5, 9-12 de `soma` em `rt/src/a.rs`"), "{text}");
+        assert!(text.contains("quem testa `apps/rt/src/a.rs`: `apps/rt/tests/a_test.rs`"), "{text}");
+        assert_eq!(built[0].stale_skills, ["somar"]);
     }
 
     /// O pedido marca a skill como a revisar pelo que diz a linha dela: `true`

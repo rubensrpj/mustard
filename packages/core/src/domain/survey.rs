@@ -37,7 +37,8 @@ use serde_json::{Map, Value};
 
 use crate::domain::citation::cited_names;
 use crate::domain::lessons;
-use crate::domain::project_map::{importers, ProjectMap};
+use crate::domain::project_map::importers;
+use crate::io::project_map::{MapReader, Need};
 use crate::domain::normalize::{Languages, Normalizer};
 use crate::domain::search::{shared_words, SearchIndex, TOP};
 use crate::domain::spec_events::{search_field, Refusal, SpecEvent, SpecLog, WORK_KINDS};
@@ -830,8 +831,9 @@ pub struct Sources<'a> {
     pub index: &'a [IndexLine],
     /// O arquivo de eventos de cada spec do projeto.
     pub prior: &'a [(String, SpecLog)],
-    /// O mapa do projeto, quando existe.
-    pub map: Option<&'a ProjectMap>,
+    /// Como o mapa do projeto se lê, quando há um: cada pergunta lê só as
+    /// tabelas dela, e só a lacuna de quem depende pergunta.
+    pub map: Option<&'a MapReader<'a>>,
     /// O levantamento condensado: todos os pontos num bloco só.
     pub condensed: bool,
     /// O idioma dos rótulos.
@@ -873,7 +875,7 @@ pub fn build(sources: &Sources<'_>) -> Vec<Proposed> {
 /// refatoração, onde cada nome citado no objetivo é declarado e quem importa
 /// esse arquivo.
 fn map_facts(key: GapKey, sources: &Sources<'_>) -> Vec<Fact> {
-    let Some(map) = sources.map.filter(|_| key == GapKey::Dependents) else {
+    let Some(read) = sources.map.filter(|_| key == GapKey::Dependents) else {
         return Vec::new();
     };
     let mut facts: Vec<Fact> = Vec::new();
@@ -883,7 +885,8 @@ fn map_facts(key: GapKey, sources: &Sources<'_>) -> Vec<Fact> {
         }
     };
     for name in cited_names(sources.goal).into_iter().take(MAP_NAMES) {
-        for (path, line) in map.declared(&name).into_iter().take(MAP_NAMES) {
+        let declared = read(Need::Declarations { file: None, name: &name }).map(|map| map.declared(&name));
+        for (path, line) in declared.unwrap_or_default().into_iter().take(MAP_NAMES) {
             push(Fact {
                 text: translate("survey.fact_declared", sources.lang)
                     .replace("{name}", &name)
@@ -891,7 +894,7 @@ fn map_facts(key: GapKey, sources: &Sources<'_>) -> Vec<Fact> {
                     .replace("{line}", &line.to_string()),
                 source: format!("{path}:{line}"),
             });
-            let users = importers(map, &path).unwrap_or_default();
+            let users = read(Need::Importers(&path)).and_then(|map| importers(&map, &path)).unwrap_or_default();
             if users.is_empty() {
                 continue;
             }
@@ -1067,7 +1070,9 @@ fn doc_pos(id: u64) -> usize {
 mod tests {
     use super::*;
     use crate::domain::spec_events::{normalize, parse_log, render_line, stamp};
+    use crate::domain::project_map::ProjectMap;
     use crate::domain::spec_index::goal_of;
+    use crate::io::project_map as store;
     use serde_json::json;
 
     fn obj(value: Value) -> Map<String, Value> {
@@ -1415,7 +1420,8 @@ mod tests {
         .unwrap();
         let mut given = sources(&["refactor"], None, &[], &[]);
         given.goal = "Tirar o `record_birth` do fluxo.";
-        given.map = Some(&map);
+        let whole = |_: Need<'_>| Ok(map.clone());
+        given.map = Some(&whole);
         let list = build(&given);
         let dependents = list.iter().find(|p| p.key == Some(GapKey::Dependents)).unwrap();
         assert_eq!(
@@ -1429,6 +1435,63 @@ mod tests {
             ]
         );
         assert!(list.iter().filter(|p| p.key != Some(GapKey::Dependents)).all(|p| p.facts.is_empty()));
+    }
+
+    /// Um projeto com o nome do objetivo declarado em dois arquivos, cada um
+    /// importado por outros, e um arquivo que o declara sem ninguém que o
+    /// importe.
+    const DEPENDENTS_MAP: &str = r#"{"modules": [
+        {"path": "src/a.rs", "declarations": [{"kind": "function", "name": "record_birth", "line": 3}], "tests": ["tests/a.rs"]},
+        {"path": "src/b.rs", "deps": ["src/a.rs", "src/z.rs"]},
+        {"path": "src/c.rs", "deps": ["src/a.rs"]},
+        {"path": "src/z.rs", "declarations": [{"kind": "function", "name": "record_birth", "line": 9}]},
+        {"path": "src/d.rs", "declarations": [{"kind": "struct", "name": "Birth", "line": 1}]}
+    ]}"#;
+
+    /// A lacuna de quem depende, com o mapa gravado no disco e lido por
+    /// `read`.
+    fn dependents_facts(read: &MapReader<'_>) -> Vec<Fact> {
+        let mut given = sources(&["refactor"], None, &[], &[]);
+        given.goal = "Tirar o `record_birth` e o `Birth` do fluxo.";
+        given.map = Some(read);
+        let list = build(&given);
+        list.iter().find(|p| p.key == Some(GapKey::Dependents)).unwrap().facts.clone()
+    }
+
+    /// O levantamento lê só as declarações com o nome e quem importa cada
+    /// arquivo, e dá os mesmos fatos que dava com o mapa inteiro lido.
+    #[test]
+    fn the_survey_reading_only_its_tables_gives_the_facts_the_whole_map_gave() {
+        let dir = tempfile::tempdir().unwrap();
+        store::write_text(dir.path(), DEPENDENTS_MAP).unwrap();
+        let by_question = dependents_facts(&|need| store::read_for(dir.path(), need));
+        let whole = dependents_facts(&|_| store::read(dir.path()));
+        assert_eq!(by_question, whole);
+        assert_eq!(by_question.len(), 5, "{by_question:?}");
+        let empty = tempfile::tempdir().unwrap();
+        assert_eq!(dependents_facts(&|need| store::read_for(empty.path(), need)), Vec::new());
+    }
+
+    /// Um mapa em que uma coluna que o levantamento não lê guarda o tipo
+    /// errado: a leitura do mapa inteiro o recusa, e o levantamento, que lê
+    /// só as declarações e quem importa, ainda dá os fatos.
+    #[test]
+    fn the_survey_answers_even_when_a_column_it_does_not_read_is_broken() {
+        let dir = tempfile::tempdir().unwrap();
+        store::write_text(dir.path(), &DEPENDENTS_MAP.replace(r#""tests": ["tests/a.rs"]"#, r#""tests": "um texto""#)).unwrap();
+        assert!(store::read(dir.path()).is_err(), "the whole map refuses the broken column");
+        let facts = dependents_facts(&|need| store::read_for(dir.path(), need));
+        let sources: Vec<&str> = facts.iter().map(|fact| fact.source.as_str()).collect();
+        assert_eq!(
+            sources,
+            [
+                "src/a.rs:3",
+                "mustard-rt run map importers --file src/a.rs",
+                "src/z.rs:9",
+                "mustard-rt run map importers --file src/z.rs",
+                "src/d.rs:1",
+            ]
+        );
     }
 
     /// Um ponto gravado registra o item da lista pela lacuna, com o rótulo em

@@ -368,13 +368,17 @@ mod tests {
     /// cortam a mesma pergunta nas mesmas formas: lado a lado, sobre os
     /// mesmos dois textos, cada pergunta acha o mesmo texto nas quatro, e a
     /// que não casa, ou só traz palavra de ligação, não acha nada em nenhuma.
+    /// O mapa é gravado e buscado pelo índice de palavras dele, como a busca
+    /// do mapa faz.
     #[test]
     fn the_four_searches_cut_the_same_question_into_the_same_forms() {
         use std::collections::BTreeMap;
 
         use serde_json::{json, Value};
 
-        use crate::domain::project_map::{self, MapDecl, MapModule, ProjectMap};
+        use crate::domain::project_map::{MapDecl, MapModule, ProjectMap};
+        use crate::domain::search::TOP;
+        use crate::io::{map_search, project_map as store};
         use crate::domain::spec_events::{found_by, normalize, parse_log, render_line, search_field, stamp};
 
         let languages = Languages::new(["pt-BR", "en-US"]);
@@ -397,6 +401,8 @@ mod tests {
                 .collect(),
             ..ProjectMap::default()
         };
+        let project = tempfile::tempdir().unwrap();
+        store::write(project.path(), &map).unwrap();
         let skills: Vec<String> = texts.iter().map(|text| search_field(Some(text), &[])).collect();
 
         let sorted = |mut ids: Vec<u64>| {
@@ -415,7 +421,7 @@ mod tests {
         ] {
             let spec = found_by(log.events.iter().collect(), question, &BTreeMap::new(), &languages);
             let spec = sorted(spec.iter().map(|e| e.id).collect());
-            let from_map = project_map::search(&map, question, &languages);
+            let from_map = map_search::search(project.path(), question, &languages, TOP).unwrap();
             let from_map = sorted(from_map.iter().map(|f| f.path.trim_end_matches(".rs").parse().unwrap()).collect());
             let lessons = crate::domain::lessons::matching_among(&log.events.iter().collect::<Vec<_>>(), question, &languages);
             let lessons = sorted(lessons.iter().map(|hit| hit.id).collect());

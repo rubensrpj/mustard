@@ -1,5 +1,5 @@
-//! grain — learn the grain of a codebase from what recurs, and expose it as a
-//! rich, language-agnostic model. Framework- and language-agnostic.
+//! grain — map a codebase (files, declarations, links, history and stacks)
+//! into a rich, language-agnostic model. Framework- and language-agnostic.
 //!
 //! Pipeline: ingest -> extract -> graph -> condense. Fully deterministic
 //! and blind to any framework/language. `scan` writes the model into the
@@ -22,12 +22,17 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use model::{Module, ProjectModel};
 use mustard_core::domain::ast::is_test_path;
+use mustard_core::domain::normalize::Languages;
 use mustard_core::io::project_map::{self as store, Listing};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
-#[command(name = "grain", version, about = "Mine a codebase's recurring conventions into a language-agnostic model.")]
+#[command(
+    name = "grain",
+    version,
+    about = "Map a codebase (files, declarations, links, history and stacks) into a language-agnostic model."
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -92,10 +97,19 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Scan { path, out, all, json } => {
-            let previous: Option<ProjectModel> = if all { None } else { ProjectModel::load(&out) };
-            let analysis = analyze(&path, previous.as_ref())?;
+            let analysis = match census_pass(&path, &out, all) {
+                Some(analysis) => analysis,
+                None => {
+                    let previous: Option<ProjectModel> = if all { None } else { ProjectModel::load(&out) };
+                    analyze(&path, previous.as_ref())?
+                }
+            };
             // Nothing changed → the file is left alone (same bytes, same date).
-            let written = analysis.model.save(&out, refresh::FORMAT)?;
+            let written = if analysis.census_only {
+                analysis.model.save_census(&out, refresh::FORMAT)?
+            } else {
+                analysis.model.save(&out, refresh::FORMAT, &Languages::of_project(&path))?
+            };
             drop_legacy_map(&out)?;
             if json {
                 let report = serde_json::json!({
@@ -107,7 +121,13 @@ fn main() -> Result<()> {
                 });
                 println!("{report}");
             } else {
-                print_summary(&analysis.model);
+                // O modelo da passada que só refez o censo não traz os
+                // arquivos inteiros: o resumo lê o mapa que ela gravou.
+                if analysis.census_only {
+                    print_summary(&ProjectModel::read(&out)?);
+                } else {
+                    print_summary(&analysis.model);
+                }
                 if written {
                     println!("\nMap written to {}", out.display());
                 } else {
@@ -142,6 +162,41 @@ struct Analysis {
     read: Vec<String>,
     /// Every file was read (no usable previous model).
     full: bool,
+    /// A passada só refez o censo: o modelo traz o censo e, de cada arquivo,
+    /// o caminho, o blob e os sinais de código, e só o censo se grava.
+    census_only: bool,
+}
+
+/// A passada sem arquivo a reler, quando é o caso: o mapa em `out` é desta
+/// versão do scan e do mesmo commit, nenhum arquivo que ele guarda mudou ou
+/// saiu, e não entrou arquivo de código nem manifesto. Ela lê do mapa só o
+/// estado, caminha pela pasta sem abrir arquivo e refaz o que depende dos
+/// caminhos: a marca da listagem, as pastas de compilação e as pilhas do
+/// projeto e de cada subprojeto, pela mesma conta da leitura inteira. As
+/// declarações, o grafo e a história ficam como estão. `None` com `all`, ou
+/// quando há o que reler.
+fn census_pass(root: &Path, out: &Path, all: bool) -> Option<Analysis> {
+    if all {
+        return None;
+    }
+    let mut model = ProjectModel::load_state(out)?;
+    let listing = store::listing(root)?;
+    if !refresh::nothing_to_read(root, &model, &listing) {
+        return None;
+    }
+    let walk = ingest::walk(root);
+    if !ingest::same_sources(&walk.paths, &model) {
+        return None;
+    }
+    let (detected_stacks, projects) = stacks(&model.manifests, &walk.paths, &model.modules);
+    let manifest_paths: Vec<&str> = model.manifests.iter().map(|m| m.path.as_str()).collect();
+    let inputs = refresh::inputs(&listing, &manifest_paths, &model.state.non_utf8);
+    model.state.inputs = inputs;
+    model.state.listing = listing.digest();
+    model.detected_stacks = detected_stacks;
+    model.projects = projects;
+    model.coverage.skipped_build_dirs = walk.skipped_build_dirs;
+    Some(Analysis { model, read: Vec::new(), full: false, census_only: true })
 }
 
 /// The code-signature evidence of some modules, as the stack inference takes
@@ -198,9 +253,9 @@ fn read_modules(root: &Path, reuse: Option<&ingest::Reuse>, listing: Option<&Lis
         ingest::Walked::Fresh(sf) => {
             let extracted = analyzers.get(sf.language.as_str()).map(|a| a.extract(&sf.content)).unwrap_or_default();
             // Machine-written class (generated/vendored/lockfile/minified) —
-            // additive provenance on the module. The model keeps the module
-            // fully visible to the miner; the map leaves it out of its search
-            // and of its examples.
+            // additive provenance on the module. The map keeps the module —
+            // its file, its place in the graph and its declarations — and
+            // leaves it out of its search and of its examples.
             let (file_class, marker) = classify::classify(&sf.rel_path, &sf.content, &overrides)
                 .map(|c| (c.class, c.marker))
                 .unwrap_or_default();
@@ -274,7 +329,6 @@ fn read_modules(root: &Path, reuse: Option<&ingest::Reuse>, listing: Option<&Lis
 /// model a pass reading every file would give.
 fn analyze(root: &Path, previous: Option<&ProjectModel>) -> Result<Analysis> {
     use mustard_core::domain::project_map::History;
-    use mustard_core::domain::vocabulary::stacks::infer_stacks;
 
     let listing = store::listing(root);
     let plan = refresh::plan(root, previous, listing.as_ref());
@@ -322,28 +376,7 @@ fn analyze(root: &Path, previous: Option<&ProjectModel>) -> Result<Analysis> {
     };
     testmap::assign(&mut modules, &history);
 
-    // Stack inference: the three evidence classes — parsed dependency names,
-    // file paths and the code signatures found in the sources. Which stacks
-    // exist and what identifies them is DATA in mustard-core's registry.
-    // Evidence from a test file — under a conventional test/fixture tree or
-    // named as a test — is discounted from all three: a committed fixture of
-    // another stack describes what the project tests, not what it is. The
-    // rule is the core's `is_test_path`, the one the whole scan reads. Paths
-    // are relative to the SCANNED ROOT, so a fixture scanned directly as the
-    // root carries no test segment and is not discounted.
-    let evidence_deps: Vec<String> = ing
-        .manifests
-        .iter()
-        .filter(|m| !is_test_path(&m.path))
-        .flat_map(|m| m.dependencies.iter().cloned())
-        .collect();
-    let evidence_paths: Vec<String> =
-        ing.walk_paths.iter().filter(|p| !is_test_path(p)).cloned().collect();
-    let evidence_code = code_evidence(modules.iter().filter(|m| !is_test_path(&m.path)));
-    let detected_stacks = infer_stacks(&evidence_deps, &evidence_paths, &evidence_code);
-
-    let mut projects = build_projects(&ing.manifests, &modules);
-    infer_unit_stacks(&mut projects, &ing.manifests, &ing.walk_paths, &modules);
+    let (detected_stacks, projects) = stacks(&ing.manifests, &ing.walk_paths, &modules);
 
     // What the next pass needs to read only what changed: this commit, the
     // mark of what git lists now and the blob of each file that decides a
@@ -374,7 +407,41 @@ fn analyze(root: &Path, previous: Option<&ProjectModel>) -> Result<Analysis> {
         },
         read: ing.read,
         full,
+        census_only: false,
     })
+}
+
+/// As pilhas do projeto e os subprojetos, cada um com as pilhas dele: a
+/// mesma conta na passada que lê os arquivos e na que só refaz o censo.
+///
+/// Stack inference: the three evidence classes — parsed dependency names of
+/// `manifests`, the file paths `walk_paths` and the code signatures the
+/// `modules` carry. Which stacks exist and what identifies them is DATA in
+/// mustard-core's registry. Evidence from a test file — under a conventional
+/// test/fixture tree or named as a test — is discounted from all three: a
+/// committed fixture of another stack describes what the project tests, not
+/// what it is. The rule is the core's `is_test_path`, the one the whole scan
+/// reads. Paths are relative to the SCANNED ROOT, so a fixture scanned
+/// directly as the root carries no test segment and is not discounted.
+fn stacks(
+    manifests: &[model::Manifest],
+    walk_paths: &[String],
+    modules: &[Module],
+) -> (Vec<mustard_core::domain::vocabulary::stacks::StackDetection>, Vec<model::ProjectUnit>) {
+    use mustard_core::domain::vocabulary::stacks::infer_stacks;
+
+    let evidence_deps: Vec<String> = manifests
+        .iter()
+        .filter(|m| !is_test_path(&m.path))
+        .flat_map(|m| m.dependencies.iter().cloned())
+        .collect();
+    let evidence_paths: Vec<String> = walk_paths.iter().filter(|p| !is_test_path(p)).cloned().collect();
+    let evidence_code = code_evidence(modules.iter().filter(|m| !is_test_path(&m.path)));
+    let detected_stacks = infer_stacks(&evidence_deps, &evidence_paths, &evidence_code);
+
+    let mut projects = build_projects(manifests, modules);
+    infer_unit_stacks(&mut projects, manifests, walk_paths, modules);
+    (detected_stacks, projects)
 }
 
 /// Map each project (one per manifest) to its directory and count the source

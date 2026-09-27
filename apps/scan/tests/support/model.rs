@@ -13,6 +13,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use mustard_core::domain::config::ProjectConfig;
+use mustard_core::domain::normalize::Languages;
 use mustard_core::io::project_map as store;
 use serde_json::Value;
 
@@ -54,4 +56,18 @@ pub fn write(dir: &Path, text: &str) -> PathBuf {
     let model = path_in(dir);
     store::write_text_at(&model, text).expect("grava o mapa");
     model
+}
+
+/// Grava de novo, pelo porto, o mapa da pasta `dir` mudado por `change`, com
+/// a marca que os blocos tinham: para a passada seguinte, ele segue sendo o
+/// mapa desta versão do scan. O índice de busca refeito junto sai nas línguas
+/// de um projeto sem configuração, como os projetos dos testes.
+pub fn edit_keeping_the_mark(dir: &Path, change: impl FnOnce(&mut Value)) {
+    let model = path_in(dir);
+    let stored = store::read_stored_at(&model).expect("o mapa foi gravado e se lê");
+    let mark = stored.marks.get(store::FILES.name()).cloned().unwrap_or_default();
+    assert!(!mark.is_empty() && stored.marks.values().all(|m| *m == mark), "{:?}", stored.marks);
+    let mut map: Value = serde_json::from_str(&stored.json).expect("o mapa é JSON");
+    change(&mut map);
+    store::save_at(&model, &map, &mark, &Languages::of(&ProjectConfig::default())).expect("grava o mapa");
 }

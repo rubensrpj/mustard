@@ -10,9 +10,9 @@
 //!
 //! The verdict feeds the model additively (`Module::file_class` +
 //! `Module::marker`). The model itself stays complete — like the test-file
-//! discount, classification never hides a module from the miner; the map
-//! reads the class to leave machine-written files out of its search and of
-//! its examples.
+//! discount, classification never hides a module: the map keeps its file, its
+//! place in the graph and its declarations, and reads the class only to leave
+//! machine-written files out of its search and of its examples.
 //!
 //! Tolerant like the rest of the crate: a catalog row that fails to compile
 //! is discarded individually (same contract as the .scm queries), unreadable

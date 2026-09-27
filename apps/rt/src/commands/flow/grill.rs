@@ -185,7 +185,7 @@ pub(crate) fn grill_for(opts: &GrillOpts, session: Option<&str>) -> Value {
         .map_or_else(|| ".claude/spec/lessons.ndjson".to_string(), |rel| rel.to_string_lossy().replace('\\', "/"));
     let index = spec_index::read(&project.root);
     let prior = spec_index::read_specs(&project.root);
-    let map = project_map::read(&project.root).ok();
+    let map = |need: project_map::Need<'_>| project_map::read_for(&project.root, need);
     let condensed = opts.condensed || survey::condensed(&log);
     let list = survey::build(&Sources {
         kinds: &kinds,
@@ -195,7 +195,7 @@ pub(crate) fn grill_for(opts: &GrillOpts, session: Option<&str>) -> Value {
         lessons_file: &lessons_file,
         index: &index,
         prior: &prior,
-        map: map.as_ref(),
+        map: Some(&map),
         condensed,
         lang,
         languages: &project.languages,
@@ -460,6 +460,55 @@ mod tests {
         assert!(warnings.iter().any(|w| w["hint"].as_str().unwrap_or_default().contains(&code)), "{report}");
         assert!(report.get("publish").is_none() && !report.to_string().contains("write publish"), "{report}");
         assert!(report.get("copy").is_none() && !report.to_string().contains("write copy"), "{report}");
+    }
+
+    /// Um mapa em que uma coluna que o levantamento não lê guarda o tipo
+    /// errado: a leitura do mapa inteiro o recusa, e a lacuna de quem
+    /// depende, na refatoração, ainda vem com onde o nome do objetivo é
+    /// declarado e quem importa o arquivo.
+    #[test]
+    fn the_dependents_gap_reads_its_map_parts_even_when_another_column_is_broken() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), b"{}").unwrap();
+        mustard_core::io::project_map::write_text(
+            root,
+            r#"{"modules": [
+                {"path": "src/a.rs", "tests": "um texto no lugar da lista",
+                 "declarations": [{"kind": "function", "name": "record_birth", "line": 3}]},
+                {"path": "src/b.rs", "deps": ["src/a.rs"]}]}"#,
+        )
+        .unwrap();
+        assert!(project_map::read(root).is_err(), "the whole map refuses the broken column");
+        assert_eq!(record_open(root, "x", "feature/x", "dev"), Ok(true));
+        let goal = "Tirar o `record_birth` do fluxo.";
+        let said = id_of(&write(root, Some("x"), "message", json!({"author": "user", "text": goal})));
+        // O objetivo como era gravado antes de a parte do usuário deixar de
+        // citar código: o nome entre crases, que o levantamento procura no
+        // mapa.
+        let path = store::spec_file(&store::spec_root(root), "x").expect("spec file");
+        let next = store::read(&path).expect("the spec").expect("the spec").events.iter().map(|e| e.id).max().unwrap_or(0) + 1;
+        let Value::Object(draft) = json!({"type": "context", "author": "assistant", "text": goal, "origin": said}) else {
+            unreachable!()
+        };
+        let line = mustard_core::domain::spec_events::render_line(&mustard_core::domain::spec_events::stamp(
+            draft,
+            next,
+            None,
+            "2026-09-01T10:00:00-03:00",
+        ));
+        let mut file = std::fs::OpenOptions::new().append(true).open(&path).expect("the spec file");
+        std::io::Write::write_all(&mut file, format!("{line}\n").as_bytes()).expect("the goal line");
+
+        let report = grill(root, "x", Some("refactor"), false);
+        let sources: Vec<&str> = report["points"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .flat_map(|point| point["facts"].as_array().into_iter().flatten())
+            .filter_map(|fact| fact["source"].as_str())
+            .collect();
+        assert_eq!(sources, ["src/a.rs:3", "mustard-rt run map importers --file src/a.rs"], "{report}");
     }
 
     /// O `grill` não escreve página nem prepara cópia: o levantamento não é

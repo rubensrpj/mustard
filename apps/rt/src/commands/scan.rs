@@ -152,7 +152,8 @@ fn review_lessons(root: &Path, model_path: Option<&Path>, result: &mut Value) {
     let home = mustard_core::io::spec_events::spec_root(root);
     let Some(path) = ClaudePaths::for_project(&home).ok().map(|paths| paths.lessons_path()) else { return };
     let Ok(Some(bank)) = mustard_core::io::lessons::read(&path) else { return };
-    let map: Option<ProjectMap> = model_path.and_then(|model| store::read_at(model).ok());
+    // Só os caminhos dos arquivos: é tudo o que a conferência das lições lê.
+    let map: Option<ProjectMap> = model_path.and_then(|model| store::read_for_at(model, store::Need::Paths).ok());
     let missing = map.as_ref().map_or_else(Vec::new, |map| {
         lessons::citing_missing_paths(&bank, |cited: &str, inside: Option<&str>| path_found(root, map, cited, inside))
     });
@@ -383,6 +384,40 @@ mod tests {
         assert_eq!(failed["lessons"]["missing_paths"], serde_json::json!([]), "sem o mapa, nada falta: {failed}");
     }
 
+    /// A ferramenta do scan que grava o mapa com uma coluna que a conferência
+    /// das lições não lê guardando o tipo errado: um texto onde cada arquivo
+    /// guarda a lista das importações.
+    fn mine_disk_with_a_broken_column(root: &Path, model: &Path) -> mustard_core::platform::error::Result<ScanReport> {
+        mine_disk(root, model)?;
+        let mut map: Value = serde_json::from_str(&store::read_stored_at(model).expect("o mapa gravado").json)?;
+        for module in map["modules"].as_array_mut().expect("os arquivos") {
+            module["deps"] = json!("um texto no lugar da lista");
+        }
+        store::write_text_at(model, &map.to_string())?;
+        assert!(store::read_at(model).is_err(), "the whole map refuses the broken column");
+        Ok(ScanReport { full: true, ..ScanReport::default() })
+    }
+
+    /// Com uma coluna que ela não lê estragada, a conferência das lições, que
+    /// lê só os caminhos dos arquivos, ainda acha pelo fim do caminho o
+    /// arquivo que existe e aponta a lição cujo arquivo saiu.
+    #[test]
+    fn the_lessons_are_checked_even_when_a_map_column_they_do_not_read_is_broken() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        write(&root.join("packages/core/src/domain/economy/estimator.rs"), "pub fn estimate() -> usize { 0 }\n");
+        let bank = ClaudePaths::for_project(root).expect("paths").lessons_path();
+        rule(&bank, "packages/core", "Trate a contagem de tokens (`domain/economy/estimator.rs`) como aproximação.", &["core", "contagem", "tokens"]);
+        let gone = rule(&bank, "packages/core", "O cálculo do frete (`domain/economy/freight.rs`) arredonda para cima.", &["core", "frete", "arredonda"]);
+
+        let result = scan_at(root, None, false, mine_disk_with_a_broken_column);
+        assert_eq!(
+            result["lessons"]["missing_paths"],
+            serde_json::json!([{"id": gone, "paths": ["domain/economy/freight.rs"]}]),
+            "{result}"
+        );
+    }
+
     /// Uma lição que cita um arquivo que ainda não existe é apontada como
     /// sem arquivo por um mapeamento bom, como o teste vizinho já prova.
     /// Depois de o arquivo nascer, um mapeamento que falha não pode mais
@@ -416,6 +451,33 @@ mod tests {
             failed.get("lessons").is_none(),
             "o arquivo já existe, e sem mapa nada é dado como faltando: {failed}"
         );
+    }
+
+    /// A lista de projetos, lida só da tabela deles, é a mesma que a
+    /// projeção do scan dava lendo o mapa inteiro noutro processo, com as
+    /// dependências, os scripts e as pilhas de cada um.
+    #[test]
+    fn the_projects_read_from_their_table_are_the_ones_the_scan_facts_gave() {
+        let scan = Scan::locate();
+        assert!(
+            scan.is_compiled_alongside(),
+            "o teste precisa do scan compilado junto com ele: rode `cargo build -p scan` antes de `cargo test -p mustard-rt`"
+        );
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        write(&root.join("web/composer.json"), r#"{"name": "acme/web", "require": {"php": "^8.2", "laravel/framework": "^11.0"}, "scripts": {"test": "phpunit"}}"#);
+        write(&root.join("web/artisan"), "#!/usr/bin/env php\n<?php\n");
+        write(&root.join("web/app/Http/Controller.php"), "<?php\nnamespace App\\Http;\nclass Controller {}\n");
+        write(&root.join("packages/core/Cargo.toml"), "[package]\nname = \"core\"\n\n[dependencies]\nserde = \"1\"\n");
+        write(&root.join("packages/core/src/lib.rs"), "pub fn run() {}\n");
+        let model = store::model_path(root);
+        scan.scan(root, &model).expect("the scan writes the map");
+
+        let from_the_table = read_projects(&model);
+        let from_the_facts = scan.facts(&model).expect("the scan facts").projects;
+        assert_eq!(format!("{from_the_table:?}"), format!("{from_the_facts:?}"));
+        assert_eq!(from_the_table.len(), 2, "{from_the_table:?}");
+        assert!(from_the_table.iter().any(|p| !p.dependencies.is_empty() && !p.detected_stacks.is_empty()), "{from_the_table:?}");
     }
 
     /// Roda `git <args>` em `root`, ignorando o resultado: só monta o

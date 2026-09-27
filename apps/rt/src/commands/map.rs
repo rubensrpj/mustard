@@ -16,8 +16,10 @@
 //! - `dump`: o banco do mapa tabela por tabela, em ordem fixa, para depurar.
 //!
 //! A regra mora em `mustard_core::domain::project_map`, e a leitura do banco
-//! na porta `mustard_core::io::project_map`; aqui só se leem o mapa, a skill e
-//! o arquivo de onde sai o trecho, e se imprime o JSON.
+//! na porta `mustard_core::io::project_map`; a busca lê o índice de palavras
+//! do mapa, por `mustard_core::io::map_search`, sem o mapa inteiro. Aqui só
+//! se leem o mapa, a skill e o arquivo de onde sai o trecho, e se imprime o
+//! JSON.
 
 use std::path::{Path, PathBuf};
 
@@ -25,6 +27,8 @@ use clap::ValueEnum;
 use mustard_core::domain::normalize::Languages;
 use mustard_core::domain::project_map::{self as project_map, MapRefusal, ProjectMap};
 use mustard_core::domain::scan::ScanReport;
+use mustard_core::domain::search::TOP;
+use mustard_core::io::map_search;
 use mustard_core::io::project_map::{self as store, Need};
 use mustard_core::platform::i18n::Locale;
 use serde_json::{json, Value};
@@ -149,9 +153,8 @@ fn answer_from(
             }))
         }
         Question::Search => {
-            let map = store::read(root)?;
-            let query = required(opts.query.as_deref(), question, "--query")?;
-            let files: Vec<Value> = project_map::search(&map, &query, languages)
+            let query = after_the_map(required(opts.query.as_deref(), question, "--query"), read)?;
+            let files: Vec<Value> = map_search::search(root, &query, languages, TOP)?
                 .into_iter()
                 .map(|found| json!({ "path": found.path, "score": found.score }))
                 .collect();
@@ -304,13 +307,12 @@ fn examples(opts: &MapOpts, lang: Locale, languages: &Languages, read: &Reader<'
 }
 
 /// Os arquivos que o mapa sugere para uma tarefa descrita em palavras, do
-/// mais forte para o menos forte. Vazio quando não há mapa gravado ou quando
-/// nada casa: quem pergunta decide o que fazer com a lista, porque o mapa não
-/// preenche a tarefa sozinho. A busca corta as palavras nas línguas
-/// `languages`.
+/// mais forte para o menos forte, pelo índice de busca do mapa. Vazio quando
+/// não há mapa gravado ou quando nada casa: quem pergunta decide o que fazer
+/// com a lista, porque o mapa não preenche a tarefa sozinho. A busca corta as
+/// palavras nas línguas `languages`.
 pub(crate) fn suggested_files(root: &Path, task: &str, limit: usize, languages: &Languages) -> Vec<String> {
-    let Ok(map) = store::read(root) else { return Vec::new() };
-    project_map::search(&map, task, languages).into_iter().take(limit).map(|found| found.path).collect()
+    map_search::search(root, task, languages, limit).unwrap_or_default().into_iter().map(|found| found.path).collect()
 }
 
 /// A pasta que a skill descreve: a de cima do `.claude` onde ela mora.
@@ -430,6 +432,63 @@ mod tests {
         std::fs::write(&config, r#"{"language": {"text": "pt-BR", "code": "pt-BR"}}"#).unwrap();
         let report = answered(&opts);
         assert_eq!(report["files"], json!([]), "{report}");
+    }
+
+    /// O índice da busca guarda as línguas em que foi feito: quando o projeto
+    /// passa a programar em inglês, a busca seguinte o refaz, e "processed"
+    /// acha o arquivo que declara `Processing`, que o índice só em português
+    /// não achava.
+    #[test]
+    fn a_change_in_the_project_languages_remakes_the_search_index() {
+        let dir = tempdir().unwrap();
+        store::write_text(
+            dir.path(),
+            r#"{"modules": [
+              {"path": "src/queue.rs", "loc": 40, "declarations": [{"name": "Processing"}]},
+              {"path": "src/billing.rs", "loc": 40, "declarations": [{"name": "Payment"}]}
+            ]}"#,
+        )
+        .unwrap();
+        let config = dir.path().join("mustard.json");
+        let mut opts = ask(dir.path(), Question::Search);
+        opts.query = Some("processed".to_string());
+
+        std::fs::write(&config, r#"{"language": {"text": "pt-BR", "code": "pt-BR"}}"#).unwrap();
+        let report = answered(&opts);
+        assert_eq!(report["files"], json!([]), "{report}");
+
+        std::fs::write(&config, r#"{"language": {"text": "pt-BR", "code": "en-US"}}"#).unwrap();
+        let report = answered(&opts);
+        assert_eq!(report["files"][0]["path"], json!("src/queue.rs"), "{report}");
+    }
+
+    /// Um mapa em que uma coluna que a busca não lê guarda o tipo errado:
+    /// texto onde se espera a lista dos arquivos importados. O mapa inteiro
+    /// não se lê, e a busca lê só o índice de palavras.
+    const WRONG_TYPE: &str = r#"{"modules": [
+      {"path": "src/pedido.rs", "loc": 40, "deps": "texto no lugar da lista", "declarations": [{"name": "buscarPedido"}]},
+      {"path": "src/cliente.rs", "loc": 40, "declarations": [{"name": "Cliente"}]}
+    ]}"#;
+
+    #[test]
+    fn the_search_question_answers_a_map_with_a_column_it_does_not_read_in_the_wrong_type() {
+        let dir = tempdir().unwrap();
+        store::write_text(dir.path(), WRONG_TYPE).unwrap();
+        assert!(store::read(dir.path()).is_err(), "the whole map does not read");
+        let mut opts = ask(dir.path(), Question::Search);
+        opts.query = Some("buscar pedido".to_string());
+        let report = answered(&opts);
+        assert_eq!(report["ok"], json!(true), "{report}");
+        assert_eq!(report["files"][0]["path"], json!("src/pedido.rs"), "{report}");
+    }
+
+    #[test]
+    fn suggested_files_come_from_a_map_with_a_column_they_do_not_read_in_the_wrong_type() {
+        let dir = tempdir().unwrap();
+        store::write_text(dir.path(), WRONG_TYPE).unwrap();
+        assert!(store::read(dir.path()).is_err(), "the whole map does not read");
+        let languages = Languages::new(["pt-BR", "en-US"]);
+        assert_eq!(suggested_files(dir.path(), "buscar pedido", 3, &languages), ["src/pedido.rs"]);
     }
 
     #[test]

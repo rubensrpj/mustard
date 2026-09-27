@@ -19,7 +19,7 @@ use std::path::Path;
 use mustard_core::platform::git as git_exec;
 
 use mustard_core::domain::project_map::{History, RawCommit, MAX_COMMITS};
-use mustard_core::io::project_map::{Listing, MapBlock, CENSUS, DECLS, FILES, GRAPH};
+use mustard_core::io::project_map::{Listing, MapBlock, BLOCKS, CENSUS, DECLS, FILES, GRAPH};
 
 use crate::model::{Module, ProjectModel};
 
@@ -107,6 +107,17 @@ pub(crate) fn plan(root: &Path, prev: Option<&ProjectModel>, listing: Option<&Li
         .map(|(path, _)| path.to_string())
         .collect();
     Plan::Only(changed)
+}
+
+/// A passada não tem arquivo a reler: todo bloco do mapa anterior `prev` é
+/// desta versão do scan, o commit é o mesmo que ele leu — um commit novo
+/// pode mudar a história e os testes que mudam juntos — e o plano não pede
+/// arquivo nenhum. Falta só conferir que não entrou nem saiu arquivo de
+/// código ou manifesto (ver [`crate::ingest::same_sources`]).
+pub(crate) fn nothing_to_read(root: &Path, prev: &ProjectModel, listing: &Listing) -> bool {
+    BLOCKS.iter().all(|block| fresh(prev, block))
+        && prev.state.head == listing.head
+        && plan(root, Some(prev), Some(listing)) == Plan::Only(BTreeSet::new())
 }
 
 /// Os arquivos de `blobs` que, mudando, aparecendo ou sumindo, fazem a

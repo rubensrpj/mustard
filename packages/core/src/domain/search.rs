@@ -10,6 +10,10 @@
 //! tamanho do documento conta palavras, não formas. Voltam só as respostas
 //! mais fortes.
 //!
+//! A busca do mapa lê um índice gravado ([`crate::io::map_search`]) e pesa
+//! cada campo à parte: a conta dela é o BM25F daqui ([`bm25f`]), sobre as
+//! listas que o banco devolve.
+//!
 //! Função pura: sem disco e sem relógio. A mesma entrada dá sempre a mesma
 //! resposta, na mesma ordem.
 
@@ -135,6 +139,89 @@ pub fn search<'a>(docs: impl IntoIterator<Item = (u64, &'a str)>, query: &str, l
     let mut normalizer = Normalizer::new(languages);
     let docs: Vec<(u64, Vec<Vec<String>>)> = docs.into_iter().map(|(id, field)| (id, normalizer.forms(field))).collect();
     SearchIndex::build(docs).top(&normalizer.query(query), TOP)
+}
+
+// ---------------------------------------------------------------------------
+// BM25F: cada campo com o tamanho e o peso dele
+// ---------------------------------------------------------------------------
+
+/// A saturação da frequência no BM25F. Ela e o peso do tamanho do campo são
+/// os da prova da busca do mapa, que com eles achou 119 dos 140 pontos da
+/// régua de perguntas.
+pub const K1: f64 = 1.2;
+/// O quanto o tamanho do campo, perto da média dele, pesa no BM25F.
+pub const B: f64 = 0.75;
+
+/// Uma ocorrência de uma forma num documento: o número do documento, o
+/// campo em que ela está e o tamanho desse campo no documento, em palavras.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Posting {
+    pub doc: i64,
+    pub field: usize,
+    pub field_len: u64,
+}
+
+/// O que a conta sabe do conjunto inteiro: quantos documentos há, o tamanho
+/// médio de cada campo, em palavras, e o peso de cada campo.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Fields {
+    pub docs: usize,
+    pub avg_len: Vec<f64>,
+    pub weights: Vec<f64>,
+}
+
+/// A nota BM25F de cada documento para as palavras de uma pergunta, da mais
+/// forte para a mais fraca e, no empate, o número menor primeiro. Só entra
+/// documento com nota acima de zero.
+///
+/// `words` traz, para cada palavra da pergunta, as ocorrências de cada uma
+/// das formas dela. Numa forma, cada ocorrência soma o peso do campo dividido
+/// pelo tamanho do campo perto da média (`1 − B + B·tamanho/média`), e a soma
+/// satura por [`K1`]; a raridade é `ln(1 + (N − df + 0,5)/(df + 0,5))`, com
+/// `df` os documentos que têm a forma. Cada palavra soma a forma que dá a
+/// nota mais alta no documento, nunca a soma das formas.
+#[must_use]
+pub fn bm25f(words: &[Vec<Vec<Posting>>], fields: &Fields) -> Vec<(i64, f64)> {
+    let n = fields.docs as f64;
+    let mut scores: BTreeMap<i64, f64> = BTreeMap::new();
+    for forms in words {
+        let mut best: BTreeMap<i64, f64> = BTreeMap::new();
+        for postings in forms {
+            let mut weighted: BTreeMap<i64, f64> = BTreeMap::new();
+            for posting in postings {
+                let (Some(&weight), Some(&avg)) = (fields.weights.get(posting.field), fields.avg_len.get(posting.field))
+                else {
+                    continue;
+                };
+                if weight <= 0.0 || avg <= 0.0 {
+                    continue;
+                }
+                *weighted.entry(posting.doc).or_insert(0.0) += weight / (1.0 - B + B * posting.field_len as f64 / avg);
+            }
+            let df = weighted.len() as f64;
+            if df == 0.0 {
+                continue;
+            }
+            let idf = (1.0 + (n - df + 0.5) / (df + 0.5)).ln();
+            for (doc, tf) in weighted {
+                let score = idf * tf * (K1 + 1.0) / (K1 + tf);
+                let slot = best.entry(doc).or_insert(0.0);
+                *slot = slot.max(score);
+            }
+        }
+        for (doc, score) in best {
+            *scores.entry(doc).or_insert(0.0) += score;
+        }
+    }
+    let mut ranked: Vec<(i64, f64)> = scores.into_iter().filter(|(_, score)| *score > 0.0).collect();
+    ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+    ranked
+}
+
+/// A nota do BM25F ×1024, em inteiro, como a das outras buscas.
+#[must_use]
+pub fn score_x1024(score: f64) -> u64 {
+    (score * SCALE as f64).round() as u64
 }
 
 #[cfg(test)]
@@ -284,5 +371,44 @@ mod tests {
         let hits = index.top(&[vec!["alvo".to_string()]], TOP);
         assert_eq!(ids(&hits), [1, 2], "{hits:?}");
         assert_eq!(hits[0].score, hits[1].score, "same number of words, same score: {hits:?}");
+    }
+
+    /// Uma ocorrência no documento `doc`, no campo `field` com `len` palavras.
+    fn at(doc: i64, field: usize, len: u64) -> Posting {
+        Posting { doc, field, field_len: len }
+    }
+
+    /// A nota de um documento pelo BM25F segue os números combinados: `K1`
+    /// 1,2, `B` 0,75 e a raridade `ln(1 + (N − df + 0,5)/(df + 0,5))`, com o
+    /// tamanho de cada campo contado contra a média dele.
+    #[test]
+    fn bm25f_weighs_each_field_by_its_own_length_with_the_saturation_and_rarity_agreed() {
+        let fields = Fields { docs: 2, avg_len: vec![2.0, 4.0], weights: vec![1.0, 1.0] };
+        // Um documento, a forma no campo 0 (tamanho 2, a média) e no campo 1
+        // (tamanho 2, metade da média).
+        let got = bm25f(&[vec![vec![at(1, 0, 2), at(1, 1, 2)]]], &fields);
+        let tf = 1.0 / (1.0 - 0.75 + 0.75 * 2.0 / 2.0) + 1.0 / (1.0 - 0.75 + 0.75 * 2.0 / 4.0);
+        let idf = (1.0f64 + (2.0 - 1.0 + 0.5) / (1.0 + 0.5)).ln();
+        let expected = idf * tf * (1.2 + 1.0) / (1.2 + tf);
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert_eq!(got[0].0, 1);
+        assert!((got[0].1 - expected).abs() < 1e-12, "{got:?} against {expected}");
+        assert_eq!(score_x1024(got[0].1), (expected * 1024.0).round() as u64);
+    }
+
+    /// No BM25F, cada palavra da pergunta soma só a forma que dá a nota mais
+    /// alta no documento: com as duas formas, a nota é a da melhor, e duas
+    /// palavras somam.
+    #[test]
+    fn bm25f_counts_the_best_form_of_each_word_never_the_sum_of_its_forms() {
+        let fields = Fields { docs: 3, avg_len: vec![2.0], weights: vec![1.0] };
+        let common = vec![at(1, 0, 2), at(2, 0, 2), at(3, 0, 2)];
+        let rare = vec![at(1, 0, 2)];
+        let best_alone = bm25f(&[vec![rare.clone()]], &fields)[0].1;
+        let one_word = bm25f(&[vec![common.clone(), rare.clone()]], &fields);
+        assert_eq!(one_word[0], (1, best_alone), "two forms of one word weigh as the best one: {one_word:?}");
+        let common_alone = bm25f(&[vec![common.clone()]], &fields)[0].1;
+        let two_words = bm25f(&[vec![common], vec![rare]], &fields);
+        assert!((two_words[0].1 - (best_alone + common_alone)).abs() < 1e-12, "two words add up: {two_words:?}");
     }
 }

@@ -23,7 +23,7 @@
 //! The per-language seam the old design called for is preserved: there is one
 //! [`Analyzer`] instance per language, but all are the same generic type, each
 //! parameterized by a compiled query. Precise AST facts go in; the same generic
-//! `Extracted`/`Decl` come out, so the miner (Layer 4) never learns any syntax.
+//! `Extracted`/`Decl` come out, so the graph and the map never learn any syntax.
 //!
 //! `build.rs` embeds the registry and the query files into `OUT_DIR`; we include
 //! the generated table here. Nothing language-specific lives in this file.

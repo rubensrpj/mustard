@@ -10,6 +10,7 @@
 //! banco não guarda — a cobertura além das pastas puladas e se o grafo tem
 //! ciclo — só serve ao resumo impresso da passada, e volta vazio.
 
+use mustard_core::domain::normalize::Languages;
 use mustard_core::domain::project_map::History;
 use mustard_core::domain::vocabulary::stacks::StackDetection;
 use mustard_core::io::project_map as store;
@@ -31,7 +32,7 @@ pub struct ProjectModel {
     /// What the scan visited vs skipped — verifiable answer to "did you read it all?".
     #[serde(default)]
     pub coverage: Coverage,
-    /// Projects/compilation units in the workspace (a slice usually spans several).
+    /// Projects/compilation units in the workspace, one per build manifest.
     #[serde(default)]
     pub projects: Vec<ProjectUnit>,
     /// Stacks inferred by evidence convergence (manifest deps + path markers +
@@ -63,6 +64,17 @@ impl ProjectModel {
         Some(model)
     }
 
+    /// O estado da leitura gravado no mapa em `path`: o censo, de cada
+    /// arquivo só o caminho, o blob e os sinais de código, e as marcas dos
+    /// blocos. As declarações, o grafo e a história ficam no banco. `None`
+    /// sem mapa, ou com um que não se lê.
+    pub fn load_state(path: &Path) -> Option<Self> {
+        let stored = store::read_state_at(path).ok()?;
+        let mut model: Self = serde_json::from_str(&stored.json).ok()?;
+        model.marks = stored.marks;
+        Some(model)
+    }
+
     /// O modelo lido do mapa em `path`, com o motivo quando não se lê.
     pub fn read(path: &Path) -> anyhow::Result<Self> {
         let stored = store::read_stored_at(path).map_err(|refusal| anyhow::anyhow!("{}: {refusal:?}", path.display()))?;
@@ -71,16 +83,23 @@ impl ProjectModel {
 
     /// Grava o modelo no mapa em `path`, com a marca `mark` em cada bloco.
     /// Só os blocos que mudaram se regravam, numa transação só; com tudo
-    /// igual, nada se grava e a resposta é `false`.
-    pub fn save(&self, path: &Path, mark: &str) -> anyhow::Result<bool> {
-        Ok(store::save_at(path, &serde_json::to_value(self)?, mark)?)
+    /// igual, nada se grava e a resposta é `false`. O índice de busca que se
+    /// refaz com os arquivos e as declarações prepara as palavras nas línguas
+    /// `languages`.
+    pub fn save(&self, path: &Path, mark: &str, languages: &Languages) -> anyhow::Result<bool> {
+        Ok(store::save_at(path, &serde_json::to_value(self)?, mark, languages)?)
+    }
+
+    /// Grava só o censo do modelo no mapa em `path`, com a marca `mark`; os
+    /// outros blocos ficam como estão. Com o censo igual, nada se grava e a
+    /// resposta é `false`.
+    pub fn save_census(&self, path: &Path, mark: &str) -> anyhow::Result<bool> {
+        Ok(store::save_block_at(path, &store::CENSUS, &serde_json::to_value(self)?, mark)?)
     }
 }
 
-/// What the scan actually visited — so "did you read everything?" is verifiable.
 /// One compilation unit / project in the workspace (one per build manifest)
-/// and how many source files live under it. A single entity slice
-/// typically spans several of these.
+/// and how many source files live under it.
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(default)]
 pub struct ProjectUnit {
@@ -109,6 +128,7 @@ pub struct ProjectUnit {
     pub detected_stacks: Vec<StackDetection>,
 }
 
+/// What the scan actually visited — so "did you read everything?" is verifiable.
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(default)]
 pub struct Coverage {

@@ -11,8 +11,8 @@
 //! (the nested composer manifest carries the dep signal).
 //!
 //! Scope guard: only STACK EVIDENCE is filtered. The nested tree stays fully
-//! ingested (manifests, modules, units) — convention mining must keep seeing
-//! test code.
+//! ingested (manifests, modules, units) — the map keeps the test code, with
+//! its files, its test links and its declarations.
 
 #[path = "support/manifest_dir.rs"]
 mod manifest_dir;
@@ -78,7 +78,7 @@ fn stack_evidence_excludes_nested_fixture_stack_from_repo_level() {
     );
 
     // The discount applies ONLY to stack evidence — the nested manifest is
-    // still ingested (the miner keeps seeing test trees).
+    // still ingested (the map keeps seeing test trees).
     let manifests = v["manifests"].as_array().expect("model carries manifests");
     let nested = manifests
         .iter()

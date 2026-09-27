@@ -306,3 +306,171 @@ fn a_repository_with_no_commit_yet_reads_only_what_changed() {
     write(dir, "b.rs", "pub fn b() {}\npub fn c() {}\n");
     assert_eq!(scan(dir, &[])["read"], json!(["b.rs"]));
 }
+
+/// Uma dependência que nenhum arquivo tem. Plantada no mapa, só a passada que
+/// refaz o grafo a tira.
+const FAKE: &str = "src/nenhum.rs";
+
+/// As dependências que o mapa gravado dá a `file`.
+fn deps_in_the_map(dir: &Path, file: &str) -> Vec<Value> {
+    let map = model::read(&map_folder(dir));
+    let module = map["modules"].as_array().unwrap().iter().find(|m| m["path"] == json!(file)).expect("o arquivo está no mapa");
+    module["deps"].as_array().cloned().unwrap_or_default()
+}
+
+/// Planta a dependência falsa em `file` (`plant`) ou a tira, pelo porto, com
+/// a marca guardada.
+fn fake_dependency(dir: &Path, file: &str, plant: bool) {
+    model::edit_keeping_the_mark(&map_folder(dir), |map| {
+        let module = map["modules"].as_array_mut().unwrap().iter_mut().find(|m| m["path"] == json!(file)).unwrap();
+        let module = module.as_object_mut().unwrap();
+        let deps = module.entry("deps").or_insert(json!([])).as_array_mut().unwrap();
+        deps.retain(|dep| *dep != json!(FAKE));
+        if plant {
+            deps.push(json!(FAKE));
+        }
+        // A lista vazia não se grava, como na passada do scan.
+        if deps.is_empty() {
+            module.remove("deps");
+        }
+    });
+}
+
+/// `change` roda entre duas passadas, com a dependência falsa plantada em
+/// `file` antes: a segunda não relê nada nem refaz o grafo, e a falsa fica.
+/// Depois ela sai, e o mapa é o que a passada gravou.
+fn only_the_census_is_redone(dir: &Path, file: &str, change: impl FnOnce()) {
+    fake_dependency(dir, file, true);
+    change();
+    let report = scan(dir, &[]);
+    assert_eq!((report["full"].clone(), report["read"].clone()), (json!(false), json!([])), "{report}");
+    assert!(deps_in_the_map(dir, file).contains(&json!(FAKE)), "the graph was not rebuilt");
+    assert!(!mustard_core::io::project_map::is_behind(dir), "the new listing mark is written");
+    fake_dependency(dir, file, false);
+}
+
+/// O Laravel, que o caminho `artisan` marca, está nas pilhas do projeto e
+/// nas do subprojeto: as duas respostas, nessa ordem.
+fn laravel_marked(dir: &Path) -> (bool, bool) {
+    let map = model::read(&map_folder(dir));
+    let has = |stacks: &Value| stacks.as_array().is_some_and(|all| all.iter().any(|s| s["name"] == json!("laravel")));
+    (has(&map["detected_stacks"]), has(&map["projects"][0]["detected_stacks"]))
+}
+
+/// Um projeto PHP sem o Laravel nas dependências, com um arquivo de código,
+/// um manifesto e um `README.md`.
+fn php_project(prefix: &str) -> tempfile::TempDir {
+    project(
+        prefix,
+        &[
+            ("composer.json", "{\"name\": \"demo/app\", \"require\": {\"php\": \"^8.2\"}}\n"),
+            ("app/Models/User.php", "<?php\nnamespace App\\Models;\n\nclass User {}\n"),
+            ("README.md", "# Demo\n"),
+        ],
+    )
+}
+
+/// Editar um arquivo que não é código não relê nada nem refaz o grafo: a
+/// passada grava só a marca nova da listagem, e o mapa deixa de estar atrás.
+#[test]
+fn editing_a_file_that_is_not_code_writes_only_the_new_mark() {
+    let temp = project(
+        "scan-not-code-",
+        &[
+            ("src/a.rs", "pub fn alpha() {}\n"),
+            ("src/b.rs", "use crate::a::alpha;\npub fn beta() {\n    alpha();\n}\n"),
+            ("README.md", "# Demo\n"),
+        ],
+    );
+    let dir = temp.path();
+    assert_eq!(scan(dir, &[])["full"], json!(true));
+    fake_dependency(dir, "src/a.rs", true);
+
+    write(dir, "README.md", "# Demo\n\nMais uma linha.\n");
+    assert!(mustard_core::io::project_map::is_behind(dir), "the edit puts the map behind");
+    let report = scan(dir, &[]);
+    assert_eq!(report["full"], json!(false), "{report}");
+    assert_eq!(report["read"], json!([]), "{report}");
+    assert_eq!(report["files"], json!(2), "{report}");
+    assert_eq!(report["head"], json!(git(dir, &["rev-parse", "HEAD"]).trim()), "{report}");
+    assert!(!mustard_core::io::project_map::is_behind(dir), "the new listing mark is written");
+    assert!(deps_in_the_map(dir, "src/a.rs").contains(&json!(FAKE)), "the graph was not rebuilt");
+}
+
+/// Um arquivo que não é código entra, muda e sai, e um deles marca o
+/// Laravel pelo caminho: a passada não relê nada, refaz as pilhas do projeto
+/// e do subprojeto, e o mapa é o de uma passada que lê tudo.
+#[test]
+fn a_file_that_is_not_code_entering_changing_and_leaving_gives_the_map_of_a_full_pass() {
+    let temp = php_project("scan-path-marker-");
+    let dir = temp.path();
+    assert_eq!(scan(dir, &[])["full"], json!(true));
+    assert_eq!(laravel_marked(dir), (false, false));
+    let file = "app/Models/User.php";
+
+    only_the_census_is_redone(dir, file, || write(dir, "artisan", "#!/usr/bin/env php\n<?php\n"));
+    assert_eq!(laravel_marked(dir), (true, true), "the path marker entered");
+    same_as_a_full_pass(dir);
+
+    only_the_census_is_redone(dir, file, || write(dir, "artisan", "#!/usr/bin/env php\n<?php\n// outra\n"));
+    same_as_a_full_pass(dir);
+
+    only_the_census_is_redone(dir, file, || write(dir, "docs/notas.txt", "notas\n"));
+    same_as_a_full_pass(dir);
+
+    only_the_census_is_redone(dir, file, || write(dir, "README.md", "# Demo\n\nOutra linha.\n"));
+    same_as_a_full_pass(dir);
+
+    only_the_census_is_redone(dir, file, || std::fs::remove_file(dir.join("artisan")).unwrap());
+    assert_eq!(laravel_marked(dir), (false, false), "the path marker left");
+    same_as_a_full_pass(dir);
+}
+
+/// O `artisan` dentro de `tests/fixtures/` é de um teste: não marca o
+/// Laravel, nem na passada que só refaz o censo nem na que lê tudo.
+#[test]
+fn a_path_marker_inside_test_fixtures_marks_no_stack_on_either_pass() {
+    let temp = php_project("scan-fixture-marker-");
+    let dir = temp.path();
+    assert_eq!(scan(dir, &[])["full"], json!(true));
+
+    only_the_census_is_redone(dir, "app/Models/User.php", || {
+        write(dir, "tests/fixtures/artisan", "#!/usr/bin/env php\n<?php\n");
+    });
+    assert_eq!(laravel_marked(dir), (false, false), "the census-only pass");
+    same_as_a_full_pass(dir);
+    assert_eq!(laravel_marked(dir), (false, false), "the full pass");
+}
+
+/// Um arquivo de código novo, e um manifesto novo, continuam lidos: a
+/// passada refaz o grafo, e a dependência falsa plantada antes sai.
+#[test]
+fn a_new_code_file_or_manifest_is_still_read() {
+    let temp = project("scan-new-source-", &[("src/a.rs", "pub fn alpha() {}\n"), ("README.md", "# Demo\n")]);
+    let dir = temp.path();
+    assert_eq!(scan(dir, &[])["full"], json!(true));
+
+    for (file, body) in [("src/c.rs", "pub fn gamma() {}\n"), ("tools/package.json", "{\"name\": \"tools\"}\n")] {
+        fake_dependency(dir, "src/a.rs", true);
+        write(dir, file, body);
+        let report = scan(dir, &[]);
+        assert_eq!(report["read"], json!([file]), "{report}");
+        assert!(!deps_in_the_map(dir, "src/a.rs").contains(&json!(FAKE)), "the graph was rebuilt for {file}");
+        same_as_a_full_pass(dir);
+    }
+}
+
+/// Um arquivo de código que o git ainda lista, mas que a caminhada deixou de
+/// ver por uma regra nova do `.gitignore`, sai do mapa como na passada que
+/// lê tudo.
+#[test]
+fn a_code_file_the_walk_stops_seeing_leaves_the_map() {
+    let temp = project("scan-now-ignored-", &[("src/a.rs", "pub fn alpha() {}\n"), ("src/b.rs", "pub fn beta() {}\n")]);
+    let dir = temp.path();
+    assert_eq!(scan(dir, &[])["full"], json!(true));
+
+    write(dir, ".gitignore", "src/b.rs\n");
+    let report = scan(dir, &[]);
+    assert_eq!(report["files"], json!(1), "{report}");
+    same_as_a_full_pass(dir);
+}

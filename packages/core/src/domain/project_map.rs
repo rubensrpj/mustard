@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::domain::ast::is_test_path;
 use crate::domain::normalize::{Languages, Normalizer};
-use crate::domain::search::{SearchIndex, TOP};
+use crate::domain::search::SearchIndex;
 use crate::platform::i18n::{translate, Locale};
 
 /// Um commit que muda mais arquivos do que isto não conta para "muda junto":
@@ -738,7 +738,8 @@ pub fn lines_of(text: &str, line: u64, end_line: u64) -> String {
 // Busca por conceito
 // ---------------------------------------------------------------------------
 
-/// Um arquivo achado pela busca, com a nota ×1024.
+/// Um arquivo achado pela busca do mapa ([`crate::io::map_search`]), com a
+/// nota ×1024.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Found {
     pub path: String,
@@ -754,27 +755,6 @@ fn search_words(m: &MapModule, normalizer: &mut Normalizer) -> Vec<Vec<String>> 
         text.push_str(&decl.name);
     }
     normalizer.forms(&text)
-}
-
-/// Os arquivos que mais casam com as palavras do pedido, os 5 mais fortes,
-/// pelo BM25 de `domain::search`, nas línguas `languages`. Arquivo escrito
-/// por máquina fica de fora.
-#[must_use]
-pub fn search(map: &ProjectMap, query: &str, languages: &Languages) -> Vec<Found> {
-    let mut normalizer = Normalizer::new(languages);
-    let docs: Vec<(u64, Vec<Vec<String>>)> = map
-        .modules
-        .iter()
-        .enumerate()
-        .filter(|(_, m)| m.file_class.is_empty())
-        .map(|(i, m)| (i as u64, search_words(m, &mut normalizer)))
-        .collect();
-    let index = SearchIndex::build(docs);
-    index
-        .top(&normalizer.query(query), TOP)
-        .into_iter()
-        .filter_map(|hit| map.modules.get(hit.id as usize).map(|m| Found { path: m.path.clone(), score: hit.score }))
-        .collect()
 }
 
 /// Quantos achados da busca pesam na escolha da pasta.
@@ -1408,16 +1388,6 @@ mod tests {
         assert_eq!(tests.files, vec!["apps/rt/tests/spec_events_cli.rs".to_string()]);
         assert!(!tests.inline);
         assert!(tests_for(&map, "apps/rt/src/commands/spec_events/read.rs").unwrap().inline);
-    }
-
-    #[test]
-    fn a_portuguese_query_finds_a_portuguese_identifier() {
-        let mut pay = module("src/pagamentos/processador_pagamento.rs", 40, &[]);
-        pay.declarations = vec![decl("ProcessadorPagamento")];
-        let other = module("src/usuarios/cadastro.rs", 40, &[]);
-        let map = ProjectMap { modules: vec![other, pay], ..ProjectMap::default() };
-        let found = search(&map, "processar os pagamentos", &languages());
-        assert_eq!(found.first().map(|f| f.path.as_str()), Some("src/pagamentos/processador_pagamento.rs"));
     }
 
     /// As línguas de um projeto com o texto em português e o código em inglês.

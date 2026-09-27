@@ -167,8 +167,8 @@ pub(crate) fn detected_languages(paths: &[String], projects: &[Project], project
 /// The distinct languages a target involves — the union of the extension signal
 /// ([`languages_of_paths`]) and the model's detected stacks
 /// ([`detected_languages`]). The one entry point both gates call so their notion
-/// of "the target language" is identical. The model is read (a scan tool
-/// spawn) only when there are paths to attribute.
+/// of "the target language" is identical. The map's project table is read
+/// only when there are paths to attribute.
 #[must_use]
 pub fn resolve_target_languages(paths: &[String], model_path: &Path, project_root: &Path) -> BTreeSet<String> {
     let mut langs = languages_of_paths(paths);
