@@ -348,7 +348,7 @@ mod tests {
         project.pass();
         assert_eq!(project.calls(), ["text 7", "comments 7"]);
 
-        let newer = |id: &str, at: i64, pr: u32| LineageCommit { id: id.to_string(), at, title: format!("x (#{pr})"), pr: Some(pr) };
+        let newer = |id: &str, at: i64, pr: u32| LineageCommit { id: id.to_string(), at, title: format!("x (#{pr})"), pr: Some(pr), ..LineageCommit::default() };
         let lineage = FileLineage { path: "src/a.rs".into(), commits: vec![newer("bbbb", 300, 7), newer("cccc", 250, 8)], ..FileLineage::default() };
         store::save_lineage_at(&store::model_path(project.root()), &lineage).unwrap();
         project.answers.borrow_mut().texts.insert(7, PrTextRead::Unchanged);

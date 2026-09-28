@@ -22,7 +22,8 @@ use std::path::Path;
 
 use anyhow::{anyhow, Result};
 use mustard_core::domain::project_map::{
-    file_history, DeclChange, DeclComment, DeclLineage, FileLineage, LineageCommit, PullComment,
+    file_history, CommitFiles, DeclChange, DeclComment, DeclLineage, FileLineage, LineageCommit, PullComment,
+    CO_CHANGE_MAX_FILES,
 };
 use mustard_core::io::project_map as store;
 
@@ -105,6 +106,9 @@ pub(crate) fn run(root: &Path, out: &Path, file: &str, moves: usize) -> Result<R
     } else {
         HashMap::new()
     };
+    // Os arquivos que cada commit criou e mudou, para a receita do arquivo
+    // além da janela da montagem.
+    let mut files = files_of(root, &referenced.iter().copied().collect::<Vec<_>>());
     let mut commits: Vec<LineageCommit> = referenced
         .iter()
         .map(|sha| {
@@ -113,7 +117,8 @@ pub(crate) fn run(root: &Path, out: &Path, file: &str, moves: usize) -> Result<R
                 Some(pr) => *pr,
                 None => numbers.get(*sha).copied().flatten(),
             };
-            LineageCommit { id: short(sha).to_string(), at, title, pr }
+            let files = files.remove(*sha).unwrap_or_default();
+            LineageCommit { id: short(sha).to_string(), at, title, pr, files }
         })
         .collect();
     commits.sort_by(|a, b| b.at.cmp(&a.at).then_with(|| a.id.cmp(&b.id)));
@@ -155,6 +160,28 @@ pub(crate) fn run(root: &Path, out: &Path, file: &str, moves: usize) -> Result<R
     };
     store::save_lineage_at(out, &lineage)?;
     Ok(Report { file: file.to_string(), commits: lineage.commits.len(), declarations: lineage.declarations.len() })
+}
+
+/// Quantos commits vão numa chamada só ao git que lê os arquivos de cada um.
+const FILES_BATCH: usize = 200;
+
+/// Os arquivos que cada commit de `shas` criou e mudou, pelo hash inteiro,
+/// lidos do git em lotes, com os caminhos como a história da montagem os
+/// guarda. O commit que muda mais de [`CO_CHANGE_MAX_FILES`] arquivos fica
+/// sem eles: ele não conta para "muda junto".
+fn files_of(root: &Path, shas: &[&str]) -> HashMap<String, CommitFiles> {
+    let mut out = HashMap::new();
+    for batch in shas.chunks(FILES_BATCH) {
+        let mut args = vec!["log", "--no-walk=unsorted", "--no-show-signature", "--no-renames", "--relative", "--name-status", HEADER];
+        args.extend(batch);
+        let Some(text) = git(root, &args) else { continue };
+        for (sha, commit) in refresh::parse_headers(&text) {
+            if commit.added.len() + commit.changed.len() <= CO_CHANGE_MAX_FILES {
+                out.insert(sha, CommitFiles { added: commit.added, changed: commit.changed });
+            }
+        }
+    }
+    out
 }
 
 /// O começo do hash, como a história guardada o escreve.

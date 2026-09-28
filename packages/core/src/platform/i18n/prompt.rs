@@ -91,6 +91,28 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("prompt.pattern.info", Locale::EnUs) => "habit: {from} imports {to} in {along} of {total} imports",
         ("prompt.pattern.example", Locale::PtBr) => "exemplo: `{name}` em `{path}`, linhas {start} a {end}",
         ("prompt.pattern.example", Locale::EnUs) => "example: `{name}` in `{path}`, lines {start} to {end}",
+        // Sem regra de importação, o bloco abre só com o que o código e o git
+        // mostram: o arquivo grande e a receita.
+        ("prompt.pattern.head_plain", Locale::PtBr) => "O que o projeto mostra sobre esta tarefa, tirado do código e da história do git.",
+        ("prompt.pattern.head_plain", Locale::EnUs) => "What the project shows about this task, taken from the code and the git history.",
+        // O arquivo da tarefa entre os maiores do projeto: só informa, e pede
+        // o código novo num arquivo novo.
+        ("prompt.pattern.large", Locale::PtBr) => {
+            "Entre os {percent}% maiores arquivos do projeto: {files}. Ponha o código novo num arquivo novo."
+        }
+        ("prompt.pattern.large", Locale::EnUs) => {
+            "Among the {percent}% largest files in the project: {files}. Put the new code in a new file."
+        }
+        // A receita do git: o que os commits do mesmo trabalho fizeram junto,
+        // com a fração de cada coisa.
+        ("prompt.pattern.recipe.created", Locale::PtBr) => "Receita do git, de {commits} commits que criaram um arquivo `{kind}`:",
+        ("prompt.pattern.recipe.created", Locale::EnUs) => "Git recipe, from {commits} commits that created a `{kind}` file:",
+        ("prompt.pattern.recipe.changed", Locale::PtBr) => "Receita do git, de {commits} commits que mudaram `{path}`:",
+        ("prompt.pattern.recipe.changed", Locale::EnUs) => "Git recipe, from {commits} commits that changed `{path}`:",
+        ("prompt.pattern.recipe.file", Locale::PtBr) => "mudou `{path}` em {count} de {commits}",
+        ("prompt.pattern.recipe.file", Locale::EnUs) => "changed `{path}` in {count} of {commits}",
+        ("prompt.pattern.recipe.tests", Locale::PtBr) => "criou um teste em {count} de {commits}",
+        ("prompt.pattern.recipe.tests", Locale::EnUs) => "created a test in {count} of {commits}",
         ("prompt.fixed", Locale::PtBr) => {
             "**O que é isto.** A lista dos itens desta onda, em ordem de execução, montada pelo \
              binário a partir da spec. Cada item vem numa linha, com o código e o título, e \
@@ -423,8 +445,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("prompt.rs"),
             super::PREFIXES,
-            53,
-            0xe7f7_93c1_1e8c_a8d8,
+            59,
+            0x8708_3aae_ebbf_181b,
         );
     }
 
@@ -434,7 +456,18 @@ mod tests {
     fn the_pattern_block_texts_read_clearly() {
         use crate::platform::i18n::{translate, Locale};
         for lang in [Locale::PtBr, Locale::EnUs] {
-            for key in ["prompt.pattern.head", "prompt.pattern.rule", "prompt.pattern.info", "prompt.pattern.example"] {
+            for key in [
+                "prompt.pattern.head",
+                "prompt.pattern.rule",
+                "prompt.pattern.info",
+                "prompt.pattern.example",
+                "prompt.pattern.head_plain",
+                "prompt.pattern.large",
+                "prompt.pattern.recipe.created",
+                "prompt.pattern.recipe.changed",
+                "prompt.pattern.recipe.file",
+                "prompt.pattern.recipe.tests",
+            ] {
                 let text = translate(key, lang)
                     .replace("{from}", "controller")
                     .replace("{to}", "service")
@@ -443,7 +476,12 @@ mod tests {
                     .replace("{name}", "create")
                     .replace("{path}", "src/order.controller.ts")
                     .replace("{start}", "12")
-                    .replace("{end}", "30");
+                    .replace("{end}", "30")
+                    .replace("{percent}", "5")
+                    .replace("{files}", "`src/order.service.ts`")
+                    .replace("{commits}", "10")
+                    .replace("{count}", "9")
+                    .replace("{kind}", "src/orders/*.ts");
                 assert!(!text.contains('{'), "{key} {lang:?}: {text}");
                 let report = crate::domain::clarity::measure(&text, &[], Some(lang));
                 assert!(report.passed, "{key} {lang:?}: {report:?}");

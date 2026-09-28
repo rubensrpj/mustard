@@ -38,7 +38,7 @@ use crate::domain::lessons::{applies_to, same_file, text_only, tied_to_wave, Sco
 use crate::domain::normalize::Languages;
 use crate::domain::mustard_id;
 use crate::domain::pattern::{Direction, Pattern};
-use crate::domain::project_map::cited_paths;
+use crate::domain::project_map::{cited_paths, Recipe, RecipeOf, QUALITY_TOP_PERCENT};
 use crate::domain::spec_events::{type_spec, Block, BlockQuery, Refusal, SpecEvent, SpecLog, Step, TASK_TITLE_MAX};
 use crate::domain::spec_index::{cut, title_of};
 use crate::domain::spec_state::State;
@@ -193,24 +193,29 @@ pub struct Material<'a> {
     /// O código de cada evento, para o pedido citar item por código.
     pub codes: BTreeMap<u64, String>,
     /// O padrão do projeto que vale para cada tarefa, pelo código dela: as
-    /// regras dos papéis que ela toca e os exemplos que as seguem
-    /// ([`pattern_block`]). A tarefa sem regra fica de fora.
+    /// regras dos papéis que ela toca, os arquivos grandes, as receitas do
+    /// git e os exemplos que seguem as regras ([`pattern_block`]). A tarefa
+    /// sem nada disso fica de fora.
     pub task_patterns: BTreeMap<String, TaskPattern>,
 }
 
 /// O teto, em caracteres, do bloco do padrão sob uma tarefa
-/// ([`pattern_block`]): acima dele saem exemplos, do fim para o começo. As
-/// regras nunca saem; se só elas passam do teto, o bloco sai inteiro, e a
+/// ([`pattern_block`]): acima dele saem os exemplos, do fim para o começo,
+/// depois as receitas, também do fim, e depois a linha dos arquivos grandes.
+/// As regras nunca saem; se só elas passam do teto, o bloco sai inteiro, e a
 /// medida do pedido mostra o tamanho.
 pub const PATTERN_CAP: usize = 875;
 
 /// O padrão do projeto sob uma tarefa: as regras fortes e as informações dos
-/// pares de papéis que ela toca, e os exemplos que seguem as regras fortes,
-/// o mais forte primeiro.
+/// pares de papéis que ela toca, os arquivos dela que passam do corte de
+/// tamanho do projeto, a receita do git de cada arquivo dela que tem uma, e
+/// os exemplos que seguem as regras fortes, o mais forte primeiro.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TaskPattern {
     pub strong: Vec<Direction>,
     pub info: Vec<Direction>,
+    pub large: Vec<String>,
+    pub recipes: Vec<Recipe>,
     pub examples: Vec<PatternExample>,
 }
 
@@ -232,16 +237,21 @@ pub fn rules_for(pattern: &Pattern, roles: &BTreeSet<&str>) -> TaskPattern {
     let touching = |list: &[Direction]| -> Vec<Direction> {
         list.iter().filter(|d| roles.contains(d.from.as_str()) || roles.contains(d.to.as_str())).cloned().collect()
     };
-    TaskPattern { strong: touching(&pattern.strong), info: touching(&pattern.info), examples: Vec::new() }
+    TaskPattern { strong: touching(&pattern.strong), info: touching(&pattern.info), ..TaskPattern::default() }
 }
 
-/// O bloco do padrão sob a linha de uma tarefa: a abertura, uma linha por
-/// regra forte e por informação, e uma por exemplo, com o nome, o arquivo e
-/// as linhas, sem código. Cabe em [`PATTERN_CAP`] caracteres: os exemplos
-/// saem do fim até caber, e as regras ficam todas. Sem regra, nenhum bloco.
+/// O bloco do padrão sob a linha de uma tarefa: a abertura; a linha dos
+/// arquivos da tarefa que passam do corte de tamanho do projeto, que pede
+/// código novo em arquivo novo; uma linha por regra forte e por informação;
+/// a receita do git de cada arquivo, com o que mudou junto; e uma linha por
+/// exemplo, com o nome, o arquivo e as linhas, sem código. Cabe em
+/// [`PATTERN_CAP`] caracteres: saem os exemplos do fim, depois as receitas
+/// do fim, depois a linha dos arquivos grandes, até caber; as regras ficam
+/// todas. Sem regra, sem arquivo grande e sem receita, nenhum bloco.
 #[must_use]
 pub fn pattern_block(pattern: &TaskPattern, lang: Locale) -> String {
-    if pattern.strong.is_empty() && pattern.info.is_empty() {
+    let ruled = !pattern.strong.is_empty() || !pattern.info.is_empty();
+    if !ruled && pattern.large.is_empty() && pattern.recipes.is_empty() {
         return String::new();
     }
     let rule = |key: &str, d: &Direction| {
@@ -251,13 +261,23 @@ pub fn pattern_block(pattern: &TaskPattern, lang: Locale) -> String {
             .replace("{along}", &d.along.to_string())
             .replace("{total}", &(d.along + d.against).to_string())
     };
-    let mut block = format!("  - {}\n", translate("prompt.pattern.head", lang));
+    let head = format!("  - {}\n", translate(if ruled { "prompt.pattern.head" } else { "prompt.pattern.head_plain" }, lang));
+    let mut rules = String::new();
     for line in pattern.strong.iter().map(|d| rule("prompt.pattern.rule", d)) {
-        let _ = writeln!(block, "    - {line}");
+        let _ = writeln!(rules, "    - {line}");
     }
     for line in pattern.info.iter().map(|d| rule("prompt.pattern.info", d)) {
-        let _ = writeln!(block, "    - {line}");
+        let _ = writeln!(rules, "    - {line}");
     }
+    let mut large: Vec<String> = Vec::new();
+    if !pattern.large.is_empty() {
+        let files = pattern.large.iter().map(|path| format!("`{path}`")).collect::<Vec<_>>().join(", ");
+        let line = translate("prompt.pattern.large", lang)
+            .replace("{percent}", &QUALITY_TOP_PERCENT.to_string())
+            .replace("{files}", &files);
+        large.push(format!("    - {line}\n"));
+    }
+    let mut recipes: Vec<String> = pattern.recipes.iter().map(|recipe| recipe_lines(recipe, lang)).collect();
     let mut examples: Vec<String> = pattern
         .examples
         .iter()
@@ -271,11 +291,47 @@ pub fn pattern_block(pattern: &TaskPattern, lang: Locale) -> String {
         })
         .collect();
     let size = |lines: &[String]| lines.iter().map(|l| l.chars().count()).sum::<usize>();
-    while !examples.is_empty() && block.chars().count() + size(&examples) > PATTERN_CAP {
-        examples.pop();
+    let fixed = head.chars().count() + rules.chars().count();
+    while fixed + size(&large) + size(&recipes) + size(&examples) > PATTERN_CAP {
+        if examples.pop().is_none() && recipes.pop().is_none() && large.pop().is_none() {
+            break;
+        }
     }
+    if !ruled && large.is_empty() && recipes.is_empty() {
+        return String::new();
+    }
+    let mut block = head;
+    block.extend(large);
+    block.push_str(&rules);
+    block.extend(recipes);
     block.extend(examples);
     block
+}
+
+/// As linhas de uma receita do git no bloco do padrão: a abertura, com o
+/// trabalho e quantos commits se contaram, e embaixo cada arquivo que mudou
+/// junto e o teste novo, com a fração.
+fn recipe_lines(recipe: &Recipe, lang: Locale) -> String {
+    let commits = recipe.commits.to_string();
+    let head = match &recipe.of {
+        RecipeOf::Created(kind) => translate("prompt.pattern.recipe.created", lang).replace("{kind}", kind),
+        RecipeOf::Changed(path) => translate("prompt.pattern.recipe.changed", lang).replace("{path}", path),
+    };
+    let mut out = format!("    - {}\n", head.replace("{commits}", &commits));
+    for (path, count) in &recipe.together {
+        let line = translate("prompt.pattern.recipe.file", lang)
+            .replace("{path}", path)
+            .replace("{count}", &count.to_string())
+            .replace("{commits}", &commits);
+        let _ = writeln!(out, "      - {line}");
+    }
+    if let Some(tests) = recipe.tests {
+        let line = translate("prompt.pattern.recipe.tests", lang)
+            .replace("{count}", &tests.to_string())
+            .replace("{commits}", &commits);
+        let _ = writeln!(out, "      - {line}");
+    }
+    out
 }
 
 /// O pedido montado e o tamanho dele.
@@ -3045,7 +3101,7 @@ mod tests {
     fn rules_alone_over_the_cap_go_out_whole_without_examples() {
         let strong: Vec<Direction> =
             (0..12).map(|n| direction(&format!("controller_of_area_{n:02}"), &format!("service_of_area_{n:02}"), 40, 1)).collect();
-        let pattern = TaskPattern { strong: strong.clone(), info: Vec::new(), examples: (0..3).map(example).collect() };
+        let pattern = TaskPattern { strong: strong.clone(), info: Vec::new(), examples: (0..3).map(example).collect(), ..TaskPattern::default() };
         let block = pattern_block(&pattern, Locale::EnUs);
         assert!(block.chars().count() > PATTERN_CAP, "{block}");
         for rule in &strong {
@@ -3063,9 +3119,85 @@ mod tests {
     }
 
     #[test]
-    fn a_task_pattern_without_rules_gives_no_block() {
+    fn a_task_pattern_without_rules_large_file_or_recipe_gives_no_block() {
         let pattern = TaskPattern { examples: (0..3).map(example).collect(), ..TaskPattern::default() };
         assert_eq!(pattern_block(&pattern, Locale::PtBr), "");
         assert_eq!(pattern_block(&rules_for(&two_rule_pattern(), &BTreeSet::from(["view"])), Locale::PtBr), "");
+    }
+
+    /// A receita de criar um comando: nove de dez commits registraram o
+    /// comando no índice, e sete criaram o teste.
+    fn command_recipe(n: usize) -> Recipe {
+        Recipe {
+            of: RecipeOf::Created(format!("apps/rt/src/commands/area_{n}/*.rs")),
+            commits: 10,
+            together: vec![(format!("apps/rt/src/commands/area_{n}/mod.rs"), 9)],
+            tests: Some(7),
+        }
+    }
+
+    #[test]
+    fn a_pattern_with_only_a_recipe_opens_without_the_import_rules() {
+        let pattern = TaskPattern { recipes: vec![command_recipe(0)], ..TaskPattern::default() };
+        let block = pattern_block(&pattern, Locale::PtBr);
+        let head = translate("prompt.pattern.head_plain", Locale::PtBr);
+        assert_eq!(
+            block,
+            format!(
+                "  - {head}\n    - Receita do git, de 10 commits que criaram um arquivo `apps/rt/src/commands/area_0/*.rs`:\n      \
+                 - mudou `apps/rt/src/commands/area_0/mod.rs` em 9 de 10\n      - criou um teste em 7 de 10\n"
+            ),
+        );
+        assert!(!block.contains("regra:") && !block.contains("importação"), "{block}");
+    }
+
+    #[test]
+    fn the_large_file_line_comes_before_the_rules_and_the_recipe_after_them() {
+        let mut pattern = rules_for(&two_rule_pattern(), &BTreeSet::from(["controller"]));
+        pattern.large = vec!["src/order.controller.ts".to_string()];
+        pattern.recipes = vec![command_recipe(0)];
+        pattern.examples = vec![example(0)];
+        let block = pattern_block(&pattern, Locale::EnUs);
+        let at = |text: &str| block.find(text).unwrap_or_else(|| panic!("{text} missing: {block}"));
+        assert!(at("The project pattern") < at("Among the 5% largest files in the project: `src/order.controller.ts`."));
+        assert!(at("Among the 5% largest") < at("rule: controller imports service"));
+        assert!(at("rule: controller imports service") < at("Git recipe, from 10 commits"));
+        assert!(at("Git recipe") < at("example: `create0`"));
+    }
+
+    #[test]
+    fn over_the_cap_the_examples_leave_before_the_recipes_the_recipes_before_the_large_line_and_rules_stay() {
+        let mut pattern = rules_for(&two_rule_pattern(), &BTreeSet::from(["controller", "repository", "entity"]));
+        pattern.large = vec!["src/order.controller.ts".to_string()];
+        pattern.recipes = (0..3).map(command_recipe).collect();
+        pattern.examples = (0..3).map(example).collect();
+        let rules = ["controller importa service", "repository importa entity", "costume: entity importa helper"];
+        let recipes = |block: &str| (0..3).filter(|n| block.contains(&format!("commands/area_{n}/*.rs"))).count();
+        let examples = |block: &str| (0..3).filter(|n| block.contains(&format!("`create{n}`"))).count();
+
+        // Três receitas e a linha grande não cabem com os exemplos: saem
+        // todos os exemplos antes da primeira receita.
+        let block = pattern_block(&pattern, Locale::PtBr);
+        assert!(block.chars().count() <= PATTERN_CAP, "{} chars: {block}", block.chars().count());
+        assert!(rules.iter().all(|rule| block.contains(rule)), "{block}");
+        assert_eq!(examples(&block), 0, "{block}");
+        assert!((1..3).contains(&recipes(&block)), "{block}");
+        assert!(block.contains("commands/area_0/*.rs"), "the first recipe stays, the last leave: {block}");
+        assert!(block.contains("5% maiores"), "{block}");
+
+        // Com uma receita só, ela e a linha grande cabem, e o exemplo que
+        // sobra no teto fica.
+        pattern.recipes.truncate(1);
+        let block = pattern_block(&pattern, Locale::PtBr);
+        assert_eq!(recipes(&block), 1, "{block}");
+        assert!(examples(&block) >= 1, "{block}");
+
+        // Com regras que já ocupam quase o teto, sai também a linha grande,
+        // e as regras ficam todas.
+        pattern.strong =
+            (0..9).map(|n| direction(&format!("controller_of_area_{n:02}"), &format!("service_of_area_{n:02}"), 40, 1)).collect();
+        let block = pattern_block(&pattern, Locale::PtBr);
+        assert!(!block.contains("5% maiores") && recipes(&block) == 0 && examples(&block) == 0, "{block}");
+        assert!(pattern.strong.iter().all(|d| block.contains(&format!("regra: {} importa {}", d.from, d.to))), "{block}");
     }
 }

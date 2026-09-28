@@ -10,7 +10,9 @@
 # feito com ele (`final cliente = http.Client();`) ou declarado com o tipo
 # (`final http.Client cliente;`). O endereço vem escrito ali, no
 # `Uri.parse('…')` ou no segundo argumento do `Uri.https('máquina', '/caminho')`
-# e do `Uri.http(…)`; ele vale sem o esquema e a máquina.
+# e do `Uri.http(…)`; ele vale sem o esquema e a máquina. O endereço escrito
+# como texto somado a um valor (`'https://loja.com/api/pedidos/' + id`) é o
+# texto com um parâmetro no fim, no lugar do valor.
 #
 # Os campos:
 # - `language`: as línguas do registro (`languages.toml`) cujos arquivos a

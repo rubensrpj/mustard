@@ -62,11 +62,15 @@
  (#match? @_mount "^(service|configure)$"))
 
 ; O grupo dentro de outro: o `.service(...)` chamado na cadeia de um grupo
-; cujo argumento é uma chamada. O grupo que começa no argumento
-; (`web::scope("/v1")`, `web::resource("/x")`) nasce do objeto, e o prefixo
-; soma os dois, o de fora primeiro. O objeto que não é grupo (`App::new()`)
-; não soma nada.
+; cujo argumento é uma chamada, ou o nome da variável que guarda o grupo. O
+; grupo que começa no argumento (`web::scope("/v1")`, `web::resource("/x")`),
+; ou no valor da variável, nasce do objeto, e o prefixo soma os dois, o de
+; fora primeiro. O objeto que não é grupo (`App::new()`) não soma nada.
 ((call_expression
    function: (field_expression value: (_) @route.receiver field: (field_identifier) @_mount)
-   arguments: (arguments . (call_expression) @route.inside .))
+   arguments: (arguments . [(call_expression) (identifier)] @route.inside .))
  (#eq? @_mount "service"))
+
+; A variável que guarda um grupo: `let v1 = web::scope("/v1").service(ler);`.
+((let_declaration pattern: (identifier) @route.variable value: (call_expression) @route.value)
+ (#match? @route.value "(scope|resource)"))

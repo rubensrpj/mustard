@@ -2,7 +2,8 @@
 ; `Http.PostAsJsonAsync("api/x", p)`): a chamada conta com qualquer objeto,
 ; como o `Http` que a página recebe do framework sem o declarar. O caminho é o
 ; primeiro argumento; o que não é texto escrito ali (`Http.GetStringAsync(url)`)
-; não faz chamada.
+; não faz chamada. O texto somado a um valor (`"api/pedidos/" + id`) é o
+; caminho com um parâmetro no lugar do valor.
 ((invocation_expression
    function: (member_access_expression
      expression: (_) @client.receiver.any
@@ -10,7 +11,14 @@
    arguments: (argument_list
      .
      (argument
-       [(string_literal) (verbatim_string_literal) (raw_string_literal) (interpolated_string_expression)] @client.path)))
+       [(string_literal) @client.path
+        (verbatim_string_literal) @client.path
+        (raw_string_literal) @client.path
+        (interpolated_string_expression) @client.path
+        (binary_expression
+          left: [(string_literal) (verbatim_string_literal) (raw_string_literal) (interpolated_string_expression)] @client.path
+          operator: "+"
+          right: [(identifier) (member_access_expression) (invocation_expression) (element_access_expression) (parenthesized_expression)] @client.path.tail)])))
  (#match? @client.method "^(GetFromJsonAsync|GetStringAsync|GetByteArrayAsync|GetStreamAsync|PostAsJsonAsync|PutAsJsonAsync|PatchAsJsonAsync|DeleteFromJsonAsync)$"))
 
 ; Os nomes que outras bibliotecas também usam (`_http.GetAsync("api/x")`): a
@@ -24,7 +32,14 @@
    arguments: (argument_list
      .
      (argument
-       [(string_literal) (verbatim_string_literal) (raw_string_literal) (interpolated_string_expression)] @client.path)))
+       [(string_literal) @client.path
+        (verbatim_string_literal) @client.path
+        (raw_string_literal) @client.path
+        (interpolated_string_expression) @client.path
+        (binary_expression
+          left: [(string_literal) (verbatim_string_literal) (raw_string_literal) (interpolated_string_expression)] @client.path
+          operator: "+"
+          right: [(identifier) (member_access_expression) (invocation_expression) (element_access_expression) (parenthesized_expression)] @client.path.tail)])))
  (#match? @client.method "^(GetAsync|PostAsync|PutAsync|PatchAsync|DeleteAsync)$"))
 
 ; A mensagem montada na chamada:
@@ -42,7 +57,14 @@
            (argument (member_access_expression expression: (identifier) @_http name: (identifier) @client.option))
            .
            (argument
-             [(string_literal) (verbatim_string_literal) (raw_string_literal) (interpolated_string_expression)] @client.path))))))
+             [(string_literal) @client.path
+              (verbatim_string_literal) @client.path
+              (raw_string_literal) @client.path
+              (interpolated_string_expression) @client.path
+              (binary_expression
+                left: [(string_literal) (verbatim_string_literal) (raw_string_literal) (interpolated_string_expression)] @client.path
+                operator: "+"
+                right: [(identifier) (member_access_expression) (invocation_expression) (element_access_expression) (parenthesized_expression)] @client.path.tail)]))))))
  (#eq? @client.method "SendAsync")
  (#eq? @_message "HttpRequestMessage")
  (#eq? @_http "HttpMethod"))

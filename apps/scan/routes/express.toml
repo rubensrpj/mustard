@@ -7,7 +7,10 @@
 # registradas no objeto com esse nome ou escritas na função com esse nome; o
 # que recebe o módulo inteiro — o import padrão (`import aves from './aves'`)
 # e o nome que recebe o `require` — (`route.module`), a todas as rotas do
-# arquivo.
+# arquivo. O roteador montado em outro soma os prefixos das montagens, de fora
+# para dentro: `app.use('/api', api)` e `api.use('/pedidos', pedidos)` dão
+# `api/pedidos` às rotas de `pedidos`, no mesmo arquivo ou em arquivos
+# separados.
 #
 # Os campos:
 # - `language`: as línguas do registro (`languages.toml`) cujos arquivos a

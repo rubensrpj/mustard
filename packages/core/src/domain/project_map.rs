@@ -298,7 +298,8 @@ pub struct FileLineage {
 }
 
 /// Um commit lido na história de um arquivo: o começo do hash, a data
-/// (segundos desde 1970), o título e o número do pull request que o trouxe.
+/// (segundos desde 1970), o título, o número do pull request que o trouxe e
+/// os arquivos que ele criou e mudou, o próprio incluído.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LineageCommit {
@@ -307,6 +308,28 @@ pub struct LineageCommit {
     pub title: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pr: Option<u32>,
+    /// Vazio no commit que muda mais de [`CO_CHANGE_MAX_FILES`] arquivos:
+    /// ele não conta para "muda junto".
+    #[serde(skip_serializing_if = "CommitFiles::is_empty")]
+    pub files: CommitFiles,
+}
+
+/// Os arquivos que um commit criou e os que ele mudou.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CommitFiles {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub added: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub changed: Vec<String>,
+}
+
+impl CommitFiles {
+    /// Nenhum arquivo guardado.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.added.is_empty() && self.changed.is_empty()
+    }
 }
 
 /// Uma declaração do arquivo, pelo nome e pela ordem entre as de mesmo nome
@@ -359,11 +382,19 @@ pub struct DeclChange {
 #[must_use]
 pub fn lineage_is_fresh(lineage: &FileLineage, map: &ProjectMap, moves: usize) -> bool {
     let comments = map.pulls.comments.iter().filter(|comment| comment.path == lineage.path).count();
-    lineage.base == map.history.base
-        && lineage.mark == map.census_mark
+    lineage_fresh_in(lineage, &map.history, &map.census_mark, comments, moves)
+}
+
+/// A mesma conta de [`lineage_is_fresh`], com as partes do mapa lidas à
+/// parte: a história do git, a marca do censo e quantos comentários de
+/// revisão presos ao arquivo o mapa tem.
+#[must_use]
+pub fn lineage_fresh_in(lineage: &FileLineage, history: &History, census_mark: &str, comments: usize, moves: usize) -> bool {
+    lineage.base == history.base
+        && lineage.mark == census_mark
         && usize::try_from(lineage.moves).is_ok_and(|read| read == moves)
         && usize::try_from(lineage.comments).is_ok_and(|read| read == comments)
-        && file_history(&map.history, &lineage.path).is_none_or(|file| file.last_commit == lineage.last_commit)
+        && file_history(history, &lineage.path).is_none_or(|file| file.last_commit == lineage.last_commit)
 }
 
 /// Por que a pergunta da história de uma declaração não tem resposta, dito
@@ -708,6 +739,106 @@ pub struct MapModule {
     /// As rotas do servidor registradas no arquivo, com as chamadas da tela
     /// que alcançam cada uma.
     pub routes: Vec<MapRoute>,
+    /// As medidas de qualidade do arquivo, como o scan as mede.
+    #[serde(skip_serializing_if = "Quality::is_empty")]
+    pub quality: Quality,
+}
+
+// ---------------------------------------------------------------------------
+// A qualidade de cada arquivo
+// ---------------------------------------------------------------------------
+
+/// As medidas de qualidade de um arquivo escrito à mão, fora os de teste: o
+/// tamanho e o de cada função, as importações, as linhas repetidas em outro
+/// arquivo e a participação num ciclo de importações. Só informam: o corte
+/// de "grande" e de "repetido" é relativo ao próprio projeto
+/// ([`QualityCuts`]), e nenhuma medida recusa trabalho.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Quality {
+    /// As linhas não vazias do arquivo, fora os trechos de teste escritos
+    /// dentro dele.
+    pub size: usize,
+    /// Quantas importações o arquivo escreve, fora as do trecho de teste.
+    pub imports: usize,
+    /// As linhas que caem numa janela de linhas seguidas igual à de outro
+    /// arquivo do projeto ([`REPEATED_WINDOW`]).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub repeated: usize,
+    /// O arquivo está num ciclo de importações.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub cycle: bool,
+    /// Cada função fora dos trechos de teste: a linha em que começa e as
+    /// linhas não vazias dela.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub functions: Vec<(u64, usize)>,
+}
+
+impl Quality {
+    /// Nenhuma medida: o arquivo que o scan não mede, ou o mapa escrito à
+    /// mão.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
+}
+
+/// Quantas linhas seguidas, iguais em dois arquivos, contam como repetição.
+pub const REPEATED_WINDOW: usize = 10;
+
+/// A parte de cima dos arquivos do projeto, em porcentagem, que conta como
+/// "grande" ou "repetido". O corte sai da posição entre os arquivos do
+/// próprio projeto, nunca de um teto fixo em linhas.
+pub const QUALITY_TOP_PERCENT: usize = 5;
+
+/// Os cortes de "grande" e de "repetido" de um projeto: o valor do primeiro
+/// arquivo logo abaixo dos [`QUALITY_TOP_PERCENT`] de cima, entre os escritos
+/// à mão que não são teste. Passa do corte só quem tem mais do que ele: o
+/// empate com o resto nunca conta, e o projeto com menos de 20 arquivos não
+/// tem nenhum acima.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QualityCuts {
+    pub size: usize,
+    pub repeated: usize,
+}
+
+impl QualityCuts {
+    /// Os cortes medidos nos arquivos `modules`.
+    #[must_use]
+    pub fn of(modules: &[MapModule]) -> Self {
+        let measured: Vec<&Quality> = modules.iter().filter(|m| is_example_material(m)).map(|m| &m.quality).collect();
+        Self {
+            size: top_cut(measured.iter().map(|q| q.size).collect()),
+            repeated: top_cut(measured.iter().map(|q| q.repeated).collect()),
+        }
+    }
+
+    /// O arquivo passa do corte de tamanho.
+    #[must_use]
+    pub fn large(&self, m: &MapModule) -> bool {
+        m.quality.size > self.size
+    }
+
+    /// O arquivo passa do corte de repetição.
+    #[must_use]
+    pub fn repeated(&self, m: &MapModule) -> bool {
+        m.quality.repeated > self.repeated
+    }
+}
+
+/// O valor logo abaixo dos [`QUALITY_TOP_PERCENT`] de cima de `values`; o
+/// maior possível quando a parte de cima não tem nenhum arquivo.
+fn top_cut(mut values: Vec<usize>) -> usize {
+    let top = values.len() * QUALITY_TOP_PERCENT / 100;
+    if top == 0 {
+        return usize::MAX;
+    }
+    values.sort_unstable_by(|a, b| b.cmp(a));
+    values.get(top).copied().unwrap_or(0)
 }
 
 /// Uma rota do servidor como as perguntas a leem: o método HTTP, o caminho
@@ -1377,15 +1508,34 @@ pub struct Example {
     pub why: Vec<String>,
 }
 
-/// A receita tirada do git: um commit que criou um arquivo do mesmo tipo na
-/// mesma pasta, e os outros arquivos que ele mudou (registro, teste, texto).
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// A receita tirada do git para um arquivo: a soma dos commits da janela do
+/// mapa que fizeram o mesmo trabalho — criar um arquivo do mesmo tipo na
+/// mesma pasta, ou mudar o arquivo —, com o que eles fizeram junto. Só entra
+/// o que passa de metade dos commits contados.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Recipe {
-    pub commit: String,
-    pub date: String,
-    pub added: String,
-    pub together: Vec<String>,
+    pub of: RecipeOf,
+    /// Quantos commits se contaram.
+    pub commits: u32,
+    /// Cada arquivo que mudou junto em mais da metade deles, com em quantos
+    /// — o registro que o arquivo novo pede, o teste, o texto —, do mais
+    /// frequente para o menos, até [`RECIPE_FILES`].
+    pub together: Vec<(String, u32)>,
+    /// Em quantos deles um teste novo nasceu junto, quando passa de metade.
+    pub tests: Option<u32>,
 }
+
+/// O trabalho que os commits de uma receita fizeram.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RecipeOf {
+    /// Criaram um arquivo do mesmo tipo na mesma pasta, como `pasta/*.rs`.
+    Created(String),
+    /// Mudaram o arquivo.
+    Changed(String),
+}
+
+/// Quantos commits uma receita precisa contar: com menos, não há receita.
+pub const RECIPE_MIN_COMMITS: u32 = 3;
 
 /// A resposta de [`examples`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -1397,8 +1547,10 @@ pub struct Examples {
     pub main_imports: Vec<String>,
     /// De 0 a 3 exemplos, o melhor primeiro.
     pub picks: Vec<Example>,
-    /// Até 3 receitas do git, a mais nova primeiro.
-    pub recipes: Vec<Recipe>,
+    /// A receita do git do alvo: a do arquivo que já existe, ou a de criar
+    /// um arquivo do tipo dele na pasta ([`recipe_for_existing`],
+    /// [`recipe_for_new`]).
+    pub recipe: Option<Recipe>,
     /// Por que não há receita do git: o mapa está sem a história da branch
     /// de partida.
     pub no_history: Option<String>,
@@ -1409,7 +1561,7 @@ const MAX_PICKS: usize = 3;
 /// Quantas importações principais contam.
 const MAX_MAIN_IMPORTS: usize = 8;
 /// Quantos arquivos de uma receita a resposta mostra.
-const RECIPE_FILES: usize = 10;
+pub const RECIPE_FILES: usize = 10;
 
 struct Candidate<'a> {
     module: &'a MapModule,
@@ -1453,8 +1605,9 @@ fn main_imports_of(files: &[&MapModule]) -> Vec<String> {
 ///
 /// - mesmo lugar e mesmo papel: a mesma pasta do alvo e as mesmas
 ///   importações principais no grafo, nunca o sufixo do nome;
-/// - a receita do git: os últimos 3 commits que criaram um arquivo do mesmo
-///   tipo na pasta, com os arquivos mudados junto;
+/// - a receita do git: a soma dos commits que criaram um arquivo do mesmo
+///   tipo na pasta, ou dos que mudaram o alvo que já existe, com o que
+///   mudou junto em mais da metade deles;
 /// - com teste primeiro, e depois o mais recente;
 /// - tamanho típico: entre o quartil de baixo e o de cima da pasta, o que
 ///   deixa de fora o índice de módulo curto, que não mostra como fazer, e o
@@ -1465,7 +1618,9 @@ fn main_imports_of(files: &[&MapModule]) -> Vec<String> {
 ///
 /// Só é exemplo o arquivo cujas importações seguem as regras fortes do
 /// padrão do projeto ([`crate::domain::pattern::learn`]), aprendido do mesmo
-/// mapa: o que importa contra uma delas ensinaria o caminho errado.
+/// mapa: o que importa contra uma delas ensinaria o caminho errado. O que
+/// passa do corte de tamanho ou de repetição do projeto ([`QualityCuts`])
+/// também fica de fora.
 #[must_use]
 pub fn examples(map: &ProjectMap, target: &str, lang: Locale) -> Examples {
     examples_following(map, target, lang, &crate::domain::pattern::learn(map))
@@ -1483,7 +1638,12 @@ pub fn examples_following(map: &ProjectMap, target: &str, lang: Locale, pattern:
     let last_at = |path: &str| -> i64 { file_history(&map.history, path).map_or(0, |h| h.last_at) };
 
     // A mesma pasta; com menos de 2, as pastas vizinhas (mesmo pai).
-    let usable = |m: &&MapModule| is_example_material(m) && m.path != target && pattern.follows(m);
+    // Nem o arquivo que passa do corte de tamanho ou de repetição do projeto
+    // ([`QualityCuts`]): ele ensinaria a crescer ou a copiar.
+    let cuts = QualityCuts::of(&map.modules);
+    let usable = |m: &&MapModule| {
+        is_example_material(m) && m.path != target && pattern.follows(m) && !cuts.large(m) && !cuts.repeated(m)
+    };
     let mut pool: Vec<(&MapModule, bool)> =
         map.modules.iter().filter(usable).filter(|m| folder_of(&m.path) == folder).map(|m| (m, true)).collect();
     if pool.len() < 2 {
@@ -1582,7 +1742,11 @@ pub fn examples_following(map: &ProjectMap, target: &str, lang: Locale, pattern:
         .collect();
 
     Examples {
-        recipes: recipes(&map.history, &folder, extension_of(&target)),
+        recipe: match target_module {
+            Some(m) => recipe_for_existing(&map.history, &m.path),
+            None if is_folder => recipe_for_new(&map.history, &format!("{folder}/")),
+            None => recipe_for_new(&map.history, &target),
+        },
         no_history: history_note(&map.history, lang),
         folder,
         main_imports,
@@ -1590,27 +1754,105 @@ pub fn examples_following(map: &ProjectMap, target: &str, lang: Locale, pattern:
     }
 }
 
-/// A receita do git: os últimos 3 commits que criaram um arquivo do tipo
-/// `ext` (qualquer um, sem extensão) na pasta `folder`, e os arquivos que
-/// cada um mudou junto.
-fn recipes(history: &History, folder: &str, ext: Option<&str>) -> Vec<Recipe> {
-    let mut out = Vec::new();
-    for commit in history.raw().into_iter().rev() {
-        let created = commit.added.iter().find(|p| {
-            folder_of(p) == folder && !is_test_path(p) && ext.is_none_or(|e| extension_of(p) == Some(e))
-        });
-        let Some(created) = created else {
-            continue;
-        };
-        let mut together: Vec<String> = commit.files().filter(|p| *p != created).map(str::to_string).collect();
-        together.sort();
-        together.truncate(RECIPE_FILES);
-        out.push(Recipe { commit: commit.id.clone(), date: date_of(commit.at), added: created.clone(), together });
-        if out.len() == MAX_PICKS {
-            break;
+/// A receita de criar o arquivo `target`, que ainda não existe: a soma dos
+/// commits da janela que criaram um arquivo do mesmo tipo (a mesma extensão;
+/// qualquer um, sem extensão) na mesma pasta, fora os de teste. O caminho
+/// que termina em `/` é a pasta, e vale qualquer tipo. O arquivo criado não
+/// entra no "muda junto": cada commit cria o seu.
+#[must_use]
+pub fn recipe_for_new(history: &History, target: &str) -> Option<Recipe> {
+    let folder = folder_of(target);
+    let ext = if target.ends_with('/') { None } else { extension_of(target) };
+    let same_kind: Vec<bool> = history
+        .paths
+        .iter()
+        .map(|p| folder_of(p) == folder && !is_test_path(p) && ext.is_none_or(|e| extension_of(p) == Some(e)))
+        .collect();
+    let kind = |i: u32| same_kind.get(i as usize).copied().unwrap_or(false);
+    let mut sum = RecipeSum::default();
+    for commit in history.commits.iter().filter(|c| c.added.len() + c.changed.len() <= CO_CHANGE_MAX_FILES) {
+        if commit.added.iter().any(|&i| kind(i)) {
+            sum.count(history, commit, |i| commit.added.contains(&i) && kind(i));
         }
     }
-    out
+    let shown = match (folder, ext) {
+        ("", Some(e)) => format!("*.{e}"),
+        ("", None) => "*".to_string(),
+        (dir, Some(e)) => format!("{dir}/*.{e}"),
+        (dir, None) => format!("{dir}/*"),
+    };
+    sum.recipe(RecipeOf::Created(shown))
+}
+
+/// A receita de mudar o arquivo `path`: a soma dos commits da janela que o
+/// mudaram, com os outros arquivos de cada um.
+#[must_use]
+pub fn recipe_for_existing(history: &History, path: &str) -> Option<Recipe> {
+    let index = u32::try_from(history.paths.binary_search_by(|p| p.as_str().cmp(path)).ok()?).ok()?;
+    let mut sum = RecipeSum::default();
+    for commit in history.commits.iter().filter(|c| c.added.len() + c.changed.len() <= CO_CHANGE_MAX_FILES) {
+        if commit.added.binary_search(&index).is_ok() || commit.changed.binary_search(&index).is_ok() {
+            sum.count(history, commit, |i| i == index);
+        }
+    }
+    sum.recipe(RecipeOf::Changed(path.to_string()))
+}
+
+/// A receita de mudar o arquivo da história `lineage`, lida do git além da
+/// janela do mapa: a mesma soma de [`recipe_for_existing`], dos commits que
+/// guardam os arquivos que mudaram junto.
+#[must_use]
+pub fn recipe_from_lineage(lineage: &FileLineage) -> Option<Recipe> {
+    let mut sum = RecipeSum::default();
+    for commit in lineage.commits.iter().filter(|c| !c.files.is_empty()) {
+        sum.commits += 1;
+        if commit.files.added.iter().any(|p| is_test_path(p)) {
+            sum.tests += 1;
+        }
+        let others: BTreeSet<&str> = commit.files.added.iter().chain(&commit.files.changed).map(String::as_str).collect();
+        for other in others.into_iter().filter(|p| *p != lineage.path) {
+            *sum.together.entry(other.to_string()).or_insert(0) += 1;
+        }
+    }
+    sum.recipe(RecipeOf::Changed(lineage.path.clone()))
+}
+
+/// A soma dos commits de uma receita.
+#[derive(Default)]
+struct RecipeSum {
+    commits: u32,
+    tests: u32,
+    together: BTreeMap<String, u32>,
+}
+
+impl RecipeSum {
+    /// Conta `commit`, com cada arquivo dele que `own` não diz ser o da
+    /// própria receita.
+    fn count(&mut self, history: &History, commit: &Commit, own: impl Fn(u32) -> bool) {
+        let path = |i: u32| history.paths.get(i as usize).map(String::as_str);
+        self.commits += 1;
+        if commit.added.iter().filter_map(|&i| path(i)).any(is_test_path) {
+            self.tests += 1;
+        }
+        let others: BTreeSet<u32> = commit.added.iter().chain(&commit.changed).copied().filter(|&i| !own(i)).collect();
+        for other in others.into_iter().filter_map(path) {
+            *self.together.entry(other.to_string()).or_insert(0) += 1;
+        }
+    }
+
+    /// A receita da soma: com menos de [`RECIPE_MIN_COMMITS`] commits, ou sem
+    /// nada que passe de metade deles, nenhuma.
+    fn recipe(self, of: RecipeOf) -> Option<Recipe> {
+        if self.commits < RECIPE_MIN_COMMITS {
+            return None;
+        }
+        let half = |n: u32| u64::from(n) * 2 > u64::from(self.commits);
+        let mut together: Vec<(String, u32)> = self.together.into_iter().filter(|(_, n)| half(*n)).collect();
+        together.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        together.truncate(RECIPE_FILES);
+        let tests = half(self.tests).then_some(self.tests);
+        (!together.is_empty() || tests.is_some()).then_some(Recipe { of, commits: self.commits, together, tests })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2004,20 +2246,186 @@ mod tests {
     }
 
     #[test]
-    fn the_recipe_lists_the_commits_that_created_a_file_of_the_same_kind_there() {
+    fn the_recipe_sums_every_commit_that_created_a_file_of_the_same_kind_there() {
         let map = command_folder();
         let got = examples(&map, "apps/rt/src/commands/spec_events/map.rs", Locale::EnUs);
-        let created: Vec<&str> = got.recipes.iter().map(|r| r.added.as_str()).collect();
-        assert_eq!(
-            created,
-            vec![
-                "apps/rt/src/commands/spec_events/read.rs",
-                "apps/rt/src/commands/spec_events/index.rs",
-                "apps/rt/src/commands/spec_events/pages.rs",
+        let recipe = got.recipe.expect("three commits created a command there");
+        assert_eq!(recipe.of, RecipeOf::Created("apps/rt/src/commands/spec_events/*.rs".to_string()));
+        assert_eq!(recipe.commits, 3);
+        // O texto mudou junto em só 1 dos 3: fica de fora.
+        assert_eq!(recipe.together, vec![("apps/rt/tests/run_command_surface.rs".to_string(), 2)]);
+        assert_eq!(recipe.tests, None);
+    }
+
+    /// Dez commits que criaram um comando em `apps/rt/src/commands`: nove
+    /// registram o comando no índice, sete criam o teste dele (quando
+    /// `tested`), três mudam o texto, e um arquivo de teste criado na própria
+    /// pasta não conta como comando. Ao lado, commits que não criam comando.
+    fn ten_commands(tested: bool) -> History {
+        let dir = "apps/rt/src/commands";
+        let mut commits = Vec::new();
+        for n in 0..10_i64 {
+            let created = format!("{dir}/cmd_{n}.rs");
+            let test = format!("apps/rt/tests/cmd_{n}.rs");
+            let mut added = vec![created.as_str()];
+            if tested && n < 7 {
+                added.push(test.as_str());
+            }
+            let mut changed = Vec::new();
+            if n < 9 {
+                changed.push("apps/rt/src/commands/mod.rs");
+            }
+            if n < 3 {
+                changed.push("packages/core/src/platform/i18n.rs");
+            }
+            commits.push(commit(&format!("c{n}"), n * DAY, &added, &changed));
+            commits.push(commit(&format!("o{n}"), n * DAY + 1, &[], &["README.md"]));
+        }
+        commits.push(commit("t0", 20 * DAY, &[&format!("{dir}/cmd_test.rs")], &["apps/rt/src/commands/mod.rs"]));
+        History::from_raw(commits)
+    }
+
+    #[test]
+    fn a_task_creating_a_command_gets_the_registry_and_the_test_it_usually_brings() {
+        let recipe = recipe_for_new(&ten_commands(true), "apps/rt/src/commands/novo.rs").expect("ten commands were created");
+        assert_eq!(recipe.of, RecipeOf::Created("apps/rt/src/commands/*.rs".to_string()));
+        assert_eq!(recipe.commits, 10, "every commit of the window is summed, not the last three");
+        assert_eq!(recipe.together, vec![("apps/rt/src/commands/mod.rs".to_string(), 9)]);
+        assert_eq!(recipe.tests, Some(7));
+    }
+
+    #[test]
+    fn a_project_without_tests_gets_no_test_line_in_the_recipe() {
+        let recipe = recipe_for_new(&ten_commands(false), "apps/rt/src/commands/novo.rs").expect("ten commands were created");
+        assert_eq!(recipe.tests, None);
+        assert_eq!(recipe.together, vec![("apps/rt/src/commands/mod.rs".to_string(), 9)]);
+    }
+
+    #[test]
+    fn fewer_than_three_commits_or_no_history_give_no_recipe() {
+        let two = History::from_raw(vec![
+            commit("a", DAY, &["src/a.rs"], &["src/mod.rs"]),
+            commit("b", 2 * DAY, &["src/b.rs"], &["src/mod.rs"]),
+        ]);
+        assert_eq!(recipe_for_new(&two, "src/c.rs"), None);
+        assert_eq!(recipe_for_new(&History::default(), "src/c.rs"), None);
+        assert_eq!(recipe_for_existing(&History::default(), "src/a.rs"), None);
+        let three = History::from_raw(vec![
+            commit("a", DAY, &["src/a.rs"], &["src/mod.rs"]),
+            commit("b", 2 * DAY, &["src/b.rs"], &["src/mod.rs"]),
+            commit("c", 3 * DAY, &["src/d.rs"], &["src/mod.rs"]),
+        ]);
+        assert_eq!(recipe_for_new(&three, "src/c.rs").map(|r| r.commits), Some(3));
+    }
+
+    #[test]
+    fn the_recipe_of_an_existing_file_sums_the_commits_that_changed_it_and_skips_the_huge_ones() {
+        let wide: Vec<String> = (0..=CO_CHANGE_MAX_FILES).map(|n| format!("src/other_{n}.rs")).collect();
+        let mut wide_changed: Vec<&str> = wide.iter().map(String::as_str).collect();
+        wide_changed.push("src/pay.rs");
+        let history = History::from_raw(vec![
+            commit("a", DAY, &["src/pay.rs"], &["src/mod.rs"]),
+            commit("b", 2 * DAY, &[], &["src/pay.rs", "tests/pay.rs"]),
+            commit("c", 3 * DAY, &[], &["src/pay.rs", "tests/pay.rs"]),
+            commit("d", 4 * DAY, &[], &["src/pay.rs", "tests/pay.rs", "src/mod.rs"]),
+            commit("e", 5 * DAY, &[], &wide_changed),
+        ]);
+        let recipe = recipe_for_existing(&history, "src/pay.rs").expect("four commits changed it");
+        assert_eq!(recipe.of, RecipeOf::Changed("src/pay.rs".to_string()));
+        assert_eq!(recipe.commits, 4, "the commit over the co-change ceiling does not count");
+        assert_eq!(recipe.together, vec![("tests/pay.rs".to_string(), 3)]);
+    }
+
+    #[test]
+    fn the_recipe_of_a_history_read_beyond_the_window_comes_from_its_commits_files() {
+        let with = |id: &str, added: &[&str], changed: &[&str]| LineageCommit {
+            id: id.to_string(),
+            files: CommitFiles {
+                added: added.iter().map(|p| (*p).to_string()).collect(),
+                changed: changed.iter().map(|p| (*p).to_string()).collect(),
+            },
+            ..LineageCommit::default()
+        };
+        let lineage = FileLineage {
+            path: "src/old.rs".to_string(),
+            commits: vec![
+                with("a", &["src/old.rs", "tests/old.rs"], &["src/mod.rs"]),
+                with("b", &[], &["src/old.rs", "src/mod.rs"]),
+                with("c", &["tests/more.rs"], &["src/old.rs", "src/mod.rs"]),
+                with("d", &[], &[]),
             ],
-        );
-        assert!(got.recipes[0].together.contains(&"apps/rt/tests/run_command_surface.rs".to_string()));
-        assert_eq!(got.recipes[0].date, "1970-01-04");
+            ..FileLineage::default()
+        };
+        let recipe = recipe_from_lineage(&lineage).expect("three commits keep their files");
+        assert_eq!(recipe.commits, 3, "the commit without files does not count");
+        assert_eq!(recipe.together, vec![("src/mod.rs".to_string(), 3)]);
+        assert_eq!(recipe.tests, Some(2));
+    }
+
+    /// Vinte e cinco arquivos medidos: uma pasta de pedidos com cinco que
+    /// importam o mesmo núcleo, entre eles o maior do projeto e o mais
+    /// repetido, os dois testados e os mais recentes; e vinte outros, pequenos.
+    fn orders_with_quality() -> ProjectMap {
+        let core = "src/core.rs";
+        let mut modules = Vec::new();
+        for name in ["big", "copied", "a", "b", "c"] {
+            let mut m = module(&format!("src/orders/{name}.rs"), 100, &[core]);
+            m.quality = Quality { size: 100, imports: 1, ..Quality::default() };
+            m.has_tests = matches!(name, "big" | "copied");
+            modules.push(m);
+        }
+        modules[0].quality.size = 5000;
+        modules[1].quality.repeated = 400;
+        for n in 0..20 {
+            let mut m = module(&format!("src/other/f{n}.rs"), 100, &[]);
+            m.quality = Quality { size: 100 + n, ..Quality::default() };
+            modules.push(m);
+        }
+        let history = History::from_raw(vec![commit("aaaa", DAY, &[], &["src/orders/big.rs", "src/orders/copied.rs"])]);
+        ProjectMap { modules, history, ..ProjectMap::default() }
+    }
+
+    #[test]
+    fn an_example_above_the_size_or_the_repetition_cut_does_not_enter() {
+        let map = orders_with_quality();
+        let cuts = QualityCuts::of(&map.modules);
+        assert!(cuts.large(&map.modules[0]), "the largest file passes the cut: {cuts:?}");
+        assert!(cuts.repeated(&map.modules[1]), "the most repeated file passes the cut: {cuts:?}");
+        let got = examples(&map, "src/orders/new.rs", Locale::PtBr);
+        let paths: Vec<&str> = got.picks.iter().map(|p| p.path.as_str()).collect();
+        assert!(!paths.is_empty());
+        assert!(!paths.contains(&"src/orders/big.rs") && !paths.contains(&"src/orders/copied.rs"), "{paths:?}");
+        // Sem as medidas, os dois seriam os primeiros: testados e recentes.
+        let mut plain = map.clone();
+        for m in &mut plain.modules {
+            m.quality = Quality::default();
+        }
+        let loose = examples(&plain, "src/orders/new.rs", Locale::PtBr);
+        let first: Vec<&str> = loose.picks.iter().take(2).map(|p| p.path.as_str()).collect();
+        assert_eq!(first, ["src/orders/big.rs", "src/orders/copied.rs"]);
+    }
+
+    #[test]
+    fn the_cut_is_relative_to_the_project_and_a_tie_with_the_rest_never_passes() {
+        let sized = |sizes: &[usize]| -> Vec<MapModule> {
+            sizes
+                .iter()
+                .enumerate()
+                .map(|(n, &size)| MapModule { path: format!("src/f{n}.rs"), quality: Quality { size, ..Quality::default() }, ..MapModule::default() })
+                .collect()
+        };
+        // Com menos de 20 arquivos, os 5% de cima não têm nenhum.
+        let few = sized(&[10, 20, 3000]);
+        assert!(!QualityCuts::of(&few).large(&few[2]));
+        // Quarenta arquivos: os 2 maiores passam, o terceiro não.
+        let many: Vec<usize> = (1..=40).map(|n| n * 10).collect();
+        let forty = sized(&many);
+        let cuts = QualityCuts::of(&forty);
+        assert_eq!(forty.iter().filter(|m| cuts.large(m)).count(), 2, "{cuts:?}");
+        // Todos iguais: ninguém passa.
+        let same = sized(&[50; 30]);
+        let cuts = QualityCuts::of(&same);
+        assert!(same.iter().all(|m| !cuts.large(m)), "{cuts:?}");
     }
 
     #[test]
@@ -2025,7 +2433,7 @@ mod tests {
         let mut map = command_folder();
         map.history = History::default();
         let got = examples(&map, "apps/rt/src/commands/spec_events/", Locale::PtBr);
-        assert!(got.recipes.is_empty());
+        assert!(got.recipe.is_none());
         assert!((2..=3).contains(&got.picks.len()), "{:?}", got.picks);
         assert!(got.picks.iter().all(|p| p.last_change.is_none()));
     }

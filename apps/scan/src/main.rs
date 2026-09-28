@@ -17,6 +17,7 @@ mod manifests;
 mod markup;
 mod model;
 mod path_aliases;
+mod quality;
 mod refresh;
 mod routes;
 mod testmap;
@@ -325,6 +326,7 @@ fn read_modules(root: &Path, reuse: Option<&ingest::Reuse>, listing: Option<&Lis
                 deps: Vec::new(),
                 tests: Vec::new(),
                 has_tests: testmap::has_inline_tests(&sf.content),
+                quality: Default::default(),
                 signals: code_signals(&sf.content),
                 calls: extracted.calls,
                 unbound_heads: extracted.unbound_heads,
@@ -464,6 +466,9 @@ fn analyze(root: &Path, previous: Option<&ProjectModel>) -> Result<Analysis> {
         _ => (true, read_modules(root, None, listing.as_ref())?),
     };
     let Read { ing, mut modules, projects, aliases, graph: (graph_stats, depth_by_path), route_rules } = read;
+    // O tamanho, as importações, a repetição e o ciclo de cada arquivo,
+    // medidos do projeto inteiro depois das importações resolvidas.
+    quality::measure(&ing.root, &mut modules);
 
     // The named edges between declarations: who calls or cites whom, in which
     // file and on which line. Read from the call sites and the citations every

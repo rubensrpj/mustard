@@ -1174,11 +1174,17 @@ pub(crate) fn files_bringing(
     let mut found: BTreeMap<(usize, String), BTreeSet<String>> = BTreeMap::new();
     for (at, name) in asks {
         let m = &modules[*at];
-        let files = m
-            .brought
-            .iter()
-            .filter(|(_, names)| names.contains_key(name))
-            .flat_map(|(imp, _)| ImportFiles::of(&resolver, m, imp).of_name(name).to_vec());
+        // O arquivo alvo é pedido pelo nome de origem, seguidos os repasses;
+        // o nome que o arquivo de entrada de pasta não declara é o arquivo ao
+        // lado dele (`from pacote import modulo`).
+        let files = m.brought.iter().filter_map(|(imp, names)| Some((imp, names.get(name)?))).flat_map(|(imp, original)| {
+            ImportFiles::of(&resolver, m, imp)
+                .of_name(name)
+                .iter()
+                .flat_map(|file| resolver.bringing(m, imp, file, original))
+                .map(|(file, _)| file)
+                .collect::<Vec<_>>()
+        });
         found.entry((*at, name.clone())).or_default().extend(files);
     }
     for (at, path) in written {
@@ -1277,7 +1283,7 @@ const ENUM_MEMBER_KINDS: &[&str] = &["enum_member", "method", "function", "const
 
 /// O que implementa e o que é implementado: os métodos, que em algumas línguas
 /// o mapa grava como função.
-const METHOD_KINDS: &[&str] = &["method", "function"];
+pub(crate) const METHOD_KINDS: &[&str] = &["method", "function"];
 
 /// Uma declaração do projeto: o arquivo e a posição dela nele.
 type DeclId = (usize, usize);

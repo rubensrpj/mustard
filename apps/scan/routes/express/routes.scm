@@ -6,9 +6,11 @@
   arguments: (arguments . (string) @route.path (_) @route.handler .))
 
 ; A montagem: `app.use('/api', router)` soma o prefixo às rotas registradas
-; em `router`, ou às do arquivo de onde vem o `router` trazido por import.
+; em `router`, ou às do arquivo de onde vem o `router` trazido por import. O
+; objeto que recebe a montagem (`app`) é o lugar dela: o prefixo posto nele
+; vem na frente (`api.use('/pedidos', pedidos)` com `app.use('/api', api)`).
 ((call_expression
-   function: (member_expression property: (property_identifier) @_use)
+   function: (member_expression object: (_) @route.receiver property: (property_identifier) @_use)
    arguments: (arguments . (string) @route.prefix (identifier) @route.target .))
  (#eq? @_use "use"))
 

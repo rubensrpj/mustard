@@ -19,13 +19,16 @@
  (#eq? @_as_view "as_view"))
 
 ; A montagem de um arquivo: `path('api/', include('loja.urls'))` soma o
-; prefixo a todas as rotas do arquivo que o texto nomeia.
+; prefixo a todas as rotas do arquivo que o texto nomeia, também na tupla com
+; o nome do app (`include(('loja.urls', 'loja'))`).
 ((list
    (call
      function: (identifier) @_path
      arguments: (argument_list
        . (string) @route.prefix
-       . (call function: (identifier) @_include arguments: (argument_list . (string) @route.target.module)))))
+       . (call
+           function: (identifier) @_include
+           arguments: (argument_list . [(string) @route.target.module (tuple . (string) @route.target.module)])))))
  (#match? @_path "^(path|re_path|url)$")
  (#eq? @_include "include"))
 
@@ -46,7 +49,8 @@
 ; A montagem de uma lista guardada num nome, sozinho ou numa tupla com o nome
 ; do app: `path('api/', include(extra))` soma o prefixo às rotas escritas na
 ; lista `extra`, a deste arquivo ou, quando um import traz o nome, a do
-; arquivo de onde ele vem.
+; arquivo de onde ele vem. O nome que o import traz como módulo
+; (`from loja import urls as loja_urls`) monta o arquivo inteiro.
 ((list
    (call
      function: (identifier) @_path

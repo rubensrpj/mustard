@@ -288,7 +288,8 @@ pub const FILES: MapBlock = block!("files", version 2, {
 /// outros que caem fora das linhas de toda declaração — os de dentro moram
 /// uma vez só, nos da declaração —, com quantos bytes do começo dos
 /// comentários da primeira declaração de fora são também do começo do
-/// arquivo.
+/// arquivo; e as medidas de qualidade de cada arquivo, que a passada refaz
+/// do projeto inteiro, porque a repetição e o ciclo dependem dos outros.
 ///
 /// Junto delas mora o índice da busca do mapa ([`crate::io::map_search`]):
 /// uma tabela FTS5 por nível — a declaração e o arquivo —, uma coluna por
@@ -299,7 +300,7 @@ pub const FILES: MapBlock = block!("files", version 2, {
 /// feito. As listas saem antes das tabelas de que elas leem. Os campos que a
 /// busca sem filtro lê vêm primeiro; os do texto de dentro das peças vêm
 /// depois, e só a busca com filtro os lê.
-pub const DECLS: MapBlock = block!("decls", version 8, {
+pub const DECLS: MapBlock = block!("decls", version 9, {
     "decls" at Place::Decls => [
         "file" Owner ["path"], "kind" Text, "name" Text, "line" Int, "end_line" Int,
         "signature" Text, "doc" Text, "whole_doc" Text, "body_comment" Text, "body_names" Text,
@@ -307,7 +308,7 @@ pub const DECLS: MapBlock = block!("decls", version 8, {
         "owner" Json, "contract" Json, "members" Json, "implements" Json, "implemented_by" Json
     ],
     "texts" at Place::Files => [
-        "path" Text, "texts" Json, "file_doc" Text, "file_comment" Text, "file_doc_in_body" Int
+        "path" Text, "texts" Json, "file_doc" Text, "file_comment" Text, "file_doc_in_body" Int, "quality" Json
     ]
 }, index [
     "file_vocab", "decl_vocab", "file_fts", "decl_fts", "decl_trigram", "file_lengths", "decl_lengths", "search_meta"
@@ -367,17 +368,18 @@ pub const HISTORY: MapBlock = block!("history", version 3, {
 /// arquivo nela quando se leu, a marca do scan que leu, quantas mudanças de
 /// arquivo a leitura podia seguir e quantos comentários de revisão presos ao
 /// arquivo o mapa tinha; os commits lidos,
-/// com o título e o número do pull request; e, de cada declaração, pelo nome
+/// com o título, o número do pull request e os arquivos que cada um criou e
+/// mudou; e, de cada declaração, pelo nome
 /// e pela ordem entre as de mesmo nome, os commits que a mudaram, cada um
 /// com a marca de só forma, e os comentários de revisão presos às linhas
 /// dela. A montagem não o grava nem o confere: ele fica
 /// fora de [`BLOCKS`], volta vazio na troca de versão, e a pergunta seguinte
 /// o enche de novo.
-pub const LINEAGE: MapBlock = block!("lineage", version 2, {
+pub const LINEAGE: MapBlock = block!("lineage", version 3, {
     "lineage_files" at list(&["files"]) => [
         "path" Text, "base" Text, "last_commit" Text, "mark" Text, "moves" Int, "comments" Int
     ],
-    "lineage_commits" at list(&["commits"]) => ["path" Text, "id" Text, "at" Int, "title" Text, "pr" Int],
+    "lineage_commits" at list(&["commits"]) => ["path" Text, "id" Text, "at" Int, "title" Text, "pr" Int, "files" Json],
     "lineage_decls" at list(&["declarations"]) => ["path" Text, "name" Text, "nth" Int, "commits" Json, "comments" Json]
 });
 
@@ -668,6 +670,10 @@ pub enum Need<'a> {
     History { file: Option<&'a str>, name: &'a str },
     /// O texto do pull request com o número, quando o mapa o tem.
     Pull(u32),
+    /// A história guardada das declarações do arquivo, quando há, com o que
+    /// a validade dela confere além da história do git: a marca da versão do
+    /// scan que gravou o censo e os comentários de revisão presos ao arquivo.
+    Lineage(&'a str),
 }
 
 /// Como quem pergunta ao mapa o lê: por [`read_for`], só as tabelas da
@@ -756,6 +762,12 @@ fn part_of(db: &MapDb, need: Need<'_>) -> Result<ProjectMap> {
             let ids: Vec<&str> =
                 map.lineage.iter().flat_map(|lineage| lineage.commits.iter().map(|commit| commit.id.as_str())).collect();
             map.spec_notes = crate::io::map_specs::notes_of(conn, Some(&ids))?;
+        }
+        Need::Lineage(file) => {
+            let file = clean_path(file);
+            map.lineage = lineages(conn, Some(&[file.as_str()]))?;
+            map.census_mark = db.mark(CENSUS.name())?.unwrap_or_default();
+            map.pulls.comments = pulls_of(conn, &[file.as_str()], &[])?.comments;
         }
         Need::Pull(number) => {
             let number = number.to_string();
@@ -867,6 +879,7 @@ pub fn pull_sources_at(model: &Path) -> std::result::Result<PullSources, MapRefu
                 at: int_cell(&row[1]),
                 title: text_cell(&row[2]),
                 pr: u32::try_from(int_cell(&row[3])).ok().filter(|n| *n > 0),
+                ..LineageCommit::default()
             })
             .collect();
         let texts = picked(conn, "pr_texts", &["number", "etag", "through"], "", &[])?
@@ -1147,13 +1160,14 @@ fn lineages(conn: &Connection, paths: Option<&[&str]>) -> Result<Vec<FileLineage
         })
         .collect();
     let at: HashMap<String, usize> = files.iter().enumerate().map(|(at, file)| (file.path.clone(), at)).collect();
-    for row in rows_for("lineage_commits", &["path", "id", "at", "title", "pr"])? {
+    for row in rows_for("lineage_commits", &["path", "id", "at", "title", "pr", "files"])? {
         if let Some(&file) = at.get(&text_cell(&row[0])) {
             files[file].commits.push(LineageCommit {
                 id: text_cell(&row[1]),
                 at: int_cell(&row[2]),
                 title: text_cell(&row[3]),
                 pr: u32::try_from(int_cell(&row[4])).ok().filter(|n| *n > 0),
+                files: json_cell(&row[5])?,
             });
         }
     }
@@ -1278,8 +1292,8 @@ fn with_routes(conn: &Connection, modules: &mut [MapModule]) -> Result<()> {
 }
 
 /// Cada arquivo com o que os exemplos leem dele: o tamanho, a classe, a
-/// marca dos próprios testes, as importações e os testes que o cobrem; com
-/// `words`, também os nomes que ele declara.
+/// marca dos próprios testes, as importações, os testes que o cobrem e as
+/// medidas de qualidade; com `words`, também os nomes que ele declara.
 fn example_modules(conn: &Connection, words: bool) -> Result<Vec<MapModule>> {
     let mut modules: Vec<MapModule> = file_rows(conn, &["path", "loc", "file_class", "has_tests"], None)?
         .iter()
@@ -1299,6 +1313,11 @@ fn example_modules(conn: &Connection, words: bool) -> Result<Vec<MapModule>> {
         if let Some(&index) = at.get(&text_cell(&row[0])) {
             modules[index].deps = json_cell(&row[1])?;
             modules[index].tests = json_cell(&row[2])?;
+        }
+    }
+    for row in picked(conn, "texts", &["path", "quality"], "", &[])? {
+        if let Some(&index) = at.get(&text_cell(&row[0])) {
+            modules[index].quality = json_cell(&row[1])?;
         }
     }
     if words {
@@ -1887,6 +1906,7 @@ pub fn save_lineage_at(model: &Path, lineage: &FileLineage) -> Result<()> {
         }],
         "commits": lineage.commits.iter().map(|commit| serde_json::json!({
             "path": path, "id": commit.id, "at": commit.at, "title": commit.title, "pr": commit.pr,
+            "files": (!commit.files.is_empty()).then_some(&commit.files),
         })).collect::<Vec<_>>(),
         "declarations": lineage.declarations.iter().map(|decl| serde_json::json!({
             "path": path, "name": decl.name, "nth": decl.nth, "commits": decl.commits,

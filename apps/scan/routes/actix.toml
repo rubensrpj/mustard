@@ -16,7 +16,11 @@
 # arquivo ou no arquivo de onde o nome vem. O escopo ou o recurso escrito
 # dentro do `.service(...)` de outro escopo soma os dois prefixos, o de fora
 # primeiro: `web::scope("/api").service(web::scope("/v1").service(ler))` dá
-# `api/v1` à rota de `ler`.
+# `api/v1` à rota de `ler`, também com o escopo de dentro guardado numa
+# variável (`let v1 = web::scope("/v1").service(ler);` e
+# `web::scope("/api").service(v1)`). O prefixo do `.configure(config)` vale
+# também para o que a função `config` monta: o escopo escrito nela soma o de
+# fora ao dele.
 #
 # Os campos:
 # - `language`: as línguas do registro (`languages.toml`) cujos arquivos a

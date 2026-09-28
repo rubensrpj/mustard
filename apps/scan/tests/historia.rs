@@ -420,6 +420,40 @@ fn a_file_older_than_the_window_gets_its_old_history_with_the_number_and_the_oth
     assert_eq!(map.lineage.iter().find(|found| found.path == "src/outro.rs"), Some(&other), "the list of another file stays as it was");
 }
 
+/// Cada commit da história de um arquivo guarda os arquivos que ele criou e
+/// mudou, o próprio incluído: é deles que sai a receita do arquivo cujo
+/// último commit ficou fora da janela do mapa.
+#[test]
+fn each_commit_of_a_file_history_keeps_the_files_it_created_and_changed() {
+    use mustard_core::domain::project_map::CommitFiles;
+
+    let temp = project("scan-linhagem-arquivos-");
+    let dir = temp.path();
+    declare_base(dir, "main");
+    write(dir, "src/registro.rs", "pub mod pagar;\n");
+    commit(dir, "src/pagar.rs", "pub fn pagar() -> u32 {\n    1\n}\n", "cria o pagar");
+    write(dir, "tests/pagar.rs", "#[test]\nfn paga() {}\n");
+    commit(dir, "src/pagar.rs", "pub fn pagar() -> u32 {\n    2\n}\n", "muda o pagar");
+    scan(dir);
+
+    let found = lineage(dir, "src/pagar.rs");
+    // Os dois commits podem cair no mesmo segundo: a ordem entre eles não
+    // conta aqui.
+    let mut files: Vec<(&str, CommitFiles)> = found.commits.iter().map(|c| (c.title.as_str(), c.files.clone())).collect();
+    files.sort_by_key(|(title, _)| *title);
+    let listed = |added: &[&str], changed: &[&str]| CommitFiles {
+        added: added.iter().map(|p| (*p).to_string()).collect(),
+        changed: changed.iter().map(|p| (*p).to_string()).collect(),
+    };
+    assert_eq!(
+        files,
+        vec![
+            ("cria o pagar", listed(&["src/pagar.rs", "src/registro.rs"], &[])),
+            ("muda o pagar", listed(&["tests/pagar.rs"], &["src/pagar.rs"])),
+        ],
+    );
+}
+
 #[test]
 fn a_change_in_the_comment_right_above_a_function_belongs_to_it() {
     let temp = project("scan-linhagem-comentario-");

@@ -1,7 +1,8 @@
 ; A chamada: `dio.get('/pedidos/$id')`, `this.dio.post('/pedidos', data: p)`.
 ; O caminho é o primeiro argumento; o que não é texto escrito ali
-; (`dio.get(caminho)`) não faz chamada. O objeto precisa ser um cliente do
-; arquivo; `this.dio` vale como `dio`.
+; (`dio.get(caminho)`) não faz chamada. O texto somado a um valor
+; (`'/pedidos/' + id`) é o caminho com um parâmetro no lugar do valor. O
+; objeto precisa ser um cliente do arquivo; `this.dio` vale como `dio`.
 (method_invocation
   function: (unconditional_assignable_selector
     .
@@ -9,7 +10,15 @@
      (unconditional_assignable_selector . (this) (identifier) @client.receiver .)]
     (identifier) @client.method
     .)
-  arguments: (argument_part (arguments . (argument (string_literal) @client.path))))
+  arguments: (argument_part
+    (arguments
+      .
+      (argument
+        [(string_literal) @client.path
+         (additive_expression
+           . (string_literal) @client.path
+           . (additive_operator)
+           . [(identifier) (this) (parenthesized_expression)] @client.path.tail)]))))
 
 ; O cliente feito e guardado num nome, com a base ou sem ela:
 ; `final dio = Dio(BaseOptions(baseUrl: 'https://loja.com/api'));`,

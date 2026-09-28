@@ -597,6 +597,118 @@ fn a_router_brought_from_another_file_takes_the_prefix_of_the_mount() {
     assert_eq!(served(&map, "named/passaros.ts"), ["GET aves/{} -> ler", "GET outro -> ler"]);
 }
 
+/// A tela que busca o pedido 5 pelo `fetch`, sem cliente.
+const SCREEN_FETCH: &str = "export function abrir() {\n  return fetch('/api/pedidos/5');\n}\n";
+
+/// O roteador de pedidos montado no `api`, e o `api` montado no `app`, os
+/// três num arquivo só.
+const EXPRESS_THREE_LEVELS: &str = "import express, { Router } from 'express';\n\nconst app = express();\n\
+                                    const api = Router();\nconst pedidos = Router();\n\n\
+                                    export function lerPedido(req, res) {}\n\npedidos.get('/:id', lerPedido);\n\
+                                    api.use('/pedidos', pedidos);\napp.use('/api', api);\n";
+
+/// Três roteadores de Express, um montado no outro, num arquivo só: a rota
+/// soma os três prefixos, de fora para dentro, e a chamada da tela liga à
+/// função dela. O roteador montado direto no `app` segue com o prefixo só
+/// dessa montagem.
+#[test]
+fn a_router_mounted_in_a_router_mounted_in_the_app_sums_every_prefix_in_one_file() {
+    let temp = project_with(&[("src/server.ts", EXPRESS_THREE_LEVELS), ("web/src/pedido.ts", SCREEN_FETCH)]);
+    let (map, _) = scan(temp.path());
+    assert_eq!(served(&map, "src/server.ts"), ["GET api/pedidos/{} -> lerPedido"]);
+    assert_eq!(called_by(&map, "src/server.ts", "GET", "api/pedidos/{}"), json!(["web/src/pedido.ts:2:abrir"]));
+
+    let one_level = "import express from 'express';\n\nconst app = express();\nconst router = express.Router();\n\n\
+                     export function lerPedido(req, res) {}\n\nrouter.get('/pedidos/:id', lerPedido);\napp.use('/api', router);\n";
+    let temp = project_with(&[("src/server.ts", one_level), ("web/src/pedido.ts", SCREEN_FETCH)]);
+    let (map, _) = scan(temp.path());
+    assert_eq!(served(&map, "src/server.ts"), ["GET api/pedidos/{} -> lerPedido"]);
+    assert_eq!(called_by(&map, "src/server.ts", "GET", "api/pedidos/{}"), json!(["web/src/pedido.ts:2:abrir"]));
+}
+
+/// Os mesmos três níveis em três arquivos: o `app` monta o `api` trazido de
+/// outro arquivo, que monta o de pedidos, trazido de um terceiro. O prefixo
+/// posto no roteador vale também para as montagens feitas nele.
+#[test]
+fn a_router_mounted_in_a_router_mounted_in_the_app_sums_every_prefix_across_files() {
+    let pedidos = "import { Router } from 'express';\n\nconst pedidos = Router();\n\n\
+                   export function lerPedido(req, res) {}\n\npedidos.get('/:id', lerPedido);\n\nexport default pedidos;\n";
+    let api = "import { Router } from 'express';\nimport pedidos from './pedidos';\n\nconst api = Router();\n\n\
+               api.use('/pedidos', pedidos);\n\nexport default api;\n";
+    let server = "import express from 'express';\nimport api from './rotas/api';\n\nconst app = express();\n\n\
+                  app.use('/api', api);\n";
+    let temp = project_with(&[
+        ("src/rotas/pedidos.ts", pedidos),
+        ("src/rotas/api.ts", api),
+        ("src/server.ts", server),
+        ("web/src/pedido.ts", SCREEN_FETCH),
+    ]);
+    let (map, _) = scan(temp.path());
+    assert_eq!(served(&map, "src/rotas/pedidos.ts"), ["GET api/pedidos/{} -> lerPedido"]);
+    assert_eq!(
+        called_by(&map, "src/rotas/pedidos.ts", "GET", "api/pedidos/{}"),
+        json!(["web/src/pedido.ts:2:abrir"])
+    );
+}
+
+/// O controlador de pedidos do NestJS sem prefixo próprio, e o módulo que o
+/// lista.
+const NEST_ORDERS_CONTROLLER: &str = "import { Controller, Get, Param } from '@nestjs/common';\n\n@Controller()\n\
+                                      export class PedidosController {\n  @Get(':id')\n  lerPedido(@Param('id') id: string) {\n    \
+                                      return { id };\n  }\n}\n";
+const NEST_ORDERS_MODULE: &str = "import { Module } from '@nestjs/common';\nimport { PedidosController } from './pedidos.controller';\n\n\
+                                  @Module({\n  controllers: [PedidosController],\n})\nexport class PedidosModule {}\n";
+
+/// A árvore de rotas do `RouterModule.register`: o `path` de cada item vale
+/// para os controladores do módulo dele e soma o do item de fora aos filhos.
+/// O `@Controller()` vazio fica com o caminho do método, e a chamada da tela
+/// liga à função.
+#[test]
+fn a_module_route_tree_prefixes_the_controllers_of_each_module_and_the_screen_call_links() {
+    let app = "import { Module } from '@nestjs/common';\nimport { RouterModule } from '@nestjs/core';\n\
+               import { ApiModule } from './api/api.module';\nimport { PedidosModule } from './pedidos/pedidos.module';\n\n\
+               @Module({\n  imports: [\n    ApiModule,\n    PedidosModule,\n    RouterModule.register([\n      {\n        \
+               path: 'api',\n        module: ApiModule,\n        children: [{ path: 'pedidos', module: PedidosModule }],\n      \
+               },\n    ]),\n  ],\n})\nexport class AppModule {}\n";
+    let main = "import { NestFactory } from '@nestjs/core';\nimport { AppModule } from './app.module';\n\n\
+                async function bootstrap() {\n  const app = await NestFactory.create(AppModule);\n  await app.listen(3000);\n}\nbootstrap();\n";
+    let temp = project_with(&[
+        ("package.json", NEST_PACKAGE),
+        ("src/main.ts", main),
+        ("src/app.module.ts", app),
+        ("src/api/api.module.ts", "import { Module } from '@nestjs/common';\n\n@Module({})\nexport class ApiModule {}\n"),
+        ("src/pedidos/pedidos.module.ts", NEST_ORDERS_MODULE),
+        ("src/pedidos/pedidos.controller.ts", NEST_ORDERS_CONTROLLER),
+        ("web/src/pedido.ts", SCREEN_FETCH),
+    ]);
+    let (map, _) = scan(temp.path());
+    let controller = "src/pedidos/pedidos.controller.ts";
+    assert_eq!(served(&map, controller), ["GET api/pedidos/{} -> lerPedido"]);
+    assert_eq!(called_by(&map, controller, "GET", "api/pedidos/{}"), json!(["web/src/pedido.ts:2:abrir"]));
+}
+
+/// Sem árvore de rotas, o módulo que lista o controlador não muda o caminho
+/// dele: o prefixo global e o do `@Controller('pedidos')` seguem dando o
+/// caminho inteiro.
+#[test]
+fn a_module_that_lists_the_controller_without_a_route_tree_keeps_the_global_prefix_path() {
+    let controller = NEST_ORDERS_CONTROLLER.replace("@Controller()", "@Controller('pedidos')");
+    let app = "import { Module } from '@nestjs/common';\nimport { PedidosModule } from './pedidos/pedidos.module';\n\n\
+               @Module({\n  imports: [PedidosModule],\n})\nexport class AppModule {}\n";
+    let temp = project_with(&[
+        ("package.json", NEST_PACKAGE),
+        ("src/main.ts", &nest_main("'api'")),
+        ("src/app.module.ts", app),
+        ("src/pedidos/pedidos.module.ts", NEST_ORDERS_MODULE),
+        ("src/pedidos/pedidos.controller.ts", &controller),
+        ("web/src/pedido.ts", SCREEN_FETCH),
+    ]);
+    let (map, _) = scan(temp.path());
+    let controller = "src/pedidos/pedidos.controller.ts";
+    assert_eq!(served(&map, controller), ["GET api/pedidos/{} -> lerPedido"]);
+    assert_eq!(called_by(&map, controller, "GET", "api/pedidos/{}"), json!(["web/src/pedido.ts:2:abrir"]));
+}
+
 /// A função de rotas do axum escrita noutro arquivo e aninhada pelo caminho
 /// (`pedidos::rotas()`) ou pelo nome trazido no `use`.
 #[test]
@@ -891,6 +1003,58 @@ fn a_path_kept_in_a_variable_makes_no_call_and_no_link() {
     let (map, _) = scan(temp.path());
     assert_eq!(route_calls(&map, "tela/src/pedidos.ts"), json!([]));
     assert_eq!(called_by(&map, "servidor/src/pedidos.ts", "GET", "api/pedidos"), json!([]));
+}
+
+/// O caminho escrito como texto e somado a um valor
+/// (`'/api/pedidos/' + id`) é o texto com um parâmetro no lugar do valor: a
+/// chamada do axios e a do `fetch` ligam provadas à rota `api/pedidos/:id`.
+/// A soma que começa pelo valor, ou que soma texto a texto, não faz chamada.
+#[test]
+fn a_path_written_as_text_plus_a_value_links_with_a_parameter_in_the_place_of_the_value() {
+    let screen = "import axios from 'axios';\n\nexport function abrir(id: string) {\n  return axios.get('/api/pedidos/' + id);\n}\n\n\
+                  export function buscar(pedido: { id: string }) {\n  return fetch('/api/pedidos/' + pedido.id);\n}\n\n\
+                  export function outros(caminho: string) {\n  axios.get(caminho + '/5');\n  return fetch('/api/' + 'pedidos');\n}\n";
+    let temp = project_with(&[
+        ("servidor/src/pedidos.ts", &express_server(&[("get", "/api/pedidos/:id", "ler")])),
+        ("tela/src/pedidos.ts", screen),
+    ]);
+    let (map, _) = scan(temp.path());
+    assert_eq!(
+        route_calls(&map, "tela/src/pedidos.ts"),
+        json!([
+            {"method": "GET", "path": "api/pedidos/{}", "written": "/api/pedidos/{}", "line": 4, "owner": "abrir", "framework": "axios"},
+            {"method": "GET", "path": "api/pedidos/{}", "written": "/api/pedidos/{}", "line": 8, "owner": "buscar", "framework": "fetch"}
+        ])
+    );
+    assert_eq!(
+        called_by(&map, "servidor/src/pedidos.ts", "GET", "api/pedidos/{}"),
+        json!(["tela/src/pedidos.ts:4:abrir", "tela/src/pedidos.ts:8:buscar"])
+    );
+}
+
+/// A mesma soma no C# e no Dart: a página Blazor, o dio e o `http` com o
+/// `Uri.parse` ligam provados ao `GET` do controlador.
+#[test]
+fn a_path_written_as_text_plus_a_value_links_in_csharp_and_in_dart() {
+    let page = "using Microsoft.AspNetCore.Components;\n\nnamespace Web.Pages;\n\npublic partial class PedidoPage : ComponentBase\n{\n    \
+                [Parameter] public string Id { get; set; }\n\n    protected override async Task OnInitializedAsync()\n    {\n        \
+                var pedido = await Http.GetFromJsonAsync<string>(\"api/pedidos/\" + Id);\n    }\n}\n";
+    let dio = "import 'package:dio/dio.dart';\n\nfinal dio = Dio();\n\n\
+               Future<void> abrir(String id) async {\n  await dio.get('/api/pedidos/' + id);\n}\n";
+    let http = "import 'package:http/http.dart' as http;\n\nFuture<void> ler(String id) async {\n  \
+                await http.get(Uri.parse('https://api.loja.com/api/pedidos/' + id));\n}\n";
+    let blazor = csproj("Microsoft.NET.Sdk.BlazorWebAssembly");
+    let temp = with_orders_api(&[
+        ("Web/Web.csproj", &blazor),
+        ("Web/Pages/PedidoPage.cs", page),
+        ("app/lib/pedidos.dart", dio),
+        ("app/lib/tela.dart", http),
+    ]);
+    let (map, _) = scan(temp.path());
+    assert_eq!(
+        called_by(&map, "Api/Controllers/PedidosController.cs", "GET", "api/pedidos/{}"),
+        json!(["Web/Pages/PedidoPage.cs:11:OnInitializedAsync", "app/lib/pedidos.dart:6:abrir", "app/lib/tela.dart:4:ler"])
+    );
 }
 
 /// Um método chamado `fetch` de outro objeto (`repo.fetch('/api/pedidos')`)
@@ -1282,6 +1446,84 @@ fn a_list_included_with_the_app_name_in_a_tuple_takes_the_same_prefix() {
     assert_eq!(served(&map, "loja/urls.py"), ["* api/pedidos -> listar", "* v1/pedidos/{} -> ler"]);
 }
 
+/// A lista de caminhos do app `loja`, com a rota de `ler`.
+const DJANGO_SHOP_URLS: &str =
+    "from django.urls import path\n\nfrom . import views\n\nurlpatterns = [\n    path('pedidos/<int:id>/', views.ler),\n]\n";
+
+/// O app `loja` e o `projeto/urls.py` escrito em `root`, com os outros
+/// arquivos do projeto em `more`.
+fn django_root_app(root: &'static str, more: &[(&'static str, &'static str)]) -> Vec<(&'static str, &'static str)> {
+    let mut files = django_list_app(DJANGO_SHOP_URLS);
+    files.extend([("projeto/__init__.py", ""), ("projeto/urls.py", root)]);
+    files.extend_from_slice(more);
+    files
+}
+
+/// O include dentro de outro include soma os prefixos dos dois, o de fora
+/// primeiro, às rotas do arquivo que o módulo nomeia.
+#[test]
+fn an_include_inside_another_include_adds_both_prefixes_to_the_file_the_module_names() {
+    let root = "from django.urls import include, path\n\n\
+                urlpatterns = [\n    path('api/', include([path('v1/', include('loja.urls'))])),\n]\n";
+    let temp = project_with(&django_root_app(root, &[]));
+    let (map, _) = scan(temp.path());
+    assert_eq!(served(&map, "loja/urls.py"), ["* api/v1/pedidos/{} -> ler"]);
+    assert_eq!(routes(&map, "projeto/urls.py"), json!([]), "the include is not a route");
+}
+
+/// A lista guardada num nome que monta o arquivo de outro módulo leva o
+/// prefixo do include que a inclui, escrita no mesmo arquivo ou trazida de
+/// outro.
+#[test]
+fn a_list_kept_in_a_name_that_includes_another_file_carries_the_outer_prefix() {
+    let root = "from django.urls import include, path\n\n\
+                v1 = [\n    path('v1/', include('loja.urls')),\n]\n\n\
+                urlpatterns = [\n    path('api/', include(v1)),\n]\n";
+    let temp = project_with(&django_root_app(root, &[]));
+    let (map, _) = scan(temp.path());
+    assert_eq!(served(&map, "loja/urls.py"), ["* api/v1/pedidos/{} -> ler"]);
+
+    let versions = "from django.urls import include, path\n\nv1 = [\n    path('v1/', include('loja.urls')),\n]\n";
+    let root = "from django.urls import include, path\n\nfrom .versoes import v1\n\n\
+                urlpatterns = [\n    path('api/', include(v1)),\n]\n";
+    let temp = project_with(&django_root_app(root, &[("projeto/versoes.py", versions)]));
+    let (map, _) = scan(temp.path());
+    assert_eq!(served(&map, "loja/urls.py"), ["* api/v1/pedidos/{} -> ler"]);
+}
+
+/// O include com a tupla do texto do módulo e do nome do app soma o prefixo
+/// como o include com o texto só.
+#[test]
+fn an_include_with_the_module_text_in_a_tuple_adds_its_prefix() {
+    let root = "from django.urls import include, path\n\n\
+                urlpatterns = [\n    path('api/', include(('loja.urls', 'loja'))),\n]\n";
+    let temp = project_with(&django_root_app(root, &[]));
+    let (map, _) = scan(temp.path());
+    assert_eq!(served(&map, "loja/urls.py"), ["* api/pedidos/{} -> ler"]);
+}
+
+/// O arquivo incluído que inclui outro leva o prefixo de fora ao outro: os
+/// dois prefixos, o de fora primeiro.
+#[test]
+fn an_included_file_that_includes_another_carries_the_outer_prefix_to_it() {
+    let root = "from django.urls import include, path\n\nurlpatterns = [\n    path('api/', include('projeto.versoes')),\n]\n";
+    let versions = "from django.urls import include, path\n\nurlpatterns = [\n    path('v1/', include('loja.urls')),\n]\n";
+    let temp = project_with(&django_root_app(root, &[("projeto/versoes.py", versions)]));
+    let (map, _) = scan(temp.path());
+    assert_eq!(served(&map, "loja/urls.py"), ["* api/v1/pedidos/{} -> ler"]);
+}
+
+/// O include do módulo trazido pelo import, com outro nome, soma o prefixo
+/// às rotas do arquivo que o import traz.
+#[test]
+fn an_include_of_a_module_brought_by_the_import_adds_its_prefix() {
+    let root = "from django.urls import include, path\n\nfrom loja import urls as loja_urls\n\n\
+                urlpatterns = [\n    path('api/', include(loja_urls)),\n]\n";
+    let temp = project_with(&django_root_app(root, &[]));
+    let (map, _) = scan(temp.path());
+    assert_eq!(served(&map, "loja/urls.py"), ["* api/pedidos/{} -> ler"]);
+}
+
 /// As listas incluídas, escritas ali ou guardadas num nome, num arquivo que
 /// não importa o Django.
 #[test]
@@ -1318,6 +1560,20 @@ fn a_decorated_file_that_imports_no_framework_has_no_route() {
     let (map, _) = scan(temp.path());
     assert_eq!(routes(&map, "loja/cache.py"), json!([]));
     assert_eq!(routes(&map, "loja/outro.py"), json!([]), "a package whose name starts with the framework's is another one");
+}
+
+/// O roteador trazido pelo nome leva o prefixo só às rotas dele: o outro
+/// roteador do mesmo arquivo fica com o caminho dele.
+#[test]
+fn a_router_brought_by_name_gives_the_prefix_only_to_its_own_routes() {
+    let routers = "from fastapi import APIRouter\n\nrouter = APIRouter()\noutro = APIRouter()\n\n\n\
+                   @router.get(\"/pedidos/{id}\")\ndef ler(id):\n    return id\n\n\n\
+                   @outro.get(\"/saude\")\ndef saude():\n    return 1\n";
+    let main = "from fastapi import FastAPI\n\nfrom .pedidos import router\n\napp = FastAPI()\n\
+                app.include_router(router, prefix=\"/api\")\n";
+    let temp = project_with(&[("loja/__init__.py", ""), ("loja/pedidos.py", routers), ("loja/main.py", main)]);
+    let (map, _) = scan(temp.path());
+    assert_eq!(served(&map, "loja/pedidos.py"), ["GET api/pedidos/{} -> ler", "GET saude -> saude"]);
 }
 
 /// A passada que lê só o arquivo mudado soma os prefixos de outros arquivos
@@ -1560,6 +1816,36 @@ fn a_scope_inside_another_adds_both_prefixes_to_the_function_of_another_file() {
 fn a_scope_right_on_the_app_takes_only_its_own_prefix() {
     let served = actix_served("App::new().service(web::scope(\"/pedidos\").service(ler))", "ler");
     assert_eq!(served, ["GET pedidos/{} -> ler"]);
+}
+
+/// O escopo guardado numa variável e montado pelo nome dentro de outro
+/// escopo soma os dois prefixos; montado direto no `App::new()`, leva só o
+/// dele.
+#[test]
+fn a_scope_kept_in_a_variable_and_mounted_in_another_scope_adds_both_prefixes() {
+    let served = actix_served(
+        "let v1 = web::scope(\"/v1\").service(ler);\n    App::new().service(web::scope(\"/api\").service(v1))",
+        "ler",
+    );
+    assert_eq!(served, ["GET api/v1/{} -> ler"]);
+
+    let served = actix_served("let v1 = web::scope(\"/v1\").service(ler);\n    App::new().service(v1)", "ler");
+    assert_eq!(served, ["GET v1/{} -> ler"]);
+}
+
+/// O escopo escrito na função que o `configure` de outro escopo nomeia soma
+/// o prefixo de fora ao dele; a rota escrita direto na função leva só o de
+/// fora.
+#[test]
+fn a_scope_inside_the_function_of_a_configure_adds_the_outer_prefix() {
+    let main = "use actix_web::{get, web, App};\n\n#[get(\"/{id}\")]\nasync fn ler() -> &'static str {\n    \"\"\n}\n\n\
+                async fn criar() -> &'static str {\n    \"\"\n}\n\n\
+                fn config(cfg: &mut web::ServiceConfig) {\n    cfg.service(web::scope(\"/v1\").service(ler));\n    \
+                cfg.route(\"/y\", web::get().to(criar));\n}\n\n\
+                fn main() {\n    App::new().service(web::scope(\"/api\").configure(config));\n}\n";
+    let temp = project_with(&[("Cargo.toml", ACTIX_CARGO), ("src/main.rs", main)]);
+    let (map, _) = scan(temp.path());
+    assert_eq!(served(&map, "src/main.rs"), ["GET api/v1/{} -> ler", "GET api/y -> criar"]);
 }
 
 // ---------------------------------------------------------------------------

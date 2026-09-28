@@ -18,7 +18,15 @@
 #   deste arquivo ou, quando um import traz o nome
 #   (`from .api import extra`), a do arquivo de onde ele vem.
 # - `include((extra, 'loja'))`: a lista, escrita ali ou guardada num nome,
-#   numa tupla com o nome do app; o prefixo é o mesmo.
+#   numa tupla com o nome do app; o prefixo é o mesmo. A tupla com o texto
+#   do módulo (`include(('loja.urls', 'loja'))`) monta o arquivo dele.
+# - `include(loja_urls)`, com `from loja import urls as loja_urls`: o nome
+#   que o import traz como módulo monta o arquivo inteiro.
+#
+# Os prefixos se somam de fora para dentro: o include escrito dentro de
+# outro (`path('api/', include([path('v1/', include('loja.urls'))]))`), na
+# lista guardada no nome que outro include monta, ou no arquivo que outro
+# include monta, leva também o prefixo de fora.
 #
 # Os campos:
 # - `language`: as línguas do registro (`languages.toml`) cujos arquivos a

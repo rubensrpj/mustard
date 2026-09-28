@@ -4,6 +4,9 @@
 # diz, em `src/routes.rs`. Só a chamada solta conta (`fetch('/api/pedidos')`):
 # a de um método com o mesmo nome (`repo.fetch()`) é outra coisa. O método
 # vem do `method` das opções (`{ method: 'POST' }`); sem ele, é GET.
+# O caminho escrito como texto somado a um valor (`'/api/pedidos/' + id`) é o
+# texto com um parâmetro no fim, no lugar do valor; a soma que começa pelo
+# valor, ou que soma texto a texto, não faz chamada.
 #
 # Os campos:
 # - `language`: as línguas do registro (`languages.toml`) cujos arquivos a

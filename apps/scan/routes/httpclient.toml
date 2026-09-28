@@ -10,7 +10,9 @@
 # qualquer objeto; o que outras bibliotecas também usam (`GetAsync`,
 # `DeleteAsync`), só no cliente declarado com o tipo `HttpClient` ou feito no
 # arquivo. O `BaseAddress = new Uri("https://loja.com/api/")`, ao fazer o
-# cliente ou depois, é a base, sem o esquema e a máquina.
+# cliente ou depois, é a base, sem o esquema e a máquina. O caminho escrito
+# como texto somado a um valor (`"api/pedidos/" + id`) é o texto com um
+# parâmetro no fim, no lugar do valor.
 #
 # Os campos:
 # - `language`: as línguas do registro (`languages.toml`) cujos arquivos a

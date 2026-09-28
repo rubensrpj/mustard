@@ -4,7 +4,9 @@
 ; `http.post(Uri.https('loja.com', '/api/pedidos'), body: corpo)`. O objeto é
 ; o nome que o import traz (`import 'package:http/http.dart' as http;`) ou um
 ; cliente do arquivo; `this.cliente` vale como `cliente`. O endereço que não é
-; texto escrito ali (`http.get(Uri.parse(url))`) não faz chamada.
+; texto escrito ali (`http.get(Uri.parse(url))`) não faz chamada. O texto
+; somado a um valor (`'https://loja.com/api/pedidos/' + id`) é o endereço com
+; um parâmetro no lugar do valor.
 (method_invocation
   function: (unconditional_assignable_selector
     .
@@ -12,7 +14,15 @@
      (unconditional_assignable_selector . (this) (identifier) @client.receiver .)]
     (identifier) @client.method
     .)
-  arguments: (argument_part (arguments . (argument (string_literal) @client.path))))
+  arguments: (argument_part
+    (arguments
+      .
+      (argument
+        [(string_literal) @client.path
+         (additive_expression
+           . (string_literal) @client.path
+           . (additive_operator)
+           . [(identifier) (this) (parenthesized_expression)] @client.path.tail)]))))
 
 ((method_invocation
    function: (unconditional_assignable_selector
@@ -27,7 +37,15 @@
        (argument
          (method_invocation
            function: (unconditional_assignable_selector . (identifier) @_uri (identifier) @_parse .)
-           arguments: (argument_part (arguments . (argument (string_literal) @client.path))))))))
+           arguments: (argument_part
+             (arguments
+               .
+               (argument
+                 [(string_literal) @client.path
+                  (additive_expression
+                    . (string_literal) @client.path
+                    . (additive_operator)
+                    . [(identifier) (this) (parenthesized_expression)] @client.path.tail)]))))))))
  (#eq? @_uri "Uri")
  (#eq? @_parse "parse"))
 
@@ -45,7 +63,17 @@
        (argument
          (method_invocation
            function: (unconditional_assignable_selector . (identifier) @_uri (identifier) @_scheme .)
-           arguments: (argument_part (arguments . (argument) . (argument (string_literal) @client.path))))))))
+           arguments: (argument_part
+             (arguments
+               .
+               (argument)
+               .
+               (argument
+                 [(string_literal) @client.path
+                  (additive_expression
+                    . (string_literal) @client.path
+                    . (additive_operator)
+                    . [(identifier) (this) (parenthesized_expression)] @client.path.tail)]))))))))
  (#eq? @_uri "Uri")
  (#match? @_scheme "^https?$"))
 

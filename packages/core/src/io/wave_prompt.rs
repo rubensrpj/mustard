@@ -28,7 +28,9 @@ use crate::domain::lessons::{in_scope, related_to_tasks, serving_wave, Scope};
 use crate::domain::pattern::Pattern;
 use crate::domain::normalize::Languages;
 use crate::domain::project_map::{
-    check_skill, cited_paths, examples_following, file_history, tests_for, History, MapModule, MapRefusal, ProjectMap,
+    check_skill, cited_paths, examples_following, file_history, lineage_fresh_in, recipe_for_existing, recipe_for_new,
+    recipe_from_lineage, tests_for, FileLineage, History, MapModule, MapRefusal, ProjectMap, QualityCuts, Recipe,
+    MAX_COMMITS, MOVES_FOLLOWED,
 };
 use crate::domain::spec_events::{Block, BlockQuery, SpecEvent, SpecLog};
 use crate::domain::wave_prompt::{
@@ -77,11 +79,20 @@ pub struct Flight {
 /// que estão fora em `flight`.
 #[must_use]
 pub fn prompts(root: &Path, spec: &str, log: &SpecLog, lang: Locale, flight: &Flight) -> Vec<WavePrompt> {
-    prompts_reading(root, spec, log, lang, flight, &|need| crate::io::project_map::read_for(root, need))
+    let trace = |file: &str, moves: usize| {
+        crate::Scan::locate().history(root, &crate::io::project_map::model_path(root), file, moves).is_ok()
+    };
+    prompts_reading(root, spec, log, lang, flight, &|need| crate::io::project_map::read_for(root, need), &trace)
 }
 
+/// Como a montagem lê do git, na hora, a história de um arquivo cujo último
+/// commit ficou fora da janela do mapa, seguindo a declaração até `moves`
+/// vezes para o arquivo de onde ela veio: pelo `scan history`, que a grava
+/// no mapa. `true` quando gravou.
+type Trace<'t> = dyn Fn(&str, usize) -> bool + 't;
+
 /// Os pedidos de [`prompts`], com o mapa do projeto lido por `read`, cada
-/// parte pela pergunta dela.
+/// parte pela pergunta dela, e a história além da janela lida por `trace`.
 fn prompts_reading(
     root: &Path,
     spec: &str,
@@ -89,11 +100,16 @@ fn prompts_reading(
     lang: Locale,
     flight: &Flight,
     read: &MapReader<'_>,
+    trace: &Trace<'_>,
 ) -> Vec<WavePrompt> {
     let bank = lesson_bank(root);
     let base = project_execution(root);
     let languages = Languages::of_project(root);
     let map = MapParts {
+        root,
+        moves: crate::ProjectConfig::load(root).history_moves().or(MOVES_FOLLOWED),
+        trace,
+        recipes: RefCell::default(),
         read,
         paths: OnceCell::new(),
         summary: OnceCell::new(),
@@ -425,6 +441,14 @@ pub fn request_items<'a>(
 /// as declarações e os testes, a cada arquivo que pede. Um mapa que falta ou
 /// não se entende responde nada, como se não houvesse mapa.
 struct MapParts<'a> {
+    root: &'a Path,
+    /// Quantas vezes a história de uma declaração segue para o arquivo de
+    /// onde ela veio (`map.historyMoves`).
+    moves: usize,
+    trace: &'a Trace<'a>,
+    /// A receita do git de cada arquivo de tarefa, pelo caminho, calculada
+    /// uma vez só por montagem.
+    recipes: RefCell<BTreeMap<String, Option<Recipe>>>,
     read: &'a MapReader<'a>,
     paths: OnceCell<Option<ProjectMap>>,
     summary: OnceCell<Option<ProjectMap>>,
@@ -481,6 +505,54 @@ impl MapParts<'_> {
             self.examples.borrow_mut().insert(path.to_string(), found.clone());
             found
         })
+    }
+
+    /// A receita do git do arquivo `file` de uma tarefa: a de criar um
+    /// arquivo do tipo dele na pasta, quando ele ainda não existe; a de
+    /// mudá-lo, pelos commits da janela do mapa; ou, quando o último commit
+    /// dele ficou fora da janela, pela história lida do git na hora
+    /// ([`Self::lineage`]). O arquivo que mudou junto e não existe mais sai
+    /// da receita. Calculada uma vez só por montagem.
+    fn recipe(&self, read: &ProjectMap, file: &str) -> Option<Recipe> {
+        if let Some(known) = self.recipes.borrow().get(file) {
+            return known.clone();
+        }
+        let history = &read.history;
+        let found = if !self.root.join(file).exists() {
+            recipe_for_new(history, file)
+        } else if file_history(history, file).is_some() {
+            recipe_for_existing(history, file)
+        } else if read.module(file).is_some() && history.commits.len() >= MAX_COMMITS && history.missing.is_none() {
+            self.lineage(file, history).as_ref().and_then(recipe_from_lineage)
+        } else {
+            None
+        };
+        let found = found
+            .map(|mut recipe| {
+                recipe.together.retain(|(path, _)| self.root.join(path).exists());
+                recipe
+            })
+            .filter(|recipe| !recipe.together.is_empty() || recipe.tests.is_some());
+        self.recipes.borrow_mut().insert(file.to_string(), found.clone());
+        found
+    }
+
+    /// A história do arquivo `file` além da janela do mapa: a guardada, pela
+    /// mesma validade da pergunta da história de uma declaração; senão, lida
+    /// do git na hora e gravada no mapa, e a pergunta seguinte não relê o
+    /// git.
+    fn lineage(&self, file: &str, history: &History) -> Option<FileLineage> {
+        let stored = |part: ProjectMap| part.lineage.into_iter().find(|lineage| lineage.path == file);
+        let part = (self.read)(Need::Lineage(file)).ok()?;
+        let comments = part.pulls.comments.len();
+        let mark = part.census_mark.clone();
+        if let Some(found) = stored(part).filter(|l| lineage_fresh_in(l, history, &mark, comments, self.moves)) {
+            return Some(found);
+        }
+        if !(self.trace)(file, self.moves) {
+            return None;
+        }
+        (self.read)(Need::Lineage(file)).ok().and_then(stored)
     }
 
     /// O padrão do projeto aprendido de [`Self::pattern`], com os arquivos
@@ -781,12 +853,14 @@ fn task_file_tests(map: &MapParts<'_>, tasks: &[&SpecEvent]) -> BTreeMap<String,
 }
 
 /// O padrão do projeto sob cada tarefa de `tasks`, pelo código dela: as
-/// regras dos papéis que os arquivos dela tocam e os exemplos que seguem as
-/// regras fortes. O papel de um arquivo que uma tarefa do plano `log` cria
-/// sai do nome dele, como o de um arquivo que já existe. Os exemplos saem
-/// dos arquivos da tarefa, um de cada por vez, o melhor de cada primeiro
-/// ([`pattern_example`]). Sem mapa, sem regra, ou para a tarefa que não toca
-/// papel com regra, nada.
+/// regras dos papéis que os arquivos dela tocam, os arquivos dela que passam
+/// do corte de tamanho do projeto, a receita do git de cada arquivo dela e
+/// os exemplos que seguem as regras fortes. O papel de um arquivo que uma
+/// tarefa do plano `log` cria sai do nome dele, como o de um arquivo que já
+/// existe. Os exemplos saem dos arquivos da tarefa, um de cada por vez, o
+/// melhor de cada primeiro ([`pattern_example`]), e só com regra. O arquivo
+/// que a própria tarefa já lista sai da receita. Sem mapa, nada; a tarefa
+/// sem regra, sem arquivo grande e sem receita fica de fora.
 fn task_patterns(
     map: &MapParts<'_>,
     log: &SpecLog,
@@ -800,39 +874,49 @@ fn task_patterns(
     };
     let every_task = || log.events.iter().filter(|e| e.event_type == "task").flat_map(files_of).collect();
     let (Some(read), Some(pattern)) = (map.pattern(), map.learned(every_task)) else { return BTreeMap::new() };
-    if pattern.strong.is_empty() && pattern.info.is_empty() {
-        return BTreeMap::new();
-    }
+    let cuts = QualityCuts::of(&read.modules);
     let mut out = BTreeMap::new();
     for task in tasks {
         let files = files_of(task);
         let roles: BTreeSet<&str> = files.iter().filter_map(|path| pattern.roles.get(path)).map(String::as_str).collect();
-        let mut rules = wave_prompt::rules_for(pattern, &roles);
-        if rules.strong.is_empty() && rules.info.is_empty() {
-            continue;
-        }
-        let picks: Vec<Vec<String>> = files
+        let mut found = wave_prompt::rules_for(pattern, &roles);
+        found.large = files.iter().filter(|path| read.module(path).is_some_and(|m| cuts.large(m))).cloned().collect();
+        found.recipes = files
             .iter()
-            .map(|file| {
-                let known = map.picks.borrow().get(file).cloned();
-                known.unwrap_or_else(|| {
-                    let found: Vec<String> =
-                        examples_following(read, file, lang, pattern).picks.into_iter().map(|p| p.path).collect();
-                    map.picks.borrow_mut().insert(file.clone(), found.clone());
-                    found
-                })
+            .filter_map(|file| map.recipe(read, file))
+            .filter_map(|mut recipe| {
+                recipe.together.retain(|(path, _)| !files.contains(path));
+                (!recipe.together.is_empty() || recipe.tests.is_some()).then_some(recipe)
             })
             .collect();
-        let deepest = picks.iter().map(Vec::len).max().unwrap_or_default();
-        let mut seen: BTreeSet<String> = BTreeSet::new();
-        for path in (0..deepest).flat_map(|rank| picks.iter().filter_map(move |list| list.get(rank))) {
-            if seen.insert(path.clone())
-                && let Some(example) = map.example(read, path)
-            {
-                rules.examples.push(example);
+        let ruled = !found.strong.is_empty() || !found.info.is_empty();
+        if !ruled && found.large.is_empty() && found.recipes.is_empty() {
+            continue;
+        }
+        if ruled {
+            let picks: Vec<Vec<String>> = files
+                .iter()
+                .map(|file| {
+                    let known = map.picks.borrow().get(file).cloned();
+                    known.unwrap_or_else(|| {
+                        let found: Vec<String> =
+                            examples_following(read, file, lang, pattern).picks.into_iter().map(|p| p.path).collect();
+                        map.picks.borrow_mut().insert(file.clone(), found.clone());
+                        found
+                    })
+                })
+                .collect();
+            let deepest = picks.iter().map(Vec::len).max().unwrap_or_default();
+            let mut seen: BTreeSet<String> = BTreeSet::new();
+            for path in (0..deepest).flat_map(|rank| picks.iter().filter_map(move |list| list.get(rank))) {
+                if seen.insert(path.clone())
+                    && let Some(example) = map.example(read, path)
+                {
+                    found.examples.push(example);
+                }
             }
         }
-        out.insert(codes.get(&task.id).cloned().unwrap_or_else(|| task.id.to_string()), rules);
+        out.insert(codes.get(&task.id).cloned().unwrap_or_else(|| task.id.to_string()), found);
     }
     out
 }
@@ -1817,7 +1901,7 @@ mod tests {
         let by_question = prompts(root, "teste", &log, Locale::PtBr, &Flight::default());
         let whole = prompts_reading(root, "teste", &log, Locale::PtBr, &Flight::default(), &|_| {
             crate::io::project_map::read(root)
-        });
+        }, &|_, _| false);
         assert_eq!(by_question, whole);
         let text = &by_question[0].text;
         assert!(text.contains("leia só as linhas 3-5, 9-12 de `soma` em `rt/src/a.rs`"), "{text}");
@@ -1911,7 +1995,7 @@ mod tests {
         let by_question = prompts(root, "teste", &log, Locale::PtBr, &Flight::default());
         let whole = prompts_reading(root, "teste", &log, Locale::PtBr, &Flight::default(), &|_| {
             crate::io::project_map::read(root)
-        });
+        }, &|_, _| false);
         assert_eq!(by_question, whole, "the map parts give the same pattern as the whole map");
         let text = &by_question[0].text;
         let controller = task_lines(text, "Criar o controller").join("\n");
@@ -1937,6 +2021,220 @@ mod tests {
         let head = crate::platform::i18n::translate("prompt.pattern.head", Locale::PtBr);
         assert!(!built[0].text.contains(head), "{}", built[0].text);
         assert!(!built[0].text.contains("regra:") && !built[0].text.contains("costume:"), "{}", built[0].text);
+    }
+
+    /// Um arquivo com o texto de sempre, na pasta do projeto `root`.
+    fn touch(root: &Path, path: &str) {
+        let at = root.join(path);
+        std::fs::create_dir_all(at.parent().unwrap()).unwrap();
+        std::fs::write(at, "pub fn run() {}\n").unwrap();
+    }
+
+    /// Um projeto sem regra de importação: vinte e cinco arquivos medidos,
+    /// entre eles o maior do projeto, `src/big.rs`, e uma tarefa em cada um
+    /// dos dois, o grande e um pequeno.
+    fn project_with_one_large_file() -> (tempfile::TempDir, SpecLog) {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let mut modules = vec![json!({"path": "src/big.rs", "language": "rust", "loc": 5200, "quality": {"size": 5000}})];
+        for n in 0..24 {
+            modules.push(json!({"path": format!("src/small{n}.rs"), "language": "rust", "loc": 100 + n, "quality": {"size": 90 + n}}));
+        }
+        for module in &modules {
+            touch(root, module["path"].as_str().unwrap());
+        }
+        write_map(root, &json!({"modules": modules}));
+        let log = log_of(&[
+            ("wave", json!({"n": 1, "text": "A onda", "criteria": [], "done_when": "passa"})),
+            ("task", json!({"wave": 1, "text": "Mexer no grande", "files": [{"path": "src/big.rs"}]})),
+            ("task", json!({"wave": 1, "text": "Mexer no pequeno", "files": [{"path": "src/small3.rs"}]})),
+        ]);
+        (dir, log)
+    }
+
+    #[test]
+    fn a_task_touching_the_largest_file_gets_the_line_and_one_on_a_small_file_does_not() {
+        let (dir, log) = project_with_one_large_file();
+        let built = prompts(dir.path(), "teste", &log, Locale::PtBr, &Flight::default());
+        assert_eq!(built.len(), 1);
+        let text = &built[0].text;
+        let big = task_lines(text, "Mexer no grande").join("\n");
+        assert!(big.contains("Entre os 5% maiores arquivos do projeto: `src/big.rs`. Ponha o código novo num arquivo novo."), "{big}");
+        let head = crate::platform::i18n::translate("prompt.pattern.head_plain", Locale::PtBr);
+        assert!(big.contains(head), "{big}");
+        let small = task_lines(text, "Mexer no pequeno").join("\n");
+        assert!(!small.contains("maiores arquivos") && !small.contains(head), "{small}");
+        // O tamanho só informa: o pedido sai inteiro, sem recusa.
+        assert!(built[0].bad_skills.is_empty() && built[0].stale_skills.is_empty());
+        assert!(text.contains("Mexer no pequeno"), "{text}");
+    }
+
+    /// Um projeto sem regra de importação cuja história tem dez commits que
+    /// criaram um comando em `apps/rt/src/commands`: nove registram o comando
+    /// no índice e, com `tested`, sete criam o teste dele. A tarefa cria um
+    /// comando novo.
+    fn project_creating_a_command(tested: bool) -> (tempfile::TempDir, SpecLog) {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let dir_of = "apps/rt/src/commands";
+        let mut paths: Vec<String> = vec![format!("{dir_of}/mod.rs"), "packages/core/src/i18n.rs".to_string()];
+        for n in 0..10 {
+            paths.push(format!("{dir_of}/cmd_{n}.rs"));
+            paths.push(format!("apps/rt/tests/cmd_{n}.rs"));
+        }
+        paths.sort();
+        let at = |path: &str| paths.iter().position(|p| p == path).unwrap();
+        let commits: Vec<Value> = (0..10)
+            .map(|n| {
+                let mut added = vec![at(&format!("{dir_of}/cmd_{n}.rs"))];
+                if tested && n < 7 {
+                    added.push(at(&format!("apps/rt/tests/cmd_{n}.rs")));
+                }
+                let mut changed = Vec::new();
+                if n < 9 {
+                    changed.push(at(&format!("{dir_of}/mod.rs")));
+                }
+                if n < 3 {
+                    changed.push(at("packages/core/src/i18n.rs"));
+                }
+                added.sort_unstable();
+                changed.sort_unstable();
+                json!({"id": format!("c{n}"), "at": 1_789_000_000 + n, "added": added, "changed": changed})
+            })
+            .collect();
+        let modules: Vec<Value> = paths
+            .iter()
+            .filter(|p| !p.contains("/tests/"))
+            .map(|p| json!({"path": p, "language": "rust", "loc": 40}))
+            .collect();
+        for module in &modules {
+            touch(root, module["path"].as_str().unwrap());
+        }
+        write_map(root, &json!({"modules": modules, "history": {"base": "main", "paths": paths, "commits": commits}}));
+        let log = log_of(&[
+            ("wave", json!({"n": 1, "text": "A onda", "criteria": [], "done_when": "passa"})),
+            ("task", json!({"wave": 1, "text": "Criar o comando", "files": [{"path": format!("{dir_of}/novo.rs")}]})),
+        ]);
+        (dir, log)
+    }
+
+    #[test]
+    fn a_task_creating_a_command_gets_the_registry_and_the_test_in_a_block_with_only_the_recipe() {
+        let (dir, log) = project_creating_a_command(true);
+        let built = prompts(dir.path(), "teste", &log, Locale::PtBr, &Flight::default());
+        let lines = task_lines(&built[0].text, "Criar o comando").join("\n");
+        let head = crate::platform::i18n::translate("prompt.pattern.head_plain", Locale::PtBr);
+        assert!(lines.contains(head), "{lines}");
+        assert!(lines.contains("Receita do git, de 10 commits que criaram um arquivo `apps/rt/src/commands/*.rs`:"), "{lines}");
+        assert!(lines.contains("      - mudou `apps/rt/src/commands/mod.rs` em 9 de 10"), "{lines}");
+        assert!(lines.contains("      - criou um teste em 7 de 10"), "{lines}");
+        // O texto mudou junto em só 3 dos 10: fica fora.
+        assert!(!lines.contains("i18n.rs"), "{lines}");
+        // Sem regra de importação, o bloco não fala de regra nem de exemplo.
+        assert!(!lines.contains("regra:") && !lines.contains("exemplo:"), "{lines}");
+        // A receita sai do programa: nenhum pedido chama o agente de skill.
+        assert_eq!(built[0].agent, "wave");
+        assert!(!built[0].text.contains("mustard-skill") && !built[0].text.contains("new_skill"), "{}", built[0].text);
+    }
+
+    #[test]
+    fn a_project_without_any_test_gets_no_test_line_in_the_recipe() {
+        let (dir, log) = project_creating_a_command(false);
+        let built = prompts(dir.path(), "teste", &log, Locale::PtBr, &Flight::default());
+        let lines = task_lines(&built[0].text, "Criar o comando").join("\n");
+        assert!(lines.contains("mudou `apps/rt/src/commands/mod.rs` em 9 de 10"), "{lines}");
+        assert!(!lines.contains("criou um teste"), "{lines}");
+    }
+
+    #[test]
+    fn a_new_project_without_history_gets_no_recipe() {
+        let (dir, log) = project_creating_a_command(true);
+        let mut map = crate::io::project_map::read(dir.path()).unwrap();
+        map.history = History::default();
+        write_map(dir.path(), &serde_json::to_value(&map).unwrap());
+        let built = prompts(dir.path(), "teste", &log, Locale::PtBr, &Flight::default());
+        let lines = task_lines(&built[0].text, "Criar o comando").join("\n");
+        assert!(!lines.contains("Receita do git"), "{lines}");
+        let head = crate::platform::i18n::translate("prompt.pattern.head_plain", Locale::PtBr);
+        assert!(!lines.contains(head), "no block at all: {lines}");
+    }
+
+    /// Um projeto cuja janela do mapa está cheia, com `MAX_COMMITS` commits
+    /// que nunca tocam `src/old.rs`: o último commit dele ficou fora dela.
+    fn project_with_a_file_older_than_the_window() -> (tempfile::TempDir, SpecLog) {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        for path in ["src/old.rs", "src/registry.rs", "src/busy.rs"] {
+            touch(root, path);
+        }
+        let commits: Vec<Value> =
+            (0..MAX_COMMITS).map(|n| json!({"id": format!("n{n:05}"), "at": 1_789_000_000 + n, "changed": [0]})).collect();
+        let modules = json!([
+            {"path": "src/old.rs", "language": "rust", "loc": 30},
+            {"path": "src/registry.rs", "language": "rust", "loc": 30},
+            {"path": "src/busy.rs", "language": "rust", "loc": 30}
+        ]);
+        write_map(root, &json!({"modules": modules, "history": {"base": "main", "paths": ["src/busy.rs"], "commits": commits}}));
+        let log = log_of(&[
+            ("wave", json!({"n": 1, "text": "A onda", "criteria": [], "done_when": "passa"})),
+            ("task", json!({"wave": 1, "text": "Mudar o antigo", "files": [{"path": "src/old.rs"}]})),
+        ]);
+        (dir, log)
+    }
+
+    #[test]
+    fn a_file_older_than_the_window_gets_its_history_on_the_spot_and_the_next_request_does_not_read_git_again() {
+        let (dir, log) = project_with_a_file_older_than_the_window();
+        let root = dir.path();
+        let calls = std::cell::Cell::new(0);
+        // O `scan history` de mentira: grava no mapa a história do arquivo,
+        // como o de verdade, com três commits que mudaram o registro junto.
+        let trace = |file: &str, moves: usize| {
+            calls.set(calls.get() + 1);
+            let mark = crate::io::project_map::read_for(root, Need::Lineage(file)).unwrap().census_mark;
+            let commit = |id: &str| crate::domain::project_map::LineageCommit {
+                id: id.to_string(),
+                files: crate::domain::project_map::CommitFiles {
+                    changed: vec![file.to_string(), "src/registry.rs".to_string()],
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let lineage = FileLineage {
+                path: file.to_string(),
+                base: "main".to_string(),
+                mark,
+                moves: u32::try_from(moves).unwrap(),
+                commits: vec![commit("a1"), commit("a2"), commit("a3")],
+                ..FileLineage::default()
+            };
+            crate::io::project_map::save_lineage_at(&crate::io::project_map::model_path(root), &lineage).unwrap();
+            true
+        };
+        let read = |need: Need<'_>| crate::io::project_map::read_for(root, need);
+        for round in 0..2 {
+            let built = prompts_reading(root, "teste", &log, Locale::PtBr, &Flight::default(), &read, &trace);
+            let lines = task_lines(&built[0].text, "Mudar o antigo").join("\n");
+            assert!(lines.contains("Receita do git, de 3 commits que mudaram `src/old.rs`:"), "round {round}: {lines}");
+            assert!(lines.contains("mudou `src/registry.rs` em 3 de 3"), "round {round}: {lines}");
+        }
+        assert_eq!(calls.get(), 1, "the second request reads the history kept in the map, not git");
+    }
+
+    /// Com a janela do mapa longe de cheia, a história que ela guarda é a
+    /// inteira: o arquivo sem commit nela não tem história a ler do git.
+    #[test]
+    fn a_file_without_commits_in_a_window_that_is_not_full_never_reads_git() {
+        let (dir, log) = project_with_one_large_file();
+        let root = dir.path();
+        let calls = std::cell::Cell::new(0);
+        let trace = |_: &str, _: usize| {
+            calls.set(calls.get() + 1);
+            false
+        };
+        let read = |need: Need<'_>| crate::io::project_map::read_for(root, need);
+        prompts_reading(root, "teste", &log, Locale::PtBr, &Flight::default(), &read, &trace);
+        assert_eq!(calls.get(), 0);
     }
 
     /// O pedido marca a skill como a revisar pelo que diz a linha dela: `true`

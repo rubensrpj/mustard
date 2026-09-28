@@ -789,7 +789,7 @@ mod tests {
         store::save_lineage_at(&model_path(root), &FileLineage {
             path: "src/pay.rs".to_string(),
             base: "main".to_string(),
-            commits: vec![LineageCommit { id: "abcdef0123".to_string(), at: 1, title: "t".to_string(), pr: None }],
+            commits: vec![LineageCommit { id: "abcdef0123".to_string(), at: 1, title: "t".to_string(), pr: None, ..LineageCommit::default() }],
             declarations: vec![DeclLineage {
                 name: "pay".to_string(),
                 nth: 0,
@@ -840,7 +840,7 @@ mod tests {
             base: "main".to_string(),
             commits: commits
                 .iter()
-                .map(|(id, title, pr, _)| LineageCommit { id: (*id).to_string(), at: 1, title: (*title).to_string(), pr: *pr })
+                .map(|(id, title, pr, _)| LineageCommit { id: (*id).to_string(), at: 1, title: (*title).to_string(), pr: *pr, ..LineageCommit::default() })
                 .collect(),
             declarations: names
                 .iter()

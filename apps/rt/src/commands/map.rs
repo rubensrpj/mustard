@@ -655,7 +655,7 @@ fn examples(opts: &MapOpts, lang: Locale, languages: &Languages, read: &Reader<'
                     "question": "examples",
                     "task": task,
                     "examples": [],
-                    "recipes": [],
+                    "recipe": null,
                     "note": mustard_core::translate("map.no_target", lang),
                 }));
             }
@@ -683,11 +683,17 @@ fn examples(opts: &MapOpts, lang: Locale, languages: &Languages, read: &Reader<'
             })
         })
         .collect();
-    let recipes: Vec<Value> = got
-        .recipes
-        .iter()
-        .map(|r| json!({ "commit": r.commit, "date": r.date, "added": r.added, "together": r.together }))
-        .collect();
+    // A receita do git: o trabalho que os commits contados fizeram — criar
+    // um arquivo do tipo, pelo molde, ou mudar o arquivo —, quantos são, e o
+    // que mudou junto em mais da metade deles.
+    let recipe = got.recipe.as_ref().map(|r| {
+        let (kind, subject) = match &r.of {
+            project_map::RecipeOf::Created(pattern) => ("created", pattern),
+            project_map::RecipeOf::Changed(path) => ("changed", path),
+        };
+        let together: Vec<Value> = r.together.iter().map(|(path, n)| json!({ "path": path, "commits": n })).collect();
+        json!({ "kind": kind, "subject": subject, "commits": r.commits, "together": together, "tests": r.tests })
+    });
     let mut report = json!({
         "ok": true,
         "question": "examples",
@@ -695,7 +701,7 @@ fn examples(opts: &MapOpts, lang: Locale, languages: &Languages, read: &Reader<'
         "folder": got.folder,
         "main_imports": got.main_imports,
         "examples": picks,
-        "recipes": recipes,
+        "recipe": recipe,
     });
     if got.picks.is_empty() {
         report["note"] = json!(mustard_core::translate("map.no_examples", lang).replace("{folder}", &got.folder));
@@ -963,11 +969,13 @@ mod tests {
       ],
       "history": {
         "paths": ["apps/rt/src/commands/pay/index.rs", "apps/rt/src/commands/pay/read.rs",
-                  "apps/rt/src/commands/pay/write.rs", "apps/rt/tests/run_command_surface.rs"],
+                  "apps/rt/src/commands/pay/refund.rs", "apps/rt/src/commands/pay/write.rs",
+                  "apps/rt/tests/run_command_surface.rs"],
         "commits": [
-          {"id": "c1", "at": 86400, "added": [0, 3]},
-          {"id": "c2", "at": 172800, "added": [1], "changed": [3]},
-          {"id": "c3", "at": 259200, "changed": [2]}
+          {"id": "c1", "at": 86400, "added": [0, 4]},
+          {"id": "c2", "at": 172800, "added": [1], "changed": [4]},
+          {"id": "c3", "at": 259200, "changed": [3]},
+          {"id": "c4", "at": 345600, "added": [2], "changed": [4]}
         ]
       }
     }"#;
@@ -1099,7 +1107,13 @@ mod tests {
         // Com teste e mais recente primeiro.
         assert_eq!(picks[0]["path"], json!("apps/rt/src/commands/pay/write.rs"));
         assert_eq!(picks[1]["path"], json!("apps/rt/src/commands/pay/read.rs"));
-        assert_eq!(report["recipes"][0]["added"], json!("apps/rt/src/commands/pay/read.rs"));
+        // A receita soma os três commits que criaram um arquivo na pasta.
+        assert_eq!(
+            report["recipe"],
+            json!({"kind": "created", "subject": "apps/rt/src/commands/pay/*", "commits": 3,
+                   "together": [{"path": "apps/rt/tests/run_command_surface.rs", "commits": 3}], "tests": null}),
+            "{report}"
+        );
     }
 
     /// A busca acha o arquivo pela mensagem que o usuário viu, e mostra o
@@ -1471,8 +1485,8 @@ mod tests {
             mark: String::new(),
             moves: u32::try_from(project_map::MOVES_FOLLOWED).unwrap(),
             commits: vec![
-                LineageCommit { id: "c3".to_string(), at: 259_200, title: "feat(pay): grava o pagamento (#4)".to_string(), pr: Some(4) },
-                LineageCommit { id: "c1".to_string(), at: 86_400, title: "formata".to_string(), pr: None },
+                LineageCommit { id: "c3".to_string(), at: 259_200, title: "feat(pay): grava o pagamento (#4)".to_string(), pr: Some(4), ..LineageCommit::default() },
+                LineageCommit { id: "c1".to_string(), at: 86_400, title: "formata".to_string(), pr: None, ..LineageCommit::default() },
             ],
             declarations: vec![DeclLineage {
                 name: "run".to_string(),
@@ -1504,7 +1518,7 @@ mod tests {
             commits: ids
                 .iter()
                 .zip(0_i64..)
-                .map(|(id, age)| LineageCommit { id: id.clone(), at: 1_000_000 - age * 1_000, title: format!("muda {id}"), pr: None })
+                .map(|(id, age)| LineageCommit { id: id.clone(), at: 1_000_000 - age * 1_000, title: format!("muda {id}"), pr: None, ..LineageCommit::default() })
                 .collect(),
             declarations: vec![DeclLineage {
                 name: "run".to_string(),
@@ -1622,7 +1636,7 @@ mod tests {
         let dir = map_with_a_base_and_a_lineage();
         let model = store::model_path(dir.path());
         let path = "apps/rt/src/commands/pay/write.rs";
-        let commit = |id: &str, at: i64, title: &str, pr: Option<u32>| LineageCommit { id: id.to_string(), at, title: title.to_string(), pr };
+        let commit = |id: &str, at: i64, title: &str, pr: Option<u32>| LineageCommit { id: id.to_string(), at, title: title.to_string(), pr, ..LineageCommit::default() };
         let lineage = FileLineage {
             commits: vec![
                 commit("c3", 259_200, "feat(pay): grava o pagamento (#4)", Some(4)),

@@ -11,7 +11,7 @@
 //! ciclo — só serve ao resumo impresso da passada, e volta vazio.
 
 use mustard_core::domain::normalize::Languages;
-use mustard_core::domain::project_map::History;
+use mustard_core::domain::project_map::{History, Quality};
 use mustard_core::domain::vocabulary::stacks::StackDetection;
 use mustard_core::io::project_map as store;
 use serde::de::Error as _;
@@ -313,6 +313,10 @@ pub struct Module {
     /// The file carries its own tests (an inline test marker).
     #[serde(default, skip_serializing_if = "is_false")]
     pub has_tests: bool,
+    /// As medidas de qualidade do arquivo, refeitas do projeto inteiro a cada
+    /// passada ([`crate::quality`]). Written only when measured.
+    #[serde(default, skip_serializing_if = "Quality::is_empty")]
+    pub quality: Quality,
     /// The stack code signatures found in this file's content, kept so a pass
     /// that does not read the file again still infers the same stacks.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -555,6 +559,12 @@ impl RouteLinks {
 /// achar a declaração a que a chamada escrita ali liga. Com `module_path`, o
 /// alvo é o caminho de um módulo escrito como texto, que se lê como import
 /// do arquivo que o escreve; ele é sempre o módulo inteiro.
+///
+/// O prefixo já soma os que o arquivo põe por fora da montagem. O lugar em
+/// que ela é feita — o objeto que a recebe (`receiver`) e a declaração em
+/// que ela está escrita (`owner`) — é por onde outra montagem, de outro
+/// arquivo, chega a ela: o prefixo posto nesse objeto ou nessa declaração
+/// vem na frente do dela.
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Mount {
     pub framework: String,
@@ -566,6 +576,10 @@ pub struct Mount {
     pub module_path: bool,
     #[serde(flatten)]
     pub prefix: RoutePath,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub receiver: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub owner: String,
 }
 
 /// O prefixo de todas as rotas do framework no projeto do arquivo que o
