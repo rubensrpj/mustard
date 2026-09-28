@@ -81,6 +81,9 @@ pub(crate) struct Extracted {
     /// Os nomes escritos onde vai um valor (`@call.value`), fora da chamada:
     /// a função entregue a outra ou guardada num nome.
     pub value_uses: Vec<CallSite>,
+    /// Os nomes de membro escritos depois do objeto (`@member`), fora da
+    /// chamada: a propriedade ou o campo lido ou escrito.
+    pub member_reads: Vec<CallSite>,
     /// Os nomes que abrem a cadeia escrita antes de uma chamada e que o
     /// arquivo não liga ([`crate::model::Module::unbound_heads`]).
     pub unbound_heads: Vec<String>,
@@ -461,6 +464,10 @@ enum CapKind {
     /// o lado direito de uma atribuição: sem ser chamado ali, ele é usado
     /// quando nomeia uma função ou um método à vista do arquivo.
     CallValue,
+    /// O nome de um membro escrito depois do objeto, sem chamada ali
+    /// (`x.Total`, `self.total`): ele é usado quando nomeia uma propriedade
+    /// ou um campo que o objeto alcança.
+    Member,
     /// Um literal de texto escrito no código: vira texto fixo do arquivo
     /// quando tem cara de texto e não cai num import, num trecho de teste
     /// nem numa documentação. `plain` é o texto escrito sem aspas (o texto
@@ -481,6 +488,7 @@ fn classify(cap: &str) -> CapKind {
         "namespace" => CapKind::Namespace,
         "call.path" => CapKind::CallPath,
         "call.value" => CapKind::CallValue,
+        "member" => CapKind::Member,
         "name" => CapKind::Name,
         "supertype" => CapKind::Supertype,
         "owner" => CapKind::Owner,
@@ -579,7 +587,7 @@ impl Analyzer {
         let code;
         let src = match self.markup {
             Some(rule) => {
-                code = rule.code_of(src, project.path);
+                code = rule.code_of(src, project.path, project.folder);
                 code.as_str()
             }
             None => src,
@@ -626,8 +634,10 @@ impl Analyzer {
         // Cada nome que o corpo de uma função liga, com a linha e o byte em
         // que foi escrito.
         let mut locals: Vec<(usize, usize, String)> = Vec::new();
-        // O byte de cada nome escrito onde vai um valor.
+        // O byte de cada nome escrito onde vai um valor e de cada nome de
+        // membro escrito depois do objeto.
         let mut value_at: BTreeSet<usize> = BTreeSet::new();
+        let mut member_at: BTreeSet<usize> = BTreeSet::new();
         // Os literais de texto do arquivo, cada um dizendo se foi escrito sem
         // aspas, e o que a documentação escrita dentro das declarações cobre:
         // o literal que a contém não é texto fixo.
@@ -718,6 +728,9 @@ impl Analyzer {
                     }
                     CapKind::CallValue => {
                         value_at.insert(node.start_byte());
+                    }
+                    CapKind::Member => {
+                        member_at.insert(node.start_byte());
                     }
                     CapKind::CallPath => {
                         // Só o caminho que começa no próprio projeto é import;
@@ -964,9 +977,15 @@ impl Analyzer {
         let quiet = Pruned::of(decorations.union(&import_spans).copied());
         let heads;
         let brought: HashSet<&str> = imported_at.iter().map(|(_, name)| name.as_str()).collect();
-        let found = use_sites(&walked.leaves, bytes, &comments, &quiet, &names_at, &name_kinds, &self.name, &brought, &value_at);
-        (out.calls, out.cites, out.value_uses, heads) = found;
-        drop_local_uses(&out.declarations, &locals, &names_at, [&mut out.calls, &mut out.cites, &mut out.value_uses]);
+        let marks = Marks { value_at: &value_at, member_at: &member_at };
+        let found = use_sites(&walked.leaves, bytes, &comments, &quiet, &names_at, &name_kinds, &self.name, &brought, &marks);
+        (out.calls, out.cites, out.value_uses, out.member_reads, heads) = found;
+        drop_local_uses(
+            &out.declarations,
+            &locals,
+            &names_at,
+            [&mut out.calls, &mut out.cites, &mut out.value_uses, &mut out.member_reads],
+        );
 
         // Cada nome trazido é do import escrito no mesmo comando: o que fica
         // dentro do nó mais próximo, subindo a partir do nome, que contém
@@ -1143,7 +1162,7 @@ fn drop_local_uses(
     decls: &[Decl],
     locals: &[(usize, usize, String)],
     names_at: &BTreeSet<usize>,
-    sites: [&mut Vec<CallSite>; 3],
+    sites: [&mut Vec<CallSite>; 4],
 ) {
     // Cada nome ligado, com a linha em que foi ligado e a última da
     // declaração em volta (sem fim conhecido, até o fim do arquivo).
@@ -1794,8 +1813,11 @@ fn glob(entry: &str, text: &str) -> bool {
 ///
 /// A citação escrita num dos bytes de `value_at`, onde vai um valor
 /// (`@call.value`), é também um uso por valor: a função entregue a outra
-/// (`xs.map(dobro)`) ou guardada num nome (`let f = dobro;`).
-#[allow(clippy::too_many_arguments)]
+/// (`xs.map(dobro)`) ou guardada num nome (`let f = dobro;`). A escrita num
+/// dos bytes de `member_at` (`@member`) é também o membro lido pelo objeto
+/// escrito antes dele (`pedido.Total`); o nome que abre a cadeia antes dele
+/// conta como o da chamada.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn use_sites(
     leaves: &[Leaf],
     bytes: &[u8],
@@ -1805,11 +1827,12 @@ fn use_sites(
     name_kinds: &BTreeSet<&str>,
     lang: &str,
     brought: &HashSet<&str>,
-    value_at: &BTreeSet<usize>,
-) -> (Vec<CallSite>, Vec<CallSite>, Vec<CallSite>, BTreeSet<String>) {
+    marks: &Marks,
+) -> (Vec<CallSite>, Vec<CallSite>, Vec<CallSite>, Vec<CallSite>, BTreeSet<String>) {
     let mut calls: BTreeSet<(usize, String, String)> = BTreeSet::new();
     let mut cites: BTreeSet<(usize, String, String)> = BTreeSet::new();
     let mut values: BTreeSet<(usize, String, String)> = BTreeSet::new();
+    let mut members: BTreeSet<(usize, String, String)> = BTreeSet::new();
     let mut heads: BTreeSet<String> = BTreeSet::new();
     for leaf in leaves {
         let node = match leaf.word {
@@ -1834,8 +1857,14 @@ fn use_sites(
             }
             calls.insert(site);
         } else if !against_a_quote(node, bytes) {
-            if value_at.contains(&node.start_byte()) {
+            if marks.value_at.contains(&node.start_byte()) {
                 values.insert(site.clone());
+            }
+            if marks.member_at.contains(&node.start_byte()) {
+                if opens_chain(node, bytes, comments, lang, &site.2) {
+                    heads.insert(site.2.clone());
+                }
+                members.insert(site.clone());
             }
             cites.insert(site);
         }
@@ -1843,7 +1872,14 @@ fn use_sites(
     let sites = |found: BTreeSet<(usize, String, String)>| {
         found.into_iter().map(|(line, name, qualifier)| CallSite { name, line, qualifier }).collect()
     };
-    (sites(calls), sites(cites), sites(values), heads)
+    (sites(calls), sites(cites), sites(values), sites(members), heads)
+}
+
+/// Os bytes em que a consulta marcou um nome: escrito onde vai um valor
+/// (`@call.value`) e escrito como membro depois do objeto (`@member`).
+struct Marks<'a> {
+    value_at: &'a BTreeSet<usize>,
+    member_at: &'a BTreeSet<usize>,
 }
 
 /// O qualificador `qualifier`, escrito antes do nó, é um nome sem nada ligado

@@ -133,6 +133,11 @@
 (assignment right: (identifier) @call.value)
 (assignment right: (attribute attribute: (identifier) @call.value))
 
+; O atributo escrito depois do objeto, sem chamada ali: o campo lido ou
+; escrito (`pedido.total`, `self.total`). O motor liga o nome só a um campo,
+; como liga a chamada de método escrita depois do mesmo objeto.
+(attribute attribute: (identifier) @member)
+
 ; Os textos fixos: o literal de texto escrito no código. O motor guarda o que
 ; tem duas palavras ou forma de caminho ou chave, com a marca (log, erro ou
 ; texto) e a declaração que o contém.

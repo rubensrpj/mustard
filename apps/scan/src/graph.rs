@@ -70,6 +70,7 @@ use petgraph::graph::{DiGraph, NodeIndex};
 use std::cell::{OnceCell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
+mod member;
 mod value;
 
 /// Catalog cap for `top_fan_in`: a bounded list (~a few KB of model) ordered
@@ -341,7 +342,10 @@ pub(crate) const CITED_KINDS: &[&str] =
 ///
 /// O nome escrito onde vai um valor (`Module::value_uses`) liga só a uma
 /// função ou a um método à vista, pelas regras de [`value::verdict`], e entra
-/// entre os nomes que a declaração em volta chama. The links of every declaration are
+/// entre os nomes que a declaração em volta chama. O membro escrito depois do
+/// objeto (`Module::member_reads`) liga só a uma propriedade ou a um campo,
+/// pelas regras de [`member::verdict`], e não entra entre os nomes chamados.
+/// The links of every declaration are
 /// rewritten from scratch on each pass, so nothing survives a declaration
 /// that is gone.
 pub fn link_declarations(
@@ -409,6 +413,19 @@ impl Verdict {
     }
 }
 
+/// O jeito em que o nome foi escrito no arquivo.
+#[derive(Clone, Copy)]
+enum Written {
+    /// Chamado (`Module::calls`).
+    Call,
+    /// Citado sem chamar (`Module::cites`).
+    Cite,
+    /// Onde vai um valor (`Module::value_uses`).
+    Value,
+    /// Como membro depois do objeto (`Module::member_reads`).
+    Member,
+}
+
 /// O que vem escrito antes do nome, como a ligação o lê.
 enum Before<'a> {
     /// Nada: o nome sozinho.
@@ -467,6 +484,7 @@ fn resolve_declaration_links(
     let callable = index(CALLABLE_KINDS);
     let cited = index(CITED_KINDS);
     let valued = index(value::KINDS);
+    let read = index(member::KINDS);
 
     // The namespaces each file declares, in the one segment form the import
     // resolution uses, so `Demo.Models` and `Demo::Models` are the same one,
@@ -543,7 +561,7 @@ fn resolve_declaration_links(
     };
 
     for (src, m) in modules.iter().enumerate() {
-        if m.calls.is_empty() && m.cites.is_empty() && m.value_uses.is_empty() {
+        if m.calls.is_empty() && m.cites.is_empty() && m.value_uses.is_empty() && m.member_reads.is_empty() {
             continue;
         }
         let imported: HashSet<&str> = m.deps.iter().map(String::as_str).collect();
@@ -606,15 +624,17 @@ fn resolve_declaration_links(
             }
         }
         // Cada nome, com as declarações que ele pode alcançar, a posição da
-        // citação e se foi escrito onde vai um valor.
+        // citação e o jeito em que foi escrito.
         let sites = m
             .calls
             .iter()
-            .map(|s| (s, &callable, None, false))
-            .chain(m.cites.iter().enumerate().map(|(i, s)| (s, &cited, Some(i), false)))
-            .chain(m.value_uses.iter().map(|s| (s, &valued, None, true)));
-        for (site, by_name, cite_at, by_value) in sites {
-            let is_call = cite_at.is_none() && !by_value;
+            .map(|s| (s, &callable, None, Written::Call))
+            .chain(m.cites.iter().enumerate().map(|(i, s)| (s, &cited, Some(i), Written::Cite)))
+            .chain(m.value_uses.iter().map(|s| (s, &valued, None, Written::Value)))
+            .chain(m.member_reads.iter().map(|s| (s, &read, None, Written::Member)));
+        for (site, by_name, cite_at, written) in sites {
+            let is_call = matches!(written, Written::Call);
+            let by_value = matches!(written, Written::Value);
             let before = Before::of(&site.qualifier, &m.language);
             // O nome que um import trouxe com troca, escrito sozinho (`L()`
             // de `import { Leitor as L }`), procura as declarações pelo nome
@@ -764,6 +784,8 @@ fn resolve_declaration_links(
                     all.iter().copied().filter(|&(mi, _)| files.contains(modules[mi].path.as_str())).collect()
                 });
                 value::verdict(named, not_ours, &before, seen, || narrowed(&all), max_same_name)
+            } else if matches!(written, Written::Member) {
+                member::verdict(not_ours, &before, seen, || narrowed(&all), path_only, max_same_name)
             } else if is_call {
                 let named = through.get(site).and_then(|paths| path_files(&resolver, m, site.line, paths));
                 match (named, &before) {
@@ -845,7 +867,7 @@ fn resolve_declaration_links(
                     candidates: candidates.clone(),
                 });
             }
-            if cite_at.is_none() && let Some(di) = from {
+            if (is_call || by_value) && let Some(di) = from {
                 links.calls[src][di].insert(looked.to_string());
             }
         }
@@ -1249,7 +1271,7 @@ pub(crate) fn nearest_manifest_deps(path: &str, manifests: &[crate::model::Manif
 }
 
 /// The folder part of `path`, empty at the root.
-fn folder_of(path: &str) -> &str {
+pub(crate) fn folder_of(path: &str) -> &str {
     path.rfind('/').map_or("", |at| &path[..at])
 }
 

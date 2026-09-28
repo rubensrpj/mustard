@@ -12,6 +12,17 @@
 //! membros: moram num método do tipo, e os seguidos, sem membro entre eles,
 //! dividem o mesmo método. O comentário da marcação vira comentário do código, no lugar
 //! dele. O arquivo sem código nenhum sai só com espaços e comentários.
+//!
+//! O comando de controle escrito na marcação (`@if (x) { … }`) é código do
+//! método, e a marcação escrita no meio do código dele ou de um bloco de corpo
+//! vira espaço, com o código em linha dela no lugar ([`code`]). As linhas do
+//! arquivo de imports da pasta que valem nos arquivos dela entram no tipo de
+//! cada um ([`folder`]).
+
+mod code;
+mod folder;
+
+pub(crate) use folder::imports_above;
 
 /// Onde mora o código num arquivo de marcação, como o registro o declara.
 pub(crate) struct Markup {
@@ -56,6 +67,27 @@ pub(crate) struct Markup {
     /// O nome, sem a extensão, do arquivo cujos imports valem também nos
     /// arquivos da mesma língua da pasta dele e das de baixo; vazio sem ele.
     pub imports_file: &'static str,
+    /// Os marcadores de linha cujas linhas, escritas no arquivo de imports da
+    /// pasta, valem também no tipo dos arquivos da mesma língua da pasta dele
+    /// e das de baixo.
+    pub folder: &'static [&'static str],
+    /// O marcador de `folder` cujo resto, herdado, ganha os nomes das pastas
+    /// entre a do arquivo de imports e a do arquivo, e o texto que os junta;
+    /// vazios sem ele.
+    pub folder_path: [&'static str; 2],
+    /// Os nomes que, logo depois do marcador do código em linha, abrem um
+    /// comando de controle, com o cabeçalho e as chaves dele.
+    pub controls: &'static [&'static str],
+    /// Os nomes que, depois das chaves de um comando de controle, o
+    /// continuam.
+    pub chains: &'static [&'static str],
+    /// A forma do comando em que vira a tag de componente, com `{}` no lugar
+    /// do nome dela; vazia sem ela.
+    pub component: &'static str,
+    /// O texto que abre um elemento de marcação no meio do código de um
+    /// bloco de corpo e o que abre uma linha de marcação ali; vazios sem
+    /// marcação no código.
+    pub code_markup: [&'static str; 2],
 }
 
 /// O que uma linha de código é no tipo do arquivo.
@@ -74,22 +106,30 @@ enum Piece {
     /// Um bloco: o byte da chave que abre e o da que fecha, sem a que fecha
     /// o fim do arquivo, e se o de dentro é o corpo de um método.
     Block { open: usize, close: usize, body: bool },
-    /// Uma linha: do começo do marcador ao fim da linha, com o código que ela
-    /// vira (na linha de base, a base) e o que ela é.
-    Line { start: usize, end: usize, code: String, kind: LineKind },
+    /// Uma linha: do começo do marcador ao fim da linha, com o marcador, o
+    /// resto dela, o código que ela vira (na linha de base, a base) e o que
+    /// ela é.
+    Line { start: usize, end: usize, marker: &'static str, argument: String, code: String, kind: LineKind },
     /// Código em linha, escrito no meio da marcação: do marcador ao fim dele,
     /// com o comando que ele vira.
     Expr { start: usize, end: usize, code: String },
     /// Um comentário da marcação: do texto que o abre ao fim do que o fecha,
     /// ou ao fim do arquivo quando nada o fecha.
     Comment { start: usize, end: usize },
+    /// Um comando de controle: do marcador ao fim da chave que fecha o último
+    /// trecho dele. O que vem depois do marcador é código, com a marcação de
+    /// dentro das chaves fora dele.
+    Control { start: usize, end: usize },
 }
 
 impl Piece {
     fn start(&self) -> usize {
         match self {
             Piece::Block { open, .. } => *open,
-            Piece::Line { start, .. } | Piece::Expr { start, .. } | Piece::Comment { start, .. } => *start,
+            Piece::Line { start, .. }
+            | Piece::Expr { start, .. }
+            | Piece::Comment { start, .. }
+            | Piece::Control { start, .. } => *start,
         }
     }
 
@@ -97,7 +137,7 @@ impl Piece {
     /// primeiro, e o fecha, quando é o último.
     fn in_type(&self) -> bool {
         match self {
-            Piece::Block { .. } | Piece::Expr { .. } => true,
+            Piece::Block { .. } | Piece::Expr { .. } | Piece::Control { .. } => true,
             Piece::Line { kind, .. } => !matches!(kind, LineKind::Head),
             Piece::Comment { .. } => false,
         }
@@ -107,14 +147,14 @@ impl Piece {
     /// método dos comandos, ou um comando, que mora nele.
     fn writes_in_type(&self) -> bool {
         match self {
-            Piece::Block { .. } | Piece::Expr { .. } => true,
+            Piece::Block { .. } | Piece::Expr { .. } | Piece::Control { .. } => true,
             Piece::Line { kind, .. } => matches!(kind, LineKind::Member),
             Piece::Comment { .. } => false,
         }
     }
 
     fn is_body(&self) -> bool {
-        matches!(self, Piece::Block { body: true, .. } | Piece::Expr { .. })
+        matches!(self, Piece::Block { body: true, .. } | Piece::Expr { .. } | Piece::Control { .. })
     }
 }
 
@@ -130,8 +170,12 @@ impl Markup {
     /// do primeiro código do tipo fica na linha dele; o escrito depois vai
     /// para a linha em que o tipo abre, antes dele. O método dos comandos
     /// abre no primeiro comando cujo código anterior no tipo não é comando, e
-    /// fecha no fim do comando cujo código seguinte no tipo não é.
-    pub(crate) fn code_of(&self, src: &str, path: &str) -> String {
+    /// fecha no fim do comando cujo código seguinte no tipo não é. As linhas
+    /// herdadas dos arquivos de imports da pasta (`folder`, com o caminho e o
+    /// texto de cada um, da pasta de cima para a de baixo) entram na linha em
+    /// que o tipo abre: as de cabeça antes dele, as bases na lista dele e os
+    /// membros logo depois de abri-lo.
+    pub(crate) fn code_of(&self, src: &str, path: &str, folder: &[(&str, &str)]) -> String {
         let pieces = self.pieces(src);
         let first_in_type = pieces.iter().position(Piece::in_type);
         let last_in_type = pieces.iter().rposition(Piece::in_type);
@@ -149,7 +193,20 @@ impl Markup {
                         out.push(' ');
                     }
                 }
-                out.push_str(&self.open.replace("{file}", file_stem(path)).replace("{bases}", &self.bases_of(&pieces)));
+                let inherited = self.inherited(&pieces, path, folder);
+                for (kind, code) in &inherited {
+                    if matches!(kind, LineKind::Head) {
+                        out.push_str(code);
+                        out.push(' ');
+                    }
+                }
+                out.push_str(&self.open.replace("{file}", file_stem(path)).replace("{bases}", &self.bases_of(&pieces, &inherited)));
+                for (kind, code) in &inherited {
+                    if matches!(kind, LineKind::Member) {
+                        out.push(' ');
+                        out.push_str(code);
+                    }
+                }
                 at = line_start;
             }
             let moved = first_in_type.is_some_and(|first| i > first);
@@ -160,7 +217,11 @@ impl Markup {
                     if *body && !body_before(i) {
                         out.push_str(self.method[0]);
                     }
-                    out.push_str(&src[open + 1..*close]);
+                    if *body {
+                        self.push_code(&mut out, src, open + 1, *close);
+                    } else {
+                        out.push_str(&src[open + 1..*close]);
+                    }
                     at = *close;
                     if *body && !body_after(i) {
                         out.push_str(self.method[1]);
@@ -189,6 +250,19 @@ impl Markup {
                     self.push_comment(&mut out, &src[*start..*end]);
                     at = *end;
                 }
+                Piece::Control { start, end } => {
+                    blank(&mut out, &src[at..*start]);
+                    if !body_before(i) {
+                        out.push_str(self.method[0]);
+                    }
+                    let code = start + self.expression[0].len();
+                    blank(&mut out, &src[*start..code]);
+                    self.push_code(&mut out, src, code, *end);
+                    at = *end;
+                    if !body_after(i) {
+                        out.push_str(self.method[1]);
+                    }
+                }
             }
             if closes {
                 out.push_str(self.close);
@@ -199,16 +273,18 @@ impl Markup {
     }
 
     /// As bases que as linhas de base dão ao tipo, na ordem dos marcadores
-    /// e, com o mesmo marcador, na do arquivo, já na forma de `base_list`;
-    /// vazio sem nenhuma.
-    fn bases_of(&self, pieces: &[Piece]) -> String {
-        let mut named: Vec<(usize, &str)> = pieces
-            .iter()
-            .filter_map(|piece| match piece {
-                Piece::Line { code, kind: LineKind::Base(order), .. } => Some((*order, code.as_str())),
-                _ => None,
-            })
-            .collect();
+    /// e, com o mesmo marcador, na do arquivo, depois as herdadas da pasta
+    /// (`inherited`), já na forma de `base_list`; vazio sem nenhuma.
+    fn bases_of(&self, pieces: &[Piece], inherited: &[(LineKind, String)]) -> String {
+        let own = pieces.iter().filter_map(|piece| match piece {
+            Piece::Line { code, kind: LineKind::Base(order), .. } => Some((*order, code.as_str())),
+            _ => None,
+        });
+        let from_folder = inherited.iter().filter_map(|(kind, code)| match kind {
+            LineKind::Base(order) => Some((*order, code.as_str())),
+            _ => None,
+        });
+        let mut named: Vec<(usize, &str)> = own.chain(from_folder).collect();
         if named.is_empty() {
             return String::new();
         }
@@ -240,14 +316,22 @@ impl Markup {
     /// comentário, pelo texto que o abre; o bloco começa pelo marcador escrito
     /// fora de outra palavra e segue na chave que vem depois dele, passados os
     /// espaços; o código em linha, pelo marcador escrito fora de outra
-    /// palavra. O
-    /// marcador escrito na tela (`escape`) não abre nada.
+    /// palavra; o comando de controle, pelo marcador seguido de um nome de
+    /// `controls`; a tag de componente, pelo `<` seguido de letra maiúscula.
+    /// O marcador escrito na tela (`escape`) não abre nada.
     fn pieces(&self, src: &str) -> Vec<Piece> {
+        self.pieces_between(src, 0, src.len(), true)
+    }
+
+    /// Os trechos de código de `src` entre os bytes `from` e `to`, como em
+    /// [`Self::pieces`]; as linhas de código só com `lines`. O trecho que
+    /// passaria de `to` não conta.
+    fn pieces_between(&self, src: &str, from: usize, to: usize, lines: bool) -> Vec<Piece> {
         let bytes = src.as_bytes();
         let mut out = Vec::new();
-        let mut at = 0;
-        let mut line_start = true;
-        while at < bytes.len() {
+        let mut at = from;
+        let mut line_start = lines;
+        while at < to {
             if line_start {
                 let first = at + bytes[at..].iter().take_while(|b| matches!(b, b' ' | b'\t')).count();
                 if let Some((line, end)) = self.line_at(src, first) {
@@ -257,7 +341,7 @@ impl Markup {
                     continue;
                 }
             }
-            if let Some(end) = self.comment_at(src, at) {
+            if let Some(end) = self.comment_at(src, at).filter(|&end| end <= to) {
                 out.push(Piece::Comment { start: at, end });
                 at = end;
                 line_start = false;
@@ -269,19 +353,27 @@ impl Markup {
                 continue;
             }
             if let Some((open, body)) = self.block_at(src, at) {
-                let close = matching(bytes, open);
-                out.push(Piece::Block { open, close, body });
-                at = (close + 1).min(bytes.len());
+                let close = if body { self.code_close(src, open) } else { matching(bytes, open) };
+                if close < to || to == src.len() {
+                    out.push(Piece::Block { open, close, body });
+                    at = (close + 1).min(bytes.len());
+                    line_start = false;
+                    continue;
+                }
+            }
+            if let Some(end) = self.control_at(src, at).filter(|&end| end <= to) {
+                out.push(Piece::Control { start: at, end });
+                at = end;
                 line_start = false;
                 continue;
             }
-            if let Some((end, code)) = self.expression_at(src, at) {
+            if let Some((end, code)) = self.component_at(src, at).or_else(|| self.expression_at(src, at)).filter(|(end, _)| *end <= to) {
                 out.push(Piece::Expr { start: at, end, code });
                 at = end;
                 line_start = false;
                 continue;
             }
-            line_start = bytes[at] == b'\n';
+            line_start = lines && bytes[at] == b'\n';
             at += 1;
         }
         out
@@ -292,7 +384,7 @@ impl Markup {
     /// pode ser vazio.
     fn line_at(&self, src: &str, first: usize) -> Option<(Piece, usize)> {
         let rest = &src[first..];
-        let (marker, form, kind) = self
+        let (marker, form, kind): (&'static str, &'static str, LineKind) = self
             .lines
             .iter()
             .map(|(marker, form)| (*marker, *form, LineKind::Member))
@@ -302,7 +394,8 @@ impl Markup {
         let end = first + rest.find('\n').unwrap_or(rest.len());
         let argument = src[first + marker.len()..end].trim();
         let code = form.replacen("{}", argument, 1);
-        (!argument.is_empty()).then_some((Piece::Line { start: first, end, code, kind }, end))
+        let line = Piece::Line { start: first, end, marker, argument: argument.to_string(), code, kind };
+        (!argument.is_empty()).then_some((line, end))
     }
 
     /// O byte em que termina o comentário cujo texto de abrir começa no byte
@@ -535,6 +628,12 @@ mod tests {
         bases: &[],
         base_list: ["", ""],
         imports_file: "",
+        folder: &[],
+        folder_path: ["", ""],
+        controls: &[],
+        chains: &[],
+        component: "",
+        code_markup: ["", ""],
     };
 
     /// A página de Blazor só com os blocos e as linhas.
@@ -554,7 +653,7 @@ mod tests {
     fn the_code_keeps_its_lines_and_the_markup_becomes_spaces() {
         let src = "@page \"/pedidos\"\n@using System.Net.Http.Json\n@inject HttpClient Http\n\n<h3>Pedidos</h3>\n\n\
                    @code {\n    private string? pedido;\n}\n";
-        let code = PAGE.code_of(src, "Web/Pages/Pedidos.razor");
+        let code = PAGE.code_of(src, "Web/Pages/Pedidos.razor", &[]);
         assert_eq!(
             lines(&code),
             [
@@ -575,7 +674,7 @@ mod tests {
     #[test]
     fn a_brace_inside_a_text_a_character_or_a_comment_does_not_close_the_block() {
         let src = "@code {\n    string a = \"}\";\n    char b = '}';\n    // }\n    /* } */\n    int c;\n}\n<p>depois</p>\n";
-        let code = PAGE.code_of(src, "P.razor");
+        let code = PAGE.code_of(src, "P.razor", &[]);
         let got = lines(&code);
         assert_eq!(got[5].trim(), "int c;");
         assert_eq!(got[6].trim(), "}", "the block closes on its own brace: {code:?}");
@@ -585,13 +684,13 @@ mod tests {
     #[test]
     fn a_marker_glued_to_another_word_or_without_a_brace_is_not_a_block() {
         let src = "<a href=\"mailto:x@code.com\">x</a>\n<p>@codex { nada }</p>\n<p>@code sem chave</p>\n";
-        assert_eq!(PAGE.code_of(src, "P.razor").trim(), "");
+        assert_eq!(PAGE.code_of(src, "P.razor", &[]).trim(), "");
     }
 
     #[test]
     fn two_blocks_live_in_one_type_that_closes_after_the_last() {
         let src = "@code {\n    int a;\n}\n<p>meio</p>\n@functions {\n    int b;\n}\n";
-        let code = PAGE.code_of(src, "Dois.razor");
+        let code = PAGE.code_of(src, "Dois.razor", &[]);
         let got = lines(&code);
         assert_eq!(got[0].trim(), "partial class Dois {");
         assert_eq!(got[2].trim(), "", "the first block's brace is blank: {code:?}");
@@ -603,7 +702,7 @@ mod tests {
 
     #[test]
     fn a_head_line_written_after_the_first_member_goes_before_the_type() {
-        let code = PAGE.code_of("@inject Loja.Carrinho Carrinho\n@using Loja\n@code { }\n", "Compra.razor");
+        let code = PAGE.code_of("@inject Loja.Carrinho Carrinho\n@using Loja\n@code { }\n", "Compra.razor", &[]);
         assert_eq!(lines(&code), ["using Loja; partial class Compra { Loja.Carrinho Carrinho;", "", "}"]);
     }
 
@@ -621,7 +720,7 @@ mod tests {
     #[test]
     fn a_body_block_is_the_body_of_a_method_of_the_type() {
         let src = "@page\n@model IndexModel\n@{\n    ViewData[\"Title\"] = \"Início\";\n}\n<h1>@ViewData[\"Title\"]</h1>\n";
-        let code = VIEW.code_of(src, "Pages/Index.cshtml");
+        let code = VIEW.code_of(src, "Pages/Index.cshtml", &[]);
         assert_eq!(
             lines(&code),
             ["", "class Index { IndexModel Model;", "async Task ExecuteAsync() {", "ViewData[\"Title\"] = \"Início\";", "}}", ""]
@@ -631,7 +730,7 @@ mod tests {
     #[test]
     fn body_blocks_in_a_row_share_one_method_and_a_member_between_them_opens_another() {
         let src = "@{ var a = 1; }\n<p>@a</p>\n@using Loja\n@{ a++; }\n@inject Loja.Carrinho Carrinho\n@{ var b = 2; }\n";
-        let code = VIEW.code_of(src, "Views/Home/V.cshtml");
+        let code = VIEW.code_of(src, "Views/Home/V.cshtml", &[]);
         assert_eq!(
             lines(&code),
             [
@@ -648,7 +747,7 @@ mod tests {
     #[test]
     fn a_member_block_whose_marker_starts_like_the_body_marker_stays_a_member() {
         let src = "@{ var total = Dobro(2); }\n@functions { int Dobro(int x) => x * 2; }\n<a href=\"mailto:x@{y}\">x</a>\n";
-        let code = VIEW.code_of(src, "V.cshtml");
+        let code = VIEW.code_of(src, "V.cshtml", &[]);
         assert_eq!(
             lines(&code),
             ["class V { async Task ExecuteAsync() { var total = Dobro(2); }", "int Dobro(int x) => x * 2; }", ""]
@@ -658,13 +757,13 @@ mod tests {
     #[test]
     fn a_page_written_with_accents_reads_its_code() {
         let src = "<h3>Ação à vista</h3>\n@code {\n    int preço;\n}\n";
-        let code = PAGE.code_of(src, "Preço.razor");
+        let code = PAGE.code_of(src, "Preço.razor", &[]);
         assert_eq!(lines(&code), ["", "partial class Preço {", "int preço;", "}"]);
     }
 
     #[test]
     fn a_file_with_only_head_lines_opens_no_type() {
-        let code = PAGE.code_of("@using Loja.Servicos\n<p>oi</p>\n", "_Imports.razor");
+        let code = PAGE.code_of("@using Loja.Servicos\n<p>oi</p>\n", "_Imports.razor", &[]);
         assert_eq!(lines(&code), ["using Loja.Servicos;", ""]);
     }
 
@@ -689,7 +788,7 @@ mod tests {
 
     /// As expressões de uma linha de marcação, como os comandos que viram.
     fn commands(src: &str) -> Vec<String> {
-        let code = FULL.code_of(src, "V.cshtml");
+        let code = FULL.code_of(src, "V.cshtml", &[]);
         code.split("_ = ").skip(1).map(|rest| rest[..rest.find(';').unwrap()].to_string()).collect()
     }
 
@@ -716,14 +815,14 @@ mod tests {
     #[test]
     fn an_address_an_escaped_marker_and_a_keyword_are_not_expressions() {
         assert_eq!(commands("<p>ajuda@loja.com, @@loja, @page, @if (x) { }, @1, @functions sem chave</p>"), Vec::<String>::new());
-        assert_eq!(FULL.code_of("<p>ajuda@loja.com</p>\n", "V.cshtml").trim(), "");
+        assert_eq!(FULL.code_of("<p>ajuda@loja.com</p>\n", "V.cshtml", &[]).trim(), "");
     }
 
     #[test]
     fn expressions_live_in_the_method_with_the_body_blocks_and_a_member_between_them_splits_it() {
         let src = "@{ var a = 1; }\n<p>@a</p>\n@functions { int b; }\n<p>@Model.Total</p>\n";
         assert_eq!(
-            lines(&FULL.code_of(src, "V.cshtml")),
+            lines(&FULL.code_of(src, "V.cshtml", &[])),
             ["class V { void Draw() { var a = 1;", "_ = a;}", "int b;", "void Draw() {_ = Model.Total;}}"]
         );
     }
@@ -731,21 +830,85 @@ mod tests {
     #[test]
     fn a_markup_comment_becomes_a_code_comment_and_nothing_in_it_is_code() {
         let src = "@* Mostra o total *@\n<p>@Model.Total</p>\n@* <p>@Esconder()</p>\n@functions { int c; } */ *@\n";
-        let code = FULL.code_of(src, "V.cshtml");
+        let code = FULL.code_of(src, "V.cshtml", &[]);
         assert_eq!(
             lines(&code),
             ["/* Mostra o total */", "class V { void Draw() {_ = Model.Total;}}", "/* <p>@Esconder()</p>", "@functions { int c; } */"]
         );
         assert_eq!(code.matches("*/").count(), 2, "the closing text inside the comment is blank: {code:?}");
-        assert!(FULL.code_of("<p>a</p>@* sem fim\n@Abrir()\n", "V.cshtml").contains("/* sem fim\n@Abrir()\n*/"));
+        assert!(FULL.code_of("<p>a</p>@* sem fim\n@Abrir()\n", "V.cshtml", &[]).contains("/* sem fim\n@Abrir()\n*/"));
     }
 
     #[test]
     fn the_base_lines_become_the_bases_of_the_type_the_inherited_first() {
         let src = "@implements IDisposable\n@inherits Base<Pedido>\n@implements IFechavel\n<p>@Model</p>\n";
-        let code = FULL.code_of(src, "Tela.cshtml");
+        let code = FULL.code_of(src, "Tela.cshtml", &[]);
         assert_eq!(lines(&code)[0], "class Tela : Base<Pedido>, IDisposable, IFechavel {");
-        assert_eq!(lines(&FULL.code_of("@inherits Base\n<p>oi</p>\n", "So.cshtml")), ["class So : Base { }", ""], "a base alone opens the type");
+        assert_eq!(lines(&FULL.code_of("@inherits Base\n<p>oi</p>\n", "So.cshtml", &[])), ["class So : Base { }", ""], "a base alone opens the type");
+    }
+
+    /// A página com os comandos de controle, a marcação no meio do código,
+    /// as tags de componente e as linhas que valem na pasta.
+    const CONTROLS: Markup = Markup {
+        blocks: &["@code"],
+        bodies: &["@"],
+        method: ["void Draw() {", "}"],
+        lines: &[("@inject", "{};")],
+        head: &[("@using", "using {};"), ("@namespace", "namespace {};")],
+        open: "class {file}{bases} {",
+        expression: ["@", "_ = {};"],
+        keywords: &["if", "foreach", "code", "inject", "inherits", "namespace"],
+        comment: ["@*", "*@", "/*", "*/"],
+        bases: &["@inherits"],
+        base_list: [" : ", ", "],
+        imports_file: "_Imports",
+        folder: &["@inject", "@inherits", "@namespace"],
+        folder_path: ["@namespace", "."],
+        controls: &["if", "foreach"],
+        chains: &["else"],
+        component: "_ = typeof({});",
+        code_markup: ["<", "@:"],
+        ..PLAIN
+    };
+
+    #[test]
+    fn a_control_is_code_of_the_method_with_its_header_and_the_markup_inside_it_is_blank() {
+        let src = "@if (a > 0) {\n    <p>@b</p>\n} else if (c) {\n    var d = 1;\n} else {\n    <p>nada</p>\n}\n<p>@foreach sem chave</p>\n";
+        assert_eq!(
+            lines(&CONTROLS.code_of(src, "V.razor", &[])),
+            ["class V {void Draw() { if (a > 0) {", "_ = b;", "} else if (c) {", "var d = 1;", "} else {", "", "}}}", ""]
+        );
+    }
+
+    #[test]
+    fn the_markup_inside_a_body_block_is_blank_and_its_code_stays() {
+        let src = "@{\n    var a = 1;\n    <div><div>Don't { Salvar(); }</div></div>\n    <br />\n    @:texto Salvar() @a\n    \
+                   if (a > 0) { <b>@(a + 1)</b> }\n    a++;\n}\n<p>fim}</p>\n";
+        assert_eq!(
+            lines(&CONTROLS.code_of(src, "V.razor", &[])),
+            ["class V { void Draw() {", "var a = 1;", "", "", "_ = a;", "if (a > 0) { _ = (a + 1); }", "a++;", "}}", ""]
+        );
+    }
+
+    #[test]
+    fn a_component_tag_is_a_use_of_the_type_it_names() {
+        let src = "<Contador Valor=\"@x\" />\n<Loja.Titulo>oi</Loja.Titulo>\n<p>@y</p>\n";
+        let code = CONTROLS.code_of(src, "V.razor", &[]);
+        let commands: Vec<&str> = code.split("_ = ").skip(1).map(|rest| &rest[..rest.find(';').unwrap()]).collect();
+        assert_eq!(commands, ["typeof(Contador)", "x", "typeof(Loja.Titulo)", "y"]);
+    }
+
+    #[test]
+    fn the_folder_lines_of_the_imports_files_above_enter_the_type_of_the_page() {
+        let folder = [
+            ("Web/_Imports.razor", "@namespace Loja\n@inject Carrinho Compras\n@inherits Base\n@using Loja.Servicos\n"),
+            ("Web/Pages/_Imports.razor", "@inherits Outra\n@inject Relogio Hora\n@inject Carrinho Compras\n"),
+        ];
+        let page = CONTROLS.code_of("<p>@Compras</p>\n", "Web/Pages/Admin/Painel.razor", &folder);
+        assert_eq!(lines(&page)[0], "namespace Loja.Pages.Admin; class Painel : Outra { Carrinho Compras; Relogio Hora; void Draw() {_ = Compras;}}");
+        let own = CONTROLS.code_of("@namespace Meu\n@inherits Minha\n<p>@Hora</p>\n", "Web/Pages/Admin/Painel.razor", &folder);
+        assert_eq!(lines(&own), ["namespace Meu;", "class Painel : Minha { Carrinho Compras; Relogio Hora;", "void Draw() {_ = Hora;}}"]);
+        assert_eq!(lines(&CONTROLS.code_of("<p>oi</p>\n", "Web/Pages/Estatica.razor", &folder)), [""], "no type, no folder lines");
     }
 
     #[test]

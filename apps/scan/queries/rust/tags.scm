@@ -55,6 +55,12 @@
 (field_initializer value: (identifier) @call.value)
 (field_initializer value: (scoped_identifier name: (identifier) @call.value))
 
+; O campo escrito depois do objeto, sem chamada ali (`self.total`,
+; `pedido.total`). O motor liga o nome só a um campo, como liga a chamada de
+; método escrita depois do mesmo objeto: depois do próprio objeto, o campo do
+; tipo; depois de um valor, nada.
+(field_expression field: (field_identifier) @member)
+
 ; O módulo marcado como teste: o atributo `#[cfg(test)]` em qualquer ponto da
 ; fila de atributos colada ao `mod`, com outros no meio (`#[allow(dead_code)]`);
 ; um item que não é atributo entre a marca e o `mod` corta a fila. O que se

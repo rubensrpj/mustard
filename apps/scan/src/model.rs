@@ -345,6 +345,15 @@ pub struct Module {
     /// again links it the same way.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub value_uses: Vec<CallSite>,
+    /// Cada nome de membro escrito depois do objeto que o tem, sem chamada
+    /// ali (`pedido.Total`, `self.total`), com a linha e o nome escrito antes
+    /// dele: a propriedade ou o campo lido ou escrito. Cru, como
+    /// [`Module::calls`]: liga só a uma propriedade ou a um campo que o
+    /// objeto alcança, do jeito que liga a chamada de método escrita depois
+    /// do mesmo objeto, e a passada que não relê o arquivo liga do mesmo
+    /// jeito.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub member_reads: Vec<CallSite>,
     /// Os textos fixos do arquivo (`@text`), fora os do trecho de teste, em
     /// ordem de linha. O arquivo de teste e o escrito por máquina não guardam
     /// nenhum. Guardados com o módulo, para que a passada que não relê o

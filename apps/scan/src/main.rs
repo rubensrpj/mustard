@@ -268,6 +268,28 @@ fn read_modules(root: &Path, reuse: Option<&ingest::Reuse>, listing: Option<&Lis
     // once; they beat the marker catalog in both directions.
     let overrides = classify::Overrides::load(&ing.root);
 
+    // Os arquivos de imports da pasta, com o texto de agora: as linhas deles
+    // que valem na pasta entram no tipo de cada arquivo da mesma língua dela
+    // e das de baixo.
+    let imports_files: Vec<(String, String, String)> = ing
+        .files
+        .iter()
+        .filter_map(|walked| {
+            let (path, language) = match walked {
+                ingest::Walked::Fresh(sf) => (&sf.rel_path, &sf.language),
+                ingest::Walked::Kept(kept) => (&kept.path, &kept.language),
+                ingest::Walked::Pending(_) => return None,
+            };
+            if !extract::imports_whole_folder(language, path) {
+                return None;
+            }
+            let text = match walked {
+                ingest::Walked::Fresh(sf) => sf.content.clone(),
+                _ => std::fs::read_to_string(ing.root.join(path)).ok()?,
+            };
+            Some((path.clone(), language.clone(), text))
+        })
+        .collect();
     // Cada arquivo lido agora é extraído em paralelo com os outros; o que a
     // passada toma do mapa anterior só perde o que se recalcula abaixo.
     let extracted = ingest::in_parallel(std::mem::take(&mut ing.files), |walked| match walked {
@@ -311,7 +333,9 @@ fn read_modules(root: &Path, reuse: Option<&ingest::Reuse>, listing: Option<&Lis
                 }
                 _ => Vec::new(),
             };
-            let project = routes::Project { global_imports: &[], manifest_deps: &manifest_deps, path: &sf.rel_path };
+            let folder = markup::imports_above(&imports_files, &sf.rel_path, &sf.language);
+            let project =
+                routes::Project { global_imports: &[], manifest_deps: &manifest_deps, path: &sf.rel_path, folder: &folder };
             let extracted = analyzer.map(|a| a.extract(&sf.content, keep, &project)).unwrap_or_default();
             Some(Module {
                 path: sf.rel_path.clone(),
@@ -342,6 +366,7 @@ fn read_modules(root: &Path, reuse: Option<&ingest::Reuse>, listing: Option<&Lis
                 unbound_heads: extracted.unbound_heads,
                 cites: extracted.cites,
                 value_uses: extracted.value_uses,
+                member_reads: extracted.member_reads,
                 texts: extracted.texts,
                 routes: extracted.routes,
                 route_links: extracted.route_links,
@@ -428,8 +453,8 @@ fn routes_by_global_imports(
                 Vec::new()
             };
             let imports: Vec<String> = m.imports.iter().chain(&m.global_imports).cloned().collect();
-            let less = routes::Project { global_imports: &[], manifest_deps: &manifest_deps, path: &m.path };
-            let more = routes::Project { global_imports: &globals, manifest_deps: &manifest_deps, path: &m.path };
+            let less = routes::Project { global_imports: &[], manifest_deps: &manifest_deps, path: &m.path, folder: &[] };
+            let more = routes::Project { global_imports: &globals, manifest_deps: &manifest_deps, path: &m.path, folder: &[] };
             analyzer.routes_turned_on_by(&imports, &less, &more).then_some((at, analyzer, globals, manifest_deps))
         })
         .collect();
@@ -437,7 +462,8 @@ fn routes_by_global_imports(
     let keep = extract::Keep { written_text: false, texts_and_routes: true };
     let found = ingest::in_parallel(again, |(at, analyzer, globals, manifest_deps)| {
         let content = std::fs::read_to_string(ing.root.join(&modules[at].path)).ok()?;
-        let project = routes::Project { global_imports: &globals, manifest_deps: &manifest_deps, path: &modules[at].path };
+        let project =
+            routes::Project { global_imports: &globals, manifest_deps: &manifest_deps, path: &modules[at].path, folder: &[] };
         let extracted = analyzer.extract(&content, keep, &project);
         Some((at, extracted.routes, extracted.route_links, extracted.route_calls))
     });

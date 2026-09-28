@@ -35,6 +35,12 @@ fn declaration<'a>(map: &'a Value, path: &str, name: &str) -> &'a Value {
     decls.iter().find(|d| d["name"] == name).unwrap_or_else(|| panic!("{name} em {path}: {decls:?}"))
 }
 
+/// As declarações `name` do arquivo `path` do mapa, na ordem do arquivo.
+fn declarations<'a>(map: &'a Value, path: &str, name: &str) -> Vec<&'a Value> {
+    let module = map["modules"].as_array().unwrap().iter().find(|m| m["path"] == path).unwrap_or_else(|| panic!("{path} no mapa"));
+    module["declarations"].as_array().unwrap().iter().filter(|d| d["name"] == name).collect()
+}
+
 /// Os usos provados da declaração `name` do arquivo `path`, como
 /// `arquivo:linha:de onde`.
 fn proven_uses(map: &Value, path: &str, name: &str) -> Vec<String> {
@@ -84,7 +90,8 @@ fn a_rust_function_handed_as_a_value_is_used_by_who_hands_it() {
     assert_eq!(proven_uses(&map, "src/calc.rs", "somar_um"), ["src/main.rs:36:main"]);
     assert_eq!(proven_uses(&map, "src/a.rs", "triplo"), ["src/main.rs:37:main"]);
     assert_eq!(proven_uses(&map, "src/main.rs", "metade"), ["src/main.rs:20:metades"]);
-    assert_eq!(every_use(&map, "src/main.rs", "total"), Vec::<String>::new(), "the field read is not a use of the method");
+    let method = declarations(&map, "src/main.rs", "total").into_iter().find(|d| d["kind"] != "field").unwrap();
+    assert_eq!(method["used_by"].as_array().cloned().unwrap_or_default(), Vec::<Value>::new(), "the field read is not a use of the method");
     assert_eq!(every_use(&map, "src/solto.rs", "solto"), Vec::<String>::new(), "a file out of sight does not link");
     let calls = declaration(&map, "src/main.rs", "main")["calls"].clone();
     for name in ["quadrado", "dobro", "somar_um", "triplo"] {

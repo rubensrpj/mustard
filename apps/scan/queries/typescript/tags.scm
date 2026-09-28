@@ -163,6 +163,12 @@
 (pair value: (identifier) @call.value)
 (pair value: (member_expression property: (property_identifier) @call.value))
 
+; O membro escrito depois do objeto, sem chamada ali: a propriedade ou o
+; campo lido ou escrito (`pedido.total`, `this.total`). O motor liga o nome
+; só a uma propriedade ou a um campo, como liga a chamada de método escrita
+; depois do mesmo objeto.
+(member_expression property: (property_identifier) @member)
+
 ; Os textos fixos: o literal de texto escrito no código. O motor guarda o que
 ; tem duas palavras ou forma de caminho ou chave, com a marca (log, erro ou
 ; texto) e a declaração que o contém.

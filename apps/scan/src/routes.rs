@@ -378,6 +378,10 @@ pub(crate) struct Project<'a> {
     /// O caminho dele no projeto, que pode dar um prefixo às rotas escritas
     /// nele (`file_prefixes`).
     pub path: &'a str,
+    /// Os arquivos de imports da pasta que o alcançam, com o caminho e o
+    /// texto de cada um, da pasta de cima para a de baixo: as linhas deles
+    /// que valem na pasta entram no tipo do arquivo de marcação.
+    pub folder: &'a [(&'a str, &'a str)],
 }
 
 /// Alguma das regras liga no arquivo que importa `imports` com o que o

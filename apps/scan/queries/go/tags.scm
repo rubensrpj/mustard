@@ -59,6 +59,11 @@
 (var_spec value: (expression_list (identifier) @call.value))
 (keyed_element value: (literal_element (identifier) @call.value))
 
+; O campo escrito depois do objeto, sem chamada ali: o lido ou escrito
+; (`pedido.Total`, `p.Total`). O motor liga o nome só a um campo, como liga a
+; chamada de método escrita depois do mesmo objeto.
+(selector_expression field: (field_identifier) @member)
+
 ; Os textos fixos: o literal de texto escrito no código. O motor guarda o que
 ; tem duas palavras ou forma de caminho ou chave, com a marca (log, erro ou
 ; texto) e a declaração que o contém.

@@ -719,21 +719,55 @@ fn markup_rule(name: &str, rule: &toml::value::Table) -> String {
         refused("it must declare `blocks`, `bodies`, `lines`, `head` or `bases`")
     );
     let [method_open, method_close] = method.unwrap_or_default();
+    let expressed = expression.is_some();
     let [marker, statement] = expression.unwrap_or_default();
     let [base_open, base_between] = base_list.unwrap_or_default();
     let pairs = |list: &[(String, String)]| list.iter().map(|(m, f)| format!("({m:?}, {f:?})")).collect::<Vec<_>>().join(", ");
     let imports_file = text("imports_file");
+    let folder = markers("folder");
+    let line_markers: Vec<&String> = lines.iter().chain(&head).map(|(marker, _)| marker).chain(&bases).collect();
+    assert!(
+        folder.is_empty() || (!imports_file.is_empty() && folder.iter().all(|marker| line_markers.contains(&marker))),
+        "{}",
+        refused("`folder` lists markers of `lines`, `head` or `bases`, and comes only with `imports_file`")
+    );
+    let [path_marker, path_joiner] = pair("folder_path").unwrap_or_default();
+    assert!(
+        path_marker.is_empty() || (folder.contains(&path_marker) && !path_joiner.is_empty()),
+        "{}",
+        refused("`folder_path` names a marker of `folder` and the text that joins the folders")
+    );
+    let (controls, chains) = (markers("controls"), markers("chains"));
+    assert!(controls.is_empty() || expressed, "{}", refused("`controls` come only with `expression`"));
+    assert!(chains.is_empty() || !controls.is_empty(), "{}", refused("`chains` come only with `controls`"));
+    let component = text("component");
+    assert!(
+        component.is_empty() || (component.contains("{}") && expressed),
+        "{}",
+        refused("`component` is a statement with `{}` and comes only with `expression`")
+    );
+    let [element, markup_line] = pair("code_markup").unwrap_or_default();
+    assert!(
+        element.is_empty() || (!markup_line.is_empty() && !bodies.is_empty()),
+        "{}",
+        refused("`code_markup` lists what opens an element and a line of markup, and comes only with `bodies`")
+    );
     format!(
         "crate::markup::Markup {{ blocks: &[{}], bodies: &[{}], method: [{method_open:?}, {method_close:?}], lines: &[{}], head: &[{}], \
          open: {open:?}, close: {close:?}, expression: [{marker:?}, {statement:?}], escape: {escape:?}, keywords: &[{}], prefixes: &[{}], \
-         comment: {comment:?}, bases: &[{}], base_list: [{base_open:?}, {base_between:?}], imports_file: {imports_file:?} }}",
+         comment: {comment:?}, bases: &[{}], base_list: [{base_open:?}, {base_between:?}], imports_file: {imports_file:?}, \
+         folder: &[{}], folder_path: [{path_marker:?}, {path_joiner:?}], controls: &[{}], chains: &[{}], component: {component:?}, \
+         code_markup: [{element:?}, {markup_line:?}] }}",
         quoted_list(&blocks),
         quoted_list(&bodies),
         pairs(&lines),
         pairs(&head),
         quoted_list(&keywords),
         quoted_list(&prefixes),
-        quoted_list(&bases)
+        quoted_list(&bases),
+        quoted_list(&folder),
+        quoted_list(&controls),
+        quoted_list(&chains)
     )
 }
 

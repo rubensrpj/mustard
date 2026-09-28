@@ -227,7 +227,10 @@ pub(crate) fn inputs(listing: &Listing, manifests: &[&str], undecodable: &[Strin
 ///   too many times links nowhere, and one fewer may make it link;
 /// - it imports a file of the project it did not import before;
 /// - a global import of its language family was written, changed or
-///   removed, since it may put in sight files that did not change.
+///   removed, since it may put in sight files that did not change;
+/// - o arquivo de imports de uma pasta acima dele, da mesma língua, foi lido
+///   agora ou sumiu: as linhas desse arquivo que valem na pasta entram no
+///   tipo dele.
 ///
 /// `fresh` holds the files this pass read; `modules`, what this pass has, with
 /// the imports already resolved.
@@ -249,6 +252,16 @@ pub(crate) fn stale_citers(
 
     let mut names: BTreeSet<String> = BTreeSet::new();
     let mut global_languages: BTreeSet<&str> = BTreeSet::new();
+    // O arquivo de imports da pasta lido agora ou que sumiu: as linhas dele
+    // que valem na pasta podem ter mudado no tipo de cada arquivo da mesma
+    // língua dela e das de baixo.
+    let imports_folders: Vec<(&str, &str)> = modules
+        .iter()
+        .filter(|m| fresh.contains(&m.path))
+        .chain(prev.modules.iter().filter(|m| !now.contains(m.path.as_str())))
+        .filter(|m| crate::extract::imports_whole_folder(&m.language, &m.path))
+        .map(|m| (m.language.as_str(), crate::graph::folder_of(&m.path)))
+        .collect();
     for m in modules.iter().filter(|m| fresh.contains(&m.path)) {
         match before.get(m.path.as_str()) {
             Some(old) if old.namespaces == m.namespaces && old.language == m.language => {
@@ -273,6 +286,7 @@ pub(crate) fn stale_citers(
         .filter(|m| !fresh.contains(&m.path))
         .filter(|m| {
             global_languages.contains(crate::extract::family(&m.language))
+                || imports_folders.iter().any(|(language, folder)| m.language == *language && crate::graph::is_under(&m.path, folder))
                 || before.get(m.path.as_str()).is_none_or(|old| m.deps.iter().any(|d| !old.deps.contains(d)))
                 || (!names.is_empty()
                     && std::fs::read_to_string(root.join(&m.path)).is_ok_and(|text| names.iter().any(|n| has_word(&text, n))))

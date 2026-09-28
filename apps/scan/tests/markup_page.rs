@@ -503,3 +503,162 @@ fn a_csharp_class_without_a_namespace_is_seen_by_the_whole_project() {
     );
     assert_eq!(every_use(&map, "Outro/Formato.cs", "Moeda"), Vec::<String>::new(), "another project does not see it");
 }
+
+/// O modelo da página de lista, no `.cshtml.cs` ao lado dela: um método para
+/// cada cabeçalho de comando de controle e para cada trecho de código da
+/// página.
+const LIST_MODEL: &str = "namespace Web.Pages;\n\npublic class ListaModel : PageModel\n{\n    \
+                          public bool Visivel() => true;\n    public bool Outro() => false;\n    \
+                          public int[] Itens() => new int[0];\n    public int Tipo() => 1;\n    \
+                          public bool Mais() => false;\n    public int Soma(int x) => x;\n    \
+                          public string Titulo { get; set; } = \"\";\n}\n";
+
+/// A página de lista: `@if` com `else if`, `@foreach` com código e
+/// marcação nas chaves, `@switch` e `@while`.
+const LIST: &str = "@page\n\
+                    @model ListaModel\n\
+                    @using Web.Pages\n\
+                    @if (Model.Visivel()) {\n    \
+                    <p>sim</p>\n\
+                    } else if (Model.Outro()) {\n    \
+                    <p>outro</p>\n\
+                    }\n\
+                    @foreach (var item in Model.Itens()) {\n    \
+                    var dobro = Model.Soma(item);\n    \
+                    <p>@dobro</p>\n\
+                    }\n\
+                    @switch (Model.Tipo()) {\n    \
+                    case 1:\n        \
+                    <p>um</p>\n        \
+                    break;\n\
+                    }\n\
+                    @while (Model.Mais()) {\n    \
+                    <p>de novo</p>\n\
+                    }\n";
+
+/// O cabeçalho dos comandos de controle da página é código do método que a
+/// desenha: o método do modelo chamado no `@if`, no `else if`, no
+/// `@foreach`, no `@switch` e no `@while` é usado pelo `ExecuteAsync`, na
+/// linha do cabeçalho; o código escrito entre as chaves do `@foreach`
+/// também, na linha dele.
+#[test]
+fn the_header_of_a_control_of_the_page_is_code_of_the_method_that_draws_it() {
+    let map = scanned(&[("Web/Pages/Lista.cshtml.cs", LIST_MODEL), ("Web/Pages/Lista.cshtml", LIST)]);
+    let model = "Web/Pages/Lista.cshtml.cs";
+    let at = |line: u32| vec![format!("Web/Pages/Lista.cshtml:{line}:ExecuteAsync")];
+    assert_eq!(every_use(&map, model, "Visivel"), at(4), "@if");
+    assert_eq!(every_use(&map, model, "Outro"), at(6), "else if");
+    assert_eq!(every_use(&map, model, "Itens"), at(9), "@foreach");
+    assert_eq!(every_use(&map, model, "Soma"), at(10), "the code inside the braces");
+    assert_eq!(every_use(&map, model, "Tipo"), at(13), "@switch");
+    assert_eq!(every_use(&map, model, "Mais"), at(18), "@while");
+}
+
+/// A página cujo bloco de corpo mistura código e marcação: o código dele
+/// segue código, e o código em linha escrito na marcação dele também.
+const MIXED: &str = "@page\n\
+                     @model ListaModel\n\
+                     @using Web.Pages\n\
+                     @{\n    \
+                     var total = Model.Soma(1);\n    \
+                     <p>Total: @total, @Model.Tipo()</p>\n    \
+                     <div class=\"caixa\">\n        \
+                     <span>Formatar(1); Model.Mais();</span>\n    \
+                     </div>\n    \
+                     @:Linha Formatar(2) @Model.Outro()\n\
+                     }\n\
+                     @functions {\n    \
+                     private string Formatar(int x) => x.ToString();\n\
+                     }\n";
+
+/// A marcação escrita dentro do bloco `@{ … }` não é código: o texto de
+/// dentro do elemento e o da linha de marcação (`@:`) que parece chamada não
+/// é uso da função da página nem do método do modelo. O código do bloco e o
+/// código em linha escrito na marcação dele seguem usos pelo `ExecuteAsync`.
+#[test]
+fn the_markup_inside_a_body_block_is_not_read_as_code() {
+    let map = scanned(&[("Web/Pages/Lista.cshtml.cs", LIST_MODEL), ("Web/Pages/Mista.cshtml", MIXED)]);
+    let (model, page) = ("Web/Pages/Lista.cshtml.cs", "Web/Pages/Mista.cshtml");
+    assert_eq!(every_use(&map, page, "Formatar"), Vec::<String>::new(), "the text of the markup calls nothing");
+    assert_eq!(every_use(&map, model, "Mais"), Vec::<String>::new(), "the text of the markup calls nothing");
+    assert_eq!(every_use(&map, model, "Soma"), ["Web/Pages/Mista.cshtml:5:ExecuteAsync"]);
+    assert_eq!(every_use(&map, model, "Tipo"), ["Web/Pages/Mista.cshtml:6:ExecuteAsync"]);
+    assert_eq!(every_use(&map, model, "Outro"), ["Web/Pages/Mista.cshtml:10:ExecuteAsync"]);
+}
+
+/// O `@inject`, o `@inherits` e o `@namespace` do `_Imports.razor` valem nas
+/// páginas da pasta dele e das de baixo, e o `@namespace` ganha o nome de
+/// cada subpasta. A página de `Pages/Admin/` herda a base, fica no namespace
+/// `Web.Pages.Admin`, que o C# que o importa enxerga, e o `Http` injetado
+/// liga a chamada dela à rota do controlador; o `@inherits` da própria
+/// página vence o da pasta. A tag `<Contador />` é uso da classe da página
+/// `Contador`, no mesmo namespace. A passada que lê só o que mudou, depois
+/// de o `@inject` nascer no arquivo da pasta, relê as páginas e liga igual.
+#[test]
+fn the_inject_inherits_and_namespace_of_the_folder_imports_file_reach_the_pages_below() {
+    let temp = tempfile::Builder::new().prefix("scan-pagina-pasta-").tempdir().unwrap();
+    let dir = temp.path();
+    git(dir, &["init", "-q"]);
+    std::fs::write(dir.join(".git").join("info").join("exclude"), mustard_core::footprint_rules().join("\n") + "\n").unwrap();
+    let files = [
+        ("Api/Api.csproj", csproj("Microsoft.NET.Sdk.Web")),
+        ("Api/Controllers/PedidosController.cs", CONTROLLER.to_string()),
+        ("Web/Web.csproj", csproj("Microsoft.NET.Sdk.BlazorWebAssembly")),
+        ("Web/_Imports.razor", "@using System.Net.Http.Json\n@using Web.Shared\n@namespace Web\n@inherits LayoutBase\n".to_string()),
+        ("Web/Shared/LayoutBase.cs", "namespace Web.Shared;\n\npublic abstract class LayoutBase\n{\n    public string Corpo => \"\";\n}\n".to_string()),
+        ("Web/Shared/OutraBase.cs", "namespace Web.Shared;\n\npublic abstract class OutraBase\n{\n}\n".to_string()),
+        (
+            "Web/Pages/Admin/Painel.razor",
+            "<h3>Painel</h3>\n<Contador />\n@code {\n    private Task<HttpResponseMessage> Ler() => Http.GetAsync(\"api/pedidos/1\");\n}\n"
+                .to_string(),
+        ),
+        ("Web/Pages/Admin/Contador.razor", "<p>@contagem</p>\n@code {\n    private int contagem;\n}\n".to_string()),
+        ("Web/Pages/Propria.razor", "@inherits OutraBase\n<p>@Corpo</p>\n".to_string()),
+        ("Web/Rotas.cs", "using Web.Pages.Admin;\n\nnamespace Web;\n\npublic static class Rotas\n{\n    public static Painel? Tela() => null;\n}\n".to_string()),
+    ];
+    for (rel, body) in &files {
+        std::fs::create_dir_all(dir.join(rel).parent().unwrap()).unwrap();
+        std::fs::write(dir.join(rel), body).unwrap();
+    }
+    git(dir, &["add", "-A"]);
+    git(dir, &["commit", "-q", "-m", "primeiro"]);
+    let (panel, own) = ("Web/Pages/Admin/Painel.razor", "Web/Pages/Propria.razor");
+    let (first, _) = model::scan(dir, &dir.join(".claude"), &[]);
+    assert_eq!(called_by(&first, "GET", "api/pedidos/{}"), json!([]), "without the inject the page does not know the client");
+
+    std::fs::write(
+        dir.join("Web/_Imports.razor"),
+        "@using System.Net.Http.Json\n@using Web.Shared\n@namespace Web\n@inherits LayoutBase\n@inject HttpClient Http\n",
+    )
+    .unwrap();
+    git(dir, &["add", "-A"]);
+    git(dir, &["commit", "-q", "-m", "inject"]);
+    let (partial, report) = model::scan(dir, &dir.join(".claude"), &[]);
+    assert_eq!(report["full"], json!(false), "{report}");
+    let whole_out = tempfile::tempdir().unwrap();
+    let (whole, _) = model::scan(dir, whole_out.path(), &[]);
+    for (map, pass) in [(&whole, "the whole pass"), (&partial, "the pass that reads only what changed")] {
+        assert_eq!(called_by(map, "GET", "api/pedidos/{}"), json!(["Web/Pages/Admin/Painel.razor:4:Ler"]), "{pass}");
+        assert_eq!(declaration(map, panel, "Painel")["supertypes"], json!(["LayoutBase"]), "{pass}");
+        assert_eq!(declaration(map, own, "Propria")["supertypes"], json!(["OutraBase"]), "{pass}");
+        assert_eq!(module(map, panel)["namespaces"], json!(["Web.Pages.Admin"]), "{pass}");
+        assert_eq!(every_use(map, panel, "Painel"), ["Web/Rotas.cs:7:Tela"], "{pass}");
+        assert_eq!(every_use(map, "Web/Pages/Admin/Contador.razor", "Contador"), ["Web/Pages/Admin/Painel.razor:2:BuildRenderTree"], "{pass}");
+    }
+}
+
+/// A propriedade lida na página sem chamada é usada pelo método que desenha a
+/// página: a do modelo, lida por `@Model.Titulo` na view, e a lida pelo campo
+/// da página do Blazor (`@modelo.Titulo`).
+#[test]
+fn a_property_read_on_the_page_is_a_use_of_it() {
+    let map = scanned(&[
+        ("Web/Pages/Lista.cshtml.cs", LIST_MODEL),
+        ("Web/Pages/Capa.cshtml", "@page\n@model ListaModel\n@using Web.Pages\n<h1>@Model.Titulo</h1>\n"),
+        ("Web/Pages/Cartao.razor", "@using Web.Pages\n<p>@modelo.Titulo</p>\n@code {\n    private ListaModel modelo = new();\n}\n"),
+    ]);
+    assert_eq!(
+        every_use(&map, "Web/Pages/Lista.cshtml.cs", "Titulo"),
+        ["Web/Pages/Capa.cshtml:4:ExecuteAsync", "Web/Pages/Cartao.razor:2:BuildRenderTree"]
+    );
+}
