@@ -4,25 +4,37 @@
 //! `MultiEdit` e `NotebookEdit` —, o arquivo passa pelo classificador único
 //! ([`WriteTarget::classify`]) e depois pelas regras ([`WriteRule`]), na ordem
 //! de [`RULES`]. A primeira regra que responde decide; sem resposta, a
-//! ferramenta passa.
+//! ferramenta passa. A busca (`Grep`) não tem um arquivo só e responde à
+//! parte, em [`search_verdict`].
 //!
 //! 1. **Segredo** ([`SecretRule`]): credenciais, chaves e a configuração do
 //!    git não são lidas nem escritas, dentro ou fora do projeto.
-//! 2. **Arquivos da spec** ([`SpecFileRule`]): o `spec.ndjson`, o `spec.md`, o
+//! 2. **Chave do Jev** ([`ConfigKeyRule`]): a leitura do `mustard.json` que
+//!    guarda a chave volta com o arquivo, e a chave trocada por `***`.
+//! 3. **Arquivos da spec** ([`SpecFileRule`]): o `spec.ndjson`, o `spec.md`, o
 //!    `spec.html` e o `meta.json` da raiz de uma spec, o índice das specs e o
 //!    banco de lições são gravados só pelo binário. A leitura passa.
-//! 3. **Aprovação** ([`ApprovalRule`]): o código do projeto não muda enquanto
+//! 4. **Aprovação** ([`ApprovalRule`]): o código do projeto não muda enquanto
 //!    a spec atual não está numa fase aprovada, pela mesma lista do `State`:
 //!    em levantamento, em plano ou descartada; sem nenhum `state`, pela
 //!    regra do [`lock_state`].
-//! 4. **Branch da spec** ([`BranchRule`]): uma edição fora da branch em que a
+//! 5. **Branch da spec** ([`BranchRule`]): uma edição fora da branch em que a
 //!    spec mora só avisa, nomeando as duas.
-//! 5. **Base** ([`BaseRule`]): nenhuma edição direta numa base que o
+//! 6. **Base** ([`BaseRule`]): nenhuma edição direta numa base que o
 //!    `git.flow` do `mustard.json` declara, fora dos planos e da evidência
 //!    descartável. Sem `git.flow`, nenhuma branch é base; o portão nunca
 //!    pergunta ao git qual é a branch padrão. Um `mustard.json` que existe e
 //!    não se lê não é um projeto sem bases: ali o portão recusa toda escrita,
 //!    menos a do próprio arquivo, que é como ele volta a se ler.
+//! 7. **Leitura inteira grande** ([`WholeReadRule`]): a leitura inteira de um
+//!    arquivo de código do mapa que traria mais de 300 linhas volta com as
+//!    partes dele e o comando que traz só a parte certa.
+//! 8. **Leitura cortada** ([`ReadCutRule`]): a leitura inteira de um arquivo
+//!    com os testes dentro dele para antes deles.
+//!
+//! As regras da leitura valem também para o arquivo de uma cópia de trabalho
+//! ligada ao mesmo repositório, como a cópia de uma onda: o caminho dela se
+//! lê como o do projeto.
 //!
 //! O estado da spec vem do [`lock_state`], a regra única da trava: com algum
 //! `state` no arquivo de eventos, vale a dobra deles; sem nenhum e com o
@@ -63,6 +75,8 @@ use mustard_core::platform::error::Error;
 use mustard_core::platform::i18n::{translate, Locale};
 
 use crate::commands::git_settle::main_checkout_root;
+use crate::shared::code_route::{self, ProjectPath};
+use crate::shared::config_key;
 use crate::shared::paths::{Access, PathClass, WriteTarget};
 use crate::shared::spec_state::{lock_state, DiskSpecState};
 
@@ -94,6 +108,13 @@ pub(crate) struct WriteContext {
     /// arquivo ([`test_cut_line`]); `None` numa escrita, numa leitura que já
     /// pede um trecho, ou num arquivo sem a marca de uma linguagem conhecida.
     pub(crate) read_cut: Option<ReadCut>,
+    /// A recusa da leitura inteira de um arquivo de código do mapa que traria
+    /// mais linhas que o teto ([`code_route::whole_read`]); `None` fora da
+    /// leitura inteira, no arquivo pequeno e no que o mapa não guarda.
+    pub(crate) whole_read: Option<String>,
+    /// A recusa da leitura do `mustard.json` que guarda a chave do Jev, com o
+    /// arquivo sem a chave ([`config_key::refusal`]); `None` em todo o resto.
+    pub(crate) config_key: Option<String>,
 }
 
 /// Onde a leitura inteira de um arquivo para, antes dos testes: o caminho
@@ -110,6 +131,17 @@ impl WriteContext {
     /// escrita, e o estado e a branch para uma escrita num arquivo do projeto
     /// que não é do harness.
     fn read(root: &str, input: &HookInput, ctx: &Ctx, target: &WriteTarget) -> Self {
+        let lang = ctx.config.language().text_or_default();
+        let whole = whole_read_of(root, input, target);
+        let read_cut = whole.as_ref().and_then(|(file, content)| test_cut_line(file, content, input));
+        let whole_read = whole.as_ref().and_then(|(file, content)| {
+            let lines = read_cut.as_ref().map_or_else(|| content.lines().count(), |cut| cut.line as usize - 1);
+            code_route::whole_read(Path::new(root), &file.rel, lines, lang)
+        });
+        let config_key = (target.access == Access::Read && config_key::is_config_file(&target.path))
+            .then(|| input.file_path())
+            .flatten()
+            .and_then(|given| config_key::refusal(&target.path, &Path::new(root).join(given), lang));
         let mut at = Self {
             spec: None,
             state: None,
@@ -117,8 +149,10 @@ impl WriteContext {
             in_project_repo: false,
             bases: ctx.config.git.declared_bases(),
             config_unreadable: ctx.config.unreadable,
-            lang: ctx.config.language().text_or_default(),
-            read_cut: test_cut_line(root, input, target),
+            lang,
+            read_cut,
+            whole_read,
+            config_key,
         };
         if target.access != Access::Write {
             return at;
@@ -155,10 +189,19 @@ pub(crate) trait WriteRule {
     fn judge(&self, target: &WriteTarget, at: &WriteContext) -> Option<Verdict>;
 }
 
-/// As regras, na ordem em que respondem. A leitura cortada vem por último:
-/// um segredo, ou a spec, decide primeiro se a leitura passa.
-pub(crate) const RULES: &[&dyn WriteRule] =
-    &[&SecretRule, &SpecFileRule, &ApprovalRule, &BranchRule, &BaseRule, &ReadCutRule];
+/// As regras, na ordem em que respondem. As da leitura inteira vêm por
+/// último: um segredo, a chave ou a spec decidem primeiro se a leitura passa,
+/// e a leitura grande volta antes de ser cortada.
+pub(crate) const RULES: &[&dyn WriteRule] = &[
+    &SecretRule,
+    &ConfigKeyRule,
+    &SpecFileRule,
+    &ApprovalRule,
+    &BranchRule,
+    &BaseRule,
+    &WholeReadRule,
+    &ReadCutRule,
+];
 
 /// A marca que abre o módulo de testes de dentro do arquivo de código, pela
 /// extensão do arquivo. Lugar único: uma linguagem nova entra numa linha,
@@ -166,23 +209,46 @@ pub(crate) const RULES: &[&dyn WriteRule] =
 /// num arquivo separado, nenhuma extensão bate, e a leitura passa inteira.
 const TEST_MARKERS: &[(&str, &str)] = &[("rs", "#[cfg(test)]")];
 
-/// A linha, contada a partir de 1, em que os testes começam — quando `input`
-/// pede a leitura INTEIRA (sem `offset` nem `limit`) de um arquivo de código
-/// do projeto cuja extensão está em [`TEST_MARKERS`] e cujo conteúdo tem a
-/// marca. `None` numa leitura que já pede um trecho, numa escrita, num
-/// arquivo fora do projeto ou sem a marca — nesses casos a leitura passa
-/// como veio.
-fn test_cut_line(root: &str, input: &HookInput, target: &WriteTarget) -> Option<ReadCut> {
-    if target.access != Access::Read || target.class != PathClass::Production {
+/// O arquivo e o conteúdo de uma leitura INTEIRA (sem `offset` nem `limit`)
+/// de um arquivo de código do projeto: na raiz, ou numa cópia de trabalho
+/// ligada ao mesmo repositório, onde ele se classifica a partir da raiz da
+/// cópia. `None` numa escrita, numa leitura que já pede um trecho, num
+/// arquivo que não é código do projeto ou que não se lê.
+fn whole_read_of(root: &str, input: &HookInput, target: &WriteTarget) -> Option<(ProjectPath, String)> {
+    if target.access != Access::Read {
         return None;
     }
     let ti = &input.tool_input;
     if ti.get("offset").is_some() || ti.get("limit").is_some() {
         return None;
     }
-    let extension = Path::new(&target.path).extension()?.to_str()?;
+    let file = match target.class {
+        PathClass::Production => ProjectPath {
+            tree: Path::new(root).to_path_buf(),
+            rel: target.path.clone(),
+            abs: Path::new(root).join(&target.path),
+        },
+        PathClass::OutsideRepo => {
+            let file = code_route::project_path(root, root, &input.file_path()?)?;
+            let inner = WriteTarget::classify(&file.tree.to_string_lossy(), input)?;
+            if inner.class != PathClass::Production {
+                return None;
+            }
+            file
+        }
+        _ => return None,
+    };
+    let content = std::fs::read_to_string(&file.abs).ok()?;
+    Some((file, content))
+}
+
+/// A linha, contada a partir de 1, em que os testes começam na leitura
+/// inteira de `file`, com o conteúdo `content`, quando a extensão dele está
+/// em [`TEST_MARKERS`] e o conteúdo tem a marca. `None` sem a marca — a
+/// leitura então passa como veio.
+fn test_cut_line(file: &ProjectPath, content: &str, input: &HookInput) -> Option<ReadCut> {
+    let extension = Path::new(&file.rel).extension()?.to_str()?;
     let marker = TEST_MARKERS.iter().find(|(ext, _)| *ext == extension)?.1;
-    let content = std::fs::read_to_string(Path::new(root).join(&target.path)).ok()?;
     let before = content.lines().position(|line| line.trim_start() == marker)?;
     if before == 0 {
         return None;
@@ -204,11 +270,44 @@ pub(crate) fn run_rules(rules: &[&dyn WriteRule], input: &HookInput, ctx: &Ctx) 
         return Verdict::Allow;
     }
     let root = ctx.project_dir_or_cwd(input);
+    if input.tool_name.as_deref() == Some("Grep") {
+        return search_verdict(&root, input, ctx);
+    }
     let Some(target) = WriteTarget::classify(&root, input) else {
         return Verdict::Allow;
     };
     let at = WriteContext::read(&root, input, ctx, &target);
     judge(rules, &target, &at)
+}
+
+/// A busca (`Grep`): no `mustard.json` que guarda a chave do Jev, a recusa
+/// com o arquivo sem a chave; numa pasta de código do projeto — a raiz, sem
+/// `path`, ou uma cópia de trabalho dele —, com um padrão que é nome de
+/// declaração do mapa, a recusa com o comando de quem usa o nome. A busca
+/// num arquivo só, fora do projeto, com outro padrão ou com um `glob` que
+/// deixa só arquivos fora do mapa passa.
+fn search_verdict(root: &str, input: &HookInput, ctx: &Ctx) -> Verdict {
+    let lang = ctx.config.language().text_or_default();
+    let ti = &input.tool_input;
+    let text = |field: &str| ti.get(field).and_then(serde_json::Value::as_str).filter(|value| !value.trim().is_empty());
+    let base = input.cwd.as_deref().filter(|cwd| !cwd.is_empty()).unwrap_or(root);
+    let path = text("path");
+    if let Some(path) = path.filter(|path| config_key::is_config_file(path)) {
+        return match config_key::refusal(path, &Path::new(base).join(path), lang) {
+            Some(reason) => Verdict::Deny { reason },
+            None => Verdict::Allow,
+        };
+    }
+    let Some(pattern) = text("pattern") else { return Verdict::Allow };
+    let Some(folder) = code_route::project_path(root, base, path.unwrap_or(".")).filter(|folder| folder.abs.is_dir())
+    else {
+        return Verdict::Allow;
+    };
+    let globs: Vec<String> = text("glob").map(str::to_string).into_iter().collect();
+    match code_route::folder_search(Path::new(root), pattern, &[folder.rel], &globs, lang) {
+        Some(reason) => Verdict::Deny { reason },
+        None => Verdict::Allow,
+    }
 }
 
 /// A primeira resposta de `rules` para `target`; sem resposta, passa.
@@ -238,6 +337,16 @@ impl WriteRule for SecretRule {
         };
         let reason = say("write_gate.secret", at.lang, &[("{file}", &target.path), ("{pattern}", pattern)]);
         Some(Verdict::Deny { reason })
+    }
+}
+
+/// A leitura do `mustard.json` que guarda a chave do Jev volta com o arquivo,
+/// e a chave trocada por `***`: a chave nunca entra na conversa.
+pub(crate) struct ConfigKeyRule;
+
+impl WriteRule for ConfigKeyRule {
+    fn judge(&self, _target: &WriteTarget, at: &WriteContext) -> Option<Verdict> {
+        at.config_key.clone().map(|reason| Verdict::Deny { reason })
     }
 }
 
@@ -337,6 +446,18 @@ impl WriteRule for BaseRule {
     }
 }
 
+/// A leitura inteira de um arquivo de código do mapa que traria mais linhas
+/// que o teto volta com as partes dele e o comando que traz só a parte certa
+/// ([`code_route::whole_read`]). Quem vai editar lê o trecho com `offset` e
+/// `limit`: a edição aceita o arquivo lido por um trecho.
+pub(crate) struct WholeReadRule;
+
+impl WriteRule for WholeReadRule {
+    fn judge(&self, _target: &WriteTarget, at: &WriteContext) -> Option<Verdict> {
+        at.whole_read.clone().map(|reason| Verdict::Deny { reason })
+    }
+}
+
 /// A leitura inteira de um arquivo de código com os testes dentro dele
 /// ([`test_cut_line`]) para antes deles: o agente recebe só a produção, e um
 /// aviso, nos dois idiomas, com a linha onde os testes começam e como pedir
@@ -379,6 +500,7 @@ fn local_tree_of(input: &HookInput, root: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shared::code_route::fixture;
     use crate::shared::context::session::bind_session_spec;
     use crate::shared::spec_state::stand_on_spec_branch;
     use mustard_core::io::spec_events as store;
@@ -621,6 +743,8 @@ mod tests {
             config_unreadable: false,
             lang: Locale::PtBr,
             read_cut: None,
+            whole_read: None,
+            config_key: None,
         };
         let warned = judge(RULES, &target, &at("feature/y"));
         assert_eq!(
@@ -655,6 +779,8 @@ mod tests {
             config_unreadable: false,
             lang: Locale::PtBr,
             read_cut: None,
+            whole_read: None,
+            config_key: None,
         };
         assert_eq!(
             judge(RULES, &target, &at(Some("minha-branch"))),
@@ -1067,5 +1193,179 @@ mod tests {
 
         let bare = tempfile::tempdir().expect("tempdir");
         assert_eq!(gate(bare.path(), "Write", &abs(bare.path(), "f.txt")), Verdict::Allow);
+    }
+
+    /// A resposta do despachante à ferramenta `tool` com `tool_input`, chamada
+    /// de `cwd`: o caminho que a sessão usa, pelo registro dos ganchos.
+    fn hook_on(cwd: &Path, tool: &str, tool_input: Value) -> Verdict {
+        let input = HookInput {
+            tool_name: Some(tool.to_string()),
+            tool_input,
+            hook_event_name: Some("PreToolUse".to_string()),
+            cwd: Some(cwd.to_string_lossy().into_owned()),
+            ..HookInput::default()
+        };
+        crate::dispatch::run_event(Some(Trigger::PreToolUse), &input).verdict
+    }
+
+    /// O motivo de uma recusa; qualquer outra resposta derruba o teste.
+    fn refused(verdict: Verdict, what: &str) -> String {
+        match verdict {
+            Verdict::Deny { reason } => reason,
+            other => panic!("{what} is refused, got {other:?}"),
+        }
+    }
+
+    /// A leitura inteira de um arquivo de código do mapa com mais de 300
+    /// linhas é recusada, nos dois idiomas: o motivo traz o tamanho, o
+    /// comando do trecho pronto para o arquivo e as partes com as linhas,
+    /// sem os campos.
+    #[test]
+    fn the_whole_read_of_a_large_mapped_file_is_refused_with_its_parts() {
+        for (tag, words) in [("pt-BR", "Partes:"), ("en-US", "Parts:")] {
+            let (_dir, root) = fixture::project(&format!(r#"{{"language":{{"text":"{tag}"}}}}"#), true);
+            let reason = refused(
+                hook_on(&root, "Read", json!({ "file_path": abs(&root, "src/big.rs") })),
+                "the whole read of a large mapped file",
+            );
+            assert!(reason.contains("`mustard-rt run map slice --file src/big.rs --name "), "{tag}: {reason}");
+            assert!(reason.contains("400"), "{tag}: {reason}");
+            assert!(reason.contains(&format!("{words} Alpha 1-150, alpha 151-400.")), "{tag}: {reason}");
+            assert!(!reason.contains("size"), "a field is not a part: {reason}");
+        }
+    }
+
+    /// A leitura com faixa de linhas, a de um arquivo pequeno e a de um
+    /// arquivo grande que o mapa não guarda passam.
+    #[test]
+    fn a_read_with_a_range_a_small_file_or_a_file_off_the_map_passes() {
+        let (_dir, root) = fixture::project("{}", true);
+        let big = abs(&root, "src/big.rs");
+        for tool_input in [
+            json!({ "file_path": big, "offset": 120, "limit": 40 }),
+            json!({ "file_path": big, "limit": 350 }),
+            json!({ "file_path": abs(&root, "src/small.rs") }),
+            json!({ "file_path": abs(&root, "docs/big.md") }),
+        ] {
+            assert_eq!(hook_on(&root, "Read", tool_input.clone()), Verdict::Allow, "{tool_input}");
+        }
+    }
+
+    /// Um arquivo com os testes dentro cuja parte de produção cabe no limite
+    /// continua cortado antes dos testes; quando a parte de produção passa do
+    /// limite, a leitura é recusada, e as partes dizem onde os testes começam.
+    #[test]
+    fn the_production_part_decides_between_the_cut_and_the_refusal() {
+        let (_dir, root) = fixture::project("{}", true);
+        let short = abs(&root, "src/tested.rs");
+        match hook_on(&root, "Read", json!({ "file_path": short })) {
+            Verdict::Rewrite { tool_input, .. } => assert_eq!(tool_input, json!({ "file_path": short, "limit": 100 })),
+            other => panic!("the short production part is cut, got {other:?}"),
+        }
+        let reason = refused(
+            hook_on(&root, "Read", json!({ "file_path": abs(&root, "src/long_tested.rs") })),
+            "the long production part",
+        );
+        assert!(reason.contains("350"), "{reason}");
+        assert!(reason.contains("delta 1-350; testes a partir da linha 351."), "{reason}");
+    }
+
+    /// Sem mapa, ou com um mapa que não se lê, a leitura inteira e a busca
+    /// de um nome passam: o erro da trava nunca segura a ação.
+    #[test]
+    fn without_a_readable_map_the_read_and_the_search_pass() {
+        let (_none, bare) = fixture::project("{}", false);
+        let (_broken, garbled) = fixture::project("{}", false);
+        mustard_core::io::project_map::write_text(&garbled, "isto não é um mapa").expect("garbled map");
+        for root in [&bare, &garbled] {
+            assert_eq!(hook_on(root, "Read", json!({ "file_path": abs(root, "src/big.rs") })), Verdict::Allow);
+            assert_eq!(hook_on(root, "Grep", json!({ "pattern": "Alpha", "path": abs(root, "src") })), Verdict::Allow);
+        }
+    }
+
+    /// Numa cópia de trabalho do projeto, fora da pasta dele, a leitura
+    /// inteira de um arquivo grande do mapa é recusada como no projeto.
+    #[test]
+    fn the_whole_read_inside_a_working_copy_is_refused_like_in_the_project() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let tmp_root = std::fs::canonicalize(tmp.path()).expect("tempdir resolvida");
+        let tmp_root = std::path::PathBuf::from(tmp_root.to_string_lossy().trim_start_matches(r"\\?\").to_string());
+        let main = tmp_root.join("repo");
+        std::fs::create_dir_all(&main).expect("main");
+        repo_on(&main, "dev");
+        git(&main, &["worktree", "add", "-q", "../copy", "-b", "work"]);
+        std::fs::write(main.join("mustard.json"), "{}").expect("config");
+        mustard_core::io::project_map::write_text(&main, fixture::MAP).expect("map");
+        let copy = tmp_root.join("copy");
+        fixture::write_files(&copy);
+
+        let reason = refused(
+            hook_on(&copy, "Read", json!({ "file_path": abs(&copy, "src/big.rs") })),
+            "the whole read inside the working copy",
+        );
+        assert!(reason.contains("--file src/big.rs"), "{reason}");
+        let ranged = json!({ "file_path": abs(&copy, "src/big.rs"), "offset": 1, "limit": 10 });
+        assert_eq!(hook_on(&copy, "Read", ranged), Verdict::Allow);
+    }
+
+    /// A leitura e a busca do `mustard.json` que guarda a chave são
+    /// recusadas; o motivo traz o arquivo com a chave trocada, e nunca a
+    /// chave. Sem a chave, a leitura passa.
+    #[test]
+    fn the_config_file_with_the_key_is_shown_without_it() {
+        let config = format!(r#"{{"language": {{"text": "pt-BR"}}, "jev": {{"key": "{}"}}}}"#, fixture::FAKE_KEY);
+        let (_dir, root) = fixture::project(&config, true);
+        let file = abs(&root, "mustard.json");
+        for (tool, tool_input) in [
+            ("Read", json!({ "file_path": file })),
+            ("Grep", json!({ "pattern": "jev", "path": file })),
+            ("Grep", json!({ "pattern": "key", "path": "mustard.json" })),
+        ] {
+            let reason = refused(hook_on(&root, tool, tool_input.clone()), "the config file with the key");
+            assert!(!reason.contains(fixture::FAKE_KEY), "{tool} {tool_input}: the key leaked");
+            assert!(reason.contains(r#""key": "***""#), "{tool} {tool_input}: {reason}");
+            assert!(reason.contains(r#""language": {"text": "pt-BR"}"#), "the rest of the file stays: {reason}");
+        }
+
+        let (_plain, plain) = fixture::project(r#"{"language": {"text": "pt-BR"}}"#, true);
+        assert_eq!(hook_on(&plain, "Read", json!({ "file_path": abs(&plain, "mustard.json") })), Verdict::Allow);
+    }
+
+    /// A busca de um nome de declaração do mapa numa pasta de código — a
+    /// pasta dada, a raiz sem pasta, ou com um filtro de código — é recusada
+    /// com o comando de quem usa o nome e o da busca por assunto.
+    #[test]
+    fn a_search_for_a_declared_name_in_a_code_folder_is_refused_with_its_users() {
+        let (_dir, root) = fixture::project("{}", true);
+        for tool_input in [
+            json!({ "pattern": "Alpha", "path": abs(&root, "src") }),
+            json!({ "pattern": "Alpha", "path": "src" }),
+            json!({ "pattern": "Alpha" }),
+            json!({ "pattern": "Alpha", "glob": "*.rs" }),
+        ] {
+            let reason = refused(hook_on(&root, "Grep", tool_input.clone()), "the search for a declared name");
+            assert!(reason.contains("`mustard-rt run map users --name Alpha`"), "{tool_input}: {reason}");
+            assert!(reason.contains(r#"`mustard-rt run map search --query "Alpha""#), "{tool_input}: {reason}");
+        }
+    }
+
+    /// A busca num arquivo só, de um texto que não é nome, de um nome que o
+    /// mapa não conhece, só em documentos, numa pasta sem código do mapa ou
+    /// fora do projeto passa.
+    #[test]
+    fn a_search_in_one_file_or_for_other_text_passes() {
+        let (_dir, root) = fixture::project("{}", true);
+        let outside = tempfile::tempdir().expect("tempdir");
+        for tool_input in [
+            json!({ "pattern": "Alpha", "path": abs(&root, "src/big.rs") }),
+            json!({ "pattern": "Alpha beta", "path": abs(&root, "src") }),
+            json!({ "pattern": "Alph.*", "path": abs(&root, "src") }),
+            json!({ "pattern": "Unknown", "path": abs(&root, "src") }),
+            json!({ "pattern": "Alpha", "glob": "*.md" }),
+            json!({ "pattern": "Alpha", "path": abs(&root, "docs") }),
+            json!({ "pattern": "Alpha", "path": outside.path().to_string_lossy() }),
+        ] {
+            assert_eq!(hook_on(&root, "Grep", tool_input.clone()), Verdict::Allow, "{tool_input}");
+        }
     }
 }

@@ -416,6 +416,60 @@ fn ask_map(root: &Path, question: &str) -> (bool, serde_json::Value) {
     (out.status.success(), report)
 }
 
+/// `run map summary --file` devolve as partes do arquivo, na ordem das
+/// linhas, com o tipo, o nome, a linha de começo e a de fim, sem os campos e
+/// sem o que mora nos testes, e a linha em que os testes começam. O arquivo
+/// que o mapa não guarda é recusado; sem `--file`, volta o resumo do projeto.
+#[test]
+fn o_resumo_de_um_arquivo_traz_as_partes_e_onde_os_testes_comecam() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    mustard_core::io::project_map::write_text(
+        root,
+        r#"{"modules": [
+             {"path": "src/a.rs", "loc": 60, "test_lines": [[40, 60]], "declarations": [
+               {"kind": "function", "name": "run", "line": 12, "end_line": 20},
+               {"kind": "struct", "name": "Alpha", "line": 3, "end_line": 10},
+               {"kind": "field", "name": "size", "line": 4, "end_line": 4},
+               {"kind": "function", "name": "a_test", "line": 45, "end_line": 50}]}
+           ]}"#,
+    )
+    .unwrap();
+    let summary = |file: Option<&str>| {
+        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_mustard-rt"));
+        command.args(["run", "map", "summary", "--root"]).arg(root).current_dir(root);
+        if let Some(file) = file {
+            command.args(["--file", file]);
+        }
+        let out = command.output().expect("run map summary");
+        let report: serde_json::Value = serde_json::from_slice(&out.stdout)
+            .unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&out.stdout)));
+        (out.status.success(), report)
+    };
+
+    let (ok, report) = summary(Some("src/a.rs"));
+    assert!(ok, "{report}");
+    assert_eq!(report["file"], "src/a.rs", "{report}");
+    assert_eq!(
+        report["parts"],
+        serde_json::json!([
+            {"kind": "struct", "name": "Alpha", "line": 3, "end_line": 10},
+            {"kind": "function", "name": "run", "line": 12, "end_line": 20}
+        ]),
+        "{report}"
+    );
+    assert_eq!(report["tests_line"], 40, "{report}");
+
+    let (ok, report) = summary(Some("src/zz.rs"));
+    assert!(!ok, "{report}");
+    assert_eq!(report["reason"], "unknown-file", "{report}");
+
+    let (ok, report) = summary(None);
+    assert!(ok, "{report}");
+    assert!(report["summary"].as_str().is_some_and(|text| !text.is_empty()), "{report}");
+    assert!(report.get("parts").is_none(), "{report}");
+}
+
 /// Para depurar o mapa, `run map dump` mostra o banco tabela por tabela, numa
 /// ordem fixa: uma entrada por tabela, com as linhas dela.
 #[test]

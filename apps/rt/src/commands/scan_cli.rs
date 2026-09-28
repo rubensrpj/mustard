@@ -50,8 +50,9 @@ pub enum ScanCmd {
     /// --query "<words>" --intent "<sentence>"` (the words and the likely
     /// names in `--query`, the sentence of what you look for and why in
     /// `--intent`; part of a name only in `--query`), `summary` (the
-    /// session-start summary, up to
-    /// 3 kB), `skill --path <SKILL.md>` (every cited path exists and the
+    /// session-start summary, up to 3 kB; with `--file`, the parts of that
+    /// file: each declaration with its kind, name and lines, and the line
+    /// where its tests start), `skill --path <SKILL.md>` (every cited path exists and the
     /// skill stays under 500 lines) or `dump` (the map database table by
     /// table, in a fixed order, for debugging). Reads `.claude/grain.db`;
     /// prints JSON and exits 1 on a refusal.
@@ -62,7 +63,8 @@ pub enum ScanCmd {
         question: crate::commands::map::Question,
         /// The file the question is about (for `examples`, the file the task
         /// creates or changes, or its folder; for `users` and `history`,
-        /// optional, keeps the declaration of that file).
+        /// optional, keeps the declaration of that file; for `summary`,
+        /// optional, lists the parts of that file).
         #[arg(long)]
         file: Option<String>,
         /// The task, in words, when there is no target file (`examples`).

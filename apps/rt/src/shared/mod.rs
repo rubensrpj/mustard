@@ -45,6 +45,10 @@
 //!   consumed.
 
 pub mod branch_state;
+/// O caminho do código pelo mapa, para as travas da leitura e da busca.
+pub mod code_route;
+/// A chave do Jev no arquivo de configuração, que nenhuma leitura mostra.
+pub mod config_key;
 pub mod context;
 /// One topological level assignment for the whole crate — see the module docs
 /// for why there used to be two, and what they disagreed about. Also the

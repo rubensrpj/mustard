@@ -664,6 +664,9 @@ pub enum Need<'a> {
     /// Os testes do arquivo: ele, com os testes que o cobrem e a marca dos
     /// próprios testes.
     Tests(&'a str),
+    /// As partes do arquivo: ele, com as linhas dos próprios testes e as
+    /// declarações dele, só com o tipo, o nome e as linhas.
+    Parts(&'a str),
     /// As declarações com o nome, com o arquivo delas; com `file`, só as
     /// desse arquivo, que vem mesmo sem nenhuma.
     Declarations { file: Option<&'a str>, name: &'a str },
@@ -753,6 +756,7 @@ fn part_of(db: &MapDb, need: Need<'_>) -> Result<ProjectMap> {
         }
         Need::Importers(file) => map.modules = importers(conn, &clean_path(file))?,
         Need::Tests(file) => map.modules = tests_of(conn, &clean_path(file))?,
+        Need::Parts(file) => map.modules = parts_of(conn, &clean_path(file))?,
         Need::Declarations { file, name } => {
             map.modules = named(conn, file.map(clean_path).as_deref(), name.trim())?;
         }
@@ -1237,6 +1241,25 @@ fn tests_of(conn: &Connection, file: &str) -> Result<Vec<MapModule>> {
         tests: tests.first().map(|row| json_cell(&row[0])).transpose()?.unwrap_or_default(),
         ..MapModule::default()
     }])
+}
+
+/// O arquivo `file`, com as linhas dos próprios testes e as declarações dele,
+/// só com o tipo, o nome e as linhas, na ordem do mapa. O arquivo que o mapa
+/// não tem não vem.
+fn parts_of(conn: &Connection, file: &str) -> Result<Vec<MapModule>> {
+    let Some(row) = file_rows(conn, &["path", "test_lines"], Some(file))?.into_iter().next() else { return Ok(Vec::new()) };
+    let filter = format!("{} = ?1", column_names("decls", &["file"])?);
+    let declarations = picked(conn, "decls", &["kind", "name", "line", "end_line"], &filter, &[file])?
+        .iter()
+        .map(|row| MapDecl {
+            kind: text_cell(&row[0]),
+            name: text_cell(&row[1]),
+            line: int_cell(&row[2]) as u64,
+            end_line: int_cell(&row[3]) as u64,
+            ..MapDecl::default()
+        })
+        .collect();
+    Ok(vec![MapModule { path: text_cell(&row[0]), test_lines: json_cell(&row[1])?, declarations, ..MapModule::default() }])
 }
 
 /// As colunas de uma declaração que as perguntas pelo nome leem.
@@ -2378,6 +2401,16 @@ mod tests {
         assert_eq!((read.history.base.as_str(), read.history.commits[0].pr, read.history.commits[1].pr), ("dev", Some(12), None));
         // A leitura do resumo traz o mesmo histórico, títulos inclusive.
         assert_eq!(read_for(dir.path(), Need::Summary).unwrap().history, read.history);
+        // A leitura das partes traz o arquivo com os trechos de teste e as
+        // declarações dele, com o tipo, o nome e as linhas.
+        let asked = read_for(dir.path(), Need::Parts("src/a.rs")).unwrap();
+        assert_eq!(asked.modules.len(), 1);
+        assert_eq!(asked.modules[0].test_lines, read.modules[0].test_lines);
+        let lines = |module: &MapModule| -> Vec<(String, String, u64, u64)> {
+            module.declarations.iter().map(|d| (d.kind.clone(), d.name.clone(), d.line, d.end_line)).collect()
+        };
+        assert_eq!(lines(&asked.modules[0]), lines(&read.modules[0]));
+        assert!(read_for(dir.path(), Need::Parts("src/zz.rs")).unwrap().modules.is_empty());
     }
 
     /// Com o mesmo mapa e a mesma marca, nada se grava: o arquivo fica com os

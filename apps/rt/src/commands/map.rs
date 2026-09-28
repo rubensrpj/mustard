@@ -23,7 +23,9 @@
 //!   função ou o arquivo ligado a ele. Com o filtro, os candidatos do banco
 //!   ganham a nota dele contra a frase, e a resposta traz as peças que
 //!   passaram, com o que cada uma puxou pelas ligações do mapa;
-//! - `summary`: o resumo do início da sessão, até 3 kB;
+//! - `summary`: o resumo do início da sessão, até 3 kB; com `--file`, as
+//!   partes do arquivo — cada declaração fora dos testes, com o tipo, o nome
+//!   e as linhas, e a linha em que os testes começam;
 //! - `skill --path <SKILL.md>`: confere os caminhos que a skill cita e o
 //!   tamanho dela;
 //! - `dump`: o banco do mapa tabela por tabela, em ordem fixa, para depurar.
@@ -253,10 +255,13 @@ fn answer_from(
             }))
         }
         Question::Search => search(opts, root, lang, languages, read, assemble),
-        Question::Summary => {
-            let text = project_map::summary(&read(Need::Summary)?, lang);
-            Ok(json!({ "ok": true, "question": "summary", "bytes": text.len(), "summary": text }))
-        }
+        Question::Summary => match opts.file.as_deref().map(str::trim).filter(|file| !file.is_empty()) {
+            Some(file) => parts(file, read),
+            None => {
+                let text = project_map::summary(&read(Need::Summary)?, lang);
+                Ok(json!({ "ok": true, "question": "summary", "bytes": text.len(), "summary": text }))
+            }
+        },
         Question::Slice => slice(opts, root, read),
         Question::Users => users(opts, root, lang, read),
         Question::History => history(opts, root, lang, read, trace),
@@ -521,6 +526,20 @@ fn pieces(
             Some(piece)
         })
         .collect())
+}
+
+/// As partes do arquivo de `--file`, para quem vai ler só um trecho dele: cada
+/// declaração fora dos testes, com o tipo, o nome e as linhas de começo e de
+/// fim, e a linha em que os testes escritos dentro dele começam, quando há.
+fn parts(file: &str, read: &Reader<'_>) -> Result<Value, MapRefusal> {
+    let found = project_map::parts(&read(Need::Parts(file))?, file)?;
+    Ok(json!({
+        "ok": true,
+        "question": "summary",
+        "file": found.file,
+        "parts": found.parts,
+        "tests_line": found.tests_line,
+    }))
 }
 
 /// O trecho da declaração de `--name` no arquivo de `--file`: as linhas dela,

@@ -11,8 +11,19 @@ use super::Locale;
 
 /// Os começos de chave (o trecho antes do primeiro ponto) que esta parte
 /// responde. Nenhum deles é de outra parte.
-pub(super) const PREFIXES: &[&str] =
-    &["write_gate", "approval", "change", "workbranch", "base", "command_guard", "install_lock", "clarity", "gate"];
+pub(super) const PREFIXES: &[&str] = &[
+    "write_gate",
+    "code_route",
+    "config_key",
+    "approval",
+    "change",
+    "workbranch",
+    "base",
+    "command_guard",
+    "install_lock",
+    "clarity",
+    "gate",
+];
 
 /// O texto de `key` em `lang`, ou `None` quando a chave não está aqui.
 pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
@@ -232,6 +243,51 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("write_gate.read_cut", Locale::EnUs) => {
             "[Mustard] The read stopped before the tests: they start on line {line}. To read them, \
              ask for that excerpt with `offset: {line}`."
+        }
+        // A leitura inteira de um arquivo grande de código do mapa volta com
+        // as partes dele e o comando que traz só a parte certa. `{parts}` vem
+        // do chamador: `nome começo-fim` de cada parte, separadas por
+        // vírgula, com as duas frases curtas abaixo no fim.
+        ("code_route.whole_read", Locale::PtBr) => {
+            "[Mustard] A leitura inteira de {file} traria {lines} linhas. Leia só a parte que \
+             precisa com `mustard-rt run map slice --file {file} --name <nome>`. Para editar, leia \
+             o trecho com `offset` e `limit`. Partes: {parts}."
+        }
+        ("code_route.whole_read", Locale::EnUs) => {
+            "[Mustard] Reading {file} whole would bring {lines} lines. Read only the part you need \
+             with `mustard-rt run map slice --file {file} --name <name>`. To edit, read the excerpt \
+             with `offset` and `limit`. Parts: {parts}."
+        }
+        // O fim da lista de partes quando ela passa do que a recusa mostra.
+        ("code_route.more_parts", Locale::PtBr) => "e mais {count} em `mustard-rt run map summary --file {file}`",
+        ("code_route.more_parts", Locale::EnUs) => "and {count} more in `mustard-rt run map summary --file {file}`",
+        // Onde começam os testes escritos dentro do arquivo.
+        ("code_route.tests_from", Locale::PtBr) => "testes a partir da linha {line}",
+        ("code_route.tests_from", Locale::EnUs) => "tests from line {line}",
+        // A busca de um nome de declaração em pastas de código volta com o
+        // comando de quem usa o nome e o da busca por assunto.
+        ("code_route.name_search", Locale::PtBr) => {
+            "[Mustard] {name} é uma declaração do mapa. Quem a usa sai em \
+             `mustard-rt run map users --name {name}`. O assunto sai em \
+             `mustard-rt run map search --query \"{name}\" --intent \"<o que procura e para quê>\"`. \
+             A busca num arquivo só, ou só em documentos, passa."
+        }
+        ("code_route.name_search", Locale::EnUs) => {
+            "[Mustard] {name} is a declaration in the map. Who uses it comes from \
+             `mustard-rt run map users --name {name}`. The subject comes from \
+             `mustard-rt run map search --query \"{name}\" --intent \"<what you look for and why>\"`. \
+             A search in one file, or only in documents, passes."
+        }
+        // A leitura do arquivo de configuração que guarda a chave do Jev
+        // volta com o arquivo, e a chave trocada. `{text}` vem do chamador:
+        // o arquivo inteiro, já sem o valor da chave.
+        ("config_key.hidden", Locale::PtBr) => {
+            "[Mustard] {file} guarda a chave do Jev, e a chave nunca entra na conversa. Segue o \
+             arquivo, com a chave trocada por ***:\n{text}"
+        }
+        ("config_key.hidden", Locale::EnUs) => {
+            "[Mustard] {file} holds the Jev key, and the key never enters the conversation. Here is \
+             the file, with the key replaced by ***:\n{text}"
         }
 
         // The approval witness: what it tells the assistant after recording
@@ -505,9 +561,33 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("gates.rs"),
             super::PREFIXES,
-            66,
-            0x7202_a599_0c5d_66c0,
+            71,
+            0x5b58_3fb4_5608_3078,
         );
+    }
+
+    /// As recusas da leitura inteira, da busca de um nome e do arquivo com a
+    /// chave passam na conferência de escrita das respostas, nos dois
+    /// idiomas, com cada vaga trocada por uma palavra. As duas frases curtas
+    /// que fecham a lista de partes existem nos dois idiomas, com as vagas.
+    #[test]
+    fn the_map_route_refusals_read_clearly() {
+        for (key, slots) in [("code_route.more_parts", &["{count}", "{file}"][..]), ("code_route.tests_from", &["{line}"][..])] {
+            let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
+            assert!(pt != "<missing-key>" && en != "<missing-key>" && pt != en, "{key}");
+            assert!(slots.iter().all(|slot| pt.contains(slot) && en.contains(slot)), "{key}");
+        }
+        for (lang, word) in [(Locale::PtBr, "partes"), (Locale::EnUs, "parts")] {
+            for (key, slots) in [
+                ("code_route.whole_read", &[("{file}", "mapa"), ("{lines}", "400"), ("{parts}", word)][..]),
+                ("code_route.name_search", &[("{name}", "Alpha")][..]),
+                ("config_key.hidden", &[("{file}", "mustard"), ("{text}", word)][..]),
+            ] {
+                let text = slots.iter().fold(translate(key, lang).to_string(), |text, (slot, value)| text.replace(slot, value));
+                let report = crate::domain::clarity::measure(&text, &[], Some(lang));
+                assert!(report.passed, "{key} {lang:?}: {report:?}");
+            }
+        }
     }
 
     /// The messages of the write gate and of the approval witness come from
@@ -522,6 +602,9 @@ mod tests {
             ("write_gate.unreadable_config", &["{file}"][..]),
             ("write_gate.other_branch", &["{spec}", "{branch}", "{current}"][..]),
             ("write_gate.read_cut", &["{line}"][..]),
+            ("code_route.whole_read", &["{file}", "{lines}", "{parts}"][..]),
+            ("code_route.name_search", &["{name}"][..]),
+            ("config_key.hidden", &["{file}", "{text}"][..]),
             ("approval.witness.clear", &["{spec}"][..]),
             ("approval.witness.free_text", &["{spec}", "{selected}", "{offered}"][..]),
             ("approval.witness.not_affirmative", &["{spec}", "{selected}"][..]),

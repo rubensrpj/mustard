@@ -69,9 +69,9 @@ impl Module {
     }
 }
 
-/// As ferramentas que escrevem ou leem arquivo, que o portão de escrita
-/// confere.
-const FILE_TOOLS: &[&str] = &["Read", "Write", "Edit", "MultiEdit", "NotebookEdit"];
+/// As ferramentas que escrevem, leem ou buscam arquivo, que o portão de
+/// escrita confere.
+const FILE_TOOLS: &[&str] = &["Read", "Write", "Edit", "MultiEdit", "NotebookEdit", "Grep"];
 
 /// As ferramentas que despacham um subagente.
 const AGENT_TOOLS: &[&str] = &["Task", "Agent"];
@@ -95,10 +95,11 @@ impl Registry {
                 check: Some(Box::new(CommandGuard)),
                 observer: None,
             },
-            // O portão de escrita, nas cinco ferramentas de arquivo. As
-            // regras, em ordem: segredo, arquivos que só o binário escreve,
-            // aprovação, a branch da spec (só aviso) e a base do `git.flow`.
-            // A primeira que responde decide.
+            // O portão de escrita, nas cinco ferramentas de arquivo e na
+            // busca. As regras, em ordem: segredo, a chave do Jev, arquivos
+            // que só o binário escreve, aprovação, a branch da spec (só
+            // aviso), a base do `git.flow`, a leitura inteira grande e a
+            // leitura cortada. A primeira que responde decide.
             Module {
                 id: "write_gate",
                 applies_to: &[(Trigger::PreToolUse, ToolMatch::OneOf(FILE_TOOLS))],
@@ -293,16 +294,17 @@ mod tests {
         assert!(!applicable_ids(&registry, Trigger::PreToolUse, Some("Write")).contains(&"command_guard"));
     }
 
-    /// O portão de escrita roda antes das cinco ferramentas de arquivo, e só
-    /// delas; o sinal de vida da onda segue rodando depois de cada uma.
+    /// O portão de escrita roda antes das cinco ferramentas de arquivo e da
+    /// busca, e só delas; o sinal de vida da onda segue rodando depois de
+    /// cada uma.
     #[test]
-    fn the_write_gate_runs_on_the_five_file_tools() {
+    fn the_write_gate_runs_on_the_file_tools_and_the_search() {
         let registry = Registry::new();
-        for tool in ["Read", "Write", "Edit", "MultiEdit", "NotebookEdit"] {
+        for tool in ["Read", "Write", "Edit", "MultiEdit", "NotebookEdit", "Grep"] {
             assert_eq!(applicable_ids(&registry, Trigger::PreToolUse, Some(tool)), ["write_gate"], "{tool}");
             assert_eq!(applicable_ids(&registry, Trigger::PostToolUse, Some(tool)), ["wave_alive_observer"], "{tool}");
         }
-        for tool in ["Bash", "Task", "Agent", "Skill"] {
+        for tool in ["Bash", "Task", "Agent", "Skill", "Glob"] {
             assert!(!applicable_ids(&registry, Trigger::PreToolUse, Some(tool)).contains(&"write_gate"), "{tool}");
         }
         let module = registry.by_id("write_gate").expect("registered");

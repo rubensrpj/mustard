@@ -1282,6 +1282,53 @@ pub fn declaration(map: &ProjectMap, file: &str, name: &str) -> Result<DeclPlace
     })
 }
 
+// ---------------------------------------------------------------------------
+// As partes de um arquivo
+// ---------------------------------------------------------------------------
+
+/// Os tipos de declaração que são dado de outra — o campo, o membro de enum e
+/// a propriedade. Moram dentro das linhas da dona e ficam fora das partes.
+const MEMBER_KINDS: &[&str] = &["field", "enum_member", "property"];
+
+/// Uma parte de um arquivo: uma declaração, com o tipo, o nome e as linhas de
+/// começo e de fim.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct FilePart {
+    pub kind: String,
+    pub name: String,
+    pub line: u64,
+    /// A última linha; a primeira, quando o mapa não a tem.
+    pub end_line: u64,
+}
+
+/// As partes de um arquivo, para quem vai ler só um trecho dele: as
+/// declarações fora dos testes escritos dentro do arquivo, em ordem de linha,
+/// e a linha em que os testes começam, quando há.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FileParts {
+    pub file: String,
+    pub parts: Vec<FilePart>,
+    pub tests_line: Option<u64>,
+}
+
+/// As partes de `file`: cada declaração que não é dado de outra
+/// ([`MEMBER_KINDS`]) e que começa fora dos trechos de teste, e a primeira
+/// linha do primeiro trecho de teste. Recusa [`MapRefusal::UnknownFile`]
+/// quando o arquivo não está no mapa.
+pub fn parts(map: &ProjectMap, file: &str) -> Result<FileParts, MapRefusal> {
+    let module = map.known(file)?;
+    let in_tests = |line: u64| module.test_lines.iter().any(|&(from, to)| from <= line && line <= to);
+    let mut parts: Vec<FilePart> = module
+        .declarations
+        .iter()
+        .filter(|d| !MEMBER_KINDS.contains(&d.kind.as_str()) && !in_tests(d.line))
+        .map(|d| FilePart { kind: d.kind.clone(), name: d.name.clone(), line: d.line, end_line: d.end_line.max(d.line) })
+        .collect();
+    parts.sort_by_key(|part| part.line);
+    let tests_line = module.test_lines.iter().map(|&(from, _)| from).min();
+    Ok(FileParts { file: module.path.clone(), parts, tests_line })
+}
+
 /// Uma declaração com o nome perguntado, onde ela mora e quem a usa.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DeclUsers {
@@ -2624,5 +2671,30 @@ mod tests {
         // que começam na mesma linha, a de mais linhas.
         assert_eq!(outer_declarations(&[(5, 6), (2, 2), (2, 8)]), vec![2]);
         assert!(outer_declarations(&[]).is_empty());
+    }
+
+    /// As partes de um arquivo são as declarações fora dos testes, em ordem
+    /// de linha, sem os campos nem os membros de enum, com a linha em que os
+    /// testes começam. O arquivo fora do mapa é recusado.
+    #[test]
+    fn the_parts_of_a_file_leave_out_the_tests_and_the_members() {
+        let map: ProjectMap = serde_json::from_str(
+            r#"{"modules":[{"path":"src/a.rs","test_lines":[[40,60]],"declarations":[
+                {"kind":"method","name":"run","line":12,"end_line":20},
+                {"kind":"struct","name":"Alpha","line":3,"end_line":10},
+                {"kind":"field","name":"size","line":4,"end_line":4},
+                {"kind":"enum_member","name":"Red","line":30,"end_line":30},
+                {"kind":"function","name":"tail","line":25},
+                {"kind":"function","name":"a_test","line":45,"end_line":50}
+            ]}]}"#,
+        )
+        .unwrap();
+        let found = parts(&map, "./src/a.rs").unwrap();
+        assert_eq!(found.file, "src/a.rs");
+        let seen: Vec<(&str, &str, u64, u64)> =
+            found.parts.iter().map(|p| (p.kind.as_str(), p.name.as_str(), p.line, p.end_line)).collect();
+        assert_eq!(seen, [("struct", "Alpha", 3, 10), ("method", "run", 12, 20), ("function", "tail", 25, 25)]);
+        assert_eq!(found.tests_line, Some(40));
+        assert!(matches!(parts(&map, "src/b.rs"), Err(MapRefusal::UnknownFile { .. })));
     }
 }
