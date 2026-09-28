@@ -120,6 +120,12 @@ fn main() {
     let mut single_part_table = String::new();
     single_part_table.push_str("pub(crate) static LANG_SINGLE_PART_PATHS: &[(&str, bool)] = &[\n");
 
+    // (name, global_namespace) — se o arquivo que não declara namespace fica
+    // à vista dos arquivos da mesma família no mesmo projeto. OPCIONAL: sem o
+    // campo, `false`.
+    let mut global_namespace_table = String::new();
+    global_namespace_table.push_str("pub(crate) static LANG_GLOBAL_NAMESPACE: &[(&str, bool)] = &[\n");
+
     // (name, import_self) — o nome OPCIONAL que, trazido por um import, traz
     // o último nome escrito antes da lista que o contém. Sem o campo, texto
     // vazio: todo nome trazido é ele mesmo.
@@ -253,6 +259,10 @@ fn main() {
             .get("single_part_paths")
             .map(|v| v.as_bool().expect("language.single_part_paths must be true or false"))
             .unwrap_or(false);
+        let global_namespace = tbl
+            .get("global_namespace")
+            .map(|v| v.as_bool().expect("language.global_namespace must be true or false"))
+            .unwrap_or(false);
         let parent_alias = tbl
             .get("parent_alias")
             .map(|v| v.as_str().expect("language.parent_alias must be a string").to_string())
@@ -342,6 +352,8 @@ fn main() {
             .expect("the generated table is a String, which never fails to write");
         writeln!(single_part_table, "    ({name:?}, {single_part_paths}),")
             .expect("the generated table is a String, which never fails to write");
+        writeln!(global_namespace_table, "    ({name:?}, {global_namespace}),")
+            .expect("the generated table is a String, which never fails to write");
         writeln!(import_self_table, "    ({name:?}, {import_self:?}),")
             .expect("the generated table is a String, which never fails to write");
         for (table, values) in list_field_tables.iter_mut().zip(&list_values) {
@@ -383,6 +395,7 @@ fn main() {
         &mut self_table,
         &mut implicit_table,
         &mut single_part_table,
+        &mut global_namespace_table,
         &mut family_table,
         &mut import_self_table,
     ]
@@ -627,8 +640,11 @@ fn route_rules(crate_root: &Path, languages: &[&str]) -> String {
 /// `markup` dela: `blocks`, `bodies`, `lines` e `head` são opcionais, mas ao
 /// menos um vem; cada forma de `lines` e de `head` tem um `{}`; `wrap` traz o
 /// texto que abre e o que fecha o tipo do arquivo, e `method`, o do método
-/// dos blocos de `bodies`, que vem junto com eles e só com eles. O erro para
-/// a compilação.
+/// dos blocos de `bodies`, que vem junto com eles e só com eles. A
+/// `expression` mora nesse método e só vem com ele; `escape`, `keywords` e
+/// `prefixes` só vêm com ela. O `comment` traz quatro textos, e `bases` vem
+/// com `base_list` e com o `{bases}` no texto que abre o tipo. O erro para a
+/// compilação.
 fn markup_rule(name: &str, rule: &toml::value::Table) -> String {
     let refused = |what: &str| format!("language.markup of `{name}`: {what}");
     let markers = |key: &str| -> Vec<String> {
@@ -667,20 +683,57 @@ fn markup_rule(name: &str, rule: &toml::value::Table) -> String {
         })
     };
     let (lines, head) = (forms("lines"), forms("head"));
+    let text = |key: &str| -> String {
+        rule.get(key).map_or_else(String::new, |v| {
+            v.as_str()
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| panic!("{}", refused(&format!("`{key}` must be a non-empty string"))))
+                .to_string()
+        })
+    };
+    let expression = pair("expression");
+    if let Some([marker, statement]) = &expression {
+        assert!(!marker.is_empty() && statement.contains("{}"), "{}", refused("`expression` needs the marker and a statement with `{}`"));
+    }
+    assert!(expression.is_none() || method.is_some(), "{}", refused("`expression` lives in the method of `bodies`: it needs `method`"));
+    let (escape, keywords, prefixes) = (text("escape"), markers("keywords"), markers("prefixes"));
     assert!(
-        !(blocks.is_empty() && bodies.is_empty() && lines.is_empty() && head.is_empty()),
+        expression.is_some() || (escape.is_empty() && keywords.is_empty() && prefixes.is_empty()),
         "{}",
-        refused("it must declare `blocks`, `bodies`, `lines` or `head`")
+        refused("`escape`, `keywords` and `prefixes` come only with `expression`")
     );
+    let comment = markers("comment");
+    assert!(comment.is_empty() || comment.len() == 4, "{}", refused("`comment` lists the markup's opening and closing and the code's"));
+    let comment: [String; 4] = comment.try_into().unwrap_or_default();
+    let bases = markers("bases");
+    let base_list = pair("base_list");
     let Some([open, close]) = pair("wrap") else { panic!("{}", refused("`wrap` must list the text that opens the type and the one that closes it")) };
+    assert!(
+        bases.is_empty() == base_list.is_none() && (bases.is_empty() || open.contains("{bases}")),
+        "{}",
+        refused("`bases` comes with `base_list` and with `{bases}` in the text that opens the type")
+    );
+    assert!(
+        !(blocks.is_empty() && bodies.is_empty() && lines.is_empty() && head.is_empty() && bases.is_empty()),
+        "{}",
+        refused("it must declare `blocks`, `bodies`, `lines`, `head` or `bases`")
+    );
     let [method_open, method_close] = method.unwrap_or_default();
+    let [marker, statement] = expression.unwrap_or_default();
+    let [base_open, base_between] = base_list.unwrap_or_default();
     let pairs = |list: &[(String, String)]| list.iter().map(|(m, f)| format!("({m:?}, {f:?})")).collect::<Vec<_>>().join(", ");
+    let imports_file = text("imports_file");
     format!(
-        "crate::markup::Markup {{ blocks: &[{}], bodies: &[{}], method: [{method_open:?}, {method_close:?}], lines: &[{}], head: &[{}], open: {open:?}, close: {close:?} }}",
+        "crate::markup::Markup {{ blocks: &[{}], bodies: &[{}], method: [{method_open:?}, {method_close:?}], lines: &[{}], head: &[{}], \
+         open: {open:?}, close: {close:?}, expression: [{marker:?}, {statement:?}], escape: {escape:?}, keywords: &[{}], prefixes: &[{}], \
+         comment: {comment:?}, bases: &[{}], base_list: [{base_open:?}, {base_between:?}], imports_file: {imports_file:?} }}",
         quoted_list(&blocks),
         quoted_list(&bodies),
         pairs(&lines),
-        pairs(&head)
+        pairs(&head),
+        quoted_list(&keywords),
+        quoted_list(&prefixes),
+        quoted_list(&bases)
     )
 }
 

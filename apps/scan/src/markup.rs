@@ -6,10 +6,12 @@
 //!
 //! O código dos blocos e das linhas de membro mora num tipo com o nome do
 //! arquivo, aberto no começo da linha do primeiro código e fechado logo
-//! depois do último. O código das linhas de cabeça fica fora desse tipo,
-//! antes dele. O bloco de corpo traz comandos, e não membros: mora num
-//! método do tipo, e os blocos de corpo seguidos, sem membro entre eles,
-//! dividem o mesmo método. O arquivo sem código nenhum sai só com espaços.
+//! depois do último, com as bases que as linhas de base dão a ele. O código
+//! das linhas de cabeça fica fora desse tipo, antes dele. O bloco de corpo e
+//! o código em linha, escrito no meio da marcação, trazem comandos, e não
+//! membros: moram num método do tipo, e os seguidos, sem membro entre eles,
+//! dividem o mesmo método. O comentário da marcação vira comentário do código, no lugar
+//! dele. O arquivo sem código nenhum sai só com espaços e comentários.
 
 /// Onde mora o código num arquivo de marcação, como o registro o declara.
 pub(crate) struct Markup {
@@ -19,7 +21,7 @@ pub(crate) struct Markup {
     /// Como `blocks`, mas o de dentro das chaves é o corpo de um método.
     pub bodies: &'static [&'static str],
     /// O texto que abre e o que fecha o método em que o código de `bodies`
-    /// mora; vazio sem `bodies`.
+    /// e do código em linha mora; vazio sem `bodies`.
     pub method: [&'static str; 2],
     /// O marcador que abre uma linha de código dentro do tipo do arquivo e a
     /// forma dela, com `{}` no lugar do resto da linha.
@@ -27,10 +29,44 @@ pub(crate) struct Markup {
     /// Como `lines`, mas o código vai antes do tipo do arquivo.
     pub head: &'static [(&'static str, &'static str)],
     /// O texto que abre o tipo do arquivo, com `{file}` no lugar do nome
-    /// dele sem a extensão.
+    /// dele sem a extensão e `{bases}` no lugar da lista de bases.
     pub open: &'static str,
     /// O texto que fecha o tipo do arquivo.
     pub close: &'static str,
+    /// O marcador que abre código em linha no meio da marcação e a forma do
+    /// comando em que ele vira, com `{}` no lugar dele; vazios sem código em
+    /// linha.
+    pub expression: [&'static str; 2],
+    /// O texto que se lê como o marcador escrito na tela, e não como código;
+    /// vazio sem ele.
+    pub escape: &'static str,
+    /// Os nomes que, logo depois do marcador do código em linha, abrem uma
+    /// diretiva ou um comando de controle, e não código em linha.
+    pub keywords: &'static [&'static str],
+    /// Os nomes que, logo depois do marcador do código em linha, seguem de
+    /// um espaço e do código, que os leva junto.
+    pub prefixes: &'static [&'static str],
+    /// O texto que abre e o que fecha o comentário da marcação, e os que o
+    /// trocam no código; vazios sem comentário.
+    pub comment: [&'static str; 4],
+    /// Os marcadores de linha cujo resto é uma base do tipo do arquivo.
+    pub bases: &'static [&'static str],
+    /// O texto antes da lista de bases e o que fica entre duas delas.
+    pub base_list: [&'static str; 2],
+    /// O nome, sem a extensão, do arquivo cujos imports valem também nos
+    /// arquivos da mesma língua da pasta dele e das de baixo; vazio sem ele.
+    pub imports_file: &'static str,
+}
+
+/// O que uma linha de código é no tipo do arquivo.
+#[derive(Clone, Copy)]
+enum LineKind {
+    /// Um membro do tipo, escrito no lugar da linha.
+    Member,
+    /// Código de antes do tipo.
+    Head,
+    /// Uma base do tipo, com a posição do marcador dela na lista de bases.
+    Base(usize),
 }
 
 /// Um trecho de código achado no arquivo.
@@ -39,40 +75,68 @@ enum Piece {
     /// o fim do arquivo, e se o de dentro é o corpo de um método.
     Block { open: usize, close: usize, body: bool },
     /// Uma linha: do começo do marcador ao fim da linha, com o código que ela
-    /// vira e se ele vai antes do tipo do arquivo.
-    Line { start: usize, end: usize, code: String, head: bool },
+    /// vira (na linha de base, a base) e o que ela é.
+    Line { start: usize, end: usize, code: String, kind: LineKind },
+    /// Código em linha, escrito no meio da marcação: do marcador ao fim dele,
+    /// com o comando que ele vira.
+    Expr { start: usize, end: usize, code: String },
+    /// Um comentário da marcação: do texto que o abre ao fim do que o fecha,
+    /// ou ao fim do arquivo quando nada o fecha.
+    Comment { start: usize, end: usize },
 }
 
 impl Piece {
     fn start(&self) -> usize {
         match self {
             Piece::Block { open, .. } => *open,
-            Piece::Line { start, .. } => *start,
+            Piece::Line { start, .. } | Piece::Expr { start, .. } | Piece::Comment { start, .. } => *start,
         }
     }
 
+    /// O trecho faz parte do tipo do arquivo: ele abre o tipo, quando é o
+    /// primeiro, e o fecha, quando é o último.
     fn in_type(&self) -> bool {
-        !matches!(self, Piece::Line { head: true, .. })
+        match self {
+            Piece::Block { .. } | Piece::Expr { .. } => true,
+            Piece::Line { kind, .. } => !matches!(kind, LineKind::Head),
+            Piece::Comment { .. } => false,
+        }
+    }
+
+    /// O trecho escreve código no corpo do tipo: um membro, que fecha o
+    /// método dos comandos, ou um comando, que mora nele.
+    fn writes_in_type(&self) -> bool {
+        match self {
+            Piece::Block { .. } | Piece::Expr { .. } => true,
+            Piece::Line { kind, .. } => matches!(kind, LineKind::Member),
+            Piece::Comment { .. } => false,
+        }
     }
 
     fn is_body(&self) -> bool {
-        matches!(self, Piece::Block { body: true, .. })
+        matches!(self, Piece::Block { body: true, .. } | Piece::Expr { .. })
     }
 }
 
 impl Markup {
+    /// O arquivo `path` é o de imports da pasta: os imports dele valem nos
+    /// arquivos da mesma língua da pasta dele e das de baixo.
+    pub(crate) fn is_imports_file(&self, path: &str) -> bool {
+        !self.imports_file.is_empty() && file_stem(path) == self.imports_file
+    }
+
     /// O texto que a gramática lê do arquivo `src`, no caminho `path`: só o
     /// código, com as linhas no lugar delas. O código de cabeça escrito antes
     /// do primeiro código do tipo fica na linha dele; o escrito depois vai
-    /// para a linha em que o tipo abre, antes dele. O método dos blocos de
-    /// corpo abre na chave do bloco cujo código do tipo anterior não é
-    /// corpo, e fecha no fim do bloco cujo código do tipo seguinte não é.
+    /// para a linha em que o tipo abre, antes dele. O método dos comandos
+    /// abre no primeiro comando cujo código anterior no tipo não é comando, e
+    /// fecha no fim do comando cujo código seguinte no tipo não é.
     pub(crate) fn code_of(&self, src: &str, path: &str) -> String {
         let pieces = self.pieces(src);
         let first_in_type = pieces.iter().position(Piece::in_type);
         let last_in_type = pieces.iter().rposition(Piece::in_type);
-        let body_before = |i: usize| pieces[..i].iter().rev().find(|piece| piece.in_type()).is_some_and(Piece::is_body);
-        let body_after = |i: usize| pieces[i + 1..].iter().find(|piece| piece.in_type()).is_some_and(Piece::is_body);
+        let body_before = |i: usize| pieces[..i].iter().rev().find(|piece| piece.writes_in_type()).is_some_and(Piece::is_body);
+        let body_after = |i: usize| pieces[i + 1..].iter().find(|piece| piece.writes_in_type()).is_some_and(Piece::is_body);
         let mut out = String::with_capacity(src.len() + 64);
         let mut at = 0;
         for (i, piece) in pieces.iter().enumerate() {
@@ -80,12 +144,12 @@ impl Markup {
                 let line_start = src[..piece.start()].rfind('\n').map_or(0, |n| n + 1).max(at);
                 blank(&mut out, &src[at..line_start]);
                 for later in &pieces[i..] {
-                    if let Piece::Line { code, head: true, .. } = later {
+                    if let Piece::Line { code, kind: LineKind::Head, .. } = later {
                         out.push_str(code);
                         out.push(' ');
                     }
                 }
-                out.push_str(&self.open.replace("{file}", file_stem(path)));
+                out.push_str(&self.open.replace("{file}", file_stem(path)).replace("{bases}", &self.bases_of(&pieces)));
                 at = line_start;
             }
             let moved = first_in_type.is_some_and(|first| i > first);
@@ -102,11 +166,27 @@ impl Markup {
                         out.push_str(self.method[1]);
                     }
                 }
-                Piece::Line { end, code, head, .. } => {
+                Piece::Line { end, code, kind, .. } => {
                     blank(&mut out, &src[at..*end]);
-                    if !(*head && moved) {
+                    if matches!(kind, LineKind::Member) || (matches!(kind, LineKind::Head) && !moved) {
                         out.push_str(code);
                     }
+                    at = *end;
+                }
+                Piece::Expr { start, end, code } => {
+                    blank(&mut out, &src[at..*start]);
+                    if !body_before(i) {
+                        out.push_str(self.method[0]);
+                    }
+                    out.push_str(code);
+                    at = *end;
+                    if !body_after(i) {
+                        out.push_str(self.method[1]);
+                    }
+                }
+                Piece::Comment { start, end } => {
+                    blank(&mut out, &src[at..*start]);
+                    self.push_comment(&mut out, &src[*start..*end]);
                     at = *end;
                 }
             }
@@ -118,10 +198,50 @@ impl Markup {
         out
     }
 
+    /// As bases que as linhas de base dão ao tipo, na ordem dos marcadores
+    /// e, com o mesmo marcador, na do arquivo, já na forma de `base_list`;
+    /// vazio sem nenhuma.
+    fn bases_of(&self, pieces: &[Piece]) -> String {
+        let mut named: Vec<(usize, &str)> = pieces
+            .iter()
+            .filter_map(|piece| match piece {
+                Piece::Line { code, kind: LineKind::Base(order), .. } => Some((*order, code.as_str())),
+                _ => None,
+            })
+            .collect();
+        if named.is_empty() {
+            return String::new();
+        }
+        named.sort_by_key(|(order, _)| *order);
+        let names: Vec<&str> = named.into_iter().map(|(_, name)| name).collect();
+        format!("{}{}", self.base_list[0], names.join(self.base_list[1]))
+    }
+
+    /// Põe em `out` o comentário da marcação `written`, com os textos que o
+    /// abrem e o fecham trocados pelos do código. O texto que fecharia o
+    /// comentário do código antes da hora vira espaço.
+    fn push_comment(&self, out: &mut String, written: &str) {
+        let [open, close, code_open, code_close] = self.comment;
+        let inner = written.strip_prefix(open).unwrap_or(written);
+        let inner = inner.strip_suffix(close).unwrap_or(inner);
+        out.push_str(code_open);
+        let mut rest = inner;
+        while let Some(at) = rest.find(code_close) {
+            out.push_str(&rest[..at]);
+            blank(out, code_close);
+            rest = &rest[at + code_close.len()..];
+        }
+        out.push_str(rest);
+        out.push_str(code_close);
+    }
+
     /// Os trechos de código de `src`, na ordem do arquivo. A linha de código
-    /// começa pelo marcador, depois dos espaços do começo da linha; o bloco
-    /// começa pelo marcador escrito fora de outra palavra e segue na chave
-    /// que vem depois dele, passados os espaços.
+    /// começa pelo marcador, depois dos espaços do começo da linha; o
+    /// comentário, pelo texto que o abre; o bloco começa pelo marcador escrito
+    /// fora de outra palavra e segue na chave que vem depois dele, passados os
+    /// espaços; o código em linha, pelo marcador escrito fora de outra
+    /// palavra. O
+    /// marcador escrito na tela (`escape`) não abre nada.
     fn pieces(&self, src: &str) -> Vec<Piece> {
         let bytes = src.as_bytes();
         let mut out = Vec::new();
@@ -137,10 +257,27 @@ impl Markup {
                     continue;
                 }
             }
+            if let Some(end) = self.comment_at(src, at) {
+                out.push(Piece::Comment { start: at, end });
+                at = end;
+                line_start = false;
+                continue;
+            }
+            if !self.escape.is_empty() && bytes[at..].starts_with(self.escape.as_bytes()) {
+                at += self.escape.len();
+                line_start = false;
+                continue;
+            }
             if let Some((open, body)) = self.block_at(src, at) {
-                let close = matching_brace(bytes, open);
+                let close = matching(bytes, open);
                 out.push(Piece::Block { open, close, body });
                 at = (close + 1).min(bytes.len());
+                line_start = false;
+                continue;
+            }
+            if let Some((end, code)) = self.expression_at(src, at) {
+                out.push(Piece::Expr { start: at, end, code });
+                at = end;
                 line_start = false;
                 continue;
             }
@@ -155,16 +292,29 @@ impl Markup {
     /// pode ser vazio.
     fn line_at(&self, src: &str, first: usize) -> Option<(Piece, usize)> {
         let rest = &src[first..];
-        let (marker, form, head) = self
+        let (marker, form, kind) = self
             .lines
             .iter()
-            .map(|(marker, form)| (marker, form, false))
-            .chain(self.head.iter().map(|(marker, form)| (marker, form, true)))
-            .find(|(marker, ..)| rest.starts_with(**marker) && rest[marker.len()..].starts_with([' ', '\t']))?;
+            .map(|(marker, form)| (*marker, *form, LineKind::Member))
+            .chain(self.head.iter().map(|(marker, form)| (*marker, *form, LineKind::Head)))
+            .chain(self.bases.iter().enumerate().map(|(order, marker)| (*marker, "{}", LineKind::Base(order))))
+            .find(|(marker, ..)| rest.starts_with(marker) && rest[marker.len()..].starts_with([' ', '\t']))?;
         let end = first + rest.find('\n').unwrap_or(rest.len());
         let argument = src[first + marker.len()..end].trim();
         let code = form.replacen("{}", argument, 1);
-        (!argument.is_empty()).then_some((Piece::Line { start: first, end, code, head }, end))
+        (!argument.is_empty()).then_some((Piece::Line { start: first, end, code, kind }, end))
+    }
+
+    /// O byte em que termina o comentário cujo texto de abrir começa no byte
+    /// `at` de `src`: logo depois do texto que o fecha ou, sem ele, o fim do
+    /// arquivo.
+    fn comment_at(&self, src: &str, at: usize) -> Option<usize> {
+        let [open, close, ..] = self.comment;
+        if open.is_empty() || !src.as_bytes()[at..].starts_with(open.as_bytes()) {
+            return None;
+        }
+        let from = at + open.len();
+        Some(src[from..].find(close).map_or(src.len(), |n| from + n + close.len()))
     }
 
     /// O byte da chave que abre o bloco cujo marcador começa no byte `at` de
@@ -187,18 +337,136 @@ impl Markup {
             (bytes.get(open) == Some(&b'{')).then_some((open, body))
         })
     }
+
+    /// O código em linha cujo marcador começa no byte `at` de `src`, com o
+    /// byte em que ele termina e o comando que ele vira. Seguido de `(`, o
+    /// marcador abre o de dentro dos parênteses; seguido de um nome, `=` e um
+    /// valor entre aspas, o valor; seguido de um nome de `prefixes`, esse nome
+    /// e o código depois dele; seguido de outro nome, fora de `keywords`, o
+    /// código escrito sem parênteses ([`implicit_end`]). O marcador colado
+    /// depois de outra palavra não abre nada.
+    fn expression_at(&self, src: &str, at: usize) -> Option<(usize, String)> {
+        let [marker, statement] = self.expression;
+        if marker.is_empty() || !src.as_bytes()[at..].starts_with(marker.as_bytes()) || word_before(src, at) {
+            return None;
+        }
+        let from = at + marker.len();
+        let (code, end) = if src[from..].starts_with('(') {
+            let close = matching(src.as_bytes(), from);
+            (close < src.len()).then_some((&src[from..=close], close + 1))?
+        } else if let Some((value, end)) = self.attribute_value(src, from) {
+            (value, end)
+        } else {
+            let word = name_len(&src[from..]);
+            let name = &src[from..from + word];
+            if word == 0 || self.keywords.contains(&name) {
+                return None;
+            }
+            let mut start = from + word;
+            if self.prefixes.contains(&name) {
+                let gap = src[start..].len() - src[start..].trim_start_matches([' ', '\t']).len();
+                if gap == 0 || name_len(&src[start + gap..]) == 0 {
+                    return None;
+                }
+                start += gap;
+            } else {
+                start = from;
+            }
+            let end = implicit_end(src, start);
+            (&src[from..end], end)
+        };
+        (!code.trim().is_empty()).then(|| (end, statement.replacen("{}", code.trim(), 1)))
+    }
+
+    /// O valor do atributo escrito logo depois do marcador, no byte `from`
+    /// de `src`: o nome dele (com `-` e `:`), `=` e o valor entre aspas, com
+    /// o byte logo depois da aspa que o fecha. O valor que começa pelo
+    /// marcador perde o marcador; o que começa por ele e `(` vai até o `)`
+    /// que fecha o parêntese, com as aspas escritas dentro dele.
+    fn attribute_value<'s>(&self, src: &'s str, from: usize) -> Option<(&'s str, usize)> {
+        let marker = self.expression[0];
+        if name_len(&src[from..]) == 0 {
+            return None;
+        }
+        let name = src[from..].find(|c: char| !(c.is_alphanumeric() || matches!(c, '_' | '-' | ':'))).map_or(src.len(), |n| from + n);
+        let rest = src[name..].strip_prefix('=')?;
+        let quote = rest.chars().next().filter(|c| matches!(c, '"' | '\''))?;
+        let value = name + 2;
+        let code = src[value..].strip_prefix(marker).map_or(value, |_| value + marker.len());
+        let close = if src[code..].starts_with('(') {
+            let paren = matching(src.as_bytes(), code);
+            (paren < src.len()).then_some(paren + 1)?
+        } else {
+            code
+        };
+        let quote_at = close + src[close..].find(quote)?;
+        Some((&src[code..quote_at], quote_at + 1))
+    }
 }
 
-/// O byte da chave que fecha a que abre no byte `open`, sem contar as chaves
-/// escritas dentro de texto entre aspas, de caractere entre apóstrofos e de
-/// comentário de linha (`//`) ou de bloco (`/* */`). Sem ela, o fim do texto.
-fn matching_brace(bytes: &[u8], open: usize) -> usize {
+/// O byte em que termina o código em linha escrito sem parênteses que
+/// começa no byte `start` de `src`: os nomes ligados por `.` ou `?.`, cada um seguido dos
+/// parênteses e colchetes escritos colados a ele (`Html.Raw(x)`,
+/// `itens?[0]`). O ponto sem nome depois dele é da marcação, e o parêntese
+/// que não fecha também.
+fn implicit_end(src: &str, start: usize) -> usize {
+    let bytes = src.as_bytes();
+    let mut at = start + name_len(&src[start..]);
+    loop {
+        let open = match (bytes.get(at), bytes.get(at + 1)) {
+            (Some(b'(' | b'['), _) => at,
+            (Some(b'?'), Some(b'[')) => at + 1,
+            (Some(b'.'), _) if name_len(&src[at + 1..]) > 0 => {
+                at += 1 + name_len(&src[at + 1..]);
+                continue;
+            }
+            (Some(b'?'), Some(b'.')) if name_len(&src[at + 2..]) > 0 => {
+                at += 2 + name_len(&src[at + 2..]);
+                continue;
+            }
+            _ => return at,
+        };
+        let close = matching(bytes, open);
+        if close >= bytes.len() {
+            return at;
+        }
+        at = close + 1;
+    }
+}
+
+/// O tamanho, em bytes, do nome escrito no começo de `text`: uma letra ou
+/// `_`, seguida de letras, dígitos e `_`. Zero sem nome.
+fn name_len(text: &str) -> usize {
+    let mut chars = text.char_indices();
+    match chars.next() {
+        Some((_, c)) if c.is_alphabetic() || c == '_' => {}
+        _ => return 0,
+    }
+    chars.find(|(_, c)| !(c.is_alphanumeric() || *c == '_')).map_or(text.len(), |(at, _)| at)
+}
+
+/// O caractere logo antes do byte `at` de `src` é parte de uma palavra:
+/// letra, dígito ou `_`.
+fn word_before(src: &str, at: usize) -> bool {
+    src[..at].chars().next_back().is_some_and(|c| c.is_alphanumeric() || c == '_')
+}
+
+/// O byte que fecha o parêntese, o colchete ou a chave que abre no byte
+/// `open`, sem contar os escritos dentro de texto entre aspas, de caractere
+/// entre apóstrofos e de comentário de linha (`//`) ou de bloco (`/* */`).
+/// Sem ele, o fim do texto.
+fn matching(bytes: &[u8], open: usize) -> usize {
+    let (opens, closes) = match bytes[open] {
+        b'(' => (b'(', b')'),
+        b'[' => (b'[', b']'),
+        _ => (b'{', b'}'),
+    };
     let mut depth = 0usize;
     let mut at = open;
     while at < bytes.len() {
         match bytes[at] {
-            b'{' => depth += 1,
-            b'}' => {
+            b if b == opens => depth += 1,
+            b if b == closes => {
                 depth -= 1;
                 if depth == 0 {
                     return at;
@@ -250,15 +518,31 @@ fn file_stem(path: &str) -> &str {
 mod tests {
     use super::*;
 
-    /// A página de Blazor como o registro a descreve.
-    const PAGE: Markup = Markup {
-        blocks: &["@code", "@functions"],
+    /// O registro sem nada além do tipo do arquivo.
+    const PLAIN: Markup = Markup {
+        blocks: &[],
         bodies: &[],
         method: ["", ""],
-        lines: &[("@inject", "{};")],
-        head: &[("@using", "using {};")],
+        lines: &[],
+        head: &[],
         open: "partial class {file} {",
         close: "}",
+        expression: ["", ""],
+        escape: "",
+        keywords: &[],
+        prefixes: &[],
+        comment: ["", "", "", ""],
+        bases: &[],
+        base_list: ["", ""],
+        imports_file: "",
+    };
+
+    /// A página de Blazor só com os blocos e as linhas.
+    const PAGE: Markup = Markup {
+        blocks: &["@code", "@functions"],
+        lines: &[("@inject", "{};")],
+        head: &[("@using", "using {};")],
+        ..PLAIN
     };
 
     /// As linhas do texto lido, com os espaços juntados num só.
@@ -323,7 +607,7 @@ mod tests {
         assert_eq!(lines(&code), ["using Loja; partial class Compra { Loja.Carrinho Carrinho;", "", "}"]);
     }
 
-    /// A view do Razor como o registro a descreve.
+    /// A view do Razor só com os blocos e as linhas.
     const VIEW: Markup = Markup {
         blocks: &["@functions"],
         bodies: &["@"],
@@ -331,7 +615,7 @@ mod tests {
         lines: &[("@inject", "{};"), ("@model", "{} Model;")],
         head: &[("@using", "using {};")],
         open: "class {file} {",
-        close: "}",
+        ..PLAIN
     };
 
     #[test]
@@ -382,5 +666,92 @@ mod tests {
     fn a_file_with_only_head_lines_opens_no_type() {
         let code = PAGE.code_of("@using Loja.Servicos\n<p>oi</p>\n", "_Imports.razor");
         assert_eq!(lines(&code), ["using Loja.Servicos;", ""]);
+    }
+
+    /// A view do Razor com as expressões, os comentários e as bases.
+    const FULL: Markup = Markup {
+        blocks: &["@functions"],
+        bodies: &["@"],
+        method: ["void Draw() {", "}"],
+        lines: &[("@model", "{} Model;")],
+        head: &[("@using", "using {};")],
+        open: "class {file}{bases} {",
+        expression: ["@", "_ = {};"],
+        escape: "@@",
+        keywords: &["page", "if", "functions"],
+        prefixes: &["await"],
+        comment: ["@*", "*@", "/*", "*/"],
+        bases: &["@inherits", "@implements"],
+        base_list: [" : ", ", "],
+        imports_file: "_ViewImports",
+        ..PLAIN
+    };
+
+    /// As expressões de uma linha de marcação, como os comandos que viram.
+    fn commands(src: &str) -> Vec<String> {
+        let code = FULL.code_of(src, "V.cshtml");
+        code.split("_ = ").skip(1).map(|rest| rest[..rest.find(';').unwrap()].to_string()).collect()
+    }
+
+    #[test]
+    fn an_implicit_expression_takes_the_names_joined_by_dots_and_what_is_glued_to_them() {
+        assert_eq!(commands("<p>@Model.Total.</p>"), ["Model.Total"], "the dot with no name after it is text");
+        assert_eq!(commands("<p>@Html.Raw(\"a)b\")!</p>"), ["Html.Raw(\"a)b\")"], "a parenthesis inside a text does not close");
+        assert_eq!(commands("<p>@itens?[0]?.Nome e @lista[1]</p>"), ["itens?[0]?.Nome", "lista[1]"]);
+        assert_eq!(commands("<p>@preço, @Model .Total</p>"), ["preço", "Model"], "the space ends the expression");
+        assert_eq!(commands("<p>@Abrir(</p>"), ["Abrir"], "the parenthesis that does not close is text");
+    }
+
+    #[test]
+    fn an_explicit_expression_an_attribute_and_an_awaited_expression_are_code() {
+        assert_eq!(commands("<p>@(a + (b * 2))</p>"), ["(a + (b * 2))"]);
+        assert_eq!(commands("<button @onclick=\"Salvar\" @bind-Value='valor'>"), ["Salvar", "valor"]);
+        assert_eq!(commands("<button @onclick=\"@(() => Dizer(\"oi\"))\">"), ["(() => Dizer(\"oi\"))"]);
+        assert_eq!(commands("<a href=\"@Url.Action(\"X\")\">@await Html.PartialAsync(\"_Menu\")</a>"), [
+            "Url.Action(\"X\")",
+            "await Html.PartialAsync(\"_Menu\")"
+        ]);
+    }
+
+    #[test]
+    fn an_address_an_escaped_marker_and_a_keyword_are_not_expressions() {
+        assert_eq!(commands("<p>ajuda@loja.com, @@loja, @page, @if (x) { }, @1, @functions sem chave</p>"), Vec::<String>::new());
+        assert_eq!(FULL.code_of("<p>ajuda@loja.com</p>\n", "V.cshtml").trim(), "");
+    }
+
+    #[test]
+    fn expressions_live_in_the_method_with_the_body_blocks_and_a_member_between_them_splits_it() {
+        let src = "@{ var a = 1; }\n<p>@a</p>\n@functions { int b; }\n<p>@Model.Total</p>\n";
+        assert_eq!(
+            lines(&FULL.code_of(src, "V.cshtml")),
+            ["class V { void Draw() { var a = 1;", "_ = a;}", "int b;", "void Draw() {_ = Model.Total;}}"]
+        );
+    }
+
+    #[test]
+    fn a_markup_comment_becomes_a_code_comment_and_nothing_in_it_is_code() {
+        let src = "@* Mostra o total *@\n<p>@Model.Total</p>\n@* <p>@Esconder()</p>\n@functions { int c; } */ *@\n";
+        let code = FULL.code_of(src, "V.cshtml");
+        assert_eq!(
+            lines(&code),
+            ["/* Mostra o total */", "class V { void Draw() {_ = Model.Total;}}", "/* <p>@Esconder()</p>", "@functions { int c; } */"]
+        );
+        assert_eq!(code.matches("*/").count(), 2, "the closing text inside the comment is blank: {code:?}");
+        assert!(FULL.code_of("<p>a</p>@* sem fim\n@Abrir()\n", "V.cshtml").contains("/* sem fim\n@Abrir()\n*/"));
+    }
+
+    #[test]
+    fn the_base_lines_become_the_bases_of_the_type_the_inherited_first() {
+        let src = "@implements IDisposable\n@inherits Base<Pedido>\n@implements IFechavel\n<p>@Model</p>\n";
+        let code = FULL.code_of(src, "Tela.cshtml");
+        assert_eq!(lines(&code)[0], "class Tela : Base<Pedido>, IDisposable, IFechavel {");
+        assert_eq!(lines(&FULL.code_of("@inherits Base\n<p>oi</p>\n", "So.cshtml")), ["class So : Base { }", ""], "a base alone opens the type");
+    }
+
+    #[test]
+    fn only_the_imports_file_of_the_registry_is_the_folders() {
+        assert!(FULL.is_imports_file("Web/Pages/_ViewImports.cshtml"));
+        assert!(!FULL.is_imports_file("Web/Pages/_ViewStart.cshtml"));
+        assert!(!PAGE.is_imports_file("Web/Pages/_ViewImports.cshtml"));
     }
 }

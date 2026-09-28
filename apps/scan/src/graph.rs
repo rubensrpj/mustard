@@ -70,6 +70,8 @@ use petgraph::graph::{DiGraph, NodeIndex};
 use std::cell::{OnceCell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
+mod value;
+
 /// Catalog cap for `top_fan_in`: a bounded list (~a few KB of model) ordered
 /// strongest first. The map's session summary reads the first
 /// hubs of `top_fan_in`.
@@ -335,7 +337,11 @@ pub(crate) const CITED_KINDS: &[&str] =
 /// arquivo à vista declara, como um tipo da biblioteca padrão, não é uso de
 /// nada do projeto e sai do mapa. O que uma passada seguinte ganha com um
 /// nome que passa a ser declarado é relido por
-/// [`crate::refresh::stale_citers`]. The links of every declaration are
+/// [`crate::refresh::stale_citers`].
+///
+/// O nome escrito onde vai um valor (`Module::value_uses`) liga só a uma
+/// função ou a um método à vista, pelas regras de [`value::verdict`], e entra
+/// entre os nomes que a declaração em volta chama. The links of every declaration are
 /// rewritten from scratch on each pass, so nothing survives a declaration
 /// that is gone.
 pub fn link_declarations(
@@ -460,6 +466,7 @@ fn resolve_declaration_links(
     };
     let callable = index(CALLABLE_KINDS);
     let cited = index(CITED_KINDS);
+    let valued = index(value::KINDS);
 
     // The namespaces each file declares, in the one segment form the import
     // resolution uses, so `Demo.Models` and `Demo::Models` are the same one,
@@ -495,6 +502,14 @@ fn resolve_declaration_links(
         })
         .collect();
     let globals = global_sight(modules, projects, manifests, aliases);
+    // O arquivo sem namespace da língua que tem o namespace de todos, com a
+    // pasta do projeto dele: fica à vista da mesma família nessa pasta.
+    let everyones: Vec<Option<&str>> = modules
+        .iter()
+        .map(|m| {
+            (crate::extract::global_namespace(&m.language) && m.namespaces.is_empty()).then(|| project_dir(&m.path, manifests))
+        })
+        .collect();
     // O caminho escrito antes do nome chamado, o import que traz nomes e o
     // import com `*` se resolvem como o import que são.
     let resolver = Resolver::new(modules, projects, aliases);
@@ -528,7 +543,7 @@ fn resolve_declaration_links(
     };
 
     for (src, m) in modules.iter().enumerate() {
-        if m.calls.is_empty() && m.cites.is_empty() {
+        if m.calls.is_empty() && m.cites.is_empty() && m.value_uses.is_empty() {
             continue;
         }
         let imported: HashSet<&str> = m.deps.iter().map(String::as_str).collect();
@@ -548,11 +563,14 @@ fn resolve_declaration_links(
         // qualificado só junta caminho.
         let path_only = crate::extract::has_member_separators(&m.language);
         // O que o arquivo tem à vista sem import: ele mesmo, o que um import
-        // global põe à vista e o mesmo namespace da mesma língua.
+        // global põe à vista, o mesmo namespace da mesma língua e o namespace
+        // de todos da mesma família no mesmo projeto.
+        let project = project_dir(&m.path, manifests);
         let sees_here = |mi: usize| {
             mi == src
                 || globals.sees(src, &modules[mi].path)
                 || (modules[mi].language == m.language && declared[mi].iter().any(|ns| in_sight[src].contains(ns)))
+                || (everyones[mi] == Some(project) && crate::extract::family(&modules[mi].language) == family)
         };
         // E, com isso, o que ele importa.
         let sees = |mi: usize| sees_here(mi) || imported.contains(modules[mi].path.as_str());
@@ -587,13 +605,16 @@ fn resolve_declaration_links(
                 *by_path.entry(site).or_default() |= library;
             }
         }
+        // Cada nome, com as declarações que ele pode alcançar, a posição da
+        // citação e se foi escrito onde vai um valor.
         let sites = m
             .calls
             .iter()
-            .map(|s| (s, &callable, None))
-            .chain(m.cites.iter().enumerate().map(|(i, s)| (s, &cited, Some(i))));
-        for (site, by_name, cite_at) in sites {
-            let is_call = cite_at.is_none();
+            .map(|s| (s, &callable, None, false))
+            .chain(m.cites.iter().enumerate().map(|(i, s)| (s, &cited, Some(i), false)))
+            .chain(m.value_uses.iter().map(|s| (s, &valued, None, true)));
+        for (site, by_name, cite_at, by_value) in sites {
+            let is_call = cite_at.is_none() && !by_value;
             let before = Before::of(&site.qualifier, &m.language);
             // O nome que um import trouxe com troca, escrito sozinho (`L()`
             // de `import { Leitor as L }`), procura as declarações pelo nome
@@ -623,12 +644,14 @@ fn resolve_declaration_links(
             // escreve com o nome da classe) é o próprio tipo para quem chama
             // esse nome: quando o tipo está entre as mesmas candidatas, o
             // membro sai e fica o tipo. O método de outro tipo com o mesmo
-            // nome fica.
+            // nome fica. Onde vai um valor, o nome do tipo nunca é o
+            // construtor dele (`nameof(Pedido)`).
             let names_its_type = |d: DeclId| {
                 owner_of(d) == Some(looked)
-                    && all.iter().any(|&(mi, di)| {
-                        mi == d.0 && TYPE_KINDS.contains(&modules[mi].declarations[di].kind.as_str())
-                    })
+                    && (by_value
+                        || all.iter().any(|&(mi, di)| {
+                            mi == d.0 && TYPE_KINDS.contains(&modules[mi].declarations[di].kind.as_str())
+                        }))
             };
             let all: Vec<DeclId> = all
                 .iter()
@@ -693,8 +716,9 @@ fn resolve_declaration_links(
                     || brought.contains(site.name.as_str())
                     || all.iter().any(|&(mi, _)| globbed.contains(&modules[mi].path)));
             // A chamada aberta por um nome de biblioteca é de fora
-            // (`File.ReadAllText()`, `std::fs::read()`), e não liga.
-            let by_library = is_call
+            // (`File.ReadAllText()`, `std::fs::read()`), e não liga; o nome
+            // entregue como valor por ele (`map(std::cmp::max)`) também não.
+            let by_library = cite_at.is_none()
                 && match by_path.get(site) {
                     Some(&library) => library,
                     None => matches!(before, Before::Name(q) if from_library(q, q)),
@@ -735,6 +759,11 @@ fn resolve_declaration_links(
             };
             let verdict = if !own.is_empty() {
                 Verdict::of(own.into_iter().filter(|&d| !own_body(d)).collect(), true, max_same_name)
+            } else if by_value {
+                let named = through.get(site).and_then(|paths| path_files(&resolver, m, site.line, paths)).map(|files| {
+                    all.iter().copied().filter(|&(mi, _)| files.contains(modules[mi].path.as_str())).collect()
+                });
+                value::verdict(named, not_ours, &before, seen, || narrowed(&all), max_same_name)
             } else if is_call {
                 let named = through.get(site).and_then(|paths| path_files(&resolver, m, site.line, paths));
                 match (named, &before) {
@@ -816,7 +845,7 @@ fn resolve_declaration_links(
                     candidates: candidates.clone(),
                 });
             }
-            if is_call && let Some(di) = from {
+            if cite_at.is_none() && let Some(di) = from {
                 links.calls[src][di].insert(looked.to_string());
             }
         }
@@ -1126,20 +1155,25 @@ fn global_sight(
 /// Each file of `modules` that writes a global import, by its index, with the
 /// indexes of the files that import reaches: those of the same language
 /// family under the folder of the manifest nearest above the writer, or under
-/// the writer's own folder when no manifest is above it.
+/// the writer's own folder when no manifest is above it. O arquivo de imports
+/// da pasta ([`crate::extract::imports_whole_folder`]) alcança só os da mesma
+/// língua sob a pasta dele.
 pub(crate) fn global_reach(modules: &[Module], manifests: &[crate::model::Manifest]) -> Vec<(usize, Vec<usize>)> {
     modules
         .iter()
         .enumerate()
         .filter(|(_, g)| !g.global_imports.is_empty())
         .map(|(writer, g)| {
-            let scope = project_dir(&g.path, manifests);
-            let reached = modules
-                .iter()
-                .enumerate()
-                .filter(|(_, m)| crate::extract::family(&m.language) == crate::extract::family(&g.language) && is_under(&m.path, scope))
-                .map(|(at, _)| at)
-                .collect();
+            let folder_wide = crate::extract::imports_whole_folder(&g.language, &g.path);
+            let scope = if folder_wide { folder_of(&g.path) } else { project_dir(&g.path, manifests) };
+            let same = |m: &Module| {
+                if folder_wide {
+                    m.language == g.language
+                } else {
+                    crate::extract::family(&m.language) == crate::extract::family(&g.language)
+                }
+            };
+            let reached = modules.iter().enumerate().filter(|(_, m)| same(m) && is_under(&m.path, scope)).map(|(at, _)| at).collect();
             (writer, reached)
         })
         .collect()
@@ -2119,16 +2153,16 @@ impl<'a> Resolver<'a> {
     }
 
     /// Os arquivos de um namespace que a importação de `importer` alcança: com
-    /// [`Reach::Used`], só os que declaram um nome que ele chama (uma
-    /// declaração que se chama) ou cita (uma que se cita) — as mesmas
-    /// declarações que o vínculo por nome liga depois, de modo que a ligação
-    /// entre os arquivos e a ligação entre as declarações contam a mesma
-    /// história; com [`Reach::Whole`], o namespace inteiro.
+    /// [`Reach::Used`], só os que declaram um nome que ele chama ou entrega
+    /// como valor (uma declaração que se chama) ou cita (uma que se cita) — as
+    /// mesmas declarações que o vínculo por nome liga depois, de modo que a
+    /// ligação entre os arquivos e a ligação entre as declarações contam a
+    /// mesma história; com [`Reach::Whole`], o namespace inteiro.
     fn narrow(&self, bucket: &[String], importer: &Module, reach: Reach) -> Vec<String> {
         if reach == Reach::Whole {
             return self.without_tests(bucket, importer);
         }
-        let called: HashSet<&str> = importer.calls.iter().map(|c| c.name.as_str()).collect();
+        let called: HashSet<&str> = importer.calls.iter().chain(&importer.value_uses).map(|c| c.name.as_str()).collect();
         let cited: HashSet<&str> = importer.cites.iter().map(|c| c.name.as_str()).collect();
         if called.is_empty() && cited.is_empty() {
             return Vec::new();

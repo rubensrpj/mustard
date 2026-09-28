@@ -73,6 +73,12 @@
 #                            (a file in A.B sees A);
 #                 without the field, a namespace is seen by the files that
 #                 declare that same namespace, and nothing else.
+#   global_namespace OPTIONAL — `true` na língua em que o arquivo que não
+#                 declara namespace fica no namespace de todos: o que ele
+#                 declara está à vista de todo arquivo da mesma família no
+#                 mesmo projeto (sob a pasta do manifesto mais perto acima
+#                 dele), sem import. Sem o campo, `false`: esse arquivo só é
+#                 visto por quem o importa.
 #   doc_tags      OPTIONAL — the markup tags the language writes its documentation
 #                 comments with. The engine drops them from the comment and keeps
 #                 the text; a self-closing tag with a value leaves the value
@@ -217,11 +223,48 @@
 #                           (`"@inject" = "{};"` lê `@inject T n` como `T n;`);
 #                   head    como `lines`, mas o código vai antes do tipo do
 #                           arquivo (`"@using" = "using {};"`);
+#                   bases   os marcadores de linha cujo resto é uma base do
+#                           tipo do arquivo (`@inherits Base`): o tipo herda
+#                           delas, na ordem da lista e, com o mesmo marcador,
+#                           na do arquivo;
+#                   base_list o texto antes da lista de bases e o que fica
+#                           entre duas delas (`[" : ", ", "]`). Vem junto com
+#                           `bases`, e só com ele;
 #                   wrap    o texto que abre e o que fecha o tipo em que o
 #                           código dos blocos e das linhas mora, com `{file}`
-#                           no lugar do nome do arquivo sem a extensão. O tipo
-#                           abre no começo da linha do primeiro código, depois
-#                           do código de `head`, e fecha logo depois do último.
+#                           no lugar do nome do arquivo sem a extensão e
+#                           `{bases}` no lugar da lista de bases, vazio sem
+#                           nenhuma. O tipo abre no começo da linha do
+#                           primeiro código ou da primeira base, depois do
+#                           código de `head`, e fecha logo depois do último;
+#                   expression o marcador que abre código no meio da
+#                           marcação e a forma do comando em que o código vira,
+#                           com `{}` no lugar dele (`["@", "_ = {};"]`). Seguido
+#                           de um nome, é a expressão até onde ela para: os
+#                           nomes ligados por `.` ou `?.` e o que vem entre
+#                           parênteses ou colchetes logo depois deles
+#                           (`@Model.Total`, `@Html.Raw(x)`); seguido de `(`,
+#                           o de dentro dos parênteses (`@(a + b)`); seguido de
+#                           um nome, `=` e um valor entre aspas, o valor
+#                           (`@onclick="Salvar"`). O marcador colado depois de
+#                           outra palavra não conta (`x@loja.com`). O comando
+#                           mora no método de `bodies`, com o código dos
+#                           blocos de corpo, e só vem com `method`;
+#                   escape  o texto que se lê como o marcador escrito na tela,
+#                           e não como código (`@@`);
+#                   keywords os nomes que, logo depois do marcador, abrem
+#                           uma diretiva ou um comando, e não uma expressão
+#                           (`@page`, `@if`);
+#                   prefixes os nomes que, logo depois do marcador, seguem
+#                           de um espaço e da expressão, que os leva junto
+#                           (`@await Html.PartialAsync("x")`);
+#                   comment o texto que abre e o que fecha o comentário da
+#                           marcação, e os que o trocam no código
+#                           (`["@*", "*@", "/*", "*/"]`): o de dentro é
+#                           comentário, e nada nele é código;
+#                   imports_file o nome, sem a extensão, do arquivo cujos
+#                           imports valem também nos arquivos da mesma língua
+#                           da pasta dele e das de baixo (`_ViewImports`).
 #                 O marcador de linha vale no começo da linha, depois dos
 #                 espaços, e fora dos blocos. Sem o campo, o arquivo inteiro é
 #                 código.
@@ -232,6 +275,7 @@ extensions = ["cs"]
 dir = "csharp"
 grammar = "grammar_cs::LANGUAGE"
 namespace_scope = "nested"
+global_namespace = true
 self_receivers = ["this"]
 parent_receivers = ["base"]
 implicit_self = true
@@ -245,9 +289,14 @@ error_forms = ["throw", "*Exception"]
 
 # A página do Blazor (`.razor`): marcação com C# dentro. O framework faz da
 # página uma classe com o nome do arquivo; os blocos `@code` e `@functions`
-# são os membros dela, e o `@inject` é uma propriedade. O `@using` vale para a
-# página inteira. As outras diretivas e o código escrito no meio da marcação
-# ficam de fora.
+# são os membros dela, e o `@inject` é uma propriedade. O que a marcação
+# desenha, com o bloco `@{ … }` e as expressões escritas no meio dela
+# (`@pedido.Total`, `@(a + b)`, `@onclick="Salvar"`), é o corpo do método que
+# desenha a página, o `BuildRenderTree`. O `@inherits` e o `@implements` são
+# as bases da classe. O `@using` vale para a página inteira, e o do
+# `_Imports.razor`, para as páginas da pasta dele e das de baixo. O
+# `@* … *@` é comentário. Os comandos de controle (`@if`, `@foreach`) ficam
+# de fora; as expressões escritas dentro deles, não.
 [[language]]
 name = "razor"
 extensions = ["razor"]
@@ -264,15 +313,39 @@ doc_tags = [
 ]
 log_calls = ["LogError", "LogWarning", "LogInformation", "LogDebug", "LogTrace", "LogCritical", "Log", "Console.*", "Debug.*", "Trace.*"]
 error_forms = ["throw", "*Exception"]
-markup = { blocks = ["@code", "@functions"], lines = { "@inject" = "{};" }, head = { "@using" = "using {};" }, wrap = ["partial class {file} {", "}"] }
+
+[language.markup]
+blocks = ["@code", "@functions"]
+bodies = ["@"]
+method = ["protected override void BuildRenderTree(RenderTreeBuilder __builder) {", "}"]
+lines = { "@inject" = "{};" }
+head = { "@using" = "using {};" }
+bases = ["@inherits", "@implements"]
+base_list = [" : ", ", "]
+wrap = ["partial class {file}{bases} {", "}"]
+expression = ["@", "_ = {};"]
+escape = "@@"
+keywords = [
+    "page", "layout", "namespace", "attribute", "typeparam", "rendermode", "preservewhitespace",
+    "inject", "inherits", "implements", "using", "code", "functions", "section", "model",
+    "addTagHelper", "removeTagHelper", "tagHelperPrefix",
+    "if", "else", "for", "foreach", "while", "do", "switch", "try", "catch", "finally", "lock",
+]
+prefixes = ["await"]
+comment = ["@*", "*@", "/*", "*/"]
+imports_file = "_Imports"
 
 # A página do Razor Pages e a view do MVC (`.cshtml`): marcação com C#
-# dentro. O framework faz da página uma classe; o bloco `@{ … }` é o corpo do
-# método que desenha a página, o `ExecuteAsync`, e o `@functions` traz os
-# membros dela. O `@model` é a propriedade `Model`, com o tipo do modelo, e o
-# `@inject`, uma propriedade. O `@using` vale para a página inteira. A classe
-# que atende a página, a do `.cshtml.cs`, é outra, e não parte desta. As
-# outras diretivas e o código escrito no meio da marcação ficam de fora.
+# dentro. O framework faz da página uma classe; o bloco `@{ … }` e as
+# expressões escritas no meio da marcação (`@Model.Total`, `@Html.Raw(x)`,
+# `@(a + b)`) são o corpo do método que desenha a página, o `ExecuteAsync`, e
+# o `@functions` traz os membros dela. O `@model` é a propriedade `Model`, com
+# o tipo do modelo, e o `@inject`, uma propriedade. O `@inherits` e o
+# `@implements` são as bases da classe. O `@using` vale para a página
+# inteira, e o do `_ViewImports.cshtml`, para as páginas da pasta dele e das
+# de baixo. O `@* … *@` é comentário. A classe que atende a página, a do
+# `.cshtml.cs`, é outra, e não parte desta. Os comandos de controle (`@if`,
+# `@foreach`) ficam de fora; as expressões escritas dentro deles, não.
 [[language]]
 name = "cshtml"
 extensions = ["cshtml"]
@@ -289,7 +362,27 @@ doc_tags = [
 ]
 log_calls = ["LogError", "LogWarning", "LogInformation", "LogDebug", "LogTrace", "LogCritical", "Log", "Console.*", "Debug.*", "Trace.*"]
 error_forms = ["throw", "*Exception"]
-markup = { blocks = ["@functions"], bodies = ["@"], method = ["async Task ExecuteAsync() {", "}"], lines = { "@inject" = "{};", "@model" = "{} Model;" }, head = { "@using" = "using {};" }, wrap = ["class {file} {", "}"] }
+
+[language.markup]
+blocks = ["@functions"]
+bodies = ["@"]
+method = ["async Task ExecuteAsync() {", "}"]
+lines = { "@inject" = "{};", "@model" = "{} Model;" }
+head = { "@using" = "using {};" }
+bases = ["@inherits", "@implements"]
+base_list = [" : ", ", "]
+wrap = ["class {file}{bases} {", "}"]
+expression = ["@", "_ = {};"]
+escape = "@@"
+keywords = [
+    "page", "layout", "namespace", "attribute", "typeparam", "rendermode", "preservewhitespace",
+    "inject", "inherits", "implements", "using", "code", "functions", "section", "model",
+    "addTagHelper", "removeTagHelper", "tagHelperPrefix",
+    "if", "else", "for", "foreach", "while", "do", "switch", "try", "catch", "finally", "lock",
+]
+prefixes = ["await"]
+comment = ["@*", "*@", "/*", "*/"]
+imports_file = "_ViewImports"
 
 [[language]]
 name = "typescript"

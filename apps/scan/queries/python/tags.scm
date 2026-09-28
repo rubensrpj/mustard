@@ -122,6 +122,17 @@
 (lambda_parameters (identifier) @local)
 (for_statement left: (identifier) @local)
 
+; A função entregue como valor, sem ser chamada ali: o nome escrito como
+; argumento (`map(dobro, xs)`, `sorted(xs, key=chave)`,
+; `Thread(target=self.rodar)`) ou à direita de uma atribuição (`f = dobro`). O
+; motor liga o nome só a uma função ou a um método à vista.
+(argument_list (identifier) @call.value)
+(argument_list (attribute attribute: (identifier) @call.value))
+(keyword_argument value: (identifier) @call.value)
+(keyword_argument value: (attribute attribute: (identifier) @call.value))
+(assignment right: (identifier) @call.value)
+(assignment right: (attribute attribute: (identifier) @call.value))
+
 ; Os textos fixos: o literal de texto escrito no código. O motor guarda o que
 ; tem duas palavras ou forma de caminho ou chave, com a marca (log, erro ou
 ; texto) e a declaração que o contém.

@@ -78,6 +78,9 @@ pub(crate) struct Extracted {
     pub tops: Vec<usize>,
     pub calls: Vec<CallSite>,
     pub cites: Vec<CallSite>,
+    /// Os nomes escritos onde vai um valor (`@call.value`), fora da chamada:
+    /// a função entregue a outra ou guardada num nome.
+    pub value_uses: Vec<CallSite>,
     /// Os nomes que abrem a cadeia escrita antes de uma chamada e que o
     /// arquivo não liga ([`crate::model::Module::unbound_heads`]).
     pub unbound_heads: Vec<String>,
@@ -257,6 +260,20 @@ pub fn self_receivers(lang: &str) -> &'static [&'static str] {
 /// (`implicit_self` em languages.toml). `false` sem o campo.
 pub fn implicit_self(lang: &str) -> bool {
     LANG_IMPLICIT_SELF.iter().any(|&(name, on)| name == lang && on)
+}
+
+/// O arquivo que não declara namespace fica à vista dos arquivos da mesma
+/// família no mesmo projeto (`global_namespace` em languages.toml). `false`
+/// sem o campo.
+pub fn global_namespace(lang: &str) -> bool {
+    LANG_GLOBAL_NAMESPACE.iter().any(|&(name, on)| name == lang && on)
+}
+
+/// O arquivo `path`, da língua `lang`, é o de imports da pasta
+/// (`imports_file` do `markup` em languages.toml): os imports dele valem nos
+/// arquivos da mesma língua da pasta dele e das de baixo.
+pub fn imports_whole_folder(lang: &str, path: &str) -> bool {
+    LANG_MARKUP.iter().any(|(name, rule)| *name == lang && rule.is_imports_file(path))
 }
 
 /// O import não relativo de uma parte só pode nomear um arquivo do projeto
@@ -440,6 +457,10 @@ enum CapKind {
     /// declaração, ele é esse valor, e não a declaração do projeto de mesmo
     /// nome.
     Local,
+    /// Um nome escrito onde vai um valor, como o argumento de uma chamada ou
+    /// o lado direito de uma atribuição: sem ser chamado ali, ele é usado
+    /// quando nomeia uma função ou um método à vista do arquivo.
+    CallValue,
     /// Um literal de texto escrito no código: vira texto fixo do arquivo
     /// quando tem cara de texto e não cai num import, num trecho de teste
     /// nem numa documentação. `plain` é o texto escrito sem aspas (o texto
@@ -459,6 +480,7 @@ fn classify(cap: &str) -> CapKind {
         "imported.original" => CapKind::ImportedOriginal,
         "namespace" => CapKind::Namespace,
         "call.path" => CapKind::CallPath,
+        "call.value" => CapKind::CallValue,
         "name" => CapKind::Name,
         "supertype" => CapKind::Supertype,
         "owner" => CapKind::Owner,
@@ -604,6 +626,8 @@ impl Analyzer {
         // Cada nome que o corpo de uma função liga, com a linha e o byte em
         // que foi escrito.
         let mut locals: Vec<(usize, usize, String)> = Vec::new();
+        // O byte de cada nome escrito onde vai um valor.
+        let mut value_at: BTreeSet<usize> = BTreeSet::new();
         // Os literais de texto do arquivo, cada um dizendo se foi escrito sem
         // aspas, e o que a documentação escrita dentro das declarações cobre:
         // o literal que a contém não é texto fixo.
@@ -691,6 +715,9 @@ impl Analyzer {
                         {
                             locals.push((node.start_position().row + 1, node.start_byte(), t.to_string()));
                         }
+                    }
+                    CapKind::CallValue => {
+                        value_at.insert(node.start_byte());
                     }
                     CapKind::CallPath => {
                         // Só o caminho que começa no próprio projeto é import;
@@ -937,9 +964,9 @@ impl Analyzer {
         let quiet = Pruned::of(decorations.union(&import_spans).copied());
         let heads;
         let brought: HashSet<&str> = imported_at.iter().map(|(_, name)| name.as_str()).collect();
-        (out.calls, out.cites, heads) =
-            use_sites(&walked.leaves, bytes, &comments, &quiet, &names_at, &name_kinds, &self.name, &brought);
-        drop_local_uses(&out.declarations, &locals, &names_at, [&mut out.calls, &mut out.cites]);
+        let found = use_sites(&walked.leaves, bytes, &comments, &quiet, &names_at, &name_kinds, &self.name, &brought, &value_at);
+        (out.calls, out.cites, out.value_uses, heads) = found;
+        drop_local_uses(&out.declarations, &locals, &names_at, [&mut out.calls, &mut out.cites, &mut out.value_uses]);
 
         // Cada nome trazido é do import escrito no mesmo comando: o que fica
         // dentro do nó mais próximo, subindo a partir do nome, que contém
@@ -987,7 +1014,10 @@ impl Analyzer {
         out.import_lines = import_lines;
         // O import escrito dentro de um trecho de teste é do teste, e fica à
         // parte dos do arquivo. O caminho de chamada fora dele guarda as
-        // chamadas escritas por ele.
+        // chamadas escritas por ele. No arquivo de imports da pasta, todo
+        // import do arquivo também vale nos arquivos da mesma língua da
+        // pasta dele e das de baixo.
+        let whole_folder = self.markup.is_some_and(|rule| rule.is_imports_file(project.path));
         for Written { text, global, byte, call, .. } in written {
             if test_blocks.iter().any(|&(start, end)| (start..end).contains(&byte)) {
                 out.test_imports.push(text);
@@ -999,6 +1029,9 @@ impl Analyzer {
             if global {
                 out.global_imports.push(text);
             } else {
+                if whole_folder {
+                    out.global_imports.push(text.clone());
+                }
                 out.imports.push(text);
             }
         }
@@ -1110,7 +1143,7 @@ fn drop_local_uses(
     decls: &[Decl],
     locals: &[(usize, usize, String)],
     names_at: &BTreeSet<usize>,
-    sites: [&mut Vec<CallSite>; 2],
+    sites: [&mut Vec<CallSite>; 3],
 ) {
     // Cada nome ligado, com a linha em que foi ligado e a última da
     // declaração em volta (sem fim conhecido, até o fim do arquivo).
@@ -1758,6 +1791,10 @@ fn glob(entry: &str, text: &str) -> bool {
 /// O qualificador se lê pelos separadores de `lang` ([`qualifier_before`]),
 /// com os nomes que os imports do arquivo trazem (`brought`). Vêm junto os
 /// qualificadores que abrem a cadeia de uma chamada ([`opens_chain`]).
+///
+/// A citação escrita num dos bytes de `value_at`, onde vai um valor
+/// (`@call.value`), é também um uso por valor: a função entregue a outra
+/// (`xs.map(dobro)`) ou guardada num nome (`let f = dobro;`).
 #[allow(clippy::too_many_arguments)]
 fn use_sites(
     leaves: &[Leaf],
@@ -1768,9 +1805,11 @@ fn use_sites(
     name_kinds: &BTreeSet<&str>,
     lang: &str,
     brought: &HashSet<&str>,
-) -> (Vec<CallSite>, Vec<CallSite>, BTreeSet<String>) {
+    value_at: &BTreeSet<usize>,
+) -> (Vec<CallSite>, Vec<CallSite>, Vec<CallSite>, BTreeSet<String>) {
     let mut calls: BTreeSet<(usize, String, String)> = BTreeSet::new();
     let mut cites: BTreeSet<(usize, String, String)> = BTreeSet::new();
+    let mut values: BTreeSet<(usize, String, String)> = BTreeSet::new();
     let mut heads: BTreeSet<String> = BTreeSet::new();
     for leaf in leaves {
         let node = match leaf.word {
@@ -1795,13 +1834,16 @@ fn use_sites(
             }
             calls.insert(site);
         } else if !against_a_quote(node, bytes) {
+            if value_at.contains(&node.start_byte()) {
+                values.insert(site.clone());
+            }
             cites.insert(site);
         }
     }
     let sites = |found: BTreeSet<(usize, String, String)>| {
         found.into_iter().map(|(line, name, qualifier)| CallSite { name, line, qualifier }).collect()
     };
-    (sites(calls), sites(cites), heads)
+    (sites(calls), sites(cites), sites(values), heads)
 }
 
 /// O qualificador `qualifier`, escrito antes do nó, é um nome sem nada ligado

@@ -51,6 +51,19 @@
   function: (member_access_expression
     expression: (member_access_expression) @call.path))
 
+; O método entregue como valor, sem ser chamado ali (o grupo de método): o
+; nome escrito como argumento (`xs.Select(Metade)`, `xs.Select(Calc.Dobro)`),
+; como valor de uma variável (`Func<int, int> f = Metade;`) ou à direita de
+; uma atribuição (`Salvo += Avisar;`). O motor liga o nome só a uma função ou
+; a um método à vista. No argumento com nome (`F(x: Metade)`), o valor é o
+; último nome dele.
+(argument (identifier) @call.value .)
+(argument (member_access_expression name: (identifier) @call.value) .)
+(variable_declarator "=" (identifier) @call.value)
+(variable_declarator "=" (member_access_expression name: (identifier) @call.value))
+(assignment_expression right: (identifier) @call.value)
+(assignment_expression right: (member_access_expression name: (identifier) @call.value))
+
 ; Decorations — an attribute list (`[HttpGet("{id}")]`, `[Fact]`) is not code
 ; of the declaration it adorns: the engine starts the header after it and reads
 ; no call out of it.

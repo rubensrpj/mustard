@@ -341,6 +341,7 @@ fn read_modules(root: &Path, reuse: Option<&ingest::Reuse>, listing: Option<&Lis
                 calls: extracted.calls,
                 unbound_heads: extracted.unbound_heads,
                 cites: extracted.cites,
+                value_uses: extracted.value_uses,
                 texts: extracted.texts,
                 routes: extracted.routes,
                 route_links: extracted.route_links,

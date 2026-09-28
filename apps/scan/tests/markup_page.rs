@@ -1,8 +1,12 @@
 //! A página de marcação com código dentro, lida pelo scan de verdade: a
-//! página `.razor` do Blazor, num projeto com o servidor de pedidos em C#. O
-//! código dos blocos `@code` entra no mapa com as linhas da página, na classe
-//! com o nome do arquivo, e as chamadas da tela escritas nele ligam às rotas
-//! do servidor. A marcação da página não é código.
+//! página `.razor` do Blazor e a `.cshtml` do Razor, num projeto com o
+//! servidor de pedidos em C#. O código dos blocos entra no mapa com as linhas
+//! da página, na classe com o nome do arquivo, e as chamadas da tela escritas
+//! nele ligam às rotas do servidor. As expressões escritas no meio da
+//! marcação são comandos do método que desenha a página, o comentário da
+//! marcação é comentário, as bases da página são as da classe, e o `@using`
+//! do arquivo de imports da pasta vale nas páginas dela. O resto da marcação
+//! não é código.
 
 #[path = "support/model.rs"]
 mod model;
@@ -95,11 +99,12 @@ const PAGE: &str = "@page \"/pedidos\"\n\
                     }\n";
 
 /// O código do bloco `@code` entra no mapa com as linhas da página, dentro
-/// da classe com o nome do arquivo, e o `@inject` é um membro dela. As
-/// chamadas da tela escritas no bloco ligam provadas às rotas do
-/// controlador, cada uma com a linha e a função da página. O `GetAsync`,
-/// nome que outras bibliotecas também usam, só conta porque o `@inject`
-/// declara o `Http` como `HttpClient`.
+/// da classe com o nome do arquivo, e o `@inject` é um membro dela. O
+/// `@onclick` da marcação mora no método que desenha a página. As chamadas
+/// da tela escritas no bloco ligam provadas às rotas do controlador, cada uma
+/// com a linha e a função da página. O `GetAsync`, nome que outras
+/// bibliotecas também usam, só conta porque o `@inject` declara o `Http`
+/// como `HttpClient`.
 #[test]
 fn a_blazor_page_calling_the_server_in_its_code_block_links_proven_to_the_controller() {
     let map = scanned(&[("Web/Pages/Pedidos.razor", PAGE)]);
@@ -107,7 +112,15 @@ fn a_blazor_page_calling_the_server_in_its_code_block_links_proven_to_the_contro
     assert_eq!(module(&map, page)["language"], json!("razor"));
     assert_eq!(
         declarations(&map, page),
-        ["class Pedidos 3-23", "field Http 3-3", "field pedido 10-10", "method OnInitializedAsync 12-15", "method Salvar 17-20", "method Ler 22-22"]
+        [
+            "class Pedidos 3-23",
+            "field Http 3-3",
+            "method BuildRenderTree 7-7",
+            "field pedido 10-10",
+            "method OnInitializedAsync 12-15",
+            "method Salvar 17-20",
+            "method Ler 22-22"
+        ]
     );
     assert_eq!(module(&map, page)["imports"], json!(["System.Net.Http.Json"]));
     assert_eq!(
@@ -213,13 +226,14 @@ const RAZOR_PAGE: &str = "@page\n\
 const PAGE_MODEL: &str = "namespace Web.Pages;\n\npublic class PedidosModel : PageModel\n{\n    public int Total() => 3;\n}\n";
 
 /// A página `.cshtml` entra no mapa com as linhas dela, na classe com o nome
-/// do arquivo: o bloco `@{ }` é o corpo do método `ExecuteAsync`, o
+/// do arquivo: o bloco `@{ }`, com as expressões da marcação logo depois
+/// dele, é o corpo do método `ExecuteAsync`, o
 /// `@model` é a propriedade `Model` com o tipo do modelo, o `@inject` e o
 /// `@functions` são membros. O `@using` da página alcança o C# do projeto: o
 /// arquivo do modelo é importado, e a chamada do bloco liga ao `Total` dele.
 /// A chamada do `@functions` liga provada à rota do controlador. A view do
-/// MVC só com o bloco de corpo tem a classe e o método; o `_ViewImports`,
-/// só com linhas de cabeça, só os imports.
+/// MVC com o bloco de corpo e uma expressão tem a classe e o método; o
+/// `_ViewImports`, só com linhas de cabeça, só os imports.
 #[test]
 fn a_razor_page_maps_its_body_block_as_a_method_and_reaches_the_csharp_of_the_project() {
     let view = "@{\n    ViewData[\"Title\"] = \"Início\";\n}\n<h1>Olá, @User.Identity?.Name</h1>\n";
@@ -233,14 +247,14 @@ fn a_razor_page_maps_its_body_block_as_a_method_and_reaches_the_csharp_of_the_pr
     assert_eq!(module(&map, page)["language"], json!("cshtml"));
     assert_eq!(
         declarations(&map, page),
-        ["class Pedidos 2-14", "field Model 2-2", "field Http 5-5", "method ExecuteAsync 6-9", "method Ler 13-13"]
+        ["class Pedidos 2-14", "field Model 2-2", "field Http 5-5", "method ExecuteAsync 6-11", "method Ler 13-13"]
     );
     assert_eq!(declaration(&map, page, "Model")["signature"], json!("PedidosModel Model"));
     assert_eq!(module(&map, page)["imports"], json!(["System.Net.Http.Json", "Web.Pages"]));
     assert_eq!(module(&map, page)["deps"], json!(["Web/Pages/Pedidos.cshtml.cs"]));
     assert_eq!(declaration(&map, page, "ExecuteAsync")["calls"], json!(["Total"]));
     assert_eq!(called_by(&map, "GET", "api/pedidos/{}"), json!(["Web/Pages/Pedidos.cshtml:13:Ler"]));
-    assert_eq!(declarations(&map, "Web/Views/Home/Index.cshtml"), ["class Index 1-3", "method ExecuteAsync 1-3"]);
+    assert_eq!(declarations(&map, "Web/Views/Home/Index.cshtml"), ["class Index 1-4", "method ExecuteAsync 1-4"]);
     assert_eq!(declarations(&map, "Web/Pages/_ViewImports.cshtml"), Vec::<String>::new());
     assert_eq!(module(&map, "Web/Pages/_ViewImports.cshtml")["imports"], json!(["Web"]));
 }
@@ -294,4 +308,198 @@ fn a_global_using_of_the_project_reaches_the_page_also_in_the_pass_that_reads_on
     assert_eq!(client(&whole), ["\"GET\" \"api/pedidos/{}\" \"Ler\":8"], "the whole pass");
     assert_eq!(calls(&partial), json!(["Total"]), "the pass that reads only what changed");
     assert_eq!(client(&partial), client(&whole), "the pass that reads only what changed");
+}
+
+/// Os usos provados da declaração `name` do arquivo `path`, como
+/// `arquivo:linha:de onde`.
+fn proven_uses(map: &Value, path: &str, name: &str) -> Vec<String> {
+    let used = declaration(map, path, name)["used_by"].as_array().cloned().unwrap_or_default();
+    used.iter().filter_map(|u| u.as_str().map(str::to_string)).collect()
+}
+
+/// Todos os usos da declaração, provados ou suspeitos, só pelo lugar.
+fn every_use(map: &Value, path: &str, name: &str) -> Vec<String> {
+    let used = declaration(map, path, name)["used_by"].as_array().cloned().unwrap_or_default();
+    used.iter().filter_map(|u| u.as_str().or_else(|| u["at"].as_str()).map(str::to_string)).collect()
+}
+
+/// O modelo da página de resumo, no `.cshtml.cs` ao lado dela.
+const SUMMARY_MODEL: &str =
+    "namespace Web.Pages;\n\npublic class ResumoModel : PageModel\n{\n    public int Total() => 3;\n\n    public int Dobro(int x) => x * 2;\n}\n";
+
+/// A página de resumo: o total pelo modelo, a ajuda do HTML com a função da
+/// página dentro, a expressão entre parênteses e, na mesma tela, o endereço
+/// e o marcador escrito duas vezes, que não são código.
+const SUMMARY: &str = "@page\n\
+                       @model ResumoModel\n\
+                       @using Web.Pages\n\
+                       <h1>Total: @Model.Total()</h1>\n\
+                       <p>@Html.Raw(Formatar(Model.Dobro(2)))</p>\n\
+                       <p>@(Model.Total() + 1)</p>\n\
+                       <p>Escreva para ajuda@Formatar(1).com ou @@Formatar(2)</p>\n\
+                       @functions {\n    \
+                       private string Formatar(int x) => x.ToString();\n\
+                       }\n";
+
+/// O contador do Blazor: o campo mostrado, os botões que ligam um método
+/// pelo nome e por uma função anônima, e a chamada ao servidor escrita entre
+/// parênteses na marcação.
+const COUNTER: &str = "@page \"/contador\"\n\
+                       @inject HttpClient Http\n\
+                       <p>@contagem</p>\n\
+                       <button @onclick=\"Somar\">+</button>\n\
+                       <button @onclick=\"() => Zerar(0)\">0</button>\n\
+                       <p>@(await Http.GetStringAsync(\"api/pedidos/1\"))</p>\n\
+                       @code {\n    \
+                       private int contagem;\n    \
+                       private void Somar() => contagem++;\n    \
+                       private void Zerar(int x) => contagem = x;\n\
+                       }\n";
+
+/// As expressões escritas no meio da marcação são comandos do método que
+/// desenha a página: o total mostrado pelo modelo (`@Model.Total()`) e o
+/// método do modelo chamado dentro da ajuda do HTML são usados pelo
+/// `ExecuteAsync`, com a linha da página; a função da página chamada dentro
+/// de `@Html.Raw(...)` também. O endereço e o marcador escrito duas vezes não
+/// são uso. No Blazor, o `@onclick` com o nome do método e com a função
+/// anônima são usos pelo `BuildRenderTree`, e a chamada ao servidor escrita
+/// em `@(...)` liga à rota do controlador.
+#[test]
+fn the_expressions_of_the_markup_are_uses_by_the_method_that_draws_the_page() {
+    let map = scanned(&[
+        ("Web/Pages/Resumo.cshtml", SUMMARY),
+        ("Web/Pages/Resumo.cshtml.cs", SUMMARY_MODEL),
+        ("Web/Pages/Contador.razor", COUNTER),
+    ]);
+    let summary = "Web/Pages/Resumo.cshtml";
+    assert_eq!(declarations(&map, summary), ["class Resumo 2-10", "field Model 2-2", "method ExecuteAsync 4-6", "method Formatar 9-9"]);
+    assert_eq!(
+        every_use(&map, "Web/Pages/Resumo.cshtml.cs", "Total"),
+        ["Web/Pages/Resumo.cshtml:4:ExecuteAsync", "Web/Pages/Resumo.cshtml:6:ExecuteAsync"]
+    );
+    assert_eq!(every_use(&map, "Web/Pages/Resumo.cshtml.cs", "Dobro"), ["Web/Pages/Resumo.cshtml:5:ExecuteAsync"]);
+    assert_eq!(proven_uses(&map, summary, "Formatar"), ["Web/Pages/Resumo.cshtml:5:ExecuteAsync"]);
+    let counter = "Web/Pages/Contador.razor";
+    assert_eq!(proven_uses(&map, counter, "Somar"), ["Web/Pages/Contador.razor:4:BuildRenderTree"]);
+    assert_eq!(proven_uses(&map, counter, "Zerar"), ["Web/Pages/Contador.razor:5:BuildRenderTree"]);
+    assert_eq!(called_by(&map, "GET", "api/pedidos/{}"), json!(["Web/Pages/Contador.razor:6:BuildRenderTree"]));
+}
+
+/// O comentário da marcação (`@* … *@`) é comentário: o texto dele entra no
+/// mapa como comentário da página, e nada escrito dentro dele é código — nem
+/// a expressão, nem o bloco comentado inteiro, de várias linhas.
+#[test]
+fn a_markup_comment_is_a_comment_and_nothing_in_it_is_code() {
+    let page = "@page\n\
+                @* Mostra o resumo do pedido *@\n\
+                <p>@Formatar(1)</p>\n\
+                @* <p>@Esconder(2)</p> *@\n\
+                @*\n\
+                @functions { private int Oculto() => 1; }\n\
+                *@\n\
+                @functions {\n    \
+                private string Formatar(int x) => x.ToString();\n    \
+                private string Esconder(int x) => x.ToString();\n\
+                }\n";
+    let map = scanned(&[("Web/Pages/Nota.cshtml", page)]);
+    let path = "Web/Pages/Nota.cshtml";
+    assert_eq!(declarations(&map, path), ["class Nota 3-11", "method ExecuteAsync 3-3", "method Formatar 9-9", "method Esconder 10-10"]);
+    assert_eq!(proven_uses(&map, path, "Formatar"), ["Web/Pages/Nota.cshtml:3:ExecuteAsync"]);
+    assert_eq!(every_use(&map, path, "Esconder"), Vec::<String>::new());
+    let written = format!("{} {}", module(&map, path)["file_doc"], module(&map, path)["file_comment"]);
+    assert!(written.contains("Mostra o resumo do pedido"), "{written}");
+}
+
+/// O `@inherits` e o `@implements` da página são as bases da classe dela:
+/// a classe da página herda do tipo do projeto e cumpre a interface, e o
+/// método da página que a interface pede é quem a implementa.
+#[test]
+fn the_inherits_and_implements_of_a_page_are_the_bases_of_its_class() {
+    let layout = "@using Web.Shared\n\
+                  @inherits LayoutBase\n\
+                  @implements IFechavel\n\
+                  <main>@Corpo</main>\n\
+                  @code {\n    \
+                  public void Fechar() { }\n\
+                  }\n";
+    let map = scanned(&[
+        ("Web/Shared/MainLayout.razor", layout),
+        ("Web/Shared/LayoutBase.cs", "namespace Web.Shared;\n\npublic abstract class LayoutBase\n{\n    public string Corpo => \"\";\n}\n"),
+        ("Web/Shared/IFechavel.cs", "namespace Web.Shared;\n\npublic interface IFechavel\n{\n    void Fechar();\n}\n"),
+    ]);
+    let page = "Web/Shared/MainLayout.razor";
+    assert_eq!(declaration(&map, page, "MainLayout")["supertypes"], json!(["IFechavel", "LayoutBase"]));
+    assert_eq!(declaration(&map, page, "Fechar")["implements"], json!(["Web/Shared/IFechavel.cs:5:Fechar"]));
+    assert_eq!(declaration(&map, "Web/Shared/IFechavel.cs", "Fechar")["implemented_by"], json!(["Web/Shared/MainLayout.razor:6:Fechar"]));
+}
+
+/// O `@using` do arquivo de imports da pasta (`_ViewImports.cshtml` e, no
+/// Blazor, `_Imports.razor`) vale nas páginas da mesma língua da pasta dele e
+/// das de baixo: a chamada à classe do namespace que ele traz liga provada
+/// nelas. A view de outra pasta e a página de outra língua na mesma pasta
+/// (`.razor` ao lado do `_ViewImports.cshtml`) não o veem. A passada que lê só o que
+/// mudou, depois de o arquivo de imports nascer, relê as páginas e liga
+/// igual.
+#[test]
+fn the_using_of_the_folder_imports_file_reaches_the_pages_of_the_folder_and_below() {
+    let temp = tempfile::Builder::new().prefix("scan-pagina-imports-").tempdir().unwrap();
+    let dir = temp.path();
+    git(dir, &["init", "-q"]);
+    std::fs::write(dir.join(".git").join("info").join("exclude"), mustard_core::footprint_rules().join("\n") + "\n").unwrap();
+    let files = [
+        ("Web/Web.csproj", csproj("Microsoft.NET.Sdk.Web")),
+        ("Web/Modelos/Calculo.cs", "namespace Web.Modelos;\n\npublic static class Calculo\n{\n    public static int Total() => 3;\n}\n".to_string()),
+        ("Web/Pages/Resumo.cshtml", "@page\n<p>@Calculo.Total()</p>\n".to_string()),
+        ("Web/Pages/Pedidos/Lista.cshtml", "@page\n<p>@Calculo.Total()</p>\n".to_string()),
+        ("Web/Pages/Tela.razor", "<p>@Calculo.Total()</p>\n".to_string()),
+        ("Web/Views/Home/Index.cshtml", "<p>@Calculo.Total()</p>\n".to_string()),
+        ("Web/Shared/Menu/Item.razor", "<p>@Calculo.Total()</p>\n".to_string()),
+    ];
+    for (rel, body) in &files {
+        std::fs::create_dir_all(dir.join(rel).parent().unwrap()).unwrap();
+        std::fs::write(dir.join(rel), body).unwrap();
+    }
+    git(dir, &["add", "-A"]);
+    git(dir, &["commit", "-q", "-m", "primeiro"]);
+    let total = "Web/Modelos/Calculo.cs";
+    let (first, _) = model::scan(dir, &dir.join(".claude"), &[]);
+    assert_eq!(every_use(&first, total, "Total"), Vec::<String>::new(), "without the imports file no page sees the namespace");
+
+    std::fs::write(dir.join("Web/Pages/_ViewImports.cshtml"), "@using Web.Modelos\n@addTagHelper *, Microsoft.AspNetCore.Mvc.TagHelpers\n").unwrap();
+    std::fs::write(dir.join("Web/Shared/_Imports.razor"), "@using Web.Modelos\n").unwrap();
+    git(dir, &["add", "-A"]);
+    git(dir, &["commit", "-q", "-m", "imports"]);
+    let (partial, report) = model::scan(dir, &dir.join(".claude"), &[]);
+    assert_eq!(report["full"], json!(false), "{report}");
+    let whole_out = tempfile::tempdir().unwrap();
+    let (whole, _) = model::scan(dir, whole_out.path(), &[]);
+    let expected = [
+        "Web/Pages/Pedidos/Lista.cshtml:2:ExecuteAsync",
+        "Web/Pages/Resumo.cshtml:2:ExecuteAsync",
+        "Web/Shared/Menu/Item.razor:1:BuildRenderTree",
+    ];
+    assert_eq!(proven_uses(&whole, total, "Total"), expected, "the whole pass");
+    assert_eq!(every_use(&whole, total, "Total"), expected, "the other folder and the other language do not see it");
+    assert_eq!(proven_uses(&partial, total, "Total"), expected, "the pass that reads only what changed");
+}
+
+/// A classe C# escrita sem namespace está no namespace de todos: a página e
+/// o outro arquivo C# do mesmo projeto a chamam sem `using`, e a chamada liga
+/// provada. A classe de mesmo nome, sem namespace, de outro projeto do
+/// repositório não fica à vista e não ganha uso.
+#[test]
+fn a_csharp_class_without_a_namespace_is_seen_by_the_whole_project() {
+    let format = "public static class Formato\n{\n    public static string Moeda(int x) => x.ToString();\n}\n";
+    let map = scanned(&[
+        ("Web/Formato.cs", format),
+        ("Web/Pages/Preco.cshtml", "@page\n<p>@Formato.Moeda(3)</p>\n@{\n    var texto = Formato.Moeda(4);\n}\n"),
+        ("Web/Servicos/Pedidos.cs", "namespace Web.Servicos;\n\npublic class Pedidos\n{\n    public string Ver() => Formato.Moeda(1);\n}\n"),
+        ("Outro/Outro.csproj", &csproj("Microsoft.NET.Sdk")),
+        ("Outro/Formato.cs", format),
+    ]);
+    assert_eq!(
+        proven_uses(&map, "Web/Formato.cs", "Moeda"),
+        ["Web/Pages/Preco.cshtml:2:ExecuteAsync", "Web/Pages/Preco.cshtml:4:ExecuteAsync", "Web/Servicos/Pedidos.cs:5:Ver"]
+    );
+    assert_eq!(every_use(&map, "Outro/Formato.cs", "Moeda"), Vec::<String>::new(), "another project does not see it");
 }

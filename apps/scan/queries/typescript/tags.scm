@@ -148,6 +148,21 @@
 (for_in_statement left: (identifier) @local)
 (catch_clause parameter: (identifier) @local)
 
+; A função entregue como valor, sem ser chamada ali: o nome escrito como
+; argumento (`xs.map(dobro)`, `xs.map(this.salvar)`), como valor de uma
+; variável (`const f = dobro;`), à direita de uma atribuição ou como valor de
+; uma chave de objeto (`{ onClick: salvar }`). O motor liga o nome só a uma
+; função ou a um método à vista; o escrito depois de um valor
+; (`pedido.total`) não liga.
+(arguments (identifier) @call.value)
+(arguments (member_expression property: (property_identifier) @call.value))
+(variable_declarator value: (identifier) @call.value)
+(variable_declarator value: (member_expression property: (property_identifier) @call.value))
+(assignment_expression right: (identifier) @call.value)
+(assignment_expression right: (member_expression property: (property_identifier) @call.value))
+(pair value: (identifier) @call.value)
+(pair value: (member_expression property: (property_identifier) @call.value))
+
 ; Os textos fixos: o literal de texto escrito no código. O motor guarda o que
 ; tem duas palavras ou forma de caminho ou chave, com a marca (log, erro ou
 ; texto) e a declaração que o contém.

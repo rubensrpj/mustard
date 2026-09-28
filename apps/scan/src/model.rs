@@ -337,6 +337,14 @@ pub struct Module {
     /// same way.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cites: Vec<CallSite>,
+    /// Every name written where a value goes (an argument, the right side of
+    /// an assignment, as the language's query marks it) without being called
+    /// there, with the line: the function handed to another one or kept in a
+    /// name. Raw, like [`Module::calls`]: it links only to a function or a
+    /// method in sight of the file, and a pass that does not read the file
+    /// again links it the same way.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub value_uses: Vec<CallSite>,
     /// Os textos fixos do arquivo (`@text`), fora os do trecho de teste, em
     /// ordem de linha. O arquivo de teste e o escrito por máquina não guardam
     /// nenhum. Guardados com o módulo, para que a passada que não relê o

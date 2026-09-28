@@ -45,6 +45,20 @@
 (parameter_declaration name: (identifier) @local)
 (range_clause left: (expression_list (identifier) @local))
 
+; A função entregue como valor, sem ser chamada ali: o nome escrito como
+; argumento (`sort.Slice(xs, menor)`, `http.HandleFunc("/", rotas.Inicio)`),
+; à direita de uma declaração ou de uma atribuição (`f := dobro`) ou como
+; valor de um campo (`Handler{Run: rodar}`). O motor liga o nome só a uma
+; função ou a um método à vista.
+(argument_list (identifier) @call.value)
+(argument_list (selector_expression field: (field_identifier) @call.value))
+(short_var_declaration right: (expression_list (identifier) @call.value))
+(short_var_declaration right: (expression_list (selector_expression field: (field_identifier) @call.value)))
+(assignment_statement right: (expression_list (identifier) @call.value))
+(assignment_statement right: (expression_list (selector_expression field: (field_identifier) @call.value)))
+(var_spec value: (expression_list (identifier) @call.value))
+(keyed_element value: (literal_element (identifier) @call.value))
+
 ; Os textos fixos: o literal de texto escrito no código. O motor guarda o que
 ; tem duas palavras ou forma de caminho ou chave, com a marca (log, erro ou
 ; texto) e a declaração que o contém.

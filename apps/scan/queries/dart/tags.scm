@@ -135,6 +135,15 @@
 (initialized_variable_definition name: (identifier) @local)
 (formal_parameter name: (identifier) @local)
 
+; A função entregue como valor, sem ser chamada ali: o nome escrito como
+; argumento (`xs.map(dobro)`, `onPressed: salvar`), como valor de uma
+; variável (`final f = dobro;`) ou à direita de uma atribuição. O motor liga o
+; nome só a uma função ou a um método à vista.
+(argument (identifier) @call.value)
+(named_argument (identifier) @call.value)
+(initialized_variable_definition value: (identifier) @call.value)
+(assignment_expression right: (identifier) @call.value)
+
 ; Os textos fixos: o literal de texto escrito no código. O motor guarda o que
 ; tem duas palavras ou forma de caminho ou chave, com a marca (log, erro ou
 ; texto) e a declaração que o contém.

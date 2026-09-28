@@ -37,6 +37,24 @@
 ; é da biblioteca e não liga ao projeto, mesmo com uma pasta `fs` nele.
 (call_expression function: (scoped_identifier path: (_) @call.path))
 
+; A função entregue como valor, sem ser chamada ali: o nome escrito como
+; argumento (`xs.map(dobro)`, `.map(Self::metade)`, `.map(calc::dobro)`), como
+; valor do `let` (`let f = dobro;`), à direita de uma atribuição ou no campo
+; de uma struct. O motor liga o nome só a uma função ou a um método à vista.
+; O campo lido (`self.total`) não entra: no Rust o método nunca se escreve
+; depois do `.` sem ser chamado. O caminho escrito antes do nome se lê como o
+; da chamada (`crate::a::triplo`).
+(arguments (identifier) @call.value)
+(arguments (scoped_identifier name: (identifier) @call.value))
+(arguments (scoped_identifier path: (_) @call.path))
+(let_declaration value: (identifier) @call.value)
+(let_declaration value: (scoped_identifier name: (identifier) @call.value))
+(let_declaration value: (scoped_identifier path: (_) @call.path))
+(assignment_expression right: (identifier) @call.value)
+(assignment_expression right: (scoped_identifier name: (identifier) @call.value))
+(field_initializer value: (identifier) @call.value)
+(field_initializer value: (scoped_identifier name: (identifier) @call.value))
+
 ; O módulo marcado como teste: o atributo `#[cfg(test)]` em qualquer ponto da
 ; fila de atributos colada ao `mod`, com outros no meio (`#[allow(dead_code)]`);
 ; um item que não é atributo entre a marca e o `mod` corta a fila. O que se

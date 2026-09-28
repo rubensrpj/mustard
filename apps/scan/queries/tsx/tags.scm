@@ -7,3 +7,9 @@
 ; aspas, ele se guarda como está escrito. O nó do texto sozinho existe também
 ; na gramática do `.ts`; o do elemento, só na do TSX.
 (jsx_element (jsx_text) @text.plain)
+
+; A função entregue como valor a um atributo de elemento (`onClick={salvar}`,
+; `onClick={this.salvar}`), sem ser chamada ali. O texto entre chaves no meio
+; da tela é o que se mostra, e não entra.
+(jsx_attribute (jsx_expression (identifier) @call.value))
+(jsx_attribute (jsx_expression (member_expression property: (property_identifier) @call.value)))

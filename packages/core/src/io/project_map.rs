@@ -342,14 +342,14 @@ pub const ROUTES: MapBlock = block!("routes", version 3, {
 });
 
 /// O grafo: as importações resolvidas, os testes que cobrem cada arquivo, as
-/// chamadas e as citações com a linha, os caminhos escritos antes das
-/// chamadas, os nomes que cada import traz, cada um com o nome que tem no
-/// arquivo de origem, os nomes que cada repasse oferece, os nomes que abrem a
-/// cadeia de uma chamada sem que o arquivo os ligue, e os arquivos mais
-/// importados.
-pub const GRAPH: MapBlock = block!("graph", version 5, {
+/// chamadas, as citações e os nomes escritos onde vai um valor, com a linha,
+/// os caminhos escritos antes das chamadas, os nomes que cada import traz,
+/// cada um com o nome que tem no arquivo de origem, os nomes que cada repasse
+/// oferece, os nomes que abrem a cadeia de uma chamada sem que o arquivo os
+/// ligue, e os arquivos mais importados.
+pub const GRAPH: MapBlock = block!("graph", version 6, {
     "links" at Place::Files => [
-        "path" Text, "deps" Json, "test_deps" Json, "tests" Json, "calls" Json, "cites" Json, "call_paths" Json,
+        "path" Text, "deps" Json, "test_deps" Json, "tests" Json, "calls" Json, "cites" Json, "value_uses" Json, "call_paths" Json,
         "other_call_paths" Json, "brought" Json, "reexports" Json, "unbound_heads" Json
     ],
     "graph" at Place::One => ["nodes" Int ["graph", "nodes"], "edges" Int ["graph", "edges"]],
