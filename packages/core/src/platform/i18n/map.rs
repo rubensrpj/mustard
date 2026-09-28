@@ -108,6 +108,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "The file `{file}` declares no `{name}`. Check the name, or run `mustard-rt run scan` \
              if it is new."
         }
+        ("map.unknown_name", Locale::PtBr) => {
+            "O mapa não tem declaração chamada `{name}`. Confira o nome, ou rode `mustard-rt run scan` \
+             se ela é nova."
+        }
+        ("map.unknown_name", Locale::EnUs) => {
+            "The map has no declaration named `{name}`. Check the name, or run `mustard-rt run scan` \
+             if it is new."
+        }
         ("map.file_unreadable", Locale::PtBr) => {
             "O arquivo `{file}` está no mapa e não pôde ser lido ({detail}). Confira se ele ainda \
              está no lugar."
@@ -372,8 +380,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("map.rs"),
             super::PREFIXES,
-            68,
-            0x252a_afac_41f5_be2a,
+            69,
+            0x4b87_f65a_8131_8f75,
         );
     }
 
@@ -558,6 +566,7 @@ mod tests {
             ("map.unfilled", &["{blocks}"][..]),
             ("map.unknown_file", &["{file}"][..]),
             ("map.unknown_declaration", &["{file}", "{name}"][..]),
+            ("map.unknown_name", &["{name}"][..]),
             ("map.file_unreadable", &["{file}", "{detail}"][..]),
             ("map.changed_in_copy", &["{name}", "{file}", "{line}"][..]),
             ("map.missing_argument", &["{question}", "{flag}"][..]),

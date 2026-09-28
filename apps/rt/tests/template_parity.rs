@@ -453,6 +453,7 @@ const KEPT_HOOKS: &[&str] = &[
     "command_guard",
     "copy_witness",
     "end_of_turn_check",
+    "glossary_witness",
     "precompact_notice",
     "prompt_entry",
     "session_cleanup_observer",

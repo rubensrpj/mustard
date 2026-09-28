@@ -5,15 +5,17 @@
 //! registro e não muda. Cada gancho diz os pares `(Trigger, ToolMatch)` em que
 //! roda, e uma chamada que não casa com nenhum deles nem o executa.
 //!
-//! São doze, e só eles: a trava de comandos, o portão de escrita, o pedido do
-//! subagente, a testemunha da aprovação, a testemunha da cópia da página, a
-//! entrada da mensagem, o início da sessão, o conserto da barra de status, o
-//! sinal de vida da onda, o aviso antes de compactar, a faxina do fim da
-//! sessão e a conferência do fim da resposta.
+//! São treze, e só eles: a trava de comandos, o portão de escrita, o pedido
+//! do subagente, a testemunha da aprovação, a testemunha da cópia da página,
+//! a entrada da mensagem, o início da sessão, o conserto da barra de status,
+//! o sinal de vida da onda, a testemunha do glossário do mapa, o aviso antes
+//! de compactar, a faxina do fim da sessão e a conferência do fim da
+//! resposta.
 
 use crate::hooks::bash::command_guard::CommandGuard;
 use crate::hooks::observe::approval_witness::ApprovalWitness;
 use crate::hooks::observe::copy_witness::CopyWitness;
+use crate::hooks::observe::glossary_witness::GlossaryWitness;
 use crate::hooks::observe::wave_alive_observer::WaveAliveObserver;
 use crate::hooks::session::conversation_size::PrecompactNotice;
 use crate::hooks::session::prompt_entry::PromptEntry;
@@ -72,6 +74,10 @@ impl Module {
 /// As ferramentas que escrevem, leem ou buscam arquivo, que o portão de
 /// escrita confere.
 const FILE_TOOLS: &[&str] = &["Read", "Write", "Edit", "MultiEdit", "NotebookEdit", "Grep"];
+
+/// As ferramentas que editam arquivo de texto, cuja edição ensina o
+/// glossário do mapa.
+const EDIT_TOOLS: &[&str] = &["Edit", "Write", "MultiEdit"];
 
 /// As ferramentas que despacham um subagente.
 const AGENT_TOOLS: &[&str] = &["Task", "Agent"];
@@ -165,6 +171,15 @@ impl Registry {
                 check: None,
                 observer: Some(Box::new(WaveAliveObserver)),
             },
+            // A testemunha do glossário do mapa: depois de cada edição, a
+            // declaração mudada que a última busca da sessão entregou ganha a
+            // marca das palavras da pergunta. Nunca barra.
+            Module {
+                id: "glossary_witness",
+                applies_to: &[(Trigger::PostToolUse, ToolMatch::OneOf(EDIT_TOOLS))],
+                check: None,
+                observer: Some(Box::new(GlossaryWitness)),
+            },
             // O aviso antes de compactar: em toda compactação, manual ou
             // automática, injeta o bloco de retomada pronto para colar.
             Module {
@@ -244,9 +259,9 @@ mod tests {
         registry.applicable(trigger, tool).iter().map(|m| m.id).collect()
     }
 
-    /// O registro tem os doze ganchos que ficam, e só eles.
+    /// O registro tem os treze ganchos que ficam, e só eles.
     #[test]
-    fn the_registry_holds_exactly_the_twelve_hooks() {
+    fn the_registry_holds_exactly_the_thirteen_hooks() {
         let registry = Registry::new();
         let mut ids = registry.ids();
         ids.sort_unstable();
@@ -257,6 +272,7 @@ mod tests {
                 "command_guard",
                 "copy_witness",
                 "end_of_turn_check",
+                "glossary_witness",
                 "precompact_notice",
                 "prompt_entry",
                 "session_cleanup_observer",
@@ -296,14 +312,22 @@ mod tests {
 
     /// O portão de escrita roda antes das cinco ferramentas de arquivo e da
     /// busca, e só delas; o sinal de vida da onda segue rodando depois de
-    /// cada uma.
+    /// cada uma, e a testemunha do glossário, só depois das três que editam
+    /// texto: a leitura nunca ensina.
     #[test]
     fn the_write_gate_runs_on_the_file_tools_and_the_search() {
         let registry = Registry::new();
         for tool in ["Read", "Write", "Edit", "MultiEdit", "NotebookEdit", "Grep"] {
             assert_eq!(applicable_ids(&registry, Trigger::PreToolUse, Some(tool)), ["write_gate"], "{tool}");
-            assert_eq!(applicable_ids(&registry, Trigger::PostToolUse, Some(tool)), ["wave_alive_observer"], "{tool}");
+            let after: &[&str] = if ["Write", "Edit", "MultiEdit"].contains(&tool) {
+                &["wave_alive_observer", "glossary_witness"]
+            } else {
+                &["wave_alive_observer"]
+            };
+            assert_eq!(applicable_ids(&registry, Trigger::PostToolUse, Some(tool)), after, "{tool}");
         }
+        let module = registry.by_id("glossary_witness").expect("registered");
+        assert!(module.check.is_none() && module.observer.is_some());
         for tool in ["Bash", "Task", "Agent", "Skill", "Glob"] {
             assert!(!applicable_ids(&registry, Trigger::PreToolUse, Some(tool)).contains(&"write_gate"), "{tool}");
         }

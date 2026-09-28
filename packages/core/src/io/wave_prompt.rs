@@ -96,11 +96,10 @@ pub type Trace<'t> = dyn Fn(&str, usize) -> bool + 't;
 /// partida, e nenhum commit do arquivo nela. Vale a guardada no mapa, pela
 /// mesma validade da pergunta da história de uma declaração; senão, `trace`
 /// a lê do git na hora, seguindo até `moves` mudanças de arquivo, e a grava
-/// no mapa, e a pergunta seguinte não relê o git. O pedido da onda e os
-/// exemplos do mapa a leem por aqui. `None` quando a janela ainda guarda a
-/// história inteira, quando o arquivo tem commit nela ou quando a leitura
-/// falha.
-pub fn history_beyond_window(
+/// no mapa, e a pergunta seguinte não relê o git. `None` quando a janela
+/// ainda guarda a história inteira, quando o arquivo tem commit nela ou
+/// quando a leitura falha.
+fn history_beyond_window(
     read: &MapReader<'_>,
     trace: &Trace<'_>,
     history: &History,
@@ -123,12 +122,52 @@ pub fn history_beyond_window(
     read(Need::Lineage(file)).ok().and_then(stored)
 }
 
+/// A receita do git do alvo `target` do projeto `root`, a mesma no pedido
+/// da onda e nos exemplos do mapa. Quem diz se o alvo existe é o disco, não
+/// o mapa, que pode estar atrás dele: o arquivo apagado que o mapa ainda
+/// lista vai ser criado de novo, e o criado depois da última passada do scan
+/// vai ser mudado.
+///
+/// - o caminho que termina em `/`, ou a pasta que existe: a receita de criar
+///   um arquivo qualquer nela;
+/// - o arquivo que não existe: a de criar um do tipo dele na pasta dele;
+/// - o arquivo que existe: a de mudá-lo, pelos commits da janela do mapa
+///   `map`; ou, quando o mapa o conhece e o último commit dele ficou fora
+///   da janela, pela história lida do git na hora
+///   ([`history_beyond_window`]), seguindo o número de mudanças de arquivo
+///   que `moves` dá, pedido só quando essa leitura acontece.
+///
+/// O arquivo que mudou junto e não existe mais sai dela ([`recipe_on_disk`]).
+pub fn recipe_for(
+    root: &Path,
+    read: &MapReader<'_>,
+    trace: &Trace<'_>,
+    map: &ProjectMap,
+    target: &str,
+    moves: impl FnOnce() -> usize,
+) -> Option<Recipe> {
+    let history = &map.history;
+    let on_disk = root.join(target);
+    let found = if target.ends_with('/') {
+        recipe_for_new(history, target)
+    } else if on_disk.is_dir() {
+        recipe_for_new(history, &format!("{target}/"))
+    } else if !on_disk.exists() {
+        recipe_for_new(history, target)
+    } else if file_history(history, target).is_some() {
+        recipe_for_existing(history, target)
+    } else if map.module(target).is_some() {
+        history_beyond_window(read, trace, history, target, moves()).as_ref().and_then(recipe_from_lineage)
+    } else {
+        None
+    };
+    found.and_then(|recipe| recipe_on_disk(root, recipe))
+}
+
 /// A receita `recipe` do jeito que ela chega a quem a lê, no projeto `root`:
 /// o arquivo que mudou junto e não existe mais sai dela, e a receita que fica
-/// sem nada a dizer, sem arquivo junto e sem teste, não sai. O pedido da onda
-/// e os exemplos do mapa a leem por aqui.
-#[must_use]
-pub fn recipe_on_disk(root: &Path, recipe: Recipe) -> Option<Recipe> {
+/// sem nada a dizer, sem arquivo junto e sem teste, não sai.
+fn recipe_on_disk(root: &Path, recipe: Recipe) -> Option<Recipe> {
     recipe_keeping(recipe, |path| root.join(path).exists())
 }
 
@@ -555,27 +594,14 @@ impl MapParts<'_> {
         })
     }
 
-    /// A receita do git do arquivo `file` de uma tarefa: a de criar um
-    /// arquivo do tipo dele na pasta, quando ele ainda não existe; a de
-    /// mudá-lo, pelos commits da janela do mapa; ou, quando o último commit
-    /// dele ficou fora da janela, pela história lida do git na hora
-    /// ([`history_beyond_window`]). O que não existe mais no projeto sai
-    /// dela ([`recipe_on_disk`]). Calculada uma vez só por montagem.
+    /// A receita do git do arquivo `file` de uma tarefa, pela mesma escolha
+    /// dos exemplos do mapa ([`recipe_for`]). Calculada uma vez só por
+    /// montagem.
     fn recipe(&self, read: &ProjectMap, file: &str) -> Option<Recipe> {
         if let Some(known) = self.recipes.borrow().get(file) {
             return known.clone();
         }
-        let history = &read.history;
-        let found = if !self.root.join(file).exists() {
-            recipe_for_new(history, file)
-        } else if file_history(history, file).is_some() {
-            recipe_for_existing(history, file)
-        } else if read.module(file).is_some() {
-            history_beyond_window(self.read, self.trace, history, file, self.moves).as_ref().and_then(recipe_from_lineage)
-        } else {
-            None
-        };
-        let found = found.and_then(|recipe| recipe_on_disk(self.root, recipe));
+        let found = recipe_for(self.root, self.read, self.trace, read, file, || self.moves);
         self.recipes.borrow_mut().insert(file.to_string(), found.clone());
         found
     }

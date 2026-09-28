@@ -1092,8 +1092,9 @@ pub enum MapRefusal {
     SkillMissingPaths { paths: Vec<String> },
     /// A skill passa do limite de linhas.
     SkillTooLong { lines: usize },
-    /// O arquivo está no mapa e não tem uma declaração com esse nome.
-    UnknownDeclaration { file: String, name: String },
+    /// O arquivo está no mapa e não tem uma declaração com esse nome; sem
+    /// arquivo, o mapa inteiro não tem.
+    UnknownDeclaration { file: Option<String>, name: String },
     /// O arquivo está no mapa e não pôde ser lido do disco.
     FileUnreadable { file: String, detail: String },
     /// Numa cópia de trabalho, a declaração mudou depois do mapa, que tem a
@@ -1149,9 +1150,10 @@ impl MapRefusal {
                 "map.skill_too_long",
                 &[("{lines}", lines.to_string()), ("{max}", SKILL_MAX_LINES.to_string())],
             ),
-            Self::UnknownDeclaration { file, name } => {
+            Self::UnknownDeclaration { file: Some(file), name } => {
                 fill("map.unknown_declaration", &[("{file}", file.clone()), ("{name}", name.clone())])
             }
+            Self::UnknownDeclaration { file: None, name } => fill("map.unknown_name", &[("{name}", name.clone())]),
             Self::FileUnreadable { file, detail } => {
                 fill("map.file_unreadable", &[("{file}", file.clone()), ("{detail}", detail.clone())])
             }
@@ -1278,7 +1280,7 @@ pub fn declaration(map: &ProjectMap, file: &str, name: &str) -> Result<DeclPlace
     let module = map.known(file)?;
     let name = name.trim();
     let found = module.declarations.iter().find(|d| d.name == name).ok_or_else(|| {
-        MapRefusal::UnknownDeclaration { file: module.path.clone(), name: name.to_string() }
+        MapRefusal::UnknownDeclaration { file: Some(module.path.clone()), name: name.to_string() }
     })?;
     Ok(DeclPlace {
         file: module.path.clone(),
@@ -1360,8 +1362,8 @@ pub struct DeclUsers {
 /// caminho e de linha. Com `file`, só as desse arquivo. Recusa
 /// [`MapRefusal::UnknownFile`] quando o arquivo não está no mapa e
 /// [`MapRefusal::UnknownDeclaration`] quando nenhuma declaração tem o nome:
-/// no arquivo pedido, ou no mapa inteiro, que a recusa cita pelo caminho dele
-/// ([`MAP_FILE`](crate::io::project_map::MAP_FILE)).
+/// no arquivo pedido, que a recusa cita, ou no mapa inteiro, e a recusa diz
+/// que o mapa não tem a declaração.
 pub fn users(map: &ProjectMap, file: Option<&str>, name: &str) -> Result<Vec<DeclUsers>, MapRefusal> {
     Ok(named_in(map, file, name)?
         .into_iter()
@@ -1393,7 +1395,7 @@ fn named_in<'m>(
     let mut found: Vec<(&MapModule, &MapDecl)> =
         modules.iter().flat_map(|m| m.declarations.iter().filter(|d| d.name == name).map(move |d| (*m, d))).collect();
     if found.is_empty() {
-        let file = modules.first().filter(|_| file.is_some()).map_or_else(|| crate::io::project_map::MAP_FILE.to_string(), |m| m.path.clone());
+        let file = file.and(modules.first()).map(|m| m.path.clone());
         return Err(MapRefusal::UnknownDeclaration { file, name: name.to_string() });
     }
     found.sort_by(|a, b| (&a.0.path, a.1.line).cmp(&(&b.0.path, b.1.line)));
@@ -1611,10 +1613,6 @@ pub struct Examples {
     pub main_imports: Vec<String>,
     /// De 0 a 3 exemplos, o melhor primeiro.
     pub picks: Vec<Example>,
-    /// A receita do git do alvo: a do arquivo que já existe, ou a de criar
-    /// um arquivo do tipo dele na pasta ([`recipe_for_existing`],
-    /// [`recipe_for_new`]).
-    pub recipe: Option<Recipe>,
     /// Por que não há receita do git: o mapa está sem a história da branch
     /// de partida.
     pub no_history: Option<String>,
@@ -1669,9 +1667,6 @@ fn main_imports_of(files: &[&MapModule]) -> Vec<String> {
 ///
 /// - mesmo lugar e mesmo papel: a mesma pasta do alvo e as mesmas
 ///   importações principais no grafo, nunca o sufixo do nome;
-/// - a receita do git: a soma dos commits que criaram um arquivo do mesmo
-///   tipo na pasta, ou dos que mudaram o alvo que já existe, com o que
-///   mudou junto em mais da metade deles;
 /// - com teste primeiro, e depois o mais recente;
 /// - tamanho típico: entre o quartil de baixo e o de cima da pasta, o que
 ///   deixa de fora o índice de módulo curto, que não mostra como fazer, e o
@@ -1806,11 +1801,6 @@ pub fn examples_following(map: &ProjectMap, target: &str, lang: Locale, pattern:
         .collect();
 
     Examples {
-        recipe: match target_module {
-            Some(m) => recipe_for_existing(&map.history, &m.path),
-            None if is_folder => recipe_for_new(&map.history, &format!("{folder}/")),
-            None => recipe_for_new(&map.history, &target),
-        },
         no_history: history_note(&map.history, lang),
         folder,
         main_imports,
@@ -2312,8 +2302,8 @@ mod tests {
     #[test]
     fn the_recipe_sums_every_commit_that_created_a_file_of_the_same_kind_there() {
         let map = command_folder();
-        let got = examples(&map, "apps/rt/src/commands/spec_events/map.rs", Locale::EnUs);
-        let recipe = got.recipe.expect("three commits created a command there");
+        let recipe = recipe_for_new(&map.history, "apps/rt/src/commands/spec_events/map.rs")
+            .expect("three commits created a command there");
         assert_eq!(recipe.of, RecipeOf::Created("apps/rt/src/commands/spec_events/*.rs".to_string()));
         assert_eq!(recipe.commits, 3);
         // O texto mudou junto em só 1 dos 3: fica de fora.
@@ -2497,7 +2487,6 @@ mod tests {
         let mut map = command_folder();
         map.history = History::default();
         let got = examples(&map, "apps/rt/src/commands/spec_events/", Locale::PtBr);
-        assert!(got.recipe.is_none());
         assert!((2..=3).contains(&got.picks.len()), "{:?}", got.picks);
         assert!(got.picks.iter().all(|p| p.last_change.is_none()));
     }

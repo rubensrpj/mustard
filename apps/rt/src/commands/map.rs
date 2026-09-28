@@ -48,10 +48,11 @@ use mustard_core::domain::normalize::Languages;
 use mustard_core::domain::project_map::{self as project_map, DeclAt, MapRefusal, ProjectMap, UseSite};
 use mustard_core::domain::scan::{HistoryReport, ScanReport};
 use mustard_core::domain::search::{CANDIDATES, TOP};
+use mustard_core::io::map_glossary::{self, Place};
 use mustard_core::io::{map_search, map_specs};
 use mustard_core::io::project_map::{self as store, Need};
 use mustard_core::io::workspace::{is_git_repo_root, linked_worktree_main};
-use mustard_core::io::wave_prompt::{history_beyond_window, recipe_on_disk};
+use mustard_core::io::wave_prompt::recipe_for;
 use mustard_core::platform::i18n::Locale;
 use mustard_core::{FilterSetting, Setting};
 use serde_json::{json, Map, Value};
@@ -168,9 +169,52 @@ pub(crate) fn map_at(opts: &MapOpts, mine: &Mine<'_>, trace: &Trace<'_>, assembl
     let _ = map_specs::sync(&project.root, &project.languages);
     let lang = project.lang;
     match answer(opts, &project.root, lang, &project.languages, trace, assemble) {
-        Ok(report) => report,
+        Ok(report) => {
+            remember(opts, &project.root, &project.languages, &report);
+            report
+        }
         Err(refusal) => refused(&refusal, lang),
     }
+}
+
+/// Guarda no glossário do mapa o que a resposta entregou à sessão de quem
+/// pergunta: da busca, as palavras da `--query` e os lugares achados, no
+/// lugar da busca anterior da sessão; da leitura de uma declaração e da de
+/// quem a usa, os lugares delas, somados aos da última busca. A edição que
+/// vier depois ensina por eles. A falha da gravação não muda a resposta.
+fn remember(opts: &MapOpts, root: &Path, languages: &Languages, report: &Value) {
+    let Some(session) = opts.session.as_deref().filter(|session| !session.is_empty()) else { return };
+    let model = store::model_path(root);
+    let _ = match opts.question {
+        Question::Search => {
+            let Some(query) = opts.query.as_deref() else { return };
+            map_glossary::record_search(&model, session, query, languages, &delivered(report))
+        }
+        Question::Slice | Question::Users => map_glossary::add_delivered(&model, session, &delivered(report)),
+        _ => return,
+    };
+}
+
+/// Os lugares que a resposta entregou: cada arquivo da busca do banco,
+/// inteiro; cada peça da busca com filtro, cada declaração de quem usa e a
+/// declaração lida, com as linhas dela.
+fn delivered(report: &Value) -> Vec<Place> {
+    let lines = |entry: &Value, key: &str| entry[key].as_u64().unwrap_or(0);
+    let mut out: Vec<Place> = Vec::new();
+    for file in report["files"].as_array().into_iter().flatten() {
+        if let Some(path) = file["path"].as_str() {
+            out.push(Place::whole(path));
+        }
+    }
+    let pieces = report["pieces"].as_array().into_iter().flatten();
+    let declarations = report["declarations"].as_array().into_iter().flatten();
+    let read = (report["question"] == "slice").then_some(report);
+    for entry in pieces.chain(declarations).chain(read) {
+        if let Some(file) = entry["path"].as_str().or_else(|| entry["file"].as_str()) {
+            out.push(Place { file: file.to_string(), line: lines(entry, "line"), end_line: lines(entry, "end_line") });
+        }
+    }
+    out
 }
 
 /// Antes da busca, a história por função dos arquivos que ligam os itens
@@ -745,12 +789,11 @@ fn split_uses(uses: &[UseSite]) -> (Vec<String>, BTreeMap<&[DeclAt], Vec<String>
 }
 
 /// Os exemplos para o alvo de `--file`; sem ele, para a pasta do arquivo que
-/// a busca acha para `--task`, nas línguas `languages`. A receita do arquivo
-/// cujo último commit ficou fora da janela do mapa sai da história dele,
-/// lida por `trace` do git local na hora e gravada no mapa, como no pedido
-/// da onda; a pergunta seguinte a lê do mapa. Como no pedido também, o
-/// arquivo que mudou junto e não existe mais sai da receita, e a receita que
-/// fica sem nada a dizer não sai. A história segue o número de
+/// a busca acha para `--task`, nas línguas `languages`. A receita sai da
+/// mesma escolha do pedido da onda ([`recipe_for`]): o disco diz se o alvo
+/// existe, e a do arquivo cujo último commit ficou fora da janela do mapa sai
+/// da história dele, lida por `trace` do git local na hora e gravada no mapa;
+/// a pergunta seguinte a lê do mapa. A história segue o número de
 /// `map.historyMoves` lido como a pergunta da história o lê, com o mesmo
 /// aviso do valor inválido.
 fn examples(
@@ -793,18 +836,18 @@ fn examples(
     // O padrão que filtra os exemplos dá o papel pelo subprojeto também,
     // como no pedido da onda: os subprojetos vêm do terreno.
     map.projects = read(Need::Terrain).map(|terrain| terrain.projects).unwrap_or_default();
-    let mut got = project_map::examples(&map, &target, lang);
+    let got = project_map::examples(&map, &target, lang);
     let mut warnings: Vec<String> = Vec::new();
-    if got.recipe.is_none() && map.module(&target).is_some() {
+    // O alvo que o mapa diz ser pasta pede a receita de criar um arquivo
+    // nela, mesmo que ela não exista mais no disco.
+    let subject = if got.folder == target { format!("{target}/") } else { target.clone() };
+    let model = store::model_path(root);
+    let traced = |file: &str, moves: usize| trace(root, &model, file, moves).is_ok();
+    let moves = || {
         let config = mustard_core::ProjectConfig::load(root);
-        let moves = history_moves(root, opts.session.as_deref(), lang, &config, &mut warnings);
-        let model = store::model_path(root);
-        let traced = |file: &str, moves: usize| trace(root, &model, file, moves).is_ok();
-        got.recipe = history_beyond_window(read, &traced, &map.history, &target, moves)
-            .as_ref()
-            .and_then(project_map::recipe_from_lineage);
-    }
-    got.recipe = got.recipe.take().and_then(|recipe| recipe_on_disk(root, recipe));
+        history_moves(root, opts.session.as_deref(), lang, &config, &mut warnings)
+    };
+    let recipe = recipe_for(root, read, &traced, &map, &subject, moves);
     let picks: Vec<Value> = got
         .picks
         .iter()
@@ -823,7 +866,7 @@ fn examples(
     // A receita do git: o trabalho que os commits contados fizeram — criar
     // um arquivo do tipo, pelo molde, ou mudar o arquivo —, quantos são, e o
     // que mudou junto em mais da metade deles.
-    let recipe = got.recipe.as_ref().map(|r| {
+    let recipe = recipe.as_ref().map(|r| {
         let (kind, subject) = match &r.of {
             project_map::RecipeOf::Created(pattern) => ("created", pattern),
             project_map::RecipeOf::Changed(path) => ("changed", path),
@@ -1479,6 +1522,102 @@ mod tests {
         assert_eq!(report["recipe"], Value::Null, "{report}");
     }
 
+    /// Um mapa atrás do disco: `src/cmd/gone.rs` está nele e foi apagado;
+    /// `src/cmd/schema.sql` existe e o mapa não o lê como arquivo de código,
+    /// mas a janela guarda três commits que o mudaram com o índice; e
+    /// `src/cmd/fresh.rs` foi criado depois da última passada do scan. Os
+    /// exemplos do mapa e o pedido da onda dão a cada um a mesma receita, e
+    /// quem diz se o arquivo existe é o disco: o apagado vai ser criado de
+    /// novo, e o que existe vai ser mudado.
+    #[test]
+    fn the_examples_and_the_wave_request_give_a_deleted_or_unscanned_file_the_same_recipe_by_the_disk() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let paths = ["src/cmd/a.rs", "src/cmd/b.rs", "src/cmd/c.rs", "src/cmd/gone.rs", "src/cmd/mod.rs", "src/cmd/schema.sql"];
+        let map = json!({
+            "modules": [
+                {"path": "src/cmd/a.rs", "language": "rust", "loc": 30},
+                {"path": "src/cmd/b.rs", "language": "rust", "loc": 30},
+                {"path": "src/cmd/c.rs", "language": "rust", "loc": 30},
+                {"path": "src/cmd/gone.rs", "language": "rust", "loc": 30},
+                {"path": "src/cmd/mod.rs", "language": "rust", "loc": 30}
+            ],
+            "history": {
+                "paths": paths,
+                "commits": [
+                    {"id": "c1", "at": 86_400, "added": [0], "changed": [4]},
+                    {"id": "c2", "at": 172_800, "added": [1], "changed": [4]},
+                    {"id": "c3", "at": 259_200, "added": [2], "changed": [4]},
+                    {"id": "c4", "at": 345_600, "changed": [3, 4]},
+                    {"id": "c5", "at": 432_000, "changed": [3, 4]},
+                    {"id": "c6", "at": 518_400, "changed": [3, 4]},
+                    {"id": "c7", "at": 604_800, "changed": [4, 5]},
+                    {"id": "c8", "at": 691_200, "changed": [4, 5]},
+                    {"id": "c9", "at": 777_600, "changed": [4, 5]}
+                ]
+            }
+        });
+        store::write_text(root, &map.to_string()).unwrap();
+        for path in ["src/cmd/a.rs", "src/cmd/b.rs", "src/cmd/c.rs", "src/cmd/mod.rs", "src/cmd/schema.sql", "src/cmd/fresh.rs"] {
+            touch(root, path);
+        }
+
+        // Cada arquivo, a tarefa que o cita e a receita esperada: o tipo, o
+        // assunto e a linha que o pedido escreve para ela.
+        let with_the_index = |kind: &str, subject: &str| {
+            json!({"kind": kind, "subject": subject, "commits": 3,
+                   "together": [{"path": "src/cmd/mod.rs", "commits": 3}], "tests": null})
+        };
+        let cases = [
+            (
+                "src/cmd/gone.rs",
+                "Recriar o apagado",
+                with_the_index("created", "src/cmd/*.rs"),
+                Some("Receita do git, de 3 commits que criaram um arquivo `src/cmd/*.rs`:"),
+            ),
+            (
+                "src/cmd/schema.sql",
+                "Mudar o esquema",
+                with_the_index("changed", "src/cmd/schema.sql"),
+                Some("Receita do git, de 3 commits que mudaram `src/cmd/schema.sql`:"),
+            ),
+            ("src/cmd/fresh.rs", "Mudar o recente", Value::Null, None),
+        ];
+
+        let mut lines = vec![
+            r#"{"v":1,"id":1,"at":"2026-09-15T10:00:00-03:00","type":"wave","author":"assistant","n":1,"text":"A onda","criteria":[],"done_when":"passa"}"#.to_string(),
+        ];
+        for (n, (file, task, _, _)) in cases.iter().enumerate() {
+            lines.push(format!(
+                r#"{{"v":1,"id":{},"at":"2026-09-15T10:00:00-03:00","type":"task","author":"assistant","wave":1,"text":"{task}","files":[{{"path":"{file}"}}]}}"#,
+                n + 2
+            ));
+        }
+        let log = mustard_core::domain::spec_events::parse_log(&(lines.join("\n") + "\n"));
+        let flight = mustard_core::io::wave_prompt::Flight::default();
+        let built = mustard_core::io::wave_prompt::prompts(root, "teste", &log, Locale::PtBr, &flight);
+        let text = &built.iter().find(|p| p.wave == 1).expect("the request of wave 1").text;
+        let under = |task: &str| -> String {
+            let mut rest = text.lines().skip_while(|line| !line.contains(task));
+            let first = rest.next().into_iter();
+            first.chain(rest.take_while(|line| !line.starts_with("- ") && !line.is_empty())).collect::<Vec<_>>().join("\n")
+        };
+
+        for (file, task, recipe, head) in &cases {
+            let opts = MapOpts { file: Some((*file).to_string()), ..ask(root, Question::Examples) };
+            let report = answered(&opts);
+            assert_eq!(report["recipe"], *recipe, "the examples of {file}: {report}");
+            let block = under(task);
+            match head {
+                Some(head) => {
+                    assert!(block.contains(head), "the request of {file}: {block}");
+                    assert!(block.contains("mudou `src/cmd/mod.rs` em 3 de 3"), "the request of {file}: {block}");
+                }
+                None => assert!(!block.contains("Receita do git"), "the request of {file}: {block}"),
+            }
+        }
+    }
+
     /// A busca acha o arquivo pela mensagem que o usuário viu, e mostra o
     /// texto que casou com a linha e a declaração onde ele nasce.
     #[test]
@@ -1601,6 +1740,7 @@ mod tests {
         let report = answered(&opts);
         assert_eq!(report["reason"], json!("unknown-declaration"), "{report}");
         assert!(report["hint"].as_str().unwrap().contains("sumiu"), "{report}");
+        assert!(report["hint"].as_str().unwrap().contains(&format!("`{file}`")), "the file asked is named: {report}");
     }
 
     /// A função do controlador que atende uma rota traz, na resposta de quem

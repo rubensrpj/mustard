@@ -258,7 +258,8 @@ fn documented_run_tokens_catches_every_spelling_and_skips_placeholders() {
 /// Quem vai mexer numa função pergunta ao mapa quem a usa, pelo comando que a
 /// pessoa roda: `run map users --name <declaração>`. A resposta cita onde a
 /// declaração mora e cada uso, como `arquivo:linha:quem chama`; um nome que o
-/// mapa não declara é recusado com o texto de declaração desconhecida.
+/// mapa não declara é recusado com o texto de declaração desconhecida, que
+/// diz que o mapa não a tem, sem citar arquivo.
 #[test]
 fn o_mapa_devolve_quem_usa_uma_declaracao_pelo_nome() {
     let dir = tempfile::tempdir().unwrap();
@@ -305,6 +306,10 @@ fn o_mapa_devolve_quem_usa_uma_declaracao_pelo_nome() {
     let hint = report["hint"].as_str().unwrap();
     assert!(hint.contains("nao_existe"), "a recusa diz o nome: {report}");
     assert!(hint.contains("Confira o nome"), "o texto de declaração desconhecida: {report}");
+    // Sem arquivo pedido, quem não tem a declaração é o mapa: o banco dele
+    // não é um arquivo do projeto e não aparece como se declarasse nomes.
+    assert!(hint.contains("O mapa não tem declaração chamada `nao_existe`"), "{report}");
+    assert!(!hint.contains(".claude/") && !hint.contains("O arquivo"), "{report}");
 }
 
 /// A resposta de quem usa separa o que o mapa provou do que ele só suspeita,
@@ -500,7 +505,7 @@ fn o_despejo_do_mapa_traz_uma_entrada_por_tabela() {
             "census", "projects", "languages", "manifests", "skeleton", "files", "decls", "texts", "routes", "links",
             "graph", "fan_in", "history_base", "history_paths", "commits", "lineage_files", "lineage_commits",
             "lineage_decls", "pr_texts", "pr_comments", "pr_commits", "spec_items", "spec_commits", "spec_pulls",
-            "spec_marks", "blocks"
+            "spec_marks", "glossary_asks", "glossary_marks", "blocks"
         ],
         "uma entrada por tabela, na ordem fixa: {report}"
     );

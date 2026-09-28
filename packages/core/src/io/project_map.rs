@@ -29,7 +29,7 @@ use crate::domain::project_map::{
 };
 use crate::domain::normalize::Languages;
 use crate::io::map_db::{self, Block, Kind, MapDb};
-use crate::io::{map_fill, map_search};
+use crate::io::{map_fill, map_glossary, map_search};
 use crate::platform::error::{Error, Result};
 
 /// A pasta do projeto onde o mapa mora.
@@ -401,6 +401,19 @@ pub const PULLS: MapBlock = written(block!("pulls", version 1, {
     "pr_commits" at list(&["commits"]) => ["id" Text, "pr" Int]
 }));
 
+/// O glossário do mapa: a palavra da pergunta ligada ao nome da declaração
+/// que o Claude editou logo depois de buscá-la. De cada sessão, a última
+/// busca — as palavras, com as formas da normalização da busca, os lugares
+/// que ela entregou, se a primeira edição ainda ensina, depois de uma busca
+/// sem resultado, e a hora —; e cada marca: as formas da palavra, o arquivo
+/// e o nome da declaração. Quem grava é `io::map_glossary`. Não se refaz do
+/// código: fica fora de [`BLOCKS`] e, na troca de versão, é convertido,
+/// nunca apagado.
+pub const GLOSSARY: MapBlock = written(block!("glossary", version 1, {
+    "glossary_asks" at list(&["asks"]) => ["session" Text, "words" Json, "found" Json, "first_edit" Flag, "at" Int],
+    "glossary_marks" at list(&["marks"]) => ["forms" Json, "file" Text, "name" Text]
+}));
+
 /// O bloco declarado por [`block!`] como escrito: convertido na troca de
 /// versão, nunca apagado.
 const fn written(mut declared: MapBlock) -> MapBlock {
@@ -408,8 +421,8 @@ const fn written(mut declared: MapBlock) -> MapBlock {
     declared
 }
 
-/// A conversão do bloco dos pull requests: a primeira versão não tem de
-/// onde converter, e as linhas ficam como estão.
+/// A conversão dos blocos escritos: a primeira versão não tem de onde
+/// converter, e as linhas ficam como estão.
 #[allow(clippy::unnecessary_wraps)] // a assinatura é a de todo bloco convertido
 fn kept_as_is(_: &Connection, _: u32) -> Result<()> {
     Ok(())
@@ -461,12 +474,13 @@ pub const BLOCKS: [MapBlock; 6] = [CENSUS, FILES, DECLS, ROUTES, GRAPH, HISTORY]
 pub(crate) const SEARCHED: [&MapBlock; 3] = [&FILES, &DECLS, &GRAPH];
 
 /// Todo bloco que a porta declara, na ordem do despejo: os da montagem e,
-/// depois deles, o da história de cada declaração, o dos pull requests e o
-/// das specs.
-const DECLARED: [&MapBlock; 9] = [&CENSUS, &FILES, &DECLS, &ROUTES, &GRAPH, &HISTORY, &LINEAGE, &PULLS, &SPECS];
+/// depois deles, o da história de cada declaração, o dos pull requests, o
+/// das specs e o do glossário.
+const DECLARED: [&MapBlock; 10] =
+    [&CENSUS, &FILES, &DECLS, &ROUTES, &GRAPH, &HISTORY, &LINEAGE, &PULLS, &SPECS, &GLOSSARY];
 
 /// Os mesmos blocos, como o banco os abre.
-const DB_BLOCKS: [Block; 9] = [
+const DB_BLOCKS: [Block; 10] = [
     CENSUS.block,
     FILES.block,
     DECLS.block,
@@ -476,6 +490,7 @@ const DB_BLOCKS: [Block; 9] = [
     LINEAGE.block,
     PULLS.block,
     SPECS.block,
+    GLOSSARY.block,
 ];
 
 /// As chaves da lista dos arquivos e da lista das declarações de cada um.
@@ -1563,21 +1578,37 @@ pub fn is_behind(root: &Path) -> bool {
 /// vazio, ou com o texto que não se entendeu — é recusado antes de abrir: o
 /// SQLite tomaria o arquivo curto por um banco novo e gravaria nele.
 pub(crate) fn open_existing(model: &Path) -> std::result::Result<MapDb, MapRefusal> {
+    existing(model)?;
+    open(model).map_err(unreadable)
+}
+
+/// [`open_existing`] com a espera `wait` pela trava de outra gravação, para
+/// quem desiste logo em vez de segurar a ação de quem o chamou.
+pub(crate) fn open_existing_waiting(model: &Path, wait: std::time::Duration) -> std::result::Result<MapDb, MapRefusal> {
+    existing(model)?;
+    MapDb::open_waiting(model, project_of(model), &DB_BLOCKS, wait).map_err(unreadable)
+}
+
+/// A recusa do mapa que falta ou que não começa como um banco.
+fn existing(model: &Path) -> std::result::Result<(), MapRefusal> {
     if !exists_at(model) {
         return Err(MapRefusal::MapMissing);
     }
     if head_of(model) != SQLITE_HEADER {
         return Err(MapRefusal::MapUnreadable { detail: format!("{} is not a SQLite database", model.display()) });
     }
-    open(model).map_err(unreadable)
+    Ok(())
 }
 
 /// Abre o banco em `model` com os blocos do mapa em dia.
 fn open(model: &Path) -> Result<MapDb> {
-    // A raiz do projeto só serve ao bloco refeito, e todo bloco do mapa volta
-    // vazio para o scan encher: a pasta de cima basta.
-    let root = model.parent().and_then(Path::parent).unwrap_or_else(|| Path::new("."));
-    MapDb::open(model, root, &DB_BLOCKS)
+    MapDb::open(model, project_of(model), &DB_BLOCKS)
+}
+
+/// A raiz do projeto do mapa em `model`. Ela só serve ao bloco refeito, e
+/// todo bloco do mapa volta vazio para o scan encher: a pasta de cima basta.
+fn project_of(model: &Path) -> &Path {
+    model.parent().and_then(Path::parent).unwrap_or_else(|| Path::new("."))
 }
 
 pub(crate) fn unreadable(err: Error) -> MapRefusal {
@@ -2034,6 +2065,11 @@ fn save_rows<'b>(
                 Some(languages) => map_search::rebuild(tx, languages)?,
                 None => map_search::forget(tx)?,
             }
+        }
+        // Refeitas as declarações, a marca do glossário cuja declaração mudou
+        // de nome ou sumiu sai junto.
+        if changed.iter().any(|(block, _)| block.name() == DECLS.name()) {
+            map_glossary::drop_stale(tx)?;
         }
         Ok(())
     })?;
@@ -2515,7 +2551,7 @@ mod tests {
                 "census", "projects", "languages", "manifests", "skeleton", "files", "decls", "texts", "routes", "links",
                 "graph", "fan_in", "history_base", "history_paths", "commits", "lineage_files", "lineage_commits",
                 "lineage_decls", "pr_texts", "pr_comments", "pr_commits", "spec_items", "spec_commits", "spec_pulls",
-                "spec_marks", "blocks"
+                "spec_marks", "glossary_asks", "glossary_marks", "blocks"
             ]
         );
         let decls = &dump[6]["rows"];

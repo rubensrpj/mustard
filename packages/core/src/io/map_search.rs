@@ -27,7 +27,15 @@
 //! trigram, para o pedaço do nome. O arquivo escrito por máquina fica fora
 //! do índice. A declaração de teste — a de um arquivo de teste e a escrita
 //! num trecho de teste de outro arquivo — entra na tabela trigram, que acha
-//! o arquivo pelo pedaço do nome, mas não no nível das declarações.
+//! o arquivo pelo pedaço do nome, mas não no nível das declarações. O mesmo
+//! vale para o campo escrito no cabeçalho do tipo dono, como o parâmetro do
+//! construtor primário do C#: a assinatura do dono já o traz.
+//!
+//! O glossário do mapa (`io::map_glossary`) entra nos dois níveis como mais
+//! um campo, o das palavras aprendidas: a palavra da pergunta que uma edição
+//! confirmada ligou a uma declaração conta nela e no arquivo dela. O
+//! documento que só esse campo achou não passa à frente de nenhum que casa
+//! pelo nome.
 //!
 //! Um terceiro nível, à parte, guarda os itens das specs (`io::map_specs`):
 //! o título, o texto e as palavras de busca de cada um, com a
@@ -71,10 +79,11 @@ use crate::domain::map_filter::FilterCandidate;
 use crate::domain::map_select::{Linked, Links};
 use crate::domain::project_map::DeclAt;
 use crate::domain::search::{
-    bm25f, file_list, folded_name, name_list, name_words, round_robin, score_x1024, Fields, NameHits, Posting,
+    bm25f, file_list, folded_name, name_list, name_words, ranked, round_robin, score_x1024, Fields, NameHits, Posting,
 };
 use crate::io::map_db::MapDb;
 use crate::io::map_fill;
+use crate::io::map_glossary::{self, Learned};
 use crate::io::project_map::{model_path, open_existing, unreadable, SEARCHED};
 use crate::platform::error::Result;
 
@@ -89,6 +98,8 @@ struct Level {
     meta: &'static str,
     fields: &'static [&'static str],
     unread: &'static [&'static str],
+    /// Como o nível lê as marcas do glossário; `None` no que não as lê.
+    learned: Option<Learned>,
 }
 
 impl Level {
@@ -106,6 +117,7 @@ const FILE_LEVEL: Level = Level {
     meta: "search_meta",
     fields: &["name", "path", "doc", "log", "error", "text"],
     unread: &["file_doc", "file_comment"],
+    learned: Some(Learned::Files),
 };
 
 /// O nível das declarações.
@@ -116,6 +128,7 @@ const DECL_LEVEL: Level = Level {
     meta: "search_meta",
     fields: &["name", "path", "signature", "doc", "log", "error", "text"],
     unread: &["whole_doc", "body_comment", "body_names", "body_calls"],
+    learned: Some(Learned::Decls),
 };
 
 /// O nível dos itens das specs (`io::map_specs`): o título, a parte do
@@ -129,6 +142,7 @@ const SPEC_LEVEL: Level = Level {
     meta: "spec_meta",
     fields: &["title", "text", "words"],
     unread: &[],
+    learned: None,
 };
 
 /// Os campos dos textos fixos, os últimos dos dois níveis, nesta ordem: cada
@@ -162,6 +176,15 @@ impl Written {
 /// 114 pontos com eles.
 const FIELD_WEIGHT: f64 = 1.0;
 
+/// O peso do campo das palavras aprendidas, com o tamanho de uma palavra e a
+/// média de uma: a palavra marcada conta como a escrita num campo de tamanho
+/// médio. Na régua das 360 buscas em três projetos, com as marcas que a
+/// primeira de cada três frases da mesma pergunta ensinaria, a certa ficou
+/// em primeiro em 340 buscas com o peso 0,5, em 350 com 1 e em 351 com 2
+/// (69 sem marca). Com as marcas de metade das perguntas, a outra metade
+/// perdeu 4 buscas no primeiro lugar e nenhuma entre os 50 primeiros.
+const LEARNED_WEIGHT: f64 = 1.0;
+
 /// A pergunta de uma palavra que procura o pedaço do nome tem pelo menos
 /// estas letras: com menos, o pedaço casa com nome demais.
 const PIECE_MIN_CHARS: usize = 4;
@@ -186,24 +209,26 @@ struct Doc {
 }
 
 /// Uma declaração do índice: o documento dela, o nome inteiro, para o pedaço
-/// do nome, o número do arquivo dela e se ela é de teste.
+/// do nome, o número do arquivo dela e se ela fica fora do nível das
+/// declarações.
 struct Decl {
     doc: Doc,
     name: String,
     file: i64,
-    test: bool,
+    unlisted: bool,
 }
 
 /// Refaz o índice inteiro a partir das tabelas dos arquivos e das
 /// declarações, com as palavras preparadas nas línguas `languages`. Roda na
 /// transação de quem grava: o índice e as linhas de que ele sai entram
-/// juntos. A declaração de teste fica fora do nível das declarações, de onde
-/// saem os candidatos da busca com filtro, e entra na tabela trigram.
+/// juntos. A declaração de teste e o campo escrito no cabeçalho do dono
+/// ficam fora do nível das declarações, de onde saem os candidatos da busca
+/// com filtro, e entram na tabela trigram.
 pub(crate) fn rebuild(conn: &Connection, languages: &Languages) -> Result<()> {
     let (files, decls) = documents(conn, &mut Normalizer::new(languages))?;
     forget(conn)?;
     fill(conn, &FILE_LEVEL, &files)?;
-    fill(conn, &DECL_LEVEL, decls.iter().filter(|decl| !decl.test).map(|decl| &decl.doc))?;
+    fill(conn, &DECL_LEVEL, decls.iter().filter(|decl| !decl.unlisted).map(|decl| &decl.doc))?;
     {
         let mut insert = conn.prepare("INSERT INTO decl_trigram(rowid, name, folded, file) VALUES (?1, ?2, ?3, ?4)")?;
         for decl in &decls {
@@ -240,7 +265,8 @@ pub(crate) fn forget(conn: &Connection) -> Result<()> {
 /// é de toda declaração cujas linhas a contêm. A documentação inteira que o
 /// scan não guardou à parte é a mesma de `doc`. A declaração é de teste
 /// quando o arquivo dela é de teste ou quando a primeira linha dela cai num
-/// trecho de teste do arquivo.
+/// trecho de teste do arquivo. A de teste e o campo escrito no cabeçalho do
+/// dono ([`in_owner_header`]) ficam fora do nível das declarações.
 fn documents(conn: &Connection, normalizer: &mut Normalizer) -> Result<(Vec<Doc>, Vec<Decl>)> {
     let mut files: Vec<Doc> = Vec::new();
     // As palavras que o arquivo já tem nos nomes, na documentação e em cada
@@ -266,7 +292,7 @@ fn documents(conn: &Connection, normalizer: &mut Normalizer) -> Result<(Vec<Doc>
     }
     let mut rows_of: Vec<DeclRow> = Vec::new();
     let mut stmt = conn.prepare(
-        "SELECT rowid, file, name, signature, doc, line, end_line, whole_doc, body_comment, body_names \
+        "SELECT rowid, file, name, signature, doc, line, end_line, whole_doc, body_comment, body_names, kind, owner \
          FROM decls ORDER BY rowid",
     )?;
     let mut rows = stmt.query([])?;
@@ -278,7 +304,7 @@ fn documents(conn: &Connection, normalizer: &mut Normalizer) -> Result<(Vec<Doc>
         rows_of.push(DeclRow {
             id: row.get(0)?,
             owner,
-            test: *test_file || test_lines.iter().any(|&(start, end)| (start..=end).contains(&first)),
+            unlisted: *test_file || test_lines.iter().any(|&(start, end)| (start..=end).contains(&first)),
             name: text(row, 2)?,
             signature: text(row, 3)?,
             doc: text(row, 4)?,
@@ -287,6 +313,11 @@ fn documents(conn: &Connection, normalizer: &mut Normalizer) -> Result<(Vec<Doc>
             whole_doc: text(row, 7)?,
             body_comment: text(row, 8)?,
             body_names: text(row, 9)?,
+            kind: text(row, 10)?,
+            owner_name: serde_json::from_str::<Vec<String>>(&text(row, 11)?)
+                .ok()
+                .and_then(|owners| owners.last().cloned())
+                .unwrap_or_default(),
         });
     }
     // Os textos de cada arquivo: as palavras vão para o arquivo e para a
@@ -294,6 +325,10 @@ fn documents(conn: &Connection, normalizer: &mut Normalizer) -> Result<(Vec<Doc>
     let mut decls_of: Vec<Vec<usize>> = vec![Vec::new(); files.len()];
     for (at, row) in rows_of.iter().enumerate() {
         decls_of[row.owner].push(at);
+    }
+    let header: Vec<usize> = (0..rows_of.len()).filter(|&at| in_owner_header(&rows_of, &decls_of, at)).collect();
+    for at in header {
+        rows_of[at].unlisted = true;
     }
     let comments = FILE_LEVEL.fields.len();
     for FileText { path, written, file_doc, file_comment, file_doc_in_body } in written_texts(conn)? {
@@ -334,7 +369,7 @@ fn documents(conn: &Connection, normalizer: &mut Normalizer) -> Result<(Vec<Doc>
             add_new(&mut called, &mut seen_calls, words);
         }
         fields.extend([whole_doc, normalizer.forms(&row.body_comment), normalizer.forms(&row.body_names), called]);
-        decls.push(Decl { doc: Doc { id: row.id, fields }, name: row.name, file: file.id, test: row.test });
+        decls.push(Decl { doc: Doc { id: row.id, fields }, name: row.name, file: file.id, unlisted: row.unlisted });
     }
     Ok((files, decls))
 }
@@ -370,8 +405,9 @@ fn written_calls(
 struct DeclRow {
     id: i64,
     owner: usize,
-    /// A declaração é de teste: fica fora do nível das declarações.
-    test: bool,
+    /// A declaração fica fora do nível das declarações: é de teste, ou é o
+    /// campo escrito no cabeçalho do dono.
+    unlisted: bool,
     name: String,
     signature: String,
     doc: String,
@@ -381,6 +417,41 @@ struct DeclRow {
     whole_doc: String,
     body_comment: String,
     body_names: String,
+    kind: String,
+    /// O nome do tipo dono, o último da lista que o scan grava.
+    owner_name: String,
+}
+
+/// `true` quando a declaração `at` é um campo escrito no cabeçalho do tipo
+/// dono: a assinatura do campo está, como palavras inteiras, na assinatura
+/// da declaração do mesmo arquivo com o nome do dono que contém a linha dele
+/// — a que começa mais abaixo. É o parâmetro do construtor primário do C#,
+/// que o scan grava também como campo: a assinatura do dono já o traz, e o
+/// campo à parte só repete, entre os candidatos, o nome do parâmetro.
+fn in_owner_header(rows: &[DeclRow], decls_of: &[Vec<usize>], at: usize) -> bool {
+    let field = &rows[at];
+    let signature = field.signature.trim();
+    if field.kind != "field" || signature.is_empty() || field.owner_name.is_empty() {
+        return false;
+    }
+    let line = field.lines.0;
+    let owner = decls_of[field.owner]
+        .iter()
+        .copied()
+        .filter(|&other| other != at)
+        .map(|other| &rows[other])
+        .filter(|other| other.name == field.owner_name && other.lines.0 <= line)
+        .filter(|other| other.lines.1 == 0 || other.lines.1 >= line)
+        .max_by_key(|other| other.lines.0);
+    owner.is_some_and(|owner| has_whole(&owner.signature, signature))
+}
+
+/// `true` quando `needle` aparece em `text` sem letra, algarismo ou `_`
+/// colados antes nem depois.
+fn has_whole(text: &str, needle: &str) -> bool {
+    let glued = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
+    text.match_indices(needle)
+        .any(|(start, found)| !glued(text[..start].chars().next_back()) && !glued(text[start + found.len()..].chars().next()))
 }
 
 /// Acrescenta a `into` cada palavra de `words` que `seen` ainda não tem.
@@ -645,7 +716,7 @@ fn by_words_as(
     texts: Texts,
     words: &[Vec<String>],
 ) -> Result<Vec<(i64, f64)>> {
-    let words = as_indexed(conn, words)?;
+    let indexed = as_indexed(conn, words)?;
     let sizes: Vec<String> = fields.iter().map(|field| format!("l.{field}")).collect();
     let mut lists = conn.prepare(&format!(
         "SELECT v.doc, v.col, {} FROM {} v JOIN {} l ON l.id = v.doc WHERE v.term = ?1",
@@ -654,11 +725,61 @@ fn by_words_as(
         level.lengths
     ))?;
     let slots = slots(fields, texts);
-    let postings = words
+    let mut postings = indexed
         .iter()
         .map(|forms| forms.iter().map(|form| postings(&mut lists, fields, &slots, form)).collect::<Result<Vec<_>>>())
         .collect::<Result<Vec<_>>>()?;
-    Ok(bm25f(&postings, &fields_of(conn, level, fields, &slots)?))
+    let mut numbers = fields_of(conn, level, fields, &slots)?;
+    let Some(learned) = level.learned else { return Ok(bm25f(&postings, &numbers)) };
+    let marked = map_glossary::marked(conn, learned, words)?;
+    if marked.iter().all(Vec::is_empty) {
+        return Ok(bm25f(&postings, &numbers));
+    }
+    let learned_slot = numbers.avg_len.len();
+    numbers.avg_len.push(1.0);
+    numbers.weights.push(LEARNED_WEIGHT);
+    for (forms, docs) in postings.iter_mut().zip(&marked) {
+        let extra: Vec<Posting> = docs.iter().map(|&doc| Posting { doc, field: learned_slot, field_len: 1 }).collect();
+        if extra.is_empty() {
+            continue;
+        }
+        if forms.is_empty() {
+            forms.push(extra);
+        } else {
+            for list in forms.iter_mut() {
+                list.extend(extra.iter().copied());
+            }
+        }
+    }
+    let name_slot = fields.iter().position(|field| *field == "name").map(|at| slots[at]);
+    Ok(behind_the_names(bm25f(&postings, &numbers), &postings, name_slot, learned_slot))
+}
+
+/// A nota com a regra das palavras aprendidas: o documento que só o campo
+/// `learned` achou fica logo abaixo do mais fraco dos que casam pelo campo
+/// `name`, quando estava acima dele. Sem o campo do nome, ou sem documento
+/// que case por ele, a nota fica como veio.
+fn behind_the_names(
+    scores: Vec<(i64, f64)>,
+    postings: &[Vec<Vec<Posting>>],
+    name: Option<usize>,
+    learned: usize,
+) -> Vec<(i64, f64)> {
+    let (mut named, mut plain) = (HashSet::new(), HashSet::new());
+    for posting in postings.iter().flatten().flatten() {
+        if posting.field != learned {
+            plain.insert(posting.doc);
+        }
+        if Some(posting.field) == name {
+            named.insert(posting.doc);
+        }
+    }
+    let Some(floor) = scores.iter().filter(|(doc, _)| named.contains(doc)).map(|&(_, score)| score).reduce(f64::min)
+    else {
+        return scores;
+    };
+    let below = floor.next_down();
+    ranked(scores.into_iter().map(|(doc, score)| if plain.contains(&doc) { (doc, score) } else { (doc, score.min(below)) }))
 }
 
 /// As formas de cada palavra da pergunta como o tokenizador do índice as
@@ -1581,6 +1702,56 @@ mod tests {
         assert_eq!(names, ["gravar_pedido"], "{found:?}");
         assert_eq!(found.whole, vec![id_of(dir.path(), "gravar_pedido")], "{found:?}");
         assert!(paths(dir.path(), "gravar_pedido_de_teste").contains(&"tests/pedido_test.rs".to_string()));
+    }
+
+    /// O parâmetro do construtor primário, que o scan grava também como campo
+    /// do tipo, não é candidato: a assinatura do tipo já o traz. O campo
+    /// escrito no corpo do tipo continua candidato, e o arquivo continua
+    /// achado pelo nome do parâmetro.
+    #[test]
+    fn a_field_written_in_the_header_of_its_owner_is_never_a_filter_candidate() {
+        let dir = saved_json(&json!({"modules": [
+            {"path": "src/Validator.cs", "declarations": [
+                {"kind": "class", "name": "BlockingValidator", "line": 1, "end_line": 9,
+                 "signature": "public sealed class BlockingValidator(string blockedSlug, string reason) : IValidator"},
+                {"kind": "field", "name": "blockedSlug", "line": 1, "end_line": 1, "signature": "string blockedSlug",
+                 "owner": ["BlockingValidator"]},
+                {"kind": "field", "name": "slugCache", "line": 3, "end_line": 3,
+                 "signature": "private readonly string slugCache", "owner": ["BlockingValidator"]}
+            ]}
+        ]}));
+        let found = candidates(dir.path(), "slug", "", &languages(), 100).unwrap();
+        let names: Vec<&str> = found.candidates.iter().map(|c| c.name.as_str()).collect();
+        assert!(names.contains(&"slugCache") && names.contains(&"BlockingValidator"), "{names:?}");
+        assert!(!names.contains(&"blockedSlug"), "{names:?}");
+        assert_eq!(paths(dir.path(), "blocked slug"), ["src/Validator.cs"]);
+    }
+
+    /// A palavra aprendida soma peso, mas a declaração que só ela acha fica
+    /// atrás da que casa pelo nome, mesmo quando o nome comprido dá a esta
+    /// uma nota menor.
+    #[test]
+    fn a_learned_word_alone_does_not_pass_a_declaration_whose_name_matches() {
+        let named = "sobra_do_caixa_do_mes_anterior_ja_consolidada_no_fechamento";
+        let dir = saved_json(&json!({"modules": [
+            {"path": "src/rounds.rs", "declarations": [
+                {"kind": "function", "name": "collect_leftover", "line": 1, "end_line": 5}]},
+            {"path": "src/cash.rs", "declarations": [
+                {"kind": "function", "name": named, "line": 1, "end_line": 5}]}
+        ]}));
+        let model = model_path(dir.path());
+        let words = Normalizer::new(&languages()).query("sobra");
+        let base = |dir: &Path| -> Vec<i64> {
+            let db = open_existing(&model_path(dir)).unwrap();
+            base_list(db.conn(), &words).unwrap().into_iter().map(|(id, _)| id).collect()
+        };
+        assert_eq!(base(dir.path()), vec![id_of(dir.path(), named)]);
+
+        map_glossary::record_search(&model, "s1", "sobra", &languages(), &[]).unwrap();
+        let wait = std::time::Duration::from_secs(1);
+        let marks = map_glossary::confirm_edit(&model, "s1", "src/rounds.rs", &[(2, 2)], &languages(), wait).unwrap();
+        assert_eq!(marks.len(), 1, "{marks:?}");
+        assert_eq!(base(dir.path()), vec![id_of(dir.path(), named), id_of(dir.path(), "collect_leftover")]);
     }
 
     #[test]

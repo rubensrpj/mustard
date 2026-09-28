@@ -8,6 +8,7 @@ pub mod lessons;
 pub mod project_map;
 pub mod map_db;
 pub mod map_fill;
+pub mod map_glossary;
 pub mod map_search;
 pub mod map_specs;
 pub mod wave_prompt;

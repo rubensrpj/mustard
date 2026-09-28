@@ -101,6 +101,13 @@ impl MapDb {
     /// bloco, numa transação própria, com `root` — a raiz do projeto — para o
     /// bloco refeito. O bloco que não está em `blocks` fica como está.
     pub fn open(path: &Path, root: &Path, blocks: &[Block]) -> Result<Self> {
+        Self::open_waiting(path, root, blocks, BUSY_WAIT)
+    }
+
+    /// [`Self::open`] com outra espera pela trava: quem não pode segurar a
+    /// ação de quem chamou — o gancho que roda depois de cada edição — espera
+    /// pouco e desiste, em vez de esperar a regravação inteira do scan.
+    pub fn open_waiting(path: &Path, root: &Path, blocks: &[Block], wait: Duration) -> Result<Self> {
         for block in blocks {
             if block.name == BLOCKS_TABLE || block.tables.contains(&BLOCKS_TABLE) {
                 return Err(Error::config(format!("map block `{}` uses the reserved name `{BLOCKS_TABLE}`", block.name)));
@@ -111,7 +118,7 @@ impl MapDb {
         }
         let mut conn = Connection::open(path)?;
         // A espera vem antes de tudo: até trocar o diário pede a trava.
-        conn.busy_timeout(BUSY_WAIT)?;
+        conn.busy_timeout(wait)?;
         // Um mapa que outro programa tenha posto em outro diário volta ao
         // `DELETE`, que não deixa arquivo ao lado depois do commit.
         let mode: String = conn.pragma_update_and_check(None, "journal_mode", "DELETE", |row| row.get(0))?;
