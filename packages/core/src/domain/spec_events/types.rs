@@ -87,16 +87,63 @@ impl BlockQuery {
     }
 
     /// Os nomes aceitos, na ordem da página, para a mensagem de recusa. Com
-    /// eles, `dispatch-<n>`: o que o pedido da onda lista, que a leitura
-    /// monta fora dos blocos.
+    /// eles, as leituras que a leitura monta fora dos blocos
+    /// ([`ReadQuery`]): o que o pedido da onda lista, o pedido gravado, a
+    /// entrega vigente, as tarefas por entregar e um item só.
     #[must_use]
     pub fn accepted_names() -> String {
         let mut names: Vec<&str> = Block::ALL.iter().map(|b| b.name()).collect();
         if let Some(i) = names.iter().position(|n| *n == "waves") {
-            names.insert(i + 1, "wave-<n>");
-            names.insert(i + 2, "dispatch-<n>");
+            let beside = ["wave-<n>", "dispatch-<n>", "request-<n>", "delivered-<n>", "backlog", "item-<code|n>"];
+            for (step, name) in beside.into_iter().enumerate() {
+                names.insert(i + 1 + step, name);
+            }
         }
         names.join(", ")
+    }
+}
+
+/// O que o `read` pede: um bloco da spec ou uma das leituras que ele monta
+/// fora dos blocos. `dispatch-2` é tudo o que o pedido da onda 2 lista;
+/// `request-2`, o pedido exato gravado no envio dela; `delivered-2`, a entrega
+/// vigente dela; `backlog`, as tarefas ainda por entregar; e `item-<código>`
+/// ou `item-<número>`, um item só, pelo código ou pela versão de número dado.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReadQuery {
+    Block(BlockQuery),
+    Dispatch(u64),
+    Request(u64),
+    Delivered(u64),
+    Backlog,
+    Item(EventRef),
+}
+
+impl ReadQuery {
+    /// Lê o nome pedido; `None` para um nome que não é bloco nem leitura, ou
+    /// para uma leitura sem o número ou o código que ela exige.
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        let name = name.trim();
+        let number = |rest: &str| rest.parse::<u64>().ok();
+        if let Some(rest) = name.strip_prefix("dispatch-") {
+            return number(rest).map(Self::Dispatch);
+        }
+        if let Some(rest) = name.strip_prefix("request-") {
+            return number(rest).map(Self::Request);
+        }
+        if let Some(rest) = name.strip_prefix("delivered-") {
+            return number(rest).map(Self::Delivered);
+        }
+        if let Some(rest) = name.strip_prefix("item-") {
+            return match number(rest) {
+                Some(id) => (id > 0).then_some(Self::Item(EventRef::Id(id))),
+                None => EventRef::from_value(&Value::String(rest.to_string())).map(Self::Item),
+            };
+        }
+        if name == "backlog" {
+            return Some(Self::Backlog);
+        }
+        BlockQuery::parse(name).map(Self::Block)
     }
 }
 
@@ -802,7 +849,30 @@ mod tests {
         assert_eq!(BlockQuery::parse("wave-2"), Some(BlockQuery::Wave(2)));
         assert_eq!(BlockQuery::parse("wave-x"), None);
         assert_eq!(BlockQuery::parse("everything"), None);
-        assert!(BlockQuery::accepted_names().contains("waves, wave-<n>, dispatch-<n>, review"));
+        assert!(BlockQuery::accepted_names().contains(
+            "waves, wave-<n>, dispatch-<n>, request-<n>, delivered-<n>, backlog, item-<code|n>, review"
+        ));
+    }
+
+    /// Além dos blocos, a leitura aceita o pedido de uma onda, o pedido
+    /// gravado, a entrega, o backlog e um item pelo código ou pelo número; sem
+    /// o número ou com um código fora do formato, o nome não é aceito.
+    #[test]
+    fn the_readings_beside_the_blocks_take_their_number_or_code() {
+        assert_eq!(ReadQuery::parse("state"), Some(ReadQuery::Block(BlockQuery::Block(Block::State))));
+        assert_eq!(ReadQuery::parse("wave-3"), Some(ReadQuery::Block(BlockQuery::Wave(3))));
+        assert_eq!(ReadQuery::parse("dispatch-3"), Some(ReadQuery::Dispatch(3)));
+        assert_eq!(ReadQuery::parse("request-3"), Some(ReadQuery::Request(3)));
+        assert_eq!(ReadQuery::parse(" delivered-3 "), Some(ReadQuery::Delivered(3)));
+        assert_eq!(ReadQuery::parse("backlog"), Some(ReadQuery::Backlog));
+        assert_eq!(ReadQuery::parse("item-42"), Some(ReadQuery::Item(EventRef::Id(42))));
+        assert_eq!(
+            ReadQuery::parse("item-MSTD-TASK-0003"),
+            Some(ReadQuery::Item(EventRef::Code("MSTD-TASK-0003".into())))
+        );
+        for refused in ["request-", "request-x", "delivered-", "item-", "item-0", "item-tarefa", "backlogs"] {
+            assert_eq!(ReadQuery::parse(refused), None, "{refused}");
+        }
     }
 
     /// A tarefa leva, quando o pedido formal muda o desenho, o par de papéis

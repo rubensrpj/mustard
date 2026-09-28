@@ -82,6 +82,24 @@ fn rt(root: &Path, home: &Path, args: &[&str], stdin: Option<&str>) -> Value {
         .unwrap_or_else(|e| panic!("{args:?} did not answer JSON ({e}): {text}{}", String::from_utf8_lossy(&out.stderr)))
 }
 
+/// O pedido de um item que a rodada despachou, lido como o agente o lê: pelo
+/// comando que a resposta traz no lugar do pedido, rodado pelo binário, com a
+/// saída crua.
+fn request_by_command(root: &Path, home: &Path, entry: &Value) -> String {
+    let command = entry["read"].as_str().unwrap_or_else(|| panic!("the dispatch carries no read command: {entry}"));
+    let words: Vec<&str> = command.split_whitespace().collect();
+    assert_eq!(words.first(), Some(&"mustard-rt"), "{command}");
+    let out = Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+        .args(&words[1..])
+        .current_dir(root)
+        .env("HOME", home)
+        .env_remove("MUSTARD_ACTIVE_SPEC")
+        .output()
+        .expect("the binary runs");
+    assert!(out.status.success(), "{command}: {}", String::from_utf8_lossy(&out.stdout));
+    String::from_utf8(out.stdout).expect("the request is text")
+}
+
 /// Um repositório com `main` e `dev`, parado em `dev`, com o `mustard.json`
 /// dado e a instalação feita. Devolve a pasta do projeto e a pessoal falsa.
 fn installed(dir: &Path, config: &str) -> (PathBuf, PathBuf) {
@@ -795,7 +813,7 @@ fn no_agent_text_creates_a_copy_on_its_own_and_the_request_names_the_slot_withou
     let mut copies = Vec::new();
     for sent in dispatched {
         let wave = sent["wave"].as_u64().unwrap();
-        let prompt = sent["prompt"].as_str().unwrap_or_default();
+        let prompt = &request_by_command(&root, &home, &sent);
         let send = log.visible().into_iter().rfind(|e| e.event_type == "send" && e.wave() == Some(wave)).unwrap();
         let copy = send.str_field("copy").unwrap_or_else(|| panic!("wave {wave} recorded no copy: {round}"));
         assert!(send.str_field("build_dir").is_none(), "wave {wave} recorded a build folder: {round}");
@@ -841,7 +859,7 @@ fn the_wave_request_says_the_agent_never_commits_and_the_commit_field_is_the_tit
         assert_eq!(round["ok"], json!(true), "{round}");
         let dispatched = round["dispatch"].as_array().cloned().unwrap_or_default();
         assert_eq!(dispatched.len(), 1, "{round}");
-        let prompt = dispatched[0]["prompt"].as_str().unwrap_or_default();
+        let prompt = &request_by_command(&root, &home, &dispatched[0]);
         for key in ["prompt.execution.no_commit", "prompt.execution.commit_field"] {
             let sentence = translate(key, text);
             assert!(prompt.contains(sentence), "{lang} wave request misses `{key}`: {prompt}");
@@ -880,7 +898,7 @@ fn o_pedido_manda_gravar_a_entrega_pela_ferramenta() {
         assert_eq!(round["ok"], json!(true), "{round}");
         let dispatched = round["dispatch"].as_array().cloned().unwrap_or_default();
         assert_eq!(dispatched.len(), 1, "{round}");
-        let prompt = dispatched[0]["prompt"].as_str().unwrap_or_default();
+        let prompt = &request_by_command(&root, &home, &dispatched[0]);
 
         let fixed = translate("prompt.fixed", text);
         assert!(prompt.contains(fixed), "{lang} wave request misses the fixed part: {prompt}");

@@ -8,7 +8,7 @@ effort: xhigh
 
 ## Goal
 
-You implement the tasks of one wave of a spec, and only those. The request gives each item's code and title and, under its line, the agent part; when in doubt, the command it gives reads the whole text, and any item a text cites is read by its code. A new item you record takes `title`, `text` and `agent`; a criterion, only `title`. Do not look for the spec anywhere else.
+You implement the tasks of one wave of a spec, and only those. First of all, read the whole request: whoever dispatches you may send only the command that reads it (`mustard-rt run read request-<n>`). The request gives each item's code and title and, under its line, the agent part; when in doubt, the command it gives reads the whole text, and any item a text cites is read by its code. The spec is read only through `mustard-rt run read`, never with python, jq or grep over `spec.ndjson`, nor from a copy of it in a file; a reading that is missing goes in `leftovers`, as a request for a new command. A new item you record takes `title`, `text` and `agent`; a criterion, only `title`. Do not look for the spec anywhere else.
 
 ## Tool guidance
 

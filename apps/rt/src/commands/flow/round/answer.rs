@@ -781,7 +781,7 @@ pub(super) fn run_entered_round(
         let written = record(&opts.root, &spec, "send", draft, PhaseWriter::Binary)
             .map_err(RoundRefusal::Refused)?;
         recorded.push(json!({ "wave": wave, "type": "send", "id": written.written.id }));
-        dispatched.push(json!({ "wave": wave, "lines": prompt.lines, "prompt": prompt.text, "agent": agent }));
+        dispatched.push(json!({ "wave": wave, "lines": prompt.lines, "read": request_command(root, &spec, *wave), "agent": agent }));
         let code = written.written.code.clone().unwrap_or_else(|| written.written.id.to_string());
         in_flight.insert(*wave, (code, written.written.id));
     }
@@ -824,7 +824,7 @@ pub(super) fn run_entered_round(
         let written = record(&opts.root, &spec, "send", draft, PhaseWriter::Binary)
             .map_err(RoundRefusal::Refused)?;
         recorded.push(json!({ "wave": wave, "type": "send", "id": written.written.id }));
-        dispatched.push(json!({ "wave": wave, "lines": text.lines().count(), "prompt": text, "agent": agent }));
+        dispatched.push(json!({ "wave": wave, "lines": text.lines().count(), "read": request_command(root, &spec, wave), "agent": agent }));
         let code = written.written.code.clone().unwrap_or_else(|| written.written.id.to_string());
         in_flight.insert(wave, (code, written.written.id));
     }
@@ -964,6 +964,15 @@ pub(super) fn run_entered_round(
         out["command"] = json!(command);
     }
     Ok(out)
+}
+
+/// O comando que lê o pedido gravado no envio da onda `wave`. A resposta da
+/// rodada traz este comando no lugar do pedido inteiro, e o agente lê o
+/// próprio pedido por ele, de dentro da cópia dele: por isso o comando leva o
+/// caminho do repositório principal, onde a spec mora.
+fn request_command(root: &Path, spec: &str, wave: u64) -> String {
+    let main = mustard_core::io::wave_prompt::shown(root);
+    format!("mustard-rt run read request-{wave} --root {main} --spec {spec}")
 }
 
 /// O fim de toda resposta da rodada, a que despacha e a que recusa um ciclo
@@ -1307,10 +1316,12 @@ mod tests {
         }
     }
 
-    /// A primeira rodada leva a spec para a execução, grava o envio de cada
-    /// onda com o pedido exato e devolve o pedido pronto para injetar.
+    /// A primeira rodada leva a spec para a execução e grava o envio de cada
+    /// onda com o pedido exato. A resposta não traz o pedido: traz o comando
+    /// que o lê, com o caminho do repositório principal, e as linhas dele; o
+    /// comando devolve o pedido gravado, letra por letra.
     #[test]
-    fn the_first_round_records_what_it_injected_and_marks_the_spec_running() {
+    fn the_first_round_records_the_request_and_answers_the_command_that_reads_it() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
@@ -1320,7 +1331,10 @@ mod tests {
         assert_eq!(out["phase"], json!("running"), "{out}");
         let dispatched = out["dispatch"].as_array().cloned().unwrap_or_default();
         assert_eq!(dispatched.len(), 1, "{out}");
-        let prompt = dispatched[0]["prompt"].as_str().unwrap_or_default().to_string();
+        assert!(dispatched[0].get("prompt").is_none(), "the answer carries no request: {out}");
+        let main = mustard_core::io::wave_prompt::shown(root);
+        assert_eq!(dispatched[0]["read"], json!(format!("mustard-rt run read request-1 --root {main} --spec x")), "{out}");
+        let prompt = request_at(&out, 0);
         // A tarefa ganha linha própria, pelo código, e a leitura aparece uma
         // vez só, na linha de como ler — o comando do pedido inteiro e o de
         // um item pelo código —, com o caminho do repositório principal: a
@@ -1341,6 +1355,7 @@ mod tests {
         assert_eq!(sent.len(), 1, "um envio por onda despachada");
         assert_eq!(sent[0].str_field("text"), Some(prompt.as_str()));
         assert_eq!(sent[0].wave(), Some(1));
+        assert_eq!(dispatched[0]["lines"], json!(sent[0].int("lines")), "the answer keeps the request's size: {out}");
     }
 
     /// Uma spec aprovada sem onda nenhuma, com `src/a.rs` e `src/b.rs` no
@@ -1507,7 +1522,7 @@ mod tests {
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
         let out = round(root, "x", None);
         assert_eq!(out["ok"], json!(true), "{out}");
-        let prompt = out["dispatch"][0]["prompt"].as_str().unwrap_or_default().to_string();
+        let prompt = request_at(&out, 0);
         assert!(!prompt.is_empty(), "{out}");
 
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
@@ -1641,7 +1656,7 @@ mod tests {
         let mut first_out = waves_in(&first, "dispatch");
         first_out.sort_unstable();
         assert_eq!(first_out, vec![1, 2, 3, 4], "{first}");
-        let first_prompt = first["dispatch"][0]["prompt"].as_str().unwrap_or_default().to_string();
+        let first_prompt = request_at(&first, 0);
 
         let path = store::spec_file(root, "x").unwrap();
         let (claude_pid, claude_started) = crate::commands::flow::stuck::sender_process();
@@ -1688,16 +1703,7 @@ mod tests {
         resent.sort_unstable();
         assert_eq!(resent, vec![1, 2], "só a pausada e a órfã saem de novo: {out}");
 
-        let prompt_of = |wave: u64| -> String {
-            out["dispatch"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .find(|d| d["wave"].as_u64() == Some(wave))
-                .and_then(|d| d["prompt"].as_str())
-                .unwrap_or_default()
-                .to_string()
-        };
+        let prompt_of = |wave: u64| -> String { request_of(&out, wave) };
         let notice = translate("round.resume.notice", Locale::PtBr);
         let wave1_prompt = prompt_of(1);
         assert!(wave1_prompt.starts_with(&first_prompt), "o pedido de antes volta palavra por palavra: {wave1_prompt}");
@@ -1757,14 +1763,7 @@ mod tests {
         let mut started = waves_in(&first, "dispatch");
         started.sort_unstable();
         assert_eq!(started, vec![1, 2, 3], "só 3 vagas: a onda 4 espera: {first}");
-        let first_prompt = first["dispatch"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|d| d["wave"].as_u64() == Some(1))
-            .and_then(|d| d["prompt"].as_str())
-            .unwrap_or_default()
-            .to_string();
+        let first_prompt = request_of(&first, 1);
         assert!(first_prompt.contains("Onda 2") && first_prompt.contains("Onda 3"), "{first_prompt}");
 
         // A onda 2 entrega — libera a vaga dela, que a 4 assume — no mesmo
@@ -1776,14 +1775,7 @@ mod tests {
         sent_now.sort_unstable();
         assert_eq!(sent_now, vec![1, 4], "a 4 assume a vaga da 2, e a 1 reenvia: {out}");
 
-        let resent = out["dispatch"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|d| d["wave"].as_u64() == Some(1))
-            .and_then(|d| d["prompt"].as_str())
-            .unwrap_or_default()
-            .to_string();
+        let resent = request_of(&out, 1);
         assert!(resent.contains("Onda 3") && resent.contains("Onda 4"), "a 3 segue e a 4 entrou: {resent}");
         assert!(!resent.contains("Onda 2"), "a 2 já entregou: a lista velha não segue no reenvio: {resent}");
 
@@ -1842,11 +1834,7 @@ mod tests {
         // ele antes de comitar, e sem um Makefile de verdade o teste
         // pegaria a recusa de build em vez do fluxo que ele testa.
         std::fs::write(root.join("Makefile"), "default:\n\t@true\n").unwrap();
-        let text = |out: &Value, field: &str, wave: u64| -> String {
-            let found = out[field].as_array().into_iter().flatten().find(|d| d["wave"] == json!(wave));
-            found.and_then(|d| d["prompt"].as_str()).unwrap_or_default().to_string()
-        };
-        let first = text(&round(root, "x", None), "dispatch", 1);
+        let first = request_of(&round(root, "x", None), 1);
         for line in ["- Compile com `make`.", "- Teste com `make test`.", "  - Onda 2: `src/b.rs`"] {
             assert!(first.contains(line), "{line}: {first}");
         }
@@ -1863,7 +1851,7 @@ mod tests {
             "text": "faltou o teste", "criteria": [{"criterion": "MSTD-CRIT-0001", "tests_rule": true}],
             "agreed": [{"item": "MSTD-DEC-0001", "met": true}]}));
         assert_eq!(rejected_with_agreed["ok"], json!(true), "{rejected_with_agreed}");
-        let fix = text(&round(root, "x", None), "dispatch", 1);
+        let fix = request_of(&round(root, "x", None), 1);
         let heading =
             format!("## {}\n\n{}", translate("prompt.part.items", Locale::PtBr), translate("prompt.fix.wave", Locale::PtBr));
         assert!(fix.contains(&heading), "{fix}");
@@ -1898,11 +1886,7 @@ mod tests {
             src/a.rs:5 menor: nome da variável confuso";
         assert_eq!(findings.lines().count(), 4, "quatro achados, um por linha");
 
-        let text = |out: &Value, field: &str, wave: u64| -> String {
-            let found = out[field].as_array().into_iter().flatten().find(|d| d["wave"] == json!(wave));
-            found.and_then(|d| d["prompt"].as_str()).unwrap_or_default().to_string()
-        };
-        let fix = text(&round(root, "x", Some(&verdict(root, 1, "rejected", findings))), "dispatch", 1);
+        let fix = request_of(&round(root, "x", Some(&verdict(root, 1, "rejected", findings))), 1);
         assert!(fix.contains("MSTD-VERD-0001"), "o pedido de conserto aponta o veredito: {fix}");
 
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();

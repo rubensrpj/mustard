@@ -52,8 +52,8 @@ pub use read::{parse_log, Hidden, SkipReason, SkippedLine, SpecEvent, SpecLog, S
 pub use refusal::{ItemPart, Refusal, TaskDeclaration, TASK_TITLE_MAX};
 pub use search::{found_by, refresh_search_lines, search_field};
 pub use types::{
-    type_names, type_spec, Block, BlockQuery, EventRef, Field, Kind, TypeSpec, DELIVERED_MAX_CHARS, METRIC_TYPES,
-    PHASES, TYPES, WORK_KINDS,
+    type_names, type_spec, Block, BlockQuery, EventRef, Field, Kind, ReadQuery, TypeSpec, DELIVERED_MAX_CHARS,
+    METRIC_TYPES, PHASES, TYPES, WORK_KINDS,
 };
 pub(crate) use types::{opt, req};
 

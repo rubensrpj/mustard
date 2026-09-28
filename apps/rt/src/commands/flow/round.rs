@@ -142,7 +142,7 @@ use crate::shared::spec_state::session_from_env;
 
 pub(crate) use answer::RoundRefusal;
 pub(crate) use convert::convert_hand_waves;
-pub(crate) use queue::{backlog_left, open_review, wave_states, waves_in_progress, waves_pending_fix};
+pub(crate) use queue::{backlog_left, open_review, tasks_left, wave_states, waves_in_progress, waves_pending_fix};
 #[cfg(test)]
 pub(crate) use slots::copies_leave_with_the_test;
 pub(crate) use slots::{
@@ -527,6 +527,38 @@ mod tests {
     /// As ondas de uma resposta da rodada, num campo dela.
     pub(super) fn waves_in(out: &Value, field: &str) -> Vec<u64> {
         out[field].as_array().cloned().unwrap_or_default().iter().filter_map(|d| d["wave"].as_u64()).collect()
+    }
+
+    /// O pedido que a resposta `out` despachou para a onda `wave`, lido como
+    /// o agente o lê: rodando o comando que a resposta traz no lugar do
+    /// pedido. O comando lê o último envio gravado da onda, então a leitura
+    /// vem logo depois da rodada que o gravou. Vazio quando a onda não saiu.
+    pub(super) fn request_of(out: &Value, wave: u64) -> String {
+        let found = out["dispatch"].as_array().into_iter().flatten().find(|d| d["wave"] == json!(wave));
+        found.map(|entry| request_by_command(entry, out)).unwrap_or_default()
+    }
+
+    /// [`request_of`] da onda na posição `at` da lista despachada.
+    pub(super) fn request_at(out: &Value, at: usize) -> String {
+        request_by_command(&out["dispatch"][at], out)
+    }
+
+    /// Roda o comando `read` de um item despachado — `mustard-rt run read
+    /// request-<n> --root <raiz> --spec <spec>` — pela mesma leitura do
+    /// comando, e devolve o que ele imprime.
+    fn request_by_command(entry: &Value, out: &Value) -> String {
+        use crate::commands::spec_events::read::{read_at, ReadOpts};
+        let command = entry["read"].as_str().unwrap_or_else(|| panic!("the dispatch carries no read command: {out}"));
+        let words: Vec<&str> = command.split_whitespace().collect();
+        assert_eq!(words.get(..3), Some(&["mustard-rt", "run", "read"][..]), "{command}");
+        let flag = |name: &str| words.iter().position(|w| *w == name).and_then(|i| words.get(i + 1)).map(|w| (*w).to_string());
+        let opts = ReadOpts {
+            root: PathBuf::from(flag("--root").unwrap_or_else(|| panic!("no --root: {command}"))),
+            spec: flag("--spec"),
+            block: words[3].to_string(),
+            term: None,
+        };
+        read_at(&opts).unwrap_or_else(|refusal| panic!("{command}: {refusal}"))
     }
 
     /// A versão nova da tarefa da onda `n`: o plano da onda muda depois do

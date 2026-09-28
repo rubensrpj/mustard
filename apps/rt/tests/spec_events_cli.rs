@@ -22,6 +22,24 @@ fn rt(root: &Path, args: &[&str]) -> Command {
     cmd
 }
 
+/// O pedido de um item que a rodada despachou, lido como o agente o lê: pelo
+/// comando que a resposta traz no lugar do pedido, rodado pelo binário, com a
+/// saída crua. O comando já traz a raiz, então não passa pelo `rt`.
+fn request_by_command(root: &Path, entry: &Value) -> String {
+    let command = entry["read"].as_str().unwrap_or_else(|| panic!("o item não traz o comando: {entry}"));
+    assert!(entry.get("prompt").is_none(), "o pedido não vem inteiro na resposta: {entry}");
+    let words: Vec<&str> = command.split_whitespace().collect();
+    assert_eq!(words.first(), Some(&"mustard-rt"), "{command}");
+    let out = Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+        .args(&words[1..])
+        .current_dir(root)
+        .env_remove("MUSTARD_ACTIVE_SPEC")
+        .output()
+        .expect("o binário roda");
+    assert!(out.status.success(), "{command}: {}", String::from_utf8_lossy(&out.stdout));
+    String::from_utf8(out.stdout).expect("o pedido é texto")
+}
+
 fn stdout_json(out: &Output) -> Value {
     serde_json::from_slice(&out.stdout)
         .unwrap_or_else(|e| panic!("not JSON ({e}): {}", String::from_utf8_lossy(&out.stdout)))
@@ -833,17 +851,41 @@ fn o_item_com_dono_pelos_arquivos_vai_no_pedido_da_onda_que_toca_neles() {
     let body = stdout_json(&out);
     assert!(body.get("analysis").is_none(), "o item com dono não pede a análise: {body}");
     let prompt = |wave: u64| {
-        body["dispatch"]
+        let entry = body["dispatch"]
             .as_array()
             .into_iter()
             .flatten()
             .find(|d| d["wave"] == json!(wave))
-            .and_then(|d| d["prompt"].as_str())
-            .unwrap_or_else(|| panic!("a onda {wave} sai: {body}"))
-            .to_string()
+            .unwrap_or_else(|| panic!("a onda {wave} sai: {body}"));
+        request_by_command(root, entry)
     };
     assert!(prompt(1).contains(&decision), "a onda que toca a1.rs leva a decisão: {}", prompt(1));
     assert!(!prompt(2).contains(&decision), "a onda que não toca fica sem ela: {}", prompt(2));
+}
+
+/// O pedido de uma onda sai, pela leitura do comando, igual byte a byte ao
+/// texto gravado no envio: acentos, crases, linha em branco e a quebra do fim,
+/// sem uma quebra a mais. Um segundo envio da mesma onda vence o primeiro, e
+/// a onda que nunca saiu devolve texto vazio.
+#[test]
+fn the_request_reading_prints_the_sent_text_byte_for_byte() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    seed_state(root, &json!({"author": "binary", "phase": "running", "branch": "feature/teste", "base": "dev"}));
+    let first = "# teste — onda 2\n\nO primeiro.\n";
+    let text = "# teste — onda 2\n\nLeia o `spec.ndjson` só pelo binário: ação, acentuação.\n\n- uma linha\n  - recuada\n";
+    for body in [first, text] {
+        seed_binary(root, "send", &json!({"author": "binary", "wave": 2, "role": "wave", "agent": "wave",
+            "text": body, "lines": body.lines().count(), "chars": body.chars().count(), "mustard": "0"}));
+    }
+
+    let out = rt(root, &["read", "request-2", "--spec", "teste"]).output().expect("read");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
+    assert_eq!(out.stdout, text.as_bytes(), "{}", String::from_utf8_lossy(&out.stdout));
+
+    let none = rt(root, &["read", "request-3", "--spec", "teste"]).output().expect("read");
+    assert!(none.status.success(), "{}", String::from_utf8_lossy(&none.stdout));
+    assert!(none.stdout.is_empty(), "{}", String::from_utf8_lossy(&none.stdout));
 }
 
 /// Cada item forma uma fila de versões, e a versão nova só entra no fim dela.

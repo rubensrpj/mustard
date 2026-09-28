@@ -122,7 +122,7 @@ pub(super) mod tests {
     use tempfile::tempdir;
 
     use super::Caller;
-    use crate::commands::flow::round::tests::{approved, line, returned, round};
+    use crate::commands::flow::round::tests::{approved, line, request_at, returned, round};
     use crate::commands::flow::round::{round_in, RoundOpts};
 
     /// O modelo que a plataforma grava nas respostas de um agente.
@@ -199,7 +199,7 @@ pub(super) mod tests {
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
         let out = round(root, "x", None);
-        let prompt = out["dispatch"][0]["prompt"].as_str().unwrap_or_default().to_string();
+        let prompt = request_at(&out, 0);
         assert!(prompt.starts_with("# "), "o pedido abre com o título da onda: {out}");
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let send = log.visible().into_iter().find(|e| e.event_type == "send" && e.wave() == Some(1)).unwrap().clone();

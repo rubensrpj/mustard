@@ -796,13 +796,17 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Git refused the round's commit: {detail}\nNothing was recorded. Fix what git pointed \
              out, or have the agent record the corrected delivery, and run the round again."
         }
+        // A resposta da rodada não traz o pedido da onda: traz o comando que
+        // o lê, e é o agente quem o roda.
         ("round.next", Locale::PtBr) => {
             "Despache os pedidos desta rodada: cada onda ao agente `mustard-wave` e cada revisão ao \
-             agente `mustard-review`."
+             agente `mustard-review`. O pedido da onda não vem nesta resposta. Mande ao agente o \
+             comando de `read`, e ele lê o próprio pedido."
         }
         ("round.next", Locale::EnUs) => {
             "Dispatch this round's requests: each wave to the `mustard-wave` agent and each review \
-             to the `mustard-review` agent."
+             to the `mustard-review` agent. The wave's request is not in this answer. Send the agent \
+             the `read` command, and it reads its own request."
         }
         // A obra de até 3 pontos: sem cópia separada e sem agente, é o
         // orquestrador — a própria conversa que chamou a rodada — quem faz a
@@ -1518,7 +1522,7 @@ mod tests {
             include_str!("flow.rs"),
             super::PREFIXES,
             189,
-            0x0694_95d5_05b9_3b90,
+            0x1f98_52e2_2877_b883,
         );
     }
 
@@ -1890,6 +1894,19 @@ mod tests {
                 let said = translate(key, lang).replace("{question}", translate("approval.question", lang));
                 assert!(said.contains(&format!("\"{question}\"")), "{key} in {lang} lacks the exact question: {said}");
             }
+        }
+    }
+
+    /// O próximo passo da rodada que despacha manda o agente ler o próprio
+    /// pedido pelo comando da resposta, nos dois idiomas, em frases que
+    /// passam na conferência de escrita.
+    #[test]
+    fn the_dispatch_step_sends_the_read_command_and_reads_clearly() {
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let text = translate("round.next", lang);
+            assert!(text.contains("`read`"), "{lang:?}: {text}");
+            let report = crate::domain::clarity::measure(text, &[], Some(lang));
+            assert!(report.passed, "{lang:?}: {report:?}");
         }
     }
 

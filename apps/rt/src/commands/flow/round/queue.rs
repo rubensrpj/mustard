@@ -863,6 +863,39 @@ pub(crate) fn tasks_not_delivered(log: &SpecLog, returning: &BTreeSet<u64>) -> B
         .collect()
 }
 
+/// Uma tarefa ainda por entregar, como a leitura do backlog a mostra: o
+/// número da versão vigente, os arquivos que ela declara e as tarefas ainda
+/// por entregar de que ela depende, cada uma pela versão vigente.
+pub(crate) struct LeftTask {
+    pub id: u64,
+    pub files: BTreeSet<String>,
+    pub depends_on: BTreeSet<u64>,
+}
+
+/// As tarefas ainda por entregar ([`tasks_not_delivered`]), em ordem de
+/// número, cada uma com os arquivos dela e as dependências que também ainda
+/// faltam: a dependência já entregue não prende mais nada e fica de fora.
+pub(crate) fn tasks_left(log: &SpecLog) -> Vec<LeftTask> {
+    let left = tasks_not_delivered(log, &BTreeSet::new());
+    let codes = log.codes();
+    left.iter()
+        .filter_map(|id| log.get(*id))
+        .map(|task| LeftTask {
+            id: task.id,
+            files: task_files(task),
+            depends_on: task
+                .fields
+                .get("depends_on")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|value| backlog_task_ref(log, &codes, value))
+                .filter(|dependency| left.contains(dependency))
+                .collect(),
+        })
+        .collect()
+}
+
 /// `true` quando a limpeza ainda espera ([`is_cleanup`]): há onda do plano
 /// por terminar — em andamento, por sair ou com conserto pendente
 /// ([`first_unfinished`]) — ou tarefa do backlog (`left`) que não é
@@ -1172,7 +1205,7 @@ mod tests {
                 assert_eq!(std::fs::read_to_string(expected.join("src/a.rs")).unwrap(), "fn um() {}\n");
                 let copy_head = Command::new("git").args(["rev-parse", "HEAD"]).current_dir(&expected).output().unwrap();
                 assert_eq!(String::from_utf8_lossy(&copy_head.stdout).trim(), head, "the copy stands on the current commit");
-                let prompt = out["dispatch"][at]["prompt"].as_str().unwrap_or_default();
+                let prompt = &request_at(&out, at);
                 assert!(prompt.contains(&format!("`{copy}`")), "{prompt}");
                 for word in ["CARGO_TARGET_DIR", "target/copias", "pasta de compilação"] {
                     assert!(!prompt.contains(word), "{kind}: no build folder in the request ({word}): {prompt}");
@@ -1219,7 +1252,7 @@ mod tests {
         let copy = sent_copy(root, 1);
         assert_eq!(copy, shown(&copies.join("x").join("a")), "{out}");
         assert!(Path::new(&copy).join(".git").is_file(), "the copy is a linked checkout");
-        let prompt = out["dispatch"][0]["prompt"].as_str().unwrap_or_default();
+        let prompt = &request_at(&out, 0);
         assert!(prompt.contains(&format!("`{copy}`")), "{prompt}");
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         assert_eq!(final_copy_path(root, "x", &log), copies.join("x").join("a"), "the review uses the wave's slot");
@@ -1420,7 +1453,7 @@ mod tests {
 
         let again = round(root, "x", None);
         assert_eq!(waves_in(&again, "dispatch"), vec![1], "the replanned fix goes out again: {again}");
-        let prompt = again["dispatch"][0]["prompt"].as_str().unwrap_or_default();
+        let prompt = &request_at(&again, 0);
         assert!(prompt.lines().any(|l| l.starts_with(&format!("- `{task_code}`"))), "{prompt}");
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let codes = log.codes();
@@ -1521,7 +1554,7 @@ mod tests {
         let slot = slot_path(root, "x", 0);
         assert_eq!(sent_copy(root, 1), shown(&slot), "{first}");
         let fresh = translate("prompt.execution.prepare_new", Locale::PtBr).replace("{command}", "true");
-        assert!(first["dispatch"][0]["prompt"].as_str().unwrap_or_default().contains(&fresh), "a vaga nova pede o preparo");
+        assert!(request_at(&first, 0).contains(&fresh), "a vaga nova pede o preparo");
         let untouched = age(&slot.join("src/b.rs"));
         age(&slot.join("src/a.rs"));
         let build = slot.join("target").join("compilado.o");
@@ -1536,7 +1569,7 @@ mod tests {
         assert_ne!(modified(&slot.join("src/a.rs")), untouched, "o arquivo mudado ganha data nova");
         assert_eq!(modified(&slot.join("src/b.rs")), untouched, "o arquivo que não mudou guarda a data");
         assert_eq!(std::fs::read_to_string(&build).unwrap(), "compilado", "a compilação ignorada fica na vaga");
-        let prompt = second["dispatch"][0]["prompt"].as_str().unwrap_or_default();
+        let prompt = &request_at(&second, 0);
         let reused = translate("prompt.execution.prepare_reused", Locale::PtBr);
         let opening = reused.split("{files}").next().unwrap_or_default();
         assert!(prompt.contains(opening) && prompt.contains("`src/a.rs`"), "{prompt}");
@@ -2114,7 +2147,7 @@ mod tests {
             "removed_lessons": [{"lesson": dropped, "why": "A busca não muda nesta onda."}],
             "tasks": []});
         assert_eq!(sent[0].fields.get("analysis"), Some(&recorded), "the send records the choice: {out}");
-        let prompt = out["dispatch"][0]["prompt"].as_str().unwrap_or_default();
+        let prompt = &request_at(&out, 0);
         // Lições vão só pelo número, sem o texto delas no pedido.
         assert!(prompt.lines().any(|l| l == format!("- `lessons`: {kept}")), "{prompt}");
         for out_of_it in [dropped, far] {
@@ -2173,7 +2206,7 @@ mod tests {
         assert_eq!(out["ok"], json!(true), "{out}");
         assert_eq!(waves_in(&out, "dispatch"), vec![1], "{out}");
         assert!(out.get("analysis").is_none(), "{out}");
-        let prompt = out["dispatch"][0]["prompt"].as_str().unwrap_or_default().to_string();
+        let prompt = request_at(&out, 0);
         assert!(prompt.contains(CHOSEN_ITEMS), "{prompt}");
         let ignored: Vec<&str> = out["warnings"]
             .as_array()
@@ -2325,7 +2358,7 @@ mod tests {
         // Ela segue candidata, e vai pelo caminho automático — não por ter
         // sido posta em `added`.
         assert_eq!(analysis_field["judged_lessons"], json!([kept]), "{analysis_field}");
-        let prompt = out["dispatch"][0]["prompt"].as_str().unwrap_or_default();
+        let prompt = &request_at(&out, 0);
         assert!(prompt.lines().any(|l| l == format!("- `lessons`: {kept}")), "{prompt}");
     }
 
@@ -2450,7 +2483,7 @@ mod tests {
         );
         let out = round_with_mine(root, "x", Some(&chosen), &rescan_disk);
         assert_eq!(waves_in(&out, "dispatch"), vec![2], "{out}");
-        let prompt = out["dispatch"][0]["prompt"].as_str().unwrap_or_default();
+        let prompt = &request_at(&out, 0);
         assert!(prompt.contains("**calculadora**"), "{prompt}");
         assert!(prompt.contains("src/calculadora_nova.rs"), "{prompt}");
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
@@ -2552,7 +2585,7 @@ mod tests {
         // commit atual.
         let third = round_with_mine(root, "x", Some(&analysis(json!([]), json!([]))), &mine_refreshed);
         assert_eq!(waves_in(&third, "dispatch"), vec![1], "{third}");
-        let prompt = third["dispatch"][0]["prompt"].as_str().unwrap_or_default();
+        let prompt = &request_at(&third, 0);
         assert!(
             prompt.contains("leia só as linhas 13-15 de `soma` em `src/a.rs`"),
             "o pedido segue o commit atual: {prompt}"
@@ -2852,9 +2885,8 @@ mod tests {
 
         let out = round(root, "x", None);
         assert_eq!(waves_in(&out, "dispatch"), vec![1, 2], "{out}");
-        let dispatched = out["dispatch"].as_array().cloned().unwrap_or_default();
-        let entry = dispatched.iter().find(|d| d["wave"] == json!(2)).unwrap_or_else(|| panic!("wave 2: {out}"));
-        let prompt = entry["prompt"].as_str().unwrap_or_default();
+        let prompt = &request_of(&out, 2);
+        assert!(!prompt.is_empty(), "wave 2: {out}");
         assert!(
             !prompt.contains("Gravar a versao nova de uma decisao"),
             "o texto da tarefa retirada nao pode aparecer no pedido: {prompt}"

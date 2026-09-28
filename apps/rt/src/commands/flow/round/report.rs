@@ -1894,7 +1894,7 @@ mod tests {
         assert_eq!(waves_in(&out, "dispatch"), vec![1], "a onda 2 divide arquivo com a 1 e espera: {out}");
         let copy = |wave: u64| slot_of(root, wave);
         let shown = |wave: u64| mustard_core::io::wave_prompt::shown(&copy(wave));
-        let prompt = out["dispatch"][0]["prompt"].as_str().unwrap_or_default();
+        let prompt = &request_at(&out, 0);
         assert!(prompt.contains(&format!("`{}`", shown(1))), "{prompt}");
         assert!(!prompt.contains("CARGO_TARGET_DIR"), "{prompt}");
 
@@ -2687,7 +2687,7 @@ mod tests {
         });
         let sent = round(root, "x", None);
         assert_eq!(waves_in(&sent, "dispatch"), vec![1], "{sent}");
-        let prompt = sent["dispatch"][0]["prompt"].as_str().unwrap_or_default();
+        let prompt = &request_at(&sent, 0);
         assert!(prompt.contains("MSTD-DEC-0001"), "the request carries the decision: {prompt}");
         origin.get()
     }
@@ -2956,7 +2956,7 @@ mod tests {
             let said = translate("prompt.model.wave", lang);
             assert!(said.contains("Opus") && !said.contains("Sonnet"), "the model line still names Sonnet: {said}");
             for at in 0..2 {
-                let prompt = out["dispatch"][at]["prompt"].as_str().unwrap_or_default();
+                let prompt = &request_at(&out, at);
                 assert!(prompt.contains(said), "the {lang:?} request does not say the model: {prompt}");
                 assert!(!prompt.contains("Sonnet"), "the {lang:?} request still names Sonnet: {prompt}");
             }
@@ -3028,7 +3028,7 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(1_100));
         let out = round(root, "x", None);
         assert_eq!(waves_in(&out, "dispatch"), vec![1], "{out}");
-        let prompt = out["dispatch"][0]["prompt"].as_str().unwrap_or_default().to_string();
+        let prompt = request_at(&out, 0);
         let (begun, sent) = begun_and_sent(root);
         assert!(instant(&begun, 0) < instant(sent.at(), 0), "{begun} {}", sent.at());
 
@@ -3744,7 +3744,7 @@ mod tests {
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
         let dispatched = round(root, "x", None);
-        let prompt = dispatched["dispatch"][0]["prompt"].as_str().unwrap_or_default().to_string();
+        let prompt = request_at(&dispatched, 0);
         let out = round(root, "x", Some(&delivered(root, 1, "A soma saiu.", &["src/a.rs"])));
         assert_eq!(out["ok"], json!(true), "{out}");
         let head = git_text(root, &["rev-parse", "HEAD"]);

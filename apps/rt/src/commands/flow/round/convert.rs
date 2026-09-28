@@ -726,14 +726,8 @@ mod tests {
 
         assert!(out.get("analysis").is_none(), "a regra com dono não pede a análise: {out}");
         let code = log.codes().get(&version.id).cloned().expect("o código da regra");
-        let prompt = out["dispatch"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .find(|d| d["wave"] == json!(2))
-            .and_then(|d| d["prompt"].as_str())
-            .unwrap_or_else(|| panic!("o lote 2 sai: {out}"))
-            .to_string();
+        assert!(waves_in(&out, "dispatch").contains(&2), "o lote 2 sai: {out}");
+        let prompt = request_of(&out, 2);
         assert!(prompt.contains(&code), "o lote que toca src/tres.rs leva a regra: {prompt}");
     }
 }
