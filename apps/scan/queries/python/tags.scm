@@ -1,8 +1,16 @@
 ; Python — imports and definitions. A module is a file, so no @namespace.
 (import_statement name: (dotted_name) @import)
-(import_statement name: (aliased_import (dotted_name) @import))
-(import_from_statement module_name: (dotted_name) @import)
-(import_from_statement module_name: (relative_import (dotted_name)) @import)
+; O apelido de `import loja.servico as s` é o nome que o import traz: o
+; próprio módulo, escrito antes de outro nome (`s.buscar()`).
+(import_statement name: (aliased_import name: (dotted_name) @import alias: (identifier) @imported))
+
+; O repasse: a língua não tem `export`, e o nome que um módulo importa é
+; importável dele. Por isso todo `from x import a, b`, com ou sem ponto na
+; frente, oferece a quem importa o arquivo os nomes que traz, e o
+; `from x import *`, tudo o que `x` oferece. O repasse é também import do
+; arquivo.
+(import_from_statement module_name: (dotted_name) @reexport)
+(import_from_statement module_name: (relative_import (dotted_name)) @reexport)
 
 ; `from . import models`: o import é só os pontos, uma pasta, e cada nome que
 ; ele traz é um arquivo dela. Capturados juntos, o motor lê o import como
@@ -29,7 +37,9 @@
 ; The names `from m import limite` brings into the file: what it brought, not
 ; a use of it.
 (import_from_statement name: (dotted_name) @imported)
-(import_from_statement name: (aliased_import) @imported)
+; `from m import a as b` traz `b`, que o repasse tira de `m` pelo nome `a`.
+(import_from_statement
+  name: (aliased_import name: (dotted_name) @reexport.original alias: (identifier) @imported))
 
 ; Functions — a module-level function is a UNIT, a method is a MEMBER. Python
 ; spells both with `function_definition`, so the line is drawn by CONTEXT: a

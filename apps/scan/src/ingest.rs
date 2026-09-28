@@ -11,6 +11,9 @@ use ignore::WalkBuilder;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+
+use mustard_core::io::project_map::Listing;
 
 pub(crate) struct Ingested {
     pub root: PathBuf,
@@ -111,37 +114,58 @@ impl<'a> Reuse<'a> {
     }
 }
 
-/// As pastas de compilação e de dependências que existem na raiz `root`: as
-/// que a caminhada pula, pelo registro dos manifestos, e que a cobertura
-/// relata. Ordenadas.
-fn skipped_build_dirs(root: &Path) -> Vec<String> {
-    let skip = crate::manifests::skip_dirs();
-    let mut found: Vec<String> = fs::read_dir(root)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter(|e| e.path().is_dir())
-        .filter_map(|e| e.file_name().into_string().ok())
-        .filter(|n| skip.iter().any(|s| s == n))
-        .collect();
-    found.sort();
-    found
+/// As pastas, relativas à raiz, que guardam algum arquivo de código que o
+/// índice do git tem, em qualquer profundidade.
+fn dirs_with_indexed_code(listing: &Listing) -> HashSet<String> {
+    let mut dirs = HashSet::new();
+    for path in listing.indexed.iter().filter(|path| crate::extract::detect_language(Path::new(path)).is_some()) {
+        for (slash, _) in path.match_indices('/') {
+            dirs.insert(path[..slash].to_string());
+        }
+    }
+    dirs
 }
 
 /// A caminhada pela pasta `root`: respeita o `.gitignore`, entra nas pastas
-/// escondidas e pula as de compilação e de dependências que o registro dos
-/// manifestos declara, nunca uma lista escrita aqui.
-fn walker(root: &Path) -> ignore::Walk {
-    let skip = crate::manifests::skip_dirs();
+/// escondidas e pula as que o registro dos manifestos declara, nunca uma
+/// lista escrita aqui. A pasta que nunca guarda código do projeto fica
+/// sempre fora. A de saída ou de dependências fica fora quando o índice do
+/// git, pela listagem `listing`, não guarda nela nenhum arquivo de código, e
+/// sempre fora do git, sem listagem. Cada pasta pulada entra em `skipped`,
+/// pelo caminho relativo; a que o `.gitignore` já pula não é da lista.
+fn walker(root: &Path, listing: Option<&Listing>, skipped: Arc<Mutex<Vec<String>>>) -> ignore::Walk {
+    let never = crate::manifests::skip_dirs();
+    let output = crate::manifests::output_dirs();
+    let holding_code = listing.map(dirs_with_indexed_code).unwrap_or_default();
+    let base = root.to_path_buf();
     WalkBuilder::new(root)
         .hidden(false)
         .git_ignore(true)
         .git_global(false)
         .filter_entry(move |e| {
+            if !e.file_type().is_some_and(|kind| kind.is_dir()) {
+                return true;
+            }
             let name = e.file_name().to_string_lossy();
-            !skip.iter().any(|s| s.as_str() == name.as_ref())
+            let named = |list: &[String]| list.iter().any(|s| s.as_str() == name.as_ref());
+            if !named(never) && !named(output) {
+                return true;
+            }
+            let rel = relative(&base, e.path());
+            if !named(never) && holding_code.contains(&rel) {
+                return true;
+            }
+            skipped.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(rel);
+            false
         })
         .build()
+}
+
+/// As pastas que a caminhada pulou, em ordem.
+fn taken(skipped: &Arc<Mutex<Vec<String>>>) -> Vec<String> {
+    let mut dirs = std::mem::take(&mut *skipped.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+    dirs.sort();
+    dirs
 }
 
 /// O caminho de `path` relativo a `root`, com `/` entre as partes.
@@ -154,20 +178,23 @@ pub(crate) struct Walk {
     /// Cada arquivo que a caminhada visita, relativo à raiz e ordenado: os
     /// mesmos caminhos que a leitura inteira guarda para as pilhas.
     pub paths: Vec<String>,
-    /// As pastas de compilação que existem na raiz.
+    /// As pastas que a caminhada pulou pela lista do registro, pelo caminho
+    /// relativo, em qualquer profundidade, ordenadas.
     pub skipped_build_dirs: Vec<String>,
 }
 
-/// A caminhada pela pasta `root` que a leitura faz, sem abrir arquivo nenhum.
-pub(crate) fn walk(root: &Path) -> Walk {
+/// A caminhada pela pasta `root` que a leitura faz, sem abrir arquivo nenhum,
+/// com a regra das pastas puladas da leitura inteira.
+pub(crate) fn walk(root: &Path, listing: Option<&Listing>) -> Walk {
     let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-    let mut paths: Vec<String> = walker(&root)
+    let skipped = Arc::new(Mutex::new(Vec::new()));
+    let mut paths: Vec<String> = walker(&root, listing, Arc::clone(&skipped))
         .flatten()
         .filter(|dent| dent.path().is_file())
         .map(|dent| relative(&root, dent.path()))
         .collect();
     paths.sort();
-    Walk { paths, skipped_build_dirs: skipped_build_dirs(&root) }
+    Walk { paths, skipped_build_dirs: taken(&skipped) }
 }
 
 /// A caminhada `paths` não traz arquivo que a leitura abriria sem que o mapa
@@ -199,7 +226,7 @@ pub(crate) fn same_sources(paths: &[String], prev: &ProjectModel) -> bool {
     seen == stored.len()
 }
 
-pub(crate) fn ingest(root: &Path, reuse: Option<&Reuse>) -> Result<Ingested> {
+pub(crate) fn ingest(root: &Path, reuse: Option<&Reuse>, listing: Option<&Listing>) -> Result<Ingested> {
     let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let mut files: Vec<Walked> = Vec::new();
     let mut read: Vec<String> = Vec::new();
@@ -216,9 +243,9 @@ pub(crate) fn ingest(root: &Path, reuse: Option<&Reuse>) -> Result<Ingested> {
     let mut top_other: BTreeMap<String, usize> = BTreeMap::new();
     let mut unsupported: BTreeMap<String, usize> = BTreeMap::new();
     let mut non_utf8 = 0usize;
-    let skipped_build_dirs = skipped_build_dirs(&root);
+    let skipped = Arc::new(Mutex::new(Vec::new()));
 
-    for dent in walker(&root).flatten() {
+    for dent in walker(&root, listing, Arc::clone(&skipped)).flatten() {
         let path = dent.path();
         if !path.is_file() {
             continue;
@@ -359,7 +386,7 @@ pub(crate) fn ingest(root: &Path, reuse: Option<&Reuse>) -> Result<Ingested> {
     let code_files_read = files.len();
     let coverage = Coverage {
         top_dirs,
-        skipped_build_dirs,
+        skipped_build_dirs: taken(&skipped),
         unsupported_exts,
         code_files_read,
         non_utf8_skipped: non_utf8,

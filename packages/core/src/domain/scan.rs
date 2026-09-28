@@ -152,6 +152,19 @@ impl Scan {
         parse_scan_report(&self.run(&scan_args(root, out))?)
     }
 
+    /// Read from git the history of each declaration of `file`, in the base
+    /// branch the project declares, and keep it in the map at `out` (`grain
+    /// history`). Only that file's lines of the map change.
+    ///
+    /// # Errors
+    /// [`Error::Io`] if the tool cannot be spawned, [`Error::CheckFailed`] on a
+    /// non-zero exit or a report that does not parse.
+    pub fn history(&self, root: &Path, out: &Path, file: &str) -> Result<HistoryReport> {
+        let stdout = self.run(&history_args(root, out, file))?;
+        let line = stdout.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("{}");
+        serde_json::from_str(line).map_err(|e| Error::check_failed(format!("scan history report: {e}")))
+    }
+
     /// Run grain with `args`, returning stdout. Maps a non-zero exit (with
     /// stderr) to [`Error::CheckFailed`].
     fn run(&self, args: &[String]) -> Result<String> {
@@ -174,6 +187,29 @@ fn scan_args(root: &Path, out: &Path) -> Vec<String> {
         out.to_string_lossy().into_owned(),
         "--json".to_string(),
     ]
+}
+
+fn history_args(root: &Path, out: &Path, file: &str) -> Vec<String> {
+    vec![
+        "history".to_string(),
+        root.to_string_lossy().into_owned(),
+        "--out".to_string(),
+        out.to_string_lossy().into_owned(),
+        "--file".to_string(),
+        file.to_string(),
+        "--json".to_string(),
+    ]
+}
+
+/// What `scan history` reports on its last stdout line: the file, how many
+/// commits of the base changed it, and how many of its declarations the base
+/// has.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct HistoryReport {
+    pub file: String,
+    pub commits: usize,
+    pub declarations: usize,
 }
 
 /// What one scan pass reports on its last stdout line: whether it read every
@@ -204,6 +240,12 @@ mod tests {
     fn scan_args_shape() {
         let a = scan_args(&PathBuf::from("repo"), &PathBuf::from("m.json"));
         assert_eq!(a, vec!["scan", "repo", "--out", "m.json", "--json"]);
+    }
+
+    #[test]
+    fn history_args_shape() {
+        let a = history_args(&PathBuf::from("repo"), &PathBuf::from("m.db"), "src/a.rs");
+        assert_eq!(a, vec!["history", "repo", "--out", "m.db", "--file", "src/a.rs", "--json"]);
     }
 
     #[test]

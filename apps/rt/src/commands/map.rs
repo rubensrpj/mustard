@@ -12,6 +12,10 @@
 //!   primeiro, e as suspeitas agrupadas pelas declarações que a chamada pode
 //!   alcançar; na função que atende uma rota do servidor, também a rota e as
 //!   chamadas da tela que a alcançam;
+//! - `history --name <declaração>` (com `--file`, só a desse arquivo): os
+//!   commits da branch de partida que mudaram a declaração, do mais novo ao
+//!   mais velho, com o título e o número do pull request; a lista de cada
+//!   arquivo se monta na primeira pergunta sobre ele e fica gravada no mapa;
 //! - `search --query "<palavras>"`: a busca por conceito;
 //! - `summary`: o resumo do início da sessão, até 3 kB;
 //! - `skill --path <SKILL.md>`: confere os caminhos que a skill cita e o
@@ -30,7 +34,7 @@ use std::path::{Path, PathBuf};
 use clap::ValueEnum;
 use mustard_core::domain::normalize::Languages;
 use mustard_core::domain::project_map::{self as project_map, DeclAt, MapRefusal, ProjectMap, UseSite};
-use mustard_core::domain::scan::ScanReport;
+use mustard_core::domain::scan::{HistoryReport, ScanReport};
 use mustard_core::domain::search::TOP;
 use mustard_core::io::map_search;
 use mustard_core::io::project_map::{self as store, Need};
@@ -48,6 +52,7 @@ pub enum Question {
     Skill,
     Slice,
     Users,
+    History,
     Dump,
 }
 
@@ -62,6 +67,7 @@ impl Question {
             Self::Skill => "skill",
             Self::Slice => "slice",
             Self::Users => "users",
+            Self::History => "history",
             Self::Dump => "dump",
         }
     }
@@ -94,14 +100,20 @@ fn required(value: Option<&str>, question: Question, flag: &str) -> Result<Strin
 /// A releitura do mapa: roda o scan sobre a raiz, gravando no caminho dado.
 pub(crate) type Mine<'m> = dyn Fn(&Path, &Path) -> mustard_core::platform::error::Result<ScanReport> + 'm;
 
+/// A passada da história por arquivo: lê do git a história das declarações
+/// do arquivo (o terceiro argumento) na raiz e a grava no mapa do caminho
+/// dado.
+pub(crate) type Trace<'t> = dyn Fn(&Path, &Path, &str) -> mustard_core::platform::error::Result<HistoryReport> + 't;
+
 /// Responde a pergunta e devolve o JSON; nunca entra em pânico. Antes, a
 /// conferência do mapa com o conteúdo de agora relê por `mine` o que mudou
-/// desde a passada que o gravou.
-pub(crate) fn map_at(opts: &MapOpts, mine: &Mine<'_>) -> Value {
+/// desde a passada que o gravou. A pergunta da história monta por `trace` a
+/// lista do arquivo que o mapa ainda não tem, ou que venceu.
+pub(crate) fn map_at(opts: &MapOpts, mine: &Mine<'_>, trace: &Trace<'_>) -> Value {
     let project = crate::commands::spec_events::project(&opts.root);
     crate::commands::flow::round::refresh_map_if_stale(&project.root, mine);
     let lang = project.lang;
-    match answer(opts, &project.root, lang, &project.languages) {
+    match answer(opts, &project.root, lang, &project.languages, trace) {
         Ok(report) => report,
         Err(refusal) => refused(&refusal, lang),
     }
@@ -112,8 +124,8 @@ fn dump(root: &Path) -> Result<Value, MapRefusal> {
     Ok(json!({ "ok": true, "question": "dump", "tables": store::dump(root)? }))
 }
 
-fn answer(opts: &MapOpts, root: &Path, lang: Locale, languages: &Languages) -> Result<Value, MapRefusal> {
-    answer_from(opts, root, lang, languages, &|need| store::read_for(root, need))
+fn answer(opts: &MapOpts, root: &Path, lang: Locale, languages: &Languages, trace: &Trace<'_>) -> Result<Value, MapRefusal> {
+    answer_from(opts, root, lang, languages, &|need| store::read_for(root, need), trace)
 }
 
 /// Como o mapa se lê para uma pergunta: pela porta, só as tabelas de que ela
@@ -137,6 +149,7 @@ fn answer_from(
     lang: Locale,
     languages: &Languages,
     read: &Reader<'_>,
+    trace: &Trace<'_>,
 ) -> Result<Value, MapRefusal> {
     let question = opts.question;
     match question {
@@ -180,6 +193,7 @@ fn answer_from(
         }
         Question::Slice => slice(opts, root, read),
         Question::Users => users(opts, lang, read),
+        Question::History => history(opts, root, lang, read, trace),
         Question::Examples => examples(opts, lang, languages, read),
         Question::Skill => skill(opts, root, read),
         Question::Dump => dump(root),
@@ -432,9 +446,93 @@ fn skill(opts: &MapOpts, root: &Path, read: &Reader<'_>) -> Result<Value, MapRef
     }))
 }
 
+/// A história de cada declaração de `--name` na branch de partida (só a do
+/// arquivo de `--file`, quando ele vem): o arquivo e a linha, quantas
+/// mudanças a base tem dela fora as só de forma e os commits mais novos, do
+/// mais novo ao mais velho, cada um com a data, o começo do hash, o título
+/// limpo e o número do pull request; na última linha, o `git show` do mais
+/// novo. Nunca o diff nem o código antigo. A lista do arquivo gravada no mapa
+/// vale enquanto a base, a marca do scan e o commit mais novo do arquivo na
+/// história guardada são os de quando ela se montou; vencida ou ausente,
+/// `trace` a monta de novo, e só ela. Sem base, a resposta diz como
+/// declarar; com o nome em mais de um arquivo e sem `--file`, lista os
+/// lugares e pede o arquivo, sem montar nada.
+fn history(opts: &MapOpts, root: &Path, lang: Locale, read: &Reader<'_>, trace: &Trace<'_>) -> Result<Value, MapRefusal> {
+    let name = after_the_map(required(opts.name.as_deref(), opts.question, "--name"), read)?;
+    let file = opts.file.as_deref().map(str::trim).filter(|f| !f.is_empty());
+    let map = read(Need::History { file, name: &name })?;
+    let files = project_map::declaring_files(&map, file, &name)?;
+    if let Some(note) = project_map::history_missing(&map.history, lang) {
+        return Ok(json!({ "ok": true, "question": "history", "name": name, "note": note }));
+    }
+    let [path] = files.as_slice() else {
+        let mut places: Vec<(&str, u64)> = map
+            .modules
+            .iter()
+            .flat_map(|m| m.declarations.iter().filter(|d| d.name == name).map(move |d| (m.path.as_str(), d.line)))
+            .collect();
+        places.sort_unstable();
+        return Ok(json!({
+            "ok": true,
+            "question": "history",
+            "name": name,
+            "places": places.iter().map(|(file, line)| format!("{file}:{line}")).collect::<Vec<_>>(),
+            "note": mustard_core::translate("map.history.pick_file", lang).replace("{name}", &name),
+        }));
+    };
+    let fresh = map
+        .lineage
+        .iter()
+        .find(|lineage| &lineage.path == path)
+        .is_some_and(|lineage| project_map::lineage_is_fresh(lineage, &map.history, &map.census_mark));
+    let map = if fresh {
+        map
+    } else {
+        trace(root, &store::model_path(root), path)
+            .map_err(|e| MapRefusal::HistoryUnreadable { file: path.clone(), detail: e.to_string() })?;
+        read(Need::History { file: Some(path), name: &name })?
+    };
+    let found = project_map::decl_history(&map, path, &name)?;
+    let base = map.history.base.as_str();
+    let declarations: Vec<Value> = found
+        .iter()
+        .map(|d| {
+            if d.commits.is_empty() {
+                return json!({
+                    "file": d.file,
+                    "line": d.line,
+                    "note": mustard_core::translate("map.history.not_in_base", lang)
+                        .replace("{base}", base)
+                        .replace("{name}", &name)
+                        .replace("{file}", &d.file),
+                });
+            }
+            json!({
+                "file": d.file,
+                "line": d.line,
+                "changes": d.changes,
+                "head": mustard_core::translate("map.history.head", lang)
+                    .replace("{name}", &name)
+                    .replace("{file}", &d.file)
+                    .replace("{line}", &d.line.to_string())
+                    .replace("{base}", base)
+                    .replace("{count}", &d.changes.to_string()),
+                "commits": d.commits.iter().map(|c| project_map::history_line(c, lang)).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    let mut report = json!({ "ok": true, "question": "history", "name": name, "base": base, "declarations": declarations });
+    let newest = found.iter().filter_map(|d| d.commits.first()).max_by(|a, b| a.at.cmp(&b.at).then_with(|| b.id.cmp(&a.id)));
+    if let Some(newest) = newest {
+        report["next"] = json!(mustard_core::translate("map.history.next", lang).replace("{commit}", &newest.id));
+    }
+    Ok(report)
+}
+
 /// Imprime a resposta e sai com 1 na recusa.
 pub fn run(opts: &MapOpts) {
-    let report = map_at(opts, &|root, out| mustard_core::Scan::locate().scan(root, out));
+    let scan = mustard_core::Scan::locate();
+    let report = map_at(opts, &|root, out| scan.scan(root, out), &|root, out, file| scan.history(root, out, file));
     println!("{}", serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".into()));
     if report["ok"] != json!(true) {
         std::process::exit(1);
@@ -444,12 +542,15 @@ pub fn run(opts: &MapOpts) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mustard_core::domain::project_map::{DeclChange, DeclLineage, FileLineage, LineageCommit};
     use tempfile::tempdir;
 
     /// A resposta do comando a um mapa de teste, que ninguém relê: fora do
     /// git, a conferência não chama o scan.
     fn answered(opts: &MapOpts) -> Value {
-        map_at(opts, &|_, _| panic!("a map outside git is never read again"))
+        map_at(opts, &|_, _| panic!("a map outside git is never read again"), &|_, _, _| {
+            panic!("a map without a base never reads a history")
+        })
     }
 
     /// Um mapa pequeno: uma pasta de comandos com quatro arquivos que
@@ -852,6 +953,12 @@ mod tests {
             with(Question::Users, Some("nao/existe.rs"), Some("run"), None),
             with(Question::Users, None, Some("sumiu"), None),
             with(Question::Users, None, None, None),
+            with(Question::History, Some("apps/rt/src/commands/pay/write.rs"), Some("run"), None),
+            with(Question::History, None, Some("run"), None),
+            with(Question::History, None, Some("Payment"), None),
+            with(Question::History, None, Some("sumiu"), None),
+            with(Question::History, Some("nao/existe.rs"), Some("run"), None),
+            with(Question::History, None, None, None),
             with(Question::Examples, Some("apps/rt/src/commands/pay/novo.rs"), None, None),
             with(Question::Examples, Some("apps/rt/src/commands/pay/index.rs"), None, None),
             with(Question::Examples, Some("apps/rt/src/commands/pay"), None, None),
@@ -867,7 +974,8 @@ mod tests {
     fn answered_from_the_whole_map(opts: &MapOpts) -> Value {
         let project = crate::commands::spec_events::project(&opts.root);
         let whole = |_: Need<'_>| store::read(&project.root);
-        answer_from(opts, &project.root, project.lang, &project.languages, &whole)
+        let trace = |_: &Path, _: &Path, _: &str| panic!("a map without a base never reads a history");
+        answer_from(opts, &project.root, project.lang, &project.languages, &whole, &trace)
             .unwrap_or_else(|refusal| refused(&refusal, project.lang))
     }
 
@@ -933,17 +1041,239 @@ mod tests {
         };
         scan.scan(root, &store::model_path(root)).expect("the first pass writes the map");
 
+        let no_trace = |_: &Path, _: &Path, _: &str| panic!("the users question never reads a history");
         let mut opts = ask(root, Question::Users);
         opts.name = Some("alpha".to_string());
-        assert_eq!(map_at(&opts, &mine)["declarations"][0]["line"], json!(1));
+        assert_eq!(map_at(&opts, &mine, &no_trace)["declarations"][0]["line"], json!(1));
         assert_eq!(calls.get(), 0, "nothing changed: the scan does not run");
 
         std::fs::write(root.join("src/lib.rs"), "// topo\n\npub fn alpha() -> u32 {\n    1\n}\n").unwrap();
-        let report = map_at(&opts, &mine);
+        let report = map_at(&opts, &mine, &no_trace);
         assert_eq!(report["declarations"][0]["line"], json!(3), "{report}");
         assert_eq!(calls.get(), 1, "the edit is read once");
-        assert_eq!(map_at(&opts, &mine)["declarations"][0]["line"], json!(3));
+        assert_eq!(map_at(&opts, &mine, &no_trace)["declarations"][0]["line"], json!(3));
         assert_eq!(calls.get(), 1, "and not again while nothing else changes");
+    }
+
+    /// A lista gravada de `apps/rt/src/commands/pay/write.rs`, da base
+    /// `main`, montada quando o commit mais novo do arquivo era o `c3`: a
+    /// primeira `run` mudou no `c3` e, só na forma, no `c1`; a segunda não
+    /// tem commit na base.
+    fn write_rs_lineage() -> FileLineage {
+        FileLineage {
+            path: "apps/rt/src/commands/pay/write.rs".to_string(),
+            base: "main".to_string(),
+            last_commit: "c3".to_string(),
+            mark: String::new(),
+            commits: vec![
+                LineageCommit { id: "c3".to_string(), at: 259_200, title: "feat(pay): grava o pagamento (#4)".to_string(), pr: Some(4) },
+                LineageCommit { id: "c1".to_string(), at: 86_400, title: "formata".to_string(), pr: None },
+            ],
+            declarations: vec![DeclLineage {
+                name: "run".to_string(),
+                nth: 0,
+                commits: vec![DeclChange { id: "c3".to_string(), form: false }, DeclChange { id: "c1".to_string(), form: true }],
+            }],
+        }
+    }
+
+    /// O mapa de todas as partes, com a base `main` e a lista gravada de um
+    /// arquivo ainda valendo.
+    fn map_with_a_base_and_a_lineage() -> tempfile::TempDir {
+        let dir = tempdir().unwrap();
+        let mut map: Value = serde_json::from_str(EVERY_PART).unwrap();
+        map["history"]["base"] = json!("main");
+        store::write_text(dir.path(), &map.to_string()).unwrap();
+        store::save_lineage_at(&store::model_path(dir.path()), &write_rs_lineage()).unwrap();
+        dir
+    }
+
+    /// A pergunta da história lê pela porta só as declarações do nome, a
+    /// história guardada e a lista do arquivo, e responde o mesmo que com o
+    /// mapa inteiro; com a lista valendo, a passada não roda.
+    #[test]
+    fn the_history_question_reading_its_tables_answers_as_the_whole_map_did() {
+        let dir = map_with_a_base_and_a_lineage();
+        let with = |file: Option<&str>, name: Option<&str>| MapOpts {
+            file: file.map(str::to_string),
+            name: name.map(str::to_string),
+            ..ask(dir.path(), Question::History)
+        };
+        for opts in [
+            with(Some("apps/rt/src/commands/pay/write.rs"), Some("run")),
+            with(Some("./apps/rt/src/commands/pay/write.rs"), Some(" run ")),
+            with(None, Some("run")),
+            with(None, Some("sumiu")),
+            with(None, None),
+        ] {
+            assert_eq!(answered(&opts), answered_from_the_whole_map(&opts), "{:?} {:?}", opts.file, opts.name);
+        }
+    }
+
+    /// A resposta diz a função com o arquivo e a linha, quantas mudanças a
+    /// base tem dela fora as só de forma, cada commit com a data, o começo do
+    /// hash, o título sem o prefixo do tipo nem o número, e o número no fim,
+    /// o commit só de forma marcado, e o `git show` do mais novo. A de mesmo
+    /// nome que a base ainda não tem diz isso.
+    #[test]
+    fn the_history_answer_lists_the_commits_with_the_clean_title_the_number_and_the_mark() {
+        let dir = map_with_a_base_and_a_lineage();
+        let mut opts = ask(dir.path(), Question::History);
+        opts.file = Some("apps/rt/src/commands/pay/write.rs".to_string());
+        opts.name = Some("run".to_string());
+        let report = answered(&opts);
+        assert_eq!(report["ok"], json!(true), "{report}");
+        let first = &report["declarations"][0];
+        assert_eq!((first["line"].clone(), first["changes"].clone()), (json!(2), json!(1)), "{report}");
+        let lines: Vec<&str> = first["commits"].as_array().unwrap().iter().map(|l| l.as_str().unwrap()).collect();
+        assert_eq!(lines.len(), 2, "{report}");
+        assert!(lines[0].ends_with(" c3 grava o pagamento #4"), "{report}");
+        let form = mustard_core::translate("map.history.form", Locale::default());
+        assert!(lines[1].ends_with(&format!(" c1 formata {form}")), "{report}");
+        assert!(report["next"].as_str().unwrap().contains("git show c3"), "{report}");
+        let second = &report["declarations"][1];
+        assert_eq!(second["line"], json!(6), "{report}");
+        assert!(second["note"].as_str().unwrap().contains("main"), "{report}");
+    }
+
+    /// Sem `--name`, a recusa diz a opção que falta; sem base declarada, a
+    /// resposta diz que não há história e como declarar; o nome em mais de
+    /// um arquivo, sem `--file`, lista os lugares e pede o arquivo. Em
+    /// nenhum dos três a passada roda.
+    #[test]
+    fn the_history_question_without_name_without_base_or_with_the_name_in_two_files_does_not_trace() {
+        let plain = tempdir().unwrap();
+        store::write_text(plain.path(), EVERY_PART).unwrap();
+        let mut opts = ask(plain.path(), Question::History);
+        let report = answered(&opts);
+        assert_eq!(report["reason"], json!("missing-argument"), "{report}");
+        assert!(report["hint"].as_str().unwrap().contains("--name"), "{report}");
+
+        opts.name = Some("Payment".to_string());
+        let report = answered(&opts);
+        assert_eq!(report["ok"], json!(true), "{report}");
+        let no_base = mustard_core::translate("map.history.no_base", Locale::default());
+        assert_eq!(report["note"], json!(no_base), "{report}");
+        assert!(no_base.contains("mustard.json"));
+
+        let dir = map_with_a_base_and_a_lineage();
+        let mut opts = ask(dir.path(), Question::History);
+        opts.name = Some("run".to_string());
+        let report = answered(&opts);
+        assert_eq!(
+            report["places"],
+            json!([
+                "apps/rt/src/commands/pay/gen.rs:1",
+                "apps/rt/src/commands/pay/index.rs:5",
+                "apps/rt/src/commands/pay/read.rs:1",
+                "apps/rt/src/commands/pay/write.rs:2",
+                "apps/rt/src/commands/pay/write.rs:6",
+                "web/src/pay.ts:3"
+            ]),
+            "{report}"
+        );
+        assert!(report["note"].as_str().unwrap().contains("--file"), "{report}");
+    }
+
+    /// Num repositório de verdade, com o scan compilado junto: a primeira
+    /// pergunta sobre um arquivo monta a lista dele, e a segunda a lê sem a
+    /// passada. Um commit novo da base que toca só um arquivo, somado pela
+    /// montagem, vence só a lista dele.
+    #[test]
+    fn the_history_is_traced_once_per_file_and_again_only_for_the_file_a_new_commit_touched() {
+        let scan = mustard_core::Scan::locate();
+        assert!(
+            scan.is_compiled_alongside(),
+            "o teste precisa do scan compilado junto com ele: rode `cargo build -p scan` antes de `cargo test -p mustard-rt`"
+        );
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(["-c", "user.email=t@example.com", "-c", "user.name=t", "-c", "commit.gpgsign=false"])
+                .args(args)
+                .current_dir(root)
+                .output()
+                .expect("git");
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        let commit = |rel: &str, body: &str, title: &str| {
+            std::fs::create_dir_all(root.join(rel).parent().unwrap()).unwrap();
+            std::fs::write(root.join(rel), body).unwrap();
+            git(&["add", "-A"]);
+            git(&["commit", "-q", "-m", title]);
+        };
+        git(&["init", "-q", "-b", "main"]);
+        std::fs::write(root.join(".git/info/exclude"), "mustard.json
+.claude/
+").unwrap();
+        std::fs::write(root.join("mustard.json"), r#"{"git": {"flow": {"*": "main"}}}"#).unwrap();
+        let gravar = |n: u32| format!("pub fn gravar() -> u32 {{
+    {n}
+}}
+");
+        commit("src/a.rs", &gravar(1), "feat(a): cria o gravar");
+        commit("src/b.rs", "pub fn ler() -> u32 {
+    1
+}
+", "cria o ler");
+        commit("src/c.rs", "pub fn gravar() {}
+", "outro gravar");
+        commit("src/a.rs", &gravar(2), "fix(a): corrige o gravar (#5)");
+        commit("src/a.rs", &gravar(3), "muda o gravar de novo");
+        scan.scan(root, &store::model_path(root)).expect("the first pass writes the map");
+        let (mines, traces) = (std::cell::Cell::new(0), std::cell::Cell::new(0));
+        let mine = |root: &Path, out: &Path| {
+            mines.set(mines.get() + 1);
+            scan.scan(root, out)
+        };
+        let trace = |root: &Path, out: &Path, file: &str| {
+            traces.set(traces.get() + 1);
+            scan.history(root, out, file)
+        };
+        let question = |file: Option<&str>, name: &str| MapOpts {
+            file: file.map(str::to_string),
+            name: Some(name.to_string()),
+            ..ask(root, Question::History)
+        };
+        let lines = |report: &Value| -> Vec<String> {
+            report["declarations"][0]["commits"]
+                .as_array()
+                .unwrap_or(&Vec::new())
+                .iter()
+                .map(|line| line.as_str().unwrap_or_default().to_string())
+                .collect()
+        };
+
+        let report = map_at(&question(Some("src/a.rs"), "gravar"), &mine, &trace);
+        let got = lines(&report);
+        assert_eq!(got.len(), 3, "{report}");
+        assert!(got[0].ends_with(" muda o gravar de novo"), "{report}");
+        assert!(got[1].ends_with(" corrige o gravar #5"), "{report}");
+        assert!(got[2].ends_with(" cria o gravar"), "{report}");
+        assert_eq!(report["declarations"][0]["changes"], json!(3), "{report}");
+        assert_eq!(traces.get(), 1);
+
+        assert_eq!(lines(&map_at(&question(Some("src/a.rs"), "gravar"), &mine, &trace)), got);
+        assert_eq!(traces.get(), 1, "the second question reads the stored list");
+
+        let both = map_at(&question(None, "gravar"), &mine, &trace);
+        assert_eq!(both["places"], json!(["src/a.rs:1", "src/c.rs:1"]), "{both}");
+        assert_eq!(traces.get(), 1, "the name in two files lists the places without tracing");
+
+        map_at(&question(None, "ler"), &mine, &trace);
+        assert_eq!(traces.get(), 2);
+        assert_eq!(mines.get(), 0, "nothing changed in the project");
+
+        commit("src/a.rs", &gravar(4), "muda o gravar pela quarta vez");
+        let report = map_at(&question(None, "ler"), &mine, &trace);
+        assert_eq!(lines(&report).len(), 1, "{report}");
+        assert_eq!(mines.get(), 1, "the new commit is summed by the pass that reads what changed");
+        assert_eq!(traces.get(), 2, "the commit did not touch the file of `ler`");
+
+        let report = map_at(&question(Some("src/a.rs"), "gravar"), &mine, &trace);
+        assert_eq!(traces.get(), 3, "the commit touched the file of `gravar`");
+        assert!(lines(&report)[0].ends_with(" muda o gravar pela quarta vez"), "{report}");
     }
 
     #[test]

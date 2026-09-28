@@ -534,7 +534,12 @@ fn resolve_declaration_links(
         let imported: HashSet<&str> = m.deps.iter().map(String::as_str).collect();
         let family = crate::extract::family(&m.language);
         let implicit_self = crate::extract::implicit_self(&m.language);
-        let Brought { outside, all: brought } = brought_names(&resolver, m);
+        let Brought { outside, all: brought, from: brought_from, objects, closed } = brought_names(&resolver, m);
+        // Os arquivos que um import que não diz o que traz alcança e que
+        // repassam alguma coisa: o que cada um repassa fica à vista de quem o
+        // importa, pelo nome, como o que ele mesmo declara. Só se procura
+        // quando algum arquivo importado repassa.
+        let passing = passing_files(&resolver, m);
         // Os nomes que todo arquivo da língua vê sem import, e os arquivos que
         // este importa com `*`, que podem declarar um deles.
         let prelude = crate::extract::prelude(&m.language);
@@ -542,14 +547,15 @@ fn resolve_declaration_links(
         // Na língua que liga o método por um separador próprio, o de nome
         // qualificado só junta caminho.
         let path_only = crate::extract::has_member_separators(&m.language);
-        // O que o arquivo tem à vista: ele mesmo, o que importa, o que um
-        // import global põe à vista e o mesmo namespace da mesma língua.
-        let sees = |mi: usize| {
+        // O que o arquivo tem à vista sem import: ele mesmo, o que um import
+        // global põe à vista e o mesmo namespace da mesma língua.
+        let sees_here = |mi: usize| {
             mi == src
-                || imported.contains(modules[mi].path.as_str())
                 || globals.sees(src, &modules[mi].path)
                 || (modules[mi].language == m.language && declared[mi].iter().any(|ns| in_sight[src].contains(ns)))
         };
+        // E, com isso, o que ele importa.
+        let sees = |mi: usize| sees_here(mi) || imported.contains(modules[mi].path.as_str());
         // O arquivo da mesma língua que o qualificador nomeia.
         let named_by = |mi: usize, q: &str| modules[mi].language == m.language && own_names[mi].iter().any(|n| n == q);
         // Cada chamada escrita por um caminho do projeto, com os caminhos.
@@ -594,14 +600,61 @@ fn resolve_declaration_links(
             // O nome sozinho só alcança um membro na língua que o chama sem
             // escrever o objeto.
             let member_out = matches!(before, Before::Nothing) && !implicit_self;
+            // O próprio arquivo vence: o nome sozinho que ele declara fora de
+            // todo tipo é essa declaração, e nenhuma outra.
+            let own: Vec<DeclId> = match before {
+                Before::Nothing => all
+                    .iter()
+                    .copied()
+                    .filter(|&(mi, di)| mi == src && modules[mi].declarations[di].owner.is_empty())
+                    .collect(),
+                _ => Vec::new(),
+            };
             // A type named inside its own body is not a use of it.
+            let own_body = |(mi, di): DeclId| !is_call && mi == src && from == Some(di);
             let all: Vec<DeclId> = all
                 .iter()
                 .copied()
-                .filter(|&(mi, di)| is_call || !(mi == src && from == Some(di)))
+                .filter(|&d| !own_body(d))
                 .filter(|&(mi, di)| !(member_out && MEMBER_KINDS.contains(&modules[mi].declarations[di].kind.as_str())))
                 .collect();
-            let seen: Vec<DeclId> = all.iter().copied().filter(|&(mi, _)| sees(mi)).collect();
+            let reached: Vec<String> = passing.iter().flat_map(|module| resolver.declaring(module, &site.name)).collect();
+            // O qualificador que um import do projeto trouxe como o próprio
+            // arquivo (`u` em `import * as u`) nomeia os arquivos desse import
+            // e os que declaram o nome a partir deles, seguidos os repasses.
+            let named_files: Vec<String> = match before {
+                Before::Name(q) if objects.contains(q) => {
+                    let files = brought_from.get(q).into_iter().flatten();
+                    files
+                        .clone()
+                        .cloned()
+                        .chain(
+                            files
+                                .filter_map(|file| resolver.by_path.get(file.as_str()))
+                                .flat_map(|&module| resolver.declaring(module, &site.name)),
+                        )
+                        .collect()
+                }
+                _ => Vec::new(),
+            };
+            let at_hand = |mi: usize| reached.contains(&modules[mi].path) || named_files.contains(&modules[mi].path);
+            let sees = |mi: usize| sees(mi) || at_hand(mi);
+            // O nome escrito sozinho só vê o arquivo que um import que diz o
+            // que traz alcança quando esse import trouxe o nome.
+            let sees_alone = |mi: usize| {
+                let path = modules[mi].path.as_str();
+                sees_here(mi)
+                    || at_hand(mi)
+                    || (imported.contains(path)
+                        && (!closed.contains(path)
+                            || brought_from.get(site.name.as_str()).is_some_and(|files| files.contains(path))))
+            };
+            let seen: Vec<DeclId> = all
+                .iter()
+                .copied()
+                .filter(|&(mi, _)| if matches!(before, Before::Nothing) { sees_alone(mi) } else { sees(mi) })
+                .collect();
+            let named_by = |mi: usize, q: &str| named_by(mi, q) || named_files.contains(&modules[mi].path);
             // O nome que um import de fora do projeto trouxe, escrito sozinho
             // ou antes de outro nome, é de fora e não liga; o caminho do
             // projeto escrito antes do nome vale antes dele.
@@ -654,7 +707,9 @@ fn resolve_declaration_links(
                 let provable = matches!(before, Before::Itself) || kept.iter().all(|&(mi, _)| sees(mi));
                 (!kept.is_empty()).then_some((kept, provable))
             };
-            let verdict = if is_call {
+            let verdict = if !own.is_empty() {
+                Verdict::of(own.into_iter().filter(|&d| !own_body(d)).collect(), true)
+            } else if is_call {
                 let named = through.get(site).and_then(|paths| path_files(&resolver, m, site.line, paths));
                 match (named, &before) {
                     (Some(files), _) => Verdict::of(
@@ -663,13 +718,14 @@ fn resolve_declaration_links(
                     ),
                     (None, _) if not_ours => None,
                     (None, Before::Nothing) if !seen.is_empty() => Verdict::of(seen, true),
-                    // Sem nada à vista, a família inteira da língua.
+                    // Sem nada à vista, a família inteira da língua, sempre
+                    // suspeita: nada no arquivo diz que é uma delas.
                     (None, Before::Nothing) => Verdict::of(
                         all.iter()
                             .copied()
                             .filter(|&(mi, _)| crate::extract::family(&modules[mi].language) == family)
                             .collect(),
-                        true,
+                        false,
                     ),
                     (None, _) => match narrowed(&all) {
                         Some((kept, provable)) => Verdict::of(kept, provable),
@@ -752,11 +808,22 @@ fn path_files(resolver: &Resolver, m: &Module, line: usize, paths: &[&str]) -> O
 }
 
 /// Os nomes que os imports de um arquivo trazem ([`Module::brought`]).
+#[derive(Default)]
 struct Brought<'m> {
     /// Os que só um import que não nomeia nada do projeto traz: são de fora.
     outside: HashSet<&'m str>,
     /// Todos, de qualquer import.
     all: HashSet<&'m str>,
+    /// Os arquivos do projeto de onde cada nome trazido vem, seguidos os
+    /// repasses.
+    from: HashMap<&'m str, HashSet<String>>,
+    /// Os nomes trazidos por um import do projeto que nenhum desses arquivos
+    /// declara: são o próprio arquivo importado (`u` em `import * as u`), e,
+    /// escritos antes de outro nome, nomeiam esses arquivos.
+    objects: HashSet<&'m str>,
+    /// Os arquivos importados que só um import que diz o que traz alcança:
+    /// o nome escrito sozinho só os vê quando um desses imports o trouxe.
+    closed: HashSet<String>,
 }
 
 /// Os arquivos do projeto que um import de `m` nomeia, escrito em qualquer
@@ -767,21 +834,60 @@ fn import_files(resolver: &Resolver, m: &Module, imp: &str) -> Vec<String> {
 }
 
 /// Os nomes trazidos pelos imports de `m`, com os que vêm só de fora do
-/// projeto à parte.
+/// projeto à parte, os arquivos de onde vem cada um e os importados que só
+/// um import que diz o que traz alcança.
 fn brought_names<'m>(resolver: &Resolver, m: &'m Module) -> Brought<'m> {
-    let mut brought = Brought { outside: HashSet::new(), all: HashSet::new() };
+    let mut brought = Brought::default();
     let mut inside: HashSet<&str> = HashSet::new();
+    let mut named: HashSet<String> = HashSet::new();
     for (imp, names) in &m.brought {
         let names = names.iter().map(String::as_str);
         brought.all.extend(names.clone());
-        if import_files(resolver, m, imp).is_empty() && resolver.outside(imp, m) {
+        let files = import_files(resolver, m, imp);
+        if files.is_empty() && resolver.outside(imp, m) {
             brought.outside.extend(names);
-        } else {
-            inside.extend(names);
+            continue;
+        }
+        for name in names {
+            inside.insert(name);
+            let from: HashSet<String> = files.iter().flat_map(|file| resolver.bringing(m, imp, file, name)).collect();
+            if !from.iter().any(|file| resolver.declares(file, name)) {
+                brought.objects.insert(name);
+            }
+            named.extend(from.iter().cloned());
+            brought.from.entry(name).or_default().extend(from);
         }
     }
     brought.outside.retain(|name| !inside.contains(name));
+    if !named.is_empty() {
+        let open: HashSet<String> = m
+            .imports
+            .iter()
+            .filter(|imp| m.brought.get(imp.as_str()).is_none_or(Vec::is_empty))
+            .flat_map(|imp| import_files(resolver, m, imp))
+            .collect();
+        brought.closed = named.into_iter().filter(|file| !open.contains(file)).collect();
+    }
     brought
+}
+
+/// Os arquivos com repasse que os imports de `m` que não trazem nome
+/// nenhum alcançam, cada um uma vez. Vazio sem procurar quando nenhum
+/// arquivo que `m` importa repassa.
+fn passing_files<'a>(resolver: &Resolver<'a>, m: &Module) -> Vec<&'a Module> {
+    let passes = |path: &str| resolver.by_path.get(path).copied().filter(|module| !module.reexports.is_empty());
+    if !m.deps.iter().any(|dep| passes(dep).is_some()) {
+        return Vec::new();
+    }
+    let mut seen: HashSet<&str> = HashSet::new();
+    m.imports
+        .iter()
+        .chain(&m.test_imports)
+        .filter(|imp| m.brought.get(imp.as_str()).is_none_or(Vec::is_empty))
+        .flat_map(|imp| import_files(resolver, m, imp))
+        .filter_map(|path| passes(&path))
+        .filter(|module| seen.insert(module.path.as_str()))
+        .collect()
 }
 
 /// Os arquivos do projeto que os imports com `*` de `m` nomeiam.
@@ -1348,40 +1454,84 @@ impl<'a> Resolver<'a> {
         if names.is_empty() {
             return targets;
         }
-        let mut out: BTreeSet<String> = BTreeSet::new();
-        for target in targets {
-            let Some(module) = self.by_path.get(target.as_str()).filter(|m| !m.reexports.is_empty()) else {
-                out.insert(target);
-                continue;
-            };
-            let mut stays = false;
-            for name in names {
-                let key = (target.clone(), name.clone());
-                let cached = self.through_hits.borrow().get(&key).cloned();
-                let found = cached.unwrap_or_else(|| {
-                    let found = self.declared_through(module, name, &mut HashSet::new());
-                    self.through_hits.borrow_mut().insert(key, found.clone());
-                    found
-                });
-                stays |= found.is_empty();
-                out.extend(found);
-            }
-            if stays {
-                out.insert(target);
-            }
-        }
+        let out: BTreeSet<String> = targets
+            .iter()
+            .flat_map(|target| names.iter().flat_map(move |name| self.bringing(importer, imp, target, name)))
+            .collect();
         out.into_iter().collect()
     }
 
+    /// Os arquivos de onde vem `name`, que o import `imp` de `importer` traz
+    /// de `target`: os que o declaram, seguidos os repasses de `target`. O
+    /// nome que o repasse de `importer` traz de um arquivo de entrada de
+    /// pasta, que esse arquivo não declara nem repassa, é o arquivo ou a
+    /// pasta de mesmo nome ao lado dele (`from pacote import modulo`). O
+    /// nome que nenhum declara fica em `target`.
+    fn bringing(&self, importer: &Module, imp: &str, target: &str, name: &str) -> Vec<String> {
+        let Some(&module) = self.by_path.get(target) else { return vec![target.to_string()] };
+        let beside_entry = importer.reexports.get(imp).is_some_and(|offered| offered.contains_key(name))
+            && is_entry_file(&module.path, &module.language)
+            && canon_segments(imp, &importer.language).rsplit('/').next() != Some(name);
+        if module.reexports.is_empty() && !beside_entry {
+            return vec![target.to_string()];
+        }
+        let found = self.declaring(module, name);
+        if !found.is_empty() {
+            return found;
+        }
+        if beside_entry {
+            let family = crate::extract::family(&importer.language);
+            let beside: Vec<String> = exact_path_candidate(
+                &join_dir(&parent_dir(&module.path), name),
+                &module.language,
+                &self.stem_index,
+                &self.module_paths,
+            )
+            .into_iter()
+            .filter(|path| {
+                path != target
+                    && self.by_path.get(path.as_str()).is_some_and(|m| crate::extract::family(&m.language) == family)
+            })
+            .collect();
+            if !beside.is_empty() {
+                return beside;
+            }
+        }
+        vec![target.to_string()]
+    }
+
+    /// Se o arquivo `path` declara `name` fora de todo tipo e de toda outra
+    /// declaração.
+    fn declares(&self, path: &str, name: &str) -> bool {
+        self.by_path
+            .get(path)
+            .is_some_and(|module| module.declarations.iter().any(|d| d.name == name && d.owner.is_empty()))
+    }
+
+    /// Os arquivos que declaram `name` a partir de `module`, seguidos os
+    /// repasses dele ([`Resolver::declared_through`]). Muitos arquivos
+    /// importam o mesmo, e cada resposta fica guardada para a próxima.
+    fn declaring(&self, module: &'a Module, name: &str) -> Vec<String> {
+        let key = (module.path.clone(), name.to_string());
+        if let Some(found) = self.through_hits.borrow().get(&key) {
+            return found.clone();
+        }
+        let found = self.declared_through(module, name, &mut HashSet::new());
+        self.through_hits.borrow_mut().insert(key, found.clone());
+        found
+    }
+
     /// Os arquivos que declaram `name` a partir de `module`: ele mesmo, quando
-    /// o declara; senão, os que cada repasse dele que oferece o nome alcança,
-    /// pelo nome de origem. `seen` guarda cada par de arquivo e nome já
-    /// visitado, e um repasse que volta a um deles não é seguido de novo.
+    /// o declara fora de todo tipo e de toda outra declaração (o que um
+    /// arquivo oferece a quem o importa; o método de uma classe não é); senão,
+    /// os que cada repasse dele que oferece o nome alcança, pelo nome de
+    /// origem. `seen` guarda cada par de arquivo e nome já visitado, e um
+    /// repasse que volta a um deles não é seguido de novo.
     fn declared_through(&self, module: &'a Module, name: &str, seen: &mut HashSet<(&'a str, String)>) -> Vec<String> {
         if !seen.insert((module.path.as_str(), name.to_string())) {
             return Vec::new();
         }
-        if module.declarations.iter().any(|d| d.name == name) {
+        if module.declarations.iter().any(|d| d.name == name && d.owner.is_empty()) {
             return vec![module.path.clone()];
         }
         let mut found = Vec::new();
@@ -1502,7 +1652,9 @@ impl<'a> Resolver<'a> {
         //    relativo que nomeia um arquivo exato fica com ele; fora isso, a
         //    procura vai primeiro aos arquivos do projeto de quem importa e,
         //    só sem nenhum ali, ao resto do repositório: um projeto pode usar
-        //    outro do mesmo repositório pelo nome do módulo.
+        //    outro do mesmo repositório pelo nome do módulo. O de uma parte só
+        //    entra aqui só na língua que diz que ele pode ser arquivo
+        //    (`single_part_paths`); nas outras ele é pacote de fora.
         let project = self.projects.nearest(from);
         if cleaned.starts_with('.') {
             let joined = join_relative(from, cleaned);
@@ -1512,7 +1664,7 @@ impl<'a> Resolver<'a> {
             }
             return self.path_candidate(&joined, lang, project, true);
         }
-        if cleaned.contains('/') || file_path {
+        if cleaned.contains('/') || file_path || crate::extract::single_part_paths(lang) {
             let hits = self.path_candidate(cleaned, lang, project, true);
             if !hits.is_empty() {
                 return hits;
@@ -1566,7 +1718,9 @@ impl<'a> Resolver<'a> {
         //    deeper folder (`./x` onto `./src/x`) points at. O import que é só o
         //    nome do pacote (`@empresa/core`) tem o resto vazio e liga ao
         //    arquivo raiz dele. Any other leading run stays an external package.
-        let segments: Vec<&str> = canon.split('/').collect();
+        //    Lido sem o esquema de pacote na frente (`package:`), como os
+        //    passos de caminho.
+        let segments: Vec<&str> = cleaned.split('/').collect();
         for cut in (1..=segments.len()).rev() {
             let name = fold_package(&segments[..cut].join("/"));
             if self.projects.has_package(&name) {
@@ -1596,17 +1750,24 @@ impl<'a> Resolver<'a> {
     /// próprio caminho, ou `/` logo antes do trecho). Com `within`, só os que
     /// estão sob essa pasta respondem primeiro; os de fora respondem só
     /// quando nenhum de dentro responde e `widen` pede o resto do
-    /// repositório.
+    /// repositório. Só responde arquivo da família da língua de quem importa:
+    /// o caminho de uma língua nunca nomeia o arquivo de outra.
     fn path_candidate(&self, cand: &str, lang: &str, within: Option<&str>, widen: bool) -> Vec<String> {
+        let family = crate::extract::family(lang);
+        let ours = |hits: Vec<String>| -> Vec<String> {
+            hits.into_iter()
+                .filter(|p| self.by_path.get(p.as_str()).is_some_and(|m| crate::extract::family(&m.language) == family))
+                .collect()
+        };
         let inside = |hits: &[String]| -> Vec<String> {
             hits.iter().filter(|p| within.is_none_or(|dir| is_under(p, dir))).cloned().collect()
         };
-        let exact = exact_path_candidate(cand, lang, &self.stem_index, &self.module_paths);
+        let exact = ours(exact_path_candidate(cand, lang, &self.stem_index, &self.module_paths));
         let exact_inside = inside(&exact);
         if !exact_inside.is_empty() {
             return exact_inside;
         }
-        let ending = self.ending_in(cand, lang);
+        let ending = ours(self.ending_in(cand, lang));
         let ending_inside = inside(&ending);
         if !ending_inside.is_empty() || !widen {
             return ending_inside;
@@ -1615,21 +1776,35 @@ impl<'a> Resolver<'a> {
     }
 
     /// Os arquivos cujo caminho, sem a extensão, é o candidato ou termina em
-    /// `/` seguido dele, em ordem.
+    /// `/` seguido dele, em ordem; sem nenhum, o arquivo de entrada da pasta
+    /// cujo caminho termina assim.
     fn ending_in(&self, cand: &str, lang: &str) -> Vec<String> {
         let stem = strip_import_ext(&normalize(cand), lang);
-        let name = stem.rsplit('/').next().unwrap_or(&stem);
-        let tail = format!("/{stem}");
-        let mut hits: Vec<String> = self
-            .by_name
-            .get(name)
-            .into_iter()
-            .flatten()
-            .filter(|k| **k == stem || k.ends_with(&tail))
-            .flat_map(|k| self.stem_index.get(k).into_iter().flatten().cloned())
-            .collect();
-        hits.sort(); // stable output: HashMap iteration order varies per run
-        hits
+        let ending = |stem: &str| -> Vec<String> {
+            let name = stem.rsplit('/').next().unwrap_or(stem);
+            let tail = format!("/{stem}");
+            let mut hits: Vec<String> = self
+                .by_name
+                .get(name)
+                .into_iter()
+                .flatten()
+                .filter(|k| **k == stem || k.ends_with(&tail))
+                .flat_map(|k| self.stem_index.get(k).into_iter().flatten().cloned())
+                .collect();
+            hits.sort(); // stable output: HashMap iteration order varies per run
+            hits
+        };
+        let hits = ending(&stem);
+        if !hits.is_empty() {
+            return hits;
+        }
+        // O caminho que termina numa pasta chega ao arquivo de entrada dela,
+        // como o caminho exato: o primeiro da lista da língua que existe.
+        entry_file_names(lang)
+            .iter()
+            .map(|entry| ending(&format!("{stem}/{entry}")))
+            .find(|hits| !hits.is_empty())
+            .unwrap_or_default()
     }
 
     /// O import que não nomeia nada do projeto, como `std::fs::{self}`: não é

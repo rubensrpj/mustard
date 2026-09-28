@@ -89,7 +89,7 @@ use std::sync::OnceLock;
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Language, Node, Query, QueryCursor};
 
-use crate::extract::{compile_good_patterns, literal_value};
+use crate::extract::{compile_good_query, literal_value};
 use crate::graph::{enclosing, is_under, project_dir};
 use crate::model::{
     Client, Decl, Exclusion, GlobalPrefix, Handoff, Manifest, Module, Mount, OpenPrefix, Route, RouteCall, RouteLinks,
@@ -480,11 +480,7 @@ impl RouteRule {
     fn compiled(&self) -> Option<&Compiled> {
         self.compiled
             .get_or_init(|| {
-                let good = compile_good_patterns(&self.language, self.raw.query, &self.name());
-                if good.is_empty() {
-                    return None;
-                }
-                let query = Query::new(&self.language, &good.join("\n")).ok()?;
+                let query = compile_good_query(&self.language, self.raw.query, &self.name())?;
                 let roles: Vec<Role> = query.capture_names().iter().map(|name| role(name)).collect();
                 let client = roles.iter().any(|role| role.is_client());
                 Some(Compiled { query, roles, client })

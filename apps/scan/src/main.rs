@@ -11,6 +11,7 @@ mod condense;
 mod facts;
 mod extract;
 mod graph;
+mod history;
 mod ingest;
 mod manifests;
 mod model;
@@ -57,6 +58,21 @@ enum Command {
         #[arg(long)]
         all: bool,
         /// Print one JSON line (what was read) instead of the text summary.
+        #[arg(long)]
+        json: bool,
+    },
+    /// A história de cada declaração de um arquivo na branch de partida, do
+    /// commit mais novo ao mais antigo, lida do git e gravada no mapa em
+    /// `--out` no lugar da que ele tinha. O resto do mapa fica como está.
+    History {
+        path: PathBuf,
+        #[arg(long, default_value = store::MAP_FILE_NAME)]
+        out: PathBuf,
+        /// O arquivo, relativo à pasta lida.
+        #[arg(long)]
+        file: String,
+        /// Uma linha de JSON (o arquivo, os commits e as declarações) no
+        /// lugar do resumo em texto.
         #[arg(long)]
         json: bool,
     },
@@ -123,6 +139,26 @@ fn main() -> Result<()> {
                 );
             }
         }
+        Command::History { path, out, file, json } => {
+            let report = history::run(&path, &out, &file)?;
+            if json {
+                let line = serde_json::json!({
+                    "ok": true,
+                    "file": report.file,
+                    "commits": report.commits,
+                    "declarations": report.declarations,
+                });
+                println!("{line}");
+            } else {
+                println!(
+                    "History of {} written to {}: {} commit(s), {} declaration(s)",
+                    report.file,
+                    out.display(),
+                    report.commits,
+                    report.declarations
+                );
+            }
+        }
     }
     Ok(())
 }
@@ -159,7 +195,7 @@ fn census_pass(root: &Path, out: &Path, all: bool) -> Option<Analysis> {
     if !refresh::nothing_to_read(root, &model, &listing) {
         return None;
     }
-    let walk = ingest::walk(root);
+    let walk = ingest::walk(root, Some(&listing));
     if !ingest::same_sources(&walk.paths, &model) {
         return None;
     }
@@ -210,7 +246,7 @@ struct Read {
 fn read_modules(root: &Path, reuse: Option<&ingest::Reuse>, listing: Option<&Listing>) -> Result<Read> {
     use mustard_core::domain::vocabulary::stacks::code_signals;
 
-    let mut ing = ingest::ingest(root, reuse)?;
+    let mut ing = ingest::ingest(root, reuse, listing)?;
     let analyzers = extract::registry();
     // Repo classification overrides (.gitattributes / .editorconfig) — loaded
     // once; they beat the marker catalog in both directions.
@@ -679,7 +715,7 @@ fn print_summary(model: &ProjectModel) {
         println!("  {:<22} {} code{}", d.dir, d.code_files, other);
     }
     if !cov.skipped_build_dirs.is_empty() {
-        println!("build/dep dirs skipped: {}", cov.skipped_build_dirs.join(", "));
+        println!("dirs skipped (tooling, build output and dependencies, by path): {}", cov.skipped_build_dirs.join(", "));
     }
     if !cov.unsupported_exts.is_empty() {
         let top: Vec<String> = cov.unsupported_exts.iter().take(10).map(|e| format!("{} {}", e.ext, e.count)).collect();
@@ -758,7 +794,7 @@ mod tests {
         use clap::CommandFactory;
         let tree = Cli::command();
         let names: Vec<&str> = tree.get_subcommands().map(clap::Command::get_name).collect();
-        assert_eq!(names, ["scan"], "the check reached every command");
+        assert_eq!(names, ["scan", "history"], "the check reached every command");
         let defects = tree_defects(&tree);
         assert!(defects.is_empty(), "{} help texts break the uppercase rule:\n{}", defects.len(), defects.join("\n"));
     }

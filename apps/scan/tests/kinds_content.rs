@@ -122,12 +122,19 @@ fn python_files_a_module_level_def_as_unit_and_a_class_def_as_member() {
 fn dart_files_a_library_function_as_unit_and_a_body_member_as_member() {
     // `summarize` is declared at library level — a unit. `describe` (class),
     // `touch` (mixin, abstract) and `shout` (extension) are members, and the
-    // three of them reach the engine through two different wrappers.
+    // three of them reach the engine through two different wrappers. Os
+    // campos da classe, o `get` e os itens do enum são membros também, cada
+    // um com o seu tipo.
     assert_pairs(
         "graph_dart",
         &[
             ("Role", "enum"),
+            ("admin", "enum_member"),
+            ("member", "enum_member"),
             ("Account", "class"),
+            ("id", "field"),
+            ("visits", "field"),
+            ("label", "property"),
             // The constructor is a member of its class, like a method.
             ("Account", "method"),
             ("describe", "method"),

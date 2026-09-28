@@ -36,6 +36,7 @@ struct ManifestDef {
 
 struct Registry {
     skip_dirs: Vec<String>,
+    output_dirs: Vec<String>,
     manifests: Vec<ManifestDef>,
 }
 
@@ -44,9 +45,17 @@ fn registry() -> &'static Registry {
     R.get_or_init(|| parse_registry(include_str!("../manifests.toml")))
 }
 
-/// Directories to skip while walking (build/dependency output).
+/// As pastas que a caminhada sempre pula, pelo nome: as que nunca guardam
+/// código do projeto.
 pub fn skip_dirs() -> &'static [String] {
     &registry().skip_dirs
+}
+
+/// As pastas de saída de compilação e de dependências, pelo nome: a
+/// caminhada as pula, salvo quando o índice do git guarda nelas algum
+/// arquivo de código.
+pub fn output_dirs() -> &'static [String] {
+    &registry().output_dirs
 }
 
 /// Cheap filename check so we only read files that are manifests.
@@ -74,6 +83,7 @@ pub fn parse(rel: &str, filename: &str, content: &str) -> Option<Parsed> {
         "toml-sections" => toml_sections(content, &def.deps),
         "yaml-section" => yaml_sections(content, &def.deps),
         "gomod" => def.dep_regex.as_ref().map(|re| captures_per_line(content, re)).unwrap_or_default(),
+        "lines" => line_deps(content),
         _ => Vec::new(),
     };
     if let Some(re) = &def.extra_dep_regex {
@@ -160,18 +170,31 @@ fn toml_sections(txt: &str, sections: &[String]) -> Vec<String> {
     out
 }
 
+/// As chaves das seções de dependência de um YAML. Só a chave do primeiro
+/// nível abaixo da seção é dependência: a de dentro dela (`sdk` em
+/// `flutter: sdk: flutter`) é a forma da dependência, não outra. O primeiro
+/// nível é o recuo da primeira chave da seção.
 fn yaml_sections(txt: &str, sections: &[String]) -> Vec<String> {
     let mut out = Vec::new();
     let mut in_deps = false;
+    let mut level: Option<usize> = None;
     for line in txt.lines() {
         let trimmed = line.trim_end();
         if sections.iter().any(|s| trimmed.starts_with(&format!("{s}:"))) {
             in_deps = true;
+            level = None;
             continue;
         }
         if in_deps {
             if !trimmed.is_empty() && !trimmed.starts_with(' ') {
                 in_deps = false;
+                continue;
+            }
+            let indent = trimmed.len() - trimmed.trim_start().len();
+            if trimmed.trim_start().is_empty() || trimmed.trim_start().starts_with('#') {
+                continue;
+            }
+            if *level.get_or_insert(indent) != indent {
                 continue;
             }
             if let Some(idx) = trimmed.find(':') {
@@ -183,6 +206,21 @@ fn yaml_sections(txt: &str, sections: &[String]) -> Vec<String> {
         }
     }
     out
+}
+
+/// O manifesto de uma dependência por linha: o nome é o que vem antes do
+/// primeiro `=`, `<`, `>`, `~`, `!`, `[`, `;` ou espaço (a versão, os extras
+/// e a condição ficam de fora). A linha vazia, o comentário (`#`) e a opção
+/// (começa por `-`, como `-r outro.txt` e `--index-url`) não são dependência.
+fn line_deps(txt: &str) -> Vec<String> {
+    txt.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#') && !l.starts_with('-'))
+        .filter_map(|l| {
+            let end = l.find(|c: char| matches!(c, '=' | '<' | '>' | '~' | '!' | '[' | ';') || c.is_whitespace());
+            Some(l[..end.unwrap_or(l.len())].to_string()).filter(|name| !name.is_empty())
+        })
+        .collect()
 }
 
 /// First-group captures scanned per line (go.mod `require` lines). The regex is
@@ -207,6 +245,7 @@ fn parse_registry(src: &str) -> Registry {
             .unwrap_or_default()
     };
     let skip_dirs = strs(v.get("skip_dirs"));
+    let output_dirs = strs(v.get("output_dirs"));
     let mut manifests = Vec::new();
     if let Some(arr) = v.get("manifest").and_then(|x| x.as_array()) {
         for m in arr {
@@ -253,5 +292,28 @@ fn parse_registry(src: &str) -> Registry {
             });
         }
     }
-    Registry { skip_dirs, manifests }
+    Registry { skip_dirs, output_dirs, manifests }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse;
+
+    /// `flutter: sdk: flutter` é a dependência `flutter`, dada pelo kit: a
+    /// chave de dentro dela não é outra dependência.
+    #[test]
+    fn a_key_inside_a_dependency_is_not_another_dependency() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/flutter_app/pubspec.yaml");
+        let content = std::fs::read_to_string(path).expect("the fixture manifest");
+        let parsed = parse("pubspec.yaml", "pubspec.yaml", &content).expect("a known manifest");
+        assert_eq!(parsed.deps, ["flutter", "collection", "flutter_test", "flutter_lints"]);
+    }
+
+    /// O nome do próprio pacote sai da primeira linha `name:` do manifesto.
+    #[test]
+    fn the_package_name_comes_from_the_name_line() {
+        let parsed = parse("pubspec.yaml", "pubspec.yaml", "name: loja\ndependencies:\n  http: ^1.0.0\n").unwrap();
+        assert_eq!(parsed.package.as_deref(), Some("loja"));
+        assert_eq!(parsed.deps, ["http"]);
+    }
 }

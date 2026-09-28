@@ -255,6 +255,196 @@ pub fn file_history(history: &History, path: &str) -> Option<FileHistory> {
     Some(out)
 }
 
+// ---------------------------------------------------------------------------
+// A história de cada declaração
+// ---------------------------------------------------------------------------
+
+/// Quantos commits de uma declaração a resposta mostra, dos mais novos.
+pub const DECL_COMMITS_SHOWN: usize = 10;
+
+/// A história das declarações de um arquivo na branch de partida, lida do git
+/// na primeira pergunta sobre ele e guardada no mapa: a base, o commit mais
+/// novo do arquivo nela quando se leu, a marca do scan que leu, os commits
+/// lidos e, de cada declaração, os commits que a mudaram. Nenhum trecho nem
+/// código antigo fica guardado.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FileLineage {
+    pub path: String,
+    pub base: String,
+    /// O começo do hash do commit mais novo do arquivo na base, quando a
+    /// história foi lida.
+    pub last_commit: String,
+    /// A marca do scan que leu ([`lineage_is_fresh`]).
+    pub mark: String,
+    /// Os commits lidos, do mais novo ao mais velho.
+    pub commits: Vec<LineageCommit>,
+    pub declarations: Vec<DeclLineage>,
+}
+
+/// Um commit lido na história de um arquivo: o começo do hash, a data
+/// (segundos desde 1970), o título e o número do pull request que o trouxe.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LineageCommit {
+    pub id: String,
+    pub at: i64,
+    pub title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pr: Option<u32>,
+}
+
+/// Uma declaração do arquivo, pelo nome e pela ordem entre as de mesmo nome
+/// no arquivo (a primeira é 0), com os commits que a mudaram, do mais novo
+/// ao mais velho.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DeclLineage {
+    pub name: String,
+    pub nth: u32,
+    pub commits: Vec<DeclChange>,
+}
+
+/// Um commit que mudou uma declaração; `form` quando a mudança foi só de
+/// forma (espaços, ou um commit que o projeto manda o `git blame` ignorar).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DeclChange {
+    pub id: String,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub form: bool,
+}
+
+/// A história guardada das declarações de um arquivo ainda vale: é da mesma
+/// branch de partida da história do mapa, foi lida pela versão do scan que
+/// gravou o censo (`census_mark`), e o commit mais novo do arquivo na
+/// história do mapa é o que ela registrou — ou o arquivo não tem nenhum lá.
+/// O commit novo da base que a montagem soma muda esse commit só nos
+/// arquivos que ele tocou; os outros seguem valendo. A base trocada, ou
+/// reescrita debaixo do arquivo, pede a leitura de novo.
+#[must_use]
+pub fn lineage_is_fresh(lineage: &FileLineage, history: &History, census_mark: &str) -> bool {
+    lineage.base == history.base
+        && lineage.mark == census_mark
+        && file_history(history, &lineage.path).is_none_or(|file| file.last_commit == lineage.last_commit)
+}
+
+/// Por que a pergunta da história de uma declaração não tem resposta, dito
+/// para quem pergunta: o projeto sem branch de partida, ou a que o clone não
+/// tem. `None` quando há base.
+#[must_use]
+pub fn history_missing(history: &History, lang: Locale) -> Option<String> {
+    history_note(history, lang).or_else(|| history.base.is_empty().then(|| translate("map.history.no_base", lang).to_string()))
+}
+
+/// Os arquivos que declaram `name`, em ordem de caminho: só `file`, quando
+/// ele vem. As recusas são as de [`users`].
+pub fn declaring_files(map: &ProjectMap, file: Option<&str>, name: &str) -> Result<Vec<String>, MapRefusal> {
+    let mut files: Vec<String> = named_in(map, file, name)?.into_iter().map(|(m, _)| m.path.clone()).collect();
+    files.dedup();
+    Ok(files)
+}
+
+/// Um commit da história de uma declaração, como a resposta o mostra.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ShownCommit {
+    pub id: String,
+    pub at: i64,
+    /// O título sem o prefixo do tipo (`fix(...)`, `feat:`) e sem o número
+    /// do pull request no fim.
+    pub title: String,
+    pub pr: Option<u32>,
+    pub form: bool,
+}
+
+/// A história de uma declaração na base: onde ela mora, quantos commits a
+/// mudaram fora os de forma e os mais novos deles, até
+/// [`DECL_COMMITS_SHOWN`], do mais novo ao mais velho. Sem nenhum, a base
+/// ainda não tem commit dela.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DeclHistory {
+    pub file: String,
+    pub line: u64,
+    pub changes: usize,
+    pub commits: Vec<ShownCommit>,
+}
+
+/// A história de cada declaração `name` de `file`, pela história guardada
+/// do arquivo. As declarações de mesmo nome se casam pela ordem no arquivo.
+/// As recusas são as de [`users`].
+pub fn decl_history(map: &ProjectMap, file: &str, name: &str) -> Result<Vec<DeclHistory>, MapRefusal> {
+    let found = named_in(map, Some(file), name)?;
+    let lineage = map.lineage.iter().find(|lineage| found.first().is_some_and(|(m, _)| m.path == lineage.path));
+    let commits: BTreeMap<&str, &LineageCommit> =
+        lineage.map(|l| l.commits.iter().map(|c| (c.id.as_str(), c)).collect()).unwrap_or_default();
+    Ok(found
+        .iter()
+        .enumerate()
+        .map(|(nth, (module, decl))| {
+            let changes: &[DeclChange] = lineage
+                .and_then(|l| l.declarations.iter().find(|d| d.name == decl.name && d.nth as usize == nth))
+                .map_or(&[], |d| d.commits.as_slice());
+            DeclHistory {
+                file: module.path.clone(),
+                line: decl.line,
+                changes: changes.iter().filter(|c| !c.form).count(),
+                commits: changes
+                    .iter()
+                    .take(DECL_COMMITS_SHOWN)
+                    .map(|change| {
+                        let commit = commits.get(change.id.as_str());
+                        ShownCommit {
+                            id: change.id.clone(),
+                            at: commit.map_or(0, |c| c.at),
+                            title: commit.map(|c| clean_title(&c.title)).unwrap_or_default(),
+                            pr: commit.and_then(|c| c.pr),
+                            form: change.form,
+                        }
+                    })
+                    .collect(),
+            }
+        })
+        .collect())
+}
+
+/// Uma linha da história de uma declaração: a data, o começo do hash, o
+/// título e o número do pull request, com a marca do commit só de forma.
+#[must_use]
+pub fn history_line(commit: &ShownCommit, lang: Locale) -> String {
+    let mut line = format!("{} {} {}", date_of(commit.at), commit.id, commit.title);
+    if let Some(pr) = commit.pr {
+        line.push_str(" #");
+        line.push_str(&pr.to_string());
+    }
+    if commit.form {
+        line.push(' ');
+        line.push_str(translate("map.history.form", lang));
+    }
+    line
+}
+
+/// O título de um commit sem o prefixo do tipo — `fix(escopo): `, `feat!: `
+/// — e sem o número do pull request escrito no fim, `(#12)`.
+#[must_use]
+pub fn clean_title(title: &str) -> String {
+    let mut title = title.trim();
+    if let Some((kind, rest)) = title.split_once(": ") {
+        let head = kind.strip_suffix('!').unwrap_or(kind);
+        let (word, scope) = head.split_once('(').map_or((head, None), |(word, scope)| (word, Some(scope)));
+        let scoped = scope.is_none_or(|scope| scope.ends_with(')') && !scope[..scope.len() - 1].contains(['(', ')']));
+        if !word.is_empty() && word.chars().all(|c| c.is_ascii_alphabetic()) && scoped {
+            title = rest.trim_start();
+        }
+    }
+    if let Some((before, number)) = title.strip_suffix(')').and_then(|t| t.rsplit_once("(#"))
+        && !number.is_empty()
+        && number.chars().all(|c| c.is_ascii_digit())
+    {
+        title = before.trim_end();
+    }
+    title.to_string()
+}
+
 /// Para cada arquivo, em quantos commits ele aparece e com quais outros ele
 /// muda junto (e quantas vezes). Os commits grandes demais
 /// ([`CO_CHANGE_MAX_FILES`]) contam para o número de commits e não para o
@@ -323,6 +513,13 @@ pub struct ProjectMap {
     pub state: MapState,
     /// A camada da arquitetura de cada pasta, como o scan a grava.
     pub skeleton: Vec<MapSkeleton>,
+    /// A história das declarações dos arquivos que alguém já perguntou, que
+    /// o mapa guarda à parte do que a montagem grava.
+    pub lineage: Vec<FileLineage>,
+    /// A marca da versão do scan que gravou o censo; vazia no mapa escrito
+    /// à mão.
+    #[serde(skip)]
+    pub census_mark: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -597,6 +794,8 @@ pub enum MapRefusal {
     UnknownDeclaration { file: String, name: String },
     /// O arquivo está no mapa e não pôde ser lido do disco.
     FileUnreadable { file: String, detail: String },
+    /// A história das declarações do arquivo não pôde ser lida do git.
+    HistoryUnreadable { file: String, detail: String },
 }
 
 impl MapRefusal {
@@ -613,6 +812,7 @@ impl MapRefusal {
             Self::SkillTooLong { .. } => "skill-too-long",
             Self::UnknownDeclaration { .. } => "unknown-declaration",
             Self::FileUnreadable { .. } => "file-unreadable",
+            Self::HistoryUnreadable { .. } => "history-unreadable",
         }
     }
 
@@ -642,6 +842,9 @@ impl MapRefusal {
             }
             Self::FileUnreadable { file, detail } => {
                 fill("map.file_unreadable", &[("{file}", file.clone()), ("{detail}", detail.clone())])
+            }
+            Self::HistoryUnreadable { file, detail } => {
+                fill("map.history_unreadable", &[("{file}", file.clone()), ("{detail}", detail.clone())])
             }
         }
     }
@@ -1660,6 +1863,7 @@ mod tests {
             history,
             state: MapState::default(),
             skeleton: Vec::new(),
+            ..ProjectMap::default()
         };
         for lang in [Locale::PtBr, Locale::EnUs] {
             let text = summary(&map, lang);

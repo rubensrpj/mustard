@@ -594,18 +594,13 @@ fn suspect_holders_of(v: &serde_json::Value, name: &str, site: &str) -> Vec<(Str
     holders
 }
 
-/// A chamada sem caminho alcança toda declaração à vista, e com duas ela é
-/// suspeita: `valor()`, na linha 6 de `src/a.rs`, pode ser o `valor` do
-/// próprio arquivo ou o de `src/x.rs`, que o arquivo importa — importar é
-/// por arquivo, e o import não diz o nome. Nenhuma das duas guarda o uso
-/// como provado, e as duas o guardam com as mesmas candidatas.
-fn assert_a_call_without_a_path_is_suspect_between_every_one_in_sight(v: &serde_json::Value) {
-    assert!(holders_of(v, "valor", "src/a.rs:6:soma").is_empty(), "nenhuma provada");
-    let both = serde_json::json!(["src/a.rs:1:valor", "src/x.rs:1:valor"]);
-    assert_eq!(
-        suspect_holders_of(v, "valor", "src/a.rs:6:soma"),
-        vec![("src/a.rs".to_string(), both.clone()), ("src/x.rs".to_string(), both)]
-    );
+/// A chamada sem caminho do nome que o próprio arquivo declara fora de todo
+/// tipo é essa declaração: `valor()`, na linha 6 de `src/a.rs`, é o `valor`
+/// do próprio arquivo, provado, e não o de `src/x.rs`, que o arquivo também
+/// importa pelo caminho da linha 15.
+fn assert_a_call_without_a_path_links_to_the_file_own_declaration(v: &serde_json::Value) {
+    assert_eq!(holders_of(v, "valor", "src/a.rs:6:soma"), vec!["src/a.rs".to_string()]);
+    assert!(suspect_holders_of(v, "valor", "src/a.rs:6:soma").is_empty(), "nenhuma suspeita");
 }
 
 #[test]
@@ -621,9 +616,9 @@ fn a_path_to_the_file_itself_links_only_to_the_file() {
 }
 
 #[test]
-fn a_call_without_a_path_is_suspect_between_every_one_in_sight() {
+fn a_call_without_a_path_links_to_the_file_own_declaration() {
     let v = scan_fixture_labeled("rs-no-path", "graph_rust_call_path");
-    assert_a_call_without_a_path_is_suspect_between_every_one_in_sight(&v);
+    assert_a_call_without_a_path_links_to_the_file_own_declaration(&v);
 }
 
 /// A passada que reaproveita `src/a.rs` sem relê-lo liga as chamadas por
@@ -635,7 +630,7 @@ fn a_pass_that_keeps_the_file_links_the_calls_by_path_the_same() {
     for v in [&first, &second] {
         assert_a_call_by_a_path_links_only_to_the_file_it_names(v);
         assert_a_path_to_the_file_itself_links_only_to_the_file(v);
-        assert_a_call_without_a_path_is_suspect_between_every_one_in_sight(v);
+        assert_a_call_without_a_path_links_to_the_file_own_declaration(v);
     }
 }
 
@@ -995,4 +990,193 @@ fn a_declared_module_matches_only_when_followed_by_a_slash_or_the_end() {
         ],
     );
     assert!(deps_of(&v, "main.go").is_empty(), "{:?}", deps_of(&v, "main.go"));
+}
+
+/// Um pacote Python que repassa com `*` o `buscar` de um módulo dele, usado
+/// pelo nome do pacote, com outro `buscar` noutro pacote.
+const PACKAGE_THAT_PASSES_ON: &[(&str, &str)] = &[
+    ("pyproject.toml", "[project]\nname = \"loja\"\n"),
+    ("loja/__init__.py", "from .servico import *\n"),
+    ("loja/servico.py", "def buscar(id):\n    return id\n"),
+    ("outra/servico.py", "def buscar(id):\n    return 0\n"),
+    ("loja/usa.py", "from loja import buscar\n\n\ndef usa():\n    return buscar(1)\n"),
+];
+
+/// `from loja import buscar` chega ao `loja/__init__.py`, que repassa tudo o
+/// que `loja/servico.py` declara: a dependência vai ao arquivo que declara o
+/// nome, e a chamada `buscar(1)` liga provada a ele, e não ao `buscar` de
+/// `outra/servico.py`.
+#[test]
+fn an_import_by_the_package_name_reaches_the_file_its_init_passes_on() {
+    let v = scan_files("python-package-name", PACKAGE_THAT_PASSES_ON);
+    assert_eq!(deps_of(&v, "loja/usa.py"), vec!["loja/servico.py".to_string()]);
+    assert_eq!(holders_of(&v, "buscar", "loja/usa.py:5:usa"), vec!["loja/servico.py".to_string()]);
+    assert!(suspect_holders_of(&v, "buscar", "loja/usa.py:5:usa").is_empty());
+}
+
+/// `import util`, de uma parte só, liga ao `util.py` da raiz do projeto.
+#[test]
+fn an_import_of_one_part_reaches_the_file_of_that_name() {
+    let v = scan_files(
+        "python-one-part",
+        &[
+            ("util.py", "def ler():\n    return 1\n"),
+            ("app/main.py", "import util\n\n\ndef main():\n    return util.ler()\n"),
+        ],
+    );
+    assert_eq!(deps_of(&v, "app/main.py"), vec!["util.py".to_string()]);
+}
+
+/// O `__init__.py` que traz um nome de um módulo e tudo de outro repassa os
+/// dois: quem importa os dois nomes pelo pacote liga aos dois arquivos que os
+/// declaram.
+#[test]
+fn an_init_file_passes_on_a_named_import_and_a_star_import() {
+    let v = scan_files(
+        "python-init-passes-on",
+        &[
+            ("loja/__init__.py", "from .servico import buscar\nfrom .outro import *\n"),
+            ("loja/servico.py", "def buscar(id):\n    return id\n"),
+            ("loja/outro.py", "def contar():\n    return 0\n"),
+            ("app.py", "from loja import buscar, contar\n\n\ndef app():\n    return buscar(contar())\n"),
+        ],
+    );
+    assert_eq!(deps_of(&v, "app.py"), vec!["loja/outro.py".to_string(), "loja/servico.py".to_string()]);
+}
+
+/// `import json`, sem `json.py` no projeto, não liga a nada, e a chamada
+/// `json.dumps({})` é de fora: não liga ao `dumps` do projeto.
+#[test]
+fn an_import_of_one_part_that_names_nothing_of_the_project_stays_outside() {
+    let v = scan_files(
+        "python-one-part-outside",
+        &[
+            ("util/texto.py", "def dumps(x):\n    return x\n"),
+            ("app.py", "import json\n\n\ndef app():\n    return json.dumps({})\n"),
+        ],
+    );
+    assert!(deps_of(&v, "app.py").is_empty(), "{:?}", deps_of(&v, "app.py"));
+    assert!(used_by_of(&v, "util/texto.py", "dumps").is_empty());
+}
+
+/// Na língua em que o import de uma parte só é pacote de fora, ele não liga
+/// ao arquivo de mesmo nome: `import x from 'react'` não é `src/react.ts`.
+#[test]
+fn an_import_of_one_part_stays_a_package_where_the_language_says_so() {
+    let v = scan_files(
+        "one-part-package",
+        &[
+            ("src/react.ts", "export function r() {\n  return 1;\n}\n"),
+            ("src/app.ts", "import x from 'react';\n\nexport function app() {\n  return x;\n}\n"),
+        ],
+    );
+    assert!(deps_of(&v, "src/app.ts").is_empty(), "{:?}", deps_of(&v, "src/app.ts"));
+}
+
+/// O manifesto de `path` como o mapa grava: o tipo e as dependências.
+fn manifest_of(v: &serde_json::Value, path: &str) -> (String, Vec<String>) {
+    let m = v["manifests"]
+        .as_array()
+        .expect("manifests")
+        .iter()
+        .find(|m| m["path"] == path)
+        .unwrap_or_else(|| panic!("{path} é manifesto no mapa"));
+    let deps = m["dependencies"].as_array().into_iter().flatten().map(|d| d.as_str().unwrap().to_string()).collect();
+    (m["kind"].as_str().unwrap().to_string(), deps)
+}
+
+/// As pastas dos projetos do mapa, em ordem.
+fn project_dirs(v: &serde_json::Value) -> Vec<String> {
+    let mut dirs: Vec<String> =
+        v["projects"].as_array().expect("projects").iter().map(|p| p["dir"].as_str().unwrap().to_string()).collect();
+    dirs.sort();
+    dirs
+}
+
+/// A lista de dependências de uma por linha, o arquivo de configuração sem
+/// dependência e o de seções: cada um marca o seu projeto, e os de
+/// dependência trazem só o nome de cada uma, sem versão nem condição.
+#[test]
+fn the_python_dependency_files_mark_their_projects_and_list_the_names() {
+    let v = scan_files(
+        "python-manifests",
+        &[
+            ("api/requirements.txt", "# web\nfastapi==0.110\nflask>=2 ; python_version>\"3\"\n\n-r base.txt\n"),
+            ("api/main.py", "def main():\n    return 1\n"),
+            ("lib/setup.cfg", "[metadata]\nname = lib\n"),
+            ("lib/util.py", "def u():\n    return 1\n"),
+            ("web/Pipfile", "[packages]\ndjango = \"*\"\n\n[dev-packages]\npytest = \"*\"\n"),
+            ("web/app.py", "def app():\n    return 1\n"),
+        ],
+    );
+    assert_eq!(manifest_of(&v, "api/requirements.txt").1, vec!["fastapi".to_string(), "flask".to_string()]);
+    assert_eq!(manifest_of(&v, "web/Pipfile").1, vec!["django".to_string(), "pytest".to_string()]);
+    assert!(manifest_of(&v, "lib/setup.cfg").1.is_empty());
+    assert_eq!(project_dirs(&v), vec!["api".to_string(), "lib".to_string(), "web".to_string()]);
+}
+
+/// Dois manifestos na mesma pasta dão um projeto só.
+#[test]
+fn two_python_manifests_in_one_folder_make_one_project() {
+    let v = scan_files(
+        "python-two-manifests",
+        &[
+            ("svc/requirements.txt", "flask\n"),
+            ("svc/pyproject.toml", "[project]\nname = \"svc\"\n"),
+            ("svc/app.py", "def app():\n    return 1\n"),
+        ],
+    );
+    assert_eq!(project_dirs(&v), vec!["svc".to_string()]);
+}
+
+/// Escreve os arquivos num projeto do git, já no primeiro commit, e devolve o
+/// mapa do scan dele.
+fn scan_committed(label: &str, files: &[(&str, &str)]) -> serde_json::Value {
+    let temp = tempfile::Builder::new().prefix(&format!("scan-graph-git-{label}-")).tempdir().unwrap();
+    let dir = temp.path();
+    for (path, body) in files {
+        let file = dir.join(path);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, body).unwrap();
+    }
+    git(dir, &["init", "-q"]);
+    let exclude = mustard_core::footprint_rules().join("\n") + "\n";
+    std::fs::write(dir.join(".git").join("info").join("exclude"), exclude).unwrap();
+    git(dir, &["add", "-A"]);
+    git(dir, &["commit", "-q", "-m", "primeiro"]);
+    scan_in_place(dir).0
+}
+
+/// Um pacote Dart que se importa pelo próprio nome: a biblioteca
+/// `lib/loja.dart` repassa `lib/src/pedido_service.dart`, o teste importa o
+/// arquivo pelo caminho do pacote, e a tela importa só a biblioteca.
+const DART_PACKAGE: &[(&str, &str)] = &[
+    ("pubspec.yaml", "name: loja\n\ndependencies:\n  http: ^1.0.0\n"),
+    ("lib/loja.dart", "export 'src/pedido_service.dart';\n"),
+    (
+        "lib/src/pedido_service.dart",
+        "class PedidoService {\n  final int limite = 10;\n  int get total => 0;\n  String buscar(int id) {\n    return '';\n  }\n}\n\nenum Estado { aberto, fechado }\n",
+    ),
+    (
+        "test/pedido_service_test.dart",
+        "import 'package:loja/src/pedido_service.dart';\n\nvoid main() {\n  PedidoService().buscar(1);\n}\n",
+    ),
+    (
+        "lib/tela.dart",
+        "import 'package:loja/loja.dart';\nimport 'package:http/http.dart' as http;\n\nvoid tela() {\n  PedidoService();\n}\n",
+    ),
+];
+
+/// O import pelo nome do próprio pacote chega ao arquivo dele; a biblioteca
+/// que repassa é o que a tela importa, e o que ela repassa fica à vista da
+/// tela: o `PedidoService()` liga provado ao arquivo que o declara. O teste
+/// fica ligado ao arquivo que ele importa, e o pacote de fora não liga a
+/// nada do projeto.
+#[test]
+fn a_package_import_reaches_its_own_file_and_a_library_passes_on_what_it_exports() {
+    let v = scan_committed("dart-package", DART_PACKAGE);
+    assert_eq!(deps_of(&v, "test/pedido_service_test.dart"), vec!["lib/src/pedido_service.dart".to_string()]);
+    assert_eq!(deps_of(&v, "lib/tela.dart"), vec!["lib/loja.dart".to_string()]);
+    assert_eq!(holders_of(&v, "PedidoService", "lib/tela.dart:5:tela"), vec!["lib/src/pedido_service.dart".to_string()]);
+    assert_eq!(list_of(&v, "lib/src/pedido_service.dart", "tests"), vec!["test/pedido_service_test.dart".to_string()]);
 }

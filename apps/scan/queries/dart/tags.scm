@@ -16,6 +16,14 @@
 ;     closest the grammar has to a method declaration node.
 (import_specification (configurable_uri (uri) @import))
 (import_specification (uri) @import)
+; O prefixo de `import 'x.dart' as c;` é o nome que o import traz: a própria
+; biblioteca, escrita antes de outro nome (`c.jsonEncode()`).
+(import_specification (identifier) @imported)
+
+; O repasse: `export 'src/x.dart';`, com `show` ou `hide` ou sem, oferece a
+; quem importa o arquivo o que `src/x.dart` oferece; com `show`, só os nomes
+; escritos nele. O caminho escrito ali não é texto fixo do arquivo.
+(library_export (configurable_uri (uri) @reexport))
 
 (class_definition name: (identifier) @name) @definition.class
 ; `mixin_declaration` has NO `name:` field (node-types.json: fields = {}); the
@@ -75,8 +83,38 @@
 ((method_signature (function_signature name: (identifier) @name) @definition.method) . (function_body) @body)
 ((method_signature (constructor_signature (identifier) @name . (formal_parameter_list)) @definition.method) . (function_body) @body)
 ((method_signature (factory_constructor_signature (identifier) @name . (formal_parameter_list)) @definition.method) . (function_body) @body)
-((method_signature (getter_signature name: (identifier) @name) @definition.method) . (function_body) @body)
-((method_signature (setter_signature name: (identifier) @name) @definition.method) . (function_body) @body)
+((method_signature (getter_signature name: (identifier) @name) @definition.property) . (function_body) @body)
+((method_signature (setter_signature name: (identifier) @name) @definition.property) . (function_body) @body)
+
+; Campos, propriedades e itens de enumeração — membros do tipo que os
+; contém, como os métodos. Cada nome declarado no corpo de uma classe, de um
+; mixin, de uma extensão ou de uma enumeração é um campo (`final int limite =
+; 10;`, `late String nome;`, os dois de `int a, b;`, o `static final`); o
+; `static const` segue constante, no padrão de cima. O `get` e o `set` sem
+; corpo (o abstrato) são propriedade, como os com corpo, logo acima. Cada item
+; de uma enumeração é um membro dela. O tipo que os contém vai escrito como
+; dono (`@owner`), porque o tipo escrito numa linha só (`enum Estado { aberto,
+; fechado }`) tem a mesma faixa que eles.
+(class_definition name: (identifier) @owner body: (class_body (declaration
+  (initialized_identifier_list (initialized_identifier . (identifier) @name))) @definition.field))
+(class_definition name: (identifier) @owner body: (class_body (declaration (final_builtin)
+  (static_final_declaration_list (static_final_declaration . (identifier) @name))) @definition.field))
+(mixin_declaration (identifier) @owner (class_body (declaration
+  (initialized_identifier_list (initialized_identifier . (identifier) @name))) @definition.field))
+(mixin_declaration (identifier) @owner (class_body (declaration (final_builtin)
+  (static_final_declaration_list (static_final_declaration . (identifier) @name))) @definition.field))
+(extension_declaration name: (identifier) @owner body: (extension_body (declaration
+  (initialized_identifier_list (initialized_identifier . (identifier) @name))) @definition.field))
+(extension_declaration name: (identifier) @owner body: (extension_body (declaration (final_builtin)
+  (static_final_declaration_list (static_final_declaration . (identifier) @name))) @definition.field))
+(enum_declaration name: (identifier) @owner body: (enum_body (declaration
+  (initialized_identifier_list (initialized_identifier . (identifier) @name))) @definition.field))
+(enum_declaration name: (identifier) @owner body: (enum_body (declaration (final_builtin)
+  (static_final_declaration_list (static_final_declaration . (identifier) @name))) @definition.field))
+(enum_declaration name: (identifier) @owner body: (enum_body
+  (enum_constant name: (identifier) @name) @definition.enum_member))
+(declaration (getter_signature name: (identifier) @name) @definition.property)
+(declaration (setter_signature name: (identifier) @name) @definition.property)
 
 ; Library — a `part` file shares one library with its owner and imports
 ; nothing, so each side is an import of the other: `part 'x.dart';` in the

@@ -48,6 +48,41 @@
 (type_alias_declaration name: (_) @name) @definition.type
 (function_declaration name: (_) @name) @definition.function
 
+; O JavaScript antigo exporta a função pondo-a no objeto `exports`, no topo
+; do arquivo: a declaração leva o nome da propriedade
+; (`exports.ler = function (req, res) {}`, `module.exports.ler = () => {}`)
+; ou o da função (`module.exports = function ler() {}`).
+; `module.exports = { ler, Carrinho }` não declara nada: os nomes já são
+; declarados no arquivo.
+(program
+  (expression_statement
+    (assignment_expression
+      left: (member_expression
+        object: (identifier) @_exports
+        property: (property_identifier) @name)
+      right: [(function_expression) (arrow_function)])) @definition.function
+  (#eq? @_exports "exports"))
+(program
+  (expression_statement
+    (assignment_expression
+      left: (member_expression
+        object: (member_expression
+          object: (identifier) @_module
+          property: (property_identifier) @_exports)
+        property: (property_identifier) @name)
+      right: [(function_expression) (arrow_function)])) @definition.function
+  (#eq? @_module "module")
+  (#eq? @_exports "exports"))
+(program
+  (expression_statement
+    (assignment_expression
+      left: (member_expression
+        object: (identifier) @_module
+        property: (property_identifier) @_exports)
+      right: (function_expression name: (identifier) @name))) @definition.function
+  (#eq? @_module "module")
+  (#eq? @_exports "exports"))
+
 ; Exported top-level consts (e.g. `export const userTable = pgTable(...)`).
 ; This is the syntax hook a convention like Drizzle/GraphQL plugs into — the
 ; engine never knows the framework; it just sees a recurring `export const`.

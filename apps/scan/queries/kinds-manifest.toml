@@ -102,4 +102,7 @@ kinds = [
   "function",
   "method",
   "const",
+  "field",
+  "property",
+  "enum_member",
 ]

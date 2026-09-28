@@ -1,6 +1,9 @@
 ; Go — package (namespace), imports, top-level types and funcs.
 (package_clause (package_identifier) @namespace)
 (import_spec path: (interpreted_string_literal) @import)
+; O apelido de `import s "strings"` é o nome que o import traz: o próprio
+; pacote, escrito antes de outro nome (`s.Join()`).
+(import_spec name: (package_identifier) @imported)
 
 (type_spec name: (type_identifier) @name type: (struct_type)) @definition.struct
 (type_spec name: (type_identifier) @name type: (interface_type)) @definition.interface

@@ -929,6 +929,172 @@ fn ligacoes() -> Vec<Ligacoes> {
     ]
 }
 
+/// O projeto do alcance de cada nome, uma pasta por linguagem. No Python,
+/// `l/util.py` declara `open` e `dumps`; `l/a.py` traz o módulo pelo pacote
+/// (`from l import util`) e chama `util.open(1)` e `open("x")`; `l/b.py`
+/// importa `json`, traz `dumps` pelo nome e chama os dois; `l/c.py` traz
+/// `loja/servico.py` pelo apelido `s`; `l/d.py` chama `buscar()` sem import.
+/// No Go, `api/a.go` importa `strings` e o pacote `util`, e chama o `Join` de
+/// cada um. No Dart, `lib/a.dart` importa `dart:convert` com o prefixo `c` e
+/// `util.dart` sem prefixo, que declara `jsonEncode`. No TypeScript,
+/// `src/util.ts` declara `setTimeout` e `join`; `src/a.ts` o importa como
+/// `util` e chama `setTimeout`; `src/b.ts` o importa como `u` e chama
+/// `u.join`; `src/aves.ts` e `src/app.ts` declaram cada um o seu `router`, e
+/// `app.ts` importa `aves.ts` e cita o `router`. No JavaScript antigo,
+/// `servico.js` exporta `ler` pelo objeto `exports`, `outro.js` exporta
+/// `gravar` por `module.exports.gravar`, `mais.js` exporta a função `apagar`
+/// como o próprio módulo, `junta.js` declara `ler` e o exporta num objeto, e
+/// `app.js` traz `ler` de `servico.js` pelo `require` e o chama.
+const ALCANCE: &[(&str, &str)] = &[
+    ("py/pyproject.toml", "[project]\nname = \"l\"\n"),
+    ("py/l/__init__.py", ""),
+    ("py/l/util.py", "def open(x):\n    return x\n\n\ndef dumps(x):\n    return x\n"),
+    ("py/l/a.py", "from l import util\n\n\ndef usa():\n    util.open(1)\n    return open(\"x\")\n"),
+    ("py/l/b.py", "import json\nfrom l.util import dumps\n\n\ndef usa():\n    json.dumps({})\n    return dumps(1)\n"),
+    ("py/l/c.py", "import loja.servico as s\n\n\ndef usa():\n    return s.buscar()\n"),
+    ("py/l/d.py", "def usa():\n    return buscar()\n"),
+    ("py/loja/__init__.py", ""),
+    ("py/loja/servico.py", "def buscar():\n    return 1\n"),
+    ("go/go.mod", "module example.com/l\n\ngo 1.21\n"),
+    ("go/util/texto.go", "package util\n\nfunc Join(a []string, s string) string {\n\treturn s\n}\n"),
+    (
+        "go/api/a.go",
+        "package api\n\nimport (\n\t\"strings\"\n\n\t\"example.com/l/util\"\n)\n\nfunc Usa() string {\n\t\
+         strings.Join(nil, \",\")\n\treturn util.Join(nil, \",\")\n}\n",
+    ),
+    ("dart/pubspec.yaml", "name: l\n"),
+    ("dart/lib/util.dart", "String jsonEncode(Object o) {\n  return \"\";\n}\n"),
+    (
+        "dart/lib/a.dart",
+        "import 'dart:convert' as c;\nimport 'util.dart';\n\nvoid usa() {\n  c.jsonEncode({});\n  jsonEncode(1);\n}\n",
+    ),
+    ("ts/package.json", "{\"name\": \"t\"}\n"),
+    (
+        "ts/src/util.ts",
+        "export function setTimeout(f: () => void, n: number) {\n  return n;\n}\n\n\
+         export function join(s: string) {\n  return s;\n}\n",
+    ),
+    ("ts/src/a.ts", "import * as util from './util';\n\nexport function usa() {\n  setTimeout(() => {}, 1);\n}\n"),
+    ("ts/src/b.ts", "import * as u from './util';\n\nexport function usa() {\n  return u.join('a');\n}\n"),
+    ("ts/src/aves.ts", "const router = criar();\n\nexport default function aves() {\n  return router;\n}\n"),
+    (
+        "ts/src/app.ts",
+        "import aves from './aves';\n\nconst router = criar();\n\nexport function app() {\n  router.get('/', aves);\n}\n",
+    ),
+    ("js/package.json", "{\"name\": \"j\"}\n"),
+    ("js/servico.js", "exports.ler = function (req, res) {\n  return 1;\n};\n"),
+    ("js/outro.js", "module.exports.gravar = (x) => x;\n"),
+    ("js/mais.js", "module.exports = function apagar() {\n  return 0;\n};\n"),
+    ("js/junta.js", "function ler() {\n  return 2;\n}\n\nmodule.exports = { ler };\n"),
+    ("js/app.js", "const { ler } = require('./servico');\n\nfunction app() {\n  return ler();\n}\n"),
+];
+
+/// O mapa do projeto do alcance, montado uma vez para todos os testes dele.
+fn mapa_do_alcance() -> &'static Value {
+    static MAPA: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+    MAPA.get_or_init(|| {
+        let temp = pasta_do_projeto("alcance-do-nome");
+        for (rel, corpo) in ALCANCE {
+            write(temp.path(), rel, corpo);
+        }
+        scan(temp.path())
+    })
+}
+
+/// Quantos usos provados e quantos suspeitos a declaração `nome` de `arquivo`
+/// recebe da linha `lugar` (`arquivo:linha`).
+fn no_lugar(arquivo: &str, nome: &str, lugar: &str) -> (usize, usize) {
+    let usos = usos_de(mapa_do_alcance(), arquivo, nome);
+    let lugar = format!("{lugar}:");
+    (
+        usos.provados.iter().filter(|at| at.starts_with(&lugar)).count(),
+        usos.suspeitos.iter().filter(|(at, _)| at.starts_with(&lugar)).count(),
+    )
+}
+
+/// O nome sozinho que o próprio arquivo declara fora de todo tipo é essa
+/// declaração, provada, e nenhuma outra: o `router` citado em `app.ts` é o
+/// dele, e não o de `aves.ts`, que ele importa.
+#[test]
+fn a_bare_name_the_file_declares_is_its_own() {
+    assert_eq!(no_lugar("ts/src/app.ts", "router", "ts/src/app.ts:6"), (1, 0), "o router do próprio arquivo");
+    assert_eq!(no_lugar("ts/src/aves.ts", "router", "ts/src/app.ts:6"), (0, 0), "o router de aves.ts");
+}
+
+/// O nome da língua escrito sozinho, que o arquivo não declara nem traz pelo
+/// nome, é o da língua e não liga: `open("x")` no Python e `setTimeout` no
+/// TypeScript, com o arquivo que declara um de mesmo nome importado como
+/// módulo.
+#[test]
+fn a_name_of_the_language_the_file_does_not_bring_links_nowhere() {
+    assert_eq!(no_lugar("py/l/util.py", "open", "py/l/a.py:6"), (0, 0), "open(\"x\")");
+    assert_eq!(no_lugar("ts/src/util.ts", "setTimeout", "ts/src/a.ts:4"), (0, 0), "setTimeout");
+}
+
+/// O nome escrito depois do apelido de uma biblioteca é dela e não liga:
+/// `c.jsonEncode({})` no Dart, com o prefixo `c` de `dart:convert`, e, sem
+/// apelido, `json.dumps({})` no Python e `strings.Join` no Go.
+#[test]
+fn a_name_after_a_library_alias_links_nowhere() {
+    assert_eq!(no_lugar("dart/lib/util.dart", "jsonEncode", "dart/lib/a.dart:5"), (0, 0), "c.jsonEncode");
+    assert_eq!(no_lugar("py/l/util.py", "dumps", "py/l/b.py:6"), (0, 0), "json.dumps");
+    assert_eq!(no_lugar("go/util/texto.go", "Join", "go/api/a.go:10"), (0, 0), "strings.Join");
+}
+
+/// O apelido que um import do projeto dá ao módulo nomeia o arquivo dele:
+/// `u.join('a')` no TypeScript e `s.buscar()` no Python são provados.
+#[test]
+fn a_name_after_a_project_alias_is_proven() {
+    assert_eq!(no_lugar("ts/src/util.ts", "join", "ts/src/b.ts:4"), (1, 0), "u.join");
+    assert_eq!(no_lugar("py/loja/servico.py", "buscar", "py/l/c.py:5"), (1, 0), "s.buscar");
+}
+
+/// O nome sozinho sem nada à vista, declarado noutro arquivo, é suspeito,
+/// mesmo declarado uma vez só: nada no arquivo diz que é aquele.
+#[test]
+fn a_bare_name_with_nothing_in_sight_is_suspect() {
+    assert_eq!(no_lugar("py/loja/servico.py", "buscar", "py/l/d.py:2"), (0, 1), "buscar() sem import");
+    let usos = usos_de(mapa_do_alcance(), "py/loja/servico.py", "buscar");
+    let candidatas: Vec<&Vec<String>> =
+        usos.suspeitos.iter().filter(|(at, _)| at.starts_with("py/l/d.py:2:")).map(|(_, c)| c).collect();
+    assert_eq!(candidatas, [&vec!["py/loja/servico.py:1:buscar".to_string()]]);
+}
+
+/// O nome que o arquivo traz segue provado: `util.open(1)` com o módulo
+/// trazido do pacote, `dumps(1)` trazido pelo nome, `util.Join` no Go e
+/// `jsonEncode(1)` com `util.dart` importado sem prefixo.
+#[test]
+fn a_name_the_file_brings_stays_proven() {
+    assert_eq!(no_lugar("py/l/util.py", "open", "py/l/a.py:5"), (1, 0), "util.open(1)");
+    assert_eq!(no_lugar("py/l/util.py", "dumps", "py/l/b.py:7"), (1, 0), "dumps(1)");
+    assert_eq!(no_lugar("go/util/texto.go", "Join", "go/api/a.go:11"), (1, 0), "util.Join");
+    assert_eq!(no_lugar("dart/lib/util.dart", "jsonEncode", "dart/lib/a.dart:6"), (1, 0), "jsonEncode(1)");
+}
+
+/// O JavaScript antigo exporta a função pelo objeto `exports`: cada forma
+/// declara uma função, com o nome da propriedade ou o da função, e a chamada
+/// de quem a traz pelo `require` é provada. O objeto exportado com nomes já
+/// declarados não declara nada de novo.
+#[test]
+fn an_old_style_export_is_a_function_its_importer_reaches() {
+    assert_eq!(no_lugar("js/servico.js", "ler", "js/app.js:4"), (1, 0), "ler()");
+    let map = mapa_do_alcance();
+    let declaradas = |arquivo: &str| -> Vec<(String, String)> {
+        let m = map["modules"].as_array().unwrap().iter().find(|m| m["path"] == arquivo).unwrap();
+        m["declarations"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|d| (d["name"].as_str().unwrap().to_string(), d["kind"].as_str().unwrap().to_string()))
+            .collect()
+    };
+    let funcao = |nome: &str| vec![(nome.to_string(), "function".to_string())];
+    assert_eq!(declaradas("js/servico.js"), funcao("ler"));
+    assert_eq!(declaradas("js/outro.js"), funcao("gravar"));
+    assert_eq!(declaradas("js/mais.js"), funcao("apagar"));
+    assert_eq!(declaradas("js/junta.js"), funcao("ler"));
+}
+
 /// Os usos gravados de cada declaração do mapa, pelo arquivo e pelo nome:
 /// os provados, como o texto `arquivo:linha:quem`, e os suspeitos, cada um
 /// com o lugar e as candidatas.
@@ -973,8 +1139,9 @@ fn usos_de(map: &Value, arquivo: &str, nome: &str) -> Usos {
 /// TypeScript e no Python. Com duas funções `run` em módulos diferentes, a
 /// chamada no arquivo que importa uma delas é provada só para ela; a chamada
 /// num arquivo que não importa nenhuma é suspeita nas duas, com as duas
-/// candidatas; e o nome declarado uma vez só na linguagem é provado mesmo sem
-/// import. A chamada por uma variável (`x.run()`) é suspeita mesmo com a
+/// candidatas; e o nome declarado uma vez só na linguagem, sem import e sem
+/// nada à vista, é suspeito, com ela de candidata: nada no arquivo diz que é
+/// ela. A chamada por uma variável (`x.run()`) é suspeita mesmo com a
 /// `run` importada: sem saber o tipo da variável, ela pode ser outro método.
 #[test]
 fn each_link_says_whether_it_is_proven_or_suspect() {
@@ -1017,8 +1184,11 @@ fn each_link_says_whether_it_is_proven_or_suspect() {
 
         let lugar = format!("{}:{}", l.usa_unica, linha_de(corpo(l, l.usa_unica), " unica()"));
         let unica = usos_de(&map, l.unica, "unica");
-        if unica.provados.iter().filter(|at| at.starts_with(&lugar)).count() != 1 || !unica.suspeitos.is_empty() {
-            faltas.push(format!("unica, declarada uma vez, é provada em {lugar} sem import: {:?}", unica.provados));
+        let so_ela = vec![format!("{}:1:unica", l.unica)];
+        let suspeitas: Vec<&Vec<String>> =
+            unica.suspeitos.iter().filter(|(at, _)| at.starts_with(&lugar)).map(|(_, c)| c).collect();
+        if suspeitas != [&so_ela] || !unica.provados.is_empty() {
+            faltas.push(format!("unica, declarada uma vez e sem import, é suspeita em {lugar}: {suspeitas:?}"));
         }
 
         let lugar = format!("{}:{}", l.por_valor, linha_de(corpo(l, l.por_valor), "x.run()"));

@@ -157,6 +157,14 @@
 #                 dentro da classe). Sem o campo, `false`: o nome sozinho
 #                 nunca alcança um método, um campo ou um membro de enum, e o
 #                 `Ok(` ou o `fechar()` escrito sem o objeto não liga a eles.
+#   single_part_paths OPTIONAL — `true` na língua em que o import não
+#                 relativo de uma parte só (`import util`, `from loja import
+#                 x`) pode nomear um arquivo ou uma pasta do projeto: ele é
+#                 procurado como os caminhos de mais partes, o arquivo exato
+#                 primeiro e depois o que termina nele numa parte inteira,
+#                 primeiro no projeto de quem importa. Sem o campo, `false`:
+#                 o import de uma parte só é pacote de fora (`import x from
+#                 'react'`) e nunca liga a arquivo pelo caminho.
 #   import_self   OPTIONAL — o nome que, trazido por um import (`@imported`),
 #                 traz o último nome escrito antes da lista que o contém
 #                 (`self` em `use std::fs::{self, File}` traz `fs`). Sem o
@@ -211,6 +219,7 @@ alias_config = "tsconfig.json"
 alias_base = "compilerOptions.baseUrl"
 alias_paths = "compilerOptions.paths"
 alias_extends = "extends"
+prelude = ["setTimeout", "setInterval", "setImmediate", "clearTimeout", "clearInterval", "clearImmediate", "queueMicrotask", "structuredClone", "requestAnimationFrame", "cancelAnimationFrame", "parseInt", "parseFloat", "isNaN", "isFinite", "encodeURI", "encodeURIComponent", "decodeURI", "decodeURIComponent", "escape", "unescape", "eval", "atob", "btoa", "fetch", "require", "alert", "confirm", "prompt", "Array", "Object", "String", "Number", "Boolean", "Symbol", "BigInt", "Date", "RegExp", "Error", "TypeError", "RangeError", "SyntaxError", "ReferenceError", "Promise", "Map", "Set", "WeakMap", "WeakSet", "JSON", "Math", "Reflect", "Proxy", "Intl", "console", "globalThis", "window", "document", "process", "Buffer"]
 log_calls = ["console.*", "logger.*", "Logger.*"]
 error_forms = ["throw", "*Error", "*Exception", "reject"]
 
@@ -228,6 +237,7 @@ alias_config = "tsconfig.json"
 alias_base = "compilerOptions.baseUrl"
 alias_paths = "compilerOptions.paths"
 alias_extends = "extends"
+prelude = ["setTimeout", "setInterval", "setImmediate", "clearTimeout", "clearInterval", "clearImmediate", "queueMicrotask", "structuredClone", "requestAnimationFrame", "cancelAnimationFrame", "parseInt", "parseFloat", "isNaN", "isFinite", "encodeURI", "encodeURIComponent", "decodeURI", "decodeURIComponent", "escape", "unescape", "eval", "atob", "btoa", "fetch", "require", "alert", "confirm", "prompt", "Array", "Object", "String", "Number", "Boolean", "Symbol", "BigInt", "Date", "RegExp", "Error", "TypeError", "RangeError", "SyntaxError", "ReferenceError", "Promise", "Map", "Set", "WeakMap", "WeakSet", "JSON", "Math", "Reflect", "Proxy", "Intl", "console", "globalThis", "window", "document", "process", "Buffer"]
 log_calls = ["console.*", "logger.*", "Logger.*"]
 error_forms = ["throw", "*Error", "*Exception", "reject"]
 
@@ -242,6 +252,7 @@ grammar = "grammar_ts::LANGUAGE_TSX"
 self_receivers = ["this"]
 parent_receivers = ["super"]
 package_entry = ["src/index", "index"]
+prelude = ["setTimeout", "setInterval", "setImmediate", "clearTimeout", "clearInterval", "clearImmediate", "queueMicrotask", "structuredClone", "requestAnimationFrame", "cancelAnimationFrame", "parseInt", "parseFloat", "isNaN", "isFinite", "encodeURI", "encodeURIComponent", "decodeURI", "decodeURIComponent", "escape", "unescape", "eval", "atob", "btoa", "fetch", "require", "alert", "confirm", "prompt", "Array", "Object", "String", "Number", "Boolean", "Symbol", "BigInt", "Date", "RegExp", "Error", "TypeError", "RangeError", "SyntaxError", "ReferenceError", "Promise", "Map", "Set", "WeakMap", "WeakSet", "JSON", "Math", "Reflect", "Proxy", "Intl", "console", "globalThis", "window", "document", "process", "Buffer"]
 log_calls = ["console.*", "logger.*", "Logger.*"]
 error_forms = ["throw", "*Error", "*Exception", "reject"]
 
@@ -251,7 +262,9 @@ extensions = ["py", "pyi"]
 dir = "python"
 grammar = "grammar_py::LANGUAGE"
 relative_import = { separator = "." }
+single_part_paths = true
 self_receivers = ["self", "cls"]
+prelude = ["abs", "aiter", "all", "anext", "any", "ascii", "bin", "bool", "breakpoint", "bytearray", "bytes", "callable", "chr", "classmethod", "compile", "complex", "delattr", "dict", "dir", "divmod", "enumerate", "eval", "exec", "filter", "float", "format", "frozenset", "getattr", "globals", "hasattr", "hash", "help", "hex", "id", "input", "int", "isinstance", "issubclass", "iter", "len", "list", "locals", "map", "max", "memoryview", "min", "next", "object", "oct", "open", "ord", "pow", "print", "property", "range", "repr", "reversed", "round", "set", "setattr", "slice", "sorted", "staticmethod", "str", "sum", "super", "tuple", "type", "vars", "zip", "__import__"]
 log_calls = ["print", "logging.*", "logger.*", "log.*"]
 error_forms = ["raise", "*Error", "*Exception"]
 
@@ -278,6 +291,7 @@ extensions = ["go"]
 dir = "go"
 grammar = "grammar_go::LANGUAGE"
 namespace_scope = "folder"
+prelude = ["append", "cap", "clear", "close", "complex", "copy", "delete", "imag", "len", "make", "max", "min", "new", "panic", "print", "println", "real", "recover"]
 log_calls = ["log.*", "fmt.Print*", "fmt.Fprint*", "slog.*"]
 error_forms = ["errors.New", "fmt.Errorf", "panic", "Error"]
 
@@ -299,5 +313,6 @@ grammar = "grammar_dart::LANGUAGE"
 self_receivers = ["this"]
 parent_receivers = ["super"]
 implicit_self = true
+prelude = ["print", "identical", "identityHashCode"]
 log_calls = ["print", "debugPrint", "log", "logger.*"]
 error_forms = ["throw", "*Exception", "*Error"]

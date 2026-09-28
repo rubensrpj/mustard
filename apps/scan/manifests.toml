@@ -4,15 +4,27 @@
 # literal. To support a new build system: add a [[manifest]] row here. Only a
 # brand-new file FORMAT (beyond json/xml/toml/yaml/lines) needs an engine change.
 #
-# Directories the scanner skips (build/dependency output, plus the harness's
-# own .claude state/tooling — scanning it is self-referential noise) live here too.
+# As pastas que a caminhada pula também moram aqui, em duas listas, e valem
+# pelo nome, em qualquer profundidade. Toda pasta pulada vai à cobertura do mapa
+# pelo caminho relativo.
+#
+# skip_dirs: as que nunca guardam código do projeto — o git e a ferramenta do
+# Claude, que lida seria ruído dela mesma. Sempre puladas.
+skip_dirs = [".git", ".claude"]
 
-skip_dirs = [".git", ".claude", "node_modules", "target", "bin", "obj", "dist", "build", ".dart_tool", "vendor"]
+# output_dirs: as de saída de compilação e de dependências. Dentro do git, a
+# pasta é lida quando o índice do git guarda nela algum arquivo de código (de
+# língua que o registro reconhece), e pulada sem nenhum; a que o .gitignore pega
+# fica fora pela própria caminhada. Fora do git, sempre pulada.
+output_dirs = ["node_modules", "target", "bin", "obj", "dist", "build", ".dart_tool", "vendor"]
 
 # Fields per manifest:
 #   kind            label stored on the project (free-form, from the repo's world)
 #   filename / ext  match by exact filename OR by extension(s)
 #   format          generic reader: json | xml-attr | xml-text | toml-sections | yaml-section | gomod
+#                   | lines (uma dependência por linha: o nome antes do primeiro
+#                   `=`, `<`, `>`, `~`, `!`, `[`, `;` ou espaço; linha vazia,
+#                   comentário `#` e opção começada por `-` ficam de fora)
 #                   | none (no dependency reader: the file only marks the project;
 #                   a manifest written in a source language is still read as code)
 #   name            project name rule: "dir" (parent folder) | "stem" (filename without ext)
@@ -59,6 +71,7 @@ kind = "pub"
 filename = "pubspec.yaml"
 format = "yaml-section"
 name = "dir"
+package_pattern = '^name:\s*(\S+)'
 deps = ["dependencies", "dev_dependencies"]
 
 [[manifest]]
@@ -94,5 +107,24 @@ deps = ["tool.poetry.dependencies", "tool.poetry.dev-dependencies"]
 [[manifest]]
 kind = "setuptools"
 filename = "setup.py"
+format = "none"
+name = "dir"
+
+[[manifest]]
+kind = "pip"
+filename = "requirements.txt"
+format = "lines"
+name = "dir"
+
+[[manifest]]
+kind = "pipenv"
+filename = "Pipfile"
+format = "toml-sections"
+name = "dir"
+deps = ["packages", "dev-packages"]
+
+[[manifest]]
+kind = "setuptools"
+filename = "setup.cfg"
 format = "none"
 name = "dir"

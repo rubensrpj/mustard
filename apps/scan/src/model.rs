@@ -130,7 +130,10 @@ pub struct ProjectUnit {
 #[serde(default)]
 pub struct Coverage {
     pub top_dirs: Vec<DirCoverage>,
-    /// Build/dependency dirs skipped on purpose (from manifests.toml skip_dirs).
+    /// As pastas que a caminhada pulou pela lista do `manifests.toml`, pelo
+    /// caminho relativo, em qualquer profundidade: as que nunca guardam
+    /// código do projeto e as de saída ou de dependências sem arquivo de
+    /// código no índice do git. A pasta dentro de outra pulada não aparece.
     pub skipped_build_dirs: Vec<String>,
     /// Extensions seen but not mined (not a supported source language).
     pub unsupported_exts: Vec<ExtCount>,

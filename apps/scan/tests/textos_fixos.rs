@@ -281,3 +281,36 @@ fn the_search_for_a_screen_text_finds_the_screen_its_line_and_its_function() {
         (3, "text", "Seu carrinho está vazio", "CarrinhoVazio")
     );
 }
+
+/// Um projeto no git com só os arquivos dados, já no primeiro commit.
+fn project_with(files: &[(&str, &str)]) -> tempfile::TempDir {
+    let temp = tempfile::Builder::new().prefix("scan-textos-repasse-").tempdir().unwrap();
+    let dir = temp.path();
+    git(dir, &["init", "-q"]);
+    let exclude = mustard_core::footprint_rules().join("\n") + "\n";
+    std::fs::write(dir.join(".git").join("info").join("exclude"), exclude).unwrap();
+    for (rel, body) in files {
+        let path = dir.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, body).unwrap();
+    }
+    git(dir, &["add", "-A"]);
+    git(dir, &["commit", "-q", "-m", "primeiro"]);
+    temp
+}
+
+/// O caminho de um repasse é import, e não texto fixo do arquivo: nem o
+/// `export 'src/x.dart';` nem o `export * from './x';` dão texto.
+#[test]
+fn the_path_of_a_reexport_is_not_a_fixed_text() {
+    let temp = project_with(&[
+        ("lib/loja.dart", "export 'src/pedido_service.dart';\nexport 'src/outro.dart' show Outro;\n"),
+        ("lib/src/pedido_service.dart", "class PedidoService {}\n"),
+        ("lib/src/outro.dart", "class Outro {}\n"),
+        ("web/barril.ts", "export * from './src/pedido';\n"),
+        ("web/src/pedido.ts", "export class Pedido {}\n"),
+    ]);
+    let (map, _) = scan(temp.path());
+    assert_eq!(values(&map, "lib/loja.dart"), Vec::<String>::new());
+    assert_eq!(values(&map, "web/barril.ts"), Vec::<String>::new());
+}

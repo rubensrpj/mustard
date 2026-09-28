@@ -64,7 +64,7 @@ pub(crate) enum Plan {
 
 /// Run git in `root`, with paths printed as they are (no octal quoting of
 /// accented names). `None` when git is missing or the command fails.
-fn git(root: &Path, args: &[&str]) -> Option<String> {
+pub(crate) fn git(root: &Path, args: &[&str]) -> Option<String> {
     let mut full: Vec<&str> = vec!["-c", "core.quotePath=false"];
     full.extend(args);
     let out = git_exec::run(root, &full);
@@ -343,6 +343,41 @@ struct Logged<'t> {
 /// número e fica de fora, como o commit que não mexe em nada sob a pasta
 /// lida.
 pub(crate) fn parse_log(text: &str) -> Vec<RawCommit> {
+    let logged = read_logged(text);
+    let brought = merged_numbers(&logged);
+    let order = oldest_first(&logged);
+    let mut logged: Vec<Option<(Logged<'_>, Option<u32>)>> = logged.into_iter().zip(brought).map(Some).collect();
+    order
+        .into_iter()
+        .filter_map(|i| logged[i].take())
+        .filter(|(one, _)| one.parents.len() < 2 && (!one.commit.added.is_empty() || !one.commit.changed.is_empty()))
+        .map(|(one, number)| {
+            let pr = number.or_else(|| squashed_number(&one.commit.title));
+            RawCommit { pr, ..one.commit }
+        })
+        .collect()
+}
+
+/// Lê a saída de `git log --format=%x00%H %ct %P%x1f%s` sem a lista de
+/// arquivos, na ordem do git: de cada commit, merges inclusos, o hash
+/// inteiro e o commit com a data, o título e o número do pull request que o
+/// trouxe, pela mesma regra de [`parse_log`].
+pub(crate) fn parse_headers(text: &str) -> Vec<(String, RawCommit)> {
+    let logged = read_logged(text);
+    let brought = merged_numbers(&logged);
+    logged
+        .into_iter()
+        .zip(brought)
+        .map(|(one, number)| {
+            let pr = number.or_else(|| squashed_number(&one.commit.title));
+            (one.sha.to_string(), RawCommit { pr, ..one.commit })
+        })
+        .collect()
+}
+
+/// Os commits da saída do `git log`, na ordem dela, cada um com os arquivos
+/// que cria e muda — o merge fica sem arquivos.
+fn read_logged(text: &str) -> Vec<Logged<'_>> {
     let mut logged = Vec::new();
     for block in text.split('\0').filter(|b| !b.trim().is_empty()) {
         let mut lines = block.lines();
@@ -374,18 +409,7 @@ pub(crate) fn parse_log(text: &str) -> Vec<RawCommit> {
         }
         logged.push(Logged { sha, parents, commit });
     }
-    let brought = merged_numbers(&logged);
-    let order = oldest_first(&logged);
-    let mut logged: Vec<Option<(Logged<'_>, Option<u32>)>> = logged.into_iter().zip(brought).map(Some).collect();
-    order
-        .into_iter()
-        .filter_map(|i| logged[i].take())
-        .filter(|(one, _)| one.parents.len() < 2 && (!one.commit.added.is_empty() || !one.commit.changed.is_empty()))
-        .map(|(one, number)| {
-            let pr = number.or_else(|| squashed_number(&one.commit.title));
-            RawCommit { pr, ..one.commit }
-        })
-        .collect()
+    logged
 }
 
 /// A ordem em que a história se guarda, do mais antigo para o mais novo:
@@ -468,7 +492,7 @@ fn squashed_number(title: &str) -> Option<u32> {
 }
 
 /// Undo git's C-style quoting of a path with unusual characters.
-fn unquote(path: &str) -> String {
+pub(crate) fn unquote(path: &str) -> String {
     let Some(inner) = path.strip_prefix('"').and_then(|p| p.strip_suffix('"')) else {
         return path.to_string();
     };
@@ -519,7 +543,7 @@ mod tests {
         Listing {
             head: String::new(),
             blobs: files.iter().map(|(path, blob)| (path.to_string(), blob.to_string())).collect(),
-            base: Default::default(),
+            ..Listing::default()
         }
     }
 

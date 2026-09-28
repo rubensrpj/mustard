@@ -70,6 +70,9 @@ pub(crate) struct Extracted {
     pub reexports: BTreeMap<String, BTreeMap<String, String>>,
     pub namespaces: Vec<String>,
     pub declarations: Vec<Decl>,
+    /// De cada declaração, na ordem de `declarations`, a primeira linha dela
+    /// com o comentário escrito logo acima, quando há um.
+    pub tops: Vec<usize>,
     pub calls: Vec<CallSite>,
     pub cites: Vec<CallSite>,
     /// Os nomes que abrem a cadeia escrita antes de uma chamada e que o
@@ -251,6 +254,12 @@ pub fn self_receivers(lang: &str) -> &'static [&'static str] {
 /// (`implicit_self` em languages.toml). `false` sem o campo.
 pub fn implicit_self(lang: &str) -> bool {
     LANG_IMPLICIT_SELF.iter().any(|&(name, on)| name == lang && on)
+}
+
+/// O import não relativo de uma parte só pode nomear um arquivo do projeto
+/// (`single_part_paths` em languages.toml). `false` sem o campo.
+pub fn single_part_paths(lang: &str) -> bool {
+    LANG_SINGLE_PART_PATHS.iter().any(|&(name, on)| name == lang && on)
 }
 
 /// O nome que, trazido por um import, traz o último nome escrito antes da
@@ -461,25 +470,35 @@ pub(crate) struct Analyzer {
 
 impl Analyzer {
     fn new(raw: &RawLang) -> Option<Analyzer> {
+        Self::compiled(raw, raw.query, true)
+    }
+
+    /// O analisador da língua `name` que só acha as declarações, com a faixa
+    /// de linhas de cada uma — a documentação e os enfeites de cima inclusos
+    /// —, pelos mesmos padrões da montagem: só os que declaram e os que
+    /// enfeitam, sem as regras de rota. É o que lê cada versão antiga de um
+    /// arquivo, sem compilar as outras línguas. `None` quando a língua não
+    /// está no registro.
+    pub(crate) fn declarations_only(name: &str) -> Option<Analyzer> {
+        let raw = raw_langs().into_iter().find(|raw| raw.name == name)?;
+        let declaring = split_patterns(raw.query)
+            .into_iter()
+            .filter(|pattern| pattern.contains("@definition.") || pattern.contains("@decoration"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        Self::compiled(&raw, &declaring, false)
+    }
+
+    /// O analisador da língua `raw` com os padrões de `patterns` e, com
+    /// `with_routes`, as regras de rota da língua.
+    fn compiled(raw: &RawLang, patterns: &str, with_routes: bool) -> Option<Analyzer> {
         let language = raw.language.clone();
-        // Compile patterns individually and keep the ones that hold against this
-        // grammar version. A single drifted node name then costs one pattern, not
-        // the whole language — and never a panic.
-        let good = compile_good_patterns(&language, raw.query, raw.name);
-        if good.is_empty() {
-            eprintln!("grain: no usable query patterns for '{}' — skipping", raw.name);
-            return None;
-        }
-        let combined = good.join("\n");
-        let query = match Query::new(&language, &combined) {
-            Ok(q) => q,
-            Err(e) => {
-                eprintln!("grain: query for '{}' failed to compile: {e}", raw.name);
-                return None;
-            }
-        };
+        // Keep the patterns that hold against this grammar version. A single
+        // drifted node name then costs one pattern, not the whole language —
+        // and never a panic.
+        let query = compile_good_query(&language, patterns, raw.name)?;
         let cap_kinds = query.capture_names().iter().map(|n| classify(n)).collect();
-        let routes = routes::rules_for(raw.name, &language);
+        let routes = if with_routes { routes::rules_for(raw.name, &language) } else { Vec::new() };
         Some(Analyzer { name: raw.name.to_string(), language, query, cap_kinds, doc_tags: raw.doc_tags, routes })
     }
 
@@ -805,7 +824,7 @@ impl Analyzer {
         for (start, name_byte, _) in decls.keys() {
             names_by_start.entry(*start).or_default().push(*name_byte);
         }
-        out.declarations = decls
+        (out.declarations, out.tops) = decls
             .into_values()
             .map(|h| {
                 let shared = &names_by_start[&h.node.start_byte()];
@@ -820,6 +839,7 @@ impl Analyzer {
                     .map(|s| s.iter().cloned().collect())
                     .unwrap_or_default();
                 let above = doc_above(h.node, bytes, &decorations, self.doc_tags);
+                let top = above.doc_row.min(above.first_row) + 1;
                 let whole = match h.doc_inside {
                     Some((_, inside)) if above.whole.is_empty() => one_line(&inside, usize::MAX),
                     _ => above.whole,
@@ -828,7 +848,7 @@ impl Analyzer {
                 // A documentação inteira fica só quando o teto cortou, e só
                 // quando o arquivo guarda o texto de dentro das peças.
                 let whole_doc = if whole == doc || !keep.written_text { String::new() } else { whole };
-                Decl {
+                let decl = Decl {
                     kind: h.kind,
                     name: h.name,
                     line: above.first_row + 1,
@@ -847,9 +867,10 @@ impl Analyzer {
                     members: Vec::new(),
                     implements: Vec::new(),
                     implemented_by: Vec::new(),
-                }
+                };
+                (decl, top)
             })
-            .collect();
+            .unzip();
         owners_in_file(&mut out.declarations);
         // O texto das linhas de cada declaração e os comentários do arquivo
         // saem de uma caminhada só pela árvore. O literal de texto e a
@@ -878,7 +899,9 @@ impl Analyzer {
         // decoration, an import or a namespace name.
         let quiet: Spans = decorations.union(&import_spans).copied().collect();
         let heads;
-        (out.calls, out.cites, heads) = use_sites(root, bytes, &comments, &quiet, &names_at, &name_kinds, &self.name);
+        let brought: HashSet<&str> = imported_at.iter().map(|(_, name)| name.as_str()).collect();
+        (out.calls, out.cites, heads) =
+            use_sites(root, bytes, &comments, &quiet, &names_at, &name_kinds, &self.name, &brought);
         drop_local_uses(&out.declarations, &locals, &names_at, [&mut out.calls, &mut out.cites]);
 
         // Cada nome trazido é do import escrito no mesmo comando: o que fica
@@ -1088,7 +1111,7 @@ fn called_site(node: Node, bytes: &[u8], comments: &Spans, lang: &str) -> Option
     Some(CallSite {
         name: name.to_string(),
         line: node.start_position().row + 1,
-        qualifier: qualifier_before(node, bytes, comments, lang),
+        qualifier: qualifier_before(node, bytes, comments, lang, &HashSet::new()),
     })
 }
 
@@ -1205,6 +1228,7 @@ fn doc_above(node: Node, bytes: &[u8], decorations: &Spans, tags: &[&str]) -> Ab
     let mut anchor = node;
     let mut top = node.start_position().row;
     let mut first_row = top;
+    let mut doc_row = top;
     'climb: loop {
         let mut cur = anchor;
         while let Some(prev) = cur.prev_sibling() {
@@ -1214,6 +1238,7 @@ fn doc_above(node: Node, bytes: &[u8], decorations: &Spans, tags: &[&str]) -> Ab
             if prev.is_extra() {
                 let Ok(text) = prev.utf8_text(bytes) else { break 'climb };
                 parts.push(clean_comment(text, tags));
+                doc_row = doc_row.min(prev.start_position().row);
             } else if is_decoration(&prev, decorations) {
                 first_row = first_row.min(prev.start_position().row);
             } else if prev.is_named() || !parts.is_empty() {
@@ -1230,7 +1255,7 @@ fn doc_above(node: Node, bytes: &[u8], decorations: &Spans, tags: &[&str]) -> Ab
         anchor = parent;
     }
     parts.reverse();
-    Above { whole: one_line(&parts.join(" "), usize::MAX), first_row }
+    Above { whole: one_line(&parts.join(" "), usize::MAX), first_row, doc_row }
 }
 
 /// What is read above a declaration: its whole documentation comment, in one
@@ -1239,6 +1264,9 @@ fn doc_above(node: Node, bytes: &[u8], decorations: &Spans, tags: &[&str]) -> Ab
 struct Above {
     whole: String,
     first_row: usize,
+    /// A linha (a partir de zero) em que começa o comentário escrito logo
+    /// acima da declaração; a da própria declaração, sem comentário.
+    doc_row: usize,
 }
 
 /// Um comentário ou um nome escrito no arquivo: a linha (a partir de zero)
@@ -1697,9 +1725,10 @@ fn glob(entry: &str, text: &str) -> bool {
 /// declarations of the file write their names with: `x.from(1)` is a call,
 /// and a modifier or a type keyword before a parenthesis is not.
 ///
-/// O qualificador se lê pelos separadores de `lang` ([`qualifier_before`]).
-/// Vêm junto os qualificadores que abrem a cadeia de uma chamada
-/// ([`opens_chain`]).
+/// O qualificador se lê pelos separadores de `lang` ([`qualifier_before`]),
+/// com os nomes que os imports do arquivo trazem (`brought`). Vêm junto os
+/// qualificadores que abrem a cadeia de uma chamada ([`opens_chain`]).
+#[allow(clippy::too_many_arguments)]
 fn use_sites(
     root: Node,
     bytes: &[u8],
@@ -1708,6 +1737,7 @@ fn use_sites(
     names_at: &BTreeSet<usize>,
     name_kinds: &BTreeSet<&str>,
     lang: &str,
+    brought: &HashSet<&str>,
 ) -> (Vec<CallSite>, Vec<CallSite>, BTreeSet<String>) {
     let mut calls: BTreeSet<(usize, String, String)> = BTreeSet::new();
     let mut cites: BTreeSet<(usize, String, String)> = BTreeSet::new();
@@ -1731,7 +1761,8 @@ fn use_sites(
         if !is_identifier(text) {
             continue;
         }
-        let site = (node.start_position().row + 1, text.to_string(), qualifier_before(node, bytes, comments, lang));
+        let site =
+            (node.start_position().row + 1, text.to_string(), qualifier_before(node, bytes, comments, lang, brought));
         if followed_by_open_paren(node, bytes) {
             if opens_chain(node, bytes, comments, lang, &site.2) {
                 heads.insert(site.2.clone());
@@ -1818,8 +1849,10 @@ fn is_wrapped_word(node: Node, name_kinds: &BTreeSet<&str>) -> bool {
 /// (`self_receivers`): outro nome ali é um valor. Quando o que vem antes do
 /// separador não é um nome (`f().total`, `a[0].total`, `...total`), ou é um
 /// valor, a marca [`RECEIVER`]. Vazio quando o nó está sozinho. O comentário
-/// escrito no meio não conta ([`code_before`]).
-fn qualifier_before(node: Node, bytes: &[u8], comments: &Spans, lang: &str) -> String {
+/// escrito no meio não conta ([`code_before`]). O nome de uma letra só é nome
+/// quando um import do arquivo o trouxe (`brought`, como o `u` de
+/// `import * as u`); fora disso, é valor.
+fn qualifier_before(node: Node, bytes: &[u8], comments: &Spans, lang: &str, brought: &HashSet<&str>) -> String {
     let before = code_before(bytes, comments, node.start_byte());
     let strip = |separators: &[&str]| separators.iter().find_map(|sep| before.strip_suffix(sep.as_bytes()));
     let (before, only_member) = match (strip(qualifier_separators(lang)), strip(member_separators(lang))) {
@@ -1833,7 +1866,9 @@ fn qualifier_before(node: Node, bytes: &[u8], comments: &Spans, lang: &str) -> S
         .rposition(|b| !(b.is_ascii_alphanumeric() || *b == b'_' || *b >= 0x80))
         .map_or(0, |i| i + 1);
     match std::str::from_utf8(&before[start..]) {
-        Ok(q) if is_identifier(q) && (!only_member || self_receivers(lang).contains(&q)) => q.to_string(),
+        Ok(q) if (is_identifier(q) || brought.contains(q)) && (!only_member || self_receivers(lang).contains(&q)) => {
+            q.to_string()
+        }
         _ => RECEIVER.to_string(),
     }
 }
@@ -1899,11 +1934,20 @@ fn is_identifier(text: &str) -> bool {
         && text.chars().count() >= 2
 }
 
-/// Split a `.scm` source into top-level patterns and keep the ones that compile
-/// against this grammar. Resilience over strictness: a query referencing a node
-/// a given grammar version lacks drops that one pattern, not the language.
-pub(crate) fn compile_good_patterns(lang: &Language, src: &str, name: &str) -> Vec<String> {
-    split_patterns(src)
+/// Split a `.scm` source into top-level patterns and compile, as one query,
+/// the ones that hold against this grammar. Resilience over strictness: a
+/// query referencing a node a given grammar version lacks drops that one
+/// pattern, not the language. O todo se compila primeiro, e quase sempre
+/// vale: cada padrão só se compila sozinho, para achar o que cai, quando o
+/// todo não compila. `None`, com o aviso, quando nenhum padrão vale.
+pub(crate) fn compile_good_query(lang: &Language, src: &str, name: &str) -> Option<Query> {
+    let patterns = split_patterns(src);
+    if !patterns.is_empty()
+        && let Ok(query) = Query::new(lang, &patterns.join("\n"))
+    {
+        return Some(query);
+    }
+    let good: Vec<String> = patterns
         .into_iter()
         .filter(|p| match Query::new(lang, p) {
             Ok(_) => true,
@@ -1912,7 +1956,18 @@ pub(crate) fn compile_good_patterns(lang: &Language, src: &str, name: &str) -> V
                 false
             }
         })
-        .collect()
+        .collect();
+    if good.is_empty() {
+        eprintln!("grain: no usable query patterns for '{name}' — skipping");
+        return None;
+    }
+    match Query::new(lang, &good.join("\n")) {
+        Ok(query) => Some(query),
+        Err(e) => {
+            eprintln!("grain: query for '{name}' failed to compile: {e}");
+            None
+        }
+    }
 }
 
 /// Break a query into its top-level S-expression patterns. A pattern runs from a
@@ -1988,5 +2043,32 @@ fn simple_type_name(txt: &str) -> Option<String> {
         Some(name)
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A gramática de qualquer língua do registro: o curinga `(_)` vale em
+    /// todas, e o nó inventado, em nenhuma.
+    fn any_grammar() -> Language {
+        raw_langs().into_iter().next().expect("the registry declares a language").language
+    }
+
+    #[test]
+    fn a_pattern_the_grammar_lacks_drops_alone_and_the_rest_compiles() {
+        let grammar = any_grammar();
+        let good = "(_) @node";
+        let bad = "(node_no_grammar_declares) @node";
+
+        let whole = compile_good_query(&grammar, &format!("{good}\n{good}"), "test").expect("every pattern holds");
+        assert_eq!(whole.pattern_count(), 2);
+
+        let kept = compile_good_query(&grammar, &format!("{good}\n{bad}\n{good}"), "test").expect("two patterns hold");
+        assert_eq!(kept.pattern_count(), 2);
+
+        assert!(compile_good_query(&grammar, bad, "test").is_none());
+        assert!(compile_good_query(&grammar, "", "test").is_none());
     }
 }

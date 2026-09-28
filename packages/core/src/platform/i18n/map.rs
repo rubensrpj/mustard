@@ -197,6 +197,31 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "The map has no git history, because the base branch {base} is not in this clone. \
              It is missing here and in origin. To get it, run git fetch origin {base}."
         }
+        // A história de uma declaração (`run map history`).
+        ("map.history.head", Locale::PtBr) => {
+            "Mudanças de `{name}` ({file}:{line}) na base {base}, fora as só de forma: {count}. \
+             Os commits vêm do mais novo ao mais velho."
+        }
+        ("map.history.head", Locale::EnUs) => {
+            "Changes to `{name}` ({file}:{line}) on the base {base}, not counting format-only ones: {count}. \
+             The commits run from newest to oldest."
+        }
+        ("map.history.form", Locale::PtBr) => "(só forma)",
+        ("map.history.form", Locale::EnUs) => "(format only)",
+        ("map.history.next", Locale::PtBr) => "Para ver a mudança mais nova, rode git show {commit}.",
+        ("map.history.next", Locale::EnUs) => "To see the newest change, run git show {commit}.",
+        ("map.history.not_in_base", Locale::PtBr) => {
+            "A base {base} ainda não tem commit de `{name}` em {file}. Ela só existe na branch de trabalho."
+        }
+        ("map.history.not_in_base", Locale::EnUs) => {
+            "The base {base} has no commit of `{name}` in {file} yet. It only exists on the work branch."
+        }
+        ("map.history.pick_file", Locale::PtBr) => {
+            "`{name}` existe em mais de um arquivo. Diga qual com --file."
+        }
+        ("map.history.pick_file", Locale::EnUs) => "`{name}` exists in more than one file. Say which one with --file.",
+        ("map.history_unreadable", Locale::PtBr) => "A história de `{file}` não pôde ser lida do git ({detail}).",
+        ("map.history_unreadable", Locale::EnUs) => "The history of `{file}` could not be read from git ({detail}).",
         _ => return None,
     })
 }
@@ -214,8 +239,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("map.rs"),
             super::PREFIXES,
-            37,
-            0xb307_3441_d01c_8ffe,
+            43,
+            0x7812_6479_a234_4c6e,
         );
     }
 
@@ -236,12 +261,21 @@ mod tests {
                 "map.users.route_suspect",
                 "map.history.no_base",
                 "map.history.base_not_found",
+                "map.history.head",
+                "map.history.form",
+                "map.history.next",
+                "map.history.not_in_base",
+                "map.history.pick_file",
+                "map.history_unreadable",
             ] {
                 let text = translate(key, lang)
                     .replace("{name}", "run")
                     .replace("{file}", "a.rs")
                     .replace("{count}", "12")
-                    .replace("{base}", "dev");
+                    .replace("{base}", "dev")
+                    .replace("{line}", "4")
+                    .replace("{commit}", "abc")
+                    .replace("{detail}", "falha");
                 let report = crate::domain::clarity::measure(&text, &[], Some(lang));
                 assert!(report.passed, "{key} {lang:?}: {report:?}");
             }
@@ -286,6 +320,12 @@ mod tests {
             ("map.users.route_suspect", &[][..]),
             ("map.history.no_base", &[][..]),
             ("map.history.base_not_found", &["{base}"][..]),
+            ("map.history.head", &["{name}", "{file}", "{line}", "{base}", "{count}"][..]),
+            ("map.history.form", &[][..]),
+            ("map.history.next", &["{commit}"][..]),
+            ("map.history.not_in_base", &["{base}", "{name}", "{file}"][..]),
+            ("map.history.pick_file", &["{name}"][..]),
+            ("map.history_unreadable", &["{file}", "{detail}"][..]),
             ("doctor.scan_output.visible", &["{paths}"][..]),
         ] {
             let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));

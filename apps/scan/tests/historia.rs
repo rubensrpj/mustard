@@ -10,7 +10,7 @@ mod model;
 use std::path::Path;
 use std::process::Command;
 
-use mustard_core::domain::project_map::{examples, summary};
+use mustard_core::domain::project_map::{examples, summary, FileLineage};
 use mustard_core::io::project_map as store;
 use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Value};
@@ -205,4 +205,197 @@ fn a_project_without_a_flow_scans_and_says_there_is_no_base() {
     let read = store::read(dir).expect("o mapa foi gravado");
     let note = translate("map.history.base_not_found", Locale::PtBr).replace("{base}", "dev");
     assert!(summary(&read, Locale::PtBr).contains(&note), "{}", summary(&read, Locale::PtBr));
+}
+
+/// Roda a passada da história de `file` sobre o mapa do projeto e devolve a
+/// lista gravada dele.
+fn lineage(dir: &Path, file: &str) -> FileLineage {
+    let model = model::path_in(&dir.join(".claude"));
+    let run = Command::new(env!("CARGO_BIN_EXE_scan"))
+        .args(["history", dir.to_str().unwrap(), "--out", model.to_str().unwrap(), "--file", file, "--json"])
+        .output()
+        .expect("run scan history");
+    assert!(run.status.success(), "stderr: {}", String::from_utf8_lossy(&run.stderr));
+    let report: Value = serde_json::from_str(String::from_utf8_lossy(&run.stdout).lines().last().unwrap_or("{}")).unwrap();
+    assert_eq!(report["file"], json!(file), "{report}");
+    let map = store::read_at(&model).expect("o mapa se lê");
+    map.lineage.into_iter().find(|found| found.path == file).expect("a passada gravou a lista do arquivo")
+}
+
+/// Os commits da declaração `name` na lista, do mais novo ao mais velho,
+/// cada um pelo título, com a marca de só forma.
+fn changes(lineage: &FileLineage, name: &str) -> Vec<(String, bool)> {
+    let decl = lineage.declarations.iter().find(|decl| decl.name == name).expect("a declaração está na lista");
+    decl.commits
+        .iter()
+        .map(|change| {
+            let commit = lineage.commits.iter().find(|commit| commit.id == change.id).expect("o commit está na lista");
+            (commit.title.clone(), change.form)
+        })
+        .collect()
+}
+
+fn listed(titles: &[&str]) -> Vec<(String, bool)> {
+    titles.iter().map(|title| ((*title).to_string(), false)).collect()
+}
+
+#[test]
+fn a_function_changed_twice_lists_both_newest_first_and_the_one_below_keeps_its_own() {
+    let temp = project("scan-linhagem-duas-");
+    let dir = temp.path();
+    declare_base(dir, "main");
+    let two = |top: u32| format!("pub fn top() -> u32 {{\n    {top}\n}}\n\npub fn bottom() -> u32 {{\n    10\n}}\n");
+    commit(dir, "src/conta.rs", &two(1), "cria as duas");
+    commit(dir, "src/conta.rs", &two(2), "muda a de cima");
+    commit(dir, "src/conta.rs", &two(3), "muda a de cima de novo");
+    scan(dir);
+
+    let found = lineage(dir, "src/conta.rs");
+    assert_eq!(changes(&found, "top"), listed(&["muda a de cima de novo", "muda a de cima", "cria as duas"]));
+    assert_eq!(changes(&found, "bottom"), listed(&["cria as duas"]), "a change only in the function above stays out of the one below");
+    assert_eq!(found.base, "main");
+}
+
+#[test]
+fn a_function_moved_to_another_file_keeps_the_commit_from_before_the_move() {
+    let temp = project("scan-linhagem-movida-");
+    let dir = temp.path();
+    declare_base(dir, "main");
+    let rest = "pub fn outra() -> u32 {\n    let a = 1;\n    let b = 2;\n    let c = 3;\n    a + b + c\n}\n";
+    let ler = |n: u32| format!("pub fn ler(x: u32) -> u32 {{\n    let lido = x + {n};\n    lido * 2\n}}\n");
+    commit(dir, "src/origem.rs", &format!("{}\n{rest}", ler(1)), "cria o ler");
+    commit(dir, "src/origem.rs", &format!("{}\n{rest}", ler(2)), "muda o ler");
+    write(dir, "src/origem.rs", rest);
+    commit(dir, "src/destino.rs", &ler(2), "move o ler");
+    scan(dir);
+
+    let found = lineage(dir, "src/destino.rs");
+    assert_eq!(
+        changes(&found, "ler"),
+        listed(&["muda o ler", "cria o ler"]),
+        "the move with the same body keeps the history of the other file and is not a change of the function"
+    );
+}
+
+#[test]
+fn a_function_renamed_in_the_same_file_with_half_its_lines_keeps_the_history() {
+    let temp = project("scan-linhagem-renomeada-");
+    let dir = temp.path();
+    declare_base(dir, "main");
+    commit(
+        dir,
+        "src/nome.rs",
+        "pub fn antigo(x: u32) -> u32 {\n    let dobro = x * 2;\n    let triplo = x * 3;\n    dobro + triplo\n}\n",
+        "cria o antigo",
+    );
+    commit(
+        dir,
+        "src/nome.rs",
+        "pub fn novo(x: u32) -> u32 {\n    let dobro = x * 2;\n    let triplo = x * 3;\n    dobro + triplo + 1\n}\n",
+        "renomeia para novo",
+    );
+    scan(dir);
+
+    let found = lineage(dir, "src/nome.rs");
+    assert_eq!(changes(&found, "novo"), listed(&["renomeia para novo", "cria o antigo"]));
+}
+
+#[test]
+fn a_renamed_file_takes_its_functions_along() {
+    let temp = project("scan-linhagem-arquivo-");
+    let dir = temp.path();
+    declare_base(dir, "main");
+    let junta = |n: u32| format!("pub fn junta(a: u32, b: u32) -> u32 {{\n    let soma = a + b;\n    soma + {n}\n}}\n");
+    commit(dir, "src/velho.rs", &junta(1), "cria o junta");
+    commit(dir, "src/velho.rs", &junta(2), "muda o junta");
+    git(dir, &["mv", "src/velho.rs", "src/novo.rs"]);
+    git(dir, &["commit", "-q", "-m", "renomeia o arquivo"]);
+    scan(dir);
+
+    let found = lineage(dir, "src/novo.rs");
+    assert_eq!(changes(&found, "junta"), listed(&["muda o junta", "cria o junta"]));
+}
+
+#[test]
+fn a_whitespace_commit_and_an_ignored_commit_are_marked_format_only() {
+    let temp = project("scan-linhagem-forma-");
+    let dir = temp.path();
+    declare_base(dir, "main");
+    commit(dir, "src/forma.rs", "pub fn calcula(x: u32) -> u32 {\n    x + 1\n}\n", "cria o calcula");
+    commit(dir, "src/forma.rs", "pub fn calcula(x: u32) -> u32 {\n    x + 2\n}\n", "muda o calcula");
+    commit(dir, "src/forma.rs", "pub fn calcula(x: u32) -> u32 {\n        x  +  2\n}\n", "só espaços");
+    commit(dir, "src/forma.rs", "pub fn calcula(x: u32) -> u32 {\n    (x + 2)\n}\n", "formata");
+    let formatted = git(dir, &["rev-parse", "HEAD"]);
+    write(dir, ".git-blame-ignore-revs", &format!("# a formatação do projeto\n{formatted}"));
+    scan(dir);
+
+    let found = lineage(dir, "src/forma.rs");
+    assert_eq!(
+        changes(&found, "calcula"),
+        vec![
+            ("formata".to_string(), true),
+            ("só espaços".to_string(), true),
+            ("muda o calcula".to_string(), false),
+            ("cria o calcula".to_string(), false),
+        ]
+    );
+}
+
+#[test]
+fn a_file_older_than_the_window_gets_its_old_history_with_the_number_and_the_others_stay() {
+    let temp = tempfile::Builder::new().prefix("scan-linhagem-antiga-").tempdir().unwrap();
+    let dir = temp.path();
+    git(dir, &["init", "-q", "-b", "main"]);
+    let exclude = mustard_core::footprint_rules().join("\n") + "\n";
+    std::fs::write(dir.join(".git").join("info").join("exclude"), exclude).unwrap();
+    declare_base(dir, "main");
+    let data = |text: &str| format!("data {}\n{text}\n", text.len());
+    let mut stream = String::new();
+    let mut at = 1_000_000_000u64;
+    let mut push = |stream: &mut String, title: &str, files: &[(&str, String)]| {
+        at += 1;
+        stream.push_str(&format!("commit refs/heads/main\ncommitter scan <scan@example.com> {at} +0000\n"));
+        stream.push_str(&data(title));
+        for (path, body) in files {
+            stream.push_str(&format!("M 100644 inline {path}\n"));
+            stream.push_str(&data(body));
+        }
+    };
+    push(&mut stream, "cria a antiga (#12)", &[("src/antiga.rs", "pub fn antiga() -> u32 {\n    7\n}\n".to_string())]);
+    let window = mustard_core::domain::project_map::MAX_COMMITS;
+    for i in 0..=window {
+        push(&mut stream, &format!("ruido {i}"), &[("src/ruido.rs", format!("pub const N: u32 = {i};\n"))]);
+    }
+    push(&mut stream, "cria o outro", &[("src/outro.rs", "pub fn outro() -> u32 {\n    1\n}\n".to_string())]);
+    let mut import = Command::new("git").args(["fast-import", "--quiet"]).current_dir(dir).stdin(std::process::Stdio::piped()).spawn().unwrap();
+    std::io::Write::write_all(import.stdin.as_mut().unwrap(), stream.as_bytes()).unwrap();
+    assert!(import.wait().unwrap().success());
+    git(dir, &["reset", "-q", "--hard"]);
+    let map = scan(dir);
+    assert!(
+        !commits(&map).iter().any(|(title, _)| title.starts_with("cria a antiga")),
+        "the creation of the old file is beyond the window the map keeps"
+    );
+
+    let other = lineage(dir, "src/outro.rs");
+    let old = lineage(dir, "src/antiga.rs");
+    assert_eq!(changes(&old, "antiga"), listed(&["cria a antiga (#12)"]));
+    assert_eq!(old.commits.iter().map(|commit| commit.pr).collect::<Vec<_>>(), vec![Some(12)]);
+    let map = store::read_at(&model::path_in(&dir.join(".claude"))).unwrap();
+    assert_eq!(map.lineage.iter().find(|found| found.path == "src/outro.rs"), Some(&other), "the list of another file stays as it was");
+}
+
+#[test]
+fn a_change_in_the_comment_right_above_a_function_belongs_to_it() {
+    let temp = project("scan-linhagem-comentario-");
+    let dir = temp.path();
+    declare_base(dir, "main");
+    let body = |doc: &str| format!("pub fn antes() {{}}\n\n/// {doc}\npub fn soma() -> u32 {{\n    2\n}}\n");
+    commit(dir, "src/doc.rs", &body("Soma."), "cria a soma");
+    commit(dir, "src/doc.rs", &body("Soma dois."), "explica a soma");
+    scan(dir);
+
+    let found = lineage(dir, "src/doc.rs");
+    assert_eq!(changes(&found, "soma"), listed(&["explica a soma", "cria a soma"]));
+    assert_eq!(changes(&found, "antes"), listed(&["cria a soma"]));
 }

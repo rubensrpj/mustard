@@ -24,7 +24,8 @@ use rusqlite::{params_from_iter, Connection};
 use serde_json::{Map, Value};
 
 use crate::domain::project_map::{
-    Commit, History, MapDecl, MapDegree, MapLanguage, MapModule, MapProject, MapRefusal, MapSkeleton, ProjectMap,
+    Commit, DeclLineage, FileLineage, History, LineageCommit, MapDecl, MapDegree, MapLanguage, MapModule, MapProject,
+    MapRefusal, MapSkeleton, ProjectMap,
 };
 use crate::domain::normalize::Languages;
 use crate::io::map_db::{self, Block, Kind, MapDb};
@@ -360,12 +361,31 @@ pub const HISTORY: MapBlock = block!("history", version 3, {
     ]
 });
 
+/// A história de cada declaração, lida do git na primeira pergunta sobre um
+/// arquivo e guardada por arquivo: a branch de partida, o commit mais novo do
+/// arquivo nela quando se leu e a marca do scan que leu; os commits lidos,
+/// com o título e o número do pull request; e, de cada declaração, pelo nome
+/// e pela ordem entre as de mesmo nome, os commits que a mudaram, cada um
+/// com a marca de só forma. A montagem não o grava nem o confere: ele fica
+/// fora de [`BLOCKS`], volta vazio na troca de versão, e a pergunta seguinte
+/// o enche de novo.
+pub const LINEAGE: MapBlock = block!("lineage", version 1, {
+    "lineage_files" at list(&["files"]) => ["path" Text, "base" Text, "last_commit" Text, "mark" Text],
+    "lineage_commits" at list(&["commits"]) => ["path" Text, "id" Text, "at" Int, "title" Text, "pr" Int],
+    "lineage_decls" at list(&["declarations"]) => ["path" Text, "name" Text, "nth" Int, "commits" Json]
+});
+
 /// Os blocos do mapa, na ordem em que se leem: os arquivos antes das
 /// declarações, das rotas e das ligações deles.
 pub const BLOCKS: [MapBlock; 6] = [CENSUS, FILES, DECLS, ROUTES, GRAPH, HISTORY];
 
+/// Todo bloco que a porta declara, na ordem do despejo: os da montagem e,
+/// depois deles, o da história de cada declaração.
+const DECLARED: [&MapBlock; 7] = [&CENSUS, &FILES, &DECLS, &ROUTES, &GRAPH, &HISTORY, &LINEAGE];
+
 /// Os mesmos blocos, como o banco os abre.
-const DB_BLOCKS: [Block; 6] = [CENSUS.block, FILES.block, DECLS.block, ROUTES.block, GRAPH.block, HISTORY.block];
+const DB_BLOCKS: [Block; 7] =
+    [CENSUS.block, FILES.block, DECLS.block, ROUTES.block, GRAPH.block, HISTORY.block, LINEAGE.block];
 
 /// As chaves da lista dos arquivos e da lista das declarações de cada um.
 const MODULES: &[&str] = &["modules"];
@@ -385,8 +405,13 @@ pub fn read(root: &Path) -> std::result::Result<ProjectMap, MapRefusal> {
 /// do mapa que o scan acabou de gravar num caminho escolhido por quem o
 /// chamou.
 pub fn read_at(model: &Path) -> std::result::Result<ProjectMap, MapRefusal> {
-    let stored = read_stored_at(model)?;
-    serde_json::from_str(&stored.json).map_err(|e| MapRefusal::MapUnreadable { detail: e.to_string() })
+    let db = open_existing(model)?;
+    let json = map_text(db.conn(), every_column).map_err(unreadable)?;
+    let mut map: ProjectMap =
+        serde_json::from_str(&json).map_err(|e| MapRefusal::MapUnreadable { detail: e.to_string() })?;
+    map.lineage = lineages(db.conn(), None).map_err(unreadable)?;
+    map.census_mark = db.mark(CENSUS.name()).map_err(unreadable)?.unwrap_or_default();
+    Ok(map)
 }
 
 /// O mapa gravado, no formato em JSON do scan, com a marca de quem encheu
@@ -467,7 +492,7 @@ pub fn dump(root: &Path) -> std::result::Result<Value, MapRefusal> {
 
 fn dump_tables(conn: &Connection) -> Result<Value> {
     let mut out = Vec::new();
-    for table in BLOCKS.iter().flat_map(|block| block.tables) {
+    for table in DECLARED.iter().flat_map(|block| block.tables) {
         let rows = rows_in(conn, table)?
             .iter()
             .map(|row| {
@@ -554,6 +579,11 @@ pub enum Need<'a> {
     /// testes e as importações, e a história. Com `words`, também os nomes
     /// que cada arquivo declara, que a busca da pasta usa.
     Examples { words: bool },
+    /// A história de uma declaração: as declarações com o nome, com o
+    /// arquivo delas (com `file`, só as dele), a história do git, a de cada
+    /// declaração desses arquivos, quando guardada, e a marca da versão do
+    /// scan que gravou o censo.
+    History { file: Option<&'a str>, name: &'a str },
 }
 
 /// Como quem pergunta ao mapa o lê: por [`read_for`], só as tabelas da
@@ -572,7 +602,14 @@ pub fn read_for(root: &Path, need: Need<'_>) -> std::result::Result<ProjectMap, 
 /// chamou.
 pub fn read_for_at(model: &Path, need: Need<'_>) -> std::result::Result<ProjectMap, MapRefusal> {
     let db = open_existing(model)?;
-    part_of(db.conn(), need).map_err(unreadable)
+    part_of(&db, need).map_err(unreadable)
+}
+
+/// A história do git guardada no mapa em `model`, sem ler outra tabela, com
+/// as mesmas recusas de [`read`].
+pub fn history_at(model: &Path) -> std::result::Result<History, MapRefusal> {
+    let db = open_existing(model)?;
+    history(db.conn()).map_err(unreadable)
 }
 
 /// Os subprojetos do mapa gravado em `model`, com todas as colunas da tabela
@@ -596,8 +633,9 @@ pub fn projects_at(model: &Path) -> std::result::Result<Vec<crate::domain::scan:
         .map_err(|detail| MapRefusal::MapUnreadable { detail })
 }
 
-fn part_of(conn: &Connection, need: Need<'_>) -> Result<ProjectMap> {
+fn part_of(db: &MapDb, need: Need<'_>) -> Result<ProjectMap> {
     use crate::domain::project_map::clean_path;
+    let conn = db.conn();
     let mut map = ProjectMap::default();
     match need {
         Need::Nothing => {}
@@ -624,6 +662,13 @@ fn part_of(conn: &Connection, need: Need<'_>) -> Result<ProjectMap> {
             map.modules = example_modules(conn, words)?;
             map.history = history(conn)?;
         }
+        Need::History { file, name } => {
+            map.modules = named(conn, file.map(clean_path).as_deref(), name.trim())?;
+            map.history = history(conn)?;
+            let paths: Vec<&str> = map.modules.iter().map(|module| module.path.as_str()).collect();
+            map.lineage = lineages(conn, Some(&paths))?;
+            map.census_mark = db.mark(CENSUS.name())?.unwrap_or_default();
+        }
     }
     Ok(map)
 }
@@ -635,7 +680,7 @@ fn table_name(table: &str) -> Result<String> {
 }
 
 fn declared_table(table: &str) -> Result<&'static Table> {
-    BLOCKS
+    DECLARED
         .iter()
         .flat_map(|block| block.tables)
         .find(|found| found.name == table)
@@ -771,6 +816,53 @@ fn history(conn: &Connection) -> Result<History> {
         None => (String::new(), None),
     };
     Ok(History { base, missing, paths, commits })
+}
+
+/// A história guardada das declarações de cada arquivo, na ordem em que se
+/// gravou; com `paths`, só a desses arquivos.
+fn lineages(conn: &Connection, paths: Option<&[&str]>) -> Result<Vec<FileLineage>> {
+    let rows_for = |table: &str, columns: &[&str]| -> Result<Vec<Picked>> {
+        match paths {
+            None => picked(conn, table, columns, "", &[]),
+            Some([]) => Ok(Vec::new()),
+            Some(paths) => {
+                let slots: Vec<String> = (1..=paths.len()).map(|at| format!("?{at}")).collect();
+                let filter = format!("{} IN ({})", column_names(table, &["path"])?, slots.join(", "));
+                picked(conn, table, columns, &filter, paths)
+            }
+        }
+    };
+    let mut files: Vec<FileLineage> = rows_for("lineage_files", &["path", "base", "last_commit", "mark"])?
+        .iter()
+        .map(|row| FileLineage {
+            path: text_cell(&row[0]),
+            base: text_cell(&row[1]),
+            last_commit: text_cell(&row[2]),
+            mark: text_cell(&row[3]),
+            ..FileLineage::default()
+        })
+        .collect();
+    let at: HashMap<String, usize> = files.iter().enumerate().map(|(at, file)| (file.path.clone(), at)).collect();
+    for row in rows_for("lineage_commits", &["path", "id", "at", "title", "pr"])? {
+        if let Some(&file) = at.get(&text_cell(&row[0])) {
+            files[file].commits.push(LineageCommit {
+                id: text_cell(&row[1]),
+                at: int_cell(&row[2]),
+                title: text_cell(&row[3]),
+                pr: u32::try_from(int_cell(&row[4])).ok().filter(|n| *n > 0),
+            });
+        }
+    }
+    for row in rows_for("lineage_decls", &["path", "name", "nth", "commits"])? {
+        if let Some(&file) = at.get(&text_cell(&row[0])) {
+            files[file].declarations.push(DeclLineage {
+                name: text_cell(&row[1]),
+                nth: u32::try_from(int_cell(&row[2])).unwrap_or_default(),
+                commits: json_cell(&row[3])?,
+            });
+        }
+    }
+    Ok(files)
 }
 
 /// O arquivo `file` e os que o importam, na ordem do mapa, cada um com as
@@ -936,6 +1028,10 @@ pub struct Listing {
     pub head: String,
     /// O blob de cada arquivo, pelo caminho.
     pub blobs: BTreeMap<String, String>,
+    /// Os caminhos que o índice do git guarda, com os dos submódulos
+    /// iniciados: só o que foi adicionado ao git, sem o arquivo novo que
+    /// ninguém adicionou.
+    pub indexed: BTreeSet<String>,
     /// A branch de partida do projeto e o commit da ponta dela.
     pub base: Base,
 }
@@ -981,9 +1077,9 @@ fn git_out(root: &Path, args: &[&str]) -> Option<String> {
 #[must_use]
 pub fn listing(root: &Path) -> Option<Listing> {
     let own = [MAP_FILE_NAME, MAP_JOURNAL_FILE_NAME].map(|name| format!("{MAP_DIR}/{name}"));
-    let blobs = blobs_under(root, &own)?;
+    let (blobs, indexed) = blobs_under(root, &own)?;
     let head = git_out(root, &["rev-parse", "--verify", "-q", "HEAD"]).map(|out| out.trim().to_string()).unwrap_or_default();
-    Some(Listing { head, blobs, base: base_of(root) })
+    Some(Listing { head, blobs, indexed, base: base_of(root) })
 }
 
 /// A branch de partida do projeto em `root`, pela configuração dele, com a
@@ -1005,10 +1101,12 @@ pub fn base_of(root: &Path) -> Base {
 
 /// O blob de cada arquivo sob `root`, com os de dentro dos submódulos
 /// iniciados, pelo caminho relativo a `root`, fora os caminhos `skip`, que
-/// nem se calculam.
-fn blobs_under(root: &Path, skip: &[String]) -> Option<BTreeMap<String, String>> {
+/// nem se calculam; e os caminhos que o índice do git guarda, da mesma
+/// leitura do índice.
+fn blobs_under(root: &Path, skip: &[String]) -> Option<(BTreeMap<String, String>, BTreeSet<String>)> {
     let staged = git_out(root, &["ls-files", "-s", "-z"])?;
     let mut blobs = BTreeMap::new();
+    let mut indexed = BTreeSet::new();
     let mut nested = Vec::new();
     for entry in staged.split('\0') {
         let Some((meta, path)) = entry.split_once('\t') else { continue };
@@ -1018,6 +1116,7 @@ fn blobs_under(root: &Path, skip: &[String]) -> Option<BTreeMap<String, String>>
             nested.push(path.to_string());
         } else if !skip.iter().any(|own| own == path) {
             blobs.insert(path.to_string(), blob.to_string());
+            indexed.insert(path.to_string());
         }
     }
     let prefix = git_out(root, &["rev-parse", "--show-prefix"])?.trim().to_string();
@@ -1056,11 +1155,13 @@ fn blobs_under(root: &Path, skip: &[String]) -> Option<BTreeMap<String, String>>
         if !dir.join(".git").exists() {
             continue;
         }
-        for (path, blob) in blobs_under(&dir, &[]).unwrap_or_default() {
+        let (inner, inner_indexed) = blobs_under(&dir, &[]).unwrap_or_default();
+        for (path, blob) in inner {
             blobs.insert(format!("{sub}/{path}"), blob);
         }
+        indexed.extend(inner_indexed.into_iter().map(|path| format!("{sub}/{path}")));
     }
-    Some(blobs)
+    Some((blobs, indexed))
 }
 
 /// O mapa de `root` ficou atrás do conteúdo de agora: o commit do checkout,
@@ -1463,6 +1564,42 @@ pub fn save_block_at(model: &Path, block: &MapBlock, map: &Value, mark: &str) ->
     let fresh: BlockRows =
         block.tables.iter().map(|table| rows(table, map)).collect::<std::result::Result<_, _>>().map_err(Error::Parse)?;
     save_rows(model, [(block, &fresh)], mark, None)
+}
+
+/// Grava a história das declarações de um arquivo, `lineage`, no mapa em
+/// `model`, que já tem de existir: troca só as linhas daquele arquivo, numa
+/// transação; as dos outros arquivos ficam como estavam.
+///
+/// # Errors
+///
+/// O mapa que falta ou não se abre, e a falha do banco.
+pub fn save_lineage_at(model: &Path, lineage: &FileLineage) -> Result<()> {
+    let path = lineage.path.as_str();
+    let rows_in_map = serde_json::json!({
+        "files": [{"path": path, "base": lineage.base, "last_commit": lineage.last_commit, "mark": lineage.mark}],
+        "commits": lineage.commits.iter().map(|commit| serde_json::json!({
+            "path": path, "id": commit.id, "at": commit.at, "title": commit.title, "pr": commit.pr,
+        })).collect::<Vec<_>>(),
+        "declarations": lineage.declarations.iter().map(|decl| serde_json::json!({
+            "path": path, "name": decl.name, "nth": decl.nth, "commits": decl.commits,
+        })).collect::<Vec<_>>(),
+    });
+    let fresh: BlockRows =
+        LINEAGE.tables.iter().map(|table| rows(table, &rows_in_map)).collect::<std::result::Result<_, _>>().map_err(Error::Parse)?;
+    let mut db = open_existing(model).map_err(|refusal| Error::Parse(format!("{refusal:?}")))?;
+    db.write(|tx| {
+        for (table, rows) in LINEAGE.tables.iter().zip(&fresh) {
+            let first = table.columns.first().map_or("path", |column| column.name);
+            tx.execute(&format!("DELETE FROM {} WHERE {} = ?1", quoted(table.name), quoted(first)), [path])?;
+            let names: Vec<String> = table.columns.iter().map(|column| quoted(column.name)).collect();
+            let slots = vec!["?"; names.len()].join(", ");
+            let mut insert = tx.prepare(&format!("INSERT INTO {}({}) VALUES ({slots})", quoted(table.name), names.join(", ")))?;
+            for row in rows {
+                insert.execute(params_from_iter(row))?;
+            }
+        }
+        Ok(())
+    })
 }
 
 /// As linhas de cada tabela de cada bloco, na ordem de [`BLOCKS`].
@@ -1989,7 +2126,8 @@ mod tests {
             names,
             [
                 "census", "projects", "languages", "manifests", "skeleton", "files", "decls", "texts", "routes", "links",
-                "graph", "fan_in", "history_base", "history_paths", "commits", "blocks"
+                "graph", "fan_in", "history_base", "history_paths", "commits", "lineage_files", "lineage_commits",
+                "lineage_decls", "blocks"
             ]
         );
         let decls = &dump[6]["rows"];

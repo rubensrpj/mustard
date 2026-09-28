@@ -44,7 +44,10 @@ pub enum ScanCmd {
     /// `tests --file`, `slice --file --name <declaration>` (the declaration's
     /// own lines, without opening the file), `users --name <declaration>` (who
     /// uses it, as `file:line:caller`; `--file` keeps the one declared in that
-    /// file), `search --query`, `summary` (the session-start summary, up to
+    /// file), `history --name <declaration>` (the commits of the base branch
+    /// that changed it, newest first, with title and pull request number;
+    /// `--file` picks the file when the name lives in more than one), `search
+    /// --query`, `summary` (the session-start summary, up to
     /// 3 kB), `skill --path <SKILL.md>` (every cited path exists and the
     /// skill stays under 500 lines) or `dump` (the map database table by
     /// table, in a fixed order, for debugging). Reads `.claude/grain.db`;
@@ -55,8 +58,8 @@ pub enum ScanCmd {
         #[arg(value_enum)]
         question: crate::commands::map::Question,
         /// The file the question is about (for `examples`, the file the task
-        /// creates or changes, or its folder; for `users`, optional, keeps the
-        /// declaration of that file).
+        /// creates or changes, or its folder; for `users` and `history`,
+        /// optional, keeps the declaration of that file).
         #[arg(long)]
         file: Option<String>,
         /// The task, in words, when there is no target file (`examples`).
@@ -68,7 +71,8 @@ pub enum ScanCmd {
         /// The skill to check (`skill`).
         #[arg(long)]
         path: Option<PathBuf>,
-        /// The declaration the question is about (`slice`, `users`).
+        /// The declaration the question is about (`slice`, `users`,
+        /// `history`).
         #[arg(long)]
         name: Option<String>,
         /// Any directory inside the project. Defaults to the current dir.

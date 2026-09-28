@@ -113,6 +113,11 @@ fn main() {
     let mut implicit_table = String::new();
     implicit_table.push_str("pub(crate) static LANG_IMPLICIT_SELF: &[(&str, bool)] = &[\n");
 
+    // (name, single_part_paths) — se o import não relativo de uma parte só
+    // pode nomear um arquivo do projeto. OPCIONAL: sem o campo, `false`.
+    let mut single_part_table = String::new();
+    single_part_table.push_str("pub(crate) static LANG_SINGLE_PART_PATHS: &[(&str, bool)] = &[\n");
+
     // (name, import_self) — o nome OPCIONAL que, trazido por um import, traz
     // o último nome escrito antes da lista que o contém. Sem o campo, texto
     // vazio: todo nome trazido é ele mesmo.
@@ -226,6 +231,10 @@ fn main() {
             .get("implicit_self")
             .map(|v| v.as_bool().expect("language.implicit_self must be true or false"))
             .unwrap_or(false);
+        let single_part_paths = tbl
+            .get("single_part_paths")
+            .map(|v| v.as_bool().expect("language.single_part_paths must be true or false"))
+            .unwrap_or(false);
         let parent_alias = tbl
             .get("parent_alias")
             .map(|v| v.as_str().expect("language.parent_alias must be a string").to_string())
@@ -313,6 +322,8 @@ fn main() {
             .expect("the generated table is a String, which never fails to write");
         writeln!(implicit_table, "    ({name:?}, {implicit_self}),")
             .expect("the generated table is a String, which never fails to write");
+        writeln!(single_part_table, "    ({name:?}, {single_part_paths}),")
+            .expect("the generated table is a String, which never fails to write");
         writeln!(import_self_table, "    ({name:?}, {import_self:?}),")
             .expect("the generated table is a String, which never fails to write");
         for (table, values) in list_field_tables.iter_mut().zip(&list_values) {
@@ -342,10 +353,16 @@ fn main() {
     body.push_str(&parent_table);
     module_table.push_str("];\n");
     body.push_str(&module_table);
-    for table in
-        [&mut member_table, &mut self_table, &mut implicit_table, &mut family_table, &mut import_self_table]
-            .into_iter()
-            .chain(list_field_tables.iter_mut())
+    for table in [
+        &mut member_table,
+        &mut self_table,
+        &mut implicit_table,
+        &mut single_part_table,
+        &mut family_table,
+        &mut import_self_table,
+    ]
+    .into_iter()
+    .chain(list_field_tables.iter_mut())
     {
         table.push_str("];\n");
         body.push_str(table);

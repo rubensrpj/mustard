@@ -15,9 +15,12 @@ ingest → extract → graph → condense → grain.db
 ```
 
 1. **Varredura** (`ingest.rs`). Percorre a árvore respeitando o `.gitignore`,
-   pula as pastas de build e de dependência listadas em `manifests.toml`
-   (`skip_dirs`), detecta a linguagem de cada arquivo pela extensão, conta as
-   linhas e lê os manifestos de build.
+   pula sempre as pastas que nunca guardam código do projeto (`skip_dirs` em
+   `manifests.toml`: `.git`, `.claude`) e as de saída e de dependência
+   (`output_dirs`: `build`, `bin`, `vendor`, `node_modules`…) quando o índice
+   do git não guarda nelas nenhum arquivo de código — fora do git, sempre. Cada
+   pasta pulada vai à cobertura do mapa pelo caminho. Detecta a linguagem de
+   cada arquivo pela extensão, conta as linhas e lê os manifestos de build.
 2. **Extração por consulta** (`extract.rs`). Um motor tree-sitter só roda as
    consultas `.scm` de cada linguagem e tira de cada arquivo os imports, os
    namespaces, as declarações, as chamadas e as citações (ver abaixo).
@@ -68,7 +71,10 @@ chama e cada lugar que a usa, com o arquivo, a linha e a declaração de onde a
 chamada parte. Um nome só se liga às declarações que o arquivo que o escreve
 enxerga — as do próprio arquivo, as dos arquivos que ele importa, as que um
 import global da linguagem põe à vista e as do mesmo namespace na mesma
-linguagem. A chamada escrita num trecho de teste é do teste e não conta como
+linguagem. O nome escrito sozinho que o próprio arquivo declara é o dele, e
+nenhum outro; o import que diz o que traz põe à vista desse nome só o que
+trouxe; e a chamada sem nada à vista fica suspeita entre as da mesma família de
+linguagem, mesmo com uma só. A chamada escrita num trecho de teste é do teste e não conta como
 uso. Cada tipo guarda os **membros** dele, os métodos primeiro, e cada método
 guarda as **implementações**: o método do tipo diz qual método do contrato ele
 implementa (`implements`), e o método do contrato diz quem o implementa
@@ -112,6 +118,20 @@ mapa; quem lê o mapa é que o deixa fora da busca e dos exemplos.
 **História.** Os commits vêm do repositório local (`git log`), nunca da rede:
 cada commit com a data e os arquivos que ele criou e mudou. A primeira passada lê
 a história inteira; as seguintes, só os commits novos.
+
+**História por declaração.** `scan history <raiz> --out <mapa> --file <arquivo>
+--json` lê só aquele arquivo, na branch de partida, da ponta para trás, sem o
+teto de commits da montagem (`git log --follow`): de cada declaração, os
+commits que a mudaram, do mais novo ao mais velho, cada um com o título e o
+número do pull request. Cada versão do arquivo se lê uma vez, com só a língua
+dele. A linha mudada vai para a declaração mais interna que a contém, e a entre
+declarações não vai a nenhuma; a declaração renomeada ou movida para outro
+arquivo no mesmo commit se casa pelo corpo (idêntico, ou pelo menos metade das
+linhas) e leva a história junto. O commit que só muda espaços, ou que o projeto
+lista no `.git-blame-ignore-revs`, fica marcado como só de forma. A montagem não
+roda esta passada: `mustard-rt run map history` a roda na primeira pergunta
+sobre o arquivo, e de novo só quando a base, a versão do scan ou o commit mais
+novo do arquivo mudam.
 
 **Leitura incremental.** Com um mapa anterior do mesmo projeto no `--out`, o
 scan relê só os arquivos que mudaram desde a passada anterior e toma o resto do
@@ -257,7 +277,13 @@ as tabelas dele e a marca do scan que o gravou:
   cobrem, as chamadas e as citações; e os números do grafo: o tamanho, os mais
   importados, as camadas e os pontos de registro;
 - **history** — os commits, cada um com a data e os arquivos que criou e mudou,
-  e a tabela dos caminhos que eles citam.
+  e a tabela dos caminhos que eles citam;
+- **lineage** — a história por declaração de cada arquivo que alguém já
+  perguntou: a base, o commit mais novo do arquivo e a versão do scan de quando
+  se leu; os commits (começo do hash, data, título e número); e, de cada
+  declaração (nome e ordem no arquivo), os commits dela, com a marca de só
+  forma. Nada de código antigo. A montagem não grava este bloco; a passada
+  `history` troca só as linhas do arquivo que leu.
 
 `mustard-rt run map dump` mostra o banco tabela por tabela, fora o índice da
 busca, que se refaz do mapa.
