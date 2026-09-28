@@ -119,7 +119,7 @@ pub(crate) fn plan(root: &Path, prev: Option<&ProjectModel>, listing: Option<&Li
 /// dependências mudaram, que apareceu ou que sumiu relê os arquivos de
 /// código dessa pasta. O que apareceu ou sumiu muda também o alcance do
 /// import global escrito sob a pasta dele (ver [`crate::graph::global_reach`]):
-/// aí os arquivos da língua desse import se releem todos.
+/// aí os arquivos da família da língua desse import se releem todos.
 fn under_changed_manifests(
     root: &Path,
     prev: &ProjectModel,
@@ -157,11 +157,11 @@ fn under_changed_manifests(
         for m in prev.modules.iter().filter(|m| is_under(&m.path, folder)) {
             again.insert(m.path.clone());
             if *came_or_went && !m.global_imports.is_empty() {
-                global_languages.insert(m.language.as_str());
+                global_languages.insert(crate::extract::family(&m.language));
             }
         }
     }
-    again.extend(prev.modules.iter().filter(|m| global_languages.contains(m.language.as_str())).map(|m| m.path.clone()));
+    again.extend(prev.modules.iter().filter(|m| global_languages.contains(crate::extract::family(&m.language))).map(|m| m.path.clone()));
     again
 }
 
@@ -226,8 +226,8 @@ pub(crate) fn inputs(listing: &Listing, manifests: &[&str], undecodable: &[Strin
 ///   files), a file gone. Losing a declaration counts too: a name declared
 ///   too many times links nowhere, and one fewer may make it link;
 /// - it imports a file of the project it did not import before;
-/// - a global import of its language was written, changed or removed, since
-///   it may put in sight files that did not change.
+/// - a global import of its language family was written, changed or
+///   removed, since it may put in sight files that did not change.
 ///
 /// `fresh` holds the files this pass read; `modules`, what this pass has, with
 /// the imports already resolved.
@@ -258,13 +258,13 @@ pub(crate) fn stale_citers(
         }
         let old_globals = before.get(m.path.as_str()).map_or(&[][..], |old| old.global_imports.as_slice());
         if old_globals != m.global_imports.as_slice() {
-            global_languages.insert(m.language.as_str());
+            global_languages.insert(crate::extract::family(&m.language));
         }
     }
     for gone in prev.modules.iter().filter(|m| !now.contains(m.path.as_str())) {
         names.extend(cited(gone));
         if !gone.global_imports.is_empty() {
-            global_languages.insert(gone.language.as_str());
+            global_languages.insert(crate::extract::family(&gone.language));
         }
     }
 
@@ -272,7 +272,7 @@ pub(crate) fn stale_citers(
         .iter()
         .filter(|m| !fresh.contains(&m.path))
         .filter(|m| {
-            global_languages.contains(m.language.as_str())
+            global_languages.contains(crate::extract::family(&m.language))
                 || before.get(m.path.as_str()).is_none_or(|old| m.deps.iter().any(|d| !old.deps.contains(d)))
                 || (!names.is_empty()
                     && std::fs::read_to_string(root.join(&m.path)).is_ok_and(|text| names.iter().any(|n| has_word(&text, n))))

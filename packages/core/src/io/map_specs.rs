@@ -12,8 +12,8 @@
 //! itens das ondas dele e os arquivos que mudou; a função ligada a um item
 //! sai, na hora da resposta, da história por função já montada do arquivo,
 //! e sem ela o commit liga só ao arquivo. Este módulo nunca monta história:
-//! diz de quais arquivos ela falta ([`untraced`]), e quem responde a busca a
-//! monta antes, um arquivo por vez.
+//! diz de quais arquivos ela falta ou venceu ([`untraced`]), e quem responde
+//! a busca a monta antes, um arquivo por vez.
 //!
 //! O commit de onda casa com a história do arquivo pelo hash. O squash e o
 //! rebase dão ao commit outro hash na base; aí ele casa pelos commits da base
@@ -37,11 +37,11 @@ use rusqlite::{params, Connection, OptionalExtension, Statement};
 use serde_json::Value;
 
 use crate::domain::normalize::Languages;
-use crate::domain::project_map::{spec_sentence, MapRefusal, SpecNote};
+use crate::domain::project_map::{lineage_is_fresh, spec_sentence, FileLineage, MapRefusal, ProjectMap, SpecNote};
 use crate::domain::spec_events::{parse_log, search_field, SpecEvent, SpecLog};
 use crate::io::claude_paths::ClaudePaths;
 use crate::io::map_search;
-use crate::io::project_map::{exists_at, model_path, open_existing, unreadable};
+use crate::io::project_map::{exists_at, history_at, model_path, open_existing, pull_comments_at, unreadable, CENSUS};
 use crate::platform::error::Result;
 
 /// Os tipos de item que entram no bloco, na ordem em que um commit de onda
@@ -571,18 +571,45 @@ fn item_commits(conn: &Connection, spec: &str, id: i64) -> Result<Vec<(String, V
 }
 
 /// Os arquivos que a busca liga inteiros aos itens `items` — a spec e o
-/// código de cada um — só por falta da história por função deles: os que
-/// os commits das ondas do item mudaram, que o mapa do projeto em `root`
-/// tem e que ainda não têm essa história. Do commit mais novo ao mais
-/// velho, até `limit` arquivos por item, os que [`links_of`] mostra. Sem a
-/// base de onde a história se lê, nenhum: a passada não teria o que ler, e
-/// cada busca a tentaria de novo.
-pub fn untraced(root: &Path, items: &[(&str, &str)], limit: usize) -> std::result::Result<Vec<String>, MapRefusal> {
-    let db = open_existing(&model_path(root))?;
-    untraced_in(db.conn(), items, limit).map_err(unreadable)
+/// código de cada um — só por falta da história por função deles, ou porque
+/// a que o mapa guarda venceu: os que os commits das ondas do item mudaram,
+/// que o mapa do projeto em `root` tem e cuja história falta ou não vale
+/// mais. A história guardada vale pela mesma regra da pergunta da história
+/// ([`lineage_is_fresh`]), lida seguindo `moves` mudanças de arquivo: o
+/// commit novo da base que mudou o arquivo, como o squash da própria spec,
+/// a vence. Do commit mais novo ao mais velho, até `limit` arquivos por
+/// item, os que [`links_of`] mostra. Sem a base de onde a história se lê,
+/// nenhum: a passada não teria o que ler, e cada busca a tentaria de novo.
+///
+/// A história do git se lê do mapa só quando algum desses arquivos já tem a
+/// história por função guardada.
+pub fn untraced(root: &Path, items: &[(&str, &str)], limit: usize, moves: usize) -> std::result::Result<Vec<String>, MapRefusal> {
+    let model = model_path(root);
+    let db = open_existing(&model)?;
+    let linked = linked_in(db.conn(), items, limit).map_err(unreadable)?;
+    if linked.iter().all(|(_, stored)| stored.is_none()) {
+        return Ok(linked.into_iter().map(|(path, _)| path).collect());
+    }
+    let mut map = ProjectMap {
+        history: history_at(&model)?,
+        census_mark: db.mark(CENSUS.name()).map_err(unreadable)?.unwrap_or_default(),
+        ..ProjectMap::default()
+    };
+    for (path, _) in linked.iter().filter(|(_, stored)| stored.is_some()) {
+        map.pulls.comments.extend(pull_comments_at(&model, path)?);
+    }
+    Ok(linked
+        .into_iter()
+        .filter(|(_, stored)| stored.as_ref().is_none_or(|lineage| !lineage_is_fresh(lineage, &map, moves)))
+        .map(|(path, _)| path)
+        .collect())
 }
 
-fn untraced_in(conn: &Connection, items: &[(&str, &str)], limit: usize) -> Result<Vec<String>> {
+/// Os arquivos que os commits das ondas dos itens `items` mudaram e que o
+/// mapa tem, cada um uma vez, com a história por função guardada dele — só
+/// o que a validade dela confere, sem os commits —, quando há. Até `limit`
+/// arquivos por item; nenhum sem a base de onde a história se lê.
+fn linked_in(conn: &Connection, items: &[(&str, &str)], limit: usize) -> Result<Vec<(String, Option<FileLineage>)>> {
     let readable = conn
         .query_row("SELECT 1 FROM history_base WHERE base <> '' AND COALESCE(missing, '') = ''", [], |_| Ok(()))
         .optional()?
@@ -591,9 +618,9 @@ fn untraced_in(conn: &Connection, items: &[(&str, &str)], limit: usize) -> Resul
         return Ok(Vec::new());
     }
     let mut item_id = conn.prepare("SELECT id FROM spec_items WHERE spec = ?1 AND code = ?2")?;
-    let mut traced = conn.prepare("SELECT 1 FROM lineage_files WHERE path = ?1")?;
+    let mut stored = conn.prepare("SELECT base, last_commit, mark, moves, comments FROM lineage_files WHERE path = ?1")?;
     let mut mapped = conn.prepare("SELECT 1 FROM files WHERE path = ?1")?;
-    let mut out: Vec<String> = Vec::new();
+    let mut out: Vec<(String, Option<FileLineage>)> = Vec::new();
     for (spec, code) in items {
         let Some(id) = item_id.query_row([spec, code], |row| row.get::<_, i64>(0)).optional()? else {
             continue;
@@ -606,8 +633,22 @@ fn untraced_in(conn: &Connection, items: &[(&str, &str)], limit: usize) -> Resul
             if shown.contains(&path) {
                 continue;
             }
-            if traced.query_row([&path], |_| Ok(())).optional()?.is_none() && mapped.query_row([&path], |_| Ok(())).optional()?.is_some() {
-                push_new(&mut out, [path.clone()]);
+            if !out.iter().any(|(known, _)| *known == path) && mapped.query_row([&path], |_| Ok(())).optional()?.is_some() {
+                let lineage = stored
+                    .query_row([&path], |row| {
+                        let count = |at: usize| row.get::<_, Option<i64>>(at).map(|n| u32::try_from(n.unwrap_or_default()).unwrap_or_default());
+                        Ok(FileLineage {
+                            path: path.clone(),
+                            base: row.get::<_, Option<String>>(0)?.unwrap_or_default(),
+                            last_commit: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                            mark: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                            moves: count(3)?,
+                            comments: count(4)?,
+                            ..FileLineage::default()
+                        })
+                    })
+                    .optional()?;
+                out.push((path.clone(), lineage));
             }
             shown.push(path);
         }

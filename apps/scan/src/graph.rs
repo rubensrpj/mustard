@@ -1125,9 +1125,9 @@ fn global_sight(
 }
 
 /// Each file of `modules` that writes a global import, by its index, with the
-/// indexes of the files that import reaches: those of the same language under
-/// the folder of the manifest nearest above the writer, or under the writer's
-/// own folder when no manifest is above it.
+/// indexes of the files that import reaches: those of the same language
+/// family under the folder of the manifest nearest above the writer, or under
+/// the writer's own folder when no manifest is above it.
 pub(crate) fn global_reach(modules: &[Module], manifests: &[crate::model::Manifest]) -> Vec<(usize, Vec<usize>)> {
     modules
         .iter()
@@ -1138,7 +1138,7 @@ pub(crate) fn global_reach(modules: &[Module], manifests: &[crate::model::Manife
             let reached = modules
                 .iter()
                 .enumerate()
-                .filter(|(_, m)| m.language == g.language && is_under(&m.path, scope))
+                .filter(|(_, m)| crate::extract::family(&m.language) == crate::extract::family(&g.language) && is_under(&m.path, scope))
                 .map(|(at, _)| at)
                 .collect();
             (writer, reached)
@@ -1587,9 +1587,11 @@ type Declaring = Vec<(String, String)>;
 
 /// Everything import resolution reads, indexed once for the whole project.
 struct Resolver<'a> {
-    /// Per language, each declared namespace in canonical segment form -> the
-    /// files that declare it. Split by language: a namespace of another
-    /// language never answers an import.
+    /// Per language family, each declared namespace in canonical segment
+    /// form -> the files that declare it. Split by family: a namespace of
+    /// another language never answers an import, and one of the same
+    /// language written in another kind of file (the code of a markup page)
+    /// does.
     ns_index: HashMap<&'a str, HashMap<String, Vec<String>>>,
     stem_index: HashMap<String, Vec<String>>,
     dir_index: HashMap<String, Vec<String>>,
@@ -1627,7 +1629,7 @@ impl<'a> Resolver<'a> {
                 // Index namespaces in canonical segment form so a lookup never
                 // depends on which separator the language writes (`\`, `.`, `::`).
                 ns_index
-                    .entry(m.language.as_str())
+                    .entry(crate::extract::family(&m.language))
                     .or_default()
                     .entry(canon_segments(ns, &m.language))
                     .or_default()
@@ -1867,7 +1869,7 @@ impl<'a> Resolver<'a> {
                 return vec![beside];
             }
         }
-        let namespaces = self.ns_index.get(importer.language.as_str());
+        let namespaces = self.ns_index.get(crate::extract::family(&importer.language));
         // 1) Namespace/package match: the import names a namespace declared in
         //    the importer's language (the common case for namespace languages —
         //    a using shared by many files). Liga só aos arquivos do namespace

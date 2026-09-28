@@ -7,13 +7,20 @@
 //! O código dos blocos e das linhas de membro mora num tipo com o nome do
 //! arquivo, aberto no começo da linha do primeiro código e fechado logo
 //! depois do último. O código das linhas de cabeça fica fora desse tipo,
-//! antes dele. O arquivo sem código nenhum sai só com espaços.
+//! antes dele. O bloco de corpo traz comandos, e não membros: mora num
+//! método do tipo, e os blocos de corpo seguidos, sem membro entre eles,
+//! dividem o mesmo método. O arquivo sem código nenhum sai só com espaços.
 
 /// Onde mora o código num arquivo de marcação, como o registro o declara.
 pub(crate) struct Markup {
     /// Os marcadores seguidos de um bloco entre chaves: o de dentro das
     /// chaves é código.
     pub blocks: &'static [&'static str],
+    /// Como `blocks`, mas o de dentro das chaves é o corpo de um método.
+    pub bodies: &'static [&'static str],
+    /// O texto que abre e o que fecha o método em que o código de `bodies`
+    /// mora; vazio sem `bodies`.
+    pub method: [&'static str; 2],
     /// O marcador que abre uma linha de código dentro do tipo do arquivo e a
     /// forma dela, com `{}` no lugar do resto da linha.
     pub lines: &'static [(&'static str, &'static str)],
@@ -28,9 +35,9 @@ pub(crate) struct Markup {
 
 /// Um trecho de código achado no arquivo.
 enum Piece {
-    /// Um bloco: o byte da chave que abre e o da que fecha; sem a que fecha,
-    /// o fim do arquivo.
-    Block { open: usize, close: usize },
+    /// Um bloco: o byte da chave que abre e o da que fecha, sem a que fecha
+    /// o fim do arquivo, e se o de dentro é o corpo de um método.
+    Block { open: usize, close: usize, body: bool },
     /// Uma linha: do começo do marcador ao fim da linha, com o código que ela
     /// vira e se ele vai antes do tipo do arquivo.
     Line { start: usize, end: usize, code: String, head: bool },
@@ -47,17 +54,25 @@ impl Piece {
     fn in_type(&self) -> bool {
         !matches!(self, Piece::Line { head: true, .. })
     }
+
+    fn is_body(&self) -> bool {
+        matches!(self, Piece::Block { body: true, .. })
+    }
 }
 
 impl Markup {
     /// O texto que a gramática lê do arquivo `src`, no caminho `path`: só o
     /// código, com as linhas no lugar delas. O código de cabeça escrito antes
     /// do primeiro código do tipo fica na linha dele; o escrito depois vai
-    /// para a linha em que o tipo abre, antes dele.
+    /// para a linha em que o tipo abre, antes dele. O método dos blocos de
+    /// corpo abre na chave do bloco cujo código do tipo anterior não é
+    /// corpo, e fecha no fim do bloco cujo código do tipo seguinte não é.
     pub(crate) fn code_of(&self, src: &str, path: &str) -> String {
         let pieces = self.pieces(src);
         let first_in_type = pieces.iter().position(Piece::in_type);
         let last_in_type = pieces.iter().rposition(Piece::in_type);
+        let body_before = |i: usize| pieces[..i].iter().rev().find(|piece| piece.in_type()).is_some_and(Piece::is_body);
+        let body_after = |i: usize| pieces[i + 1..].iter().find(|piece| piece.in_type()).is_some_and(Piece::is_body);
         let mut out = String::with_capacity(src.len() + 64);
         let mut at = 0;
         for (i, piece) in pieces.iter().enumerate() {
@@ -76,10 +91,16 @@ impl Markup {
             let moved = first_in_type.is_some_and(|first| i > first);
             let closes = last_in_type == Some(i);
             match piece {
-                Piece::Block { open, close } => {
+                Piece::Block { open, close, body } => {
                     blank(&mut out, &src[at..=*open]);
+                    if *body && !body_before(i) {
+                        out.push_str(self.method[0]);
+                    }
                     out.push_str(&src[open + 1..*close]);
                     at = *close;
+                    if *body && !body_after(i) {
+                        out.push_str(self.method[1]);
+                    }
                 }
                 Piece::Line { end, code, head, .. } => {
                     blank(&mut out, &src[at..*end]);
@@ -116,9 +137,9 @@ impl Markup {
                     continue;
                 }
             }
-            if let Some(open) = self.block_at(src, at) {
+            if let Some((open, body)) = self.block_at(src, at) {
                 let close = matching_brace(bytes, open);
-                out.push(Piece::Block { open, close });
+                out.push(Piece::Block { open, close, body });
                 at = (close + 1).min(bytes.len());
                 line_start = false;
                 continue;
@@ -147,20 +168,24 @@ impl Markup {
     }
 
     /// O byte da chave que abre o bloco cujo marcador começa no byte `at` de
-    /// `src`. O marcador não pode estar colado a outra palavra, nem antes nem
-    /// depois.
-    fn block_at(&self, src: &str, at: usize) -> Option<usize> {
+    /// `src`, e se o bloco é de corpo. O marcador não pode estar colado a
+    /// outra palavra, nem antes nem depois; o que começa como outro marcador
+    /// (`@` e `@functions`) vale pelo que tem a chave depois dele. O byte
+    /// `at` pode cair no meio de um caractere: a comparação é por bytes.
+    fn block_at(&self, src: &str, at: usize) -> Option<(usize, bool)> {
         let bytes = src.as_bytes();
         if at > 0 && is_word(bytes[at - 1]) {
             return None;
         }
-        let marker = self.blocks.iter().find(|marker| src[at..].starts_with(**marker))?;
-        let after = at + marker.len();
-        if bytes.get(after).is_some_and(|b| is_word(*b)) {
-            return None;
-        }
-        let open = after + bytes[after..].iter().take_while(|b| b.is_ascii_whitespace()).count();
-        (bytes.get(open) == Some(&b'{')).then_some(open)
+        let markers = self.blocks.iter().map(|marker| (marker, false)).chain(self.bodies.iter().map(|marker| (marker, true)));
+        markers.filter(|(marker, _)| bytes[at..].starts_with(marker.as_bytes())).find_map(|(marker, body)| {
+            let after = at + marker.len();
+            if bytes.get(after).is_some_and(|b| is_word(*b)) {
+                return None;
+            }
+            let open = after + bytes[after..].iter().take_while(|b| b.is_ascii_whitespace()).count();
+            (bytes.get(open) == Some(&b'{')).then_some((open, body))
+        })
     }
 }
 
@@ -228,6 +253,8 @@ mod tests {
     /// A página de Blazor como o registro a descreve.
     const PAGE: Markup = Markup {
         blocks: &["@code", "@functions"],
+        bodies: &[],
+        method: ["", ""],
         lines: &[("@inject", "{};")],
         head: &[("@using", "using {};")],
         open: "partial class {file} {",
@@ -294,6 +321,61 @@ mod tests {
     fn a_head_line_written_after_the_first_member_goes_before_the_type() {
         let code = PAGE.code_of("@inject Loja.Carrinho Carrinho\n@using Loja\n@code { }\n", "Compra.razor");
         assert_eq!(lines(&code), ["using Loja; partial class Compra { Loja.Carrinho Carrinho;", "", "}"]);
+    }
+
+    /// A view do Razor como o registro a descreve.
+    const VIEW: Markup = Markup {
+        blocks: &["@functions"],
+        bodies: &["@"],
+        method: ["async Task ExecuteAsync() {", "}"],
+        lines: &[("@inject", "{};"), ("@model", "{} Model;")],
+        head: &[("@using", "using {};")],
+        open: "class {file} {",
+        close: "}",
+    };
+
+    #[test]
+    fn a_body_block_is_the_body_of_a_method_of_the_type() {
+        let src = "@page\n@model IndexModel\n@{\n    ViewData[\"Title\"] = \"Início\";\n}\n<h1>@ViewData[\"Title\"]</h1>\n";
+        let code = VIEW.code_of(src, "Pages/Index.cshtml");
+        assert_eq!(
+            lines(&code),
+            ["", "class Index { IndexModel Model;", "async Task ExecuteAsync() {", "ViewData[\"Title\"] = \"Início\";", "}}", ""]
+        );
+    }
+
+    #[test]
+    fn body_blocks_in_a_row_share_one_method_and_a_member_between_them_opens_another() {
+        let src = "@{ var a = 1; }\n<p>@a</p>\n@using Loja\n@{ a++; }\n@inject Loja.Carrinho Carrinho\n@{ var b = 2; }\n";
+        let code = VIEW.code_of(src, "Views/Home/V.cshtml");
+        assert_eq!(
+            lines(&code),
+            [
+                "using Loja; class V { async Task ExecuteAsync() { var a = 1;",
+                "",
+                "",
+                "a++; }",
+                "Loja.Carrinho Carrinho;",
+                "async Task ExecuteAsync() { var b = 2; }}",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_member_block_whose_marker_starts_like_the_body_marker_stays_a_member() {
+        let src = "@{ var total = Dobro(2); }\n@functions { int Dobro(int x) => x * 2; }\n<a href=\"mailto:x@{y}\">x</a>\n";
+        let code = VIEW.code_of(src, "V.cshtml");
+        assert_eq!(
+            lines(&code),
+            ["class V { async Task ExecuteAsync() { var total = Dobro(2); }", "int Dobro(int x) => x * 2; }", ""]
+        );
+    }
+
+    #[test]
+    fn a_page_written_with_accents_reads_its_code() {
+        let src = "<h3>Ação à vista</h3>\n@code {\n    int preço;\n}\n";
+        let code = PAGE.code_of(src, "Preço.razor");
+        assert_eq!(lines(&code), ["", "partial class Preço {", "int preço;", "}"]);
     }
 
     #[test]

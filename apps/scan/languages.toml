@@ -196,11 +196,22 @@
 #                 Só o código se lê: o resto do arquivo vira espaço, e cada
 #                 linha fica no lugar dela. Chaves:
 #                   blocks  os marcadores seguidos de um bloco entre chaves
-#                           (`@code { … }`): o de dentro das chaves é código.
-#                           O marcador colado a outra palavra não conta, e a
-#                           chave escrita em texto entre aspas, entre
-#                           apóstrofos ou em comentário (`//`, `/* */`) não
-#                           fecha o bloco;
+#                           (`@code { … }`): o de dentro das chaves é código,
+#                           os membros do tipo do arquivo. O marcador colado
+#                           a outra palavra não conta, e a chave escrita em
+#                           texto entre aspas, entre apóstrofos ou em
+#                           comentário (`//`, `/* */`) não fecha o bloco;
+#                   bodies  como `blocks`, mas o de dentro das chaves é o
+#                           corpo de um método, com comandos, e não membros
+#                           (`@{ … }`). O marcador que começa como outro
+#                           (`@` e `@functions`) vale pelo que tem a chave
+#                           logo depois;
+#                   method  o texto que abre e o que fecha o método em que
+#                           o código de `bodies` mora, dentro do tipo do
+#                           arquivo. Vem junto com `bodies`, e só com ele. Os
+#                           blocos de corpo seguidos, sem membro entre eles,
+#                           dividem o mesmo método; o membro entre dois o
+#                           fecha, e o bloco seguinte abre outro;
 #                   lines   o marcador que abre uma linha de código e a forma
 #                           dela, com `{}` no lugar do resto da linha
 #                           (`"@inject" = "{};"` lê `@inject T n` como `T n;`);
@@ -254,6 +265,31 @@ doc_tags = [
 log_calls = ["LogError", "LogWarning", "LogInformation", "LogDebug", "LogTrace", "LogCritical", "Log", "Console.*", "Debug.*", "Trace.*"]
 error_forms = ["throw", "*Exception"]
 markup = { blocks = ["@code", "@functions"], lines = { "@inject" = "{};" }, head = { "@using" = "using {};" }, wrap = ["partial class {file} {", "}"] }
+
+# A página do Razor Pages e a view do MVC (`.cshtml`): marcação com C#
+# dentro. O framework faz da página uma classe; o bloco `@{ … }` é o corpo do
+# método que desenha a página, o `ExecuteAsync`, e o `@functions` traz os
+# membros dela. O `@model` é a propriedade `Model`, com o tipo do modelo, e o
+# `@inject`, uma propriedade. O `@using` vale para a página inteira. A classe
+# que atende a página, a do `.cshtml.cs`, é outra, e não parte desta. As
+# outras diretivas e o código escrito no meio da marcação ficam de fora.
+[[language]]
+name = "cshtml"
+extensions = ["cshtml"]
+dir = "csharp"
+grammar = "grammar_cs::LANGUAGE"
+namespace_scope = "nested"
+self_receivers = ["this"]
+parent_receivers = ["base"]
+implicit_self = true
+doc_tags = [
+    "summary", "remarks", "returns", "param", "typeparam", "value", "example",
+    "para", "c", "code", "list", "item", "term", "description", "exception",
+    "see", "seealso", "paramref", "typeparamref", "inheritdoc", "include",
+]
+log_calls = ["LogError", "LogWarning", "LogInformation", "LogDebug", "LogTrace", "LogCritical", "Log", "Console.*", "Debug.*", "Trace.*"]
+error_forms = ["throw", "*Exception"]
+markup = { blocks = ["@functions"], bodies = ["@"], method = ["async Task ExecuteAsync() {", "}"], lines = { "@inject" = "{};", "@model" = "{} Model;" }, head = { "@using" = "using {};" }, wrap = ["class {file} {", "}"] }
 
 [[language]]
 name = "typescript"

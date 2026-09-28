@@ -183,3 +183,115 @@ fn the_history_of_a_page_goes_to_the_method_its_commit_changed() {
     assert_eq!(titles("Ler"), ["cria a página"]);
     assert_eq!(titles("Pedidos"), ["cria a página"], "the changed line goes to the innermost declaration");
 }
+
+
+/// A declaração `name` do arquivo `path` do mapa.
+fn declaration<'a>(map: &'a Value, path: &str, name: &str) -> &'a Value {
+    let decls = module(map, path)["declarations"].as_array().unwrap();
+    decls.iter().find(|d| d["name"] == json!(name)).unwrap_or_else(|| panic!("{name} em {path}: {decls:?}"))
+}
+
+/// A página do Razor Pages: o modelo, o `@model`, dois `@using`, o
+/// `@inject`, o bloco de corpo que chama o modelo e o `@functions` que chama
+/// o servidor, com texto acentuado na marcação.
+const RAZOR_PAGE: &str = "@page\n\
+                          @model PedidosModel\n\
+                          @using System.Net.Http.Json\n\
+                          @using Web.Pages\n\
+                          @inject HttpClient Http\n\
+                          @{\n    \
+                          ViewData[\"Title\"] = \"Pedidos em aberto\";\n    \
+                          var total = Model.Total();\n\
+                          }\n\
+                          <h1>@ViewData[\"Title\"] — ação à vista</h1>\n\
+                          <p>Total: @total</p>\n\
+                          @functions {\n    \
+                          private Task<string?> Ler() => Http.GetFromJsonAsync<string>(\"api/pedidos/1\");\n\
+                          }\n";
+
+/// A classe que atende a página, no `.cshtml.cs` ao lado.
+const PAGE_MODEL: &str = "namespace Web.Pages;\n\npublic class PedidosModel : PageModel\n{\n    public int Total() => 3;\n}\n";
+
+/// A página `.cshtml` entra no mapa com as linhas dela, na classe com o nome
+/// do arquivo: o bloco `@{ }` é o corpo do método `ExecuteAsync`, o
+/// `@model` é a propriedade `Model` com o tipo do modelo, o `@inject` e o
+/// `@functions` são membros. O `@using` da página alcança o C# do projeto: o
+/// arquivo do modelo é importado, e a chamada do bloco liga ao `Total` dele.
+/// A chamada do `@functions` liga provada à rota do controlador. A view do
+/// MVC só com o bloco de corpo tem a classe e o método; o `_ViewImports`,
+/// só com linhas de cabeça, só os imports.
+#[test]
+fn a_razor_page_maps_its_body_block_as_a_method_and_reaches_the_csharp_of_the_project() {
+    let view = "@{\n    ViewData[\"Title\"] = \"Início\";\n}\n<h1>Olá, @User.Identity?.Name</h1>\n";
+    let map = scanned(&[
+        ("Web/Pages/Pedidos.cshtml", RAZOR_PAGE),
+        ("Web/Pages/Pedidos.cshtml.cs", PAGE_MODEL),
+        ("Web/Pages/_ViewImports.cshtml", "@using Web\n@addTagHelper *, Microsoft.AspNetCore.Mvc.TagHelpers\n"),
+        ("Web/Views/Home/Index.cshtml", view),
+    ]);
+    let page = "Web/Pages/Pedidos.cshtml";
+    assert_eq!(module(&map, page)["language"], json!("cshtml"));
+    assert_eq!(
+        declarations(&map, page),
+        ["class Pedidos 2-14", "field Model 2-2", "field Http 5-5", "method ExecuteAsync 6-9", "method Ler 13-13"]
+    );
+    assert_eq!(declaration(&map, page, "Model")["signature"], json!("PedidosModel Model"));
+    assert_eq!(module(&map, page)["imports"], json!(["System.Net.Http.Json", "Web.Pages"]));
+    assert_eq!(module(&map, page)["deps"], json!(["Web/Pages/Pedidos.cshtml.cs"]));
+    assert_eq!(declaration(&map, page, "ExecuteAsync")["calls"], json!(["Total"]));
+    assert_eq!(called_by(&map, "GET", "api/pedidos/{}"), json!(["Web/Pages/Pedidos.cshtml:13:Ler"]));
+    assert_eq!(declarations(&map, "Web/Views/Home/Index.cshtml"), ["class Index 1-3", "method ExecuteAsync 1-3"]);
+    assert_eq!(declarations(&map, "Web/Pages/_ViewImports.cshtml"), Vec::<String>::new());
+    assert_eq!(module(&map, "Web/Pages/_ViewImports.cshtml")["imports"], json!(["Web"]));
+}
+
+/// O `global using` escrito num `.cs` do projeto alcança a página, como
+/// alcança os outros arquivos C# dele: a chamada do bloco de corpo liga à
+/// classe do namespace que ele traz, e o `System.Net.Http` liga a regra do
+/// `HttpClient` na página, num projeto cujo SDK não a liga sozinho. A
+/// passada que lê só o que mudou relê a página, que não mudou, e dá o mesmo
+/// que a passada inteira.
+#[test]
+fn a_global_using_of_the_project_reaches_the_page_also_in_the_pass_that_reads_only_what_changed() {
+    let temp = tempfile::Builder::new().prefix("scan-pagina-global-").tempdir().unwrap();
+    let dir = temp.path();
+    git(dir, &["init", "-q"]);
+    std::fs::write(dir.join(".git").join("info").join("exclude"), mustard_core::footprint_rules().join("\n") + "\n").unwrap();
+    let files = [
+        ("Web/Web.csproj", csproj("MSBuild.Sdk.Extras")),
+        ("Web/Modelos/Calculo.cs", "namespace Web.Modelos;\n\npublic static class Calculo\n{\n    public static int Total() => 3;\n}\n".to_string()),
+        (
+            "Web/Pages/Resumo.cshtml",
+            "@page\n@inject HttpClient Http\n@{\n    var total = Calculo.Total();\n}\n<p>@total</p>\n\
+             @functions {\n    private Task<string> Ler() => Http.GetStringAsync(\"api/pedidos/1\");\n}\n"
+                .to_string(),
+        ),
+    ];
+    for (rel, body) in &files {
+        std::fs::create_dir_all(dir.join(rel).parent().unwrap()).unwrap();
+        std::fs::write(dir.join(rel), body).unwrap();
+    }
+    git(dir, &["add", "-A"]);
+    git(dir, &["commit", "-q", "-m", "primeiro"]);
+    let page = "Web/Pages/Resumo.cshtml";
+    let calls = |map: &Value| declaration(map, page, "ExecuteAsync").get("calls").cloned().unwrap_or(json!([]));
+    let client = |map: &Value| -> Vec<String> {
+        let found = module(map, page).get("route_calls").and_then(Value::as_array).cloned().unwrap_or_default();
+        found.iter().map(|call| format!("{} {} {}:{}", call["method"], call["path"], call["owner"], call["line"])).collect()
+    };
+    let (first, _) = model::scan(dir, &dir.join(".claude"), &[]);
+    assert_eq!(calls(&first), json!([]), "without the global using the page does not see the namespace");
+    assert_eq!(client(&first), Vec::<String>::new(), "without the global using the client rule is off");
+
+    std::fs::write(dir.join("Web/GlobalUsings.cs"), "global using System.Net.Http;\nglobal using Web.Modelos;\n").unwrap();
+    git(dir, &["add", "-A"]);
+    git(dir, &["commit", "-q", "-m", "global"]);
+    let (partial, report) = model::scan(dir, &dir.join(".claude"), &[]);
+    assert_eq!(report["full"], json!(false), "{report}");
+    let whole_out = tempfile::tempdir().unwrap();
+    let (whole, _) = model::scan(dir, whole_out.path(), &[]);
+    assert_eq!(calls(&whole), json!(["Total"]), "the whole pass");
+    assert_eq!(client(&whole), ["\"GET\" \"api/pedidos/{}\" \"Ler\":8"], "the whole pass");
+    assert_eq!(calls(&partial), json!(["Total"]), "the pass that reads only what changed");
+    assert_eq!(client(&partial), client(&whole), "the pass that reads only what changed");
+}

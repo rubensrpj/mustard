@@ -624,18 +624,35 @@ fn route_rules(crate_root: &Path, languages: &[&str]) -> String {
 }
 
 /// O `Markup` da língua `name`, escrito como código Rust, a partir da tabela
-/// `markup` dela: `blocks`, `lines` e `head` são opcionais, mas ao menos um
-/// vem; cada forma de `lines` e de `head` tem um `{}`; `wrap` traz o texto
-/// que abre e o que fecha o tipo do arquivo. O erro para a compilação.
+/// `markup` dela: `blocks`, `bodies`, `lines` e `head` são opcionais, mas ao
+/// menos um vem; cada forma de `lines` e de `head` tem um `{}`; `wrap` traz o
+/// texto que abre e o que fecha o tipo do arquivo, e `method`, o do método
+/// dos blocos de `bodies`, que vem junto com eles e só com eles. O erro para
+/// a compilação.
 fn markup_rule(name: &str, rule: &toml::value::Table) -> String {
     let refused = |what: &str| format!("language.markup of `{name}`: {what}");
-    let blocks: Vec<String> = rule.get("blocks").map_or_else(Vec::new, |v| {
-        v.as_array()
-            .unwrap_or_else(|| panic!("{}", refused("`blocks` must be an array")))
-            .iter()
-            .map(|e| e.as_str().filter(|s| !s.is_empty()).unwrap_or_else(|| panic!("{}", refused("each block marker is a non-empty string"))).to_string())
-            .collect()
-    });
+    let markers = |key: &str| -> Vec<String> {
+        rule.get(key).map_or_else(Vec::new, |v| {
+            v.as_array()
+                .unwrap_or_else(|| panic!("{}", refused(&format!("`{key}` must be an array"))))
+                .iter()
+                .map(|e| {
+                    e.as_str()
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or_else(|| panic!("{}", refused(&format!("each marker of `{key}` is a non-empty string"))))
+                        .to_string()
+                })
+                .collect()
+        })
+    };
+    let (blocks, bodies) = (markers("blocks"), markers("bodies"));
+    let pair = |key: &str| -> Option<[String; 2]> {
+        let list: Vec<&str> = rule.get(key)?.as_array().map(|list| list.iter().filter_map(|e| e.as_str()).collect()).unwrap_or_default();
+        let [open, close] = list.as_slice() else { panic!("{}", refused(&format!("`{key}` must list the text that opens and the one that closes"))) };
+        Some([(*open).to_string(), (*close).to_string()])
+    };
+    let method = pair("method");
+    assert_eq!(bodies.is_empty(), method.is_none(), "{}", refused("`bodies` and `method` come together"));
     let forms = |key: &str| -> Vec<(String, String)> {
         rule.get(key).map_or_else(Vec::new, |v| {
             v.as_table()
@@ -650,17 +667,18 @@ fn markup_rule(name: &str, rule: &toml::value::Table) -> String {
         })
     };
     let (lines, head) = (forms("lines"), forms("head"));
-    assert!(!(blocks.is_empty() && lines.is_empty() && head.is_empty()), "{}", refused("it must declare `blocks`, `lines` or `head`"));
-    let wrap: Vec<&str> = rule
-        .get("wrap")
-        .and_then(|v| v.as_array())
-        .map(|list| list.iter().filter_map(|e| e.as_str()).collect())
-        .unwrap_or_default();
-    let [open, close] = wrap.as_slice() else { panic!("{}", refused("`wrap` must list the text that opens the type and the one that closes it")) };
+    assert!(
+        !(blocks.is_empty() && bodies.is_empty() && lines.is_empty() && head.is_empty()),
+        "{}",
+        refused("it must declare `blocks`, `bodies`, `lines` or `head`")
+    );
+    let Some([open, close]) = pair("wrap") else { panic!("{}", refused("`wrap` must list the text that opens the type and the one that closes it")) };
+    let [method_open, method_close] = method.unwrap_or_default();
     let pairs = |list: &[(String, String)]| list.iter().map(|(m, f)| format!("({m:?}, {f:?})")).collect::<Vec<_>>().join(", ");
     format!(
-        "crate::markup::Markup {{ blocks: &[{}], lines: &[{}], head: &[{}], open: {open:?}, close: {close:?} }}",
+        "crate::markup::Markup {{ blocks: &[{}], bodies: &[{}], method: [{method_open:?}, {method_close:?}], lines: &[{}], head: &[{}], open: {open:?}, close: {close:?} }}",
         quoted_list(&blocks),
+        quoted_list(&bodies),
         pairs(&lines),
         pairs(&head)
     )
