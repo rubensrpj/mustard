@@ -622,11 +622,23 @@ fn resolve_declaration_links(
             };
             // A type named inside its own body is not a use of it.
             let own_body = |(mi, di): DeclId| !is_call && mi == src && from == Some(di);
+            // O membro com o nome do tipo dono dele (o construtor que se
+            // escreve com o nome da classe) é o próprio tipo para quem chama
+            // esse nome: quando o tipo está entre as mesmas candidatas, o
+            // membro sai e fica o tipo. O método de outro tipo com o mesmo
+            // nome fica.
+            let names_its_type = |d: DeclId| {
+                owner_of(d) == Some(looked)
+                    && all.iter().any(|&(mi, di)| {
+                        mi == d.0 && TYPE_KINDS.contains(&modules[mi].declarations[di].kind.as_str())
+                    })
+            };
             let all: Vec<DeclId> = all
                 .iter()
                 .copied()
                 .filter(|&d| !own_body(d))
                 .filter(|&(mi, di)| !(member_out && MEMBER_KINDS.contains(&modules[mi].declarations[di].kind.as_str())))
+                .filter(|&d| !names_its_type(d))
                 .collect();
             let reached: Vec<String> =
                 passing.iter().flat_map(|module| resolver.declaring(module, looked)).map(|(file, _)| file).collect();

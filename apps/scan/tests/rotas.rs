@@ -1482,6 +1482,86 @@ fn a_scope_service_adds_its_prefix_to_the_function_of_another_file() {
     assert_eq!(served(&map, "src/handlers.rs"), ["GET api/aves/{} -> ler"]);
 }
 
+/// Um `src/main.rs` do Actix com a função `ler` e a montagem `app` escrita
+/// na função `main`, que registra as rotas.
+fn actix_main(app: &str) -> String {
+    format!(
+        "use actix_web::{{get, web, App}};\n\n#[get(\"/{{id}}\")]\nasync fn ler() -> &'static str {{\n    \"\"\n}}\n\n\
+         async fn listar() -> &'static str {{\n    \"\"\n}}\n\n\
+         async fn criar() -> &'static str {{\n    \"\"\n}}\n\n\
+         fn config(cfg: &mut web::ServiceConfig) {{\n    \
+         cfg.service(web::resource(\"/x\").route(web::post().to(criar)));\n    \
+         cfg.route(\"/y\", web::get().to(criar));\n}}\n\n\
+         fn main() {{\n    {app};\n}}\n"
+    )
+}
+
+/// As rotas de `src/main.rs` com a montagem `app` que a função `handler`
+/// atende.
+fn actix_served(app: &str, handler: &str) -> Vec<String> {
+    let temp = project_with(&[("Cargo.toml", ACTIX_CARGO), ("src/main.rs", &actix_main(app))]);
+    let (map, _) = scan(temp.path());
+    let by = format!("-> {handler}");
+    served(&map, "src/main.rs").into_iter().filter(|route| route.ends_with(&by)).collect()
+}
+
+/// O escopo escrito dentro do `service` de outro escopo soma os dois
+/// prefixos, o de fora primeiro.
+#[test]
+fn a_scope_inside_another_scope_adds_both_prefixes() {
+    let served =
+        actix_served("App::new().service(web::scope(\"/api\").service(web::scope(\"/pedidos\").service(ler)))", "ler");
+    assert_eq!(served, ["GET api/pedidos/{} -> ler"]);
+}
+
+/// Três escopos, um dentro do outro: os três prefixos, de fora para dentro.
+#[test]
+fn three_nested_scopes_add_all_their_prefixes_from_the_outside_in() {
+    let served = actix_served(
+        "App::new().service(web::scope(\"/api\").service(web::scope(\"/v1\").service(web::scope(\"/pedidos\").service(ler))))",
+        "ler",
+    );
+    assert_eq!(served, ["GET api/v1/pedidos/{} -> ler"]);
+}
+
+/// O recurso escrito dentro de um escopo soma o prefixo do escopo ao dele.
+#[test]
+fn a_resource_inside_a_scope_adds_the_scope_prefix() {
+    let served = actix_served(
+        "App::new().service(web::scope(\"/api\").service(web::resource(\"/fotos\").route(web::get().to(listar))))",
+        "listar",
+    );
+    assert_eq!(served, ["GET api/fotos -> listar"]);
+}
+
+/// O `configure` num escopo dentro de outro leva os dois prefixos às rotas
+/// da função que ele nomeia.
+#[test]
+fn a_configure_in_a_scope_inside_another_adds_both_prefixes() {
+    let served = actix_served("App::new().service(web::scope(\"/api\").service(web::scope(\"/v1\").configure(config)))", "criar");
+    assert_eq!(served, ["GET api/v1/y -> criar", "POST api/v1/x -> criar"]);
+}
+
+/// A função de outro arquivo montada num escopo dentro de outro leva os dois
+/// prefixos.
+#[test]
+fn a_scope_inside_another_adds_both_prefixes_to_the_function_of_another_file() {
+    let handlers = "use actix_web::get;\n\n#[get(\"/{id}\")]\npub async fn ler() -> &'static str {\n    \"\"\n}\n";
+    let main = "use actix_web::{web, App};\nuse crate::handlers::ler;\n\nmod handlers;\n\n\
+                fn app() {\n    App::new().service(web::scope(\"/api\").service(web::scope(\"/pedidos\").service(ler)));\n}\n";
+    let temp = project_with(&[("Cargo.toml", ACTIX_CARGO), ("src/handlers.rs", handlers), ("src/main.rs", main)]);
+    let (map, _) = scan(temp.path());
+    assert_eq!(served(&map, "src/handlers.rs"), ["GET api/pedidos/{} -> ler"]);
+}
+
+/// O escopo escrito direto no `App::new()` leva só o prefixo dele: o objeto
+/// que não é grupo não soma nada.
+#[test]
+fn a_scope_right_on_the_app_takes_only_its_own_prefix() {
+    let served = actix_served("App::new().service(web::scope(\"/pedidos\").service(ler))", "ler");
+    assert_eq!(served, ["GET pedidos/{} -> ler"]);
+}
+
 // ---------------------------------------------------------------------------
 // As rotas do Laravel, do Symfony, do Dart e do Fastify
 // ---------------------------------------------------------------------------

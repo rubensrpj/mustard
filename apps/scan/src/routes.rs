@@ -29,7 +29,8 @@
 //!   as rotas dele: o método, o pedaço de caminho depois do do recurso e o
 //!   nome de quem atende cada uma.
 //! - `route.receiver`: o objeto em que a rota se registra; no match de
-//!   `route.nest` e no de `route.call`, o objeto escrito antes do nome.
+//!   `route.nest`, no de `route.call` e no de `route.inside`, o objeto
+//!   escrito antes do nome.
 //! - `route.group`: o trecho cujos métodos agrupados tomam o `route.path` do
 //!   mesmo match.
 //! - `route.prefix`: o literal de um prefixo. Vale para as rotas dentro do
@@ -64,6 +65,11 @@
 //!   em qualquer ponto da cadeia; ele vale como objeto de uma rota, de outro
 //!   grupo ou de uma chamada, e na variável que o guarda (`route.variable`,
 //!   com o valor em `route.value`), dentro da mesma declaração.
+//! - `route.inside`: o argumento de uma chamada feita na cadeia do objeto
+//!   dela (`route.receiver`). O grupo sem objeto que começa onde o argumento
+//!   começa nasce desse objeto: quando ele é grupo, o prefixo soma os dois, o
+//!   de fora primeiro (`web::scope("/api").service(web::scope("/v1"))`); o
+//!   objeto que não é grupo não soma nada.
 //! - `route.parameter`: o parâmetro de uma declaração que pode levar um
 //!   grupo, com o nome em `route.parameter.name`; `route.parameter.receiver`,
 //!   o que recebe o objeto escrito antes do nome na chamada, que fica fora da
@@ -217,6 +223,7 @@ enum Role {
     ParameterReceiver,
     Call,
     Argument,
+    Inside,
     ClientMethod,
     ClientPath,
     ClientOption,
@@ -276,6 +283,7 @@ fn role(capture: &str) -> Role {
         "route.parameter.receiver" => Role::ParameterReceiver,
         "route.call" => Role::Call,
         "route.argument" => Role::Argument,
+        "route.inside" => Role::Inside,
         "client.method" => Role::ClientMethod,
         "client.path" => Role::ClientPath,
         "client.option" => Role::ClientOption,
@@ -427,6 +435,7 @@ struct Captured<'t> {
     parameter_receiver: Option<Node<'t>>,
     call: Option<Node<'t>>,
     argument: Option<Node<'t>>,
+    inside: Option<Node<'t>>,
 }
 
 /// Um prefixo e a quem ele vale: às rotas dentro do trecho `scope`, ou às do
@@ -475,6 +484,10 @@ struct Groups<'t> {
     nests: Vec<Nest<'t>>,
     bindings: Vec<Binding<'t>>,
     params: Vec<Param>,
+    /// Os argumentos escritos numa chamada feita na cadeia de um objeto: o
+    /// byte em que cada um começa e o objeto. O grupo sem objeto que começa
+    /// ali nasce desse objeto.
+    inside: Vec<(usize, Node<'t>)>,
 }
 
 /// A chamada que faz um grupo: o trecho dela, o prefixo e o objeto de que o
@@ -516,7 +529,8 @@ impl<'t> Groups<'t> {
 
     /// O grupo que é o valor escrito em `node`. O valor que começa pela
     /// chamada que faz um grupo — a mais de fora delas, quando uma cadeia
-    /// tem várias — é esse grupo, somado ao do objeto dela; o nome é o valor
+    /// tem várias — é esse grupo, somado ao do objeto dela; sem objeto, ao
+    /// do objeto da chamada em cujo argumento ela começa. O nome é o valor
     /// da variável que o guarda, escrita antes na mesma declaração, o
     /// parâmetro da declaração em que está ou, sem nenhum dos dois, a
     /// variável guardada antes no topo do arquivo. `None` para o que não é
@@ -528,8 +542,11 @@ impl<'t> Groups<'t> {
         let (start, end) = (node.start_byte(), node.end_byte());
         let nest = self.nests.iter().filter(|n| n.span.0 == start && n.span.1 <= end).max_by_key(|n| n.span.1);
         if let Some(nest) = nest {
+            let object = nest.object.or_else(|| {
+                self.inside.iter().find(|(begins, _)| *begins == nest.span.0).map(|&(_, object)| object)
+            });
             let mut group =
-                nest.object.and_then(|object| self.of(object, bytes, declarations, depth + 1)).unwrap_or_default();
+                object.and_then(|object| self.of(object, bytes, declarations, depth + 1)).unwrap_or_default();
             group.pieces.push(nest.prefix.clone());
             return Some(group);
         }
@@ -756,6 +773,7 @@ impl RouteRule {
                     Role::ParameterReceiver => here.parameter_receiver = node,
                     Role::Call => here.call = node,
                     Role::Argument => here.argument = node,
+                    Role::Inside => here.inside = node,
                     // Uma regra usa as capturas de um lado só; as da tela
                     // não são do servidor.
                     _ => {}
@@ -796,6 +814,10 @@ impl RouteRule {
                 if !skipped(target) {
                     on_groups.push((target, object));
                 }
+            } else if let (Some(inside), Some(object)) = (here.inside, here.receiver) {
+                // O argumento escrito na cadeia de um objeto: o grupo que
+                // começa nele nasce do objeto.
+                file_groups.inside.push((inside.start_byte(), object));
             } else if let (Some(name), Some(value)) = (here.variable, here.value) {
                 file_groups.bindings.push(Binding { name: text(name), value });
             } else if let (Some(parameter), Some(name)) = (here.parameter, here.parameter_name) {

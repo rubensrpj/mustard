@@ -1660,27 +1660,134 @@ fn a_name_taken_from_a_require_under_another_name_is_used_by_the_new_name() {
 /// linha. O campo com valor numa linha do corpo segue dono dos usos dela.
 #[test]
 fn the_types_of_a_class_header_are_used_by_the_class() {
-    let v = scan_files(
-        "cs-class-header",
-        &[
-            (
-                "Base.cs",
-                "namespace Loja;\n\npublic interface IRepo { }\npublic interface ILog { }\npublic interface IServico { }\npublic class Pedido { }\n\npublic class BaseServico\n{\n    public BaseServico(IRepo repo) { }\n}\n",
-            ),
-            (
-                "Servico.cs",
-                "namespace Loja;\n[Obsolete]\npublic class Servico(IRepo repo, ILog log) : BaseServico(repo), IServico\n{\n    private readonly List<Pedido> _itens = new();\n}\n",
-            ),
-        ],
-    );
+    let v = scan_files("cs-class-header", CLASS_HEADER);
     let header = vec!["Servico.cs:3:Servico".to_string()];
     assert_eq!(proven_uses_of(&v, "Base.cs", "IServico"), header);
     assert_eq!(proven_uses_of(&v, "Base.cs", "ILog"), header);
-    // A chamada da base escrita no cabeçalho fica entre a classe e o
-    // construtor dela: o lugar do uso é o que importa aqui.
+    // O lugar do uso da base escrita no cabeçalho; a ligação provada tem
+    // teste próprio.
     assert_eq!(use_places_of(&v, "Base.cs", "BaseServico"), header);
     assert!(proven_uses_of(&v, "Base.cs", "IRepo").contains(&header[0]), "{v}");
     assert_eq!(proven_uses_of(&v, "Base.cs", "Pedido"), vec!["Servico.cs:5:_itens".to_string()]);
+}
+
+/// A classe com construtor primário e base escritos no cabeçalho, e a base
+/// com o construtor dela escrito.
+const CLASS_HEADER: &[(&str, &str)] = &[
+    (
+        "Base.cs",
+        "namespace Loja;\n\npublic interface IRepo { }\npublic interface ILog { }\npublic interface IServico { }\npublic class Pedido { }\n\npublic class BaseServico\n{\n    public BaseServico(IRepo repo) { }\n}\n",
+    ),
+    (
+        "Servico.cs",
+        "namespace Loja;\n[Obsolete]\npublic class Servico(IRepo repo, ILog log) : BaseServico(repo), IServico\n{\n    private readonly List<Pedido> _itens = new();\n}\n",
+    ),
+];
+
+/// A base chamada pelo nome no cabeçalho é a classe, e não o construtor dela,
+/// que tem o mesmo nome: o uso liga provado à classe, sem candidatas.
+#[test]
+fn the_base_called_in_a_class_header_is_the_class_and_not_its_constructor() {
+    let v = scan_files("cs-header-base", CLASS_HEADER);
+    assert_eq!(proven_uses_of(&v, "Base.cs", "BaseServico"), vec!["Servico.cs:3:Servico".to_string()]);
+    assert!(suspect_holders_of(&v, "BaseServico", "Servico.cs:3:Servico").is_empty(), "{v}");
+}
+
+/// `new Pedido(1)` cria a classe: o construtor escrito dela tem o mesmo nome,
+/// mas quem chama o nome chama a classe, e o uso liga provado a ela.
+#[test]
+fn a_class_created_by_name_is_the_class_and_not_its_constructor() {
+    let v = scan_files(
+        "cs-new-class",
+        &[
+            ("Pedido.cs", "namespace Vendas;\n\npublic class Pedido\n{\n    public Pedido(int id) { }\n}\n"),
+            (
+                "Loja.cs",
+                "namespace Vendas;\n\npublic class Loja\n{\n    public void Abrir()\n    {\n        var p = new Pedido(1);\n    }\n}\n",
+            ),
+        ],
+    );
+    assert_eq!(proven_uses_of(&v, "Pedido.cs", "Pedido"), vec!["Loja.cs:7:Abrir".to_string()]);
+    assert!(suspect_holders_of(&v, "Pedido", "Loja.cs:7:Abrir").is_empty(), "{v}");
+}
+
+/// O mesmo no Dart: `Pedido(1)` é a classe, e não o construtor sem nome dela.
+#[test]
+fn a_dart_class_called_by_name_is_the_class_and_not_its_constructor() {
+    let v = scan_files(
+        "dart-new-class",
+        &[
+            ("lib/pedido.dart", "class Pedido {\n  Pedido(this.id);\n  final int id;\n}\n"),
+            ("lib/loja.dart", "import 'pedido.dart';\n\nvoid abrir() {\n  final p = Pedido(1);\n}\n"),
+        ],
+    );
+    assert_eq!(proven_uses_of(&v, "lib/pedido.dart", "Pedido"), vec!["lib/loja.dart:4:abrir".to_string()]);
+    assert!(suspect_holders_of(&v, "Pedido", "lib/loja.dart:4:abrir").is_empty(), "{v}");
+}
+
+/// A classe sem construtor escrito segue provada quando é criada pelo nome.
+#[test]
+fn a_class_without_a_written_constructor_created_by_name_stays_proven() {
+    let v = scan_files(
+        "cs-new-plain-class",
+        &[
+            ("Pedido.cs", "namespace Vendas;\n\npublic class Pedido\n{\n}\n"),
+            (
+                "Loja.cs",
+                "namespace Vendas;\n\npublic class Loja\n{\n    public void Abrir()\n    {\n        var p = new Pedido();\n    }\n}\n",
+            ),
+        ],
+    );
+    assert_eq!(proven_uses_of(&v, "Pedido.cs", "Pedido"), vec!["Loja.cs:7:Abrir".to_string()]);
+}
+
+/// O construtor nomeado do Dart (`Caixa.vazia()`) tem o nome dele, e não o
+/// da classe: segue ligado a quem o chama.
+#[test]
+fn a_dart_named_constructor_stays_linked_by_its_own_name() {
+    let v = scan_files(
+        "dart-named-constructor",
+        &[
+            ("lib/caixa.dart", "class Caixa {\n  Caixa.vazia();\n}\n"),
+            ("lib/loja.dart", "import 'caixa.dart';\n\nvoid abrir() {\n  final c = Caixa.vazia();\n}\n"),
+        ],
+    );
+    assert_eq!(proven_uses_of(&v, "lib/caixa.dart", "vazia"), vec!["lib/loja.dart:4:abrir".to_string()]);
+}
+
+/// O método de outro tipo com o nome da classe não é construtor dela: segue
+/// entre as candidatas de quem chama o nome.
+#[test]
+fn a_method_of_another_type_named_as_the_class_stays_a_candidate() {
+    let v = scan_files(
+        "cs-method-named-as-class",
+        &[
+            ("Pedido.cs", "namespace Vendas;\n\npublic class Pedido\n{\n    public Pedido(int id) { }\n}\n"),
+            ("Fabrica.cs", "namespace Vendas;\n\npublic class Fabrica\n{\n    public int Pedido(int id) { return id; }\n}\n"),
+            (
+                "Loja.cs",
+                "namespace Vendas;\n\npublic class Loja\n{\n    public void Abrir()\n    {\n        var p = new Pedido(1);\n    }\n}\n",
+            ),
+        ],
+    );
+    let holders: Vec<String> =
+        suspect_holders_of(&v, "Pedido", "Loja.cs:7:Abrir").into_iter().map(|(file, _)| file).collect();
+    assert!(holders.contains(&"Fabrica.cs".to_string()), "{v}");
+}
+
+/// No TypeScript o construtor se chama `constructor`: `new Pedido()` liga à
+/// classe como sempre.
+#[test]
+fn a_typescript_class_created_by_name_stays_linked_to_the_class() {
+    let v = scan_files(
+        "ts-new-class",
+        &[
+            ("src/pedido.ts", "export class Pedido {\n  constructor() {}\n}\n"),
+            ("src/loja.ts", "import { Pedido } from './pedido';\n\nexport function abrir() {\n  return new Pedido();\n}\n"),
+        ],
+    );
+    assert_eq!(proven_uses_of(&v, "src/pedido.ts", "Pedido"), vec!["src/loja.ts:4:abrir".to_string()]);
+    assert!(use_places_of(&v, "src/pedido.ts", "constructor").is_empty(), "{v}");
 }
 
 /// `use crate::io::{eventos as store}` traz um módulo com apelido: `store::ler()`

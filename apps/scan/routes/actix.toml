@@ -13,7 +13,10 @@
 # prefixo. O `.service(ler)` e o `.configure(config)` chamados na cadeia de
 # um grupo montam nele a função que nomeiam: o prefixo do grupo vale para a
 # rota da função `ler` e para as rotas escritas na função `config`, no mesmo
-# arquivo ou no arquivo de onde o nome vem.
+# arquivo ou no arquivo de onde o nome vem. O escopo ou o recurso escrito
+# dentro do `.service(...)` de outro escopo soma os dois prefixos, o de fora
+# primeiro: `web::scope("/api").service(web::scope("/v1").service(ler))` dá
+# `api/v1` à rota de `ler`.
 #
 # Os campos:
 # - `language`: as línguas do registro (`languages.toml`) cujos arquivos a

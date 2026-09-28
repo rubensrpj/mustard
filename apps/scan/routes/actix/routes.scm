@@ -60,3 +60,13 @@
    function: (field_expression value: (_) @route.receiver field: (field_identifier) @_mount)
    arguments: (arguments . [(identifier) @route.target (scoped_identifier name: (identifier) @route.target)] .))
  (#match? @_mount "^(service|configure)$"))
+
+; O grupo dentro de outro: o `.service(...)` chamado na cadeia de um grupo
+; cujo argumento é uma chamada. O grupo que começa no argumento
+; (`web::scope("/v1")`, `web::resource("/x")`) nasce do objeto, e o prefixo
+; soma os dois, o de fora primeiro. O objeto que não é grupo (`App::new()`)
+; não soma nada.
+((call_expression
+   function: (field_expression value: (_) @route.receiver field: (field_identifier) @_mount)
+   arguments: (arguments . (call_expression) @route.inside .))
+ (#eq? @_mount "service"))
