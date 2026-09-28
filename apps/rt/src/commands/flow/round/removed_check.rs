@@ -395,7 +395,10 @@ mod tests {
     fn a_program_function_still_cited_in_another_file_outside_tests_only_warns() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        let files = [("src/a.rs", "fn run_sum() {}\n"), ("src/b.rs", "use crate::a as calc;\n\nfn go() {\n    calc::compute_total();\n}\n")];
+        // A função passada como valor, sem ser chamada ali, é uso que o mapa
+        // não liga: ele liga a chamada, não o nome entregue a outra função.
+        let go = "use crate::a as calc;\n\nfn go() -> Vec<u32> {\n    [1, 2].into_iter().map(calc::compute_total).collect()\n}\n";
+        let files = [("src/a.rs", "fn run_sum() {}\n"), ("src/b.rs", go)];
         project(root, &files, &with_test_block(&["src/a.rs:2:run_sum"], &["src/a.rs:16:checks_total"]));
         let out = back(root, with_test_block(&[], &[]));
         assert_eq!(out["ok"], json!(true), "{out}");
