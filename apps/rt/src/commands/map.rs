@@ -49,7 +49,7 @@ use mustard_core::domain::scan::{HistoryReport, ScanReport};
 use mustard_core::domain::search::{CANDIDATES, TOP};
 use mustard_core::io::{map_search, map_specs};
 use mustard_core::io::project_map::{self as store, Need};
-use mustard_core::io::wave_prompt::history_beyond_window;
+use mustard_core::io::wave_prompt::{history_beyond_window, recipe_on_disk};
 use mustard_core::platform::i18n::Locale;
 use mustard_core::{FilterSetting, Setting};
 use serde_json::{json, Map, Value};
@@ -684,7 +684,9 @@ fn split_uses(uses: &[UseSite]) -> (Vec<String>, BTreeMap<&[DeclAt], Vec<String>
 /// a busca acha para `--task`, nas línguas `languages`. A receita do arquivo
 /// cujo último commit ficou fora da janela do mapa sai da história dele,
 /// lida por `trace` do git local na hora e gravada no mapa, como no pedido
-/// da onda; a pergunta seguinte a lê do mapa.
+/// da onda; a pergunta seguinte a lê do mapa. Como no pedido também, o
+/// arquivo que mudou junto e não existe mais sai da receita, e a receita que
+/// fica sem nada a dizer não sai.
 fn examples(
     opts: &MapOpts,
     root: &Path,
@@ -734,6 +736,7 @@ fn examples(
             .as_ref()
             .and_then(project_map::recipe_from_lineage);
     }
+    got.recipe = got.recipe.take().and_then(|recipe| recipe_on_disk(root, recipe));
     let picks: Vec<Value> = got
         .picks
         .iter()
@@ -1052,6 +1055,13 @@ mod tests {
         dir
     }
 
+    /// Um arquivo qualquer em `path`, na pasta do projeto `root`.
+    fn touch(root: &Path, path: &str) {
+        let at = root.join(path);
+        std::fs::create_dir_all(at.parent().unwrap()).unwrap();
+        std::fs::write(at, "pub fn run() {}\n").unwrap();
+    }
+
     fn ask(root: &Path, question: Question) -> MapOpts {
         MapOpts {
             root: root.to_path_buf(),
@@ -1182,6 +1192,8 @@ mod tests {
     #[test]
     fn a_task_asking_for_examples_gets_two_or_three_from_the_same_folder_with_the_reason() {
         let dir = project_with_map();
+        // O registro de teste que a receita cita existe no projeto.
+        touch(dir.path(), "apps/rt/tests/run_command_surface.rs");
         let mut opts = ask(dir.path(), Question::Examples);
         opts.task = Some("adicionar um comando run".to_string());
         let report = answered(&opts);
@@ -1226,6 +1238,9 @@ mod tests {
         ]);
         let map = json!({"modules": modules, "history": {"base": "main", "paths": ["src/busy.rs"], "commits": commits}});
         store::write_text(root, &map.to_string()).unwrap();
+        for path in ["src/old.rs", "src/registry.rs", "src/busy.rs"] {
+            touch(root, path);
+        }
         let calls = std::cell::Cell::new(0);
         // A passada falsa grava no mapa a história do arquivo, como a de
         // verdade: três commits que mudaram o registro junto com ele.
@@ -1262,6 +1277,46 @@ mod tests {
             );
         }
         assert_eq!(calls.get(), 1, "the second question reads the history kept in the map, not git");
+    }
+
+    /// Três commits criaram um arquivo em `src/cmd` e mudaram junto o índice
+    /// da pasta e `src/gone.rs`, que não existe mais no projeto: a receita do
+    /// arquivo novo cita só o índice. Com o índice apagado também, ela fica
+    /// sem nada a dizer e não sai.
+    #[test]
+    fn the_examples_recipe_leaves_out_a_file_that_no_longer_exists_and_is_not_shown_when_nothing_is_left() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let map = json!({
+            "modules": [
+                {"path": "src/cmd/a.rs", "loc": 30}, {"path": "src/cmd/b.rs", "loc": 30},
+                {"path": "src/cmd/c.rs", "loc": 30}, {"path": "src/cmd/mod.rs", "loc": 30}
+            ],
+            "history": {
+                "paths": ["src/cmd/a.rs", "src/cmd/b.rs", "src/cmd/c.rs", "src/cmd/mod.rs", "src/gone.rs"],
+                "commits": [
+                    {"id": "c1", "at": 86_400, "added": [0], "changed": [3, 4]},
+                    {"id": "c2", "at": 172_800, "added": [1], "changed": [3, 4]},
+                    {"id": "c3", "at": 259_200, "added": [2], "changed": [3, 4]}
+                ]
+            }
+        });
+        store::write_text(root, &map.to_string()).unwrap();
+        for path in ["src/cmd/a.rs", "src/cmd/b.rs", "src/cmd/c.rs", "src/cmd/mod.rs"] {
+            touch(root, path);
+        }
+        let opts = MapOpts { file: Some("src/cmd/novo.rs".to_string()), ..ask(root, Question::Examples) };
+        let report = answered(&opts);
+        assert_eq!(
+            report["recipe"],
+            json!({"kind": "created", "subject": "src/cmd/*.rs", "commits": 3,
+                   "together": [{"path": "src/cmd/mod.rs", "commits": 3}], "tests": null}),
+            "{report}"
+        );
+        std::fs::remove_file(root.join("src/cmd/mod.rs")).unwrap();
+        let report = answered(&opts);
+        assert_eq!(report["ok"], json!(true), "{report}");
+        assert_eq!(report["recipe"], Value::Null, "{report}");
     }
 
     /// A busca acha o arquivo pela mensagem que o usuário viu, e mostra o
@@ -3021,6 +3076,41 @@ mod tests {
         assert_eq!(passes.get(), 1, "{report}");
         assert_eq!(report["ok"], json!(true), "{report}");
         assert_eq!(fake.last().candidates.len(), 100, "{report}");
+    }
+
+    /// Com o scan de outra compilação, as perguntas que leem as declarações
+    /// — quem usa, o trecho, os exemplos e a história — recusam como a
+    /// busca, com a saída, em vez de responder que a declaração não existe;
+    /// quem importa e o resumo, que não as leem, respondem.
+    #[test]
+    fn a_scan_from_another_build_leaves_the_questions_on_declarations_refused_instead_of_empty() {
+        let (dir, map) = scanned_repo(FILTER_MAP);
+        let root = dir.path();
+        opened_by_an_older_scan(root);
+        let older_build = |root: &Path, _: &Path| {
+            written_by_the_scan(root, &map);
+            opened_by_an_older_scan(root);
+            Ok(ScanReport::default())
+        };
+        let fake = FakeFilter::scoring(&[0.9]);
+        let on = |question, file: Option<&str>, name: Option<&str>| MapOpts {
+            file: file.map(str::to_string),
+            name: name.map(str::to_string),
+            ..ask(root, question)
+        };
+        for opts in [
+            on(Question::Users, None, Some("gravar_pedido")),
+            on(Question::Slice, Some("src/pedido.rs"), Some("gravar_pedido")),
+            on(Question::Examples, Some("src/pedido.rs"), None),
+            on(Question::History, Some("src/pedido.rs"), Some("gravar_pedido")),
+        ] {
+            let report = super::map_at(&opts, &older_build, &no_history, &fake.assemble());
+            assert_eq!(report["reason"], json!("map-unfilled"), "{:?}: {report}", opts.question);
+        }
+        for opts in [on(Question::Importers, Some("src/pedido.rs"), None), on(Question::Summary, None, None)] {
+            let report = super::map_at(&opts, &older_build, &no_history, &fake.assemble());
+            assert_eq!(report["ok"], json!(true), "{:?}: {report}", opts.question);
+        }
     }
 
     /// Com o scan de outra compilação, que grava as declarações no formato

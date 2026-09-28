@@ -4,14 +4,50 @@
 //! bloco cujo formato muda volta vazio e sem marca na abertura do banco
 //! ([`crate::io::map_db`]), e só a passada seguinte o enche de novo. Até ela
 //! rodar, o bloco sem marca ao lado de um bloco marcado diz que o mapa guarda
-//! menos do que o projeto tem: a pergunta que o lê responderia vazio.
+//! menos do que o projeto tem: a pergunta que o lê responderia vazio, e por
+//! isso recusa ([`refuse`]).
 //!
 //! O mapa escrito à mão num teste não tem marca em bloco nenhum, e nele nada
 //! falta encher.
 
+use crate::domain::project_map::MapRefusal;
 use crate::io::map_db::MapDb;
-use crate::io::project_map::{MapBlock, BLOCKS};
+use crate::io::project_map::{unreadable, MapBlock, Need, BLOCKS, CENSUS, DECLS, FILES, GRAPH, HISTORY, ROUTES};
 use crate::platform::error::Result;
+
+/// Os blocos de [`BLOCKS`] que a pergunta `need` lê: as tabelas deles ou,
+/// no caso do censo, a marca da passada que o gravou. Os blocos que o scan
+/// não enche — a história de cada declaração, os pull requests e as specs —
+/// não entram.
+pub(crate) fn read_by(need: Need<'_>) -> &'static [&'static MapBlock] {
+    match need {
+        Need::Nothing | Need::Pull(_) => &[],
+        Need::Terrain | Need::Lineage(_) => &[&CENSUS],
+        Need::Paths => &[&FILES],
+        Need::Importers(_) | Need::Tests(_) => &[&FILES, &GRAPH],
+        Need::Parts(_) => &[&FILES, &DECLS],
+        Need::Declarations { .. } => &[&FILES, &DECLS, &ROUTES],
+        Need::Summary => &[&CENSUS, &FILES, &GRAPH, &HISTORY],
+        Need::Examples { .. } => &[&FILES, &DECLS, &GRAPH, &HISTORY],
+        Need::History { .. } => &[&CENSUS, &FILES, &DECLS, &ROUTES, &HISTORY],
+    }
+}
+
+/// A recusa de quem lê os blocos `among` num mapa em que algum deles voltou
+/// vazio numa troca de formato e o scan ainda não o encheu de novo
+/// ([`unfilled`]): [`MapRefusal::MapUnfilled`], com o nome de cada um. Sem
+/// ela, a pergunta responderia como se o projeto não tivesse o que o bloco
+/// guarda.
+pub(crate) fn refuse(db: &MapDb, among: &[&MapBlock]) -> std::result::Result<(), MapRefusal> {
+    if among.is_empty() {
+        return Ok(());
+    }
+    let blocks = unfilled(db, among.iter().copied()).map_err(unreadable)?;
+    if blocks.is_empty() {
+        return Ok(());
+    }
+    Err(MapRefusal::MapUnfilled { blocks: blocks.into_iter().map(str::to_string).collect() })
+}
 
 /// Os nomes dos blocos de `among` que o scan ainda tem de encher: os sem
 /// marca, num mapa em que algum bloco de [`BLOCKS`] traz a de uma passada.
@@ -66,8 +102,124 @@ mod tests {
     /// das declarações noutra versão, e o bloco perde a marca da passada. A
     /// abertura seguinte, na versão deste programa, o refaz vazio.
     fn opened_by_an_older_scan(root: &Path) {
-        let older = Block { name: DECLS.name(), version: 1, tables: &[], schema: "", kind: Kind::Rebuilt(|_, _| Ok(())) };
+        emptied_by_an_older_scan(root, &DECLS);
+    }
+
+    /// O mesmo com o bloco `block`: o scan mais velho o declara noutra
+    /// versão, e a abertura seguinte o refaz vazio e sem marca.
+    fn emptied_by_an_older_scan(root: &Path, block: &MapBlock) {
+        let older = Block { name: block.name(), version: 1, tables: &[], schema: "", kind: Kind::Rebuilt(|_, _| Ok(())) };
         MapDb::open(&model_path(root), root, &[older]).unwrap();
+    }
+
+    /// Um mapa com o que cada pergunta lê de cada bloco que o scan grava: as
+    /// línguas, o subprojeto e a camada da pasta, no censo; os arquivos; as
+    /// declarações e a medida de qualidade do arquivo; a rota; as
+    /// importações, os testes e o arquivo mais importado, nas ligações; e a
+    /// história da base.
+    fn map_of_every_block() -> Value {
+        json!({
+            "state": {},
+            "languages": [{"language": "rust", "files": 2, "loc": 15}],
+            "projects": [{"name": "loja", "dir": "", "kind": "cargo", "code_files": 2}],
+            "skeleton": [{"dir": "src", "role": "L0"}],
+            "modules": [
+                {"path": "src/pedido.rs", "loc": 10, "has_tests": true, "tests": ["tests/pedido.rs"],
+                 "quality": {"size": 8, "imports": 1},
+                 "declarations": [{"kind": "function", "name": "gravar_pedido", "line": 1, "end_line": 3,
+                                   "signature": "pub fn gravar_pedido()", "doc": "Grava o pedido.",
+                                   "used_by": ["src/uso.rs:2:usar"]}],
+                 "routes": [{"method": "POST", "path": "pedidos", "written": "/pedidos", "handler": "gravar_pedido",
+                             "line": 1, "framework": "axum"}]},
+                {"path": "src/uso.rs", "loc": 5, "deps": ["src/pedido.rs"],
+                 "declarations": [{"kind": "function", "name": "usar", "line": 2, "end_line": 4}]}
+            ],
+            "graph": {"nodes": 2, "edges": 1, "top_fan_in": [{"module": "src/pedido.rs", "degree": 1}]},
+            "history": {"base": "dev", "paths": ["src/pedido.rs", "src/uso.rs"],
+                        "commits": [{"id": "c1", "at": 10, "title": "Cria o pedido (#12)", "pr": 12, "added": [0, 1]}]}
+        })
+    }
+
+    /// Cada pergunta ao mapa, pelos nomes de [`map_of_every_block`].
+    const QUESTIONS: [Need<'static>; 14] = [
+        Need::Nothing,
+        Need::Summary,
+        Need::Terrain,
+        Need::Paths,
+        Need::Importers("src/pedido.rs"),
+        Need::Tests("src/pedido.rs"),
+        Need::Declarations { file: None, name: "gravar_pedido" },
+        Need::Declarations { file: Some("src/pedido.rs"), name: "gravar_pedido" },
+        Need::Examples { words: false },
+        Need::Examples { words: true },
+        Need::History { file: None, name: "gravar_pedido" },
+        Need::History { file: Some("src/pedido.rs"), name: "gravar_pedido" },
+        Need::Lineage("src/pedido.rs"),
+        Need::Pull(12),
+    ];
+
+    /// Com cada bloco que o scan grava vazio numa troca de formato, a
+    /// pergunta que o lê — quem usa, o trecho, os exemplos, quem importa, o
+    /// resumo e as outras — recusa com o nome dele em vez de responder
+    /// vazio, e só ela: a que não o lê responde o mesmo que no mapa inteiro.
+    /// Lado a lado, a leitura sem a conferência mostra que os blocos de cada
+    /// pergunta são os que mudam a resposta dela.
+    #[test]
+    fn a_question_on_a_block_emptied_by_a_format_change_is_refused_and_the_others_answer_as_before() {
+        for block in &BLOCKS {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            let model = model_path(root);
+            project_map::save_at(&model, &map_of_every_block(), "scan 1", &languages()).unwrap();
+            let whole = open_existing(&model).unwrap();
+            let before: Vec<String> =
+                QUESTIONS.iter().map(|&need| format!("{:?}", project_map::part_of(&whole, need).unwrap())).collect();
+            drop(whole);
+
+            emptied_by_an_older_scan(root, block);
+            let db = open_existing(&model).unwrap();
+            for (&need, before) in QUESTIONS.iter().zip(&before) {
+                let name = block.name();
+                let reads = read_by(need).iter().any(|read| read.name() == name);
+                let unchecked = format!("{:?}", project_map::part_of(&db, need).unwrap());
+                assert_eq!(&unchecked != before, reads, "{need:?} with the block {name} emptied");
+                match project_map::read_for(root, need) {
+                    Ok(answer) => {
+                        assert!(!reads, "{need:?} answered with the block {name} emptied");
+                        assert_eq!(&format!("{answer:?}"), before, "{need:?} with the block {name} emptied");
+                    }
+                    Err(refusal) => {
+                        assert!(reads, "{need:?} refused with the block {name} emptied: {refusal:?}");
+                        assert_eq!(refusal, MapRefusal::MapUnfilled { blocks: vec![name.to_string()] });
+                    }
+                }
+            }
+        }
+    }
+
+    /// O mapa escrito à mão, sem marca em bloco nenhum, responde toda
+    /// pergunta mesmo depois da troca de formato que esvazia as declarações;
+    /// no mapa da passada, quem usa recusa até a passada seguinte gravar as
+    /// declarações de novo.
+    #[test]
+    fn a_hand_written_map_answers_every_question_and_a_map_written_again_answers_again() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        project_map::write_text(root, &map_of_every_block().to_string()).unwrap();
+        opened_by_an_older_scan(root);
+        for need in QUESTIONS {
+            assert!(project_map::read_for(root, need).is_ok(), "{need:?} on a hand-written map");
+        }
+
+        let users = Need::Declarations { file: None, name: "gravar_pedido" };
+        project_map::save_at(&model_path(root), &map_of_every_block(), "scan 1", &languages()).unwrap();
+        opened_by_an_older_scan(root);
+        let refused = MapRefusal::MapUnfilled { blocks: vec!["decls".to_string()] };
+        assert_eq!(project_map::read_for(root, users).unwrap_err(), refused);
+
+        project_map::save_at(&model_path(root), &map_of_every_block(), "scan 1", &languages()).unwrap();
+        let found = project_map::read_for(root, users).unwrap();
+        assert_eq!(found.declared("gravar_pedido"), [("src/pedido.rs".to_string(), 1)]);
     }
 
     fn unfilled_in(root: &Path) -> Vec<&'static str> {

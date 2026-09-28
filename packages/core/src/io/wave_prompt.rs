@@ -123,6 +123,22 @@ pub fn history_beyond_window(
     read(Need::Lineage(file)).ok().and_then(stored)
 }
 
+/// A receita `recipe` do jeito que ela chega a quem a lê, no projeto `root`:
+/// o arquivo que mudou junto e não existe mais sai dela, e a receita que fica
+/// sem nada a dizer, sem arquivo junto e sem teste, não sai. O pedido da onda
+/// e os exemplos do mapa a leem por aqui.
+#[must_use]
+pub fn recipe_on_disk(root: &Path, recipe: Recipe) -> Option<Recipe> {
+    recipe_keeping(recipe, |path| root.join(path).exists())
+}
+
+/// A receita `recipe` só com os arquivos que mudaram junto que `keep`
+/// guarda; nenhuma, quando ela fica sem arquivo junto e sem teste.
+fn recipe_keeping(mut recipe: Recipe, keep: impl Fn(&str) -> bool) -> Option<Recipe> {
+    recipe.together.retain(|(path, _)| keep(path));
+    (!recipe.together.is_empty() || recipe.tests.is_some()).then_some(recipe)
+}
+
 /// Os pedidos de [`prompts`], com o mapa do projeto lido por `read`, cada
 /// parte pela pergunta dela, e a história além da janela lida por `trace`.
 fn prompts_reading(
@@ -543,8 +559,8 @@ impl MapParts<'_> {
     /// arquivo do tipo dele na pasta, quando ele ainda não existe; a de
     /// mudá-lo, pelos commits da janela do mapa; ou, quando o último commit
     /// dele ficou fora da janela, pela história lida do git na hora
-    /// ([`history_beyond_window`]). O arquivo que mudou junto e não existe mais sai
-    /// da receita. Calculada uma vez só por montagem.
+    /// ([`history_beyond_window`]). O que não existe mais no projeto sai
+    /// dela ([`recipe_on_disk`]). Calculada uma vez só por montagem.
     fn recipe(&self, read: &ProjectMap, file: &str) -> Option<Recipe> {
         if let Some(known) = self.recipes.borrow().get(file) {
             return known.clone();
@@ -559,12 +575,7 @@ impl MapParts<'_> {
         } else {
             None
         };
-        let found = found
-            .map(|mut recipe| {
-                recipe.together.retain(|(path, _)| self.root.join(path).exists());
-                recipe
-            })
-            .filter(|recipe| !recipe.together.is_empty() || recipe.tests.is_some());
+        let found = found.and_then(|recipe| recipe_on_disk(self.root, recipe));
         self.recipes.borrow_mut().insert(file.to_string(), found.clone());
         found
     }
@@ -898,10 +909,7 @@ fn task_patterns(
         found.recipes = files
             .iter()
             .filter_map(|file| map.recipe(read, file))
-            .filter_map(|mut recipe| {
-                recipe.together.retain(|(path, _)| !files.contains(path));
-                (!recipe.together.is_empty() || recipe.tests.is_some()).then_some(recipe)
-            })
+            .filter_map(|recipe| recipe_keeping(recipe, |path| !files.iter().any(|file| file == path)))
             .collect();
         let ruled = !found.strong.is_empty() || !found.info.is_empty();
         if !ruled && found.large.is_empty() && found.recipes.is_empty() {
@@ -2158,6 +2166,27 @@ mod tests {
         let lines = task_lines(&built[0].text, "Criar o comando").join("\n");
         assert!(lines.contains("mudou `apps/rt/src/commands/mod.rs` em 9 de 10"), "{lines}");
         assert!(!lines.contains("criou um teste"), "{lines}");
+    }
+
+    /// O índice dos comandos, que mudou junto em 9 dos 10 commits, não existe
+    /// mais no projeto: sai da receita, e fica a linha do teste. Sem teste
+    /// nenhum na história, a receita fica sem nada a dizer e o bloco não sai.
+    #[test]
+    fn a_file_that_no_longer_exists_leaves_the_recipe_and_a_recipe_left_with_nothing_leaves_the_request() {
+        let head = crate::platform::i18n::translate("prompt.pattern.head_plain", Locale::PtBr);
+        let (dir, log) = project_creating_a_command(true);
+        std::fs::remove_file(dir.path().join("apps/rt/src/commands/mod.rs")).unwrap();
+        let built = prompts(dir.path(), "teste", &log, Locale::PtBr, &Flight::default());
+        let lines = task_lines(&built[0].text, "Criar o comando").join("\n");
+        assert!(lines.contains("Receita do git, de 10 commits que criaram um arquivo `apps/rt/src/commands/*.rs`:"), "{lines}");
+        assert!(lines.contains("      - criou um teste em 7 de 10"), "{lines}");
+        assert!(!lines.contains("mod.rs"), "{lines}");
+
+        let (dir, log) = project_creating_a_command(false);
+        std::fs::remove_file(dir.path().join("apps/rt/src/commands/mod.rs")).unwrap();
+        let built = prompts(dir.path(), "teste", &log, Locale::PtBr, &Flight::default());
+        let lines = task_lines(&built[0].text, "Criar o comando").join("\n");
+        assert!(!lines.contains("Receita do git") && !lines.contains(head), "no block at all: {lines}");
     }
 
     #[test]

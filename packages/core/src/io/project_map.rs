@@ -693,7 +693,9 @@ pub enum Need<'a> {
 pub type MapReader<'r> = dyn Fn(Need<'_>) -> std::result::Result<ProjectMap, MapRefusal> + 'r;
 
 /// O mapa do projeto em `root` com só o que `need` pede, com as mesmas
-/// recusas de [`read`].
+/// recusas de [`read`] e, quando um bloco que a pergunta lê voltou vazio
+/// numa troca de formato sem que o scan o enchesse de novo,
+/// [`MapRefusal::MapUnfilled`].
 pub fn read_for(root: &Path, need: Need<'_>) -> std::result::Result<ProjectMap, MapRefusal> {
     read_for_at(&model_path(root), need)
 }
@@ -703,6 +705,7 @@ pub fn read_for(root: &Path, need: Need<'_>) -> std::result::Result<ProjectMap, 
 /// chamou.
 pub fn read_for_at(model: &Path, need: Need<'_>) -> std::result::Result<ProjectMap, MapRefusal> {
     let db = open_existing(model)?;
+    map_fill::refuse(&db, map_fill::read_by(need))?;
     part_of(&db, need).map_err(unreadable)
 }
 
@@ -734,7 +737,9 @@ pub fn projects_at(model: &Path) -> std::result::Result<Vec<crate::domain::scan:
         .map_err(|detail| MapRefusal::MapUnreadable { detail })
 }
 
-fn part_of(db: &MapDb, need: Need<'_>) -> Result<ProjectMap> {
+/// O que `need` lê do banco `db`, sem conferir os blocos que o scan ainda
+/// tem de encher.
+pub(crate) fn part_of(db: &MapDb, need: Need<'_>) -> Result<ProjectMap> {
     use crate::domain::project_map::clean_path;
     let conn = db.conn();
     let mut map = ProjectMap::default();
