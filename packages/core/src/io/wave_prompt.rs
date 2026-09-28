@@ -945,8 +945,8 @@ fn pattern_example(map: &MapParts<'_>, read: &ProjectMap, path: &str) -> Option<
     let mut first: Option<PatternExample> = None;
     for name in names.into_iter().take(EXAMPLE_NAMES_READ) {
         let Some(named) = map.declarations(path, name) else { continue };
-        let found = named.modules.iter().filter(|m| m.path == path).flat_map(|m| &m.declarations);
-        let Some(decl) = found.filter(|d| d.name == name && d.end_line > 0).next() else { continue };
+        let mut found = named.modules.iter().filter(|m| m.path == path).flat_map(|m| &m.declarations);
+        let Some(decl) = found.find(|d| d.name == name && d.end_line > 0) else { continue };
         let example = PatternExample { name: name.to_string(), path: path.to_string(), start: decl.line, end: decl.end_line };
         if plain(name) == stem || matches!(decl.kind.as_str(), "function" | "method") {
             return Some(example);

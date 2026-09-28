@@ -857,7 +857,8 @@ fn after_wave_answer(waves: &[WaveReport], found: &[Finding], lang: Locale) -> R
     let listed: BTreeSet<u64> = found.iter().map(|f| f.wave).collect();
     for wave in listed {
         let key = if refusing.contains(&wave) { "round.after_wave.wave" } else { "round.after_wave.wave_warnings" };
-        text.push_str(&format!("\n\n{}", fill(key, wave)));
+        text.push_str("\n\n");
+        text.push_str(&fill(key, wave));
         let lines = found.iter().filter(|f| f.wave == wave);
         text.extend(lines.clone().filter(|f| f.refuses).chain(lines.filter(|f| !f.refuses)).map(|f| format!("\n- {}", f.text)));
     }
