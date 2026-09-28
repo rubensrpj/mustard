@@ -10,9 +10,10 @@
 //! Nunca falha: sem mapa, com o mapa ilegível ou o banco travado, a resposta
 //! é nenhuma, e a ação segue.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use mustard_core::domain::project_map::{self, FileParts};
+use mustard_core::domain::project_map::{self, FilePart, FileParts};
 use mustard_core::io::project_map::{self as store, Need};
 use mustard_core::io::workspace::{is_git_repo_root, linked_worktree_main};
 use mustard_core::platform::i18n::Locale;
@@ -66,17 +67,23 @@ pub(crate) fn project_path(root: &str, base: &str, given: &str) -> Option<Projec
     Some(ProjectPath { tree: top.to_path_buf(), rel: rel.trim_start_matches("./").to_string(), abs })
 }
 
-/// A recusa da leitura inteira do arquivo `file` (relativo à raiz), que
+/// A recusa da leitura inteira do arquivo `file`, de texto `text`, que
 /// traria `lines` linhas: as partes dele e o comando do trecho, quando o mapa
-/// de `root` o guarda e ele passa de [`WHOLE_READ_MAX_LINES`]. `None` no
-/// arquivo pequeno, no que o mapa não guarda, sem mapa e em todo erro de
-/// leitura do mapa.
-pub(crate) fn whole_read(root: &Path, file: &str, lines: usize, lang: Locale) -> Option<String> {
+/// de `root` o guarda e ele passa de [`WHOLE_READ_MAX_LINES`]. Numa cópia de
+/// trabalho, as partes saem com as linhas que têm no texto da cópia
+/// ([`parts_in_copy`]). `None` no arquivo pequeno, no que o mapa não guarda,
+/// sem mapa e em todo erro de leitura do mapa.
+pub(crate) fn whole_read(root: &Path, file: &ProjectPath, text: &str, lines: usize, lang: Locale) -> Option<String> {
     if lines <= WHOLE_READ_MAX_LINES {
         return None;
     }
-    let map = store::read_for(root, Need::Parts(file)).ok()?;
-    let found = project_map::parts(&map, file).ok()?;
+    let map = store::read_for(root, Need::Parts(&file.rel)).ok()?;
+    let mut found = project_map::parts(&map, &file.rel).ok()?;
+    if file.tree != root
+        && let Ok(project) = std::fs::read_to_string(root.join(&file.rel))
+    {
+        found = parts_in_copy(found, &project, text);
+    }
     let parts = parts_line(&found, lang);
     Some(say(
         "code_route.whole_read",
@@ -100,6 +107,154 @@ fn parts_line(found: &FileParts, lang: Locale) -> String {
         text.push_str(&say("code_route.tests_from", lang, &[("{line}", &tests.to_string())]));
     }
     text
+}
+
+/// As partes `found`, com as linhas do texto `project` de onde o mapa as
+/// tirou, levadas para as linhas que têm no texto `copy` do mesmo arquivo
+/// numa cópia de trabalho ([`CopyLines`]), com a linha em que os testes
+/// começam. A parte que a cópia apagou sai da lista.
+pub(crate) fn parts_in_copy(found: FileParts, project: &str, copy: &str) -> FileParts {
+    if project == copy {
+        return found;
+    }
+    let lines = CopyLines::between(project, copy);
+    let parts = found
+        .parts
+        .into_iter()
+        .filter_map(|part| {
+            let (line, end_line) = lines.range(part.line, part.end_line)?;
+            Some(FilePart { line, end_line, ..part })
+        })
+        .collect();
+    FileParts { file: found.file, parts, tests_line: found.tests_line.map(|line| lines.start(line)) }
+}
+
+/// Onde as linhas de um arquivo do projeto ficam no mesmo arquivo de uma
+/// cópia de trabalho que o mudou. As linhas iguais dos dois textos se casam
+/// em ordem: as do começo e as do fim que batem; no que sobra no meio, as que
+/// aparecem uma vez só de cada lado; e o mesmo de novo entre elas. A linha
+/// que não casou, mudada ou apagada na cópia, fica entre as vizinhas que
+/// casaram, com a folga para o lado de trazer uma linha a mais, nunca a menos.
+pub(crate) struct CopyLines {
+    /// Para cada linha do projeto, contada a partir de 0, a da cópia que
+    /// casou com ela.
+    paired: Vec<Option<usize>>,
+    /// Quantas linhas a cópia tem.
+    copy_len: usize,
+}
+
+impl CopyLines {
+    /// O casamento das linhas de `project` com as de `copy`.
+    pub(crate) fn between(project: &str, copy: &str) -> Self {
+        let project: Vec<&str> = project.lines().collect();
+        let copy: Vec<&str> = copy.lines().collect();
+        let mut paired = vec![None; project.len()];
+        pair_lines(&project, &copy, (0, project.len()), (0, copy.len()), &mut paired);
+        Self { paired, copy_len: copy.len() }
+    }
+
+    /// A linha da cópia, contada a partir de 1, em que começa o que no
+    /// projeto começa na linha `line`: a que casou com ela ou, sem par, a
+    /// seguinte à última casada antes dela.
+    pub(crate) fn start(&self, line: u64) -> u64 {
+        let at = line_index(line);
+        if let Some(copy) = self.paired.get(at).copied().flatten() {
+            return copy as u64 + 1;
+        }
+        let before = &self.paired[..at.min(self.paired.len())];
+        before.iter().rev().find_map(|paired| *paired).map_or(1, |copy| copy as u64 + 2)
+    }
+
+    /// A linha da cópia, contada a partir de 1, em que termina o que no
+    /// projeto termina na linha `line`: a que casou com ela ou, sem par, a
+    /// anterior à primeira casada depois dela.
+    pub(crate) fn end(&self, line: u64) -> u64 {
+        let at = line_index(line);
+        if let Some(copy) = self.paired.get(at).copied().flatten() {
+            return copy as u64 + 1;
+        }
+        let after = self.paired.get(at.saturating_add(1)..).unwrap_or_default();
+        after.iter().find_map(|paired| *paired).map_or(self.copy_len as u64, |copy| copy as u64)
+    }
+
+    /// O começo e o fim na cópia do que no projeto vai de `line` a
+    /// `end_line`; `None` quando a cópia apagou tudo.
+    pub(crate) fn range(&self, line: u64, end_line: u64) -> Option<(u64, u64)> {
+        let (first, last) = (self.start(line), self.end(end_line.max(line)));
+        (first <= last).then_some((first, last))
+    }
+}
+
+/// A posição, contada a partir de 0, da linha `line`, contada a partir de 1.
+fn line_index(line: u64) -> usize {
+    usize::try_from(line.max(1) - 1).unwrap_or(usize::MAX)
+}
+
+/// Casa as linhas iguais de `project[p0..p1]` com as de `copy[c0..c1]`, em
+/// ordem, e grava em `paired` a linha da cópia de cada linha do projeto que
+/// casou ([`CopyLines`]).
+fn pair_lines(
+    project: &[&str],
+    copy: &[&str],
+    (mut p0, mut p1): (usize, usize),
+    (mut c0, mut c1): (usize, usize),
+    paired: &mut [Option<usize>],
+) {
+    while p0 < p1 && c0 < c1 && project[p0] == copy[c0] {
+        paired[p0] = Some(c0);
+        (p0, c0) = (p0 + 1, c0 + 1);
+    }
+    while p0 < p1 && c0 < c1 && project[p1 - 1] == copy[c1 - 1] {
+        (p1, c1) = (p1 - 1, c1 - 1);
+        paired[p1] = Some(c1);
+    }
+    // Para cada texto de linha: quantas vezes aparece e onde, no projeto e na cópia.
+    let mut seen: HashMap<&str, [(usize, usize); 2]> = HashMap::new();
+    for (at, text) in project.iter().enumerate().take(p1).skip(p0) {
+        let side = &mut seen.entry(*text).or_default()[0];
+        *side = (side.0 + 1, at);
+    }
+    for (at, text) in copy.iter().enumerate().take(c1).skip(c0) {
+        if let Some(sides) = seen.get_mut(text) {
+            sides[1] = (sides[1].0 + 1, at);
+        }
+    }
+    let mut once: Vec<(usize, usize)> =
+        seen.values().filter(|[p, c]| p.0 == 1 && c.0 == 1).map(|[p, c]| (p.1, c.1)).collect();
+    if once.is_empty() {
+        return;
+    }
+    once.sort_unstable();
+    for (p, c) in in_order(&once) {
+        pair_lines(project, copy, (p0, p), (c0, c), paired);
+        paired[p] = Some(c);
+        (p0, c0) = (p + 1, c + 1);
+    }
+    pair_lines(project, copy, (p0, p1), (c0, c1), paired);
+}
+
+/// A maior sequência de `pairs`, já em ordem de linha do projeto, em que as
+/// linhas da cópia também crescem.
+fn in_order(pairs: &[(usize, usize)]) -> Vec<(usize, usize)> {
+    let mut tails: Vec<usize> = Vec::new();
+    let mut before: Vec<Option<usize>> = vec![None; pairs.len()];
+    for (at, &(_, copy)) in pairs.iter().enumerate() {
+        let length = tails.partition_point(|&tail| pairs[tail].1 < copy);
+        before[at] = length.checked_sub(1).map(|shorter| tails[shorter]);
+        if length == tails.len() {
+            tails.push(at);
+        } else {
+            tails[length] = at;
+        }
+    }
+    let mut chain = Vec::new();
+    let mut at = tails.last().copied();
+    while let Some(here) = at {
+        chain.push(pairs[here]);
+        at = before[here];
+    }
+    chain.reverse();
+    chain
 }
 
 /// `true` quando `pattern` pode ser um nome de declaração: letras, números e
@@ -227,5 +382,27 @@ pub(crate) mod fixture {
             mustard_core::io::project_map::write_text(&root, MAP).expect("map");
         }
         (dir, root)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CopyLines;
+
+    /// A declaração cuja primeira linha a cópia trocou vai da linha seguinte
+    /// à última igual antes dela até a igual em que ela termina, e o tipo
+    /// que a contém segue do começo ao fim dele na cópia: um tipo de 1 a 7,
+    /// com a função de 3 a 5, ganha uma linha no topo e uma no corpo, e fica
+    /// de 2 a 9, com a função de 4 a 7.
+    #[test]
+    fn a_declaration_with_a_changed_first_line_keeps_the_copy_lines() {
+        let project = "struct Pedido {\n\n    fn gravar(&self) {\n        banco();\n    }\n\n}\n";
+        let copy = concat!(
+            "// novo\nstruct Pedido {\n\n    fn gravar(&self, agora: bool) {\n",
+            "        banco();\n        avisar();\n    }\n\n}\n",
+        );
+        let lines = CopyLines::between(project, copy);
+        assert_eq!(lines.range(1, 7), Some((2, 9)));
+        assert_eq!(lines.range(3, 5), Some((4, 7)));
     }
 }

@@ -26,7 +26,8 @@
 //!   passaram, com o que cada uma puxou pelas ligações do mapa;
 //! - `summary`: o resumo do início da sessão, até 3 kB; com `--file`, as
 //!   partes do arquivo — cada declaração fora dos testes, com o tipo, o nome
-//!   e as linhas, e a linha em que os testes começam;
+//!   e as linhas, e a linha em que os testes começam; perguntado de dentro de
+//!   uma cópia de trabalho do projeto, com as linhas do arquivo da cópia;
 //! - `skill --path <SKILL.md>`: confere os caminhos que a skill cita e o
 //!   tamanho dela;
 //! - `dump`: o banco do mapa tabela por tabela, em ordem fixa, para depurar.
@@ -56,6 +57,8 @@ use mustard_core::io::wave_prompt::recipe_for;
 use mustard_core::platform::i18n::Locale;
 use mustard_core::{FilterSetting, Setting};
 use serde_json::{json, Map, Value};
+
+use crate::shared::code_route;
 
 /// A pergunta feita ao mapa.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -302,7 +305,7 @@ fn answer_from(
         }
         Question::Search => search(opts, root, lang, languages, read, (trace, assemble)),
         Question::Summary => match opts.file.as_deref().map(str::trim).filter(|file| !file.is_empty()) {
-            Some(file) => parts(file, read),
+            Some(file) => parts(opts, root, file, read),
             None => {
                 let text = project_map::summary(&read(Need::Summary)?, lang);
                 Ok(json!({ "ok": true, "question": "summary", "bytes": text.len(), "summary": text }))
@@ -581,8 +584,17 @@ fn pieces(
 /// As partes do arquivo de `--file`, para quem vai ler só um trecho dele: cada
 /// declaração fora dos testes, com o tipo, o nome e as linhas de começo e de
 /// fim, e a linha em que os testes escritos dentro dele começam, quando há.
-fn parts(file: &str, read: &Reader<'_>) -> Result<Value, MapRefusal> {
-    let found = project_map::parts(&read(Need::Parts(file))?, file)?;
+/// Numa cópia de trabalho do projeto, como a de uma onda, as linhas são as
+/// do arquivo da cópia ([`code_route::parts_in_copy`]), como as do trecho.
+fn parts(opts: &MapOpts, root: &Path, file: &str, read: &Reader<'_>) -> Result<Value, MapRefusal> {
+    let mut found = project_map::parts(&read(Need::Parts(file))?, file)?;
+    if let Some(copy) = working_copy(&opts.root, root) {
+        let text = std::fs::read_to_string(copy.join(&found.file))
+            .map_err(|e| MapRefusal::FileUnreadable { file: found.file.clone(), detail: e.to_string() })?;
+        if let Ok(project) = std::fs::read_to_string(root.join(&found.file)) {
+            found = code_route::parts_in_copy(found, &project, &text);
+        }
+    }
     Ok(json!({
         "ok": true,
         "question": "summary",
@@ -646,34 +658,24 @@ fn working_copy(start: &Path, root: &Path) -> Option<PathBuf> {
 /// As linhas da declaração `place` no texto `copy` do arquivo numa cópia de
 /// trabalho, dado o texto `project` do mesmo arquivo no projeto, de onde o
 /// mapa tirou as linhas. Com os dois iguais, as linhas do mapa valem. Com o
-/// arquivo mudado na cópia, a declaração do projeto, linha a linha, acha o
-/// lugar dela na cópia: onde ela aparece inteira, a vez mais perto da linha
-/// do mapa. Sem ela inteira na cópia, a declaração mudou ali, e a recusa
-/// [`MapRefusal::ChangedInCopy`] manda ler o arquivo da cópia por faixa de
-/// linhas.
+/// arquivo mudado na cópia, as linhas da declaração vão para as da cópia pela
+/// mesma regra das partes do arquivo ([`code_route::CopyLines`]). Quando o
+/// que está ali na cópia não é a declaração do projeto, linha a linha, ela
+/// mudou na cópia, e a recusa [`MapRefusal::ChangedInCopy`] manda ler o
+/// arquivo da cópia por faixa de linhas.
 fn slice_in_copy(place: &project_map::DeclPlace, copy: &str, project: Option<&str>) -> Result<(u64, u64), MapRefusal> {
     if project == Some(copy) {
         return Ok((place.line, place.end_line));
     }
     let (line, end_line) = (place.line.max(1), place.end_line.max(place.line.max(1)));
     let changed = || MapRefusal::ChangedInCopy { file: place.file.clone(), name: place.name.clone(), line };
-    let block: Vec<&str> = project
-        .unwrap_or_default()
-        .lines()
-        .skip(usize::try_from(line - 1).unwrap_or(usize::MAX))
-        .take(usize::try_from(end_line - line + 1).unwrap_or(usize::MAX))
-        .collect();
-    if block.is_empty() {
+    let project = project.ok_or_else(changed)?;
+    let block = project_map::lines_of(project, line, end_line);
+    let (first, last) = code_route::CopyLines::between(project, copy).range(line, end_line).ok_or_else(changed)?;
+    if block.is_empty() || project_map::lines_of(copy, first, last) != block {
         return Err(changed());
     }
-    let lines: Vec<&str> = copy.lines().collect();
-    let first = (1..)
-        .zip(lines.windows(block.len()))
-        .filter(|(_, window)| *window == block.as_slice())
-        .map(|(first, _): (u64, _)| first)
-        .min_by_key(|first| first.abs_diff(line))
-        .ok_or_else(changed)?;
-    Ok((first, first + (end_line - line)))
+    Ok((first, last))
 }
 
 /// Quem usa a declaração de `--name`: cada declaração com esse nome no mapa
@@ -3552,5 +3554,52 @@ mod tests {
         let in_the_project = slice_from(root, "gravar_pedido");
         assert_eq!((&in_the_project["line"], &in_the_project["end_line"]), (&json!(3), &json!(5)), "{in_the_project}");
         assert_eq!(in_the_project["slice"], json!(declaration), "{in_the_project}");
+    }
+
+    /// As partes do arquivo perguntadas de dentro de uma cópia de trabalho
+    /// do projeto saem com as linhas do arquivo da cópia. Com duas linhas
+    /// novas no topo, `gravar_pedido` fica nas linhas 5 a 7 e
+    /// `cancelar_pedido` na 9. Com uma linha nova no topo e uma a mais no
+    /// corpo de `gravar_pedido`, ela vai da 4 à 7, e `cancelar_pedido` segue
+    /// na 9. Apagada na cópia, `gravar_pedido` sai da lista. Perguntadas no
+    /// projeto, as partes seguem as linhas do mapa.
+    #[test]
+    fn the_parts_asked_inside_a_working_copy_follow_the_copy_lines() {
+        let (dir, map) = scanned_repo_with(ORDER_MAP, &[("src/pedido.rs", ORDER_FILE)]);
+        let root = dir.path();
+        let copies = tempdir().unwrap();
+        let copy = copies.path().join("c");
+        let out = std::process::Command::new("git")
+            .args(["worktree", "add", "-q", "-b", "onda"])
+            .arg(&copy)
+            .current_dir(root)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git worktree: {}", String::from_utf8_lossy(&out.stderr));
+        let rescan = |root: &Path, _: &Path| {
+            written_by_the_scan(root, &map);
+            Ok(ScanReport::default())
+        };
+        let parts_from = |start: &Path| {
+            let opts = MapOpts { file: Some("src/pedido.rs".to_string()), ..ask(start, Question::Summary) };
+            let report = super::map_at(&opts, &rescan, &no_history, &|_, _| Err(FilterError::MissingKey));
+            let parts = report["parts"].as_array().unwrap_or_else(|| panic!("the parts: {report}"));
+            let line = |part: &Value| format!("{} {}-{}", part["name"], part["line"], part["end_line"]);
+            parts.iter().map(line).collect::<Vec<_>>()
+        };
+        let file = copy.join("src/pedido.rs");
+
+        std::fs::write(&file, format!("use banco;\nuse pedido::Pedido;\n{ORDER_FILE}")).unwrap();
+        assert_eq!(parts_from(&copy.join("src")), [r#""gravar_pedido" 5-7"#, r#""cancelar_pedido" 9-9"#]);
+
+        let grown = ORDER_FILE
+            .replace("    banco::gravar(pedido);\n", "    let feito = banco::gravar(pedido);\n    avisar(feito);\n");
+        std::fs::write(&file, format!("use banco;\n{grown}")).unwrap();
+        assert_eq!(parts_from(&copy), [r#""gravar_pedido" 4-7"#, r#""cancelar_pedido" 9-9"#]);
+
+        std::fs::write(&file, "// pedidos\n\npub fn cancelar_pedido(id: u64) {}\n").unwrap();
+        assert_eq!(parts_from(&copy), [r#""cancelar_pedido" 3-3"#]);
+
+        assert_eq!(parts_from(root), [r#""gravar_pedido" 3-5"#, r#""cancelar_pedido" 7-7"#]);
     }
 }

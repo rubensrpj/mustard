@@ -136,7 +136,7 @@ impl WriteContext {
         let read_cut = whole.as_ref().and_then(|(file, content)| test_cut_line(file, content, input));
         let whole_read = whole.as_ref().and_then(|(file, content)| {
             let lines = read_cut.as_ref().map_or_else(|| content.lines().count(), |cut| cut.line as usize - 1);
-            code_route::whole_read(Path::new(root), &file.rel, lines, lang)
+            code_route::whole_read(Path::new(root), file, content, lines, lang)
         });
         let config_key = (target.access == Access::Read && config_key::is_config_file(&target.path))
             .then(|| input.file_path())
@@ -1302,9 +1302,13 @@ mod tests {
     }
 
     /// Numa cópia de trabalho do projeto, fora da pasta dele, a leitura
-    /// inteira de um arquivo grande do mapa é recusada como no projeto.
+    /// inteira de um arquivo grande do mapa é recusada como no projeto. Com
+    /// linhas novas no topo do arquivo da cópia, as partes saem com as linhas
+    /// da cópia: dez linhas a mais levam `Alpha` para 11-160 e `alpha` para
+    /// 161-410; cinco a mais levam `delta` para 6-355, e os testes para a
+    /// linha 356.
     #[test]
-    fn the_whole_read_inside_a_working_copy_is_refused_like_in_the_project() {
+    fn the_whole_read_inside_a_working_copy_is_refused_with_the_copy_lines() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let tmp_root = std::fs::canonicalize(tmp.path()).expect("tempdir resolvida");
         let tmp_root = std::path::PathBuf::from(tmp_root.to_string_lossy().trim_start_matches(r"\\?\").to_string());
@@ -1315,6 +1319,7 @@ mod tests {
         std::fs::write(main.join("mustard.json"), "{}").expect("config");
         mustard_core::io::project_map::write_text(&main, fixture::MAP).expect("map");
         let copy = tmp_root.join("copy");
+        fixture::write_files(&main);
         fixture::write_files(&copy);
 
         let reason = refused(
@@ -1322,8 +1327,28 @@ mod tests {
             "the whole read inside the working copy",
         );
         assert!(reason.contains("--file src/big.rs"), "{reason}");
+        assert!(reason.contains("Alpha 1-150, alpha 151-400."), "{reason}");
         let ranged = json!({ "file_path": abs(&copy, "src/big.rs"), "offset": 1, "limit": 10 });
         assert_eq!(hook_on(&copy, "Read", ranged), Verdict::Allow);
+
+        let on_top = |count: usize, file: &str| {
+            let text = std::fs::read_to_string(main.join(file)).expect("project file");
+            std::fs::write(copy.join(file), format!("{}{text}", "// nova\n".repeat(count))).expect("copy file");
+        };
+        on_top(10, "src/big.rs");
+        on_top(5, "src/long_tested.rs");
+        let moved = refused(
+            hook_on(&copy, "Read", json!({ "file_path": abs(&copy, "src/big.rs") })),
+            "the whole read of the moved file",
+        );
+        assert!(moved.contains("410"), "{moved}");
+        assert!(moved.contains("Alpha 11-160, alpha 161-410."), "{moved}");
+        let tested = refused(
+            hook_on(&copy, "Read", json!({ "file_path": abs(&copy, "src/long_tested.rs") })),
+            "the whole read of the moved tested file",
+        );
+        assert!(tested.contains("355"), "{tested}");
+        assert!(tested.contains("delta 6-355; testes a partir da linha 356."), "{tested}");
     }
 
     /// A leitura e a busca do `mustard.json` que guarda a chave são
