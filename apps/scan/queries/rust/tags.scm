@@ -42,25 +42,39 @@
 
 ; O `mod x;` marcado com `#[path = "..."]` mora no arquivo que o atributo
 ; nomeia, lido a partir da pasta de quem o escreve: o caminho é import do
-; arquivo, e o que ele declara fica à vista de quem escreve o `mod`.
+; arquivo, e o que ele declara fica à vista de quem escreve o `mod`. O
+; atributo vale em qualquer ponto da fila de atributos colada ao `mod`, com
+; outros no meio (`#[allow(dead_code)]`, `#[cfg(unix)]`); um item que não é
+; atributo entre ele e o `mod` corta a fila.
 ((attribute_item (attribute (identifier) @_attr value: (string_literal (string_content) @import)))
+  .
+  (attribute_item)*
   .
   (mod_item !body)
   (#eq? @_attr "path"))
 
-; O mesmo `mod` com `#[cfg(test)]` antes ou depois do `path` é do teste: o
-; atributo do caminho é trecho de teste, e o arquivo que ele nomeia, import
-; do teste, e não do arquivo.
+; O mesmo `mod` com `#[cfg(test)]` em qualquer ponto da mesma fila, antes ou
+; depois do `path`, é do teste: o atributo do caminho é trecho de teste, e o
+; arquivo que ele nomeia, import do teste, e não do arquivo. O import que o
+; padrão de cima também acha cai dentro desse trecho e fica só do teste.
 ((attribute_item) @_marker
   .
+  (attribute_item)*
+  .
   (attribute_item (attribute (identifier) @_attr value: (string_literal (string_content) @import))) @test_block
+  .
+  (attribute_item)*
   .
   (mod_item !body)
   (#eq? @_marker "#[cfg(test)]")
   (#eq? @_attr "path"))
 ((attribute_item (attribute (identifier) @_attr value: (string_literal (string_content) @import))) @test_block
   .
+  (attribute_item)*
+  .
   (attribute_item) @_marker
+  .
+  (attribute_item)*
   .
   (mod_item !body)
   (#eq? @_marker "#[cfg(test)]")
