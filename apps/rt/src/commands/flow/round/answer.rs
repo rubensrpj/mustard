@@ -200,7 +200,7 @@ impl RoundRefusal {
                 "round.replan",
                 &[
                     ("{wave}", wave.to_string()),
-                    ("{change}", change.clone()),
+                    ("{change}", without_final_period(change)),
                     ("{question}", change_question(*wave, change, lang)),
                     ("{code}", code.clone()),
                     ("{yes}", translate("change.accept", lang).to_string()),
@@ -259,6 +259,13 @@ impl RoundRefusal {
         }
         out
     }
+}
+
+/// A mudança `change` sem o ponto final: a frase do catálogo já fecha a
+/// mudança com o ponto dela, e a que o agente mandou terminada em ponto
+/// sairia com dois.
+fn without_final_period(change: &str) -> String {
+    change.trim().trim_end_matches('.').trim_end().to_string()
 }
 
 /// Os códigos de tarefa `tasks` numa lista só, para a frase do catálogo; a
@@ -2391,5 +2398,31 @@ mod tests {
         let asked = out["analysis"].as_array().cloned().unwrap_or_default();
         assert!(asked.iter().any(|a| a["wave"] == json!(wave)), "{out}");
         assert!(out["next"].as_str().unwrap_or_default().contains(&check_of(&code)), "{out}");
+    }
+
+    /// A mudança que a onda manda terminada em ponto aparece na pergunta da
+    /// rodada com um ponto só; a que vem sem ponto ganha o da frase.
+    #[test]
+    fn a_change_ending_in_a_period_shows_one_period_in_the_round_question() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        round(root, "x", None);
+        let back = json!({"wave": 1, "text": "Parei.", "replan": "Dividir a onda em duas.", "undone": []});
+        assert_eq!(returned(root, back)["ok"], json!(true));
+        let stopped = round(root, "x", None);
+        assert_eq!(stopped["reason"], json!("wave-plan-does-not-work"), "{stopped}");
+        let hint = stopped["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains("Mudança proposta: Dividir a onda em duas. Com o aceite"), "{hint}");
+        assert!(!hint.contains(".."), "{hint}");
+
+        let bare = RoundRefusal::Replan {
+            wave: 2,
+            change: "Split the wave".into(),
+            code: "onda-2-000000".into(),
+            tasks: Vec::new(),
+        };
+        let text = bare.message(Locale::EnUs);
+        assert!(text.contains("Proposed change: Split the wave. On acceptance"), "{text}");
     }
 }
