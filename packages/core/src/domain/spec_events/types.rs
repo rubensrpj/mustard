@@ -89,12 +89,13 @@ impl BlockQuery {
     /// Os nomes aceitos, na ordem da página, para a mensagem de recusa. Com
     /// eles, as leituras que a leitura monta fora dos blocos
     /// ([`ReadQuery`]): o que o pedido da onda lista, o pedido gravado, a
-    /// entrega vigente, as tarefas por entregar e um item só.
+    /// entrega vigente, as tarefas por entregar, a soma das chamadas de cada
+    /// comando e um item só.
     #[must_use]
     pub fn accepted_names() -> String {
         let mut names: Vec<&str> = Block::ALL.iter().map(|b| b.name()).collect();
         if let Some(i) = names.iter().position(|n| *n == "waves") {
-            let beside = ["wave-<n>", "dispatch-<n>", "request-<n>", "delivered-<n>", "backlog", "item-<code|n>"];
+            let beside = ["wave-<n>", "dispatch-<n>", "request-<n>", "delivered-<n>", "backlog", "calls", "item-<code|n>"];
             for (step, name) in beside.into_iter().enumerate() {
                 names.insert(i + 1 + step, name);
             }
@@ -106,8 +107,9 @@ impl BlockQuery {
 /// O que o `read` pede: um bloco da spec ou uma das leituras que ele monta
 /// fora dos blocos. `dispatch-2` é tudo o que o pedido da onda 2 lista;
 /// `request-2`, o pedido exato gravado no envio dela; `delivered-2`, a entrega
-/// vigente dela; `backlog`, as tarefas ainda por entregar; e `item-<código>`
-/// ou `item-<número>`, um item só, pelo código ou pela versão de número dado.
+/// vigente dela; `backlog`, as tarefas ainda por entregar; `calls`, a soma
+/// das chamadas de cada comando; e `item-<código>` ou `item-<número>`, um
+/// item só, pelo código ou pela versão de número dado.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReadQuery {
     Block(BlockQuery),
@@ -115,6 +117,7 @@ pub enum ReadQuery {
     Request(u64),
     Delivered(u64),
     Backlog,
+    Calls,
     Item(EventRef),
 }
 
@@ -142,6 +145,9 @@ impl ReadQuery {
         }
         if name == "backlog" {
             return Some(Self::Backlog);
+        }
+        if name == "calls" {
+            return Some(Self::Calls);
         }
         BlockQuery::parse(name).map(Self::Block)
     }
@@ -861,13 +867,14 @@ mod tests {
         assert_eq!(BlockQuery::parse("wave-x"), None);
         assert_eq!(BlockQuery::parse("everything"), None);
         assert!(BlockQuery::accepted_names().contains(
-            "waves, wave-<n>, dispatch-<n>, request-<n>, delivered-<n>, backlog, item-<code|n>, review"
+            "waves, wave-<n>, dispatch-<n>, request-<n>, delivered-<n>, backlog, calls, item-<code|n>, review"
         ));
     }
 
     /// Além dos blocos, a leitura aceita o pedido de uma onda, o pedido
-    /// gravado, a entrega, o backlog e um item pelo código ou pelo número; sem
-    /// o número ou com um código fora do formato, o nome não é aceito.
+    /// gravado, a entrega, o backlog, a soma das chamadas e um item pelo
+    /// código ou pelo número; sem o número ou com um código fora do formato,
+    /// o nome não é aceito.
     #[test]
     fn the_readings_beside_the_blocks_take_their_number_or_code() {
         assert_eq!(ReadQuery::parse("state"), Some(ReadQuery::Block(BlockQuery::Block(Block::State))));
@@ -876,12 +883,13 @@ mod tests {
         assert_eq!(ReadQuery::parse("request-3"), Some(ReadQuery::Request(3)));
         assert_eq!(ReadQuery::parse(" delivered-3 "), Some(ReadQuery::Delivered(3)));
         assert_eq!(ReadQuery::parse("backlog"), Some(ReadQuery::Backlog));
+        assert_eq!(ReadQuery::parse("calls"), Some(ReadQuery::Calls));
         assert_eq!(ReadQuery::parse("item-42"), Some(ReadQuery::Item(EventRef::Id(42))));
         assert_eq!(
             ReadQuery::parse("item-MSTD-TASK-0003"),
             Some(ReadQuery::Item(EventRef::Code("MSTD-TASK-0003".into())))
         );
-        for refused in ["request-", "request-x", "delivered-", "item-", "item-0", "item-tarefa", "backlogs"] {
+        for refused in ["request-", "request-x", "delivered-", "item-", "item-0", "item-tarefa", "backlogs", "call"] {
             assert_eq!(ReadQuery::parse(refused), None, "{refused}");
         }
     }

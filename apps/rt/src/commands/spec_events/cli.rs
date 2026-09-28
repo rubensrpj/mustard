@@ -32,16 +32,21 @@ pub enum SpecEventsCmd {
     /// (the one the round took over, else the agent's own), keeping only the
     /// agreed items not met. `backlog` lists the tasks not yet delivered,
     /// each with its code, current version, wave, file count and the pending
-    /// tasks it waits on, then the totals. `item-MSTD-TASK-NNNN` reads the
-    /// item's current version and `item-<n>` that version, each with `changed`
-    /// (what changed from the previous version); a removed item says
+    /// tasks it waits on, then the totals. `calls` sums the calls of each
+    /// command, one line per command: how many, the failures by reason, the
+    /// median, p90 and worst of the call time and of the filter time, and
+    /// the tokens and cost added up; `--term` names the one command.
+    /// `item-MSTD-TASK-NNNN` reads the item's current version and `item-<n>`
+    /// that version, each with `changed` (what changed from the previous
+    /// version); a removed item says
     /// `removed`, and a message shows only its number and type. The `state`
     /// block also gives `last_user_message`, the number of the user's latest
     /// message, without its text.
     #[command(display_order = 8)]
     Read {
         /// The block to read, e.g. `state`, `wave-2`, `dispatch-2`,
-        /// `request-2`, `delivered-2`, `backlog` or `item-MSTD-TASK-0003`.
+        /// `request-2`, `delivered-2`, `backlog`, `calls` or
+        /// `item-MSTD-TASK-0003`.
         block: String,
         /// The spec whose file is read. Without it, the current spec: the
         /// `MUSTARD_ACTIVE_SPEC` override, then the spec of the checkout's
@@ -49,8 +54,9 @@ pub enum SpecEventsCmd {
         #[arg(long)]
         spec: Option<String>,
         /// Keep only the events whose words or item code match this term —
-        /// the conversation searched for a subject, or an item found by the
-        /// code the page shows, like `MSTD-CRIT-NNNN`.
+        /// the conversation searched for a subject, an item found by the
+        /// code the page shows, like `MSTD-CRIT-NNNN`, or the calls of a
+        /// command by its name, like `map search`.
         #[arg(long)]
         term: Option<String>,
         /// Any directory inside the repo. Defaults to the current dir.

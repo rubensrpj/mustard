@@ -19,9 +19,9 @@
 //! projeto, e o resto é lido.
 //!
 //! Com `--term`, a leitura devolve o que o termo acha, do mais forte para o
-//! menos forte: um código de item devolve aquele item, e qualquer outro termo
-//! passa pela busca por nota, que não exige que o item tenha todas as
-//! palavras.
+//! menos forte: um código de item devolve aquele item, o nome de um comando
+//! (`map search`) devolve as chamadas dele, e qualquer outro termo passa pela
+//! busca por nota, que não exige que o item tenha todas as palavras.
 //!
 //! O bloco `lessons` foge dessa regra: fica fora da spec, vive no banco do
 //! projeto (`.claude/spec/lessons.ndjson`) e o `--term` é o número da lição
@@ -47,6 +47,11 @@
 //! - `request-<n>` devolve, em texto puro, o pedido gravado no último envio da
 //!   onda, igual byte a byte: é por ele que o agente lê o próprio pedido.
 //!
+//! `calls` soma as chamadas de cada comando, uma linha por comando: quantas,
+//! as falhas por motivo, a mediana, o p90 e o pior do tempo da chamada e do
+//! tempo do filtro, e os tokens e o custo somados. O `--term` nela é o nome do
+//! comando, e a linha dele vem só.
+//!
 //! O bloco `state` traz também o número da última mensagem do usuário, sem o
 //! texto, que é o `origin` de quem grava a partir dela.
 
@@ -57,7 +62,8 @@ use mustard_core::domain::lessons::kept;
 use mustard_core::domain::mustard_id;
 use mustard_core::domain::normalize::Languages;
 use mustard_core::domain::spec_events::{
-    found_by, shown_line, Block, BlockQuery, EventRef, Hidden, ReadQuery, Refusal, SpecEvent, SpecLog,
+    calls_command, found_by, shown_line, Block, BlockQuery, EventRef, Hidden, ReadQuery, Refusal, SpecEvent,
+    SpecLog,
 };
 use mustard_core::domain::spec_state::SpecState;
 use mustard_core::io::spec_events as store;
@@ -119,6 +125,7 @@ pub(crate) fn read_for(opts: &ReadOpts, session: Option<&str>) -> Result<String,
             extra.push(("total", total));
             lines
         }
+        ReadQuery::Calls => calls_lines(&log, term),
         ReadQuery::Block(query) => {
             if query == BlockQuery::Block(Block::State)
                 && let Some(id) = last_user_message(&log)
@@ -306,6 +313,67 @@ fn backlog_lines(log: &SpecLog, codes: &BTreeMap<u64, String>) -> (Vec<String>, 
         .collect();
     let files: BTreeSet<&String> = left.iter().flat_map(|task| &task.files).collect();
     (lines, json!({ "tasks": left.len(), "files": files.len() }))
+}
+
+/// A soma das chamadas de cada comando, uma linha por comando, na ordem do
+/// nome: quantas são; as falhas por motivo, a recusa pelo motivo dela (ou
+/// `refused`, quando ela não diz) e a falha do filtro, em que a busca volta
+/// pelo banco, pelo filtro e o motivo (`jev:busy`); a mediana, o p90 e o pior
+/// do tempo da chamada (`ms`) e do tempo do filtro (`filter_ms`); e os tokens
+/// e o custo, somados. Os campos que nenhuma chamada do comando traz ficam de
+/// fora. Com `term`, só o comando que tem esse nome.
+fn calls_lines(log: &SpecLog, term: &str) -> Vec<String> {
+    let term = term.trim();
+    let mut by_command: BTreeMap<&str, Vec<&SpecEvent>> = BTreeMap::new();
+    for call in log.block(BlockQuery::Block(Block::Metrics)) {
+        if call.event_type == "call" && (term.is_empty() || calls_command(call, term)) {
+            by_command.entry(call.str_field("command").unwrap_or_default().trim()).or_default().push(call);
+        }
+    }
+    by_command.into_iter().map(|(command, calls)| shown_line(&calls_sum(command, &calls))).collect()
+}
+
+/// A linha de [`calls_lines`] de um comando.
+fn calls_sum(command: &str, calls: &[&SpecEvent]) -> Map<String, Value> {
+    let mut sum = Map::new();
+    sum.insert("command".into(), json!(command));
+    sum.insert("count".into(), json!(calls.len()));
+    let mut failures: BTreeMap<&str, u64> = BTreeMap::new();
+    for call in calls {
+        let reason = if call.str_field("result") == Some("refused") {
+            Some(call.str_field("refusal").unwrap_or("refused"))
+        } else {
+            call.str_field("filter").filter(|filter| filter.contains(':'))
+        };
+        if let Some(reason) = reason {
+            *failures.entry(reason).or_default() += 1;
+        }
+    }
+    if !failures.is_empty() {
+        sum.insert("failures".into(), json!(failures));
+    }
+    let numbers = |field: &str| calls.iter().filter_map(|call| call.int(field)).collect::<Vec<u64>>();
+    for field in ["ms", "filter_ms"] {
+        if let Some(spread) = spread(numbers(field)) {
+            sum.insert(field.into(), spread);
+        }
+    }
+    for field in ["tokens", "cost_micro_usd"] {
+        let values = numbers(field);
+        if !values.is_empty() {
+            sum.insert(field.into(), json!(values.iter().fold(0_u64, |total, n| total.saturating_add(*n))));
+        }
+    }
+    sum
+}
+
+/// A mediana, o p90 e o pior de `values`, pela posição mais próxima: o
+/// percentil `p` é o valor na posição ⌈n·p/100⌉ da lista em ordem crescente,
+/// sem média entre dois valores. `None` sem valor nenhum.
+fn spread(mut values: Vec<u64>) -> Option<Value> {
+    values.sort_unstable();
+    let at = |percent: usize| values.get((values.len() * percent).div_ceil(100).saturating_sub(1)).copied();
+    Some(json!({"median": at(50)?, "p90": at(90)?, "max": values.last()?}))
 }
 
 /// O que o pedido da onda `wave` lista, pela mesma conta que o monta
@@ -842,6 +910,74 @@ mod tests {
              ],\"total\":{{\"tasks\":3,\"files\":3}}}}"
         );
         assert_eq!(report, expected);
+    }
+
+    /// Uma chamada gravada como o programa a grava, com o autor e o comando.
+    fn call(root: &std::path::Path, command: &str, fields: Value) -> u64 {
+        let mut body = json!({"author": "binary", "command": command, "result": "ok"});
+        if let (Some(body), Some(fields)) = (body.as_object_mut(), fields.as_object()) {
+            body.extend(fields.clone());
+        }
+        by_program(root, "call", body)
+    }
+
+    /// O nome do comando acha as chamadas dele, na ordem do arquivo, sem olhar
+    /// maiúsculas nem espaços de sobra; a busca por nota, que acharia a
+    /// entrega que cita a busca, não entra, e a chamada de outro comando fica
+    /// de fora.
+    #[test]
+    fn the_name_of_a_command_finds_its_calls() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let first = call(root, "map search", json!({"ms": 1800}));
+        call(root, "round", json!({"ms": 3}));
+        by_program(root, "delivered", json!({"author": "binary", "wave": 1, "text": "A map search ficou pronta.", "files": []}));
+        let second = call(root, "map search", json!({"ms": 900}));
+
+        let ids = |block: &str, term: &str| -> Vec<Value> {
+            events(&read_at(&opts(root, block, Some(term))).unwrap()).iter().map(|e| e["id"].clone()).collect()
+        };
+        assert_eq!(ids("metrics", "map search"), [json!(first), json!(second)]);
+        assert_eq!(ids("conversation", " Map  Search "), [json!(first), json!(second)]);
+        assert_eq!(ids("metrics", "pronta").len(), 1, "a word that names no command still searches by score");
+    }
+
+    /// A soma das chamadas traz, por comando, quantas foram, as falhas por
+    /// motivo, a mediana, o p90 e o pior do tempo da chamada e do tempo do
+    /// filtro pela posição mais próxima, sem média entre dois valores, e os
+    /// tokens e o custo somados; o comando sem filtro fica sem os campos dele,
+    /// e o nome do comando deixa só a linha dele.
+    #[test]
+    fn the_calls_reading_sums_each_command() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let jev = |ms: u64, filter_ms: u64, tokens: u64, cost: u64| {
+            json!({"ms": ms, "filter": "jev", "filter_ms": filter_ms, "tokens": tokens, "cost_micro_usd": cost})
+        };
+        call(root, "map search", jev(100, 90, 20_000, 840));
+        call(root, "map search", jev(900, 800, 21_000, 882));
+        call(root, "map search", json!({"ms": 300, "filter": "jev:busy", "filter_ms": 40}));
+        call(root, "map search", jev(700, 600, 22_000, 924));
+        call(root, "round", json!({"ms": 3}));
+        call(root, "map search", jev(500, 400, 20_000, 840));
+        call(root, "map search", json!({"ms": 200, "result": "refused", "refusal": "no-map"}));
+        call(root, "map search", jev(800, 700, 21_000, 882));
+        call(root, "round", json!({"ms": 7, "result": "refused"}));
+        call(root, "map search", json!({"ms": 400, "filter": "jev:busy", "filter_ms": 60}));
+        call(root, "map search", jev(1000, 950, 22_000, 924));
+        call(root, "round", json!({"ms": 5}));
+        call(root, "map search", jev(600, 500, 20_000, 840));
+
+        let search = "{\"command\":\"map search\",\"cost_micro_usd\":6132,\"count\":10,\
+            \"failures\":{\"jev:busy\":2,\"no-map\":1},\"filter_ms\":{\"max\":950,\"median\":500,\"p90\":950},\
+            \"ms\":{\"max\":1000,\"median\":500,\"p90\":900},\"tokens\":146000}";
+        let round = "{\"command\":\"round\",\"count\":3,\"failures\":{\"refused\":1},\"ms\":{\"max\":7,\"median\":5,\"p90\":7}}";
+        let envelope = |count: usize, lines: &str| {
+            format!("{{\"ok\":true,\"spec\":\"teste\",\"block\":\"calls\",\"count\":{count},\"events\":[\n{lines}\n]}}")
+        };
+        assert_eq!(read_at(&opts(root, "calls", None)).unwrap(), envelope(2, &format!("{search},\n{round}")));
+        assert_eq!(read_at(&opts(root, "calls", Some("map search"))).unwrap(), envelope(1, search));
+        assert!(events(&read_at(&opts(root, "calls", Some("close"))).unwrap()).is_empty());
     }
 
     /// O estado traz o número da última mensagem do usuário, sem o texto

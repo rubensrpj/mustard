@@ -43,7 +43,10 @@ pub fn search_field(text: Option<&str>, keys: &[&str]) -> String {
 ///
 /// O termo que é o código de um item devolve exatamente esse item: é assim que
 /// a conversa e a página citam um item, e um código nunca é uma busca por
-/// assunto. Qualquer outro termo passa pela busca por nota que o projeto já
+/// assunto. O termo que é o nome do comando de uma chamada, como `map
+/// search`, devolve as chamadas dele, na ordem do arquivo: a chamada não tem
+/// texto, e a busca por nota nunca a acharia. Qualquer outro termo passa pela
+/// busca por nota que o projeto já
 /// usa nas lições e no recorte dos itens por onda, sobre o campo de busca de
 /// cada evento: quem casa mais forte vem primeiro, e não é preciso ter todas
 /// as palavras do termo. O termo vazio devolve tudo, na ordem do arquivo.
@@ -66,12 +69,23 @@ pub fn found_by<'a>(
     if !by_code.is_empty() {
         return events.into_iter().filter(|e| by_code.contains(&e.id)).collect();
     }
+    if events.iter().any(|e| calls_command(e, term)) {
+        return events.into_iter().filter(|e| calls_command(e, term)).collect();
+    }
     let mut normalizer = Normalizer::new(languages);
     let docs: Vec<(u64, Vec<Vec<String>>)> =
         events.iter().map(|e| (e.id, normalizer.forms(e.str_field("search").unwrap_or_default()))).collect();
     let ranked = SearchIndex::build(docs).top(&normalizer.query(term), events.len());
     let by_id: BTreeMap<u64, &SpecEvent> = events.iter().map(|e| (e.id, *e)).collect();
     ranked.into_iter().filter_map(|hit| by_id.get(&hit.id).copied()).collect()
+}
+
+/// Se `event` é uma chamada do comando `command`. O nome casa sem olhar
+/// maiúsculas nem os espaços de sobra: `Map  search` é o comando `map search`.
+#[must_use]
+pub fn calls_command(event: &SpecEvent, command: &str) -> bool {
+    let words = |name: &str| name.split_whitespace().map(str::to_lowercase).collect::<Vec<_>>();
+    event.event_type == "call" && event.str_field("command").is_some_and(|name| words(name) == words(command))
 }
 
 /// Os caminhos dos arquivos que a linha cita: cada item de `files`, que vem
