@@ -391,6 +391,10 @@ pub(crate) fn write_at_with(opts: &WriteOpts, copy: bool) -> Value {
     drop(held);
     match recorded {
         Ok(Recorded { written, survey }) => {
+            // O item gravado entra no bloco das specs do mapa. A gravação na
+            // spec já está feita: a falha no mapa não a desfaz, e a próxima
+            // resposta do mapa tenta de novo.
+            let _ = mustard_core::io::map_specs::sync_spec(&project.root, spec, &project.languages);
             let mut report = json!({
                 "ok": true,
                 "spec": spec.trim(),
@@ -5027,5 +5031,32 @@ mod tests {
         let log = store::read(&store::spec_file(root, "teste").unwrap()).unwrap().unwrap();
         let written = log.get(recorded.written.id).expect("a versão gravada");
         assert_eq!(written.str_field("title"), Some("Fechamento confere cada critério"), "{:?}", written.fields);
+    }
+
+    /// O item gravado pelo comando de gravação entra na hora no bloco das
+    /// specs do mapa: a busca seguinte o acha lendo só o mapa. Com o mapa
+    /// estragado, a gravação na spec sai do mesmo jeito, e o item fica no
+    /// arquivo.
+    #[test]
+    fn a_written_item_enters_the_map_and_a_broken_map_never_undoes_the_write() {
+        use mustard_core::io::{map_search, project_map};
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        project_map::write_text(root, r#"{"modules": []}"#).unwrap();
+        let said = message(root, "user", "e o estorno?");
+        let decision =
+            json!({"title": "Estorno volta ao cartão", "text": "O estorno volta ao cartão.", "keys": ["estorno"], "why": "w", "origin": said});
+        assert_eq!(write(root, "decision", &decision.to_string())["code"], json!("MSTD-DEC-0001"));
+        let languages = crate::commands::spec_events::project(root).languages;
+        let found = map_search::search_specs(root, "estorno", &languages, 5).unwrap();
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!((found[0].spec.as_str(), found[0].code.as_str()), ("teste", "MSTD-DEC-0001"));
+
+        std::fs::write(project_map::model_path(root), "não é um banco").unwrap();
+        let second = json!({"title": "Pix confirma na hora", "text": "O pix confirma na hora.", "keys": ["pix"], "why": "w", "origin": said});
+        let out = write(root, "decision", &second.to_string());
+        assert_eq!((out["ok"].clone(), out["code"].clone()), (json!(true), json!("MSTD-DEC-0002")), "{out}");
+        let log = DiskSpecState::new(root).log("teste").unwrap();
+        assert!(log.visible().iter().any(|event| event.str_field("title") == Some("Pix confirma na hora")));
     }
 }

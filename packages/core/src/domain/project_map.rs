@@ -259,8 +259,16 @@ pub fn file_history(history: &History, path: &str) -> Option<FileHistory> {
 // A história de cada declaração
 // ---------------------------------------------------------------------------
 
-/// Quantos commits de uma declaração a resposta mostra, dos mais novos.
+/// Quantos commits de uma declaração a resposta mostra, dos mais novos,
+/// quando o projeto não escreve outro número em `map.historyCommits`.
+/// Medido no Mustard, numa função de 26 commits: 5, 10 e 20 dão respostas de 872, 1.256 e 2.048 caracteres.
 pub const DECL_COMMITS_SHOWN: usize = 10;
+
+/// Quantas vezes seguidas a história de uma declaração segue para o arquivo
+/// de onde ela veio, quando o projeto não escreve outro número em
+/// `map.historyMoves`.
+/// Medido no Mustard, em três funções (uma movida): 3, 5 e 10 acham os mesmos commits no mesmo tempo, e 5 guarda folga.
+pub const MOVES_FOLLOWED: usize = 5;
 
 /// A história das declarações de um arquivo na branch de partida, lida do git
 /// na primeira pergunta sobre ele e guardada no mapa: a base, o commit mais
@@ -277,6 +285,12 @@ pub struct FileLineage {
     pub last_commit: String,
     /// A marca do scan que leu ([`lineage_is_fresh`]).
     pub mark: String,
+    /// Quantas vezes seguidas a leitura podia seguir a declaração para o
+    /// arquivo de onde ela veio.
+    pub moves: u32,
+    /// Quantos comentários de revisão presos ao arquivo o mapa tinha quando a
+    /// lista se montou ([`lineage_is_fresh`]).
+    pub comments: u32,
     /// Os commits lidos, do mais novo ao mais velho.
     pub commits: Vec<LineageCommit>,
     pub declarations: Vec<DeclLineage>,
@@ -303,6 +317,20 @@ pub struct DeclLineage {
     pub name: String,
     pub nth: u32,
     pub commits: Vec<DeclChange>,
+    /// Os comentários de revisão presos às linhas dela, na versão do commit
+    /// comentado.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub comments: Vec<DeclComment>,
+}
+
+/// Um comentário de revisão preso às linhas de uma declaração: o pull
+/// request, o commit comentado e o texto.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DeclComment {
+    pub pr: u32,
+    pub commit: String,
+    pub body: String,
 }
 
 /// Um commit que mudou uma declaração; `form` quando a mudança foi só de
@@ -317,16 +345,24 @@ pub struct DeclChange {
 
 /// A história guardada das declarações de um arquivo ainda vale: é da mesma
 /// branch de partida da história do mapa, foi lida pela versão do scan que
-/// gravou o censo (`census_mark`), e o commit mais novo do arquivo na
-/// história do mapa é o que ela registrou — ou o arquivo não tem nenhum lá.
-/// O commit novo da base que a montagem soma muda esse commit só nos
-/// arquivos que ele tocou; os outros seguem valendo. A base trocada, ou
-/// reescrita debaixo do arquivo, pede a leitura de novo.
+/// gravou o censo, seguindo as mesmas `moves` mudanças de arquivo que a
+/// pergunta pede agora, e o commit mais novo do arquivo na história do mapa é
+/// o que ela registrou — ou o arquivo não tem nenhum lá. O commit novo da
+/// base que a montagem soma muda esse commit só nos arquivos que ele tocou;
+/// os outros seguem valendo. A base trocada, ou reescrita debaixo do arquivo,
+/// pede a leitura de novo.
+///
+/// Também vence quando o mapa ganhou comentário de revisão preso ao arquivo
+/// depois que ela se montou: a pergunta seguinte a refaz, e o comentário
+/// novo se liga à declaração dele.
 #[must_use]
-pub fn lineage_is_fresh(lineage: &FileLineage, history: &History, census_mark: &str) -> bool {
-    lineage.base == history.base
-        && lineage.mark == census_mark
-        && file_history(history, &lineage.path).is_none_or(|file| file.last_commit == lineage.last_commit)
+pub fn lineage_is_fresh(lineage: &FileLineage, map: &ProjectMap, moves: usize) -> bool {
+    let comments = map.pulls.comments.iter().filter(|comment| comment.path == lineage.path).count();
+    lineage.base == map.history.base
+        && lineage.mark == map.census_mark
+        && usize::try_from(lineage.moves).is_ok_and(|read| read == moves)
+        && usize::try_from(lineage.comments).is_ok_and(|read| read == comments)
+        && file_history(&map.history, &lineage.path).is_none_or(|file| file.last_commit == lineage.last_commit)
 }
 
 /// Por que a pergunta da história de uma declaração não tem resposta, dito
@@ -355,60 +391,127 @@ pub struct ShownCommit {
     pub title: String,
     pub pr: Option<u32>,
     pub form: bool,
+    /// O item combinado de uma spec que a onda deste commit cumpriu, quando
+    /// o mapa guarda a spec.
+    pub spec: Option<SpecNote>,
+}
+
+/// O item de uma spec ligado a um commit da onda que o cumpriu: a spec, o
+/// código do item e a primeira frase da parte do usuário, até
+/// [`SPEC_SENTENCE_CHARS`] caracteres.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SpecNote {
+    pub spec: String,
+    pub code: String,
+    pub sentence: String,
+}
+
+/// Quantos caracteres da primeira frase de um item de spec a história e a
+/// busca mostram.
+pub const SPEC_SENTENCE_CHARS: usize = 200;
+
+/// A primeira frase de `text`, até [`SPEC_SENTENCE_CHARS`] caracteres.
+#[must_use]
+pub fn spec_sentence(text: &str) -> String {
+    crate::domain::spec_index::cut(crate::domain::spec_index::first_sentence(text), SPEC_SENTENCE_CHARS)
 }
 
 /// A história de uma declaração na base: onde ela mora, quantos commits a
-/// mudaram fora os de forma e os mais novos deles, até
-/// [`DECL_COMMITS_SHOWN`], do mais novo ao mais velho. Sem nenhum, a base
-/// ainda não tem commit dela.
+/// mudaram fora os de forma e os mais novos deles, até o número pedido
+/// ([`DECL_COMMITS_SHOWN`] sem outro), do mais novo ao mais velho. Sem
+/// nenhum, a base ainda não tem commit dela.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DeclHistory {
     pub file: String,
     pub line: u64,
     pub changes: usize,
     pub commits: Vec<ShownCommit>,
+    /// Os pull requests dos commits mostrados, cada um uma vez, na ordem em
+    /// que aparecem, com o título que o servidor deu; sem título os que o
+    /// mapa ainda não leu.
+    pub pulls: Vec<(u32, String)>,
+    /// Os comentários de revisão presos às linhas da declaração, cada um com
+    /// o pull request e até [`COMMENT_CHARS`] caracteres do texto.
+    pub comments: Vec<(u32, String)>,
 }
 
+/// Quantos caracteres de um comentário de revisão a resposta da história
+/// mostra.
+pub const COMMENT_CHARS: usize = 200;
+
+/// Quantos caracteres do primeiro parágrafo da descrição de um pull request
+/// a resposta mostra.
+pub const DESCRIPTION_CHARS: usize = 600;
+
 /// A história de cada declaração `name` de `file`, pela história guardada
-/// do arquivo. As declarações de mesmo nome se casam pela ordem no arquivo.
-/// As recusas são as de [`users`].
-pub fn decl_history(map: &ProjectMap, file: &str, name: &str) -> Result<Vec<DeclHistory>, MapRefusal> {
+/// do arquivo, com os `shown` commits mais novos de cada uma. As declarações
+/// de mesmo nome se casam pela ordem no arquivo. As recusas são as de
+/// [`users`].
+pub fn decl_history(map: &ProjectMap, file: &str, name: &str, shown: usize) -> Result<Vec<DeclHistory>, MapRefusal> {
     let found = named_in(map, Some(file), name)?;
     let lineage = map.lineage.iter().find(|lineage| found.first().is_some_and(|(m, _)| m.path == lineage.path));
     let commits: BTreeMap<&str, &LineageCommit> =
         lineage.map(|l| l.commits.iter().map(|c| (c.id.as_str(), c)).collect()).unwrap_or_default();
+    // O número que o provedor deu ao commit sem número no título.
+    let asked: BTreeMap<&str, u32> =
+        map.pulls.commits.iter().filter(|c| c.pr > 0).map(|c| (c.id.as_str(), c.pr)).collect();
+    let titles: BTreeMap<u32, &str> = map.pulls.texts.iter().map(|t| (t.number, t.title.as_str())).collect();
     Ok(found
         .iter()
         .enumerate()
         .map(|(nth, (module, decl))| {
-            let changes: &[DeclChange] = lineage
-                .and_then(|l| l.declarations.iter().find(|d| d.name == decl.name && d.nth as usize == nth))
-                .map_or(&[], |d| d.commits.as_slice());
+            let declared = lineage.and_then(|l| l.declarations.iter().find(|d| d.name == decl.name && d.nth as usize == nth));
+            let changes: &[DeclChange] = declared.map_or(&[], |d| d.commits.as_slice());
+            let shown_commits: Vec<ShownCommit> = changes
+                .iter()
+                .take(shown)
+                .map(|change| {
+                    let commit = commits.get(change.id.as_str());
+                    ShownCommit {
+                        id: change.id.clone(),
+                        at: commit.map_or(0, |c| c.at),
+                        title: commit.map(|c| clean_title(&c.title)).unwrap_or_default(),
+                        pr: commit.and_then(|c| c.pr).or_else(|| asked.get(change.id.as_str()).copied()),
+                        form: change.form,
+                        spec: map.spec_notes.get(change.id.as_str()).cloned(),
+                    }
+                })
+                .collect();
+            let mut pulls: Vec<(u32, String)> = Vec::new();
+            for number in shown_commits.iter().filter_map(|c| c.pr) {
+                if !pulls.iter().any(|(seen, _)| *seen == number) {
+                    pulls.push((number, titles.get(&number).map(|t| t.trim().to_string()).unwrap_or_default()));
+                }
+            }
+            let comments = declared
+                .map(|d| d.comments.iter().map(|c| (c.pr, crate::domain::spec_index::cut(c.body.trim(), COMMENT_CHARS))).collect())
+                .unwrap_or_default();
             DeclHistory {
                 file: module.path.clone(),
                 line: decl.line,
                 changes: changes.iter().filter(|c| !c.form).count(),
-                commits: changes
-                    .iter()
-                    .take(DECL_COMMITS_SHOWN)
-                    .map(|change| {
-                        let commit = commits.get(change.id.as_str());
-                        ShownCommit {
-                            id: change.id.clone(),
-                            at: commit.map_or(0, |c| c.at),
-                            title: commit.map(|c| clean_title(&c.title)).unwrap_or_default(),
-                            pr: commit.and_then(|c| c.pr),
-                            form: change.form,
-                        }
-                    })
-                    .collect(),
+                commits: shown_commits,
+                pulls,
+                comments,
             }
         })
         .collect())
 }
 
+/// O título e o primeiro parágrafo da descrição do pull request `number`,
+/// até [`DESCRIPTION_CHARS`] caracteres; `None` quando o mapa ainda não tem
+/// o texto dele ou quando o provedor não achou o número.
+#[must_use]
+pub fn pull_description(map: &ProjectMap, number: u32) -> Option<(String, String)> {
+    let text = map.pulls.texts.iter().find(|text| text.number == number && !text.title.trim().is_empty())?;
+    let body = text.body.replace("\r\n", "\n");
+    let paragraph = body.trim().split("\n\n").next().unwrap_or_default().trim();
+    Some((text.title.trim().to_string(), crate::domain::spec_index::cut(paragraph, DESCRIPTION_CHARS)))
+}
+
 /// Uma linha da história de uma declaração: a data, o começo do hash, o
-/// título e o número do pull request, com a marca do commit só de forma.
+/// título e o número do pull request, com a marca do commit só de forma e,
+/// no commit de uma onda, o item da spec que ela cumpriu.
 #[must_use]
 pub fn history_line(commit: &ShownCommit, lang: Locale) -> String {
     let mut line = format!("{} {} {}", date_of(commit.at), commit.id, commit.title);
@@ -419,6 +522,15 @@ pub fn history_line(commit: &ShownCommit, lang: Locale) -> String {
     if commit.form {
         line.push(' ');
         line.push_str(translate("map.history.form", lang));
+    }
+    if let Some(note) = &commit.spec {
+        line.push_str(" — ");
+        line.push_str(
+            &translate("map.history.spec", lang)
+                .replace("{spec}", &note.spec)
+                .replace("{code}", &note.code)
+                .replace("{sentence}", &note.sentence),
+        );
     }
     line
 }
@@ -520,6 +632,56 @@ pub struct ProjectMap {
     /// à mão.
     #[serde(skip)]
     pub census_mark: String,
+    /// O que o servidor disse dos pull requests da base, guardado à parte
+    /// do que a montagem grava.
+    #[serde(skip)]
+    pub pulls: Pulls,
+    /// O item de spec de cada commit de onda da história guardada, pelo
+    /// começo do hash, como o bloco das specs o liga.
+    #[serde(skip)]
+    pub spec_notes: BTreeMap<String, SpecNote>,
+}
+
+/// O que o mapa guarda do servidor sobre os pull requests da base, lido uma
+/// vez depois que o commit entra nela: o texto de cada um, os comentários de
+/// revisão presos a linhas e o número do pull request de cada commit que não
+/// o diz no título.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Pulls {
+    pub texts: Vec<PullText>,
+    pub comments: Vec<PullComment>,
+    pub commits: Vec<PullOfCommit>,
+}
+
+/// O texto de um pull request: o título, a descrição, a marca de versão com
+/// que o servidor o deu (vazia no provedor que não a dá) e o commit mais novo
+/// da base que o citava quando ele foi lido.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PullText {
+    pub number: u32,
+    pub title: String,
+    pub body: String,
+    pub etag: String,
+    pub through: String,
+}
+
+/// Um comentário de revisão preso a uma linha: o pull request, o commit
+/// comentado (o hash inteiro), o arquivo e a linha nessa versão, e o texto.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PullComment {
+    pub number: u32,
+    pub commit: String,
+    pub path: String,
+    pub line: u64,
+    pub body: String,
+}
+
+/// O pull request de um commit da base que não diz o número no título, como
+/// o provedor respondeu: 0 quando ele não achou nenhum.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PullOfCommit {
+    pub id: String,
+    pub pr: u32,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1136,6 +1298,19 @@ pub struct FoundText {
     pub kind: String,
     pub value: String,
     pub owner: String,
+}
+
+/// Um item de spec achado pela busca: a spec, o código, o título, a linha
+/// da parte do usuário que mais casa com a pergunta (nenhuma quando só o
+/// título ou a parte do agente casou) e os lugares ligados a ele — a função,
+/// como `arquivo:nome`, que um commit da onda dele mudou, ou o arquivo.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FoundItem {
+    pub spec: String,
+    pub code: String,
+    pub title: String,
+    pub line: Option<String>,
+    pub links: Vec<String>,
 }
 
 /// As palavras de busca de um arquivo, cada uma com as suas formas: as do
@@ -1870,6 +2045,18 @@ mod tests {
             assert!(text.len() <= SUMMARY_MAX_BYTES, "{} bytes", text.len());
             assert!(text.contains("mustard-rt run map"), "the way to ask always fits: {text}");
             assert!(text.contains("5000"), "{text}");
+        }
+    }
+
+    /// O convite do resumo, que diz como perguntar ao mapa, cita a pergunta da
+    /// história de uma declaração nos dois idiomas, ao lado das outras.
+    #[test]
+    fn the_session_summary_invites_the_history_question() {
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let text = summary(&ProjectMap::default(), lang);
+            let ask = text.lines().last().unwrap_or_default();
+            assert!(ask.contains("`history --name <"), "{lang:?}: {ask}");
+            assert!(ask.contains("`users --name <") && ask.contains("`search --query"), "{lang:?}: {ask}");
         }
     }
 

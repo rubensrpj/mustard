@@ -1,5 +1,9 @@
 ; Python — imports and definitions. A module is a file, so no @namespace.
 (import_statement name: (dotted_name) @import)
+; Sem apelido, `import util` traz ao arquivo só o primeiro nome escrito, o do
+; módulo (`loja` em `import loja.servico`): `util.ler()` alcança o módulo, e
+; `ler()` sozinho não o vê.
+(import_statement name: (dotted_name . (identifier) @imported))
 ; O apelido de `import loja.servico as s` é o nome que o import traz: o
 ; próprio módulo, escrito antes de outro nome (`s.buscar()`).
 (import_statement name: (aliased_import name: (dotted_name) @import alias: (identifier) @imported))

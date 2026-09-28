@@ -21,17 +21,15 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 
 use anyhow::{anyhow, Result};
-use mustard_core::domain::project_map::{file_history, DeclChange, DeclLineage, FileLineage, LineageCommit};
+use mustard_core::domain::project_map::{
+    file_history, DeclChange, DeclComment, DeclLineage, FileLineage, LineageCommit, PullComment,
+};
 use mustard_core::io::project_map as store;
 
 use crate::extract::{detect_language, Analyzer, Keep};
 use crate::ingest::in_parallel;
 use crate::refresh::{self, git, unquote};
 use crate::routes;
-
-/// Quantas vezes seguidas a história de uma declaração segue para o arquivo de
-/// onde ela veio.
-const MOVES_FOLLOWED: usize = 5;
 
 /// Contexto grande o bastante para o diff de cada commit trazer o arquivo
 /// inteiro, dos dois lados.
@@ -68,19 +66,21 @@ pub(crate) struct Report {
 type Key = (String, u32);
 
 /// Monta a história das declarações de `file` na ponta da base de `root` e a
-/// grava no mapa em `out`, no lugar da que ele tinha.
+/// grava no mapa em `out`, no lugar da que ele tinha. Uma declaração que veio
+/// de outro arquivo é seguida nele até `moves` vezes seguidas.
 ///
 /// # Errors
 ///
 /// Sem base declarada ou sem ela no clone, com o mapa ilegível, quando o git
 /// não lê a história do arquivo ou quando a gravação falha.
-pub(crate) fn run(root: &Path, out: &Path, file: &str) -> Result<Report> {
+pub(crate) fn run(root: &Path, out: &Path, file: &str, moves: usize) -> Result<Report> {
     let base = store::base_of(root);
     if base.name.is_empty() || base.tip.is_empty() {
         return Err(anyhow!("the project declares no base branch this clone has"));
     }
     let stored = store::history_at(out).map_err(|refusal| anyhow!("{}: {}", out.display(), refusal.reason()))?;
-    let mut pass = Pass::new(root);
+    let reviews = store::pull_comments_at(out, file).map_err(|refusal| anyhow!("{}: {}", out.display(), refusal.reason()))?;
+    let mut pass = Pass::new(root, moves);
     let tip = match git(root, &["show", "--no-textconv", &format!("{}:./{file}", base.tip)]) {
         Some(text) => pass.layout_of(file, &text),
         None => Layout::default(),
@@ -118,11 +118,13 @@ pub(crate) fn run(root: &Path, out: &Path, file: &str) -> Result<Report> {
         .collect();
     commits.sort_by(|a, b| b.at.cmp(&a.at).then_with(|| a.id.cmp(&b.id)));
 
+    let mut attached = pass.attach(file, &reviews, &tip.index(), &commits);
     let declarations: Vec<DeclLineage> = tip
         .spans
         .iter()
         .zip(&pass.changes)
-        .map(|(span, changes)| {
+        .enumerate()
+        .map(|(at, (span, changes))| {
             let mut list: Vec<&Change> = Vec::new();
             for change in changes {
                 if !list.iter().any(|kept| kept.sha == change.sha) {
@@ -134,6 +136,7 @@ pub(crate) fn run(root: &Path, out: &Path, file: &str) -> Result<Report> {
                 name: span.name.clone(),
                 nth: span.nth,
                 commits: list.iter().map(|change| DeclChange { id: short(&change.sha).to_string(), form: change.form }).collect(),
+                comments: attached.remove(&at).unwrap_or_default(),
             }
         })
         .collect();
@@ -145,6 +148,8 @@ pub(crate) fn run(root: &Path, out: &Path, file: &str) -> Result<Report> {
         base: base.name,
         last_commit,
         mark: refresh::FORMAT.to_string(),
+        moves: u32::try_from(moves).unwrap_or(u32::MAX),
+        comments: u32::try_from(reviews.len()).unwrap_or(u32::MAX),
         commits,
         declarations,
     };
@@ -297,11 +302,67 @@ struct Pass<'r> {
     changes: Vec<Vec<Change>>,
     /// Cada commit lido, pelo hash inteiro: a data e o título.
     seen: HashMap<String, (i64, String)>,
+    /// Quantas vezes seguidas uma declaração é seguida para o arquivo de
+    /// onde ela veio.
+    moves: usize,
 }
 
 impl<'r> Pass<'r> {
-    fn new(root: &'r Path) -> Self {
-        Pass { root, analyzers: HashMap::new(), ignored: ignored_revs(root), changes: Vec::new(), seen: HashMap::new() }
+    fn new(root: &'r Path, moves: usize) -> Self {
+        Pass {
+            root,
+            analyzers: HashMap::new(),
+            ignored: ignored_revs(root),
+            changes: Vec::new(),
+            seen: HashMap::new(),
+            moves,
+        }
+    }
+
+    /// Os comentários de revisão `reviews`, presos a linhas de `path`, por
+    /// declaração da ponta: cada um cai na declaração que continha a linha
+    /// no commit comentado e que chega à ponta pela chave de `tip`. O
+    /// commit comentado que o clone não tem — o do ramo apagado depois de
+    /// um squash — dá lugar ao commit da base, entre os `commits` da lista,
+    /// com o número do pull request, cujo arquivo tem as linhas do ramo. O
+    /// comentário cuja linha não cai numa declaração, ou cuja declaração
+    /// não chegou à ponta, fica sem declaração.
+    fn attach(
+        &mut self,
+        path: &str,
+        reviews: &[PullComment],
+        tip: &HashMap<Key, usize>,
+        commits: &[LineageCommit],
+    ) -> HashMap<usize, Vec<DeclComment>> {
+        let mut layouts: HashMap<String, Option<Layout>> = HashMap::new();
+        let mut attached: HashMap<usize, Vec<DeclComment>> = HashMap::new();
+        for review in reviews {
+            let merged = commits
+                .iter()
+                .find(|commit| commit.pr == Some(review.number))
+                .and_then(|commit| self.seen.keys().find(|sha| short(sha) == commit.id))
+                .cloned();
+            let found = [Some(review.commit.clone()), merged].into_iter().flatten().find_map(|commit| {
+                let layout = layouts
+                    .entry(commit.clone())
+                    .or_insert_with(|| {
+                        git(self.root, &["show", "--no-textconv", &format!("{commit}:./{path}")])
+                            .map(|text| self.layout_of(path, &text))
+                    })
+                    .as_ref()?;
+                let line = usize::try_from(review.line).ok()?;
+                let owner = layout.owner_of(line)?;
+                tip.get(&layout.spans[owner].key()).copied()
+            });
+            if let Some(at) = found {
+                attached.entry(at).or_default().push(DeclComment {
+                    pr: review.number,
+                    commit: short(&review.commit).to_string(),
+                    body: review.body.clone(),
+                });
+            }
+        }
+        attached
     }
 
     /// O analisador da língua do caminho, compilado uma vez na leitura.
@@ -387,7 +448,7 @@ impl<'r> Pass<'r> {
             }
             current = next;
         }
-        if depth < MOVES_FOLLOWED && !births.is_empty() {
+        if depth < self.moves && !births.is_empty() {
             self.follow_moves(births, depth)?;
         }
         Ok(newest)

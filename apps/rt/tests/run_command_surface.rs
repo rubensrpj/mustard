@@ -409,7 +409,7 @@ fn o_despejo_do_mapa_traz_uma_entrada_por_tabela() {
         [
             "census", "projects", "languages", "manifests", "skeleton", "files", "decls", "texts", "routes", "links",
             "graph", "fan_in", "history_base", "history_paths", "commits", "lineage_files", "lineage_commits",
-            "lineage_decls", "blocks"
+            "lineage_decls", "pr_texts", "pr_comments", "pr_commits", "spec_items", "spec_commits", "spec_marks", "blocks"
         ],
         "uma entrada por tabela, na ordem fixa: {report}"
     );
@@ -419,6 +419,189 @@ fn o_despejo_do_mapa_traz_uma_entrada_por_tabela() {
     assert_eq!(rows("decls")[0]["used_by"], serde_json::json!(["src/pedido.rs:5:fechar"]), "{report}");
     assert_eq!(rows("census")[0]["head"], "abc", "{report}");
     assert_eq!(rows("fan_in")[0]["degree"], 1, "{report}");
+}
+
+/// Um projeto no git, na branch `main` declarada como base, com o remoto do
+/// GitHub e um `gh` falso no caminho, que anota cada chamada e responde o
+/// texto e os comentários do pull request 7.
+struct PullRequestProject {
+    dir: tempfile::TempDir,
+    fake: tempfile::TempDir,
+}
+
+impl PullRequestProject {
+    fn new() -> Self {
+        let project = Self { dir: tempfile::tempdir().unwrap(), fake: tempfile::tempdir().unwrap() };
+        let root = project.root();
+        project.git(&["init", "-q", "-b", "main"]);
+        project.git(&["remote", "add", "origin", "https://github.com/dono/loja.git"]);
+        fs::write(root.join(".git/info/exclude"), mustard_core::footprint_rules().join("\n") + "\n").unwrap();
+        project.config(true);
+        let gh = project.fake.path().join("gh");
+        fs::write(
+            &gh,
+            "#!/bin/sh\n\
+             echo \"$*\" >> \"$FAKE_DIR/log\"\n\
+             case \"$*\" in\n\
+             \"api -i repos/{owner}/{repo}/pulls/\"*) n=${3#*pulls/} ;\n\
+               [ -f \"$FAKE_DIR/pull$n.json\" ] || { echo 'gh: Not Found (HTTP 404)' >&2 ; exit 1 ; } ;\n\
+               printf 'HTTP/2.0 200 OK\\r\\nEtag: W/\"e\"\\r\\n\\r\\n' ; cat \"$FAKE_DIR/pull$n.json\" ;;\n\
+             \"api repos/{owner}/{repo}/pulls/\"*\"/comments?per_page=100\") n=${2#*pulls/} ; n=${n%%/*} ;\n\
+               cat \"$FAKE_DIR/comments$n.json\" 2>/dev/null || echo '[]' ;;\n\
+             \"api repos/{owner}/{repo}/commits/\"*\"/pulls\") echo '[]' ;;\n\
+             *) echo 'gh: Not Found (HTTP 404)' >&2 ; exit 1 ;;\n\
+             esac\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        fs::write(
+            project.fake.path().join("pull7.json"),
+            r#"{"number": 7, "title": "Muda o ler", "body": "O ler passa a somar dois.\n\nDetalhes que não aparecem."}"#,
+        )
+        .unwrap();
+        project
+    }
+
+    fn root(&self) -> &Path {
+        self.dir.path()
+    }
+
+    fn git(&self, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .args(["-c", "user.email=t@example.com", "-c", "user.name=t", "-c", "commit.gpgsign=false"])
+            .args(args)
+            .current_dir(self.root())
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    fn commit(&self, body: &str, title: &str) -> String {
+        fs::create_dir_all(self.root().join("src")).unwrap();
+        fs::write(self.root().join("src/a.rs"), body).unwrap();
+        self.git(&["add", "-A"]);
+        self.git(&["commit", "-q", "-m", title]);
+        self.git(&["rev-parse", "HEAD"])
+    }
+
+    /// A base `main` e muitas chamadas por passada; `on` é a chave do
+    /// texto dos pull requests.
+    fn config(&self, on: bool) {
+        let config = serde_json::json!({
+            "git": { "flow": { "*": "main" }, "pullRequestText": on },
+            "map": { "pullRequestCalls": 20 },
+        });
+        fs::write(self.root().join("mustard.json"), config.to_string()).unwrap();
+    }
+
+    /// Roda `mustard-rt run <args>` com `path` no lugar do caminho dos
+    /// programas: o JSON da resposta e se saiu sem erro.
+    fn run(&self, args: &[&str], path: &str) -> (bool, serde_json::Value) {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+            .arg("run")
+            .args(args)
+            .arg("--root")
+            .arg(self.root())
+            .current_dir(self.root())
+            .env("PATH", path)
+            .env("FAKE_DIR", self.fake.path())
+            .output()
+            .unwrap();
+        let report = serde_json::from_slice(&out.stdout)
+            .unwrap_or_else(|e| panic!("{e}: {} {}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)));
+        (out.status.success(), report)
+    }
+
+    /// O caminho dos programas com o `gh` falso na frente.
+    fn with_fake_gh(&self) -> String {
+        format!("{}:{}", self.fake.path().display(), std::env::var("PATH").unwrap_or_default())
+    }
+
+    /// As chamadas que o `gh` falso recebeu.
+    fn calls(&self) -> Vec<String> {
+        fs::read_to_string(self.fake.path().join("log")).unwrap_or_default().lines().map(str::to_string).collect()
+    }
+}
+
+/// Pelo comando que a pessoa roda: depois do scan, o texto do pull request
+/// mesclado vem do provedor uma vez, com o comentário de revisão preso à
+/// linha da função, e o `map history` mostra o título, o comentário e, com
+/// `--pr`, o primeiro parágrafo da descrição; o comentário geral fica fora.
+/// O scan seguinte não lê de novo; com a chave desligada, nada chama o
+/// provedor; sem o `gh` a história sai com o título e o número, sem erro; e
+/// o commit novo da base, visto pela pergunta ao mapa, traz o texto do pull
+/// request dele na mesma resposta.
+#[test]
+fn a_historia_traz_o_texto_do_pull_request_lido_uma_vez_depois_do_scan() {
+    assert!(
+        mustard_core::Scan::locate().is_compiled_alongside(),
+        "o teste precisa do scan compilado junto com ele: rode `cargo build -p scan` antes de `cargo test -p mustard-rt`"
+    );
+    let project = PullRequestProject::new();
+    let created = project.commit("pub fn ler(x: u32) -> u32 {\n    x + 1\n}\n", "cria o ler");
+    let changed = project.commit("pub fn ler(x: u32) -> u32 {\n    x + 2\n}\n", "muda o ler (#7)");
+    let comments = serde_json::json!([
+        { "path": "src/a.rs", "line": 2, "commit_id": changed, "side": "RIGHT", "subject_type": "line", "body": "soma dois mesmo?" },
+        { "path": "src/a.rs", "line": null, "original_line": null, "commit_id": changed, "subject_type": "file", "body": "o arquivo todo" },
+    ]);
+    fs::write(project.fake.path().join("comments7.json"), comments.to_string()).unwrap();
+    let path = project.with_fake_gh();
+
+    let (ok, scanned) = project.run(&["scan"], &path);
+    assert!(ok, "{scanned}");
+    // Os dois commits têm o mesmo segundo: a ordem entre eles não conta.
+    let mut calls = project.calls();
+    calls.sort();
+    assert_eq!(
+        calls,
+        [
+            "api -i repos/{owner}/{repo}/pulls/7".to_string(),
+            format!("api repos/{{owner}}/{{repo}}/commits/{created}/pulls"),
+            "api repos/{owner}/{repo}/pulls/7/comments?per_page=100".to_string(),
+        ],
+    );
+    let (ok, report) = project.run(&["map", "history", "--name", "ler", "--file", "src/a.rs", "--pr", "7"], &path);
+    assert!(ok, "{report}");
+    let ler = &report["declarations"][0];
+    assert_eq!(ler["pulls"], serde_json::json!(["#7 Muda o ler"]), "{report}");
+    assert_eq!(ler["comments"], serde_json::json!(["#7 soma dois mesmo?"]), "{report}");
+    assert_eq!(report["pull"]["description"], "O ler passa a somar dois.", "{report}");
+
+    let (ok, again) = project.run(&["scan"], &path);
+    assert!(ok, "{again}");
+    assert_eq!(project.calls().len(), 3, "um pull request já lido não é lido de novo sem mudança");
+
+    project.config(false);
+    project.commit("pub fn ler(x: u32) -> u32 {\n    x + 3\n}\n", "muda o ler de novo (#8)");
+    let (ok, off) = project.run(&["scan"], &path);
+    assert!(ok, "{off}");
+    assert_eq!(project.calls().len(), 3, "a chave desligada não chama o provedor");
+
+    project.config(true);
+    let git = std::process::Command::new("sh").args(["-c", "command -v git"]).output().unwrap();
+    let only_git = tempfile::tempdir().unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(String::from_utf8_lossy(&git.stdout).trim(), only_git.path().join("git")).unwrap();
+    let without_gh = only_git.path().display().to_string();
+    let (ok, scanned) = project.run(&["scan"], &without_gh);
+    assert!(ok, "{scanned}");
+    let (ok, report) = project.run(&["map", "history", "--name", "ler", "--file", "src/a.rs"], &without_gh);
+    assert!(ok, "sem o gh, a história sai sem erro: {report}");
+    let lines: Vec<&str> = report["declarations"][0]["commits"].as_array().unwrap().iter().filter_map(|c| c.as_str()).collect();
+    assert!(lines[0].contains("muda o ler de novo") && lines[0].ends_with("#8"), "{report}");
+    assert_eq!(project.calls().len(), 3, "{report}");
+
+    fs::write(project.fake.path().join("pull9.json"), r#"{"number": 9, "title": "Ler dobrado", "body": "O ler dobra."}"#).unwrap();
+    project.commit("pub fn ler(x: u32) -> u32 {\n    x * 2\n}\n", "dobra o ler (#9)");
+    let (ok, report) = project.run(&["map", "history", "--pr", "9"], &path);
+    assert!(ok, "{report}");
+    assert_eq!(report["pull"]["description"], "O ler dobra.", "a atualização do mapa antes da resposta leu o texto: {report}");
+    assert!(project.calls().contains(&"api -i repos/{owner}/{repo}/pulls/9".to_string()));
 }
 
 /// Perguntar a um projeto que ainda não tem mapa recusa com mapa ausente e não

@@ -1027,6 +1027,22 @@ fn an_import_of_one_part_reaches_the_file_of_that_name() {
     assert_eq!(deps_of(&v, "app/main.py"), vec!["util.py".to_string()]);
 }
 
+/// `import util`, sem apelido, traz ao arquivo só o nome do módulo: a
+/// chamada `util.ler()` liga ao `ler` de `util.py`, e `ler()` escrito sozinho
+/// não o vê, nem como ligação provada.
+#[test]
+fn an_import_without_alias_brings_only_the_module_name() {
+    let v = scan_files(
+        "python-module-name",
+        &[
+            ("util.py", "def ler():\n    return 1\n"),
+            ("app/main.py", "import util\n\n\ndef main():\n    util.ler()\n    return ler()\n"),
+        ],
+    );
+    assert_eq!(holders_of(&v, "ler", "app/main.py:5:main"), vec!["util.py".to_string()]);
+    assert!(holders_of(&v, "ler", "app/main.py:6:main").is_empty(), "ler() sozinho não é do módulo importado");
+}
+
 /// O `__init__.py` que traz um nome de um módulo e tudo de outro repassa os
 /// dois: quem importa os dois nomes pelo pacote liga aos dois arquivos que os
 /// declaram.

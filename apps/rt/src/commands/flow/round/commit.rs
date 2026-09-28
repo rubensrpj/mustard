@@ -263,11 +263,14 @@ fn fork_point(copy_repo: &Path, root_repo: &Path) -> Result<String, String> {
 /// Depois do commit da rodada, o mapa relê só os arquivos que mudaram, pela
 /// leitura por partes que a ferramenta do scan já faz sozinha: sem isso, a
 /// sugestão de skill e de arquivos parecidos, antes do envio da onda
-/// seguinte, apontaria um arquivo que este commit acabou de apagar. Nunca
-/// trava a rodada nem avisa: sem o mapa, ou sem a ferramenta, a sugestão
-/// segue com o que já tinha.
+/// seguinte, apontaria um arquivo que este commit acabou de apagar. Depois
+/// do mapa, lê do provedor o texto dos pull requests que a história dele
+/// cita e ainda não tem. Nunca trava a rodada nem avisa: sem o mapa, sem a
+/// ferramenta ou sem o provedor, a sugestão e a história seguem com o que já
+/// tinham.
 pub(super) fn refresh_map(root: &Path, mine: &dyn Fn(&Path, &Path) -> mustard_core::platform::error::Result<ScanReport>) {
     let _ = mine(root, &mustard_core::io::project_map::model_path(root));
+    crate::shared::pr_history::refresh(root);
 }
 
 /// A conferência do mapa com o conteúdo de agora, antes de toda resposta

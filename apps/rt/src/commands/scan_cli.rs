@@ -75,6 +75,10 @@ pub enum ScanCmd {
         /// `history`).
         #[arg(long)]
         name: Option<String>,
+        /// The pull request whose description `history` shows, first
+        /// paragraph only.
+        #[arg(long)]
+        pr: Option<u32>,
         /// Any directory inside the project. Defaults to the current dir.
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -86,7 +90,7 @@ pub enum ScanCmd {
 pub fn dispatch(cmd: ScanCmd) {
     match cmd {
         ScanCmd::Scan { root, out, full } => scan::run(&root, out.as_deref(), full),
-        ScanCmd::Map { question, file, task, query, path, name, root } => {
+        ScanCmd::Map { question, file, task, query, path, name, pr, root } => {
             crate::commands::map::run(&crate::commands::map::MapOpts {
                 root,
                 question,
@@ -95,6 +99,8 @@ pub fn dispatch(cmd: ScanCmd) {
                 query,
                 path,
                 name,
+                pr,
+                session: crate::shared::spec_state::session_from_env(),
             });
         }
     }

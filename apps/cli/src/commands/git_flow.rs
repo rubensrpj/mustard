@@ -269,6 +269,9 @@ pub fn apply_choices(config: &mut ProjectConfig, choices: &Choices, root: &Path)
         // Not a question the install asks: the deletion of the server branch
         // stays whatever the project already declared, off when it said nothing.
         delete_remote_branch: config.git.delete_remote_branch,
+        // Também não é pergunta da instalação: a leitura do texto dos pull
+        // requests fica como o projeto a deixou, ligada quando ele não disse.
+        pull_request_text: config.git.pull_request_text,
     };
 
     let cmds = detect_commands(root);

@@ -65,6 +65,7 @@ pub mod pr_azure;
 // behind it (next waves) — the allow leaves with the first caller.
 #[allow(dead_code)]
 pub mod pr_provider;
+pub mod pr_history;
 pub mod proc;
 pub mod prompt;
 pub mod spec_state;

@@ -210,9 +210,15 @@ fn a_project_without_a_flow_scans_and_says_there_is_no_base() {
 /// Roda a passada da história de `file` sobre o mapa do projeto e devolve a
 /// lista gravada dele.
 fn lineage(dir: &Path, file: &str) -> FileLineage {
+    lineage_with(dir, file, &[])
+}
+
+/// A passada de [`lineage`] com as opções `extra` a mais.
+fn lineage_with(dir: &Path, file: &str, extra: &[&str]) -> FileLineage {
     let model = model::path_in(&dir.join(".claude"));
     let run = Command::new(env!("CARGO_BIN_EXE_scan"))
         .args(["history", dir.to_str().unwrap(), "--out", model.to_str().unwrap(), "--file", file, "--json"])
+        .args(extra)
         .output()
         .expect("run scan history");
     assert!(run.status.success(), "stderr: {}", String::from_utf8_lossy(&run.stderr));
@@ -275,6 +281,35 @@ fn a_function_moved_to_another_file_keeps_the_commit_from_before_the_move() {
         listed(&["muda o ler", "cria o ler"]),
         "the move with the same body keeps the history of the other file and is not a change of the function"
     );
+}
+
+/// A função movida duas vezes de arquivo: sem o número, a passada segue as
+/// duas mudanças até o arquivo onde ela nasceu; com `--moves 1`, segue só a
+/// última, e a lista guarda o número que seguiu.
+#[test]
+fn the_moves_number_limits_how_many_file_moves_the_history_follows() {
+    let temp = project("scan-linhagem-mudancas-");
+    let dir = temp.path();
+    declare_base(dir, "main");
+    let rest = "pub fn outra() -> u32 {\n    let a = 1;\n    let b = 2;\n    let c = 3;\n    a + b + c\n}\n";
+    let rest2 = "pub fn mais() -> u32 {\n    let d = 4;\n    let e = 5;\n    let f = 6;\n    d * e * f\n}\n";
+    let ler = |n: u32| format!("pub fn ler(x: u32) -> u32 {{\n    let lido = x + {n};\n    lido * 2\n}}\n");
+    commit(dir, "src/origem.rs", &format!("{}\n{rest}", ler(1)), "cria o ler");
+    commit(dir, "src/origem.rs", &format!("{}\n{rest}", ler(2)), "muda o ler");
+    write(dir, "src/origem.rs", rest);
+    commit(dir, "src/meio.rs", &format!("{}\n{rest2}", ler(2)), "move o ler para o meio");
+    commit(dir, "src/meio.rs", &format!("{}\n{rest2}", ler(3)), "muda o ler no meio");
+    write(dir, "src/meio.rs", rest2);
+    commit(dir, "src/destino.rs", &ler(3), "move o ler para o destino");
+    scan(dir);
+
+    let every = lineage(dir, "src/destino.rs");
+    assert_eq!(changes(&every, "ler"), listed(&["muda o ler no meio", "muda o ler", "cria o ler"]));
+    assert_eq!(every.moves, 5, "sem o número, vale o padrão");
+
+    let one = lineage_with(dir, "src/destino.rs", &["--moves", "1"]);
+    assert_eq!(changes(&one, "ler"), listed(&["muda o ler no meio", "move o ler para o meio"]));
+    assert_eq!(one.moves, 1);
 }
 
 #[test]
@@ -398,4 +433,46 @@ fn a_change_in_the_comment_right_above_a_function_belongs_to_it() {
     let found = lineage(dir, "src/doc.rs");
     assert_eq!(changes(&found, "soma"), listed(&["explica a soma", "cria a soma"]));
     assert_eq!(changes(&found, "antes"), listed(&["cria a soma"]));
+}
+
+/// Um comentário de revisão preso a uma linha cai na função que continha a
+/// linha no commit comentado, mesmo que ela tenha descido no arquivo depois;
+/// o preso a uma linha fora de qualquer função fica sem função; e o do
+/// commit que o clone não tem, o do ramo apagado depois de um squash, cai
+/// pelas linhas do commit da base com o número do pull request.
+#[test]
+fn a_review_comment_joins_the_function_that_held_its_line_in_the_commented_commit() {
+    use mustard_core::domain::project_map::{PullComment, PullText};
+
+    let temp = project("scan-linhagem-revisao-");
+    let dir = temp.path();
+    declare_base(dir, "main");
+    let two = "pub fn top() -> u32 {\n    1\n}\n\npub fn bottom() -> u32 {\n    10\n}\n";
+    commit(dir, "src/conta.rs", two, "cria as duas (#3)");
+    let created = git(dir, &["rev-parse", "HEAD"]).trim().to_string();
+    commit(dir, "src/conta.rs", &format!("pub fn novo() {{}}\n\n{two}"), "põe o novo em cima (#4)");
+    scan(dir);
+
+    let model = model::path_in(&dir.join(".claude"));
+    let text = |number: u32| PullText { number, title: format!("pull request {number}"), ..PullText::default() };
+    let comment = |number: u32, commit: &str, line: u64, body: &str| PullComment {
+        number,
+        commit: commit.to_string(),
+        path: "src/conta.rs".to_string(),
+        line,
+        body: body.to_string(),
+    };
+    store::save_pull_at(&model, &text(3), &[comment(3, &created, 6, "e o dez?"), comment(3, &created, 4, "linha em branco")]).unwrap();
+    let gone = "0123456789abcdef0123456789abcdef01234567";
+    store::save_pull_at(&model, &text(4), &[comment(4, gone, 1, "nome melhor")]).unwrap();
+
+    let found = lineage(dir, "src/conta.rs");
+    let bodies = |name: &str| -> Vec<(u32, String, String)> {
+        let decl = found.declarations.iter().find(|decl| decl.name == name).expect("a declaração está na lista");
+        decl.comments.iter().map(|c| (c.pr, c.commit.clone(), c.body.clone())).collect()
+    };
+    assert_eq!(bodies("bottom"), [(3, created[..10].to_string(), "e o dez?".to_string())], "{found:?}");
+    assert_eq!(bodies("novo"), [(4, gone[..10].to_string(), "nome melhor".to_string())], "{found:?}");
+    assert!(bodies("top").is_empty(), "{found:?}");
+    assert_eq!(found.comments, 3, "a lista guarda quantos comentários presos ao arquivo o mapa tinha");
 }

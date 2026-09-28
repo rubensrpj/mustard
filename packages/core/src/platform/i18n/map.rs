@@ -127,13 +127,13 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("map.summary.recent", Locale::EnUs) => "Recently changed: {files}.",
         ("map.summary.ask", Locale::PtBr) => {
             "Pergunte ao mapa: `mustard-rt run map examples --file <caminho>`, `importers`, `tests`, \
-             `slice --file <caminho> --name <declaração>`, `users --name <declaração>` ou \
-             `search --query \"<palavras>\"`."
+             `slice --file <caminho> --name <declaração>`, `users --name <declaração>`, \
+             `history --name <declaração>` ou `search --query \"<palavras>\"`."
         }
         ("map.summary.ask", Locale::EnUs) => {
             "Ask the map: `mustard-rt run map examples --file <path>`, `importers`, `tests`, \
-             `slice --file <path> --name <declaration>`, `users --name <declaration>` or \
-             `search --query \"<words>\"`."
+             `slice --file <path> --name <declaration>`, `users --name <declaration>`, \
+             `history --name <declaration>` or `search --query \"<words>\"`."
         }
         ("map.users.head", Locale::PtBr) => {
             "Quem usa `{name}`, como arquivo:linha:quem chama. As ligações provadas vêm primeiro. \
@@ -220,6 +220,24 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "`{name}` existe em mais de um arquivo. Diga qual com --file."
         }
         ("map.history.pick_file", Locale::EnUs) => "`{name}` exists in more than one file. Say which one with --file.",
+        ("map.history.bad_setting", Locale::PtBr) => {
+            "O valor de map.{key} no mustard.json não vale, porque o número tem que ser inteiro e maior que zero. \
+             A história usa o padrão, {default}."
+        }
+        ("map.history.bad_setting", Locale::EnUs) => {
+            "The value of map.{key} in mustard.json does not count, because the number must be a whole number \
+             above zero. The history uses the default, {default}."
+        }
+        ("map.history.pull_missing", Locale::PtBr) => {
+            "O mapa ainda não tem o texto do pull request #{number}. Ele vem do provedor quando o mapa se \
+             atualiza, depois que o commit entra na base."
+        }
+        ("map.history.pull_missing", Locale::EnUs) => {
+            "The map does not have the text of pull request #{number} yet. It comes from the provider when \
+             the map updates, after the commit reaches the base."
+        }
+        ("map.history.spec", Locale::PtBr) => "combinado na spec {spec}, {code}: {sentence}",
+        ("map.history.spec", Locale::EnUs) => "agreed in spec {spec}, {code}: {sentence}",
         ("map.history_unreadable", Locale::PtBr) => "A história de `{file}` não pôde ser lida do git ({detail}).",
         ("map.history_unreadable", Locale::EnUs) => "The history of `{file}` could not be read from git ({detail}).",
         _ => return None,
@@ -239,8 +257,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("map.rs"),
             super::PREFIXES,
-            43,
-            0x7812_6479_a234_4c6e,
+            46,
+            0x7527_204a_6e03_e87b,
         );
     }
 
@@ -266,6 +284,9 @@ mod tests {
                 "map.history.next",
                 "map.history.not_in_base",
                 "map.history.pick_file",
+                "map.history.bad_setting",
+                "map.history.pull_missing",
+                "map.history.spec",
                 "map.history_unreadable",
             ] {
                 let text = translate(key, lang)
@@ -275,7 +296,13 @@ mod tests {
                     .replace("{base}", "dev")
                     .replace("{line}", "4")
                     .replace("{commit}", "abc")
-                    .replace("{detail}", "falha");
+                    .replace("{detail}", "falha")
+                    .replace("{key}", "historyCommits")
+                    .replace("{default}", "10")
+                    .replace("{number}", "7")
+                    .replace("{spec}", "entrega")
+                    .replace("{code}", "combinado")
+                    .replace("{sentence}", "O pedido sai em uma frase.");
                 let report = crate::domain::clarity::measure(&text, &[], Some(lang));
                 assert!(report.passed, "{key} {lang:?}: {report:?}");
             }
@@ -325,6 +352,9 @@ mod tests {
             ("map.history.next", &["{commit}"][..]),
             ("map.history.not_in_base", &["{base}", "{name}", "{file}"][..]),
             ("map.history.pick_file", &["{name}"][..]),
+            ("map.history.bad_setting", &["{key}", "{default}"][..]),
+            ("map.history.pull_missing", &["{number}"][..]),
+            ("map.history.spec", &["{spec}", "{code}", "{sentence}"][..]),
             ("map.history_unreadable", &["{file}", "{detail}"][..]),
             ("doctor.scan_output.visible", &["{paths}"][..]),
         ] {

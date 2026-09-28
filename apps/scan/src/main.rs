@@ -71,6 +71,10 @@ enum Command {
         /// O arquivo, relativo à pasta lida.
         #[arg(long)]
         file: String,
+        /// Quantas vezes seguidas uma declaração que veio de outro arquivo é
+        /// seguida nele.
+        #[arg(long, default_value_t = mustard_core::domain::project_map::MOVES_FOLLOWED)]
+        moves: usize,
         /// Uma linha de JSON (o arquivo, os commits e as declarações) no
         /// lugar do resumo em texto.
         #[arg(long)]
@@ -139,8 +143,8 @@ fn main() -> Result<()> {
                 );
             }
         }
-        Command::History { path, out, file, json } => {
-            let report = history::run(&path, &out, &file)?;
+        Command::History { path, out, file, moves, json } => {
+            let report = history::run(&path, &out, &file, moves)?;
             if json {
                 let line = serde_json::json!({
                     "ok": true,

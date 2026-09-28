@@ -47,6 +47,11 @@ use super::scan_claude;
 /// generator.
 pub fn run(root: &Path, out: Option<&Path>, full: bool) {
     let result = scan_at(root, out, full, |root, model| Scan::locate().scan(root, model));
+    // Com o mapa do projeto gravado, o texto dos pull requests que a
+    // história dele cita e ele ainda não tem, lido do provedor sem travar.
+    if out.is_none() && result["ok"] == json!(true) {
+        crate::shared::pr_history::refresh(root);
+    }
     println!("{}", serde_json::to_string_pretty(&result).unwrap_or_else(|_| "{}".into()));
 }
 

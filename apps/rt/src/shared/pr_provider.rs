@@ -296,6 +296,44 @@ pub(crate) enum PrRef<'a> {
     Checkout,
 }
 
+/// O texto de um pull request como o provedor o guarda: o título, a
+/// descrição (vazia quando não tem) e a marca de versão da leitura, vazia no
+/// provedor que não a dá.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct PrText {
+    pub(crate) title: String,
+    pub(crate) body: String,
+    pub(crate) etag: String,
+}
+
+/// O que a leitura do texto de um pull request responde: o texto, ou que ele
+/// segue igual ao da marca de versão que quem perguntou já tinha.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PrTextRead {
+    Unchanged,
+    Read(PrText),
+}
+
+/// Se o motivo de uma leitura que falhou é o provedor dizer que não conhece
+/// o que se pediu — o número de outro repositório no título de um commit, ou
+/// o commit que o servidor não tem —, e não a falta de acesso ou de rede: o
+/// `gh` diz o código HTTP no erro (404, e 422 para o commit desconhecido), e
+/// o adaptador do Azure DevOps o põe no começo do motivo.
+pub(crate) fn is_not_found(reason: &str) -> bool {
+    ["HTTP 404", "HTTP 422"].iter().any(|code| reason.contains(code)) || reason.starts_with("azure-http-404")
+}
+
+/// Um comentário de revisão preso a uma linha: o commit comentado, o arquivo
+/// com barras normais a partir da raiz, a linha (a partir de 1) na versão
+/// desse commit e o texto.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PrLineComment {
+    pub(crate) commit: String,
+    pub(crate) path: String,
+    pub(crate) line: u64,
+    pub(crate) body: String,
+}
+
 // ---------------------------------------------------------------------------
 // The port
 // ---------------------------------------------------------------------------
@@ -372,6 +410,31 @@ pub(crate) trait PrProvider {
     /// question that was never asked is how a diagnostic teaches the operator
     /// to ignore it.
     fn branch_protection(&self, branch: &str) -> Result<bool, String>;
+
+    /// O título e a descrição do pull request `number`. Com a marca de
+    /// versão `known` de uma leitura anterior, o provedor que a entende
+    /// responde [`PrTextRead::Unchanged`] quando nada mudou, sem mandar o
+    /// texto de novo. Só leitura. Quem não sabe fazer responde
+    /// [`PR_UNSUPPORTED`].
+    fn text(&self, _number: u64, _known: &str) -> Result<PrTextRead, String> {
+        unsupported()
+    }
+
+    /// Os comentários de revisão do pull request `number` presos a uma linha
+    /// do lado novo do diff; o comentário geral e o preso ao arquivo inteiro
+    /// ficam fora. Só leitura. Quem não sabe fazer responde
+    /// [`PR_UNSUPPORTED`].
+    fn line_comments(&self, _number: u64) -> Result<Vec<PrLineComment>, String> {
+        unsupported()
+    }
+
+    /// O número do pull request mesclado que levou o commit `sha` (o hash
+    /// inteiro) à base, para o commit de squash ou rebase que não o diz no
+    /// título; `None` quando nenhum o levou. Só leitura. Quem não sabe fazer
+    /// responde [`PR_UNSUPPORTED`].
+    fn pr_of_commit(&self, _sha: &str) -> Result<Option<u64>, String> {
+        unsupported()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -654,6 +717,87 @@ impl PrProvider for GithubPrCli {
         )?;
         Ok(rules_protect(&row))
     }
+
+    fn text(&self, number: u64, known: &str) -> Result<PrTextRead, String> {
+        // `-i` traz os cabeçalhos, onde vem a marca de versão. Com ela, o
+        // GitHub responde 304 sem corpo quando nada mudou, e a resposta 304
+        // não conta no limite de chamadas da conta; o `gh` a trata como
+        // falha e diz o código no erro.
+        let endpoint = format!("repos/{{owner}}/{{repo}}/pulls/{number}");
+        let condition = format!("If-None-Match: {known}");
+        let mut args = vec!["api", "-i", endpoint.as_str()];
+        if !known.is_empty() {
+            args.extend(["-H", condition.as_str()]);
+        }
+        match gh_out(&self.repo, &args) {
+            Ok(raw) => text_from_github(&raw).map(PrTextRead::Read),
+            Err(reason) if !known.is_empty() && reason.contains("HTTP 304") => Ok(PrTextRead::Unchanged),
+            Err(reason) => Err(reason),
+        }
+    }
+
+    fn line_comments(&self, number: u64) -> Result<Vec<PrLineComment>, String> {
+        // Os comentários de revisão não vêm no `gh pr view --json`: só a API
+        // de REST os dá. Uma página, até cem.
+        let doc = gh_json(&self.repo, &["api", &format!("repos/{{owner}}/{{repo}}/pulls/{number}/comments?per_page=100")])?;
+        line_comments_from_github(&doc)
+    }
+
+    fn pr_of_commit(&self, sha: &str) -> Result<Option<u64>, String> {
+        let doc = gh_json(&self.repo, &["api", &format!("repos/{{owner}}/{{repo}}/commits/{sha}/pulls")])?;
+        merged_pr_from_github(&doc)
+    }
+}
+
+/// O texto de um pull request na saída do `gh api -i`: os cabeçalhos, uma
+/// linha em branco e o documento. A marca de versão vem do cabeçalho `ETag`,
+/// com qualquer caixa; a descrição nula fica vazia; o documento sem título
+/// não é um pull request.
+fn text_from_github(raw: &str) -> Result<PrText, String> {
+    let raw = raw.replace("\r\n", "\n");
+    let (head, doc) = raw.split_once("\n\n").unwrap_or(("", raw.as_str()));
+    let etag = head
+        .lines()
+        .find_map(|line| line.split_once(':').filter(|(name, _)| name.trim().eq_ignore_ascii_case("etag")))
+        .map(|(_, value)| value.trim().to_string())
+        .unwrap_or_default();
+    let doc: Value = serde_json::from_str(doc.trim()).map_err(|_| "parse-error".to_string())?;
+    let title = doc.get("title").and_then(Value::as_str).ok_or_else(|| "parse-error".to_string())?;
+    let body = doc.get("body").and_then(Value::as_str).unwrap_or_default();
+    Ok(PrText { title: title.to_string(), body: body.to_string(), etag })
+}
+
+/// Os comentários presos a linhas numa página de `pulls/N/comments`. Vale a
+/// posição de agora (`commit_id` e `line`) e, no comentário que ficou para
+/// trás e já não tem linha, a de quando se escreveu (`original_commit_id` e
+/// `original_line`). Fica fora o comentário do arquivo inteiro, o do lado
+/// velho do diff e o sem linha.
+fn line_comments_from_github(doc: &Value) -> Result<Vec<PrLineComment>, String> {
+    let rows = doc.as_array().ok_or_else(|| "parse-error".to_string())?;
+    let text = |row: &Value, key: &str| row.get(key).and_then(Value::as_str).unwrap_or_default().to_string();
+    Ok(rows
+        .iter()
+        .filter(|row| text(row, "subject_type") != "file" && text(row, "side") != "LEFT")
+        .filter_map(|row| {
+            let (commit, line) = match row.get("line").and_then(Value::as_u64) {
+                Some(line) => (text(row, "commit_id"), line),
+                None => (text(row, "original_commit_id"), row.get("original_line").and_then(Value::as_u64)?),
+            };
+            let path = text(row, "path");
+            (line > 0 && !commit.is_empty() && !path.is_empty())
+                .then(|| PrLineComment { commit, path, line, body: text(row, "body") })
+        })
+        .collect())
+}
+
+/// O número do primeiro pull request mesclado na lista de `commits/SHA/pulls`;
+/// o aberto ou fechado sem merge não levou o commit à base.
+fn merged_pr_from_github(doc: &Value) -> Result<Option<u64>, String> {
+    let rows = doc.as_array().ok_or_else(|| "parse-error".to_string())?;
+    Ok(rows
+        .iter()
+        .find(|row| row.get("merged_at").is_some_and(|at| !at.is_null()))
+        .and_then(|row| row.get("number").and_then(Value::as_u64)))
 }
 
 /// Whether a `rules/branches/{branch}` document names any rule at all.
@@ -751,7 +895,7 @@ pub(crate) fn provider_in(config_root: &Path, repo: &Path) -> Box<dyn PrProvider
 mod tests {
     use super::*;
     use crate::shared::pr_azure::{
-        do_open, do_view_number, pat_from,
+        do_line_comments, do_open, do_pr_of_commit, do_text, do_view_number, pat_from,
         test_support::{remote, FakeTransport},
         AzureRemote, PAT_ENV,
     };
@@ -1220,5 +1364,112 @@ mod tests {
                 "for {url:?}",
             );
         }
+    }
+
+    /// O texto de um pull request pelo `gh api -i`: a marca de versão vem do
+    /// cabeçalho, em qualquer caixa e com a quebra de linha do Windows, a
+    /// descrição nula fica vazia, e o documento sem título é recusado.
+    #[test]
+    fn the_github_text_reads_the_mark_from_the_headers_and_the_body_from_the_document() {
+        let raw = "HTTP/2.0 200 OK\r\nContent-Type: application/json\r\nEtag: W/\"abc\"\r\n\r\n{\"number\": 7, \"title\": \"Grava o pagamento\", \"body\": \"Primeiro.\\n\\nSegundo.\"}";
+        assert_eq!(
+            text_from_github(raw),
+            Ok(PrText { title: "Grava o pagamento".into(), body: "Primeiro.\n\nSegundo.".into(), etag: "W/\"abc\"".into() }),
+        );
+        let no_body = "HTTP/2.0 200 OK\nETAG: \"x\"\n\n{\"title\": \"Sem descrição\", \"body\": null}";
+        assert_eq!(text_from_github(no_body), Ok(PrText { title: "Sem descrição".into(), body: String::new(), etag: "\"x\"".into() }));
+        assert_eq!(text_from_github("HTTP/2.0 200 OK\n\n{\"number\": 7}"), Err("parse-error".to_string()));
+    }
+
+    /// Dos comentários de revisão do GitHub ficam só os presos a uma linha
+    /// do lado novo: vale a posição de agora e, no comentário que ficou para
+    /// trás, a de quando se escreveu; o do arquivo inteiro, o do lado velho e
+    /// o sem linha ficam fora.
+    #[test]
+    fn only_the_github_comments_on_a_new_side_line_are_kept() {
+        let doc = json!([
+            { "path": "src/a.rs", "line": 4, "commit_id": "c2", "original_line": 3, "original_commit_id": "c1", "side": "RIGHT", "subject_type": "line", "body": "agora" },
+            { "path": "src/a.rs", "line": null, "commit_id": "c2", "original_line": 9, "original_commit_id": "c1", "side": "RIGHT", "subject_type": "line", "body": "ficou para trás" },
+            { "path": "src/a.rs", "line": null, "commit_id": "c2", "original_line": null, "original_commit_id": "c1", "subject_type": "file", "body": "o arquivo inteiro" },
+            { "path": "src/a.rs", "line": 7, "commit_id": "c2", "side": "LEFT", "subject_type": "line", "body": "lado velho" },
+            { "path": "src/a.rs", "line": null, "commit_id": "c2", "original_line": null, "subject_type": "line", "body": "sem linha" },
+        ]);
+        let kept = line_comments_from_github(&doc).unwrap();
+        let seen: Vec<(&str, u64, &str)> = kept.iter().map(|c| (c.commit.as_str(), c.line, c.body.as_str())).collect();
+        assert_eq!(seen, [("c2", 4, "agora"), ("c1", 9, "ficou para trás")]);
+        assert_eq!(line_comments_from_github(&json!({ "message": "Not Found" })), Err("parse-error".to_string()));
+    }
+
+    /// O pull request de um commit é o primeiro mesclado da lista; o aberto
+    /// ou fechado sem merge não levou o commit à base.
+    #[test]
+    fn the_pull_request_of_a_github_commit_is_the_merged_one() {
+        let doc = json!([
+            { "number": 3, "merged_at": null },
+            { "number": 9, "merged_at": "2026-09-20T10:00:00Z" },
+        ]);
+        assert_eq!(merged_pr_from_github(&doc), Ok(Some(9)));
+        assert_eq!(merged_pr_from_github(&json!([{ "number": 3, "merged_at": null }])), Ok(None));
+        assert_eq!(merged_pr_from_github(&json!([])), Ok(None));
+    }
+
+    /// No Azure DevOps, o texto vem do pull request, sem marca de versão; os
+    /// comentários, das conversas presas a uma linha do lado novo, no último
+    /// commit do ramo de origem, sem a conversa geral, a apagada e o
+    /// comentário do sistema; e o pull request de um commit, da consulta por
+    /// commit de merge. Só GET, e o POST da consulta, que não grava nada.
+    #[test]
+    fn azure_reads_the_text_the_line_comments_and_the_pull_request_of_a_commit() {
+        let pulls = "https://dev.azure.com/contoso/vendas/_apis/git/repositories/portal/pullrequests";
+        let query = "https://dev.azure.com/contoso/vendas/_apis/git/repositories/portal/pullrequestquery?api-version=7.1";
+        let pr = json!({ "pullRequestId": 7, "title": "Grava o pagamento", "description": "Primeiro.", "lastMergeSourceCommit": { "commitId": "c0ffee" } });
+        let threads = json!({ "value": [
+            { "threadContext": { "filePath": "/src/a.rs", "rightFileStart": { "line": 4, "offset": 1 } },
+              "comments": [
+                { "content": "cuidado", "commentType": "text" },
+                { "content": "votou", "commentType": "system" },
+                { "content": "apagado", "commentType": "text", "isDeleted": true },
+              ] },
+            { "threadContext": null, "comments": [{ "content": "geral", "commentType": "text" }] },
+            { "threadContext": { "filePath": "/src/a.rs", "leftFileStart": { "line": 2, "offset": 1 } },
+              "comments": [{ "content": "lado velho", "commentType": "text" }] },
+            { "isDeleted": true, "threadContext": { "filePath": "/src/a.rs", "rightFileStart": { "line": 5, "offset": 1 } },
+              "comments": [{ "content": "conversa apagada", "commentType": "text" }] },
+        ] });
+        let found = json!({ "results": [{ "c0ffee": [{ "pullRequestId": 7 }] }] });
+        let fake = FakeTransport::of(&[
+            ("GET", &format!("{pulls}/7?api-version=7.1"), pr),
+            ("GET", &format!("{pulls}/7/threads?api-version=7.1"), threads),
+            ("POST", query, found),
+        ]);
+        let r = remote();
+        assert_eq!(
+            do_text(&r, &fake, "Basic x", 7),
+            Ok(PrText { title: "Grava o pagamento".into(), body: "Primeiro.".into(), etag: String::new() }),
+        );
+        assert_eq!(
+            do_line_comments(&r, &fake, "Basic x", 7),
+            Ok(vec![PrLineComment { commit: "c0ffee".into(), path: "src/a.rs".into(), line: 4, body: "cuidado".into() }]),
+        );
+        assert_eq!(do_pr_of_commit(&r, &fake, "Basic x", "c0ffee"), Ok(Some(7)));
+        let calls = fake.calls.borrow();
+        assert!(calls.iter().all(|c| c.method == "GET" || c.url == query), "{calls:?}");
+        assert_eq!(
+            calls.last().and_then(|c| c.body.clone()),
+            Some(json!({ "queries": [{ "type": "lastMergeCommit", "items": ["c0ffee"] }] })),
+        );
+    }
+
+    /// O provedor sem adaptador não lê texto, comentário nem número: diz
+    /// que não sabe, e quem pediu segue sem eles.
+    #[test]
+    fn a_provider_without_an_adapter_reads_no_pull_request_text() {
+        let other = UnsupportedPr { provider: "gitlab".to_string() };
+        assert_eq!(other.text(7, ""), Err(PR_UNSUPPORTED.to_string()));
+        assert_eq!(other.line_comments(7), Err(PR_UNSUPPORTED.to_string()));
+        assert_eq!(other.pr_of_commit("c0ffee"), Err(PR_UNSUPPORTED.to_string()));
+        assert!(is_not_found("gh: Not Found (HTTP 404)") && is_not_found("azure-http-404: gone"));
+        assert!(is_not_found("gh: No commit found for SHA: c0ffee (HTTP 422)"));
+        assert!(!is_not_found("gh: Bad credentials (HTTP 401)") && !is_not_found("gh-not-found"));
     }
 }

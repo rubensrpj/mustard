@@ -104,6 +104,12 @@ pub struct GitConfig {
     /// touched unless the project turns this on in `mustard.json`.
     #[serde(rename = "deleteRemoteBranch", default, skip_serializing_if = "std::ops::Not::not")]
     pub delete_remote_branch: bool,
+    /// Se a história do mapa lê do servidor o texto dos pull requests da
+    /// base: o título, a descrição e os comentários presos a linhas. Ligada
+    /// quando ausente; `false` faz a história não chamar o servidor. Lida só
+    /// por [`GitConfig::pull_request_text`].
+    #[serde(rename = "pullRequestText", default, skip_serializing_if = "Option::is_none")]
+    pub pull_request_text: Option<bool>,
 }
 
 
@@ -152,6 +158,74 @@ impl GitConfig {
             return Some(star.to_string());
         }
         self.declared_bases().into_iter().next()
+    }
+
+    /// A história do mapa lê do servidor o texto dos pull requests: só um
+    /// `pullRequestText: false` escrito no arquivo a desliga.
+    #[must_use]
+    pub fn pull_request_text(&self) -> bool {
+        self.pull_request_text != Some(false)
+    }
+}
+
+/// A seção `map` do `mustard.json`: os números da pergunta da história que
+/// trocam custo por qualidade. Cada valor fica como o arquivo o traz, para
+/// que um texto ou um número negativo não torne o arquivo inteiro ilegível:
+/// quem o lê é [`Setting::of`], que diz se ele falta, vale ou é inválido.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct MapConfig {
+    /// Quantas vezes seguidas a história de uma função segue para o arquivo
+    /// de onde ela veio.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub history_moves: Option<Value>,
+    /// Quantos commits de uma função a resposta da história mostra.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub history_commits: Option<Value>,
+    /// Quantas chamadas ao provedor cada atualização do mapa gasta lendo os
+    /// pull requests da base.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pull_request_calls: Option<Value>,
+}
+
+impl MapConfig {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.history_moves.is_none() && self.history_commits.is_none() && self.pull_request_calls.is_none()
+    }
+}
+
+/// Um número da configuração, como o arquivo o traz: ausente, um inteiro
+/// maior que zero, ou inválido (zero, negativo, fração ou texto). O ausente e
+/// o inválido caem no padrão de quem lê; o inválido pede o aviso.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Setting {
+    Absent,
+    Set(usize),
+    Invalid,
+}
+
+impl Setting {
+    /// O número escrito em `value`.
+    #[must_use]
+    pub fn of(value: Option<&Value>) -> Self {
+        match value {
+            None | Some(Value::Null) => Self::Absent,
+            Some(value) => value
+                .as_u64()
+                .filter(|n| *n > 0)
+                .and_then(|n| usize::try_from(n).ok())
+                .map_or(Self::Invalid, Self::Set),
+        }
+    }
+
+    /// O número que vale: o escrito ou, sem ele, `default`.
+    #[must_use]
+    pub fn or(self, default: usize) -> usize {
+        match self {
+            Self::Set(n) => n,
+            Self::Absent | Self::Invalid => default,
+        }
     }
 }
 
@@ -419,6 +493,11 @@ pub struct ProjectConfig {
     /// um número maior aqui.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_compiling_waves: Option<u64>,
+    /// Os números da pergunta da história do mapa — veja [`MapConfig`]. Lidos
+    /// só por [`ProjectConfig::history_moves`] e
+    /// [`ProjectConfig::history_commits`].
+    #[serde(skip_serializing_if = "MapConfig::is_empty")]
+    pub map: MapConfig,
     /// A chave que liga e desliga o Mustard no projeto. Desligado (`false`),
     /// nenhum gancho do Mustard age aqui; ausente, ele está ligado. Lida só
     /// por [`ProjectConfig::enabled`].
@@ -574,6 +653,27 @@ impl ProjectConfig {
     #[must_use]
     pub fn max_compiling_waves(&self) -> Option<usize> {
         self.max_compiling_waves.and_then(|n| usize::try_from(n).ok())
+    }
+
+    /// `map.historyMoves`: quantas vezes seguidas a história de uma função
+    /// segue para o arquivo de onde ela veio.
+    #[must_use]
+    pub fn history_moves(&self) -> Setting {
+        Setting::of(self.map.history_moves.as_ref())
+    }
+
+    /// `map.historyCommits`: quantos commits de uma função a resposta da
+    /// história mostra.
+    #[must_use]
+    pub fn history_commits(&self) -> Setting {
+        Setting::of(self.map.history_commits.as_ref())
+    }
+
+    /// `map.pullRequestCalls`: quantas chamadas ao provedor cada atualização
+    /// do mapa gasta lendo os pull requests da base.
+    #[must_use]
+    pub fn pull_request_calls(&self) -> Setting {
+        Setting::of(self.map.pull_request_calls.as_ref())
     }
 
     /// O Mustard está ligado neste projeto: só um `enabled: false` escrito no
@@ -858,6 +958,55 @@ mod tests {
         assert_eq!(cfg.max_active_specs(), Some(0));
         cfg.max_active_specs = Some(5);
         assert_eq!(cfg.max_active_specs(), Some(5));
+    }
+
+    /// Os números da história vêm da seção `map`: sem a chave, ausentes;
+    /// com um inteiro maior que zero, ele; com zero, negativo, fração ou
+    /// texto, inválidos, e o resto do arquivo segue lido.
+    #[test]
+    fn the_history_numbers_are_absent_set_or_invalid() {
+        let dir = tempdir().unwrap();
+        let load = |text: &str| {
+            std::fs::write(dir.path().join("mustard.json"), text).unwrap();
+            ProjectConfig::load(dir.path())
+        };
+        let cfg = load(r#"{"git": {"flow": {"*": "main"}}}"#);
+        assert_eq!((cfg.history_moves(), cfg.history_commits()), (Setting::Absent, Setting::Absent));
+        assert_eq!(cfg.history_commits().or(10), 10);
+
+        assert_eq!(cfg.pull_request_calls(), Setting::Absent);
+
+        let cfg = load(r#"{"map": {"historyMoves": 2, "historyCommits": 20, "pullRequestCalls": 8}}"#);
+        assert_eq!((cfg.history_moves(), cfg.history_commits()), (Setting::Set(2), Setting::Set(20)));
+        assert_eq!((cfg.history_moves().or(5), cfg.history_commits().or(10)), (2, 20));
+        assert_eq!(cfg.pull_request_calls().or(4), 8);
+
+        for bad in ["0", "-3", "2.5", "\"dez\"", "true"] {
+            let cfg = load(&format!(r#"{{"git": {{"flow": {{"*": "main"}}}}, "map": {{"historyCommits": {bad}}}}}"#));
+            assert_eq!(cfg.history_commits(), Setting::Invalid, "{bad}");
+            let calls = load(&format!(r#"{{"map": {{"pullRequestCalls": {bad}}}}}"#));
+            assert_eq!(calls.pull_request_calls().or(4), 4, "{bad}");
+            assert_eq!(cfg.history_commits().or(10), 10, "{bad}");
+            assert!(!cfg.unreadable, "{bad}: o valor inválido não torna o arquivo ilegível");
+            assert_eq!(cfg.git.primary_base().as_deref(), Some("main"), "{bad}");
+        }
+    }
+
+    /// A leitura do texto dos pull requests fica ligada sem a chave e só
+    /// desliga com `pullRequestText: false`; sem ela, a gravação não escreve
+    /// a chave.
+    #[test]
+    fn the_pull_request_text_is_on_unless_written_off() {
+        let dir = tempdir().unwrap();
+        let load = |text: &str| {
+            std::fs::write(dir.path().join("mustard.json"), text).unwrap();
+            ProjectConfig::load(dir.path())
+        };
+        assert!(load("{}").git.pull_request_text());
+        assert!(load(r#"{"git": {"pullRequestText": true}}"#).git.pull_request_text());
+        assert!(!load(r#"{"git": {"pullRequestText": false}}"#).git.pull_request_text());
+        let written = serde_json::to_string(&ProjectConfig::default()).unwrap();
+        assert!(!written.contains("pullRequestText") && !written.contains("\"map\""), "{written}");
     }
 
     /// O idioma vem só do bloco `language`: o texto e o código, cada um na

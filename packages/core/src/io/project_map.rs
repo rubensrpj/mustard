@@ -25,7 +25,7 @@ use serde_json::{Map, Value};
 
 use crate::domain::project_map::{
     Commit, DeclLineage, FileLineage, History, LineageCommit, MapDecl, MapDegree, MapLanguage, MapModule, MapProject,
-    MapRefusal, MapSkeleton, ProjectMap,
+    MapRefusal, MapSkeleton, ProjectMap, PullComment, PullOfCommit, PullText, Pulls,
 };
 use crate::domain::normalize::Languages;
 use crate::io::map_db::{self, Block, Kind, MapDb};
@@ -363,29 +363,105 @@ pub const HISTORY: MapBlock = block!("history", version 3, {
 
 /// A história de cada declaração, lida do git na primeira pergunta sobre um
 /// arquivo e guardada por arquivo: a branch de partida, o commit mais novo do
-/// arquivo nela quando se leu e a marca do scan que leu; os commits lidos,
+/// arquivo nela quando se leu, a marca do scan que leu, quantas mudanças de
+/// arquivo a leitura podia seguir e quantos comentários de revisão presos ao
+/// arquivo o mapa tinha; os commits lidos,
 /// com o título e o número do pull request; e, de cada declaração, pelo nome
 /// e pela ordem entre as de mesmo nome, os commits que a mudaram, cada um
-/// com a marca de só forma. A montagem não o grava nem o confere: ele fica
+/// com a marca de só forma, e os comentários de revisão presos às linhas
+/// dela. A montagem não o grava nem o confere: ele fica
 /// fora de [`BLOCKS`], volta vazio na troca de versão, e a pergunta seguinte
 /// o enche de novo.
-pub const LINEAGE: MapBlock = block!("lineage", version 1, {
-    "lineage_files" at list(&["files"]) => ["path" Text, "base" Text, "last_commit" Text, "mark" Text],
+pub const LINEAGE: MapBlock = block!("lineage", version 2, {
+    "lineage_files" at list(&["files"]) => [
+        "path" Text, "base" Text, "last_commit" Text, "mark" Text, "moves" Int, "comments" Int
+    ],
     "lineage_commits" at list(&["commits"]) => ["path" Text, "id" Text, "at" Int, "title" Text, "pr" Int],
-    "lineage_decls" at list(&["declarations"]) => ["path" Text, "name" Text, "nth" Int, "commits" Json]
+    "lineage_decls" at list(&["declarations"]) => ["path" Text, "name" Text, "nth" Int, "commits" Json, "comments" Json]
 });
+
+/// O que o servidor disse dos pull requests da base, lido uma vez depois que
+/// o commit entra nela: o título, a descrição, a marca de versão e o commit
+/// mais novo da base que citava cada um; os comentários de revisão presos a
+/// linhas, com o commit comentado, o arquivo e a linha; e o número de cada
+/// commit que não o diz no título, 0 quando o provedor não achou. Não se
+/// refaz do código nem do git: fica fora de [`BLOCKS`] e, na troca de
+/// versão, é convertido, nunca apagado.
+pub const PULLS: MapBlock = written(block!("pulls", version 1, {
+    "pr_texts" at list(&["texts"]) => ["number" Int, "title" Text, "body" Text, "etag" Text, "through" Text],
+    "pr_comments" at list(&["comments"]) => ["number" Int, "sha" Text, "path" Text, "line" Int, "body" Text],
+    "pr_commits" at list(&["commits"]) => ["id" Text, "pr" Int]
+}));
+
+/// O bloco declarado por [`block!`] como escrito: convertido na troca de
+/// versão, nunca apagado.
+const fn written(mut declared: MapBlock) -> MapBlock {
+    declared.block.kind = Kind::Written(kept_as_is);
+    declared
+}
+
+/// A conversão do bloco dos pull requests: a primeira versão não tem de
+/// onde converter, e as linhas ficam como estão.
+#[allow(clippy::unnecessary_wraps)] // a assinatura é a de todo bloco convertido
+fn kept_as_is(_: &Connection, _: u32) -> Result<()> {
+    Ok(())
+}
+
+/// Os itens das specs do projeto, com o que os liga ao código: de cada
+/// item vigente de decisão, regra, pedido, tarefa, limite, contrato, erro,
+/// caso de borda e fora do escopo, a spec, o número, o código, o tipo, o
+/// título, a parte do usuário, a parte do agente, as palavras de busca que a
+/// gravação calculou e os arquivos que ele cita ou que as tarefas dele
+/// mudam; de cada commit de onda, os itens que ele cumpriu e os arquivos
+/// dele; e, de cada spec, o último número lido e o tamanho e a hora do
+/// arquivo quando se leu. Junto mora o índice da busca dos itens, com o
+/// título, a parte do usuário e as palavras como campos próprios. Quem o
+/// enche é `io::map_specs`; a montagem não o grava nem o confere.
+pub const SPECS: MapBlock = rebuilt_by(block!("specs", version 1, {
+    "spec_items" at list(&["items"]) => [
+        "spec" Text, "id" Int, "code" Text, "kind" Text, "title" Text, "text" Text, "agent" Text, "search" Text,
+        "files" Json
+    ],
+    "spec_commits" at list(&["commits"]) => ["spec" Text, "sha" Text, "items" Json, "files" Json],
+    "spec_marks" at list(&["marks"]) => ["spec" Text, "last_id" Int, "size" Int, "modified" Int]
+}, index [
+    "spec_vocab", "spec_fts", "spec_lengths", "spec_meta"
+] "CREATE INDEX spec_items_by_spec ON spec_items(spec, id);\
+   CREATE INDEX spec_commits_by_sha ON spec_commits(substr(sha, 1, 10));\
+   CREATE VIRTUAL TABLE spec_fts USING fts5(title, text, words, content='', contentless_delete=1, \
+     tokenize='unicode61 remove_diacritics 2');\
+   CREATE VIRTUAL TABLE spec_vocab USING fts5vocab(spec_fts, instance);\
+   CREATE TABLE spec_lengths(id INTEGER PRIMARY KEY, title INTEGER, text INTEGER, words INTEGER);\
+   CREATE TABLE spec_meta(key TEXT PRIMARY KEY, value);"), crate::io::map_specs::rebuild);
+
+/// O bloco declarado por [`block!`] refeito por `rebuild`, e não vazio para
+/// o scan encher.
+const fn rebuilt_by(mut declared: MapBlock, rebuild: crate::io::map_db::Rebuild) -> MapBlock {
+    declared.block.kind = Kind::Rebuilt(rebuild);
+    declared
+}
 
 /// Os blocos do mapa, na ordem em que se leem: os arquivos antes das
 /// declarações, das rotas e das ligações deles.
 pub const BLOCKS: [MapBlock; 6] = [CENSUS, FILES, DECLS, ROUTES, GRAPH, HISTORY];
 
 /// Todo bloco que a porta declara, na ordem do despejo: os da montagem e,
-/// depois deles, o da história de cada declaração.
-const DECLARED: [&MapBlock; 7] = [&CENSUS, &FILES, &DECLS, &ROUTES, &GRAPH, &HISTORY, &LINEAGE];
+/// depois deles, o da história de cada declaração, o dos pull requests e o
+/// das specs.
+const DECLARED: [&MapBlock; 9] = [&CENSUS, &FILES, &DECLS, &ROUTES, &GRAPH, &HISTORY, &LINEAGE, &PULLS, &SPECS];
 
 /// Os mesmos blocos, como o banco os abre.
-const DB_BLOCKS: [Block; 7] =
-    [CENSUS.block, FILES.block, DECLS.block, ROUTES.block, GRAPH.block, HISTORY.block, LINEAGE.block];
+const DB_BLOCKS: [Block; 9] = [
+    CENSUS.block,
+    FILES.block,
+    DECLS.block,
+    ROUTES.block,
+    GRAPH.block,
+    HISTORY.block,
+    LINEAGE.block,
+    PULLS.block,
+    SPECS.block,
+];
 
 /// As chaves da lista dos arquivos e da lista das declarações de cada um.
 const MODULES: &[&str] = &["modules"];
@@ -411,6 +487,8 @@ pub fn read_at(model: &Path) -> std::result::Result<ProjectMap, MapRefusal> {
         serde_json::from_str(&json).map_err(|e| MapRefusal::MapUnreadable { detail: e.to_string() })?;
     map.lineage = lineages(db.conn(), None).map_err(unreadable)?;
     map.census_mark = db.mark(CENSUS.name()).map_err(unreadable)?.unwrap_or_default();
+    map.pulls = every_pull(db.conn()).map_err(unreadable)?;
+    map.spec_notes = crate::io::map_specs::notes_of(db.conn(), None).map_err(unreadable)?;
     Ok(map)
 }
 
@@ -584,6 +662,8 @@ pub enum Need<'a> {
     /// declaração desses arquivos, quando guardada, e a marca da versão do
     /// scan que gravou o censo.
     History { file: Option<&'a str>, name: &'a str },
+    /// O texto do pull request com o número, quando o mapa o tem.
+    Pull(u32),
 }
 
 /// Como quem pergunta ao mapa o lê: por [`read_for`], só as tabelas da
@@ -668,9 +748,226 @@ fn part_of(db: &MapDb, need: Need<'_>) -> Result<ProjectMap> {
             let paths: Vec<&str> = map.modules.iter().map(|module| module.path.as_str()).collect();
             map.lineage = lineages(conn, Some(&paths))?;
             map.census_mark = db.mark(CENSUS.name())?.unwrap_or_default();
+            map.pulls = pulls_of(conn, &paths, &map.lineage)?;
+            let ids: Vec<&str> =
+                map.lineage.iter().flat_map(|lineage| lineage.commits.iter().map(|commit| commit.id.as_str())).collect();
+            map.spec_notes = crate::io::map_specs::notes_of(conn, Some(&ids))?;
+        }
+        Need::Pull(number) => {
+            let number = number.to_string();
+            map.pulls.texts = pull_texts(conn, &format!("{} = ?1", column_names("pr_texts", &["number"])?), &[&number])?;
         }
     }
     Ok(map)
+}
+
+/// Tudo o que o bloco dos pull requests guarda.
+fn every_pull(conn: &Connection) -> Result<Pulls> {
+    Ok(Pulls {
+        texts: pull_texts(conn, "", &[])?,
+        comments: picked(conn, "pr_comments", &["number", "sha", "path", "line", "body"], "", &[])?
+            .iter()
+            .map(pull_comment)
+            .collect(),
+        commits: picked(conn, "pr_commits", &["id", "pr"], "", &[])?.iter().map(pull_of_commit).collect(),
+    })
+}
+
+fn pull_comment(row: &Picked) -> PullComment {
+    PullComment {
+        number: u32::try_from(int_cell(&row[0])).unwrap_or_default(),
+        commit: text_cell(&row[1]),
+        path: text_cell(&row[2]),
+        line: u64::try_from(int_cell(&row[3])).unwrap_or_default(),
+        body: text_cell(&row[4]),
+    }
+}
+
+fn pull_of_commit(row: &Picked) -> PullOfCommit {
+    PullOfCommit { id: text_cell(&row[0]), pr: u32::try_from(int_cell(&row[1])).unwrap_or_default() }
+}
+
+/// O que o bloco dos pull requests guarda para a história dos arquivos
+/// `paths`: os comentários presos a eles, o número de cada commit das listas
+/// `lineage` que o provedor achou, e o texto dos pull requests desses
+/// commits.
+fn pulls_of(conn: &Connection, paths: &[&str], lineage: &[FileLineage]) -> Result<Pulls> {
+    let within = |table: &str, column: &str, values: &[&str]| -> Result<String> {
+        let slots: Vec<String> = (1..=values.len()).map(|at| format!("?{at}")).collect();
+        Ok(format!("{} IN ({})", column_names(table, &[column])?, slots.join(", ")))
+    };
+    let mut pulls = Pulls::default();
+    if !paths.is_empty() {
+        let filter = within("pr_comments", "path", paths)?;
+        pulls.comments = picked(conn, "pr_comments", &["number", "sha", "path", "line", "body"], &filter, paths)?
+            .iter()
+            .map(pull_comment)
+            .collect();
+    }
+    let ids: Vec<&str> = lineage.iter().flat_map(|file| file.commits.iter().map(|commit| commit.id.as_str())).collect();
+    if !ids.is_empty() {
+        pulls.commits =
+            picked(conn, "pr_commits", &["id", "pr"], &within("pr_commits", "id", &ids)?, &ids)?.iter().map(pull_of_commit).collect();
+    }
+    let numbers: BTreeSet<String> = lineage
+        .iter()
+        .flat_map(|file| file.commits.iter().filter_map(|commit| commit.pr))
+        .chain(pulls.commits.iter().map(|commit| commit.pr).filter(|pr| *pr > 0))
+        .map(|pr| pr.to_string())
+        .collect();
+    let numbers: Vec<&str> = numbers.iter().map(String::as_str).collect();
+    if !numbers.is_empty() {
+        let filter = within("pr_texts", "number", &numbers)?;
+        pulls.texts = pull_texts(conn, &filter, &numbers)?;
+    }
+    Ok(pulls)
+}
+
+/// O texto dos pull requests que `filter` deixa, com a marca de versão e o
+/// commit até onde cada um foi lido.
+fn pull_texts(conn: &Connection, filter: &str, params: &[&str]) -> Result<Vec<PullText>> {
+    Ok(picked(conn, "pr_texts", &["number", "title", "body", "etag", "through"], filter, params)?
+        .iter()
+        .map(|row| PullText {
+            number: u32::try_from(int_cell(&row[0])).unwrap_or_default(),
+            title: text_cell(&row[1]),
+            body: text_cell(&row[2]),
+            etag: text_cell(&row[3]),
+            through: text_cell(&row[4]),
+        })
+        .collect())
+}
+
+/// De onde parte a leitura dos pull requests: os commits da história
+/// guardada da base, os das listas por arquivo, e o que o bloco dos pull
+/// requests já tem — os textos sem a descrição, e o número de cada commit
+/// já perguntado.
+#[derive(Debug, Clone, Default)]
+pub struct PullSources {
+    pub window: Vec<Commit>,
+    pub lineage: Vec<LineageCommit>,
+    pub texts: Vec<PullText>,
+    pub asked: Vec<PullOfCommit>,
+}
+
+/// O que a leitura dos pull requests precisa do mapa em `model`, como
+/// [`PullSources`] o descreve. Com as recusas de [`read`].
+pub fn pull_sources_at(model: &Path) -> std::result::Result<PullSources, MapRefusal> {
+    let db = open_existing(model)?;
+    let conn = db.conn();
+    let read = || -> Result<PullSources> {
+        let lineage = picked(conn, "lineage_commits", &["id", "at", "title", "pr"], "", &[])?
+            .iter()
+            .map(|row| LineageCommit {
+                id: text_cell(&row[0]),
+                at: int_cell(&row[1]),
+                title: text_cell(&row[2]),
+                pr: u32::try_from(int_cell(&row[3])).ok().filter(|n| *n > 0),
+            })
+            .collect();
+        let texts = picked(conn, "pr_texts", &["number", "etag", "through"], "", &[])?
+            .iter()
+            .map(|row| PullText {
+                number: u32::try_from(int_cell(&row[0])).unwrap_or_default(),
+                etag: text_cell(&row[1]),
+                through: text_cell(&row[2]),
+                ..PullText::default()
+            })
+            .collect();
+        let asked = picked(conn, "pr_commits", &["id", "pr"], "", &[])?.iter().map(pull_of_commit).collect();
+        Ok(PullSources { window: history(conn)?.commits, lineage, texts, asked })
+    };
+    read().map_err(unreadable)
+}
+
+/// Os comentários de revisão presos ao arquivo `path` no mapa em `model`,
+/// na ordem em que se gravaram. Com as recusas de [`read`].
+pub fn pull_comments_at(model: &Path, path: &str) -> std::result::Result<Vec<PullComment>, MapRefusal> {
+    let db = open_existing(model)?;
+    Ok(pulls_of(db.conn(), &[path], &[]).map_err(unreadable)?.comments)
+}
+
+/// Grava no mapa em `model` o texto do pull request e os comentários presos
+/// a linhas dele, no lugar do que o mapa tinha desse número.
+///
+/// # Errors
+///
+/// Sem o mapa, com ele ilegível ou quando a gravação falha.
+pub fn save_pull_at(model: &Path, text: &PullText, comments: &[PullComment]) -> Result<()> {
+    let number = Sql::Integer(i64::from(text.number));
+    let texts = vec![vec![
+        number.clone(),
+        Sql::Text(text.title.clone()),
+        Sql::Text(text.body.clone()),
+        Sql::Text(text.etag.clone()),
+        Sql::Text(text.through.clone()),
+    ]];
+    let comments = comments
+        .iter()
+        .map(|comment| {
+            vec![
+                number.clone(),
+                Sql::Text(comment.commit.clone()),
+                Sql::Text(comment.path.clone()),
+                Sql::Integer(i64::try_from(comment.line).unwrap_or(i64::MAX)),
+                Sql::Text(comment.body.clone()),
+            ]
+        })
+        .collect();
+    replace_rows(model, vec![("pr_texts", "number", number.clone(), texts), ("pr_comments", "number", number, comments)])
+}
+
+/// Marca no mapa em `model` que o texto do pull request `number` segue o
+/// mesmo até o commit `through`, sem regravar o texto.
+///
+/// # Errors
+///
+/// Sem o mapa, com ele ilegível ou quando a gravação falha.
+pub fn keep_pull_at(model: &Path, number: u32, through: &str) -> Result<()> {
+    let mut db = open_existing(model).map_err(|refusal| Error::Parse(format!("{refusal:?}")))?;
+    db.write(|tx| {
+        tx.execute(
+            &format!("UPDATE {} SET {} = ?1 WHERE {} = ?2", table_name("pr_texts")?, quoted("through"), quoted("number")),
+            rusqlite::params![through, i64::from(number)],
+        )?;
+        Ok(())
+    })
+}
+
+/// Grava no mapa em `model` o número que o provedor deu a cada commit sem
+/// número no título, no lugar do que o mapa tinha desses commits.
+///
+/// # Errors
+///
+/// Sem o mapa, com ele ilegível ou quando a gravação falha.
+pub fn save_pull_commits_at(model: &Path, found: &[PullOfCommit]) -> Result<()> {
+    let changes = found
+        .iter()
+        .map(|commit| {
+            let id = Sql::Text(commit.id.clone());
+            ("pr_commits", "id", id.clone(), vec![vec![id, Sql::Integer(i64::from(commit.pr))]])
+        })
+        .collect();
+    replace_rows(model, changes)
+}
+
+/// Troca, numa transação só, as linhas de cada tabela em que a coluna dada
+/// vale o valor dado pelas linhas novas, na ordem das colunas declaradas.
+fn replace_rows(model: &Path, changes: Vec<(&str, &str, Sql, Vec<Row>)>) -> Result<()> {
+    let mut db = open_existing(model).map_err(|refusal| Error::Parse(format!("{refusal:?}")))?;
+    db.write(|tx| {
+        for (table, key, value, rows) in &changes {
+            let found = declared_table(table)?;
+            tx.execute(&format!("DELETE FROM {} WHERE {} = ?1", quoted(found.name), quoted(key)), [value])?;
+            let names: Vec<String> = found.columns.iter().map(|column| quoted(column.name)).collect();
+            let slots = vec!["?"; names.len()].join(", ");
+            let mut insert = tx.prepare(&format!("INSERT INTO {}({}) VALUES ({slots})", quoted(found.name), names.join(", ")))?;
+            for row in rows {
+                insert.execute(params_from_iter(row))?;
+            }
+        }
+        Ok(())
+    })
 }
 
 /// O nome entre aspas de uma tabela declarada; a tabela que nenhum bloco
@@ -832,13 +1129,16 @@ fn lineages(conn: &Connection, paths: Option<&[&str]>) -> Result<Vec<FileLineage
             }
         }
     };
-    let mut files: Vec<FileLineage> = rows_for("lineage_files", &["path", "base", "last_commit", "mark"])?
+    let columns = ["path", "base", "last_commit", "mark", "moves", "comments"];
+    let mut files: Vec<FileLineage> = rows_for("lineage_files", &columns)?
         .iter()
         .map(|row| FileLineage {
             path: text_cell(&row[0]),
             base: text_cell(&row[1]),
             last_commit: text_cell(&row[2]),
             mark: text_cell(&row[3]),
+            moves: u32::try_from(int_cell(&row[4])).unwrap_or_default(),
+            comments: u32::try_from(int_cell(&row[5])).unwrap_or_default(),
             ..FileLineage::default()
         })
         .collect();
@@ -853,12 +1153,13 @@ fn lineages(conn: &Connection, paths: Option<&[&str]>) -> Result<Vec<FileLineage
             });
         }
     }
-    for row in rows_for("lineage_decls", &["path", "name", "nth", "commits"])? {
+    for row in rows_for("lineage_decls", &["path", "name", "nth", "commits", "comments"])? {
         if let Some(&file) = at.get(&text_cell(&row[0])) {
             files[file].declarations.push(DeclLineage {
                 name: text_cell(&row[1]),
                 nth: u32::try_from(int_cell(&row[2])).unwrap_or_default(),
                 commits: json_cell(&row[3])?,
+                comments: json_cell(&row[4])?,
             });
         }
     }
@@ -1576,30 +1877,27 @@ pub fn save_block_at(model: &Path, block: &MapBlock, map: &Value, mark: &str) ->
 pub fn save_lineage_at(model: &Path, lineage: &FileLineage) -> Result<()> {
     let path = lineage.path.as_str();
     let rows_in_map = serde_json::json!({
-        "files": [{"path": path, "base": lineage.base, "last_commit": lineage.last_commit, "mark": lineage.mark}],
+        "files": [{
+            "path": path, "base": lineage.base, "last_commit": lineage.last_commit, "mark": lineage.mark,
+            "moves": lineage.moves, "comments": lineage.comments,
+        }],
         "commits": lineage.commits.iter().map(|commit| serde_json::json!({
             "path": path, "id": commit.id, "at": commit.at, "title": commit.title, "pr": commit.pr,
         })).collect::<Vec<_>>(),
         "declarations": lineage.declarations.iter().map(|decl| serde_json::json!({
             "path": path, "name": decl.name, "nth": decl.nth, "commits": decl.commits,
+            "comments": (!decl.comments.is_empty()).then_some(&decl.comments),
         })).collect::<Vec<_>>(),
     });
     let fresh: BlockRows =
         LINEAGE.tables.iter().map(|table| rows(table, &rows_in_map)).collect::<std::result::Result<_, _>>().map_err(Error::Parse)?;
-    let mut db = open_existing(model).map_err(|refusal| Error::Parse(format!("{refusal:?}")))?;
-    db.write(|tx| {
-        for (table, rows) in LINEAGE.tables.iter().zip(&fresh) {
-            let first = table.columns.first().map_or("path", |column| column.name);
-            tx.execute(&format!("DELETE FROM {} WHERE {} = ?1", quoted(table.name), quoted(first)), [path])?;
-            let names: Vec<String> = table.columns.iter().map(|column| quoted(column.name)).collect();
-            let slots = vec!["?"; names.len()].join(", ");
-            let mut insert = tx.prepare(&format!("INSERT INTO {}({}) VALUES ({slots})", quoted(table.name), names.join(", ")))?;
-            for row in rows {
-                insert.execute(params_from_iter(row))?;
-            }
-        }
-        Ok(())
-    })
+    let changes = LINEAGE
+        .tables
+        .iter()
+        .zip(fresh)
+        .map(|(table, rows)| (table.name, "path", Sql::Text(path.to_string()), rows))
+        .collect();
+    replace_rows(model, changes)
 }
 
 /// As linhas de cada tabela de cada bloco, na ordem de [`BLOCKS`].
@@ -2127,13 +2425,52 @@ mod tests {
             [
                 "census", "projects", "languages", "manifests", "skeleton", "files", "decls", "texts", "routes", "links",
                 "graph", "fan_in", "history_base", "history_paths", "commits", "lineage_files", "lineage_commits",
-                "lineage_decls", "blocks"
+                "lineage_decls", "pr_texts", "pr_comments", "pr_commits", "spec_items", "spec_commits", "spec_marks", "blocks"
             ]
         );
         let decls = &dump[6]["rows"];
         assert_eq!(decls[0]["file"], json!("src/a.rs"));
         assert_eq!(decls[0]["used_by"], json!(["src/b.rs:2:beta"]));
         assert_eq!(decls[1]["doc"], Value::Null);
+    }
+
+    /// O que o provedor disse dos pull requests fica no mapa quando o scan o
+    /// grava de novo, e a gravação do mesmo número troca o que havia dele: a
+    /// história de um arquivo lê os comentários presos a ele, o número dado
+    /// ao commit sem número e o texto dos pull requests dos commits dela.
+    #[test]
+    fn the_pull_request_rows_survive_a_new_scan_and_are_replaced_by_number() {
+        let dir = tempdir().unwrap();
+        let model = model_path(dir.path());
+        save_at(&model, &scan_map(), "scan 1", &languages()).unwrap();
+        let comment = |line: u64, body: &str| PullComment {
+            number: 7,
+            commit: "c0ffee1234".to_string(),
+            path: "src/a.rs".to_string(),
+            line,
+            body: body.to_string(),
+        };
+        let text = |title: &str| PullText { number: 7, title: title.to_string(), body: "Descrição.".to_string(), etag: "W/\"e1\"".to_string(), through: "aaaa".to_string() };
+        save_pull_at(&model, &text("Primeiro"), &[comment(3, "velho"), comment(4, "velho também")]).unwrap();
+        save_pull_at(&model, &text("Grava o pagamento"), &[comment(3, "cuidado com o arredondamento")]).unwrap();
+        save_pull_commits_at(&model, &[PullOfCommit { id: "bbbb".to_string(), pr: 9 }, PullOfCommit { id: "cccc".to_string(), pr: 0 }]).unwrap();
+        keep_pull_at(&model, 7, "dddd").unwrap();
+        let mut again = scan_map();
+        again["modules"][0]["loc"] = json!(99);
+        save_at(&model, &again, "scan 2", &languages()).unwrap();
+
+        let sources = pull_sources_at(&model).unwrap();
+        let texts: Vec<(u32, &str, &str)> = sources.texts.iter().map(|t| (t.number, t.etag.as_str(), t.through.as_str())).collect();
+        assert_eq!(texts, [(7, "W/\"e1\"", "dddd")], "{sources:?}");
+        let asked: Vec<(&str, u32)> = sources.asked.iter().map(|c| (c.id.as_str(), c.pr)).collect();
+        assert_eq!(asked, [("bbbb", 9), ("cccc", 0)]);
+        let comments = pull_comments_at(&model, "src/a.rs").unwrap();
+        assert_eq!(comments, [comment(3, "cuidado com o arredondamento")], "a gravação do mesmo número troca os comentários");
+        assert!(pull_comments_at(&model, "src/b.rs").unwrap().is_empty());
+        let pull = read_for_at(&model, Need::Pull(7)).unwrap();
+        assert_eq!(pull.pulls.texts.len(), 1);
+        assert_eq!((pull.pulls.texts[0].title.as_str(), pull.pulls.texts[0].body.as_str()), ("Grava o pagamento", "Descrição."));
+        assert!(read_for_at(&model, Need::Pull(8)).unwrap().pulls.texts.is_empty());
     }
 
     /// As tabelas do banco da pasta e as colunas de cada uma.

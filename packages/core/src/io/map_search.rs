@@ -27,6 +27,11 @@
 //! trigram, para o pedaço do nome. O arquivo escrito por máquina fica fora
 //! do índice.
 //!
+//! Um terceiro nível, à parte, guarda os itens das specs (`io::map_specs`):
+//! o título, o texto e as palavras de busca de cada um, com a
+//! tabela própria de números, `spec_meta`. Ele muda quando uma spec muda,
+//! e não quando o scan monta o mapa.
+//!
 //! A busca devolve arquivos, cada um com o texto fixo dele que mais casa com
 //! a pergunta, quando algum casa. A nota é o BM25F de `domain::search`, calculado
 //! aqui sobre as listas do banco: a lista de cada forma e o tamanho dos
@@ -45,7 +50,9 @@ use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Row, Sta
 use serde::Deserialize;
 
 use crate::domain::normalize::{Languages, Normalizer};
-use crate::domain::project_map::{outer_declarations, Found, FoundText, MapRefusal};
+use crate::domain::project_map::{
+    outer_declarations, spec_sentence, Found, FoundItem, FoundText, MapRefusal, SPEC_SENTENCE_CHARS,
+};
 use crate::domain::search::{bm25f, score_x1024, Fields, Posting};
 use crate::io::project_map::{model_path, open_existing, unreadable};
 use crate::platform::error::Result;
@@ -57,6 +64,8 @@ struct Level {
     fts: &'static str,
     vocab: &'static str,
     lengths: &'static str,
+    /// A tabela das línguas, do número de documentos e das médias.
+    meta: &'static str,
     fields: &'static [&'static str],
     unread: &'static [&'static str],
 }
@@ -73,6 +82,7 @@ const FILE_LEVEL: Level = Level {
     fts: "file_fts",
     vocab: "file_vocab",
     lengths: "file_lengths",
+    meta: "search_meta",
     fields: &["name", "path", "doc", "log", "error", "text"],
     unread: &["file_doc", "file_comment"],
 };
@@ -82,8 +92,22 @@ const DECL_LEVEL: Level = Level {
     fts: "decl_fts",
     vocab: "decl_vocab",
     lengths: "decl_lengths",
+    meta: "search_meta",
     fields: &["name", "path", "signature", "doc", "log", "error", "text"],
     unread: &["whole_doc", "body_comment", "body_names", "body_calls"],
+};
+
+/// O nível dos itens das specs (`io::map_specs`): o título, a parte do
+/// usuário e as palavras de busca que a gravação calculou, cada um no seu
+/// campo. As médias e as línguas moram numa tabela do bloco das specs, que a
+/// montagem do mapa não esvazia.
+const SPEC_LEVEL: Level = Level {
+    fts: "spec_fts",
+    vocab: "spec_vocab",
+    lengths: "spec_lengths",
+    meta: "spec_meta",
+    fields: &["title", "text", "words"],
+    unread: &[],
 };
 
 /// Os campos dos textos fixos, os últimos dos dois níveis, nesta ordem: cada
@@ -415,7 +439,7 @@ fn text(row: &Row<'_>, at: usize) -> Result<String> {
 
 /// Grava os documentos de um nível: as formas de cada campo na tabela FTS5,
 /// o tamanho de cada campo em palavras, e o número de documentos e o tamanho
-/// médio de cada campo em `search_meta`.
+/// médio de cada campo na tabela de números do nível.
 fn fill<'d>(conn: &Connection, level: &Level, docs: impl IntoIterator<Item = &'d Doc>) -> Result<()> {
     let names: Vec<&str> = level.columns().collect();
     let columns = names.join(", ");
@@ -437,7 +461,7 @@ fn fill<'d>(conn: &Connection, level: &Level, docs: impl IntoIterator<Item = &'d
         lengths.execute(params_from_iter(sizes))?;
         count += 1;
     }
-    let mut meta = conn.prepare("INSERT INTO search_meta(key, value) VALUES (?1, ?2)")?;
+    let mut meta = conn.prepare(&format!("INSERT OR REPLACE INTO {}(key, value) VALUES (?1, ?2)", level.meta))?;
     meta.execute(params![format!("{}.docs", level.fts), count as i64])?;
     for (field, name) in names.iter().enumerate() {
         let avg = if count == 0 { 0.0 } else { total[field] as f64 / count as f64 };
@@ -603,7 +627,7 @@ fn postings(lists: &mut Statement<'_>, level: &Level, form: &str) -> Result<Vec<
 /// O número de documentos do nível e o tamanho médio de cada campo, como o
 /// índice os gravou, com o mesmo peso em todos os campos.
 fn fields_of(conn: &Connection, level: &Level) -> Result<Fields> {
-    let mut meta = conn.prepare("SELECT value FROM search_meta WHERE key = ?1")?;
+    let mut meta = conn.prepare(&format!("SELECT value FROM {} WHERE key = ?1", level.meta))?;
     let mut number = |key: String| -> Result<f64> {
         Ok(meta.query_row([key], |row| row.get::<_, f64>(0)).optional()?.unwrap_or(0.0))
     };
@@ -611,6 +635,163 @@ fn fields_of(conn: &Connection, level: &Level) -> Result<Fields> {
     let avg_len =
         level.fields.iter().map(|name| number(format!("{}.{name}", level.fts))).collect::<Result<Vec<_>>>()?;
     Ok(Fields { docs, avg_len, weights: vec![FIELD_WEIGHT; level.fields.len()] })
+}
+
+/// `true` quando o índice dos itens das specs foi feito nas línguas
+/// `languages`.
+pub(crate) fn specs_indexed_in(conn: &Connection, languages: &Languages) -> Result<bool> {
+    let stored: Option<String> = conn
+        .query_row(&format!("SELECT value FROM {} WHERE key = ?1", SPEC_LEVEL.meta), [LANGUAGES_KEY], |row| row.get(0))
+        .optional()?;
+    Ok(stored.is_some_and(|stored| stored == languages.codes().join(",")))
+}
+
+/// Tira do índice dos itens das specs os documentos `ids`, os das linhas que
+/// saíram.
+pub(crate) fn unindex_specs(conn: &Connection, ids: &[i64]) -> Result<()> {
+    let mut words = conn.prepare(&format!("DELETE FROM {} WHERE rowid = ?1", SPEC_LEVEL.fts))?;
+    let mut lengths = conn.prepare(&format!("DELETE FROM {} WHERE id = ?1", SPEC_LEVEL.lengths))?;
+    for id in ids {
+        words.execute([id])?;
+        lengths.execute([id])?;
+    }
+    Ok(())
+}
+
+/// Põe no índice dos itens das specs as linhas da spec `spec` — de todas,
+/// sem ela —, com as palavras nas línguas `languages`, e refaz a contagem e
+/// as médias do nível pela tabela dos tamanhos. Roda na transação de quem
+/// grava as linhas.
+pub(crate) fn index_specs(conn: &Connection, languages: &Languages, spec: Option<&str>) -> Result<()> {
+    let mut normalizer = Normalizer::new(languages);
+    let docs: Vec<Doc> = {
+        let filter = if spec.is_some() { "WHERE spec = ?1" } else { "" };
+        let mut stmt = conn.prepare(&format!("SELECT rowid, title, text, search FROM spec_items {filter} ORDER BY rowid"))?;
+        let mut rows = match spec {
+            Some(spec) => stmt.query([spec])?,
+            None => stmt.query([])?,
+        };
+        let mut docs = Vec::new();
+        while let Some(row) = rows.next()? {
+            let fields = (1..=3).map(|at| Ok(normalizer.forms(&text(row, at)?))).collect::<Result<Vec<Words>>>()?;
+            docs.push(Doc { id: row.get(0)?, fields });
+        }
+        docs
+    };
+    let names: Vec<&str> = SPEC_LEVEL.columns().collect();
+    let slots: Vec<String> = (2..=names.len() + 1).map(|at| format!("?{at}")).collect();
+    let (columns, slots) = (names.join(", "), slots.join(", "));
+    let mut words = conn.prepare(&format!("INSERT INTO {}(rowid, {columns}) VALUES (?1, {slots})", SPEC_LEVEL.fts))?;
+    let mut lengths = conn.prepare(&format!("INSERT INTO {}(id, {columns}) VALUES (?1, {slots})", SPEC_LEVEL.lengths))?;
+    for doc in &docs {
+        let mut texts = vec![Sql::Integer(doc.id)];
+        let mut sizes = vec![Sql::Integer(doc.id)];
+        for prepared in &doc.fields {
+            sizes.push(Sql::Integer(prepared.len() as i64));
+            texts.push(Sql::Text(prepared.iter().flatten().map(String::as_str).collect::<Vec<_>>().join(" ")));
+        }
+        words.execute(params_from_iter(texts))?;
+        lengths.execute(params_from_iter(sizes))?;
+    }
+    let averages: Vec<String> = names.iter().map(|name| format!("coalesce(avg({name}), 0)")).collect();
+    let (count, means) = conn.query_row(
+        &format!("SELECT count(*), {} FROM {}", averages.join(", "), SPEC_LEVEL.lengths),
+        [],
+        |row| Ok((row.get::<_, i64>(0)?, (1..=names.len()).map(|at| row.get::<_, f64>(at)).collect::<rusqlite::Result<Vec<f64>>>()?)),
+    )?;
+    let mut meta = conn.prepare(&format!("INSERT OR REPLACE INTO {}(key, value) VALUES (?1, ?2)", SPEC_LEVEL.meta))?;
+    meta.execute(params![format!("{}.docs", SPEC_LEVEL.fts), count])?;
+    for (name, mean) in names.iter().zip(means) {
+        meta.execute(params![format!("{}.{name}", SPEC_LEVEL.fts), mean])?;
+    }
+    meta.execute(params![LANGUAGES_KEY, languages.codes().join(",")])?;
+    Ok(())
+}
+
+/// Refaz o índice inteiro dos itens das specs nas línguas `languages`.
+fn reindex_specs(conn: &Connection, languages: &Languages) -> Result<()> {
+    conn.execute_batch(&format!(
+        "INSERT INTO {fts}({fts}) VALUES ('delete-all'); DELETE FROM {lengths}; DELETE FROM {meta};",
+        fts = SPEC_LEVEL.fts,
+        lengths = SPEC_LEVEL.lengths,
+        meta = SPEC_LEVEL.meta
+    ))?;
+    index_specs(conn, languages, None)?;
+    conn.execute(&format!("INSERT INTO {fts}({fts}) VALUES ('optimize')", fts = SPEC_LEVEL.fts), [])?;
+    Ok(())
+}
+
+/// Os itens das specs que mais casam com a pergunta `query` no mapa do
+/// projeto em `root`, até `limit`, da nota mais alta para a mais baixa, cada
+/// um com a spec, o código, o título, a linha da parte do usuário que mais
+/// casa e até `limit` lugares ligados a ele. Lê só o mapa: nenhum arquivo de
+/// spec se abre. As recusas são as de [`search`].
+pub fn search_specs(root: &Path, query: &str, languages: &Languages, limit: usize) -> std::result::Result<Vec<FoundItem>, MapRefusal> {
+    search_specs_at(&model_path(root), query, languages, limit)
+}
+
+/// A busca de [`search_specs`] no mapa gravado em `model`.
+pub fn search_specs_at(
+    model: &Path,
+    query: &str,
+    languages: &Languages,
+    limit: usize,
+) -> std::result::Result<Vec<FoundItem>, MapRefusal> {
+    let mut db = open_existing(model)?;
+    if !specs_indexed_in(db.conn(), languages).map_err(unreadable)? {
+        db.write(|tx| if specs_indexed_in(tx, languages)? { Ok(()) } else { reindex_specs(tx, languages) })
+            .map_err(unreadable)?;
+    }
+    found_items(db.conn(), query, languages, limit).map_err(unreadable)
+}
+
+fn found_items(conn: &Connection, query: &str, languages: &Languages, limit: usize) -> Result<Vec<FoundItem>> {
+    let mut normalizer = Normalizer::new(languages);
+    let words = normalizer.query(query);
+    let mut item = conn.prepare("SELECT spec, id, code, title, text, files FROM spec_items WHERE rowid = ?1")?;
+    let mut out = Vec::new();
+    for (rowid, _) in by_words(conn, &SPEC_LEVEL, &words)?.into_iter().take(limit) {
+        let Some((spec, id, code, title, body, files)) = item
+            .query_row([rowid], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                    row.get::<_, Option<String>>(4)?.unwrap_or_default(),
+                    row.get::<_, Option<String>>(5)?,
+                ))
+            })
+            .optional()?
+        else {
+            continue;
+        };
+        let files: Vec<String> = files.and_then(|files| serde_json::from_str(&files).ok()).unwrap_or_default();
+        let title = if title.trim().is_empty() { spec_sentence(&body) } else { title.trim().to_string() };
+        out.push(FoundItem {
+            links: crate::io::map_specs::links_of(conn, &spec, id, &files, limit)?,
+            line: best_line(&body, &words, &mut normalizer),
+            spec,
+            code,
+            title,
+        });
+    }
+    Ok(out)
+}
+
+/// A linha de `body` que tem mais palavras da pergunta, por alguma das
+/// formas, até o teto da frase de um item; empatadas, a mais de cima.
+/// `None` quando nenhuma tem nenhuma.
+fn best_line(body: &str, words: &[Vec<String>], normalizer: &mut Normalizer) -> Option<String> {
+    let mut best: Option<(usize, &str)> = None;
+    for line in body.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        let forms: HashSet<String> = normalizer.forms(line).into_iter().flatten().collect();
+        let hits = words.iter().filter(|word| word.iter().any(|form| forms.contains(form))).count();
+        if hits > 0 && best.is_none_or(|(most, _)| hits > most) {
+            best = Some((hits, line));
+        }
+    }
+    best.map(|(_, line)| crate::domain::spec_index::cut(line, SPEC_SENTENCE_CHARS))
 }
 
 /// Os arquivos das declarações cujo nome traz a pergunta como pedaço, o nome
