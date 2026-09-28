@@ -1,5 +1,10 @@
 # A raiz das palavras desta língua: o algoritmo do Snowball, pelo nome.
 stem: portuguese
+# As palavras que o nome de uma spec deixa de fora: só as que encurtam o nome
+# sem mudar o sentido, e não todas as de ligação ("não" e "sem" ficam). As
+# contrações de "em" e "a" com artigo entram: sem elas, um "no" no fim ocupa
+# uma vaga do nome e empurra a palavra seguinte para fora.
+slug: a o as os de da do das dos e em no na nos nas ao aos
 # Snowball Portuguese stop-word list, vendored as DATA.
 # Source: https://snowballstem.org/algorithms/portuguese/stop.txt (BSD-3-Clause).
 # Comments were stripped; one word per line. Lines starting with # are ignored.

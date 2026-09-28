@@ -2010,6 +2010,88 @@ fn a_name_changed_by_the_import_mounts_what_the_origin_file_names() {
     );
 }
 
+/// O roteador trazido de outro arquivo, montado aqui e que também ganha uma
+/// rota escrita aqui, leva o prefixo da montagem às rotas dos dois arquivos:
+/// a rota escrita aqui não esconde a montagem do arquivo de onde ele vem.
+/// Vale para o nome trazido entre chaves e para o módulo inteiro.
+#[test]
+fn a_router_brought_from_another_file_and_given_a_route_here_takes_the_prefix_in_both_files() {
+    let named = "import { Router } from 'express';\n\nexport const pedidos = Router();\npedidos.get('/:id', lerPedido);\n\n\
+                 function lerPedido() {}\n";
+    let named_app = "import express from 'express';\nimport { pedidos } from './pedidos';\n\nconst app = express();\n\
+                     app.use('/api', pedidos);\npedidos.get('/extra', extra);\n\nfunction extra() {}\n";
+    let whole = "const express = require('express');\nconst router = express.Router();\n\
+                 router.get('/:id', ler);\nfunction ler() {}\nmodule.exports = router;\n";
+    let whole_app = "const express = require('express');\nconst aves = require('./aves');\nconst app = express();\n\
+                     app.use('/aves', aves);\naves.get('/extra', extra);\nfunction extra() {}\n";
+    let temp = project_with(&[
+        ("named/pedidos.ts", named),
+        ("named/app.ts", named_app),
+        ("whole/aves.js", whole),
+        ("whole/app.js", whole_app),
+    ]);
+    let (map, _) = scan(temp.path());
+    let served_in = |files: &[&str]| files.iter().map(|file| served(&map, file)).collect::<Vec<_>>();
+    assert_eq!(
+        served_in(&["named/pedidos.ts", "named/app.ts", "whole/aves.js", "whole/app.js"]),
+        [
+            vec!["GET api/{} -> lerPedido"],
+            vec!["GET api/extra -> extra"],
+            vec!["GET aves/{} -> ler"],
+            vec!["GET aves/extra -> extra"]
+        ]
+    );
+    // O roteador feito aqui e montado aqui continua sem deixar montagem para
+    // outro arquivo.
+    let local = "import express from 'express';\n\nconst app = express();\nconst pedidos = express.Router();\n\
+                 app.use('/api', pedidos);\npedidos.get('/extra', extra);\n\nfunction extra() {}\n";
+    let temp = project_with(&[("local/app.ts", local)]);
+    let (map, _) = scan(temp.path());
+    assert_eq!(served(&map, "local/app.ts"), ["GET api/extra -> extra"]);
+    assert_eq!(mounts(&map, "local/app.ts"), json!([]));
+}
+
+/// O arquivo do meio monta o roteador trazido de outro arquivo no fim de
+/// duas montagens dele (`api` monta `v1`, que monta `pedidos`), e a
+/// aplicação monta o `api` pelo nome: as rotas de pedidos somam os três
+/// prefixos, de fora para dentro, como a rota escrita no `v1`. Com três
+/// montagens no meio, soma os quatro.
+#[test]
+fn a_mount_at_the_end_of_local_mounts_takes_the_prefix_of_the_file_that_mounts_the_outer_one() {
+    let pedidos = "import { Router } from 'express';\n\nconst pedidos = Router();\npedidos.get('/:id', lerPedido);\n\n\
+                   function lerPedido() {}\n\nexport default pedidos;\n";
+    let api = "import { Router } from 'express';\nimport pedidos from './pedidos';\n\nexport const api = Router();\n\
+               const v1 = Router();\n\napi.use('/v1', v1);\nv1.use('/pedidos', pedidos);\nv1.get('/saude', saude);\n\n\
+               function saude() {}\n";
+    let app = "import express from 'express';\nimport { api } from './api';\n\nconst app = express();\n\
+               app.use('/api', api);\n";
+    let deeper = "import { Router } from 'express';\nimport pedidos from '../dois/pedidos';\n\nexport const api = Router();\n\
+                  const v1 = Router();\nconst loja = Router();\n\napi.use('/v1', v1);\nv1.use('/loja', loja);\n\
+                  loja.use('/pedidos', pedidos);\n";
+    let deeper_app = "import express from 'express';\nimport { api } from './api';\n\nconst app = express();\n\
+                      app.use('/api', api);\n";
+    let temp = project_with(&[
+        ("dois/pedidos.ts", pedidos),
+        ("dois/api.ts", api),
+        ("dois/app.ts", app),
+        ("tres/api.ts", deeper),
+        ("tres/app.ts", deeper_app),
+    ]);
+    let (map, _) = scan(temp.path());
+    assert_eq!(served(&map, "dois/api.ts"), ["GET api/v1/saude -> saude"]);
+    // Só a montagem do nome trazido fica para outro arquivo seguir, com o
+    // lugar da montagem mais de fora do arquivo; o `v1`, que é daqui, não.
+    assert_eq!(
+        mounts(&map, "dois/api.ts"),
+        json!([{"framework": "express", "target": "pedidos", "line": 8, "whole": true,
+                "written": "v1/pedidos", "path": "v1/pedidos", "receiver": "v1", "through": ["api"]}])
+    );
+    assert_eq!(
+        served(&map, "dois/pedidos.ts"),
+        ["GET api/v1/loja/pedidos/{} -> lerPedido", "GET api/v1/pedidos/{} -> lerPedido"]
+    );
+}
+
 // ---------------------------------------------------------------------------
 // As rotas do Laravel, do Symfony, do Dart e do Fastify
 // ---------------------------------------------------------------------------

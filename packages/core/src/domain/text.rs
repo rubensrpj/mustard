@@ -162,22 +162,12 @@ fn tail_matches(mut rest: &str, words: &[&str], bounds: Boundaries) -> bool {
 // ---------------------------------------------------------------------------
 //
 // São três listas porque as três perguntas são diferentes. O slug descarta só
-// o que encurta um nome sem perder o sentido. O voto de idioma da busca conta
-// palavras funcionais dos dois lados, mesmo as que os dois idiomas têm ("a",
-// "no"), porque só compara as contagens. A medição de clareza decide o idioma
+// o que encurta um nome sem perder o sentido; essa lista mora no arquivo de
+// cada língua, na linha `slug:` (`domain::normalize`). O voto de idioma da
+// busca conta palavras funcionais dos dois lados, mesmo as que os dois
+// idiomas têm ("a", "no"), porque só compara as contagens. A medição de clareza decide o idioma
 // da resposta pelas palavras, então deixa de fora as que existem nos dois
 // idiomas e aceita a grafia sem acento de quem digita sem ("nao", "voce").
-
-/// Artigos e preposições que o slug do português descarta.
-pub const SLUG_STOPWORDS_PT: &[&str] = &[
-    "a", "o", "as", "os", "de", "da", "do", "das", "dos", "e", "em",
-    // Contrações de `em`/`a` com artigo: sem elas, um `no` no fim ("em o")
-    // ocupa uma vaga do slug e empurra a palavra seguinte para fora.
-    "no", "na", "nos", "nas", "ao", "aos",
-];
-
-/// Artigos e preposições que o slug do inglês descarta.
-pub const SLUG_STOPWORDS_EN: &[&str] = &["a", "an", "the", "of", "and", "or", "in"];
 
 /// Palavras comuns do português para a medição de clareza, com e sem acento.
 /// Ficam de fora as que existem nos dois idiomas ("a", "as", "no", "do", "se",
@@ -558,11 +548,12 @@ mod tests {
         }
     }
 
-    /// Critério da onda de preparo: as listas do slug chegaram iguais.
+    /// As palavras que o slug descarta, lidas do arquivo de cada língua, são
+    /// as das listas de antes, na mesma ordem.
     #[test]
-    fn slug_stopwords_are_the_old_lists() {
-        assert_eq!(SLUG_STOPWORDS_PT, before::SLUG_PT);
-        assert_eq!(SLUG_STOPWORDS_EN, before::SLUG_EN);
+    fn the_slug_words_of_the_language_files_are_the_old_lists() {
+        assert_eq!(crate::domain::normalize::slug_words("pt"), before::SLUG_PT);
+        assert_eq!(crate::domain::normalize::slug_words("en"), before::SLUG_EN);
     }
 
     #[test]

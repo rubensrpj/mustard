@@ -3,7 +3,8 @@
 //! Spec slugs (`.claude/spec/{slug}/spec.md`) are kebab-case identifiers
 //! derived from a free-form title (e.g. `"Configuração de Idioma e Tom"` →
 //! `"configuracao-idioma-tom"`). The pt-BR path needs accent stripping; the
-//! en-US path does not. Stopword lists differ per locale.
+//! en-US path does not. The words left out are the `slug:` line of the
+//! locale's language file.
 //!
 //! [`canonical`] is the ONE derivation that names a work unit, and it lives
 //! here so the three callers that must agree about it — the base gate that

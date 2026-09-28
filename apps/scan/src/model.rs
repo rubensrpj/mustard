@@ -568,8 +568,9 @@ impl RouteLinks {
     }
 }
 
-/// A montagem de um nome que o arquivo não registra: o prefixo vale para as
-/// rotas do arquivo de onde o nome vem. Com `whole`, o nome recebe o módulo
+/// A montagem de um nome que o arquivo não registra, ou que ele traz de
+/// outro pelo import: o prefixo vale para as rotas do arquivo de onde o nome
+/// vem. Com `whole`, o nome recebe o módulo
 /// inteiro (o import padrão, o que recebe o `require`), e o prefixo vale
 /// para todas as rotas dele; sem, só para as registradas num objeto com esse
 /// nome ou escritas numa declaração com esse nome. A linha é a do nome, para
@@ -581,7 +582,10 @@ impl RouteLinks {
 /// que ela é feita — o objeto que a recebe (`receiver`) e a declaração em
 /// que ela está escrita (`owner`) — é por onde outra montagem, de outro
 /// arquivo, chega a ela: o prefixo posto nesse objeto ou nessa declaração
-/// vem na frente do dela.
+/// vem na frente do dela. Quando ela está no fim de outras montagens do
+/// arquivo, `through` guarda os lugares da montagem mais de fora delas, como
+/// em [`Route::through`]: a montagem de outro arquivo num deles também chega
+/// a ela.
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Mount {
     pub framework: String,
@@ -597,6 +601,8 @@ pub struct Mount {
     pub receiver: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub owner: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub through: Vec<String>,
 }
 
 /// O prefixo de todas as rotas do framework no projeto do arquivo que o

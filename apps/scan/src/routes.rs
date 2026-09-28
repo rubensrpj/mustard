@@ -39,7 +39,9 @@
 //!   registradas num objeto com esse nome, ou escritas numa declaração com
 //!   esse nome, no mesmo arquivo. O `route.target` que não alcança rota
 //!   nenhuma do arquivo é um nome trazido de outro: o prefixo vale para as
-//!   rotas do arquivo de onde ele vem (ver [`across_files`]). O `route.target`
+//!   rotas do arquivo de onde ele vem (ver [`across_files`]). O nome que o
+//!   arquivo traz pelo import vale lá também quando alcança rotas escritas
+//!   aqui. O `route.target`
 //!   com `route.receiver` e sem `route.prefix` monta no grupo do objeto: o
 //!   prefixo é o do grupo que a cadeia do objeto começa
 //!   (`web::scope("/api").service(ler)`); o objeto que não é grupo e é um
@@ -156,7 +158,7 @@ use crate::model::{
 mod place;
 mod sum;
 
-use place::{open_places, Chain, Reached};
+use place::{brought_here, open_places, Chain, Reached};
 use sum::Sums;
 
 /// Uma rota que a rota de recurso registra: o método, o pedaço de caminho
@@ -407,7 +409,6 @@ pub(crate) struct Source<'s> {
 /// com o que o `project` diz dele, em ordem, os prefixos que ele escreve
 /// para rotas de outros arquivos e as chamadas da tela escritas nele.
 pub(crate) fn find(rules: &[RouteRule], root: Node, bytes: &[u8], source: &Source, project: &Project) -> Found {
-    let (declarations, skip) = (source.declarations, source.skip);
     let mut found = Found::default();
     for (rule, compiled) in rules
         .iter()
@@ -420,7 +421,7 @@ pub(crate) fn find(rules: &[RouteRule], root: Node, bytes: &[u8], source: &Sourc
             found.links.clients.extend(clients);
             continue;
         }
-        let (routes, links) = rule.routes(compiled, root, bytes, declarations, skip, project.path);
+        let (routes, links) = rule.routes(compiled, root, bytes, source, project.path);
         found.routes.extend(routes);
         found.links.mounts.extend(links.mounts);
         found.links.globals.extend(links.globals);
@@ -805,10 +806,10 @@ impl RouteRule {
         compiled: &Compiled,
         root: Node,
         bytes: &[u8],
-        declarations: &[Decl],
-        skip: &BTreeSet<(usize, usize)>,
+        source: &Source,
         file: &str,
     ) -> (Vec<Route>, RouteLinks) {
+        let (declarations, skip) = (source.declarations, source.skip);
         let text = |node: Node| node.utf8_text(bytes).unwrap_or_default().to_string();
         let literal = |node: Node| self.trimmed(literal_value(&text(node))).to_string();
         let span = |node: Node| (node.start_byte(), node.end_byte());
@@ -1081,12 +1082,7 @@ impl RouteRule {
                         from_file.into_iter().chain(mount.map(|c| c.path.as_str())).chain(tail.iter().copied()).collect();
                     let written = joined_path(&pieces);
                     let own_receiver = receiver.clone().filter(|r| is_name(r)).unwrap_or_default();
-                    let through: Vec<String> = mount
-                        .into_iter()
-                        .flat_map(|c| c.places.iter())
-                        .filter(|place| **place != own_receiver && Some(place.as_str()) != owner)
-                        .cloned()
-                        .collect();
+                    let through = mount.map(|c| c.through(&own_receiver, owner)).unwrap_or_default();
                     built.push(Built {
                         route: Route {
                             method: method.clone(),
@@ -1110,8 +1106,10 @@ impl RouteRule {
 
         let framework = self.raw.framework.to_string();
         let mut links = RouteLinks::default();
+        let brought = brought_here(source.brought, &whole_modules);
         for (i, p) in prefixes.iter().enumerate() {
-            let Some(target) = p.target.as_deref().filter(|target| p.module_path || !reached.contains(target)) else {
+            let exported = |target: &&str| p.module_path || !reached.contains(target) || brought.contains(target);
+            let Some(target) = p.target.as_deref().filter(exported) else {
                 continue;
             };
             for chain in &full[i] {
@@ -1124,6 +1122,7 @@ impl RouteRule {
                     prefix: self.prefix_path(&[&chain.path]),
                     receiver: p.receiver.clone().unwrap_or_default(),
                     owner: p.owner.clone().unwrap_or_default(),
+                    through: chain.through(p.receiver.as_deref().unwrap_or_default(), p.owner.as_deref()),
                 });
             }
         }
@@ -1603,8 +1602,8 @@ fn earlier_siblings(node: Node) -> Vec<Node> {
 }
 
 /// Os nomes trazidos de outro arquivo que as rotas e as chamadas pedem, com
-/// a posição do arquivo em `modules`: os montados que cada arquivo não
-/// registra ([`Mount`]), que [`across_files`] segue até as rotas de onde
+/// a posição do arquivo em `modules`: os montados que cada arquivo deixa
+/// para outro ([`Mount`]), que [`across_files`] segue até as rotas de onde
 /// eles vêm, e os objetos das chamadas da tela feitas por um cliente de
 /// outro arquivo ([`RouteCall::via`]), que a ligação segue até a base dele.
 pub(crate) fn brought_names(modules: &[Module]) -> Vec<(usize, String)> {
@@ -1729,7 +1728,8 @@ type MountAt = (usize, usize);
 /// com o nome dele, escritas numa declaração com o nome dele ou que passam
 /// por uma montagem posta nesse objeto ou nessa declaração
 /// ([`Route::through`]), e as montagens feitas nesse objeto ou nessa
-/// declaração. O nome é o que o arquivo de onde ele vem lhe dá: o import que
+/// declaração ou que passam, do mesmo jeito, por uma montagem posta nele
+/// ([`Mount::through`]). O nome é o que o arquivo de onde ele vem lhe dá: o import que
 /// o troca (`import { router as api }`) monta, pelo `api`, o `router` de lá.
 fn mounted(
     modules: &[Module],
@@ -1800,9 +1800,7 @@ fn mounted(
         let mount = &modules[at].route_links.mounts[mi];
         for reached in files {
             for (mj, next) in modules[reached.file].route_links.mounts.iter().enumerate() {
-                if next.framework == mount.framework
-                    && (reached.whole || reached.has(&next.receiver) || reached.has(&next.owner))
-                {
+                if next.framework == mount.framework && reached.reaches(&next.receiver, &next.owner, &next.through) {
                     incoming.entry((reached.file, mj)).or_default().push((at, mi));
                 }
             }
@@ -1822,13 +1820,7 @@ fn mounted(
                             && r.line <= d.end_line.max(d.line)
                     })
                 };
-                if r.framework == mount.framework
-                    && (reached.whole
-                        || reached.has(&r.receiver)
-                        || reached.has(&r.owner)
-                        || r.through.iter().any(|place| reached.has(place))
-                        || written_in())
-                {
+                if r.framework == mount.framework && (reached.reaches(&r.receiver, &r.owner, &r.through) || written_in()) {
                     middle
                         .entry((to, ri))
                         .or_default()

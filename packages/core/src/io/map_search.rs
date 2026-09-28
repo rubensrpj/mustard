@@ -1035,10 +1035,15 @@ fn declarations_in(conn: &Connection, ids: &[i64]) -> Result<Vec<FilterCandidate
         .collect())
 }
 
-/// As ligações de cada declaração de `ids` que o mapa tem.
+/// As ligações de cada declaração de `ids` que o mapa tem. A implementação
+/// entra só quando pode ser candidata: a de teste, como o dublê escrito num
+/// arquivo de teste ou no trecho de teste de outro arquivo, fica de fora,
+/// pela mesma regra que a tira dos candidatos.
 fn links_in(conn: &Connection, ids: &[i64]) -> Result<Links> {
     let stored = stored(conn, ids)?;
     let kinds = kinds_of(conn, stored.iter().flat_map(|decl| decl.members.iter().chain(&decl.implemented_by)))?;
+    let implementations = stored.iter().flat_map(|decl| &decl.implemented_by).filter_map(|place| kinds.get(place));
+    let eligible = in_decl_level(conn, implementations.map(|(id, _)| *id))?;
     Ok(stored
         .into_iter()
         .map(|decl| {
@@ -1053,12 +1058,26 @@ fn links_in(conn: &Connection, ids: &[i64]) -> Result<Links> {
                 .implemented_by
                 .iter()
                 .filter_map(|place| kinds.get(place).map(|(id, _)| (*id, place.file.clone())))
+                .filter(|(id, _)| eligible.contains(id))
                 .collect();
             let linked =
                 Linked { kind: decl.candidate.kind, path: decl.candidate.path, methods, implementations };
             (decl.candidate.id, linked)
         })
         .collect())
+}
+
+/// Das declarações `ids`, as que estão no nível das declarações do índice,
+/// de onde saem os candidatos da busca com filtro.
+fn in_decl_level(conn: &Connection, ids: impl Iterator<Item = i64>) -> Result<HashSet<i64>> {
+    let ids: Vec<i64> = ids.collect::<HashSet<_>>().into_iter().collect();
+    if ids.is_empty() {
+        return Ok(HashSet::new());
+    }
+    let slots: Vec<String> = (1..=ids.len()).map(|at| format!("?{at}")).collect();
+    let mut stmt = conn.prepare(&format!("SELECT id FROM decl_lengths WHERE id IN ({})", slots.join(", ")))?;
+    let rows = stmt.query_map(params_from_iter(&ids), |row| row.get::<_, i64>(0))?;
+    Ok(rows.collect::<rusqlite::Result<HashSet<_>>>()?)
 }
 
 /// O id e o tipo de cada declaração apontada por `places`, lidos numa
@@ -1520,6 +1539,45 @@ mod tests {
         assert_eq!(found[&port].methods, vec![contract], "the constant is a member, not a method");
         assert_eq!(found[&contract].path, "src/pay/port.rs");
         assert_eq!(found[&contract].implementations, vec![(implementation, "src/pay/card.rs".to_string())]);
+    }
+
+    /// O método de contrato cumprido pelo cartão, longe dele, e por dois
+    /// dublês de teste: um no trecho de teste do próprio arquivo, de caminho
+    /// igual ao dele, e outro num arquivo de teste. As ligações só trazem o
+    /// cartão, e é ele que o método puxa quando nenhuma implementação está
+    /// entre os candidatos, mesmo com o caminho do dublê mais parecido.
+    #[test]
+    fn a_test_double_is_never_the_implementation_a_contract_method_pulls() {
+        let dir = saved_json(&json!({"modules": [
+            {"path": "src/pay/port.rs", "test_lines": [[10, 20]], "declarations": [
+                {"kind": "method", "name": "charge", "line": 2, "end_line": 2, "signature": "fn charge(&self)",
+                 "owner": ["PaymentPort"],
+                 "implemented_by": ["src/pay/port.rs:12:charge", "tests/fakes.rs:3:charge", "src/bank/card.rs:3:charge"]},
+                {"kind": "method", "name": "charge", "line": 12, "end_line": 14, "signature": "fn charge(&self)",
+                 "owner": ["FakeGateway"], "implements": ["src/pay/port.rs:2:charge"]}]},
+            {"path": "tests/fakes.rs", "declarations": [
+                {"kind": "method", "name": "charge", "line": 3, "end_line": 5, "signature": "fn charge(&self)",
+                 "owner": ["FakeCard"], "implements": ["src/pay/port.rs:2:charge"]}]},
+            {"path": "src/bank/card.rs", "declarations": [
+                {"kind": "method", "name": "charge", "line": 3, "end_line": 9, "signature": "fn charge(&self)",
+                 "owner": ["CardGateway"], "implements": ["src/pay/port.rs:2:charge"]}]}
+        ]}));
+        let db = open_existing(&model_path(dir.path())).unwrap();
+        let at = |file: &str, line: i64| -> i64 {
+            db.conn()
+                .query_row("SELECT rowid FROM decls WHERE file = ?1 AND line = ?2", params![file, line], |row| row.get(0))
+                .unwrap()
+        };
+        let (contract, card) = (at("src/pay/port.rs", 2), at("src/bank/card.rs", 3));
+        let found = links(dir.path(), &[contract]).unwrap();
+        assert_eq!(found[&contract].implementations, vec![(card, "src/bank/card.rs".to_string())]);
+        let picks = crate::domain::map_select::select(&[contract], &[], &[], &found);
+        let pulled: Vec<i64> = picks
+            .iter()
+            .filter(|pick| pick.source == crate::domain::map_select::Source::Pulled)
+            .map(|pick| pick.id)
+            .collect();
+        assert_eq!(pulled, [card]);
     }
 
     #[test]

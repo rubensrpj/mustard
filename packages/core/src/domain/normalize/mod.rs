@@ -13,9 +13,10 @@
 //!
 //! As línguas vêm do projeto e são passadas por quem busca ([`Languages`]).
 //! Cada língua é um arquivo de dados, `languages/<código>.txt`, embutido no
-//! binário: a linha `stem:` dá o algoritmo de raiz pelo nome, e as outras
-//! linhas são as palavras de ligação. A língua nova é um arquivo a mais na
-//! pasta, sem linha de código. [`STEMMERS`] é a única tabela que liga o nome
+//! binário: a linha `stem:` dá o algoritmo de raiz pelo nome, a linha
+//! `slug:` dá as palavras que o nome de uma spec deixa de fora
+//! ([`slug_words`]), e as outras linhas são as palavras de ligação. A língua
+//! nova é um arquivo a mais na pasta, sem linha de código. [`STEMMERS`] é a única tabela que liga o nome
 //! ao algoritmo da biblioteca. A língua sem arquivo, ou sem a linha `stem:`,
 //! fica sem raiz, e a palavra dela é comparada inteira; a sem palavras de
 //! ligação não tira palavra nenhuma.
@@ -58,12 +59,21 @@ const STEMMERS: &[(&str, Algorithm)] = &[
 /// Os arquivos das línguas, pela parte da língua do código BCP-47: um por
 /// arquivo da pasta `languages/`, com o texto dele, na tabela que o script de
 /// compilação grava. Em cada arquivo, a linha que começa com `#` é
-/// comentário, a linha `stem:` dá o nome do algoritmo de raiz, e cada outra
+/// comentário, a linha `stem:` dá o nome do algoritmo de raiz, a linha
+/// `slug:` dá as palavras que o nome de uma spec deixa de fora, e cada outra
 /// linha é uma palavra de ligação.
 const LANGUAGE_FILES: &[(&str, &str)] = include!(concat!(env!("OUT_DIR"), "/languages.rs"));
 
 /// O começo da linha que dá, no arquivo da língua, o nome do algoritmo de raiz.
 const STEM_LINE: &str = "stem:";
+
+/// O começo da linha que dá, no arquivo da língua, as palavras que o nome de
+/// uma spec deixa de fora, separadas por espaço.
+const SLUG_LINE: &str = "slug:";
+
+/// As linhas do arquivo da língua que dizem algo dela e não são palavra de
+/// ligação.
+const KEYED_LINES: [&str; 2] = [STEM_LINE, SLUG_LINE];
 
 /// As línguas em que as palavras de uma busca são cortadas: a parte da
 /// língua de cada código declarado (`pt` de `pt-BR`), em minúsculas, sem
@@ -280,9 +290,18 @@ fn algorithm(language: &str) -> Option<Algorithm> {
 }
 
 /// As palavras de ligação da língua: as linhas do arquivo dela fora a do
-/// algoritmo; nenhuma quando ela não tem arquivo.
+/// algoritmo e a do nome da spec; nenhuma quando ela não tem arquivo.
 fn stopwords(language: &str) -> impl Iterator<Item = &'static str> + '_ {
-    entries(language).filter(|line| !line.starts_with(STEM_LINE))
+    entries(language).filter(|line| !KEYED_LINES.iter().any(|key| line.starts_with(key)))
+}
+
+/// As palavras que o nome de uma spec escrito na língua deixa de fora: as da
+/// linha `slug:` do arquivo dela, só as que encurtam o nome sem mudar o
+/// sentido. Nenhuma quando a língua não tem arquivo ou o arquivo não tem a
+/// linha: o nome fica com todas as palavras.
+#[must_use]
+pub fn slug_words(language: &str) -> Vec<&'static str> {
+    entries(language).filter_map(|line| line.strip_prefix(SLUG_LINE)).flat_map(str::split_whitespace).collect()
 }
 
 #[cfg(test)]
@@ -519,7 +538,17 @@ mod tests {
         }
         assert_eq!(stem_name("pt"), Some("portuguese"));
         assert!(!stopwords("pt").any(|word| word.starts_with(STEM_LINE)), "the stem line is not a function word");
+        assert!(!stopwords("pt").any(|word| word.starts_with(SLUG_LINE)), "the slug line is not a function word");
         assert!(stopwords("pt").any(|word| word == "onde"));
+        // Cada palavra que o nome da spec deixa de fora é também de ligação
+        // na língua dela: a linha só escolhe entre elas.
+        for (code, _) in LANGUAGE_FILES {
+            let function: Vec<&str> = stopwords(code).collect();
+            for word in slug_words(code) {
+                assert!(function.contains(&word), "{code}: {word} is left out of the spec name but is not a function word");
+            }
+        }
+        assert!(slug_words("xx").is_empty(), "a language without a file leaves no word out");
     }
 
     /// Nenhuma parte do código escolhe um algoritmo de raiz fora da tabela

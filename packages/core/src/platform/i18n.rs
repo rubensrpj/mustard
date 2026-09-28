@@ -231,7 +231,8 @@ fn key_as_static(_key: &str) -> &'static str {
 /// PT locale strips Latin diacritics (`ç → c`, `ã → a`, …) before kebab-casing
 /// so spec slugs round-trip cleanly. EN locale keeps the input as-is (no
 /// Unicode normalisation): accents are removed only in PT.
-/// Stopword lists differ per locale (basic articles/prepositions are dropped).
+/// The words dropped are the `slug:` line of the locale's language file
+/// (`domain::normalize::slug_words`): basic articles and prepositions only.
 ///
 /// The output never contains leading/trailing dashes and never collapses to an
 /// empty string — fully non-alphanumeric input degrades to `"x"`, mirroring
@@ -242,10 +243,9 @@ pub fn slugify(text: &str, lang: Locale) -> String {
         Locale::PtBr => crate::domain::text::fold_accents(text),
         Locale::EnUs => text.to_string(),
     };
-    let stopwords: &[&str] = match lang {
-        Locale::PtBr => crate::domain::text::SLUG_STOPWORDS_PT,
-        Locale::EnUs => crate::domain::text::SLUG_STOPWORDS_EN,
-    };
+    let languages = crate::domain::normalize::Languages::new([lang.as_str()]);
+    let stopwords: Vec<&str> =
+        languages.codes().iter().map(String::as_str).flat_map(crate::domain::normalize::slug_words).collect();
     // 1. lowercase + split on non-alphanumeric.
     let mut tokens: Vec<String> = Vec::new();
     let mut cur = String::new();
@@ -743,6 +743,23 @@ mod tests {
         assert_eq!(slugify("The Quick Brown Fox", Locale::EnUs), "quick-brown-fox");
         // PT stopwords are NOT applied in EN mode.
         assert_eq!(slugify("de para", Locale::EnUs), "de-para");
+    }
+
+    /// O nome da spec deixa de fora cada palavra da linha `slug:` do arquivo
+    /// da língua, e só elas: a palavra de ligação fora da linha, como "sem"
+    /// e "not", fica no nome, porque mudaria o sentido.
+    #[test]
+    fn slugify_drops_the_slug_words_of_the_language_file_and_only_them() {
+        for (lang, language) in [(Locale::PtBr, "pt"), (Locale::EnUs, "en")] {
+            let words = crate::domain::normalize::slug_words(language);
+            assert!(!words.is_empty(), "{language}");
+            for word in words {
+                assert_eq!(slugify(&format!("erro {word} nome"), lang), "erro-nome", "{language}: {word}");
+            }
+        }
+        assert_eq!(slugify("spec sem dono", Locale::PtBr), "spec-sem-dono");
+        assert_eq!(slugify("commit nao fecha", Locale::PtBr), "commit-nao-fecha");
+        assert_eq!(slugify("gate not closed", Locale::EnUs), "gate-not-closed");
     }
 
     #[test]

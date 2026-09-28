@@ -41,7 +41,8 @@ pub struct Linked {
     /// Num tipo, os seus métodos.
     pub methods: Vec<i64>,
     /// Num método de contrato, os métodos que o cumprem, cada um com o
-    /// caminho do arquivo dele.
+    /// caminho do arquivo dele: só os que podem ser candidatos da busca, sem
+    /// o dublê de teste.
     pub implementations: Vec<(i64, String)>,
 }
 
@@ -75,8 +76,9 @@ pub struct Pick {
 /// candidatos; se nenhuma está neles, a de melhor posição em `whole`, a lista
 /// inteira de onde os candidatos saíram; se nenhuma está nela, a de caminho
 /// mais parecido com o do item (mais pastas em comum no começo) e, no
-/// empate, a de menor id. O puxado entra só se ainda não voltou nem está no
-/// corte.
+/// empate, a de menor id. O dublê de teste nunca é puxado: ele não chega nas
+/// implementações de `links`, mesmo quando o caminho dele é o mais parecido.
+/// O puxado entra só se ainda não voltou nem está no corte.
 #[must_use]
 pub fn select(cut: &[i64], candidates: &[i64], whole: &[i64], links: &Links) -> Vec<Pick> {
     let in_cut: HashSet<i64> = cut.iter().copied().collect();

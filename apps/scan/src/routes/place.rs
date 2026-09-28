@@ -2,7 +2,7 @@
 //! escrita noutro arquivo chega às rotas que as montagens daqui alcançam, e
 //! a montagem que não leva nada a lugar nenhum.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use tree_sitter::Node;
 
@@ -14,6 +14,16 @@ use crate::model::Decl;
 pub(super) struct Chain {
     pub path: String,
     pub places: Vec<String>,
+}
+
+impl Chain {
+    /// Os lugares em aberto por que passa o que a montagem do caminho alcança
+    /// — a rota ou a montagem de um nome trazido —, fora o lugar dela mesma
+    /// (o objeto `receiver` e a declaração `owner`), que a montagem de outro
+    /// arquivo já alcança direto.
+    pub(super) fn through(&self, receiver: &str, owner: Option<&str>) -> Vec<String> {
+        self.places.iter().filter(|place| *place != receiver && Some(place.as_str()) != owner).cloned().collect()
+    }
 }
 
 /// Os lugares em aberto da montagem `top`: o objeto que a recebe e a
@@ -65,4 +75,21 @@ impl Reached<'_> {
     pub(super) fn has(&self, name: &str) -> bool {
         !name.is_empty() && self.names.contains(&name)
     }
+
+    /// A montagem alcança o que, no arquivo alcançado, está no lugar
+    /// `receiver` e `owner` ou passa por um dos lugares `through`: a rota e a
+    /// montagem feita ali seguem a mesma regra.
+    pub(super) fn reaches(&self, receiver: &str, owner: &str, through: &[String]) -> bool {
+        self.whole || self.has(receiver) || self.has(owner) || through.iter().any(|place| self.has(place))
+    }
+}
+
+/// Os nomes que o arquivo traz de outro: os de cada import e os que recebem
+/// um módulo inteiro. A montagem de um deles vale também para as rotas do
+/// arquivo de onde ele vem, mesmo quando alcança rotas escritas aqui.
+pub(super) fn brought_here<'s>(
+    brought: &'s BTreeMap<String, BTreeMap<String, String>>,
+    whole_modules: &'s HashSet<String>,
+) -> HashSet<&'s str> {
+    brought.values().flat_map(BTreeMap::keys).chain(whole_modules).map(String::as_str).collect()
 }
