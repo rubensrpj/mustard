@@ -571,7 +571,8 @@ fn users(opts: &MapOpts, root: &Path, lang: Locale, read: &Reader<'_>) -> Result
             }
             if d.common_calls > 0 {
                 entry["common_calls"] = json!(d.common_calls);
-                entry["common"] = json!(mustard_core::translate("map.users.common", lang)
+                let key = if d.common_calls == 1 { "map.users.common.one" } else { "map.users.common.many" };
+                entry["common"] = json!(mustard_core::translate(key, lang)
                     .replace("{count}", &d.common_calls.to_string())
                     .replace("{name}", &d.name));
             }

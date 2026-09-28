@@ -366,6 +366,42 @@ fn the_users_answer_puts_proven_links_first_and_groups_the_suspect_ones() {
     assert!(common.contains('3') && common.contains("findReferences"), "a contagem e o jeito de achar: {report}");
 }
 
+/// A contagem das chamadas do nome comum concorda com o número, pelo comando
+/// que a pessoa roda: uma chamada só sai no singular, e três saem no plural.
+#[test]
+fn one_common_call_reads_in_the_singular_and_three_in_the_plural() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    // O mapa como o scan o grava: a `run` de src/a.rs conta uma chamada do
+    // nome comum, e a de src/b.rs conta três.
+    mustard_core::io::project_map::write_text(
+        root,
+        r#"{"modules": [
+             {"path": "src/a.rs", "loc": 3, "declarations": [
+               {"kind": "function", "name": "run", "line": 1, "end_line": 3, "common_calls": 1}]},
+             {"path": "src/b.rs", "loc": 3, "declarations": [
+               {"kind": "function", "name": "run", "line": 1, "end_line": 3, "common_calls": 3}]}
+           ]}"#,
+    )
+    .unwrap();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+        .args(["run", "map", "users", "--name", "run", "--root"])
+        .arg(root)
+        .current_dir(root)
+        .output()
+        .expect("run map users");
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout)
+        .unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&out.stdout)));
+    assert!(out.status.success(), "{report}");
+    let declarations = report["declarations"].as_array().unwrap();
+    let common: Vec<&str> = declarations.iter().map(|d| d["common"].as_str().unwrap_or_default()).collect();
+    assert_eq!(declarations.len(), 2, "{report}");
+    assert!(common[0].starts_with("Uma chamada de `run` ficou sem ligação,"), "uma chamada, no singular: {report}");
+    assert!(common[0].contains("Para achá-la,") && !common[0].contains("chamadas"), "{report}");
+    assert!(common[1].starts_with("3 chamadas de `run` ficaram sem ligação,"), "três chamadas, no plural: {report}");
+    assert!(common[1].contains("Para achá-las,"), "{report}");
+}
+
 /// Pergunta ao mapa pelo comando que a pessoa roda, na raiz `root`: o JSON da
 /// resposta e se o comando saiu sem erro.
 fn ask_map(root: &Path, question: &str) -> (bool, serde_json::Value) {

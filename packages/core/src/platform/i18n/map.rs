@@ -209,12 +209,21 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "A suspect screen call matches more than one route. Or it only matches without the address version, \
              such as v1, or without the client base. To decide, read the address on the line of the call."
         }
-        ("map.users.common", Locale::PtBr) => {
+        ("map.users.common.one", Locale::PtBr) => {
+            "Uma chamada de `{name}` ficou sem ligação, porque o nome é comum demais para o mapa decidir. \
+             Para achá-la, peça findReferences nesta declaração à ferramenta `LSP` (servidor de linguagem) \
+             do Claude Code."
+        }
+        ("map.users.common.one", Locale::EnUs) => {
+            "One call of `{name}` was left unlinked, because the name is too common for the map to decide. \
+             To find it, ask the `LSP` (language server) tool of Claude Code for findReferences on this declaration."
+        }
+        ("map.users.common.many", Locale::PtBr) => {
             "{count} chamadas de `{name}` ficaram sem ligação, porque o nome é comum demais para o mapa decidir. \
              Para achá-las, peça findReferences nesta declaração à ferramenta `LSP` (servidor de linguagem) \
              do Claude Code."
         }
-        ("map.users.common", Locale::EnUs) => {
+        ("map.users.common.many", Locale::EnUs) => {
             "{count} calls of `{name}` were left unlinked, because the name is too common for the map to decide. \
              To find them, ask the `LSP` (language server) tool of Claude Code for findReferences on this declaration."
         }
@@ -345,8 +354,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("map.rs"),
             super::PREFIXES,
-            65,
-            0xef22_6037_9285_df67,
+            66,
+            0x1b0d_b340_7c4a_8d6f,
         );
     }
 
@@ -362,7 +371,8 @@ mod tests {
                 "map.users.head",
                 "map.users.none",
                 "map.users.suspect",
-                "map.users.common",
+                "map.users.common.one",
+                "map.users.common.many",
                 "map.users.routes",
                 "map.users.route_suspect",
                 "map.history.no_base",
@@ -552,7 +562,8 @@ mod tests {
             ("map.users.head", &["{name}"][..]),
             ("map.users.none", &["{name}", "{file}"][..]),
             ("map.users.suspect", &[][..]),
-            ("map.users.common", &["{count}", "{name}"][..]),
+            ("map.users.common.one", &["{name}"][..]),
+            ("map.users.common.many", &["{count}", "{name}"][..]),
             ("map.users.routes", &["{name}"][..]),
             ("map.users.route_suspect", &[][..]),
             ("map.history.no_base", &[][..]),
