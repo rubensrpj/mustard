@@ -17,20 +17,22 @@
 //! O modelo pedido é uma versão fixa, e o uso guarda o nome do modelo que a
 //! resposta diz ter respondido.
 //!
-//! A chave vale para a máquina inteira: [`KEY_ENV`] no ambiente ou o arquivo
-//! [`KEY_FILE`] na pasta do Mustard da máquina ([`key_path`]). Nenhum projeto
-//! a configura, nenhum comando a grava, e nenhum erro, aviso ou log a leva —
-//! nem o corpo da resposta do serviço.
+//! A chave vem de [`KEY_ENV`] no ambiente ou, sem ela, de `jev.key` no
+//! `mustard.json` do projeto ([`load_key`]). O git não pode guardar esse
+//! arquivo: guardado, a chave dele não se usa, e a busca avisa. Nenhum
+//! comando a grava, e nenhum erro, aviso ou log a leva — nem o corpo da
+//! resposta do serviço.
 
 use std::fmt;
 use std::io::ErrorKind;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use mustard_core::domain::map_filter::{
     FilterCandidate, FilterError, FilterRequest, FilterUsage, Filtered, MapFilter, Scored, cut,
 };
 use mustard_core::domain::normalize::split_identifier;
+use mustard_core::ProjectConfig;
 use serde_json::{Map, Value, json};
 
 use crate::commands::spec_events::pages::secret::without_secrets;
@@ -50,11 +52,8 @@ pub const JEV_MODEL: &str = "jev-1.13.0";
 /// US$ por milhão de tokens de entrada; a saída não é cobrada.
 pub const PRICE_PER_MILLION_INPUT_TOKENS: f64 = 0.042;
 
-/// A variável de ambiente da chave; vence o arquivo.
+/// A variável de ambiente da chave; vence o `mustard.json`.
 pub const KEY_ENV: &str = "TYPESAFE_API_KEY";
-
-/// O arquivo da chave, na pasta do Mustard da máquina, com permissão 600.
-pub const KEY_FILE: &str = "jev.key";
 
 /// Candidatos por pedido. Com os 100 candidatos do banco, são 2 pedidos.
 pub const GROUP_SIZE: usize = 50;
@@ -142,54 +141,51 @@ impl fmt::Debug for JevKey {
     }
 }
 
-/// A chave achada e, quando o arquivo dela está aberto a outros usuários da
-/// máquina, o aviso para fechar a permissão. A chave vale do mesmo jeito.
+/// A chave achada e, quando o git guarda o `mustard.json` que também traz
+/// uma chave, o aviso para tirá-lo do git. A chave do ambiente vale do mesmo
+/// jeito.
 #[derive(Debug, Clone)]
 pub struct LoadedKey {
     pub key: JevKey,
     pub warning: Option<FilterError>,
 }
 
-/// Onde mora o arquivo da chave, a partir da pasta pessoal.
-#[must_use]
-pub fn key_path(home: &Path) -> PathBuf {
-    home.join(".cache").join("mustard").join(KEY_FILE)
+/// A chave do projeto em `root`: [`KEY_ENV`] no ambiente; sem ela, `jev.key`
+/// do `mustard.json` que `config` leu. Sem nenhuma das duas,
+/// [`FilterError::MissingKey`]; com a do arquivo que o git guarda,
+/// [`FilterError::KeyInGit`].
+pub fn load_key(root: &Path, config: &ProjectConfig) -> Result<LoadedKey, FilterError> {
+    key_in(root, config, std::env::var(KEY_ENV).ok())
 }
 
-/// A chave da máquina: [`KEY_ENV`] no ambiente; sem ela, o arquivo em
-/// [`key_path`]. Sem nenhuma das duas, [`FilterError::MissingKey`].
-pub fn load_key() -> Result<LoadedKey, FilterError> {
-    let file = mustard_core::platform::harness::home_dir().map(|home| key_path(&home));
-    key_from(std::env::var(KEY_ENV).ok(), file.as_deref())
+/// A chave do projeto como em [`load_key`], com `env` no lugar do valor de
+/// [`KEY_ENV`]: o teste não depende do ambiente de quem o roda.
+pub fn key_in(root: &Path, config: &ProjectConfig, env: Option<String>) -> Result<LoadedKey, FilterError> {
+    key_from(env, config.jev_key(), || tracked_by_git(root))
 }
 
-/// A escolha da chave, sobre o valor do ambiente e o caminho do arquivo. O
-/// valor em branco vale como ausente.
-fn key_from(env: Option<String>, file: Option<&Path>) -> Result<LoadedKey, FilterError> {
+/// A escolha da chave, sobre o valor do ambiente e o do `mustard.json`; o
+/// valor em branco vale como ausente. `tracked` diz se o git guarda o
+/// arquivo, e só se pergunta quando ele traz uma chave: a chave guardada no
+/// git não se usa, e o aviso sai mesmo quando a do ambiente vale.
+fn key_from(env: Option<String>, project: Option<&str>, tracked: impl FnOnce() -> bool) -> Result<LoadedKey, FilterError> {
+    let project = project.map(str::trim).filter(|key| !key.is_empty());
+    let in_git = project.is_some() && tracked();
+    let warning = in_git.then_some(FilterError::KeyInGit);
     if let Some(key) = env.map(|value| value.trim().to_string()).filter(|value| !value.is_empty()) {
-        return Ok(LoadedKey { key: JevKey(key), warning: None });
+        return Ok(LoadedKey { key: JevKey(key), warning });
     }
-    let path = file.ok_or(FilterError::MissingKey)?;
-    let text = std::fs::read_to_string(path).map_err(|_| FilterError::MissingKey)?;
-    let key = text.trim();
-    if key.is_empty() {
-        return Err(FilterError::MissingKey);
+    if in_git {
+        return Err(FilterError::KeyInGit);
     }
-    Ok(LoadedKey { key: JevKey(key.to_string()), warning: open_to_others(path) })
+    let key = project.ok_or(FilterError::MissingKey)?;
+    Ok(LoadedKey { key: JevKey(key.to_string()), warning: None })
 }
 
-/// O aviso para o arquivo da chave que outros usuários podem ler ou gravar.
-#[cfg(unix)]
-fn open_to_others(path: &Path) -> Option<FilterError> {
-    use std::os::unix::fs::PermissionsExt;
-    let mode = std::fs::metadata(path).ok()?.permissions().mode() & 0o777;
-    (mode & 0o077 != 0).then(|| FilterError::KeyFileOpen { path: path.display().to_string(), mode })
-}
-
-/// Fora do Unix, a permissão não se lê em bits: não há aviso.
-#[cfg(not(unix))]
-fn open_to_others(_path: &Path) -> Option<FilterError> {
-    None
+/// O git guarda o `mustard.json` de `root`, no índice ou num commit. Sem git
+/// ou fora de um repositório, não guarda.
+fn tracked_by_git(root: &Path) -> bool {
+    mustard_core::platform::git::run(root, &["ls-files", "--error-unmatch", "--", "mustard.json"]).ok
 }
 
 // ---------------------------------------------------------------------------
@@ -212,7 +208,7 @@ pub struct JevFilter {
 }
 
 impl JevFilter {
-    /// O filtro com a chave da máquina, no endereço do serviço.
+    /// O filtro com a chave do projeto, no endereço do serviço.
     #[must_use]
     pub fn new(key: JevKey) -> Self {
         Self::at(key, JEV_URL)
@@ -1105,7 +1101,7 @@ mod tests {
             FilterError::MissingKey,
             FilterError::Timeout,
             FilterError::TooLarge { estimated_tokens: 70_000 },
-            FilterError::KeyFileOpen { path: "/home/x/.cache/mustard/jev.key".to_string(), mode: 0o644 },
+            FilterError::KeyInGit,
         ]);
         for error in errors {
             assert!(!error.to_string().contains(SECRET), "{error}");
@@ -1113,58 +1109,77 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_environment_key_comes_before_the_file() {
-        let home = tempfile::tempdir().unwrap();
-        let file = key_path(home.path());
-        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-        std::fs::write(&file, "from-file\n").unwrap();
+    /// Um projeto numa pasta nova com `mustard.json` trazendo `key` em
+    /// `jev.key`; com `git`, a pasta é um repositório, ainda sem o arquivo.
+    fn project_with_key(key: &str, git: bool) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        if git {
+            assert!(mustard_core::platform::git::run(dir.path(), &["init", "-q"]).ok);
+        }
+        let config = json!({"language": {"text": "pt-BR"}, "jev": {"key": key}});
+        std::fs::write(dir.path().join("mustard.json"), config.to_string()).unwrap();
+        dir
+    }
 
-        let loaded = key_from(Some(" from-env ".to_string()), Some(&file)).unwrap();
+    /// A chave como a busca a acha no projeto em `root`, com `env` no lugar
+    /// do ambiente de quem roda o teste.
+    fn project_key(root: &Path, env: Option<&str>) -> Result<LoadedKey, FilterError> {
+        key_in(root, &ProjectConfig::load(root), env.map(str::to_string))
+    }
+
+    #[test]
+    fn the_environment_key_comes_before_the_project_file() {
+        let loaded = key_from(Some(" from-env ".to_string()), Some("from-file"), || false).unwrap();
         assert_eq!(loaded.key.0, "from-env");
-        let loaded = key_from(Some("  ".to_string()), Some(&file)).unwrap();
+        let loaded = key_from(Some("  ".to_string()), Some(" from-file "), || false).unwrap();
         assert_eq!(loaded.key.0, "from-file");
-        let loaded = key_from(None, Some(&file)).unwrap();
+        let loaded = key_from(None, Some("from-file"), || false).unwrap();
         assert_eq!(loaded.key.0, "from-file");
+        assert!(loaded.warning.is_none());
     }
 
     #[test]
     fn without_a_key_anywhere_the_filter_has_no_key() {
-        let home = tempfile::tempdir().unwrap();
-        let file = key_path(home.path());
-        assert_eq!(key_from(None, Some(&file)).unwrap_err(), FilterError::MissingKey);
-        assert_eq!(key_from(None, None).unwrap_err(), FilterError::MissingKey);
-        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-        std::fs::write(&file, " \n").unwrap();
-        assert_eq!(key_from(None, Some(&file)).unwrap_err(), FilterError::MissingKey);
+        let never = || panic!("without a key in the file, git is not asked");
+        assert_eq!(key_from(None, None, never).unwrap_err(), FilterError::MissingKey);
+        assert_eq!(key_from(Some(" ".to_string()), Some("  "), never).unwrap_err(), FilterError::MissingKey);
+        let loaded = key_from(Some("from-env".to_string()), None, never).unwrap();
+        assert!(loaded.warning.is_none());
     }
 
+    /// A chave em `jev.key` do `mustard.json` vai ao serviço, no cabeçalho, e
+    /// liga o corte: as notas voltam e o que passa fica.
     #[test]
-    fn the_key_file_lives_in_the_machine_folder() {
-        let home = Path::new("/home/someone");
-        assert_eq!(key_path(home), home.join(".cache").join("mustard").join("jev.key"));
+    fn the_key_in_the_project_file_turns_the_cut_on() {
+        let project = project_with_key(SECRET, false);
+        let loaded = project_key(project.path(), None).unwrap();
+        assert!(loaded.warning.is_none());
+        let service = FakeService::start(1, |_, body| {
+            Reply::json(200, &answer_by_name(body, |name| if name == "cand1" { 0.9 } else { 0.1 }))
+        });
+        let got = JevFilter::at(loaded.key, &service.url).filter(&request(vec![candidate(1), candidate(2)])).unwrap();
+        assert_eq!(service.received()[0].authorization, format!("Bearer {SECRET}"));
+        assert_eq!(got.kept.first().map(|scored| scored.id), Some(1));
+
+        let bare = tempfile::tempdir().unwrap();
+        assert_eq!(project_key(bare.path(), None).unwrap_err(), FilterError::MissingKey);
     }
 
-    #[cfg(unix)]
+    /// O `mustard.json` que o git guarda não entrega a chave: sem a do
+    /// ambiente, não há chave e o motivo é o git; com ela, vale a do ambiente,
+    /// com o mesmo aviso.
     #[test]
-    fn a_key_file_open_to_others_still_counts_and_warns() {
-        use std::os::unix::fs::PermissionsExt;
-        let home = tempfile::tempdir().unwrap();
-        let file = key_path(home.path());
-        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-        std::fs::write(&file, SECRET).unwrap();
+    fn a_key_in_a_file_that_git_tracks_is_not_used_and_warns() {
+        let project = project_with_key(SECRET, true);
+        assert_eq!(project_key(project.path(), None).unwrap().key.0, SECRET, "out of git, the key counts");
 
-        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
-        let closed = key_from(None, Some(&file)).unwrap();
-        assert!(closed.warning.is_none());
-
-        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
-        let open = key_from(None, Some(&file)).unwrap();
-        assert_eq!(open.key.0, SECRET);
-        let warning = open.warning.unwrap();
-        assert!(matches!(warning, FilterError::KeyFileOpen { mode: 0o644, .. }), "{warning:?}");
-        assert!(warning.to_string().contains("chmod 600"));
-        assert!(!warning.to_string().contains(SECRET));
+        assert!(mustard_core::platform::git::run(project.path(), &["add", "mustard.json"]).ok);
+        let refused = project_key(project.path(), None).unwrap_err();
+        assert_eq!(refused, FilterError::KeyInGit);
+        assert!(!refused.to_string().contains(SECRET));
+        let with_env = project_key(project.path(), Some("from-env")).unwrap();
+        assert_eq!(with_env.key.0, "from-env");
+        assert_eq!(with_env.warning, Some(FilterError::KeyInGit));
     }
 
     // -- o serviço de verdade ----------------------------------------------------

@@ -103,13 +103,13 @@ pub struct Filtered {
 /// da resposta do serviço.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum FilterError {
-    /// Não há chave na máquina: nem no ambiente, nem no arquivo.
+    /// Não há chave: nem no ambiente, nem no `mustard.json` do projeto.
     #[error("no key for the filter service")]
     MissingKey,
-    /// O arquivo da chave vale, mas outros usuários da máquina podem lê-lo.
-    /// Não impede o filtro: é o aviso para fechar a permissão.
-    #[error("the key file {path} is readable by other users (mode {mode:o}): run chmod 600 {path}")]
-    KeyFileOpen { path: String, mode: u32 },
+    /// A chave está no `mustard.json`, mas o git guarda o arquivo: a chave
+    /// dele não se usa, e o aviso pede para tirá-lo do git e trocar a chave.
+    #[error("the key in mustard.json is not used, because git tracks the file")]
+    KeyInGit,
     /// O pedido não chegou ou a resposta não voltou por falha de rede.
     #[error("network: {0}")]
     Network(String),
@@ -134,7 +134,7 @@ impl FilterError {
     pub fn reason(&self) -> &'static str {
         match self {
             Self::MissingKey => "missing_key",
-            Self::KeyFileOpen { .. } => "key_file_open",
+            Self::KeyInGit => "key_in_git",
             Self::Network(_) => "network",
             Self::Refused { status: 401 | 403 } => "key_refused",
             Self::Refused { status: 402 } => "no_credit",

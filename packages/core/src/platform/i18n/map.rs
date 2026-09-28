@@ -329,11 +329,21 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "The value of search.filter in mustard.json does not count, because the filter must be jev or none. The \
              search goes on without a filter."
         }
-        ("map.search.key_file_open", Locale::PtBr) => {
-            "Outros usuários da máquina podem ler o arquivo da chave do filtro, {path}. Rode chmod 600 {path}."
+        ("map.search.missing_key", Locale::PtBr) => {
+            "A busca segue sem filtro, porque falta a chave dele. Ponha a chave em jev.key no mustard.json ou na \
+             variável `TYPESAFE_API_KEY`. Para não usar o filtro, ponha none em search.filter."
         }
-        ("map.search.key_file_open", Locale::EnUs) => {
-            "Other users of the machine can read the key file of the filter, {path}. Run chmod 600 {path}."
+        ("map.search.missing_key", Locale::EnUs) => {
+            "The search goes on without a filter, because its key is missing. Put the key in jev.key in mustard.json \
+             or in the `TYPESAFE_API_KEY` variable. To not use the filter, set search.filter to none."
+        }
+        ("map.search.key_in_git", Locale::PtBr) => {
+            "A chave em jev.key não vale, porque o git guarda o mustard.json. Tire o arquivo do git e troque a \
+             chave, porque quem lê o repositório pode tê-la visto."
+        }
+        ("map.search.key_in_git", Locale::EnUs) => {
+            "The key in jev.key does not count, because git tracks mustard.json. Take the file out of git and \
+             change the key, because anyone who reads the repository may have seen it."
         }
         ("map.history_unreadable", Locale::PtBr) => "A história de `{file}` não pôde ser lida do git ({detail}).",
         ("map.history_unreadable", Locale::EnUs) => "The history of `{file}` could not be read from git ({detail}).",
@@ -354,8 +364,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("map.rs"),
             super::PREFIXES,
-            66,
-            0x1b0d_b340_7c4a_8d6f,
+            67,
+            0x0f33_cf21_f176_735f,
         );
     }
 
@@ -389,7 +399,8 @@ mod tests {
                 "map.search.filter_failed",
                 "map.search.bad_number",
                 "map.search.bad_filter",
-                "map.search.key_file_open",
+                "map.search.missing_key",
+                "map.search.key_in_git",
                 "scan.bad_max_same_name",
             ] {
                 let text = translate(key, lang)
@@ -407,7 +418,6 @@ mod tests {
                     .replace("{code}", "combinado")
                     .replace("{sentence}", "O pedido sai em uma frase.")
                     .replace("{reason}", translate("map.search.reason.timeout", lang))
-                    .replace("{path}", "/casa/jev.key")
                     .replace("{value}", "dois");
                 let report = crate::domain::clarity::measure(&text, &[], Some(lang));
                 assert!(report.passed, "{key} {lang:?}: {report:?}");
@@ -589,7 +599,8 @@ mod tests {
             ("map.search.reason.refused", &[][..]),
             ("map.search.bad_number", &["{key}", "{default}"][..]),
             ("map.search.bad_filter", &[][..]),
-            ("map.search.key_file_open", &["{path}"][..]),
+            ("map.search.missing_key", &[][..]),
+            ("map.search.key_in_git", &[][..]),
             ("scan.bad_max_same_name", &["scan.max_same_name", "{value}", "{default}"][..]),
             ("doctor.scan_output.visible", &["{paths}"][..]),
         ] {

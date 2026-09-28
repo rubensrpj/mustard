@@ -123,25 +123,26 @@ pub(crate) type Mine<'m> = dyn Fn(&Path, &Path) -> mustard_core::platform::error
 pub(crate) type Trace<'t> =
     dyn Fn(&Path, &Path, &str, usize) -> mustard_core::platform::error::Result<HistoryReport> + 't;
 
-/// O filtro da busca montado com a chave da máquina: o nome dele, que a
-/// resposta e o registro da chamada dizem, e o aviso do arquivo da chave
-/// aberto a outros usuários, quando há.
+/// O filtro da busca montado com a chave do projeto: o nome dele, que a
+/// resposta e o registro da chamada dizem, e o aviso da chave, quando a do
+/// ambiente vale mas o git guarda o `mustard.json` que também traz uma.
 pub(crate) struct Assembled {
     pub(crate) name: &'static str,
     pub(crate) filter: Box<dyn MapFilter>,
     pub(crate) warning: Option<FilterError>,
 }
 
-/// A montagem do filtro: com a chave da máquina, o filtro; sem ela, `None`.
-/// Só a busca por assunto a chama, e só quando a configuração não desliga o
+/// A montagem do filtro para o projeto na raiz, com o `mustard.json` que a
+/// busca leu: com a chave, o filtro; sem ela, o motivo, que vira aviso. Só a
+/// busca por assunto a chama, e só quando a configuração não desliga o
 /// filtro.
-pub(crate) type Assemble<'a> = dyn Fn() -> Option<Assembled> + 'a;
+pub(crate) type Assemble<'a> = dyn Fn(&Path, &mustard_core::ProjectConfig) -> Result<Assembled, FilterError> + 'a;
 
-/// A montagem de verdade: o Jev, com a chave do ambiente ou da pasta do
-/// Mustard da máquina.
-fn jev() -> Option<Assembled> {
-    let loaded = crate::shared::jev::load_key().ok()?;
-    Some(Assembled {
+/// A montagem de verdade: o Jev, com a chave do ambiente ou do
+/// `mustard.json` do projeto.
+fn jev(root: &Path, config: &mustard_core::ProjectConfig) -> Result<Assembled, FilterError> {
+    let loaded = crate::shared::jev::load_key(root, config)?;
+    Ok(Assembled {
         name: "jev",
         filter: Box::new(crate::shared::jev::JevFilter::new(loaded.key)),
         warning: loaded.warning,
@@ -275,7 +276,8 @@ struct SearchNumbers {
 
 /// A busca por assunto. O filtro se escolhe aqui, num ponto só: desligado
 /// (`none`) ou com nome desconhecido, nenhum; ausente ou `jev`, o que
-/// `assemble` monta, se há chave na máquina. Com filtro, os candidatos do
+/// `assemble` monta, se há chave para o projeto; sem ela, nenhum, com o
+/// aviso do motivo. Com filtro, os candidatos do
 /// banco passam pela nota dele, a resposta traz as peças, e a chamada fica
 /// gravada na spec atual com o tempo, os tokens e o custo; sem filtro, ou na
 /// falha dele, a resposta é a da busca do banco. Os avisos saem uma vez por
@@ -317,15 +319,19 @@ fn search(
             }
             None
         }
-        FilterSetting::Absent | FilterSetting::Jev => assemble(),
+        FilterSetting::Absent | FilterSetting::Jev => match assemble(root, &config) {
+            Ok(assembled) => Some(assembled),
+            Err(error) => {
+                key_warning(root, session, &error, lang, &mut warnings);
+                None
+            }
+        },
     };
     let (mut report, measured) = match assembled {
         None => (bank_search(root, &query, languages)?, None),
         Some(assembled) => {
-            if let Some(FilterError::KeyFileOpen { path, .. }) = &assembled.warning
-                && first_warning(root, session, "search.key_file")
-            {
-                warnings.push(mustard_core::translate("map.search.key_file_open", lang).replace("{path}", path));
+            if let Some(error) = &assembled.warning {
+                key_warning(root, session, error, lang, &mut warnings);
             }
             let asked = Asked { root, query: &query, intent, lang, languages, numbers: &numbers };
             let searched = filtered_search(&asked, &assembled)?;
@@ -371,6 +377,19 @@ fn search(
         );
     }
     Ok(report)
+}
+
+/// O aviso da chave do filtro, uma vez por sessão para cada motivo: a chave
+/// que falta, ou a do `mustard.json` que o git guarda. Nenhum dos dois leva
+/// a chave.
+fn key_warning(root: &Path, session: Option<&str>, error: &FilterError, lang: Locale, warnings: &mut Vec<String>) {
+    let key = match error {
+        FilterError::KeyInGit => "map.search.key_in_git",
+        _ => "map.search.missing_key",
+    };
+    if first_warning(root, session, &format!("search.{}", error.reason())) {
+        warnings.push(mustard_core::translate(key, lang).to_string());
+    }
 }
 
 /// A busca do banco, sem filtro: os arquivos que mais casam com a pergunta.
@@ -967,9 +986,9 @@ mod tests {
     };
     use tempfile::tempdir;
 
-    /// A resposta de uma máquina sem a chave do filtro: a busca é a do banco.
+    /// A resposta de um projeto sem a chave do filtro: a busca é a do banco.
     fn map_at(opts: &MapOpts, mine: &Mine<'_>, trace: &Trace<'_>) -> Value {
-        super::map_at(opts, mine, trace, &|| None)
+        super::map_at(opts, mine, trace, &|_, _| Err(FilterError::MissingKey))
     }
 
     /// A resposta do comando a um mapa de teste, que ninguém relê: fora do
@@ -1503,7 +1522,7 @@ mod tests {
         let project = crate::commands::spec_events::project(&opts.root);
         let whole = |_: Need<'_>| store::read(&project.root);
         let trace = |_: &Path, _: &Path, _: &str, _: usize| panic!("a map without a base never reads a history");
-        answer_from(opts, &project.root, project.lang, &project.languages, &whole, &trace, &|| None)
+        answer_from(opts, &project.root, project.lang, &project.languages, &whole, &trace, &|_, _| Err(FilterError::MissingKey))
             .unwrap_or_else(|refusal| refused(&refusal, project.lang))
     }
 
@@ -2409,8 +2428,8 @@ mod tests {
         }
     }
 
-    /// A resposta da busca com a montagem `assemble` no lugar da chave da
-    /// máquina.
+    /// A resposta da busca com a montagem `assemble` no lugar da chave do
+    /// projeto.
     fn searched(opts: &MapOpts, assemble: &Assemble<'_>) -> Value {
         super::map_at(
             opts,
@@ -2474,9 +2493,22 @@ mod tests {
             Self { asked: std::rc::Rc::default(), notes: Vec::new(), error: Some(error) }
         }
 
-        /// A montagem que entrega este filtro, como a chave na máquina.
-        fn assemble(&self) -> impl Fn() -> Option<Assembled> + '_ {
-            move || Some(Assembled { name: "jev", filter: Box::new(self.clone()), warning: None })
+        /// A montagem que entrega este filtro, como a chave no projeto.
+        fn assemble(&self) -> impl Fn(&Path, &mustard_core::ProjectConfig) -> Result<Assembled, FilterError> + '_ {
+            move |_, _| Ok(Assembled { name: "jev", filter: Box::new(self.clone()), warning: None })
+        }
+
+        /// A montagem com a chave achada no projeto como a busca de verdade a
+        /// acha, com `env` no lugar do ambiente de quem roda o teste e este
+        /// filtro no lugar do serviço.
+        fn assemble_from_the_project(
+            &self,
+            env: Option<&'static str>,
+        ) -> impl Fn(&Path, &mustard_core::ProjectConfig) -> Result<Assembled, FilterError> + '_ {
+            move |root, config| {
+                let loaded = crate::shared::jev::key_in(root, config, env.map(str::to_string))?;
+                Ok(Assembled { name: "jev", filter: Box::new(self.clone()), warning: loaded.warning })
+            }
         }
 
         fn calls(&self) -> usize {
@@ -2488,20 +2520,33 @@ mod tests {
         }
     }
 
-    /// Sem `search.filter` e sem chave na máquina, a busca é a do banco,
-    /// igual à de antes do filtro, e a frase de `--intent` não a muda.
+    /// Sem `search.filter` e sem chave, nem no ambiente nem no
+    /// `mustard.json`, a busca é a do banco, igual à de antes do filtro, com
+    /// o aviso da chave que falta uma vez por sessão; a frase de `--intent`
+    /// não a muda. Com o filtro desligado, não há aviso.
     #[test]
-    fn without_the_filter_setting_and_without_a_key_the_search_is_the_bank_one() {
+    fn without_a_key_the_search_is_the_bank_one_and_warns_once_per_session() {
         let dir = search_project(FILTER_MAP, &json!({}));
+        let fake = FakeFilter::scoring(&[0.9, 0.9, 0.9]);
         let bank = bank_answer(dir.path(), "cancelar");
         assert_eq!(bank["files"][0]["path"], json!("src/pedido.rs"), "{bank}");
-        assert_eq!(searched(&search_opts(dir.path(), "cancelar", None, None), &|| None), bank);
-        let with_intent = search_opts(dir.path(), "cancelar", Some("onde avisa o cliente"), None);
-        assert_eq!(searched(&with_intent, &|| None), bank);
+        let opts = search_opts(dir.path(), "cancelar", None, Some("sessao-sem-chave"));
+        let first = searched(&opts, &fake.assemble_from_the_project(None));
+        let warned = mustard_core::translate("map.search.missing_key", Locale::PtBr);
+        assert_eq!(first["warnings"], json!([warned]), "{first}");
+        assert_eq!(without(&first, "warnings"), bank, "{first}");
+        assert_eq!(searched(&opts, &fake.assemble_from_the_project(None)), bank, "the same session is not warned again");
+        let with_intent = search_opts(dir.path(), "cancelar", Some("onde avisa o cliente"), Some("sessao-sem-chave"));
+        assert_eq!(searched(&with_intent, &fake.assemble_from_the_project(None)), bank);
+        assert_eq!(fake.calls(), 0);
+
+        let off = search_project(FILTER_MAP, &json!({"filter": "none"}));
+        let quiet = searched(&search_opts(off.path(), "cancelar", None, None), &fake.assemble_from_the_project(None));
+        assert_eq!(quiet, bank_answer(off.path(), "cancelar"));
     }
 
     /// Com `search.filter: "none"`, a busca não monta o filtro, mesmo com a
-    /// chave na máquina.
+    /// chave no projeto.
     #[test]
     fn the_filter_set_to_none_is_not_called_even_with_a_key() {
         let dir = search_project(FILTER_MAP, &json!({"filter": "none"}));
@@ -2610,9 +2655,9 @@ mod tests {
         let skill = skill_dir.join("SKILL.md");
         std::fs::write(&skill, "Veja `pay/index.rs`.\n").unwrap();
         let assembled = std::cell::Cell::new(0);
-        let counting = || {
+        let counting = |_: &Path, _: &mustard_core::ProjectConfig| {
             assembled.set(assembled.get() + 1);
-            None
+            Err(FilterError::MissingKey)
         };
         for opts in every_question(dir.path(), &skill) {
             searched(&opts, &counting);
@@ -2744,8 +2789,118 @@ mod tests {
     #[test]
     fn a_search_without_the_filter_records_no_call() {
         let dir = search_project_on("sem-filtro");
-        searched(&search_opts(dir.path(), "pedido", Some("onde o pedido é gravado"), None), &|| None);
+        searched(&search_opts(dir.path(), "pedido", Some("onde o pedido é gravado"), None), &|_, _| Err(FilterError::MissingKey));
         assert!(calls_of(dir.path(), "sem-filtro").is_empty());
+    }
+
+    /// Uma chave falsa, que nenhuma saída pode mostrar.
+    const PROJECT_KEY: &str = "tsk-falsa-9f8e7d6c5b4a";
+
+    /// Grava `jev.key` com a chave falsa no `mustard.json` do projeto, com o
+    /// resto do arquivo como estava.
+    fn with_the_key(root: &Path) {
+        let path = root.join("mustard.json");
+        let mut config: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        config["jev"] = json!({"key": PROJECT_KEY});
+        std::fs::write(&path, config.to_string()).unwrap();
+    }
+
+    /// Todo arquivo sob `.claude` do projeto, pelo texto.
+    fn claude_texts(root: &Path) -> Vec<(PathBuf, String)> {
+        let mut found = Vec::new();
+        let mut pending = vec![root.join(".claude")];
+        while let Some(dir) = pending.pop() {
+            for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    pending.push(path);
+                } else {
+                    found.push((path.clone(), String::from_utf8_lossy(&std::fs::read(&path).unwrap()).into_owned()));
+                }
+            }
+        }
+        found
+    }
+
+    /// A chave em `jev.key` do `mustard.json`, fora do git, liga o filtro: a
+    /// busca responde pelas notas, sem aviso. Nem a resposta, nem os avisos,
+    /// nem a chamada gravada, nem arquivo nenhum sob `.claude` mostram a
+    /// chave, com o filtro respondendo ou falhando.
+    #[test]
+    fn the_key_in_the_project_file_turns_the_filter_on_and_never_shows() {
+        let dir = search_project_on("chave");
+        with_the_key(dir.path());
+        let fake = FakeFilter::scoring(&[0.7, 0.9, 0.8]);
+        let opts = search_opts(dir.path(), "pedido", Some("onde o pedido é gravado"), Some("sessao-chave"));
+        let report = searched(&opts, &fake.assemble_from_the_project(None));
+        assert_eq!(fake.calls(), 1, "{report}");
+        assert_eq!(report["filter"], json!("jev"), "{report}");
+        assert!(report.get("warnings").is_none(), "{report}");
+        assert!(!report.to_string().contains(PROJECT_KEY), "{report}");
+
+        let failing = FakeFilter::failing(FilterError::Refused { status: 401 });
+        let refused = searched(&opts, &failing.assemble_from_the_project(None));
+        assert_eq!(failing.calls(), 1, "{refused}");
+        assert!(refused.get("warnings").is_some(), "{refused}");
+        assert!(!refused.to_string().contains(PROJECT_KEY), "{refused}");
+
+        let calls = calls_of(dir.path(), "chave");
+        assert_eq!(calls.len(), 2, "{calls:?}");
+        assert!(!format!("{calls:?}").contains(PROJECT_KEY), "{calls:?}");
+        let texts = claude_texts(dir.path());
+        assert!(!texts.is_empty());
+        for (path, text) in texts {
+            assert!(!text.contains(PROJECT_KEY), "{}", path.display());
+        }
+    }
+
+    /// Um repositório git de verdade com o mapa do filtro e a chave falsa em
+    /// `jev.key` do `mustard.json`, que o git guarda num commit.
+    fn repo_with_the_key_in_git() -> tempfile::TempDir {
+        let (dir, mut map) = scanned_repo(FILTER_MAP);
+        let root = dir.path();
+        with_the_key(root);
+        let out = std::process::Command::new("git")
+            .args(["-c", "user.email=t@example.com", "-c", "user.name=t", "-c", "commit.gpgsign=false"])
+            .args(["commit", "-q", "-am", "chave"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git commit: {}", String::from_utf8_lossy(&out.stderr));
+        // A pasta do Mustard fica fora do git, como a instalação a deixa: a
+        // marca do aviso dado na sessão não muda o conteúdo do projeto.
+        std::fs::write(root.join(".git/info/exclude"), ".claude/\n").unwrap();
+        let now = store::listing(root).unwrap();
+        map["state"] = json!({"head": now.head, "listing": now.digest()});
+        written_by_the_scan(root, &map);
+        dir
+    }
+
+    /// A chave do `mustard.json` que o git guarda não se usa: sem a do
+    /// ambiente, a busca é a do banco, com o aviso uma vez por sessão; com
+    /// ela, o filtro vale, com o mesmo aviso. Nenhum dos dois mostra a
+    /// chave.
+    #[test]
+    fn a_key_in_a_mustard_json_that_git_tracks_is_not_used_and_warns() {
+        let dir = repo_with_the_key_in_git();
+        let root = dir.path();
+        let fake = FakeFilter::scoring(&[0.7, 0.9, 0.8]);
+        let warned = mustard_core::translate("map.search.key_in_git", Locale::PtBr);
+        let opts = search_opts(root, "pedido", None, Some("sessao-git"));
+        let first = searched(&opts, &fake.assemble_from_the_project(None));
+        assert_eq!(fake.calls(), 0, "{first}");
+        assert_eq!(first["warnings"], json!([warned]), "{first}");
+        assert_eq!(without(&first, "warnings"), bank_answer(root, "pedido"), "{first}");
+        assert!(!first.to_string().contains(PROJECT_KEY), "{first}");
+        let second = searched(&opts, &fake.assemble_from_the_project(None));
+        assert!(second.get("warnings").is_none(), "the same session is not warned again: {second}");
+
+        let with_env = search_opts(root, "pedido", None, Some("sessao-git-ambiente"));
+        let filtered = searched(&with_env, &fake.assemble_from_the_project(Some("tsk-do-ambiente")));
+        assert_eq!(fake.calls(), 1, "{filtered}");
+        assert_eq!(filtered["filter"], json!("jev"), "{filtered}");
+        assert_eq!(filtered["warnings"], json!([warned]), "{filtered}");
+        assert!(!filtered.to_string().contains(PROJECT_KEY), "{filtered}");
     }
 
     /// A falha do filtro grava a chamada com o motivo junto do nome dele.

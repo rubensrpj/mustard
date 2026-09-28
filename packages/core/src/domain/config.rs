@@ -244,6 +244,41 @@ impl ScanConfig {
     }
 }
 
+/// A seção `jev` do `mustard.json`: a chave do serviço que dá nota aos
+/// candidatos da busca por assunto, em `jev.key`. É segredo: o `Debug` não a
+/// escreve, e a serialização do tipo não a leva. Só a gravação do próprio
+/// arquivo a devolve ao lugar de onde veio, para que regravar o
+/// `mustard.json` não apague a chave de quem a pôs lá.
+///
+/// A seção fica como o arquivo a traz, de qualquer forma: uma chave que não
+/// é texto vale como ausente e não torna o arquivo inteiro ilegível.
+#[derive(Clone, Default)]
+pub struct JevConfig {
+    raw: Option<Value>,
+}
+
+impl JevConfig {
+    /// A chave escrita em `jev.key`, sem espaço em volta; `None` quando falta,
+    /// está em branco ou não é texto.
+    #[must_use]
+    pub fn key(&self) -> Option<&str> {
+        self.raw.as_ref()?.get("key")?.as_str().map(str::trim).filter(|key| !key.is_empty())
+    }
+}
+
+impl std::fmt::Debug for JevConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.key().is_some() { "JevConfig(key: …)" } else { "JevConfig" })
+    }
+}
+
+impl<'de> Deserialize<'de> for JevConfig {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        let raw = Value::deserialize(deserializer)?;
+        Ok(Self { raw: (!raw.is_null()).then_some(raw) })
+    }
+}
+
 /// O teto do nome comum: a chamada que pode alcançar mais declarações de
 /// mesmo nome que ele é palavra comum (`new`, `build`, `run`), não ligação, e
 /// só se conta. Medido no próprio Mustard, com 4.632 lugares de chamada
@@ -590,6 +625,11 @@ pub struct ProjectConfig {
     /// [`ProjectConfig::scan_max_same_name`].
     #[serde(skip_serializing_if = "ScanConfig::is_empty")]
     pub scan: ScanConfig,
+    /// A chave do filtro da busca — veja [`JevConfig`]. Lida só por
+    /// [`ProjectConfig::jev_key`]. Nenhuma serialização do tipo a leva: só
+    /// [`ProjectConfig::write`] a devolve ao arquivo.
+    #[serde(skip_serializing)]
+    pub jev: JevConfig,
     /// A chave que liga e desliga o Mustard no projeto. Desligado (`false`),
     /// nenhum gancho do Mustard age aqui; ausente, ele está ligado. Lida só
     /// por [`ProjectConfig::enabled`].
@@ -671,13 +711,20 @@ impl ProjectConfig {
 
     /// Serialize and atomically write to `<root>/mustard.json`.
     ///
+    /// A seção `jev` volta ao arquivo como foi lida, no fim: é a chave do
+    /// projeto, que a serialização do tipo não leva.
+    ///
     /// # Errors
     /// [`crate::platform::error::Error::Parse`] on serialization failure (never
     /// happens for this type in practice) or [`crate::platform::error::Error::Io`]
     /// on a write failure.
     pub fn write(&self, root: &Path) -> Result<()> {
         let path = Self::json_path(root);
-        let mut json = serde_json::to_string_pretty(self)?;
+        let mut document = serde_json::to_value(self)?;
+        if let (Some(jev), Value::Object(keys)) = (&self.jev.raw, &mut document) {
+            keys.insert("jev".to_string(), jev.clone());
+        }
+        let mut json = serde_json::to_string_pretty(&document)?;
         json.push('\n');
         fs::write_atomic(&path, json.as_bytes())
     }
@@ -792,6 +839,14 @@ impl ProjectConfig {
     #[must_use]
     pub fn search_max_returned(&self) -> Setting {
         Setting::of(self.search.max_returned.as_ref())
+    }
+
+    /// `jev.key`: a chave do filtro da busca escrita no arquivo, sem espaço em
+    /// volta; `None` quando falta, está em branco ou não é texto. Quem a lê
+    /// não a escreve em saída nenhuma.
+    #[must_use]
+    pub fn jev_key(&self) -> Option<&str> {
+        self.jev.key()
     }
 
     /// `scan.max_same_name`: o teto do nome comum que vale, e se o valor
@@ -1184,6 +1239,49 @@ mod tests {
         ProjectConfig::default().write(bare.path()).unwrap();
         let raw = std::fs::read_to_string(bare.path().join("mustard.json")).unwrap();
         assert!(!raw.contains("scan"), "{raw}");
+    }
+
+    /// A chave do filtro vem de `jev.key`, sem espaço em volta; em branco ou
+    /// fora de texto, vale como ausente, sem tornar o arquivo ilegível. Nem o
+    /// `Debug` nem a serialização do tipo a escrevem, e regravar o arquivo a
+    /// mantém lá, com o resto da seção.
+    #[test]
+    fn the_filter_key_is_read_kept_on_write_and_never_printed() {
+        const KEY: &str = "tsk-falsa-0123456789abcdef";
+        let dir = tempdir().unwrap();
+        let load = |text: &str| {
+            std::fs::write(dir.path().join("mustard.json"), text).unwrap();
+            ProjectConfig::load(dir.path())
+        };
+        assert_eq!(load("{}").jev_key(), None);
+        for (text, key) in [
+            (format!(r#"{{"jev": {{"key": " {KEY} "}}}}"#), Some(KEY)),
+            (r#"{"jev": {"key": "  "}}"#.to_string(), None),
+            (r#"{"jev": {"key": 42}}"#.to_string(), None),
+            (r#"{"jev": "solta"}"#.to_string(), None),
+            (r#"{"jev": null}"#.to_string(), None),
+        ] {
+            let cfg = load(&text);
+            assert_eq!(cfg.jev_key(), key, "{text}");
+            assert!(!cfg.unreadable, "{text}: a chave fora de forma não torna o arquivo ilegível");
+        }
+
+        let cfg = load(&format!(r#"{{"language": {{"text": "pt-BR"}}, "jev": {{"key": "{KEY}", "nota": 1}}}}"#));
+        assert!(!format!("{cfg:?}").contains(KEY), "{cfg:?}");
+        assert!(!format!("{:?}", cfg.jev).contains(KEY));
+        let serialized = serde_json::to_string(&cfg).unwrap();
+        assert!(!serialized.contains(KEY) && !serialized.contains("jev"), "{serialized}");
+
+        cfg.write(dir.path()).unwrap();
+        let written: Value = serde_json::from_str(&std::fs::read_to_string(dir.path().join("mustard.json")).unwrap()).unwrap();
+        assert_eq!(written["jev"], serde_json::json!({"key": KEY, "nota": 1}));
+        assert_eq!(written["language"]["text"], "pt-BR");
+        assert_eq!(ProjectConfig::load(dir.path()).jev_key(), Some(KEY));
+
+        let bare = tempdir().unwrap();
+        ProjectConfig::default().write(bare.path()).unwrap();
+        let raw = std::fs::read_to_string(bare.path().join("mustard.json")).unwrap();
+        assert!(!raw.contains("jev"), "{raw}");
     }
 
     /// A leitura do texto dos pull requests fica ligada sem a chave e só
