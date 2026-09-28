@@ -662,6 +662,7 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("round.replan", Locale::PtBr) => {
             "A onda {wave} diz que o plano dela não funciona. Mudança proposta: {change}. \
+             Com o aceite, voltam à fila as tarefas que ela não fez: {tasks}. \
              Faça ao usuário a pergunta com opções, com \"{yes}\" e \"{no}\", e ponha {code} \
              no cabeçalho dela. É o cabeçalho que diz qual mudança o clique decide; o enunciado \
              você escreve com as palavras que o usuário entender. Pergunta pronta: \"{question}\". \
@@ -669,11 +670,45 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("round.replan", Locale::EnUs) => {
             "Wave {wave} says its plan does not work. Proposed change: {change}. \
+             On acceptance, the tasks it did not do go back to the queue: {tasks}. \
              Ask the user a question with options, with \"{yes}\" and \"{no}\", and put {code} \
              in its header. The header is what says which change the click decides; the \
              question itself you write in words the user understands. Ready question: \
              \"{question}\". The yes is the click on \"{yes}\": after it, run the round again \
              with the same report."
+        }
+        ("round.no_tasks", Locale::PtBr) => "nenhuma",
+        ("round.no_tasks", Locale::EnUs) => "none",
+        ("round.replan_needs_undone", Locale::PtBr) => {
+            "A entrega da onda {wave} muda o plano e não diz quais tarefas ficaram por fazer. \
+             Grave a entrega de novo com `\"undone\":[\"<código>\"]`, com cada tarefa não feita, \
+             ou com `\"undone\":[]` se fez todas. Tarefas da onda: {tasks}. Nada foi gravado."
+        }
+        ("round.replan_needs_undone", Locale::EnUs) => {
+            "Wave {wave}'s delivery changes the plan and does not say which tasks were left undone. \
+             Record the delivery again with `\"undone\":[\"<task code>\"]`, listing each task not done, \
+             or with `\"undone\":[]` if it did them all. The wave's tasks: {tasks}. Nothing was \
+             recorded."
+        }
+        ("round.undone_not_in_wave", Locale::PtBr) => {
+            "A tarefa {code} não é da onda {wave}, e `undone` só leva tarefa da própria onda. \
+             Tarefas da onda: {tasks}. Nada foi gravado."
+        }
+        ("round.undone_not_in_wave", Locale::EnUs) => {
+            "Task {code} is not in wave {wave}, and `undone` only takes tasks of the wave itself. \
+             The wave's tasks: {tasks}. Nothing was recorded."
+        }
+        ("round.returned_change", Locale::PtBr) => "Mudança de plano aceita na volta da onda {wave}: {change}",
+        ("round.returned_change", Locale::EnUs) => "Plan change accepted when wave {wave} came back: {change}",
+        ("round.tasks_returned", Locale::PtBr) => {
+            "A onda {wave} não fez as tarefas {tasks}, e elas voltaram ao backlog, com a mudança \
+             de plano anotada quando houve. Se a mudança altera uma decisão ou o que a tarefa pede, \
+             grave a decisão e reescreva a tarefa antes da próxima rodada."
+        }
+        ("round.tasks_returned", Locale::EnUs) => {
+            "Wave {wave} did not do tasks {tasks}, and they went back to the backlog, with the plan \
+             change noted when there was one. If the change alters a decision or what the task asks, \
+             record the decision and rewrite the task before the next round."
         }
         ("round.git_refused", Locale::PtBr) => {
             "O git recusou o commit da rodada: {detail}\nNada foi gravado. Corrija o que o git \
@@ -1404,8 +1439,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            173,
-            0x9d08_485f_aa35_166b,
+            178,
+            0x9a0d_ec3b_2528_d7a5,
         );
     }
 
@@ -1588,7 +1623,12 @@ mod tests {
             ("round.commit_forbidden", &["{found}"][..]),
             ("round.commit_looks_like_sha", &["{found}"][..]),
             ("round.formatter_missing", &["{name}"][..]),
-            ("round.replan", &["{wave}", "{change}", "{question}", "{yes}", "{no}", "{code}"][..]),
+            ("round.replan", &["{wave}", "{change}", "{question}", "{yes}", "{no}", "{code}", "{tasks}"][..]),
+            ("round.no_tasks", &[][..]),
+            ("round.replan_needs_undone", &["{wave}", "{tasks}"][..]),
+            ("round.undone_not_in_wave", &["{wave}", "{code}", "{tasks}"][..]),
+            ("round.returned_change", &["{wave}", "{change}"][..]),
+            ("round.tasks_returned", &["{wave}", "{tasks}"][..]),
             ("round.git_refused", &["{detail}"][..]),
             ("round.next", &[][..]),
             ("round.next.copy_file", &["{path}"][..]),

@@ -1121,6 +1121,11 @@ pub(crate) fn wave_states(log: &SpecLog) -> mustard_core::view::document::WaveSt
         .collect()
 }
 
+/// O cenário da volta com tarefa não feita, que os testes da entrega também
+/// usam.
+#[cfg(test)]
+pub(super) use tests::{return_with_an_undone_task, task_now, UndoneReturn};
+
 #[cfg(test)]
 mod tests {
     use std::process::Command;
@@ -2878,6 +2883,12 @@ mod tests {
     /// onda nenhuma: as tarefas vão para o backlog. Devolve o número da fala
     /// do usuário e o do critério, que as tarefas citam.
     fn backlog_project(root: &Path) -> (u64, u64) {
+        backlog_project_with(root, |_| {})
+    }
+
+    /// [`backlog_project`] com o que o teste grava antes da aprovação
+    /// (`before`), que recebe o número da fala do usuário.
+    fn backlog_project_with(root: &Path, before: impl FnOnce(u64)) -> (u64, u64) {
         std::fs::create_dir_all(root.join("src")).unwrap();
         for name in ["a.rs", "b.rs"] {
             std::fs::write(root.join("src").join(name), "fn um() {}\n").unwrap();
@@ -2902,6 +2913,7 @@ mod tests {
                     "status": "not_applicable", "closes": id_of(&opened), "reason": "Já respondido.", "origin": said});
                 assert_eq!(write(root, "x", "point", closing)["ok"], json!(true));
             }
+            before(said);
         });
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let first = |kind: &str| log.visible().into_iter().find(|e| e.event_type == kind).map(|e| e.id).unwrap();
@@ -3499,5 +3511,142 @@ mod tests {
         for task in [first, second, third] {
             assert_eq!(log.current(task).and_then(SpecEvent::wave), Some(1), "a tarefa {task} ganhou a onda");
         }
+    }
+
+    /// O backlog da onda que volta sem fazer uma das tarefas, depois do
+    /// "Aceitar" do usuário na mudança de plano dela.
+    pub(crate) struct UndoneReturn {
+        /// O código de cada tarefa: A, B, C e D.
+        pub(crate) a: String,
+        pub(crate) b: String,
+        pub(crate) c: String,
+        pub(crate) d: String,
+        /// O código da decisão que só B cobre.
+        pub(crate) b_decision: String,
+        /// A mudança de plano que a onda propôs.
+        pub(crate) change: String,
+        /// A resposta da rodada que parou pela mudança, antes do clique.
+        pub(crate) stopped: Value,
+        /// A resposta da rodada que assumiu a volta, depois do clique.
+        pub(crate) accepted: Value,
+    }
+
+    /// A versão vigente da tarefa de código `code` na spec `x`.
+    pub(crate) fn task_now(root: &Path, code: &str) -> SpecEvent {
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let codes = log.codes();
+        log.visible()
+            .into_iter()
+            .find(|e| e.event_type == "task" && codes.get(&e.id).map(String::as_str) == Some(code))
+            .cloned()
+            .unwrap_or_else(|| panic!("sem a tarefa {code}"))
+    }
+
+    /// Um backlog com quatro tarefas, cada uma num arquivo: A cobre uma
+    /// decisão e B cobre outra; C depende de B, e D depende de A. Nem C nem D
+    /// divide arquivo com A ou com B, e por isso nenhuma entra no lote de A e
+    /// B pela espera. A primeira rodada leva A e B numa onda de lote só; a
+    /// onda volta com A feita e B por fazer, com a mudança de plano, a rodada
+    /// para, o usuário clica em "Aceitar", e a rodada seguinte assume a
+    /// volta.
+    pub(crate) fn return_with_an_undone_task(root: &Path) -> UndoneReturn {
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        for name in ["c.rs", "d.rs"] {
+            std::fs::write(root.join("src").join(name), "fn um() {}\n").unwrap();
+        }
+        let decisions = std::cell::Cell::new((0, 0));
+        let (said, crit) = backlog_project_with(root, |said| {
+            let decision = |text: &str| {
+                id_of(&write(root, "x", "decision", json!({"text": text, "why": "w", "keys": ["k"], "origin": said})))
+            };
+            decisions.set((decision("A soma arredonda para baixo."), decision("A lista vazia soma zero.")));
+        });
+        let (for_a, for_b) = decisions.get();
+        let task = |text: &str, file: &str, covers: Vec<u64>, depends: Vec<u64>| {
+            id_of(&write(root, "x", "task", json!({"text": text, "files": [{"path": file}], "depends_on": depends,
+                "covers": covers, "origin": said})))
+        };
+        let a = task("Arredondar a soma.", "src/a.rs", vec![crit, for_a], vec![]);
+        let b = task("Somar a lista vazia.", "src/b.rs", vec![crit, for_b], vec![]);
+        let c = task("Mostrar a soma da lista vazia.", "src/c.rs", vec![crit], vec![b]);
+        let d = task("Mostrar a soma arredondada.", "src/d.rs", vec![crit], vec![a]);
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let codes = log.codes();
+        let code = |id: u64| codes[&id].clone();
+        let (a, b, c, d, b_decision) = (code(a), code(b), code(c), code(d), code(for_b));
+
+        let first = round(root, "x", None);
+        assert_eq!(waves_in(&first, "dispatch"), vec![1], "{first}");
+        let batch: Vec<String> = [&a, &b, &c, &d]
+            .into_iter()
+            .filter(|task| task_now(root, task).wave() == Some(1))
+            .cloned()
+            .collect();
+        assert_eq!(batch, vec![a.clone(), b.clone()], "o lote leva A e B: {first}");
+
+        let session = "s-tarefa-nao-feita";
+        crate::shared::context::session::bind_session_spec(&root.to_string_lossy(), session, "x");
+        std::fs::write(root.join("src/a.rs"), "fn um() {}\n// A soma arredonda.\n").unwrap();
+        let change = "B precisa de uma decisão sobre a lista vazia antes.";
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let agreed: Vec<Value> = super::super::report::request_agreed(&log, 1, &Languages::of_project(root))
+            .iter()
+            .map(|item| {
+                let code = log.codes()[&item.id].clone();
+                if code == b_decision {
+                    json!({"item": code, "met": false, "text": "B não foi feita."})
+                } else {
+                    json!({"item": code, "met": true})
+                }
+            })
+            .collect();
+        assert_eq!(agreed.len(), 2, "o pedido leva as duas decisões: {agreed:?}");
+        let back = json!({"wave": 1, "text": "A saiu; B ficou por fazer.", "files": ["src/a.rs"],
+            "commit": "a soma arredonda", "replan": change, "undone": [b], "agreed": agreed});
+        let wrote = returned(root, back);
+        assert_eq!(wrote["ok"], json!(true), "{wrote}");
+
+        let stopped = round(root, "x", None);
+        assert_eq!(stopped["reason"], json!("wave-plan-does-not-work"), "{stopped}");
+        let question = stopped["question"].as_str().unwrap_or_default().to_string();
+        let header = stopped["header"].as_str().unwrap_or_default().to_string();
+        click(root, session, &question, &header, "Aceitar");
+        let accepted = round(root, "x", None);
+        assert_eq!(accepted["ok"], json!(true), "{accepted}");
+        UndoneReturn { a, b, c, d, b_decision, change: change.to_string(), stopped, accepted }
+    }
+
+    /// A tarefa que a onda não fez volta ao backlog sem a onda que a levou,
+    /// e só sai na rodada seguinte à que a soltou. A tarefa que depende dela
+    /// segue esperando, e a que dependia só da tarefa feita sai no mesmo lote
+    /// da devolvida. A onda entregue não sai de novo.
+    #[test]
+    fn a_task_the_wave_did_not_do_goes_back_to_the_queue_and_holds_its_dependents() {
+        if std::env::var_os("MUSTARD_ACTIVE_SPEC").is_some() {
+            return;
+        }
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let UndoneReturn { a, b, c, d, accepted, .. } = return_with_an_undone_task(root);
+
+        assert_eq!(task_now(root, &a).wave(), Some(1), "A segue na onda que a fez");
+        let returned_b = task_now(root, &b);
+        assert_eq!(returned_b.wave(), None, "B voltou sem onda: {:?}", returned_b.fields);
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        assert!(backlog_left(&log).contains(&returned_b.id), "B está no backlog");
+        assert_eq!(waves_in(&accepted, "dispatch"), Vec::<u64>::new(), "B só sai na rodada seguinte: {accepted}");
+
+        let next = round(root, "x", None);
+        assert_eq!(waves_in(&next, "dispatch"), vec![2], "só o lote novo sai, nunca a onda entregue: {next}");
+        let in_two: Vec<String> = [&a, &b, &c, &d]
+            .into_iter()
+            .filter(|task| task_now(root, task).wave() == Some(2))
+            .cloned()
+            .collect();
+        assert_eq!(in_two, vec![b.clone(), d.clone()], "o lote leva B e D: {next}");
+        assert_eq!(task_now(root, &c).wave(), None, "C espera B ser entregue");
+
+        let quiet = round(root, "x", None);
+        assert!(!waves_in(&quiet, "dispatch").contains(&1), "a onda entregue não sai de novo: {quiet}");
     }
 }

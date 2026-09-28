@@ -83,8 +83,16 @@ pub(crate) enum RoundRefusal {
     /// commit, e não com o título em palavras que ele pede.
     CommitLooksLikeSha { found: String },
     /// Um agente disse que o plano da onda não funciona: a rodada para e
-    /// mostra a mudança proposta, com a pergunta que decide.
-    Replan { wave: u64, change: String, code: String },
+    /// mostra a mudança proposta, com a pergunta que decide e as tarefas que
+    /// o agente não fez, que voltam à fila com o aceite.
+    Replan { wave: u64, change: String, code: String, tasks: Vec<String> },
+    /// A entrega muda o plano e não diz quais tarefas da onda ficaram por
+    /// fazer: sem a lista, a rodada daria todas por feitas. Leva as tarefas
+    /// da onda, para o agente escolher.
+    ReplanNeedsUndone { wave: u64, tasks: Vec<String> },
+    /// A entrega cita como não feita uma tarefa que não é da onda dela: o
+    /// código citado e as tarefas da onda.
+    UndoneNotInWave { wave: u64, code: String, tasks: Vec<String> },
     /// O git recusou o commit.
     Git { detail: String },
     /// O repositório principal não compilou antes do commit da rodada.
@@ -126,6 +134,8 @@ impl RoundRefusal {
             Self::CommitForbidden { .. } => "commit-forbidden-text".into(),
             Self::CommitLooksLikeSha { .. } => "commit-looks-like-sha".into(),
             Self::Replan { .. } => "wave-plan-does-not-work".into(),
+            Self::ReplanNeedsUndone { .. } => "replan-needs-undone".into(),
+            Self::UndoneNotInWave { .. } => "undone-not-in-wave".into(),
             Self::Git { .. } => "git-refused".into(),
             Self::BuildFailed { .. } => "round-build-failed".into(),
             Self::CriterionProofFailed { .. } => "round-criterion-proof-failed".into(),
@@ -186,7 +196,7 @@ impl RoundRefusal {
             Self::CommitLooksLikeSha { found } => {
                 fill("round.commit_looks_like_sha", &[("{found}", found.clone())])
             }
-            Self::Replan { wave, change, code } => fill(
+            Self::Replan { wave, change, code, tasks } => fill(
                 "round.replan",
                 &[
                     ("{wave}", wave.to_string()),
@@ -195,7 +205,16 @@ impl RoundRefusal {
                     ("{code}", code.clone()),
                     ("{yes}", translate("change.accept", lang).to_string()),
                     ("{no}", translate("change.decline", lang).to_string()),
+                    ("{tasks}", task_list(tasks, lang)),
                 ],
+            ),
+            Self::ReplanNeedsUndone { wave, tasks } => fill(
+                "round.replan_needs_undone",
+                &[("{wave}", wave.to_string()), ("{tasks}", task_list(tasks, lang))],
+            ),
+            Self::UndoneNotInWave { wave, code, tasks } => fill(
+                "round.undone_not_in_wave",
+                &[("{wave}", wave.to_string()), ("{code}", code.clone()), ("{tasks}", task_list(tasks, lang))],
             ),
             Self::Git { detail } => fill("round.git_refused", &[("{detail}", detail.clone())]),
             Self::BuildFailed { command, output } => {
@@ -233,13 +252,19 @@ impl RoundRefusal {
         // o código que vai no cabeçalho dela: o enunciado quem pergunta pode
         // reescrever com as palavras do usuário, e é o cabeçalho, não a
         // frase, que diz à testemunha qual mudança o clique decide.
-        if let Self::Replan { wave, change, code } = self {
+        if let Self::Replan { wave, change, code, .. } = self {
             out["question"] = json!(change_question(*wave, change, lang));
             out["header"] = json!(code);
             out["options"] = json!([translate("change.accept", lang), translate("change.decline", lang)]);
         }
         out
     }
+}
+
+/// Os códigos de tarefa `tasks` numa lista só, para a frase do catálogo; a
+/// palavra de nenhuma, no idioma `lang`, quando não há tarefa.
+fn task_list(tasks: &[String], lang: Locale) -> String {
+    if tasks.is_empty() { translate("round.no_tasks", lang).to_string() } else { tasks.join(", ") }
 }
 
 /// A recusa das ondas `cycle`, que dependem umas das outras em círculo.

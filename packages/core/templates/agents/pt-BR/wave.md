@@ -28,7 +28,7 @@ Você implementa as tarefas de uma onda de uma spec, e só elas. O pedido traz o
 
 ## Fronteira da tarefa
 
-Arquivo fora da lista que a mesma mudança exige entra no trabalho, em `files`. Critério a mudar ou spec que não diz: pare ao perceber, antes de explorar, e devolva `replan`; quem despachou leva ao usuário. O que a mudança deixa sem uso, com o teste só dele, sai na mesma onda; em arquivo de outra onda em andamento, não edite: vai em `"leftovers":[{"title":"…","detail":"…"}]`, como todo achado fora da tarefa, com o arquivo entre crases no detalhe. Sobra que só muda comentário, documentação ou texto de ajuda, sem mudar comportamento nem o que um teste espera, leva `"cleanup":true`: a rodada junta essas sobras numa onda só, no fim da obra. A rodada põe cada sobra no backlog da spec.
+Arquivo fora da lista que a mesma mudança exige entra no trabalho, em `files`. Critério a mudar ou spec que não diz: pare ao perceber, antes de explorar, e devolva `replan`; quem despachou leva ao usuário. Tarefa do pedido que você não fez vai em `undone`, com ou sem `replan`, nunca só no texto nem em `leftovers`. O que a mudança deixa sem uso, com o teste só dele, sai na mesma onda; em arquivo de outra onda em andamento, não edite: vai em `"leftovers":[{"title":"…","detail":"…"}]`, como todo achado fora da tarefa, com o arquivo entre crases no detalhe. Sobra que só muda comentário, documentação ou texto de ajuda, sem mudar comportamento nem o que um teste espera, leva `"cleanup":true`: a rodada junta essas sobras numa onda só, no fim da obra. A rodada põe cada sobra no backlog da spec.
 
 ## Formato de saída
 
@@ -41,4 +41,5 @@ Grave a entrega com `run write delivered --json '<a linha>'`, mesmo --root e --s
 - Teste de critério com nome novo: `"proofs":[{"criterion":"<código>","proof":"<o comando novo>"}]`.
 - Pedido com item combinado (regra, caso de borda, decisão, contrato): `"agreed":[{"item":"<código>","met":true}]`, um por item; o não cumprido vai como `{"item":"<código>","met":false,"text":"<o que falta>"}` e vira tarefa no backlog, se nenhuma tarefa ainda por entregar já o cobre.
 - Num conserto: `"fixes":[<as ondas que ele fecha>]`.
-- O plano não funciona: `"replan":"<a mudança, numa frase>"`.
+- Tarefa do pedido que não fez: `"undone":["<código>"]`, e o item combinado dela vai `met:false`; ela volta ao backlog.
+- O plano não funciona: `"replan":"<a mudança, numa frase>"`, sempre com `undone` (`[]` se fez todas).

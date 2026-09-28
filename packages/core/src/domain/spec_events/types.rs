@@ -640,6 +640,11 @@ pub const TYPES: &[TypeSpec] = &[
             // sem mexer em nenhum, e o texto dela diz o que conferiu.
             opt("files", Kind::Texts),
             opt("replan", Kind::Text),
+            // O código de cada tarefa da onda que o agente não fez. Com a
+            // mudança de plano, é obrigatório, vazio quando fez todas; sem
+            // ela, ausente quer dizer que fez todas. Cada tarefa citada volta
+            // ao backlog quando a rodada assume a volta.
+            opt("undone", Kind::Texts),
             // O resumo do commit, em palavras, de onde a rodada monta o título.
             opt("commit", Kind::Text),
             // As provas dos testes de nome novo, cada uma com o critério e o

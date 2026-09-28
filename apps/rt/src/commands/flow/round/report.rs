@@ -31,7 +31,7 @@ use super::commit::{
 use super::agreed::{covered_codes, settle_agreed};
 use super::leftovers::{leftover_task, leftovers_of, Leftover};
 use super::queue::{backlog_wave, open_review, open_sends, waves_in_progress, ANALYSIS_LINE};
-use super::stops::{change_accepted, replan_code};
+use super::stops::{change_accepted, replan_code, tasks_returned, undone_of, undone_returns};
 use super::usage::{measure_usage, Caller, Usage};
 use crate::commands::review::qa_run::ProofFault;
 use crate::commands::spec_events::write::{record, RecordCheck};
@@ -65,6 +65,10 @@ pub(crate) struct WaveReport {
     /// As ondas que este conserto fecha.
     pub fixes: Vec<u64>,
     pub replan: Option<String>,
+    /// As tarefas da onda que o agente não fez, cada uma pelo número da
+    /// versão vigente e pelo código: voltam ao backlog quando a rodada
+    /// assume a volta.
+    pub undone: Vec<(u64, String)>,
     /// As sobras, cada uma com o título e o detalhe: a rodada grava cada uma
     /// como tarefa da spec quando assume a volta ([`Leftover`]).
     pub leftovers: Vec<Leftover>,
@@ -217,13 +221,15 @@ fn take_returns(
     cut: &[u64],
 ) -> Result<Taken, RoundRefusal> {
     // O agente que diz que o plano da onda não funciona para a rodada: a
-    // mudança proposta é mostrada, e só o clique do usuário em "Aceitar",
-    // gravado pela testemunha, a deixa seguir.
+    // mudança proposta é mostrada, com as tarefas que voltam à fila, e só o
+    // clique do usuário em "Aceitar", gravado pela testemunha, a deixa
+    // seguir.
     for wave in &report.waves {
         if let Some(change) = &wave.replan {
             let code = replan_code(wave.wave, change);
             if !change_accepted(log, wave.wave, &code) {
-                return Err(RoundRefusal::Replan { wave: wave.wave, change: change.clone(), code });
+                let tasks = wave.undone.iter().map(|(_, code)| code.clone()).collect();
+                return Err(RoundRefusal::Replan { wave: wave.wave, change: change.clone(), code, tasks });
             }
         }
     }
@@ -309,7 +315,7 @@ fn take_returns(
             .collect(),
         None => Vec::new(),
     };
-    let checked = check_reports(start, root, spec, &report, planned).map_err(RoundRefusal::Refused)?;
+    let checked = check_reports(start, root, spec, &report, planned, lang).map_err(RoundRefusal::Refused)?;
 
     if let Err(refused) = write_joined(root, &joined, true) {
         let _ = write_joined(root, &joined, false);
@@ -355,6 +361,10 @@ fn take_returns(
         warnings.push(json!({ "reason": refusal.reason(), "wave": wave, "hint": refusal.message(lang) }));
     }
     let (mut recorded, proofs) = record_reports(start, spec, checked).map_err(RoundRefusal::Refused)?;
+    // Quem avisa que a tarefa não feita voltou ao backlog é a resposta da
+    // rodada: a mudança aceita pode pedir uma decisão nova ou uma tarefa
+    // reescrita antes da rodada seguinte.
+    warnings.extend(report.waves.iter().filter_map(|wave| tasks_returned(wave, lang)));
     let commit = match made {
         Some((made, title)) => {
             let mut commit = record_commit(start, root, spec, &made.sha, &title, &waves, &files)?;
@@ -518,6 +528,7 @@ fn wave_report_of(log: &SpecLog, fields: &Map<String, Value>) -> Result<WaveRepo
         .filter_map(|p| Some((p.get("criterion").filter(|c| !c.is_null())?.clone(), field(p, "proof")?)))
         .collect();
     let fixes = listed("fixes").iter().filter_map(Value::as_u64).filter(|n| *n != wave).collect();
+    let undone = undone_of(log, wave, fields, replan.is_some())?;
     let leftovers = leftovers_of(&listed("leftovers")).map_err(RoundRefusal::Refused)?;
     Ok(WaveReport {
         wave,
@@ -527,6 +538,7 @@ fn wave_report_of(log: &SpecLog, fields: &Map<String, Value>) -> Result<WaveRepo
         proofs,
         fixes,
         replan,
+        undone,
         leftovers,
         agreed: listed("agreed"),
         returns: Vec::new(),
@@ -911,6 +923,9 @@ struct CheckedReport {
     /// Uma tarefa nova no backlog por item combinado que a revisão final
     /// marcou `met:false`: sem onda, para a rodada seguinte formar o lote.
     agreed_tasks: Vec<Map<String, Value>>,
+    /// A versão nova de cada tarefa que a onda não fez, com a onda que a
+    /// devolveu: sem a onda que a levou, de volta ao backlog.
+    undone_tasks: Vec<(u64, Map<String, Value>)>,
     /// Uma tarefa nova no backlog por item combinado que a entrega de uma
     /// onda marcou `met:false` e por sobra, com a onda que a apontou: também
     /// sem onda própria, para a rodada seguinte formar o lote.
@@ -939,13 +954,16 @@ pub(super) fn own_copy_relative(log: &SpecLog, wave: u64, file: &str) -> String 
 /// nunca deixa gravada a que veio antes dela, e nada é recusado depois do
 /// commit. O entregou vai também em cada onda que o conserto fecha, e o item
 /// combinado que a entrega não cumpriu e cada sobra viram tarefa no backlog,
-/// pela mesma conferência das tarefas que nascem do veredito.
+/// pela mesma conferência das tarefas que nascem do veredito. A tarefa que a
+/// onda não fez volta ao backlog antes das entregas, com a mudança aceita
+/// anotada no idioma `lang`.
 fn check_reports(
     start: &Path,
     root: &Path,
     spec: &str,
     report: &Report,
     commits: Vec<Map<String, Value>>,
+    lang: Locale,
 ) -> Result<CheckedReport, Refusal> {
     let mut check = RecordCheck::open(start, spec, PhaseWriter::Binary)?;
     // Os critérios citados existem, antes de qualquer gravação.
@@ -974,6 +992,13 @@ fn check_reports(
     for task in &agreed_tasks {
         check.record("task", task.clone())?;
     }
+    // A tarefa que a onda não fez volta ao backlog, sem a onda que a levou,
+    // antes das entregas: a leitura das tarefas ainda por entregar já a vê
+    // solta, e o item combinado que só ela cobre não vira tarefa nova.
+    let undone_tasks = undone_returns(check.log(), &report.waves, lang);
+    for (_, task) in &undone_tasks {
+        check.record("task", task.clone())?;
+    }
     // A entrega oficial de cada onda aponta em `replaces` todas as voltas
     // dela desde o envio que a despachou: nenhuma volta velha fica esperando
     // outra rodada. A cópia na onda que o conserto fecha não substitui nada.
@@ -991,6 +1016,10 @@ fn check_reports(
             draft.insert("files".into(), json!(files));
             if let Some(replan) = &report.replan {
                 draft.insert("replan".into(), json!(replan));
+            }
+            if wave == report.wave && !report.undone.is_empty() {
+                let codes: Vec<&str> = report.undone.iter().map(|(_, code)| code.as_str()).collect();
+                draft.insert("undone".into(), json!(codes));
             }
             if wave == report.wave
                 && let Some(returns) = replaced(&report.returns)
@@ -1074,7 +1103,7 @@ fn check_reports(
     for draft in commits {
         check.record("commit", draft)?;
     }
-    Ok(CheckedReport { verdicts, deliveries, proofs, sent_proofs, sends, agreed_tasks, wave_tasks })
+    Ok(CheckedReport { verdicts, deliveries, proofs, sent_proofs, sends, agreed_tasks, undone_tasks, wave_tasks })
 }
 
 /// A versão nova de um critério com a prova nova.
@@ -1105,7 +1134,8 @@ fn criterion_version(log: &SpecLog, id: u64, proof: &str) -> Option<CriterionVer
 }
 
 /// Grava o que [`check_reports`] conferiu, pela mesma porta de gravação das
-/// outras: primeiro os vereditos, que julgam entregas já gravadas; depois o
+/// outras: primeiro os vereditos, que julgam entregas já gravadas; depois a
+/// volta ao backlog de cada tarefa que a onda não fez, o
 /// entregou de cada onda, a tarefa de cada item combinado que ela não cumpriu
 /// e de cada sobra, e a versão nova de cada critério com prova nova.
 /// Devolve o que foi gravado e, de cada prova nova, o código do critério e o
@@ -1113,7 +1143,8 @@ fn criterion_version(log: &SpecLog, id: u64, proof: &str) -> Option<CriterionVer
 /// que a própria onda mandou: quem conduz a obra confere a entrega pela
 /// resposta da rodada, sem ir ler a spec.
 fn record_reports(start: &Path, spec: &str, checked: CheckedReport) -> Result<RecordedReport, Refusal> {
-    let CheckedReport { verdicts, deliveries, proofs, sent_proofs, sends, agreed_tasks, wave_tasks } = checked;
+    let CheckedReport { verdicts, deliveries, proofs, sent_proofs, sends, agreed_tasks, undone_tasks, wave_tasks } =
+        checked;
     let path = store::spec_file(&crate::commands::spec_events::project(start).root, spec)?;
     let read = || store::read(&path)?.ok_or_else(|| Refusal::NoSpecFile { spec: spec.to_string() });
     let mut recorded = Vec::new();
@@ -1128,6 +1159,10 @@ fn record_reports(start: &Path, spec: &str, checked: CheckedReport) -> Result<Re
     for draft in agreed_tasks {
         let written = record(start, spec, "task", draft, PhaseWriter::Binary)?;
         recorded.push(json!({ "type": "task", "id": written.written.id }));
+    }
+    for (wave, draft) in undone_tasks {
+        let written = record(start, spec, "task", draft, PhaseWriter::Binary)?;
+        recorded.push(json!({ "wave": wave, "type": "task", "id": written.written.id }));
     }
     for (wave, draft) in deliveries {
         let text = draft.get("text").cloned().unwrap_or_default();
@@ -1169,6 +1204,7 @@ mod tests {
     use tempfile::tempdir;
 
     use crate::commands::event::pending::{pending_at, PendingOpts};
+    use crate::commands::flow::round::queue::{return_with_an_undone_task, task_now, UndoneReturn};
     use crate::commands::flow::round::queue::{dispatch_backlog, waves_to_redo};
     use crate::commands::flow::round::usage::tests::{answer_line, instant, platform_file, request_line, MODEL};
 
@@ -1385,7 +1421,7 @@ mod tests {
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
         round(root, "x", None);
         let change = "o plano não serve mais";
-        let with_replan = json!({"wave": 1, "text": "Parei sem mexer em arquivo.", "replan": change});
+        let with_replan = json!({"wave": 1, "text": "Parei sem mexer em arquivo.", "replan": change, "undone": []});
         assert_eq!(returned(root, with_replan)["ok"], json!(true));
         let stopped = round(root, "x", None);
         assert_eq!(stopped["reason"], json!("wave-plan-does-not-work"), "{stopped}");
@@ -4029,4 +4065,155 @@ mod tests {
         let task = leftover_task(dir.path(), &log, 2, &leftover);
         assert!(!task.contains_key("covers"), "onda sem critério, tarefa sem `covers`: {task:?}");
     }
+
+    /// A leitura da spec `x`.
+    fn spec_x(root: &Path) -> SpecLog {
+        store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap()
+    }
+
+    /// O código da tarefa vigente da onda `wave` na spec `x`.
+    fn task_code_of_wave(root: &Path, wave: u64) -> String {
+        let log = spec_x(root);
+        let task = log.visible().into_iter().find(|e| e.event_type == "task" && e.wave() == Some(wave)).unwrap();
+        log.codes()[&task.id].clone()
+    }
+
+    /// O item combinado que só a tarefa não feita cobria não vira tarefa
+    /// nova: a própria tarefa, de volta ao backlog, segue cobrindo o item, e
+    /// a entrega guarda a resposta como veio, não cumprida.
+    #[test]
+    fn an_unmet_item_of_a_task_the_wave_did_not_do_gets_no_new_task() {
+        if std::env::var_os("MUSTARD_ACTIVE_SPEC").is_some() {
+            return;
+        }
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let UndoneReturn { b, b_decision, .. } = return_with_an_undone_task(root);
+
+        let log = spec_x(root);
+        let codes = log.codes();
+        let covering: Vec<String> = log
+            .visible()
+            .into_iter()
+            .filter(|e| e.event_type == "task")
+            .filter(|task| task.ints("covers").iter().any(|id| codes.get(id) == Some(&b_decision)))
+            .map(|task| codes[&task.id].clone())
+            .collect();
+        assert_eq!(covering, vec![b.clone()], "só a própria tarefa cobre o item dela");
+        let official = log.visible().into_iter().find(|e| e.event_type == "delivered" && e.wave() == Some(1)).unwrap();
+        let unmet: Vec<&Value> = official.fields["agreed"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|item| item["met"] == json!(false))
+            .collect();
+        assert_eq!(unmet.len(), 1, "{:?}", official.fields);
+        assert_eq!(official.fields["undone"], json!([b]), "a entrega diz o que não fez: {:?}", official.fields);
+    }
+
+    /// A entrega que muda o plano sem dizer quais tarefas não fez é
+    /// recusada, com as tarefas da onda para escolher; a que cita como não
+    /// feita a tarefa de outra onda também, com ou sem mudança de plano.
+    /// Nada é gravado nas recusas, e a lista certa grava.
+    #[test]
+    fn a_replan_without_the_undone_list_or_with_a_task_of_another_wave_is_refused() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[])]);
+        assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1, 2]);
+        let (own, other) = (task_code_of_wave(root, 1), task_code_of_wave(root, 2));
+
+        let refused = returned(root, json!({"wave": 1, "text": "Parei.", "replan": "Dividir a onda."}));
+        assert_eq!(refused["reason"], json!("replan-needs-undone"), "{refused}");
+        let expected = translate("round.replan_needs_undone", Locale::PtBr).replace("{wave}", "1").replace("{tasks}", &own);
+        assert_eq!(refused["hint"], json!(expected), "{refused}");
+        assert_eq!(written_deliveries(root), 0, "{refused}");
+
+        let expected = translate("round.undone_not_in_wave", Locale::PtBr)
+            .replace("{wave}", "1")
+            .replace("{code}", &other)
+            .replace("{tasks}", &own);
+        for body in [
+            json!({"wave": 1, "text": "Parei.", "replan": "Dividir a onda.", "undone": [other]}),
+            json!({"wave": 1, "text": "Parei.", "undone": [other]}),
+        ] {
+            let refused = returned(root, body);
+            assert_eq!(refused["reason"], json!("undone-not-in-wave"), "{refused}");
+            assert_eq!(refused["hint"], json!(expected), "{refused}");
+            assert_eq!(written_deliveries(root), 0, "{refused}");
+        }
+
+        let wrote = returned(root, json!({"wave": 1, "text": "Parei.", "replan": "Dividir a onda.", "undone": [own]}));
+        assert_eq!(wrote["ok"], json!(true), "{wrote}");
+    }
+
+    /// A página acompanha a tarefa que voltou ao backlog: depois do aceite,
+    /// a cópia leva a versão nova dela sem onda, e a onda entregue aparece
+    /// aprovada só com a tarefa que fez.
+    #[test]
+    fn the_page_shows_the_task_the_wave_did_not_do_out_of_the_approved_wave() {
+        if std::env::var_os("MUSTARD_ACTIVE_SPEC").is_some() {
+            return;
+        }
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let UndoneReturn { a, b, accepted, .. } = return_with_an_undone_task(root);
+
+        let bodies = crate::commands::spec_events::pages::copy::sent(root, &accepted, "spec");
+        let rows: Vec<Value> = bodies
+            .iter()
+            .filter(|w| w["op"] == json!("set"))
+            .flat_map(|w| w["body"]["items"].as_array().cloned().unwrap_or_default())
+            .collect();
+        let replaced: BTreeSet<u64> = rows
+            .iter()
+            .flat_map(|row| match &row["replaces"] {
+                Value::Array(ids) => ids.iter().filter_map(Value::as_u64).collect(),
+                other => other.as_u64().into_iter().collect::<Vec<_>>(),
+            })
+            .collect();
+        let tasks: Vec<&Value> = rows
+            .iter()
+            .filter(|row| row["type"] == json!("task"))
+            .filter(|row| row["id"].as_u64().is_some_and(|id| !replaced.contains(&id)))
+            .collect();
+        let in_one: Vec<&Value> = tasks.iter().filter(|row| row["wave"] == json!(1)).map(|row| &row["code"]).collect();
+        assert_eq!(in_one, vec![&json!(a)], "a onda entregue fica só com A: {tasks:?}");
+        let row_b = tasks.iter().find(|row| row["code"] == json!(b)).expect("a linha de B");
+        assert!(row_b.get("wave").is_none(), "B vai sem onda: {row_b}");
+        let computed = bodies.iter().find(|w| w["collection"] == json!("computed")).expect("the computed item");
+        assert_eq!(computed["body"]["waves"]["1"], json!("approved"), "{computed}");
+    }
+
+    /// A versão da tarefa devolvida traz a mudança aceita na parte do
+    /// agente, com o título e a parte do usuário como estavam; a pergunta da
+    /// mudança já dizia qual tarefa voltaria à fila, e a resposta da rodada
+    /// que assume a volta avisa, pelo código, que ela voltou ao backlog.
+    #[test]
+    fn the_returned_task_carries_the_accepted_change_and_the_round_warns_about_it() {
+        if std::env::var_os("MUSTARD_ACTIVE_SPEC").is_some() {
+            return;
+        }
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let UndoneReturn { b, change, stopped, accepted, .. } = return_with_an_undone_task(root);
+
+        let asked = stopped["hint"].as_str().unwrap_or_default();
+        assert!(asked.contains(&b), "a pergunta da mudança diz que B volta à fila: {asked}");
+        let now = task_now(root, &b);
+        let log = spec_x(root);
+        let before = now.replaced().first().and_then(|id| log.get(*id)).expect("a versão de antes");
+        let line = translate("round.returned_change", Locale::PtBr).replace("{wave}", "1").replace("{change}", &change);
+        let agent = now.str_field("agent").unwrap_or_default();
+        assert!(agent.contains(&line), "a mudança aceita na parte do agente: {agent}");
+        assert!(agent.starts_with(before.str_field("agent").unwrap_or_default()), "o resto fica: {agent}");
+        assert_eq!((now.str_field("title"), now.str_field("text")), (before.str_field("title"), before.str_field("text")));
+
+        let warnings = accepted["warnings"].as_array().cloned().unwrap_or_default();
+        let warned = warnings.iter().find(|w| w["reason"] == json!("tasks-returned")).expect("o aviso da volta");
+        assert_eq!((&warned["wave"], &warned["tasks"]), (&json!(1), &json!([b])), "{warned}");
+        let hint = translate("round.tasks_returned", Locale::PtBr).replace("{wave}", "1").replace("{tasks}", &b);
+        assert_eq!(warned["hint"], json!(hint), "{warned}");
+    }
 }
+

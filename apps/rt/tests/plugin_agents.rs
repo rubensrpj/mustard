@@ -421,12 +421,14 @@ fn wave_headers(lang: &str) -> (&'static str, &'static str) {
 /// que a mesma mudança exige, mesmo fora da lista da tarefa, e dizê-lo em
 /// `files`; a mudança de plano fica para o critério que precisa mudar ou a
 /// spec que não diz o que fazer, e sai ao perceber, antes de explorar o
-/// resto. A fronteira não manda mais parar porque falta arquivo na lista.
+/// resto. A tarefa do pedido que o agente não fez vai na lista das não
+/// feitas, com ou sem mudança de plano. A fronteira não manda mais parar
+/// porque falta arquivo na lista.
 #[test]
 fn o_molde_da_onda_poe_na_tarefa_o_arquivo_que_a_mudanca_exige() {
     for (lang, said, gone) in [
-        ("pt-BR", ["entra no trabalho", "antes de explorar", "`files`", "`replan`"], "arquivo que falta"),
-        ("en-US", ["is part of the work", "before exploring", "`files`", "`replan`"], "a missing file"),
+        ("pt-BR", ["entra no trabalho", "antes de explorar", "`files`", "`replan`", "`undone`"], "arquivo que falta"),
+        ("en-US", ["is part of the work", "before exploring", "`files`", "`replan`", "`undone`"], "a missing file"),
     ] {
         let name = "wave";
         let body = template(lang, name);

@@ -1,13 +1,17 @@
 //! O que para sem travar a rodada: o limite de consertos de cada onda, com a
 //! pergunta ao usuário, e o plano que muda — a onda replanejada depois do
 //! pedido e a mudança de plano que um agente propõe, que só segue com o
-//! clique do usuário.
+//! clique do usuário, com as tarefas que a onda não fez, que voltam ao
+//! backlog quando a rodada assume a volta.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use mustard_core::domain::spec_events::{Block, BlockQuery, SpecEvent, SpecLog};
 use mustard_core::platform::i18n::{translate, Locale};
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
+
+use super::answer::RoundRefusal;
+use super::report::{backlog_return, WaveReport};
 
 /// Quantas rodadas de conserto uma onda tem. A reprovação que vem depois da
 /// última delas para a onda e as que dependem dela: o problema é de desenho,
@@ -195,6 +199,89 @@ pub(super) fn waves_replanned(log: &SpecLog) -> BTreeSet<u64> {
         .collect()
 }
 
+/// As tarefas que a volta da onda `wave` diz não ter feito (`undone`), cada
+/// uma pelo número da versão vigente e pelo código. Cada código citado
+/// aponta uma tarefa vigente da própria onda; o que não aponta recusa a
+/// volta, com as tarefas da onda. Com a mudança de plano (`replan`), a lista
+/// é obrigatória, vazia quando a onda fez todas: sem ela, a rodada daria por
+/// feitas as tarefas que o agente não fez. Sem a mudança, a ausência quer
+/// dizer que a onda fez todas.
+pub(super) fn undone_of(
+    log: &SpecLog,
+    wave: u64,
+    fields: &Map<String, Value>,
+    replan: bool,
+) -> Result<Vec<(u64, String)>, RoundRefusal> {
+    let codes = log.codes();
+    let code_of = |task: &SpecEvent| codes.get(&task.id).cloned().unwrap_or_else(|| task.id.to_string());
+    let own: Vec<&SpecEvent> =
+        log.visible().into_iter().filter(|e| e.event_type == "task" && e.wave() == Some(wave)).collect();
+    let tasks = || own.iter().map(|task| code_of(task)).collect::<Vec<_>>();
+    let Some(cited) = fields.get("undone").and_then(Value::as_array) else {
+        return if replan { Err(RoundRefusal::ReplanNeedsUndone { wave, tasks: tasks() }) } else { Ok(Vec::new()) };
+    };
+    let mut undone: Vec<(u64, String)> = Vec::new();
+    for value in cited {
+        let said = value.as_str().map_or_else(|| value.to_string(), |code| code.trim().to_string());
+        let Some(task) = own.iter().find(|task| code_of(task) == said) else {
+            return Err(RoundRefusal::UndoneNotInWave { wave, code: said, tasks: tasks() });
+        };
+        if !undone.iter().any(|(id, _)| *id == task.id) {
+            undone.push((task.id, said));
+        }
+    }
+    Ok(undone)
+}
+
+/// A versão nova da tarefa `task`, que a onda `wave` não fez: a mesma volta
+/// ao backlog de [`backlog_return`]. Com a mudança de plano aceita
+/// (`change`), a parte do agente ganha uma linha com ela, no idioma `lang`;
+/// o título e a parte do usuário ficam como estão.
+fn undone_return(task: &SpecEvent, wave: u64, change: Option<&str>, lang: Locale) -> Map<String, Value> {
+    let mut draft = backlog_return(task);
+    if let Some(change) = change {
+        let line =
+            translate("round.returned_change", lang).replace("{wave}", &wave.to_string()).replace("{change}", change.trim());
+        let before = draft.get("agent").and_then(Value::as_str).map(str::trim_end).filter(|text| !text.is_empty());
+        let agent = match before {
+            Some(text) if text.lines().last().is_some_and(|last| last.trim_start().starts_with("- ")) => {
+                format!("{text}\n- {line}")
+            }
+            Some(text) => format!("{text}\n\n{line}"),
+            None => line,
+        };
+        draft.insert("agent".into(), json!(agent));
+    }
+    draft
+}
+
+/// A versão nova de cada tarefa que as voltas `waves` não fizeram, com a
+/// onda que a devolveu, lida em `log`: a volta ao backlog de
+/// [`undone_return`].
+pub(super) fn undone_returns(log: &SpecLog, waves: &[WaveReport], lang: Locale) -> Vec<(u64, Map<String, Value>)> {
+    let mut out = Vec::new();
+    for wave in waves {
+        for task in wave.undone.iter().filter_map(|(id, _)| log.get(*id)) {
+            out.push((wave.wave, undone_return(task, wave.wave, wave.replan.as_deref(), lang)));
+        }
+    }
+    out
+}
+
+/// O aviso da resposta da rodada de que as tarefas que a volta `wave` não
+/// fez voltaram ao backlog, com os códigos delas, no idioma `lang`: a
+/// mudança aceita pode pedir uma decisão nova ou a tarefa reescrita antes da
+/// rodada seguinte. `None` quando a onda fez todas.
+pub(super) fn tasks_returned(wave: &WaveReport, lang: Locale) -> Option<Value> {
+    let codes: Vec<&str> = wave.undone.iter().map(|(_, code)| code.as_str()).collect();
+    (!codes.is_empty()).then(|| {
+        let hint = translate("round.tasks_returned", lang)
+            .replace("{wave}", &wave.wave.to_string())
+            .replace("{tasks}", &codes.join(", "));
+        json!({ "reason": "tasks-returned", "wave": wave.wave, "tasks": codes, "hint": hint })
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
@@ -289,7 +376,7 @@ mod tests {
 
         let change = "A onda 1 precisa da 2 antes.";
         let code = replan_code(1, change);
-        let back = json!({"wave": 1, "text": "Parei.", "files": ["src/a.rs"], "replan": change});
+        let back = json!({"wave": 1, "text": "Parei.", "files": ["src/a.rs"], "replan": change, "undone": []});
         assert_eq!(returned(root, back)["ok"], json!(true));
         let stopped = round(root, "x", None);
         assert_eq!(stopped["reason"], json!("wave-plan-does-not-work"), "{stopped}");
@@ -354,7 +441,7 @@ mod tests {
 
         let change = "A onda 1 precisa da onda 2 antes dela.";
         let code = replan_code(1, change);
-        let back = json!({"wave": 1, "text": "Parei: o plano não fecha.", "replan": change});
+        let back = json!({"wave": 1, "text": "Parei: o plano não fecha.", "replan": change, "undone": []});
         assert_eq!(returned(root, back)["ok"], json!(true));
         let stopped = round(root, "x", None);
         assert_eq!(stopped["reason"], json!("wave-plan-does-not-work"), "{stopped}");
