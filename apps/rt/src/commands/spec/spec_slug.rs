@@ -2,22 +2,23 @@
 //!
 //! Spec slugs (`.claude/spec/{slug}/spec.md`) are kebab-case identifiers
 //! derived from a free-form title (e.g. `"Configuração de Idioma e Tom"` →
-//! `"configuracao-idioma-tom"`). The pt-BR path needs accent stripping; the
-//! en-US path does not. The words left out are the `slug:` line of the
-//! locale's language file.
+//! `"configuracao-idioma-tom"`). Accents are stripped in every language; the
+//! words left out are the `slug:` line of the language file of the language
+//! the title is written in.
 //!
-//! [`canonical`] is the ONE derivation that names a work unit, and it lives
-//! here so the three callers that must agree about it — the base gate that
-//! mints the name, the `{base}_{slug}` work branch, and the `spec-draft` that
-//! files the spec directory — call the same function instead of each writing
-//! their own BCP-47 parse / cap / fail-open dance.
+//! [`canonical`] is the ONE derivation that names a work unit from its intent,
+//! and it lives here so every caller that must agree about the name calls the
+//! same function instead of each writing their own BCP-47 parse / cap /
+//! fail-open dance. Today the only one is the base gate's overlap check, and
+//! the gate itself has no caller.
 //!
 //! ## Fail-open
 //!
 //! Every helper accepts free-form input. An empty or fully non-alphanumeric
 //! input degrades to `"x"` (the floor inherited from the legacy slug contract).
 
-use mustard_core::{slugify, SupportedLocale as Locale};
+use mustard_core::domain::normalize::text_language;
+use mustard_core::slugify;
 use std::path::Path;
 
 /// Max number of words kept in a work unit's canonical slug. A paragraph-length
@@ -26,41 +27,35 @@ use std::path::Path;
 const SLUG_MAX_TOKENS: usize = 5;
 
 /// The CANONICAL name of a work unit, derived from its free-text intent: the
-/// per-locale [`mustard_core::slugify`] capped to [`SLUG_MAX_TOKENS`] words.
-///
-/// ONE derivation with several callers, deliberately. The base gate mints the
-/// name here (`emit-pipeline --kind pipeline.kind`), [`compute_work_branch`]
-/// builds `{base}_{slug}` on top of it, and `spec-draft` names the spec
-/// directory with it. A second spelling anywhere is how a unit ends up carrying
-/// TWO names — the branch under one, the spec directory under another — which
-/// `inside_own_work_branch` then reports as "not inside your own unit".
+/// [`mustard_core::slugify`] of the intent in `language` (a BCP-47 code, any
+/// language) capped to [`SLUG_MAX_TOKENS`] words.
 ///
 /// A shared function is not a shared ARGUMENT, though: two callers passing
-/// different intents (or different locales) still get different names. That is
-/// why the name is minted ONCE, at the gate, and carried from there.
-///
-/// [`compute_work_branch`]: crate::commands::event::work_branch::compute_work_branch
-/// [`inside_own_work_branch`]: crate::commands::pipeline::resume_bootstrap
+/// different intents (or different languages) still get different names. That
+/// is why the name is minted ONCE and carried from there.
 #[must_use]
-pub fn canonical(intent: &str, lang: Locale) -> String {
-    slugify(intent, lang)
+pub fn canonical(intent: &str, language: &str) -> String {
+    slugify(intent, language)
         .split('-')
         .take(SLUG_MAX_TOKENS)
         .collect::<Vec<_>>()
         .join("-")
 }
 
-/// [`canonical`] against the text language the PROJECT declares
-/// (`language.text`), defaulting to `pt-BR` — read through
-/// [`mustard_core::ProjectConfig::language`], the one reader of the language.
+/// [`canonical`] in the text language the PROJECT declares (`language.text`),
+/// as written — `es-ES` stays `es-ES`, even though Mustard has no messages in
+/// it — and `pt-BR` when none was declared. Read through
+/// [`text_language`], the same reader the search uses, and never through the
+/// closed set of message languages, which would name a Spanish unit by the
+/// Portuguese rules.
 ///
-/// The callers that hold only a project root — the base gate and the
-/// work-branch name — resolve the locale through here, so they cannot each pick
-/// a different one. Fail-open: an unreadable `mustard.json` yields the default.
+/// The callers that hold only a project root resolve the language through
+/// here, so they cannot each pick a different one. Fail-open: an unreadable
+/// `mustard.json` yields the default.
 #[must_use]
 pub fn canonical_for_project(intent: &str, project: &Path) -> String {
-    let lang = mustard_core::ProjectConfig::load(project).language().text_or_default();
-    canonical(intent, lang)
+    let language = text_language(&mustard_core::ProjectConfig::load(project));
+    canonical(intent, &language)
 }
 
 #[cfg(test)]
@@ -69,26 +64,26 @@ mod tests {
 
     #[test]
     fn canonical_strips_accents_in_portuguese() {
-        assert_eq!(canonical("Olá Mundo", Locale::PtBr), "ola-mundo");
-        assert_eq!(canonical("Configuração", Locale::PtBr), "configuracao");
+        assert_eq!(canonical("Olá Mundo", "pt-BR"), "ola-mundo");
+        assert_eq!(canonical("Configuração", "pt-BR"), "configuracao");
     }
 
     #[test]
     fn empty_input_degrades_to_x() {
-        assert_eq!(canonical("", Locale::PtBr), "x");
-        assert_eq!(canonical("///", Locale::EnUs), "x");
+        assert_eq!(canonical("", "pt-BR"), "x");
+        assert_eq!(canonical("///", "en-US"), "x");
     }
 
     #[test]
     fn canonical_is_kebab_and_word_bounded() {
-        assert_eq!(canonical("Add user CRUD", Locale::EnUs), "add-user-crud");
-        assert_eq!(canonical("  ---  Fix login   bug  ", Locale::EnUs), "fix-login-bug");
+        assert_eq!(canonical("Add user CRUD", "en-US"), "add-user-crud");
+        assert_eq!(canonical("  ---  Fix login   bug  ", "en-US"), "fix-login-bug");
     }
 
     #[test]
     fn canonical_caps_on_a_word_boundary() {
         // 10 content words → first 5 kept, cut on a boundary (no partial word).
-        let s = canonical("alpha beta gamma delta epsilon zeta eta theta iota kappa", Locale::EnUs);
+        let s = canonical("alpha beta gamma delta epsilon zeta eta theta iota kappa", "en-US");
         assert_eq!(s, "alpha-beta-gamma-delta-epsilon");
     }
 
@@ -99,7 +94,7 @@ mod tests {
         // the token cap lands on a word boundary.
         let s = canonical(
             "Espelhar em contas a pagar a visão de listagem de contas a receber",
-            Locale::PtBr,
+            "pt-BR",
         );
         assert_eq!(s, "espelhar-contas-pagar-visao-listagem");
         assert!(!s.ends_with('-'));
@@ -125,5 +120,27 @@ mod tests {
         // The old language key is not read: the project declared nothing.
         std::fs::write(root.join("mustard.json"), r#"{"lang":"en-US"}"#).unwrap();
         assert_eq!(canonical_for_project(intent, root), "corrigir-botao-login");
+    }
+
+    /// A língua declarada fora das mensagens do Mustard dá o nome pelas regras
+    /// dela, e não pelas do português: o "no" do espanhol é negação e fica no
+    /// nome, e o acento sai do mesmo jeito.
+    #[test]
+    fn canonical_for_project_names_by_a_language_outside_the_messages() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let intent = "El botón no guarda";
+
+        std::fs::write(root.join("mustard.json"), r#"{"language":{"text":"es-ES"}}"#).unwrap();
+        assert_eq!(canonical_for_project(intent, root), "el-boton-no-guarda");
+
+        // A língua sem arquivo também é a declarada: nenhuma palavra sai, e o
+        // padrão do português não entra no lugar dela.
+        std::fs::write(root.join("mustard.json"), r#"{"language":{"text":" xx-YY "}}"#).unwrap();
+        assert_eq!(canonical_for_project("Corrigir o botão de login", root), "corrigir-o-botao-de-login");
+
+        // Em branco é não declarada: vale o padrão, o português.
+        std::fs::write(root.join("mustard.json"), r#"{"language":{"text":"  "}}"#).unwrap();
+        assert_eq!(canonical_for_project(intent, root), "el-boton-guarda");
     }
 }

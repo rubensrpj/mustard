@@ -104,12 +104,9 @@ impl Languages {
     /// mesmo jeito.
     #[must_use]
     pub fn of(config: &ProjectConfig) -> Self {
-        let declared = config.language();
-        let written = |raw: Option<&str>| raw.map(str::trim).filter(|tag| !tag.is_empty()).map(str::to_string);
-        let text = written(config.language.text.as_deref())
-            .unwrap_or_else(|| declared.text_or_default().as_str().to_string());
+        let text = text_language(config);
         let code = written(config.language.code.as_deref())
-            .unwrap_or_else(|| declared.code_or_default().as_str().to_string());
+            .unwrap_or_else(|| config.language().code_or_default().as_str().to_string());
         Self::new([text.as_str(), code.as_str()])
     }
 
@@ -124,6 +121,23 @@ impl Languages {
     pub fn codes(&self) -> &[String] {
         &self.0
     }
+}
+
+/// A língua do texto do projeto: `language.text` do `mustard.json` como está
+/// escrita, mesmo quando o Mustard não tem mensagens nela (`es-ES` fica
+/// `es-ES`), e o padrão que [`ProjectConfig::language`] dá a ela quando não
+/// foi declarada. As mensagens do próprio Mustard seguem a língua fechada de
+/// [`crate::domain::config::Language::text_or_default`]; o que depende do texto
+/// que a pessoa escreveu, como a busca e o nome de uma spec, lê esta.
+#[must_use]
+pub fn text_language(config: &ProjectConfig) -> String {
+    written(config.language.text.as_deref())
+        .unwrap_or_else(|| config.language().text_or_default().as_str().to_string())
+}
+
+/// O código de língua escrito, sem espaço em volta; nenhum quando em branco.
+fn written(raw: Option<&str>) -> Option<String> {
+    raw.map(str::trim).filter(|tag| !tag.is_empty()).map(str::to_string)
 }
 
 /// O nome quebrado nas palavras dele: `ProcessadorPagamento`,
