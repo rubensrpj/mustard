@@ -181,8 +181,13 @@ fn text_search(segment: &Segment) -> Option<TextSearch> {
             }
             ("exclude", Some(value)) if !rg => filters.push(NameFilter { exclude: true, glob: value }),
             ("g" | "glob" | "iglob", Some(value)) if rg => {
-                filters.push(NameFilter::rg(&value));
-                globs.push(value);
+                // O filtro com `!` deixa arquivos de fora: não estreita a
+                // busca aos que ele nomeia, e a busca de um nome não o lê.
+                let filter = NameFilter::rg(&value);
+                if !filter.exclude {
+                    globs.push(value);
+                }
+                filters.push(filter);
             }
             _ => {}
         }
@@ -223,6 +228,8 @@ mod tests {
         assert_eq!(read("grep -d recurse -e Alpha ."), Some(("Alpha".into(), owned(&["."]), vec![])));
         assert_eq!(read("rtk rg -n -g '*.rs' Alpha apps/scan"), Some(("Alpha".into(), owned(&["apps/scan"]), owned(&["*.rs"]))));
         assert_eq!(read("rg --type rust -C 2 Alpha"), Some(("Alpha".into(), vec![], vec![])));
+        assert_eq!(read("rg -g '!*.md' Alpha"), Some(("Alpha".into(), vec![], vec![])), "a negated filter only leaves files out");
+        assert_eq!(read("rg --glob='!*.md' -g '*.rs' --iglob '!*.txt' Alpha"), Some(("Alpha".into(), vec![], owned(&["*.rs"]))));
         assert_eq!(read("rg -e Alpha -e Beta src"), None, "two patterns are not one name");
         assert_eq!(read("grep -rf patterns.txt src"), None, "patterns from a file are unknown");
         assert_eq!(read("cat x | grep Alpha"), None);
@@ -252,11 +259,20 @@ mod tests {
 
     /// A busca recursiva de um nome de declaração do mapa numa pasta de
     /// código, pelo `grep` ou pelo `rg`, é recusada com o comando de quem usa
-    /// o nome, também depois de um `cd` e atrás de um envoltório.
+    /// o nome, também depois de um `cd`, atrás de um envoltório e com um
+    /// filtro do `rg` que só deixa documentos de fora.
     #[test]
     fn a_recursive_search_for_a_declared_name_is_refused_with_its_users() {
         let (_dir, root) = fixture::project("{}", true);
-        for command in ["grep -rn Alpha src/", "rtk rg Alpha", "cd src && grep -R alpha .", "rg -g '*.rs' Alpha"] {
+        for command in [
+            "grep -rn Alpha src/",
+            "rtk rg Alpha",
+            "cd src && grep -R alpha .",
+            "rg -g '*.rs' Alpha",
+            "rg -g '!*.md' Alpha",
+            "rg --glob='!*.md' Alpha src",
+            "rg -g '*.rs' -g '!*.md' Alpha",
+        ] {
             let reason = refused(run(&root, command), command);
             assert!(reason.contains("`mustard-rt run map users --name "), "{command}: {reason}");
         }
