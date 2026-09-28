@@ -41,9 +41,10 @@
 ; The names `from m import limite` brings into the file: what it brought, not
 ; a use of it.
 (import_from_statement name: (dotted_name) @imported)
-; `from m import a as b` traz `b`, que o repasse tira de `m` pelo nome `a`.
+; `from m import a as b` traz `b`, que o import e o repasse tiram de `m`
+; pelo nome `a`.
 (import_from_statement
-  name: (aliased_import name: (dotted_name) @reexport.original alias: (identifier) @imported))
+  name: (aliased_import name: (dotted_name) @imported.original alias: (identifier) @imported))
 
 ; Functions — a module-level function is a UNIT, a method is a MEMBER. Python
 ; spells both with `function_definition`, so the line is drawn by CONTEXT: a

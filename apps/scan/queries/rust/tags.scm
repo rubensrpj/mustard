@@ -11,11 +11,12 @@
 
 ; O repasse: o `use` visível de fora (`pub use io::leitor::Leitor`) oferece a
 ; quem importa o arquivo os nomes que traz, tirados do arquivo que o caminho
-; nomeia; o `pub use x::*` oferece todos. O nome oferecido com outro nome
-; (`pub use a::B as C`) é tirado de lá pelo nome de origem.
+; nomeia; o `pub use x::*` oferece todos. O nome trazido ou oferecido com
+; outro nome (`use a::B as C`, `pub use a::B as C`, `use a::{B as C}`) é
+; pedido ao arquivo alvo pelo nome de origem.
 (use_declaration (visibility_modifier) argument: (_) @reexport)
 (use_as_clause
-  path: [(scoped_identifier name: (identifier) @reexport.original) (identifier) @reexport.original]
+  path: [(scoped_identifier name: (identifier) @imported.original) (identifier) @imported.original]
   alias: (identifier) @imported)
 
 ; O caminho de uma chamada escrita pelo nome completo, sem `use`: `crate::a::b`

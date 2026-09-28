@@ -299,7 +299,7 @@ fn read_modules(root: &Path, reuse: Option<&ingest::Reuse>, listing: Option<&Lis
                 }
                 _ => Vec::new(),
             };
-            let project = routes::Project { global_imports: &[], manifest_deps: &manifest_deps };
+            let project = routes::Project { global_imports: &[], manifest_deps: &manifest_deps, path: &sf.rel_path };
             let extracted = analyzer.map(|a| a.extract(&sf.content, keep, &project)).unwrap_or_default();
             Some(Module {
                 path: sf.rel_path.clone(),
@@ -342,7 +342,7 @@ fn read_modules(root: &Path, reuse: Option<&ingest::Reuse>, listing: Option<&Lis
     });
     let mut modules: Vec<Module> = extracted.into_iter().flatten().collect();
     routes_by_global_imports(&ing, &mut modules, &analyzers);
-    let route_rules: BTreeSet<String> = analyzers.values().flat_map(extract::Analyzer::compiled_routes).collect();
+    let route_rules: BTreeSet<String> = analyzers.compiled_languages().flat_map(extract::Analyzer::compiled_routes).collect();
     // O blob do conteúdo lido, o de agora: o do arquivo tomado do mapa
     // anterior é o mesmo que ele guardava.
     if let Some(listing) = listing {
@@ -386,7 +386,7 @@ fn read_modules(root: &Path, reuse: Option<&ingest::Reuse>, listing: Option<&Lis
 fn routes_by_global_imports(
     ing: &ingest::Ingested,
     modules: &mut [Module],
-    analyzers: &std::collections::HashMap<String, extract::Analyzer>,
+    analyzers: &extract::Registry,
 ) {
     let reach = graph::global_reach(modules, &ing.manifests);
     if reach.is_empty() {
@@ -414,8 +414,8 @@ fn routes_by_global_imports(
                 Vec::new()
             };
             let imports: Vec<String> = m.imports.iter().chain(&m.global_imports).cloned().collect();
-            let less = routes::Project { global_imports: &[], manifest_deps: &manifest_deps };
-            let more = routes::Project { global_imports: &globals, manifest_deps: &manifest_deps };
+            let less = routes::Project { global_imports: &[], manifest_deps: &manifest_deps, path: &m.path };
+            let more = routes::Project { global_imports: &globals, manifest_deps: &manifest_deps, path: &m.path };
             analyzer.routes_turned_on_by(&imports, &less, &more).then_some((at, analyzer, globals, manifest_deps))
         })
         .collect();
@@ -423,7 +423,7 @@ fn routes_by_global_imports(
     let keep = extract::Keep { written_text: false, texts_and_routes: true };
     let found = ingest::in_parallel(again, |(at, analyzer, globals, manifest_deps)| {
         let content = std::fs::read_to_string(ing.root.join(&modules[at].path)).ok()?;
-        let project = routes::Project { global_imports: &globals, manifest_deps: &manifest_deps };
+        let project = routes::Project { global_imports: &globals, manifest_deps: &manifest_deps, path: &modules[at].path };
         let extracted = analyzer.extract(&content, keep, &project);
         Some((at, extracted.routes, extracted.route_links, extracted.route_calls))
     });

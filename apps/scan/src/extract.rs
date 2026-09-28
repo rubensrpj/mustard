@@ -33,6 +33,7 @@ use crate::routes::{self, RouteRule};
 use mustard_core::domain::project_map::outer_declarations;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
+use std::sync::OnceLock;
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Language, Node, Parser, Query, QueryCursor};
 
@@ -61,9 +62,10 @@ pub(crate) struct Extracted {
     /// que não virou import (`std::fs` em `std::fs::read()`), com as chamadas
     /// escritas por ele, fora do trecho de teste.
     pub other_call_paths: BTreeMap<String, Vec<CallSite>>,
-    /// De cada import, os nomes que ele traz ao arquivo (`@imported`),
-    /// ordenados e sem repetição.
-    pub brought: BTreeMap<String, Vec<String>>,
+    /// De cada import, os nomes que ele traz ao arquivo (`@imported`), cada
+    /// um com o nome que tem no arquivo de origem (`@imported.original`); o
+    /// mesmo nome quando o import não o troca.
+    pub brought: BTreeMap<String, BTreeMap<String, String>>,
     /// De cada repasse escrito fora dos módulos de dentro do arquivo, os nomes
     /// que ele oferece, cada um com o nome que tem no arquivo de origem; `*`
     /// quando oferece todos.
@@ -315,10 +317,11 @@ fn text_field(table: &'static [(&'static str, &'static str)], lang: &str) -> &'s
     table.iter().find(|(name, _)| *name == lang).map_or("", |(_, value)| *value)
 }
 
-/// O nome do arquivo de configuração dos apelidos de pasta da língua
-/// (`alias_config` em languages.toml); vazio quando a língua não tem.
-pub fn alias_config(lang: &str) -> &'static str {
-    text_field(LANG_ALIAS_CONFIG, lang)
+/// Os nomes do arquivo de configuração dos apelidos de pasta da língua
+/// (`alias_config` em languages.toml), em ordem de preferência na mesma
+/// pasta; vazio quando a língua não tem.
+pub fn alias_config(lang: &str) -> &'static [&'static str] {
+    list_field(LANG_ALIAS_CONFIG, lang)
 }
 
 /// A chave, em caminho com pontos, da pasta base dos imports não relativos
@@ -341,26 +344,43 @@ pub fn alias_extends(lang: &str) -> &'static str {
 
 /// As línguas que declaram arquivo de configuração de apelidos de pasta.
 pub fn alias_languages() -> impl Iterator<Item = &'static str> {
-    LANG_ALIAS_CONFIG.iter().filter(|(_, file)| !file.is_empty()).map(|(name, _)| *name)
+    LANG_ALIAS_CONFIG.iter().filter(|(_, files)| !files.is_empty()).map(|(name, _)| *name)
 }
 
 /// Todos os nomes de arquivo de configuração de apelidos que o registro
-/// declara, sem repetição.
+/// declara, de todas as línguas, sem repetição.
 pub fn alias_config_names() -> BTreeSet<&'static str> {
-    alias_languages().map(alias_config).collect()
+    alias_languages().flat_map(alias_config).copied().collect()
 }
 
-/// Build one [`Analyzer`] per language declared in the registry. A language
-/// whose grammar/queries fail to compile is skipped with a warning rather than
-/// aborting the whole run.
-pub fn registry() -> HashMap<String, Analyzer> {
-    let mut m = HashMap::new();
-    for raw in raw_langs() {
-        if let Some(a) = Analyzer::new(&raw) {
-            m.insert(a.name.clone(), a);
-        }
+/// O registro das línguas, sem nenhuma preparada: cada uma compila a consulta
+/// dela uma vez, na primeira vez que um arquivo da língua pede, e a língua que
+/// o projeto não tem não compila nada.
+pub(crate) fn registry() -> Registry {
+    Registry { languages: raw_langs().into_iter().map(|raw| (raw, OnceLock::new())).collect() }
+}
+
+/// As línguas do registro, cada uma com o analisador que a primeira leitura
+/// dela prepara. Duas leituras em paralelo que pedem a mesma língua esperam a
+/// mesma preparação, e línguas diferentes se preparam ao mesmo tempo.
+pub(crate) struct Registry {
+    languages: Vec<(RawLang, OnceLock<Option<Analyzer>>)>,
+}
+
+impl Registry {
+    /// O analisador da língua `lang`, preparado na primeira vez que se pede.
+    /// `None` quando a língua não está no registro ou quando nenhum padrão da
+    /// consulta dela compila — ela fica de fora com um aviso, sem parar a
+    /// passada.
+    pub(crate) fn get(&self, lang: &str) -> Option<&Analyzer> {
+        let (raw, analyzer) = self.languages.iter().find(|(raw, _)| raw.name == lang)?;
+        analyzer.get_or_init(|| Analyzer::new(raw)).as_ref()
     }
-    m
+
+    /// Os analisadores das línguas que esta passada já preparou.
+    pub(crate) fn compiled_languages(&self) -> impl Iterator<Item = &Analyzer> {
+        self.languages.iter().filter_map(|(_, analyzer)| analyzer.get()?.as_ref())
+    }
 }
 
 /// What a capture name means to the engine. Computed once per compiled query so
@@ -379,9 +399,10 @@ enum CapKind {
     /// arquivo oferece a quem o importa, tirados do arquivo que o caminho
     /// nomeia; sem nome nenhum, oferece todos.
     Reexport,
-    /// O nome que o arquivo de origem dá ao nome que o repasse do mesmo
-    /// pattern oferece com outro (`X` em `export { X as Y } from`).
-    ReexportOriginal,
+    /// O nome que o arquivo de origem dá ao nome que o import ou o repasse do
+    /// mesmo pattern traz com outro (`X` em `import { X as Y } from` e em
+    /// `export { X as Y } from`); `*` quando o nome novo é o arquivo inteiro.
+    ImportedOriginal,
     Namespace,
     /// O caminho escrito antes do nome numa chamada qualificada (`crate::a`
     /// em `crate::a::f()`): vira import do arquivo só quando começa por um
@@ -434,7 +455,7 @@ fn classify(cap: &str) -> CapKind {
         "import.global" => CapKind::ImportGlobal,
         "imported" => CapKind::Imported,
         "reexport" => CapKind::Reexport,
-        "reexport.original" => CapKind::ReexportOriginal,
+        "imported.original" => CapKind::ImportedOriginal,
         "namespace" => CapKind::Namespace,
         "call.path" => CapKind::CallPath,
         "name" => CapKind::Name,
@@ -561,8 +582,8 @@ impl Analyzer {
         // Cada nome que um import traz, com o nó em que foi escrito: só depois
         // de todos os matches se sabe de que import ele é.
         let mut imported_at: Vec<(Node, String)> = Vec::new();
-        // O nome de origem de cada nome que um repasse oferece com outro, pelo
-        // byte em que o nome oferecido foi escrito.
+        // O nome de origem de cada nome que um import ou um repasse traz com
+        // outro, pelo byte em que o nome trazido foi escrito.
         let mut original_of: HashMap<usize, String> = HashMap::new();
         // Cada nome que o corpo de uma função liga, com a linha e o byte em
         // que foi escrito.
@@ -586,9 +607,11 @@ impl Analyzer {
         let own_module = module_alias(&self.name);
         let separators = qualifier_separators(&self.name);
 
-        // Os comentários do arquivo: o separador escrito num deles não liga
-        // um nome ao que vem antes.
-        let comments = comment_spans(root);
+        // Uma caminhada só pela árvore junta os comentários e as folhas do
+        // arquivo, que o texto escrito e os usos leem depois dos matches. O
+        // separador escrito num comentário não liga um nome ao que vem antes.
+        let walked = Walked::of(root);
+        let comments: Spans = walked.comments.iter().map(|c| (c.start_byte(), c.end_byte())).collect();
         let mut matches = cursor.matches(&self.query, root, bytes);
         while let Some(m) = matches.next() {
             let mut def: Option<(Node, &str)> = None;
@@ -606,7 +629,7 @@ impl Analyzer {
             // escrito, e os nomes que o mesmo pattern diz que eles trazem.
             let mut here_imports: Vec<Written> = Vec::new();
             let mut brought: Vec<String> = Vec::new();
-            // O nome oferecido e o de origem, quando o pattern escreve os dois.
+            // O nome trazido e o de origem, quando o pattern escreve os dois.
             let mut offered_at: Option<usize> = None;
             let mut original: Option<String> = None;
 
@@ -625,7 +648,7 @@ impl Analyzer {
                             }
                         }
                     }
-                    CapKind::ReexportOriginal => {
+                    CapKind::ImportedOriginal => {
                         import_spans.insert((node.start_byte(), node.end_byte()));
                         original = node.utf8_text(bytes).ok().map(str::trim).filter(|t| !t.is_empty()).map(str::to_string);
                     }
@@ -873,16 +896,14 @@ impl Analyzer {
             .unzip();
         owners_in_file(&mut out.declarations);
         // O texto das linhas de cada declaração e os comentários do arquivo
-        // saem de uma caminhada só pela árvore. O literal de texto e a
-        // documentação escrita como literal não são código: os nomes escritos
-        // neles ficam de fora.
+        // saem do que a caminhada juntou. O literal de texto e a documentação
+        // escrita como literal não são código: os nomes e os comentários
+        // escritos neles ficam de fora.
         if keep.written_text {
-            let not_code: HashSet<(usize, usize)> = literals
-                .iter()
-                .map(|(node, _)| (node.start_byte(), node.end_byte()))
-                .chain(doc_spans.iter().copied())
-                .collect();
-            let written_text = WrittenText::of(root, bytes, self.doc_tags, &not_code);
+            let not_code = Pruned::of(
+                literals.iter().map(|(node, _)| (node.start_byte(), node.end_byte())).chain(doc_spans.iter().copied()),
+            );
+            let written_text = WrittenText::of(root, &walked, bytes, self.doc_tags, &not_code);
             for decl in &mut out.declarations {
                 (decl.body_comment, decl.body_names) = written_text.lines(decl.line, decl.end_line);
             }
@@ -897,30 +918,30 @@ impl Analyzer {
         // declaration headers themselves (`foo` in `fn foo(` is where it is
         // defined, not a use of it) and minus what is written inside a
         // decoration, an import or a namespace name.
-        let quiet: Spans = decorations.union(&import_spans).copied().collect();
+        let quiet = Pruned::of(decorations.union(&import_spans).copied());
         let heads;
         let brought: HashSet<&str> = imported_at.iter().map(|(_, name)| name.as_str()).collect();
         (out.calls, out.cites, heads) =
-            use_sites(root, bytes, &comments, &quiet, &names_at, &name_kinds, &self.name, &brought);
+            use_sites(&walked.leaves, bytes, &comments, &quiet, &names_at, &name_kinds, &self.name, &brought);
         drop_local_uses(&out.declarations, &locals, &names_at, [&mut out.calls, &mut out.cites]);
 
         // Cada nome trazido é do import escrito no mesmo comando: o que fica
         // dentro do nó mais próximo, subindo a partir do nome, que contém
-        // algum import. O caminho de uma chamada não traz nome.
-        // O nome trazido por um repasse é também um nome que o arquivo
-        // oferece, com o nome que tem no arquivo de origem.
+        // algum import. O caminho de uma chamada não traz nome. Cada um vai
+        // com o nome que tem no arquivo de origem, e o nome trazido por um
+        // repasse é também um nome que o arquivo oferece.
         let in_module = |line: usize| out.module_lines.iter().any(|&(first, last)| (first..=last).contains(&line));
-        let mut brought_by: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let mut brought_by: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
         for (node, name) in &imported_at {
+            let original = original_of.get(&node.start_byte()).unwrap_or(name);
             let mut at = Some(*node);
             while let Some(n) = at {
                 let (start, end) = (n.start_byte(), n.end_byte());
                 let mut inside = written.iter().filter(|w| w.call.is_none() && start <= w.byte && w.end <= end).peekable();
                 if inside.peek().is_some() {
                     for w in inside {
-                        brought_by.entry(w.text.clone()).or_default().insert(name.clone());
+                        brought_by.entry(w.text.clone()).or_default().insert(name.clone(), original.clone());
                         if w.reexport && !in_module(w.line) {
-                            let original = original_of.get(&node.start_byte()).unwrap_or(name);
                             out.reexports.entry(w.text.clone()).or_default().insert(name.clone(), original.clone());
                         }
                     }
@@ -929,7 +950,7 @@ impl Analyzer {
                 at = n.parent();
             }
         }
-        out.brought = brought_by.into_iter().map(|(import, names)| (import, names.into_iter().collect())).collect();
+        out.brought = brought_by;
         // O repasse que não escreve nome nenhum oferece todos.
         for w in written.iter().filter(|w| w.reexport && !in_module(w.line)) {
             out.reexports.entry(w.text.clone()).or_insert_with(|| BTreeMap::from([("*".to_string(), "*".to_string())]));
@@ -1290,47 +1311,37 @@ struct WrittenText {
 }
 
 impl WrittenText {
-    /// Caminha pela árvore de `root` na ordem do texto. O comentário é lido
-    /// inteiro, limpo das marcas e das `tags` de documentação; o nó cujo
-    /// trecho está em `not_code` fica de fora, com o que tem dentro.
-    fn of(root: Node, bytes: &[u8], tags: &[&str], not_code: &HashSet<(usize, usize)>) -> WrittenText {
-        let mut comments = Vec::new();
-        let mut names = Vec::new();
+    /// Lê o que a caminhada `walked` juntou da árvore de `root`, na ordem do
+    /// texto. O comentário é lido inteiro, limpo das marcas e das `tags` de
+    /// documentação; o comentário e o nome dentro de um trecho de `not_code`
+    /// ficam de fora.
+    fn of(root: Node, walked: &Walked, bytes: &[u8], tags: &[&str], not_code: &Pruned) -> WrittenText {
         let mut cursor = root.walk();
         let first_code = {
             let mut children = root.children(&mut cursor);
             children.find(|child| !child.is_extra()).map_or(usize::MAX, |child| child.start_byte())
         };
-        let mut cursor = root.walk();
-        loop {
-            let node = cursor.node();
-            let piece = |text: String| Piece { row: node.start_position().row, byte: node.start_byte(), text };
-            let mut descend = false;
-            if node.is_extra() {
-                if let Ok(text) = node.utf8_text(bytes) {
-                    let text = clean_comment(text, tags);
-                    if !text.is_empty() {
-                        comments.push(piece(text));
-                    }
-                }
-            } else if !not_code.contains(&(node.start_byte(), node.end_byte())) {
-                descend = node.child_count() > 0;
-                if !descend && node.is_named()
-                    && let Ok(text) = node.utf8_text(bytes)
-                    && is_identifier(text)
-                {
-                    names.push(piece(text.to_string()));
-                }
-            }
-            if descend && cursor.goto_first_child() {
-                continue;
-            }
-            while !cursor.goto_next_sibling() {
-                if !cursor.goto_parent() {
-                    return WrittenText { comments, names, first_code };
-                }
-            }
-        }
+        let piece = |node: &Node, text: String| Piece { row: node.start_position().row, byte: node.start_byte(), text };
+        let comments = walked
+            .comments
+            .iter()
+            .filter(|node| !not_code.holds(node))
+            .filter_map(|node| {
+                let text = clean_comment(node.utf8_text(bytes).ok()?, tags);
+                (!text.is_empty()).then(|| piece(node, text))
+            })
+            .collect();
+        let names = walked
+            .leaves
+            .iter()
+            .map(|leaf| &leaf.node)
+            .filter(|node| node.is_named() && !not_code.holds(node))
+            .filter_map(|node| {
+                let text = node.utf8_text(bytes).ok()?;
+                is_identifier(text).then(|| piece(node, text.to_string()))
+            })
+            .collect();
+        WrittenText { comments, names, first_code }
     }
 
     /// Os comentários e os nomes das linhas `first` a `last` (a partir de
@@ -1720,20 +1731,23 @@ fn glob(entry: &str, text: &str) -> bool {
 /// `names_at`, is its header.
 ///
 /// A grammar may wrap a word in a name node (a keyword that is a name only in
-/// some places). That node counts as a leaf when its one child spans exactly
-/// what it spans, and only when it is of a type in `name_kinds`, the types the
-/// declarations of the file write their names with: `x.from(1)` is a call,
-/// and a modifier or a type keyword before a parenthesis is not.
+/// some places, [`Leaf::word`]). That node is read in place of its leaf only
+/// when it is of a type in `name_kinds`, the types the declarations of the
+/// file write their names with: `x.from(1)` is a call, and a modifier or a
+/// type keyword before a parenthesis is not.
+///
+/// Os nós lidos são as folhas que a caminhada pela árvore juntou
+/// ([`Walked`]); a que está dentro de um trecho de `quiet` fica de fora.
 ///
 /// O qualificador se lê pelos separadores de `lang` ([`qualifier_before`]),
 /// com os nomes que os imports do arquivo trazem (`brought`). Vêm junto os
 /// qualificadores que abrem a cadeia de uma chamada ([`opens_chain`]).
 #[allow(clippy::too_many_arguments)]
 fn use_sites(
-    root: Node,
+    leaves: &[Leaf],
     bytes: &[u8],
     comments: &Spans,
-    quiet: &Spans,
+    quiet: &Pruned,
     names_at: &BTreeSet<usize>,
     name_kinds: &BTreeSet<&str>,
     lang: &str,
@@ -1742,23 +1756,19 @@ fn use_sites(
     let mut calls: BTreeSet<(usize, String, String)> = BTreeSet::new();
     let mut cites: BTreeSet<(usize, String, String)> = BTreeSet::new();
     let mut heads: BTreeSet<String> = BTreeSet::new();
-    let mut cursor = root.walk();
-    let mut stack = vec![root];
-    while let Some(node) = stack.pop() {
-        if is_decoration(&node, quiet) || node.is_extra() {
+    for leaf in leaves {
+        let node = match leaf.word {
+            Some(word) if name_kinds.contains(word.kind()) => word,
+            _ => leaf.node,
+        };
+        if !node.is_named() || quiet.holds(&node) || names_at.contains(&node.start_byte()) {
             continue;
         }
-        if node.child_count() > 0 && !is_wrapped_word(node, name_kinds) {
-            for child in node.children(&mut cursor) {
-                stack.push(child);
-            }
-            continue;
-        }
-        if !node.is_named() || names_at.contains(&node.start_byte()) {
-            continue;
-        }
+        // A letra sozinha, que fora disso é valor, é nome quando um import do
+        // arquivo a trouxe (`L` de `import { Leitor as L }`). O traço baixo
+        // não é letra: o import que traz o nome como `_` não traz nome.
         let Ok(text) = node.utf8_text(bytes) else { continue };
-        if !is_identifier(text) {
+        if !(is_identifier(text) || (brought.contains(text) && text.chars().all(char::is_alphabetic))) {
             continue;
         }
         let site =
@@ -1796,23 +1806,81 @@ fn opens_chain(node: Node, bytes: &[u8], comments: &Spans, lang: &str, qualifier
     !separators().any(|sep| before.ends_with(sep.as_bytes()))
 }
 
-/// Os trechos que a árvore marca como extras — os comentários —, sem descer
-/// dentro deles.
-fn comment_spans(root: Node) -> Spans {
-    let mut spans = Spans::new();
-    let mut cursor = root.walk();
-    loop {
-        let node = cursor.node();
-        if node.is_extra() {
-            spans.insert((node.start_byte(), node.end_byte()));
-        } else if cursor.goto_first_child() {
-            continue;
-        }
-        while !cursor.goto_next_sibling() {
-            if !cursor.goto_parent() {
-                return spans;
+/// O que uma caminhada pela árvore de um arquivo junta, na ordem do texto.
+struct Walked<'t> {
+    /// Os nós que a gramática marca como extras — os comentários —, sem
+    /// descer dentro deles.
+    comments: Vec<Node<'t>>,
+    /// As folhas fora dos comentários: as nomeadas e as que uma palavra
+    /// embrulha.
+    leaves: Vec<Leaf<'t>>,
+}
+
+/// Uma folha da árvore e a palavra que a embrulha, quando há.
+struct Leaf<'t> {
+    node: Node<'t>,
+    /// O nó nomeado que tem a folha como filho único e o mesmo trecho dela: a
+    /// gramática embrulha a palavra num nó de nome. Se ele é um nome só se
+    /// sabe depois dos matches, pelos tipos com que o arquivo escreve os nomes
+    /// das declarações.
+    word: Option<Node<'t>>,
+}
+
+impl<'t> Walked<'t> {
+    fn of(root: Node<'t>) -> Walked<'t> {
+        let mut comments = Vec::new();
+        let mut leaves = Vec::new();
+        let mut cursor = root.walk();
+        // O nó de um filho só, nomeado, que acabou de ser visto: o próximo nó
+        // da caminhada é o filho dele.
+        let mut single_parent: Option<Node<'t>> = None;
+        loop {
+            let node = cursor.node();
+            let parent = single_parent.take();
+            if node.is_extra() {
+                comments.push(node);
+            } else if node.child_count() == 0 {
+                let word = parent.filter(|w| w.start_byte() == node.start_byte() && w.end_byte() == node.end_byte());
+                if node.is_named() || word.is_some() {
+                    leaves.push(Leaf { node, word });
+                }
+            } else {
+                single_parent = (node.child_count() == 1 && node.is_named()).then_some(node);
+                if cursor.goto_first_child() {
+                    continue;
+                }
+                single_parent = None;
+            }
+            while !cursor.goto_next_sibling() {
+                if !cursor.goto_parent() {
+                    return Walked { comments, leaves };
+                }
             }
         }
+    }
+}
+
+/// Os trechos que uma leitura poda, só os de fora — o que está dentro de
+/// outro já fica de fora com ele —, em ordem.
+struct Pruned(Vec<(usize, usize)>);
+
+impl Pruned {
+    fn of(spans: impl IntoIterator<Item = (usize, usize)>) -> Pruned {
+        let mut spans: Vec<(usize, usize)> = spans.into_iter().collect();
+        spans.sort_unstable_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
+        let mut outer: Vec<(usize, usize)> = Vec::with_capacity(spans.len());
+        for span in spans {
+            if outer.last().is_none_or(|last| span.1 > last.1) {
+                outer.push(span);
+            }
+        }
+        Pruned(outer)
+    }
+
+    /// O nó está dentro de um trecho podado.
+    fn holds(&self, node: &Node) -> bool {
+        let at = self.0.partition_point(|&(start, _)| start <= node.start_byte());
+        at > 0 && node.end_byte() <= self.0[at - 1].1
     }
 }
 
@@ -1829,17 +1897,6 @@ fn code_before<'b>(bytes: &'b [u8], comments: &Spans, at: usize) -> &'b [u8] {
             _ => return before,
         }
     }
-}
-
-/// A name node standing for one word: of a type in `name_kinds`, with a single
-/// child that spans exactly what the node spans.
-fn is_wrapped_word(node: Node, name_kinds: &BTreeSet<&str>) -> bool {
-    node.child_count() == 1
-        && node.is_named()
-        && name_kinds.contains(node.kind())
-        && node
-            .child(0)
-            .is_some_and(|c| c.child_count() == 0 && c.start_byte() == node.start_byte() && c.end_byte() == node.end_byte())
 }
 
 /// O que vem escrito antes do nó e ligado a ele por um separador de `lang`.
@@ -2070,5 +2127,29 @@ mod tests {
 
         assert!(compile_good_query(&grammar, bad, "test").is_none());
         assert!(compile_good_query(&grammar, "", "test").is_none());
+    }
+
+    /// A passada só prepara as línguas que o projeto tem; a consulta inteira
+    /// de cada língua do registro compila sem perder padrão, tenha o projeto
+    /// a língua ou não.
+    #[test]
+    fn every_language_of_the_registry_compiles_its_whole_query() {
+        for raw in raw_langs() {
+            let whole = Query::new(&raw.language, raw.query);
+            assert!(whole.is_ok(), "{}: {:?}", raw.name, whole.err());
+        }
+    }
+
+    #[test]
+    fn only_the_language_a_file_asks_for_is_prepared() {
+        let asked = detect_language(Path::new("src/lib.rs")).expect("the registry reads the extension");
+        let registry = registry();
+
+        assert!(registry.compiled_languages().next().is_none(), "no language is prepared before a file asks");
+        assert!(registry.get(&asked).is_some());
+        assert!(registry.get(&asked).is_some(), "asking again reuses the prepared language");
+
+        let prepared: Vec<&str> = registry.compiled_languages().map(|a| a.name.as_str()).collect();
+        assert_eq!(prepared, vec![asked.as_str()]);
     }
 }

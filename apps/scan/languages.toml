@@ -86,11 +86,14 @@
 #                 (`./order.service` cita `order.service.<ext>`, nunca
 #                 `order.<ext>`).
 #   alias_config  OPTIONAL — o nome do arquivo de configuração que declara os
-#                 apelidos de pasta dos imports da língua. O arquivo é JSON e
-#                 aceita comentário e vírgula sobrando. Cada arquivo lê o mais
-#                 próximo, subindo as pastas; o scan lê o projeto inteiro de
-#                 novo sempre que um arquivo com esse nome muda. As três chaves
-#                 abaixo apontam lugares dentro dele, em caminho com pontos:
+#                 apelidos de pasta dos imports da língua, ou a lista dos nomes
+#                 que ela lê, em ordem de preferência. O arquivo é JSON e
+#                 aceita comentário e vírgula sobrando. Cada arquivo lê a
+#                 configuração mais próxima, subindo as pastas; na mesma pasta,
+#                 vale o primeiro nome da lista que existe. O scan lê o projeto
+#                 inteiro de novo sempre que um arquivo com um desses nomes
+#                 muda. As três chaves abaixo apontam lugares dentro dele, em
+#                 caminho com pontos, e valem para todos os nomes da lista:
 #   alias_base    OPTIONAL — a pasta de onde se leem os imports não relativos,
 #                 relativa à configuração que a declara;
 #   alias_paths   OPTIONAL — o objeto que liga um padrão de import (no máximo
@@ -252,6 +255,10 @@ grammar = "grammar_ts::LANGUAGE_TSX"
 self_receivers = ["this"]
 parent_receivers = ["super"]
 package_entry = ["src/index", "index"]
+alias_config = ["tsconfig.json", "jsconfig.json"]
+alias_base = "compilerOptions.baseUrl"
+alias_paths = "compilerOptions.paths"
+alias_extends = "extends"
 prelude = ["setTimeout", "setInterval", "setImmediate", "clearTimeout", "clearInterval", "clearImmediate", "queueMicrotask", "structuredClone", "requestAnimationFrame", "cancelAnimationFrame", "parseInt", "parseFloat", "isNaN", "isFinite", "encodeURI", "encodeURIComponent", "decodeURI", "decodeURIComponent", "escape", "unescape", "eval", "atob", "btoa", "fetch", "require", "alert", "confirm", "prompt", "Array", "Object", "String", "Number", "Boolean", "Symbol", "BigInt", "Date", "RegExp", "Error", "TypeError", "RangeError", "SyntaxError", "ReferenceError", "Promise", "Map", "Set", "WeakMap", "WeakSet", "JSON", "Math", "Reflect", "Proxy", "Intl", "console", "globalThis", "window", "document", "process", "Buffer"]
 log_calls = ["console.*", "logger.*", "Logger.*"]
 error_forms = ["throw", "*Error", "*Exception", "reject"]

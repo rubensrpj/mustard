@@ -1146,3 +1146,328 @@ fn a_pass_that_reads_only_the_changed_router_gives_the_same_routes_as_the_whole_
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// As rotas do Go e as do Actix
+// ---------------------------------------------------------------------------
+
+/// O roteador da biblioteca padrão: o caminho sem método e o que o escreve
+/// na frente.
+const GO_NET_HTTP: &str = "package api\n\nimport \"net/http\"\n\nfunc Rotas() {\n\
+                           \thttp.HandleFunc(\"/pedidos/\", ler)\n\tmux := http.NewServeMux()\n\
+                           \tmux.HandleFunc(\"GET /aves/{id}\", ler)\n}\n\n\
+                           func ler(w http.ResponseWriter, r *http.Request) {}\n";
+
+/// Um motor com um grupo, um grupo feito dele dentro do bloco e uma rota de
+/// qualquer método.
+const GIN: &str = "package main\n\nimport \"github.com/gin-gonic/gin\"\n\nfunc main() {\n\tr := gin.Default()\n\
+                   \tg := r.Group(\"/api\")\n\tg.GET(\"/aves/:id\", lerAve)\n\t{\n\t\tv1 := g.Group(\"/v1\")\n\
+                   \t\tv1.GET(\"/x\", lerAve)\n\t}\n\tr.Any(\"/todos\", lerAve)\n\tr.Run()\n}\n\n\
+                   func lerAve(c *gin.Context) {}\n";
+
+/// Um arquivo Go sem import de framework, com chamadas que têm a forma das
+/// rotas dos dois.
+const GO_NO_FRAMEWORK: &str = "package util\n\nimport \"strings\"\n\nfunc Rotas(r Roteador) {\n\
+                               \tr.GET(\"/aves/:id\", ler)\n\thttp.HandleFunc(\"/x\", ler)\n\
+                               \t_ = strings.TrimSpace(\" \")\n}\n\nfunc ler() {}\n";
+
+#[test]
+fn a_standard_library_route_takes_the_method_written_before_its_path_or_any() {
+    let temp = project_with(&[("go.mod", "module loja\n\ngo 1.22\n"), ("api/rotas.go", GO_NET_HTTP)]);
+    let (map, _) = scan(temp.path());
+    assert_eq!(served(&map, "api/rotas.go"), ["* pedidos -> ler", "GET aves/{} -> ler"]);
+}
+
+#[test]
+fn a_route_of_a_group_kept_in_a_variable_joins_every_group_it_was_made_from() {
+    let temp = project_with(&[("go.mod", "module loja\n\ngo 1.22\n"), ("main.go", GIN)]);
+    let (map, _) = scan(temp.path());
+    assert_eq!(served(&map, "main.go"), ["* todos -> lerAve", "GET api/aves/{} -> lerAve", "GET api/v1/x -> lerAve"]);
+}
+
+#[test]
+fn a_go_file_that_imports_no_framework_has_no_route() {
+    let temp = project_with(&[("go.mod", "module loja\n\ngo 1.22\n"), ("util/rotas.go", GO_NO_FRAMEWORK)]);
+    let (map, _) = scan(temp.path());
+    assert_eq!(routes(&map, "util/rotas.go"), json!([]));
+}
+
+/// As rotas pelo atributo e pela chamada, montadas num escopo pelo
+/// `service` e pelo `configure`.
+const ACTIX: &str = r#"use actix_web::{get, route, web, App, HttpServer};
+
+#[get("/aves/{id}")]
+async fn ler() -> &'static str {
+    "ave"
+}
+
+#[route("/multi", method = "GET", method = "POST")]
+async fn multi() -> &'static str {
+    ""
+}
+
+async fn criar() -> &'static str {
+    ""
+}
+
+fn config(cfg: &mut web::ServiceConfig) {
+    cfg.service(web::resource("/x").route(web::post().to(criar)));
+    cfg.route("/y", web::get().to(criar));
+}
+
+#[actix_web::main]
+async fn main() -> std::io::Result<()> {
+    HttpServer::new(|| {
+        App::new()
+            .service(multi)
+            .service(web::scope("/api").service(ler))
+            .service(web::scope("/cfg").configure(config))
+    })
+    .bind(("127.0.0.1", 8080))?
+    .run()
+    .await
+}
+"#;
+
+const ACTIX_CARGO: &str = "[package]\nname = \"loja\"\nversion = \"0.1.0\"\n\n[dependencies]\nactix-web = \"4\"\n";
+
+#[test]
+fn an_attribute_route_is_served_by_its_function_and_a_scope_service_adds_its_prefix() {
+    let temp = project_with(&[("Cargo.toml", ACTIX_CARGO), ("src/main.rs", ACTIX)]);
+    let (map, _) = scan(temp.path());
+    let served = served(&map, "src/main.rs");
+    for route in ["GET api/aves/{} -> ler", "GET multi -> multi", "POST multi -> multi"] {
+        assert!(served.contains(&route.to_string()), "{route}: {served:?}");
+    }
+    assert!(!served.contains(&"GET aves/{} -> ler".to_string()), "{served:?}");
+}
+
+#[test]
+fn a_resource_route_is_served_by_the_function_of_its_to_and_configure_adds_the_scope() {
+    let temp = project_with(&[("Cargo.toml", ACTIX_CARGO), ("src/main.rs", ACTIX)]);
+    let (map, _) = scan(temp.path());
+    let served = served(&map, "src/main.rs");
+    for route in ["POST cfg/x -> criar", "GET cfg/y -> criar"] {
+        assert!(served.contains(&route.to_string()), "{route}: {served:?}");
+    }
+    assert_eq!(served.len(), 5, "{served:?}");
+}
+
+/// A função com o atributo escrita noutro arquivo, trazida pelo `use` e
+/// montada no escopo.
+#[test]
+fn a_scope_service_adds_its_prefix_to_the_function_of_another_file() {
+    let handlers = "use actix_web::get;\n\n#[get(\"/aves/{id}\")]\npub async fn ler() -> &'static str {\n    \"ave\"\n}\n";
+    let main = "use actix_web::{web, App};\nuse crate::handlers::ler;\n\nmod handlers;\n\n\
+                fn app() {\n    App::new().service(web::scope(\"/api\").service(ler));\n}\n";
+    let temp = project_with(&[("Cargo.toml", ACTIX_CARGO), ("src/handlers.rs", handlers), ("src/main.rs", main)]);
+    let (map, _) = scan(temp.path());
+    assert_eq!(served(&map, "src/handlers.rs"), ["GET api/aves/{} -> ler"]);
+}
+
+// ---------------------------------------------------------------------------
+// As rotas do Laravel, do Symfony, do Dart e do Fastify
+// ---------------------------------------------------------------------------
+
+/// O arquivo de rotas da API: a rota com a ação na lista, a do texto
+/// `Controlador@acao`, a de um grupo com prefixo e a de um recurso.
+const LARAVEL_API: &str = r#"<?php
+
+use App\Http\Controllers\PedidoController;
+use Illuminate\Support\Facades\Route;
+
+Route::get('/pedidos/{id}', [PedidoController::class, 'show']);
+Route::post('/pedidos', 'PedidoController@store');
+Route::middleware('auth')->prefix('v1')->group(function () {
+    Route::get('/itens/{id?}', [PedidoController::class, 'item']);
+});
+Route::apiResource('fotos', FotoController::class);
+"#;
+
+const LARAVEL_WEB: &str = "<?php\n\nuse Illuminate\\Support\\Facades\\Route;\n\n\
+                           Route::get('/inicio', function () {\n    return view('inicio');\n});\n";
+
+const LARAVEL_CONTROLLER: &str = "<?php\n\nnamespace App\\Http\\Controllers;\n\nclass PedidoController\n{\n    \
+                                  public function show($id)\n    {\n        return $id;\n    }\n}\n";
+
+fn laravel_project() -> tempfile::TempDir {
+    project_with(&[
+        ("composer.json", r#"{"require": {"laravel/framework": "^11.0"}}"#),
+        ("routes/api.php", LARAVEL_API),
+        ("routes/web.php", LARAVEL_WEB),
+        ("app/Http/Controllers/PedidoController.php", LARAVEL_CONTROLLER),
+    ])
+}
+
+#[test]
+fn a_route_of_the_api_routes_file_takes_its_prefix_and_the_action_written_in_the_list() {
+    let temp = laravel_project();
+    let (map, _) = scan(temp.path());
+    let api = served(&map, "routes/api.php");
+    assert!(api.contains(&"GET api/pedidos/{} -> show".to_string()), "{api:?}");
+    assert_eq!(served(&map, "routes/web.php"), ["GET inicio -> "]);
+}
+
+#[test]
+fn an_action_written_as_controller_at_method_is_served_by_the_method() {
+    let temp = laravel_project();
+    let (map, _) = scan(temp.path());
+    let served = served(&map, "routes/api.php");
+    assert!(served.contains(&"POST api/pedidos -> store".to_string()), "{served:?}");
+}
+
+#[test]
+fn a_prefix_in_the_middle_of_a_chain_goes_in_front_of_the_routes_of_its_group() {
+    let temp = laravel_project();
+    let (map, _) = scan(temp.path());
+    let served = served(&map, "routes/api.php");
+    assert!(served.contains(&"GET api/v1/itens/{} -> item".to_string()), "{served:?}");
+}
+
+#[test]
+fn an_api_resource_gives_each_route_of_the_resource_with_its_action() {
+    let temp = laravel_project();
+    let (map, _) = scan(temp.path());
+    let served: Vec<String> = served(&map, "routes/api.php").into_iter().filter(|r| r.contains("fotos")).collect();
+    assert_eq!(
+        served,
+        [
+            "DELETE api/fotos/{} -> destroy",
+            "GET api/fotos -> index",
+            "GET api/fotos/{} -> show",
+            "PATCH api/fotos/{} -> update",
+            "POST api/fotos -> store",
+            "PUT api/fotos/{} -> update",
+        ]
+    );
+}
+
+#[test]
+fn a_php_file_that_imports_no_framework_has_no_route() {
+    let file = "<?php\n\nRoute::get('/pedidos/{id}', [PedidoController::class, 'show']);\nRoute::apiResource('fotos', F::class);\n";
+    let temp = project_with(&[("routes/api.php", file)]);
+    let (map, _) = scan(temp.path());
+    assert_eq!(routes(&map, "routes/api.php"), json!([]));
+}
+
+const SYMFONY: &str = r#"<?php
+
+namespace App\Controller;
+
+use Symfony\Component\Routing\Attribute\Route;
+
+#[Route('/api')]
+class PedidoController
+{
+    #[Route('/pedidos/{id}', name: 'pedido', methods: ['GET'])]
+    public function show(int $id)
+    {
+        return $id;
+    }
+
+    #[Route('/pedidos', name: 'todos')]
+    public function todos()
+    {
+        return 1;
+    }
+}
+"#;
+
+#[test]
+fn a_method_attribute_route_joins_the_prefix_of_its_class_and_takes_the_methods_written() {
+    let temp = project_with(&[("src/Controller/PedidoController.php", SYMFONY)]);
+    let (map, _) = scan(temp.path());
+    assert_eq!(
+        served(&map, "src/Controller/PedidoController.php"),
+        ["* api/pedidos -> todos", "GET api/pedidos/{} -> show"]
+    );
+}
+
+const SHELF: &str = r#"import 'package:shelf/shelf.dart';
+import 'package:shelf_router/shelf_router.dart';
+
+Response ler(Request request, String id) => Response.ok(id);
+
+Router rotas() {
+  final api = Router();
+  api.get('/pedidos/<id>', ler);
+  final app = Router();
+  app.mount('/api/', api.call);
+  return app;
+}
+
+class Aves {
+  @Route.get('/aves/<id>')
+  Response ave(Request request, String id) => Response.ok(id);
+
+  Router get router => _$AvesRouter(this);
+}
+
+class Site {
+  @Route.mount('/v1/')
+  Router get _aves => Aves().router;
+}
+"#;
+
+#[test]
+fn a_router_mounted_in_another_takes_the_prefix_of_the_mount() {
+    let temp = project_with(&[("pubspec.yaml", "name: loja\n"), ("lib/server.dart", SHELF)]);
+    let (map, _) = scan(temp.path());
+    let served = served(&map, "lib/server.dart");
+    assert!(served.contains(&"GET api/pedidos/{} -> ler".to_string()), "{served:?}");
+}
+
+#[test]
+fn an_annotated_route_takes_the_prefix_of_the_getter_that_mounts_its_class() {
+    let temp = project_with(&[("pubspec.yaml", "name: loja\n"), ("lib/server.dart", SHELF)]);
+    let (map, _) = scan(temp.path());
+    let served = served(&map, "lib/server.dart");
+    assert!(served.contains(&"GET v1/aves/{} -> ave".to_string()), "{served:?}");
+}
+
+const FASTIFY: &str = r#"import Fastify from 'fastify';
+
+const f = Fastify();
+f.get('/rapido/:id', { schema: {} }, lerRapido);
+f.route({ method: 'POST', url: '/rapido', handler: lerRapido });
+
+async function plugin(app) {
+  app.get('/itens', lerRapido);
+}
+f.register(plugin, { prefix: '/api' });
+
+function lerRapido() {}
+"#;
+
+#[test]
+fn a_fastify_route_is_served_by_its_last_argument_or_by_the_handler_of_its_object() {
+    let temp = project_with(&[("rapido.ts", FASTIFY)]);
+    let (map, _) = scan(temp.path());
+    let served = served(&map, "rapido.ts");
+    for route in ["GET rapido/{} -> lerRapido", "POST rapido -> lerRapido"] {
+        assert!(served.contains(&route.to_string()), "{route}: {served:?}");
+    }
+}
+
+#[test]
+fn a_registered_plugin_takes_the_prefix_of_the_register_also_in_javascript() {
+    let js = FASTIFY.replace("import Fastify from 'fastify';", "const Fastify = require('fastify');");
+    let temp = project_with(&[("rapido.ts", FASTIFY), ("rapido.js", &js)]);
+    let (map, _) = scan(temp.path());
+    for file in ["rapido.ts", "rapido.js"] {
+        let served = served(&map, file);
+        assert!(served.contains(&"GET api/itens -> lerRapido".to_string()), "{file}: {served:?}");
+        assert_eq!(served.len(), 3, "{file}: {served:?}");
+    }
+}
+
+#[test]
+fn a_plugin_from_another_file_takes_the_prefix_of_the_register() {
+    let plugin = "import { FastifyInstance } from 'fastify';\n\nexport async function pedidos(app: FastifyInstance) {\n  \
+                  app.get('/itens/:id', ler);\n}\n\nfunction ler() {}\n";
+    let server = "import Fastify from 'fastify';\nimport { pedidos } from './pedidos';\n\nconst f = Fastify();\n\
+                  f.register(pedidos, { prefix: '/api' });\n";
+    let temp = project_with(&[("src/pedidos.ts", plugin), ("src/server.ts", server)]);
+    let (map, _) = scan(temp.path());
+    assert_eq!(served(&map, "src/pedidos.ts"), ["GET api/itens/{} -> ler"]);
+}

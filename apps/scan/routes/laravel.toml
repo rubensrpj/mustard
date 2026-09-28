@@ -1,0 +1,71 @@
+# As rotas do Laravel. O nome deste arquivo é o nome do framework; a consulta
+# que acha as rotas está em `laravel/routes.scm`, e o que cada captura dela
+# diz, em `src/routes.rs`.
+#
+# A rota é o `Route::get('/pedidos/{id}', …)`, pelo nome do método;
+# `Route::match(['get', 'post'], '/x', …)` dá uma rota por método escrito.
+# Quem atende: `[PedidoController::class, 'show']` dá `show`,
+# `'PedidoController@store'` dá `store`, a classe sozinha
+# (`PedidoController::class`) dá a classe, e a função escrita ali, a linha
+# dela. O `Route::prefix('api')->group(function () { … })`, também no meio
+# de uma cadeia (`Route::middleware('auth')->prefix('v1')->group(…)`), e o
+# `Route::group(['prefix' => 'api'], …)` somam o prefixo às rotas de dentro.
+# O `Route::resource('pedidos', …)` e o `Route::apiResource(…)` dão as rotas
+# do recurso, pela tabela `resources`.
+#
+# Os campos:
+# - `language`: as línguas do registro (`languages.toml`) cujos arquivos a
+#   consulta lê. Ela precisa compilar na gramática de cada uma.
+# - `imports`: a regra só roda no arquivo que importa um destes nomes, ou um
+#   caminho que começa por ele seguido de separador
+#   (`Illuminate\Support\Facades\Route`).
+# - `methods`: o nome do método chamado e o método HTTP que ele diz; `"*"` é
+#   qualquer método. O nome fora da tabela não faz rota. O método escrito
+#   como texto (`route.method.text`) vale sem as aspas, em maiúsculas.
+# - `param_wrappers`: as marcas que abrem e fecham um parâmetro (`{id}`,
+#   `{id?}`).
+# - `handler_separators`: o que separa, no texto de quem atende
+#   (`'PedidoController@store'`), o controlador do método: vale o pedaço
+#   depois do último.
+# - `resources`: o nome chamado que registra um recurso e, de cada rota
+#   dele, o método, o pedaço de caminho depois do do recurso e a ação que a
+#   atende.
+# - `file_prefixes`: o fim do caminho do arquivo de rotas e o prefixo que
+#   todas as rotas dele levam na frente (o `routes/api.php` fica sob `api`).
+
+language = ["php"]
+imports = ["Illuminate"]
+param_wrappers = [["{", "}"]]
+handler_separators = ["@"]
+
+[methods]
+get = "GET"
+post = "POST"
+put = "PUT"
+patch = "PATCH"
+delete = "DELETE"
+options = "OPTIONS"
+any = "*"
+
+[resources]
+resource = [
+    ["GET", "", "index"],
+    ["GET", "create", "create"],
+    ["POST", "", "store"],
+    ["GET", "{id}", "show"],
+    ["GET", "{id}/edit", "edit"],
+    ["PUT", "{id}", "update"],
+    ["PATCH", "{id}", "update"],
+    ["DELETE", "{id}", "destroy"],
+]
+apiResource = [
+    ["GET", "", "index"],
+    ["POST", "", "store"],
+    ["GET", "{id}", "show"],
+    ["PUT", "{id}", "update"],
+    ["PATCH", "{id}", "update"],
+    ["DELETE", "{id}", "destroy"],
+]
+
+[file_prefixes]
+"routes/api.php" = "api"

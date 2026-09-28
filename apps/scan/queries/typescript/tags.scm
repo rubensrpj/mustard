@@ -3,9 +3,11 @@
 (import_statement source: (string (string_fragment) @import))
 
 ; The names an import brings into the file (`limite` in
-; `import { limite } from`): what it brought, not a use of it.
-(import_specifier name: (_) @imported)
-(import_specifier alias: (_) @imported)
+; `import { limite } from`): what it brought, not a use of it. Com apelido
+; (`import { Leitor as L } from`), o arquivo traz `L`, e o arquivo alvo é
+; pedido pelo nome de origem, `Leitor`.
+(import_specifier name: (_) @imported !alias)
+(import_specifier name: (_) @imported.original alias: (_) @imported)
 (import_clause (identifier) @imported)
 (namespace_import (identifier) @imported)
 
@@ -18,12 +20,18 @@
   (export_clause (export_specifier name: (_) @imported !alias))
   source: (_))
 (export_statement
-  (export_clause (export_specifier name: (_) @reexport.original alias: (_) @imported))
+  (export_clause (export_specifier name: (_) @imported.original alias: (_) @imported))
+  source: (_))
+; `export * as util from './util'` oferece o nome `util`, que é o arquivo
+; `./util` inteiro: a origem `*`.
+(export_statement
+  (namespace_export "*" @imported.original (_) @imported)
   source: (_))
 
 ; `require('m')` importa `m` como o `import`, e o nome que recebe o que ele
-; devolve é o que ele traz: `x` em `const x = require('m')`, `a` e `b` em
-; `const { a, b: b } = require('m')`.
+; devolve é o que ele traz: `x` em `const x = require('m')`, `a` e `c` em
+; `const { a, b: c } = require('m')`, em que `c` tem no arquivo de origem o
+; nome `b`.
 ((call_expression
    function: (identifier) @_require
    arguments: (arguments . (string (string_fragment) @import)))
@@ -37,7 +45,7 @@
    value: (call_expression function: (identifier) @_require))
   (#eq? @_require "require"))
 ((variable_declarator
-   name: (object_pattern (pair_pattern key: (_) @imported value: (identifier) @imported))
+   name: (object_pattern (pair_pattern key: (_) @imported.original value: (identifier) @imported))
    value: (call_expression function: (identifier) @_require))
   (#eq? @_require "require"))
 

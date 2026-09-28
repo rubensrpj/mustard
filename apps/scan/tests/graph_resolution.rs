@@ -233,6 +233,79 @@ fn the_nearest_configuration_wins_over_the_root_one() {
     assert_eq!(deps_of(&v, "pkg/usa.ts"), vec!["pkg/lib/pedido.ts".to_string()]);
 }
 
+/// A configuração de apelidos de pasta do projeto só de JavaScript: `@/*` para
+/// `src/*`.
+const JS_CONFIG_AT_SRC: &str = r#"{"compilerOptions":{"baseUrl":".","paths":{"@/*":["src/*"]}}}"#;
+
+/// O projeto só de JavaScript lê os apelidos da configuração dele: o `.jsx`
+/// que importa `@/servicos/pedido` depende do `.js` que a pasta nomeia.
+#[test]
+fn a_folder_alias_from_the_javascript_configuration_links_a_javascript_import() {
+    let v = scan_files(
+        "js-alias",
+        &[
+            ("jsconfig.json", JS_CONFIG_AT_SRC),
+            ("src/servicos/pedido.js", "export function buscarPedido(id) {\n  return id;\n}\n"),
+            (
+                "src/telas/Pedido.jsx",
+                "import { buscarPedido } from '@/servicos/pedido';\n\nexport function Pedido() {\n  return buscarPedido(1);\n}\n",
+            ),
+        ],
+    );
+    assert_eq!(deps_of(&v, "src/telas/Pedido.jsx"), vec!["src/servicos/pedido.js".to_string()]);
+}
+
+/// No projeto com a configuração do TypeScript, o `.js` lê os mesmos apelidos
+/// que o `.ts` ao lado dele.
+#[test]
+fn a_javascript_file_in_a_typescript_project_reads_the_typescript_configuration() {
+    let v = scan_files(
+        "js-in-ts-alias",
+        &[
+            ("tsconfig.json", r#"{"compilerOptions":{"paths":{"@/*":["./src/*"]}}}"#),
+            ("src/servicos/pedido.js", "export function buscarPedido(id) {\n  return id;\n}\n"),
+            ("src/telas/outra.ts", "import { buscarPedido } from '@/servicos/pedido';\n\nexport const x = buscarPedido(1);\n"),
+            ("src/telas/pedido.js", "import { buscarPedido } from '@/servicos/pedido';\n\nexport const y = buscarPedido(2);\n"),
+        ],
+    );
+    assert_eq!(deps_of(&v, "src/telas/outra.ts"), vec!["src/servicos/pedido.js".to_string()]);
+    assert_eq!(deps_of(&v, "src/telas/pedido.js"), vec!["src/servicos/pedido.js".to_string()]);
+}
+
+/// Na mesma pasta, a configuração do TypeScript vence a do JavaScript, na
+/// ordem que o registro dá.
+#[test]
+fn in_the_same_folder_the_typescript_configuration_wins_over_the_javascript_one() {
+    let v = scan_files(
+        "js-ts-same-folder",
+        &[
+            ("tsconfig.json", r#"{"compilerOptions":{"paths":{"@/*":["src/a/*"]}}}"#),
+            ("jsconfig.json", r#"{"compilerOptions":{"paths":{"@/*":["src/b/*"]}}}"#),
+            ("src/a/x.js", "export const x = 1;\n"),
+            ("src/b/x.js", "export const x = 2;\n"),
+            ("src/usa.js", "import { x } from '@/x';\n\nexport const y = x;\n"),
+        ],
+    );
+    assert_eq!(deps_of(&v, "src/usa.js"), vec!["src/a/x.js".to_string()]);
+}
+
+/// A configuração do JavaScript mais próxima de quem importa vence a do
+/// TypeScript de uma pasta acima.
+#[test]
+fn a_nearer_javascript_configuration_wins_over_a_typescript_one_above() {
+    let v = scan_files(
+        "js-nearer",
+        &[
+            ("tsconfig.json", r#"{"compilerOptions":{"paths":{"@/*":["src/*"]}}}"#),
+            ("web/jsconfig.json", r#"{"compilerOptions":{"paths":{"@/*":["lib/*"]}}}"#),
+            ("src/x.js", "export const x = 1;\n"),
+            ("web/lib/x.js", "export const x = 2;\n"),
+            ("web/usa.js", "import { x } from '@/x';\n\nexport const y = x;\n"),
+        ],
+    );
+    assert_eq!(deps_of(&v, "web/usa.js"), vec!["web/lib/x.js".to_string()]);
+}
+
 /// Um ponto na frente é a pasta de quem importa: `from .models import Pedido`
 /// em `pkg/views.py` liga a `pkg/models.py`, ao lado.
 #[test]
@@ -514,9 +587,20 @@ fn scan_in_place(dir: &std::path::Path) -> (serde_json::Value, serde_json::Value
 /// e, depois de mudar só `src/main.rs`, a que reaproveita os outros arquivos
 /// sem relê-los. Devolve o mapa de cada uma.
 fn full_and_kept_pass(name: &str) -> (serde_json::Value, serde_json::Value) {
-    let temp = tempfile::Builder::new().prefix(&format!("scan-graph-reuse-{name}-")).tempdir().unwrap();
+    full_and_kept_pass_of(name, |dir| copy_tree(&fixture(name), dir), ("src/main.rs", "\npub fn outra() {}\n"))
+}
+
+/// As duas passadas de [`full_and_kept_pass`] sobre a árvore que `fill`
+/// escreve: a segunda depois de acrescentar `changed.1` ao fim do arquivo
+/// `changed.0`, o único relido.
+fn full_and_kept_pass_of(
+    label: &str,
+    fill: impl FnOnce(&std::path::Path),
+    changed: (&str, &str),
+) -> (serde_json::Value, serde_json::Value) {
+    let temp = tempfile::Builder::new().prefix(&format!("scan-graph-reuse-{label}-")).tempdir().unwrap();
     let dir = temp.path();
-    copy_tree(&fixture(name), dir);
+    fill(dir);
     git(dir, &["init", "-q"]);
     let exclude = mustard_core::footprint_rules().join("\n") + "\n";
     std::fs::write(dir.join(".git").join("info").join("exclude"), exclude).unwrap();
@@ -525,11 +609,12 @@ fn full_and_kept_pass(name: &str) -> (serde_json::Value, serde_json::Value) {
     let (first, report) = scan_in_place(dir);
     assert_eq!(report["full"], serde_json::Value::Bool(true), "{report}");
 
-    let main = std::fs::read_to_string(dir.join("src/main.rs")).unwrap();
-    std::fs::write(dir.join("src/main.rs"), format!("{main}\npub fn outra() {{}}\n")).unwrap();
+    let (path, added) = changed;
+    let text = std::fs::read_to_string(dir.join(path)).unwrap();
+    std::fs::write(dir.join(path), format!("{text}{added}")).unwrap();
     git(dir, &["commit", "-q", "-am", "segundo"]);
     let (second, report) = scan_in_place(dir);
-    assert_eq!(report["read"], serde_json::json!(["src/main.rs"]), "só o que mudou é relido: {report}");
+    assert_eq!(report["read"], serde_json::json!([path]), "só o que mudou é relido: {report}");
     (first, second)
 }
 
@@ -725,6 +810,10 @@ fn a_name_passed_on_under_another_name_is_followed_by_its_original_name() {
     );
     let v = scan_owned("reexport-renamed", &files);
     assert_eq!(deps_of(&v, "web/src/tela.ts"), vec!["web/src/pedidos/pedido.service.ts".to_string()]);
+    assert_eq!(
+        proven_uses_of(&v, "web/src/pedidos/pedido.service.ts", "buscarPedido"),
+        vec!["web/src/tela.ts:4:tela".to_string()]
+    );
 }
 
 /// Dois `index.ts` que repassam tudo um ao outro: a leitura termina, e o nome
@@ -1372,4 +1461,235 @@ fn a_test_that_imports_the_package_still_sees_its_test_files() {
         deps_of(&v, "api/rotas_test.go"),
         vec!["pedidos/servico.go".to_string(), "pedidos/servico_test.go".to_string()]
     );
+}
+
+/// Quem usa a declaração `name` do arquivo `path` com ligação provada: as
+/// entradas escritas só com o lugar, sem candidatos.
+fn proven_uses_of(v: &serde_json::Value, path: &str, name: &str) -> Vec<String> {
+    let module = v["modules"]
+        .as_array()
+        .expect("modules")
+        .iter()
+        .find(|m| m["path"] == path)
+        .unwrap_or_else(|| panic!("{path} está no mapa"));
+    let decl = module["declarations"]
+        .as_array()
+        .expect("declarations")
+        .iter()
+        .find(|d| d["name"] == name)
+        .unwrap_or_else(|| panic!("{name} está em {path}"));
+    decl["used_by"].as_array().into_iter().flatten().filter_map(|u| u.as_str().map(str::to_string)).collect()
+}
+
+/// Os lugares de quem usa a primeira declaração `name` do arquivo `path`,
+/// provados ou suspeitos, sem repetição.
+fn use_places_of(v: &serde_json::Value, path: &str, name: &str) -> Vec<String> {
+    let module = v["modules"]
+        .as_array()
+        .expect("modules")
+        .iter()
+        .find(|m| m["path"] == path)
+        .unwrap_or_else(|| panic!("{path} está no mapa"));
+    let decl = module["declarations"]
+        .as_array()
+        .expect("declarations")
+        .iter()
+        .find(|d| d["name"] == name)
+        .unwrap_or_else(|| panic!("{name} está em {path}"));
+    let places: std::collections::BTreeSet<String> = decl["used_by"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|u| u.as_str().or_else(|| u["at"].as_str()).map(str::to_string))
+        .collect();
+    places.into_iter().collect()
+}
+
+/// Uma pasta cujo `index.ts` repassa um nome e um arquivo inteiro com nome, e
+/// três telas que a importam: uma pelo nome repassado com apelido, uma pelo
+/// nome do arquivo inteiro e uma por um nome que só o arquivo inteiro
+/// declara.
+const TS_RENAMED_IMPORTS: &[(&str, &str)] = &[
+    ("src/pasta/index.ts", "export { Leitor } from './leitor';\nexport * as util from './util';\n"),
+    ("src/pasta/leitor.ts", "export function Leitor() {\n  return 1;\n}\n"),
+    ("src/pasta/util.ts", "export function soma(a: number) {\n  return a;\n}\n"),
+    ("src/app.ts", "import { Leitor as L } from './pasta';\n\nexport function tela() {\n  return L();\n}\n"),
+    ("src/app2.ts", "import { util } from './pasta';\n\nexport function tela2() {\n  return util.soma(1);\n}\n"),
+    ("src/app3.ts", "import { soma } from './pasta';\n\nexport function tela3() {\n  return soma(1);\n}\n"),
+];
+
+/// `import { Leitor as L }` pede à pasta o nome de origem: a dependência é o
+/// arquivo que declara o `Leitor`, e `L()` é uso dele, provado.
+fn assert_an_import_under_another_name_reaches_the_declaration_by_its_original_name(v: &serde_json::Value) {
+    assert_eq!(deps_of(v, "src/app.ts"), vec!["src/pasta/leitor.ts".to_string()]);
+    assert_eq!(proven_uses_of(v, "src/pasta/leitor.ts", "Leitor"), vec!["src/app.ts:4:tela".to_string()]);
+}
+
+#[test]
+fn an_import_under_another_name_reaches_the_declaration_by_its_original_name() {
+    let v = scan_files("ts-renamed-import", TS_RENAMED_IMPORTS);
+    assert_an_import_under_another_name_reaches_the_declaration_by_its_original_name(&v);
+}
+
+/// `export * as util from './util'` oferece `util` como o arquivo inteiro:
+/// quem traz `util` depende do `util.ts`, e `util.soma()` é uso provado da
+/// `soma` dele. O nome que só o `util.ts` declara não é oferecido pela pasta
+/// e fica no `index.ts`.
+#[test]
+fn a_whole_file_passed_on_under_a_name_is_that_file() {
+    let v = scan_files("ts-namespace-export", TS_RENAMED_IMPORTS);
+    assert_eq!(deps_of(&v, "src/app2.ts"), vec!["src/pasta/util.ts".to_string()]);
+    assert_eq!(proven_uses_of(&v, "src/pasta/util.ts", "soma"), vec!["src/app2.ts:4:tela2".to_string()]);
+    assert_eq!(deps_of(&v, "src/app3.ts"), vec!["src/pasta/index.ts".to_string()]);
+}
+
+/// A passada que relê só o arquivo que mudou liga o nome trazido com apelido
+/// como a leitura inteira: o nome de origem fica com o módulo guardado.
+#[test]
+fn a_pass_that_keeps_the_file_links_a_name_under_another_name_the_same() {
+    let fill = |dir: &std::path::Path| {
+        for (path, body) in TS_RENAMED_IMPORTS {
+            let file = dir.join(path);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(&file, body).unwrap();
+        }
+    };
+    let (first, second) =
+        full_and_kept_pass_of("ts-renamed-import", fill, ("src/app3.ts", "\nexport function outra() {}\n"));
+    for v in [&first, &second] {
+        assert_an_import_under_another_name_reaches_the_declaration_by_its_original_name(v);
+    }
+}
+
+/// `use crate::io::{Leitor as L}` e `use crate::io::leitor::Leitor as M`:
+/// cada um pede o `Leitor` ao alvo, e o apelido escrito antes do método liga
+/// ao método do tipo de origem.
+#[test]
+fn a_type_brought_under_another_name_links_its_methods_through_the_original_name() {
+    let v = scan_files(
+        "rust-renamed-use",
+        &[
+            ("Cargo.toml", "[package]\nname = \"loja\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"),
+            ("src/main.rs", "mod app;\nmod io;\nmod outro;\n\nfn main() {}\n"),
+            ("src/io/mod.rs", "pub mod leitor;\npub use leitor::Leitor;\n"),
+            ("src/io/leitor.rs", "pub struct Leitor;\n\nimpl Leitor {\n    pub fn novo() -> Self {\n        Leitor\n    }\n}\n"),
+            ("src/app.rs", "use crate::io::{Leitor as L};\n\npub fn abrir() {\n    let _ = L::novo();\n}\n"),
+            ("src/outro.rs", "use crate::io::leitor::Leitor as M;\n\npub fn outro() {\n    let _ = M::novo();\n}\n"),
+        ],
+    );
+    assert_eq!(deps_of(&v, "src/app.rs"), vec!["src/io/leitor.rs".to_string()]);
+    assert_eq!(
+        proven_uses_of(&v, "src/io/leitor.rs", "novo"),
+        vec!["src/app.rs:4:abrir".to_string(), "src/outro.rs:4:outro".to_string()]
+    );
+}
+
+/// `from loja.servico import buscar as b`: o import guarda `b` com a origem
+/// `buscar`, e `b(1)` é uso da função.
+#[test]
+fn a_function_imported_under_another_name_is_used_by_the_new_name() {
+    let v = scan_files(
+        "py-renamed-import",
+        &[
+            ("loja/servico.py", "def buscar(id):\n    return id\n"),
+            ("usa.py", "from loja.servico import buscar as b\n\n\ndef usar():\n    return b(1)\n"),
+        ],
+    );
+    let usa = v["modules"].as_array().unwrap().iter().find(|m| m["path"] == "usa.py").expect("usa.py");
+    assert_eq!(usa["brought"], serde_json::json!({"loja.servico": {"b": "buscar"}}));
+    assert_eq!(proven_uses_of(&v, "loja/servico.py", "buscar"), vec!["usa.py:5:usar".to_string()]);
+}
+
+/// `from . import models as m` segue nomeando o `models.py` da pasta.
+#[test]
+fn a_file_of_the_folder_imported_under_another_name_is_still_that_file() {
+    let v = scan_files(
+        "py-relative-alias",
+        &[
+            ("loja/models.py", "def criar():\n    return 1\n"),
+            ("loja/usa.py", "from . import models as m\n\n\ndef usar():\n    return m.criar()\n"),
+        ],
+    );
+    assert_eq!(deps_of(&v, "loja/usa.py"), vec!["loja/models.py".to_string()]);
+}
+
+/// `const { ler: lerPedido } = require('./pasta/servico')`: `lerPedido()` é
+/// uso do `ler` do serviço.
+#[test]
+fn a_name_taken_from_a_require_under_another_name_is_used_by_the_new_name() {
+    let v = scan_files(
+        "js-renamed-require",
+        &[
+            ("pasta/servico.js", "function ler() {\n  return 1;\n}\n\nmodule.exports = { ler };\n"),
+            ("app.js", "const { ler: lerPedido } = require('./pasta/servico');\n\nfunction abrir() {\n  return lerPedido();\n}\n"),
+        ],
+    );
+    assert_eq!(proven_uses_of(&v, "pasta/servico.js", "ler"), vec!["app.js:4:abrir".to_string()]);
+}
+
+/// A classe com construtor primário escrita depois de um atributo: os tipos
+/// do cabeçalho são usados pela classe, e não pelo parâmetro escrito na mesma
+/// linha. O campo com valor numa linha do corpo segue dono dos usos dela.
+#[test]
+fn the_types_of_a_class_header_are_used_by_the_class() {
+    let v = scan_files(
+        "cs-class-header",
+        &[
+            (
+                "Base.cs",
+                "namespace Loja;\n\npublic interface IRepo { }\npublic interface ILog { }\npublic interface IServico { }\npublic class Pedido { }\n\npublic class BaseServico\n{\n    public BaseServico(IRepo repo) { }\n}\n",
+            ),
+            (
+                "Servico.cs",
+                "namespace Loja;\n[Obsolete]\npublic class Servico(IRepo repo, ILog log) : BaseServico(repo), IServico\n{\n    private readonly List<Pedido> _itens = new();\n}\n",
+            ),
+        ],
+    );
+    let header = vec!["Servico.cs:3:Servico".to_string()];
+    assert_eq!(proven_uses_of(&v, "Base.cs", "IServico"), header);
+    assert_eq!(proven_uses_of(&v, "Base.cs", "ILog"), header);
+    // A chamada da base escrita no cabeçalho fica entre a classe e o
+    // construtor dela: o lugar do uso é o que importa aqui.
+    assert_eq!(use_places_of(&v, "Base.cs", "BaseServico"), header);
+    assert!(proven_uses_of(&v, "Base.cs", "IRepo").contains(&header[0]), "{v}");
+    assert_eq!(proven_uses_of(&v, "Base.cs", "Pedido"), vec!["Servico.cs:5:_itens".to_string()]);
+}
+
+/// `use crate::io::{eventos as store}` traz um módulo com apelido: `store::ler()`
+/// é o `ler` desse módulo, e não o de outra pasta que tem o nome do módulo.
+#[test]
+fn a_module_brought_under_another_name_names_only_that_module() {
+    let v = scan_files(
+        "rust-renamed-module",
+        &[
+            ("Cargo.toml", "[package]\nname = \"loja\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"),
+            ("src/main.rs", "mod app;\nmod eventos;\nmod io;\n\nfn main() {}\n"),
+            ("src/io/mod.rs", "pub mod eventos;\n"),
+            ("src/io/eventos.rs", "pub fn ler() -> u8 {\n    1\n}\n"),
+            ("src/eventos/mod.rs", "pub mod paginas;\n"),
+            ("src/eventos/paginas.rs", "pub fn ler() -> u8 {\n    2\n}\n"),
+            ("src/app.rs", "use crate::io::{eventos as store};\n\npub fn abrir() -> u8 {\n    store::ler()\n}\n"),
+        ],
+    );
+    assert_eq!(proven_uses_of(&v, "src/io/eventos.rs", "ler"), vec!["src/app.rs:4:abrir".to_string()]);
+    assert!(use_places_of(&v, "src/eventos/paginas.rs", "ler").is_empty(), "{v}");
+}
+
+/// `use crate::traco::Traco as _` põe o traço à vista sem trazer nome: o `_`
+/// escrito depois (`Vec<_>`) não é uso dele.
+#[test]
+fn a_blank_name_brought_by_an_import_is_not_a_use() {
+    let v = scan_files(
+        "rust-blank-alias",
+        &[
+            ("Cargo.toml", "[package]\nname = \"loja\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"),
+            ("src/main.rs", "mod app;\nmod traco;\n\nfn main() {}\n"),
+            ("src/traco.rs", "pub trait Traco {\n    fn ler(&self) -> u8;\n}\n"),
+            (
+                "src/app.rs",
+                "use crate::traco::Traco as _;\n\npub fn lista() -> Vec<u8> {\n    let v: Vec<_> = Vec::new();\n    v\n}\n",
+            ),
+        ],
+    );
+    assert!(use_places_of(&v, "src/traco.rs", "Traco").is_empty(), "{v}");
 }

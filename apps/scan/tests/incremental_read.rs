@@ -143,6 +143,35 @@ fn changing_only_the_alias_configuration_reads_everything_again() {
     assert_eq!(usa["deps"], json!(["src/b/pedido.ts"]), "{usa}");
 }
 
+/// Mudar só a configuração de apelidos do JavaScript faz a passada seguinte
+/// ler o projeto inteiro, como a do TypeScript.
+#[test]
+fn changing_only_the_javascript_alias_configuration_reads_everything_again() {
+    let temp = tempfile::Builder::new().prefix("scan-incremental-js-alias-").tempdir().unwrap();
+    let dir = temp.path().to_path_buf();
+    git(&dir, &["init", "-q"]);
+    let exclude = mustard_core::footprint_rules().join("\n") + "\n";
+    std::fs::write(dir.join(".git").join("info").join("exclude"), exclude).unwrap();
+
+    write(&dir, "jsconfig.json", "{ \"compilerOptions\": { \"paths\": { \"@app/*\": [\"src/a/*\"] } } }\n");
+    write(&dir, "src/a/pedido.js", "export const total = 1;\n");
+    write(&dir, "src/b/pedido.js", "export const total = 2;\n");
+    write(&dir, "src/usa.js", "import { total } from '@app/pedido';\n\nexport const x = total;\n");
+    git(&dir, &["add", "-A"]);
+    git(&dir, &["commit", "-q", "-m", "first"]);
+    assert_eq!(scan(&dir, &[])["full"], json!(true));
+
+    write(&dir, "jsconfig.json", "{ \"compilerOptions\": { \"paths\": { \"@app/*\": [\"src/b/*\"] } } }\n");
+    git(&dir, &["commit", "-q", "-am", "second"]);
+    let second = scan(&dir, &[]);
+    assert_eq!(second["full"], json!(true), "{second}");
+    assert!(second["read"].as_array().unwrap().contains(&json!("src/usa.js")), "{second}");
+
+    let model: Value = model::read(&map_folder(&dir));
+    let usa = model["modules"].as_array().unwrap().iter().find(|m| m["path"] == json!("src/usa.js")).unwrap();
+    assert_eq!(usa["deps"], json!(["src/b/pedido.js"]), "{usa}");
+}
+
 /// A importação de namespace liga aos arquivos que declaram o nome que o
 /// arquivo cita, e a passada que lê só o que mudou liga igual à que lê tudo,
 /// mesmo quando o nome é declarado por arquivos demais para a citação ligar a

@@ -255,19 +255,26 @@ pub struct Module {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub other_call_paths: BTreeMap<String, Vec<CallSite>>,
     /// De cada import do arquivo, como foi escrito, os nomes que ele traz
-    /// (`@imported`). O nome que um import de fora do projeto traz é de fora:
-    /// escrito sozinho ou antes de outro nome, não liga a nada do projeto. A
-    /// resolução é do projeto inteiro e se refaz a cada passada, por isso os
-    /// nomes ficam com o módulo, para que a passada que não relê o arquivo
-    /// ligue igual.
+    /// (`@imported`), cada um com o nome que tem no arquivo de origem
+    /// (`{"./pasta": {"L": "Leitor"}}` para `import { Leitor as L } from
+    /// './pasta'`); o mesmo nome quando o import não o troca, e também quando
+    /// o nome é o módulo inteiro (`s` em `import loja.servico as s`). O
+    /// arquivo alvo é pedido pelo nome de origem, e o nome escrito no corpo
+    /// liga às declarações pelo nome que elas têm onde a resolução chegou. O
+    /// nome que um import de fora do projeto traz é de fora: escrito sozinho
+    /// ou antes de outro nome, não liga a nada do projeto. A resolução é do
+    /// projeto inteiro e se refaz a cada passada, por isso os nomes ficam com
+    /// o módulo, para que a passada que não relê o arquivo ligue igual.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub brought: BTreeMap<String, Vec<String>>,
+    pub brought: BTreeMap<String, BTreeMap<String, String>>,
     /// De cada repasse do arquivo, como foi escrito (`export * from './x'`,
     /// `pub use a::B`), os nomes que ele oferece a quem importa o arquivo,
-    /// cada um com o nome que tem no arquivo de origem; `*` quando oferece
-    /// todos. O nome que o arquivo não declara, mas repassa, liga quem o
-    /// importa ao arquivo que o declara. Fica com o módulo pelo mesmo motivo
-    /// dos `brought`.
+    /// cada um com o nome que tem no arquivo de origem; `*` como nome
+    /// oferecido quando oferece todos, e `*` como nome de origem quando o
+    /// nome oferecido é o arquivo inteiro que o caminho nomeia (`util` em
+    /// `export * as util from './util'`). O nome que o arquivo não declara,
+    /// mas repassa, liga quem o importa ao arquivo que o declara. Fica com o
+    /// módulo pelo mesmo motivo dos `brought`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub reexports: BTreeMap<String, BTreeMap<String, String>>,
     /// Os nomes que abrem a cadeia escrita antes de uma chamada — o

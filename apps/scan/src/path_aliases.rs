@@ -8,7 +8,9 @@
 //! nele. Este módulo nunca escreve o nome de uma língua nem o de um arquivo.
 //!
 //! Cada arquivo que importa lê a configuração mais próxima, subindo as pastas.
-//! A configuração segue a herança relativa dentro do projeto; a herança de um
+//! A língua pode ler mais de um nome de arquivo: na mesma pasta, vale o
+//! primeiro nome da lista dela que existe ali, e a pasta mais próxima vence
+//! qualquer nome de uma pasta acima. A configuração segue a herança relativa dentro do projeto; a herança de um
 //! pacote de fora fica de fora. O arquivo é JSON e aceita comentário e vírgula
 //! sobrando. Os arquivos de configuração saem da lista de caminhos que a
 //! varredura já guarda, então o que o git ignora não conta.
@@ -29,10 +31,11 @@ struct Keys {
 }
 
 impl Keys {
-    /// As entradas da língua; `None` quando ela não tem arquivo de apelidos.
-    fn of(lang: &str) -> Option<Keys> {
-        let file = crate::extract::alias_config(lang);
-        (!file.is_empty()).then(|| Keys {
+    /// As entradas da língua, uma por nome de arquivo de apelidos, na ordem
+    /// de preferência do registro, todas com as mesmas três chaves; vazio
+    /// quando ela não tem arquivo de apelidos.
+    fn all(lang: &str) -> impl Iterator<Item = Keys> + '_ {
+        crate::extract::alias_config(lang).iter().map(move |&file| Keys {
             file,
             base: crate::extract::alias_base(lang),
             paths: crate::extract::alias_paths(lang),
@@ -138,7 +141,8 @@ impl PathAliases {
     pub(crate) fn load(root: &Path, walk_paths: &[String]) -> Self {
         let known: HashSet<&str> = walk_paths.iter().map(String::as_str).collect();
         let mut configs: HashMap<Keys, HashMap<String, Aliases>> = HashMap::new();
-        for keys in crate::extract::alias_languages().filter_map(Keys::of) {
+        // A configuração que duas línguas leem do mesmo jeito se lê uma vez.
+        for keys in crate::extract::alias_languages().flat_map(Keys::all) {
             if configs.contains_key(&keys) {
                 continue;
             }
@@ -155,21 +159,24 @@ impl PathAliases {
 
     /// Os caminhos, relativos à raiz, que o import `imp` do arquivo `importer`
     /// (da língua `lang`) pode estar citando pelos apelidos da configuração
-    /// mais próxima dele. Vazio quando a língua não tem apelidos, quando
-    /// nenhuma configuração está acima do arquivo ou quando nenhum apelido
-    /// serve.
+    /// mais próxima dele: subindo as pastas, a primeira que tem uma das
+    /// configurações da língua, e nela a do primeiro nome da lista. Vazio
+    /// quando a língua não tem apelidos, quando nenhuma configuração está
+    /// acima do arquivo ou quando nenhum apelido serve.
     pub(crate) fn candidates(&self, importer: &str, lang: &str, imp: &str) -> Vec<String> {
-        let Some(keys) = Keys::of(lang) else {
+        let found: Vec<(Keys, &HashMap<String, Aliases>)> = Keys::all(lang)
+            .filter_map(|keys| self.configs.get(&keys).filter(|found| !found.is_empty()).map(|found| (keys, found)))
+            .collect();
+        if found.is_empty() {
             return Vec::new();
-        };
-        let Some(found) = self.configs.get(&keys).filter(|found| !found.is_empty()) else {
-            return Vec::new();
-        };
+        }
         let mut dir = parent_dir(importer);
         loop {
-            let config = if dir.is_empty() { keys.file.to_string() } else { format!("{dir}/{}", keys.file) };
-            if let Some(aliases) = found.get(&config) {
-                return aliases.candidates(imp);
+            for (keys, found) in &found {
+                let config = if dir.is_empty() { keys.file.to_string() } else { format!("{dir}/{}", keys.file) };
+                if let Some(aliases) = found.get(&config) {
+                    return aliases.candidates(imp);
+                }
             }
             if dir.is_empty() {
                 return Vec::new();

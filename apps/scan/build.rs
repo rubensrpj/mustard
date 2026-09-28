@@ -71,10 +71,12 @@ fn main() {
     let mut import_ext_table = String::new();
     import_ext_table.push_str("pub(crate) static LANG_IMPORT_EXTENSIONS: &[(&str, &[&str])] = &[\n");
 
-    // (name, alias_config), (name, alias_base), (name, alias_paths) e
-    // (name, alias_extends) — o arquivo de configuração OPCIONAL dos apelidos
-    // de pasta e as três chaves lidas nele. Sem o campo, texto vazio: a
-    // língua não tem apelido de pasta e a leitura nem começa.
+    // (name, alias_config) — os nomes OPCIONAIS do arquivo de configuração
+    // dos apelidos de pasta, em ordem de preferência na mesma pasta; o texto
+    // sozinho é lista de um. Sem o campo, lista vazia: a língua não tem
+    // apelido de pasta e a leitura nem começa.
+    // (name, alias_base), (name, alias_paths) e (name, alias_extends) — as
+    // três chaves lidas na configuração; sem o campo, texto vazio.
     // (name, separator) — o import relativo OPCIONAL que a língua escreve com
     // um separador no lugar da barra. Sem o campo, texto vazio: o import da
     // língua nunca é lido assim. O arquivo que responde pela pasta vem da
@@ -141,7 +143,9 @@ fn main() {
     let mut family_table = String::new();
     family_table.push_str("pub(crate) static LANG_FAMILY: &[(&str, &str)] = &[\n");
 
-    let alias_fields = ["alias_config", "alias_base", "alias_paths", "alias_extends"];
+    let mut alias_config_table = String::new();
+    alias_config_table.push_str("pub(crate) static LANG_ALIAS_CONFIG: &[(&str, &[&str])] = &[\n");
+    let alias_fields = ["alias_base", "alias_paths", "alias_extends"];
     let mut alias_field_tables: Vec<String> = alias_fields
         .iter()
         .map(|field| format!("pub(crate) static LANG_{}: &[(&str, &str)] = &[\n", field.to_ascii_uppercase()))
@@ -191,6 +195,14 @@ fn main() {
                     .collect()
             })
             .unwrap_or_default();
+        let alias_config: Vec<String> = tbl.get("alias_config").map_or_else(Vec::new, |v| {
+            let refused = "language.alias_config must be a string or a list of strings";
+            match (v.as_str(), v.as_array()) {
+                (Some(one), _) => vec![one.to_string()],
+                (None, Some(list)) => list.iter().map(|e| e.as_str().expect(refused).to_string()).collect(),
+                _ => panic!("{refused}"),
+            }
+        });
         let alias_values: Vec<String> = alias_fields
             .iter()
             .map(|field| {
@@ -331,6 +343,8 @@ fn main() {
                 .expect("the generated table is a String, which never fails to write");
         }
         writeln!(family_table, "    ({name:?}, {dir:?}),").expect("the generated table is a String, which never fails to write");
+        writeln!(alias_config_table, "    ({name:?}, &[{}]),", quoted_list(&alias_config))
+            .expect("the generated table is a String, which never fails to write");
         for (table, value) in alias_field_tables.iter_mut().zip(&alias_values) {
             writeln!(table, "    ({name:?}, {value:?}),").expect("the generated table is a String, which never fails to write");
         }
@@ -367,7 +381,7 @@ fn main() {
         table.push_str("];\n");
         body.push_str(table);
     }
-    for table in &mut alias_field_tables {
+    for table in std::iter::once(&mut alias_config_table).chain(alias_field_tables.iter_mut()) {
         table.push_str("];\n");
         body.push_str(table);
     }
@@ -510,6 +524,49 @@ fn route_rules(crate_root: &Path, languages: &[&str]) -> String {
             class_suffix.is_empty() || !class_marker.is_empty(),
             "routes/{framework}.toml: `class_suffix` needs a `class_marker`"
         );
+        // O caminho escrito pode trazer o método na frente, seguido de espaço.
+        let method_in_path = match tbl.get("method_in_path") {
+            None => false,
+            Some(value) => value
+                .as_bool()
+                .unwrap_or_else(|| panic!("routes/{framework}.toml: `method_in_path` must be true or false")),
+        };
+        // As rotas de recurso: o nome chamado e, de cada rota, o método, o
+        // pedaço de caminho e o nome de quem atende.
+        let resources: Vec<(String, Vec<[String; 3]>)> = tbl.get("resources").map_or_else(Vec::new, |v| {
+            v.as_table()
+                .unwrap_or_else(|| panic!("routes/{framework}.toml: `resources` must be a table"))
+                .iter()
+                .map(|(called, list)| {
+                    let rows: Vec<[String; 3]> = list
+                        .as_array()
+                        .unwrap_or_else(|| panic!("routes/{framework}.toml: resource `{called}` must be an array"))
+                        .iter()
+                        .map(|row| match row.as_array().map(|r| r.iter().filter_map(|s| s.as_str()).collect::<Vec<_>>()) {
+                            Some(r) if r.len() == 3 && http(r[0]) && !r[2].is_empty() => {
+                                [r[0].to_string(), r[1].to_string(), r[2].to_string()]
+                            }
+                            _ => panic!(
+                                "routes/{framework}.toml: each route of resource `{called}` is [METHOD, path piece, handler name]"
+                            ),
+                        })
+                        .collect();
+                    assert!(!rows.is_empty(), "routes/{framework}.toml: resource `{called}` must list at least one route");
+                    (called.clone(), rows)
+                })
+                .collect()
+        });
+        // O prefixo das rotas do arquivo cujo caminho termina num destes.
+        let file_prefixes: Vec<(String, String)> = tbl.get("file_prefixes").map_or_else(Vec::new, |v| {
+            v.as_table()
+                .unwrap_or_else(|| panic!("routes/{framework}.toml: `file_prefixes` must be a table"))
+                .iter()
+                .map(|(end, prefix)| match prefix.as_str() {
+                    Some(prefix) if !end.is_empty() && !prefix.is_empty() => (end.clone(), prefix.to_string()),
+                    _ => panic!("routes/{framework}.toml: each `file_prefixes` entry is a path end and a non-empty prefix"),
+                })
+                .collect()
+        });
         let query = read_queries(crate_root, &root, &framework);
         // A regra é do servidor, que acha rotas, ou da tela, que acha as
         // chamadas a elas: a consulta usa as capturas de um lado só.
@@ -524,7 +581,8 @@ fn route_rules(crate_root: &Path, languages: &[&str]) -> String {
              manifest_dependencies: &[{}], query: {query:?}, \
              methods: &[{}], param_prefixes: &[{}], param_wrappers: &[{}], reset_marks: &[{}], \
              path_starts: &[{}], exclude_wildcards: &[{}], class_marker: {class_marker:?}, \
-             class_suffix: {class_suffix:?}, default_method: {default_method:?}, path_trims: &[{}] }},",
+             class_suffix: {class_suffix:?}, default_method: {default_method:?}, path_trims: &[{}], \
+             method_in_path: {method_in_path}, handler_separators: &[{}], resources: &[{}], file_prefixes: &[{}] }},",
             quoted_list(&rule_languages),
             quoted_list(&imports),
             quoted_list(&list("manifest_dependencies", false)),
@@ -535,6 +593,16 @@ fn route_rules(crate_root: &Path, languages: &[&str]) -> String {
             quoted_list(&list("path_starts", false)),
             quoted_list(&list("exclude_wildcards", false)),
             quoted_list(&list("path_trims", false)),
+            quoted_list(&list("handler_separators", false)),
+            resources
+                .iter()
+                .map(|(called, rows)| {
+                    let rows: Vec<String> = rows.iter().map(|[m, p, h]| format!("({m:?}, {p:?}, {h:?})")).collect();
+                    format!("({called:?}, &[{}])", rows.join(", "))
+                })
+                .collect::<Vec<_>>()
+                .join(", "),
+            pairs(&file_prefixes),
         )
         .expect("the generated table is a String, which never fails to write");
     }
