@@ -33,6 +33,11 @@ pub(crate) fn read_by(need: Need<'_>) -> &'static [&'static MapBlock] {
     }
 }
 
+/// Os blocos que a lista de candidatos do filtro lê: os do índice de busca
+/// ([`SEARCHED`](crate::io::project_map::SEARCHED)) e a história da base, de
+/// onde saem os títulos dos commits mais novos do arquivo de cada candidato.
+pub(crate) const READ_BY_CANDIDATES: [&MapBlock; 4] = [&FILES, &DECLS, &GRAPH, &HISTORY];
+
 /// A recusa de quem lê os blocos `among` num mapa em que algum deles voltou
 /// vazio numa troca de formato e o scan ainda não o encheu de novo
 /// ([`unfilled`]): [`MapRefusal::MapUnfilled`], com o nome de cada um. Sem
@@ -302,5 +307,63 @@ mod tests {
         project_map::save_at(&model_path(root), &map, "scan 1", &languages()).unwrap();
         let found = map_search::candidates(root, "pedido", "", &languages(), 100).unwrap();
         assert_eq!(found.candidates.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["gravar_pedido"]);
+    }
+
+    /// A busca por "pedido" e a lista de candidatos do filtro no mapa em
+    /// `root`, cada uma escrita para comparar e com os blocos que lê.
+    fn searched_in(root: &Path) -> [(std::result::Result<String, MapRefusal>, &'static [&'static MapBlock]); 2] {
+        [
+            (map_search::search(root, "pedido", &languages(), 5).map(|found| format!("{found:?}")), &SEARCHED),
+            (
+                map_search::candidates(root, "pedido", "", &languages(), 100).map(|found| format!("{found:?}")),
+                &READ_BY_CANDIDATES,
+            ),
+        ]
+    }
+
+    /// Com cada bloco que o scan grava vazio numa troca de formato, a busca
+    /// e a lista de candidatos do filtro recusam só quando leem dele — a
+    /// busca, os arquivos, as declarações e as ligações; a lista, também a
+    /// história, de onde vêm os títulos dos commits de cada candidato —, e
+    /// com a mesma recusa de cada pergunta que lê o mesmo bloco; com os
+    /// outros, respondem o mesmo que no mapa inteiro. Com dois blocos vazios,
+    /// a recusa dá os dois nomes na mesma ordem da pergunta que lê os dois.
+    #[test]
+    fn a_search_on_a_block_it_reads_emptied_by_a_format_change_is_refused_like_the_other_questions() {
+        for block in &BLOCKS {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            project_map::save_at(&model_path(root), &map_of_every_block(), "scan 1", &languages()).unwrap();
+            let before = searched_in(root);
+            assert!(before.iter().all(|(answer, _)| answer.as_ref().is_ok_and(|text| text.contains("src/pedido.rs"))));
+
+            emptied_by_an_older_scan(root, block);
+            let name = block.name();
+            for ((answer, read), (before, _)) in searched_in(root).into_iter().zip(&before) {
+                if !read.iter().any(|read| read.name() == name) {
+                    assert_eq!(&answer, before, "a search that does not read the block {name} emptied");
+                    continue;
+                }
+                let refusal = answer.unwrap_err();
+                assert_eq!(refusal, MapRefusal::MapUnfilled { blocks: vec![name.to_string()] });
+                let alike: Vec<Need<'_>> =
+                    QUESTIONS.into_iter().filter(|&need| read_by(need).iter().any(|read| read.name() == name)).collect();
+                assert!(!alike.is_empty(), "some question reads the block {name}");
+                for need in alike {
+                    assert_eq!(project_map::read_for(root, need).unwrap_err(), refusal, "{need:?} and the search");
+                }
+            }
+        }
+
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        project_map::save_at(&model_path(root), &map_of_every_block(), "scan 1", &languages()).unwrap();
+        emptied_by_an_older_scan(root, &GRAPH);
+        emptied_by_an_older_scan(root, &FILES);
+        let importers = project_map::read_for(root, Need::Importers("src/pedido.rs")).unwrap_err();
+        assert_eq!(importers, MapRefusal::MapUnfilled { blocks: vec!["files".to_string(), "graph".to_string()] });
+        for (answer, _) in searched_in(root) {
+            assert_eq!(answer.unwrap_err(), importers);
+        }
     }
 }

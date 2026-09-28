@@ -84,7 +84,7 @@ use crate::domain::search::{
 use crate::io::map_db::MapDb;
 use crate::io::map_fill;
 use crate::io::map_glossary::{self, Learned};
-use crate::io::project_map::{model_path, open_existing, unreadable, SEARCHED};
+use crate::io::project_map::{model_path, open_existing, unreadable, MapBlock, SEARCHED};
 use crate::platform::error::Result;
 
 /// Um nível do índice: a tabela FTS5, a lista de cada forma por ela, a tabela
@@ -592,20 +592,18 @@ pub fn search_at(
     languages: &Languages,
     limit: usize,
 ) -> std::result::Result<Vec<Found>, MapRefusal> {
-    let db = indexed(model, languages)?;
+    let db = indexed(model, languages, &SEARCHED)?;
     found(db.conn(), query, languages, limit).map_err(unreadable)
 }
 
 /// O banco em `model`, com o índice feito nas línguas `languages`: o feito
-/// em outras se refaz antes da busca. O bloco de que o índice lê e que o
-/// scan ainda não encheu depois de uma troca de formato
-/// ([`map_fill::unfilled`]) recusa a busca, que sem ele responderia vazio.
-fn indexed(model: &Path, languages: &Languages) -> std::result::Result<MapDb, MapRefusal> {
+/// em outras se refaz antes da busca. O bloco de `read`, os que a busca lê,
+/// que o scan ainda não encheu depois de uma troca de formato recusa a
+/// busca, que sem ele responderia vazio: a mesma recusa das outras perguntas
+/// ao mapa ([`map_fill::refuse`]).
+fn indexed(model: &Path, languages: &Languages, read: &[&MapBlock]) -> std::result::Result<MapDb, MapRefusal> {
     let mut db = open_existing(model)?;
-    let unfilled = map_fill::unfilled(&db, SEARCHED).map_err(unreadable)?;
-    if !unfilled.is_empty() {
-        return Err(MapRefusal::MapUnfilled { blocks: unfilled.into_iter().map(str::to_string).collect() });
-    }
+    map_fill::refuse(&db, read)?;
     if !made_in(db.conn(), languages).map_err(unreadable)? {
         db.write(|tx| if made_in(tx, languages)? { Ok(()) } else { rebuild(tx, languages) }).map_err(unreadable)?;
     }
@@ -1043,7 +1041,10 @@ pub struct FilterCandidates {
 
 /// Os candidatos do filtro no mapa do projeto em `root`: as palavras de
 /// `query` e a frase de `intent`, com as palavras cortadas nas línguas
-/// `languages`, até `limit` candidatos. As recusas são as de [`search`].
+/// `languages`, até `limit` candidatos. As recusas são as de [`search`] e,
+/// como os candidatos levam os títulos dos commits do arquivo, também a da
+/// história da base ainda vazia depois de uma troca de formato
+/// ([`map_fill::READ_BY_CANDIDATES`]).
 pub fn candidates(
     root: &Path,
     query: &str,
@@ -1062,7 +1063,7 @@ pub fn candidates_at(
     languages: &Languages,
     limit: usize,
 ) -> std::result::Result<FilterCandidates, MapRefusal> {
-    let db = indexed(model, languages)?;
+    let db = indexed(model, languages, &map_fill::READ_BY_CANDIDATES)?;
     let whole = whole_list(db.conn(), query, intent, languages).map_err(unreadable)?;
     let first: Vec<i64> = whole.iter().take(limit).copied().collect();
     let candidates = declarations_in(db.conn(), &first).map_err(unreadable)?;
