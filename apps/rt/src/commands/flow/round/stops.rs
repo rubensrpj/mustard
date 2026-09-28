@@ -242,17 +242,25 @@ fn undone_return(task: &SpecEvent, wave: u64, change: Option<&str>, lang: Locale
     if let Some(change) = change {
         let line =
             translate("round.returned_change", lang).replace("{wave}", &wave.to_string()).replace("{change}", change.trim());
-        let before = draft.get("agent").and_then(Value::as_str).map(str::trim_end).filter(|text| !text.is_empty());
-        let agent = match before {
-            Some(text) if text.lines().last().is_some_and(|last| last.trim_start().starts_with("- ")) => {
-                format!("{text}\n- {line}")
-            }
-            Some(text) => format!("{text}\n\n{line}"),
-            None => line,
-        };
-        draft.insert("agent".into(), json!(agent));
+        append_agent_line(&mut draft, &line);
     }
     draft
+}
+
+/// Acrescenta a linha `line` ao fim da parte do agente da versão `draft` de
+/// uma tarefa: como item da lista, quando a parte termina numa; como
+/// parágrafo novo, quando termina em texto corrido; sozinha, quando a parte
+/// está vazia ou falta.
+pub(super) fn append_agent_line(draft: &mut Map<String, Value>, line: &str) {
+    let before = draft.get("agent").and_then(Value::as_str).map(str::trim_end).filter(|text| !text.is_empty());
+    let agent = match before {
+        Some(text) if text.lines().last().is_some_and(|last| last.trim_start().starts_with("- ")) => {
+            format!("{text}\n- {line}")
+        }
+        Some(text) => format!("{text}\n\n{line}"),
+        None => line.to_string(),
+    };
+    draft.insert("agent".into(), json!(agent));
 }
 
 /// A versão nova de cada tarefa que as voltas `waves` não fizeram, com a

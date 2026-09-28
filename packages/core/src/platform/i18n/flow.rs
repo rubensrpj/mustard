@@ -778,6 +778,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("round.returned_change", Locale::PtBr) => "Mudança de plano aceita na volta da onda {wave}: {change}",
         ("round.returned_change", Locale::EnUs) => "Plan change accepted when wave {wave} came back: {change}",
+        ("round.leftover_joined", Locale::PtBr) => "Sobra da onda {wave}, nos mesmos arquivos — {title}: {detail}",
+        ("round.leftover_joined", Locale::EnUs) => "Leftover from wave {wave}, on the same files — {title}: {detail}",
         ("round.tasks_returned", Locale::PtBr) => {
             "A onda {wave} não fez as tarefas {tasks}, e elas voltaram ao backlog, com a mudança \
              de plano anotada quando houve. Se a mudança altera uma decisão ou o que a tarefa pede, \
@@ -1521,8 +1523,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            189,
-            0x1f98_52e2_2877_b883,
+            190,
+            0x6e56_e2ca_6040_d6ab,
         );
     }
 
@@ -1725,6 +1727,7 @@ mod tests {
             ("round.replan_needs_undone", &["{wave}", "{tasks}"][..]),
             ("round.undone_not_in_wave", &["{wave}", "{code}", "{tasks}"][..]),
             ("round.returned_change", &["{wave}", "{change}"][..]),
+            ("round.leftover_joined", &["{wave}", "{title}", "{detail}"][..]),
             ("round.tasks_returned", &["{wave}", "{tasks}"][..]),
             ("round.git_refused", &["{detail}"][..]),
             ("round.next", &[][..]),

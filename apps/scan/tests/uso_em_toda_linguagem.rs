@@ -1297,6 +1297,31 @@ fn a_name_above_the_ceiling_is_only_counted() {
     }
 }
 
+/// O teto do nome comum vem do `mustard.json` do projeto: com
+/// `scan.max_same_name` 9, a mesma chamada que alcança nove declarações liga,
+/// suspeita, a cada uma delas, com as nove como candidatas.
+#[test]
+fn the_project_ceiling_links_a_name_the_default_only_counts() {
+    let temp = pasta_do_projeto("teto-do-projeto");
+    let dir = temp.path().to_path_buf();
+    let owners: Vec<String> = (1..=9).map(|n| format!("src/m{n}.rs")).collect();
+    for (n, owner) in owners.iter().enumerate() {
+        write(&dir, owner, &format!("pub fn comum() -> u32 {{\n    {n}\n}}\n"));
+    }
+    write(&dir, "src/chama.rs", "pub fn chama() -> u32 {\n    comum()\n}\n");
+    write(&dir, "mustard.json", r#"{"scan": {"max_same_name": 9}}"#);
+    let map = scan(&dir);
+    let candidates: Vec<String> = owners.iter().map(|owner| format!("{owner}:1:comum")).collect();
+    for owner in &owners {
+        let comum = usos_de(&map, owner, "comum");
+        assert_eq!(
+            (comum.comuns, comum.provados.len(), comum.suspeitos),
+            (0, 0, vec![("src/chama.rs:2:chama".to_string(), candidates.clone())]),
+            "o comum de {owner} liga suspeito, com as nove candidatas"
+        );
+    }
+}
+
 /// O projeto em que o código liga um nome que o projeto também declara: em
 /// cada língua, `fill` declarada num arquivo e importada por outro, que a
 /// chama numa função vizinha, e chama pelo mesmo nome uma variável e um

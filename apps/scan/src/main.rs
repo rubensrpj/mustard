@@ -26,6 +26,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use model::{Module, ProjectModel};
 use mustard_core::domain::ast::is_test_path;
+use mustard_core::domain::config::ProjectConfig;
 use mustard_core::domain::normalize::Languages;
 use mustard_core::io::project_map::{self as store, Listing};
 use std::collections::BTreeSet;
@@ -101,18 +102,23 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Scan { path, out, all, json } => {
-            let analysis = match census_pass(&path, &out, all) {
+            // O `mustard.json` da pasta lida: as línguas da busca e o teto do
+            // nome comum da ligação. O valor inválido já vale o padrão aqui;
+            // quem avisa é quem chama o scan.
+            let config = ProjectConfig::load(&path);
+            let (max_same_name, _) = config.scan_max_same_name();
+            let analysis = match census_pass(&path, &out, all, max_same_name) {
                 Some(analysis) => analysis,
                 None => {
                     let previous: Option<ProjectModel> = if all { None } else { ProjectModel::load(&out) };
-                    analyze(&path, previous.as_ref())?
+                    analyze(&path, previous.as_ref(), max_same_name)?
                 }
             };
             // Nothing changed → the file is left alone (same bytes, same date).
             let written = if analysis.census_only {
                 analysis.model.save_census(&out, refresh::FORMAT)?
             } else {
-                analysis.model.save(&out, refresh::FORMAT, &Languages::of_project(&path))?
+                analysis.model.save(&out, refresh::FORMAT, &Languages::of(&config))?
             };
             drop_legacy_map(&out)?;
             if json {
@@ -190,13 +196,17 @@ struct Analysis {
 /// estado, caminha pela pasta sem abrir arquivo e refaz o que depende dos
 /// caminhos: a marca da listagem, as pastas de compilação e as pilhas do
 /// projeto e de cada subprojeto, pela mesma conta da leitura inteira. As
-/// declarações, o grafo e a história ficam como estão. `None` com `all`, ou
-/// quando há o que reler.
-fn census_pass(root: &Path, out: &Path, all: bool) -> Option<Analysis> {
+/// declarações, o grafo e a história ficam como estão. `None` com `all`,
+/// quando há o que reler, ou quando o mapa ligou com outro teto do nome comum
+/// que `max_same_name`: aí a passada religa o projeto sem reler os arquivos.
+fn census_pass(root: &Path, out: &Path, all: bool, max_same_name: usize) -> Option<Analysis> {
     if all {
         return None;
     }
     let mut model = ProjectModel::load_state(out)?;
+    if model.state.max_same_name != max_same_name {
+        return None;
+    }
     let listing = store::listing(root)?;
     if !refresh::nothing_to_read(root, &model, &listing) {
         return None;
@@ -441,8 +451,9 @@ fn routes_by_global_imports(
 /// the dictionary sidecar when every file was read. With a `previous` model of
 /// the same project, only the files that changed since are read (see
 /// [`refresh`]); everything else is taken from it, and the result is the same
-/// model a pass reading every file would give.
-fn analyze(root: &Path, previous: Option<&ProjectModel>) -> Result<Analysis> {
+/// model a pass reading every file would give. As chamadas ligam com o teto
+/// do nome comum `max_same_name`, que o estado da passada guarda.
+fn analyze(root: &Path, previous: Option<&ProjectModel>, max_same_name: usize) -> Result<Analysis> {
     use mustard_core::domain::project_map::History;
 
     let listing = store::listing(root);
@@ -474,7 +485,7 @@ fn analyze(root: &Path, previous: Option<&ProjectModel>) -> Result<Analysis> {
     // file and on which line. Read from the call sites and the citations every
     // module carries, so a pass that read only what changed links the same
     // declarations a full pass does.
-    graph::link_declarations(&mut modules, &projects, &ing.manifests, &aliases);
+    graph::link_declarations(&mut modules, &projects, &ing.manifests, &aliases, max_same_name);
     // Cada tipo com os membros dele e cada método com o do contrato que ele
     // cumpre, refeitos do projeto inteiro como as ligações acima.
     graph::link_members(&mut modules);
@@ -522,6 +533,7 @@ fn analyze(root: &Path, previous: Option<&ProjectModel>) -> Result<Analysis> {
         listing: listing.as_ref().map(Listing::digest).unwrap_or_default(),
         inputs: listing.as_ref().map(|l| refresh::inputs(l, &manifest_paths, &ing.non_utf8)).unwrap_or_default(),
         non_utf8: ing.non_utf8,
+        max_same_name,
     };
 
     Ok(Analysis {

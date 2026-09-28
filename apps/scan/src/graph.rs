@@ -249,12 +249,6 @@ pub fn build(modules: &[Module], projects: &Projects, aliases: &PathAliases) -> 
     (stats, depth_by_path)
 }
 
-/// A call that can reach more declarations than this one is a common word
-/// (`new`, `build`, `run`), not a link: tying it to all of them would fill the
-/// map with noise instead of answers, so it is only counted. Same bucket
-/// ceiling the import resolution already applies.
-const MAX_SAME_NAME: usize = 8;
-
 /// The declaration kinds a use can point to: what is called or built by name.
 /// A field or a property is read, not called — `x.kind()` is the call of
 /// something else that happens to share the name — and a type alias, an
@@ -285,7 +279,8 @@ pub(crate) const CITED_KINDS: &[&str] =
 ///
 /// Cada ligação diz se é provada ou suspeita ([`UseSite::candidates`]). A
 /// provada tem um alvo só; a suspeita traz as declarações que a chamada pode
-/// alcançar, e a chamada que pode alcançar mais que o teto só se conta
+/// alcançar, e a chamada que pode alcançar mais declarações que
+/// `max_same_name`, o teto do nome comum que o projeto configura, só se conta
 /// (`Decl::common_calls`). Quem a chamada alcança se procura por degraus,
 /// sempre só entre as declarações que se chamam ([`CALLABLE_KINDS`]):
 ///
@@ -348,9 +343,10 @@ pub fn link_declarations(
     projects: &Projects,
     manifests: &[crate::model::Manifest],
     aliases: &PathAliases,
+    max_same_name: usize,
 ) {
     let DeclLinks { mut calls, mut uses, common, linked } =
-        resolve_declaration_links(modules, projects, manifests, aliases);
+        resolve_declaration_links(modules, projects, manifests, aliases, max_same_name);
     for (m, linked) in modules.iter_mut().zip(linked) {
         m.cites = std::mem::take(&mut m.cites)
             .into_iter()
@@ -389,19 +385,19 @@ enum Verdict {
     Proven(DeclId),
     /// Uma destas, sem como decidir qual: a ligação suspeita.
     Suspect(Vec<DeclId>),
-    /// Mais declarações que o teto: a chamada só se conta.
+    /// Mais declarações que o teto do nome comum: a chamada só se conta.
     Common(Vec<DeclId>),
 }
 
 impl Verdict {
     /// O veredito sobre as declarações que a chamada pode alcançar: uma só é
-    /// provada quando `provable`; mais que o teto, só a contagem. `None` sem
-    /// nenhuma.
-    fn of(pool: Vec<DeclId>, provable: bool) -> Option<Self> {
+    /// provada quando `provable`; mais que `max_same_name`, o teto do nome
+    /// comum, só a contagem. `None` sem nenhuma.
+    fn of(pool: Vec<DeclId>, provable: bool, max_same_name: usize) -> Option<Self> {
         match pool.len() {
             0 => None,
             1 if provable => Some(Self::Proven(pool[0])),
-            n if n > MAX_SAME_NAME => Some(Self::Common(pool)),
+            n if n > max_same_name => Some(Self::Common(pool)),
             _ => Some(Self::Suspect(pool)),
         }
     }
@@ -449,6 +445,7 @@ fn resolve_declaration_links(
     projects: &Projects,
     manifests: &[crate::model::Manifest],
     aliases: &PathAliases,
+    max_same_name: usize,
 ) -> DeclLinks {
     let index = |kinds: &[&str]| {
         let mut by_name: HashMap<&str, Vec<DeclId>> = HashMap::new();
@@ -737,16 +734,17 @@ fn resolve_declaration_links(
                 (!kept.is_empty()).then_some((kept, provable))
             };
             let verdict = if !own.is_empty() {
-                Verdict::of(own.into_iter().filter(|&d| !own_body(d)).collect(), true)
+                Verdict::of(own.into_iter().filter(|&d| !own_body(d)).collect(), true, max_same_name)
             } else if is_call {
                 let named = through.get(site).and_then(|paths| path_files(&resolver, m, site.line, paths));
                 match (named, &before) {
                     (Some(files), _) => Verdict::of(
                         all.iter().copied().filter(|&(mi, _)| files.contains(modules[mi].path.as_str())).collect(),
                         true,
+                        max_same_name,
                     ),
                     (None, _) if not_ours => None,
-                    (None, Before::Nothing) if !seen.is_empty() => Verdict::of(seen, true),
+                    (None, Before::Nothing) if !seen.is_empty() => Verdict::of(seen, true, max_same_name),
                     // Sem nada à vista, a família inteira da língua, sempre
                     // suspeita: nada no arquivo diz que é uma delas.
                     (None, Before::Nothing) => Verdict::of(
@@ -755,14 +753,15 @@ fn resolve_declaration_links(
                             .filter(|&(mi, _)| crate::extract::family(&modules[mi].language) == family)
                             .collect(),
                         false,
+                        max_same_name,
                     ),
                     (None, _) => match narrowed(&all) {
-                        Some((kept, provable)) => Verdict::of(kept, provable),
+                        Some((kept, provable)) => Verdict::of(kept, provable, max_same_name),
                         // O nome antes de um separador que só junta caminho
                         // é módulo ou tipo, nunca valor: sem nada do projeto
                         // com esse nome, a chamada é de fora (`Vec::new()`).
                         None if matches!(before, Before::Name(_)) && path_only => None,
-                        None => Verdict::of(seen, false),
+                        None => Verdict::of(seen, false, max_same_name),
                     },
                 }
             } else {
@@ -774,9 +773,9 @@ fn resolve_declaration_links(
                     _ => seen,
                 };
                 match (narrowed(&pool), &before) {
-                    (Some((kept, provable)), _) => Verdict::of(kept, provable),
-                    (None, Before::Nothing) => Verdict::of(pool, true),
-                    (None, _) => Verdict::of(pool, false),
+                    (Some((kept, provable)), _) => Verdict::of(kept, provable, max_same_name),
+                    (None, Before::Nothing) => Verdict::of(pool, true, max_same_name),
+                    (None, _) => Verdict::of(pool, false, max_same_name),
                 }
             };
             let Some(verdict) = verdict else { continue };

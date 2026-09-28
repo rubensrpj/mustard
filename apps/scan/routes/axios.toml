@@ -5,9 +5,10 @@
 # ela (`api.post(`/pedidos/${id}`, corpo)`). O cliente feito com
 # `axios.create({ baseURL: '/api' })` põe a base na frente de todo caminho
 # que ele chama, também no arquivo que o traz por import.
-# O caminho escrito como texto somado a um valor (`'/api/pedidos/' + id`) é o
-# texto com um parâmetro no fim, no lugar do valor; a soma que começa pelo
-# valor, ou que soma texto a texto, não faz chamada.
+# O caminho escrito como soma que começa por texto
+# (`'/api/pedidos/' + id + '/itens'`, `'/api/' + 'pedidos'`) junta os pedaços,
+# com um parâmetro no lugar de cada valor; a soma que começa pelo valor não
+# faz chamada.
 #
 # Os campos:
 # - `language`: as línguas do registro (`languages.toml`) cujos arquivos a

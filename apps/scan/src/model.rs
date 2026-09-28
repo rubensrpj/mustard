@@ -422,8 +422,9 @@ pub const TEXT_PLAIN: &str = "text";
 ///
 /// O resto diz como os prefixos escritos noutros arquivos a alcançam: o nome
 /// do objeto em que ela se registra, o da declaração que a contém, o prefixo
-/// em aberto e, quando algum prefixo de fora a mudou, o caminho só com o que
-/// o próprio arquivo escreve.
+/// em aberto, os lugares da montagem de fora por que ela passa e, quando
+/// algum prefixo de fora a mudou, o caminho só com o que o próprio arquivo
+/// escreve.
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Route {
     pub method: String,
@@ -446,6 +447,14 @@ pub struct Route {
     /// grupo nessa posição lhe dá o prefixo ([`Handoff`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub open: Option<OpenPrefix>,
+    /// Os lugares da montagem mais de fora do arquivo por que a rota passa —
+    /// o objeto que a recebe e a declaração em que está escrita —, quando o
+    /// arquivo não monta nada nesse lugar e a montagem nasce de um nome, que
+    /// outro arquivo pode montar. A montagem de outro arquivo num desses
+    /// lugares põe o prefixo dela na frente do caminho da rota, como na rota
+    /// registrada no objeto com o nome dela.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub through: Vec<String>,
     /// O caminho só com o que o próprio arquivo escreve, quando um prefixo de
     /// outro arquivo o mudou; `None` quando nenhum mudou.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -756,6 +765,9 @@ pub struct ScanState {
     /// without being opened again.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub non_utf8: Vec<String>,
+    /// O teto do nome comum com que a passada ligou as chamadas: a passada
+    /// seguinte com outro teto religa o projeto, mesmo sem arquivo a reler.
+    pub max_same_name: usize,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]

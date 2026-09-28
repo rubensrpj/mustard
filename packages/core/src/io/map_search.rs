@@ -25,7 +25,9 @@
 //! línguas, o número de documentos e o tamanho médio de cada campo, em
 //! `search_meta`. Os nomes das declarações entram inteiros numa tabela
 //! trigram, para o pedaço do nome. O arquivo escrito por máquina fica fora
-//! do índice.
+//! do índice. A declaração de teste — a de um arquivo de teste e a escrita
+//! num trecho de teste de outro arquivo — entra na tabela trigram, que acha
+//! o arquivo pelo pedaço do nome, mas não no nível das declarações.
 //!
 //! Um terceiro nível, à parte, guarda os itens das specs (`io::map_specs`):
 //! o título, o texto e as palavras de busca de cada um, com a
@@ -46,7 +48,8 @@
 //! quatro listas do nível das declarações — a de base, a dos nomes, a de
 //! todos os campos e a dos arquivos — juntadas por rodízio
 //! (`domain::search::round_robin`) numa lista inteira, de onde saem os
-//! primeiros até o teto. Cada candidato leva o que o mapa guarda dele: o
+//! primeiros até o teto. Só as declarações do nível entram nas quatro: a de
+//! teste nunca é candidata. Cada candidato leva o que o mapa guarda dele: o
 //! dono, os membros, os comentários do corpo e os títulos dos commits mais
 //! novos do arquivo. As ligações ([`links`]) dão ao corte do filtro os
 //! métodos de cada tipo e as implementações de cada método de contrato.
@@ -58,6 +61,7 @@ use rusqlite::types::{Value as Sql, ValueRef};
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Row, Statement};
 use serde::Deserialize;
 
+use crate::domain::ast::is_test_path;
 use crate::domain::normalize::{Languages, Normalizer};
 use crate::domain::project_map::{
     outer_declarations, spec_sentence, Found, FoundItem, FoundText, MapRefusal, SPEC_SENTENCE_CHARS,
@@ -180,22 +184,24 @@ struct Doc {
 }
 
 /// Uma declaração do índice: o documento dela, o nome inteiro, para o pedaço
-/// do nome, e o número do arquivo dela.
+/// do nome, o número do arquivo dela e se ela é de teste.
 struct Decl {
     doc: Doc,
     name: String,
     file: i64,
+    test: bool,
 }
 
 /// Refaz o índice inteiro a partir das tabelas dos arquivos e das
 /// declarações, com as palavras preparadas nas línguas `languages`. Roda na
 /// transação de quem grava: o índice e as linhas de que ele sai entram
-/// juntos.
+/// juntos. A declaração de teste fica fora do nível das declarações, de onde
+/// saem os candidatos da busca com filtro, e entra na tabela trigram.
 pub(crate) fn rebuild(conn: &Connection, languages: &Languages) -> Result<()> {
     let (files, decls) = documents(conn, &mut Normalizer::new(languages))?;
     forget(conn)?;
     fill(conn, &FILE_LEVEL, &files)?;
-    fill(conn, &DECL_LEVEL, decls.iter().map(|decl| &decl.doc))?;
+    fill(conn, &DECL_LEVEL, decls.iter().filter(|decl| !decl.test).map(|decl| &decl.doc))?;
     {
         let mut insert = conn.prepare("INSERT INTO decl_trigram(rowid, name, folded, file) VALUES (?1, ?2, ?3, ?4)")?;
         for decl in &decls {
@@ -230,20 +236,25 @@ pub(crate) fn forget(conn: &Connection) -> Result<()> {
 /// mesmas formas — o mesmo que preparar o texto delas junto. Cada texto fixo
 /// é também da declaração mais interna que contém a linha dele; cada chamada
 /// é de toda declaração cujas linhas a contêm. A documentação inteira que o
-/// scan não guardou à parte é a mesma de `doc`.
+/// scan não guardou à parte é a mesma de `doc`. A declaração é de teste
+/// quando o arquivo dela é de teste ou quando a primeira linha dela cai num
+/// trecho de teste do arquivo.
 fn documents(conn: &Connection, normalizer: &mut Normalizer) -> Result<(Vec<Doc>, Vec<Decl>)> {
     let mut files: Vec<Doc> = Vec::new();
     // As palavras que o arquivo já tem nos nomes, na documentação e em cada
     // campo dos textos.
     let mut seen: Vec<[HashSet<Vec<String>>; 5]> = Vec::new();
     let mut at: HashMap<String, usize> = HashMap::new();
-    let mut stmt = conn.prepare("SELECT rowid, path, file_class FROM files ORDER BY rowid")?;
+    // De cada arquivo, se ele é de teste e os trechos de teste dele.
+    let mut tests: Vec<(bool, Vec<(u64, u64)>)> = Vec::new();
+    let mut stmt = conn.prepare("SELECT rowid, path, file_class, test_lines FROM files ORDER BY rowid")?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
         if !text(row, 2)?.is_empty() {
             continue;
         }
         let path = text(row, 1)?;
+        tests.push((is_test_path(&path), serde_json::from_str(&text(row, 3)?).unwrap_or_default()));
         let words = normalizer.forms(&path);
         at.insert(path, files.len());
         let mut fields = vec![Vec::new(); FILE_LEVEL.columns().count()];
@@ -260,13 +271,16 @@ fn documents(conn: &Connection, normalizer: &mut Normalizer) -> Result<(Vec<Doc>
     while let Some(row) = rows.next()? {
         let Some(&owner) = at.get(&text(row, 1)?) else { continue };
         let line = |at: usize| -> Result<u64> { Ok(row.get::<_, Option<i64>>(at)?.unwrap_or(0).max(0) as u64) };
+        let (test_file, test_lines) = &tests[owner];
+        let first = line(5)?;
         rows_of.push(DeclRow {
             id: row.get(0)?,
             owner,
+            test: *test_file || test_lines.iter().any(|&(start, end)| (start..=end).contains(&first)),
             name: text(row, 2)?,
             signature: text(row, 3)?,
             doc: text(row, 4)?,
-            lines: (line(5)?, line(6)?),
+            lines: (first, line(6)?),
             texts: vec![Vec::new(); TEXT_FIELDS.len()],
             whole_doc: text(row, 7)?,
             body_comment: text(row, 8)?,
@@ -318,7 +332,7 @@ fn documents(conn: &Connection, normalizer: &mut Normalizer) -> Result<(Vec<Doc>
             add_new(&mut called, &mut seen_calls, words);
         }
         fields.extend([whole_doc, normalizer.forms(&row.body_comment), normalizer.forms(&row.body_names), called]);
-        decls.push(Decl { doc: Doc { id: row.id, fields }, name: row.name, file: file.id });
+        decls.push(Decl { doc: Doc { id: row.id, fields }, name: row.name, file: file.id, test: row.test });
     }
     Ok((files, decls))
 }
@@ -354,6 +368,8 @@ fn written_calls(
 struct DeclRow {
     id: i64,
     owner: usize,
+    /// A declaração é de teste: fica fora do nível das declarações.
+    test: bool,
     name: String,
     signature: String,
     doc: String,
@@ -908,10 +924,13 @@ fn base_list(conn: &Connection, words: &[Vec<String>]) -> Result<Vec<(i64, f64)>
     by_words(conn, &DECL_LEVEL, BASE_FIELDS, words)
 }
 
-/// De cada palavra de nome da `query`, as declarações cujo nome dobrado a
-/// contém, pela tabela trigram.
+/// De cada palavra de nome da `query`, as declarações do nível cujo nome
+/// dobrado a contém, pela tabela trigram.
 fn name_hits(conn: &Connection, query: &str) -> Result<Vec<NameHits>> {
-    let mut stmt = conn.prepare("SELECT rowid, folded FROM decl_trigram WHERE folded LIKE ?1")?;
+    let mut stmt = conn.prepare(
+        "SELECT t.rowid, t.folded FROM decl_trigram t \
+         WHERE t.folded LIKE ?1 AND EXISTS (SELECT 1 FROM decl_lengths l WHERE l.id = t.rowid)",
+    )?;
     let mut out = Vec::new();
     for word in name_words(query) {
         let mut names = Vec::new();
@@ -924,9 +943,9 @@ fn name_hits(conn: &Connection, query: &str) -> Result<Vec<NameHits>> {
     Ok(out)
 }
 
-/// Cada declaração do índice com o número do arquivo dela.
+/// Cada declaração do nível com o número do arquivo dela.
 fn decl_files(conn: &Connection) -> Result<Vec<(i64, i64)>> {
-    let mut stmt = conn.prepare("SELECT rowid, file FROM decl_trigram")?;
+    let mut stmt = conn.prepare("SELECT l.id, t.file FROM decl_lengths l JOIN decl_trigram t ON t.rowid = l.id")?;
     let rows = stmt.query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)))?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
@@ -1454,6 +1473,29 @@ mod tests {
 
         let shown = declarations(dir.path(), &[card.id, 999]).unwrap();
         assert_eq!(shown, vec![card.clone()], "an id the map does not have is left out");
+    }
+
+    /// A declaração de teste nunca é candidata da busca com filtro: nem a de
+    /// um arquivo de teste nem a escrita no trecho de teste de outro arquivo,
+    /// por nenhuma das quatro listas. A busca sem filtro ainda acha o arquivo
+    /// de teste pelo pedaço do nome.
+    #[test]
+    fn a_test_declaration_is_never_a_filter_candidate() {
+        let dir = saved_json(&json!({"modules": [
+            {"path": "src/pedido.rs", "test_lines": [[8, 20]], "declarations": [
+                {"kind": "function", "name": "gravar_pedido", "line": 1, "end_line": 5,
+                 "signature": "pub fn gravar_pedido()", "doc": "Grava o pedido."},
+                {"kind": "function", "name": "grava_o_pedido_no_teste", "line": 10, "end_line": 14,
+                 "signature": "fn grava_o_pedido_no_teste()", "doc": "Grava o pedido."}]},
+            {"path": "tests/pedido_test.rs", "declarations": [
+                {"kind": "function", "name": "gravar_pedido_de_teste", "line": 1, "end_line": 4,
+                 "signature": "fn gravar_pedido_de_teste()", "doc": "Grava o pedido."}]}
+        ]}));
+        let found = candidates(dir.path(), "gravar pedido", "gravar o pedido", &languages(), 100).unwrap();
+        let names: Vec<&str> = found.candidates.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["gravar_pedido"], "{found:?}");
+        assert_eq!(found.whole, vec![id_of(dir.path(), "gravar_pedido")], "{found:?}");
+        assert!(paths(dir.path(), "gravar_pedido_de_teste").contains(&"tests/pedido_test.rs".to_string()));
     }
 
     #[test]

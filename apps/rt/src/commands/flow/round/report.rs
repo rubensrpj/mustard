@@ -29,7 +29,7 @@ use super::commit::{
     write_joined, UNMADE_SHA,
 };
 use super::agreed::{covered_codes, settle_agreed};
-use super::leftovers::{leftover_task, leftovers_of, Leftover};
+use super::leftovers::{leftover_tasks, leftovers_of, Leftover};
 use super::queue::{backlog_wave, open_review, open_sends, waves_in_progress, ANALYSIS_LINE};
 use super::stops::{change_accepted, replan_code, tasks_returned, undone_of, undone_returns};
 use super::usage::{measure_usage, Caller, Usage};
@@ -952,7 +952,9 @@ pub(super) fn own_copy_relative(log: &SpecLog, wave: u64, file: &str) -> String 
 /// nunca deixa gravada a que veio antes dela, e nada é recusado depois do
 /// commit. O entregou vai também em cada onda que o conserto fecha, e o item
 /// combinado que a entrega não cumpriu e cada sobra viram tarefa no backlog,
-/// pela mesma conferência das tarefas que nascem do veredito. A tarefa que a
+/// pela mesma conferência das tarefas que nascem do veredito — a sobra cujos
+/// arquivos já estão numa tarefa aberta vira uma linha nela
+/// ([`leftover_tasks`]). A tarefa que a
 /// onda não fez volta ao backlog antes das entregas, com a mudança aceita
 /// anotada no idioma `lang`.
 fn check_reports(
@@ -1045,11 +1047,9 @@ fn check_reports(
             deliveries.push((wave, draft));
         }
     }
-    for wave in &report.waves {
-        for leftover in &wave.leftovers {
-            wave_tasks.push((wave.wave, leftover_task(root, check.log(), wave.wave, leftover)));
-        }
-    }
+    let found: Vec<(u64, &Leftover)> =
+        report.waves.iter().flat_map(|wave| wave.leftovers.iter().map(move |leftover| (wave.wave, leftover))).collect();
+    wave_tasks.extend(leftover_tasks(root, check.log(), &found, lang));
     for (_, task) in &wave_tasks {
         check.record("task", task.clone())?;
     }
@@ -1135,8 +1135,9 @@ fn criterion_version(log: &SpecLog, id: u64, proof: &str) -> Option<CriterionVer
 /// outras: primeiro os vereditos, que julgam entregas já gravadas; depois a
 /// volta ao backlog de cada tarefa que a onda não fez, o
 /// entregou de cada onda, a tarefa de cada item combinado que ela não cumpriu
-/// e de cada sobra, e a versão nova de cada critério com prova nova.
-/// Devolve o que foi gravado e, de cada prova nova, o código do critério e o
+/// e de cada sobra, e a versão nova de cada critério com prova nova. A
+/// entrada da tarefa que uma sobra fez ganhar versão nova leva o número da
+/// versão que ela substitui. Devolve o que foi gravado e, de cada prova nova, o código do critério e o
 /// comando. A entrada de cada entregou leva o texto, os arquivos e as provas
 /// que a própria onda mandou: quem conduz a obra confere a entrega pela
 /// resposta da rodada, sem ir ler a spec.
@@ -1175,8 +1176,13 @@ fn record_reports(start: &Path, spec: &str, checked: CheckedReport) -> Result<Re
             "files": files, "proofs": own }));
     }
     for (wave, draft) in wave_tasks {
+        let replaces = draft.get("replaces").cloned();
         let written = record(start, spec, "task", draft, PhaseWriter::Binary)?;
-        recorded.push(json!({ "wave": wave, "type": "task", "id": written.written.id }));
+        let mut entry = json!({ "wave": wave, "type": "task", "id": written.written.id });
+        if let Some(replaces) = replaces {
+            entry["replaces"] = replaces;
+        }
+        recorded.push(entry);
     }
     for (wave, draft) in sends {
         let written = record(start, spec, "send", draft, PhaseWriter::Binary)?;
@@ -1202,6 +1208,7 @@ mod tests {
     use tempfile::tempdir;
 
     use crate::commands::event::pending::{pending_at, PendingOpts};
+    use crate::commands::flow::round::leftovers::leftover_task;
     use crate::commands::flow::round::queue::{return_with_an_undone_task, task_now, UndoneReturn};
     use crate::commands::flow::round::queue::{dispatch_backlog, waves_to_redo};
     use crate::commands::flow::round::usage::tests::{answer_line, instant, platform_file, request_line, MODEL};
@@ -3834,23 +3841,30 @@ mod tests {
         assert_eq!((git_text(root, &["rev-parse", "HEAD"]), spec_lines(root)), (head, before), "{refused}");
     }
 
-    /// Toda sobra da volta assumida vira tarefa da spec, no backlog e sem
-    /// onda, sem pergunta: a sem `kind`, a `cosmetic`, a `breaks` e a de um
-    /// `kind` que a volta antiga ainda traga, que é aceita e fica sem ele. A
-    /// tarefa leva o título, o detalhe, o autor da onda e o arquivo que o
-    /// detalhe cita e que existe. A lista de pendências do projeto não ganha
-    /// item nenhum, nem com a sobra que repete o título de uma pendência já
-    /// aberta, e o fechamento não ganha pendência nova a perguntar. A sobra sem
-    /// título é recusada na gravação, com o texto combinado, e nada é gravado.
+    /// Toda sobra da volta assumida vai ao backlog da spec, sem onda e sem
+    /// pergunta: a sem `kind`, a `cosmetic`, a `breaks` e a de um `kind` que
+    /// a volta antiga ainda traga, que é aceita e fica sem ele. A tarefa nova
+    /// leva o título, o detalhe, o autor da onda e o arquivo que o detalhe
+    /// cita e que existe. A mesma sobra, vista de novo por outra onda na
+    /// rodada seguinte, não vira segunda tarefa: todos os arquivos dela já
+    /// estão na tarefa aberta, e essa tarefa ganha uma versão nova com a
+    /// sobra numa linha da parte do agente. A sobra que cita um arquivo a
+    /// mais que a tarefa, e a que não cita arquivo nenhum, mesmo com o título
+    /// repetido, viram tarefa nova. A lista de pendências do projeto não
+    /// ganha item nenhum, nem com a sobra que repete o título de uma
+    /// pendência já aberta, e o fechamento não ganha pendência nova a
+    /// perguntar. A sobra sem título é recusada na gravação, com o texto
+    /// combinado, e nada é gravado.
     #[test]
     fn every_leftover_becomes_a_spec_task_and_the_pending_list_gains_nothing() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         std::fs::create_dir_all(root.join("src")).unwrap();
-        std::fs::write(root.join("src/c.rs"), "fn tres() {}\n").unwrap();
-        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        std::fs::write(root.join("src/commit.rs"), "fn tres() {}\n").unwrap();
+        std::fs::write(root.join("src/c.rs"), "fn quatro() {}\n").unwrap();
+        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[])]);
         git_at(root, &["checkout", "-q", "-b", "feature/x"]);
-        round(root, "x", None);
+        assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1, 2]);
         let open = pending_at(&PendingOpts {
             root: root.to_path_buf(),
             add: true,
@@ -3881,7 +3895,7 @@ mod tests {
         );
         assert_eq!(spec_lines(root), before, "nada foi gravado: {untitled}");
 
-        let cites = "Sem o índice, `src/c.rs` para de ler o arquivo; `src/nao_existe.rs` também.";
+        let cites = "Sem o índice, `src/commit.rs` para de ler o arquivo; `src/nao_existe.rs` também.";
         let wrote = returned(root, json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"],
             "commit": "a soma sai", "leftovers": [
                 {"title": "O log não gira", "detail": "O arquivo de log cresce sem limite."},
@@ -3919,8 +3933,59 @@ mod tests {
         }
         assert_eq!(tasks[1].fields["text"], json!("Um nome mais claro."), "{:?}", tasks[1].fields);
         assert_eq!(tasks[2].fields["text"], json!(cites), "{:?}", tasks[2].fields);
-        assert_eq!(tasks[2].fields["files"], json!([{"path": "src/c.rs"}]), "{:?}", tasks[2].fields);
+        assert_eq!(tasks[2].fields["files"], json!([{"path": "src/commit.rs"}]), "{:?}", tasks[2].fields);
         assert_eq!(tasks[0].fields["files"], json!([]), "{:?}", tasks[0].fields);
+
+        // A onda 2 volta na rodada seguinte com a mesma sobra em
+        // `src/commit.rs`, uma que cita também `src/c.rs` e uma sem arquivo.
+        std::fs::write(root.join("src/b.rs"), "fn dois() {}\n").unwrap();
+        let wider = "Sem o índice, `src/commit.rs` e `src/c.rs` param.";
+        let wrote = returned(root, json!({"wave": 2, "text": "O dois saiu.", "files": ["src/b.rs"],
+            "commit": "o dois sai", "leftovers": [
+                {"title": "A leitura para sem o índice", "detail": cites},
+                {"title": "A leitura para nos dois", "detail": wider},
+                {"title": "O log não gira", "detail": "O arquivo de log cresce sem limite."},
+            ]}));
+        assert_eq!(wrote["ok"], json!(true), "{wrote}");
+        let again = round(root, "x", None);
+        assert_eq!(again["ok"], json!(true), "{again}");
+        let entries: Vec<Value> =
+            again["recorded"].as_array().into_iter().flatten().filter(|r| r["type"] == json!("task")).cloned().collect();
+        assert_eq!(entries.len(), 3, "{again}");
+        assert_eq!(entries[0]["replaces"], json!(tasks[2].id), "a tarefa aberta ganha versão nova: {again}");
+        assert!(entries[1].get("replaces").is_none() && entries[2].get("replaces").is_none(), "{again}");
+
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let joined = log.get(entries[0]["id"].as_u64().unwrap()).unwrap();
+        let line = translate("round.leftover_joined", Locale::PtBr)
+            .replace("{wave}", "2")
+            .replace("{title}", "A leitura para sem o índice")
+            .replace("{detail}", cites);
+        assert_eq!(joined.fields["agent"], json!(line), "{:?}", joined.fields);
+        assert_eq!(
+            (&joined.fields["title"], &joined.fields["text"], &joined.fields["files"]),
+            (&json!("A leitura para sem o índice"), &json!(cites), &json!([{"path": "src/commit.rs"}])),
+            "o resto da tarefa fica como estava"
+        );
+        // A rodada pode já ter posto a tarefa num lote do backlog, numa versão
+        // mais nova ainda: conta a tarefa vigente, pelo título.
+        let same: Vec<&SpecEvent> = log
+            .visible()
+            .into_iter()
+            .filter(|e| e.event_type == "task" && e.str_field("title") == Some("A leitura para sem o índice"))
+            .collect();
+        assert_eq!(same.len(), 1, "duas rodadas com a mesma sobra dão uma tarefa só: {same:?}");
+        assert!(same[0].id == joined.id || same[0].replaced().contains(&joined.id), "{same:?}");
+        let wider_task = log.get(entries[1]["id"].as_u64().unwrap()).unwrap();
+        let wider_files: BTreeSet<&str> = wider_task.fields["files"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|file| file["path"].as_str())
+            .collect();
+        assert_eq!(wider_files, BTreeSet::from(["src/c.rs", "src/commit.rs"]), "um arquivo a mais, tarefa nova");
+        let untied = log.get(entries[2]["id"].as_u64().unwrap()).unwrap();
+        assert_eq!(untied.fields["title"], json!("O log não gira"), "sem arquivo, a sobra vira tarefa nova");
 
         assert_eq!(ledger(), ledger_before, "a lista de pendências do projeto não ganha item");
         assert_eq!(born(), born_before, "nenhuma pendência nova espera a pergunta do fechamento");

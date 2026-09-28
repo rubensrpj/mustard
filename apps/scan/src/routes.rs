@@ -111,9 +111,15 @@
 //!   montado sobre um valor, como a base guardada numa variável, e não liga.
 //!   O endereço inteiro (`https://loja.com/api/pedidos`) vale sem o esquema e
 //!   a máquina, como a base.
-//! - `client.path.tail`: o valor somado depois do literal do caminho
-//!   (`'/api/pedidos/' + id`). O caminho é o literal com um parâmetro no fim,
-//!   no lugar do valor.
+//! - `client.path.sum`: o caminho escrito como soma
+//!   (`'/api/pedidos/' + id + '/itens'`), que precisa ser uma `client.sum`.
+//!   O caminho junta os pedaços dela, da esquerda para a direita: o texto de
+//!   cada um que é texto e um parâmetro no lugar de cada valor. A soma cujo
+//!   primeiro pedaço é um valor é montada sobre ele, e não liga.
+//! - `client.sum`: uma soma, com cada sinal de somar dela em
+//!   `client.sum.plus`: o que fica entre dois sinais é um pedaço. O pedaço
+//!   que é outra soma dá os pedaços dela; o que é texto escrito ali leva
+//!   `client.sum.text`; todo outro é um valor.
 //! - `client.option`: o método escrito nas opções da chamada, que vale no
 //!   lugar do que o nome diz.
 //! - `client.receiver`: o objeto antes do nome. A chamada conta quando ele é
@@ -146,6 +152,12 @@ use crate::model::{
     Client, Decl, Exclusion, GlobalPrefix, Handoff, Manifest, Module, Mount, OpenPrefix, Route, RouteCall, RouteLinks,
     RoutePath, ANY_METHOD,
 };
+
+mod place;
+mod sum;
+
+use place::{open_places, Chain, Reached};
+use sum::Sums;
 
 /// Uma rota que a rota de recurso registra: o método, o pedaço de caminho
 /// depois do do recurso e o nome de quem atende.
@@ -240,7 +252,10 @@ enum Role {
     Inside,
     ClientMethod,
     ClientPath,
-    ClientPathTail,
+    ClientPathSum,
+    ClientSum,
+    ClientSumPlus,
+    ClientSumText,
     ClientOption,
     ClientReceiver,
     ClientAnyReceiver,
@@ -258,7 +273,10 @@ impl Role {
             self,
             Self::ClientMethod
                 | Self::ClientPath
-                | Self::ClientPathTail
+                | Self::ClientPathSum
+                | Self::ClientSum
+                | Self::ClientSumPlus
+                | Self::ClientSumText
                 | Self::ClientOption
                 | Self::ClientReceiver
                 | Self::ClientAnyReceiver
@@ -302,7 +320,10 @@ fn role(capture: &str) -> Role {
         "route.inside" => Role::Inside,
         "client.method" => Role::ClientMethod,
         "client.path" => Role::ClientPath,
-        "client.path.tail" => Role::ClientPathTail,
+        "client.path.sum" => Role::ClientPathSum,
+        "client.sum" => Role::ClientSum,
+        "client.sum.plus" => Role::ClientSumPlus,
+        "client.sum.text" => Role::ClientSumText,
         "client.option" => Role::ClientOption,
         "client.receiver" => Role::ClientReceiver,
         "client.receiver.any" => Role::ClientAnyReceiver,
@@ -460,7 +481,9 @@ struct Captured<'t> {
 /// `module_path`, o alvo é o caminho de um módulo escrito como texto, que não
 /// é nome de nada no arquivo. O lugar em que a montagem do alvo é feita é o
 /// objeto que a recebe (`receiver`) e a declaração em que ela está escrita
-/// (`owner`); `literal` é o trecho do literal do prefixo.
+/// (`owner`); `literal` é o trecho do literal do prefixo. Com `from_name`, a
+/// montagem nasce de um nome: o objeto que a recebe é um nome, ou o grupo
+/// dela nasce de um nome que não é grupo no arquivo.
 struct Prefix {
     value: String,
     scope: Option<(usize, usize)>,
@@ -472,6 +495,7 @@ struct Prefix {
     literal: Option<(usize, usize)>,
     receiver: Option<String>,
     owner: Option<String>,
+    from_name: bool,
 }
 
 /// Um prefixo global como a consulta o dá: o literal e as exclusões, cada uma
@@ -543,11 +567,13 @@ struct Param {
 }
 
 /// Um grupo: os prefixos que ele soma, na ordem, e, quando ele nasce de um
-/// parâmetro, a declaração e a posição dele.
+/// parâmetro, a declaração e a posição dele. Com `from_name`, ele nasce de um
+/// nome que não é grupo no arquivo, como um parâmetro.
 #[derive(Default)]
 struct Group {
     pieces: Vec<String>,
     open: Option<(usize, Option<usize>)>,
+    from_name: bool,
 }
 
 impl<'t> Groups<'t> {
@@ -571,8 +597,13 @@ impl<'t> Groups<'t> {
         let nest = self.nests.iter().filter(|n| n.span.0 == start && n.span.1 <= end).max_by_key(|n| n.span.1);
         if let Some(nest) = nest {
             let object = nest.object.or_else(|| self.outer_of(nest.span.0, bytes, declarations));
-            let mut group =
-                object.and_then(|object| self.of(object, bytes, declarations, depth + 1)).unwrap_or_default();
+            let mut group = match object {
+                Some(object) => self.of(object, bytes, declarations, depth + 1).unwrap_or_else(|| Group {
+                    from_name: object.utf8_text(bytes).is_ok_and(is_name),
+                    ..Group::default()
+                }),
+                None => Group::default(),
+            };
             group.pieces.push(nest.prefix.clone());
             return Some(group);
         }
@@ -581,6 +612,7 @@ impl<'t> Groups<'t> {
             Named::Param(param) => Some(Group {
                 pieces: Vec::new(),
                 open: Some((param.decl, param.position)),
+                from_name: true,
             }),
         }
     }
@@ -870,6 +902,7 @@ impl RouteRule {
                     owner: target
                         .and_then(|node| enclosing(declarations, line_of(node)))
                         .map(|i| declarations[i].name.clone()),
+                    from_name: here.receiver.map(text).is_some_and(|name| is_name(&name)),
                 });
             } else if let (Some(target), Some(object)) = (here.target, here.receiver) {
                 // A montagem no grupo do objeto: o prefixo só se conhece
@@ -904,14 +937,19 @@ impl RouteRule {
             position,
         };
         for (target, object) in on_groups {
+            // O nome que guarda um grupo já nascido do objeto desta montagem
+            // não leva o prefixo a outro lugar: o grupo já soma o do objeto.
+            if file_groups.held_inside(target, bytes, declarations) {
+                continue;
+            }
             let receiver = Some(text(object)).filter(|name| is_name(name));
-            let value = match file_groups.of(object, bytes, declarations, 0) {
+            let (value, from_name) = match file_groups.of(object, bytes, declarations, 0) {
                 Some(group) => {
-                    joined_path(&group.pieces.iter().map(String::as_str).collect::<Vec<_>>())
+                    (joined_path(&group.pieces.iter().map(String::as_str).collect::<Vec<_>>()), group.from_name)
                 }
                 // O objeto que não é grupo e é um nome é o lugar da montagem:
                 // o prefixo posto nele vale para o alvo.
-                None if receiver.is_some() => String::new(),
+                None if receiver.is_some() => (String::new(), true),
                 None => continue,
             };
             prefixes.push(Prefix {
@@ -926,6 +964,7 @@ impl RouteRule {
                 receiver,
                 owner: enclosing(declarations, line_of(target))
                     .map(|i| declarations[i].name.clone()),
+                from_name,
             });
         }
         // Os caminhos inteiros de cada prefixo que vale para um alvo, e os
@@ -1032,17 +1071,22 @@ impl RouteRule {
                 // Cada caminho inteiro de cada montagem do objeto ou da
                 // declaração da rota é uma rota: a mesma registrada sob dois
                 // prefixos atende nos dois.
-                let mounts: Vec<Option<&str>> = if mounted.is_empty() {
+                let mounts: Vec<Option<&Chain>> = if mounted.is_empty() {
                     vec![None]
                 } else {
-                    mounted
-                        .iter()
-                        .flat_map(|&i| full[i].iter().map(|chain| Some(chain.as_str())))
-                        .collect()
+                    mounted.iter().flat_map(|&i| full[i].iter().map(Some)).collect()
                 };
                 for mount in mounts {
-                    let pieces: Vec<&str> = from_file.into_iter().chain(mount).chain(tail.iter().copied()).collect();
+                    let pieces: Vec<&str> =
+                        from_file.into_iter().chain(mount.map(|c| c.path.as_str())).chain(tail.iter().copied()).collect();
                     let written = joined_path(&pieces);
+                    let own_receiver = receiver.clone().filter(|r| is_name(r)).unwrap_or_default();
+                    let through: Vec<String> = mount
+                        .into_iter()
+                        .flat_map(|c| c.places.iter())
+                        .filter(|place| **place != own_receiver && Some(place.as_str()) != owner)
+                        .cloned()
+                        .collect();
                     built.push(Built {
                         route: Route {
                             method: method.clone(),
@@ -1051,9 +1095,10 @@ impl RouteRule {
                             handler: handler.clone(),
                             line: handler_line,
                             framework: self.raw.framework.to_string(),
-                            receiver: receiver.clone().filter(|r| is_name(r)).unwrap_or_default(),
+                            receiver: own_receiver,
                             owner: owner.unwrap_or_default().to_string(),
                             open: group.as_ref().and_then(|g| g.open).map(open_of),
+                            through,
                             local: None,
                             called_by: Vec::new(),
                         },
@@ -1076,7 +1121,7 @@ impl RouteRule {
                     line: p.line,
                     whole: p.module_path || whole_modules.contains(target),
                     module_path: p.module_path,
-                    prefix: self.prefix_path(&[chain]),
+                    prefix: self.prefix_path(&[&chain.path]),
                     receiver: p.receiver.clone().unwrap_or_default(),
                     owner: p.owner.clone().unwrap_or_default(),
                 });
@@ -1144,6 +1189,7 @@ impl RouteRule {
 
         let mut made: BTreeMap<(usize, usize), (String, Option<String>)> = BTreeMap::new();
         let mut written: BTreeMap<(usize, usize), CallAt> = BTreeMap::new();
+        let mut sums = Sums::default();
         let mut cursor = QueryCursor::new();
         let mut matches = cursor.matches(&compiled.query, root, bytes);
         while let Some(m) = matches.next() {
@@ -1153,7 +1199,10 @@ impl RouteRule {
                 match compiled.roles[cap.index as usize] {
                     Role::ClientMethod => here.method = node,
                     Role::ClientPath => here.path = node,
-                    Role::ClientPathTail => here.tail = true,
+                    Role::ClientPathSum => (here.path, here.sum) = (node, true),
+                    Role::ClientSum => sums.sum(cap.node),
+                    Role::ClientSumPlus => sums.plus(cap.node),
+                    Role::ClientSumText => sums.text(cap.node),
                     Role::ClientOption => here.option = node,
                     Role::ClientReceiver => here.receiver = node,
                     Role::ClientAnyReceiver => (here.receiver, here.any_receiver) = (node, true),
@@ -1177,7 +1226,7 @@ impl RouteRule {
                 let entry = written.entry(span(method)).or_insert(CallAt {
                     method,
                     path,
-                    tail: here.tail,
+                    sum: here.sum,
                     receiver: here.receiver,
                     any_receiver: here.any_receiver,
                     option: None,
@@ -1202,27 +1251,19 @@ impl RouteRule {
         for call in written.into_values() {
             let Some(named) = self.method(&text(call.method)) else { continue };
             let method = call.option.map(literal).filter(|m| is_method_name(m)).map_or_else(|| named.to_string(), |m| m.to_uppercase());
-            let literal_path = literal(call.path);
-            if self
-                .raw
-                .param_wrappers
-                .iter()
-                .any(|(open, _)| literal_path.starts_with(*open))
-                || self
-                    .raw
-                    .param_prefixes
-                    .iter()
-                    .any(|prefix| literal_path.starts_with(prefix))
+            // A soma junta os pedaços dela, com um parâmetro no lugar de cada
+            // valor.
+            let path = if call.sum {
+                let Some(path) = sums.path(call.path, &literal, PARAM) else { continue };
+                path
+            } else {
+                literal(call.path)
+            };
+            if self.raw.param_wrappers.iter().any(|(open, _)| path.starts_with(*open))
+                || self.raw.param_prefixes.iter().any(|prefix| path.starts_with(prefix))
             {
                 continue;
             }
-            // O texto somado a um valor é o texto com um parâmetro no lugar do
-            // valor.
-            let path = if call.tail {
-                format!("{literal_path}{PARAM}")
-            } else {
-                literal_path
-            };
             let (base, via) = match call.receiver.map(text) {
                 None => (None, String::new()),
                 Some(receiver) if library.contains(&receiver) => (None, String::new()),
@@ -1375,8 +1416,8 @@ pub(crate) fn without_version(path: &str) -> String {
 struct CallAt<'t> {
     method: Node<'t>,
     path: Node<'t>,
-    /// O caminho é o texto somado a um valor (`client.path.tail`).
-    tail: bool,
+    /// O caminho é uma soma (`client.path.sum`).
+    sum: bool,
     receiver: Option<Node<'t>>,
     /// A chamada conta com qualquer objeto (`client.receiver.any`).
     any_receiver: bool,
@@ -1388,7 +1429,7 @@ struct CallAt<'t> {
 struct CallCaptured<'t> {
     method: Option<Node<'t>>,
     path: Option<Node<'t>>,
-    tail: bool,
+    sum: bool,
     option: Option<Node<'t>>,
     receiver: Option<Node<'t>>,
     any_receiver: bool,
@@ -1452,10 +1493,11 @@ fn joined_prefix(outer: &RoutePath, inner: &RoutePath) -> RoutePath {
 }
 
 /// Os caminhos inteiros de cada prefixo que vale para um alvo, pela posição
-/// em `prefixes` (nenhum para o que não tem alvo), e as posições dos
+/// em `prefixes` (nenhum para o que não tem alvo), cada um com os lugares em
+/// aberto da montagem mais de fora dele ([`open_places`]), e as posições dos
 /// prefixos postos no lugar de outra montagem ([`outer_mounts`]).
-fn mount_chains(prefixes: &[Prefix]) -> (Vec<Vec<String>>, Vec<usize>) {
-    let mut full = vec![Vec::new(); prefixes.len()];
+fn mount_chains(prefixes: &[Prefix]) -> (Vec<Vec<Chain>>, Vec<usize>) {
+    let mut full: Vec<Vec<Chain>> = prefixes.iter().map(|_| Vec::new()).collect();
     let mut reaching = BTreeSet::new();
     if prefixes.iter().all(|p| p.target.is_none()) {
         return (full, Vec::new());
@@ -1469,8 +1511,8 @@ fn mount_chains(prefixes: &[Prefix]) -> (Vec<Vec<String>>, Vec<usize>) {
     for (i, p) in prefixes.iter().enumerate() {
         if p.target.is_some() {
             full[i] = chains(prefixes, &on, i, &mut Vec::new())
-                .iter()
-                .map(|pieces| joined_path(pieces))
+                .into_iter()
+                .map(|(pieces, top)| Chain { path: joined_path(&pieces), places: open_places(prefixes, &on, top) })
                 .collect();
             reaching.extend(outer_mounts(prefixes, &on, i));
         }
@@ -1501,13 +1543,14 @@ fn outer_mounts(prefixes: &[Prefix], on: &HashMap<&str, Vec<usize>>, i: usize) -
 /// literal, que é o dela mesma escrito de outro jeito — e o dela; na frente,
 /// cada caminho inteiro dos prefixos postos no lugar em que ela é feita
 /// ([`outer_mounts`]). A cadeia que volta a uma montagem por onde passou para
-/// ali; sem nada que chegue de fora, fica o caminho do lugar.
+/// ali; sem nada que chegue de fora, fica o caminho do lugar. Cada caminho
+/// vai com a posição da montagem mais de fora dele.
 fn chains<'p>(
     prefixes: &'p [Prefix],
     on: &HashMap<&str, Vec<usize>>,
     i: usize,
     passed: &mut Vec<usize>,
-) -> Vec<Vec<&'p str>> {
+) -> Vec<(Vec<&'p str>, usize)> {
     if passed.len() > MAX_GROUP_DEPTH || passed.contains(&i) {
         return Vec::new();
     }
@@ -1526,14 +1569,14 @@ fn chains<'p>(
     passed.push(i);
     let mut out = Vec::new();
     for j in outer_mounts(prefixes, on, i) {
-        for mut chain in chains(prefixes, on, j, passed) {
+        for (mut chain, top) in chains(prefixes, on, j, passed) {
             chain.extend(own.iter().copied());
-            out.push(chain);
+            out.push((chain, top));
         }
     }
     passed.pop();
     if out.is_empty() {
-        out.push(own);
+        out.push((own, i));
     }
     out
 }
@@ -1683,8 +1726,11 @@ type MountAt = (usize, usize);
 /// inteiro — pelo import, ou o nome que o arquivo aonde o import chega não
 /// declara (`from loja import urls`) — alcança todas as rotas do framework
 /// no arquivo, e todas as montagens dele; o outro, as registradas num objeto
-/// com o nome dele ou escritas numa declaração com o nome dele, e as
-/// montagens feitas nesse objeto ou nessa declaração.
+/// com o nome dele, escritas numa declaração com o nome dele ou que passam
+/// por uma montagem posta nesse objeto ou nessa declaração
+/// ([`Route::through`]), e as montagens feitas nesse objeto ou nessa
+/// declaração. O nome é o que o arquivo de onde ele vem lhe dá: o import que
+/// o troca (`import { router as api }`) monta, pelo `api`, o `router` de lá.
 fn mounted(
     modules: &[Module],
     brought: &BTreeMap<(usize, String), Vec<String>>,
@@ -1696,7 +1742,7 @@ fn mounted(
     let index: HashMap<&str, usize> = modules.iter().enumerate().map(|(at, m)| (m.path.as_str(), at)).collect();
     // Os arquivos que cada montagem alcança, cada um com o módulo inteiro ou
     // não.
-    let mut reach: BTreeMap<MountAt, Vec<(usize, bool)>> = BTreeMap::new();
+    let mut reach: BTreeMap<MountAt, Vec<Reached>> = BTreeMap::new();
     for (at, m) in modules.iter().enumerate() {
         for (mi, mount) in m.route_links.mounts.iter().enumerate() {
             let imported: BTreeSet<usize> = brought
@@ -1734,11 +1780,16 @@ fn mounted(
                                 .any(|d| d.name == *o && d.owner.is_empty())
                         })
                     };
-                    (
-                        to,
-                        imported.contains(&to)
-                            && (mount.whole || (!origins.is_empty() && !declared())),
-                    )
+                    let names = if imported.contains(&to) && !origins.is_empty() {
+                        origins.clone()
+                    } else {
+                        vec![mount.target.as_str()]
+                    };
+                    Reached {
+                        file: to,
+                        whole: imported.contains(&to) && (mount.whole || (!origins.is_empty() && !declared())),
+                        names,
+                    }
                 })
                 .collect();
             reach.insert((at, mi), files);
@@ -1747,12 +1798,12 @@ fn mounted(
     let mut incoming: HashMap<MountAt, Vec<MountAt>> = HashMap::new();
     for (&(at, mi), files) in &reach {
         let mount = &modules[at].route_links.mounts[mi];
-        for &(to, whole) in files {
-            for (mj, next) in modules[to].route_links.mounts.iter().enumerate() {
+        for reached in files {
+            for (mj, next) in modules[reached.file].route_links.mounts.iter().enumerate() {
                 if next.framework == mount.framework
-                    && (whole || next.receiver == mount.target || next.owner == mount.target)
+                    && (reached.whole || reached.has(&next.receiver) || reached.has(&next.owner))
                 {
-                    incoming.entry((to, mj)).or_default().push((at, mi));
+                    incoming.entry((reached.file, mj)).or_default().push((at, mi));
                 }
             }
         }
@@ -1760,20 +1811,22 @@ fn mounted(
     for (&(at, mi), files) in &reach {
         let mount = &modules[at].route_links.mounts[mi];
         let prefixes = full_prefixes(modules, &incoming, (at, mi), &mut Vec::new());
-        for &(to, whole) in files {
+        for reached in files {
+            let to = reached.file;
             let declarations = &modules[to].declarations;
             for (ri, r) in modules[to].routes.iter().enumerate() {
                 let written_in = || {
                     declarations.iter().any(|d| {
-                        d.name == mount.target
+                        reached.has(&d.name)
                             && d.line <= r.line
                             && r.line <= d.end_line.max(d.line)
                     })
                 };
                 if r.framework == mount.framework
-                    && (whole
-                        || r.receiver == mount.target
-                        || r.owner == mount.target
+                    && (reached.whole
+                        || reached.has(&r.receiver)
+                        || reached.has(&r.owner)
+                        || r.through.iter().any(|place| reached.has(place))
                         || written_in())
                 {
                     middle

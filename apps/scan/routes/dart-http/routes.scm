@@ -4,9 +4,9 @@
 ; `http.post(Uri.https('loja.com', '/api/pedidos'), body: corpo)`. O objeto é
 ; o nome que o import traz (`import 'package:http/http.dart' as http;`) ou um
 ; cliente do arquivo; `this.cliente` vale como `cliente`. O endereço que não é
-; texto escrito ali (`http.get(Uri.parse(url))`) não faz chamada. O texto
-; somado a um valor (`'https://loja.com/api/pedidos/' + id`) é o endereço com
-; um parâmetro no lugar do valor.
+; texto escrito ali (`http.get(Uri.parse(url))`) não faz chamada. A soma que
+; começa por texto (`'https://loja.com/api/pedidos/' + id + '/itens'`) é o
+; endereço com um parâmetro no lugar de cada valor.
 (method_invocation
   function: (unconditional_assignable_selector
     .
@@ -19,10 +19,7 @@
       .
       (argument
         [(string_literal) @client.path
-         (additive_expression
-           . (string_literal) @client.path
-           . (additive_operator)
-           . [(identifier) (this) (parenthesized_expression)] @client.path.tail)]))))
+         (additive_expression) @client.path.sum]))))
 
 ((method_invocation
    function: (unconditional_assignable_selector
@@ -42,10 +39,7 @@
                .
                (argument
                  [(string_literal) @client.path
-                  (additive_expression
-                    . (string_literal) @client.path
-                    . (additive_operator)
-                    . [(identifier) (this) (parenthesized_expression)] @client.path.tail)]))))))))
+                  (additive_expression) @client.path.sum]))))))))
  (#eq? @_uri "Uri")
  (#eq? @_parse "parse"))
 
@@ -70,12 +64,22 @@
                .
                (argument
                  [(string_literal) @client.path
-                  (additive_expression
-                    . (string_literal) @client.path
-                    . (additive_operator)
-                    . [(identifier) (this) (parenthesized_expression)] @client.path.tail)]))))))))
+                  (additive_expression) @client.path.sum]))))))))
  (#eq? @_uri "Uri")
  (#match? @_scheme "^https?$"))
+
+; A soma, pedaço por pedaço: o primeiro é texto ou outra soma; o que fica
+; entre dois sinais de somar é um pedaço — `pedido.id` inteiro —, e o texto
+; escrito ali leva `client.sum.text`.
+((additive_expression
+   . [(string_literal) @client.sum.text (additive_expression)]
+   . (additive_operator) @client.sum.plus) @client.sum
+ (#eq? @client.sum.plus "+"))
+
+((additive_expression
+   (additive_operator) @_plus
+   . (string_literal) @client.sum.text .)
+ (#eq? @_plus "+"))
 
 ; O cliente feito pela biblioteca e guardado num nome, sem base:
 ; `final cliente = http.Client();`.

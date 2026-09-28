@@ -239,8 +239,10 @@ fn filled_by_the_scan(_: &Connection, _: &Path) -> Result<()> {
 /// branch de partida e a ponta dela, onde a história parou, a marca da listagem
 /// do git daquela passada ([`Listing::digest`]) e o blob
 /// de cada arquivo que decide a releitura sem ser código: os manifestos, os
-/// que mudam a leitura de todos os outros e os que não se decodificaram.
-pub const CENSUS: MapBlock = block!("census", version 4, {
+/// que mudam a leitura de todos os outros e os que não se decodificaram. E o
+/// teto do nome comum com que as chamadas ligaram, que religa o projeto
+/// quando muda.
+pub const CENSUS: MapBlock = block!("census", version 5, {
     "census" at Place::One => [
         "root" Text,
         "head" Text ["state", "head"],
@@ -249,6 +251,7 @@ pub const CENSUS: MapBlock = block!("census", version 4, {
         "listing" Text ["state", "listing"],
         "inputs" Json ["state", "inputs"],
         "non_utf8" Json ["state", "non_utf8"],
+        "max_same_name" Int ["state", "max_same_name"],
         "frameworks" Json,
         "detected_stacks" Json,
         "skipped_build_dirs" Json ["coverage", "skipped_build_dirs"]
@@ -299,8 +302,9 @@ pub const FILES: MapBlock = block!("files", version 2, {
 /// números), para o pedaço do nome; e as línguas e as médias com que ele foi
 /// feito. As listas saem antes das tabelas de que elas leem. Os campos que a
 /// busca sem filtro lê vêm primeiro; os do texto de dentro das peças vêm
-/// depois, e só a busca com filtro os lê.
-pub const DECLS: MapBlock = block!("decls", version 9, {
+/// depois, e só a busca com filtro os lê. A declaração de teste fica fora do
+/// nível das declarações, e só a tabela trigram a guarda.
+pub const DECLS: MapBlock = block!("decls", version 10, {
     "decls" at Place::Decls => [
         "file" Owner ["path"], "kind" Text, "name" Text, "line" Int, "end_line" Int,
         "signature" Text, "doc" Text, "whole_doc" Text, "body_comment" Text, "body_names" Text,

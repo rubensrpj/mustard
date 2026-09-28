@@ -143,6 +143,43 @@ fn changing_only_the_alias_configuration_reads_everything_again() {
     assert_eq!(usa["deps"], json!(["src/b/pedido.ts"]), "{usa}");
 }
 
+/// Mudar só o teto do nome comum no `mustard.json`, sem mexer em arquivo de
+/// código nem em commit, muda a ligação na passada seguinte: ela religa o
+/// projeto sem reler arquivo nenhum, e a chamada que alcança nove
+/// declarações, só contada com o padrão, passa a ligar suspeita a cada uma.
+#[test]
+fn changing_only_the_common_name_ceiling_links_again_without_reading() {
+    let temp = tempfile::Builder::new().prefix("scan-incremental-ceiling-").tempdir().unwrap();
+    let dir = temp.path().to_path_buf();
+    git(&dir, &["init", "-q"]);
+    let exclude = mustard_core::footprint_rules().join("\n") + "\n";
+    std::fs::write(dir.join(".git").join("info").join("exclude"), exclude).unwrap();
+
+    for n in 1..=9 {
+        write(&dir, &format!("src/m{n}.rs"), &format!("pub fn comum() -> u32 {{\n    {n}\n}}\n"));
+    }
+    write(&dir, "src/chama.rs", "pub fn chama() -> u32 {\n    comum()\n}\n");
+    git(&dir, &["add", "-A"]);
+    git(&dir, &["commit", "-q", "-m", "first"]);
+    assert_eq!(scan(&dir, &[])["full"], json!(true));
+    let comum = |model: &Value| -> Value {
+        let m1 = model["modules"].as_array().unwrap().iter().find(|m| m["path"] == json!("src/m1.rs")).unwrap();
+        m1["declarations"].as_array().unwrap().iter().find(|d| d["name"] == json!("comum")).unwrap().clone()
+    };
+    let before = comum(&model::read(&map_folder(&dir)));
+    let uses = |d: &Value| d["used_by"].as_array().map_or(0, Vec::len);
+    assert_eq!((before["common_calls"].as_u64().unwrap_or(0), uses(&before)), (1, 0), "{before}");
+
+    write(&dir, "mustard.json", r#"{"scan": {"max_same_name": 9}}"#);
+    let second = scan(&dir, &[]);
+    assert_eq!((second["full"].clone(), second["read"].clone()), (json!(false), json!([])), "{second}");
+    let after = comum(&model::read(&map_folder(&dir)));
+    assert_eq!((after["common_calls"].as_u64().unwrap_or(0), uses(&after)), (0, 1), "{after}");
+    let used_by = after["used_by"].as_array().unwrap();
+    assert_eq!(used_by[0]["at"], json!("src/chama.rs:2:chama"), "{after}");
+    assert_eq!(used_by[0]["candidates"].as_array().unwrap().len(), 9, "{after}");
+}
+
 /// Mudar só a configuração de apelidos do JavaScript faz a passada seguinte
 /// ler o projeto inteiro, como a do TypeScript.
 #[test]

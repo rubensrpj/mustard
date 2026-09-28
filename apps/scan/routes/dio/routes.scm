@@ -1,8 +1,9 @@
 ; A chamada: `dio.get('/pedidos/$id')`, `this.dio.post('/pedidos', data: p)`.
 ; O caminho é o primeiro argumento; o que não é texto escrito ali
-; (`dio.get(caminho)`) não faz chamada. O texto somado a um valor
-; (`'/pedidos/' + id`) é o caminho com um parâmetro no lugar do valor. O
-; objeto precisa ser um cliente do arquivo; `this.dio` vale como `dio`.
+; (`dio.get(caminho)`) não faz chamada. A soma que começa por texto
+; (`'/pedidos/' + id + '/itens'`) é o caminho com um parâmetro no lugar de
+; cada valor. O objeto precisa ser um cliente do arquivo; `this.dio` vale
+; como `dio`.
 (method_invocation
   function: (unconditional_assignable_selector
     .
@@ -15,10 +16,20 @@
       .
       (argument
         [(string_literal) @client.path
-         (additive_expression
-           . (string_literal) @client.path
-           . (additive_operator)
-           . [(identifier) (this) (parenthesized_expression)] @client.path.tail)]))))
+         (additive_expression) @client.path.sum]))))
+
+; A soma, pedaço por pedaço: o primeiro é texto ou outra soma; o que fica
+; entre dois sinais de somar é um pedaço — `pedido.id` inteiro —, e o texto
+; escrito ali leva `client.sum.text`.
+((additive_expression
+   . [(string_literal) @client.sum.text (additive_expression)]
+   . (additive_operator) @client.sum.plus) @client.sum
+ (#eq? @client.sum.plus "+"))
+
+((additive_expression
+   (additive_operator) @_plus
+   . (string_literal) @client.sum.text .)
+ (#eq? @_plus "+"))
 
 ; O cliente feito e guardado num nome, com a base ou sem ela:
 ; `final dio = Dio(BaseOptions(baseUrl: 'https://loja.com/api'));`,

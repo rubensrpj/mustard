@@ -224,6 +224,35 @@ impl SearchConfig {
     }
 }
 
+/// A seção `scan` do `mustard.json`: os números com que o scan liga as
+/// chamadas às declarações. As chaves internas vão em snake_case, como as de
+/// `git`. Cada valor fica como o arquivo o traz; quem o lê diz se ele vale ou
+/// é inválido.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct ScanConfig {
+    /// Quantas declarações de mesmo nome uma chamada pode alcançar e ainda
+    /// ligar, como suspeita.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_same_name: Option<Value>,
+}
+
+impl ScanConfig {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.max_same_name.is_none()
+    }
+}
+
+/// O teto do nome comum: a chamada que pode alcançar mais declarações de
+/// mesmo nome que ele é palavra comum (`new`, `build`, `run`), não ligação, e
+/// só se conta. Medido no próprio Mustard, com 4.632 lugares de chamada
+/// suspeita: com 8, só 66 lugares ficam sem ligar. O 4 deixa mais 179 sem
+/// ligar. Do 12 para cima, os 66 ligam, cada um com 11 candidatas em média,
+/// e as ligações suspeitas crescem 10% sem nenhuma provada a mais. O tempo da
+/// passada não muda com o teto.
+pub const MAX_SAME_NAME: usize = 8;
+
 /// O filtro da busca por assunto como o `mustard.json` o escolhe. Ausente, a
 /// montagem decide pela chave da máquina; o inválido não filtra e pede o
 /// aviso.
@@ -557,6 +586,10 @@ pub struct ProjectConfig {
     /// [`ProjectConfig::search_max_returned`].
     #[serde(skip_serializing_if = "SearchConfig::is_empty")]
     pub search: SearchConfig,
+    /// Os números da ligação do scan — veja [`ScanConfig`]. Lida só por
+    /// [`ProjectConfig::scan_max_same_name`].
+    #[serde(skip_serializing_if = "ScanConfig::is_empty")]
+    pub scan: ScanConfig,
     /// A chave que liga e desliga o Mustard no projeto. Desligado (`false`),
     /// nenhum gancho do Mustard age aqui; ausente, ele está ligado. Lida só
     /// por [`ProjectConfig::enabled`].
@@ -759,6 +792,15 @@ impl ProjectConfig {
     #[must_use]
     pub fn search_max_returned(&self) -> Setting {
         Setting::of(self.search.max_returned.as_ref())
+    }
+
+    /// `scan.max_same_name`: o teto do nome comum que vale, e se o valor
+    /// escrito era inválido (zero, negativo ou texto), caso em que vale o
+    /// padrão, [`MAX_SAME_NAME`], e quem lê avisa.
+    #[must_use]
+    pub fn scan_max_same_name(&self) -> (usize, bool) {
+        let setting = Setting::of(self.scan.max_same_name.as_ref());
+        (setting.or(MAX_SAME_NAME), setting == Setting::Invalid)
     }
 
     /// O Mustard está ligado neste projeto: só um `enabled: false` escrito no
@@ -1117,6 +1159,31 @@ mod tests {
         ProjectConfig::default().write(bare.path()).unwrap();
         let raw = std::fs::read_to_string(bare.path().join("mustard.json")).unwrap();
         assert!(!raw.contains("search"), "{raw}");
+    }
+
+    /// O teto do nome comum vem de `scan.max_same_name`: sem a chave vale 8;
+    /// com um inteiro maior que zero, ele; com zero, negativo ou texto, vale 8
+    /// e o valor vem marcado como inválido, sem tornar o arquivo ilegível.
+    /// Sem nada escrito, a seção não vai para o arquivo.
+    #[test]
+    fn the_common_name_ceiling_is_the_default_the_value_or_the_default_marked_invalid() {
+        let dir = tempdir().unwrap();
+        let load = |text: &str| {
+            std::fs::write(dir.path().join("mustard.json"), text).unwrap();
+            ProjectConfig::load(dir.path())
+        };
+        assert_eq!(load(r#"{"git": {"flow": {"*": "main"}}}"#).scan_max_same_name(), (8, false));
+        assert_eq!(load(r#"{"scan": {"max_same_name": 12}}"#).scan_max_same_name(), (12, false));
+        for bad in ["0", "-3", "\"oito\""] {
+            let cfg = load(&format!(r#"{{"scan": {{"max_same_name": {bad}}}}}"#));
+            assert_eq!(cfg.scan_max_same_name(), (8, true), "{bad}");
+            assert!(!cfg.unreadable, "{bad}: o valor inválido não torna o arquivo ilegível");
+        }
+
+        let bare = tempdir().unwrap();
+        ProjectConfig::default().write(bare.path()).unwrap();
+        let raw = std::fs::read_to_string(bare.path().join("mustard.json")).unwrap();
+        assert!(!raw.contains("scan"), "{raw}");
     }
 
     /// A leitura do texto dos pull requests fica ligada sem a chave e só

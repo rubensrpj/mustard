@@ -11,8 +11,9 @@
 # `DeleteAsync`), só no cliente declarado com o tipo `HttpClient` ou feito no
 # arquivo. O `BaseAddress = new Uri("https://loja.com/api/")`, ao fazer o
 # cliente ou depois, é a base, sem o esquema e a máquina. O caminho escrito
-# como texto somado a um valor (`"api/pedidos/" + id`) é o texto com um
-# parâmetro no fim, no lugar do valor.
+# como soma que começa por texto (`"api/pedidos/" + id + "/itens"`) junta os
+# pedaços, com um parâmetro no lugar de cada valor; a soma que começa pelo
+# valor não faz chamada.
 #
 # Os campos:
 # - `language`: as línguas do registro (`languages.toml`) cujos arquivos a

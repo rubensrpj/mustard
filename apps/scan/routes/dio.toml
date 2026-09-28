@@ -6,8 +6,9 @@
 # `Dio(BaseOptions(baseUrl: 'https://loja.com/api'))`, cuja base, sem o
 # esquema e a máquina, vai na frente de todo caminho que ele chama; o feito
 # com `Dio()`; e o declarado com o tipo (`final Dio _dio;`), sem base.
-# O caminho escrito como texto somado a um valor (`'/pedidos/' + id`) é o
-# texto com um parâmetro no fim, no lugar do valor.
+# O caminho escrito como soma que começa por texto
+# (`'/pedidos/' + id + '/itens'`) junta os pedaços, com um parâmetro no lugar
+# de cada valor; a soma que começa pelo valor não faz chamada.
 #
 # Os campos:
 # - `language`: as línguas do registro (`languages.toml`) cujos arquivos a

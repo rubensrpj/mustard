@@ -46,7 +46,8 @@ use super::scan_claude;
 /// `CLAUDE.md` is ever written. The hard cap guards the map against a runaway
 /// generator.
 pub fn run(root: &Path, out: Option<&Path>, full: bool) {
-    let result = scan_at(root, out, full, |root, model| Scan::locate().scan(root, model));
+    let session = crate::shared::spec_state::session_from_env();
+    let result = scan_at(root, out, full, session.as_deref(), |root, model| Scan::locate().scan(root, model));
     // Com o mapa do projeto gravado, o texto dos pull requests que a
     // história dele cita e ele ainda não tem, lido do provedor sem travar.
     if out.is_none() && result["ok"] == json!(true) {
@@ -58,11 +59,14 @@ pub fn run(root: &Path, out: Option<&Path>, full: bool) {
 /// O núcleo testável de [`run`]: o relatório que o comando imprime. `mine`
 /// é a leitura do projeto pela ferramenta do scan, que grava o mapa em
 /// `model`; o comando passa a ferramenta instalada, e o teste, uma que
-/// grava o mapa dos arquivos do disco ou que falha.
+/// grava o mapa dos arquivos do disco ou que falha. O teto do nome comum
+/// escrito errado no `mustard.json` sai em `warning` uma vez na sessão
+/// `session`.
 pub(crate) fn scan_at(
     root: &Path,
     out: Option<&Path>,
     full: bool,
+    session: Option<&str>,
     mine: impl FnOnce(&Path, &Path) -> mustard_core::platform::error::Result<ScanReport>,
 ) -> Value {
     let model_path = out.map_or_else(|| store::model_path(root), Path::to_path_buf);
@@ -111,6 +115,9 @@ pub(crate) fn scan_at(
 
     // Only run the map pass when grain succeeded (model file is valid).
     if scan_result.is_ok() {
+        if let Some(warning) = ceiling_warning(root, session) {
+            result["warning"] = json!(warning);
+        }
         let mut projects = read_projects(&model_path);
         // The grain miner is git-blind; stamp the git-boundary FACT onto the
         // census here (a `.git` dir/file at each subproject's dir) so the
@@ -144,6 +151,23 @@ pub(crate) fn scan_at(
     // anterior ainda acha o arquivo que já saiu.
     review_lessons(root, scan_result.is_ok().then_some(model_path.as_path()), &mut result);
     result
+}
+
+/// O aviso do teto do nome comum inválido no `mustard.json` de `root`, com o
+/// valor lido e o padrão que o scan usou no lugar dele, quando ainda não saiu
+/// na sessão `session`. `None` com o teto válido ou ausente.
+pub(crate) fn ceiling_warning(root: &Path, session: Option<&str>) -> Option<String> {
+    let config = mustard_core::ProjectConfig::load(root);
+    let (ceiling, invalid) = config.scan_max_same_name();
+    if !invalid || !super::map::first_warning(root, session, "scan.max_same_name") {
+        return None;
+    }
+    let written = config.scan.max_same_name.as_ref().map_or_else(String::new, Value::to_string);
+    Some(
+        translate("scan.bad_max_same_name", config.language().text_or_default())
+            .replace("{value}", &written)
+            .replace("{default}", &ceiling.to_string()),
+    )
 }
 
 /// Lê o banco de lições e põe no relatório o que enxugar nele: em `lessons`,
@@ -321,6 +345,42 @@ mod tests {
     /// apagado, aponta as duas parecidas como um grupo a juntar e a outra como
     /// candidata a sair, e o passo seguinte manda juntar e retirar pelo
     /// comando de gravar lição. O banco fica com os mesmos bytes.
+    /// O teto do nome comum escrito errado no `mustard.json` (zero, negativo
+    /// ou texto) sai em `warning` na primeira passada da sessão, com a chave,
+    /// o valor lido e o padrão que valeu; a segunda passada da mesma sessão
+    /// não o repete, a de outra sessão o traz de novo, e sem sessão ele sai
+    /// toda vez. O teto válido não avisa.
+    #[test]
+    fn an_invalid_common_name_ceiling_warns_once_per_session() {
+        for (bad, shown) in [("0", "0"), ("-3", "-3"), ("\"dois\"", "\"dois\"")] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let root = dir.path();
+            write(&root.join("src/lib.rs"), "pub fn run() {}\n");
+            write(&root.join("mustard.json"), &format!(r#"{{"scan": {{"max_same_name": {bad}}}}}"#));
+
+            let first = scan_at(root, None, false, Some("sessao-a"), mine_disk);
+            let warning = first["warning"].as_str().unwrap_or_else(|| panic!("{bad}: sem aviso: {first}"));
+            for part in ["scan.max_same_name", shown, "8"] {
+                assert!(warning.contains(part), "{bad}: o aviso cita {part}: {warning}");
+            }
+            let again = scan_at(root, None, false, Some("sessao-a"), mine_disk);
+            assert!(again.get("warning").is_none(), "{bad}: um aviso por sessão: {again}");
+            let other = scan_at(root, None, false, Some("sessao-b"), mine_disk);
+            assert!(other.get("warning").is_some(), "{bad}: outra sessão avisa: {other}");
+            for _ in 0..2 {
+                let unknown = scan_at(root, None, false, None, mine_disk);
+                assert!(unknown.get("warning").is_some(), "{bad}: sem sessão, avisa sempre: {unknown}");
+            }
+        }
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        write(&root.join("src/lib.rs"), "pub fn run() {}\n");
+        write(&root.join("mustard.json"), r#"{"scan": {"max_same_name": 12}}"#);
+        let valid = scan_at(root, None, false, None, mine_disk);
+        assert!(valid.get("warning").is_none(), "{valid}");
+    }
+
     #[test]
     fn the_scan_points_out_similar_lessons_and_the_one_citing_a_deleted_file_without_touching_the_bank() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -336,13 +396,13 @@ mod tests {
         let second = rule(&bank, sub, "Subcomando novo de `run` exige QUATRO registros (variante no enum, braço no `dispatch()`, entrada na lista trancada e um chamador).", &["rt", "subcomando", "exige", "quatro", "registros", "variante", "família"]);
         let stale = rule(&bank, "packages/core", "Trate a contagem de tokens (`domain/economy/estimator.rs`) como aproximação.", &["core", "contagem", "tokens"]);
 
-        let before = scan_at(root, None, false, mine_disk);
+        let before = scan_at(root, None, false, None, mine_disk);
         assert_eq!(before["lessons"]["similar"], serde_json::json!([[first, second]]), "{before}");
         assert_eq!(before["lessons"]["missing_paths"], serde_json::json!([]), "o arquivo ainda existe: {before}");
 
         std::fs::remove_file(&cited).expect("apaga o arquivo citado");
         let bytes = std::fs::read(&bank).expect("o banco");
-        let result = scan_at(root, None, false, mine_disk);
+        let result = scan_at(root, None, false, None, mine_disk);
         assert_eq!(result["lessons"]["similar"], serde_json::json!([[first, second]]), "{result}");
         assert_eq!(
             result["lessons"]["missing_paths"],
@@ -375,10 +435,10 @@ mod tests {
         let second = rule(&bank, sub, "Subcomando novo de `run` exige QUATRO registros (variante no enum, braço no `dispatch()`, entrada na lista trancada e um chamador).", &["rt", "subcomando", "exige", "quatro", "registros", "variante", "família"]);
         rule(&bank, "packages/core", "Trate a contagem de tokens (`domain/economy/estimator.rs`) como aproximação.", &["core", "contagem", "tokens"]);
 
-        let mined = scan_at(root, None, false, mine_disk);
+        let mined = scan_at(root, None, false, None, mine_disk);
         assert_eq!(mined["lessons"]["missing_paths"], serde_json::json!([]), "o mapa acha o arquivo: {mined}");
 
-        let failed = scan_at(root, None, false, mine_fails);
+        let failed = scan_at(root, None, false, None, mine_fails);
         assert_eq!(failed["ok"], serde_json::json!(false), "{failed}");
         assert_eq!(failed["lessons"]["missing_paths"], serde_json::json!([]), "o arquivo existe: {failed}");
         assert_eq!(failed["lessons"]["similar"], serde_json::json!([[first, second]]), "{failed}");
@@ -386,7 +446,7 @@ mod tests {
         assert!(!next.contains("\"targets\""), "nada a retirar: {next}");
 
         std::fs::remove_file(&cited).expect("apaga o arquivo citado");
-        let failed = scan_at(root, None, false, mine_fails);
+        let failed = scan_at(root, None, false, None, mine_fails);
         assert_eq!(failed["lessons"]["missing_paths"], serde_json::json!([]), "sem o mapa, nada falta: {failed}");
     }
 
@@ -416,7 +476,7 @@ mod tests {
         rule(&bank, "packages/core", "Trate a contagem de tokens (`domain/economy/estimator.rs`) como aproximação.", &["core", "contagem", "tokens"]);
         let gone = rule(&bank, "packages/core", "O cálculo do frete (`domain/economy/freight.rs`) arredonda para cima.", &["core", "frete", "arredonda"]);
 
-        let result = scan_at(root, None, false, mine_disk_with_a_broken_column);
+        let result = scan_at(root, None, false, None, mine_disk_with_a_broken_column);
         assert_eq!(
             result["lessons"]["missing_paths"],
             serde_json::json!([{"id": gone, "paths": ["domain/economy/freight.rs"]}]),
@@ -441,7 +501,7 @@ mod tests {
         let stale = rule(&bank, "packages/core", "Trate a contagem de tokens (`domain/economy/estimator.rs`) como aproximação.", &["core", "contagem", "tokens"]);
 
         // O arquivo ainda não existe: um mapeamento bom aponta a lição.
-        let before = scan_at(root, None, false, mine_disk);
+        let before = scan_at(root, None, false, None, mine_disk);
         assert_eq!(
             before["lessons"]["missing_paths"],
             serde_json::json!([{"id": stale, "paths": ["domain/economy/estimator.rs"]}]),
@@ -451,7 +511,7 @@ mod tests {
         // O arquivo nasce, e um mapeamento que falha roda: sem o mapa desta
         // vez, a lição não é apontada como sem arquivo.
         write(&cited, "pub fn estimate() -> usize { 0 }\n");
-        let failed = scan_at(root, None, false, mine_fails);
+        let failed = scan_at(root, None, false, None, mine_fails);
         assert_eq!(failed["ok"], serde_json::json!(false), "{failed}");
         assert!(
             failed.get("lessons").is_none(),
@@ -530,11 +590,11 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path();
         write(&root.join("src/main.rs"), "fn main() {}\n");
-        let result = scan_at(root, None, false, mine_disk);
+        let result = scan_at(root, None, false, None, mine_disk);
         assert!(result.get("lessons").is_none() && result.get("next").is_none(), "{result}");
         let bank = ClaudePaths::for_project(root).expect("paths").lessons_path();
         rule(&bank, "src", "O `main.rs` só chama a biblioteca.", &["main"]);
-        let result = scan_at(root, None, false, mine_disk);
+        let result = scan_at(root, None, false, None, mine_disk);
         assert!(result.get("lessons").is_none() && result.get("next").is_none(), "{result}");
     }
 
@@ -563,14 +623,14 @@ mod tests {
         let head = "345b9361a952fba302c9f811626e26bea7fac2f2";
 
         let whole = format!(r#"{{"ok":true,"full":true,"read":["src/lib.rs","src/main.rs"],"files":2,"head":"{head}"}}"#);
-        let answer = scan_at(root, None, false, mine_reporting(whole));
+        let answer = scan_at(root, None, false, None, mine_reporting(whole));
         assert_eq!(answer["ok"], json!(true), "{answer}");
         assert_eq!(answer["full"], json!(true), "{answer}");
         assert_eq!(answer["read"], json!(2), "{answer}");
         assert_eq!(answer["files"], json!(2), "{answer}");
 
         let changed = format!(r#"{{"ok":true,"full":false,"read":["src/lib.rs"],"files":2,"head":"{head}"}}"#);
-        let answer = scan_at(root, None, false, mine_reporting(changed));
+        let answer = scan_at(root, None, false, None, mine_reporting(changed));
         assert_eq!(answer["full"], json!(false), "{answer}");
         assert_eq!(answer["read"], json!(1), "{answer}");
         let text = answer.to_string();
@@ -578,7 +638,7 @@ mod tests {
 
         let read: Vec<String> = (0..1349).map(|n| format!("src/modulo_{n}.ts")).collect();
         let suzano = json!({"ok": true, "full": true, "read": read, "files": 1349, "head": head}).to_string();
-        let answer = scan_at(root, None, false, mine_reporting(suzano));
+        let answer = scan_at(root, None, false, None, mine_reporting(suzano));
         assert_eq!(answer["read"], json!(1349), "{answer}");
         let text = answer.to_string();
         assert!(!text.contains("modulo_"), "a resposta não leva os nomes: {text}");

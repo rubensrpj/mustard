@@ -11,8 +11,9 @@
 # (`final http.Client cliente;`). O endereço vem escrito ali, no
 # `Uri.parse('…')` ou no segundo argumento do `Uri.https('máquina', '/caminho')`
 # e do `Uri.http(…)`; ele vale sem o esquema e a máquina. O endereço escrito
-# como texto somado a um valor (`'https://loja.com/api/pedidos/' + id`) é o
-# texto com um parâmetro no fim, no lugar do valor.
+# como soma que começa por texto (`'https://loja.com/api/pedidos/' + id`)
+# junta os pedaços, com um parâmetro no lugar de cada valor; a soma que começa
+# pelo valor não faz chamada.
 #
 # Os campos:
 # - `language`: as línguas do registro (`languages.toml`) cujos arquivos a

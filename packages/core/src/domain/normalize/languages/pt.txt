@@ -1,3 +1,5 @@
+# A raiz das palavras desta língua: o algoritmo do Snowball, pelo nome.
+stem: portuguese
 # Snowball Portuguese stop-word list, vendored as DATA.
 # Source: https://snowballstem.org/algorithms/portuguese/stop.txt (BSD-3-Clause).
 # Comments were stripped; one word per line. Lines starting with # are ignored.
@@ -213,3 +215,65 @@ teriam
 # ambiguity visible.
 toda
 todas
+# Acréscimos locais: as palavras do português que fazem o papel de uma palavra
+# da lista do inglês, para a mesma pergunta nas duas línguas perder as mesmas
+# palavras ("onde" é "where", "cada" é "each", "é" é "is"). "aí" fica de fora:
+# sem acento, é o "ai" dos nomes do código.
+é
+ser
+ter
+têm
+havia
+onde
+aonde
+porque
+pois
+quais
+qualquer
+quaisquer
+ambos
+ambas
+cada
+poucos
+poucas
+outro
+outra
+outros
+outras
+algum
+alguma
+alguns
+algumas
+tal
+tais
+apenas
+somente
+próprio
+própria
+próprios
+próprias
+mesma
+mesmos
+mesmas
+então
+assim
+tão
+sobre
+contra
+durante
+antes
+após
+acima
+abaixo
+sob
+dentro
+através
+novamente
+além
+aqui
+ali
+lá
+enquanto
+muita
+muitos
+muitas

@@ -2,8 +2,8 @@
 ; `Http.PostAsJsonAsync("api/x", p)`): a chamada conta com qualquer objeto,
 ; como o `Http` que a página recebe do framework sem o declarar. O caminho é o
 ; primeiro argumento; o que não é texto escrito ali (`Http.GetStringAsync(url)`)
-; não faz chamada. O texto somado a um valor (`"api/pedidos/" + id`) é o
-; caminho com um parâmetro no lugar do valor.
+; não faz chamada. A soma que começa por texto (`"api/pedidos/" + id + "/itens"`)
+; é o caminho com um parâmetro no lugar de cada valor.
 ((invocation_expression
    function: (member_access_expression
      expression: (_) @client.receiver.any
@@ -15,10 +15,7 @@
         (verbatim_string_literal) @client.path
         (raw_string_literal) @client.path
         (interpolated_string_expression) @client.path
-        (binary_expression
-          left: [(string_literal) (verbatim_string_literal) (raw_string_literal) (interpolated_string_expression)] @client.path
-          operator: "+"
-          right: [(identifier) (member_access_expression) (invocation_expression) (element_access_expression) (parenthesized_expression)] @client.path.tail)])))
+        (binary_expression operator: "+") @client.path.sum])))
  (#match? @client.method "^(GetFromJsonAsync|GetStringAsync|GetByteArrayAsync|GetStreamAsync|PostAsJsonAsync|PutAsJsonAsync|PatchAsJsonAsync|DeleteFromJsonAsync)$"))
 
 ; Os nomes que outras bibliotecas também usam (`_http.GetAsync("api/x")`): a
@@ -36,10 +33,7 @@
         (verbatim_string_literal) @client.path
         (raw_string_literal) @client.path
         (interpolated_string_expression) @client.path
-        (binary_expression
-          left: [(string_literal) (verbatim_string_literal) (raw_string_literal) (interpolated_string_expression)] @client.path
-          operator: "+"
-          right: [(identifier) (member_access_expression) (invocation_expression) (element_access_expression) (parenthesized_expression)] @client.path.tail)])))
+        (binary_expression operator: "+") @client.path.sum])))
  (#match? @client.method "^(GetAsync|PostAsync|PutAsync|PatchAsync|DeleteAsync)$"))
 
 ; A mensagem montada na chamada:
@@ -61,13 +55,26 @@
               (verbatim_string_literal) @client.path
               (raw_string_literal) @client.path
               (interpolated_string_expression) @client.path
-              (binary_expression
-                left: [(string_literal) (verbatim_string_literal) (raw_string_literal) (interpolated_string_expression)] @client.path
-                operator: "+"
-                right: [(identifier) (member_access_expression) (invocation_expression) (element_access_expression) (parenthesized_expression)] @client.path.tail)]))))))
+              (binary_expression operator: "+") @client.path.sum]))))))
  (#eq? @client.method "SendAsync")
  (#eq? @_message "HttpRequestMessage")
  (#eq? @_http "HttpMethod"))
+
+; A soma, pedaço por pedaço: o primeiro é texto ou outra soma; o que fica
+; entre dois sinais de somar é um pedaço, e o texto escrito ali leva
+; `client.sum.text`.
+(binary_expression
+  left: [(string_literal) @client.sum.text
+         (verbatim_string_literal) @client.sum.text
+         (raw_string_literal) @client.sum.text
+         (interpolated_string_expression) @client.sum.text
+         (binary_expression)]
+  operator: "+" @client.sum.plus) @client.sum
+
+(binary_expression
+  left: [(string_literal) (verbatim_string_literal) (raw_string_literal) (interpolated_string_expression) (binary_expression)]
+  operator: "+"
+  right: [(string_literal) (verbatim_string_literal) (raw_string_literal) (interpolated_string_expression)] @client.sum.text)
 
 ; O cliente declarado com o tipo, sem base: a propriedade
 ; (`[Inject] public HttpClient Http { get; set; }`), o campo, a variável e o

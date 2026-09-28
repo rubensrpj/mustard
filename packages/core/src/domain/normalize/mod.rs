@@ -12,10 +12,13 @@
 //! palavra de conteúdo parecida (a de "some" nunca é a de "somar").
 //!
 //! As línguas vêm do projeto e são passadas por quem busca ([`Languages`]).
-//! A raiz de cada língua vem de [`STEMMERS`], a única tabela que liga uma
-//! língua a um algoritmo; a língua fora dela fica sem raiz, e a palavra dela
-//! é comparada inteira. As palavras de ligação vêm de um arquivo de dados por
-//! língua, embutido no binário; a língua sem arquivo não tira palavra nenhuma.
+//! Cada língua é um arquivo de dados, `languages/<código>.txt`, embutido no
+//! binário: a linha `stem:` dá o algoritmo de raiz pelo nome, e as outras
+//! linhas são as palavras de ligação. A língua nova é um arquivo a mais na
+//! pasta, sem linha de código. [`STEMMERS`] é a única tabela que liga o nome
+//! ao algoritmo da biblioteca. A língua sem arquivo, ou sem a linha `stem:`,
+//! fica sem raiz, e a palavra dela é comparada inteira; a sem palavras de
+//! ligação não tira palavra nenhuma.
 //!
 //! Função pura: sem disco e sem relógio, a não ser [`Languages::of_project`],
 //! que lê a configuração do projeto.
@@ -28,47 +31,39 @@ use rust_stemmers::{Algorithm, Stemmer};
 use crate::domain::config::ProjectConfig;
 use crate::domain::text;
 
-/// A tabela única que liga a língua, pela parte da língua do código BCP-47,
-/// ao algoritmo de raiz: as 18 línguas da biblioteca de raízes. Nenhuma outra
-/// parte do código escolhe algoritmo.
+/// A tabela única que liga o nome do algoritmo de raiz, como o arquivo da
+/// língua o escreve na linha `stem:`, ao algoritmo da biblioteca: os 18 que
+/// ela tem. Nenhuma outra parte do código escolhe algoritmo.
 const STEMMERS: &[(&str, Algorithm)] = &[
-    ("ar", Algorithm::Arabic),
-    ("da", Algorithm::Danish),
-    ("nl", Algorithm::Dutch),
-    ("en", Algorithm::English),
-    ("fi", Algorithm::Finnish),
-    ("fr", Algorithm::French),
-    ("de", Algorithm::German),
-    ("el", Algorithm::Greek),
-    ("hu", Algorithm::Hungarian),
-    ("it", Algorithm::Italian),
-    ("no", Algorithm::Norwegian),
-    ("pt", Algorithm::Portuguese),
-    ("ro", Algorithm::Romanian),
-    ("ru", Algorithm::Russian),
-    ("es", Algorithm::Spanish),
-    ("sv", Algorithm::Swedish),
-    ("ta", Algorithm::Tamil),
-    ("tr", Algorithm::Turkish),
+    ("arabic", Algorithm::Arabic),
+    ("danish", Algorithm::Danish),
+    ("dutch", Algorithm::Dutch),
+    ("english", Algorithm::English),
+    ("finnish", Algorithm::Finnish),
+    ("french", Algorithm::French),
+    ("german", Algorithm::German),
+    ("greek", Algorithm::Greek),
+    ("hungarian", Algorithm::Hungarian),
+    ("italian", Algorithm::Italian),
+    ("norwegian", Algorithm::Norwegian),
+    ("portuguese", Algorithm::Portuguese),
+    ("romanian", Algorithm::Romanian),
+    ("russian", Algorithm::Russian),
+    ("spanish", Algorithm::Spanish),
+    ("swedish", Algorithm::Swedish),
+    ("tamil", Algorithm::Tamil),
+    ("turkish", Algorithm::Turkish),
 ];
 
-/// As palavras de ligação das línguas que o Snowball publica, um arquivo por
-/// língua, uma palavra por linha; a linha que começa com `#` é comentário.
-const STOPWORDS: &[(&str, &str)] = &[
-    ("da", include_str!("stopwords/da.txt")),
-    ("de", include_str!("stopwords/de.txt")),
-    ("en", include_str!("stopwords/en.txt")),
-    ("es", include_str!("stopwords/es.txt")),
-    ("fi", include_str!("stopwords/fi.txt")),
-    ("fr", include_str!("stopwords/fr.txt")),
-    ("hu", include_str!("stopwords/hu.txt")),
-    ("it", include_str!("stopwords/it.txt")),
-    ("nl", include_str!("stopwords/nl.txt")),
-    ("no", include_str!("stopwords/no.txt")),
-    ("pt", include_str!("stopwords/pt.txt")),
-    ("ru", include_str!("stopwords/ru.txt")),
-    ("sv", include_str!("stopwords/sv.txt")),
-];
+/// Os arquivos das línguas, pela parte da língua do código BCP-47: um por
+/// arquivo da pasta `languages/`, com o texto dele, na tabela que o script de
+/// compilação grava. Em cada arquivo, a linha que começa com `#` é
+/// comentário, a linha `stem:` dá o nome do algoritmo de raiz, e cada outra
+/// linha é uma palavra de ligação.
+const LANGUAGE_FILES: &[(&str, &str)] = include!(concat!(env!("OUT_DIR"), "/languages.rs"));
+
+/// O começo da linha que dá, no arquivo da língua, o nome do algoritmo de raiz.
+const STEM_LINE: &str = "stem:";
 
 /// As línguas em que as palavras de uma busca são cortadas: a parte da
 /// língua de cada código declarado (`pt` de `pt-BR`), em minúsculas, sem
@@ -261,19 +256,33 @@ impl Normalizer {
     }
 }
 
-/// O algoritmo de raiz da língua, pela tabela [`STEMMERS`].
-fn algorithm(language: &str) -> Option<Algorithm> {
-    STEMMERS.iter().find(|(code, _)| *code == language).map(|(_, algorithm)| *algorithm)
-}
-
-/// As palavras de ligação da língua; nenhuma quando ela não tem arquivo.
-fn stopwords(language: &str) -> impl Iterator<Item = &'static str> + '_ {
-    STOPWORDS
+/// As linhas de dado do arquivo da língua, sem as vazias e sem os
+/// comentários; nenhuma quando ela não tem arquivo.
+fn entries(language: &str) -> impl Iterator<Item = &'static str> + '_ {
+    LANGUAGE_FILES
         .iter()
         .filter(move |(code, _)| *code == language)
-        .flat_map(|(_, list)| list.lines())
+        .flat_map(|(_, file)| file.lines())
         .map(str::trim)
-        .filter(|word| !word.is_empty() && !word.starts_with('#'))
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+}
+
+/// O nome do algoritmo de raiz que o arquivo da língua dá na linha `stem:`.
+fn stem_name(language: &str) -> Option<&'static str> {
+    entries(language).find_map(|line| line.strip_prefix(STEM_LINE)).map(str::trim)
+}
+
+/// O algoritmo de raiz da língua: o nome que o arquivo dela dá, pela tabela
+/// [`STEMMERS`].
+fn algorithm(language: &str) -> Option<Algorithm> {
+    let name = stem_name(language)?;
+    STEMMERS.iter().find(|(known, _)| *known == name).map(|(_, algorithm)| *algorithm)
+}
+
+/// As palavras de ligação da língua: as linhas do arquivo dela fora a do
+/// algoritmo; nenhuma quando ela não tem arquivo.
+fn stopwords(language: &str) -> impl Iterator<Item = &'static str> + '_ {
+    entries(language).filter(|line| !line.starts_with(STEM_LINE))
 }
 
 #[cfg(test)]
@@ -433,6 +442,84 @@ mod tests {
                 "{question}: spec, map, lessons and skills side by side"
             );
         }
+    }
+
+    /// A mesma pergunta, em português e em inglês, acha o mesmo arquivo no
+    /// mapa: a raiz de "validado" encontra a de "validates", e as palavras
+    /// que só ligam a frase saem nas duas línguas ("onde", "é", "cada" e
+    /// "antes" saem como "where", "is", "each" e "before"). Sem isso, a
+    /// pergunta em português acharia primeiro o arquivo cuja documentação,
+    /// em português, repete essas palavras.
+    #[test]
+    fn the_same_question_in_portuguese_and_english_finds_the_same_target() {
+        use crate::domain::project_map::{MapDecl, MapModule, ProjectMap};
+        use crate::io::{map_search, project_map as store};
+
+        let languages = Languages::new(["pt-BR", "en-US"]);
+        let mut normalizer = Normalizer::new(&languages);
+        assert!(normalizer.query("Onde é que cada um antes de ser").is_empty());
+        assert!(normalizer.query("Where is each of these before it is").is_empty());
+
+        let module = |path: &str, name: &str, doc: &str| MapModule {
+            path: path.to_string(),
+            declarations: vec![MapDecl { name: name.to_string(), doc: doc.to_string(), ..MapDecl::default() }],
+            ..MapModule::default()
+        };
+        let map = ProjectMap {
+            modules: vec![
+                module("src/orders.rs", "validate_order", "Validates the order before it is saved."),
+                module(
+                    "src/notes.rs",
+                    "notes",
+                    "Onde cada nota é guardada: é aqui, onde cada parte é lida antes e onde cada linha é escrita antes.",
+                ),
+                module("src/page.rs", "render_page", "Renders the page."),
+                module("src/line.rs", "parse_line", "Parses one line."),
+            ],
+            ..ProjectMap::default()
+        };
+        let project = tempfile::tempdir().unwrap();
+        store::write(project.path(), &map).unwrap();
+        let first = |question: &str| {
+            let found = map_search::search(project.path(), question, &languages, 5).unwrap();
+            found.first().map(|file| file.path.clone()).unwrap_or_default()
+        };
+        let portuguese = first("Onde é que cada pedido é validado antes de ser salvo?");
+        let english = first("Where is each order validated before it is saved?");
+        assert_eq!(english, "src/orders.rs");
+        assert_eq!(portuguese, english, "the same question in both languages finds the same file");
+    }
+
+    /// Cada língua é um arquivo da pasta das línguas, e cada arquivo da pasta
+    /// entra no binário: a língua nova é um arquivo a mais, sem linha de
+    /// código. A linha `stem:` de cada arquivo nomeia um algoritmo da tabela,
+    /// e cada algoritmo da tabela tem a sua língua.
+    #[test]
+    fn each_language_is_one_data_file_of_the_folder() {
+        let folder = Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("domain").join("normalize").join("languages");
+        let mut on_disk: Vec<String> = std::fs::read_dir(&folder)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "txt"))
+            .filter_map(|path| path.file_stem().and_then(|stem| stem.to_str()).map(str::to_string))
+            .collect();
+        on_disk.sort();
+        let mut built_in: Vec<String> = LANGUAGE_FILES.iter().map(|(code, _)| (*code).to_string()).collect();
+        built_in.sort();
+        assert_eq!(built_in, on_disk, "every file of the folder is built in");
+
+        for (code, _) in LANGUAGE_FILES {
+            if let Some(name) = stem_name(code) {
+                assert!(STEMMERS.iter().any(|(known, _)| *known == name), "{code}: unknown stem {name}");
+            }
+        }
+        for (name, _) in STEMMERS {
+            assert!(LANGUAGE_FILES.iter().any(|(code, _)| stem_name(code) == Some(*name)), "no language uses {name}");
+        }
+        assert_eq!(stem_name("pt"), Some("portuguese"));
+        assert!(!stopwords("pt").any(|word| word.starts_with(STEM_LINE)), "the stem line is not a function word");
+        assert!(stopwords("pt").any(|word| word == "onde"));
     }
 
     /// Nenhuma parte do código escolhe um algoritmo de raiz fora da tabela

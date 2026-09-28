@@ -253,7 +253,7 @@ fn answer_from(
             Ok(json!({ "ok": true, "question": "summary", "bytes": text.len(), "summary": text }))
         }
         Question::Slice => slice(opts, root, read),
-        Question::Users => users(opts, lang, read),
+        Question::Users => users(opts, root, lang, read),
         Question::History => history(opts, root, lang, read, trace),
         Question::Examples => examples(opts, lang, languages, read),
         Question::Skill => skill(opts, root, read),
@@ -538,8 +538,9 @@ fn slice(opts: &MapOpts, root: &Path, read: &Reader<'_>) -> Result<Value, MapRef
 /// alcançam, como `arquivo:linha:quem chama`: as provadas em `screens`, e as
 /// suspeitas em `suspect`, agrupadas pelas funções que a chamada pode
 /// alcançar. A que ninguém usa leva a nota que diz isso, para que a lista
-/// vazia não pareça um mapa sem a informação.
-fn users(opts: &MapOpts, lang: Locale, read: &Reader<'_>) -> Result<Value, MapRefusal> {
+/// vazia não pareça um mapa sem a informação. O teto do nome comum escrito
+/// errado no `mustard.json` sai em `warning`, uma vez por sessão.
+fn users(opts: &MapOpts, root: &Path, lang: Locale, read: &Reader<'_>) -> Result<Value, MapRefusal> {
     let name = after_the_map(required(opts.name.as_deref(), opts.question, "--name"), read)?;
     let file = opts.file.as_deref().map(str::trim).filter(|f| !f.is_empty());
     let found = project_map::users(&read(Need::Declarations { file, name: &name })?, file, &name)?;
@@ -618,6 +619,9 @@ fn users(opts: &MapOpts, lang: Locale, read: &Reader<'_>) -> Result<Value, MapRe
     }
     if let Some(file) = file {
         report["file"] = json!(project_map::clean_path(file));
+    }
+    if let Some(warning) = crate::commands::scan::ceiling_warning(root, opts.session.as_deref()) {
+        report["warning"] = json!(warning);
     }
     Ok(report)
 }
@@ -900,7 +904,7 @@ fn name_history(opts: &MapOpts, root: &Path, lang: Locale, read: &Reader<'_>, tr
 /// se não saiu, marca que saiu, em `.claude/.session/<sessão>/`. Sem sessão
 /// conhecida, avisa sempre: repetir o aviso é melhor que calar o valor que
 /// não vale.
-fn first_warning(root: &Path, session: Option<&str>, key: &str) -> bool {
+pub(crate) fn first_warning(root: &Path, session: Option<&str>, key: &str) -> bool {
     let usable = |s: &&str| !s.is_empty() && *s != "unknown" && !s.starts_with('.') && !s.contains(['/', '\\']);
     let Some(session) = session.map(str::trim).filter(usable) else {
         return true;
@@ -1030,6 +1034,31 @@ mod tests {
         std::fs::write(&config, r#"{"language": {"text": "pt-BR", "code": "pt-BR"}}"#).unwrap();
         let report = answered(&opts);
         assert_eq!(report["files"], json!([]), "{report}");
+    }
+
+    /// A resposta de quem usa, onde a contagem das chamadas comuns aparece,
+    /// traz em `warning` o teto do nome comum escrito errado no
+    /// `mustard.json`, com a chave, o valor lido e o padrão, uma vez na
+    /// sessão; a mesma pergunta de novo na sessão não o repete.
+    #[test]
+    fn users_warns_once_per_session_about_an_invalid_common_name_ceiling() {
+        let dir = tempdir().unwrap();
+        store::write_text(
+            dir.path(),
+            r#"{"modules": [{"path": "src/m1.rs", "loc": 3, "declarations": [{"name": "comum", "common_calls": 1}]}]}"#,
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("mustard.json"), r#"{"scan": {"max_same_name": "dois"}}"#).unwrap();
+        let opts = MapOpts { name: Some("comum".to_string()), session: Some("sessao".to_string()), ..ask(dir.path(), Question::Users) };
+
+        let first = answered(&opts);
+        assert_eq!(first["declarations"][0]["common_calls"], json!(1), "{first}");
+        let warning = first["warning"].as_str().unwrap_or_else(|| panic!("sem aviso: {first}"));
+        for part in ["scan.max_same_name", "\"dois\"", "8"] {
+            assert!(warning.contains(part), "o aviso cita {part}: {warning}");
+        }
+        let again = answered(&opts);
+        assert!(again.get("warning").is_none(), "um aviso por sessão: {again}");
     }
 
     /// O índice da busca guarda as línguas em que foi feito: quando o projeto

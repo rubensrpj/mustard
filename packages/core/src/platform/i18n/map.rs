@@ -52,6 +52,16 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("scan.map.language.pt-BR", Locale::EnUs) => "Portuguese",
         ("scan.map.language.en-US", Locale::PtBr) => "inglês",
         ("scan.map.language.en-US", Locale::EnUs) => "English",
+        // O teto do nome comum escrito errado no `mustard.json`: sai na
+        // resposta do scan e na de quem usa, uma vez por sessão.
+        ("scan.bad_max_same_name", Locale::PtBr) => {
+            "O valor {value} de scan.max_same_name no mustard.json não vale, porque o número tem que ser inteiro e \
+             maior que zero. O scan usa o padrão, {default}."
+        }
+        ("scan.bad_max_same_name", Locale::EnUs) => {
+            "The value {value} of scan.max_same_name in mustard.json does not count, because the number must be a \
+             whole number above zero. The scan uses the default, {default}."
+        }
         // The project map (`run map`): refusals, reasons of the examples and
         // the session-start summary.
         ("map.missing", Locale::PtBr) => "O mapa do projeto ainda não existe. Rode `mustard-rt run scan`.",
@@ -315,8 +325,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("map.rs"),
             super::PREFIXES,
-            61,
-            0x81d0_44dd_7849_0184,
+            62,
+            0xe1b1_9355_3c0e_829e,
         );
     }
 
@@ -350,6 +360,7 @@ mod tests {
                 "map.search.bad_number",
                 "map.search.bad_filter",
                 "map.search.key_file_open",
+                "scan.bad_max_same_name",
             ] {
                 let text = translate(key, lang)
                     .replace("{name}", "run")
@@ -366,7 +377,8 @@ mod tests {
                     .replace("{code}", "combinado")
                     .replace("{sentence}", "O pedido sai em uma frase.")
                     .replace("{reason}", translate("map.search.reason.timeout", lang))
-                    .replace("{path}", "/casa/jev.key");
+                    .replace("{path}", "/casa/jev.key")
+                    .replace("{value}", "dois");
                 let report = crate::domain::clarity::measure(&text, &[], Some(lang));
                 assert!(report.passed, "{key} {lang:?}: {report:?}");
             }
@@ -513,6 +525,7 @@ mod tests {
             ("map.search.bad_number", &["{key}", "{default}"][..]),
             ("map.search.bad_filter", &[][..]),
             ("map.search.key_file_open", &["{path}"][..]),
+            ("scan.bad_max_same_name", &["scan.max_same_name", "{value}", "{default}"][..]),
             ("doctor.scan_output.visible", &["{paths}"][..]),
         ] {
             let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));

@@ -1008,12 +1008,13 @@ fn a_path_kept_in_a_variable_makes_no_call_and_no_link() {
 /// O caminho escrito como texto e somado a um valor
 /// (`'/api/pedidos/' + id`) é o texto com um parâmetro no lugar do valor: a
 /// chamada do axios e a do `fetch` ligam provadas à rota `api/pedidos/:id`.
-/// A soma que começa pelo valor, ou que soma texto a texto, não faz chamada.
+/// A soma que começa pelo valor, escrita ali ou com o texto vazio na frente,
+/// não faz chamada.
 #[test]
 fn a_path_written_as_text_plus_a_value_links_with_a_parameter_in_the_place_of_the_value() {
     let screen = "import axios from 'axios';\n\nexport function abrir(id: string) {\n  return axios.get('/api/pedidos/' + id);\n}\n\n\
                   export function buscar(pedido: { id: string }) {\n  return fetch('/api/pedidos/' + pedido.id);\n}\n\n\
-                  export function outros(caminho: string) {\n  axios.get(caminho + '/5');\n  return fetch('/api/' + 'pedidos');\n}\n";
+                  export function outros(caminho: string) {\n  axios.get(caminho + '/5');\n  return fetch('' + caminho + '/5');\n}\n";
     let temp = project_with(&[
         ("servidor/src/pedidos.ts", &express_server(&[("get", "/api/pedidos/:id", "ler")])),
         ("tela/src/pedidos.ts", screen),
@@ -1054,6 +1055,72 @@ fn a_path_written_as_text_plus_a_value_links_in_csharp_and_in_dart() {
     assert_eq!(
         called_by(&map, "Api/Controllers/PedidosController.cs", "GET", "api/pedidos/{}"),
         json!(["Web/Pages/PedidoPage.cs:11:OnInitializedAsync", "app/lib/pedidos.dart:6:abrir", "app/lib/tela.dart:4:ler"])
+    );
+}
+
+/// A soma de mais de dois pedaços que começa por texto junta todos eles, com
+/// um parâmetro no lugar de cada valor: `'/api/pedidos/' + id + '/itens'`
+/// liga provada a `api/pedidos/:id/itens`, a de quatro pedaços à rota do
+/// item, e o texto somado a texto (`'/api/' + 'pedidos'`) à rota da lista.
+/// A mesma soma começada por um valor segue sem chamada.
+#[test]
+fn a_path_summed_from_several_pieces_links_with_a_parameter_in_the_place_of_each_value() {
+    let screen = "import axios from 'axios';\n\nexport function itens(id: string) {\n  return axios.get('/api/pedidos/' + id + '/itens');\n}\n\n\
+                  export function item(id: string, n: number) {\n  return fetch('/api/pedidos/' + id + '/itens/' + n);\n}\n\n\
+                  export function lista() {\n  return fetch('/api/' + 'pedidos');\n}\n\n\
+                  export function solto(base: string, id: string) {\n  return axios.get(base + '/pedidos/' + id + '/itens');\n}\n";
+    let temp = project_with(&[
+        (
+            "servidor/src/pedidos.ts",
+            &express_server(&[
+                ("get", "/api/pedidos", "listar"),
+                ("get", "/api/pedidos/:id/itens", "listarItens"),
+                ("get", "/api/pedidos/:id/itens/:item", "lerItem"),
+            ]),
+        ),
+        ("tela/src/pedidos.ts", screen),
+    ]);
+    let (map, _) = scan(temp.path());
+    assert_eq!(
+        route_calls(&map, "tela/src/pedidos.ts"),
+        json!([
+            {"method": "GET", "path": "api/pedidos", "written": "/api/pedidos", "line": 12, "owner": "lista", "framework": "fetch"},
+            {"method": "GET", "path": "api/pedidos/{}/itens", "written": "/api/pedidos/{}/itens", "line": 4, "owner": "itens", "framework": "axios"},
+            {"method": "GET", "path": "api/pedidos/{}/itens/{}", "written": "/api/pedidos/{}/itens/{}", "line": 8, "owner": "item", "framework": "fetch"}
+        ])
+    );
+    let server = "servidor/src/pedidos.ts";
+    assert_eq!(called_by(&map, server, "GET", "api/pedidos/{}/itens"), json!(["tela/src/pedidos.ts:4:itens"]));
+    assert_eq!(called_by(&map, server, "GET", "api/pedidos/{}/itens/{}"), json!(["tela/src/pedidos.ts:8:item"]));
+    assert_eq!(called_by(&map, server, "GET", "api/pedidos"), json!(["tela/src/pedidos.ts:12:lista"]));
+}
+
+/// A mesma soma de três pedaços no C# e no Dart: a página Blazor, o dio,
+/// com o valor escrito como `pedido.id`, e o `http` com o `Uri.parse` ligam
+/// provados ao `GET` dos itens do controlador.
+#[test]
+fn a_path_summed_from_several_pieces_links_in_csharp_and_in_dart() {
+    let controller = "[ApiController]\n[Route(\"api/pedidos\")]\npublic class ItensController : ControllerBase\n{\n    \
+                      [HttpGet(\"{id}/itens\")]\n    public string Itens(int id) => \"itens\";\n}\n";
+    let page = "using Microsoft.AspNetCore.Components;\n\nnamespace Web.Pages;\n\npublic partial class ItensPage : ComponentBase\n{\n    \
+                [Parameter] public string Id { get; set; }\n\n    protected override async Task OnInitializedAsync()\n    {\n        \
+                var itens = await Http.GetFromJsonAsync<string>(\"api/pedidos/\" + Id + \"/itens\");\n    }\n}\n";
+    let dio = "import 'package:dio/dio.dart';\n\nfinal dio = Dio();\n\n\
+               Future<void> abrir(Pedido pedido) async {\n  await dio.get('/api/pedidos/' + pedido.id + '/itens');\n}\n";
+    let http = "import 'package:http/http.dart' as http;\n\nFuture<void> ler(String id) async {\n  \
+                await http.get(Uri.parse('https://api.loja.com/api/pedidos/' + id + '/itens'));\n}\n";
+    let blazor = csproj("Microsoft.NET.Sdk.BlazorWebAssembly");
+    let temp = web_project(&[
+        ("Api/Controllers/ItensController.cs", controller),
+        ("Web/Web.csproj", &blazor),
+        ("Web/Pages/ItensPage.cs", page),
+        ("app/lib/pedidos.dart", dio),
+        ("app/lib/tela.dart", http),
+    ]);
+    let (map, _) = scan(temp.path());
+    assert_eq!(
+        called_by(&map, "Api/Controllers/ItensController.cs", "GET", "api/pedidos/{}/itens"),
+        json!(["Web/Pages/ItensPage.cs:11:OnInitializedAsync", "app/lib/pedidos.dart:6:abrir", "app/lib/tela.dart:4:ler"])
     );
 }
 
@@ -1846,6 +1913,101 @@ fn a_scope_inside_the_function_of_a_configure_adds_the_outer_prefix() {
     let temp = project_with(&[("Cargo.toml", ACTIX_CARGO), ("src/main.rs", main)]);
     let (map, _) = scan(temp.path());
     assert_eq!(served(&map, "src/main.rs"), ["GET api/v1/{} -> ler", "GET api/y -> criar"]);
+}
+
+/// As montagens que o arquivo deixa para a soma entre arquivos seguir.
+fn mounts(map: &Value, path: &str) -> Value {
+    let module = map["modules"].as_array().unwrap().iter().find(|m| m["path"] == json!(path));
+    let module = module.unwrap_or_else(|| panic!("{path} no mapa"));
+    module.get("route_links").and_then(|links| links.get("mounts")).cloned().unwrap_or(json!([]))
+}
+
+/// O escopo guardado numa variável e montado pelo nome dentro de outro
+/// escopo já leva o prefixo de fora pelo grupo: o nome não deixa montagem
+/// para outro arquivo seguir, e a rota sai com os dois prefixos. A função
+/// trazida de outro arquivo, montada do mesmo jeito, segue deixando a dela.
+#[test]
+fn a_scope_kept_in_a_variable_leaves_no_mount_for_another_file() {
+    let main = "use actix_web::{get, web, App};\nuse crate::handlers::listar;\n\nmod handlers;\n\n\
+                #[get(\"/{id}\")]\nasync fn ler() -> &'static str {\n    \"\"\n}\n\n\
+                fn main() {\n    let v1 = web::scope(\"/v1\").service(ler);\n    \
+                App::new().service(web::scope(\"/api\").service(v1)).service(web::scope(\"/lista\").service(listar));\n}\n";
+    let handlers = "use actix_web::get;\n\n#[get(\"/todos\")]\npub async fn listar() -> &'static str {\n    \"\"\n}\n";
+    let temp = project_with(&[("Cargo.toml", ACTIX_CARGO), ("src/main.rs", main), ("src/handlers.rs", handlers)]);
+    let (map, _) = scan(temp.path());
+    assert_eq!(served(&map, "src/main.rs"), ["GET api/v1/{} -> ler"]);
+    assert_eq!(
+        mounts(&map, "src/main.rs"),
+        json!([{"framework": "actix", "target": "listar", "line": 13, "written": "lista", "path": "lista", "owner": "main"}])
+    );
+    assert_eq!(served(&map, "src/handlers.rs"), ["GET lista/todos -> listar"]);
+}
+
+/// A função passada ao `configure` e escrita noutro arquivo leva o prefixo
+/// de fora às rotas que o escopo aberto nela alcança, somado ao dele, e às
+/// escritas direto nela. A mesma função montada noutro escopo, fora dela,
+/// fica só com o prefixo desse escopo. A passada que relê só o arquivo da
+/// montagem dá as mesmas rotas.
+#[test]
+fn a_scope_inside_the_function_of_a_configure_of_another_file_adds_the_outer_prefix() {
+    let handlers = "use actix_web::{get, web, App};\n\n#[get(\"/{id}\")]\npub async fn ler() -> &'static str {\n    \"\"\n}\n\n\
+                    pub async fn criar() -> &'static str {\n    \"\"\n}\n\n\
+                    pub fn config(cfg: &mut web::ServiceConfig) {\n    cfg.service(web::scope(\"/v1\").service(ler));\n    \
+                    cfg.route(\"/y\", web::get().to(criar));\n}\n\n\
+                    pub fn outra() {\n    App::new().service(web::scope(\"/x\").service(ler));\n}\n";
+    let main = "use actix_web::{web, App};\nuse crate::handlers::config;\n\nmod handlers;\n\n\
+                fn main() {\n    App::new().service(web::scope(\"/api\").configure(config));\n}\n";
+    let temp = project_with(&[("Cargo.toml", ACTIX_CARGO), ("src/handlers.rs", handlers), ("src/main.rs", main)]);
+    let dir = temp.path();
+    let (first, _) = scan(dir);
+    let expected = ["GET api/v1/{} -> ler", "GET api/y -> criar", "GET x/{} -> ler"];
+    assert_eq!(served(&first, "src/handlers.rs"), expected);
+
+    std::fs::write(dir.join("src/main.rs"), format!("// A aplicação.\n{main}")).unwrap();
+    git(dir, &["add", "-A"]);
+    git(dir, &["commit", "-q", "-m", "comentario"]);
+    let (partial, report) = scan(dir);
+    assert_eq!(report["read"], json!(["src/main.rs"]), "{report}");
+    assert_eq!(served(&partial, "src/handlers.rs"), expected);
+}
+
+/// O nome trocado pelo import (`import { router as api }`) monta o que ele
+/// é no arquivo de onde vem: o prefixo vale para as rotas registradas no
+/// `router` de lá e para as montagens feitas nele, e não para o outro
+/// roteador do arquivo. A função de configuração trazida com outro nome
+/// (`use crate::handlers::config as rotas`) leva o prefixo às rotas escritas
+/// nela.
+#[test]
+fn a_name_changed_by_the_import_mounts_what_the_origin_file_names() {
+    let pedidos = "import { Router } from 'express';\n\nconst pedidos = Router();\npedidos.get('/:id', lerPedido);\n\n\
+                   function lerPedido() {}\n\nexport default pedidos;\n";
+    let api = "import { Router } from 'express';\nimport pedidos from './pedidos';\n\nexport const router = Router();\n\
+               router.get('/saude', saude);\nrouter.use('/pedidos', pedidos);\n\nexport const outro = Router();\n\
+               outro.get('/outro', saude);\n\nfunction saude() {}\n";
+    let app = "import express from 'express';\nimport { router as api } from './api';\n\nconst app = express();\n\
+               app.use('/api', api);\n";
+    let handlers = "use actix_web::web;\n\nasync fn criar() -> &'static str {\n    \"\"\n}\n\n\
+                    pub fn config(cfg: &mut web::ServiceConfig) {\n    cfg.route(\"/y\", web::get().to(criar));\n}\n";
+    let main = "use actix_web::{web, App};\nuse crate::handlers::config as rotas;\n\nmod handlers;\n\n\
+                fn main() {\n    App::new().service(web::scope(\"/api\").configure(rotas));\n}\n";
+    let temp = project_with(&[
+        ("web/pedidos.ts", pedidos),
+        ("web/api.ts", api),
+        ("web/app.ts", app),
+        ("Cargo.toml", ACTIX_CARGO),
+        ("src/handlers.rs", handlers),
+        ("src/main.rs", main),
+    ]);
+    let (map, _) = scan(temp.path());
+    let served_in = |files: &[&str]| files.iter().map(|file| served(&map, file)).collect::<Vec<_>>();
+    assert_eq!(
+        served_in(&["web/api.ts", "web/pedidos.ts", "src/handlers.rs"]),
+        [
+            vec!["GET api/saude -> saude", "GET outro -> saude"],
+            vec!["GET api/pedidos/{} -> lerPedido"],
+            vec!["GET api/y -> criar"]
+        ]
+    );
 }
 
 // ---------------------------------------------------------------------------
