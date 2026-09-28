@@ -51,11 +51,16 @@ pub struct OversizedEntry {
 /// orientation, so it is user-facing text, not an internal index. A project
 /// with no declared language gets `pt-BR`
 /// ([`mustard_core::Language::text_or_default`]).
+///
+/// `code_lang` é a língua dos nomes do código (`language.code`, inglês sem
+/// ela): a dica pede as palavras do pedido também nessa língua, soltas, e os
+/// nomes prováveis nela, com o nome da língua escrito no idioma do texto.
 pub(crate) fn render_map(
     kind: &str,
     code_files: usize,
     commands: &mustard_core::domain::config::Commands,
     lang: SupportedLocale,
+    code_lang: SupportedLocale,
 ) -> String {
     let commands_block = render_commands(commands);
 
@@ -64,7 +69,9 @@ pub(crate) fn render_map(
         .replace("{kind}", kind)
         .replace("{count}", &code_files.to_string());
     let _ = writeln!(out, "{type_line}");
-    let _ = writeln!(out, "{}", translate("scan.map.pointer", lang));
+    let code_language = translate(&format!("scan.map.language.{}", code_lang.as_str()), lang);
+    let pointer = translate("scan.map.pointer", lang).replace("{code_language}", code_language);
+    let _ = writeln!(out, "{pointer}");
     if !commands_block.is_empty() {
         out.push('\n');
         // `render_commands` already ends in a newline.
@@ -122,8 +129,10 @@ fn run_full(
 
     // The scan-map language follows the project's text language — resolved
     // once at the scan root, applied to every unit. Fail-open: no or
-    // unreadable config gives the `pt-BR` default.
-    let lang = crate::shared::context::config::project_config_cached(root).language().text_or_default();
+    // unreadable config gives the `pt-BR` default. A língua dos nomes do
+    // código sai da mesma configuração, com o inglês como padrão.
+    let language = crate::shared::context::config::project_config_cached(root).language();
+    let (lang, code_lang) = (language.text_or_default(), language.code_or_default());
 
     for project in projects {
         let dir = root.join(&project.dir);
@@ -162,7 +171,7 @@ fn run_full(
         // Hard cap guards MUSTARD's own output only: a map this large means the
         // generator ran away, so refuse the write and surface it. Deterministic
         // — the outcome is a pure function of the rendered byte length.
-        let map = render_map(&project.kind, project.code_files, &commands, lang);
+        let map = render_map(&project.kind, project.code_files, &commands, lang, code_lang);
         if map.len() > SCAN_MAP_HARD_CAP_BYTES {
             eprintln!(
                 "scan --full: refusing to write {:?}: {} bytes exceeds hard cap of {} — runaway machine map",
@@ -216,7 +225,7 @@ mod tests {
             prepare: None,
             build_output: Vec::new(),
         };
-        let out = render_map("rust", 12, &commands, SupportedLocale::PtBr);
+        let out = render_map("rust", 12, &commands, SupportedLocale::PtBr, SupportedLocale::EnUs);
         assert!(out.contains("Tipo: rust · 12 arquivos"), "map header missing: {out}");
         // Commands table has only the Some rows, in fixed order, no Lint row.
         assert!(out.contains("## Commands"), "commands heading missing: {out}");
@@ -228,7 +237,7 @@ mod tests {
 
     #[test]
     fn map_omits_commands_table_when_all_none() {
-        let out = render_map("rust", 1, &no_commands(), SupportedLocale::PtBr);
+        let out = render_map("rust", 1, &no_commands(), SupportedLocale::PtBr, SupportedLocale::EnUs);
         assert!(!out.contains("## Commands"), "commands section must be absent: {out}");
         // After the Stack cut there is no `## Stack` section at all.
         assert!(!out.contains("## Stack"), "stack section must be dropped: {out}");
@@ -246,8 +255,8 @@ mod tests {
             build_output: Vec::new(),
         };
         assert_eq!(
-            render_map("typescript", 30, &commands, SupportedLocale::PtBr),
-            render_map("typescript", 30, &commands, SupportedLocale::PtBr),
+            render_map("typescript", 30, &commands, SupportedLocale::PtBr, SupportedLocale::EnUs),
+            render_map("typescript", 30, &commands, SupportedLocale::PtBr, SupportedLocale::EnUs),
             "two renders must produce identical bytes"
         );
     }
@@ -257,13 +266,42 @@ mod tests {
         // An `en-US` project gets an English map;
         // a project with no declared locale keeps the pt-BR default (asserted
         // by the sibling tests). The header + pointer both route through i18n.
-        let out = render_map("rust", 12, &no_commands(), SupportedLocale::EnUs);
+        let out = render_map("rust", 12, &no_commands(), SupportedLocale::EnUs, SupportedLocale::EnUs);
         assert!(out.contains("Type: rust · 12 files"), "EN header missing: {out}");
         assert!(!out.contains("arquivos"), "no pt-BR bytes in an EN map: {out}");
         assert!(
             out.contains("The terrain is already in your window"),
             "EN pointer missing: {out}"
         );
+    }
+
+    /// O mapa escrito pela passada pede as palavras do pedido também na
+    /// língua dos nomes do código, soltas. Sem essa língua declarada, ela é o
+    /// inglês; declarada em português, a frase diz português. O nome da língua
+    /// sai no idioma do texto do projeto.
+    #[test]
+    fn the_map_asks_for_the_request_words_in_the_language_of_the_names() {
+        for (language, said, not_said) in [
+            (serde_json::json!({"text": "pt-BR"}), "as mesmas palavras em inglês, soltas", "em português"),
+            (
+                serde_json::json!({"text": "pt-BR", "code": "pt-BR"}),
+                "as mesmas palavras em português, soltas",
+                "em inglês",
+            ),
+        ] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let root = dir.path();
+            let config = serde_json::json!({ "language": language }).to_string();
+            std::fs::write(root.join("mustard.json"), config).expect("write config");
+
+            let result = run_full(root, &[project("(root)", "")]);
+
+            assert!(result.over_cap.is_empty(), "{:?}", result.over_cap);
+            let map = std::fs::read_to_string(root.join(".claude").join("scan-map.md")).expect("read map");
+            assert!(map.contains(said), "{language}: {map}");
+            assert!(!map.contains(not_said), "{language}: {map}");
+            assert!(!map.contains("{code_language}"), "{language}: {map}");
+        }
     }
 
     fn project(name: &str, dir: &str) -> mustard_core::domain::scan::Project {

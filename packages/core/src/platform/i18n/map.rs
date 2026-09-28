@@ -21,6 +21,9 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // project's text language (`language.text` in `mustard.json`) — unlike
         // the internal census/index/search, which stays English by policy. The
         // `{kind}` / `{count}` / `{map}` slots are interpolated by the caller.
+        // A dica do mapa leva `{code_language}`, a língua dos nomes do código
+        // (`language.code`): a busca por conceito junta as palavras do pedido,
+        // as mesmas palavras nessa língua, soltas, e os nomes prováveis nela.
         ("orient.terrain.header", Locale::PtBr) => {
             "[Terreno] subprojetos mapeados pelo /scan — leia daqui, não grepe para se orientar:"
         }
@@ -38,11 +41,17 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("scan.map.type_line", Locale::PtBr) => "Tipo: {kind} · {count} arquivos",
         ("scan.map.type_line", Locale::EnUs) => "Type: {kind} · {count} files",
         ("scan.map.pointer", Locale::PtBr) => {
-            "O terreno já está na sua janela (o resumo do mapa injetado no início da sessão). Para localizar: `grep` para termo exato conhecido; `mustard-rt run map search --query \"<palavras>\" --intent \"<frase>\"` para conceito. Na mesma busca, junte as palavras do pedido do usuário e os nomes prováveis no código, em inglês, camelCase ou snake_case: `--query \"prazo de entrega deliveryDeadline due_date\"`. Em `--intent` vai a frase do que você procura e para quê. O pedaço de um nome vai só em `--query`. Depois leia os arquivos apontados: o mapa acha onde olhar, não substitui ler."
+            "O terreno já está na sua janela (o resumo do mapa injetado no início da sessão). Para localizar: `grep` para termo exato conhecido; `mustard-rt run map search --query \"<palavras>\" --intent \"<frase>\"` para conceito. Na mesma busca, junte as palavras do pedido do usuário, as mesmas palavras em {code_language}, soltas, e os nomes prováveis no código. Os nomes vão em {code_language}, camelCase ou snake_case: `--query \"prazo de entrega delivery deadline deliveryDeadline due_date\"`. Em `--intent` vai a frase do que você procura e para quê. O pedaço de um nome vai só em `--query`. Depois leia os arquivos apontados: o mapa acha onde olhar, não substitui ler."
         }
         ("scan.map.pointer", Locale::EnUs) => {
-            "The terrain is already in your window (the map summary injected at session start). To locate: `grep` for a known exact term; `mustard-rt run map search --query \"<words>\" --intent \"<sentence>\"` for a concept. In the same search, join the words of the user's request and the likely names in the code, in English, camelCase or snake_case: `--query \"delivery deadline deliveryDeadline due_date\"`. In `--intent` goes the sentence of what you are looking for and why. Part of a name goes only in `--query`. Then read the files it points to: the map finds where to look, it does not replace reading."
+            "The terrain is already in your window (the map summary injected at session start). To locate: `grep` for a known exact term; `mustard-rt run map search --query \"<words>\" --intent \"<sentence>\"` for a concept. In one search, join the words of the user's request, the same words in {code_language} as plain words, and the likely names in the code. The names go in {code_language}, camelCase or snake_case: `--query \"delivery deadline deliveryDeadline due_date\"`. In `--intent` goes the sentence of what you are looking for and why. Part of a name goes only in `--query`. Then read the files it points to: the map finds where to look, it does not replace reading."
         }
+        // O nome da língua dos nomes do código, no idioma do texto: preenche o
+        // `{code_language}` da dica do mapa.
+        ("scan.map.language.pt-BR", Locale::PtBr) => "português",
+        ("scan.map.language.pt-BR", Locale::EnUs) => "Portuguese",
+        ("scan.map.language.en-US", Locale::PtBr) => "inglês",
+        ("scan.map.language.en-US", Locale::EnUs) => "English",
         // The project map (`run map`): refusals, reasons of the examples and
         // the session-start summary.
         ("map.missing", Locale::PtBr) => "O mapa do projeto ainda não existe. Rode `mustard-rt run scan`.",
@@ -306,8 +315,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("map.rs"),
             super::PREFIXES,
-            59,
-            0x07f4_2822_350d_f5fc,
+            61,
+            0x81d0_44dd_7849_0184,
         );
     }
 
@@ -373,7 +382,8 @@ mod tests {
             (Locale::PtBr, "palavras do pedido do usuário", "nomes prováveis no código"),
             (Locale::EnUs, "words of the user's request", "likely names in the code"),
         ] {
-            let text = translate("scan.map.pointer", lang);
+            let text = translate("scan.map.pointer", lang)
+                .replace("{code_language}", translate("scan.map.language.en-US", lang));
             assert!(text.contains(words), "{lang:?}: {text}");
             assert!(text.contains(names), "{lang:?}: {text}");
             let example = text.split("`--query \"").nth(1).expect("an example of the search");
@@ -381,8 +391,54 @@ mod tests {
             assert!(example.contains("deliveryDeadline"), "{lang:?}: {example}");
             assert!(example.contains("due_date"), "{lang:?}: {example}");
             assert!(example.split(' ').any(|w| w.chars().all(char::is_lowercase)), "{lang:?}: {example}");
-            let report = crate::domain::clarity::measure(text, &[], Some(lang));
+            let report = crate::domain::clarity::measure(&text, &[], Some(lang));
             assert!(report.passed, "{lang:?}: {report:?}");
+        }
+    }
+
+    /// A dica do mapa pede as palavras do pedido também na língua dos nomes
+    /// do código, soltas, e os nomes prováveis nessa mesma língua, que vem do
+    /// encaixe e nunca fica fixa. No português, o exemplo põe a palavra solta
+    /// em inglês ao lado das em português; no inglês, a língua do pedido já é
+    /// a dos nomes, e nenhuma palavra do exemplo se repete. Com a língua
+    /// preenchida, o texto passa na conferência de escrita nos dois idiomas.
+    #[test]
+    fn the_map_hint_asks_for_the_request_words_in_the_language_of_the_names() {
+        for (lang, loose, names, fixed, words) in [
+            (
+                Locale::PtBr,
+                "as mesmas palavras em {code_language}, soltas",
+                "Os nomes vão em {code_language}",
+                "em inglês",
+                &["prazo", "entrega", "delivery", "deadline", "deliveryDeadline"][..],
+            ),
+            (
+                Locale::EnUs,
+                "the same words in {code_language} as plain words",
+                "The names go in {code_language}",
+                "in English",
+                &["delivery", "deadline", "deliveryDeadline"][..],
+            ),
+        ] {
+            let hint = translate("scan.map.pointer", lang);
+            assert!(hint.contains(loose), "{lang:?}: {hint}");
+            assert!(hint.contains(names), "{lang:?}: {hint}");
+            assert!(!hint.contains(fixed), "{lang:?}: {hint}");
+            let example = hint.split("`--query \"").nth(1).expect("an example of the search");
+            let example: Vec<&str> = example.split('"').next().unwrap_or_default().split(' ').collect();
+            for word in words {
+                assert!(example.contains(word), "{lang:?}: {word} in {example:?}");
+            }
+            let mut seen = example.clone();
+            seen.sort_unstable();
+            seen.dedup();
+            assert_eq!(seen.len(), example.len(), "{lang:?}: a word repeats in {example:?}");
+            for code in [Locale::PtBr, Locale::EnUs] {
+                let name = translate(&format!("scan.map.language.{}", code.as_str()), lang);
+                let text = hint.replace("{code_language}", name);
+                let report = crate::domain::clarity::measure(&text, &[], Some(lang));
+                assert!(report.passed, "{lang:?} {code:?}: {report:?}");
+            }
         }
     }
 
