@@ -62,6 +62,9 @@
 //!
 //! The child is this same test binary, re-run with [`PROBE_ENV`] set.
 
+#[path = "support/executable.rs"]
+mod executable;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -86,13 +89,7 @@ fn shim_dir(root: &Path, log: &Path) -> PathBuf {
     fs::create_dir_all(&dir).expect("mkdir shims");
     for tool in SHIMMED {
         let script = format!("#!/bin/sh\necho \"{tool} $*\" >> \"{}\"\nexit 0\n", log.display());
-        let path = dir.join(tool);
-        fs::write(&path, script).expect("write shim");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).expect("chmod shim");
-        }
+        executable::write_executable(&dir.join(tool), &script);
     }
     #[cfg(unix)]
     {
@@ -113,10 +110,7 @@ fn shim_dir(root: &Path, log: &Path) -> PathBuf {
             log.display(),
             real_git
         );
-        let path = dir.join("git");
-        fs::write(&path, wrapper).expect("write git wrapper");
-        use std::os::unix::fs::PermissionsExt as _;
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).expect("chmod git");
+        executable::write_executable(&dir.join("git"), &wrapper);
     }
     dir
 }

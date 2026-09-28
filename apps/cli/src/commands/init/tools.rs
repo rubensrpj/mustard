@@ -155,28 +155,13 @@ mod tests {
     /// argumentos em `log` em vez de instalar qualquer coisa. No Windows é um
     /// `.cmd`, extensão que o executor da máquina procura; fora dele, um
     /// script de shell com o nome puro.
-    ///
-    /// Fora do Windows, quem grava o arquivo é um shell à parte, nunca este
-    /// processo. Os testes rodam em paralelo, e outro teste que abre um
-    /// programa na hora em que este processo tem o arquivo aberto para
-    /// escrita leva uma cópia dessa abertura para o programa que nasce; até
-    /// esse programa começar, o Linux recusa rodar o arquivo ("Text file
-    /// busy"), e o falso não roda. Gravado pelo shell, o arquivo já está
-    /// fechado em todo lugar quando o shell sai.
     fn write_fake_program(dir: &Path, name: &str, log: &Path) {
-        if cfg!(windows) {
-            let script = format!("@echo off\r\necho %0 %* >> \"{}\"\r\nexit /b 0\r\n", log.display());
-            std::fs::write(dir.join(format!("{name}.cmd")), script).unwrap();
-            return;
-        }
-        let script = format!("#!/bin/sh\necho \"$0 $*\" >> \"{}\"\nexit 0\n", log.display());
-        let written = std::process::Command::new("/bin/sh")
-            .args(["-c", "printf '%s' \"$2\" > \"$1\" && chmod 755 \"$1\"", "sh"])
-            .arg(dir.join(name))
-            .arg(script)
-            .status()
-            .unwrap();
-        assert!(written.success(), "the fake {name} was not written");
+        let (file, script) = if cfg!(windows) {
+            (format!("{name}.cmd"), format!("@echo off\r\necho %0 %* >> \"{}\"\r\nexit /b 0\r\n", log.display()))
+        } else {
+            (name.to_string(), format!("#!/bin/sh\necho \"$0 $*\" >> \"{}\"\nexit 0\n", log.display()))
+        };
+        crate::executable::write_executable(&dir.join(file), &script);
     }
 
     /// The proof: a Rust project, with every real toolchain replaced by a

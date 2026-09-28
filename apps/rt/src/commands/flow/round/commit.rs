@@ -1407,7 +1407,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_commit_hook_that_refuses_records_nothing() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
@@ -1415,8 +1414,7 @@ mod tests {
         let hooks = root.join("ganchos");
         std::fs::create_dir_all(&hooks).unwrap();
         let hook = hooks.join("pre-commit");
-        std::fs::write(&hook, "#!/bin/sh\necho 'o gancho recusou' >&2\nexit 1\n").unwrap();
-        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        crate::executable::write_executable(&hook, "#!/bin/sh\necho 'o gancho recusou' >&2\nexit 1\n");
         git_at(root, &["config", "core.hooksPath", &hooks.to_string_lossy()]);
 
         std::fs::write(root.join("src/a.rs"), "fn um() {}\n// Saiu.\n").unwrap();
@@ -1431,7 +1429,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_refused_main_commit_undoes_the_submodule_commit() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = tempdir().unwrap();
         let root = &dir.path().join("principal");
         with_submodule(root, dir.path());
@@ -1448,8 +1445,7 @@ mod tests {
         let hooks = dir.path().join("ganchos");
         std::fs::create_dir_all(&hooks).unwrap();
         let hook = hooks.join("pre-commit");
-        std::fs::write(&hook, "#!/bin/sh\necho 'o gancho recusou' >&2\nexit 1\n").unwrap();
-        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        crate::executable::write_executable(&hook, "#!/bin/sh\necho 'o gancho recusou' >&2\nexit 1\n");
         git_at(root, &["config", "core.hooksPath", &hooks.to_string_lossy()]);
         let report = json!({"wave": 1, "text": "Saiu.", "files": ["src/a.rs", "libs/sub/lib.txt"], "commit": "a onda 1 sai"});
         assert_eq!(returned(root, report)["ok"], json!(true));
@@ -1475,7 +1471,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_slow_commit_hook_holds_the_git_step_and_not_the_readers_of_the_spec() {
-        use std::os::unix::fs::PermissionsExt;
         use std::sync::mpsc;
         use std::time::Duration;
 
@@ -1492,8 +1487,7 @@ mod tests {
             started.display(),
             release.display()
         );
-        std::fs::write(&hook, script).unwrap();
-        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        crate::executable::write_executable(&hook, &script);
         git_at(root, &["config", "core.hooksPath", &hooks.to_string_lossy()]);
         delivered(root, 1, "Saiu.", &["src/a.rs"]);
         let spec = store::spec_file(root, "x").unwrap();

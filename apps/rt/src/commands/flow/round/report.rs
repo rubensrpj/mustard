@@ -1976,12 +1976,7 @@ mod tests {
         let hooks = root.join("ganchos");
         std::fs::create_dir_all(&hooks).unwrap();
         let hook = hooks.join("pre-commit");
-        std::fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
+        crate::executable::write_executable(&hook, "#!/bin/sh\nexit 1\n");
         git_at(root, &["config", "core.hooksPath", &hooks.to_string_lossy()]);
         hook
     }
@@ -2193,7 +2188,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_merge_the_commit_refuses_leaves_the_main_repository_as_it_was() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
@@ -2205,8 +2199,7 @@ mod tests {
         let hooks = root.join("ganchos");
         std::fs::create_dir_all(&hooks).unwrap();
         let hook = hooks.join("pre-commit");
-        std::fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
-        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        crate::executable::write_executable(&hook, "#!/bin/sh\nexit 1\n");
         git_at(root, &["config", "core.hooksPath", &hooks.to_string_lossy()]);
 
         let report = json!({"wave": 1, "text": "Saiu.", "files": ["src/a.rs"], "commit": "a onda 1 sai"});
@@ -2234,7 +2227,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn two_waves_one_refused_by_git_leave_nothing_staged_and_each_commit_carries_only_its_files() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[])]);
@@ -2256,8 +2248,7 @@ mod tests {
             staged.display(),
             refuse.display()
         );
-        std::fs::write(&hook, script).unwrap();
-        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        crate::executable::write_executable(&hook, &script);
         git_at(root, &["config", "core.hooksPath", &hooks.path().to_string_lossy()]);
         std::fs::write(&refuse, b"").unwrap();
 
@@ -3552,7 +3543,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_volta_gravada_durante_a_rodada_nao_gera_segunda_entrega() {
-        use std::os::unix::fs::PermissionsExt;
         use std::sync::mpsc;
         use std::time::Duration;
 
@@ -3574,8 +3564,7 @@ mod tests {
             started.display(),
             release.display()
         );
-        std::fs::write(&hook, script).unwrap();
-        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        crate::executable::write_executable(&hook, &script);
         git_at(root, &["config", "core.hooksPath", &hooks.to_string_lossy()]);
 
         let (out, late, written_while_held) = std::thread::scope(|scope| {

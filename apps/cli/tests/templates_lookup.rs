@@ -9,6 +9,9 @@
 //!
 //! Roda só no unix: o `rtk` e o `rg` do caminho de busca são scripts de shell.
 
+#[path = "support/executable.rs"]
+mod executable;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -19,13 +22,7 @@ fn tools(root: &Path) -> PathBuf {
     let dir = root.join("bin");
     fs::create_dir_all(&dir).expect("mkdir bin");
     for tool in ["rtk", "rg"] {
-        let path = dir.join(tool);
-        fs::write(&path, "#!/bin/sh\nexit 0\n").expect("write shim");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).expect("chmod shim");
-        }
+        executable::write_executable(&dir.join(tool), "#!/bin/sh\nexit 0\n");
     }
     #[cfg(unix)]
     {

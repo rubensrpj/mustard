@@ -12,6 +12,8 @@
 
 #[path = "support/manifest_dir.rs"]
 mod manifest_dir;
+#[path = "support/executable.rs"]
+mod executable;
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -49,13 +51,7 @@ fn read(path: &Path) -> String {
 /// arquivo qualquer que já estivesse lá.
 fn shim_cargo(dir: &Path) {
     let script = "#!/bin/sh\nset -e\nmkdir -p \"$CARGO_TARGET_DIR/release\"\nfor b in scan mustard-rt mustard; do\n  printf 'built-%s' \"$b\" > \"$CARGO_TARGET_DIR/release/$b\"\n  chmod +x \"$CARGO_TARGET_DIR/release/$b\"\ndone\n";
-    let path = dir.join("cargo");
-    write(&path, script);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).expect("chmod shim");
-    }
+    executable::write_executable(&dir.join("cargo"), script);
 }
 
 /// Um executável (qualquer nome) que sempre escreve `stdout` para stdout,
@@ -64,13 +60,7 @@ fn shim_cargo(dir: &Path) {
 /// root sem precisar de root de verdade).
 fn shim_fixed_output(dir: &Path, name: &str, stdout: &str) {
     let script = format!("#!/bin/sh\necho '{stdout}'\n");
-    let path = dir.join(name);
-    write(&path, &script);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).expect("chmod shim");
-    }
+    executable::write_executable(&dir.join(name), &script);
 }
 
 /// Roda `scripts/dev-install.sh` de dentro do repositório de verdade (é dali
@@ -179,13 +169,7 @@ fn seed_system_copy(system_dir: &Path) {
 /// o script tentou tornar dono de quê, sem precisar de privilégio real.
 fn shim_logging_chown(dir: &Path, log: &Path) {
     let script = format!("#!/bin/sh\necho \"$*\" >> \"{}\"\n", log.display());
-    let path = dir.join("chown");
-    write(&path, &script);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).expect("chmod shim");
-    }
+    executable::write_executable(&dir.join("chown"), &script);
 }
 
 /// `id -u` de verdade — decide qual dos dois ramos da cópia do sistema o

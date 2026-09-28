@@ -26,6 +26,8 @@
 
 #[path = "support/manifest_dir.rs"]
 mod manifest_dir;
+#[path = "support/executable.rs"]
+mod executable;
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -46,13 +48,7 @@ fn shim_dir(log: &Path, with_rtk: bool) -> PathBuf {
             "#!/bin/sh\necho \"{tool} $*\" >> \"{}\"\nexit 0\n",
             log.display()
         );
-        let path = dir.join(tool);
-        fs::write(&path, script).expect("write shim");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).expect("chmod shim");
-        }
+        executable::write_executable(&dir.join(tool), &script);
     }
     // The real git: `init` inspects the repository, and faking that would test a
     // path the product never runs.
@@ -190,13 +186,7 @@ fn the_binary_installs_the_code_tool_of_a_detected_language() {
     let bin = shim_dir(&log, true);
     for tool in ["rustup", "claude"] {
         let script = format!("#!/bin/sh\necho \"{tool} $*\" >> \"{}\"\nexit 0\n", log.display());
-        let path = bin.join(tool);
-        fs::write(&path, script).expect("write shim");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).expect("chmod shim");
-        }
+        executable::write_executable(&bin.join(tool), &script);
     }
     let project = fresh_repo(tmp.path());
     fs::write(project.join("Cargo.toml"), "[package]\nname = \"x\"\n").expect("write Cargo.toml");
@@ -244,13 +234,7 @@ fn the_binary_brings_typescript_6_into_the_servers_folder() {
     let bin = shim_dir(&log, true);
     for (tool, exit) in [("npm", 0), ("claude", 0), ("typescript-language-server", 0), ("node", 1)] {
         let script = format!("#!/bin/sh\necho \"{tool} $*\" >> \"{}\"\nexit {exit}\n", log.display());
-        let path = bin.join(tool);
-        fs::write(&path, script).expect("write shim");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).expect("chmod shim");
-        }
+        executable::write_executable(&bin.join(tool), &script);
     }
     let project = fresh_repo(tmp.path());
     fs::write(project.join("package.json"), r#"{"devDependencies":{"typescript":"7.0.2"}}"#).expect("package.json");

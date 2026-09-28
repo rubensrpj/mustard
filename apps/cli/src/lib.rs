@@ -30,6 +30,11 @@ pub mod fs_ops;
 #[path = "../tests/support/manifest_dir.rs"]
 pub(crate) mod manifest_dir;
 
+// O programa falso que os testes de dentro de `src/` gravam e depois rodam.
+#[cfg(test)]
+#[path = "../tests/support/executable.rs"]
+pub(crate) mod executable;
+
 pub use commands::init::{InitOptions, init};
 
 /// The version stamped into `mustard.json` by `init`.

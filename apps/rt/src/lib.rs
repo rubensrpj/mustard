@@ -51,3 +51,8 @@ mod hook_output;
 #[cfg(test)]
 #[path = "../tests/support/manifest_dir.rs"]
 pub(crate) mod manifest_dir;
+
+// O programa falso que os testes de dentro de `src/` gravam e depois rodam.
+#[cfg(test)]
+#[path = "../tests/support/executable.rs"]
+pub(crate) mod executable;

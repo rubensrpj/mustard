@@ -39,6 +39,8 @@ use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Value};
 
 mod support;
+#[path = "support/executable.rs"]
+mod executable;
 
 const SPEC: &str = "ponta";
 const GOAL: &str = "Trocar a saudação do programa.";
@@ -188,9 +190,7 @@ impl Project {
              esac\nexit 1\n"
                 .to_string()
         };
-        std::fs::write(&gh, script).expect("the fake gh");
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        executable::write_executable(&gh, &script);
         support::copies_leave_with_the_test(&root);
         Self { _dir: dir, root, home, bin, remotes }
     }
@@ -938,9 +938,7 @@ fn a_submodule_pointer_the_server_refuses_keeps_the_main_pull_request_a_draft() 
     open_pull_requests_with_a_submodule(&project);
 
     let refuse = project.remotes.join("projeto.git/hooks/pre-receive");
-    std::fs::write(&refuse, "#!/bin/sh\nexit 1\n").expect("the server hook");
-    use std::os::unix::fs::PermissionsExt as _;
-    std::fs::set_permissions(&refuse, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    executable::write_executable(&refuse, "#!/bin/sh\nexit 1\n");
 
     let sub = project.root.join(SUB);
     let merged = project.answer(&["pr-merge", "--pr", "3", "--root", &sub.to_string_lossy()]);
@@ -971,9 +969,7 @@ fn two_sessions_checking_the_submodule_at_the_same_time_move_the_pointer_once() 
 
     // O commit do ponteiro demora, e as duas sessões se encontram dentro dele.
     let hook = project.root.join(".git/hooks/pre-commit");
-    std::fs::write(&hook, "#!/bin/sh\nsleep 1\n").expect("the commit hook");
-    use std::os::unix::fs::PermissionsExt as _;
-    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    executable::write_executable(&hook, "#!/bin/sh\nsleep 1\n");
 
     let commits = git_out(&project.root, &["rev-list", "--count", "HEAD"]);
     let start = session_start(&project);

@@ -20,6 +20,8 @@
 
 #[path = "support/manifest_dir.rs"]
 mod manifest_dir;
+#[path = "support/executable.rs"]
+mod executable;
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -534,7 +536,7 @@ impl PullRequestProject {
         fs::write(root.join(".git/info/exclude"), mustard_core::footprint_rules().join("\n") + "\n").unwrap();
         project.config(true);
         let gh = project.fake.path().join("gh");
-        fs::write(
+        executable::write_executable(
             &gh,
             "#!/bin/sh\n\
              echo \"$*\" >> \"$FAKE_DIR/log\"\n\
@@ -547,13 +549,7 @@ impl PullRequestProject {
              \"api repos/{owner}/{repo}/commits/\"*\"/pulls\") echo '[]' ;;\n\
              *) echo 'gh: Not Found (HTTP 404)' >&2 ; exit 1 ;;\n\
              esac\n",
-        )
-        .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).unwrap();
-        }
+        );
         fs::write(
             project.fake.path().join("pull7.json"),
             r#"{"number": 7, "title": "Muda o ler", "body": "O ler passa a somar dois.\n\nDetalhes que não aparecem."}"#,

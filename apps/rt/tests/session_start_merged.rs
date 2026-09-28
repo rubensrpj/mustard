@@ -22,8 +22,10 @@
 //!   lista do provedor que decide se a branch sai.
 //! - O provedor não responde: o aviso diz isso, e nada muda.
 
+#[path = "support/executable.rs"]
+mod executable;
+
 use std::io::Write;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -142,8 +144,7 @@ impl Scene {
         // O `gh` falso.
         let bin = dir.path().join("bin");
         std::fs::create_dir_all(&bin).unwrap();
-        std::fs::write(bin.join("gh"), FAKE_GH).unwrap();
-        std::fs::set_permissions(bin.join("gh"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        executable::write_executable(&bin.join("gh"), FAKE_GH);
 
         let scene = Self { dir, work };
         assert_eq!(scene.phase(), "closed", "the spec starts closed");
