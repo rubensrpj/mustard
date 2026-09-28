@@ -1096,6 +1096,10 @@ pub enum MapRefusal {
     UnknownDeclaration { file: String, name: String },
     /// O arquivo está no mapa e não pôde ser lido do disco.
     FileUnreadable { file: String, detail: String },
+    /// Numa cópia de trabalho, a declaração mudou depois do mapa, que tem a
+    /// do projeto a partir da linha `line`: o trecho dela na cópia não se
+    /// acha pelas linhas do mapa.
+    ChangedInCopy { file: String, name: String, line: u64 },
     /// A história das declarações do arquivo não pôde ser lida do git.
     HistoryUnreadable { file: String, detail: String },
 }
@@ -1115,6 +1119,7 @@ impl MapRefusal {
             Self::SkillTooLong { .. } => "skill-too-long",
             Self::UnknownDeclaration { .. } => "unknown-declaration",
             Self::FileUnreadable { .. } => "file-unreadable",
+            Self::ChangedInCopy { .. } => "changed-in-copy",
             Self::HistoryUnreadable { .. } => "history-unreadable",
         }
     }
@@ -1150,6 +1155,10 @@ impl MapRefusal {
             Self::FileUnreadable { file, detail } => {
                 fill("map.file_unreadable", &[("{file}", file.clone()), ("{detail}", detail.clone())])
             }
+            Self::ChangedInCopy { file, name, line } => fill(
+                "map.changed_in_copy",
+                &[("{file}", file.clone()), ("{name}", name.clone()), ("{line}", line.to_string())],
+            ),
             Self::HistoryUnreadable { file, detail } => {
                 fill("map.history_unreadable", &[("{file}", file.clone()), ("{detail}", detail.clone())])
             }

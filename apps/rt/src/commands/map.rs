@@ -8,7 +8,8 @@
 //! - `importers --file <arquivo>`: quem importa o arquivo;
 //! - `tests --file <arquivo>`: que testes o cobrem;
 //! - `slice --file <arquivo> --name <declaração>`: o trecho da declaração, do
-//!   começo ao fim, com o caminho e as linhas de onde ele saiu;
+//!   começo ao fim, com o caminho e as linhas de onde ele saiu; perguntado de
+//!   dentro de uma cópia de trabalho do projeto, o do arquivo da cópia;
 //! - `users --name <declaração>` (com `--file`, só a desse arquivo): quem usa
 //!   a declaração, como `arquivo:linha:quem chama` — as ligações provadas
 //!   primeiro, e as suspeitas agrupadas pelas declarações que a chamada pode
@@ -49,6 +50,7 @@ use mustard_core::domain::scan::{HistoryReport, ScanReport};
 use mustard_core::domain::search::{CANDIDATES, TOP};
 use mustard_core::io::{map_search, map_specs};
 use mustard_core::io::project_map::{self as store, Need};
+use mustard_core::io::workspace::{is_git_repo_root, linked_worktree_main};
 use mustard_core::io::wave_prompt::{history_beyond_window, recipe_on_disk};
 use mustard_core::platform::i18n::Locale;
 use mustard_core::{FilterSetting, Setting};
@@ -157,13 +159,13 @@ fn jev(root: &Path, config: &mustard_core::ProjectConfig) -> Result<Assembled, F
 /// gravaram desde a última resposta; a falha dele deixa o bloco como
 /// estava, e a resposta sai. A pergunta da história monta por `trace` a
 /// lista do arquivo que o mapa ainda não tem, ou que venceu, e a dos
-/// exemplos, a do alvo além da janela do mapa; a busca monta
-/// por `assemble` o filtro, quando a configuração não o desliga.
+/// exemplos, a do alvo além da janela do mapa; a busca monta por `trace` a
+/// dos arquivos ligados aos itens achados, e por `assemble` o filtro, quando
+/// a configuração não o desliga.
 pub(crate) fn map_at(opts: &MapOpts, mine: &Mine<'_>, trace: &Trace<'_>, assemble: &Assemble<'_>) -> Value {
     let project = crate::commands::spec_events::project(&opts.root);
     crate::commands::flow::round::refresh_map_if_stale(&project.root, mine);
     let _ = map_specs::sync(&project.root, &project.languages);
-    trace_search_links(opts, &project.root, &project.languages, trace);
     let lang = project.lang;
     match answer(opts, &project.root, lang, &project.languages, trace, assemble) {
         Ok(report) => report,
@@ -177,18 +179,18 @@ pub(crate) fn map_at(opts: &MapOpts, mine: &Mine<'_>, trace: &Trace<'_>, assembl
 /// pergunta da história, entraria inteiro na resposta, no lugar da função.
 /// Cada um se lê por `trace`, do git local, um arquivo por vez, e fica
 /// gravado no mapa; a busca seguinte já o acha, sem passada. A falha de um
-/// deixa o arquivo inteiro, e a busca responde assim mesmo.
-fn trace_search_links(opts: &MapOpts, root: &Path, languages: &Languages, trace: &Trace<'_>) {
-    if opts.question != Question::Search {
+/// deixa o arquivo inteiro, e a busca responde assim mesmo. A história segue
+/// até `moves` mudanças de arquivo seguidas.
+fn trace_search_links(root: &Path, query: &str, languages: &Languages, moves: usize, trace: &Trace<'_>) {
+    let query = query.trim();
+    if query.is_empty() {
         return;
     }
-    let Some(query) = opts.query.as_deref().map(str::trim).filter(|query| !query.is_empty()) else { return };
     let Ok(found) = map_search::search_specs(root, query, languages, TOP) else { return };
     if found.is_empty() {
         return;
     }
     let items: Vec<(&str, &str)> = found.iter().map(|item| (item.spec.as_str(), item.code.as_str())).collect();
-    let moves = mustard_core::ProjectConfig::load(root).history_moves().or(project_map::MOVES_FOLLOWED);
     let Ok(files) = map_specs::untraced(root, &items, TOP, moves) else { return };
     let model = store::model_path(root);
     for file in &files {
@@ -254,7 +256,7 @@ fn answer_from(
                 "tests": tests.files,
             }))
         }
-        Question::Search => search(opts, root, lang, languages, read, assemble),
+        Question::Search => search(opts, root, lang, languages, read, (trace, assemble)),
         Question::Summary => match opts.file.as_deref().map(str::trim).filter(|file| !file.is_empty()) {
             Some(file) => parts(file, read),
             None => {
@@ -285,15 +287,17 @@ struct SearchNumbers {
 /// aviso do motivo. Com filtro, os candidatos do
 /// banco passam pela nota dele, a resposta traz as peças, e a chamada fica
 /// gravada na spec atual com o tempo, os tokens e o custo; sem filtro, ou na
-/// falha dele, a resposta é a da busca do banco. Os avisos saem uma vez por
-/// sessão.
+/// falha dele, a resposta é a da busca do banco. Antes dela, `trace` monta a
+/// história dos arquivos ligados aos itens achados, seguindo o número de
+/// `map.historyMoves` lido como a pergunta da história o lê. Os avisos saem
+/// uma vez por sessão.
 fn search(
     opts: &MapOpts,
     root: &Path,
     lang: Locale,
     languages: &Languages,
     read: &Reader<'_>,
-    assemble: &Assemble<'_>,
+    (trace, assemble): (&Trace<'_>, &Assemble<'_>),
 ) -> Result<Value, MapRefusal> {
     let started = Instant::now();
     let query = after_the_map(required(opts.query.as_deref(), opts.question, "--query"), read)?;
@@ -301,6 +305,8 @@ fn search(
     let session = opts.session.as_deref();
     let config = mustard_core::ProjectConfig::load(root);
     let mut warnings: Vec<String> = Vec::new();
+    let moves = history_moves(root, session, lang, &config, &mut warnings);
+    trace_search_links(root, &query, languages, moves, trace);
     let mut number = |key: &str, setting: Setting, default: usize| {
         if setting == Setting::Invalid && first_warning(root, session, &format!("search.{key}")) {
             warnings.push(
@@ -545,27 +551,85 @@ fn parts(file: &str, read: &Reader<'_>) -> Result<Value, MapRefusal> {
 /// O trecho da declaração de `--name` no arquivo de `--file`: as linhas dela,
 /// do começo ao fim, mais o caminho e as linhas de onde saíram. O mapa diz
 /// onde a declaração mora; o arquivo é lido aqui, uma vez, para que quem
-/// pergunta não precise abri-lo.
+/// pergunta não precise abri-lo. Numa cópia de trabalho do projeto, como a
+/// de uma onda, o arquivo é o da cópia ([`slice_in_copy`]).
 fn slice(opts: &MapOpts, root: &Path, read: &Reader<'_>) -> Result<Value, MapRefusal> {
     let question = opts.question;
     let file = after_the_map(required(opts.file.as_deref(), question, "--file"), read)?;
     let name = after_the_map(required(opts.name.as_deref(), question, "--name"), read)?;
     let map = read(Need::Declarations { file: Some(&file), name: &name })?;
     let place = project_map::declaration(&map, &file, &name)?;
-    let text = std::fs::read_to_string(root.join(&place.file))
-        .map_err(|e| MapRefusal::FileUnreadable { file: place.file.clone(), detail: e.to_string() })?;
+    let (line, end_line) = (place.line, place.end_line);
+    let unreadable = |e: std::io::Error| MapRefusal::FileUnreadable { file: place.file.clone(), detail: e.to_string() };
+    let project_text = std::fs::read_to_string(root.join(&place.file));
+    let (text, line, end_line) = match working_copy(&opts.root, root) {
+        None => (project_text.map_err(unreadable)?, line, end_line),
+        Some(copy) => {
+            let text = std::fs::read_to_string(copy.join(&place.file)).map_err(unreadable)?;
+            let (line, end_line) = slice_in_copy(&place, &text, project_text.ok().as_deref())?;
+            (text, line, end_line)
+        }
+    };
     Ok(json!({
         "ok": true,
         "question": "slice",
         "file": place.file,
         "name": place.name,
         "kind": place.kind,
-        "line": place.line,
-        "end_line": place.end_line,
+        "line": line,
+        "end_line": end_line,
         "doc": place.doc,
         "signature": place.signature,
-        "slice": project_map::lines_of(&text, place.line, place.end_line),
+        "slice": project_map::lines_of(&text, line, end_line),
     }))
+}
+
+/// A raiz da cópia de trabalho de onde a pergunta vem (`start`), quando ela
+/// é uma cópia ligada ao repositório do projeto `root`, como a de uma onda.
+/// `None` no próprio projeto e em qualquer outra pasta. Lê só os arquivos
+/// que o git deixa, sem rodar o git.
+fn working_copy(start: &Path, root: &Path) -> Option<PathBuf> {
+    let start = std::path::absolute(start).ok()?;
+    let top = start.ancestors().find(|folder| is_git_repo_root(folder))?;
+    let main = linked_worktree_main(top)?;
+    let same = match (std::fs::canonicalize(&main), std::fs::canonicalize(root)) {
+        (Ok(main), Ok(root)) => main == root,
+        _ => false,
+    };
+    same.then(|| top.to_path_buf())
+}
+
+/// As linhas da declaração `place` no texto `copy` do arquivo numa cópia de
+/// trabalho, dado o texto `project` do mesmo arquivo no projeto, de onde o
+/// mapa tirou as linhas. Com os dois iguais, as linhas do mapa valem. Com o
+/// arquivo mudado na cópia, a declaração do projeto, linha a linha, acha o
+/// lugar dela na cópia: onde ela aparece inteira, a vez mais perto da linha
+/// do mapa. Sem ela inteira na cópia, a declaração mudou ali, e a recusa
+/// [`MapRefusal::ChangedInCopy`] manda ler o arquivo da cópia por faixa de
+/// linhas.
+fn slice_in_copy(place: &project_map::DeclPlace, copy: &str, project: Option<&str>) -> Result<(u64, u64), MapRefusal> {
+    if project == Some(copy) {
+        return Ok((place.line, place.end_line));
+    }
+    let (line, end_line) = (place.line.max(1), place.end_line.max(place.line.max(1)));
+    let changed = || MapRefusal::ChangedInCopy { file: place.file.clone(), name: place.name.clone(), line };
+    let block: Vec<&str> = project
+        .unwrap_or_default()
+        .lines()
+        .skip(usize::try_from(line - 1).unwrap_or(usize::MAX))
+        .take(usize::try_from(end_line - line + 1).unwrap_or(usize::MAX))
+        .collect();
+    if block.is_empty() {
+        return Err(changed());
+    }
+    let lines: Vec<&str> = copy.lines().collect();
+    let first = (1..)
+        .zip(lines.windows(block.len()))
+        .filter(|(_, window)| *window == block.as_slice())
+        .map(|(first, _): (u64, _)| first)
+        .min_by_key(|first| first.abs_diff(line))
+        .ok_or_else(changed)?;
+    Ok((first, first + (end_line - line)))
 }
 
 /// Quem usa a declaração de `--name`: cada declaração com esse nome no mapa
@@ -686,7 +750,9 @@ fn split_uses(uses: &[UseSite]) -> (Vec<String>, BTreeMap<&[DeclAt], Vec<String>
 /// lida por `trace` do git local na hora e gravada no mapa, como no pedido
 /// da onda; a pergunta seguinte a lê do mapa. Como no pedido também, o
 /// arquivo que mudou junto e não existe mais sai da receita, e a receita que
-/// fica sem nada a dizer não sai.
+/// fica sem nada a dizer não sai. A história segue o número de
+/// `map.historyMoves` lido como a pergunta da história o lê, com o mesmo
+/// aviso do valor inválido.
 fn examples(
     opts: &MapOpts,
     root: &Path,
@@ -728,8 +794,10 @@ fn examples(
     // como no pedido da onda: os subprojetos vêm do terreno.
     map.projects = read(Need::Terrain).map(|terrain| terrain.projects).unwrap_or_default();
     let mut got = project_map::examples(&map, &target, lang);
+    let mut warnings: Vec<String> = Vec::new();
     if got.recipe.is_none() && map.module(&target).is_some() {
-        let moves = mustard_core::ProjectConfig::load(root).history_moves().or(project_map::MOVES_FOLLOWED);
+        let config = mustard_core::ProjectConfig::load(root);
+        let moves = history_moves(root, opts.session.as_deref(), lang, &config, &mut warnings);
         let model = store::model_path(root);
         let traced = |file: &str, moves: usize| trace(root, &model, file, moves).is_ok();
         got.recipe = history_beyond_window(read, &traced, &map.history, &target, moves)
@@ -777,6 +845,9 @@ fn examples(
     }
     if let Some(why) = got.no_history {
         report["no_history"] = json!(why);
+    }
+    if !warnings.is_empty() {
+        report["warnings"] = json!(warnings);
     }
     Ok(report)
 }
@@ -886,21 +957,13 @@ fn name_history(opts: &MapOpts, root: &Path, lang: Locale, read: &Reader<'_>, tr
             "note": mustard_core::translate("map.history.pick_file", lang).replace("{name}", &name),
         }));
     };
-    let (moves, shown) = (config.history_moves(), config.history_commits());
-    let warnings: Vec<String> = [
-        ("historyMoves", moves, project_map::MOVES_FOLLOWED),
-        ("historyCommits", shown, project_map::DECL_COMMITS_SHOWN),
-        ("pullRequestCalls", config.pull_request_calls(), crate::shared::pr_history::CALLS_PER_PASS),
-    ]
-    .into_iter()
-    .filter(|(key, setting, _)| *setting == Setting::Invalid && first_warning(root, opts.session.as_deref(), key))
-    .map(|(key, _, default)| {
-        mustard_core::translate("map.history.bad_setting", lang)
-            .replace("{key}", key)
-            .replace("{default}", &default.to_string())
-    })
-    .collect();
-    let (moves, shown) = (moves.or(project_map::MOVES_FOLLOWED), shown.or(project_map::DECL_COMMITS_SHOWN));
+    let session = opts.session.as_deref();
+    let mut warnings: Vec<String> = Vec::new();
+    let moves = history_moves(root, session, lang, &config, &mut warnings);
+    let commits = ("historyCommits", config.history_commits());
+    let shown = history_number(root, session, lang, commits, project_map::DECL_COMMITS_SHOWN, &mut warnings);
+    let calls = ("pullRequestCalls", config.pull_request_calls());
+    history_number(root, session, lang, calls, crate::shared::pr_history::CALLS_PER_PASS, &mut warnings);
     let fresh = map
         .lineage
         .iter()
@@ -962,6 +1025,42 @@ fn name_history(opts: &MapOpts, root: &Path, lang: Locale, read: &Reader<'_>, tr
         report["warnings"] = json!(warnings);
     }
     Ok(report)
+}
+
+/// O número de `map.historyMoves`, quantas mudanças de arquivo seguidas a
+/// história de uma declaração segue, lido por um caminho só pela pergunta da
+/// história, pela busca e pelos exemplos: o aviso do valor inválido sai uma
+/// vez por sessão, seja qual for a pergunta que o leu primeiro.
+fn history_moves(
+    root: &Path,
+    session: Option<&str>,
+    lang: Locale,
+    config: &mustard_core::ProjectConfig,
+    warnings: &mut Vec<String>,
+) -> usize {
+    let moves = ("historyMoves", config.history_moves());
+    history_number(root, session, lang, moves, project_map::MOVES_FOLLOWED, warnings)
+}
+
+/// O número da chave `key` da seção `map`, escrito como `setting`: o valor
+/// inválido cai no padrão `default` e deixa em `warnings` o aviso que diz a
+/// chave e o padrão, uma vez por sessão.
+fn history_number(
+    root: &Path,
+    session: Option<&str>,
+    lang: Locale,
+    (key, setting): (&str, Setting),
+    default: usize,
+    warnings: &mut Vec<String>,
+) -> usize {
+    if setting == Setting::Invalid && first_warning(root, session, key) {
+        warnings.push(
+            mustard_core::translate("map.history.bad_setting", lang)
+                .replace("{key}", key)
+                .replace("{default}", &default.to_string()),
+        );
+    }
+    setting.or(default)
 }
 
 /// Se o aviso do valor inválido de `key` ainda não saiu na sessão `session`;
@@ -1219,13 +1318,10 @@ mod tests {
         );
     }
 
-    /// Os exemplos de um arquivo cujo último commit ficou fora da janela do
-    /// mapa, cheia com `MAX_COMMITS` commits que nunca o tocam: a primeira
-    /// pergunta lê do git a história dele, com três commits que mudaram o
-    /// registro junto, e a receita sai dela; a segunda lê a história que
-    /// ficou gravada no mapa, sem voltar ao git.
-    #[test]
-    fn examples_of_a_file_older_than_the_window_read_its_history_once_and_the_next_question_does_not_read_git() {
+    /// Um projeto com o mapa cuja janela está cheia com `MAX_COMMITS`
+    /// commits que nunca tocam `src/old.rs`: o último commit dele ficou fora
+    /// da janela.
+    fn project_with_a_file_older_than_the_window() -> tempfile::TempDir {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let commits: Vec<Value> = (0..project_map::MAX_COMMITS)
@@ -1241,30 +1337,51 @@ mod tests {
         for path in ["src/old.rs", "src/registry.rs", "src/busy.rs"] {
             touch(root, path);
         }
+        dir
+    }
+
+    /// A passada falsa da história: grava no mapa em `out` a de `file`,
+    /// seguindo `moves` mudanças, como a de verdade: três commits que mudaram
+    /// o registro junto com ele.
+    fn three_commits_with_the_registry(
+        out: &Path,
+        file: &str,
+        moves: usize,
+    ) -> mustard_core::platform::error::Result<HistoryReport> {
+        let mark = store::read_for_at(out, Need::Lineage(file)).unwrap().census_mark;
+        let commit = |id: &str| LineageCommit {
+            id: id.to_string(),
+            files: project_map::CommitFiles {
+                changed: vec![file.to_string(), "src/registry.rs".to_string()],
+                ..Default::default()
+            },
+            ..LineageCommit::default()
+        };
+        let lineage = FileLineage {
+            path: file.to_string(),
+            base: "main".to_string(),
+            mark,
+            moves: u32::try_from(moves).unwrap(),
+            commits: vec![commit("a1"), commit("a2"), commit("a3")],
+            ..FileLineage::default()
+        };
+        store::save_lineage_at(out, &lineage)?;
+        Ok(HistoryReport::default())
+    }
+
+    /// Os exemplos de um arquivo cujo último commit ficou fora da janela do
+    /// mapa, cheia com `MAX_COMMITS` commits que nunca o tocam: a primeira
+    /// pergunta lê do git a história dele, com três commits que mudaram o
+    /// registro junto, e a receita sai dela; a segunda lê a história que
+    /// ficou gravada no mapa, sem voltar ao git.
+    #[test]
+    fn examples_of_a_file_older_than_the_window_read_its_history_once_and_the_next_question_does_not_read_git() {
+        let dir = project_with_a_file_older_than_the_window();
+        let root = dir.path();
         let calls = std::cell::Cell::new(0);
-        // A passada falsa grava no mapa a história do arquivo, como a de
-        // verdade: três commits que mudaram o registro junto com ele.
         let trace = |_: &Path, out: &Path, file: &str, moves: usize| {
             calls.set(calls.get() + 1);
-            let mark = store::read_for_at(out, Need::Lineage(file)).unwrap().census_mark;
-            let commit = |id: &str| LineageCommit {
-                id: id.to_string(),
-                files: project_map::CommitFiles {
-                    changed: vec![file.to_string(), "src/registry.rs".to_string()],
-                    ..Default::default()
-                },
-                ..LineageCommit::default()
-            };
-            let lineage = FileLineage {
-                path: file.to_string(),
-                base: "main".to_string(),
-                mark,
-                moves: u32::try_from(moves).unwrap(),
-                commits: vec![commit("a1"), commit("a2"), commit("a3")],
-                ..FileLineage::default()
-            };
-            store::save_lineage_at(out, &lineage)?;
-            Ok(HistoryReport::default())
+            three_commits_with_the_registry(out, file, moves)
         };
         let opts = MapOpts { file: Some("src/old.rs".to_string()), ..ask(root, Question::Examples) };
         for round in 0..2 {
@@ -1277,6 +1394,49 @@ mod tests {
             );
         }
         assert_eq!(calls.get(), 1, "the second question reads the history kept in the map, not git");
+    }
+
+    /// Nos exemplos, o valor inválido de `map.historyMoves` — zero, negativo
+    /// ou texto — cai no padrão e sai com o aviso que diz a chave e o padrão,
+    /// uma vez só na sessão; outra sessão recebe o aviso de novo. Com o valor
+    /// certo, a história segue o número escrito, sem aviso.
+    #[test]
+    fn an_invalid_history_moves_in_the_examples_falls_back_to_the_default_with_one_warning() {
+        for bad in ["0", "-2", "\"dez\""] {
+            let dir = project_with_a_file_older_than_the_window();
+            let root = dir.path();
+            let config = |text: String| std::fs::write(root.join("mustard.json"), text).unwrap();
+            config(format!(r#"{{"map": {{"historyMoves": {bad}}}}}"#));
+            let moved = std::cell::RefCell::new(Vec::new());
+            let trace = |_: &Path, out: &Path, file: &str, moves: usize| {
+                moved.borrow_mut().push(moves);
+                three_commits_with_the_registry(out, file, moves)
+            };
+            let ask_in = |session: &str| {
+                let opts = MapOpts {
+                    file: Some("src/old.rs".to_string()),
+                    session: Some(session.to_string()),
+                    ..ask(root, Question::Examples)
+                };
+                map_at(&opts, &|_, _| panic!("a map outside git is never read again"), &trace)
+            };
+            let report = ask_in("sessao-1");
+            assert_eq!(*moved.borrow(), vec![project_map::MOVES_FOLLOWED], "{bad}: {report}");
+            assert_eq!(report["recipe"]["commits"], json!(3), "{bad}: {report}");
+            let warnings: Vec<&str> =
+                report["warnings"].as_array().map(|all| all.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+            assert_eq!(warnings.len(), 1, "{bad}: {report}");
+            assert!(warnings[0].contains("map.historyMoves"), "{bad}: {report}");
+            assert!(warnings[0].contains(&project_map::MOVES_FOLLOWED.to_string()), "{bad}: {report}");
+            let again = ask_in("sessao-1");
+            assert!(again.get("warnings").is_none(), "{bad}: one warning per session: {again}");
+            assert!(ask_in("sessao-2").get("warnings").is_some(), "{bad}: another session is warned again");
+
+            config(r#"{"map": {"historyMoves": 2}}"#.to_string());
+            let valid = ask_in("sessao-3");
+            assert!(valid.get("warnings").is_none(), "{bad}: {valid}");
+            assert_eq!(moved.borrow().last(), Some(&2), "{bad}: {valid}");
+        }
     }
 
     /// Três commits criaram um arquivo em `src/cmd` e mudaram junto o índice
@@ -1828,6 +1988,43 @@ mod tests {
             assert!(again.get("warnings").is_none(), "{bad}: one warning per session: {again}");
             assert_eq!(HistoryNumbers::shown(&again), project_map::DECL_COMMITS_SHOWN, "{bad}: {again}");
             assert!(case.ask("sessao-2").get("warnings").is_some(), "{bad}: another session is warned again");
+        }
+    }
+
+    /// Na busca, o valor inválido de `map.historyMoves` — zero, negativo ou
+    /// texto — cai no padrão e sai com o mesmo aviso da pergunta da história,
+    /// uma vez só na sessão, seja qual for a pergunta que o leu primeiro:
+    /// depois da busca, a história na mesma sessão não avisa de novo, e segue
+    /// o padrão. Outra sessão recebe o aviso de novo; o valor certo, nenhum.
+    #[test]
+    fn an_invalid_history_moves_warns_in_the_search_once_per_session_with_the_history_question() {
+        for bad in ["0", "-2", "\"dez\""] {
+            let case = HistoryNumbers::new();
+            case.config(&format!(r#"{{"map": {{"historyMoves": {bad}}}, "search": {{"filter": "none"}}}}"#));
+            let search = |session: &str| {
+                searched(&search_opts(case.dir.path(), "pay", None, Some(session)), &|_, _| {
+                    panic!("the filter is off")
+                })
+            };
+            let report = search("sessao-1");
+            assert_eq!(report["ok"], json!(true), "{bad}: {report}");
+            let warnings: Vec<&str> =
+                report["warnings"].as_array().map(|all| all.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+            assert_eq!(warnings.len(), 1, "{bad}: {report}");
+            assert!(warnings[0].contains("map.historyMoves"), "{bad}: {report}");
+            assert!(warnings[0].contains(&project_map::MOVES_FOLLOWED.to_string()), "{bad}: {report}");
+
+            let again = search("sessao-1");
+            assert!(again.get("warnings").is_none(), "{bad}: one warning per session: {again}");
+            let history = case.ask("sessao-1");
+            assert!(history.get("warnings").is_none(), "{bad}: the search already warned the session: {history}");
+            assert!(case.traced.borrow().is_empty(), "{bad}: the default moves still count: {history}");
+            assert!(search("sessao-2").get("warnings").is_some(), "{bad}: another session is warned again");
+
+            case.config(r#"{"map": {"historyMoves": 2}, "search": {"filter": "none"}}"#);
+            let valid = search("sessao-3");
+            assert_eq!(valid["ok"], json!(true), "{bad}: {valid}");
+            assert!(valid.get("warnings").is_none(), "{bad}: {valid}");
         }
     }
 
@@ -3009,8 +3206,19 @@ mod tests {
     /// o mapa `map` gravado pela passada do scan no commit e no conteúdo de
     /// agora.
     fn scanned_repo(map: &str) -> (tempfile::TempDir, Value) {
+        scanned_repo_with(map, &[])
+    }
+
+    /// [`scanned_repo`] com os arquivos `files`, pelo caminho e o texto, no
+    /// commit.
+    fn scanned_repo_with(map: &str, files: &[(&str, &str)]) -> (tempfile::TempDir, Value) {
         let dir = tempdir().unwrap();
         let root = dir.path();
+        for (path, text) in files {
+            let at = root.join(path);
+            std::fs::create_dir_all(at.parent().unwrap()).unwrap();
+            std::fs::write(at, text).unwrap();
+        }
         let git = |args: &[&str]| {
             let out = std::process::Command::new("git")
                 .args(["-c", "user.email=t@example.com", "-c", "user.name=t", "-c", "commit.gpgsign=false"])
@@ -3134,5 +3342,75 @@ mod tests {
         assert_eq!(passes.get(), 1, "{report}");
         assert_eq!(report["reason"], json!("map-unfilled"), "{report}");
         assert_eq!(fake.calls(), 0, "{report}");
+    }
+
+    /// O arquivo de `src/pedido.rs` no commit: `gravar_pedido` nas linhas 3
+    /// a 5, como o mapa diz.
+    const ORDER_FILE: &str = "// pedidos\n\npub fn gravar_pedido(pedido: &Pedido) {\n    banco::gravar(pedido);\n}\n\npub fn cancelar_pedido(id: u64) {}\n";
+
+    /// O mapa de `src/pedido.rs` com as linhas do commit.
+    const ORDER_MAP: &str = r#"{"modules": [
+      {"path": "src/pedido.rs", "loc": 8, "declarations": [
+        {"kind": "function", "name": "gravar_pedido", "line": 3, "end_line": 5,
+         "signature": "pub fn gravar_pedido(pedido: &Pedido)", "doc": ""},
+        {"kind": "function", "name": "cancelar_pedido", "line": 7, "end_line": 7,
+         "signature": "pub fn cancelar_pedido(id: u64)", "doc": ""}]}
+    ]}"#;
+
+    /// O trecho perguntado de dentro de uma cópia de trabalho do projeto,
+    /// como a de uma onda, sai do arquivo da cópia, não do projeto: com duas
+    /// linhas novas no topo, `gravar_pedido` sai inteira nas linhas 5 a 7 da
+    /// cópia. A declaração que a cópia mudou recusa e manda ler o arquivo
+    /// da cópia por faixa de linhas. Perguntado no projeto, o trecho segue o
+    /// do projeto, nas linhas do mapa.
+    #[test]
+    fn the_slice_asked_inside_a_working_copy_reads_the_copy_file() {
+        let (dir, map) = scanned_repo_with(ORDER_MAP, &[("src/pedido.rs", ORDER_FILE)]);
+        let root = dir.path();
+        let copies = tempdir().unwrap();
+        let copy = copies.path().join("c");
+        let out = std::process::Command::new("git")
+            .args(["worktree", "add", "-q", "-b", "onda"])
+            .arg(&copy)
+            .current_dir(root)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git worktree: {}", String::from_utf8_lossy(&out.stderr));
+        let rescan = |root: &Path, _: &Path| {
+            written_by_the_scan(root, &map);
+            Ok(ScanReport::default())
+        };
+        let slice_from = |start: &Path, name: &str| {
+            let opts = MapOpts {
+                file: Some("src/pedido.rs".to_string()),
+                name: Some(name.to_string()),
+                ..ask(start, Question::Slice)
+            };
+            super::map_at(&opts, &rescan, &no_history, &|_, _| Err(FilterError::MissingKey))
+        };
+        let declaration = "pub fn gravar_pedido(pedido: &Pedido) {\n    banco::gravar(pedido);\n}";
+        let same = slice_from(&copy, "gravar_pedido");
+        assert_eq!((&same["line"], &same["end_line"]), (&json!(3), &json!(5)), "{same}");
+        assert_eq!(same["slice"], json!(declaration), "{same}");
+
+        std::fs::write(copy.join("src/pedido.rs"), format!("use banco;\nuse pedido::Pedido;\n{ORDER_FILE}")).unwrap();
+        let moved = slice_from(&copy.join("src"), "gravar_pedido");
+        assert_eq!(moved["ok"], json!(true), "{moved}");
+        assert_eq!((&moved["line"], &moved["end_line"]), (&json!(5), &json!(7)), "{moved}");
+        assert_eq!(moved["slice"], json!(declaration), "{moved}");
+
+        let changed = ORDER_FILE.replace("banco::gravar(pedido);", "banco::gravar(pedido)?;");
+        std::fs::write(copy.join("src/pedido.rs"), format!("use banco;\n{changed}")).unwrap();
+        let refused = slice_from(&copy, "gravar_pedido");
+        assert_eq!(refused["reason"], json!("changed-in-copy"), "{refused}");
+        let hint = refused["hint"].as_str().unwrap();
+        assert!(hint.contains("gravar_pedido") && hint.contains("src/pedido.rs"), "{refused}");
+        let untouched = slice_from(&copy, "cancelar_pedido");
+        assert_eq!((&untouched["line"], &untouched["end_line"]), (&json!(8), &json!(8)), "{untouched}");
+        assert_eq!(untouched["slice"], json!("pub fn cancelar_pedido(id: u64) {}"), "{untouched}");
+
+        let in_the_project = slice_from(root, "gravar_pedido");
+        assert_eq!((&in_the_project["line"], &in_the_project["end_line"]), (&json!(3), &json!(5)), "{in_the_project}");
+        assert_eq!(in_the_project["slice"], json!(declaration), "{in_the_project}");
     }
 }

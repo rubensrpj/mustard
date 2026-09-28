@@ -116,6 +116,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "The file `{file}` is in the map and could not be read ({detail}). Check whether it is \
              still there."
         }
+        ("map.changed_in_copy", Locale::PtBr) => {
+            "A declaração `{name}` de `{file}` mudou nesta cópia depois do mapa, que tem a do projeto a partir da \
+             linha {line}. Leia o arquivo desta cópia por faixa de linhas."
+        }
+        ("map.changed_in_copy", Locale::EnUs) => {
+            "The declaration `{name}` in `{file}` changed in this copy after the map, which has the project's one \
+             from line {line}. Read the file of this copy by a line range."
+        }
         ("map.missing_argument", Locale::PtBr) => "A pergunta `{question}` precisa de `{flag}`.",
         ("map.missing_argument", Locale::EnUs) => "The `{question}` question needs `{flag}`.",
         ("map.skill_unreadable", Locale::PtBr) => "A skill `{path}` não pôde ser lida ({detail}).",
@@ -364,8 +372,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("map.rs"),
             super::PREFIXES,
-            67,
-            0x0f33_cf21_f176_735f,
+            68,
+            0x252a_afac_41f5_be2a,
         );
     }
 
@@ -396,6 +404,7 @@ mod tests {
                 "map.history.pull_missing",
                 "map.history.spec",
                 "map.history_unreadable",
+                "map.changed_in_copy",
                 "map.search.filter_failed",
                 "map.search.bad_number",
                 "map.search.bad_filter",
@@ -550,6 +559,7 @@ mod tests {
             ("map.unknown_file", &["{file}"][..]),
             ("map.unknown_declaration", &["{file}", "{name}"][..]),
             ("map.file_unreadable", &["{file}", "{detail}"][..]),
+            ("map.changed_in_copy", &["{name}", "{file}", "{line}"][..]),
             ("map.missing_argument", &["{question}", "{flag}"][..]),
             ("map.skill_unreadable", &["{path}", "{detail}"][..]),
             ("map.skill_missing_path", &["{paths}"][..]),
