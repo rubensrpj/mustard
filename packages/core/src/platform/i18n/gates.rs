@@ -289,6 +289,31 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "[Mustard] {file} holds the Jev key, and the key never enters the conversation. Here is \
              the file, with the key replaced by ***:\n{text}"
         }
+        // A busca do terminal em pastas que passaria pelo arquivo com a
+        // chave volta com a opção que o deixa de fora. `{fix}` vem do
+        // chamador, no jeito do programa da busca.
+        ("config_key.swept", Locale::PtBr) => {
+            "[Mustard] Essa busca passa por {file}, que guarda a chave do Jev, e mostraria a chave. \
+             A chave nunca entra na conversa. Rode a mesma busca com {fix} no fim: assim o arquivo \
+             fica de fora."
+        }
+        ("config_key.swept", Locale::EnUs) => {
+            "[Mustard] This search goes through {file}, which holds the Jev key, and would show the \
+             key. The key never enters the conversation. Run the same search with {fix} at the end: \
+             that leaves the file out."
+        }
+        // A ferramenta de busca cujo `glob` alcança o arquivo com a chave,
+        // que ela deixaria de fora sem ele.
+        ("config_key.swept_tool", Locale::PtBr) => {
+            "[Mustard] O `glob` dessa busca alcança {file}, que guarda a chave do Jev, e a busca \
+             mostraria a chave. A chave nunca entra na conversa. Troque o `glob` por `type`, ou \
+             busque sem ele: assim o arquivo fica de fora, como tudo o que o git ignora."
+        }
+        ("config_key.swept_tool", Locale::EnUs) => {
+            "[Mustard] The `glob` of this search reaches {file}, which holds the Jev key, and the \
+             search would show the key. The key never enters the conversation. Use `type` instead \
+             of `glob`, or search without it: that leaves the file out, like everything git ignores."
+        }
 
         // The approval witness: what it tells the assistant after recording
         // the approval, or when nothing was recorded.
@@ -561,8 +586,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("gates.rs"),
             super::PREFIXES,
-            71,
-            0x5b58_3fb4_5608_3078,
+            73,
+            0xab83_db51_9676_be99,
         );
     }
 
@@ -582,6 +607,8 @@ mod tests {
                 ("code_route.whole_read", &[("{file}", "mapa"), ("{lines}", "400"), ("{parts}", word)][..]),
                 ("code_route.name_search", &[("{name}", "Alpha")][..]),
                 ("config_key.hidden", &[("{file}", "mustard"), ("{text}", word)][..]),
+                ("config_key.swept", &[("{file}", "mustard"), ("{fix}", word)][..]),
+                ("config_key.swept_tool", &[("{file}", "mustard")][..]),
             ] {
                 let text = slots.iter().fold(translate(key, lang).to_string(), |text, (slot, value)| text.replace(slot, value));
                 let report = crate::domain::clarity::measure(&text, &[], Some(lang));
@@ -605,6 +632,8 @@ mod tests {
             ("code_route.whole_read", &["{file}", "{lines}", "{parts}"][..]),
             ("code_route.name_search", &["{name}"][..]),
             ("config_key.hidden", &["{file}", "{text}"][..]),
+            ("config_key.swept", &["{file}", "{fix}"][..]),
+            ("config_key.swept_tool", &["{file}"][..]),
             ("approval.witness.clear", &["{spec}"][..]),
             ("approval.witness.free_text", &["{spec}", "{selected}", "{offered}"][..]),
             ("approval.witness.not_affirmative", &["{spec}", "{selected}"][..]),

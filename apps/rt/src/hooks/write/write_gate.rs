@@ -285,7 +285,9 @@ pub(crate) fn run_rules(rules: &[&dyn WriteRule], input: &HookInput, ctx: &Ctx) 
 /// `path`, ou uma cópia de trabalho dele —, com um padrão que é nome de
 /// declaração do mapa, a recusa com o comando de quem usa o nome. A busca
 /// num arquivo só, fora do projeto, com outro padrão ou com um `glob` que
-/// deixa só arquivos fora do mapa passa.
+/// deixa só arquivos fora do mapa passa. A busca que traz as linhas numa
+/// pasta que guarda o arquivo com a chave, com um `glob` que casa com o nome
+/// dele e passa por cima do que o git ignora, é recusada também.
 fn search_verdict(root: &str, input: &HookInput, ctx: &Ctx) -> Verdict {
     let lang = ctx.config.language().text_or_default();
     let ti = &input.tool_input;
@@ -299,13 +301,29 @@ fn search_verdict(root: &str, input: &HookInput, ctx: &Ctx) -> Verdict {
         };
     }
     let Some(pattern) = text("pattern") else { return Verdict::Allow };
-    let Some(folder) = code_route::project_path(root, base, path.unwrap_or(".")).filter(|folder| folder.abs.is_dir())
-    else {
-        return Verdict::Allow;
-    };
     let globs: Vec<String> = text("glob").map(str::to_string).into_iter().collect();
-    match code_route::folder_search(Path::new(root), pattern, &[folder.rel], &globs, lang) {
-        Some(reason) => Verdict::Deny { reason },
+    if let Some(folder) = code_route::project_path(root, base, path.unwrap_or(".")).filter(|folder| folder.abs.is_dir())
+        && let Some(reason) = code_route::folder_search(Path::new(root), pattern, &[folder.rel], &globs, lang)
+    {
+        return Verdict::Deny { reason };
+    }
+    // Só o modo que traz as linhas mostraria a chave; os outros listam
+    // arquivos ou contam.
+    if text("output_mode") != Some("content") {
+        return Verdict::Allow;
+    }
+    // O `glob` da ferramenta pode trazer vários filtros, separados por espaço
+    // ou, fora das chaves, por vírgula.
+    let filters: Vec<config_key::NameFilter> = text("glob")
+        .into_iter()
+        .flat_map(str::split_whitespace)
+        .flat_map(|glob| if glob.contains('{') { vec![glob] } else { glob.split(',').collect() })
+        .filter(|glob| !glob.is_empty())
+        .map(config_key::NameFilter::rg)
+        .collect();
+    let folder = Path::new(base).join(path.unwrap_or("."));
+    match config_key::swept(&[folder], Path::new(root), config_key::Walk::Rg { unignored: false }, &filters) {
+        Some(file) => Verdict::Deny { reason: say("config_key.swept_tool", lang, &[("{file}", &file)]) },
         None => Verdict::Allow,
     }
 }
@@ -1367,5 +1385,35 @@ mod tests {
         ] {
             assert_eq!(hook_on(&root, "Grep", tool_input.clone()), Verdict::Allow, "{tool_input}");
         }
+    }
+    /// A busca que traz as linhas numa pasta com o `mustard.json` que guarda
+    /// a chave, com um `glob` que casa com o nome dele, é recusada sem
+    /// mostrar a chave. Sem o `glob`, com um `glob` que não casa, no modo que
+    /// só lista arquivos ou conta, numa pasta de dentro ou sem a chave, passa.
+    #[test]
+    fn a_search_whose_glob_reaches_the_key_file_is_refused() {
+        let config = format!(r#"{{"jev": {{"key": "{}"}}}}"#, fixture::FAKE_KEY);
+        let (_dir, root) = fixture::project(&config, true);
+        for tool_input in [
+            json!({ "pattern": "key", "glob": "*.json", "output_mode": "content" }),
+            json!({ "pattern": "key", "glob": "*.{json,md}", "output_mode": "content", "path": abs(&root, ".") }),
+            json!({ "pattern": "key", "glob": "*.rs mustard.json", "output_mode": "content" }),
+        ] {
+            let reason = refused(hook_on(&root, "Grep", tool_input.clone()), "the search through the key file");
+            assert!(!reason.contains(fixture::FAKE_KEY), "{tool_input}: the key leaked");
+            assert!(reason.contains("mustard.json") && reason.contains("`type`"), "{tool_input}: {reason}");
+        }
+        for tool_input in [
+            json!({ "pattern": "key", "output_mode": "content" }),
+            json!({ "pattern": "key", "glob": "*.rs", "output_mode": "content" }),
+            json!({ "pattern": "key", "glob": "*.json" }),
+            json!({ "pattern": "key", "glob": "*.json", "output_mode": "count" }),
+            json!({ "pattern": "key", "glob": "*.json", "output_mode": "content", "path": abs(&root, "src") }),
+        ] {
+            assert_eq!(hook_on(&root, "Grep", tool_input.clone()), Verdict::Allow, "{tool_input}");
+        }
+        let (_plain, plain) = fixture::project("{}", true);
+        let tool_input = json!({ "pattern": "key", "glob": "*.json", "output_mode": "content" });
+        assert_eq!(hook_on(&plain, "Grep", tool_input), Verdict::Allow);
     }
 }

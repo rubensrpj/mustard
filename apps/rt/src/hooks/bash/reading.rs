@@ -4,8 +4,15 @@
 //!
 //! - **O arquivo de configuração com a chave.** Um programa que mostra o
 //!   texto de um arquivo ([`READERS`]) com o `mustard.json` nos argumentos,
-//!   ou qualquer programa que o recebe por `<`, é recusado quando o arquivo
-//!   guarda a chave. O motivo traz o arquivo com a chave trocada por `***`.
+//!   por nome ou por um curinga que o terminal abre (`*.json`), ou qualquer
+//!   programa que o recebe por `<`, é recusado quando o arquivo guarda a
+//!   chave. O motivo traz o arquivo com a chave trocada por `***`.
+//! - **A busca em pastas que passa pelo arquivo com a chave.** O `grep`
+//!   recursivo numa pasta que guarda o `mustard.json`, e o `rg` que o lê
+//!   mesmo com ele no `.git/info/exclude` (com `-u`, ou com um `-g` que casa
+//!   com o nome), são recusados com a opção que deixa o arquivo de fora
+//!   ([`config_key::swept`]). A busca que só lista arquivos ou conta
+//!   linhas não mostra a chave, e passa.
 //! - **A busca de um nome em pastas.** O `grep` recursivo e o `rg` numa
 //!   pasta de código, com um padrão que é nome de declaração do mapa, voltam
 //!   com o comando de quem usa o nome ([`code_route::folder_search`]). A
@@ -20,7 +27,9 @@ use std::path::{Path, PathBuf};
 use mustard_core::domain::model::contract::{Ctx, HookInput, Verdict};
 
 use super::lex::Segment;
-use crate::shared::{code_route, config_key};
+use crate::hooks::write::write_gate::say;
+use crate::shared::config_key::{self, NameFilter, Walk, CONFIG_FILE};
+use crate::shared::code_route;
 
 /// Os programas que mostram o texto de um arquivo.
 const READERS: &[&str] = &[
@@ -64,15 +73,27 @@ pub(super) fn bash_reading(segments: &[Segment], input: &HookInput, ctx: &Ctx) -
         let Some(search) = text_search(segment) else { continue };
         let base = cwd.to_string_lossy();
         let searched = if search.paths.is_empty() { vec![".".to_string()] } else { search.paths };
-        let folders: Vec<String> = searched
-            .iter()
-            .filter_map(|path| code_route::project_path(&root, &base, path))
-            .filter(|path| path.abs.is_dir())
-            .map(|path| path.rel)
-            .collect();
-        if let Some(reason) = code_route::folder_search(Path::new(&root), &search.pattern, &folders, &search.globs, lang)
-        {
-            return Some(Verdict::Deny { reason });
+        if let Some(pattern) = &search.pattern {
+            let folders: Vec<String> = searched
+                .iter()
+                .filter_map(|path| code_route::project_path(&root, &base, path))
+                .filter(|path| path.abs.is_dir())
+                .map(|path| path.rel)
+                .collect();
+            if let Some(reason) = code_route::folder_search(Path::new(&root), pattern, &folders, &search.globs, lang) {
+                return Some(Verdict::Deny { reason });
+            }
+        }
+        if !search.shows_lines {
+            continue;
+        }
+        let folders: Vec<PathBuf> = searched.iter().map(|path| cwd.join(path)).collect();
+        if let Some(file) = config_key::swept(&folders, Path::new(&root), search.walk, &search.filters) {
+            let fix = match search.walk {
+                Walk::Grep => format!("`--exclude={CONFIG_FILE}`"),
+                Walk::Rg { .. } => format!("`-g '!{CONFIG_FILE}'`"),
+            };
+            return Some(Verdict::Deny { reason: say("config_key.swept", lang, &[("{file}", &file), ("{fix}", &fix)]) });
         }
     }
     None
@@ -80,28 +101,35 @@ pub(super) fn bash_reading(segments: &[Segment], input: &HookInput, ctx: &Ctx) -
 
 /// A recusa do comando que mostraria o arquivo de configuração com a chave:
 /// um leitor com o arquivo nos argumentos, ou qualquer programa com o arquivo
-/// entrando por `<`.
+/// entrando por `<`, pelo nome ou por um curinga que o alcança.
 fn config_refusal(segment: &Segment, cwd: &Path, lang: mustard_core::platform::i18n::Locale) -> Option<String> {
     let reader = READERS.contains(&segment.name());
-    let named = segment.args.iter().filter(|_| reader).map(|word| word.text.as_str());
-    let fed = segment.redirects.iter().filter(|redirect| redirect.op == "<").map(|redirect| redirect.target.text.as_str());
+    let named = segment.args.iter().filter(|_| reader);
+    let fed = segment.redirects.iter().filter(|redirect| redirect.op == "<").map(|redirect| &redirect.target);
     named
         .chain(fed)
-        .filter(|path| config_key::is_config_file(path))
-        .find_map(|path| config_key::refusal(path, &cwd.join(path), lang))
+        .filter_map(|word| config_key::named_by(&word.text, word.text == word.raw))
+        .find_map(|path| config_key::refusal(&path, &cwd.join(&path), lang))
 }
 
-/// Uma busca de texto do terminal: o padrão, os caminhos e os filtros de nome
-/// de arquivo.
+/// Uma busca de texto do terminal em pastas.
 struct TextSearch {
-    pattern: String,
+    /// O padrão, quando há um só e escrito na linha; `None` com mais de um ou
+    /// com os padrões lidos de arquivo.
+    pattern: Option<String>,
     paths: Vec<String>,
+    /// Os filtros de entrada, como a busca de um nome os lê.
     globs: Vec<String>,
+    /// Os filtros de nome de arquivo, de entrada e de saída, na ordem.
+    filters: Vec<NameFilter>,
+    walk: Walk,
+    /// `false` quando a busca só lista arquivos, conta ou fica quieta: a
+    /// saída não traz as linhas.
+    shows_lines: bool,
 }
 
-/// A busca que `segment` faz, quando é um `grep` recursivo ou um `rg` com um
-/// padrão só. `None` em todo o resto: outro programa, `grep` sem recursão,
-/// padrões lidos de arquivo, mais de um padrão.
+/// A busca que `segment` faz, quando é um `grep` recursivo ou um `rg`. `None`
+/// em todo o resto: outro programa, `grep` sem recursão.
 fn text_search(segment: &Segment) -> Option<TextSearch> {
     let (short_value, long_value, rg) = match segment.name() {
         "grep" | "egrep" | "fgrep" => (GREP_SHORT_VALUE, GREP_LONG_VALUE, false),
@@ -109,8 +137,8 @@ fn text_search(segment: &Segment) -> Option<TextSearch> {
         _ => return None,
     };
     let mut recursive = rg;
-    let mut from_file = false;
-    let (mut patterns, mut positionals, mut globs) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut from_file, mut names_only, mut unignored) = (false, false, false);
+    let (mut patterns, mut positionals, mut globs, mut filters) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     let mut args = segment.args.iter().map(|word| word.text.as_str());
     let mut options_done = false;
     while let Some(arg) = args.next() {
@@ -128,11 +156,13 @@ fn text_search(segment: &Segment) -> Option<TextSearch> {
             (name.to_string(), value)
         } else {
             let cluster = &arg[1..];
-            let Some((at, short)) = cluster.char_indices().find(|(_, c)| short_value.contains(c)) else {
-                recursive |= !rg && cluster.contains(['r', 'R']);
-                continue;
-            };
-            recursive |= !rg && cluster[..at].contains(['r', 'R']);
+            let found = cluster.char_indices().find(|(_, c)| short_value.contains(c));
+            let flags = found.map_or(cluster, |(at, _)| &cluster[..at]);
+            recursive |= !rg && flags.contains(['r', 'R']);
+            // No `rg`, o `-L` segue os atalhos; no `grep`, lista os arquivos.
+            names_only |= flags.contains(['l', 'c', 'q']) || (!rg && flags.contains('L'));
+            unignored |= rg && flags.contains('u');
+            let Some((at, short)) = found else { continue };
             let rest = &cluster[at + short.len_utf8()..];
             let value = if rest.is_empty() { args.next().map(str::to_string) } else { Some(rest.to_string()) };
             (short.to_string(), value)
@@ -142,19 +172,30 @@ fn text_search(segment: &Segment) -> Option<TextSearch> {
             ("f" | "file", _) => from_file = true,
             ("recursive" | "dereference-recursive", _) if !rg => recursive = true,
             ("d" | "directories", Some(value)) if !rg && value == "recurse" => recursive = true,
-            ("include", Some(value)) if !rg => globs.push(value),
-            ("g" | "glob" | "iglob", Some(value)) if rg => globs.push(value),
+            ("files-with-matches" | "files-without-match" | "count" | "quiet" | "silent", _) => names_only = true,
+            ("count-matches" | "files", _) if rg => names_only = true,
+            ("no-ignore" | "no-ignore-vcs" | "no-ignore-exclude" | "unrestricted", _) if rg => unignored = true,
+            ("include", Some(value)) if !rg => {
+                filters.push(NameFilter { exclude: false, glob: value.clone() });
+                globs.push(value);
+            }
+            ("exclude", Some(value)) if !rg => filters.push(NameFilter { exclude: true, glob: value }),
+            ("g" | "glob" | "iglob", Some(value)) if rg => {
+                filters.push(NameFilter::rg(&value));
+                globs.push(value);
+            }
             _ => {}
         }
     }
-    if from_file || !recursive {
+    if !recursive {
         return None;
     }
-    if patterns.is_empty() && !positionals.is_empty() {
+    if !from_file && patterns.is_empty() && !positionals.is_empty() {
         patterns.push(positionals.remove(0));
     }
-    let [pattern] = <[String; 1]>::try_from(patterns).ok()?;
-    Some(TextSearch { pattern, paths: positionals, globs })
+    let pattern = <[String; 1]>::try_from(patterns).ok().map(|[pattern]| pattern).filter(|_| !from_file);
+    let walk = if rg { Walk::Rg { unignored } } else { Walk::Grep };
+    Some(TextSearch { pattern, paths: positionals, globs, filters, walk, shows_lines: !names_only })
 }
 
 #[cfg(test)]
@@ -166,7 +207,7 @@ mod tests {
 
     /// O padrão, os caminhos e os filtros que a busca de uma linha lê.
     fn read(cmd: &str) -> Option<(String, Vec<String>, Vec<String>)> {
-        segments(cmd).iter().find_map(text_search).map(|s| (s.pattern, s.paths, s.globs))
+        segments(cmd).iter().find_map(text_search).and_then(|s| Some((s.pattern?, s.paths, s.globs)))
     }
 
     /// O `grep` só conta como busca em pastas com a recursão; o `rg`, sempre.
@@ -260,5 +301,73 @@ mod tests {
 
         let (_plain, plain) = fixture::project("{}", true);
         assert_eq!(run(&plain, "cat mustard.json"), Verdict::Allow);
+    }
+    /// A busca recursiva que passaria pelo `mustard.json` com a chave é
+    /// recusada com a opção que o deixa de fora, e o motivo nunca traz a
+    /// chave: o `grep` recursivo na raiz, depois de um `cd` ou numa pasta
+    /// acima dela, também com mais de um padrão, e o `rg` que lê o que o git
+    /// ignora.
+    #[test]
+    fn a_recursive_search_through_the_config_file_with_the_key_is_refused() {
+        let config = format!(r#"{{"jev": {{"key": "{}"}}}}"#, fixture::FAKE_KEY);
+        let (_dir, root) = fixture::project(&config, true);
+        let above = format!("grep -rn jev {}", root.parent().expect("a folder above the project").display());
+        let (grep, rg) = ("`--exclude=mustard.json`", "`-g '!mustard.json'`");
+        for (command, fix) in [
+            ("grep -r jev .", grep),
+            ("grep -rn jev", grep),
+            ("cd src && grep -R key ..", grep),
+            ("grep -r -e jev -e key .", grep),
+            ("grep -r --include=*.json key .", grep),
+            (above.as_str(), grep),
+            ("rtk rg -u jev", rg),
+            ("rg --no-ignore-vcs jev .", rg),
+            ("rg -g '*.json' key", rg),
+        ] {
+            let reason = refused(run(&root, command), command);
+            assert!(!reason.contains(fixture::FAKE_KEY), "`{command}`: the key leaked");
+            assert!(reason.contains(fix) && reason.contains("mustard.json"), "{command}: {reason}");
+        }
+    }
+
+    /// O leitor com um curinga sem aspas que o terminal abre e que alcança o
+    /// `mustard.json` com a chave recebe o arquivo sem a chave.
+    #[test]
+    fn a_reader_with_a_wildcard_that_reaches_the_config_file_gets_it_without_the_key() {
+        let config = format!(r#"{{"jev": {{"key": "{}"}}}}"#, fixture::FAKE_KEY);
+        let (_dir, root) = fixture::project(&config, true);
+        for command in ["grep key *.json", "cat *", "cd src && head -5 ../m*"] {
+            let reason = refused(run(&root, command), command);
+            assert!(!reason.contains(fixture::FAKE_KEY), "`{command}`: the key leaked");
+            assert!(reason.contains(r#""key": "***""#), "{command}: {reason}");
+        }
+    }
+
+    /// A busca que deixa o arquivo de fora, a que não passa pela pasta dele,
+    /// a que só lista arquivos ou conta, o `rg` que respeita o que o git
+    /// ignora e o curinga entre aspas passam; sem a chave, a busca
+    /// recursiva na raiz passa também.
+    #[test]
+    fn a_search_that_leaves_the_config_file_out_passes() {
+        let config = format!(r#"{{"jev": {{"key": "{}"}}}}"#, fixture::FAKE_KEY);
+        let (_dir, root) = fixture::project(&config, true);
+        for command in [
+            "grep -r --exclude=mustard.json jev .",
+            "grep -r jev . --exclude=mustard.json",
+            "grep -r --include=*.rs jev .",
+            "grep -r jev src",
+            "grep -rl jev .",
+            "grep -rc jev .",
+            "rg jev",
+            "rg -g '*.rs' key",
+            "rg -u jev -g '!mustard.json'",
+            "rg -l -g '*.json' key",
+            "grep -n key 'm*'",
+            "ls *",
+        ] {
+            assert_eq!(run(&root, command), Verdict::Allow, "{command}");
+        }
+        let (_plain, plain) = fixture::project("{}", true);
+        assert_eq!(run(&plain, "grep -r jev ."), Verdict::Allow);
     }
 }

@@ -244,6 +244,11 @@ impl ScanConfig {
     }
 }
 
+/// O nome do campo que guarda a chave do Jev dentro da seção `jev` do
+/// `mustard.json`. A leitura da chave o procura, e as travas escondem o valor
+/// dele em toda leitura do arquivo: um nome só para as duas.
+pub const JEV_KEY_FIELD: &str = "key";
+
 /// A seção `jev` do `mustard.json`: a chave do serviço que dá nota aos
 /// candidatos da busca por assunto, em `jev.key`. É segredo: o `Debug` não a
 /// escreve, e a serialização do tipo não a leva. Só a gravação do próprio
@@ -262,7 +267,7 @@ impl JevConfig {
     /// está em branco ou não é texto.
     #[must_use]
     pub fn key(&self) -> Option<&str> {
-        self.raw.as_ref()?.get("key")?.as_str().map(str::trim).filter(|key| !key.is_empty())
+        self.raw.as_ref()?.get(JEV_KEY_FIELD)?.as_str().map(str::trim).filter(|key| !key.is_empty())
     }
 }
 
