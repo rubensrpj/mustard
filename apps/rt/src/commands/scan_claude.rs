@@ -54,7 +54,8 @@ pub struct OversizedEntry {
 ///
 /// `code_lang` é a língua dos nomes do código (`language.code`, inglês sem
 /// ela): a dica pede as palavras do pedido também nessa língua, soltas, e os
-/// nomes prováveis nela, com o nome da língua escrito no idioma do texto.
+/// nomes prováveis nela, com o nome da língua escrito no idioma do texto. O
+/// exemplo da busca mostra os nomes nessa mesma língua.
 pub(crate) fn render_map(
     kind: &str,
     code_files: usize,
@@ -70,7 +71,10 @@ pub(crate) fn render_map(
         .replace("{count}", &code_files.to_string());
     let _ = writeln!(out, "{type_line}");
     let code_language = translate(&format!("scan.map.language.{}", code_lang.as_str()), lang);
-    let pointer = translate("scan.map.pointer", lang).replace("{code_language}", code_language);
+    let example = translate(&format!("scan.map.example.{}", code_lang.as_str()), lang);
+    let pointer = translate("scan.map.pointer", lang)
+        .replace("{code_language}", code_language)
+        .replace("{example}", example);
     let _ = writeln!(out, "{pointer}");
     if !commands_block.is_empty() {
         out.push('\n');
@@ -278,15 +282,32 @@ mod tests {
     /// O mapa escrito pela passada pede as palavras do pedido também na
     /// língua dos nomes do código, soltas. Sem essa língua declarada, ela é o
     /// inglês; declarada em português, a frase diz português. O nome da língua
-    /// sai no idioma do texto do projeto.
+    /// sai no idioma do texto do projeto, e o exemplo da busca mostra os nomes
+    /// na língua dos nomes: `prazoEntrega` no português, `deliveryDeadline` no
+    /// inglês, nunca o outro.
     #[test]
     fn the_map_asks_for_the_request_words_in_the_language_of_the_names() {
-        for (language, said, not_said) in [
-            (serde_json::json!({"text": "pt-BR"}), "as mesmas palavras em inglês, soltas", "em português"),
+        for (language, said, not_said, example, other_name) in [
+            (
+                serde_json::json!({"text": "pt-BR"}),
+                "as mesmas palavras em inglês, soltas",
+                "em português",
+                "--query \"prazo de entrega delivery deadline deliveryDeadline due_date\"",
+                "prazoEntrega",
+            ),
             (
                 serde_json::json!({"text": "pt-BR", "code": "pt-BR"}),
                 "as mesmas palavras em português, soltas",
                 "em inglês",
+                "--query \"prazo de entrega prazoEntrega data_limite\"",
+                "deliveryDeadline",
+            ),
+            (
+                serde_json::json!({"text": "en-US", "code": "pt-BR"}),
+                "the same words in Portuguese as plain words",
+                "in English",
+                "--query \"delivery deadline prazo entrega prazoEntrega data_limite\"",
+                "deliveryDeadline",
             ),
         ] {
             let dir = tempfile::tempdir().expect("tempdir");
@@ -301,6 +322,9 @@ mod tests {
             assert!(map.contains(said), "{language}: {map}");
             assert!(!map.contains(not_said), "{language}: {map}");
             assert!(!map.contains("{code_language}"), "{language}: {map}");
+            assert!(map.contains(example), "{language}: {map}");
+            assert!(!map.contains(other_name), "{language}: {map}");
+            assert!(!map.contains("{example}"), "{language}: {map}");
         }
     }
 

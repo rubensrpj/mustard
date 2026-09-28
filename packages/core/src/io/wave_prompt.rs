@@ -89,7 +89,39 @@ pub fn prompts(root: &Path, spec: &str, log: &SpecLog, lang: Locale, flight: &Fl
 /// commit ficou fora da janela do mapa, seguindo a declaração até `moves`
 /// vezes para o arquivo de onde ela veio: pelo `scan history`, que a grava
 /// no mapa. `true` quando gravou.
-type Trace<'t> = dyn Fn(&str, usize) -> bool + 't;
+pub type Trace<'t> = dyn Fn(&str, usize) -> bool + 't;
+
+/// A história do arquivo `file` além da janela do mapa, quando o último
+/// commit dele ficou fora dela: a janela cheia, com a história da branch de
+/// partida, e nenhum commit do arquivo nela. Vale a guardada no mapa, pela
+/// mesma validade da pergunta da história de uma declaração; senão, `trace`
+/// a lê do git na hora, seguindo até `moves` mudanças de arquivo, e a grava
+/// no mapa, e a pergunta seguinte não relê o git. O pedido da onda e os
+/// exemplos do mapa a leem por aqui. `None` quando a janela ainda guarda a
+/// história inteira, quando o arquivo tem commit nela ou quando a leitura
+/// falha.
+pub fn history_beyond_window(
+    read: &MapReader<'_>,
+    trace: &Trace<'_>,
+    history: &History,
+    file: &str,
+    moves: usize,
+) -> Option<FileLineage> {
+    if file_history(history, file).is_some() || history.commits.len() < MAX_COMMITS || history.missing.is_some() {
+        return None;
+    }
+    let stored = |part: ProjectMap| part.lineage.into_iter().find(|lineage| lineage.path == file);
+    let part = read(Need::Lineage(file)).ok()?;
+    let comments = part.pulls.comments.len();
+    let mark = part.census_mark.clone();
+    if let Some(found) = stored(part).filter(|l| lineage_fresh_in(l, history, &mark, comments, moves)) {
+        return Some(found);
+    }
+    if !trace(file, moves) {
+        return None;
+    }
+    read(Need::Lineage(file)).ok().and_then(stored)
+}
 
 /// Os pedidos de [`prompts`], com o mapa do projeto lido por `read`, cada
 /// parte pela pergunta dela, e a história além da janela lida por `trace`.
@@ -511,7 +543,7 @@ impl MapParts<'_> {
     /// arquivo do tipo dele na pasta, quando ele ainda não existe; a de
     /// mudá-lo, pelos commits da janela do mapa; ou, quando o último commit
     /// dele ficou fora da janela, pela história lida do git na hora
-    /// ([`Self::lineage`]). O arquivo que mudou junto e não existe mais sai
+    /// ([`history_beyond_window`]). O arquivo que mudou junto e não existe mais sai
     /// da receita. Calculada uma vez só por montagem.
     fn recipe(&self, read: &ProjectMap, file: &str) -> Option<Recipe> {
         if let Some(known) = self.recipes.borrow().get(file) {
@@ -522,8 +554,8 @@ impl MapParts<'_> {
             recipe_for_new(history, file)
         } else if file_history(history, file).is_some() {
             recipe_for_existing(history, file)
-        } else if read.module(file).is_some() && history.commits.len() >= MAX_COMMITS && history.missing.is_none() {
-            self.lineage(file, history).as_ref().and_then(recipe_from_lineage)
+        } else if read.module(file).is_some() {
+            history_beyond_window(self.read, self.trace, history, file, self.moves).as_ref().and_then(recipe_from_lineage)
         } else {
             None
         };
@@ -535,24 +567,6 @@ impl MapParts<'_> {
             .filter(|recipe| !recipe.together.is_empty() || recipe.tests.is_some());
         self.recipes.borrow_mut().insert(file.to_string(), found.clone());
         found
-    }
-
-    /// A história do arquivo `file` além da janela do mapa: a guardada, pela
-    /// mesma validade da pergunta da história de uma declaração; senão, lida
-    /// do git na hora e gravada no mapa, e a pergunta seguinte não relê o
-    /// git.
-    fn lineage(&self, file: &str, history: &History) -> Option<FileLineage> {
-        let stored = |part: ProjectMap| part.lineage.into_iter().find(|lineage| lineage.path == file);
-        let part = (self.read)(Need::Lineage(file)).ok()?;
-        let comments = part.pulls.comments.len();
-        let mark = part.census_mark.clone();
-        if let Some(found) = stored(part).filter(|l| lineage_fresh_in(l, history, &mark, comments, self.moves)) {
-            return Some(found);
-        }
-        if !(self.trace)(file, self.moves) {
-            return None;
-        }
-        (self.read)(Need::Lineage(file)).ok().and_then(stored)
     }
 
     /// O padrão do projeto aprendido de [`Self::pattern`], com os arquivos

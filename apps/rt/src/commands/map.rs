@@ -2,7 +2,9 @@
 //!
 //! `mustard-rt run map <pergunta>`:
 //! - `examples --file <alvo>` (ou `--task "<tarefa>"`): 2 ou 3 arquivos que
-//!   servem de exemplo, com o motivo de cada um e as receitas do git;
+//!   servem de exemplo, com o motivo de cada um e as receitas do git; a do
+//!   arquivo cujo último commit ficou fora da janela do mapa sai da história
+//!   dele lida do git na hora, e fica gravada no mapa;
 //! - `importers --file <arquivo>`: quem importa o arquivo;
 //! - `tests --file <arquivo>`: que testes o cobrem;
 //! - `slice --file <arquivo> --name <declaração>`: o trecho da declaração, do
@@ -45,6 +47,7 @@ use mustard_core::domain::scan::{HistoryReport, ScanReport};
 use mustard_core::domain::search::{CANDIDATES, TOP};
 use mustard_core::io::{map_search, map_specs};
 use mustard_core::io::project_map::{self as store, Need};
+use mustard_core::io::wave_prompt::history_beyond_window;
 use mustard_core::platform::i18n::Locale;
 use mustard_core::{FilterSetting, Setting};
 use serde_json::{json, Map, Value};
@@ -150,7 +153,8 @@ fn jev() -> Option<Assembled> {
 /// desde a passada que o gravou, e o bloco das specs recebe o que as specs
 /// gravaram desde a última resposta; a falha dele deixa o bloco como
 /// estava, e a resposta sai. A pergunta da história monta por `trace` a
-/// lista do arquivo que o mapa ainda não tem, ou que venceu; a busca monta
+/// lista do arquivo que o mapa ainda não tem, ou que venceu, e a dos
+/// exemplos, a do alvo além da janela do mapa; a busca monta
 /// por `assemble` o filtro, quando a configuração não o desliga.
 pub(crate) fn map_at(opts: &MapOpts, mine: &Mine<'_>, trace: &Trace<'_>, assemble: &Assemble<'_>) -> Value {
     let project = crate::commands::spec_events::project(&opts.root);
@@ -255,7 +259,7 @@ fn answer_from(
         Question::Slice => slice(opts, root, read),
         Question::Users => users(opts, root, lang, read),
         Question::History => history(opts, root, lang, read, trace),
-        Question::Examples => examples(opts, lang, languages, read),
+        Question::Examples => examples(opts, root, lang, languages, read, trace),
         Question::Skill => skill(opts, root, read),
         Question::Dump => dump(root),
     }
@@ -638,8 +642,18 @@ fn split_uses(uses: &[UseSite]) -> (Vec<String>, BTreeMap<&[DeclAt], Vec<String>
 }
 
 /// Os exemplos para o alvo de `--file`; sem ele, para a pasta do arquivo que
-/// a busca acha para `--task`, nas línguas `languages`.
-fn examples(opts: &MapOpts, lang: Locale, languages: &Languages, read: &Reader<'_>) -> Result<Value, MapRefusal> {
+/// a busca acha para `--task`, nas línguas `languages`. A receita do arquivo
+/// cujo último commit ficou fora da janela do mapa sai da história dele,
+/// lida por `trace` do git local na hora e gravada no mapa, como no pedido
+/// da onda; a pergunta seguinte a lê do mapa.
+fn examples(
+    opts: &MapOpts,
+    root: &Path,
+    lang: Locale,
+    languages: &Languages,
+    read: &Reader<'_>,
+    trace: &Trace<'_>,
+) -> Result<Value, MapRefusal> {
     let file = opts.file.as_deref().map(str::trim).filter(|f| !f.is_empty());
     let task = opts.task.as_deref().map(str::trim).filter(|t| !t.is_empty());
     // A pasta que a tarefa acha sai dos nomes que cada arquivo declara; o
@@ -672,7 +686,15 @@ fn examples(opts: &MapOpts, lang: Locale, languages: &Languages, read: &Reader<'
     // O padrão que filtra os exemplos dá o papel pelo subprojeto também,
     // como no pedido da onda: os subprojetos vêm do terreno.
     map.projects = read(Need::Terrain).map(|terrain| terrain.projects).unwrap_or_default();
-    let got = project_map::examples(&map, &target, lang);
+    let mut got = project_map::examples(&map, &target, lang);
+    if got.recipe.is_none() && map.module(&target).is_some() {
+        let moves = mustard_core::ProjectConfig::load(root).history_moves().or(project_map::MOVES_FOLLOWED);
+        let model = store::model_path(root);
+        let traced = |file: &str, moves: usize| trace(root, &model, file, moves).is_ok();
+        got.recipe = history_beyond_window(read, &traced, &map.history, &target, moves)
+            .as_ref()
+            .and_then(project_map::recipe_from_lineage);
+    }
     let picks: Vec<Value> = got
         .picks
         .iter()
@@ -1144,6 +1166,63 @@ mod tests {
                    "together": [{"path": "apps/rt/tests/run_command_surface.rs", "commits": 3}], "tests": null}),
             "{report}"
         );
+    }
+
+    /// Os exemplos de um arquivo cujo último commit ficou fora da janela do
+    /// mapa, cheia com `MAX_COMMITS` commits que nunca o tocam: a primeira
+    /// pergunta lê do git a história dele, com três commits que mudaram o
+    /// registro junto, e a receita sai dela; a segunda lê a história que
+    /// ficou gravada no mapa, sem voltar ao git.
+    #[test]
+    fn examples_of_a_file_older_than_the_window_read_its_history_once_and_the_next_question_does_not_read_git() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let commits: Vec<Value> = (0..project_map::MAX_COMMITS)
+            .map(|n| json!({"id": format!("n{n:05}"), "at": 1_789_000_000 + n, "changed": [0]}))
+            .collect();
+        let modules = json!([
+            {"path": "src/old.rs", "loc": 30},
+            {"path": "src/registry.rs", "loc": 30},
+            {"path": "src/busy.rs", "loc": 30}
+        ]);
+        let map = json!({"modules": modules, "history": {"base": "main", "paths": ["src/busy.rs"], "commits": commits}});
+        store::write_text(root, &map.to_string()).unwrap();
+        let calls = std::cell::Cell::new(0);
+        // A passada falsa grava no mapa a história do arquivo, como a de
+        // verdade: três commits que mudaram o registro junto com ele.
+        let trace = |_: &Path, out: &Path, file: &str, moves: usize| {
+            calls.set(calls.get() + 1);
+            let mark = store::read_for_at(out, Need::Lineage(file)).unwrap().census_mark;
+            let commit = |id: &str| LineageCommit {
+                id: id.to_string(),
+                files: project_map::CommitFiles {
+                    changed: vec![file.to_string(), "src/registry.rs".to_string()],
+                    ..Default::default()
+                },
+                ..LineageCommit::default()
+            };
+            let lineage = FileLineage {
+                path: file.to_string(),
+                base: "main".to_string(),
+                mark,
+                moves: u32::try_from(moves).unwrap(),
+                commits: vec![commit("a1"), commit("a2"), commit("a3")],
+                ..FileLineage::default()
+            };
+            store::save_lineage_at(out, &lineage)?;
+            Ok(HistoryReport::default())
+        };
+        let opts = MapOpts { file: Some("src/old.rs".to_string()), ..ask(root, Question::Examples) };
+        for round in 0..2 {
+            let report = map_at(&opts, &|_, _| panic!("a map outside git is never read again"), &trace);
+            assert_eq!(
+                report["recipe"],
+                json!({"kind": "changed", "subject": "src/old.rs", "commits": 3,
+                       "together": [{"path": "src/registry.rs", "commits": 3}], "tests": null}),
+                "round {round}: {report}"
+            );
+        }
+        assert_eq!(calls.get(), 1, "the second question reads the history kept in the map, not git");
     }
 
     /// A busca acha o arquivo pela mensagem que o usuário viu, e mostra o
