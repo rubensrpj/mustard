@@ -11,7 +11,9 @@
 //! valem também para os itens que ela cobre. Cada commit de onda leva os
 //! itens das ondas dele e os arquivos que mudou; a função ligada a um item
 //! sai, na hora da resposta, da história por função já montada do arquivo,
-//! e sem ela o commit liga só ao arquivo. Este módulo nunca monta história.
+//! e sem ela o commit liga só ao arquivo. Este módulo nunca monta história:
+//! diz de quais arquivos ela falta ([`untraced`]), e quem responde a busca a
+//! monta antes, um arquivo por vez.
 //!
 //! O commit de onda casa com a história do arquivo pelo hash. O squash e o
 //! rebase dão ao commit outro hash na base; aí ele casa pelos commits da base
@@ -508,7 +510,6 @@ const BASE_PULL: &str = "SELECT c.id AS id, COALESCE(NULLIF(c.pr, 0), p.pr) AS p
 /// arquivo não tem casa pelos commits da base do pull request da spec
 /// ([`sought_ids`]).
 pub(crate) fn links_of(conn: &Connection, spec: &str, id: i64, files: &[String], limit: usize) -> Result<Vec<String>> {
-    let mut commits = conn.prepare("SELECT sha, items, files FROM spec_commits WHERE spec = ?1 ORDER BY rowid DESC")?;
     let mut traced = conn.prepare("SELECT 1 FROM lineage_files WHERE path = ?1")?;
     let mut history = conn.prepare(&format!("{BASE_PULL} WHERE c.path = ?1"))?;
     let mut decls = conn.prepare("SELECT name, commits FROM lineage_decls WHERE path = ?1 ORDER BY rowid")?;
@@ -518,19 +519,10 @@ pub(crate) fn links_of(conn: &Connection, spec: &str, id: i64, files: &[String],
         numbers.collect::<rusqlite::Result<_>>()?
     };
     let mut out: Vec<String> = Vec::new();
-    let mut rows = commits.query([spec])?;
-    while let Some(row) = rows.next()? {
+    for (short, changed) in item_commits(conn, spec, id)? {
         if out.len() >= limit {
             break;
         }
-        let items: Vec<i64> = serde_json::from_str(&row.get::<_, String>(1)?).unwrap_or_default();
-        if !items.contains(&id) {
-            continue;
-        }
-        let sha: String = row.get(0)?;
-        let short: String = sha.chars().take(SHORT_ID).collect();
-        let changed: Vec<String> =
-            row.get::<_, Option<String>>(2)?.and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default();
         for path in changed {
             let mut found: Vec<String> = Vec::new();
             if traced.query_row([&path], |_| Ok(())).optional()?.is_some() {
@@ -555,6 +547,71 @@ pub(crate) fn links_of(conn: &Connection, spec: &str, id: i64, files: &[String],
         files.iter().filter(|path| !out.iter().any(|link| link.strip_prefix(path.as_str()).is_some_and(|rest| rest.starts_with(':')))).cloned().collect();
     push_new(&mut out, direct);
     out.truncate(limit);
+    Ok(out)
+}
+
+/// Os commits das ondas do item `id` da spec `spec`, do mais novo ao mais
+/// velho, cada um com o começo do hash que a história por função guarda e
+/// os arquivos que mudou.
+fn item_commits(conn: &Connection, spec: &str, id: i64) -> Result<Vec<(String, Vec<String>)>> {
+    let mut commits = conn.prepare("SELECT sha, items, files FROM spec_commits WHERE spec = ?1 ORDER BY rowid DESC")?;
+    let rows = commits.query_map([spec], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<String>>(2)?))
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (sha, items, files) = row?;
+        if !serde_json::from_str::<Vec<i64>>(&items).unwrap_or_default().contains(&id) {
+            continue;
+        }
+        let changed: Vec<String> = files.and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default();
+        out.push((sha.chars().take(SHORT_ID).collect(), changed));
+    }
+    Ok(out)
+}
+
+/// Os arquivos que a busca liga inteiros aos itens `items` — a spec e o
+/// código de cada um — só por falta da história por função deles: os que
+/// os commits das ondas do item mudaram, que o mapa do projeto em `root`
+/// tem e que ainda não têm essa história. Do commit mais novo ao mais
+/// velho, até `limit` arquivos por item, os que [`links_of`] mostra. Sem a
+/// base de onde a história se lê, nenhum: a passada não teria o que ler, e
+/// cada busca a tentaria de novo.
+pub fn untraced(root: &Path, items: &[(&str, &str)], limit: usize) -> std::result::Result<Vec<String>, MapRefusal> {
+    let db = open_existing(&model_path(root))?;
+    untraced_in(db.conn(), items, limit).map_err(unreadable)
+}
+
+fn untraced_in(conn: &Connection, items: &[(&str, &str)], limit: usize) -> Result<Vec<String>> {
+    let readable = conn
+        .query_row("SELECT 1 FROM history_base WHERE base <> '' AND COALESCE(missing, '') = ''", [], |_| Ok(()))
+        .optional()?
+        .is_some();
+    if !readable {
+        return Ok(Vec::new());
+    }
+    let mut item_id = conn.prepare("SELECT id FROM spec_items WHERE spec = ?1 AND code = ?2")?;
+    let mut traced = conn.prepare("SELECT 1 FROM lineage_files WHERE path = ?1")?;
+    let mut mapped = conn.prepare("SELECT 1 FROM files WHERE path = ?1")?;
+    let mut out: Vec<String> = Vec::new();
+    for (spec, code) in items {
+        let Some(id) = item_id.query_row([spec, code], |row| row.get::<_, i64>(0)).optional()? else {
+            continue;
+        };
+        let mut shown: Vec<String> = Vec::new();
+        for path in item_commits(conn, spec, id)?.into_iter().flat_map(|(_, changed)| changed) {
+            if shown.len() >= limit {
+                break;
+            }
+            if shown.contains(&path) {
+                continue;
+            }
+            if traced.query_row([&path], |_| Ok(())).optional()?.is_none() && mapped.query_row([&path], |_| Ok(())).optional()?.is_some() {
+                push_new(&mut out, [path.clone()]);
+            }
+            shown.push(path);
+        }
+    }
     Ok(out)
 }
 

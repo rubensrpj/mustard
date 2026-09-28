@@ -191,6 +191,29 @@
 #                 (`Err`, `*Exception`), casados como em `log_calls`. O texto
 #                 fixo escrito dentro de um deles ganha a marca erro. Sem o
 #                 campo, nenhum texto da língua é de erro.
+#   markup        OPTIONAL — a língua escrita dentro de um arquivo de marcação,
+#                 a página que mistura o texto da tela com trechos de código.
+#                 Só o código se lê: o resto do arquivo vira espaço, e cada
+#                 linha fica no lugar dela. Chaves:
+#                   blocks  os marcadores seguidos de um bloco entre chaves
+#                           (`@code { … }`): o de dentro das chaves é código.
+#                           O marcador colado a outra palavra não conta, e a
+#                           chave escrita em texto entre aspas, entre
+#                           apóstrofos ou em comentário (`//`, `/* */`) não
+#                           fecha o bloco;
+#                   lines   o marcador que abre uma linha de código e a forma
+#                           dela, com `{}` no lugar do resto da linha
+#                           (`"@inject" = "{};"` lê `@inject T n` como `T n;`);
+#                   head    como `lines`, mas o código vai antes do tipo do
+#                           arquivo (`"@using" = "using {};"`);
+#                   wrap    o texto que abre e o que fecha o tipo em que o
+#                           código dos blocos e das linhas mora, com `{file}`
+#                           no lugar do nome do arquivo sem a extensão. O tipo
+#                           abre no começo da linha do primeiro código, depois
+#                           do código de `head`, e fecha logo depois do último.
+#                 O marcador de linha vale no começo da linha, depois dos
+#                 espaços, e fora dos blocos. Sem o campo, o arquivo inteiro é
+#                 código.
 
 [[language]]
 name = "csharp"
@@ -208,6 +231,29 @@ doc_tags = [
 ]
 log_calls = ["LogError", "LogWarning", "LogInformation", "LogDebug", "LogTrace", "LogCritical", "Log", "Console.*", "Debug.*", "Trace.*"]
 error_forms = ["throw", "*Exception"]
+
+# A página do Blazor (`.razor`): marcação com C# dentro. O framework faz da
+# página uma classe com o nome do arquivo; os blocos `@code` e `@functions`
+# são os membros dela, e o `@inject` é uma propriedade. O `@using` vale para a
+# página inteira. As outras diretivas e o código escrito no meio da marcação
+# ficam de fora.
+[[language]]
+name = "razor"
+extensions = ["razor"]
+dir = "csharp"
+grammar = "grammar_cs::LANGUAGE"
+namespace_scope = "nested"
+self_receivers = ["this"]
+parent_receivers = ["base"]
+implicit_self = true
+doc_tags = [
+    "summary", "remarks", "returns", "param", "typeparam", "value", "example",
+    "para", "c", "code", "list", "item", "term", "description", "exception",
+    "see", "seealso", "paramref", "typeparamref", "inheritdoc", "include",
+]
+log_calls = ["LogError", "LogWarning", "LogInformation", "LogDebug", "LogTrace", "LogCritical", "Log", "Console.*", "Debug.*", "Trace.*"]
+error_forms = ["throw", "*Exception"]
+markup = { blocks = ["@code", "@functions"], lines = { "@inject" = "{};" }, head = { "@using" = "using {};" }, wrap = ["partial class {file} {", "}"] }
 
 [[language]]
 name = "typescript"

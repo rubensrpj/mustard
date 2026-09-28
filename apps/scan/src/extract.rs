@@ -28,6 +28,7 @@
 //! `build.rs` embeds the registry and the query files into `OUT_DIR`; we include
 //! the generated table here. Nothing language-specific lives in this file.
 
+use crate::markup::Markup;
 use crate::model::{CallSite, Decl, Route, RouteCall, RouteLinks, Text, RECEIVER, TEXT_ERROR, TEXT_LOG, TEXT_PLAIN};
 use crate::routes::{self, RouteRule};
 use mustard_core::domain::project_map::outer_declarations;
@@ -487,6 +488,9 @@ pub(crate) struct Analyzer {
     doc_tags: &'static [&'static str],
     /// As regras de rota dos frameworks escritos na língua.
     routes: Vec<RouteRule>,
+    /// Onde mora o código no arquivo da língua escrita dentro de marcação;
+    /// `None` quando o arquivo inteiro é código.
+    markup: Option<&'static Markup>,
 }
 
 impl Analyzer {
@@ -520,7 +524,8 @@ impl Analyzer {
         let query = compile_good_query(&language, patterns, raw.name)?;
         let cap_kinds = query.capture_names().iter().map(|n| classify(n)).collect();
         let routes = if with_routes { routes::rules_for(raw.name, &language) } else { Vec::new() };
-        Some(Analyzer { name: raw.name.to_string(), language, query, cap_kinds, doc_tags: raw.doc_tags, routes })
+        let markup = LANG_MARKUP.iter().find(|(name, _)| *name == raw.name).map(|(_, rule)| rule);
+        Some(Analyzer { name: raw.name.to_string(), language, query, cap_kinds, doc_tags: raw.doc_tags, routes, markup })
     }
 
     /// As regras de rota da língua que algum arquivo ligou até aqui, e que
@@ -544,8 +549,19 @@ impl Analyzer {
     /// O que o arquivo `src` diz, lido só no que `keep` pede além das
     /// declarações, dos imports, das chamadas e das citações. As rotas saem
     /// das regras que o arquivo liga pelos imports dele ou pelo que o
-    /// `project` diz dele.
+    /// `project` diz dele. No arquivo de marcação, o nome do arquivo, pelo
+    /// caminho em `project`, dá o nome do tipo em que o código mora.
     pub fn extract(&self, src: &str, keep: Keep, project: &routes::Project) -> Extracted {
+        // No arquivo de marcação, só o código se lê, com as linhas no lugar
+        // delas: tudo o que sai daqui fala das linhas do arquivo.
+        let code;
+        let src = match self.markup {
+            Some(rule) => {
+                code = rule.code_of(src, project.path);
+                code.as_str()
+            }
+            None => src,
+        };
         let mut out = Extracted::default();
         let mut parser = Parser::new();
         if parser.set_language(&self.language).is_err() {

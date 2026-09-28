@@ -143,6 +143,12 @@ fn main() {
     let mut family_table = String::new();
     family_table.push_str("pub(crate) static LANG_FAMILY: &[(&str, &str)] = &[\n");
 
+    // (name, markup) — OPCIONAL: a língua escrita dentro de um arquivo de
+    // marcação, com onde o código está e o tipo em que ele mora. Só as
+    // línguas que o declaram entram; nas outras, o arquivo inteiro é código.
+    let mut markup_table = String::new();
+    markup_table.push_str("pub(crate) static LANG_MARKUP: &[(&str, crate::markup::Markup)] = &[\n");
+
     let mut alias_config_table = String::new();
     alias_config_table.push_str("pub(crate) static LANG_ALIAS_CONFIG: &[(&str, &[&str])] = &[\n");
     let alias_fields = ["alias_base", "alias_paths", "alias_extends"];
@@ -343,6 +349,11 @@ fn main() {
                 .expect("the generated table is a String, which never fails to write");
         }
         writeln!(family_table, "    ({name:?}, {dir:?}),").expect("the generated table is a String, which never fails to write");
+        if let Some(rule) = tbl.get("markup") {
+            let rule = rule.as_table().unwrap_or_else(|| panic!("language.markup of `{name}` must be a table"));
+            writeln!(markup_table, "    ({name:?}, {}),", markup_rule(&name, rule))
+                .expect("the generated table is a String, which never fails to write");
+        }
         writeln!(alias_config_table, "    ({name:?}, &[{}]),", quoted_list(&alias_config))
             .expect("the generated table is a String, which never fails to write");
         for (table, value) in alias_field_tables.iter_mut().zip(&alias_values) {
@@ -381,6 +392,8 @@ fn main() {
         table.push_str("];\n");
         body.push_str(table);
     }
+    markup_table.push_str("];\n");
+    body.push_str(&markup_table);
     for table in std::iter::once(&mut alias_config_table).chain(alias_field_tables.iter_mut()) {
         table.push_str("];\n");
         body.push_str(table);
@@ -608,6 +621,49 @@ fn route_rules(crate_root: &Path, languages: &[&str]) -> String {
     }
     table.push_str("];\n");
     table
+}
+
+/// O `Markup` da língua `name`, escrito como código Rust, a partir da tabela
+/// `markup` dela: `blocks`, `lines` e `head` são opcionais, mas ao menos um
+/// vem; cada forma de `lines` e de `head` tem um `{}`; `wrap` traz o texto
+/// que abre e o que fecha o tipo do arquivo. O erro para a compilação.
+fn markup_rule(name: &str, rule: &toml::value::Table) -> String {
+    let refused = |what: &str| format!("language.markup of `{name}`: {what}");
+    let blocks: Vec<String> = rule.get("blocks").map_or_else(Vec::new, |v| {
+        v.as_array()
+            .unwrap_or_else(|| panic!("{}", refused("`blocks` must be an array")))
+            .iter()
+            .map(|e| e.as_str().filter(|s| !s.is_empty()).unwrap_or_else(|| panic!("{}", refused("each block marker is a non-empty string"))).to_string())
+            .collect()
+    });
+    let forms = |key: &str| -> Vec<(String, String)> {
+        rule.get(key).map_or_else(Vec::new, |v| {
+            v.as_table()
+                .unwrap_or_else(|| panic!("{}", refused(&format!("`{key}` must be a table of marker = form"))))
+                .iter()
+                .map(|(marker, form)| {
+                    let form = form.as_str().unwrap_or_else(|| panic!("{}", refused(&format!("the form of `{marker}` must be a string"))));
+                    assert!(!marker.is_empty() && form.contains("{}"), "{}", refused(&format!("`{marker}` needs a form with `{{}}`")));
+                    (marker.clone(), form.to_string())
+                })
+                .collect()
+        })
+    };
+    let (lines, head) = (forms("lines"), forms("head"));
+    assert!(!(blocks.is_empty() && lines.is_empty() && head.is_empty()), "{}", refused("it must declare `blocks`, `lines` or `head`"));
+    let wrap: Vec<&str> = rule
+        .get("wrap")
+        .and_then(|v| v.as_array())
+        .map(|list| list.iter().filter_map(|e| e.as_str()).collect())
+        .unwrap_or_default();
+    let [open, close] = wrap.as_slice() else { panic!("{}", refused("`wrap` must list the text that opens the type and the one that closes it")) };
+    let pairs = |list: &[(String, String)]| list.iter().map(|(m, f)| format!("({m:?}, {f:?})")).collect::<Vec<_>>().join(", ");
+    format!(
+        "crate::markup::Markup {{ blocks: &[{}], lines: &[{}], head: &[{}], open: {open:?}, close: {close:?} }}",
+        quoted_list(&blocks),
+        pairs(&lines),
+        pairs(&head)
+    )
 }
 
 /// A lista OPCIONAL de textos do campo `key`: vazia sem o campo. Declarada,

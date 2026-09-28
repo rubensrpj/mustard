@@ -12,10 +12,11 @@
 //!   prosa ([`distinctive`]).
 //! - Órfão: a declaração que tinha uso fora de teste no mapa da base, e cujo
 //!   último uso a onda tirou, e ficou sem nenhum. Teste chamando não conta
-//!   como uso. A declaração escrita dentro do trecho de teste do arquivo,
-//!   que o scan reconhece e o mapa guarda pelas linhas, é do teste e não
-//!   entra. A declaração já sem uso na base não entra, e o ponto de
-//!   entrada nunca é órfão: a função principal, a que atende uma rota do
+//!   como uso: nem o arquivo de teste, nem o trecho de teste de um arquivo
+//!   do programa, que o scan reconhece e o mapa guarda pelas linhas. A
+//!   declaração escrita dentro desse trecho é do teste e não entra. A
+//!   declaração já sem uso na base não entra, e o ponto de entrada nunca é
+//!   órfão: a função principal, a que atende uma rota do
 //!   mapa, o método que cumpre um contrato (chamado por quem registra o
 //!   tipo) e a declarada no arquivo de entrada da pasta, que exporta o
 //!   pacote. O órfão cujo nome ainda aparece como palavra inteira fora de
@@ -26,7 +27,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use mustard_core::domain::ast::{is_entry_file, is_test_path};
-use mustard_core::domain::project_map::{MapDecl, MapModule};
+use mustard_core::domain::project_map::{MapDecl, MapModule, ProjectMap, UseSite};
 use mustard_core::platform::git as git_exec;
 use mustard_core::platform::i18n::{translate, Locale};
 
@@ -90,12 +91,12 @@ fn orphans(root: &Path, maps: &AfterWave, created: &[String], lang: Locale) -> V
         for decl in module.declarations.iter().filter(|decl| !in_test_lines(module, decl.line)) {
             let routed = module.routes.iter().chain(&before.routes).any(|route| route.handler == decl.name);
             let entry = decl.name == "main" || routed || !decl.implements.is_empty();
-            if entry || decl.used_by.iter().any(|site| !is_test_path(&site.file)) {
+            if entry || decl.used_by.iter().any(|site| from_program(&maps.after, site)) {
                 continue;
             }
             let Some(old) = before.declarations.iter().find(|d| d.name == decl.name && d.kind == decl.kind) else { continue };
             let callers: Vec<&str> =
-                old.used_by.iter().map(|site| site.file.as_str()).filter(|file| !is_test_path(file)).collect();
+                old.used_by.iter().filter(|site| from_program(&maps.base, site)).map(|site| site.file.as_str()).collect();
             let wave = maps.changed.iter().find(|(_, files)| files.iter().any(|f| callers.contains(&f.as_str())));
             let Some((wave, _)) = wave else { continue };
             let text = translate("round.after_wave.orphan", lang)
@@ -107,6 +108,13 @@ fn orphans(root: &Path, maps: &AfterWave, created: &[String], lang: Locale) -> V
         }
     }
     out
+}
+
+/// O uso `site` é do programa, pelo mapa `map` em que ele está: fora de
+/// arquivo de teste e fora dos trechos de teste do arquivo dele.
+fn from_program(map: &ProjectMap, site: &UseSite) -> bool {
+    let line = u64::try_from(site.line).unwrap_or(u64::MAX);
+    !is_test_path(&site.file) && !map.module(&site.file).is_some_and(|module| in_test_lines(module, line))
 }
 
 /// A linha `line` cai dentro de um trecho de teste do arquivo `module`, pelas
@@ -360,6 +368,27 @@ mod tests {
         let hint = out["hint"].as_str().unwrap_or_default();
         assert!(hint.contains("`compute_total` em `src/a.rs` linha 5 ficou sem uso fora de teste"), "{hint}");
         assert!(!hint.contains("sample_rows"), "the test helper is not listed: {hint}");
+    }
+
+    #[test]
+    fn a_program_function_left_called_only_from_the_test_block_is_an_orphan() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let base = with_test_block(&["src/a.rs:2:run_sum", "src/a.rs:16:checks_total"], &[]);
+        project(root, &[("src/a.rs", "fn run_sum() {}\n")], &base);
+        let out = back(root, with_test_block(&["src/a.rs:16:checks_total"], &[]));
+        assert_eq!(out["reason"], json!("round-after-wave"), "{out}");
+        let hint = out["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains("`compute_total` em `src/a.rs` linha 5 ficou sem uso fora de teste"), "{hint}");
+    }
+
+    #[test]
+    fn a_program_function_used_only_from_the_test_block_before_the_wave_is_not_listed() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let base = with_test_block(&["src/a.rs:16:checks_total"], &[]);
+        project(root, &[("src/a.rs", "fn run_sum() {}\n")], &base);
+        silent(&back(root, with_test_block(&[], &[])));
     }
 
     #[test]

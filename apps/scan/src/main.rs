@@ -14,6 +14,7 @@ mod graph;
 mod history;
 mod ingest;
 mod manifests;
+mod markup;
 mod model;
 mod path_aliases;
 mod refresh;

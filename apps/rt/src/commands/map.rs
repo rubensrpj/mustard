@@ -123,10 +123,35 @@ pub(crate) fn map_at(opts: &MapOpts, mine: &Mine<'_>, trace: &Trace<'_>) -> Valu
     let project = crate::commands::spec_events::project(&opts.root);
     crate::commands::flow::round::refresh_map_if_stale(&project.root, mine);
     let _ = map_specs::sync(&project.root, &project.languages);
+    trace_search_links(opts, &project.root, &project.languages, trace);
     let lang = project.lang;
     match answer(opts, &project.root, lang, &project.languages, trace) {
         Ok(report) => report,
         Err(refusal) => refused(&refusal, lang),
+    }
+}
+
+/// Antes da busca, a história por função dos arquivos que ligam os itens
+/// achados das specs: o arquivo que um commit de onda do item mudou e que
+/// ainda não tem essa história entraria inteiro na resposta, no lugar da
+/// função. Cada um se lê por `trace`, do git local, um arquivo por vez, e
+/// fica gravado no mapa; a busca seguinte já o acha, sem passada. A falha de
+/// um deixa o arquivo inteiro, e a busca responde assim mesmo.
+fn trace_search_links(opts: &MapOpts, root: &Path, languages: &Languages, trace: &Trace<'_>) {
+    if opts.question != Question::Search {
+        return;
+    }
+    let Some(query) = opts.query.as_deref().map(str::trim).filter(|query| !query.is_empty()) else { return };
+    let Ok(found) = map_search::search_specs(root, query, languages, TOP) else { return };
+    let items: Vec<(&str, &str)> = found.iter().map(|item| (item.spec.as_str(), item.code.as_str())).collect();
+    let Ok(files) = map_specs::untraced(root, &items, TOP) else { return };
+    if files.is_empty() {
+        return;
+    }
+    let moves = mustard_core::ProjectConfig::load(root).history_moves().or(project_map::MOVES_FOLLOWED);
+    let model = store::model_path(root);
+    for file in &files {
+        let _ = trace(root, &model, file, moves);
     }
 }
 
@@ -1709,6 +1734,122 @@ mod tests {
         std::fs::File::options().write(true).open(&path).unwrap().set_modified(modified).unwrap();
         let again = answered(&opts);
         assert_eq!(again["specs"][0]["title"], json!("Estorno volta ao cartão"), "the answer came from the map: {again}");
+    }
+
+    /// Grava em `root` a spec `obra`: a decisão do estorno, a tarefa da onda
+    /// 1 que a cobre e o commit `sha` da onda 1, que mudou `changed`.
+    fn spec_with_a_wave_commit(root: &Path, sha: &str, changed: &[&str]) {
+        let spec = root.join(".claude/spec/obra");
+        std::fs::create_dir_all(&spec).unwrap();
+        let lines = [
+            json!({"id": 1, "type": "decision", "title": "Estorno volta ao cartão",
+                   "text": "O estorno volta ao cartão em dois dias.", "keys": ["estorno"], "why": "w", "origin": 1}),
+            json!({"id": 2, "type": "task", "wave": 1, "title": "Grava a volta", "text": "Grava a volta.",
+                   "files": [{"path": changed[0]}], "covers": [1], "depends_on": []}),
+            json!({"id": 3, "type": "commit", "sha": sha, "title": "t", "waves": [1], "files": changed, "repo": "r"}),
+        ];
+        let text: String = lines.iter().map(|line| line.to_string() + "\n").collect();
+        std::fs::write(spec.join("spec.ndjson"), text).unwrap();
+    }
+
+    /// Os lugares que a busca por `estorno` liga à decisão, pela passada
+    /// `trace`.
+    fn refund_links(root: &Path, trace: &Trace<'_>) -> Value {
+        let mut opts = ask(root, Question::Search);
+        opts.query = Some("estorno".to_string());
+        let report = map_at(&opts, &|_, _| panic!("a map outside git is never read again"), trace);
+        assert_eq!(report["ok"], json!(true), "{report}");
+        let found = report["specs"].as_array().unwrap().iter().find(|item| item["code"] == json!("MSTD-DEC-0001"));
+        found.unwrap_or_else(|| panic!("the decision: {report}"))["links"].clone()
+    }
+
+    /// Com a base, a busca monta só a história do arquivo que o commit da
+    /// onda mudou, que o mapa tem e que ainda não a tem: nem a do arquivo
+    /// que já a tem, nem a do que o mapa não tem. A passada que falha deixa
+    /// o arquivo inteiro, e a busca responde. Sem a base, a busca não monta
+    /// história nenhuma, e cada arquivo entra inteiro.
+    #[test]
+    fn a_search_traces_only_the_mapped_file_without_a_history_and_nothing_without_a_base() {
+        let dir = map_with_a_base_and_a_lineage();
+        let root = dir.path();
+        let changed = ["apps/rt/src/commands/pay/write.rs", "apps/rt/src/commands/pay/index.rs", "src/sumiu.rs"];
+        spec_with_a_wave_commit(root, "c3", &changed);
+        let traced = std::cell::RefCell::new(Vec::new());
+        let failing = |_: &Path, _: &Path, file: &str, _: usize| -> mustard_core::platform::error::Result<HistoryReport> {
+            traced.borrow_mut().push(file.to_string());
+            Err(std::io::Error::other("git ilegível").into())
+        };
+        let links = refund_links(root, &failing);
+        assert_eq!(*traced.borrow(), ["apps/rt/src/commands/pay/index.rs"]);
+        assert_eq!(
+            links,
+            json!(["apps/rt/src/commands/pay/write.rs:run", "apps/rt/src/commands/pay/index.rs", "src/sumiu.rs"])
+        );
+
+        let dir = tempdir().unwrap();
+        store::write_text(dir.path(), EVERY_PART).unwrap();
+        spec_with_a_wave_commit(dir.path(), "c3", &changed);
+        let links = refund_links(dir.path(), &|_, _, _, _| panic!("a map without a base never reads a history"));
+        assert_eq!(links, json!(changed));
+    }
+
+    /// Num repositório de verdade, com o scan compilado junto: o commit da
+    /// onda mudou um arquivo que ainda não tem a história por função, e a
+    /// primeira busca já liga a decisão à função que ele mudou, e não ao
+    /// arquivo inteiro. A busca monta a história desse arquivo uma vez só:
+    /// a segunda a lê gravada, sem passada.
+    #[test]
+    fn a_search_traces_the_file_its_wave_changed_once_and_links_to_the_function() {
+        let scan = mustard_core::Scan::locate();
+        assert!(
+            scan.is_compiled_alongside(),
+            "o teste precisa do scan compilado junto com ele: rode `cargo build -p scan` antes de `cargo test -p mustard-rt`"
+        );
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let git = |args: &[&str]| -> String {
+            let out = std::process::Command::new("git")
+                .args(["-c", "user.email=t@example.com", "-c", "user.name=t", "-c", "commit.gpgsign=false"])
+                .args(args)
+                .current_dir(root)
+                .output()
+                .expect("git");
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        let pay = |total: u32| format!("pub fn pay() -> u32 {{\n    {total}\n}}\n\npub fn refund() -> u32 {{\n    2\n}}\n");
+        let commit = |body: &str, title: &str| {
+            std::fs::create_dir_all(root.join("src")).unwrap();
+            std::fs::write(root.join("src/pay.rs"), body).unwrap();
+            git(&["add", "-A"]);
+            git(&["commit", "-q", "-m", title]);
+        };
+        git(&["init", "-q", "-b", "main"]);
+        std::fs::write(root.join(".git/info/exclude"), "mustard.json\n.claude/\n").unwrap();
+        std::fs::write(root.join("mustard.json"), r#"{"git": {"flow": {"*": "main"}}}"#).unwrap();
+        commit(&pay(1), "cria o pagamento");
+        commit(&pay(3), "arredonda o pagamento");
+        let sha = git(&["rev-parse", "HEAD"]);
+        scan.scan(root, &store::model_path(root)).expect("the first pass writes the map");
+        spec_with_a_wave_commit(root, &sha, &["src/pay.rs"]);
+        let traces = std::cell::Cell::new(0);
+        let trace = |root: &Path, out: &Path, file: &str, moves: usize| {
+            traces.set(traces.get() + 1);
+            scan.history(root, out, file, moves)
+        };
+        let mine = |root: &Path, out: &Path| scan.scan(root, out);
+        let links = || {
+            let mut opts = ask(root, Question::Search);
+            opts.query = Some("estorno".to_string());
+            let report = map_at(&opts, &mine, &trace);
+            assert_eq!(report["ok"], json!(true), "{report}");
+            report["specs"][0]["links"].clone()
+        };
+
+        assert_eq!(links(), json!(["src/pay.rs:pay"]));
+        assert_eq!(traces.get(), 1);
+        assert_eq!(links(), json!(["src/pay.rs:pay"]));
+        assert_eq!(traces.get(), 1, "the second search reads the stored history");
     }
 
     /// Na história, o commit da onda ganha o código e a primeira frase do

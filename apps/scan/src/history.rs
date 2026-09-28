@@ -374,7 +374,7 @@ impl<'r> Pass<'r> {
 
     fn layout_of(&mut self, path: &str, text: &str) -> Layout {
         let language = self.analyzer_for(path);
-        layout(language.and_then(|l| self.analyzers.get(&l)).and_then(Option::as_ref), text)
+        layout(language.and_then(|l| self.analyzers.get(&l)).and_then(Option::as_ref), path, text)
     }
 
     /// As declarações de cada versão, lidas em paralelo, uma vez cada.
@@ -383,7 +383,7 @@ impl<'r> Pass<'r> {
         let analyzers = &self.analyzers;
         let work: Vec<(Option<String>, Version)> = languages.into_iter().zip(versions).collect();
         in_parallel(work, |(language, version)| {
-            layout(language.and_then(|l| analyzers.get(&l)).and_then(Option::as_ref), &version.text)
+            layout(language.and_then(|l| analyzers.get(&l)).and_then(Option::as_ref), &version.path, &version.text)
         })
     }
 
@@ -539,15 +539,15 @@ fn counterparts(new: &Layout, old: &Layout, new_index: &HashMap<Key, usize>, old
     out
 }
 
-/// As declarações de `text` pelo analisador, sem nenhuma quando a língua
-/// não é conhecida.
-fn layout(analyzer: Option<&Analyzer>, text: &str) -> Layout {
+/// As declarações de `text`, a versão do arquivo em `path`, pelo
+/// analisador, sem nenhuma quando a língua não é conhecida.
+fn layout(analyzer: Option<&Analyzer>, path: &str, text: &str) -> Layout {
     let lines: Vec<String> = text.lines().map(str::to_string).collect();
     let Some(analyzer) = analyzer else {
         return Layout { lines, ..Layout::default() };
     };
     let keep = Keep { written_text: false, texts_and_routes: false };
-    let extracted = analyzer.extract(text, keep, &routes::Project::default());
+    let extracted = analyzer.extract(text, keep, &routes::Project { path, ..routes::Project::default() });
     let mut seen: HashMap<String, u32> = HashMap::new();
     let spans: Vec<Span> = extracted
         .declarations
