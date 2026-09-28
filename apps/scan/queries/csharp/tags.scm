@@ -35,10 +35,11 @@
 (field_declaration (variable_declaration (variable_declarator name: (identifier) @name))) @definition.field
 (enum_member_declaration name: (identifier) @name) @definition.enum_member
 ; O parâmetro do construtor primário (`class Servico(IRepo repo)`) vale na
-; classe inteira, também nas outras partes de uma classe `partial`: é um campo
-; dela.
-(class_declaration (parameter_list (parameter name: (identifier) @name) @definition.field))
-(struct_declaration (parameter_list (parameter name: (identifier) @name) @definition.field))
+; classe inteira, também nas outras partes de uma classe `partial`, mas é
+; parâmetro, e não campo: mora no cabeçalho do tipo, cuja assinatura já o
+; traz, e ninguém o lê como membro (`outro.repo`).
+(class_declaration (parameter_list (parameter name: (identifier) @name) @definition.parameter))
+(struct_declaration (parameter_list (parameter name: (identifier) @name) @definition.parameter))
 
 ; A constructor is a member like a method; left uncaptured, its header was read
 ; as a call and the class appeared to use itself.

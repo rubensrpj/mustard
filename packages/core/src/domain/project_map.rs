@@ -1297,9 +1297,10 @@ pub fn declaration(map: &ProjectMap, file: &str, name: &str) -> Result<DeclPlace
 // As partes de um arquivo
 // ---------------------------------------------------------------------------
 
-/// Os tipos de declaração que são dado de outra — o campo, o membro de enum e
-/// a propriedade. Moram dentro das linhas da dona e ficam fora das partes.
-const MEMBER_KINDS: &[&str] = &["field", "enum_member", "property"];
+/// Os tipos de declaração que são dado de outra — o campo, o membro de enum,
+/// a propriedade e o parâmetro escrito no cabeçalho do tipo. Moram dentro das
+/// linhas da dona e ficam fora das partes.
+const MEMBER_KINDS: &[&str] = &["field", "enum_member", "property", "parameter"];
 
 /// Uma parte de um arquivo: uma declaração, com o tipo, o nome e as linhas de
 /// começo e de fim.
@@ -2672,14 +2673,16 @@ mod tests {
     }
 
     /// As partes de um arquivo são as declarações fora dos testes, em ordem
-    /// de linha, sem os campos nem os membros de enum, com a linha em que os
-    /// testes começam. O arquivo fora do mapa é recusado.
+    /// de linha, sem os campos, os membros de enum nem os parâmetros do
+    /// cabeçalho do tipo, com a linha em que os testes começam. O arquivo
+    /// fora do mapa é recusado.
     #[test]
     fn the_parts_of_a_file_leave_out_the_tests_and_the_members() {
         let map: ProjectMap = serde_json::from_str(
             r#"{"modules":[{"path":"src/a.rs","test_lines":[[40,60]],"declarations":[
                 {"kind":"method","name":"run","line":12,"end_line":20},
                 {"kind":"struct","name":"Alpha","line":3,"end_line":10},
+                {"kind":"parameter","name":"width","line":3,"end_line":3},
                 {"kind":"field","name":"size","line":4,"end_line":4},
                 {"kind":"enum_member","name":"Red","line":30,"end_line":30},
                 {"kind":"function","name":"tail","line":25},

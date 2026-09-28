@@ -236,6 +236,9 @@ fn csharp_files_every_member_as_member_because_it_has_no_free_function() {
             ("User", "class"),
             ("Name", "property"),
             ("UserService", "class"),
+            // O parâmetro escrito no cabeçalho do tipo é parâmetro, e não
+            // campo: a assinatura do tipo já o traz.
+            ("prefix", "parameter"),
             ("Load", "method"),
         ],
     );

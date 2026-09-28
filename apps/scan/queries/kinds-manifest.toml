@@ -29,6 +29,7 @@ kinds = [
   "method",
   "property",
   "field",
+  "parameter",
   "enum_member",
   "const",
 ]

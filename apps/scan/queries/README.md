@@ -62,6 +62,13 @@ Kinds de membro (`method`, `property`, `field`, `enum_member`) chegam ao mapa
 junto com as outras declarações do arquivo, e o grafo lista cada um sob o tipo
 dono dele (veja `@owner` acima).
 
+O kind `parameter` é o parâmetro escrito no cabeçalho do tipo, que vale no
+tipo inteiro (o construtor primário do C#). Como declaração, o nome dele é do
+projeto, também nas outras partes do tipo, e a chamada aberta por ele segue
+ligando; mas ele não é campo: nenhum membro lido liga a ele, ele fica fora das
+partes do arquivo, e a busca do mapa não o oferece como candidato, porque a
+assinatura do tipo já o traz.
+
 ## Proveniência e licença
 
 Os patterns partem do `queries/tags.scm` upstream de cada gramática (todas

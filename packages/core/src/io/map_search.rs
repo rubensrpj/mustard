@@ -28,8 +28,9 @@
 //! do índice. A declaração de teste — a de um arquivo de teste e a escrita
 //! num trecho de teste de outro arquivo — entra na tabela trigram, que acha
 //! o arquivo pelo pedaço do nome, mas não no nível das declarações. O mesmo
-//! vale para o campo escrito no cabeçalho do tipo dono, como o parâmetro do
-//! construtor primário do C#: a assinatura do dono já o traz.
+//! vale para o parâmetro escrito no cabeçalho do tipo dono, como o do
+//! construtor primário do C#, que o scan grava com o tipo de declaração
+//! próprio dele: a assinatura do dono já o traz.
 //!
 //! O glossário do mapa (`io::map_glossary`) entra nos dois níveis como mais
 //! um campo, o das palavras aprendidas: a palavra da pergunta que uma edição
@@ -221,7 +222,7 @@ struct Decl {
 /// Refaz o índice inteiro a partir das tabelas dos arquivos e das
 /// declarações, com as palavras preparadas nas línguas `languages`. Roda na
 /// transação de quem grava: o índice e as linhas de que ele sai entram
-/// juntos. A declaração de teste e o campo escrito no cabeçalho do dono
+/// juntos. A declaração de teste e o parâmetro escrito no cabeçalho do dono
 /// ficam fora do nível das declarações, de onde saem os candidatos da busca
 /// com filtro, e entram na tabela trigram.
 pub(crate) fn rebuild(conn: &Connection, languages: &Languages) -> Result<()> {
@@ -265,8 +266,9 @@ pub(crate) fn forget(conn: &Connection) -> Result<()> {
 /// é de toda declaração cujas linhas a contêm. A documentação inteira que o
 /// scan não guardou à parte é a mesma de `doc`. A declaração é de teste
 /// quando o arquivo dela é de teste ou quando a primeira linha dela cai num
-/// trecho de teste do arquivo. A de teste e o campo escrito no cabeçalho do
-/// dono ([`in_owner_header`]) ficam fora do nível das declarações.
+/// trecho de teste do arquivo. A de teste e o parâmetro escrito no
+/// cabeçalho do dono ([`HEADER_PARAMETER_KIND`]) ficam fora do nível das
+/// declarações.
 fn documents(conn: &Connection, normalizer: &mut Normalizer) -> Result<(Vec<Doc>, Vec<Decl>)> {
     let mut files: Vec<Doc> = Vec::new();
     // As palavras que o arquivo já tem nos nomes, na documentação e em cada
@@ -292,7 +294,7 @@ fn documents(conn: &Connection, normalizer: &mut Normalizer) -> Result<(Vec<Doc>
     }
     let mut rows_of: Vec<DeclRow> = Vec::new();
     let mut stmt = conn.prepare(
-        "SELECT rowid, file, name, signature, doc, line, end_line, whole_doc, body_comment, body_names, kind, owner \
+        "SELECT rowid, file, name, signature, doc, line, end_line, whole_doc, body_comment, body_names, kind \
          FROM decls ORDER BY rowid",
     )?;
     let mut rows = stmt.query([])?;
@@ -304,7 +306,9 @@ fn documents(conn: &Connection, normalizer: &mut Normalizer) -> Result<(Vec<Doc>
         rows_of.push(DeclRow {
             id: row.get(0)?,
             owner,
-            unlisted: *test_file || test_lines.iter().any(|&(start, end)| (start..=end).contains(&first)),
+            unlisted: *test_file
+                || test_lines.iter().any(|&(start, end)| (start..=end).contains(&first))
+                || text(row, 10)? == HEADER_PARAMETER_KIND,
             name: text(row, 2)?,
             signature: text(row, 3)?,
             doc: text(row, 4)?,
@@ -313,11 +317,6 @@ fn documents(conn: &Connection, normalizer: &mut Normalizer) -> Result<(Vec<Doc>
             whole_doc: text(row, 7)?,
             body_comment: text(row, 8)?,
             body_names: text(row, 9)?,
-            kind: text(row, 10)?,
-            owner_name: serde_json::from_str::<Vec<String>>(&text(row, 11)?)
-                .ok()
-                .and_then(|owners| owners.last().cloned())
-                .unwrap_or_default(),
         });
     }
     // Os textos de cada arquivo: as palavras vão para o arquivo e para a
@@ -325,10 +324,6 @@ fn documents(conn: &Connection, normalizer: &mut Normalizer) -> Result<(Vec<Doc>
     let mut decls_of: Vec<Vec<usize>> = vec![Vec::new(); files.len()];
     for (at, row) in rows_of.iter().enumerate() {
         decls_of[row.owner].push(at);
-    }
-    let header: Vec<usize> = (0..rows_of.len()).filter(|&at| in_owner_header(&rows_of, &decls_of, at)).collect();
-    for at in header {
-        rows_of[at].unlisted = true;
     }
     let comments = FILE_LEVEL.fields.len();
     for FileText { path, written, file_doc, file_comment, file_doc_in_body } in written_texts(conn)? {
@@ -399,6 +394,12 @@ fn written_calls(
     Ok(out)
 }
 
+/// O tipo de declaração que o scan dá ao parâmetro escrito no cabeçalho do
+/// tipo dono, como o do construtor primário do C#. A assinatura do dono já o
+/// traz, e ele à parte só repetiria, entre os candidatos, o nome do
+/// parâmetro — também quando o teto da assinatura do dono o cortou.
+const HEADER_PARAMETER_KIND: &str = "parameter";
+
 /// Uma declaração lida do mapa para o índice: o número dela, o arquivo, o
 /// nome, a assinatura, a documentação, a primeira e a última linha, e as
 /// palavras dos textos fixos que caem nela, por campo.
@@ -406,7 +407,7 @@ struct DeclRow {
     id: i64,
     owner: usize,
     /// A declaração fica fora do nível das declarações: é de teste, ou é o
-    /// campo escrito no cabeçalho do dono.
+    /// parâmetro escrito no cabeçalho do dono.
     unlisted: bool,
     name: String,
     signature: String,
@@ -417,41 +418,6 @@ struct DeclRow {
     whole_doc: String,
     body_comment: String,
     body_names: String,
-    kind: String,
-    /// O nome do tipo dono, o último da lista que o scan grava.
-    owner_name: String,
-}
-
-/// `true` quando a declaração `at` é um campo escrito no cabeçalho do tipo
-/// dono: a assinatura do campo está, como palavras inteiras, na assinatura
-/// da declaração do mesmo arquivo com o nome do dono que contém a linha dele
-/// — a que começa mais abaixo. É o parâmetro do construtor primário do C#,
-/// que o scan grava também como campo: a assinatura do dono já o traz, e o
-/// campo à parte só repete, entre os candidatos, o nome do parâmetro.
-fn in_owner_header(rows: &[DeclRow], decls_of: &[Vec<usize>], at: usize) -> bool {
-    let field = &rows[at];
-    let signature = field.signature.trim();
-    if field.kind != "field" || signature.is_empty() || field.owner_name.is_empty() {
-        return false;
-    }
-    let line = field.lines.0;
-    let owner = decls_of[field.owner]
-        .iter()
-        .copied()
-        .filter(|&other| other != at)
-        .map(|other| &rows[other])
-        .filter(|other| other.name == field.owner_name && other.lines.0 <= line)
-        .filter(|other| other.lines.1 == 0 || other.lines.1 >= line)
-        .max_by_key(|other| other.lines.0);
-    owner.is_some_and(|owner| has_whole(&owner.signature, signature))
-}
-
-/// `true` quando `needle` aparece em `text` sem letra, algarismo ou `_`
-/// colados antes nem depois.
-fn has_whole(text: &str, needle: &str) -> bool {
-    let glued = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
-    text.match_indices(needle)
-        .any(|(start, found)| !glued(text[..start].chars().next_back()) && !glued(text[start + found.len()..].chars().next()))
 }
 
 /// Acrescenta a `into` cada palavra de `words` que `seen` ainda não tem.
@@ -1705,17 +1671,20 @@ mod tests {
         assert!(paths(dir.path(), "gravar_pedido_de_teste").contains(&"tests/pedido_test.rs".to_string()));
     }
 
-    /// O parâmetro do construtor primário, que o scan grava também como campo
-    /// do tipo, não é candidato: a assinatura do tipo já o traz. O campo
-    /// escrito no corpo do tipo continua candidato, e o arquivo continua
-    /// achado pelo nome do parâmetro.
+    /// O parâmetro escrito no cabeçalho do tipo, que o scan grava com o tipo
+    /// de declaração próprio dele, não é candidato: nem o que a assinatura do
+    /// tipo traz, nem o que o teto dela cortou. O campo escrito no corpo do
+    /// tipo continua candidato, e o arquivo continua achado pelo nome do
+    /// parâmetro.
     #[test]
-    fn a_field_written_in_the_header_of_its_owner_is_never_a_filter_candidate() {
+    fn a_parameter_written_in_the_header_of_its_owner_is_never_a_filter_candidate() {
         let dir = saved_json(&json!({"modules": [
             {"path": "src/Validator.cs", "declarations": [
                 {"kind": "class", "name": "BlockingValidator", "line": 1, "end_line": 9,
-                 "signature": "public sealed class BlockingValidator(string blockedSlug, string reason) : IValidator"},
-                {"kind": "field", "name": "blockedSlug", "line": 1, "end_line": 1, "signature": "string blockedSlug",
+                 "signature": "public sealed class BlockingValidator(string slugOwner, string reason"},
+                {"kind": "parameter", "name": "slugOwner", "line": 1, "end_line": 1, "signature": "string slugOwner",
+                 "owner": ["BlockingValidator"]},
+                {"kind": "parameter", "name": "blockedSlug", "line": 1, "end_line": 1, "signature": "string blockedSlug",
                  "owner": ["BlockingValidator"]},
                 {"kind": "field", "name": "slugCache", "line": 3, "end_line": 3,
                  "signature": "private readonly string slugCache", "owner": ["BlockingValidator"]}
@@ -1724,7 +1693,7 @@ mod tests {
         let found = candidates(dir.path(), "slug", "", &languages(), 100).unwrap();
         let names: Vec<&str> = found.candidates.iter().map(|c| c.name.as_str()).collect();
         assert!(names.contains(&"slugCache") && names.contains(&"BlockingValidator"), "{names:?}");
-        assert!(!names.contains(&"blockedSlug"), "{names:?}");
+        assert!(!names.contains(&"slugOwner") && !names.contains(&"blockedSlug"), "{names:?}");
         assert_eq!(paths(dir.path(), "blocked slug"), ["src/Validator.cs"]);
     }
 
