@@ -306,7 +306,8 @@ pub(crate) const CITED_KINDS: &[&str] =
 ///   global da língua põe à vista (escrito em qualquer lugar sob a pasta do
 ///   manifesto mais próximo acima de quem o escreve, ou sob a pasta dele
 ///   quando não há manifesto acima) e o mesmo módulo — os arquivos que
-///   declaram o mesmo namespace na mesma língua. Como o namespace se vê é
+///   declaram o mesmo namespace na mesma família (a classe da página de
+///   marcação e o código da língua dela contam juntos). Como o namespace se vê é
 ///   dado do registro: na língua cujo namespace vai junto com a pasta, o
 ///   mesmo nome em outra pasta é outro namespace; na língua cujos namespaces
 ///   se aninham, o arquivo vê também os de cima. Importar é por arquivo, não
@@ -581,14 +582,16 @@ fn resolve_declaration_links(
         // qualificado só junta caminho.
         let path_only = crate::extract::has_member_separators(&m.language);
         // O que o arquivo tem à vista sem import: ele mesmo, o que um import
-        // global põe à vista, o mesmo namespace da mesma língua e o namespace
+        // global põe à vista, o mesmo namespace da mesma família (a classe
+        // da página de marcação e a do código da língua dela) e o namespace
         // de todos da mesma família no mesmo projeto.
         let project = project_dir(&m.path, manifests);
         let sees_here = |mi: usize| {
+            let same_family = crate::extract::family(&modules[mi].language) == family;
             mi == src
                 || globals.sees(src, &modules[mi].path)
-                || (modules[mi].language == m.language && declared[mi].iter().any(|ns| in_sight[src].contains(ns)))
-                || (everyones[mi] == Some(project) && crate::extract::family(&modules[mi].language) == family)
+                || (same_family && declared[mi].iter().any(|ns| in_sight[src].contains(ns)))
+                || (everyones[mi] == Some(project) && same_family)
         };
         // E, com isso, o que ele importa.
         let sees = |mi: usize| sees_here(mi) || imported.contains(modules[mi].path.as_str());

@@ -145,10 +145,12 @@
 (assignment_expression right: (identifier) @call.value)
 
 ; O membro escrito depois do objeto, sem chamada ali: o campo ou a
-; propriedade lida ou escrita (`pedido.total`, `this.total`). O motor liga o
-; nome só a um campo ou a uma propriedade, como liga a chamada de método
-; escrita depois do mesmo objeto.
+; propriedade lida ou escrita (`pedido.total`, `this.total`), também pelo
+; acesso opcional (`pedido?.total`). O motor liga o nome só a um campo ou a
+; uma propriedade, como liga a chamada de método escrita depois do mesmo
+; objeto.
 (unconditional_assignable_selector (assignable_operator) . (identifier) @member)
+(conditional_assignable_selector (assignable_operator) . (identifier) @member)
 
 ; Os textos fixos: o literal de texto escrito no código. O motor guarda o que
 ; tem duas palavras ou forma de caminho ou chave, com a marca (log, erro ou

@@ -162,6 +162,39 @@ fn a_csharp_method_group_is_used_by_who_hands_it() {
     assert_eq!(every_use(&map, "Loja/Relatorio.cs", "Total"), Vec::<String>::new(), "a property read from a value");
 }
 
+/// No C#, o `nameof(Painel)` é uso do tipo `Painel` pelo método que o
+/// escreve, também quando o tipo vem de outro namespace por `using` ou é a
+/// classe de uma página; o construtor, que tem o nome do tipo, não ganha
+/// uso. O `nameof(Painel.Abrir)` é uso do método `Abrir` e do tipo escrito
+/// antes dele.
+#[test]
+fn a_csharp_nameof_is_a_use_of_the_named_type_and_not_of_its_constructor() {
+    let map = scanned(
+        "csharp-nameof",
+        &[
+            ("Loja/Painel.cs", "namespace Loja;\n\npublic class Painel\n{\n    public Painel() { }\n\n    public void Abrir() { }\n}\n"),
+            (
+                "Loja/Telas/Tela.cs",
+                "using Loja;\nusing Web.Pages;\n\nnamespace Loja.Telas;\n\npublic class Tela\n{\n    \
+public string Nome() => nameof(Painel);\n\n    public string Acao() => nameof(Painel.Abrir);\n\n    \
+public string Pagina() => nameof(Quadro);\n}\n",
+            ),
+            ("Web/Pages/Quadro.razor", "@namespace Web.Pages\n<h3>Quadro</h3>\n@code {\n    private int visitas;\n}\n"),
+        ],
+    );
+    let [class, constructor] = declarations(&map, "Loja/Painel.cs", "Painel")[..] else {
+        panic!("the class and its constructor are declared")
+    };
+    let uses = |d: &Value| -> Vec<String> {
+        let used = d["used_by"].as_array().cloned().unwrap_or_default();
+        used.iter().filter_map(|u| u.as_str().or_else(|| u["at"].as_str()).map(str::to_string)).collect()
+    };
+    assert_eq!(uses(class), ["Loja/Telas/Tela.cs:8:Nome", "Loja/Telas/Tela.cs:10:Acao"], "the type named by nameof");
+    assert_eq!(uses(constructor), Vec::<String>::new(), "the constructor is not what nameof names");
+    assert_eq!(every_use(&map, "Loja/Painel.cs", "Abrir"), ["Loja/Telas/Tela.cs:10:Acao"]);
+    assert_eq!(every_use(&map, "Web/Pages/Quadro.razor", "Quadro"), ["Loja/Telas/Tela.cs:12:Pagina"], "the class of a page");
+}
+
 /// Em Python, Go e Dart, a função passada como argumento é usada pela função
 /// que a passa. No PHP, o nome escrito sozinho é uma constante, e a função
 /// entregue como valor se escreve `dobro(...)`: também é usada por quem a

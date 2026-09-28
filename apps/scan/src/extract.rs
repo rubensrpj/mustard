@@ -279,6 +279,17 @@ pub fn imports_whole_folder(lang: &str, path: &str) -> bool {
     LANG_MARKUP.iter().any(|(name, rule)| *name == lang && rule.is_imports_file(path))
 }
 
+/// As linhas que o projeto de cada manifesto de `manifests` escreve na
+/// pasta dele para os arquivos de marcação cuja língua o pede (`folder_root`
+/// do `markup` em languages.toml), cada uma como um arquivo de imports da
+/// pasta: o caminho do manifesto, a língua e o texto.
+pub(crate) fn project_imports(manifests: &[crate::model::Manifest]) -> Vec<(String, String, String)> {
+    LANG_MARKUP
+        .iter()
+        .flat_map(|(lang, rule)| rule.project_lines(manifests).into_iter().map(|(path, text)| (path, (*lang).to_string(), text)))
+        .collect()
+}
+
 /// O import não relativo de uma parte só pode nomear um arquivo do projeto
 /// (`single_part_paths` em languages.toml). `false` sem o campo.
 pub fn single_part_paths(lang: &str) -> bool {
@@ -1200,7 +1211,7 @@ fn called_site(node: Node, bytes: &[u8], comments: &Spans, lang: &str) -> Option
     Some(CallSite {
         name: name.to_string(),
         line: node.start_position().row + 1,
-        qualifier: qualifier_before(node, bytes, comments, lang, &HashSet::new()),
+        qualifier: qualifier_before(node, bytes, comments, lang),
     })
 }
 
@@ -1807,9 +1818,9 @@ fn glob(entry: &str, text: &str) -> bool {
 /// Os nós lidos são as folhas que a caminhada pela árvore juntou
 /// ([`Walked`]); a que está dentro de um trecho de `quiet` fica de fora.
 ///
-/// O qualificador se lê pelos separadores de `lang` ([`qualifier_before`]),
-/// com os nomes que os imports do arquivo trazem (`brought`). Vêm junto os
-/// qualificadores que abrem a cadeia de uma chamada ([`opens_chain`]).
+/// O qualificador se lê pelos separadores de `lang` ([`qualifier_before`]).
+/// Vêm junto os qualificadores que abrem a cadeia de uma chamada
+/// ([`opens_chain`]).
 ///
 /// A citação escrita num dos bytes de `value_at`, onde vai um valor
 /// (`@call.value`), é também um uso por valor: a função entregue a outra
@@ -1850,7 +1861,7 @@ fn use_sites(
             continue;
         }
         let site =
-            (node.start_position().row + 1, text.to_string(), qualifier_before(node, bytes, comments, lang, brought));
+            (node.start_position().row + 1, text.to_string(), qualifier_before(node, bytes, comments, lang));
         if followed_by_open_paren(node, bytes) {
             if opens_chain(node, bytes, comments, lang, &site.2) {
                 heads.insert(site.2.clone());
@@ -1893,7 +1904,7 @@ fn opens_chain(node: Node, bytes: &[u8], comments: &Spans, lang: &str, qualifier
     let separators = || qualifier_separators(lang).iter().chain(member_separators(lang));
     let before = code_before(bytes, comments, node.start_byte());
     let Some(before) = separators().find_map(|sep| before.strip_suffix(sep.as_bytes())) else { return false };
-    let Some(before) = code_before(bytes, comments, before.len()).strip_suffix(qualifier.as_bytes()) else {
+    let Some(before) = before_separator(bytes, comments, before.len()).strip_suffix(qualifier.as_bytes()) else {
         return false;
     };
     let before = code_before(bytes, comments, before.len());
@@ -2000,10 +2011,10 @@ fn code_before<'b>(bytes: &'b [u8], comments: &Spans, at: usize) -> &'b [u8] {
 /// (`self_receivers`): outro nome ali é um valor. Quando o que vem antes do
 /// separador não é um nome (`f().total`, `a[0].total`, `...total`), ou é um
 /// valor, a marca [`RECEIVER`]. Vazio quando o nó está sozinho. O comentário
-/// escrito no meio não conta ([`code_before`]). O nome de uma letra só é nome
-/// quando um import do arquivo o trouxe (`brought`, como o `u` de
-/// `import * as u`); fora disso, é valor.
-fn qualifier_before(node: Node, bytes: &[u8], comments: &Spans, lang: &str, brought: &HashSet<&str>) -> String {
+/// escrito no meio não conta ([`code_before`]), nem a marca de acesso
+/// opcional ([`before_separator`]). O nome de uma letra é nome como o de
+/// duas: o `p` do receptor em `p.total`, o `u` de `import * as u`.
+fn qualifier_before(node: Node, bytes: &[u8], comments: &Spans, lang: &str) -> String {
     let before = code_before(bytes, comments, node.start_byte());
     let strip = |separators: &[&str]| separators.iter().find_map(|sep| before.strip_suffix(sep.as_bytes()));
     let (before, only_member) = match (strip(qualifier_separators(lang)), strip(member_separators(lang))) {
@@ -2011,16 +2022,26 @@ fn qualifier_before(node: Node, bytes: &[u8], comments: &Spans, lang: &str, brou
         (None, Some(before)) => (before, true),
         (None, None) => return String::new(),
     };
-    let before = code_before(bytes, comments, before.len());
+    let before = before_separator(bytes, comments, before.len());
     let start = before
         .iter()
         .rposition(|b| !(b.is_ascii_alphanumeric() || *b == b'_' || *b >= 0x80))
         .map_or(0, |i| i + 1);
     match std::str::from_utf8(&before[start..]) {
-        Ok(q) if (is_identifier(q) || brought.contains(q)) && (!only_member || self_receivers(lang).contains(&q)) => {
-            q.to_string()
-        }
+        Ok(q) if is_name(q) && (!only_member || self_receivers(lang).contains(&q)) => q.to_string(),
         _ => RECEIVER.to_string(),
+    }
+}
+
+/// O código escrito antes do separador que começa no byte `at`, sem o espaço
+/// e os comentários ([`code_before`]) e sem a marca de acesso opcional escrita
+/// entre o objeto e o separador (o `?` de `pedido?.Total` e de
+/// `$pedido?->total`): o objeto é o mesmo do acesso comum, e o membro também.
+fn before_separator<'b>(bytes: &'b [u8], comments: &Spans, at: usize) -> &'b [u8] {
+    let before = code_before(bytes, comments, at);
+    match before.strip_suffix(b"?") {
+        Some(object) => code_before(bytes, comments, object.len()),
+        None => before,
     }
 }
 
@@ -2079,10 +2100,14 @@ fn followed_by_open_paren(node: Node, bytes: &[u8]) -> bool {
 /// letter or an underscore. Two characters at least, the same floor
 /// [`simple_type_name`] uses.
 fn is_identifier(text: &str) -> bool {
+    is_name(text) && text.chars().count() >= 2
+}
+
+/// O texto se lê como nome, de qualquer tamanho: letras, algarismos e `_`,
+/// começando por letra ou `_`.
+fn is_name(text: &str) -> bool {
     let mut chars = text.chars();
-    chars.next().is_some_and(|c| c.is_alphabetic() || c == '_')
-        && text.chars().all(|c| c.is_alphanumeric() || c == '_')
-        && text.chars().count() >= 2
+    chars.next().is_some_and(|c| c.is_alphabetic() || c == '_') && chars.all(|c| c.is_alphanumeric() || c == '_')
 }
 
 /// Split a `.scm` source into top-level patterns and compile, as one query,

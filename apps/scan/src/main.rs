@@ -270,26 +270,24 @@ fn read_modules(root: &Path, reuse: Option<&ingest::Reuse>, listing: Option<&Lis
 
     // Os arquivos de imports da pasta, com o texto de agora: as linhas deles
     // que valem na pasta entram no tipo de cada arquivo da mesma língua dela
-    // e das de baixo.
-    let imports_files: Vec<(String, String, String)> = ing
-        .files
-        .iter()
-        .filter_map(|walked| {
-            let (path, language) = match walked {
-                ingest::Walked::Fresh(sf) => (&sf.rel_path, &sf.language),
-                ingest::Walked::Kept(kept) => (&kept.path, &kept.language),
-                ingest::Walked::Pending(_) => return None,
-            };
-            if !extract::imports_whole_folder(language, path) {
-                return None;
-            }
-            let text = match walked {
-                ingest::Walked::Fresh(sf) => sf.content.clone(),
-                _ => std::fs::read_to_string(ing.root.join(path)).ok()?,
-            };
-            Some((path.clone(), language.clone(), text))
-        })
-        .collect();
+    // e das de baixo. Antes deles, as linhas que o projeto de cada manifesto
+    // escreve na pasta dele, que o arquivo de imports da mesma pasta vence.
+    let mut imports_files = extract::project_imports(&ing.manifests);
+    imports_files.extend(ing.files.iter().filter_map(|walked| {
+        let (path, language) = match walked {
+            ingest::Walked::Fresh(sf) => (&sf.rel_path, &sf.language),
+            ingest::Walked::Kept(kept) => (&kept.path, &kept.language),
+            ingest::Walked::Pending(_) => return None,
+        };
+        if !extract::imports_whole_folder(language, path) {
+            return None;
+        }
+        let text = match walked {
+            ingest::Walked::Fresh(sf) => sf.content.clone(),
+            _ => std::fs::read_to_string(ing.root.join(path)).ok()?,
+        };
+        Some((path.clone(), language.clone(), text))
+    }));
     // Cada arquivo lido agora é extraído em paralelo com os outros; o que a
     // passada toma do mapa anterior só perde o que se recalcula abaixo.
     let extracted = ingest::in_parallel(std::mem::take(&mut ing.files), |walked| match walked {

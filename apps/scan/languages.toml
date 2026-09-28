@@ -236,7 +236,11 @@
 #                           `{bases}` no lugar da lista de bases, vazio sem
 #                           nenhuma. O tipo abre no começo da linha do
 #                           primeiro código ou da primeira base, depois do
-#                           código de `head`, e fecha logo depois do último;
+#                           código de `head`, e fecha logo depois do último.
+#                           O arquivo sem código do tipo, que não é o de
+#                           `imports_file`, é o tipo mesmo assim, vazio, no
+#                           começo da primeira linha, depois de todo o código
+#                           de `head`;
 #                   expression o marcador que abre código no meio da
 #                           marcação e a forma do comando em que o código vira,
 #                           com `{}` no lugar dele (`["@", "_ = {};"]`). Seguido
@@ -280,14 +284,29 @@
 #                           imports e a do arquivo, e o texto que os junta
 #                           (`["@namespace", "."]`: `@namespace Loja` vale
 #                           `Loja.Admin` na página de `Admin/`);
+#                   folder_root o `kind` do manifesto (manifests.toml) cujo
+#                           projeto escreve o marcador de `folder_path` com o
+#                           nome dele, como um arquivo de imports na pasta do
+#                           manifesto, que o arquivo de imports da mesma
+#                           pasta e os de baixo vencem: sem esse marcador na
+#                           página nem num arquivo de imports acima dela, a
+#                           página de `Web/Pages/Admin/` do `Web/Web.csproj`
+#                           fica em `Web.Pages.Admin`. Vem só com
+#                           `folder_path`;
 #                   controls os nomes que, logo depois do marcador, abrem um
 #                           comando de controle (`@if (x) { … }`,
-#                           `@foreach (var p in ps) { … }`): o comando
-#                           inteiro, com o cabeçalho e as chaves, é código do
-#                           método de `bodies`, como o de um bloco de corpo.
-#                           Vem só com `expression`;
+#                           `@foreach (var p in ps) { … }`, `@try { … }`): o
+#                           comando inteiro, com o cabeçalho entre parênteses,
+#                           quando há, e as chaves, é código do método de
+#                           `bodies`, como o de um bloco de corpo. No começo
+#                           da linha, o comando vence a linha de mesmo
+#                           marcador (`@using (…) { … }` é comando, e
+#                           `@using Loja`, linha). Vem só com `expression`;
 #                   chains  os nomes que, depois das chaves de um comando de
-#                           controle, o continuam (`else`, `else if (y)`);
+#                           controle, o continuam, seguidos ou não de um nome
+#                           de `controls`, do cabeçalho e das chaves (`else`,
+#                           `else if (y)`, `catch (E e)`, `finally`), ou do
+#                           cabeçalho e de `;` (o `while (x);` do `do`);
 #                   component a forma do comando em que vira a tag de
 #                           componente, a tag da marcação cujo nome começa
 #                           com letra maiúscula (`<Contador />`), com `{}` no
@@ -336,11 +355,13 @@ error_forms = ["throw", "*Exception"]
 # as bases da classe, e o `@namespace`, o namespace dela. O `@using` vale
 # para a página inteira, e o do `_Imports.razor`, para as páginas da pasta
 # dele e das de baixo; o `@inject`, o `@inherits` e o `@namespace` dele
-# também, e o `@namespace` ganha o nome de cada subpasta. O `@* … *@` é
-# comentário. Os comandos de controle (`@if (…) { … }`, `@foreach`) são
-# comandos do `BuildRenderTree`, com a marcação de dentro deles e a do
-# `@{ … }` fora do código, e a tag de componente (`<Contador />`) é uso da
-# classe da página que ela nomeia.
+# também, e o `@namespace` ganha o nome de cada subpasta. Sem `@namespace`,
+# a página fica no namespace do projeto mais as pastas até ela. A página sem
+# código também é uma classe. O `@* … *@` é comentário. Os comandos de
+# controle (`@if (…) { … }`, `@foreach`, `@try`, `@using (…)`) são comandos
+# do `BuildRenderTree`, com a marcação de dentro deles e a do `@{ … }` fora
+# do código, e a tag de componente (`<Contador />`) é uso da classe da
+# página que ela nomeia.
 [[language]]
 name = "razor"
 extensions = ["razor"]
@@ -380,8 +401,9 @@ comment = ["@*", "*@", "/*", "*/"]
 imports_file = "_Imports"
 folder = ["@inject", "@inherits", "@namespace"]
 folder_path = ["@namespace", "."]
-controls = ["if", "foreach", "for", "while", "switch"]
-chains = ["else"]
+folder_root = "dotnet"
+controls = ["if", "foreach", "for", "while", "switch", "do", "try", "using", "lock"]
+chains = ["else", "catch", "finally", "while"]
 component = "_ = typeof({});"
 code_markup = ["<", "@:"]
 
@@ -397,8 +419,9 @@ code_markup = ["<", "@:"]
 # `@namespace` dele também, e o `@namespace` ganha o nome de cada subpasta.
 # O `@* … *@` é comentário. A classe que atende a página, a do
 # `.cshtml.cs`, é outra, e não parte desta. Os comandos de controle
-# (`@if (…) { … }`, `@foreach`) são comandos do `ExecuteAsync`, com a
-# marcação de dentro deles e a do `@{ … }` fora do código.
+# (`@if (…) { … }`, `@foreach`, `@try`, `@using (…)`) são comandos do
+# `ExecuteAsync`, com a marcação de dentro deles e a do `@{ … }` fora do
+# código.
 [[language]]
 name = "cshtml"
 extensions = ["cshtml"]
@@ -438,8 +461,8 @@ comment = ["@*", "*@", "/*", "*/"]
 imports_file = "_ViewImports"
 folder = ["@inject", "@inherits", "@namespace"]
 folder_path = ["@namespace", "."]
-controls = ["if", "foreach", "for", "while", "switch"]
-chains = ["else"]
+controls = ["if", "foreach", "for", "while", "switch", "do", "try", "using", "lock"]
+chains = ["else", "catch", "finally", "while"]
 code_markup = ["<", "@:"]
 
 [[language]]

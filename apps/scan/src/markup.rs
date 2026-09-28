@@ -11,7 +11,9 @@
 //! o código em linha, escrito no meio da marcação, trazem comandos, e não
 //! membros: moram num método do tipo, e os seguidos, sem membro entre eles,
 //! dividem o mesmo método. O comentário da marcação vira comentário do código, no lugar
-//! dele. O arquivo sem código nenhum sai só com espaços e comentários.
+//! dele. O arquivo sem código nenhum sai com o tipo vazio no começo da
+//! primeira linha, e o resto em espaços e comentários; o arquivo de imports
+//! da pasta, sem tipo.
 //!
 //! O comando de controle escrito na marcação (`@if (x) { … }`) é código do
 //! método, e a marcação escrita no meio do código dele ou de um bloco de corpo
@@ -75,6 +77,11 @@ pub(crate) struct Markup {
     /// entre a do arquivo de imports e a do arquivo, e o texto que os junta;
     /// vazios sem ele.
     pub folder_path: [&'static str; 2],
+    /// O tipo (`kind`) do manifesto cujo nome de projeto começa o marcador de
+    /// `folder_path` que nenhum arquivo de imports escreve: vale como uma
+    /// linha dele escrita num arquivo de imports na pasta do manifesto;
+    /// vazio sem ele.
+    pub folder_root: &'static str,
     /// Os nomes que, logo depois do marcador do código em linha, abrem um
     /// comando de controle, com o cabeçalho e as chaves dele.
     pub controls: &'static [&'static str],
@@ -174,7 +181,9 @@ impl Markup {
     /// herdadas dos arquivos de imports da pasta (`folder`, com o caminho e o
     /// texto de cada um, da pasta de cima para a de baixo) entram na linha em
     /// que o tipo abre: as de cabeça antes dele, as bases na lista dele e os
-    /// membros logo depois de abri-lo.
+    /// membros logo depois de abri-lo. O arquivo sem código do tipo, que não
+    /// é o de imports da pasta, é o tipo mesmo assim: ele abre e fecha no
+    /// começo da primeira linha, depois de todo o código de cabeça.
     pub(crate) fn code_of(&self, src: &str, path: &str, folder: &[(&str, &str)]) -> String {
         let pieces = self.pieces(src);
         let first_in_type = pieces.iter().position(Piece::in_type);
@@ -182,34 +191,20 @@ impl Markup {
         let body_before = |i: usize| pieces[..i].iter().rev().find(|piece| piece.writes_in_type()).is_some_and(Piece::is_body);
         let body_after = |i: usize| pieces[i + 1..].iter().find(|piece| piece.writes_in_type()).is_some_and(Piece::is_body);
         let mut out = String::with_capacity(src.len() + 64);
+        let empty_type = first_in_type.is_none() && !self.open.is_empty() && !self.is_imports_file(path);
+        if empty_type {
+            self.open_type(&mut out, &pieces, 0, path, folder);
+            out.push_str(self.close);
+        }
         let mut at = 0;
         for (i, piece) in pieces.iter().enumerate() {
             if first_in_type == Some(i) {
                 let line_start = src[..piece.start()].rfind('\n').map_or(0, |n| n + 1).max(at);
                 blank(&mut out, &src[at..line_start]);
-                for later in &pieces[i..] {
-                    if let Piece::Line { code, kind: LineKind::Head, .. } = later {
-                        out.push_str(code);
-                        out.push(' ');
-                    }
-                }
-                let inherited = self.inherited(&pieces, path, folder);
-                for (kind, code) in &inherited {
-                    if matches!(kind, LineKind::Head) {
-                        out.push_str(code);
-                        out.push(' ');
-                    }
-                }
-                out.push_str(&self.open.replace("{file}", file_stem(path)).replace("{bases}", &self.bases_of(&pieces, &inherited)));
-                for (kind, code) in &inherited {
-                    if matches!(kind, LineKind::Member) {
-                        out.push(' ');
-                        out.push_str(code);
-                    }
-                }
+                self.open_type(&mut out, &pieces, i, path, folder);
                 at = line_start;
             }
-            let moved = first_in_type.is_some_and(|first| i > first);
+            let moved = empty_type || first_in_type.is_some_and(|first| i > first);
             let closes = last_in_type == Some(i);
             match piece {
                 Piece::Block { open, close, body } => {
@@ -270,6 +265,33 @@ impl Markup {
         }
         blank(&mut out, &src[at..]);
         out
+    }
+
+    /// Põe em `out` a abertura do tipo do arquivo `path`, cujos trechos são
+    /// `pieces`: o código de cabeça dos trechos a partir do de posição
+    /// `first` e o herdado da pasta (`folder`), o texto que abre o tipo, com
+    /// as bases, e os membros herdados.
+    fn open_type(&self, out: &mut String, pieces: &[Piece], first: usize, path: &str, folder: &[(&str, &str)]) {
+        for later in &pieces[first..] {
+            if let Piece::Line { code, kind: LineKind::Head, .. } = later {
+                out.push_str(code);
+                out.push(' ');
+            }
+        }
+        let inherited = self.inherited(pieces, path, folder);
+        for (kind, code) in &inherited {
+            if matches!(kind, LineKind::Head) {
+                out.push_str(code);
+                out.push(' ');
+            }
+        }
+        out.push_str(&self.open.replace("{file}", file_stem(path)).replace("{bases}", &self.bases_of(pieces, &inherited)));
+        for (kind, code) in &inherited {
+            if matches!(kind, LineKind::Member) {
+                out.push(' ');
+                out.push_str(code);
+            }
+        }
     }
 
     /// As bases que as linhas de base dão ao tipo, na ordem dos marcadores
@@ -333,8 +355,12 @@ impl Markup {
         let mut line_start = lines;
         while at < to {
             if line_start {
+                // O comando de controle vence a linha de mesmo marcador:
+                // `@using (…) { … }` é comando, e `@using Loja`, linha.
                 let first = at + bytes[at..].iter().take_while(|b| matches!(b, b' ' | b'\t')).count();
-                if let Some((line, end)) = self.line_at(src, first) {
+                if self.control_at(src, first).is_none()
+                    && let Some((line, end)) = self.line_at(src, first)
+                {
                     out.push(line);
                     at = end;
                     line_start = false;
@@ -630,6 +656,7 @@ mod tests {
         imports_file: "",
         folder: &[],
         folder_path: ["", ""],
+        folder_root: "",
         controls: &[],
         chains: &[],
         component: "",
@@ -684,7 +711,7 @@ mod tests {
     #[test]
     fn a_marker_glued_to_another_word_or_without_a_brace_is_not_a_block() {
         let src = "<a href=\"mailto:x@code.com\">x</a>\n<p>@codex { nada }</p>\n<p>@code sem chave</p>\n";
-        assert_eq!(PAGE.code_of(src, "P.razor", &[]).trim(), "");
+        assert_eq!(PAGE.code_of(src, "P.razor", &[]).trim(), "partial class P {}", "only the empty type of the file");
     }
 
     #[test]
@@ -762,9 +789,16 @@ mod tests {
     }
 
     #[test]
-    fn a_file_with_only_head_lines_opens_no_type() {
-        let code = PAGE.code_of("@using Loja.Servicos\n<p>oi</p>\n", "_Imports.razor", &[]);
+    fn the_imports_file_with_only_head_lines_opens_no_type() {
+        let folder = Markup { imports_file: "_Imports", ..PAGE };
+        let code = folder.code_of("@using Loja.Servicos\n<p>oi</p>\n", "_Imports.razor", &[]);
         assert_eq!(lines(&code), ["using Loja.Servicos;", ""]);
+    }
+
+    #[test]
+    fn a_page_without_code_opens_its_empty_type_on_the_first_line_after_the_head_code() {
+        let code = PAGE.code_of("<p>oi</p>\n@using Loja.Servicos\n<p>tchau</p>\n", "Pagina.razor", &[]);
+        assert_eq!(lines(&code), ["using Loja.Servicos; partial class Pagina {}", "", ""]);
     }
 
     /// A view do Razor com as expressões, os comentários e as bases.
@@ -815,7 +849,7 @@ mod tests {
     #[test]
     fn an_address_an_escaped_marker_and_a_keyword_are_not_expressions() {
         assert_eq!(commands("<p>ajuda@loja.com, @@loja, @page, @if (x) { }, @1, @functions sem chave</p>"), Vec::<String>::new());
-        assert_eq!(FULL.code_of("<p>ajuda@loja.com</p>\n", "V.cshtml", &[]).trim(), "");
+        assert_eq!(FULL.code_of("<p>ajuda@loja.com</p>\n", "V.cshtml", &[]).trim(), "class V {}", "only the empty type of the file");
     }
 
     #[test]
@@ -908,7 +942,11 @@ mod tests {
         assert_eq!(lines(&page)[0], "namespace Loja.Pages.Admin; class Painel : Outra { Carrinho Compras; Relogio Hora; void Draw() {_ = Compras;}}");
         let own = CONTROLS.code_of("@namespace Meu\n@inherits Minha\n<p>@Hora</p>\n", "Web/Pages/Admin/Painel.razor", &folder);
         assert_eq!(lines(&own), ["namespace Meu;", "class Painel : Minha { Carrinho Compras; Relogio Hora;", "void Draw() {_ = Hora;}}"]);
-        assert_eq!(lines(&CONTROLS.code_of("<p>oi</p>\n", "Web/Pages/Estatica.razor", &folder)), [""], "no type, no folder lines");
+        assert_eq!(
+            lines(&CONTROLS.code_of("<p>oi</p>\n", "Web/Pages/Estatica.razor", &folder)),
+            ["namespace Loja.Pages; class Estatica : Outra { Carrinho Compras; Relogio Hora;}"],
+            "the page without code gets the folder lines in its empty type"
+        );
     }
 
     #[test]

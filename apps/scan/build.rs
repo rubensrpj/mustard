@@ -737,6 +737,8 @@ fn markup_rule(name: &str, rule: &toml::value::Table) -> String {
         "{}",
         refused("`folder_path` names a marker of `folder` and the text that joins the folders")
     );
+    let folder_root = text("folder_root");
+    assert!(folder_root.is_empty() || !path_marker.is_empty(), "{}", refused("`folder_root` comes only with `folder_path`"));
     let (controls, chains) = (markers("controls"), markers("chains"));
     assert!(controls.is_empty() || expressed, "{}", refused("`controls` come only with `expression`"));
     assert!(chains.is_empty() || !controls.is_empty(), "{}", refused("`chains` come only with `controls`"));
@@ -756,8 +758,8 @@ fn markup_rule(name: &str, rule: &toml::value::Table) -> String {
         "crate::markup::Markup {{ blocks: &[{}], bodies: &[{}], method: [{method_open:?}, {method_close:?}], lines: &[{}], head: &[{}], \
          open: {open:?}, close: {close:?}, expression: [{marker:?}, {statement:?}], escape: {escape:?}, keywords: &[{}], prefixes: &[{}], \
          comment: {comment:?}, bases: &[{}], base_list: [{base_open:?}, {base_between:?}], imports_file: {imports_file:?}, \
-         folder: &[{}], folder_path: [{path_marker:?}, {path_joiner:?}], controls: &[{}], chains: &[{}], component: {component:?}, \
-         code_markup: [{element:?}, {markup_line:?}] }}",
+         folder: &[{}], folder_path: [{path_marker:?}, {path_joiner:?}], folder_root: {folder_root:?}, controls: &[{}], chains: &[{}], \
+         component: {component:?}, code_markup: [{element:?}, {markup_line:?}] }}",
         quoted_list(&blocks),
         quoted_list(&bodies),
         pairs(&lines),

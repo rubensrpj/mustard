@@ -1,7 +1,8 @@
 //! O código escrito no meio da marcação e a marcação escrita no meio do
-//! código. O comando de controle (`@if (x) { … }`, `@foreach (…) { … }`) é
-//! código, do cabeçalho à chave que fecha o último trecho dele (`else`
-//! incluído). Dentro das chaves dele e das de um bloco de corpo (`@{ … }`),
+//! código. O comando de controle (`@if (x) { … }`, `@foreach (…) { … }`,
+//! `@try { … }`) é código, do cabeçalho à chave que fecha o último trecho
+//! dele (`else`, `catch` e `finally` incluídos), ou ao `;` do trecho que
+//! termina no cabeçalho (o `while (x);` do `do`). Dentro das chaves dele e das de um bloco de corpo (`@{ … }`),
 //! o que começa um comando pelo texto de `code_markup` é marcação: o
 //! elemento até a tag que o fecha (`<p>…</p>`) e a linha de marcação até o
 //! fim dela (`@:texto`). Essa marcação vira espaço, e o código em linha, os
@@ -13,11 +14,11 @@ use super::{blank, matching, name_len, word_before, Markup, Piece};
 
 impl Markup {
     /// O fim do comando de controle cujo marcador começa no byte `at` de
-    /// `src`: o marcador seguido de um nome de `controls`, do cabeçalho entre
-    /// parênteses e das chaves, cada trecho seguinte aberto por um nome de
-    /// `chains` (com o cabeçalho quando o nome seguinte é de `controls`,
-    /// como em `else if (y)`) e as chaves dele. `None` sem as chaves logo
-    /// depois do cabeçalho.
+    /// `src`: o marcador seguido de um nome de `controls` e de um trecho
+    /// ([`Self::control_part`]), e cada trecho seguinte aberto por um nome de
+    /// `chains`, seguido ou não de um nome de `controls` (`else if (y)`,
+    /// `catch (E e)`, `finally`, o `while (x);` do `do`). `None` quando o
+    /// primeiro trecho não se fecha.
     pub(super) fn control_at(&self, src: &str, at: usize) -> Option<usize> {
         let marker = self.expression[0];
         if self.controls.is_empty() || !src.as_bytes()[at..].starts_with(marker.as_bytes()) || word_before(src, at) {
@@ -28,7 +29,7 @@ impl Markup {
         if !self.controls.contains(&name) {
             return None;
         }
-        let mut end = self.control_part(src, from + name.len(), true)?;
+        let mut end = self.control_part(src, from + name.len())?;
         loop {
             let next = skip_space(src, end);
             let word = &src[next..next + name_len(&src[next..])];
@@ -37,9 +38,8 @@ impl Markup {
             }
             let after = skip_space(src, next + word.len());
             let inner = &src[after..after + name_len(&src[after..])];
-            let headed = self.controls.contains(&inner);
-            let from = if headed { after + inner.len() } else { next + word.len() };
-            match self.control_part(src, from, headed) {
+            let from = if self.controls.contains(&inner) { after + inner.len() } else { next + word.len() };
+            match self.control_part(src, from) {
                 Some(part) => end = part,
                 None => return Some(end),
             }
@@ -47,26 +47,26 @@ impl Markup {
     }
 
     /// Um trecho do comando de controle, a partir do byte `from` de `src`:
-    /// o cabeçalho entre parênteses, com `headed`, e as chaves. O byte logo
-    /// depois da chave que fecha; `None` sem os parênteses pedidos ou sem a
-    /// chave que abre.
-    fn control_part(&self, src: &str, from: usize, headed: bool) -> Option<usize> {
+    /// o cabeçalho entre parênteses, quando há, e as chaves, ou, depois do
+    /// cabeçalho, o `;` que fecha o comando. O byte logo depois da chave que
+    /// fecha ou do `;`; `None` sem nenhum deles, ou com o parêntese que não
+    /// fecha.
+    fn control_part(&self, src: &str, from: usize) -> Option<usize> {
         let bytes = src.as_bytes();
         let mut at = skip_space(src, from);
+        let headed = bytes.get(at) == Some(&b'(');
         if headed {
-            if bytes.get(at) != Some(&b'(') {
-                return None;
-            }
             let close = matching(bytes, at);
             if close >= bytes.len() {
                 return None;
             }
             at = skip_space(src, close + 1);
         }
-        if bytes.get(at) != Some(&b'{') {
-            return None;
+        match bytes.get(at) {
+            Some(b'{') => Some((self.code_close(src, at) + 1).min(bytes.len())),
+            Some(b';') if headed => Some(at + 1),
+            _ => None,
         }
-        Some((self.code_close(src, at) + 1).min(bytes.len()))
     }
 
     /// A tag de componente que começa no byte `at` de `src`: o `<` seguido

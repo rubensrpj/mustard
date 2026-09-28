@@ -662,3 +662,125 @@ fn a_property_read_on_the_page_is_a_use_of_it() {
         ["Web/Pages/Capa.cshtml:4:ExecuteAsync", "Web/Pages/Cartao.razor:2:BuildRenderTree"]
     );
 }
+
+/// O C# e a página do Blazor do mesmo namespace se enxergam sem `using`,
+/// como dois arquivos C# dele: a classe C# que cita a classe da página e a
+/// página que chama a classe C# ligam, e a página de outro namespace não
+/// ganha uso.
+#[test]
+fn the_csharp_and_the_page_of_the_same_namespace_see_each_other() {
+    let map = scanned(&[
+        ("Web/Telas/Lista.razor", "@namespace Web.Telas\n<p>@Texto()</p>\n@code {\n    private string Texto() => Formato.Nome();\n}\n"),
+        (
+            "Web/Telas/Formato.cs",
+            "namespace Web.Telas;\n\npublic static class Formato\n{\n    public static string Nome() => \"x\";\n    \
+             public static Lista? Tela() => null;\n}\n",
+        ),
+        ("Web/Outras/Lista.razor", "@namespace Web.Outras\n<p>@Texto()</p>\n@code {\n    private string Texto() => \"\";\n}\n"),
+    ]);
+    assert_eq!(every_use(&map, "Web/Telas/Lista.razor", "Lista"), ["Web/Telas/Formato.cs:6:Tela"]);
+    assert_eq!(every_use(&map, "Web/Telas/Formato.cs", "Nome"), ["Web/Telas/Lista.razor:4:Texto"]);
+    assert_eq!(every_use(&map, "Web/Outras/Lista.razor", "Lista"), Vec::<String>::new(), "another namespace");
+}
+
+/// Sem `@namespace` na página nem num `_Imports.razor` acima dela, a classe
+/// da página do Blazor fica no namespace do projeto (o nome do `.csproj`)
+/// mais as pastas até ela. O `@namespace` do `_Imports.razor` mais perto
+/// vence o do projeto, e o da própria página vence os dois. A página do
+/// Razor, que o framework põe em outro namespace, fica sem.
+#[test]
+fn a_page_without_namespace_lives_in_the_project_namespace_plus_its_folders() {
+    let map = scanned(&[
+        ("Web/App.razor", "<p>@Texto()</p>\n@code {\n    private string Texto() => \"\";\n}\n"),
+        ("Web/Pages/Admin/Painel.razor", "<h3>@Texto()</h3>\n@code {\n    private string Texto() => \"\";\n}\n"),
+        ("Web/Outras/_Imports.razor", "@namespace Outro\n"),
+        ("Web/Outras/Sub/Tela.razor", "<p>@Texto()</p>\n@code {\n    private string Texto() => \"\";\n}\n"),
+        ("Web/Outras/Sub/Propria.razor", "@namespace Meu\n<p>@Texto()</p>\n@code {\n    private string Texto() => \"\";\n}\n"),
+        ("Web/Pages/Vista.cshtml", "@page\n<p>@Texto()</p>\n@functions {\n    private string Texto() => \"\";\n}\n"),
+    ]);
+    assert_eq!(module(&map, "Web/App.razor")["namespaces"], json!(["Web"]));
+    assert_eq!(module(&map, "Web/Pages/Admin/Painel.razor")["namespaces"], json!(["Web.Pages.Admin"]));
+    assert_eq!(module(&map, "Web/Outras/Sub/Tela.razor")["namespaces"], json!(["Outro.Sub"]));
+    assert_eq!(module(&map, "Web/Outras/Sub/Propria.razor")["namespaces"], json!(["Meu"]));
+    assert_eq!(module(&map, "Web/Pages/Vista.cshtml")["namespaces"], json!([]));
+}
+
+/// A página sem trecho de código é uma classe com o nome dela, na primeira
+/// linha: a tag `<Contador />` de outra página liga a ela. O arquivo de
+/// imports da pasta não abre classe. A view do Razor só com marcação também
+/// é uma classe.
+#[test]
+fn a_page_with_only_markup_is_a_class_its_component_tag_uses() {
+    let map = scanned(&[
+        ("Web/_Imports.razor", "@namespace Web\n@using Web.Shared\n"),
+        ("Web/Pages/Admin/Contador.razor", "<p>Olá</p>\n<p>mundo</p>\n"),
+        ("Web/Pages/Admin/Painel.razor", "<h3>Painel</h3>\n<Contador />\n"),
+        ("Web/Pages/Sobre.cshtml", "<p>Sobre</p>\n"),
+    ]);
+    assert_eq!(declarations(&map, "Web/Pages/Admin/Contador.razor"), ["class Contador 1-1"]);
+    assert_eq!(every_use(&map, "Web/Pages/Admin/Contador.razor", "Contador"), ["Web/Pages/Admin/Painel.razor:2:BuildRenderTree"]);
+    assert_eq!(declarations(&map, "Web/_Imports.razor"), Vec::<String>::new(), "the imports file of the folder");
+    assert_eq!(declarations(&map, "Web/Pages/Sobre.cshtml"), ["class Sobre 1-1"]);
+}
+
+/// O modelo da página de comandos: um método para cada trecho dos comandos
+/// que a página escreve.
+const COMMANDS_MODEL: &str = "namespace Web.Pages;\n\npublic class ComandosModel : PageModel\n{\n    \
+                              public int Soma(int x) => x;\n    public bool Mais() => false;\n    \
+                              public int Tipo() => 1;\n    public int Outro() => 2;\n    \
+                              public bool Visivel() => true;\n    public System.IDisposable Abrir() => null;\n    \
+                              public object Trava() => this;\n    public int Itens() => 0;\n}\n";
+
+/// A página com `@do … while`, `@try … catch … finally`, `@using (…)` e
+/// `@lock (…)`, e com o `@using` que traz o namespace do modelo.
+const COMMANDS: &str = "@page\n\
+                        @model ComandosModel\n\
+                        @using Web.Pages\n\
+                        @do {\n    \
+                        <p>@Model.Soma(1)</p>\n\
+                        } while (Model.Mais());\n\
+                        @try {\n    \
+                        var t = Model.Tipo();\n\
+                        } catch (Exception e) {\n    \
+                        <p>@Model.Outro()</p>\n\
+                        } finally {\n    \
+                        Model.Visivel();\n\
+                        }\n\
+                        @using (var itens = Model.Abrir()) {\n    \
+                        <p>@itens</p>\n\
+                        }\n\
+                        @lock (Model.Trava()) {\n    \
+                        Model.Itens();\n\
+                        }\n";
+
+/// O `@do`, o `@try`, o `@using (…)` e o `@lock` são comandos do método que
+/// desenha a página, como o `@if`: o método do modelo chamado no cabeçalho de
+/// cada um, no `while` que fecha o `do`, no `catch` e no `finally`, e no
+/// código entre as chaves, é usado pelo `ExecuteAsync`, na linha dele; a
+/// marcação entre as chaves segue marcação, com a expressão escrita nela. O
+/// `@using` sem parênteses segue trazendo o namespace. Na página do Blazor, o
+/// `@try` é comando do `BuildRenderTree`.
+#[test]
+fn do_try_using_and_lock_are_commands_of_the_method_that_draws_the_page() {
+    let map = scanned(&[
+        ("Web/Pages/Comandos.cshtml.cs", COMMANDS_MODEL),
+        ("Web/Pages/Comandos.cshtml", COMMANDS),
+        (
+            "Web/Pages/Tentar.razor",
+            "@try {\n    Salvar();\n} catch (Exception e) {\n    Falhar();\n}\n@code {\n    \
+             private void Salvar() { }\n    private void Falhar() { }\n}\n",
+        ),
+    ]);
+    let model = "Web/Pages/Comandos.cshtml.cs";
+    let at = |line: u32| vec![format!("Web/Pages/Comandos.cshtml:{line}:ExecuteAsync")];
+    assert_eq!(every_use(&map, model, "Soma"), at(5), "the expression in the markup inside the do");
+    assert_eq!(every_use(&map, model, "Mais"), at(6), "the while that closes the do");
+    assert_eq!(every_use(&map, model, "Tipo"), at(8), "the code inside the try");
+    assert_eq!(every_use(&map, model, "Outro"), at(10), "the expression inside the catch");
+    assert_eq!(every_use(&map, model, "Visivel"), at(12), "the code inside the finally");
+    assert_eq!(every_use(&map, model, "Abrir"), at(14), "the header of the using");
+    assert_eq!(every_use(&map, model, "Trava"), at(17), "the header of the lock");
+    assert_eq!(every_use(&map, model, "Itens"), at(18), "the code inside the lock");
+    assert_eq!(every_use(&map, "Web/Pages/Tentar.razor", "Salvar"), ["Web/Pages/Tentar.razor:2:BuildRenderTree"]);
+    assert_eq!(every_use(&map, "Web/Pages/Tentar.razor", "Falhar"), ["Web/Pages/Tentar.razor:4:BuildRenderTree"]);
+}

@@ -65,10 +65,11 @@
 (assignment_expression right: (member_access_expression name: (identifier) @call.value))
 
 ; O membro escrito depois do objeto, sem chamada ali: a propriedade ou o
-; campo lido ou escrito (`pedido.Total`, `this.Total`). O motor liga o nome
-; só a uma propriedade ou a um campo, como liga a chamada de método escrita
-; depois do mesmo objeto.
+; campo lido ou escrito (`pedido.Total`, `this.Total`), também pelo acesso
+; opcional (`pedido?.Total`). O motor liga o nome só a uma propriedade ou a um
+; campo, como liga a chamada de método escrita depois do mesmo objeto.
 (member_access_expression name: (identifier) @member)
+(member_binding_expression name: (identifier) @member)
 
 ; Decorations — an attribute list (`[HttpGet("{id}")]`, `[Fact]`) is not code
 ; of the declaration it adorns: the engine starts the header after it and reads

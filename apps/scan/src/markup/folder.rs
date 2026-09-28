@@ -4,10 +4,15 @@
 //! pasta de cima para a de baixo; das de cabeça e de base, vale a do arquivo
 //! de imports mais perto, e a do próprio arquivo, com o mesmo marcador, vence
 //! as herdadas. O resto herdado do marcador de `folder_path` ganha os nomes
-//! das pastas entre a do arquivo de imports e a do arquivo.
+//! das pastas entre a do arquivo de imports e a do arquivo. O projeto do
+//! manifesto de `folder_root` escreve esse marcador com o nome dele, como um
+//! arquivo de imports na pasta do manifesto: sem `@namespace` na página nem
+//! num arquivo de imports acima dela, a página de `Web/Pages/Admin/` do
+//! `Web/Web.csproj` fica em `Web.Pages.Admin`.
 
 use super::{LineKind, Markup, Piece};
 use crate::graph::{folder_of, is_under};
+use crate::model::Manifest;
 
 impl Markup {
     /// As linhas herdadas pelo arquivo `path`, cujos trechos são `pieces`,
@@ -49,6 +54,28 @@ impl Markup {
             }
         }
         found.into_iter().map(|(_, kind, code)| (kind, code)).collect()
+    }
+
+    /// A linha que o projeto de cada manifesto de `manifests` do tipo de
+    /// `folder_root` escreve na pasta dele, com o caminho do manifesto: o
+    /// marcador de `folder_path` seguido do nome do projeto, cada parte dele
+    /// com o que não é letra, algarismo nem `_` trocado por `_`
+    /// (`@namespace Loja.Web` do `Loja.Web.csproj`). Vazio sem
+    /// `folder_root`.
+    pub(crate) fn project_lines(&self, manifests: &[Manifest]) -> Vec<(String, String)> {
+        let [marker, joiner] = self.folder_path;
+        if self.folder_root.is_empty() {
+            return Vec::new();
+        }
+        let part = |text: &str| -> String { text.chars().map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' }).collect() };
+        manifests
+            .iter()
+            .filter(|manifest| manifest.kind == self.folder_root && !manifest.name.is_empty())
+            .map(|manifest| {
+                let name: Vec<String> = manifest.name.split(joiner).map(part).collect();
+                (manifest.path.clone(), format!("{marker} {}", name.join(joiner)))
+            })
+            .collect()
     }
 }
 

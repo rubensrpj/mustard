@@ -263,3 +263,85 @@ fn a_dart_field_read_after_the_object_is_a_use_of_it() {
     assert_eq!(every_use(&map, "lib/pedido.dart", "troco"), Vec::<String>::new(), "a field read from a value");
     assert_eq!(every_use(&map, "lib/nota.dart", "desconto"), Vec::<String>::new(), "a file nobody imports");
 }
+
+/// O acesso opcional (`pedido?.Total`) lê o membro do mesmo objeto que o
+/// acesso comum: a propriedade lida e o método chamado depois dele ganham o
+/// mesmo uso, suspeito, que ganham depois de `pedido.`, no C#, no TypeScript,
+/// no JavaScript e no Dart.
+#[test]
+fn a_member_read_or_a_call_after_optional_access_is_a_use_like_after_the_plain_one() {
+    let csharp = scanned(
+        "opcional-csharp",
+        &[
+            ("Loja/Pedido.cs", "namespace Loja;\n\npublic class Pedido\n{\n    public int Total { get; set; }\n    public int Calcular() => 1;\n}\n"),
+            (
+                "Loja/Caixa.cs",
+                "namespace Loja;\n\npublic class Caixa\n{\n    public int? Fechar(Pedido? pedido)\n    {\n        \
+                 return pedido?.Total + pedido?.Calcular();\n    }\n}\n",
+            ),
+        ],
+    );
+    assert_eq!(suspect_uses(&csharp, "Loja/Pedido.cs", "Total"), ["Loja/Caixa.cs:7:Fechar"]);
+    assert_eq!(suspect_uses(&csharp, "Loja/Pedido.cs", "Calcular"), ["Loja/Caixa.cs:7:Fechar"]);
+
+    let typescript = scanned(
+        "opcional-typescript",
+        &[
+            ("src/pedido.ts", "export class Pedido {\n  total = 0;\n\n  calcular() {\n    return 1;\n  }\n}\n"),
+            (
+                "src/caixa.ts",
+                "import { Pedido } from './pedido';\n\nexport function fechar(pedido?: Pedido) {\n  \
+                 return (pedido?.total ?? 0) + (pedido?.calcular() ?? 0);\n}\n",
+            ),
+            ("src/velho.js", "import { Pedido } from './pedido';\n\nexport function antigo(pedido) {\n  return pedido?.total;\n}\n"),
+        ],
+    );
+    assert_eq!(suspect_uses(&typescript, "src/pedido.ts", "total"), ["src/caixa.ts:4:fechar", "src/velho.js:4:antigo"]);
+    assert_eq!(suspect_uses(&typescript, "src/pedido.ts", "calcular"), ["src/caixa.ts:4:fechar"]);
+
+    let dart = scanned(
+        "opcional-dart",
+        &[
+            ("pubspec.yaml", "name: loja\n"),
+            ("lib/pedido.dart", "class Pedido {\n  int total = 0;\n\n  int calcular() => 1;\n}\n"),
+            (
+                "lib/caixa.dart",
+                "import 'pedido.dart';\n\nint? fechar(Pedido? pedido) => pedido?.total;\n\nint? somar(Pedido? pedido) => pedido?.calcular();\n",
+            ),
+        ],
+    );
+    assert_eq!(suspect_uses(&dart, "lib/pedido.dart", "total"), ["lib/caixa.dart:3:fechar"]);
+    assert_eq!(suspect_uses(&dart, "lib/pedido.dart", "calcular"), ["lib/caixa.dart:5:somar"]);
+}
+
+/// O nome de uma letra antes do separador é um nome como o de duas: o
+/// receptor do método no Go (`func (p *Pedido)`) e o parâmetro da função
+/// anônima no C# (`p => p.Total`) leem o campo e a propriedade, que ganham
+/// uso suspeito, como depois de `pedido.`.
+#[test]
+fn a_one_letter_name_before_the_separator_reads_the_member_like_a_longer_one() {
+    let go = scanned(
+        "uma-letra-go",
+        &[
+            ("go.mod", "module exemplo.com/loja\n\ngo 1.21\n"),
+            (
+                "loja/pedido.go",
+                "package loja\n\ntype Pedido struct {\n\tTotal int\n}\n\nfunc (p *Pedido) Dobro() int {\n\treturn p.Total * 2\n}\n",
+            ),
+        ],
+    );
+    assert_eq!(suspect_uses(&go, "loja/pedido.go", "Total"), ["loja/pedido.go:8:Dobro"]);
+
+    let csharp = scanned(
+        "uma-letra-csharp",
+        &[
+            ("Loja/Pedido.cs", "namespace Loja;\n\npublic class Pedido\n{\n    public int Total { get; set; }\n}\n"),
+            (
+                "Loja/Caixa.cs",
+                "using System.Linq;\n\nnamespace Loja;\n\npublic class Caixa\n{\n    \
+                 public int Somar(Pedido[] pedidos) => pedidos.Sum(p => p.Total);\n}\n",
+            ),
+        ],
+    );
+    assert_eq!(suspect_uses(&csharp, "Loja/Pedido.cs", "Total"), ["Loja/Caixa.cs:7:Somar"]);
+}
