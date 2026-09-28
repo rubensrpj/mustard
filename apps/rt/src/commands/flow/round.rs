@@ -116,6 +116,7 @@ mod agreed;
 mod answer;
 mod commit;
 mod convert;
+mod copy_check;
 mod imports_check;
 mod leftovers;
 mod queue;

@@ -630,7 +630,7 @@ pub(super) fn run_entered_round(
     // despacha. Sem volta e sem linha a assumir, nada é juntado, e a rodada
     // vai direto ao despacho, com a escolha de cada onda.
     let raw = opts.report.as_deref().map(str::trim).filter(|r| !r.is_empty());
-    let Taken { mut recorded, formatted, mut warnings, commit, paused, waiting: changes } =
+    let Taken { mut recorded, formatted, mut warnings, commit, paused, waiting: held } =
         super::report::take_report_with_mine(&opts.root, root, &spec, raw, &log, lang, caller, mine)?;
     let (given, unread) = analysis_lines(raw, lang);
     warnings.extend(unread);
@@ -686,12 +686,13 @@ pub(super) fn run_entered_round(
     // projeto deixa compilar ao mesmo tempo contando as que já estão em
     // andamento, e nenhuma que a onda parada pelo limite de consertos segura.
     // Cada uma sai com a sua vaga, a cópia fixa em que ela compila.
-    // A onda que pede novo plano já voltou: o agente dela terminou, e ela
-    // espera o clique do usuário, não o agente. O envio aberto segue segurando
-    // a vaga e os arquivos dela (`occupied`), mas ela não aparece em
-    // andamento nem manda esperar por ela.
-    let running: BTreeMap<u64, u64> =
-        waves_in_progress(&log).into_iter().filter(|(n, _)| changes.iter().all(|one| one.wave != *n)).collect();
+    // A onda cuja volta ficou de fora — a que pede novo plano, ou a recusada
+    // por uma conferência dela — já voltou: o agente dela terminou, e ela
+    // espera o clique do usuário ou a volta regravada, não o agente. O envio
+    // aberto segue segurando a vaga e os arquivos dela (`occupied`), mas ela
+    // não aparece em andamento nem manda esperar por ela
+    // ([`waves_in_progress`]).
+    let running: BTreeMap<u64, u64> = waves_in_progress(&log);
     // A órfã segue ocupando a vaga dela até o reenvio, mais abaixo: quem
     // conta vaga livre soma as vivas e as órfãs, e só a viva entra no
     // "esperando" da resposta.
@@ -733,10 +734,13 @@ pub(super) fn run_entered_round(
     let (copies, not_copied) = open_copies(root, &spec, &log, &held_lock, &go, false, lang);
     warnings.extend(not_copied);
     let next: Vec<u64> = go.into_iter().filter(|wave| copies.contains_key(wave)).collect();
-    // O pedido de cada onda lista as outras em andamento, contando as que
-    // saem junto com ela nesta rodada, e traz a cópia dela e a escolha do
-    // orquestrador.
-    let flight = Flight { running: occupied.keys().chain(&next).copied().collect(), copies, choices };
+    // O pedido de cada onda lista as outras em andamento, contando as órfãs,
+    // que saem de novo nesta rodada, e as que saem junto com ela, e traz a
+    // cópia dela e a escolha do orquestrador. A onda cuja volta ficou de fora
+    // não está em andamento, como no gancho que monta o mesmo pedido.
+    let orphans = orphaned_waves(&log);
+    let away = running.keys().chain(orphans.keys()).chain(&next).copied().collect();
+    let flight = Flight { running: away, copies, choices };
     let built = prompts(root, &spec, &log, lang, &flight);
     let mut dispatched: Vec<Value> = Vec::new();
     // O código e o número do envio de cada onda em andamento — o número é o
@@ -870,7 +874,7 @@ pub(super) fn run_entered_round(
     } else if !running.is_empty() {
         let waves: Vec<String> = running.keys().map(u64::to_string).collect();
         format!("{} {report_back}", translate("round.waiting", lang).replace("{waves}", &waves.join(", ")))
-    } else if !stuck.is_empty() || !changes.is_empty() {
+    } else if !stuck.is_empty() || !held.is_empty() {
         String::new()
     } else if let Some(wave) = first_unfinished(&log, &running) {
         translate("round.missing", lang).replace("{wave}", &wave.to_string())
@@ -935,7 +939,7 @@ pub(super) fn run_entered_round(
     });
     let then = question
         .into_iter()
-        .chain(changes.iter().map(|one| one.refusal.message(lang)))
+        .chain(held.iter().map(|one| one.next_line(lang)))
         .chain(analysis)
         .chain(Some(then).filter(|t| !t.is_empty()))
         .collect::<Vec<_>>()

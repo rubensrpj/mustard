@@ -271,9 +271,10 @@ fn run_close(
     let raw = opts.report.as_deref().map(str::trim).filter(|r| !r.is_empty());
     let taken = crate::commands::flow::round::take_report(&opts.root, root, &spec, raw, &log, lang, caller)
         .map_err(CloseRefusal::Report)?;
-    // A onda que pede novo plano sem o clique do usuário ficou fora do commit
-    // e segura o fechamento, que depende de todas: as outras voltas já foram
-    // assumidas acima, e a recusa traz a pergunta que a decide.
+    // A volta que ficou fora do commit — a que pede novo plano sem o clique
+    // do usuário, ou a recusada por uma conferência dela — segura o
+    // fechamento, que depende de todas: as outras voltas já foram assumidas
+    // acima, e a recusa traz a pergunta que a decide ou o que falta à volta.
     if let Some(waiting) = taken.waiting.into_iter().next() {
         return Err(CloseRefusal::Report(waiting.refusal));
     }

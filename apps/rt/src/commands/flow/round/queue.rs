@@ -518,9 +518,16 @@ fn claude_still_here(log: &SpecLog, sent: u64) -> bool {
 }
 
 /// As ondas em andamento, cada uma com o número do pedido dela: as com pedido
-/// aberto ([`open_sends`]) cujo Claude Code ainda está aberto.
+/// aberto ([`open_sends`]) cujo Claude Code ainda está aberto e que ainda não
+/// voltaram ([`waves_returned`]). A onda que voltou e espera — o clique do
+/// usuário na mudança de plano, ou a volta regravada que uma conferência
+/// dela pediu — já tem o agente terminado: o envio aberto segue guardando a
+/// vaga, os arquivos e a cópia dela, mas ela não está em andamento para
+/// ninguém. A resposta da rodada, o bloco de retomada, a página e o pedido
+/// de cada onda leem o andamento daqui, e só daqui.
 pub(crate) fn waves_in_progress(log: &SpecLog) -> BTreeMap<u64, u64> {
-    open_sends(log).into_iter().filter(|(_, sent)| claude_still_here(log, *sent)).collect()
+    let returned = waves_returned(log);
+    open_sends(log).into_iter().filter(|(n, sent)| !returned.contains(n) && claude_still_here(log, *sent)).collect()
 }
 
 /// As ondas órfãs, cada uma com o número do pedido dela: as com pedido aberto
@@ -535,8 +542,8 @@ pub(crate) fn orphaned_waves(log: &SpecLog) -> BTreeMap<u64, u64> {
 
 /// As ondas que voltaram e esperam a rodada: a entrega que o agente gravou
 /// depois do envio que a despachou e que nenhuma rodada assumiu ainda — a
-/// que pede novo plano sem o clique do usuário, ou a que a junção segurou
-/// por conflito.
+/// que pede novo plano sem o clique do usuário, a que uma conferência da
+/// própria volta segurou, ou a que a junção segurou por conflito.
 fn waves_returned(log: &SpecLog) -> BTreeSet<u64> {
     log.unassumed_returns()
         .into_iter()

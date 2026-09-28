@@ -25,13 +25,13 @@ use serde_json::{json, Map, Value};
 use super::answer::RoundRefusal;
 use super::commit::{
     commit_draft, commit_message, ensure_after_wave, ensure_builds, ensure_criteria_proofs, format_round_files, git_lock,
-    head, join_copies, make_commit, real_changed_files, record_commit, refresh_map, round_repos, unknown_file,
-    write_joined, UNMADE_SHA,
+    head, join_copies, make_commit, record_commit, refresh_map, round_repos, unknown_file, write_joined, UNMADE_SHA,
 };
+use super::copy_check::check_against_copies;
 use super::agreed::{covered_codes, settle_agreed};
 use super::leftovers::{leftover_tasks, leftovers_of, Leftover};
 use super::queue::{backlog_wave, open_review, open_sends, waves_in_progress, ANALYSIS_LINE};
-use super::stops::{hold_waiting_changes, tasks_returned, undone_of, undone_returns, WaitingChange};
+use super::stops::{hold_waiting_changes, tasks_returned, undone_of, undone_returns, HeldReturn};
 use super::usage::{measure_usage, Caller, Usage};
 use crate::commands::review::qa_run::ProofFault;
 use crate::commands::spec_events::write::{record, RecordCheck};
@@ -122,9 +122,11 @@ pub(crate) struct Taken {
     pub commit: Option<Value>,
     /// As ondas que pausaram, pela linha `PAUSED`.
     pub paused: Vec<u64>,
-    /// As ondas que pedem novo plano e esperam o clique do usuário, fora do
-    /// commit: o aviso de cada uma já vai em `warnings`.
-    pub waiting: Vec<WaitingChange>,
+    /// As voltas que ficaram fora do commit, cada uma segurando só a onda
+    /// dela ([`HeldReturn`]): a que pede novo plano e espera o clique do
+    /// usuário, e a que uma conferência da própria volta recusou. O aviso de
+    /// cada uma já vai em `warnings`.
+    pub waiting: Vec<HeldReturn>,
 }
 
 /// Assume o que voltou de uma rodada: a volta que cada onda gravou na spec
@@ -140,9 +142,10 @@ pub(crate) struct Taken {
 /// recusa junta e grava tudo uma vez só, e o commit de outra onda nunca leva
 /// nada da recusada. A entrega que a junção segura por conflito fica de fora,
 /// e a resposta traz a recusa dela; só quando não há mais nada a assumir a
-/// recusa é a resposta. A volta que pede novo plano sem o clique do usuário
-/// também fica de fora, com o aviso dela, e nunca vira a resposta: ela segura
-/// só a própria onda. O consumo de cada onda assumida é medido nos
+/// recusa é a resposta. A volta que pede novo plano sem o clique do usuário,
+/// e a que uma conferência da própria volta recusa, também ficam de fora,
+/// cada uma com o aviso dela, e nunca viram a resposta: cada uma segura só a
+/// própria onda ([`HeldReturn`]). O consumo de cada onda assumida é medido nos
 /// arquivos de conversa da plataforma de quem chama (`caller`). A rodada e o
 /// fechamento assumem por aqui.
 pub(crate) fn take_report(
@@ -172,12 +175,14 @@ pub(crate) fn take_report_with_mine(
 ) -> Result<Taken, RoundRefusal> {
     let mut report = parse_report(raw.unwrap_or_default())?;
     let nothing = |report: &Report| report.waves.is_empty() && report.verdicts.is_empty() && report.usage.is_empty();
-    report.waves = returned_waves(log)?;
+    let (waves, refused) = returned_waves(log);
+    report.waves = waves;
     report.verdicts = returned_verdict(log);
     // Sem volta, sem veredito e sem consumo, não há o que juntar nem comitar,
     // e a rodada não espera a trava: a pausa reenvia essas ondas com o pedido
-    // de antes, mais adiante, em [`super::answer::run_round_with_mine`].
-    if nothing(&report) {
+    // de antes, mais adiante, em [`super::answer::run_round_with_mine`]. A
+    // volta recusada, mesmo sozinha, segue até o aviso dela.
+    if nothing(&report) && refused.is_empty() {
         return Ok(Taken::only_paused(report.paused));
     }
     // A volta mora na spec, e duas rodadas ao mesmo tempo leem a mesma: a
@@ -188,12 +193,13 @@ pub(crate) fn take_report_with_mine(
     let held_lock = git_lock(root)?;
     let path = store::spec_file(root, spec).map_err(RoundRefusal::Refused)?;
     let fresh = store::read(&path).map_err(RoundRefusal::Refused)?.unwrap_or_else(|| log.clone());
-    report.waves = returned_waves(&fresh)?;
+    let (waves, mut waiting) = returned_waves(&fresh);
+    report.waves = waves;
     report.verdicts = returned_verdict(&fresh);
-    let cut = match_usage(&fresh, &mut report)?;
+    let cut = match_usage(&fresh, &mut report, &waiting)?;
     // A onda que diz que o plano dela não funciona espera o clique do usuário
     // fora do commit, e só ela: as outras voltas seguem.
-    let waiting = hold_waiting_changes(&fresh, &mut report.waves);
+    waiting.extend(hold_waiting_changes(&fresh, &mut report.waves));
     if nothing(&report) {
         // A onda de lote cortada não entra no commit: as tarefas dela voltam
         // ao backlog soltas, sem a onda que as levou.
@@ -206,6 +212,7 @@ pub(crate) fn take_report_with_mine(
     let measured = report.waves.iter_mut().map(|w| (w.wave, &mut w.usage));
     measure_usage(&fresh, caller, measured.chain(report.usage.iter_mut().map(|(n, u)| (*n, u))));
     let mut taken = take_returns(start, root, spec, report, &fresh, lang, mine, held_lock, &cut)?;
+    waiting.append(&mut taken.waiting);
     taken.warnings.splice(0..0, waiting.iter().map(|one| one.warning(lang)));
     taken.waiting = waiting;
     Ok(taken)
@@ -236,49 +243,10 @@ fn take_returns(
     // Da leitura das voltas e do repositório à junção, ao commit e ao desfazer
     // quando o git recusa, a trava do passo do git fica presa, uma vez: outra
     // rodada ao mesmo tempo no mesmo checkout espera, e nunca junta sobre o
-    // que esta ainda não comitou nem põe a mudança dela no commit desta.
-    // A lista que a entrega cita vira só conferência: o que entra no commit é
-    // o que a cópia da onda mudou de fato, pelo `git status` dela — inclusive
-    // o arquivo que a entrega não citou. A divergência entre as duas vira
-    // aviso, com quantos arquivos mudaram, quantos a onda citou e quais
-    // ficaram de fora da citação.
-    let mut warnings: Vec<Value> = Vec::new();
-    for wave in &mut report.waves {
-        let Some(actual) = real_changed_files(root, log, wave.wave) else { continue };
-        // Cópia sem diff nenhum (comum nos testes, que escrevem direto na
-        // raiz do checkout em vez da cópia da onda) não conta como
-        // divergência nem apaga a lista declarada: sem nada de real para
-        // comparar, a conferência não tem o que dizer. É também a cópia da
-        // onda que só foi conferir: sem arquivo mudado, não há o que comitar.
-        if actual.is_empty() {
-            continue;
-        }
-        // A cópia mudou arquivo de verdade: a entrega precisa do resumo do
-        // commit, mesmo tendo voltado sem citar arquivo nenhum. É a única
-        // conferência da volta que depende da cópia, e por isso fica aqui, e
-        // não na gravação: o que a onda mexeu nunca entra no repositório
-        // principal sem título de commit, e a resposta pede que o agente
-        // grave a entrega de novo.
-        if wave.commit.is_none() {
-            return Err(RoundRefusal::ReturnNeedsCommit { wave: wave.wave });
-        }
-        let declared: BTreeSet<&str> = wave.files.iter().map(String::as_str).collect();
-        let actual_set: BTreeSet<&str> = actual.iter().map(String::as_str).collect();
-        if declared != actual_set {
-            let left_out: Vec<String> = actual_set.difference(&declared).map(|s| (*s).to_string()).collect();
-            warnings.push(json!({
-                "reason": "files-diverged",
-                "wave": wave.wave,
-                "hint": translate("round.files_diverged", lang)
-                    .replace("{wave}", &wave.wave.to_string())
-                    .replace("{changed}", &actual.len().to_string())
-                    .replace("{declared}", &declared.len().to_string())
-                    .replace("{missing}", &left_out.join(", ")),
-            }));
-        }
-        wave.files = actual;
-    }
-    unknown_file(root, log, &report.waves)?;
+    // que esta ainda não comitou nem põe a mudança dela no commit desta. Cada
+    // volta é conferida contra a cópia dela antes da junção: a recusada
+    // segura só a própria onda.
+    let (mut warnings, mut refused) = check_against_copies(root, log, &mut report.waves, lang);
     // A junção de cada cópia é decidida antes de qualquer gravação. A entrega
     // com um trecho que ela não resolve fica de fora, com o repositório
     // principal intacto para ela, e o resto do relatório segue.
@@ -351,13 +319,10 @@ fn take_returns(
         Some((title, body)) => Some((make_commit(root, &held_lock, &unit, (&title, &body), &repos, &joined)?, title)),
         None => None,
     };
-    // A entrega segurada se resolve no commit que já leva as outras.
+    // A entrega segurada se resolve no commit que já leva as outras: segura
+    // só a própria onda, como a volta recusada.
     let now = head(root);
-    for one in held {
-        let wave = one.wave;
-        let refusal = one.refusal(now.clone());
-        warnings.push(json!({ "reason": refusal.reason(), "wave": wave, "hint": refusal.message(lang) }));
-    }
+    refused.extend(held.into_iter().map(|one| HeldReturn { wave: one.wave, refusal: one.refusal(now.clone()) }));
     let (mut recorded, proofs) = record_reports(start, spec, checked).map_err(RoundRefusal::Refused)?;
     // Quem avisa que a tarefa não feita voltou ao backlog é a resposta da
     // rodada: a mudança aceita pode pedir uma decisão nova ou uma tarefa
@@ -423,7 +388,7 @@ fn take_returns(
         };
         warnings.push(json!({ "reason": reason, "hint": hint }));
     }
-    Ok(Taken { recorded, formatted: outcome.formatted, warnings, commit, paused: report.paused, waiting: Vec::new() })
+    Ok(Taken { recorded, formatted: outcome.formatted, warnings, commit, paused: report.paused, waiting: refused })
 }
 
 /// O envio que despachou a onda `wave` por último: o mais novo dela que não é
@@ -440,17 +405,26 @@ pub(super) fn dispatched_at(log: &SpecLog, wave: u64) -> Option<u64> {
 /// As voltas que a rodada assume agora, uma por onda: a última entrega que a
 /// onda gravou depois do envio que a despachou e que ninguém assumiu ainda,
 /// com todas as voltas dela desde esse envio. A volta de antes do envio —
-/// de um envio já superado por um reenvio — não conta.
-fn returned_waves(log: &SpecLog) -> Result<Vec<WaveReport>, RoundRefusal> {
+/// de um envio já superado por um reenvio — não conta. A volta que não se lê
+/// como a rodada a assume ([`wave_report_of`]) vem à parte, com a recusa
+/// dela: segura só a própria onda.
+fn returned_waves(log: &SpecLog) -> (Vec<WaveReport>, Vec<HeldReturn>) {
     let hidden = log.hidden();
     let mut waves = Vec::new();
+    let mut refused = Vec::new();
     for last in log.unassumed_returns().into_iter().filter(|e| e.event_type == "delivered") {
         let Some(wave) = last.wave() else { continue };
         let since = dispatched_at(log, wave).unwrap_or_default();
         if last.id <= since {
             continue;
         }
-        let mut report = wave_report_of(log, &last.fields)?;
+        let mut report = match wave_report_of(log, &last.fields) {
+            Ok(report) => report,
+            Err(refusal) => {
+                refused.push(HeldReturn { wave, refusal });
+                continue;
+            }
+        };
         report.returns = log
             .events
             .iter()
@@ -460,7 +434,7 @@ fn returned_waves(log: &SpecLog) -> Result<Vec<WaveReport>, RoundRefusal> {
             .collect();
         waves.push(report);
     }
-    Ok(waves)
+    (waves, refused)
 }
 
 /// O veredito que a rodada ou o fechamento assume agora: a última volta que o
@@ -715,15 +689,17 @@ fn spec_log(start: &Path, spec: &str) -> Result<(crate::commands::spec_events::P
 /// não entra no commit: com o Claude Code dela aberto, a rodada recusa e pede
 /// que o agente grave a entrega; com ele fechado, a onda de lote está
 /// cortada, e o número dela sai na lista devolvida. A linha de uma onda sem
-/// entrega nenhuma não se entende.
-fn match_usage(log: &SpecLog, report: &mut Report) -> Result<Vec<u64>, RoundRefusal> {
+/// entrega nenhuma não se entende. A onda com a volta recusada (`held`) já
+/// voltou: a linha dela fica sem uso, e o consumo é medido quando a volta
+/// regravada for assumida — nunca é tomada por cortada.
+fn match_usage(log: &SpecLog, report: &mut Report, held: &[HeldReturn]) -> Result<Vec<u64>, RoundRefusal> {
     let open = open_sends(log);
     let alive = waves_in_progress(log);
     let delivered = log.last_by_wave("delivered");
     let mut cut = Vec::new();
     let mut assumed = Vec::new();
     for (wave, usage) in std::mem::take(&mut report.usage) {
-        if report.waves.iter().any(|w| w.wave == wave) {
+        if report.waves.iter().any(|w| w.wave == wave) || held.iter().any(|one| one.wave == wave) {
             continue;
         }
         if alive.contains_key(&wave) {
@@ -1406,15 +1382,19 @@ mod tests {
         assert_eq!(recorded.fields.get("files").and_then(Value::as_array).map_or(0, Vec::len), 0, "{:?}", recorded.fields);
 
         // A cópia que mudou arquivo de verdade continua pedindo o título do
-        // commit, mesmo sem citar arquivo nenhum na entrega.
+        // commit, mesmo sem citar arquivo nenhum na entrega: a volta fica de
+        // fora, com o aviso, e segura só a onda dela.
         let copy = slot_of(root, 2);
         std::fs::write(copy.join("src/b.rs"), "fn um() {}\nfn dois() {}\n").unwrap();
         let hidden = json!({"wave": 2, "text": "Mexi no arquivo e não contei."});
         assert_eq!(returned(root, hidden)["ok"], json!(true));
-        let refused = round(root, "x", None);
-        assert_eq!(refused["reason"], json!("round-return-needs-commit"), "{refused}");
-        assert_eq!(delivered_count(root), 1, "nada foi gravado: {refused}");
-        assert_eq!(git_text(root, &["rev-parse", "HEAD"]), head_before, "nada foi comitado: {refused}");
+        let held = round(root, "x", None);
+        assert_eq!(held["ok"], json!(true), "{held}");
+        let warned = held["warnings"].as_array().into_iter().flatten().find(|w| w["wave"] == json!(2)).cloned();
+        assert_eq!(warned.map(|w| w["reason"].clone()), Some(json!("round-return-needs-commit")), "{held}");
+        assert_eq!(delivered_count(root), 1, "nada dela foi gravado: {held}");
+        assert_eq!(git_text(root, &["rev-parse", "HEAD"]), head_before, "nada foi comitado: {held}");
+        assert_eq!(std::fs::read_to_string(copy.join("src/b.rs")).unwrap(), "fn um() {}\nfn dois() {}\n", "a cópia fica");
     }
 
     /// Uma onda que volta com pedido de replanejamento e sem arquivo nenhum
@@ -2189,7 +2169,12 @@ mod tests {
             .filter(|w| w["reason"] != json!("usage-missing"))
             .collect();
         assert_eq!(json!(warned), json!([{"reason": "round-merge-conflict", "wave": 1, "hint": expected}]), "{out}");
-        assert_eq!(waves_in(&out, "running"), vec![1], "the held wave is still out: {out}");
+        // O agente da onda segurada já terminou: ela não está em andamento, e
+        // o próximo passo diz que só ela ficou de fora, com o que a leva ao
+        // commit.
+        assert_eq!(waves_in(&out, "running"), Vec::<u64>::new(), "the held wave came back: {out}");
+        let line = translate("round.held_return", Locale::PtBr).replace("{wave}", "1").replace("{hint}", &expected);
+        assert!(out["next"].as_str().unwrap_or_default().contains(&line), "{out}");
 
         git_at(&copy(1), &["checkout", "-q", "--merge", "--detach", &head]);
         std::fs::write(copy(1).join("src/a.rs"), "fn um() {}\n// principal\n// onda 1\n").unwrap();

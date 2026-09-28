@@ -790,6 +790,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              change noted when there was one. If the change alters a decision or what the task asks, \
              record the decision and rewrite the task before the next round."
         }
+        ("round.held_return", Locale::PtBr) => {
+            "A volta da onda {wave} ficou fora desta rodada, e só ela: o resto seguiu. {hint}"
+        }
+        ("round.held_return", Locale::EnUs) => {
+            "Wave {wave}'s return was left out of this round, and only it: the rest went on. {hint}"
+        }
         ("round.git_refused", Locale::PtBr) => {
             "O git recusou o commit da rodada: {detail}\nNada foi gravado. Corrija o que o git \
              apontou, ou peça ao agente que grave a entrega corrigida, e rode a rodada de novo."
@@ -1523,8 +1529,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            190,
-            0x6e56_e2ca_6040_d6ab,
+            191,
+            0x8e03_68b0_7826_4178,
         );
     }
 
@@ -1729,6 +1735,7 @@ mod tests {
             ("round.returned_change", &["{wave}", "{change}"][..]),
             ("round.leftover_joined", &["{wave}", "{title}", "{detail}"][..]),
             ("round.tasks_returned", &["{wave}", "{tasks}"][..]),
+            ("round.held_return", &["{wave}", "{hint}"][..]),
             ("round.git_refused", &["{detail}"][..]),
             ("round.next", &[][..]),
             ("round.next.copy_file", &["{path}"][..]),
