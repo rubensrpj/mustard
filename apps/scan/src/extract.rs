@@ -264,7 +264,7 @@ pub fn single_part_paths(lang: &str) -> bool {
 
 /// O nome que, trazido por um import, traz o último nome escrito antes da
 /// lista que o contém (`import_self` em languages.toml). `None` sem o campo.
-fn import_self(lang: &str) -> Option<&'static str> {
+pub(crate) fn import_self(lang: &str) -> Option<&'static str> {
     Some(text_field(LANG_IMPORT_SELF, lang)).filter(|name| !name.is_empty())
 }
 

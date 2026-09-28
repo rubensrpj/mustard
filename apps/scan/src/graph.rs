@@ -67,7 +67,7 @@ use crate::model::{CallSite, Decl, DeclAt, GraphStats, Module, NodeDegree, UseSi
 use crate::path_aliases::PathAliases;
 use mustard_core::domain::ast::{entry_file_names, is_entry_file};
 use petgraph::graph::{DiGraph, NodeIndex};
-use std::cell::RefCell;
+use std::cell::{OnceCell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 /// Catalog cap for `top_fan_in`: a bounded list (~a few KB of model) ordered
@@ -120,14 +120,17 @@ pub fn resolve_edges(modules: &[Module], projects: &Projects, aliases: &PathAlia
     for (src, m) in modules.iter().enumerate() {
         for imp in &m.imports {
             for nested in m.import_depths(imp, false) {
-                let targets = resolver.resolve_through(imp, m, nested);
-                let w = (1024 / targets.len().max(1) as u64).max(1);
-                for t in targets {
-                    if let Some(&dst) = pos.get(t.as_str())
-                        && dst != src {
-                            let e = edge_w.entry((src, dst)).or_insert(0);
-                            *e = (*e).max(w);
-                        }
+                // Cada ramo de um import em grupo pesa como o import que ele
+                // é sozinho: o grupo não espalha a evidência entre os ramos.
+                for targets in resolver.resolve_each(imp, m, nested) {
+                    let w = (1024 / targets.len().max(1) as u64).max(1);
+                    for t in targets {
+                        if let Some(&dst) = pos.get(t.as_str())
+                            && dst != src {
+                                let e = edge_w.entry((src, dst)).or_insert(0);
+                                *e = (*e).max(w);
+                            }
+                    }
                 }
             }
         }
@@ -829,8 +832,112 @@ struct Brought<'m> {
 /// Os arquivos do projeto que um import de `m` nomeia, escrito em qualquer
 /// profundidade e em qualquer trecho, inteiro quando nomeia um namespace.
 fn import_files(resolver: &Resolver, m: &Module, imp: &str) -> Vec<String> {
+    path_files_of(resolver, m, imp, imp)
+}
+
+/// Os arquivos que o caminho `path` nomeia, lido nas profundidades em que o
+/// import `imp` de `m` é escrito.
+fn path_files_of(resolver: &Resolver, m: &Module, imp: &str, path: &str) -> Vec<String> {
     let depths: BTreeSet<usize> = m.import_depths(imp, false).union(&m.import_depths(imp, true)).copied().collect();
-    depths.into_iter().flat_map(|nested| resolver.resolve(imp, m, Reach::Whole, nested)).collect()
+    depths.into_iter().flat_map(|nested| resolver.resolve(path, m, Reach::Whole, nested)).collect()
+}
+
+/// Os arquivos que um import nomeia: os do import inteiro e, no import em
+/// grupo, os de cada nome que um ramo traz.
+struct ImportFiles {
+    all: Vec<String>,
+    by_name: HashMap<String, Vec<String>>,
+}
+
+impl ImportFiles {
+    /// Os arquivos do import `imp` de `m`. No import em grupo, cada ramo se
+    /// resolve uma vez só, e o import inteiro é a soma dos ramos.
+    fn of(resolver: &Resolver, m: &Module, imp: &str) -> Self {
+        let Some(branches) = group_branches(imp, &m.language) else {
+            return Self { all: import_files(resolver, m, imp), by_name: HashMap::new() };
+        };
+        let mut all: BTreeSet<String> = BTreeSet::new();
+        let mut by_name: HashMap<String, BTreeSet<String>> = HashMap::new();
+        for branch in branches {
+            let files = path_files_of(resolver, m, imp, &branch.path);
+            all.extend(files.iter().cloned());
+            by_name.entry(branch.name).or_default().extend(files);
+        }
+        let by_name = by_name.into_iter().map(|(name, files)| (name, files.into_iter().collect())).collect();
+        Self { all: all.into_iter().collect(), by_name }
+    }
+
+    /// Os arquivos de onde o import pode trazer `name`: no import em grupo,
+    /// só os do ramo que traz o nome; no comum, ou quando nenhum ramo o traz,
+    /// os do import inteiro.
+    fn of_name(&self, name: &str) -> &[String] {
+        self.by_name.get(name).map_or(self.all.as_slice(), Vec::as_slice)
+    }
+}
+
+/// Um ramo de um import em grupo: o caminho inteiro, como seria escrito
+/// sozinho, e o nome que ele traz ao arquivo.
+#[derive(Debug, PartialEq, Eq)]
+struct Branch {
+    path: String,
+    name: String,
+}
+
+/// Os ramos de um import que junta vários caminhos num grupo entre chaves,
+/// cada um com a parte de fora na frente (`a::{b, c::d}` é `a::b` e
+/// `a::c::d`), abertos também os grupos de dentro. Cada ramo traz a última
+/// palavra escrita nele: o fim do caminho, ou o nome novo escrito depois dele
+/// (`b as c` traz `c`). O nome que a língua escreve no grupo pelo próprio
+/// caminho de fora (`import_self` no registro: `self` em `a::{self}`) é esse
+/// caminho, e traz a última parte dele. `None` quando o import não tem grupo.
+fn group_branches(imp: &str, lang: &str) -> Option<Vec<Branch>> {
+    let open = imp.find('{')?;
+    let mut branches = Vec::new();
+    open_group(&imp[..open], &imp[open + 1..], crate::extract::import_self(lang), &mut branches);
+    Some(branches)
+}
+
+/// Acrescenta a `out` os ramos do grupo escrito em `rest` (o texto logo
+/// depois da chave que o abre), cada um com `prefix` na frente.
+fn open_group(prefix: &str, rest: &str, own: Option<&str>, out: &mut Vec<Branch>) {
+    let is_word = |c: char| c.is_alphanumeric() || c == '_';
+    // A última parte do caminho, vazia quando ele não termina num nome (`*`).
+    let last_word = |text: &str| text.rsplit(|c: char| !is_word(c)).next().unwrap_or_default().to_string();
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    let mut parts: Vec<&str> = Vec::new();
+    for (at, c) in rest.char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' if depth == 0 => {
+                parts.push(&rest[start..at]);
+                break;
+            }
+            '}' => depth -= 1,
+            ',' if depth == 0 => {
+                parts.push(&rest[start..at]);
+                start = at + 1;
+            }
+            _ => {}
+        }
+    }
+    for part in parts.into_iter().map(str::trim).filter(|part| !part.is_empty()) {
+        if let Some(inner) = part.find('{') {
+            let head: String = part[..inner].split_whitespace().collect();
+            open_group(&format!("{prefix}{head}"), &part[inner + 1..], own, out);
+            continue;
+        }
+        let words: Vec<&str> = part.split_whitespace().collect();
+        let (written, alias) = (words[0], words.last().filter(|_| words.len() > 1).copied());
+        if own == Some(written) {
+            let path = prefix.trim_end_matches(|c: char| !is_word(c)).to_string();
+            let name = alias.map_or_else(|| last_word(&path), str::to_string);
+            out.push(Branch { path, name });
+        } else {
+            let name = alias.map_or_else(|| last_word(written), str::to_string);
+            out.push(Branch { path: format!("{}{written}", prefix.trim_start()), name });
+        }
+    }
 }
 
 /// Os nomes trazidos pelos imports de `m`, com os que vêm só de fora do
@@ -843,14 +950,15 @@ fn brought_names<'m>(resolver: &Resolver, m: &'m Module) -> Brought<'m> {
     for (imp, names) in &m.brought {
         let names = names.iter().map(String::as_str);
         brought.all.extend(names.clone());
-        let files = import_files(resolver, m, imp);
-        if files.is_empty() && resolver.outside(imp, m) {
+        let files = ImportFiles::of(resolver, m, imp);
+        if files.all.is_empty() && resolver.outside(imp, m) {
             brought.outside.extend(names);
             continue;
         }
         for name in names {
             inside.insert(name);
-            let from: HashSet<String> = files.iter().flat_map(|file| resolver.bringing(m, imp, file, name)).collect();
+            let from: HashSet<String> =
+                files.of_name(name).iter().flat_map(|file| resolver.bringing(m, imp, file, name)).collect();
             if !from.iter().any(|file| resolver.declares(file, name)) {
                 brought.objects.insert(name);
             }
@@ -890,12 +998,18 @@ fn passing_files<'a>(resolver: &Resolver<'a>, m: &Module) -> Vec<&'a Module> {
         .collect()
 }
 
-/// Os arquivos do projeto que os imports com `*` de `m` nomeiam.
+/// Os arquivos do projeto que os imports com `*` de `m` nomeiam: o escrito
+/// com `*` no fim, e o que não traz nome nenhum e repassa tudo o que o
+/// arquivo nomeado oferece — o import com `*` da língua em que todo import é
+/// repasse (`from x import *`), que fica só com o caminho do arquivo.
 fn glob_files(resolver: &Resolver, m: &Module) -> HashSet<String> {
+    let takes_all = |imp: &str| {
+        m.brought.get(imp).is_none_or(Vec::is_empty) && m.reexports.get(imp).is_some_and(|offered| offered.contains_key("*"))
+    };
     m.imports
         .iter()
         .chain(&m.test_imports)
-        .filter(|imp| imp.trim_end().ends_with('*'))
+        .filter(|imp| imp.trim_end().ends_with('*') || takes_all(imp))
         .flat_map(|imp| import_files(resolver, m, imp))
         .collect()
 }
@@ -987,29 +1101,35 @@ pub(crate) fn project_dir<'a>(path: &'a str, manifests: &'a [crate::model::Manif
 /// Os arquivos do projeto de onde vem cada nome pedido, pela posição em
 /// `modules` do arquivo que o usa e pelo nome: os que o import que traz o
 /// nome a esse arquivo ([`Module::brought`]) nomeia, resolvido como todo
-/// import. Sem pedido, o resolvedor nem se monta.
+/// import. Cada caminho de módulo pedido (`written`), escrito como texto no
+/// arquivo, dá os arquivos que ele nomeia lido como um import desse arquivo.
+/// Sem pedido, o resolvedor nem se monta.
 pub(crate) fn files_bringing(
     modules: &[Module],
     projects: &Projects,
     aliases: &PathAliases,
     asks: &[(usize, String)],
+    written: &[(usize, String)],
 ) -> BTreeMap<(usize, String), Vec<String>> {
-    if asks.is_empty() {
+    if asks.is_empty() && written.is_empty() {
         return BTreeMap::new();
     }
     let resolver = Resolver::new(modules, projects, aliases);
-    asks.iter()
-        .map(|(at, name)| {
-            let m = &modules[*at];
-            let files: BTreeSet<String> = m
-                .brought
-                .iter()
-                .filter(|(_, names)| names.contains(name))
-                .flat_map(|(imp, _)| import_files(&resolver, m, imp))
-                .collect();
-            ((*at, name.clone()), files.into_iter().collect())
-        })
-        .collect()
+    let mut found: BTreeMap<(usize, String), BTreeSet<String>> = BTreeMap::new();
+    for (at, name) in asks {
+        let m = &modules[*at];
+        let files = m
+            .brought
+            .iter()
+            .filter(|(_, names)| names.contains(name))
+            .flat_map(|(imp, _)| ImportFiles::of(&resolver, m, imp).of_name(name).to_vec());
+        found.entry((*at, name.clone())).or_default().extend(files);
+    }
+    for (at, path) in written {
+        let files = resolver.resolve(path, &modules[*at], Reach::Whole, 0);
+        found.entry((*at, path.clone())).or_default().extend(files);
+    }
+    found.into_iter().map(|(ask, files)| (ask, files.into_iter().collect())).collect()
 }
 
 /// The folder of the manifest nearest above `path`: the deepest folder that
@@ -1393,6 +1513,9 @@ struct Resolver<'a> {
     /// Os arquivos que declaram cada nome pedido a um arquivo que repassa,
     /// uma vez seguidos os repasses a partir dele.
     through_hits: RefCell<HashMap<(String, String), Vec<String>>>,
+    /// Os arquivos de teste do projeto, lidos na primeira vez que um import
+    /// de pasta ou de namespace inteiro precisa deles.
+    tests: OnceCell<HashSet<&'a str>>,
 }
 
 impl<'a> Resolver<'a> {
@@ -1437,6 +1560,7 @@ impl<'a> Resolver<'a> {
             aliases,
             package_hits: RefCell::new(HashMap::new()),
             through_hits: RefCell::new(HashMap::new()),
+            tests: OnceCell::new(),
         }
     }
 
@@ -1449,16 +1573,38 @@ impl<'a> Resolver<'a> {
     /// arestas, o `deps` e, por ele, a ligação das declarações veem o nome
     /// no arquivo que o define.
     fn resolve_through(&self, imp: &str, importer: &Module, nested: usize) -> Vec<String> {
-        let targets = self.resolve(imp, importer, Reach::Used, nested);
-        let names = importer.brought.get(imp).map(Vec::as_slice).unwrap_or_default();
-        if names.is_empty() {
-            return targets;
-        }
-        let out: BTreeSet<String> = targets
-            .iter()
-            .flat_map(|target| names.iter().flat_map(move |name| self.bringing(importer, imp, target, name)))
-            .collect();
+        let out: BTreeSet<String> = self.resolve_each(imp, importer, nested).into_iter().flatten().collect();
         out.into_iter().collect()
+    }
+
+    /// Os alvos de [`Resolver::resolve_through`], uma lista por import escrito:
+    /// uma só no import comum, uma por ramo no import em grupo
+    /// ([`group_branches`]). Cada ramo se lê como o import que seria sozinho,
+    /// com os nomes do grupo que ele traz; o ramo que não traz nome nenhum
+    /// (`*`) liga ao que o caminho dele nomeia.
+    fn resolve_each(&self, imp: &str, importer: &Module, nested: usize) -> Vec<Vec<String>> {
+        let names = importer.brought.get(imp).map(Vec::as_slice).unwrap_or_default();
+        let through = |path: &str, names: &[&str]| -> Vec<String> {
+            let targets = self.resolve(path, importer, Reach::Used, nested);
+            if names.is_empty() {
+                return targets;
+            }
+            let out: BTreeSet<String> = targets
+                .iter()
+                .flat_map(|target| names.iter().flat_map(move |name| self.bringing(importer, imp, target, name)))
+                .collect();
+            out.into_iter().collect()
+        };
+        match group_branches(imp, &importer.language) {
+            Some(branches) => branches
+                .iter()
+                .map(|branch| {
+                    let own: Vec<&str> = names.iter().map(String::as_str).filter(|name| *name == branch.name).collect();
+                    through(&branch.path, &own)
+                })
+                .collect(),
+            None => vec![through(imp, &names.iter().map(String::as_str).collect::<Vec<_>>())],
+        }
     }
 
     /// Os arquivos de onde vem `name`, que o import `imp` de `importer` traz
@@ -1562,6 +1708,12 @@ impl<'a> Resolver<'a> {
     fn resolve(&self, imp: &str, importer: &Module, reach: Reach, nested: usize) -> Vec<String> {
         let from = importer.path.as_str();
         let lang = importer.language.as_str();
+        // O import em grupo nomeia o que cada ramo dele nomeia sozinho.
+        if let Some(branches) = group_branches(imp, lang) {
+            let hits: BTreeSet<String> =
+                branches.iter().flat_map(|branch| self.resolve(&branch.path, importer, reach, nested)).collect();
+            return hits.into_iter().collect();
+        }
         let (stem_index, dir_index, module_paths) = (&self.stem_index, &self.dir_index, &self.module_paths);
         // O import relativo escrito com o separador da língua nomeia um lugar
         // a partir da pasta de quem importa, e nenhum outro caminho responde
@@ -1622,7 +1774,7 @@ impl<'a> Resolver<'a> {
         if let Some((dir, rest)) = self.projects.module_of(imp)
             && let Some(v) = dir_index.get(&join_dir(dir, rest))
         {
-            return v.clone();
+            return self.without_tests(v, importer);
         }
         // 2b) Apelido de pasta: um import não relativo lido pelos apelidos e
         //     pela pasta base da configuração mais próxima de quem importa. Só
@@ -1640,8 +1792,12 @@ impl<'a> Resolver<'a> {
         //     como se tivesse o apelido do próprio módulo na frente: na pasta
         //     dos módulos de quem importa, tirando do fim quantas partes for
         //     preciso até achar arquivo. Só fora dos módulos escritos no
-        //     arquivo, cujos filhos são outros.
+        //     arquivo, cujos filhos são outros, e só no caminho de módulo: o
+        //     caminho de arquivo (com a extensão da língua ou começado por
+        //     ponto) se lê pela pasta de quem importa, logo abaixo.
         if nested == 0
+            && !file_path
+            && !cleaned.starts_with('.')
             && let Some(hits) = self.child_module(&canon, importer)
         {
             return hits;
@@ -1844,7 +2000,7 @@ impl<'a> Resolver<'a> {
     /// história; com [`Reach::Whole`], o namespace inteiro.
     fn narrow(&self, bucket: &[String], importer: &Module, reach: Reach) -> Vec<String> {
         if reach == Reach::Whole {
-            return bucket.to_vec();
+            return self.without_tests(bucket, importer);
         }
         let called: HashSet<&str> = importer.calls.iter().map(|c| c.name.as_str()).collect();
         let cited: HashSet<&str> = importer.cites.iter().map(|c| c.name.as_str()).collect();
@@ -1863,6 +2019,20 @@ impl<'a> Resolver<'a> {
             })
             .cloned()
             .collect()
+    }
+
+    /// Os arquivos de `found`, uma pasta ou um namespace inteiro que um import
+    /// de `importer` nomeia, sem os arquivos de teste quando quem importa não
+    /// é teste: o código não importa o teste que mora ao lado dele. O teste
+    /// que importa a pasta segue vendo todos.
+    fn without_tests(&self, found: &[String], importer: &Module) -> Vec<String> {
+        let tests = self.tests.get_or_init(|| {
+            self.by_path.keys().copied().filter(|path| mustard_core::domain::ast::is_test_path(path)).collect()
+        });
+        if tests.contains(importer.path.as_str()) {
+            return found.to_vec();
+        }
+        found.iter().filter(|path| !tests.contains(path.as_str())).cloned().collect()
     }
 
     /// Os arquivos que um caminho sem apelido cita quando a primeira parte

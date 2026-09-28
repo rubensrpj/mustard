@@ -400,8 +400,9 @@ fn check_entry_file_languages(crate_root: &Path, languages: &[&str]) {
 /// A tabela das regras de rota: uma por `routes/<framework>.toml`, em ordem de
 /// nome, com a consulta dos `.scm` de `routes/<framework>/`. O nome do
 /// arquivo é o do framework. Cada língua da regra é uma do registro
-/// (`languages`), e cada método da tabela é um nome HTTP em maiúsculas ou `*`,
-/// que vale qualquer um; o erro para a compilação.
+/// (`languages`), e cada método da tabela, como o método padrão, é um nome
+/// HTTP em maiúsculas ou `*`, que vale qualquer um; a regra sem tabela de
+/// métodos tem o padrão. O erro para a compilação.
 fn route_rules(crate_root: &Path, languages: &[&str]) -> String {
     let root = crate_root.join("routes");
     let mut files: Vec<_> = fs::read_dir(&root)
@@ -458,21 +459,42 @@ fn route_rules(crate_root: &Path, languages: &[&str]) -> String {
         };
         let imports = list("imports", !global);
         assert!(!global || imports.is_empty(), "routes/{framework}.toml: a `global` rule has no `imports`");
-        let methods: Vec<(String, String)> = tbl
-            .get("methods")
-            .and_then(|v| v.as_table())
-            .unwrap_or_else(|| panic!("routes/{framework}.toml must declare a [methods] table"))
-            .iter()
-            .map(|(written, method)| {
-                let method = method.as_str().unwrap_or_else(|| panic!("routes/{framework}.toml: method `{written}` is a string"));
+        let http = |method: &str| method == "*" || (!method.is_empty() && method.chars().all(|c| c.is_ascii_uppercase()));
+        // O método da rota em que a consulta não captura método nenhum. A
+        // regra sem ele precisa da tabela `methods`, de onde toda rota dela
+        // tira o método.
+        let default_method = text("default_method");
+        assert!(
+            default_method.is_empty() || http(&default_method),
+            "routes/{framework}.toml: `default_method` must be an uppercase HTTP name or `*`, not `{default_method}`"
+        );
+        let methods: Vec<(String, String)> = match tbl.get("methods") {
+            None => {
                 assert!(
-                    method == "*" || (!method.is_empty() && method.chars().all(|c| c.is_ascii_uppercase())),
-                    "routes/{framework}.toml: method `{written}` must be an uppercase HTTP name or `*`, not `{method}`"
+                    !default_method.is_empty(),
+                    "routes/{framework}.toml must declare a [methods] table or a `default_method`"
                 );
-                (written.clone(), method.to_string())
-            })
-            .collect();
-        assert!(!methods.is_empty(), "routes/{framework}.toml: [methods] must name at least one method");
+                Vec::new()
+            }
+            Some(value) => value
+                .as_table()
+                .unwrap_or_else(|| panic!("routes/{framework}.toml: `methods` must be a table"))
+                .iter()
+                .map(|(written, method)| {
+                    let method =
+                        method.as_str().unwrap_or_else(|| panic!("routes/{framework}.toml: method `{written}` is a string"));
+                    assert!(
+                        http(method),
+                        "routes/{framework}.toml: method `{written}` must be an uppercase HTTP name or `*`, not `{method}`"
+                    );
+                    (written.clone(), method.to_string())
+                })
+                .collect(),
+        };
+        assert!(
+            !methods.is_empty() || !default_method.is_empty(),
+            "routes/{framework}.toml: [methods] must name at least one method"
+        );
         let wrappers: Vec<(String, String)> = tbl.get("param_wrappers").map_or_else(Vec::new, |v| {
             v.as_array()
                 .unwrap_or_else(|| panic!("routes/{framework}.toml: `param_wrappers` must be an array"))
@@ -502,7 +524,7 @@ fn route_rules(crate_root: &Path, languages: &[&str]) -> String {
              manifest_dependencies: &[{}], query: {query:?}, \
              methods: &[{}], param_prefixes: &[{}], param_wrappers: &[{}], reset_marks: &[{}], \
              path_starts: &[{}], exclude_wildcards: &[{}], class_marker: {class_marker:?}, \
-             class_suffix: {class_suffix:?} }},",
+             class_suffix: {class_suffix:?}, default_method: {default_method:?}, path_trims: &[{}] }},",
             quoted_list(&rule_languages),
             quoted_list(&imports),
             quoted_list(&list("manifest_dependencies", false)),
@@ -512,6 +534,7 @@ fn route_rules(crate_root: &Path, languages: &[&str]) -> String {
             quoted_list(&list("reset_marks", false)),
             quoted_list(&list("path_starts", false)),
             quoted_list(&list("exclude_wildcards", false)),
+            quoted_list(&list("path_trims", false)),
         )
         .expect("the generated table is a String, which never fails to write");
     }

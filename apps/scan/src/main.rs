@@ -473,7 +473,8 @@ fn analyze(root: &Path, previous: Option<&ProjectModel>) -> Result<Analysis> {
     // aqui, depois do grafo e das ligações, a partir do que cada arquivo
     // guarda, em toda passada.
     let asked = routes::brought_names(&modules);
-    let brought = graph::files_bringing(&modules, &projects, &aliases, &asked);
+    let written = routes::module_paths(&modules);
+    let brought = graph::files_bringing(&modules, &projects, &aliases, &asked, &written);
     routes::across_files(&mut modules, &ing.manifests, &brought);
     // Cada chamada da tela liga à rota que ela alcança, já com todos os
     // prefixos, e à função que a atende.

@@ -12,8 +12,13 @@
 //!   leva ao método HTTP; o nome fora da tabela não é rota.
 //! - `route.method.grouped`: o mesmo, para o método que só é rota dentro de um
 //!   `route.group`, de quem ele toma o caminho.
+//! - `route.method.text`: o método escrito como texto (`"POST"`), que vale
+//!   sem as aspas, em maiúsculas; cada texto é uma rota.
 //! - `route.path`: o literal do caminho, no match do método ou do grupo. A
-//!   rota sem ele fica no caminho dos prefixos.
+//!   rota sem ele fica no caminho dos prefixos. Na regra com método padrão
+//!   (`default_method`), o match que captura o caminho sem método é uma rota
+//!   desse método, a menos que outro match do mesmo caminho escrito diga o
+//!   método dele.
 //! - `route.handler`: o que atende a rota. Sem ele, quem atende é a declaração
 //!   mais interna que contém a linha do método.
 //! - `route.receiver`: o objeto em que a rota se registra; no match de
@@ -32,6 +37,10 @@
 //! - `route.module`: o nome que recebe um módulo inteiro. Montado, ele leva o
 //!   prefixo a todas as rotas do arquivo de onde vem, e não só às
 //!   registradas num objeto com o nome dele.
+//! - `route.target.module`: o alvo de um prefixo escrito como texto que
+//!   nomeia um módulo (`include('loja.urls')`). Ele se lê como import do
+//!   arquivo que o escreve, e o prefixo vale para todas as rotas do arquivo
+//!   que ele nomeia.
 //! - `route.prefix.global`: o literal do prefixo de todas as rotas do
 //!   framework no projeto do arquivo que o escreve.
 //! - `route.exclude`: o caminho de uma rota que o prefixo global do mesmo
@@ -129,6 +138,11 @@ pub(crate) struct RawRouteRule {
     pub exclude_wildcards: &'static [&'static str],
     pub class_marker: &'static str,
     pub class_suffix: &'static str,
+    /// O método da rota em que a consulta não captura método nenhum; vazio
+    /// quando toda rota da regra captura o dela.
+    pub default_method: &'static str,
+    /// As marcas que saem das pontas do caminho escrito antes de tudo.
+    pub path_trims: &'static [&'static str],
 }
 
 // Traz `ROUTE_RULES`, gerada pelo `build.rs` dos arquivos de rotas.
@@ -139,6 +153,7 @@ include!(concat!(env!("OUT_DIR"), "/routes_generated.rs"));
 enum Role {
     Method,
     GroupedMethod,
+    MethodText,
     Path,
     Handler,
     Receiver,
@@ -147,6 +162,7 @@ enum Role {
     Scope,
     Class,
     Target,
+    TargetModule,
     Module,
     GlobalPrefix,
     Exclude,
@@ -192,6 +208,7 @@ fn role(capture: &str) -> Role {
     match capture {
         "route.method" => Role::Method,
         "route.method.grouped" => Role::GroupedMethod,
+        "route.method.text" => Role::MethodText,
         "route.path" => Role::Path,
         "route.handler" => Role::Handler,
         "route.receiver" => Role::Receiver,
@@ -200,6 +217,7 @@ fn role(capture: &str) -> Role {
         "route.scope" => Role::Scope,
         "route.class" => Role::Class,
         "route.target" => Role::Target,
+        "route.target.module" => Role::TargetModule,
         "route.module" => Role::Module,
         "route.prefix.global" => Role::GlobalPrefix,
         "route.exclude" => Role::Exclude,
@@ -333,6 +351,8 @@ pub(crate) fn find(rules: &[RouteRule], root: Node, bytes: &[u8], source: &Sourc
 struct Captured<'t> {
     method: Option<Node<'t>>,
     grouped: bool,
+    /// O método foi escrito como texto, e não pelo nome da tabela.
+    method_text: bool,
     path: Option<Node<'t>>,
     handler: Option<Node<'t>>,
     receiver: Option<Node<'t>>,
@@ -341,6 +361,7 @@ struct Captured<'t> {
     scope: Option<Node<'t>>,
     class: Option<Node<'t>>,
     target: Option<Node<'t>>,
+    target_module: Option<Node<'t>>,
     module: Option<Node<'t>>,
     global: Option<Node<'t>>,
     exclude: Option<Node<'t>>,
@@ -357,12 +378,15 @@ struct Captured<'t> {
 }
 
 /// Um prefixo e a quem ele vale: às rotas dentro do trecho `scope`, ou às do
-/// nome `target`, escrito na linha `line`.
+/// nome `target`, escrito na linha `line`. Com `module_path`, o alvo é o
+/// caminho de um módulo escrito como texto, que não é nome de nada no
+/// arquivo.
 struct Prefix {
     value: String,
     scope: Option<(usize, usize)>,
     class: Option<String>,
     target: Option<String>,
+    module_path: bool,
     line: usize,
 }
 
@@ -441,8 +465,10 @@ impl<'t> Groups<'t> {
     /// O grupo que é o valor escrito em `node`. O valor que começa pela
     /// chamada que faz um grupo — a mais de fora delas, quando uma cadeia
     /// tem várias — é esse grupo, somado ao do objeto dela; o nome é o valor
-    /// da variável que o guarda, escrita antes na mesma declaração, ou o
-    /// parâmetro da declaração em que está. `None` para o que não é grupo.
+    /// da variável que o guarda, escrita antes na mesma declaração, o
+    /// parâmetro da declaração em que está ou, sem nenhum dos dois, a
+    /// variável guardada antes no topo do arquivo. `None` para o que não é
+    /// grupo.
     fn of(&self, node: Node<'t>, bytes: &[u8], declarations: &[Decl], depth: usize) -> Option<Group> {
         if depth > MAX_GROUP_DEPTH || self.is_empty() {
             return None;
@@ -457,20 +483,21 @@ impl<'t> Groups<'t> {
         }
         let name = node.utf8_text(bytes).ok().filter(|text| is_name(text))?;
         let decl = enclosing(declarations, node.start_position().row + 1);
-        let binding = self
-            .bindings
-            .iter()
-            .filter(|b| {
-                b.name == name
-                    && b.value.start_byte() < start
-                    && enclosing(declarations, b.value.start_position().row + 1) == decl
-            })
-            .max_by_key(|b| b.value.start_byte());
-        if let Some(binding) = binding {
+        let held = |b: &Binding| enclosing(declarations, b.value.start_position().row + 1);
+        let before = self.bindings.iter().filter(|b| b.name == name && b.value.start_byte() < start);
+        if let Some(binding) = before.clone().filter(|b| held(b) == decl).max_by_key(|b| b.value.start_byte()) {
             return self.of(binding.value, bytes, declarations, depth + 1);
         }
-        let param = self.params.iter().find(|p| p.name == name && Some(p.decl) == decl)?;
-        Some(Group { pieces: Vec::new(), open: Some((param.decl, param.position)) })
+        if let Some(param) = self.params.iter().find(|p| p.name == name && Some(p.decl) == decl) {
+            return Some(Group { pieces: Vec::new(), open: Some((param.decl, param.position)) });
+        }
+        // A variável do topo do arquivo — fora de toda declaração, ou que é
+        // ela mesma a declaração que a guarda — vale também dentro das
+        // declarações escritas depois dela: a rota da função decorada, cujo
+        // decorador é da declaração da função, vê o grupo guardado no topo.
+        let top = |b: &&Binding| held(b).is_none_or(|at| declarations[at].name == b.name);
+        let binding = before.filter(top).max_by_key(|b| b.value.start_byte())?;
+        self.of(binding.value, bytes, declarations, depth + 1)
     }
 }
 
@@ -542,6 +569,31 @@ impl RouteRule {
         self.raw.methods.iter().find(|(name, _)| *name == written).map(|(_, method)| *method)
     }
 
+    /// O método HTTP da rota de um match: o do nome escrito, pela tabela
+    /// `methods`; o do texto escrito (`"post"`), sem as aspas e em
+    /// maiúsculas; sem método capturado, o padrão da regra. `None` para o
+    /// nome fora da tabela e o texto que não é nome de método.
+    fn stated_method(&self, here: &Captured, bytes: &[u8]) -> Option<String> {
+        let Some(node) = here.method else {
+            return (!self.raw.default_method.is_empty()).then(|| self.raw.default_method.to_string());
+        };
+        let written = node.utf8_text(bytes).unwrap_or_default();
+        if here.method_text {
+            return Some(literal_value(written)).filter(|m| is_method_name(m)).map(str::to_uppercase);
+        }
+        self.method(written).map(str::to_string)
+    }
+
+    /// O caminho escrito sem as marcas `path_trims` das pontas.
+    fn trimmed<'p>(&self, path: &'p str) -> &'p str {
+        let mut rest = path;
+        while let Some(mark) = self.raw.path_trims.iter().find(|mark| rest.starts_with(**mark) || rest.ends_with(**mark)) {
+            rest = rest.strip_prefix(mark).unwrap_or(rest);
+            rest = rest.strip_suffix(mark).unwrap_or(rest);
+        }
+        rest
+    }
+
     /// O método HTTP do nome, sem olhar maiúsculas e minúsculas: o nome da
     /// exclusão (`RequestMethod.GET`) não se escreve como o do decorador.
     fn method_ignoring_case(&self, written: &str) -> Option<&'static str> {
@@ -558,7 +610,7 @@ impl RouteRule {
         skip: &BTreeSet<(usize, usize)>,
     ) -> (Vec<Route>, RouteLinks) {
         let text = |node: Node| node.utf8_text(bytes).unwrap_or_default().to_string();
-        let literal = |node: Node| literal_value(&text(node)).to_string();
+        let literal = |node: Node| self.trimmed(literal_value(&text(node))).to_string();
         let span = |node: Node| (node.start_byte(), node.end_byte());
         let skipped = |node: Node| {
             let byte = node.start_byte();
@@ -584,6 +636,7 @@ impl RouteRule {
                 match compiled.roles[cap.index as usize] {
                     Role::Method => here.method = node,
                     Role::GroupedMethod => (here.method, here.grouped) = (node, true),
+                    Role::MethodText => (here.method, here.method_text) = (node, true),
                     Role::Path => here.path = node,
                     Role::Handler => here.handler = node,
                     Role::Receiver => here.receiver = node,
@@ -592,6 +645,7 @@ impl RouteRule {
                     Role::Scope => here.scope = node,
                     Role::Class => here.class = node,
                     Role::Target => here.target = node,
+                    Role::TargetModule => here.target_module = node,
                     Role::Module => here.module = node,
                     Role::GlobalPrefix => here.global = node,
                     Role::Exclude => here.exclude = node,
@@ -614,6 +668,8 @@ impl RouteRule {
                 found.push(here);
             } else if let (Some(group), Some(path)) = (here.group, here.path) {
                 groups.push((span(group), literal(path)));
+            } else if here.path.is_some() && !self.raw.default_method.is_empty() {
+                found.push(here);
             } else if let (Some(nest), Some(prefix)) = (here.nest, here.prefix) {
                 file_groups.nests.push(Nest { span: span(nest), prefix: literal(prefix), object: here.receiver });
             } else if let Some(global) = here.global.filter(|node| !skipped(*node)) {
@@ -624,15 +680,18 @@ impl RouteRule {
                     item.method = here.exclude_method.map(text).or(item.method.take());
                 }
             } else if let Some(prefix) = here.prefix {
-                if here.target.is_some_and(skipped) {
+                let target = here.target.or(here.target_module);
+                if target.is_some_and(skipped) {
                     continue;
                 }
+                let module_path = here.target_module.map(|node| literal_value(&text(node)).to_string());
                 prefixes.push(Prefix {
                     value: literal(prefix),
                     scope: here.scope.map(span),
                     class: here.class.map(text),
-                    target: here.target.map(text),
-                    line: here.target.map_or(0, line_of),
+                    module_path: module_path.is_some(),
+                    target: here.target.map(text).or(module_path),
+                    line: target.map_or(0, line_of),
                 });
             } else if let (Some(name), Some(value)) = (here.variable, here.value) {
                 file_groups.bindings.push(Binding { name: text(name), value });
@@ -657,15 +716,22 @@ impl RouteRule {
             position,
         };
 
+        // O caminho escrito cujo método algum match diz não ganha também a
+        // rota do método padrão, do match que o captura sem método.
+        let stated: HashSet<(usize, usize)> = found
+            .iter()
+            .filter(|here| here.method.is_some() && self.stated_method(here, bytes).is_some())
+            .filter_map(|here| here.path.map(span))
+            .collect();
         let mut built: Vec<Built> = Vec::new();
         let mut reached: HashSet<&str> = HashSet::new();
         for here in found {
-            let Some(at) = here.method else { continue };
-            if skipped(at) {
+            let Some(at) = here.method.or(here.path) else { continue };
+            if skipped(at) || (here.method.is_none() && here.path.is_some_and(|path| stated.contains(&span(path)))) {
                 continue;
             }
             let byte = at.start_byte();
-            let Some(method) = self.method(&text(at)) else { continue };
+            let Some(method) = self.stated_method(&here, bytes) else { continue };
             let inside = |(start, end): (usize, usize)| start <= byte && byte < end;
             let own = if here.grouped {
                 let group = groups.iter().filter(|(span, _)| inside(*span)).min_by_key(|((start, end), _)| end - start);
@@ -679,6 +745,7 @@ impl RouteRule {
             let receiver = here.receiver.map(text);
             let mounted: Vec<&Prefix> = prefixes
                 .iter()
+                .filter(|p| !p.module_path)
                 .filter(|p| {
                     p.target.as_deref().is_some_and(|target| Some(target) == receiver.as_deref() || Some(target) == owner)
                 })
@@ -709,7 +776,7 @@ impl RouteRule {
                 let written = joined_path(&pieces);
                 built.push(Built {
                     route: Route {
-                        method: method.to_string(),
+                        method: method.clone(),
                         path: self.normalized(&written, class),
                         written,
                         handler: handler.clone(),
@@ -729,12 +796,15 @@ impl RouteRule {
         let framework = self.raw.framework.to_string();
         let mut links = RouteLinks::default();
         for p in &prefixes {
-            let Some(target) = p.target.as_deref().filter(|target| !reached.contains(target)) else { continue };
+            let Some(target) = p.target.as_deref().filter(|target| p.module_path || !reached.contains(target)) else {
+                continue;
+            };
             links.mounts.push(Mount {
                 framework: framework.clone(),
                 target: target.to_string(),
                 line: p.line,
-                whole: whole_modules.contains(target),
+                whole: p.module_path || whole_modules.contains(target),
+                module_path: p.module_path,
                 prefix: self.prefix_path(&[&p.value]),
             });
         }
@@ -1114,12 +1184,27 @@ pub(crate) fn brought_names(modules: &[Module]) -> Vec<(usize, String)> {
         .iter()
         .enumerate()
         .flat_map(|(at, m)| {
-            let mounted = m.route_links.mounts.iter().map(|mount| mount.target.clone());
+            let mounted = m.route_links.mounts.iter().filter(|mount| !mount.module_path).map(|mount| mount.target.clone());
             let via = m.route_calls.iter().filter(|call| !call.via.is_empty()).map(|call| call.via.clone());
             mounted.chain(via).map(move |name| (at, name))
         })
         .collect();
     names.into_iter().collect()
+}
+
+/// Os caminhos de módulo que as montagens escrevem como texto
+/// ([`Mount::module_path`]), com a posição do arquivo em `modules`: cada um
+/// se lê como import do arquivo que o escreve, e [`across_files`] segue até
+/// as rotas do arquivo que ele nomeia.
+pub(crate) fn module_paths(modules: &[Module]) -> Vec<(usize, String)> {
+    let paths: BTreeSet<(usize, String)> = modules
+        .iter()
+        .enumerate()
+        .flat_map(|(at, m)| {
+            m.route_links.mounts.iter().filter(|mount| mount.module_path).map(move |mount| (at, mount.target.clone()))
+        })
+        .collect();
+    paths.into_iter().collect()
 }
 
 /// A soma entre arquivos, refeita em toda passada, inteira ou não, a partir
@@ -1130,7 +1215,9 @@ pub(crate) fn brought_names(modules: &[Module]) -> Vec<(usize, String)> {
 /// - a montagem de um nome trazido de outro arquivo ([`Mount`]). O arquivo de
 ///   onde o nome vem é o que o import que o traz nomeia (`brought`, pela
 ///   posição do arquivo e pelo nome, de [`brought_names`]) ou o da
-///   declaração a que liga a chamada escrita na linha da montagem;
+///   declaração a que liga a chamada escrita na linha da montagem. O do
+///   caminho de módulo escrito como texto é o que ele nomeia, lido como
+///   import de quem o escreve (`brought`, de [`module_paths`]);
 /// - a entrega de um grupo ([`Handoff`]) às rotas em aberto de toda
 ///   declaração com o nome e a posição dela, no projeto do arquivo que a
 ///   escreve. A entrega cujo grupo nasce de um parâmetro soma, na frente, o

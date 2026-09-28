@@ -39,6 +39,32 @@
 ; sobe pasta. O `mod x;` sem corpo mora em outro arquivo e não entra.
 (mod_item body: (declaration_list)) @inner_module
 
+; O `mod x;` marcado com `#[path = "..."]` mora no arquivo que o atributo
+; nomeia, lido a partir da pasta de quem o escreve: o caminho é import do
+; arquivo, e o que ele declara fica à vista de quem escreve o `mod`.
+((attribute_item (attribute (identifier) @_attr value: (string_literal (string_content) @import)))
+  .
+  (mod_item !body)
+  (#eq? @_attr "path"))
+
+; O mesmo `mod` com `#[cfg(test)]` antes ou depois do `path` é do teste: o
+; atributo do caminho é trecho de teste, e o arquivo que ele nomeia, import
+; do teste, e não do arquivo.
+((attribute_item) @_marker
+  .
+  (attribute_item (attribute (identifier) @_attr value: (string_literal (string_content) @import))) @test_block
+  .
+  (mod_item !body)
+  (#eq? @_marker "#[cfg(test)]")
+  (#eq? @_attr "path"))
+((attribute_item (attribute (identifier) @_attr value: (string_literal (string_content) @import))) @test_block
+  .
+  (attribute_item) @_marker
+  .
+  (mod_item !body)
+  (#eq? @_marker "#[cfg(test)]")
+  (#eq? @_attr "path"))
+
 (struct_item name: (type_identifier) @name) @definition.struct
 (enum_item name: (type_identifier) @name) @definition.enum
 (trait_item name: (type_identifier) @name) @definition.trait

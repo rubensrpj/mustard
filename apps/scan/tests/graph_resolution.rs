@@ -1180,3 +1180,180 @@ fn a_package_import_reaches_its_own_file_and_a_library_passes_on_what_it_exports
     assert_eq!(holders_of(&v, "PedidoService", "lib/tela.dart:5:tela"), vec!["lib/src/pedido_service.dart".to_string()]);
     assert_eq!(list_of(&v, "lib/src/pedido_service.dart", "tests"), vec!["test/pedido_service_test.dart".to_string()]);
 }
+
+/// Um import com `*` que só escreve o caminho do arquivo (`from loja.util
+/// import *`) põe à vista tudo o que o arquivo declara, também o nome que a
+/// língua já tem (`open`); o mesmo nome escrito num arquivo sem esse import
+/// segue sendo o da língua.
+const PYTHON_STAR_IMPORT: &[(&str, &str)] = &[
+    ("loja/__init__.py", ""),
+    ("loja/util.py", "def open():\n    pass\n"),
+    ("loja/outro.py", "def open():\n    pass\n"),
+    ("loja/app.py", "from loja.util import *\n\ndef principal():\n    open()\n"),
+    ("loja/solto.py", "def solto():\n    open()\n"),
+];
+
+#[test]
+fn a_star_import_that_writes_only_the_module_puts_the_language_name_it_declares_in_sight() {
+    let v = scan_files("py-star", PYTHON_STAR_IMPORT);
+    assert_eq!(holders_of(&v, "open", "loja/app.py:4:principal"), vec!["loja/util.py".to_string()]);
+    assert!(suspect_holders_of(&v, "open", "loja/app.py:4:principal").is_empty(), "nenhuma suspeita");
+    assert!(holders_of(&v, "open", "loja/solto.py:2:solto").is_empty(), "sem o import, o nome é o da língua");
+    assert!(suspect_holders_of(&v, "open", "loja/solto.py:2:solto").is_empty(), "sem o import, o nome é o da língua");
+}
+
+/// O `mod` marcado com `#[path = "..."]` mora no arquivo que o atributo
+/// nomeia, a partir da pasta de quem o escreve, também subindo pasta: o
+/// arquivo é dependência de quem escreve o `mod`, e a chamada do que ele
+/// declara, sozinha ou pelo nome do módulo, liga provada, mesmo com outro
+/// arquivo que declara o mesmo nome.
+const RUST_PATH_MODULE: &[(&str, &str)] = &[
+    ("Cargo.toml", "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n"),
+    (
+        "src/lib.rs",
+        "pub mod leitor;\npub mod terceiro;\n\n#[cfg(test)]\n#[path = \"../tests/support/medida.rs\"]\nmod medida;\n",
+    ),
+    ("src/leitor.rs", "#[path = \"../tests/support/outra.rs\"]\nmod outra;\n"),
+    ("src/terceiro.rs", "#[path = \"../tests/support/outra.rs\"]\n#[cfg(test)]\nmod outra;\n"),
+    ("tests/support/medida.rs", "pub fn prose_budget() {}\n"),
+    ("tests/support/outra.rs", "pub fn prose_budget() {}\n"),
+    (
+        "tests/orcamento.rs",
+        "#[path = \"support/medida.rs\"]\nmod medida;\n\nuse medida::prose_budget;\n\n#[test]\nfn mede() {\n    prose_budget();\n    medida::prose_budget();\n}\n",
+    ),
+];
+
+#[test]
+fn a_module_with_a_path_attribute_reaches_the_file_it_names() {
+    let v = scan_files("rs-path-attr", RUST_PATH_MODULE);
+    assert_eq!(deps_of(&v, "tests/orcamento.rs"), vec!["tests/support/medida.rs".to_string()]);
+    assert_eq!(deps_of(&v, "src/leitor.rs"), vec!["tests/support/outra.rs".to_string()]);
+    // Com `#[cfg(test)]` antes ou depois do `path`, o arquivo é import do
+    // teste escrito ali, e não do arquivo.
+    assert!(deps_of(&v, "src/lib.rs").is_empty(), "{:?}", deps_of(&v, "src/lib.rs"));
+    assert_eq!(list_of(&v, "src/lib.rs", "test_deps"), vec!["tests/support/medida.rs".to_string()]);
+    assert!(deps_of(&v, "src/terceiro.rs").is_empty(), "{:?}", deps_of(&v, "src/terceiro.rs"));
+    assert_eq!(list_of(&v, "src/terceiro.rs", "test_deps"), vec!["tests/support/outra.rs".to_string()]);
+    for site in ["tests/orcamento.rs:8:mede", "tests/orcamento.rs:9:mede"] {
+        assert_eq!(holders_of(&v, "prose_budget", site), vec!["tests/support/medida.rs".to_string()], "{site}");
+        assert!(suspect_holders_of(&v, "prose_budget", site).is_empty(), "{site}: nenhuma suspeita");
+    }
+}
+
+/// O `use` que junta caminhos num grupo (`a::{self, b::c}`), também com um
+/// grupo dentro de outro e a partir do `super`, chega ao arquivo de cada
+/// ramo: cada nome trazido liga, provado, ao arquivo que o ramo nomeia, mesmo
+/// com outro arquivo que declara o mesmo nome.
+const RUST_GROUPED_USE: &[(&str, &str)] = &[
+    ("Cargo.toml", "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n"),
+    ("src/lib.rs", "pub mod eventos;\npub mod fluxo;\npub mod outro;\n"),
+    ("src/eventos/mod.rs", "pub mod abrir;\npub mod read;\npub mod write;\n"),
+    ("src/eventos/write.rs", "pub fn record_open() {}\npub fn record() {}\n"),
+    ("src/eventos/read.rs", "pub fn checkout() {}\n"),
+    ("src/outro.rs", "pub fn record_open() {}\npub fn record() {}\npub fn checkout() {}\n"),
+    (
+        "src/fluxo.rs",
+        "use crate::eventos::{self, read::checkout, write::record_open};\n\npub fn abre() {\n    record_open();\n    checkout();\n}\n",
+    ),
+    (
+        "src/eventos/abrir.rs",
+        "use super::{\n    self,\n    write::{record, record_open},\n};\n\npub fn fecha() {\n    record();\n    record_open();\n}\n",
+    ),
+];
+
+#[test]
+fn a_grouped_use_reaches_the_file_of_each_branch() {
+    let v = scan_files("rs-grouped-use", RUST_GROUPED_USE);
+    let paths = |list: &[&str]| list.iter().map(|p| (*p).to_string()).collect::<Vec<_>>();
+    assert_eq!(deps_of(&v, "src/fluxo.rs"), paths(&["src/eventos/mod.rs", "src/eventos/read.rs", "src/eventos/write.rs"]));
+    assert_eq!(deps_of(&v, "src/eventos/abrir.rs"), paths(&["src/eventos/mod.rs", "src/eventos/write.rs"]));
+    for (name, site, file) in [
+        ("record_open", "src/fluxo.rs:4:abre", "src/eventos/write.rs"),
+        ("checkout", "src/fluxo.rs:5:abre", "src/eventos/read.rs"),
+        ("record", "src/eventos/abrir.rs:7:fecha", "src/eventos/write.rs"),
+        ("record_open", "src/eventos/abrir.rs:8:fecha", "src/eventos/write.rs"),
+    ] {
+        assert_eq!(holders_of(&v, name, site), vec![file.to_string()], "{site}");
+        assert!(suspect_holders_of(&v, name, site).is_empty(), "{site}: nenhuma suspeita");
+    }
+}
+
+/// Um módulo Go: o teste mora no mesmo pacote do serviço e chama a função sem
+/// import do projeto; outro pacote importa o do serviço pelo caminho do
+/// módulo.
+const GO_SAME_PACKAGE_TEST: &[(&str, &str)] = &[
+    ("go.mod", "module example.com/loja\n\ngo 1.22\n"),
+    ("pedidos/servico.go", "package pedidos\n\nfunc Buscar(id int) int {\n\treturn id\n}\n"),
+    (
+        "pedidos/servico_test.go",
+        "package pedidos\n\nimport \"testing\"\n\nfunc TestBuscar(t *testing.T) {\n\tBuscar(1)\n}\n",
+    ),
+    (
+        "api/rotas.go",
+        "package api\n\nimport \"example.com/loja/pedidos\"\n\nfunc Rotas() int {\n\treturn pedidos.Buscar(2)\n}\n",
+    ),
+];
+
+/// O que o mapa sabe do teste do pacote e de quem importa o pacote.
+fn assert_the_same_package_test_covers_the_service(v: &serde_json::Value) {
+    assert_eq!(holders_of(v, "Buscar", "pedidos/servico_test.go:6:TestBuscar"), vec!["pedidos/servico.go".to_string()]);
+    assert_eq!(list_of(v, "pedidos/servico.go", "tests"), vec!["pedidos/servico_test.go".to_string()]);
+    assert_eq!(deps_of(v, "api/rotas.go"), vec!["pedidos/servico.go".to_string()], "o código não importa o teste");
+}
+
+/// O teste liga ao arquivo que declara o que ele chama por ligação provada,
+/// sem importá-lo; e o import do pacote inteiro, escrito no código, não traz
+/// o arquivo de teste. A passada que relê só o que mudou chega ao mesmo.
+#[test]
+fn a_test_covers_the_file_it_calls_without_importing_it_and_code_does_not_import_the_test() {
+    let temp = tempfile::Builder::new().prefix("scan-graph-go-same-package-").tempdir().unwrap();
+    let dir = temp.path();
+    for (path, body) in GO_SAME_PACKAGE_TEST {
+        let file = dir.join(path);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, body).unwrap();
+    }
+    git(dir, &["init", "-q"]);
+    let exclude = mustard_core::footprint_rules().join("\n") + "\n";
+    std::fs::write(dir.join(".git").join("info").join("exclude"), exclude).unwrap();
+    git(dir, &["add", "-A"]);
+    git(dir, &["commit", "-q", "-m", "primeiro"]);
+    let (full, report) = scan_in_place(dir);
+    assert_eq!(report["full"], serde_json::Value::Bool(true), "{report}");
+    assert_the_same_package_test_covers_the_service(&full);
+
+    let rotas = std::fs::read_to_string(dir.join("api/rotas.go")).unwrap();
+    std::fs::write(dir.join("api/rotas.go"), format!("{rotas}\nfunc Outra() {{}}\n")).unwrap();
+    git(dir, &["commit", "-q", "-am", "segundo"]);
+    let (kept, report) = scan_in_place(dir);
+    assert_eq!(report["read"], serde_json::json!(["api/rotas.go"]), "só o que mudou é relido: {report}");
+    assert_the_same_package_test_covers_the_service(&kept);
+}
+
+/// O teste cuja chamada só tem ligação suspeita (duas funções `Buscar` no
+/// pacote dele, as duas à vista) não cobre nenhuma das duas pelo uso.
+#[test]
+fn a_test_whose_call_is_only_suspect_covers_no_file_by_the_use() {
+    let mut files = GO_SAME_PACKAGE_TEST.to_vec();
+    files.push(("pedidos/outro.go", "package pedidos\n\nfunc Buscar(id int) int {\n\treturn 0\n}\n"));
+    let v = scan_committed("go-suspect-use", &files);
+    let suspects = suspect_holders_of(&v, "Buscar", "pedidos/servico_test.go:6:TestBuscar");
+    assert_eq!(suspects.len(), 2, "{suspects:?}");
+    assert!(list_of(&v, "pedidos/servico.go", "tests").is_empty());
+    assert!(list_of(&v, "pedidos/outro.go", "tests").is_empty());
+}
+
+/// O teste que importa o pacote inteiro segue vendo os arquivos de teste dele.
+#[test]
+fn a_test_that_imports_the_package_still_sees_its_test_files() {
+    let mut files = GO_SAME_PACKAGE_TEST.to_vec();
+    files.push((
+        "api/rotas_test.go",
+        "package api\n\nimport (\n\t\"testing\"\n\n\t\"example.com/loja/pedidos\"\n)\n\nfunc TestRotas(t *testing.T) {\n\tpedidos.Buscar(3)\n}\n",
+    ));
+    let v = scan_committed("go-test-imports-package", &files);
+    assert_eq!(
+        deps_of(&v, "api/rotas_test.go"),
+        vec!["pedidos/servico.go".to_string(), "pedidos/servico_test.go".to_string()]
+    );
+}

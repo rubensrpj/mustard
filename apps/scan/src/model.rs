@@ -545,7 +545,9 @@ impl RouteLinks {
 /// inteiro (o import padrão, o que recebe o `require`), e o prefixo vale
 /// para todas as rotas dele; sem, só para as registradas num objeto com esse
 /// nome ou escritas numa declaração com esse nome. A linha é a do nome, para
-/// achar a declaração a que a chamada escrita ali liga.
+/// achar a declaração a que a chamada escrita ali liga. Com `module_path`, o
+/// alvo é o caminho de um módulo escrito como texto, que se lê como import
+/// do arquivo que o escreve; ele é sempre o módulo inteiro.
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Mount {
     pub framework: String,
@@ -553,6 +555,8 @@ pub struct Mount {
     pub line: usize,
     #[serde(default, skip_serializing_if = "is_false")]
     pub whole: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub module_path: bool,
     #[serde(flatten)]
     pub prefix: RoutePath,
 }

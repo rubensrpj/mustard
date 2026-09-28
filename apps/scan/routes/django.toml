@@ -1,0 +1,30 @@
+# As rotas do Django. O nome deste arquivo é o nome do framework; a consulta
+# que acha as rotas está em `django/routes.scm`, e o que cada captura dela
+# diz, em `src/routes.rs`. A rota é cada `path('pedidos/<int:id>/', …)` e
+# cada `re_path(r'^aves/(?P<id>\d+)/$', …)` da lista `urlpatterns`, sem
+# método: vale qualquer um. Quem atende é o nome escrito no segundo
+# argumento, o que vem depois do último ponto (`views.ler_pedido`), ou a
+# classe da `PedidoView.as_view()`.
+#
+# O `path('api/', include('loja.urls'))` monta o arquivo que o texto nomeia,
+# lido como import do arquivo que o escreve (`route.target.module`): o
+# prefixo vale para todas as rotas de lá.
+#
+# Os campos:
+# - `language`: as línguas do registro (`languages.toml`) cujos arquivos a
+#   consulta lê. Ela precisa compilar na gramática de cada uma.
+# - `imports`: a regra só roda no arquivo que importa um destes nomes, ou um
+#   caminho que começa por ele seguido de separador (`django.urls`).
+# - `default_method`: o método da rota em que a consulta não captura método
+#   nenhum; `"*"` é qualquer método. Sem tabela `methods`: nenhuma rota
+#   escreve o método.
+# - `param_wrappers`: as marcas que abrem e fecham um parâmetro (`<id>`,
+#   `<int:id>`, o grupo com nome da expressão, `(?P<id>\d+)`).
+# - `path_trims`: as marcas que saem das pontas do caminho escrito antes de
+#   tudo (`^` e `$` da expressão do `re_path`).
+
+language = ["python"]
+imports = ["django"]
+default_method = "*"
+param_wrappers = [["<", ">"], ["(?P<", ")"]]
+path_trims = ["^", "$"]

@@ -2,7 +2,8 @@
 //! caminho como foi escrito e a função que atende cada uma. Projetos pequenos
 //! com um controlador de C#, um de NestJS, um roteador de axum e um de
 //! Express, lidos pelo scan de verdade. O Express vale também no arquivo
-//! JavaScript que o traz pelo `require`.
+//! JavaScript que o traz pelo `require`. No Python, os decoradores do FastAPI
+//! e do Flask e a lista de caminhos do Django.
 
 #[path = "support/model.rs"]
 mod model;
@@ -904,4 +905,244 @@ fn a_method_named_like_the_bare_call_is_not_a_screen_call() {
     let (map, _) = scan(temp.path());
     assert_eq!(route_calls(&map, "tela/src/repo.ts"), json!([]));
     assert_eq!(called_by(&map, "servidor/src/pedidos.ts", "GET", "api/pedidos"), json!([]));
+}
+
+// ---------------------------------------------------------------------------
+// As rotas dos decoradores e da lista de caminhos
+// ---------------------------------------------------------------------------
+
+/// Um roteador com prefixo montado no mesmo arquivo, e as rotas do
+/// `api_route`, com a lista de métodos e sem ela.
+const FASTAPI: &str = r#"from fastapi import APIRouter, FastAPI
+
+app = FastAPI()
+router = APIRouter(prefix="/pedidos")
+
+
+@router.get("/{id}")
+def ler(id):
+    return id
+
+
+@app.api_route("/duplo", methods=["GET", "POST"])
+def duplo():
+    return 1
+
+
+@app.api_route("/simples")
+def simples():
+    return 1
+
+
+app.include_router(router, prefix="/api")
+"#;
+
+#[test]
+fn a_decorated_route_joins_the_prefix_of_its_router_and_of_the_include_in_the_same_file() {
+    let temp = project_with(&[("loja/api.py", FASTAPI)]);
+    let (map, _) = scan(temp.path());
+    let served = served(&map, "loja/api.py");
+    assert!(served.contains(&"GET api/pedidos/{} -> ler".to_string()), "{served:?}");
+}
+
+#[test]
+fn each_method_written_as_text_in_the_list_is_a_route_and_without_the_list_the_default_one() {
+    let temp = project_with(&[("loja/api.py", FASTAPI)]);
+    let (map, _) = scan(temp.path());
+    let served = served(&map, "loja/api.py");
+    for route in ["GET duplo -> duplo", "POST duplo -> duplo", "GET simples -> simples"] {
+        assert!(served.contains(&route.to_string()), "{route}: {served:?}");
+    }
+    assert_eq!(served.len(), 4, "the path whose methods are written does not also get the default: {served:?}");
+}
+
+/// O roteador escrito num arquivo e montado noutro, pelo nome trazido no
+/// import ou pelo módulo (`pedidos.router`); o blueprint, do mesmo jeito.
+#[test]
+fn a_router_included_from_another_file_takes_the_prefix_of_the_include() {
+    let router = "from fastapi import APIRouter\n\nrouter = APIRouter(prefix=\"/pedidos\")\n\n\n\
+                  @router.get(\"/{id}\")\ndef ler(id):\n    return id\n";
+    let by_name = "from fastapi import FastAPI\n\nfrom .pedidos import router\n\napp = FastAPI()\n\
+                   app.include_router(router, prefix=\"/api\")\n";
+    let by_module = "from fastapi import FastAPI\n\nfrom loja import pedidos\n\napp = FastAPI()\n\
+                     app.include_router(pedidos.router, prefix=\"/api\")\n";
+    let blueprint = "from flask import Blueprint\n\nbp = Blueprint('aves', __name__, url_prefix='/aves')\n\n\n\
+                     @bp.get('/<int:id>')\ndef ave(id):\n    return id\n";
+    let register = "from flask import Flask\n\nfrom .aves import bp\n\napp = Flask(__name__)\n\
+                    app.register_blueprint(bp, url_prefix='/api')\n";
+    for main in [by_name, by_module] {
+        let temp = project_with(&[
+            ("loja/__init__.py", ""),
+            ("loja/pedidos.py", router),
+            ("loja/main.py", main),
+            ("site/__init__.py", ""),
+            ("site/aves.py", blueprint),
+            ("site/app.py", register),
+        ]);
+        let (map, _) = scan(temp.path());
+        assert_eq!(served(&map, "loja/pedidos.py"), ["GET api/pedidos/{} -> ler"], "{main}");
+        assert_eq!(served(&map, "site/aves.py"), ["GET api/aves/{} -> ave"]);
+    }
+}
+
+/// A rota de método escrito na lista, a sem lista e a do blueprint montado.
+const FLASK: &str = r#"from flask import Blueprint, Flask
+
+app = Flask(__name__)
+bp = Blueprint('pedidos', __name__, url_prefix='/pedidos')
+
+
+@app.route("/aves/<int:id>", methods=["POST"])
+def criar(id):
+    return id
+
+
+@app.route("/x")
+def x():
+    return 1
+
+
+@bp.get("/<id>")
+def ler(id):
+    return id
+
+
+app.register_blueprint(bp, url_prefix='/api')
+"#;
+
+#[test]
+fn a_route_with_its_methods_written_takes_them_and_one_without_them_takes_the_default() {
+    let temp = project_with(&[("loja/web.py", FLASK)]);
+    let (map, _) = scan(temp.path());
+    let served = served(&map, "loja/web.py");
+    assert!(served.contains(&"POST aves/{} -> criar".to_string()), "{served:?}");
+    assert!(!served.contains(&"GET aves/{} -> criar".to_string()), "{served:?}");
+    assert!(served.contains(&"GET x -> x".to_string()), "{served:?}");
+}
+
+#[test]
+fn a_blueprint_route_joins_the_prefix_of_the_blueprint_and_of_the_register() {
+    let temp = project_with(&[("loja/web.py", FLASK)]);
+    let (map, _) = scan(temp.path());
+    let served = served(&map, "loja/web.py");
+    assert!(served.contains(&"GET api/pedidos/{} -> ler".to_string()), "{served:?}");
+}
+
+/// A variável de mesmo nome guardada dentro de outra função não é o grupo da
+/// rota: só a do topo do arquivo vale nas funções escritas depois dela.
+#[test]
+fn a_group_kept_inside_another_function_is_not_the_group_of_the_route() {
+    let api = "from fastapi import APIRouter\n\nrouter = APIRouter()\n\n\ndef outro():\n    \
+               router = APIRouter(prefix=\"/outro\")\n    return router\n\n\n\
+               @router.get(\"/x\")\ndef ler():\n    return 1\n";
+    let temp = project_with(&[("loja/api.py", api)]);
+    let (map, _) = scan(temp.path());
+    assert_eq!(served(&map, "loja/api.py"), ["GET x -> ler"]);
+}
+
+/// A lista de caminhos de um app: a rota do `path`, a do `re_path` e a da
+/// visão de classe.
+const DJANGO_URLS: &str = r#"from django.urls import path, re_path
+
+from . import views
+
+urlpatterns = [
+    path('pedidos/<int:id>/', views.ler_pedido),
+    re_path(r'^aves/(?P<id>\d+)/$', views.ave),
+    path('classe/', views.PedidoView.as_view(), name='classe'),
+]
+"#;
+
+const DJANGO_VIEWS: &str = "def ler_pedido(request, id):\n    return id\n\n\ndef ave(request, id):\n    return id\n\n\n\
+                            class PedidoView:\n    pass\n";
+
+/// A lista de caminhos do projeto, que inclui a do app sob `api/`.
+const DJANGO_ROOT: &str = "from django.urls import include, path\n\nurlpatterns = [\n    path('api/', include('loja.urls')),\n]\n";
+
+fn django_app() -> [(&'static str, &'static str); 3] {
+    [("loja/__init__.py", ""), ("loja/urls.py", DJANGO_URLS), ("loja/views.py", DJANGO_VIEWS)]
+}
+
+#[test]
+fn a_path_in_the_list_is_a_route_of_any_method_served_by_the_view_or_its_class() {
+    let temp = project_with(&django_app());
+    let (map, _) = scan(temp.path());
+    let served = served(&map, "loja/urls.py");
+    assert!(served.contains(&"* pedidos/{} -> ler_pedido".to_string()), "{served:?}");
+    assert!(served.contains(&"* classe -> PedidoView".to_string()), "{served:?}");
+}
+
+#[test]
+fn a_regular_expression_path_drops_its_anchors_and_reads_the_named_group_as_a_parameter() {
+    let temp = project_with(&django_app());
+    let (map, _) = scan(temp.path());
+    let served = served(&map, "loja/urls.py");
+    assert!(served.contains(&"* aves/{} -> ave".to_string()), "{served:?}");
+}
+
+#[test]
+fn an_include_adds_its_prefix_to_every_route_of_the_file_the_module_names() {
+    let mut files = django_app().to_vec();
+    files.extend([("projeto/__init__.py", ""), ("projeto/urls.py", DJANGO_ROOT)]);
+    let temp = project_with(&files);
+    let (map, _) = scan(temp.path());
+    assert_eq!(served(&map, "loja/urls.py"), ["* api/aves/{} -> ave", "* api/classe -> PedidoView", "* api/pedidos/{} -> ler_pedido"]);
+    assert_eq!(routes(&map, "projeto/urls.py"), json!([]), "the include is not a route");
+}
+
+/// O decorador e a lista com a forma de rota, num arquivo que não importa o
+/// framework, ou que importa um pacote cujo nome começa pelo dele.
+#[test]
+fn a_decorated_file_that_imports_no_framework_has_no_route() {
+    let cache = "from cache import app\n\n\n@app.get(\"/x\")\ndef ler():\n    return 1\n\n\n\
+                 urlpatterns = [\n    path('pedidos/', ler),\n]\n";
+    let other = "from flask_caching import app\n\n\n@app.route(\"/x\")\ndef ler():\n    return 1\n";
+    let temp = project_with(&[("loja/cache.py", cache), ("loja/outro.py", other)]);
+    let (map, _) = scan(temp.path());
+    assert_eq!(routes(&map, "loja/cache.py"), json!([]));
+    assert_eq!(routes(&map, "loja/outro.py"), json!([]), "a package whose name starts with the framework's is another one");
+}
+
+/// A passada que lê só o arquivo mudado soma os prefixos de outros arquivos
+/// como a passada inteira: o do include pelo nome e o do include pelo
+/// caminho do módulo.
+#[test]
+fn a_pass_that_reads_only_the_changed_router_gives_the_same_routes_as_the_whole_pass() {
+    let router = "from fastapi import APIRouter\n\nrouter = APIRouter(prefix=\"/pedidos\")\n\n\n\
+                  @router.get(\"/{id}\")\ndef ler(id):\n    return id\n";
+    let main = "from fastapi import FastAPI\n\nfrom .pedidos import router\n\napp = FastAPI()\n\
+                app.include_router(router, prefix=\"/api\")\n";
+    let mut files = vec![("loja/pedidos.py", router), ("loja/main.py", main)];
+    files.extend(django_app());
+    files.extend([("projeto/__init__.py", ""), ("projeto/urls.py", DJANGO_ROOT)]);
+    let temp = project_with(&files);
+    let dir = temp.path();
+    let (first, _) = scan(dir);
+    assert_eq!(served(&first, "loja/pedidos.py"), ["GET api/pedidos/{} -> ler"]);
+
+    let added = format!("{router}\n\n@router.post(\"/\")\ndef criar():\n    return 1\n");
+    let more_urls = DJANGO_URLS.replace("]\n", "    path('novo/', views.ave),\n]\n");
+    let steps: [(&str, String, &str, &[&str]); 2] = [
+        ("loja/pedidos.py", added, "loja/pedidos.py", &["GET api/pedidos/{} -> ler", "POST api/pedidos -> criar"]),
+        (
+            "loja/urls.py",
+            more_urls,
+            "loja/urls.py",
+            &["* api/aves/{} -> ave", "* api/classe -> PedidoView", "* api/novo -> ave", "* api/pedidos/{} -> ler_pedido"],
+        ),
+    ];
+    for (path, body, file, expected) in steps {
+        std::fs::write(dir.join(path), body).unwrap();
+        git(dir, &["add", "-A"]);
+        git(dir, &["commit", "-q", "-m", path]);
+        let (partial, report) = scan(dir);
+        assert_eq!(report["full"], json!(false), "{path}: {report}");
+        assert_eq!(report["read"], json!([path]), "{path}: {report}");
+        let whole_out = tempfile::tempdir().unwrap();
+        let (whole, _) = model::scan(dir, whole_out.path(), &[]);
+        assert_eq!(served(&whole, file), expected, "{path}: the whole pass");
+        for other in ["loja/pedidos.py", "loja/urls.py"] {
+            assert_eq!(routes(&partial, other), routes(&whole, other), "{path}: {other}");
+        }
+    }
 }

@@ -1,4 +1,5 @@
-//! Which tests cover each file: a test that imports the file, or a test that
+//! Which tests cover each file: a test that imports the file, a test that
+//! calls or cites something the file declares by a proven link, or a test that
 //! keeps changing together with it in git. A file that carries its own tests
 //! (an inline marker from the core's test-file data, `test-files.toml`) says
 //! so on its own, and covers what its test block imports.
@@ -21,22 +22,36 @@ pub(crate) fn has_inline_tests(content: &str) -> bool {
 }
 
 /// Por que um teste cobre um arquivo, do mais forte ao mais fraco: ele importa
-/// o arquivo, ou só muda junto com ele no histórico.
+/// o arquivo, chama ou cita algo que o arquivo declara, ou só muda junto com
+/// ele no histórico.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Link {
     Imports,
+    Uses,
     History,
 }
 
 /// Fill `tests` on every module from the resolved imports (`deps` of a test
-/// file, `test_deps` of any file) and the history. Test files themselves get
-/// none.
+/// file, `test_deps` of any file), the proven uses and the history. Test files
+/// themselves get none.
+///
+/// O teste cobre também o arquivo de produção que declara algo que ele chama
+/// ou cita por ligação provada, mesmo sem importar o arquivo (o teste no mesmo
+/// pacote, que vê o que o pacote declara sem import). Lê os usos que a ligação
+/// das declarações já gravou em cada declaração, refeitos do projeto inteiro
+/// em toda passada; o uso suspeito não conta.
 pub(crate) fn assign(modules: &mut [Module], history: &History) {
     let tests: BTreeSet<String> = modules.iter().filter(|m| is_test_path(&m.path)).map(|m| m.path.clone()).collect();
     let mut found: BTreeMap<String, BTreeMap<String, Link>> = BTreeMap::new();
     for test in modules.iter().filter(|m| tests.contains(&m.path)) {
         for dep in test.deps.iter().filter(|d| !tests.contains(*d)) {
             link(&mut found, dep, &test.path, Link::Imports);
+        }
+    }
+    for module in modules.iter().filter(|m| !tests.contains(&m.path)) {
+        let proven = module.declarations.iter().flat_map(|d| &d.used_by).filter(|site| site.is_proven());
+        for site in proven.filter(|site| tests.contains(&site.file)) {
+            link(&mut found, &module.path, &site.file, Link::Uses);
         }
     }
     // O trecho de teste escrito dentro de um arquivo cobre o que ele importa.
@@ -70,8 +85,8 @@ fn link(found: &mut BTreeMap<String, BTreeMap<String, Link>>, file: &str, test: 
 }
 
 /// Os testes de `file` em ordem, cortados em [`MAX_TESTS`]: primeiro o que tem
-/// o nome do arquivo, depois os que o importam, por último os que só mudam
-/// junto com ele; empate em ordem alfabética. O corte vem depois da ordem, para
+/// o nome do arquivo, depois os que o importam, os que usam algo dele e, por
+/// último, os que só mudam junto com ele; empate em ordem alfabética. O corte vem depois da ordem, para
 /// que o teste do próprio arquivo nunca perca a vaga para outro que só vem
 /// antes no alfabeto.
 fn ranked(file: &str, links: BTreeMap<String, Link>) -> Vec<String> {
@@ -86,6 +101,7 @@ fn ranked(file: &str, links: BTreeMap<String, Link>) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{Decl, DeclAt, UseSite};
     use mustard_core::domain::project_map::RawCommit;
 
     fn module(path: &str, deps: &[&str]) -> Module {
@@ -109,6 +125,41 @@ mod tests {
         assert_eq!(modules[0].tests, vec!["tests/a_test.rs".to_string()]);
         assert_eq!(modules[1].tests, vec!["tests/b_flow.rs".to_string()]);
         assert!(modules[2].tests.is_empty());
+    }
+
+    /// Uma declaração `name` de `src/a.x` usada em `used_by`.
+    fn declared(name: &str, used_by: Vec<UseSite>) -> Decl {
+        Decl { kind: "function".to_string(), name: name.to_string(), line: 1, used_by, ..Default::default() }
+    }
+
+    fn use_at(file: &str, candidates: Vec<DeclAt>) -> UseSite {
+        UseSite { file: file.to_string(), line: 6, from: "t".to_string(), candidates }
+    }
+
+    #[test]
+    fn a_test_covers_the_file_whose_function_it_uses_by_a_proven_link_without_importing_it() {
+        let mut a = module("src/a.x", &[]);
+        a.declarations = vec![declared("buscar", vec![use_at("tests/a_test.x", Vec::new())])];
+        let mut modules = vec![a, module("tests/a_test.x", &[])];
+        assign(&mut modules, &History::from_raw(Vec::new()));
+        assert_eq!(modules[0].tests, vec!["tests/a_test.x".to_string()]);
+        assert!(modules[1].tests.is_empty(), "o teste não ganha teste");
+    }
+
+    #[test]
+    fn a_suspect_use_from_a_test_covers_nothing() {
+        let candidates = vec![
+            DeclAt { file: "src/a.x".to_string(), line: 1, name: "buscar".to_string() },
+            DeclAt { file: "src/b.x".to_string(), line: 1, name: "buscar".to_string() },
+        ];
+        let mut a = module("src/a.x", &[]);
+        a.declarations = vec![declared("buscar", vec![use_at("tests/c_test.x", candidates.clone())])];
+        let mut b = module("src/b.x", &[]);
+        b.declarations = vec![declared("buscar", vec![use_at("tests/c_test.x", candidates)])];
+        let mut modules = vec![a, b, module("tests/c_test.x", &[])];
+        assign(&mut modules, &History::from_raw(Vec::new()));
+        assert!(modules[0].tests.is_empty(), "{:?}", modules[0].tests);
+        assert!(modules[1].tests.is_empty(), "{:?}", modules[1].tests);
     }
 
     #[test]
