@@ -1810,6 +1810,32 @@ fn a_module_brought_under_another_name_names_only_that_module() {
     assert!(use_places_of(&v, "src/eventos/paginas.rs", "ler").is_empty(), "{v}");
 }
 
+/// `use crate::dominio::indice as idx;` traz o módulo com apelido fora de
+/// grupo: `idx::projetar()` é o `projetar` desse módulo, e o de outro módulo
+/// com o mesmo nome não recebe o uso, nem quando o arquivo que chama tem o
+/// mesmo nome do módulo trazido.
+#[test]
+fn a_module_brought_alone_under_another_name_names_only_that_module() {
+    let v = scan_files(
+        "rust-module-alias",
+        &[
+            ("Cargo.toml", "[package]\nname = \"loja\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"),
+            ("src/main.rs", "mod dominio;\nmod io;\nmod outro;\n\nfn main() {}\n"),
+            ("src/dominio/mod.rs", "pub mod indice;\n"),
+            ("src/dominio/indice.rs", "pub fn projetar(texto: &str) -> usize {\n    texto.len()\n}\n"),
+            ("src/outro.rs", "pub fn projetar(texto: &str) -> usize {\n    texto.len() + 1\n}\n"),
+            ("src/io/mod.rs", "pub mod indice;\n"),
+            (
+                "src/io/indice.rs",
+                "use crate::dominio::indice as idx;\n\npub fn ler(texto: &str) -> usize {\n    idx::projetar(texto)\n}\n",
+            ),
+        ],
+    );
+    assert_eq!(deps_of(&v, "src/io/indice.rs"), vec!["src/dominio/indice.rs".to_string()]);
+    assert_eq!(proven_uses_of(&v, "src/dominio/indice.rs", "projetar"), vec!["src/io/indice.rs:4:ler".to_string()]);
+    assert!(use_places_of(&v, "src/outro.rs", "projetar").is_empty(), "{v}");
+}
+
 /// `use crate::traco::Traco as _` põe o traço à vista sem trazer nome: o `_`
 /// escrito depois (`Vec<_>`) não é uso dele.
 #[test]

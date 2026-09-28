@@ -1,5 +1,10 @@
 ; Rust — use imports and item definitions.
-(use_declaration argument: (_) @import)
+; O import é o caminho escrito no `use`. No `use a::b as c;` o caminho é só
+; `a::b`: o apelido é o nome que ele traz ao arquivo, e não parte do lugar
+; que o caminho nomeia (`c::f()` chama o `f` do arquivo `a/b.rs`).
+(use_declaration
+  argument: [(crate) (identifier) (metavariable) (scoped_identifier) (scoped_use_list) (self) (super) (use_list) (use_wildcard)] @import)
+(use_declaration argument: (use_as_clause path: (_) @import))
 
 ; The names `use m::limite` brings into the file: what it brought, not a use
 ; of it. The whole path is already the import's.
@@ -14,7 +19,10 @@
 ; nomeia; o `pub use x::*` oferece todos. O nome trazido ou oferecido com
 ; outro nome (`use a::B as C`, `pub use a::B as C`, `use a::{B as C}`) é
 ; pedido ao arquivo alvo pelo nome de origem.
-(use_declaration (visibility_modifier) argument: (_) @reexport)
+(use_declaration
+  (visibility_modifier)
+  argument: [(crate) (identifier) (metavariable) (scoped_identifier) (scoped_use_list) (self) (super) (use_list) (use_wildcard)] @reexport)
+(use_declaration (visibility_modifier) argument: (use_as_clause path: (_) @reexport))
 (use_as_clause
   path: [(scoped_identifier name: (identifier) @imported.original) (identifier) @imported.original]
   alias: (identifier) @imported)
