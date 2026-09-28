@@ -41,7 +41,9 @@ use crate::domain::project_map::{lineage_is_fresh, spec_sentence, FileLineage, M
 use crate::domain::spec_events::{parse_log, search_field, SpecEvent, SpecLog};
 use crate::io::claude_paths::ClaudePaths;
 use crate::io::map_search;
-use crate::io::project_map::{exists_at, history_at, model_path, open_existing, pull_comments_at, unreadable, CENSUS};
+use crate::io::project_map::{
+    exists_at, history_at, lineage_heads, model_path, open_existing, pull_comments_at, unreadable, CENSUS,
+};
 use crate::platform::error::Result;
 
 /// Os tipos de item que entram no bloco, na ordem em que um commit de onda
@@ -618,9 +620,8 @@ fn linked_in(conn: &Connection, items: &[(&str, &str)], limit: usize) -> Result<
         return Ok(Vec::new());
     }
     let mut item_id = conn.prepare("SELECT id FROM spec_items WHERE spec = ?1 AND code = ?2")?;
-    let mut stored = conn.prepare("SELECT base, last_commit, mark, moves, comments FROM lineage_files WHERE path = ?1")?;
     let mut mapped = conn.prepare("SELECT 1 FROM files WHERE path = ?1")?;
-    let mut out: Vec<(String, Option<FileLineage>)> = Vec::new();
+    let mut linked: Vec<String> = Vec::new();
     for (spec, code) in items {
         let Some(id) = item_id.query_row([spec, code], |row| row.get::<_, i64>(0)).optional()? else {
             continue;
@@ -633,27 +634,18 @@ fn linked_in(conn: &Connection, items: &[(&str, &str)], limit: usize) -> Result<
             if shown.contains(&path) {
                 continue;
             }
-            if !out.iter().any(|(known, _)| *known == path) && mapped.query_row([&path], |_| Ok(())).optional()?.is_some() {
-                let lineage = stored
-                    .query_row([&path], |row| {
-                        let count = |at: usize| row.get::<_, Option<i64>>(at).map(|n| u32::try_from(n.unwrap_or_default()).unwrap_or_default());
-                        Ok(FileLineage {
-                            path: path.clone(),
-                            base: row.get::<_, Option<String>>(0)?.unwrap_or_default(),
-                            last_commit: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
-                            mark: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
-                            moves: count(3)?,
-                            comments: count(4)?,
-                            ..FileLineage::default()
-                        })
-                    })
-                    .optional()?;
-                out.push((path.clone(), lineage));
+            if !linked.contains(&path) && mapped.query_row([&path], |_| Ok(())).optional()?.is_some() {
+                linked.push(path.clone());
             }
             shown.push(path);
         }
     }
-    Ok(out)
+    let paths: Vec<&str> = linked.iter().map(String::as_str).collect();
+    let heads = lineage_heads(conn, Some(&paths))?;
+    Ok(linked
+        .iter()
+        .map(|path| (path.clone(), heads.iter().find(|head| head.path == *path).cloned()))
+        .collect())
 }
 
 /// Os commits da história do arquivo `path`, lida por `history`, que dizem o

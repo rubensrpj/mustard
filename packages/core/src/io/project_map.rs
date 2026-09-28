@@ -1136,22 +1136,29 @@ fn history(conn: &Connection) -> Result<History> {
     Ok(History { base, missing, paths, commits })
 }
 
-/// A história guardada das declarações de cada arquivo, na ordem em que se
-/// gravou; com `paths`, só a desses arquivos.
-fn lineages(conn: &Connection, paths: Option<&[&str]>) -> Result<Vec<FileLineage>> {
-    let rows_for = |table: &str, columns: &[&str]| -> Result<Vec<Picked>> {
-        match paths {
-            None => picked(conn, table, columns, "", &[]),
-            Some([]) => Ok(Vec::new()),
-            Some(paths) => {
-                let slots: Vec<String> = (1..=paths.len()).map(|at| format!("?{at}")).collect();
-                let filter = format!("{} IN ({})", column_names(table, &["path"])?, slots.join(", "));
-                picked(conn, table, columns, &filter, paths)
-            }
+/// As colunas `columns` das linhas da tabela `table` da história guardada,
+/// na ordem em que se gravaram: de todos os arquivos, ou só dos caminhos
+/// `paths`.
+fn lineage_rows(conn: &Connection, table: &str, columns: &[&str], paths: Option<&[&str]>) -> Result<Vec<Picked>> {
+    match paths {
+        None => picked(conn, table, columns, "", &[]),
+        Some([]) => Ok(Vec::new()),
+        Some(paths) => {
+            let slots: Vec<String> = (1..=paths.len()).map(|at| format!("?{at}")).collect();
+            let filter = format!("{} IN ({})", column_names(table, &["path"])?, slots.join(", "));
+            picked(conn, table, columns, &filter, paths)
         }
-    };
+    }
+}
+
+/// O cabeçalho da história guardada de cada arquivo, na ordem em que se
+/// gravou: a base, o commit mais novo, a marca do scan e as contagens que
+/// dizem se ela ainda vale, sem os commits nem as declarações; com `paths`,
+/// só o desses arquivos. A pergunta da história e a busca o leem por aqui,
+/// e por isso conferem a validade pelos mesmos valores.
+pub(crate) fn lineage_heads(conn: &Connection, paths: Option<&[&str]>) -> Result<Vec<FileLineage>> {
     let columns = ["path", "base", "last_commit", "mark", "moves", "comments"];
-    let mut files: Vec<FileLineage> = rows_for("lineage_files", &columns)?
+    Ok(lineage_rows(conn, "lineage_files", &columns, paths)?
         .iter()
         .map(|row| FileLineage {
             path: text_cell(&row[0]),
@@ -1162,9 +1169,15 @@ fn lineages(conn: &Connection, paths: Option<&[&str]>) -> Result<Vec<FileLineage
             comments: u32::try_from(int_cell(&row[5])).unwrap_or_default(),
             ..FileLineage::default()
         })
-        .collect();
+        .collect())
+}
+
+/// A história guardada das declarações de cada arquivo, na ordem em que se
+/// gravou; com `paths`, só a desses arquivos.
+fn lineages(conn: &Connection, paths: Option<&[&str]>) -> Result<Vec<FileLineage>> {
+    let mut files = lineage_heads(conn, paths)?;
     let at: HashMap<String, usize> = files.iter().enumerate().map(|(at, file)| (file.path.clone(), at)).collect();
-    for row in rows_for("lineage_commits", &["path", "id", "at", "title", "pr", "files"])? {
+    for row in lineage_rows(conn, "lineage_commits", &["path", "id", "at", "title", "pr", "files"], paths)? {
         if let Some(&file) = at.get(&text_cell(&row[0])) {
             files[file].commits.push(LineageCommit {
                 id: text_cell(&row[1]),
@@ -1175,7 +1188,7 @@ fn lineages(conn: &Connection, paths: Option<&[&str]>) -> Result<Vec<FileLineage
             });
         }
     }
-    for row in rows_for("lineage_decls", &["path", "name", "nth", "commits", "comments"])? {
+    for row in lineage_rows(conn, "lineage_decls", &["path", "name", "nth", "commits", "comments"], paths)? {
         if let Some(&file) = at.get(&text_cell(&row[0])) {
             files[file].declarations.push(DeclLineage {
                 name: text_cell(&row[1]),
