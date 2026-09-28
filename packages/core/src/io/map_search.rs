@@ -41,6 +41,15 @@
 //! ou mais, procura também o pedaço no nome das declarações, e o que ela acha
 //! vem na frente. O índice feito em outras línguas que as da busca — a
 //! configuração do projeto mudou depois da gravação — se refaz antes dela.
+//!
+//! A busca com filtro ([`candidates`]) devolve declarações, e não arquivos:
+//! quatro listas do nível das declarações — a de base, a dos nomes, a de
+//! todos os campos e a dos arquivos — juntadas por rodízio
+//! (`domain::search::round_robin`) numa lista inteira, de onde saem os
+//! primeiros até o teto. Cada candidato leva o que o mapa guarda dele: o
+//! dono, os membros, os comentários do corpo e os títulos dos commits mais
+//! novos do arquivo. As ligações ([`links`]) dão ao corte do filtro os
+//! métodos de cada tipo e as implementações de cada método de contrato.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -53,7 +62,13 @@ use crate::domain::normalize::{Languages, Normalizer};
 use crate::domain::project_map::{
     outer_declarations, spec_sentence, Found, FoundItem, FoundText, MapRefusal, SPEC_SENTENCE_CHARS,
 };
-use crate::domain::search::{bm25f, score_x1024, Fields, Posting};
+use crate::domain::map_filter::FilterCandidate;
+use crate::domain::map_select::{Linked, Links};
+use crate::domain::project_map::DeclAt;
+use crate::domain::search::{
+    bm25f, file_list, folded_name, name_list, name_words, round_robin, score_x1024, Fields, NameHits, Posting,
+};
+use crate::io::map_db::MapDb;
 use crate::io::project_map::{model_path, open_existing, unreadable};
 use crate::platform::error::Result;
 
@@ -182,9 +197,9 @@ pub(crate) fn rebuild(conn: &Connection, languages: &Languages) -> Result<()> {
     fill(conn, &FILE_LEVEL, &files)?;
     fill(conn, &DECL_LEVEL, decls.iter().map(|decl| &decl.doc))?;
     {
-        let mut insert = conn.prepare("INSERT INTO decl_trigram(rowid, name, file) VALUES (?1, ?2, ?3)")?;
+        let mut insert = conn.prepare("INSERT INTO decl_trigram(rowid, name, folded, file) VALUES (?1, ?2, ?3, ?4)")?;
         for decl in &decls {
-            insert.execute(params![decl.doc.id, decl.name, decl.file])?;
+            insert.execute(params![decl.doc.id, decl.name, folded_name(&decl.name), decl.file])?;
         }
     }
     conn.execute(
@@ -486,11 +501,18 @@ pub fn search_at(
     languages: &Languages,
     limit: usize,
 ) -> std::result::Result<Vec<Found>, MapRefusal> {
+    let db = indexed(model, languages)?;
+    found(db.conn(), query, languages, limit).map_err(unreadable)
+}
+
+/// O banco em `model`, com o índice feito nas línguas `languages`: o feito
+/// em outras se refaz antes da busca.
+fn indexed(model: &Path, languages: &Languages) -> std::result::Result<MapDb, MapRefusal> {
     let mut db = open_existing(model)?;
     if !made_in(db.conn(), languages).map_err(unreadable)? {
         db.write(|tx| if made_in(tx, languages)? { Ok(()) } else { rebuild(tx, languages) }).map_err(unreadable)?;
     }
-    found(db.conn(), query, languages, limit).map_err(unreadable)
+    Ok(db)
 }
 
 /// `true` quando o índice foi feito nas línguas `languages`.
@@ -504,7 +526,7 @@ fn made_in(conn: &Connection, languages: &Languages) -> Result<bool> {
 fn found(conn: &Connection, query: &str, languages: &Languages, limit: usize) -> Result<Vec<Found>> {
     let mut normalizer = Normalizer::new(languages);
     let words = normalizer.query(query);
-    let by_words = by_words(conn, &FILE_LEVEL, &words)?;
+    let by_words = by_words(conn, &FILE_LEVEL, FILE_LEVEL.fields, &words)?;
     let scores: HashMap<i64, f64> = by_words.iter().copied().collect();
     let mut path_of = conn.prepare("SELECT path FROM files WHERE rowid = ?1")?;
     let mut out: Vec<Found> = Vec::new();
@@ -552,11 +574,12 @@ fn best_text(
 }
 
 /// A nota de cada documento do nível para as palavras da pergunta, cada uma
-/// com as suas formas: a lista de cada forma e o tamanho dos campos de cada
-/// documento dela saem numa consulta só.
-fn by_words(conn: &Connection, level: &Level, words: &[Vec<String>]) -> Result<Vec<(i64, f64)>> {
+/// com as suas formas, contando só os campos `fields` do nível: a lista de
+/// cada forma e o tamanho dos campos de cada documento dela saem numa
+/// consulta só.
+fn by_words(conn: &Connection, level: &Level, fields: &[&str], words: &[Vec<String>]) -> Result<Vec<(i64, f64)>> {
     let words = as_indexed(conn, words)?;
-    let sizes: Vec<String> = level.fields.iter().map(|field| format!("l.{field}")).collect();
+    let sizes: Vec<String> = fields.iter().map(|field| format!("l.{field}")).collect();
     let mut lists = conn.prepare(&format!(
         "SELECT v.doc, v.col, {} FROM {} v JOIN {} l ON l.id = v.doc WHERE v.term = ?1",
         sizes.join(", "),
@@ -565,9 +588,9 @@ fn by_words(conn: &Connection, level: &Level, words: &[Vec<String>]) -> Result<V
     ))?;
     let postings = words
         .iter()
-        .map(|forms| forms.iter().map(|form| postings(&mut lists, level, form)).collect::<Result<Vec<_>>>())
+        .map(|forms| forms.iter().map(|form| postings(&mut lists, fields, form)).collect::<Result<Vec<_>>>())
         .collect::<Result<Vec<_>>>()?;
-    Ok(bm25f(&postings, &fields_of(conn, level)?))
+    Ok(bm25f(&postings, &fields_of(conn, level, fields)?))
 }
 
 /// As formas de cada palavra da pergunta como o tokenizador do índice as
@@ -611,30 +634,29 @@ fn through_tokenizer(conn: &Connection, words: &[Vec<String>]) -> Result<Vec<Vec
     Ok(out)
 }
 
-/// As ocorrências da forma `form` no nível, com o tamanho do campo de cada
-/// uma.
-fn postings(lists: &mut Statement<'_>, level: &Level, form: &str) -> Result<Vec<Posting>> {
+/// As ocorrências da forma `form` nos campos `fields`, com o tamanho do
+/// campo de cada uma.
+fn postings(lists: &mut Statement<'_>, fields: &[&str], form: &str) -> Result<Vec<Posting>> {
     let mut rows = lists.query([form])?;
     let mut out = Vec::new();
     while let Some(row) = rows.next()? {
         let column = text(row, 1)?;
-        let Some(field) = level.fields.iter().position(|name| *name == column) else { continue };
+        let Some(field) = fields.iter().position(|name| *name == column) else { continue };
         out.push(Posting { doc: row.get(0)?, field, field_len: row.get::<_, i64>(2 + field)?.max(0) as u64 });
     }
     Ok(out)
 }
 
-/// O número de documentos do nível e o tamanho médio de cada campo, como o
-/// índice os gravou, com o mesmo peso em todos os campos.
-fn fields_of(conn: &Connection, level: &Level) -> Result<Fields> {
+/// O número de documentos do nível e o tamanho médio de cada campo de
+/// `fields`, como o índice os gravou, com o mesmo peso em todos.
+fn fields_of(conn: &Connection, level: &Level, fields: &[&str]) -> Result<Fields> {
     let mut meta = conn.prepare(&format!("SELECT value FROM {} WHERE key = ?1", level.meta))?;
     let mut number = |key: String| -> Result<f64> {
         Ok(meta.query_row([key], |row| row.get::<_, f64>(0)).optional()?.unwrap_or(0.0))
     };
     let docs = number(format!("{}.docs", level.fts))? as usize;
-    let avg_len =
-        level.fields.iter().map(|name| number(format!("{}.{name}", level.fts))).collect::<Result<Vec<_>>>()?;
-    Ok(Fields { docs, avg_len, weights: vec![FIELD_WEIGHT; level.fields.len()] })
+    let avg_len = fields.iter().map(|name| number(format!("{}.{name}", level.fts))).collect::<Result<Vec<_>>>()?;
+    Ok(Fields { docs, avg_len, weights: vec![FIELD_WEIGHT; fields.len()] })
 }
 
 /// `true` quando o índice dos itens das specs foi feito nas línguas
@@ -750,7 +772,7 @@ fn found_items(conn: &Connection, query: &str, languages: &Languages, limit: usi
     let words = normalizer.query(query);
     let mut item = conn.prepare("SELECT spec, id, code, title, text, files FROM spec_items WHERE rowid = ?1")?;
     let mut out = Vec::new();
-    for (rowid, _) in by_words(conn, &SPEC_LEVEL, &words)?.into_iter().take(limit) {
+    for (rowid, _) in by_words(conn, &SPEC_LEVEL, SPEC_LEVEL.fields, &words)?.into_iter().take(limit) {
         let Some((spec, id, code, title, body, files)) = item
             .query_row([rowid], |row| {
                 Ok((
@@ -794,6 +816,296 @@ fn best_line(body: &str, words: &[Vec<String>], normalizer: &mut Normalizer) -> 
     best.map(|(_, line)| crate::domain::spec_index::cut(line, SPEC_SENTENCE_CHARS))
 }
 
+// ---------------------------------------------------------------------------
+// Os candidatos da busca com filtro
+// ---------------------------------------------------------------------------
+
+/// Os campos da declaração que a lista de base lê: o nome, o caminho, a
+/// assinatura e a documentação.
+const BASE_FIELDS: &[&str] = &["name", "path", "signature", "doc"];
+
+/// Quantos títulos de commit do arquivo vão com cada candidato, os mais
+/// novos.
+const FILE_COMMITS: usize = 3;
+
+/// Os tipos de declaração que, entre os membros de um tipo, são métodos.
+const METHOD_KINDS: [&str; 2] = ["function", "method"];
+
+/// Os candidatos da busca com filtro: a lista inteira do rodízio e os
+/// primeiros dela, até o teto, cada um com o que o mapa guarda dele.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FilterCandidates {
+    /// A lista inteira: as quatro listas juntadas por rodízio, sem teto.
+    pub whole: Vec<i64>,
+    /// Os primeiros da lista inteira, na ordem dela.
+    pub candidates: Vec<FilterCandidate>,
+}
+
+/// Os candidatos do filtro no mapa do projeto em `root`: as palavras de
+/// `query` e a frase de `intent`, com as palavras cortadas nas línguas
+/// `languages`, até `limit` candidatos. As recusas são as de todo leitor do
+/// mapa.
+pub fn candidates(
+    root: &Path,
+    query: &str,
+    intent: &str,
+    languages: &Languages,
+    limit: usize,
+) -> std::result::Result<FilterCandidates, MapRefusal> {
+    candidates_at(&model_path(root), query, intent, languages, limit)
+}
+
+/// Os candidatos de [`candidates`] no mapa gravado em `model`.
+pub fn candidates_at(
+    model: &Path,
+    query: &str,
+    intent: &str,
+    languages: &Languages,
+    limit: usize,
+) -> std::result::Result<FilterCandidates, MapRefusal> {
+    let db = indexed(model, languages)?;
+    let whole = whole_list(db.conn(), query, intent, languages).map_err(unreadable)?;
+    let first: Vec<i64> = whole.iter().take(limit).copied().collect();
+    let candidates = declarations_in(db.conn(), &first).map_err(unreadable)?;
+    Ok(FilterCandidates { whole, candidates })
+}
+
+/// As declarações `ids` do mapa do projeto em `root`, na ordem pedida, com
+/// o que o mapa guarda de cada uma; o id que o mapa não tem fica de fora.
+pub fn declarations(root: &Path, ids: &[i64]) -> std::result::Result<Vec<FilterCandidate>, MapRefusal> {
+    let db = open_existing(&model_path(root))?;
+    declarations_in(db.conn(), ids).map_err(unreadable)
+}
+
+/// As ligações das declarações `ids` no mapa do projeto em `root`: o tipo,
+/// o caminho, os métodos de cada tipo e as implementações de cada método de
+/// contrato.
+pub fn links(root: &Path, ids: &[i64]) -> std::result::Result<Links, MapRefusal> {
+    let db = open_existing(&model_path(root))?;
+    links_in(db.conn(), ids).map_err(unreadable)
+}
+
+/// A lista inteira: o rodízio das listas de base, dos nomes, de tudo e dos
+/// arquivos, nesta ordem. As listas de palavras leem a `query` seguida da
+/// `intent`; a dos nomes, só as palavras da `query`.
+fn whole_list(conn: &Connection, query: &str, intent: &str, languages: &Languages) -> Result<Vec<i64>> {
+    let words = Normalizer::new(languages).query(format!("{query} {intent}").trim());
+    let base = base_list(conn, &words)?;
+    let every_decl_field: Vec<&str> = DECL_LEVEL.columns().collect();
+    let everything = by_words(conn, &DECL_LEVEL, &every_decl_field, &words)?;
+    let every_file_field: Vec<&str> = FILE_LEVEL.columns().collect();
+    let file_scores: HashMap<i64, f64> = by_words(conn, &FILE_LEVEL, &every_file_field, &words)?.into_iter().collect();
+    let base_scores: HashMap<i64, f64> = base.iter().copied().collect();
+    let names = name_list(&name_hits(conn, query)?, fields_of(conn, &DECL_LEVEL, &[])?.docs);
+    let files = file_list(&decl_files(conn)?, &file_scores, &base_scores);
+    let ids = |list: Vec<(i64, f64)>| list.into_iter().map(|(id, _)| id).collect::<Vec<_>>();
+    Ok(round_robin(&[ids(base), ids(names), ids(everything), files]))
+}
+
+/// A lista de base: o BM25F no nível das declarações, sobre o nome, o
+/// caminho, a assinatura e a documentação.
+fn base_list(conn: &Connection, words: &[Vec<String>]) -> Result<Vec<(i64, f64)>> {
+    by_words(conn, &DECL_LEVEL, BASE_FIELDS, words)
+}
+
+/// De cada palavra de nome da `query`, as declarações cujo nome dobrado a
+/// contém, pela tabela trigram.
+fn name_hits(conn: &Connection, query: &str) -> Result<Vec<NameHits>> {
+    let mut stmt = conn.prepare("SELECT rowid, folded FROM decl_trigram WHERE folded LIKE ?1")?;
+    let mut out = Vec::new();
+    for word in name_words(query) {
+        let mut names = Vec::new();
+        let mut rows = stmt.query([format!("%{word}%")])?;
+        while let Some(row) = rows.next()? {
+            names.push((row.get::<_, i64>(0)?, text(row, 1)?.chars().count()));
+        }
+        out.push(NameHits { word_chars: word.chars().count(), names });
+    }
+    Ok(out)
+}
+
+/// Cada declaração do índice com o número do arquivo dela.
+fn decl_files(conn: &Connection) -> Result<Vec<(i64, i64)>> {
+    let mut stmt = conn.prepare("SELECT rowid, file FROM decl_trigram")?;
+    let rows = stmt.query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)))?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// Uma declaração como a tabela a guarda, com as ligações ainda em texto.
+struct Stored {
+    candidate: FilterCandidate,
+    owner: Vec<String>,
+    members: Vec<DeclAt>,
+    implemented_by: Vec<DeclAt>,
+}
+
+/// As declarações `ids`, na ordem pedida, como a tabela as guarda.
+fn stored(conn: &Connection, ids: &[i64]) -> Result<Vec<Stored>> {
+    let mut stmt = conn.prepare(
+        "SELECT file, kind, name, line, end_line, signature, doc, body_comment, owner, contract, members, implemented_by \
+         FROM decls WHERE rowid = ?1",
+    )?;
+    let list = |row: &Row<'_>, at: usize| -> Result<Vec<String>> {
+        Ok(serde_json::from_str(&text(row, at)?).unwrap_or_default())
+    };
+    let places = |row: &Row<'_>, at: usize| -> Result<Vec<DeclAt>> {
+        Ok(serde_json::from_str(&text(row, at)?).unwrap_or_default())
+    };
+    let mut out = Vec::new();
+    for &id in ids {
+        let mut rows = stmt.query([id])?;
+        let Some(row) = rows.next()? else { continue };
+        let line = |at: usize| -> Result<u32> { Ok(u32::try_from(row.get::<_, Option<i64>>(at)?.unwrap_or(0)).unwrap_or(0)) };
+        let mut owner = list(row, 8)?;
+        owner.extend(list(row, 9)?);
+        out.push(Stored {
+            candidate: FilterCandidate {
+                id,
+                kind: text(row, 1)?,
+                name: text(row, 2)?,
+                path: text(row, 0)?,
+                line: line(3)?,
+                end_line: line(4)?,
+                signature: text(row, 5)?,
+                documentation: text(row, 6)?,
+                owner: String::new(),
+                members: Vec::new(),
+                body_comments: text(row, 7)?,
+                file_commits: Vec::new(),
+            },
+            owner,
+            members: places(row, 10)?,
+            implemented_by: places(row, 11)?,
+        });
+    }
+    Ok(out)
+}
+
+/// As declarações `ids`, na ordem pedida, com o dono e o contrato em texto,
+/// os membros (os métodos com `()` no fim) e os títulos dos commits mais
+/// novos do arquivo.
+fn declarations_in(conn: &Connection, ids: &[i64]) -> Result<Vec<FilterCandidate>> {
+    let stored = stored(conn, ids)?;
+    let kinds = kinds_of(conn, stored.iter().flat_map(|decl| &decl.members))?;
+    let paths: HashSet<&str> = stored.iter().map(|decl| decl.candidate.path.as_str()).collect();
+    let titles = newest_titles(conn, &paths)?;
+    Ok(stored
+        .iter()
+        .map(|decl| {
+            let mut candidate = decl.candidate.clone();
+            candidate.owner = decl.owner.join(" ");
+            candidate.members = decl
+                .members
+                .iter()
+                .map(|member| match kinds.get(member) {
+                    Some((_, kind)) if METHOD_KINDS.contains(&kind.as_str()) => format!("{}()", member.name),
+                    _ => member.name.clone(),
+                })
+                .collect();
+            candidate.file_commits = titles.get(candidate.path.as_str()).cloned().unwrap_or_default();
+            candidate
+        })
+        .collect())
+}
+
+/// As ligações de cada declaração de `ids` que o mapa tem.
+fn links_in(conn: &Connection, ids: &[i64]) -> Result<Links> {
+    let stored = stored(conn, ids)?;
+    let kinds = kinds_of(conn, stored.iter().flat_map(|decl| decl.members.iter().chain(&decl.implemented_by)))?;
+    Ok(stored
+        .into_iter()
+        .map(|decl| {
+            let methods = decl
+                .members
+                .iter()
+                .filter_map(|member| kinds.get(member))
+                .filter(|(_, kind)| METHOD_KINDS.contains(&kind.as_str()))
+                .map(|(id, _)| *id)
+                .collect();
+            let implementations = decl
+                .implemented_by
+                .iter()
+                .filter_map(|place| kinds.get(place).map(|(id, _)| (*id, place.file.clone())))
+                .collect();
+            let linked =
+                Linked { kind: decl.candidate.kind, path: decl.candidate.path, methods, implementations };
+            (decl.candidate.id, linked)
+        })
+        .collect())
+}
+
+/// O id e o tipo de cada declaração apontada por `places`, lidos numa
+/// passada só pelos arquivos delas.
+fn kinds_of<'p>(conn: &Connection, places: impl Iterator<Item = &'p DeclAt>) -> Result<HashMap<DeclAt, (i64, String)>> {
+    let wanted: HashSet<&DeclAt> = places.collect();
+    let files: Vec<&str> = wanted.iter().map(|place| place.file.as_str()).collect::<HashSet<_>>().into_iter().collect();
+    let mut out = HashMap::new();
+    if files.is_empty() {
+        return Ok(out);
+    }
+    let slots: Vec<String> = (1..=files.len()).map(|at| format!("?{at}")).collect();
+    let mut stmt =
+        conn.prepare(&format!("SELECT rowid, file, line, name, kind FROM decls WHERE file IN ({})", slots.join(", ")))?;
+    let mut rows = stmt.query(params_from_iter(&files))?;
+    while let Some(row) = rows.next()? {
+        let place = DeclAt {
+            file: text(row, 1)?,
+            line: usize::try_from(row.get::<_, Option<i64>>(2)?.unwrap_or(0)).unwrap_or(0),
+            name: text(row, 3)?,
+        };
+        if wanted.contains(&place) {
+            out.entry(place).or_insert((row.get(0)?, text(row, 4)?));
+        }
+    }
+    Ok(out)
+}
+
+/// Os títulos dos [`FILE_COMMITS`] commits mais novos que mudaram cada
+/// arquivo de `paths`, do mais novo ao mais velho. O mapa sem a história do
+/// git não dá título nenhum.
+fn newest_titles(conn: &Connection, paths: &HashSet<&str>) -> Result<HashMap<String, Vec<String>>> {
+    let mut out: HashMap<String, Vec<String>> = HashMap::new();
+    let mut stmt = conn.prepare("SELECT path FROM history_paths ORDER BY rowid")?;
+    let listed = stmt.query_map([], |row| row.get::<_, Option<String>>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let wanted: HashMap<usize, String> = listed
+        .into_iter()
+        .enumerate()
+        .filter_map(|(at, path)| path.filter(|path| paths.contains(path.as_str())).map(|path| (at, path)))
+        .collect();
+    if wanted.is_empty() {
+        return Ok(out);
+    }
+    let mut stmt = conn.prepare("SELECT title, added, changed FROM commits ORDER BY at DESC, rowid")?;
+    let mut rows = stmt.query([])?;
+    let mut full = 0;
+    while let Some(row) = rows.next()? {
+        let title = text(row, 0)?;
+        if title.trim().is_empty() {
+            continue;
+        }
+        let touched: HashSet<usize> = [1, 2]
+            .into_iter()
+            .map(|at| Ok(serde_json::from_str::<Vec<usize>>(&text(row, at)?).unwrap_or_default()))
+            .collect::<Result<Vec<_>>>()?
+            .into_iter()
+            .flatten()
+            .collect();
+        for path in touched.iter().filter_map(|at| wanted.get(at)) {
+            let titles = out.entry(path.clone()).or_default();
+            if titles.len() < FILE_COMMITS {
+                titles.push(title.clone());
+                if titles.len() == FILE_COMMITS {
+                    full += 1;
+                }
+            }
+        }
+        if full == wanted.len() {
+            break;
+        }
+    }
+    Ok(out)
+}
+
 /// Os arquivos das declarações cujo nome traz a pergunta como pedaço, o nome
 /// mais curto primeiro: só quando a pergunta é uma palavra só, com
 /// [`PIECE_MIN_CHARS`] letras ou mais.
@@ -819,7 +1131,7 @@ fn by_piece(conn: &Connection, query: &str) -> Result<Vec<i64>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::search::TOP;
+    use crate::domain::search::{CANDIDATES, TOP};
     use crate::io::project_map as store;
     use serde_json::{json, Value};
     use tempfile::{tempdir, TempDir};
@@ -865,7 +1177,7 @@ mod tests {
     fn by_words_only(dir: &Path, query: &str) -> Vec<(String, u64)> {
         let db = open_existing(&model_path(dir)).unwrap();
         let words = Normalizer::new(&languages()).query(query);
-        by_words(db.conn(), &FILE_LEVEL, &words)
+        by_words(db.conn(), &FILE_LEVEL, FILE_LEVEL.fields, &words)
             .unwrap()
             .into_iter()
             .map(|(id, score)| {
@@ -1042,5 +1354,203 @@ mod tests {
         assert_eq!(paths(written.path(), "buscar pedido cliente"), paths(dir.path(), "buscar pedido cliente"));
         let db = open_existing(&model_path(written.path())).unwrap();
         assert!(made_in(db.conn(), &languages()).unwrap());
+    }
+
+    // -- os candidatos da busca com filtro -----------------------------------
+
+    /// Um projeto com o mapa `map`, em JSON, gravado pela porta.
+    fn saved_json(map: &Value) -> TempDir {
+        let dir = tempdir().unwrap();
+        store::save_at(&model_path(dir.path()), map, "scan 1", &languages()).unwrap();
+        dir
+    }
+
+    /// O id da declaração `name` no mapa.
+    fn id_of(dir: &Path, name: &str) -> i64 {
+        let db = open_existing(&model_path(dir)).unwrap();
+        db.conn().query_row("SELECT rowid FROM decls WHERE name = ?1", [name], |row| row.get(0)).unwrap()
+    }
+
+    #[test]
+    fn a_word_only_in_a_signature_puts_that_declaration_in_the_base_list() {
+        let dir = saved_json(&json!({"modules": [
+            {"path": "src/relogio.rs", "declarations": [
+                {"kind": "function", "name": "agora", "line": 1, "signature": "pub fn agora() -> Timestamp"}]},
+            {"path": "src/pedido.rs", "declarations": [
+                {"kind": "function", "name": "gravar", "line": 1, "signature": "pub fn gravar()"}]}
+        ]}));
+        let db = open_existing(&model_path(dir.path())).unwrap();
+        let words = Normalizer::new(&languages()).query("timestamp");
+        let base: Vec<i64> = base_list(db.conn(), &words).unwrap().into_iter().map(|(id, _)| id).collect();
+        assert_eq!(base, vec![id_of(dir.path(), "agora")]);
+    }
+
+    #[test]
+    fn a_fresh_map_has_no_case_free_name_index() {
+        let dir = saved(LARGER);
+        let db = open_existing(&model_path(dir.path())).unwrap();
+        let found: i64 = db
+            .conn()
+            .query_row("SELECT count(*) FROM sqlite_master WHERE name = 'decls_name_nocase'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(found, 0);
+    }
+
+    /// O mapa de um contrato e da implementação dele, em arquivos separados,
+    /// com a história de quatro commits.
+    fn contract_map() -> Value {
+        json!({
+          "modules": [
+            {"path": "src/pay/port.rs", "declarations": [
+              {"kind": "trait", "name": "PaymentPort", "line": 1, "end_line": 4, "signature": "pub trait PaymentPort",
+               "doc": "Cobra o pedido.", "members": ["src/pay/port.rs:2:charge", "src/pay/port.rs:3:LIMIT"]},
+              {"kind": "method", "name": "charge", "line": 2, "end_line": 2, "signature": "fn charge(&self, total: u32)",
+               "owner": ["PaymentPort"], "implemented_by": ["src/pay/card.rs:3:charge"]},
+              {"kind": "constant", "name": "LIMIT", "line": 3, "end_line": 3, "owner": ["PaymentPort"]}
+            ]},
+            {"path": "src/pay/card.rs", "declarations": [
+              {"kind": "struct", "name": "CardGateway", "line": 1, "end_line": 1},
+              {"kind": "method", "name": "charge", "line": 3, "end_line": 9, "signature": "fn charge(&self, total: u32)",
+               "owner": ["CardGateway"], "contract": ["PaymentPort"], "body_comment": "manda ao banco do cartão",
+               "implements": ["src/pay/port.rs:2:charge"]}
+            ]}
+          ],
+          "history": {
+            "paths": ["src/pay/card.rs", "src/pay/port.rs"],
+            "commits": [
+              {"id": "c1", "at": 100, "title": "Primeiro cartão", "added": [0, 1]},
+              {"id": "c2", "at": 300, "title": "Cartão com parcela", "changed": [0]},
+              {"id": "c3", "at": 200, "title": "Limite do cartão", "changed": [0]},
+              {"id": "c4", "at": 400, "title": "Cartão sem juros", "changed": [0]}
+            ]
+          }
+        })
+    }
+
+    /// Cada candidato leva o que o mapa guarda: o dono e o contrato, os
+    /// membros com os métodos marcados, os comentários do corpo e os três
+    /// títulos de commit mais novos do arquivo.
+    #[test]
+    fn each_candidate_carries_the_owner_the_members_the_body_comments_and_the_three_newest_commits() {
+        let dir = saved_json(&contract_map());
+        let found = candidates(dir.path(), "charge PaymentPort", "cobrar o pedido no cartão", &languages(), 100).unwrap();
+        assert_eq!(found.whole.len(), 5, "{found:?}");
+        let ids: Vec<i64> = found.candidates.iter().map(|c| c.id).collect();
+        assert_eq!(ids, found.whole, "under the cap every declaration of the whole list is a candidate");
+
+        let port = found.candidates.iter().find(|c| c.name == "PaymentPort").unwrap();
+        assert_eq!(port.members, vec!["charge()".to_string(), "LIMIT".to_string()]);
+        assert_eq!(port.file_commits, vec!["Primeiro cartão".to_string()]);
+        assert_eq!(port.documentation, "Cobra o pedido.");
+
+        let card = found.candidates.iter().find(|c| c.name == "charge" && c.path == "src/pay/card.rs").unwrap();
+        assert_eq!(card.owner, "CardGateway PaymentPort");
+        assert_eq!(card.body_comments, "manda ao banco do cartão");
+        assert_eq!((card.line, card.end_line), (3, 9));
+        assert_eq!(
+            card.file_commits,
+            vec!["Cartão sem juros".to_string(), "Cartão com parcela".to_string(), "Limite do cartão".to_string()]
+        );
+
+        let shown = declarations(dir.path(), &[card.id, 999]).unwrap();
+        assert_eq!(shown, vec![card.clone()], "an id the map does not have is left out");
+    }
+
+    #[test]
+    fn the_links_give_the_methods_of_a_type_and_the_implementations_of_a_contract_method() {
+        let dir = saved_json(&contract_map());
+        let (port, contract) = (id_of(dir.path(), "PaymentPort"), id_of(dir.path(), "LIMIT") - 1);
+        let db = open_existing(&model_path(dir.path())).unwrap();
+        let implementation: i64 = db
+            .conn()
+            .query_row("SELECT rowid FROM decls WHERE name = 'charge' AND file = 'src/pay/card.rs'", [], |row| row.get(0))
+            .unwrap();
+        let found = links(dir.path(), &[port, contract]).unwrap();
+        assert_eq!(found[&port].kind, "trait");
+        assert_eq!(found[&port].methods, vec![contract], "the constant is a member, not a method");
+        assert_eq!(found[&contract].path, "src/pay/port.rs");
+        assert_eq!(found[&contract].implementations, vec![(implementation, "src/pay/card.rs".to_string())]);
+    }
+
+    #[test]
+    fn the_name_list_finds_a_word_of_the_query_inside_a_glued_name() {
+        let dir = saved(LARGER);
+        let db = open_existing(&model_path(dir.path())).unwrap();
+        let hits = name_hits(db.conn(), "pagamento de pedido").unwrap();
+        let named = |hit: &NameHits| -> Vec<String> {
+            let mut names: Vec<String> = hit
+                .names
+                .iter()
+                .map(|(id, _)| {
+                    db.conn().query_row("SELECT name FROM decls WHERE rowid = ?1", [id], |row| row.get(0)).unwrap()
+                })
+                .collect();
+            names.sort();
+            names
+        };
+        assert_eq!(hits.len(), 2, "the three-letter word looks for no name");
+        assert_eq!(named(&hits[0]), ["estornarPagamento"]);
+        // O nome do arquivo escrito por máquina fica fora do índice.
+        assert_eq!(named(&hits[1]), ["buscarPedido", "listarPedidos", "pagarPedido"]);
+        assert_eq!(hits[0].word_chars, 9);
+        assert_eq!(hits[0].names[0].1, "estornarpagamento".chars().count());
+    }
+
+    /// A medida do primeiro elo da busca com filtro: em quantas buscas de
+    /// uma régua a declaração certa está entre os 100 candidatos, e quanto
+    /// tempo a etapa leva. A régua vem de um arquivo JSON apontado por
+    /// `MAP_FIRST_LINK_RULER`: `expected` (as buscas que o laboratório
+    /// acertou) e `searches`, cada uma com `key`, o `model` do projeto, a
+    /// `query`, a `intent` e os `targets` (caminho, nome e linha). A
+    /// diferença acima de 3 buscas falha, com a lista das perdidas.
+    #[test]
+    #[ignore = "mede com os mapas dos projetos de prova"]
+    fn the_first_link_puts_the_right_declaration_among_the_hundred_candidates() {
+        let Ok(ruler) = std::env::var("MAP_FIRST_LINK_RULER") else {
+            panic!("MAP_FIRST_LINK_RULER points to the ruler file");
+        };
+        let ruler: Value = serde_json::from_str(&std::fs::read_to_string(ruler).unwrap()).unwrap();
+        let languages = Languages::new(["pt-BR", "en-US"]);
+        let searches = ruler["searches"].as_array().unwrap();
+        // A primeira busca de cada mapa refaz o índice nas línguas dela: fica
+        // fora do tempo.
+        let mut warmed = HashSet::new();
+        for search in searches {
+            let model = search["model"].as_str().unwrap();
+            if warmed.insert(model.to_string()) {
+                candidates_at(Path::new(model), "warm", "", &languages, CANDIDATES).unwrap();
+            }
+        }
+        let (mut found, mut millis, mut lost) = (0usize, Vec::new(), Vec::new());
+        for search in searches {
+            let text = |key: &str| search[key].as_str().unwrap().to_string();
+            let started = std::time::Instant::now();
+            let got = candidates_at(Path::new(&text("model")), &text("query"), &text("intent"), &languages, CANDIDATES)
+                .unwrap();
+            millis.push(started.elapsed().as_secs_f64() * 1000.0);
+            let targets: Vec<(String, String, u64)> = search["targets"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|t| (t[0].as_str().unwrap().to_string(), t[1].as_str().unwrap().to_string(), t[2].as_u64().unwrap()))
+                .collect();
+            let hit = got.candidates.iter().any(|c| {
+                targets.iter().any(|(path, name, line)| &c.path == path && &c.name == name && u64::from(c.line) == *line)
+            });
+            found += usize::from(hit);
+            if !hit {
+                lost.push(format!("{} (lab: {})", text("key"), search["lab_in_100"]));
+            }
+        }
+        millis.sort_by(f64::total_cmp);
+        let expected = usize::try_from(ruler["expected"].as_u64().unwrap()).unwrap();
+        println!(
+            "first link: {found} of {} with the right one among {CANDIDATES}; lab {expected}; median {:.0} ms, worst {:.0} ms",
+            searches.len(),
+            millis[millis.len() / 2],
+            millis[millis.len() - 1]
+        );
+        println!("lost: {lost:#?}");
+        assert!(found.abs_diff(expected) <= 3, "{found} against {expected}: {lost:#?}");
     }
 }

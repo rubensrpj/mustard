@@ -17,7 +17,7 @@
 //! Função pura: sem disco e sem relógio. A mesma entrada dá sempre a mesma
 //! resposta, na mesma ordem.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::domain::normalize::{Languages, Normalizer};
 use crate::domain::ranking::{avgdl_x1024, bm25_x1024_default, idf_x1024, SCALE};
@@ -213,15 +213,143 @@ pub fn bm25f(words: &[Vec<Vec<Posting>>], fields: &Fields) -> Vec<(i64, f64)> {
             *scores.entry(doc).or_insert(0.0) += score;
         }
     }
-    let mut ranked: Vec<(i64, f64)> = scores.into_iter().filter(|(_, score)| *score > 0.0).collect();
-    ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
-    ranked
+    ranked(scores)
 }
 
 /// A nota do BM25F ×1024, em inteiro, como a das outras buscas.
 #[must_use]
 pub fn score_x1024(score: f64) -> u64 {
     (score * SCALE as f64).round() as u64
+}
+
+// ---------------------------------------------------------------------------
+// Os candidatos do filtro: quatro listas juntadas por rodízio
+// ---------------------------------------------------------------------------
+
+/// Quantos candidatos do banco vão ao filtro, quando o projeto não diz outro
+/// número. Com 100, a cadeia inteira acertou quase o mesmo que com 200 nas
+/// quatro réguas do laboratório (95,6% contra 96,3% das buscas), com metade
+/// dos tokens por busca; as buscas perdidas tinham o certo entre os
+/// candidatos 101 e 200. Com os grupos de 50 do filtro, são 2 pedidos.
+pub const CANDIDATES: usize = 100;
+
+/// A palavra da pergunta que procura um pedaço de nome tem pelo menos estas
+/// letras e números: com menos, ela casa com nome demais.
+pub const NAME_WORD_MIN_CHARS: usize = 4;
+
+/// O nome como a lista dos nomes o compara: minúsculas, sem acento, só
+/// letras e números. `split_identifier` e `SplitIdentifier` viram
+/// `splitidentifier`.
+#[must_use]
+pub fn folded_name(name: &str) -> String {
+    crate::domain::text::fold(name).chars().filter(|c| c.is_alphanumeric()).collect()
+}
+
+/// As palavras da pergunta, separadas por espaço, que a lista dos nomes
+/// procura: cada uma dobrada por [`folded_name`], com pelo menos
+/// [`NAME_WORD_MIN_CHARS`] letras e números, sem repetir.
+#[must_use]
+pub fn name_words(query: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for word in query.split_whitespace().map(folded_name) {
+        if word.chars().count() >= NAME_WORD_MIN_CHARS && !out.contains(&word) {
+            out.push(word);
+        }
+    }
+    out
+}
+
+/// As declarações cujo nome dobrado contém uma palavra de nome: o tamanho
+/// da palavra e, de cada declaração, o número e o tamanho do nome dobrado,
+/// em caracteres.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NameHits {
+    pub word_chars: usize,
+    pub names: Vec<(i64, usize)>,
+}
+
+/// A raridade de uma palavra de nome que casa com `found` das `total`
+/// declarações: `ln(1 + total/found) / ln(1 + total)`. Vai de perto de zero,
+/// para a palavra que casa com quase todas, a 1, para a que casa com uma só.
+#[must_use]
+pub fn name_rarity(found: usize, total: usize) -> f64 {
+    if found == 0 || total == 0 {
+        return 0.0;
+    }
+    let (found, total) = (found as f64, total as f64);
+    (1.0 + total / found).ln() / (1.0 + total).ln()
+}
+
+/// A lista dos nomes: cada declaração soma, por palavra que o nome dela
+/// contém, a raridade da palavra vezes a parte do nome que ela cobre
+/// (`tamanho da palavra / tamanho do nome`). Da nota mais alta para a mais
+/// baixa e, no empate, o número menor primeiro.
+#[must_use]
+pub fn name_list(hits: &[NameHits], total: usize) -> Vec<(i64, f64)> {
+    let mut scores: BTreeMap<i64, f64> = BTreeMap::new();
+    for word in hits {
+        let rarity = name_rarity(word.names.len(), total);
+        for &(id, name_chars) in &word.names {
+            if name_chars > 0 {
+                *scores.entry(id).or_insert(0.0) += rarity * word.word_chars as f64 / name_chars as f64;
+            }
+        }
+    }
+    ranked(scores)
+}
+
+/// As notas acima de zero, da mais alta para a mais baixa e, no empate, o
+/// número menor primeiro.
+#[must_use]
+pub fn ranked(scores: impl IntoIterator<Item = (i64, f64)>) -> Vec<(i64, f64)> {
+    let mut out: Vec<(i64, f64)> = scores.into_iter().filter(|(_, score)| *score > 0.0).collect();
+    out.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+    out
+}
+
+/// A lista dos arquivos: as declarações (`decls`, cada uma com o número do
+/// arquivo dela) dos arquivos com nota acima de zero, pela nota do arquivo,
+/// depois pela nota da declaração na lista de base, depois pelo número.
+#[must_use]
+pub fn file_list<S: std::hash::BuildHasher>(
+    decls: &[(i64, i64)],
+    file_scores: &HashMap<i64, f64, S>,
+    base_scores: &HashMap<i64, f64, S>,
+) -> Vec<i64> {
+    let score = |scores: &HashMap<i64, f64, S>, id: i64| scores.get(&id).copied().unwrap_or(0.0);
+    let mut out: Vec<(i64, f64, f64)> = decls
+        .iter()
+        .map(|&(id, file)| (id, score(file_scores, file), score(base_scores, id)))
+        .filter(|(_, file, _)| *file > 0.0)
+        .collect();
+    out.sort_by(|a, b| b.1.total_cmp(&a.1).then(b.2.total_cmp(&a.2)).then(a.0.cmp(&b.0)));
+    out.into_iter().map(|(id, _, _)| id).collect()
+}
+
+/// O rodízio: tira um item de cada lista, na ordem delas, pulando o que já
+/// entrou, até esgotar todas. Cada número entra uma vez só.
+#[must_use]
+pub fn round_robin(lists: &[Vec<i64>]) -> Vec<i64> {
+    let mut out: Vec<i64> = Vec::new();
+    let mut seen: HashSet<i64> = HashSet::new();
+    let mut next = vec![0usize; lists.len()];
+    loop {
+        let mut took = false;
+        for (list, at) in lists.iter().zip(next.iter_mut()) {
+            while *at < list.len() && seen.contains(&list[*at]) {
+                *at += 1;
+            }
+            if let Some(&id) = list.get(*at) {
+                seen.insert(id);
+                out.push(id);
+                *at += 1;
+                took = true;
+            }
+        }
+        if !took {
+            return out;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -410,5 +538,54 @@ mod tests {
         let common_alone = bm25f(&[vec![common.clone()]], &fields)[0].1;
         let two_words = bm25f(&[vec![common], vec![rare]], &fields);
         assert!((two_words[0].1 - (best_alone + common_alone)).abs() < 1e-12, "two words add up: {two_words:?}");
+    }
+
+    // -- os candidatos do filtro ---------------------------------------------
+
+    #[test]
+    fn the_round_robin_takes_one_of_each_list_until_all_run_out_without_repeating() {
+        let lists = vec![vec![1, 2, 3, 4, 5], vec![2, 6], vec![], vec![7, 1, 8]];
+        // Primeira volta: 1, 2, (vazia), 7; segunda: 3, 6, 8 (o 1 já entrou);
+        // depois só a primeira lista tem o que dar.
+        assert_eq!(round_robin(&lists), vec![1, 2, 7, 3, 6, 8, 4, 5]);
+        assert!(round_robin(&[]).is_empty());
+    }
+
+    #[test]
+    fn a_three_letter_word_does_not_enter_the_name_list() {
+        assert_eq!(name_words("map Split_Identifier SEARCH açaí map açai"), vec!["splitidentifier", "search", "acai"]);
+        assert!(name_words("map a b").is_empty());
+        assert_eq!(folded_name("SplitIdentifier"), folded_name("split_identifier"));
+    }
+
+    #[test]
+    fn the_name_list_adds_the_rarity_times_the_part_of_the_name_each_word_covers() {
+        // "pedido" casa com 2 das 100 declarações; "total", com 50.
+        let hits = vec![
+            NameHits { word_chars: 6, names: vec![(3, 12), (9, 6)] },
+            NameHits { word_chars: 5, names: (1..=50).map(|id| (id, 10)).collect() },
+        ];
+        let listed = name_list(&hits, 100);
+        let rare = name_rarity(2, 100);
+        let common = name_rarity(50, 100);
+        assert!(rare > common && rare < 1.0 && common > 0.0, "{rare} {common}");
+        assert_eq!(listed[0].0, 9, "{listed:?}");
+        assert!((listed[0].1 - (rare + common * 0.5)).abs() < 1e-12, "{listed:?}");
+        assert_eq!(listed[1].0, 3, "{listed:?}");
+        assert!((listed[1].1 - (rare * 0.5 + common * 0.5)).abs() < 1e-12, "{listed:?}");
+        // Os de nota igual vão pelo número.
+        assert_eq!(listed[2].0, 1, "{listed:?}");
+        assert_eq!(listed.len(), 50, "cada declaração entra uma vez: {listed:?}");
+    }
+
+    #[test]
+    fn a_file_with_score_zero_does_not_enter_the_file_list() {
+        // As declarações 1 e 2 moram no arquivo 10; a 3, no 20; a 4, no 30.
+        let decls = [(1, 10), (2, 10), (3, 20), (4, 30)];
+        let files: HashMap<i64, f64> = [(10, 1.5), (20, 0.0), (30, 2.0)].into_iter().collect();
+        let base: HashMap<i64, f64> = [(1, 0.2), (2, 0.9)].into_iter().collect();
+        // O arquivo 30 primeiro; no 10, a nota da base desempata; o 20 fica
+        // de fora.
+        assert_eq!(file_list(&decls, &files, &base), vec![4, 2, 1]);
     }
 }

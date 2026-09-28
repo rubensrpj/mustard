@@ -78,12 +78,18 @@ pub struct Scored {
 }
 
 /// O que o filtro gastou numa chamada.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FilterUsage {
     /// Tokens de entrada cobrados, somados de todos os pedidos.
     pub input_tokens: u64,
     /// Milissegundos da chamada inteira, do primeiro pedido à última resposta.
     pub millis: u64,
+    /// O custo da chamada em milionésimos de dólar: os tokens cobrados vezes
+    /// o preço de tabela do serviço.
+    pub cost_micro_usd: u64,
+    /// O nome do modelo que respondeu, como a resposta o diz. Vazio quando
+    /// ela não diz.
+    pub model: String,
 }
 
 /// A resposta do filtro: o que passou do corte, na ordem da nota, e o uso.
@@ -121,6 +127,26 @@ pub enum FilterError {
     TooLarge { estimated_tokens: u64 },
 }
 
+impl FilterError {
+    /// O motivo da falha numa palavra só, para o aviso e para o registro da
+    /// chamada: nunca leva a chave nem o corpo da resposta.
+    #[must_use]
+    pub fn reason(&self) -> &'static str {
+        match self {
+            Self::MissingKey => "missing_key",
+            Self::KeyFileOpen { .. } => "key_file_open",
+            Self::Network(_) => "network",
+            Self::Refused { status: 401 | 403 } => "key_refused",
+            Self::Refused { status: 402 } => "no_credit",
+            Self::Refused { status: 429 } => "busy",
+            Self::Refused { .. } => "refused",
+            Self::Timeout => "timeout",
+            Self::Unreadable(_) => "unreadable",
+            Self::TooLarge { .. } => "too_large",
+        }
+    }
+}
+
 /// A tomada: quem dá nota aos candidatos e devolve o que passa do corte.
 pub trait MapFilter {
     /// Dá nota a cada candidato de `request` contra a frase e devolve o que
@@ -138,6 +164,13 @@ pub trait MapFilter {
 
 /// Quantos itens voltam, no máximo.
 pub const MAX_KEPT: usize = 12;
+
+/// O mínimo do corte que a busca pede, quando o projeto não diz outro. Com
+/// 8, o corte empatou com 0 e com 6 nas perguntas escritas sobre o código,
+/// achou 2 buscas a mais nas perguntas tiradas das mensagens do usuário e foi
+/// o único que trouxe o serviço certo na simulação de uma tarefa real; custa
+/// perto de 1 item a mais por busca.
+pub const CUT_MINIMUM: usize = 8;
 
 /// A nota abaixo da qual nada volta, nem para completar o mínimo.
 pub const SCORE_FLOOR: f64 = 0.15;

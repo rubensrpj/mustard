@@ -38,10 +38,10 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("scan.map.type_line", Locale::PtBr) => "Tipo: {kind} · {count} arquivos",
         ("scan.map.type_line", Locale::EnUs) => "Type: {kind} · {count} files",
         ("scan.map.pointer", Locale::PtBr) => {
-            "O terreno já está na sua janela (o resumo do mapa injetado no início da sessão). Para localizar: `grep` para termo exato conhecido; `mustard-rt run map search --query \"<palavras>\"` para conceito. Na mesma busca, junte as palavras do pedido do usuário e os nomes prováveis no código, em inglês, camelCase ou snake_case: `--query \"prazo de entrega deliveryDeadline due_date\"`. Depois leia os arquivos apontados: o mapa acha onde olhar, não substitui ler."
+            "O terreno já está na sua janela (o resumo do mapa injetado no início da sessão). Para localizar: `grep` para termo exato conhecido; `mustard-rt run map search --query \"<palavras>\" --intent \"<frase>\"` para conceito. Na mesma busca, junte as palavras do pedido do usuário e os nomes prováveis no código, em inglês, camelCase ou snake_case: `--query \"prazo de entrega deliveryDeadline due_date\"`. Em `--intent` vai a frase do que você procura e para quê. O pedaço de um nome vai só em `--query`. Depois leia os arquivos apontados: o mapa acha onde olhar, não substitui ler."
         }
         ("scan.map.pointer", Locale::EnUs) => {
-            "The terrain is already in your window (the map summary injected at session start). To locate: `grep` for a known exact term; `mustard-rt run map search --query \"<words>\"` for a concept. In the same search, join the words of the user's request and the likely names in the code, in English, camelCase or snake_case: `--query \"delivery deadline deliveryDeadline due_date\"`. Then read the files it points to: the map finds where to look, it does not replace reading."
+            "The terrain is already in your window (the map summary injected at session start). To locate: `grep` for a known exact term; `mustard-rt run map search --query \"<words>\" --intent \"<sentence>\"` for a concept. In the same search, join the words of the user's request and the likely names in the code, in English, camelCase or snake_case: `--query \"delivery deadline deliveryDeadline due_date\"`. In `--intent` goes the sentence of what you are looking for and why. Part of a name goes only in `--query`. Then read the files it points to: the map finds where to look, it does not replace reading."
         }
         // The project map (`run map`): refusals, reasons of the examples and
         // the session-start summary.
@@ -238,6 +238,55 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("map.history.spec", Locale::PtBr) => "combinado na spec {spec}, {code}: {sentence}",
         ("map.history.spec", Locale::EnUs) => "agreed in spec {spec}, {code}: {sentence}",
+        // A busca com filtro: a frase da busca de uma palavra só, os avisos
+        // do filtro e dos números da seção `search`, e o motivo de cada falha
+        // do filtro.
+        ("map.search.name_piece", Locale::PtBr) => "pedaço de nome: {word}",
+        ("map.search.name_piece", Locale::EnUs) => "part of a name: {word}",
+        ("map.search.filter_failed", Locale::PtBr) => {
+            "O filtro da busca falhou por {reason}. A resposta veio só do banco do mapa."
+        }
+        ("map.search.filter_failed", Locale::EnUs) => {
+            "The search filter failed because of {reason}. The answer came from the map database alone."
+        }
+        ("map.search.reason.no_credit", Locale::PtBr) => "falta de crédito",
+        ("map.search.reason.no_credit", Locale::EnUs) => "missing credit",
+        ("map.search.reason.key_refused", Locale::PtBr) => "chave recusada",
+        ("map.search.reason.key_refused", Locale::EnUs) => "a refused key",
+        ("map.search.reason.network", Locale::PtBr) => "falha de rede",
+        ("map.search.reason.network", Locale::EnUs) => "a network failure",
+        ("map.search.reason.timeout", Locale::PtBr) => "tempo esgotado",
+        ("map.search.reason.timeout", Locale::EnUs) => "a timeout",
+        ("map.search.reason.unreadable", Locale::PtBr) => "resposta ilegível",
+        ("map.search.reason.unreadable", Locale::EnUs) => "an unreadable answer",
+        ("map.search.reason.too_large", Locale::PtBr) => "pedido grande demais",
+        ("map.search.reason.too_large", Locale::EnUs) => "a request too large",
+        ("map.search.reason.busy", Locale::PtBr) => "serviço ocupado",
+        ("map.search.reason.busy", Locale::EnUs) => "a busy service",
+        ("map.search.reason.refused", Locale::PtBr) => "recusa do serviço",
+        ("map.search.reason.refused", Locale::EnUs) => "a refusal of the service",
+        ("map.search.bad_number", Locale::PtBr) => {
+            "O valor de search.{key} no mustard.json não vale, porque o número tem que ser inteiro e maior que zero. \
+             A busca usa o padrão, {default}."
+        }
+        ("map.search.bad_number", Locale::EnUs) => {
+            "The value of search.{key} in mustard.json does not count, because the number must be a whole number \
+             above zero. The search uses the default, {default}."
+        }
+        ("map.search.bad_filter", Locale::PtBr) => {
+            "O valor de search.filter no mustard.json não vale, porque o filtro tem que ser jev ou none. A busca \
+             segue sem filtro."
+        }
+        ("map.search.bad_filter", Locale::EnUs) => {
+            "The value of search.filter in mustard.json does not count, because the filter must be jev or none. The \
+             search goes on without a filter."
+        }
+        ("map.search.key_file_open", Locale::PtBr) => {
+            "Outros usuários da máquina podem ler o arquivo da chave do filtro, {path}. Rode chmod 600 {path}."
+        }
+        ("map.search.key_file_open", Locale::EnUs) => {
+            "Other users of the machine can read the key file of the filter, {path}. Run chmod 600 {path}."
+        }
         ("map.history_unreadable", Locale::PtBr) => "A história de `{file}` não pôde ser lida do git ({detail}).",
         ("map.history_unreadable", Locale::EnUs) => "The history of `{file}` could not be read from git ({detail}).",
         _ => return None,
@@ -257,8 +306,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("map.rs"),
             super::PREFIXES,
-            46,
-            0xfbf2_0e41_3bb8_bc85,
+            59,
+            0x07f4_2822_350d_f5fc,
         );
     }
 
@@ -288,6 +337,10 @@ mod tests {
                 "map.history.pull_missing",
                 "map.history.spec",
                 "map.history_unreadable",
+                "map.search.filter_failed",
+                "map.search.bad_number",
+                "map.search.bad_filter",
+                "map.search.key_file_open",
             ] {
                 let text = translate(key, lang)
                     .replace("{name}", "run")
@@ -302,7 +355,9 @@ mod tests {
                     .replace("{number}", "7")
                     .replace("{spec}", "entrega")
                     .replace("{code}", "combinado")
-                    .replace("{sentence}", "O pedido sai em uma frase.");
+                    .replace("{sentence}", "O pedido sai em uma frase.")
+                    .replace("{reason}", translate("map.search.reason.timeout", lang))
+                    .replace("{path}", "/casa/jev.key");
                 let report = crate::domain::clarity::measure(&text, &[], Some(lang));
                 assert!(report.passed, "{key} {lang:?}: {report:?}");
             }
@@ -328,6 +383,17 @@ mod tests {
             assert!(example.split(' ').any(|w| w.chars().all(char::is_lowercase)), "{lang:?}: {example}");
             let report = crate::domain::clarity::measure(text, &[], Some(lang));
             assert!(report.passed, "{lang:?}: {report:?}");
+        }
+    }
+
+    /// A dica do mapa manda a frase do que se procura em `--intent`, e o
+    /// pedaço de nome só em `--query`, nos dois idiomas.
+    #[test]
+    fn the_map_hint_sends_the_sentence_in_the_intent() {
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let text = translate("scan.map.pointer", lang);
+            assert!(text.contains("--query \"<") && text.contains("--intent \"<"), "{lang:?}: {text}");
+            assert!(text.contains("`--intent`"), "{lang:?}: {text}");
         }
     }
 
@@ -378,6 +444,19 @@ mod tests {
             ("map.history.pull_missing", &["{number}"][..]),
             ("map.history.spec", &["{spec}", "{code}", "{sentence}"][..]),
             ("map.history_unreadable", &["{file}", "{detail}"][..]),
+            ("map.search.name_piece", &["{word}"][..]),
+            ("map.search.filter_failed", &["{reason}"][..]),
+            ("map.search.reason.no_credit", &[][..]),
+            ("map.search.reason.key_refused", &[][..]),
+            ("map.search.reason.network", &[][..]),
+            ("map.search.reason.timeout", &[][..]),
+            ("map.search.reason.unreadable", &[][..]),
+            ("map.search.reason.too_large", &[][..]),
+            ("map.search.reason.busy", &[][..]),
+            ("map.search.reason.refused", &[][..]),
+            ("map.search.bad_number", &["{key}", "{default}"][..]),
+            ("map.search.bad_filter", &[][..]),
+            ("map.search.key_file_open", &["{path}"][..]),
             ("doctor.scan_output.visible", &["{paths}"][..]),
         ] {
             let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));

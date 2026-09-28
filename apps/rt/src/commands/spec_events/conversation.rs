@@ -19,10 +19,10 @@
 use std::path::Path;
 use std::time::Instant;
 
-use mustard_core::domain::spec_events::PURGED_MARK;
 use mustard_core::domain::spec_state::{last_user_message, PhaseWriter, SpecState, State};
 use serde_json::{json, Map, Value};
 
+use super::pages::secret::without_secrets;
 use crate::shared::spec_state::DiskSpecState;
 
 /// As fases em que a spec já terminou, e a conversa não é mais dela.
@@ -74,20 +74,6 @@ fn draft(fields: Value) -> Map<String, Value> {
         Value::Object(map) => map,
         _ => Map::new(),
     }
-}
-
-/// O texto como ele vai para o arquivo da spec: cada trecho com cara de
-/// segredo sai como "…". O mais longo sai primeiro, para o trecho que mora
-/// dentro de outro não deixar sobra. O campo de busca é calculado deste texto
-/// na gravação, então também não leva o segredo.
-fn without_secrets(text: &str) -> String {
-    let mut excerpts = super::pages::secret::secret_excerpts(text);
-    excerpts.sort_by_key(|excerpt| std::cmp::Reverse(excerpt.len()));
-    let mut out = text.to_string();
-    for excerpt in excerpts {
-        out = out.replace(&excerpt, PURGED_MARK);
-    }
-    out
 }
 
 /// A mensagem do usuário, como ele a escreveu, sem os segredos.
@@ -178,6 +164,22 @@ pub(crate) fn record_injection(root: &Path, session: Option<&str>, hook: &str, t
 /// certo, e a razão da recusa (`reason`, ou o `error` das portas do pull
 /// request). A spec é a do relatório, a que a chamada nomeou, ou a atual.
 pub(crate) fn record_call(root: &Path, command: &str, named: Option<&str>, started: Instant, report: &Value) -> Option<u64> {
+    let session = crate::shared::spec_state::session_from_env();
+    record_measured_call(root, command, named, session.as_deref(), started, report, Map::new())
+}
+
+/// A chamada de [`record_call`], da sessão `session`, com os campos da
+/// medida de quem chamou (`measured`) além dos de toda chamada: a busca do
+/// mapa grava o filtro, o tempo dele, os tokens e o custo.
+pub(crate) fn record_measured_call(
+    root: &Path,
+    command: &str,
+    named: Option<&str>,
+    session: Option<&str>,
+    started: Instant,
+    report: &Value,
+    measured: Map<String, Value>,
+) -> Option<u64> {
     let spec = report
         .get("spec")
         .and_then(Value::as_str)
@@ -185,7 +187,7 @@ pub(crate) fn record_call(root: &Path, command: &str, named: Option<&str>, start
         .map(str::trim)
         .filter(|spec| !spec.is_empty())
         .map(str::to_string)
-        .or_else(|| conversation_spec(root, crate::shared::spec_state::session_from_env().as_deref()))?;
+        .or_else(|| conversation_spec(root, session))?;
     DiskSpecState::new(root).log(&spec)?;
     let ok = report.get("ok").and_then(Value::as_bool) == Some(true);
     let ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
@@ -199,7 +201,9 @@ pub(crate) fn record_call(root: &Path, command: &str, named: Option<&str>, start
     if let Some(reason) = reason.filter(|_| !ok) {
         fields["refusal"] = json!(reason);
     }
-    record_in_spec(root, &spec, "call", draft(fields))
+    let mut fields = draft(fields);
+    fields.extend(measured);
+    record_in_spec(root, &spec, "call", fields)
 }
 
 #[cfg(test)]

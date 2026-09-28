@@ -1,9 +1,11 @@
 //! Texto com cara de segredo: chave, token ou senha.
 //!
-//! A procura devolve os trechos que achou, e a mesma procura serve à página e
-//! ao expurgo: antes de uma página ser publicada, cada texto dela passa por
-//! aqui, e o trecho achado sai da página como "…"; o expurgo troca o mesmo
-//! trecho por "…" no arquivo da spec. Três famílias:
+//! A procura devolve os trechos que achou, e a mesma procura serve à página,
+//! ao expurgo e ao envio a serviço de fora: antes de uma página ser
+//! publicada, cada texto dela passa por aqui, e o trecho achado sai da página
+//! como "…"; o expurgo troca o mesmo trecho por "…" no arquivo da spec; e o
+//! texto que vai a um serviço de fora sai sem ele ([`without_secrets`]). Três
+//! famílias:
 //!
 //! - as chaves e os tokens com forma conhecida e o cabeçalho de chave privada,
 //!   que casam sozinhos;
@@ -25,6 +27,7 @@
 
 use std::sync::OnceLock;
 
+use mustard_core::domain::spec_events::PURGED_MARK;
 use regex::Regex;
 
 /// As formas de chave e token que não se confundem com texto comum.
@@ -152,6 +155,20 @@ pub(crate) fn secret_excerpts(text: &str) -> Vec<String> {
         if !excerpt.is_empty() && !out.contains(&excerpt) {
             out.push(excerpt);
         }
+    }
+    out
+}
+
+/// O texto sem os segredos: cada trecho com cara de segredo sai como "…",
+/// a mesma marca do expurgo. O mais longo sai primeiro, para o trecho que
+/// mora dentro de outro não deixar sobra. É o texto que vai para o arquivo
+/// da spec e o que sai da máquina para um serviço de fora.
+pub(crate) fn without_secrets(text: &str) -> String {
+    let mut excerpts = secret_excerpts(text);
+    excerpts.sort_by_key(|excerpt| std::cmp::Reverse(excerpt.len()));
+    let mut out = text.to_string();
+    for excerpt in excerpts {
+        out = out.replace(&excerpt, PURGED_MARK);
     }
     out
 }

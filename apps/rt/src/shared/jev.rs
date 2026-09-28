@@ -10,7 +10,12 @@
 //! De cada candidato vão só nomes, caminho, assinatura, documentação,
 //! comentários, o dono, os membros e títulos de commit, com os cortes medidos
 //! no laboratório. Nunca uma linha do corpo nem um texto entre aspas: o
-//! candidato do núcleo nem tem onde guardá-los.
+//! candidato do núcleo nem tem onde guardá-los. Todo texto que sai, o pedido
+//! e as palavras inclusive, passa antes pela procura de segredo, e o trecho
+//! com cara de chave, senha ou token vai como "…".
+//!
+//! O modelo pedido é uma versão fixa, e o uso guarda o nome do modelo que a
+//! resposta diz ter respondido.
 //!
 //! A chave vale para a máquina inteira: [`KEY_ENV`] no ambiente ou o arquivo
 //! [`KEY_FILE`] na pasta do Mustard da máquina ([`key_path`]). Nenhum projeto
@@ -28,6 +33,8 @@ use mustard_core::domain::map_filter::{
 use mustard_core::domain::normalize::split_identifier;
 use serde_json::{Map, Value, json};
 
+use crate::commands::spec_events::pages::secret::without_secrets;
+
 // ---------------------------------------------------------------------------
 // O serviço
 // ---------------------------------------------------------------------------
@@ -35,8 +42,10 @@ use serde_json::{Map, Value, json};
 /// O endereço do serviço.
 pub const JEV_URL: &str = "https://api.typesafe.ai/v1/systemone";
 
-/// O modelo pedido: sempre a versão mais nova do serviço.
-pub const JEV_MODEL: &str = "jev-latest";
+/// O modelo pedido: uma versão fixa, a que o laboratório mediu. A versão
+/// mais nova do serviço mudaria as notas sem aviso; a troca vem com medida
+/// nova.
+pub const JEV_MODEL: &str = "jev-1.13.0";
 
 /// US$ por milhão de tokens de entrada; a saída não é cobrada.
 pub const PRICE_PER_MILLION_INPUT_TOKENS: f64 = 0.042;
@@ -47,7 +56,7 @@ pub const KEY_ENV: &str = "TYPESAFE_API_KEY";
 /// O arquivo da chave, na pasta do Mustard da máquina, com permissão 600.
 pub const KEY_FILE: &str = "jev.key";
 
-/// Candidatos por pedido. Com o teto de 200 do banco, são 4 pedidos.
+/// Candidatos por pedido. Com os 100 candidatos do banco, são 2 pedidos.
 pub const GROUP_SIZE: usize = 50;
 
 /// O maior pedido que o serviço aceita, em tokens. Com 50 candidatos, um
@@ -83,11 +92,15 @@ const MAX_RETRY_WAIT: Duration = Duration::from_secs(5);
 // Os textos do pedido, como o filtro medido os mandava
 // ---------------------------------------------------------------------------
 
+// Cada campo que `candidate_fields` põe no candidato, pela chave, entre
+// crases, na ordem dele: o teste confere os dois lados.
 const ABOUT: &str = "A coding agent is searching a codebase. `request` is what it asked for, in Portuguese or English: either a \
 description of what some code does, or the name, or part of the name, of an identifier. Each question shows \
-one candidate declaration with what the code index knows about it: its kind, its name split into words, its \
-file path, its signature, its documentation, the files that import its file, the files its file imports and \
-the titles of the last commits that changed its file. The body of the code is not shown.";
+one candidate declaration with what the code index knows about it: `kind`, `name` (its name split into words), \
+`path` (its file path), `signature`, `documentation`, `last commits of the file` (the titles of the last commits \
+that changed its file), `owner` (the names of the type or block that holds it), `comments in the body` (the \
+comments inside its code) and `members` (the members it declares, when it is a type). The body of the code is \
+not shown.";
 
 const ANSWER_YES_WHEN: &str = "The candidate is the code the request asks for: it does, defines or decides what the request describes, \
 or its name is the identifier the request names.";
@@ -268,15 +281,32 @@ impl MapFilter for JevFilter {
         });
         let mut scores = Vec::with_capacity(request.candidates.len());
         let mut input_tokens = 0;
+        let mut models: Vec<String> = Vec::new();
         for (group, answer) in groups.iter().zip(answers) {
             let doc = answer?;
             input_tokens += read_scores(&doc, group, &mut scores)?;
+            let model = doc.get("model").and_then(Value::as_str).map(str::trim).unwrap_or_default();
+            if !model.is_empty() && !models.iter().any(|seen| seen == model) {
+                models.push(model.to_string());
+            }
         }
         Ok(Filtered {
             kept: cut(&scores, request.minimum),
-            usage: FilterUsage { input_tokens, millis: started.elapsed().as_millis() as u64 },
+            usage: FilterUsage {
+                input_tokens,
+                millis: started.elapsed().as_millis() as u64,
+                cost_micro_usd: cost_micro_usd(input_tokens),
+                model: models.join(","),
+            },
         })
     }
+}
+
+/// O custo de `input_tokens` tokens de entrada em milionésimos de dólar,
+/// pelo preço de tabela: o preço por milhão de tokens é o preço de cada
+/// token em milionésimos.
+fn cost_micro_usd(input_tokens: u64) -> u64 {
+    (input_tokens as f64 * PRICE_PER_MILLION_INPUT_TOKENS).round() as u64
 }
 
 /// As notas de um grupo, na ordem do banco, somadas a `scores`; devolve os
@@ -336,9 +366,10 @@ fn estimated_tokens(payload: &str) -> u64 {
 /// palavras como palpites, o que é a busca e quando responder sim ou não.
 fn state(request: &FilterRequest) -> Value {
     let asked = if request.phrase.trim().is_empty() { request.words.join(" ") } else { request.phrase.clone() };
+    let words: Vec<String> = request.words.iter().map(|word| without_secrets(word)).collect();
     let mut state = Map::new();
-    state.insert("request".to_string(), Value::String(asked));
-    state.insert(GUESSED_WORDS.to_string(), json!(request.words));
+    state.insert("request".to_string(), Value::String(without_secrets(&asked)));
+    state.insert(GUESSED_WORDS.to_string(), json!(words));
     state.insert("about".to_string(), Value::String(ABOUT.to_string()));
     state.insert("answer yes when".to_string(), Value::String(ANSWER_YES_WHEN.to_string()));
     state.insert("answer no when".to_string(), Value::String(ANSWER_NO_WHEN.to_string()));
@@ -366,18 +397,23 @@ fn question_id(index: usize) -> String {
     format!("c{index:02}")
 }
 
-/// O que vai de um candidato, na ordem medida, sem os campos vazios.
+/// O que vai de um candidato, na ordem medida, sem os campos vazios. Cada
+/// texto sai sem os segredos, antes dos cortes: o corte não parte um segredo
+/// num trecho que a procura já não reconhece.
 fn candidate_fields(candidate: &FilterCandidate) -> Value {
+    let clean = |text: &str| without_secrets(text);
+    let commits: Vec<String> = candidate.file_commits.iter().take(FILE_COMMITS).map(|title| clean(title)).collect();
+    let members: Vec<String> = candidate.members.iter().map(|member| clean(member)).collect();
     let mut out = Map::new();
-    put_text(&mut out, "kind", candidate.kind.clone());
-    put_text(&mut out, "name", split_identifier(&candidate.name));
-    put_text(&mut out, "path", candidate.path.clone());
-    put_text(&mut out, "signature", squash(&candidate.signature).chars().take(SIGNATURE_CHARS).collect());
-    put_text(&mut out, "documentation", clip(&candidate.documentation, DOCUMENTATION_CHARS, "…"));
-    put_list(&mut out, "last commits of the file", candidate.file_commits.iter().take(FILE_COMMITS).cloned().collect());
-    put_text(&mut out, "owner", owner_names(&candidate.owner));
-    put_text(&mut out, "comments in the body", clip(&candidate.body_comments, BODY_COMMENTS_CHARS, " …"));
-    put_list(&mut out, "members", capped(&candidate.members, MEMBERS));
+    put_text(&mut out, "kind", clean(&candidate.kind));
+    put_text(&mut out, "name", split_identifier(&clean(&candidate.name)));
+    put_text(&mut out, "path", clean(&candidate.path));
+    put_text(&mut out, "signature", squash(&clean(&candidate.signature)).chars().take(SIGNATURE_CHARS).collect());
+    put_text(&mut out, "documentation", clip(&clean(&candidate.documentation), DOCUMENTATION_CHARS, "…"));
+    put_list(&mut out, "last commits of the file", commits);
+    put_text(&mut out, "owner", owner_names(&clean(&candidate.owner)));
+    put_text(&mut out, "comments in the body", clip(&clean(&candidate.body_comments), BODY_COMMENTS_CHARS, " …"));
+    put_list(&mut out, "members", capped(&members, MEMBERS));
     Value::Object(out)
 }
 
@@ -651,8 +687,97 @@ mod tests {
 
         let sent = service.received();
         assert_eq!(sent.len(), 1);
+        // O arquivo guarda o pedido como o laboratório o mandou. As diferenças
+        // planejadas são só duas: o `about`, que cita cada campo que vai no
+        // candidato, e a versão fixa do modelo.
+        let mut expected = example["body"].clone();
+        expected["state"]["about"] = json!(ABOUT);
+        expected["model"] = json!(JEV_MODEL);
         // Com a ordem dos campos: o texto inteiro é igual ao do laboratório.
-        assert_eq!(sent[0].body.to_string(), example["body"].to_string());
+        assert_eq!(sent[0].body.to_string(), expected.to_string());
+    }
+
+    /// Um candidato com todos os campos cheios.
+    fn full_candidate() -> FilterCandidate {
+        FilterCandidate {
+            id: 1,
+            kind: "method".to_string(),
+            name: "chargeCard".to_string(),
+            path: "src/pay/card.rs".to_string(),
+            line: 3,
+            end_line: 9,
+            signature: "fn charge_card(&self, total: u32)".to_string(),
+            documentation: "Cobra o cartão.".to_string(),
+            owner: "CardGateway PaymentPort".to_string(),
+            members: vec!["charge()".to_string()],
+            body_comments: "manda ao banco".to_string(),
+            file_commits: vec!["Cartão sem juros".to_string()],
+        }
+    }
+
+    /// Os nomes entre crases do texto, na ordem.
+    fn quoted(text: &str) -> Vec<String> {
+        text.split('`').skip(1).step_by(2).map(str::to_string).collect()
+    }
+
+    #[test]
+    fn the_about_names_each_field_of_the_candidate_in_its_order() {
+        let fields = candidate_fields(&full_candidate());
+        let keys: Vec<String> = fields.as_object().unwrap().keys().cloned().collect();
+        assert_eq!(keys.len(), 9, "every field is filled: {keys:?}");
+        let named: Vec<String> = quoted(ABOUT).into_iter().skip_while(|name| name == "request").collect();
+        assert_eq!(named, keys);
+    }
+
+    #[test]
+    fn a_secret_in_any_text_does_not_leave_the_machine() {
+        let key = format!("ghp_{}", "a1B2c3D4".repeat(5));
+        let secret = format!("DB_PASSWORD=S3nh4F0rte2024 {key}");
+        let mut leaky = full_candidate();
+        for text in [
+            &mut leaky.name,
+            &mut leaky.path,
+            &mut leaky.signature,
+            &mut leaky.documentation,
+            &mut leaky.owner,
+            &mut leaky.body_comments,
+        ] {
+            text.push_str(&format!(" {secret}"));
+        }
+        leaky.members.push(key.clone());
+        leaky.file_commits = vec![format!("Troca a chave {key}")];
+        let mut asked = request(vec![leaky]);
+        asked.words.push(key.clone());
+        asked.phrase = format!("a senha do banco: {secret}");
+        let service = FakeService::start(1, |_, body| Reply::json(200, &answer_by_name(body, |_| 0.5)));
+        service.filter().filter(&asked).unwrap();
+
+        let sent = service.received()[0].body.to_string();
+        assert!(!sent.contains("S3nh4F0rte2024"), "{sent}");
+        assert!(!sent.contains(&key[..12]), "{sent}");
+        assert!(sent.contains("Troca a chave …"), "the rest of the text still goes: {sent}");
+        assert!(sent.contains("Cobra o cartão."), "{sent}");
+    }
+
+    #[test]
+    fn the_usage_keeps_the_model_that_answered_and_the_cost_of_the_tokens() {
+        let service = FakeService::start(2, |_, body| {
+            let mut answer = answer_by_name(body, |_| 0.5);
+            answer["model"] = json!("jev-1.13.0");
+            answer["usage"]["input_tokens"] = json!(10_500);
+            Reply::json(200, &answer)
+        });
+        let got = service.filter().filter(&request((1..=100).map(candidate).collect())).unwrap();
+        assert_eq!(service.received().len(), 2);
+        assert!(service.received().iter().all(|sent| sent.body["model"] == json!("jev-1.13.0")));
+        assert_eq!(got.usage.input_tokens, 21_000);
+        assert_eq!(got.usage.model, "jev-1.13.0");
+        // 21 mil tokens a US$ 0,042 o milhão: US$ 0,000882.
+        assert_eq!(got.usage.cost_micro_usd, 882);
+
+        let silent = FakeService::start(1, |_, body| Reply::json(200, &answer_by_name(body, |_| 0.5)));
+        let got = silent.filter().filter(&request(vec![candidate(1)])).unwrap();
+        assert_eq!(got.usage.model, "", "an answer that does not say the model leaves it empty");
     }
 
     #[test]

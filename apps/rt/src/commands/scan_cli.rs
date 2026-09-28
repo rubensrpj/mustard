@@ -47,7 +47,10 @@ pub enum ScanCmd {
     /// file), `history --name <declaration>` (the commits of the base branch
     /// that changed it, newest first, with title and pull request number;
     /// `--file` picks the file when the name lives in more than one), `search
-    /// --query`, `summary` (the session-start summary, up to
+    /// --query "<words>" --intent "<sentence>"` (the words and the likely
+    /// names in `--query`, the sentence of what you look for and why in
+    /// `--intent`; part of a name only in `--query`), `summary` (the
+    /// session-start summary, up to
     /// 3 kB), `skill --path <SKILL.md>` (every cited path exists and the
     /// skill stays under 500 lines) or `dump` (the map database table by
     /// table, in a fixed order, for debugging). Reads `.claude/grain.db`;
@@ -65,9 +68,14 @@ pub enum ScanCmd {
         /// The task, in words, when there is no target file (`examples`).
         #[arg(long)]
         task: Option<String>,
-        /// The words to look for (`search`).
+        /// The words to look for (`search`): the words of the request and the
+        /// likely names in the code. Part of a name goes only here.
         #[arg(long)]
         query: Option<String>,
+        /// The sentence of what you are looking for and why (`search`); the
+        /// filter reads it, and the search without a filter ignores it.
+        #[arg(long)]
+        intent: Option<String>,
         /// The skill to check (`skill`).
         #[arg(long)]
         path: Option<PathBuf>,
@@ -90,13 +98,14 @@ pub enum ScanCmd {
 pub fn dispatch(cmd: ScanCmd) {
     match cmd {
         ScanCmd::Scan { root, out, full } => scan::run(&root, out.as_deref(), full),
-        ScanCmd::Map { question, file, task, query, path, name, pr, root } => {
+        ScanCmd::Map { question, file, task, query, intent, path, name, pr, root } => {
             crate::commands::map::run(&crate::commands::map::MapOpts {
                 root,
                 question,
                 file,
                 task,
                 query,
+                intent,
                 path,
                 name,
                 pr,

@@ -16,9 +16,11 @@
 //!   commits da branch de partida que mudaram a declaração, do mais novo ao
 //!   mais velho, com o título e o número do pull request; a lista de cada
 //!   arquivo se monta na primeira pergunta sobre ele e fica gravada no mapa;
-//! - `search --query "<palavras>"`: a busca por conceito, nos arquivos e
-//!   nos itens combinados das specs, cada um com a função ou o arquivo
-//!   ligado a ele;
+//! - `search --query "<palavras>" --intent "<frase>"`: a busca por
+//!   conceito, nos arquivos e nos itens combinados das specs, cada um com a
+//!   função ou o arquivo ligado a ele. Com o filtro, os candidatos do banco
+//!   ganham a nota dele contra a frase, e a resposta traz as peças que
+//!   passaram, com o que cada uma puxou pelas ligações do mapa;
 //! - `summary`: o resumo do início da sessão, até 3 kB;
 //! - `skill --path <SKILL.md>`: confere os caminhos que a skill cita e o
 //!   tamanho dela;
@@ -30,19 +32,22 @@
 //! se leem o mapa, a skill e o arquivo de onde sai o trecho, e se imprime o
 //! JSON.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use clap::ValueEnum;
+use mustard_core::domain::map_filter::{FilterCandidate, FilterError, FilterRequest, Filtered, MapFilter, CUT_MINIMUM};
+use mustard_core::domain::map_select::{capped, select, Source, MAX_RETURNED};
 use mustard_core::domain::normalize::Languages;
 use mustard_core::domain::project_map::{self as project_map, DeclAt, MapRefusal, ProjectMap, UseSite};
 use mustard_core::domain::scan::{HistoryReport, ScanReport};
-use mustard_core::domain::search::TOP;
+use mustard_core::domain::search::{CANDIDATES, TOP};
 use mustard_core::io::{map_search, map_specs};
 use mustard_core::io::project_map::{self as store, Need};
 use mustard_core::platform::i18n::Locale;
-use mustard_core::Setting;
-use serde_json::{json, Value};
+use mustard_core::{FilterSetting, Setting};
+use serde_json::{json, Map, Value};
 
 /// A pergunta feita ao mapa.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -83,6 +88,8 @@ pub struct MapOpts {
     pub file: Option<String>,
     pub task: Option<String>,
     pub query: Option<String>,
+    /// A frase do que se procura e para quê, que só o filtro lê.
+    pub intent: Option<String>,
     pub path: Option<PathBuf>,
     pub name: Option<String>,
     /// O pull request cuja descrição a história mostra.
@@ -113,19 +120,45 @@ pub(crate) type Mine<'m> = dyn Fn(&Path, &Path) -> mustard_core::platform::error
 pub(crate) type Trace<'t> =
     dyn Fn(&Path, &Path, &str, usize) -> mustard_core::platform::error::Result<HistoryReport> + 't;
 
+/// O filtro da busca montado com a chave da máquina: o nome dele, que a
+/// resposta e o registro da chamada dizem, e o aviso do arquivo da chave
+/// aberto a outros usuários, quando há.
+pub(crate) struct Assembled {
+    pub(crate) name: &'static str,
+    pub(crate) filter: Box<dyn MapFilter>,
+    pub(crate) warning: Option<FilterError>,
+}
+
+/// A montagem do filtro: com a chave da máquina, o filtro; sem ela, `None`.
+/// Só a busca por assunto a chama, e só quando a configuração não desliga o
+/// filtro.
+pub(crate) type Assemble<'a> = dyn Fn() -> Option<Assembled> + 'a;
+
+/// A montagem de verdade: o Jev, com a chave do ambiente ou da pasta do
+/// Mustard da máquina.
+fn jev() -> Option<Assembled> {
+    let loaded = crate::shared::jev::load_key().ok()?;
+    Some(Assembled {
+        name: "jev",
+        filter: Box::new(crate::shared::jev::JevFilter::new(loaded.key)),
+        warning: loaded.warning,
+    })
+}
+
 /// Responde a pergunta e devolve o JSON; nunca entra em pânico. Antes, a
 /// conferência do mapa com o conteúdo de agora relê por `mine` o que mudou
 /// desde a passada que o gravou, e o bloco das specs recebe o que as specs
 /// gravaram desde a última resposta; a falha dele deixa o bloco como
 /// estava, e a resposta sai. A pergunta da história monta por `trace` a
-/// lista do arquivo que o mapa ainda não tem, ou que venceu.
-pub(crate) fn map_at(opts: &MapOpts, mine: &Mine<'_>, trace: &Trace<'_>) -> Value {
+/// lista do arquivo que o mapa ainda não tem, ou que venceu; a busca monta
+/// por `assemble` o filtro, quando a configuração não o desliga.
+pub(crate) fn map_at(opts: &MapOpts, mine: &Mine<'_>, trace: &Trace<'_>, assemble: &Assemble<'_>) -> Value {
     let project = crate::commands::spec_events::project(&opts.root);
     crate::commands::flow::round::refresh_map_if_stale(&project.root, mine);
     let _ = map_specs::sync(&project.root, &project.languages);
     trace_search_links(opts, &project.root, &project.languages, trace);
     let lang = project.lang;
-    match answer(opts, &project.root, lang, &project.languages, trace) {
+    match answer(opts, &project.root, lang, &project.languages, trace, assemble) {
         Ok(report) => report,
         Err(refusal) => refused(&refusal, lang),
     }
@@ -160,8 +193,15 @@ fn dump(root: &Path) -> Result<Value, MapRefusal> {
     Ok(json!({ "ok": true, "question": "dump", "tables": store::dump(root)? }))
 }
 
-fn answer(opts: &MapOpts, root: &Path, lang: Locale, languages: &Languages, trace: &Trace<'_>) -> Result<Value, MapRefusal> {
-    answer_from(opts, root, lang, languages, &|need| store::read_for(root, need), trace)
+fn answer(
+    opts: &MapOpts,
+    root: &Path,
+    lang: Locale,
+    languages: &Languages,
+    trace: &Trace<'_>,
+    assemble: &Assemble<'_>,
+) -> Result<Value, MapRefusal> {
+    answer_from(opts, root, lang, languages, &|need| store::read_for(root, need), trace, assemble)
 }
 
 /// Como o mapa se lê para uma pergunta: pela porta, só as tabelas de que ela
@@ -186,6 +226,7 @@ fn answer_from(
     languages: &Languages,
     read: &Reader<'_>,
     trace: &Trace<'_>,
+    assemble: &Assemble<'_>,
 ) -> Result<Value, MapRefusal> {
     let question = opts.question;
     match question {
@@ -205,43 +246,7 @@ fn answer_from(
                 "tests": tests.files,
             }))
         }
-        Question::Search => {
-            let query = after_the_map(required(opts.query.as_deref(), question, "--query"), read)?;
-            let files: Vec<Value> = map_search::search(root, &query, languages, TOP)?
-                .into_iter()
-                .map(|found| {
-                    let mut file = json!({ "path": found.path, "score": found.score });
-                    // O texto fixo que casou vem com a linha e a declaração
-                    // onde nasce.
-                    if let Some(text) = found.text {
-                        file["text"] = json!({
-                            "line": text.line, "kind": text.kind, "value": text.value, "owner": text.owner
-                        });
-                    }
-                    file
-                })
-                .collect();
-            let mut report = json!({ "ok": true, "question": "search", "query": query, "files": files });
-            // Os itens das specs que casam, cada um com o código, o título,
-            // a linha da parte do usuário que casou e os lugares ligados.
-            let items: Vec<Value> = map_search::search_specs(root, &query, languages, TOP)?
-                .into_iter()
-                .map(|item| {
-                    let mut found = json!({ "spec": item.spec, "code": item.code, "title": item.title });
-                    if let Some(line) = item.line {
-                        found["line"] = json!(line);
-                    }
-                    if !item.links.is_empty() {
-                        found["links"] = json!(item.links);
-                    }
-                    found
-                })
-                .collect();
-            if !items.is_empty() {
-                report["specs"] = json!(items);
-            }
-            Ok(report)
-        }
+        Question::Search => search(opts, root, lang, languages, read, assemble),
         Question::Summary => {
             let text = project_map::summary(&read(Need::Summary)?, lang);
             Ok(json!({ "ok": true, "question": "summary", "bytes": text.len(), "summary": text }))
@@ -253,6 +258,245 @@ fn answer_from(
         Question::Skill => skill(opts, root, read),
         Question::Dump => dump(root),
     }
+}
+
+/// Os números da busca com filtro, com o padrão no lugar do ausente e do
+/// inválido.
+struct SearchNumbers {
+    candidates: usize,
+    cut_min: usize,
+    max_returned: usize,
+}
+
+/// A busca por assunto. O filtro se escolhe aqui, num ponto só: desligado
+/// (`none`) ou com nome desconhecido, nenhum; ausente ou `jev`, o que
+/// `assemble` monta, se há chave na máquina. Com filtro, os candidatos do
+/// banco passam pela nota dele, a resposta traz as peças, e a chamada fica
+/// gravada na spec atual com o tempo, os tokens e o custo; sem filtro, ou na
+/// falha dele, a resposta é a da busca do banco. Os avisos saem uma vez por
+/// sessão.
+fn search(
+    opts: &MapOpts,
+    root: &Path,
+    lang: Locale,
+    languages: &Languages,
+    read: &Reader<'_>,
+    assemble: &Assemble<'_>,
+) -> Result<Value, MapRefusal> {
+    let started = Instant::now();
+    let query = after_the_map(required(opts.query.as_deref(), opts.question, "--query"), read)?;
+    let intent = opts.intent.as_deref().map(str::trim).unwrap_or_default();
+    let session = opts.session.as_deref();
+    let config = mustard_core::ProjectConfig::load(root);
+    let mut warnings: Vec<String> = Vec::new();
+    let mut number = |key: &str, setting: Setting, default: usize| {
+        if setting == Setting::Invalid && first_warning(root, session, &format!("search.{key}")) {
+            warnings.push(
+                mustard_core::translate("map.search.bad_number", lang)
+                    .replace("{key}", key)
+                    .replace("{default}", &default.to_string()),
+            );
+        }
+        setting.or(default)
+    };
+    let numbers = SearchNumbers {
+        candidates: number("candidates", config.search_candidates(), CANDIDATES),
+        cut_min: number("cut_min", config.search_cut_min(), CUT_MINIMUM),
+        max_returned: number("max_returned", config.search_max_returned(), MAX_RETURNED),
+    };
+    let assembled = match config.search_filter() {
+        FilterSetting::Off => None,
+        FilterSetting::Invalid => {
+            if first_warning(root, session, "search.filter") {
+                warnings.push(mustard_core::translate("map.search.bad_filter", lang).to_string());
+            }
+            None
+        }
+        FilterSetting::Absent | FilterSetting::Jev => assemble(),
+    };
+    let (mut report, measured) = match assembled {
+        None => (bank_search(root, &query, languages)?, None),
+        Some(assembled) => {
+            if let Some(FilterError::KeyFileOpen { path, .. }) = &assembled.warning
+                && first_warning(root, session, "search.key_file")
+            {
+                warnings.push(mustard_core::translate("map.search.key_file_open", lang).replace("{path}", path));
+            }
+            let asked = Asked { root, query: &query, intent, lang, languages, numbers: &numbers };
+            let searched = filtered_search(&asked, &assembled)?;
+            if let Some(error) = searched.failure
+                && first_warning(root, session, "search.filter_failed")
+            {
+                let reason = mustard_core::translate(&format!("map.search.reason.{}", error.reason()), lang);
+                warnings.push(mustard_core::translate("map.search.filter_failed", lang).replace("{reason}", reason));
+            }
+            (searched.report, Some(searched.measured))
+        }
+    };
+    // Os itens das specs que casam, cada um com o código, o título, a linha
+    // da parte do usuário que casou e os lugares ligados.
+    let items: Vec<Value> = map_search::search_specs(root, &query, languages, TOP)?
+        .into_iter()
+        .map(|item| {
+            let mut found = json!({ "spec": item.spec, "code": item.code, "title": item.title });
+            if let Some(line) = item.line {
+                found["line"] = json!(line);
+            }
+            if !item.links.is_empty() {
+                found["links"] = json!(item.links);
+            }
+            found
+        })
+        .collect();
+    if !items.is_empty() {
+        report["specs"] = json!(items);
+    }
+    if !warnings.is_empty() {
+        report["warnings"] = json!(warnings);
+    }
+    if let Some(measured) = measured {
+        let _ = crate::commands::spec_events::conversation::record_measured_call(
+            root,
+            "map search",
+            None,
+            session,
+            started,
+            &report,
+            measured,
+        );
+    }
+    Ok(report)
+}
+
+/// A busca do banco, sem filtro: os arquivos que mais casam com a pergunta.
+fn bank_search(root: &Path, query: &str, languages: &Languages) -> Result<Value, MapRefusal> {
+    let files: Vec<Value> = map_search::search(root, query, languages, TOP)?
+        .into_iter()
+        .map(|found| {
+            let mut file = json!({ "path": found.path, "score": found.score });
+            // O texto fixo que casou vem com a linha e a declaração onde
+            // nasce.
+            if let Some(text) = found.text {
+                file["text"] = json!({
+                    "line": text.line, "kind": text.kind, "value": text.value, "owner": text.owner
+                });
+            }
+            file
+        })
+        .collect();
+    Ok(json!({ "ok": true, "question": "search", "query": query, "files": files }))
+}
+
+/// O que a busca com filtro leva: o projeto, as palavras, a frase, o idioma
+/// do texto, as línguas das palavras e os números.
+struct Asked<'a> {
+    root: &'a Path,
+    query: &'a str,
+    intent: &'a str,
+    lang: Locale,
+    languages: &'a Languages,
+    numbers: &'a SearchNumbers,
+}
+
+/// A frase que o filtro lê: a de `--intent`; sem ela, as palavras da
+/// `--query`, e a palavra só vira o pedido de um pedaço de nome, no idioma do
+/// texto do projeto.
+fn phrase_of(words: &[String], query: &str, intent: &str, lang: Locale) -> String {
+    match (intent.is_empty(), words) {
+        (false, _) => intent.to_string(),
+        (true, [word]) => mustard_core::translate("map.search.name_piece", lang).replace("{word}", word),
+        (true, _) => query.to_string(),
+    }
+}
+
+/// O que a busca com o filtro devolve: a resposta, os campos da medida da
+/// chamada e, na falha do filtro, o erro dele.
+struct Searched {
+    report: Value,
+    measured: Map<String, Value>,
+    failure: Option<FilterError>,
+}
+
+/// A busca com o filtro montado; na falha dele, a resposta é a da busca do
+/// banco.
+fn filtered_search(asked: &Asked<'_>, assembled: &Assembled) -> Result<Searched, MapRefusal> {
+    let found = map_search::candidates(asked.root, asked.query, asked.intent, asked.languages, asked.numbers.candidates)?;
+    let words: Vec<String> = asked.query.split_whitespace().map(str::to_string).collect();
+    let phrase = phrase_of(&words, asked.query, asked.intent, asked.lang);
+    let request = FilterRequest { words, phrase, minimum: asked.numbers.cut_min, candidates: found.candidates };
+    let calling = Instant::now();
+    let mut measured = Map::new();
+    measured.insert("candidates".to_string(), json!(request.candidates.len()));
+    match assembled.filter.filter(&request) {
+        Ok(filtered) => {
+            let pieces = pieces(asked.root, &request.candidates, &found.whole, &filtered, asked.numbers.max_returned)?;
+            measured.insert("filter".to_string(), json!(assembled.name));
+            measured.insert("filter_ms".to_string(), json!(filtered.usage.millis));
+            measured.insert("tokens".to_string(), json!(filtered.usage.input_tokens));
+            measured.insert("cost_micro_usd".to_string(), json!(filtered.usage.cost_micro_usd));
+            measured.insert("returned".to_string(), json!(pieces.len()));
+            if !filtered.usage.model.is_empty() {
+                measured.insert("model".to_string(), json!(filtered.usage.model));
+            }
+            let report = json!({
+                "ok": true, "question": "search", "query": asked.query, "filter": assembled.name, "pieces": pieces
+            });
+            Ok(Searched { report, measured, failure: None })
+        }
+        Err(error) => {
+            let report = bank_search(asked.root, asked.query, asked.languages)?;
+            measured.insert("filter".to_string(), json!(format!("{}:{}", assembled.name, error.reason())));
+            measured.insert("filter_ms".to_string(), json!(u64::try_from(calling.elapsed().as_millis()).unwrap_or(u64::MAX)));
+            measured.insert("returned".to_string(), json!(report["files"].as_array().map_or(0, Vec::len)));
+            Ok(Searched { report, measured, failure: Some(error) })
+        }
+    }
+}
+
+/// As peças da resposta com filtro, na ordem da combinação e até o teto
+/// `max`: o corte, o que cada item dele puxou e os primeiros do banco. Cada
+/// peça traz o caminho, a linha, o fim, o tipo, o nome, a assinatura e a
+/// primeira frase da documentação; só as do corte trazem a nota. Nunca o
+/// corpo.
+fn pieces(
+    root: &Path,
+    candidates: &[FilterCandidate],
+    whole: &[i64],
+    filtered: &Filtered,
+    max: usize,
+) -> Result<Vec<Value>, MapRefusal> {
+    let cut: Vec<i64> = filtered.kept.iter().map(|scored| scored.id).collect();
+    let scores: HashMap<i64, f64> = filtered.kept.iter().map(|scored| (scored.id, scored.score)).collect();
+    let bank: Vec<i64> = candidates.iter().map(|candidate| candidate.id).collect();
+    let picks = capped(&select(&cut, &bank, whole, &map_search::links(root, &cut)?), max);
+    let outside: Vec<i64> = picks.iter().map(|pick| pick.id).filter(|id| !bank.contains(id)).collect();
+    let pulled = map_search::declarations(root, &outside)?;
+    let known: HashMap<i64, &FilterCandidate> =
+        candidates.iter().chain(&pulled).map(|candidate| (candidate.id, candidate)).collect();
+    Ok(picks
+        .iter()
+        .filter_map(|pick| {
+            let decl = known.get(&pick.id)?;
+            let mut piece = json!({
+                "path": decl.path, "line": decl.line, "end_line": decl.end_line, "kind": decl.kind, "name": decl.name
+            });
+            if !decl.signature.is_empty() {
+                piece["signature"] = json!(decl.signature);
+            }
+            // O começo da documentação: a primeira frase, como a de um item
+            // de spec.
+            let doc = project_map::spec_sentence(&decl.documentation);
+            if !doc.is_empty() {
+                piece["doc"] = json!(doc);
+            }
+            if pick.source == Source::Cut
+                && let Some(score) = scores.get(&pick.id)
+            {
+                piece["score"] = json!((score * 100.0).round() / 100.0);
+            }
+            Some(piece)
+        })
+        .collect())
 }
 
 /// O trecho da declaração de `--name` no arquivo de `--file`: as linhas dela,
@@ -669,8 +913,12 @@ fn first_warning(root: &Path, session: Option<&str>, key: &str) -> bool {
 /// Imprime a resposta e sai com 1 na recusa.
 pub fn run(opts: &MapOpts) {
     let scan = mustard_core::Scan::locate();
-    let report =
-        map_at(opts, &|root, out| scan.scan(root, out), &|root, out, file, moves| scan.history(root, out, file, moves));
+    let report = map_at(
+        opts,
+        &|root, out| scan.scan(root, out),
+        &|root, out, file, moves| scan.history(root, out, file, moves),
+        &jev,
+    );
     println!("{}", serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".into()));
     if report["ok"] != json!(true) {
         std::process::exit(1);
@@ -684,6 +932,11 @@ mod tests {
         DeclChange, DeclComment, DeclLineage, FileLineage, LineageCommit, PullComment, PullText,
     };
     use tempfile::tempdir;
+
+    /// A resposta de uma máquina sem a chave do filtro: a busca é a do banco.
+    fn map_at(opts: &MapOpts, mine: &Mine<'_>, trace: &Trace<'_>) -> Value {
+        super::map_at(opts, mine, trace, &|| None)
+    }
 
     /// A resposta do comando a um mapa de teste, que ninguém relê: fora do
     /// git, a conferência não chama o scan.
@@ -732,6 +985,7 @@ mod tests {
             file: None,
             task: None,
             query: None,
+            intent: None,
             path: None,
             name: None,
             pr: None,
@@ -1125,7 +1379,7 @@ mod tests {
         let project = crate::commands::spec_events::project(&opts.root);
         let whole = |_: Need<'_>| store::read(&project.root);
         let trace = |_: &Path, _: &Path, _: &str, _: usize| panic!("a map without a base never reads a history");
-        answer_from(opts, &project.root, project.lang, &project.languages, &whole, &trace)
+        answer_from(opts, &project.root, project.lang, &project.languages, &whole, &trace, &|| None)
             .unwrap_or_else(|refusal| refused(&refusal, project.lang))
     }
 
@@ -1871,5 +2125,407 @@ mod tests {
         let form = mustard_core::translate("map.history.form", Locale::default());
         assert!(lines[1].ends_with(&format!(" c1 formata {form}")), "{report}");
         assert_eq!(report, answered_from_the_whole_map(&opts), "the whole map says the same");
+    }
+
+    /// Um mapa para a busca com filtro: três funções do pedido, uma do
+    /// cliente, e um comentário no corpo, que nunca vai na resposta.
+    const FILTER_MAP: &str = r#"{"modules": [
+      {"path": "src/pedido.rs", "loc": 40, "declarations": [
+        {"kind": "function", "name": "gravar_pedido", "line": 3, "end_line": 9,
+         "signature": "pub fn gravar_pedido(pedido: &Pedido)",
+         "doc": "Grava o pedido no banco. Depois avisa o cliente.", "body_comment": "trava a linha do pedido"},
+        {"kind": "function", "name": "cancelar_pedido", "line": 11, "end_line": 20,
+         "signature": "pub fn cancelar_pedido(id: u64)", "doc": "Cancela o pedido."},
+        {"kind": "function", "name": "listar_pedidos", "line": 22, "end_line": 30,
+         "signature": "pub fn listar_pedidos()", "doc": "Lista os pedidos do dia."}]},
+      {"path": "src/cliente.rs", "loc": 20, "declarations": [
+        {"kind": "function", "name": "avisar_cliente", "line": 1, "end_line": 5,
+         "signature": "pub fn avisar_cliente()", "doc": "Avisa o cliente do pedido."}]}
+    ]}"#;
+
+    /// Um projeto com o mapa `map`, o texto em português e a seção `search`
+    /// da configuração.
+    fn search_project(map: &str, search: &Value) -> tempfile::TempDir {
+        let dir = tempdir().unwrap();
+        store::write_text(dir.path(), map).unwrap();
+        let config = json!({"language": {"text": "pt-BR", "code": "pt-BR"}, "search": search});
+        std::fs::write(dir.path().join("mustard.json"), config.to_string()).unwrap();
+        dir
+    }
+
+    /// Um mapa com `count` funções que casam com "pedido", em arquivos de
+    /// dez funções.
+    fn many_orders(count: usize) -> String {
+        let modules: Vec<Value> = (0..count.div_ceil(10))
+            .map(|file| {
+                let declarations: Vec<Value> = (0..10)
+                    .map(|at| file * 10 + at)
+                    .filter(|&n| n < count)
+                    .map(|n| json!({"kind": "function", "name": format!("pedido_{n}"), "line": n + 1, "end_line": n + 1}))
+                    .collect();
+                json!({"path": format!("src/pedidos_{file}.rs"), "loc": 20, "declarations": declarations})
+            })
+            .collect();
+        json!({ "modules": modules }).to_string()
+    }
+
+    fn search_opts(root: &Path, query: &str, intent: Option<&str>, session: Option<&str>) -> MapOpts {
+        MapOpts {
+            query: Some(query.to_string()),
+            intent: intent.map(str::to_string),
+            session: session.map(str::to_string),
+            ..ask(root, Question::Search)
+        }
+    }
+
+    /// A resposta da busca com a montagem `assemble` no lugar da chave da
+    /// máquina.
+    fn searched(opts: &MapOpts, assemble: &Assemble<'_>) -> Value {
+        super::map_at(
+            opts,
+            &|_, _| panic!("a map outside git is never read again"),
+            &|_, _, _, _| panic!("a map without a base never reads a history"),
+            assemble,
+        )
+    }
+
+    /// A busca do banco, a de antes do filtro, para `query`.
+    fn bank_answer(root: &Path, query: &str) -> Value {
+        let project = crate::commands::spec_events::project(root);
+        bank_search(&project.root, query, &project.languages).unwrap()
+    }
+
+    /// A resposta sem o campo `field`.
+    fn without(report: &Value, field: &str) -> Value {
+        let mut report = report.clone();
+        report.as_object_mut().unwrap().remove(field);
+        report
+    }
+
+    /// Um filtro de mentira: guarda cada pedido e dá as notas de `notes` aos
+    /// candidatos, na ordem do banco, com o corte de verdade; ou falha com
+    /// `error`.
+    #[derive(Clone)]
+    struct FakeFilter {
+        asked: std::rc::Rc<std::cell::RefCell<Vec<FilterRequest>>>,
+        notes: Vec<f64>,
+        error: Option<FilterError>,
+    }
+
+    impl MapFilter for FakeFilter {
+        fn filter(&self, request: &FilterRequest) -> Result<Filtered, FilterError> {
+            self.asked.borrow_mut().push(request.clone());
+            if let Some(error) = &self.error {
+                return Err(error.clone());
+            }
+            let scores: Vec<mustard_core::domain::map_filter::Scored> = request
+                .candidates
+                .iter()
+                .zip(&self.notes)
+                .map(|(candidate, &score)| mustard_core::domain::map_filter::Scored { id: candidate.id, score })
+                .collect();
+            let usage = mustard_core::domain::map_filter::FilterUsage {
+                input_tokens: 21_000,
+                millis: 40,
+                cost_micro_usd: 882,
+                model: "jev-1.13.0".to_string(),
+            };
+            Ok(Filtered { kept: mustard_core::domain::map_filter::cut(&scores, request.minimum), usage })
+        }
+    }
+
+    impl FakeFilter {
+        fn scoring(notes: &[f64]) -> Self {
+            Self { asked: std::rc::Rc::default(), notes: notes.to_vec(), error: None }
+        }
+
+        fn failing(error: FilterError) -> Self {
+            Self { asked: std::rc::Rc::default(), notes: Vec::new(), error: Some(error) }
+        }
+
+        /// A montagem que entrega este filtro, como a chave na máquina.
+        fn assemble(&self) -> impl Fn() -> Option<Assembled> + '_ {
+            move || Some(Assembled { name: "jev", filter: Box::new(self.clone()), warning: None })
+        }
+
+        fn calls(&self) -> usize {
+            self.asked.borrow().len()
+        }
+
+        fn last(&self) -> FilterRequest {
+            self.asked.borrow().last().cloned().unwrap()
+        }
+    }
+
+    /// Sem `search.filter` e sem chave na máquina, a busca é a do banco,
+    /// igual à de antes do filtro, e a frase de `--intent` não a muda.
+    #[test]
+    fn without_the_filter_setting_and_without_a_key_the_search_is_the_bank_one() {
+        let dir = search_project(FILTER_MAP, &json!({}));
+        let bank = bank_answer(dir.path(), "cancelar");
+        assert_eq!(bank["files"][0]["path"], json!("src/pedido.rs"), "{bank}");
+        assert_eq!(searched(&search_opts(dir.path(), "cancelar", None, None), &|| None), bank);
+        let with_intent = search_opts(dir.path(), "cancelar", Some("onde avisa o cliente"), None);
+        assert_eq!(searched(&with_intent, &|| None), bank);
+    }
+
+    /// Com `search.filter: "none"`, a busca não monta o filtro, mesmo com a
+    /// chave na máquina.
+    #[test]
+    fn the_filter_set_to_none_is_not_called_even_with_a_key() {
+        let dir = search_project(FILTER_MAP, &json!({"filter": "none"}));
+        let fake = FakeFilter::scoring(&[0.9, 0.9, 0.9]);
+        let report = searched(&search_opts(dir.path(), "pedido", Some("onde o pedido é gravado"), None), &fake.assemble());
+        assert_eq!(fake.calls(), 0);
+        assert_eq!(report, bank_answer(dir.path(), "pedido"));
+    }
+
+    /// O filtro que dá nota a três candidatos faz a resposta trazer três
+    /// peças, na ordem da nota, cada uma com o caminho, as linhas, o tipo, o
+    /// nome, a assinatura, a primeira frase da documentação e a nota; nunca
+    /// o corpo.
+    #[test]
+    fn three_scores_give_three_pieces_with_signature_and_doc_and_no_body() {
+        let dir = search_project(FILTER_MAP, &json!({}));
+        let intent = "onde o pedido é gravado";
+        let project = crate::commands::spec_events::project(dir.path());
+        let bank = map_search::candidates(&project.root, "pedido", intent, &project.languages, CANDIDATES).unwrap();
+        assert_eq!(bank.candidates.len(), 4, "{bank:?}");
+        // As notas vão aos três primeiros do banco, que também são o topo
+        // dele: nada mais entra.
+        let fake = FakeFilter::scoring(&[0.7, 0.9, 0.8]);
+        let report = searched(&search_opts(dir.path(), "pedido", Some(intent), None), &fake.assemble());
+        assert_eq!(fake.calls(), 1);
+        assert_eq!(report["filter"], json!("jev"), "{report}");
+        assert!(report.get("files").is_none(), "{report}");
+        let pieces = report["pieces"].as_array().unwrap();
+        let names: Vec<&str> = pieces.iter().map(|piece| piece["name"].as_str().unwrap()).collect();
+        let order = [&bank.candidates[1], &bank.candidates[2], &bank.candidates[0]];
+        assert_eq!(names, order.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), "{report}");
+        assert_eq!(pieces.iter().map(|piece| piece["score"].clone()).collect::<Vec<_>>(), [json!(0.9), json!(0.8), json!(0.7)]);
+        for piece in pieces {
+            let keys: Vec<&str> = piece.as_object().unwrap().keys().map(String::as_str).collect();
+            assert_eq!(keys, ["path", "line", "end_line", "kind", "name", "signature", "doc", "score"], "{piece}");
+        }
+        let saved = pieces.iter().find(|piece| piece["name"] == json!("gravar_pedido")).unwrap();
+        assert_eq!(
+            saved,
+            &json!({"path": "src/pedido.rs", "line": 3, "end_line": 9, "kind": "function", "name": "gravar_pedido",
+                    "signature": "pub fn gravar_pedido(pedido: &Pedido)", "doc": "Grava o pedido no banco.",
+                    "score": saved["score"]})
+        );
+        assert!(!report.to_string().contains("trava a linha"), "the body never goes back: {report}");
+    }
+
+    /// O filtro que falha devolve a busca do banco, com o aviso do motivo
+    /// uma vez por sessão; sem sessão conhecida, o aviso sai toda vez.
+    #[test]
+    fn a_failing_filter_answers_from_the_bank_and_warns_once_per_session() {
+        let dir = search_project(FILTER_MAP, &json!({}));
+        let fake = FakeFilter::failing(FilterError::Refused { status: 402 });
+        let bank = bank_answer(dir.path(), "pedido");
+        let opts = search_opts(dir.path(), "pedido", Some("onde o pedido é gravado"), Some("sessao-falha"));
+        let first = searched(&opts, &fake.assemble());
+        assert_eq!(fake.calls(), 1);
+        assert_eq!(without(&first, "warnings"), bank, "{first}");
+        let warned = mustard_core::translate("map.search.filter_failed", Locale::PtBr).replace("{reason}", "falta de crédito");
+        assert_eq!(first["warnings"], json!([warned]), "{first}");
+        let second = searched(&opts, &fake.assemble());
+        assert_eq!(fake.calls(), 2);
+        assert_eq!(second, bank, "the same session is not warned again");
+
+        let unknown = search_opts(dir.path(), "pedido", None, None);
+        for _ in 0..2 {
+            assert_eq!(searched(&unknown, &fake.assemble())["warnings"], json!([warned]));
+        }
+    }
+
+    /// Um nome de filtro que o projeto não conhece avisa e não filtra.
+    #[test]
+    fn an_unknown_filter_name_warns_and_does_not_filter() {
+        let dir = search_project(FILTER_MAP, &json!({"filter": "outro"}));
+        let fake = FakeFilter::scoring(&[0.9]);
+        let report = searched(&search_opts(dir.path(), "pedido", None, Some("sessao-outro")), &fake.assemble());
+        assert_eq!(fake.calls(), 0);
+        let warned = mustard_core::translate("map.search.bad_filter", Locale::PtBr);
+        assert_eq!(report["warnings"], json!([warned]), "{report}");
+        assert_eq!(without(&report, "warnings"), bank_answer(dir.path(), "pedido"));
+    }
+
+    /// A frase ao filtro: a de `--intent`; sem ela, as palavras; e a palavra
+    /// só vira o pedido de um pedaço de nome, no idioma do texto.
+    #[test]
+    fn a_single_word_without_intent_sends_the_name_piece_phrase() {
+        let dir = search_project(FILTER_MAP, &json!({}));
+        let fake = FakeFilter::scoring(&[0.9]);
+        searched(&search_opts(dir.path(), "pedido", None, None), &fake.assemble());
+        assert_eq!(fake.last().phrase, "pedaço de nome: pedido");
+        assert_eq!(fake.last().words, ["pedido"]);
+        searched(&search_opts(dir.path(), "gravar pedido", None, None), &fake.assemble());
+        assert_eq!(fake.last().phrase, "gravar pedido");
+        assert_eq!(fake.last().words, ["gravar", "pedido"]);
+        searched(&search_opts(dir.path(), "pedido", Some("onde o pedido é gravado"), None), &fake.assemble());
+        assert_eq!(fake.last().phrase, "onde o pedido é gravado");
+    }
+
+    /// Só a busca por assunto monta o filtro: nenhuma outra pergunta do mapa
+    /// o pede, e os arquivos sugeridos à rodada e ao plano vêm do banco.
+    #[test]
+    fn only_the_search_question_assembles_the_filter() {
+        let dir = tempdir().unwrap();
+        store::write_text(dir.path(), EVERY_PART).unwrap();
+        let skill_dir = dir.path().join("apps/rt/.claude/skills/add-pay");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        let skill = skill_dir.join("SKILL.md");
+        std::fs::write(&skill, "Veja `pay/index.rs`.\n").unwrap();
+        let assembled = std::cell::Cell::new(0);
+        let counting = || {
+            assembled.set(assembled.get() + 1);
+            None
+        };
+        for opts in every_question(dir.path(), &skill) {
+            searched(&opts, &counting);
+            assert_eq!(assembled.get(), 0, "{:?} assembled the filter", opts.question);
+        }
+        searched(&search_opts(dir.path(), "pagamento", None, None), &counting);
+        assert_eq!(assembled.get(), 1);
+
+        let languages = crate::commands::spec_events::project(dir.path()).languages;
+        let bank: Vec<String> =
+            map_search::search(dir.path(), "gravar pagamento", &languages, 3).unwrap().into_iter().map(|f| f.path).collect();
+        assert_eq!(suggested_files(dir.path(), "gravar pagamento", 3, &languages), bank);
+    }
+
+    /// `search.candidates`: ausente, vale 100; com valor, vale o valor; com
+    /// 0, vale 100 e avisa uma vez por sessão.
+    #[test]
+    fn the_candidates_setting_is_the_default_the_value_or_the_default_with_a_warning() {
+        let map = many_orders(120);
+        let sent = |search: Value, session: &str| {
+            let dir = search_project(&map, &search);
+            let fake = FakeFilter::scoring(&[0.9]);
+            let opts = search_opts(dir.path(), "pedido", None, Some(session));
+            let first = searched(&opts, &fake.assemble());
+            let second = searched(&opts, &fake.assemble());
+            (fake.last().candidates.len(), first["warnings"].clone(), second["warnings"].clone())
+        };
+        assert_eq!(sent(json!({}), "s1"), (100, Value::Null, Value::Null));
+        assert_eq!(sent(json!({"candidates": 5}), "s2"), (5, Value::Null, Value::Null));
+        let warned = mustard_core::translate("map.search.bad_number", Locale::PtBr)
+            .replace("{key}", "candidates")
+            .replace("{default}", "100");
+        assert_eq!(sent(json!({"candidates": 0}), "s3"), (100, json!([warned]), Value::Null));
+    }
+
+    /// `search.cut_min` vai no pedido: ausente, 8; com valor, o valor; com
+    /// 0, 8 e o aviso.
+    #[test]
+    fn the_cut_minimum_setting_goes_in_the_request() {
+        let sent = |search: Value| {
+            let dir = search_project(FILTER_MAP, &search);
+            let fake = FakeFilter::scoring(&[0.9]);
+            let report = searched(&search_opts(dir.path(), "pedido", None, None), &fake.assemble());
+            (fake.last().minimum, report["warnings"].clone())
+        };
+        assert_eq!(sent(json!({})), (8, Value::Null));
+        assert_eq!(sent(json!({"cut_min": 3})), (3, Value::Null));
+        let warned = mustard_core::translate("map.search.bad_number", Locale::PtBr)
+            .replace("{key}", "cut_min")
+            .replace("{default}", "8");
+        assert_eq!(sent(json!({"cut_min": 0})), (8, json!([warned])));
+    }
+
+    /// `search.max_returned`: ausente, a volta de 15 peças não se corta; com
+    /// 5, ficam os 3 primeiros do banco e as 2 primeiras do corte; com 0,
+    /// vale o padrão e avisa.
+    #[test]
+    fn the_max_returned_setting_caps_the_answer_or_warns() {
+        let map = many_orders(40);
+        // Os três primeiros do banco ficam abaixo do piso da nota; os doze
+        // seguintes passam.
+        let mut notes = vec![0.1; 3];
+        notes.extend([0.9; 12]);
+        let answered_with = |search: Value| {
+            let dir = search_project(&map, &search);
+            let fake = FakeFilter::scoring(&notes);
+            searched(&search_opts(dir.path(), "pedido", None, None), &fake.assemble())
+        };
+        let whole = answered_with(json!({}));
+        let pieces = whole["pieces"].as_array().unwrap();
+        assert_eq!(pieces.len(), 15, "{whole}");
+        assert!(whole.get("warnings").is_none(), "{whole}");
+
+        let capped = answered_with(json!({"max_returned": 5}));
+        let names = |report: &Value| -> Vec<String> {
+            report["pieces"].as_array().unwrap().iter().map(|piece| piece["name"].as_str().unwrap().to_string()).collect()
+        };
+        let all = names(&whole);
+        assert_eq!(names(&capped), [&all[0], &all[1], &all[12], &all[13], &all[14]].map(String::clone), "{capped}");
+
+        let zero = answered_with(json!({"max_returned": 0}));
+        assert_eq!(names(&zero), all);
+        let warned = mustard_core::translate("map.search.bad_number", Locale::PtBr)
+            .replace("{key}", "max_returned")
+            .replace("{default}", "15");
+        assert_eq!(zero["warnings"], json!([warned]), "{zero}");
+    }
+
+    /// Um projeto com a spec `spec` aberta, o checkout na branch dela e o
+    /// mapa da busca com filtro.
+    fn search_project_on(spec: &str) -> tempfile::TempDir {
+        let dir = search_project(FILTER_MAP, &json!({}));
+        crate::shared::spec_state::stand_on_spec_branch(dir.path(), spec);
+        crate::commands::spec_events::write::record_open(dir.path(), spec, &format!("feature/{spec}"), "dev").unwrap();
+        dir
+    }
+
+    fn calls_of(root: &Path, spec: &str) -> Vec<serde_json::Map<String, Value>> {
+        use mustard_core::domain::spec_state::SpecState;
+        crate::shared::spec_state::DiskSpecState::new(root)
+            .log(spec)
+            .map(|log| {
+                log.visible().into_iter().filter(|e| e.event_type == "call").map(|e| e.fields.clone()).collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// A busca com o filtro, numa spec aberta, grava a chamada com o tempo,
+    /// o filtro, o tempo dele, os tokens, o custo, os candidatos, o que
+    /// voltou e o modelo que respondeu.
+    #[test]
+    fn a_filtered_search_in_an_open_spec_records_the_call_with_time_tokens_and_cost() {
+        let dir = search_project_on("busca");
+        let fake = FakeFilter::scoring(&[0.7, 0.9, 0.8]);
+        searched(&search_opts(dir.path(), "pedido", Some("onde o pedido é gravado"), None), &fake.assemble());
+        let calls = calls_of(dir.path(), "busca");
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        let call = &calls[0];
+        assert_eq!(call["command"], json!("map search"));
+        assert_eq!(call["result"], json!("ok"));
+        assert!(call["ms"].is_u64(), "{call:?}");
+        assert_eq!(
+            [&call["filter"], &call["filter_ms"], &call["tokens"], &call["cost_micro_usd"], &call["candidates"], &call["returned"], &call["model"]],
+            [&json!("jev"), &json!(40), &json!(21_000), &json!(882), &json!(4), &json!(3), &json!("jev-1.13.0")]
+        );
+    }
+
+    /// A busca sem filtro não grava chamada.
+    #[test]
+    fn a_search_without_the_filter_records_no_call() {
+        let dir = search_project_on("sem-filtro");
+        searched(&search_opts(dir.path(), "pedido", Some("onde o pedido é gravado"), None), &|| None);
+        assert!(calls_of(dir.path(), "sem-filtro").is_empty());
+    }
+
+    /// A falha do filtro grava a chamada com o motivo junto do nome dele.
+    #[test]
+    fn a_failing_filter_records_the_reason_in_the_call() {
+        let dir = search_project_on("falha");
+        let fake = FakeFilter::failing(FilterError::Refused { status: 429 });
+        searched(&search_opts(dir.path(), "pedido", None, None), &fake.assemble());
+        let calls = calls_of(dir.path(), "falha");
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        assert_eq!(calls[0]["filter"], json!("jev:busy"));
+        assert!(calls[0].get("tokens").is_none(), "{calls:?}");
     }
 }

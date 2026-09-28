@@ -23,4 +23,5 @@ pub mod mustard_id;
 pub mod project_map;
 pub mod pattern;
 pub mod map_filter;
+pub mod map_select;
 pub mod wave_prompt;

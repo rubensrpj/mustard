@@ -393,6 +393,17 @@ pub const TYPES: &[TypeSpec] = &[
             req("ms", Kind::Int),
             req("result", Kind::OneOf(CALL_RESULTS)),
             opt("refusal", Kind::Text),
+            // A busca que chamou o filtro: qual (`jev`, ou `jev:<motivo>` na
+            // falha), o tempo dele, os tokens de entrada, o custo em
+            // milionésimos de dólar, os candidatos, as peças devolvidas e o
+            // modelo que respondeu.
+            opt("filter", Kind::Text),
+            opt("filter_ms", Kind::Int),
+            opt("tokens", Kind::Int),
+            opt("cost_micro_usd", Kind::Int),
+            opt("candidates", Kind::Int),
+            opt("returned", Kind::Int),
+            opt("model", Kind::Text),
         ],
     ),
     // Estado.
@@ -904,5 +915,29 @@ mod tests {
         assert!(refusal.message(Locale::PtBr).contains("uma destas palavras: warn, block"));
         let author = checked("message", json!({"text": "oi", "author": "robot"})).unwrap_err();
         assert!(matches!(author, Refusal::InvalidValue { ref field, .. } if field == "author"));
+    }
+
+    /// A chamada da busca com filtro leva o filtro, o tempo dele, os tokens,
+    /// o custo, os candidatos, as peças e o modelo, todos opcionais: sem
+    /// eles, a chamada de sempre continua valendo; com um número em texto, a
+    /// recusa diz o campo.
+    #[test]
+    fn a_call_takes_the_filter_fields_and_still_holds_without_them() {
+        let call = |extra: serde_json::Value| {
+            let mut fields = json!({"author": "binary", "command": "map search", "ms": 1800, "result": "ok"});
+            if let (Some(fields), Some(extra)) = (fields.as_object_mut(), extra.as_object()) {
+                fields.extend(extra.clone());
+            }
+            checked("call", fields)
+        };
+        assert_eq!(call(json!({})), Ok(()));
+        assert_eq!(
+            call(json!({"filter": "jev", "filter_ms": 1500, "tokens": 20985, "cost_micro_usd": 881,
+                "candidates": 100, "returned": 12, "model": "jev-1.13.0"})),
+            Ok(())
+        );
+        assert_eq!(call(json!({"filter": "jev:no_credit", "filter_ms": 40})), Ok(()));
+        let refusal = call(json!({"tokens": "muitos"})).unwrap_err();
+        assert!(matches!(refusal, Refusal::InvalidValue { ref field, .. } if field == "tokens"), "{refusal:?}");
     }
 }

@@ -256,14 +256,19 @@ fn fit(text: &str, lists: &[(&str, Vec<String>)], lang: Locale) -> String {
     render(&kept)
 }
 
-/// O último passo do fluxo: o comando da chamada mais nova que deu certo.
+/// As chamadas que não são passo do fluxo: a busca do mapa grava a chamada
+/// para a conta do filtro, e não diz onde o fluxo parou.
+const NOT_A_STEP: &[&str] = &["map search"];
+
+/// O último passo do fluxo: o comando da chamada mais nova que deu certo,
+/// fora as de [`NOT_A_STEP`].
 fn last_step(log: &SpecLog) -> Option<String> {
     log.block(BlockQuery::Block(Block::Conversation))
         .into_iter()
         .filter(|e| e.event_type == "call" && e.str_field("result") == Some("ok"))
         .filter_map(|e| e.str_field("command"))
         .map(str::trim)
-        .rfind(|command| !command.is_empty())
+        .rfind(|command| !command.is_empty() && !NOT_A_STEP.contains(command))
         .map(str::to_string)
 }
 
@@ -454,6 +459,22 @@ mod tests {
 
         let started = crate::hooks::session::session_start_inject::started_after_clear(root, "s-clear");
         assert!(started.lines().any(|l| l == line), "the session start carries the resume line: {started}");
+    }
+
+    /// A busca do mapa depois do passo da rodada não vira o último passo: a
+    /// retomada ainda diz que foi a rodada.
+    #[test]
+    fn a_map_search_after_the_round_does_not_become_the_last_step() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), b"{}").unwrap();
+        assert_eq!(record_open(root, "x", "feature/x", "dev"), Ok(true));
+        let seed = |event_type: &str, body: Value| crate::shared::spec_state::seed_event(root, "x", event_type, body);
+        seed("call", json!({"command": "round", "ms": 3, "result": "ok", "author": "binary"}));
+        seed("call", json!({"command": "map search", "ms": 1800, "result": "ok", "author": "binary", "filter": "jev",
+            "filter_ms": 1500, "tokens": 20985, "cost_micro_usd": 881, "candidates": 100, "returned": 12}));
+        let log = crate::shared::spec_state::DiskSpecState::new(root).log("x").unwrap();
+        assert_eq!(last_step(&log).as_deref(), Some("round"));
     }
 
     /// Na linha de retomada, a onda em andamento é a que a rodada diz que
