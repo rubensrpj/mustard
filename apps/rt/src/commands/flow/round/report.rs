@@ -24,7 +24,7 @@ use serde_json::{json, Map, Value};
 
 use super::answer::RoundRefusal;
 use super::commit::{
-    commit_draft, commit_message, ensure_builds, ensure_criteria_proofs, format_round_files, git_lock,
+    commit_draft, commit_message, ensure_after_wave, ensure_builds, ensure_criteria_proofs, format_round_files, git_lock,
     head, join_copies, make_commit, real_changed_files, record_commit, refresh_map, round_repos, unknown_file,
     write_joined, UNMADE_SHA,
 };
@@ -330,14 +330,12 @@ fn take_returns(
         }));
     }
     // O repositório principal compila antes do commit, com o mesmo comando
-    // que o pedido de cada onda já ensina: não compilou, o disco volta ao que
-    // era e nada é comitado.
-    if message.is_some()
-        && let Err(refusal) = ensure_builds(root)
-    {
-        let _ = write_joined(root, &joined, false);
-        return Err(refusal);
-    }
+    // que o pedido de cada onda já ensina, e passa pela conferência depois da
+    // onda (importações contra a regra, restos e órfãos): a recusa de uma ou
+    // de outra volta o disco ao que era e nada é comitado; o que só avisa
+    // segue nos avisos.
+    let after = message.is_some().then(|| ensure_builds(root).and_then(|()| ensure_after_wave(root, log, &report.waves, mine, lang)));
+    warnings.extend(after.transpose().inspect_err(|_| drop(write_joined(root, &joined, false)))?.unwrap_or_default());
     // A prova de cada critério que as ondas deste relatório cobrem roda antes
     // do commit, uma de cada vez: a que não executa ou não passa recusa com o
     // código do critério, o comando inteiro e a saída de erro, e nada é

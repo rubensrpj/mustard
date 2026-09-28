@@ -38,10 +38,10 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("scan.map.type_line", Locale::PtBr) => "Tipo: {kind} · {count} arquivos",
         ("scan.map.type_line", Locale::EnUs) => "Type: {kind} · {count} files",
         ("scan.map.pointer", Locale::PtBr) => {
-            "O terreno já está na sua janela (o resumo do mapa injetado no início da sessão). Para localizar: `grep` para termo exato conhecido; `mustard-rt run map search --query \"<palavras>\"` para conceito. Depois leia os arquivos apontados: o mapa acha onde olhar, não substitui ler."
+            "O terreno já está na sua janela (o resumo do mapa injetado no início da sessão). Para localizar: `grep` para termo exato conhecido; `mustard-rt run map search --query \"<palavras>\"` para conceito. Na mesma busca, junte as palavras do pedido do usuário e os nomes prováveis no código, em inglês, camelCase ou snake_case: `--query \"prazo de entrega deliveryDeadline due_date\"`. Depois leia os arquivos apontados: o mapa acha onde olhar, não substitui ler."
         }
         ("scan.map.pointer", Locale::EnUs) => {
-            "The terrain is already in your window (the map summary injected at session start). To locate: `grep` for a known exact term; `mustard-rt run map search --query \"<words>\"` for a concept. Then read the files it points to: the map finds where to look, it does not replace reading."
+            "The terrain is already in your window (the map summary injected at session start). To locate: `grep` for a known exact term; `mustard-rt run map search --query \"<words>\"` for a concept. In the same search, join the words of the user's request and the likely names in the code, in English, camelCase or snake_case: `--query \"delivery deadline deliveryDeadline due_date\"`. Then read the files it points to: the map finds where to look, it does not replace reading."
         }
         // The project map (`run map`): refusals, reasons of the examples and
         // the session-start summary.
@@ -258,7 +258,7 @@ mod tests {
             include_str!("map.rs"),
             super::PREFIXES,
             46,
-            0x7527_204a_6e03_e87b,
+            0xfbf2_0e41_3bb8_bc85,
         );
     }
 
@@ -306,6 +306,28 @@ mod tests {
                 let report = crate::domain::clarity::measure(&text, &[], Some(lang));
                 assert!(report.passed, "{key} {lang:?}: {report:?}");
             }
+        }
+    }
+
+    /// A dica do mapa pede, na mesma busca por conceito, as palavras do pedido
+    /// do usuário e os nomes prováveis no código, com um exemplo que junta as
+    /// duas coisas; e passa na conferência de escrita nos dois idiomas.
+    #[test]
+    fn the_map_hint_asks_for_the_request_words_and_the_code_names() {
+        for (lang, words, names) in [
+            (Locale::PtBr, "palavras do pedido do usuário", "nomes prováveis no código"),
+            (Locale::EnUs, "words of the user's request", "likely names in the code"),
+        ] {
+            let text = translate("scan.map.pointer", lang);
+            assert!(text.contains(words), "{lang:?}: {text}");
+            assert!(text.contains(names), "{lang:?}: {text}");
+            let example = text.split("`--query \"").nth(1).expect("an example of the search");
+            let example = example.split('"').next().unwrap_or_default();
+            assert!(example.contains("deliveryDeadline"), "{lang:?}: {example}");
+            assert!(example.contains("due_date"), "{lang:?}: {example}");
+            assert!(example.split(' ').any(|w| w.chars().all(char::is_lowercase)), "{lang:?}: {example}");
+            let report = crate::domain::clarity::measure(text, &[], Some(lang));
+            assert!(report.passed, "{lang:?}: {report:?}");
         }
     }
 

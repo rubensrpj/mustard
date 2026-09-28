@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 
+use mustard_core::domain::project_map::ProjectMap;
 use mustard_core::domain::scan::ScanReport;
 use mustard_core::domain::spec_events::{
     check_message, MessageRefusal, Refusal, SpecLog, MESSAGE_BODY_MAX, MESSAGE_TITLE_MAX,
@@ -766,6 +767,105 @@ pub(super) fn ensure_builds(root: &Path) -> Result<(), RoundRefusal> {
         return Ok(());
     }
     Err(RoundRefusal::BuildFailed { command: build, output: out.output })
+}
+
+/// Um achado da conferência depois da onda, da onda `wave`: a frase pronta e
+/// se ele recusa a volta ou só avisa.
+pub(super) struct Finding {
+    pub(super) wave: u64,
+    pub(super) refuses: bool,
+    pub(super) text: String,
+}
+
+/// O que a conferência depois da onda compara: o mapa da base da rodada, o
+/// de depois da junção das ondas, e os arquivos que cada onda mudou, pela
+/// onda.
+pub(super) struct AfterWave {
+    pub(super) base: ProjectMap,
+    pub(super) after: ProjectMap,
+    pub(super) changed: Vec<(u64, Vec<String>)>,
+}
+
+/// A conferência depois da onda, antes do commit da rodada, com o disco já
+/// juntado: as importações novas contra o padrão do projeto
+/// ([`super::imports_check`]) e os restos do que as ondas tiraram
+/// ([`super::removed_check`]). Tudo passou: nada, nem texto. Só avisos: os
+/// avisos, e a rodada segue. Algum achado que recusa: a rodada não comita,
+/// e a mensagem lista tudo de uma vez, por onda, com a rodada de conserto de
+/// cada uma — a volta que a onda grava de novo conta como uma, até
+/// [`super::stops::MAX_FIX_ROUNDS`]. A onda que já passou por todas vira
+/// pergunta ao usuário. Sem mapa da base, com o mapa sem arquivos, ou com o
+/// mapeador falhando, não há com que comparar e a rodada segue.
+pub(super) fn ensure_after_wave(
+    root: &Path,
+    log: &SpecLog,
+    waves: &[WaveReport],
+    mine: &dyn Fn(&Path, &Path) -> mustard_core::platform::error::Result<ScanReport>,
+    lang: Locale,
+) -> Result<Vec<Value>, RoundRefusal> {
+    let changed: Vec<(u64, Vec<String>)> =
+        waves.iter().filter(|w| !w.files.is_empty()).map(|w| (w.wave, w.files.clone())).collect();
+    let Some(maps) = after_wave_maps(root, changed, mine) else { return Ok(Vec::new()) };
+    let mut found = super::imports_check::findings(root, &maps, log, lang);
+    found.extend(super::removed_check::findings(root, &maps, lang));
+    after_wave_answer(waves, &found, lang)
+}
+
+/// Os dois mapas da conferência depois da onda: o da base, lido do mapa do
+/// projeto, e o de depois, que o mapeador relê numa cópia do da base, fora
+/// do projeto — só o que mudou é lido de novo, e o mapa do projeto fica
+/// como estava até o commit.
+fn after_wave_maps(
+    root: &Path,
+    changed: Vec<(u64, Vec<String>)>,
+    mine: &dyn Fn(&Path, &Path) -> mustard_core::platform::error::Result<ScanReport>,
+) -> Option<AfterWave> {
+    if changed.is_empty() {
+        return None;
+    }
+    let base = mustard_core::io::project_map::read(root).ok().filter(|map| !map.modules.is_empty())?;
+    let dir = tempfile::tempdir().ok()?;
+    let model = dir.path().join("grain.db");
+    std::fs::copy(mustard_core::io::project_map::model_path(root), &model).ok()?;
+    mine(root, &model).ok()?;
+    let after = mustard_core::io::project_map::read_at(&model).ok()?;
+    Some(AfterWave { base, after, changed })
+}
+
+/// A resposta da conferência depois da onda aos achados `found`.
+fn after_wave_answer(waves: &[WaveReport], found: &[Finding], lang: Locale) -> Result<Vec<Value>, RoundRefusal> {
+    if found.is_empty() {
+        return Ok(Vec::new());
+    }
+    let max = super::stops::MAX_FIX_ROUNDS;
+    let done = |wave: u64| waves.iter().find(|w| w.wave == wave).map_or(0, |w| w.returns.len().saturating_sub(1));
+    let refusing: BTreeSet<u64> = found.iter().filter(|f| f.refuses).map(|f| f.wave).collect();
+    let stuck: Vec<String> = refusing.iter().filter(|w| done(**w) >= max).map(u64::to_string).collect();
+    let fill = |key: &str, wave: u64| {
+        translate(key, lang)
+            .replace("{wave}", &wave.to_string())
+            .replace("{round}", &(done(wave) + 1).min(max).to_string())
+            .replace("{max}", &max.to_string())
+            .replace("{waves}", &stuck.join(", "))
+    };
+    let head = match (refusing.is_empty(), stuck.is_empty()) {
+        (true, _) => "round.after_wave.warnings",
+        (false, true) => "round.after_wave",
+        (false, false) => "round.after_wave.limit",
+    };
+    let mut text = fill(head, 0);
+    let listed: BTreeSet<u64> = found.iter().map(|f| f.wave).collect();
+    for wave in listed {
+        let key = if refusing.contains(&wave) { "round.after_wave.wave" } else { "round.after_wave.wave_warnings" };
+        text.push_str(&format!("\n\n{}", fill(key, wave)));
+        let lines = found.iter().filter(|f| f.wave == wave);
+        text.extend(lines.clone().filter(|f| f.refuses).chain(lines.filter(|f| !f.refuses)).map(|f| format!("\n- {}", f.text)));
+    }
+    if refusing.is_empty() {
+        return Ok(vec![json!({ "reason": "round-after-wave-warnings", "hint": text })]);
+    }
+    let question = (!stuck.is_empty()).then(|| fill("round.after_wave.question", 0));
+    Err(RoundRefusal::AfterWave { text, question })
 }
 
 /// A prova de cada critério que as ondas de `waves` cobrem roda, uma de cada

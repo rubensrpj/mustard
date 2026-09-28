@@ -75,6 +75,22 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // para o agente não sair procurando um por um no código.
         ("prompt.task.tested_by", Locale::PtBr) => "quem testa `{file}`: {tests}",
         ("prompt.task.tested_by", Locale::EnUs) => "who tests `{file}`: {tests}",
+        // O padrão do projeto sob a tarefa que toca um papel com regra: as
+        // regras que o código já segue e exemplos que as seguem, sem código.
+        ("prompt.pattern.head", Locale::PtBr) => {
+            "O padrão do projeto, tirado das importações do código. A importação contra uma regra é \
+             recusada na volta da onda; contra um costume, só gera aviso."
+        }
+        ("prompt.pattern.head", Locale::EnUs) => {
+            "The project pattern, taken from the imports in the code. An import against a rule is \
+             refused when the wave returns; against a habit, it only raises a warning."
+        }
+        ("prompt.pattern.rule", Locale::PtBr) => "regra: {from} importa {to} em {along} de {total} importações",
+        ("prompt.pattern.rule", Locale::EnUs) => "rule: {from} imports {to} in {along} of {total} imports",
+        ("prompt.pattern.info", Locale::PtBr) => "costume: {from} importa {to} em {along} de {total} importações",
+        ("prompt.pattern.info", Locale::EnUs) => "habit: {from} imports {to} in {along} of {total} imports",
+        ("prompt.pattern.example", Locale::PtBr) => "exemplo: `{name}` em `{path}`, linhas {start} a {end}",
+        ("prompt.pattern.example", Locale::EnUs) => "example: `{name}` in `{path}`, lines {start} to {end}",
         ("prompt.fixed", Locale::PtBr) => {
             "**O que é isto.** A lista dos itens desta onda, em ordem de execução, montada pelo \
              binário a partir da spec. Cada item vem numa linha, com o código e o título, e \
@@ -407,8 +423,31 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("prompt.rs"),
             super::PREFIXES,
-            49,
-            0xf67b_7d1b_0bdf_aae8,
+            53,
+            0xe7f7_93c1_1e8c_a8d8,
         );
+    }
+
+    /// O bloco do padrão sob a tarefa passa na conferência de escrita nos
+    /// dois idiomas, com cada lacuna trocada por uma palavra.
+    #[test]
+    fn the_pattern_block_texts_read_clearly() {
+        use crate::platform::i18n::{translate, Locale};
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            for key in ["prompt.pattern.head", "prompt.pattern.rule", "prompt.pattern.info", "prompt.pattern.example"] {
+                let text = translate(key, lang)
+                    .replace("{from}", "controller")
+                    .replace("{to}", "service")
+                    .replace("{along}", "24")
+                    .replace("{total}", "25")
+                    .replace("{name}", "create")
+                    .replace("{path}", "src/order.controller.ts")
+                    .replace("{start}", "12")
+                    .replace("{end}", "30");
+                assert!(!text.contains('{'), "{key} {lang:?}: {text}");
+                let report = crate::domain::clarity::measure(&text, &[], Some(lang));
+                assert!(report.passed, "{key} {lang:?}: {report:?}");
+            }
+        }
     }
 }

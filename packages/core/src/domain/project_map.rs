@@ -29,6 +29,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::domain::ast::is_test_path;
+use crate::domain::pattern::Pattern;
 use crate::domain::normalize::{Languages, Normalizer};
 use crate::domain::search::SearchIndex;
 use crate::platform::i18n::{translate, Locale};
@@ -1456,8 +1457,19 @@ fn main_imports_of(files: &[&MapModule]) -> Vec<String> {
 ///
 /// As lições do banco vêm de quem chama, que lê o banco. Sem histórico, valem
 /// a pasta, as importações, o teste e o tamanho.
+///
+/// Só é exemplo o arquivo cujas importações seguem as regras fortes do
+/// padrão do projeto ([`crate::domain::pattern::learn`]), aprendido do mesmo
+/// mapa: o que importa contra uma delas ensinaria o caminho errado.
 #[must_use]
 pub fn examples(map: &ProjectMap, target: &str, lang: Locale) -> Examples {
+    examples_following(map, target, lang, &crate::domain::pattern::learn(map))
+}
+
+/// [`examples`] com o padrão `pattern` já aprendido do mapa: quem pede os
+/// exemplos de várias tarefas aprende o padrão uma vez só.
+#[must_use]
+pub fn examples_following(map: &ProjectMap, target: &str, lang: Locale, pattern: &Pattern) -> Examples {
     let target = clean_path(target);
     let target_module = map.module(&target);
     let is_folder = target_module.is_none()
@@ -1466,7 +1478,7 @@ pub fn examples(map: &ProjectMap, target: &str, lang: Locale) -> Examples {
     let last_at = |path: &str| -> i64 { file_history(&map.history, path).map_or(0, |h| h.last_at) };
 
     // A mesma pasta; com menos de 2, as pastas vizinhas (mesmo pai).
-    let usable = |m: &&MapModule| is_example_material(m) && m.path != target;
+    let usable = |m: &&MapModule| is_example_material(m) && m.path != target && pattern.follows(m);
     let mut pool: Vec<(&MapModule, bool)> =
         map.modules.iter().filter(usable).filter(|m| folder_of(&m.path) == folder).map(|m| (m, true)).collect();
     if pool.len() < 2 {
@@ -1873,6 +1885,61 @@ mod tests {
         }
         assert!(got.picks[0].why.iter().any(|w| w.contains("mesma pasta")), "{:?}", got.picks[0].why);
         assert!(got.picks[0].why.iter().any(|w| w.contains("spec_events_cli.rs")), "{:?}", got.picks[0].why);
+    }
+
+    /// Cinco controllers que importam cinco services, em 24 importações, e o
+    /// `service4`, o único testado e o mais recente da pasta, que importa o
+    /// `controller4` contra a regra forte.
+    fn services_against_one_rule() -> ProjectMap {
+        let named = |role: &str, n: usize| format!("src/{role}/{role}{n}.{role}.ts");
+        let mut modules = Vec::new();
+        for c in 0..5 {
+            let deps: Vec<String> = (0..5).map(|s| named("service", s)).take(if c == 4 { 4 } else { 5 }).collect();
+            modules.push(MapModule { path: named("controller", c), language: "typescript".to_string(), loc: 50, deps, ..MapModule::default() });
+        }
+        for s in 0..5 {
+            let against = s == 4;
+            modules.push(MapModule {
+                path: named("service", s),
+                language: "typescript".to_string(),
+                loc: 50,
+                deps: if against { vec![named("controller", 4)] } else { Vec::new() },
+                has_tests: against,
+                declarations: vec![decl(&format!("Service{s}"))],
+                ..MapModule::default()
+            });
+        }
+        let history = History::from_raw(vec![commit("aaaa", DAY, &[], &[&named("service", 4)])]);
+        ProjectMap { modules, history, ..ProjectMap::default() }
+    }
+
+    #[test]
+    fn a_file_that_imports_against_a_strong_rule_is_never_an_example() {
+        let map = services_against_one_rule();
+        assert_eq!(crate::domain::pattern::learn(&map).strong.len(), 1, "controller imports service is a strong rule");
+        let got = examples(&map, "src/service/service9.service.ts", Locale::PtBr);
+        let paths: Vec<&str> = got.picks.iter().map(|p| p.path.as_str()).collect();
+        assert!(!paths.is_empty(), "the services that follow the rule are still examples");
+        assert!(!paths.contains(&"src/service/service4.service.ts"), "{paths:?}");
+        // Sem a regra, o mesmo arquivo seria o primeiro: testado e recente.
+        let loose = examples_following(&map, "src/service/service9.service.ts", Locale::PtBr, &Pattern::default());
+        assert_eq!(loose.picks[0].path, "src/service/service4.service.ts");
+    }
+
+    #[test]
+    fn a_new_session_gets_no_pattern() {
+        let map = services_against_one_rule();
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let text = summary(&map, lang);
+            for key in ["prompt.pattern.head", "prompt.pattern.rule", "prompt.pattern.info", "prompt.pattern.example"] {
+                let fixed = translate(key, lang).split('{').next().unwrap_or_default();
+                assert!(!text.contains(fixed), "{key} in the session summary: {text}");
+            }
+            assert!(!text.contains("importa service") && !text.contains("imports service"), "{text}");
+        }
+        for template in [include_str!("../../templates/agents/pt-BR/wave.md"), include_str!("../../templates/agents/en-US/wave.md")] {
+            assert!(!template.contains("importa service") && !template.contains("regra:") && !template.contains("rule:"), "{template}");
+        }
     }
 
     /// Uma árvore do tamanho da real: uma pasta de comandos com 24 arquivos que

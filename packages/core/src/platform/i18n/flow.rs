@@ -536,6 +536,84 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("round.build_failed", Locale::EnUs) => {
             "The main repository did not build with `{command}`, and the round committed nothing: {output}"
         }
+        // A conferência depois da onda, antes do commit: as importações novas
+        // contra o padrão do projeto e os restos do que a onda tirou.
+        ("round.after_wave", Locale::PtBr) => {
+            "A conferência depois da onda achou o que consertar, e a rodada não comitou nada. Mande cada \
+             onda abaixo de volta ao agente dela, na mesma cópia. Ele conserta, grava a entrega de novo, \
+             e você roda a rodada outra vez. Os avisos não seguram a rodada."
+        }
+        ("round.after_wave", Locale::EnUs) => {
+            "The after-wave check found things to fix, and the round committed nothing. Send each wave \
+             below back to its agent, in the same copy. The agent fixes them, records the delivery again, \
+             and you run the round once more. Warnings do not hold the round."
+        }
+        ("round.after_wave.limit", Locale::PtBr) => {
+            "A onda {waves} já passou por {max} rodadas de conserto, e a conferência depois da onda ainda \
+             recusa. A rodada não comitou nada. Mostre ao usuário a lista abaixo e faça a pergunta de \
+             `question`."
+        }
+        ("round.after_wave.limit", Locale::EnUs) => {
+            "Wave {waves} has already gone through {max} fix rounds, and the after-wave check still \
+             refuses. The round committed nothing. Show the user the list below and ask the question in \
+             `question`."
+        }
+        ("round.after_wave.question", Locale::PtBr) => {
+            "A onda {waves} ainda tem o que consertar depois de {max} rodadas de conserto. Mudar o desenho \
+             do projeto por um pedido, revisar o plano da onda ou tirá-la do plano?"
+        }
+        ("round.after_wave.question", Locale::EnUs) => {
+            "Wave {waves} still has things to fix after {max} fix rounds. Change the project design \
+             through a request, revise the wave's plan, or take it out of the plan?"
+        }
+        ("round.after_wave.warnings", Locale::PtBr) => {
+            "A conferência depois da onda só deixou avisos, e a rodada seguiu."
+        }
+        ("round.after_wave.warnings", Locale::EnUs) => "The after-wave check left only warnings, and the round went on.",
+        ("round.after_wave.wave", Locale::PtBr) => "Onda {wave}, rodada de conserto {round} de {max}:",
+        ("round.after_wave.wave", Locale::EnUs) => "Wave {wave}, fix round {round} of {max}:",
+        ("round.after_wave.wave_warnings", Locale::PtBr) => "Onda {wave}, só avisos:",
+        ("round.after_wave.wave_warnings", Locale::EnUs) => "Wave {wave}, warnings only:",
+        ("round.after_wave.import", Locale::PtBr) => {
+            "`{file}` linha {line} importa `{target}`: {from} importando {to} vai contra a regra \
+             {rule_from} importa {rule_to}, seguida em {along} de {total} importações. Leve essa chamada \
+             para um arquivo de {rule_from}."
+        }
+        ("round.after_wave.import", Locale::EnUs) => {
+            "`{file}` line {line} imports `{target}`: {from} importing {to} goes against the rule \
+             {rule_from} imports {rule_to}, followed in {along} of {total} imports. Move that call into a \
+             {rule_from} file."
+        }
+        ("round.after_wave.weak", Locale::PtBr) => {
+            "`{file}` linha {line} importa `{target}`: {from} importando {to} vai contra o costume \
+             {rule_from} importa {rule_to}, seguido em {along} de {total} importações. É só um aviso."
+        }
+        ("round.after_wave.weak", Locale::EnUs) => {
+            "`{file}` line {line} imports `{target}`: {from} importing {to} goes against the habit \
+             {rule_from} imports {rule_to}, followed in {along} of {total} imports. It is only a warning."
+        }
+        ("round.after_wave.cycle", Locale::PtBr) => {
+            "`{file}` linha {line} importa `{target}` e fecha um ciclo novo de importações. É só um aviso."
+        }
+        ("round.after_wave.cycle", Locale::EnUs) => {
+            "`{file}` line {line} imports `{target}` and closes a new import cycle. It is only a warning."
+        }
+        ("round.after_wave.leftover", Locale::PtBr) => {
+            "`{file}` linha {line} ainda cita `{name}`, que a onda tirou de `{from}`. Tire a citação ou \
+             troque pelo nome novo."
+        }
+        ("round.after_wave.leftover", Locale::EnUs) => {
+            "`{file}` line {line} still cites `{name}`, which the wave took out of `{from}`. Remove the \
+             citation or use the new name."
+        }
+        ("round.after_wave.orphan", Locale::PtBr) => {
+            "`{name}` em `{file}` linha {line} ficou sem uso fora de teste, porque a onda tirou quem a \
+             chamava. Tire a declaração e o teste só dela."
+        }
+        ("round.after_wave.orphan", Locale::EnUs) => {
+            "`{name}` in `{file}` line {line} lost its last use outside tests, because the wave removed its \
+             caller. Remove the declaration and the tests that only cover it."
+        }
         ("round.criterion_proof_failed", Locale::PtBr) => {
             "A verificação do critério {code} não executou ou não passou, e a rodada não comitou nada: \
              `{command}` — {output}"
@@ -1439,8 +1517,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            178,
-            0x9a0d_ec3b_2528_d7a5,
+            189,
+            0x0694_95d5_05b9_3b90,
         );
     }
 
@@ -1606,6 +1684,21 @@ mod tests {
             ("round.files_diverged", &["{wave}", "{changed}", "{declared}", "{missing}"][..]),
             ("round.usage_missing", &["{wave}"][..]),
             ("round.build_failed", &["{command}", "{output}"][..]),
+            ("round.after_wave.limit", &["{waves}", "{max}"][..]),
+            ("round.after_wave.question", &["{waves}", "{max}"][..]),
+            ("round.after_wave.wave", &["{wave}", "{round}", "{max}"][..]),
+            ("round.after_wave.wave_warnings", &["{wave}"][..]),
+            (
+                "round.after_wave.import",
+                &["{file}", "{line}", "{target}", "{from}", "{to}", "{rule_from}", "{rule_to}", "{along}", "{total}"][..],
+            ),
+            (
+                "round.after_wave.weak",
+                &["{file}", "{line}", "{target}", "{from}", "{to}", "{rule_from}", "{rule_to}", "{along}", "{total}"][..],
+            ),
+            ("round.after_wave.cycle", &["{file}", "{line}", "{target}"][..]),
+            ("round.after_wave.leftover", &["{file}", "{line}", "{name}", "{from}"][..]),
+            ("round.after_wave.orphan", &["{file}", "{line}", "{name}"][..]),
             ("round.criterion_proof_failed", &["{code}", "{command}", "{output}"][..]),
             ("round.criterion_ran_no_test", &["{code}", "{command}", "{count}"][..]),
             ("round.criterion_missing_test", &["{code}", "{name}"][..]),
@@ -1796,6 +1889,50 @@ mod tests {
             for key in ["plan.next", "resume.next.plan"] {
                 let said = translate(key, lang).replace("{question}", translate("approval.question", lang));
                 assert!(said.contains(&format!("\"{question}\"")), "{key} in {lang} lacks the exact question: {said}");
+            }
+        }
+    }
+
+    /// A conferência depois da onda fala nos dois idiomas com frases que
+    /// passam na conferência de escrita, com cada lacuna trocada por uma
+    /// palavra.
+    #[test]
+    fn the_after_wave_check_texts_read_clearly() {
+        let keys = [
+            "round.after_wave",
+            "round.after_wave.limit",
+            "round.after_wave.question",
+            "round.after_wave.warnings",
+            "round.after_wave.wave",
+            "round.after_wave.wave_warnings",
+            "round.after_wave.import",
+            "round.after_wave.weak",
+            "round.after_wave.cycle",
+            "round.after_wave.leftover",
+            "round.after_wave.orphan",
+        ];
+        let words = [
+            ("{waves}", "3"),
+            ("{wave}", "3"),
+            ("{max}", "2"),
+            ("{round}", "1"),
+            ("{file}", "src/order.service.ts"),
+            ("{line}", "12"),
+            ("{target}", "src/order.controller.ts"),
+            ("{from}", "service"),
+            ("{to}", "controller"),
+            ("{rule_from}", "controller"),
+            ("{rule_to}", "service"),
+            ("{along}", "24"),
+            ("{total}", "25"),
+            ("{name}", "old_total"),
+        ];
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            for key in keys {
+                let text = words.iter().fold(translate(key, lang).to_string(), |text, (slot, word)| text.replace(slot, word));
+                assert!(!text.contains('{'), "{key} {lang:?}: {text}");
+                let report = crate::domain::clarity::measure(&text, &[], Some(lang));
+                assert!(report.passed, "{key} {lang:?}: {report:?}");
             }
         }
     }

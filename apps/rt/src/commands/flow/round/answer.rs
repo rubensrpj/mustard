@@ -111,6 +111,10 @@ pub(crate) enum RoundRefusal {
     /// O pedido de uma onda passa do teto de tokens: a rodada recusa antes de
     /// gravar o envio, com o tamanho medido e o teto.
     TokenCap { wave: u64, tokens: u64 },
+    /// A conferência depois da onda achou o que consertar: nada foi comitado.
+    /// Com `question`, uma onda já passou por todas as rodadas de conserto, e
+    /// a pergunta vai ao usuário.
+    AfterWave { text: String, question: Option<String> },
 }
 
 impl RoundRefusal {
@@ -142,6 +146,9 @@ impl RoundRefusal {
             Self::CriterionRanNoTest { .. } => "round-criterion-ran-no-test".into(),
             Self::CriterionMissingTest { .. } => "round-criterion-missing-test".into(),
             Self::TokenCap { .. } => "wave-token-cap".into(),
+            Self::AfterWave { question, .. } => {
+                if question.is_some() { "round-after-wave-limit".into() } else { "round-after-wave".into() }
+            }
         }
     }
 
@@ -234,6 +241,7 @@ impl RoundRefusal {
             Self::TokenCap { wave, tokens } => {
                 token_cap_message(*wave, *tokens, lang).unwrap_or_default()
             }
+            Self::AfterWave { text, .. } => text.clone(),
         }
     }
 
@@ -256,6 +264,9 @@ impl RoundRefusal {
             out["question"] = json!(change_question(*wave, change, lang));
             out["header"] = json!(code);
             out["options"] = json!([translate("change.accept", lang), translate("change.decline", lang)]);
+        }
+        if let Self::AfterWave { question: Some(question), .. } = self {
+            out["question"] = json!(question);
         }
         out
     }

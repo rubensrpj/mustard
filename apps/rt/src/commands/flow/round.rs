@@ -68,7 +68,12 @@
 //! assinatura de coautoria ou e-mail de alguém); a prova de um critério que
 //! as ondas da rodada cobrem que não executa ou não passa — a rodada roda
 //! cada uma, na ordem do código, antes de comitar, e recusa nomeando o
-//! critério, o comando inteiro e a saída de erro; o relatório em que um agente
+//! critério, o comando inteiro e a saída de erro; a conferência depois da
+//! onda, também antes de comitar, que recusa a importação nova contra uma
+//! regra forte do padrão do projeto e o resto do que a onda tirou — a lista
+//! vai inteira numa mensagem só, a onda conserta na mesma cópia e grava a
+//! entrega de novo, e depois da segunda rodada de conserto a pergunta vai ao
+//! usuário; o relatório em que um agente
 //! diz que o plano da onda não funciona, que para a rodada e só segue com o
 //! "sim" do usuário. O "sim" da mudança de plano é o clique em "Aceitar" na
 //! pergunta dela, gravado pela testemunha como na aprovação da spec, e nunca a
@@ -111,8 +116,10 @@ mod agreed;
 mod answer;
 mod commit;
 mod convert;
+mod imports_check;
 mod leftovers;
 mod queue;
+mod removed_check;
 mod report;
 mod slots;
 mod stops;

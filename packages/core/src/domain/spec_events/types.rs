@@ -542,6 +542,11 @@ pub const TYPES: &[TypeSpec] = &[
             // até o fim da obra, para sair junto das outras numa onda só.
             // Ausente é tarefa comum.
             opt("cleanup", Kind::Bool),
+            // O par de papéis cuja direção de importação esta tarefa muda,
+            // por pedido formal do usuário: a conferência depois da onda
+            // libera a importação entre os dois só nos arquivos desta
+            // tarefa. Ausente, a regra forte vale como sempre.
+            opt("role_pair", Kind::Texts),
         ],
     ),
     ty(
@@ -798,6 +803,19 @@ mod tests {
         assert_eq!(BlockQuery::parse("wave-x"), None);
         assert_eq!(BlockQuery::parse("everything"), None);
         assert!(BlockQuery::accepted_names().contains("waves, wave-<n>, dispatch-<n>, review"));
+    }
+
+    /// A tarefa leva, quando o pedido formal muda o desenho, o par de papéis
+    /// cuja direção muda, como uma lista de nomes; outro formato é recusado.
+    #[test]
+    fn a_task_takes_the_pair_of_roles_its_request_changes() {
+        let task = |pair: serde_json::Value| {
+            checked("task", json!({"text": "Mudar a direção.", "origin": 1, "files": [], "depends_on": [],
+                "role_pair": pair}))
+        };
+        assert_eq!(task(json!(["service", "controller"])), Ok(()));
+        let refusal = task(json!("service")).unwrap_err();
+        assert!(matches!(refusal, Refusal::InvalidValue { ref field, .. } if field == "role_pair"), "{refusal:?}");
     }
 
     #[test]

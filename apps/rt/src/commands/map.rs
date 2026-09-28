@@ -375,7 +375,7 @@ fn examples(opts: &MapOpts, lang: Locale, languages: &Languages, read: &Reader<'
         (None, None) => Need::Nothing,
         (file, _) => Need::Examples { words: file.is_none() },
     };
-    let map = read(need)?;
+    let mut map = read(need)?;
     let target = match (file, task) {
         (Some(file), _) => project_map::clean_path(file),
         (None, Some(task)) => match project_map::best_folder(&map, task, languages) {
@@ -395,6 +395,9 @@ fn examples(opts: &MapOpts, lang: Locale, languages: &Languages, read: &Reader<'
             return Err(MapRefusal::MissingArgument { question: "examples".to_string(), flag: "--file".to_string() });
         }
     };
+    // O padrão que filtra os exemplos dá o papel pelo subprojeto também,
+    // como no pedido da onda: os subprojetos vêm do terreno.
+    map.projects = read(Need::Terrain).map(|terrain| terrain.projects).unwrap_or_default();
     let got = project_map::examples(&map, &target, lang);
     let picks: Vec<Value> = got
         .picks

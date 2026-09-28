@@ -37,6 +37,7 @@ use crate::domain::config::Language;
 use crate::domain::lessons::{applies_to, same_file, text_only, tied_to_wave, Scope};
 use crate::domain::normalize::Languages;
 use crate::domain::mustard_id;
+use crate::domain::pattern::{Direction, Pattern};
 use crate::domain::project_map::cited_paths;
 use crate::domain::spec_events::{type_spec, Block, BlockQuery, Refusal, SpecEvent, SpecLog, Step, TASK_TITLE_MAX};
 use crate::domain::spec_index::{cut, title_of};
@@ -191,6 +192,90 @@ pub struct Material<'a> {
     pub since_verdict: Vec<&'a SpecEvent>,
     /// O código de cada evento, para o pedido citar item por código.
     pub codes: BTreeMap<u64, String>,
+    /// O padrão do projeto que vale para cada tarefa, pelo código dela: as
+    /// regras dos papéis que ela toca e os exemplos que as seguem
+    /// ([`pattern_block`]). A tarefa sem regra fica de fora.
+    pub task_patterns: BTreeMap<String, TaskPattern>,
+}
+
+/// O teto, em caracteres, do bloco do padrão sob uma tarefa
+/// ([`pattern_block`]): acima dele saem exemplos, do fim para o começo. As
+/// regras nunca saem; se só elas passam do teto, o bloco sai inteiro, e a
+/// medida do pedido mostra o tamanho.
+pub const PATTERN_CAP: usize = 875;
+
+/// O padrão do projeto sob uma tarefa: as regras fortes e as informações dos
+/// pares de papéis que ela toca, e os exemplos que seguem as regras fortes,
+/// o mais forte primeiro.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TaskPattern {
+    pub strong: Vec<Direction>,
+    pub info: Vec<Direction>,
+    pub examples: Vec<PatternExample>,
+}
+
+/// Um exemplo do padrão: o nome da função, o arquivo e a faixa de linhas
+/// dela. Nunca o código: o agente lê o trecho se precisar.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PatternExample {
+    pub name: String,
+    pub path: String,
+    pub start: u64,
+    pub end: u64,
+}
+
+/// As regras de `pattern` que valem para quem toca os papéis `roles`: só os
+/// pares em que um deles aparece, de um lado ou do outro. Sem exemplos: quem
+/// chama os escolhe.
+#[must_use]
+pub fn rules_for(pattern: &Pattern, roles: &BTreeSet<&str>) -> TaskPattern {
+    let touching = |list: &[Direction]| -> Vec<Direction> {
+        list.iter().filter(|d| roles.contains(d.from.as_str()) || roles.contains(d.to.as_str())).cloned().collect()
+    };
+    TaskPattern { strong: touching(&pattern.strong), info: touching(&pattern.info), examples: Vec::new() }
+}
+
+/// O bloco do padrão sob a linha de uma tarefa: a abertura, uma linha por
+/// regra forte e por informação, e uma por exemplo, com o nome, o arquivo e
+/// as linhas, sem código. Cabe em [`PATTERN_CAP`] caracteres: os exemplos
+/// saem do fim até caber, e as regras ficam todas. Sem regra, nenhum bloco.
+#[must_use]
+pub fn pattern_block(pattern: &TaskPattern, lang: Locale) -> String {
+    if pattern.strong.is_empty() && pattern.info.is_empty() {
+        return String::new();
+    }
+    let rule = |key: &str, d: &Direction| {
+        translate(key, lang)
+            .replace("{from}", &d.from)
+            .replace("{to}", &d.to)
+            .replace("{along}", &d.along.to_string())
+            .replace("{total}", &(d.along + d.against).to_string())
+    };
+    let mut block = format!("  - {}\n", translate("prompt.pattern.head", lang));
+    for line in pattern.strong.iter().map(|d| rule("prompt.pattern.rule", d)) {
+        let _ = writeln!(block, "    - {line}");
+    }
+    for line in pattern.info.iter().map(|d| rule("prompt.pattern.info", d)) {
+        let _ = writeln!(block, "    - {line}");
+    }
+    let mut examples: Vec<String> = pattern
+        .examples
+        .iter()
+        .map(|e| {
+            let line = translate("prompt.pattern.example", lang)
+                .replace("{name}", &e.name)
+                .replace("{path}", &e.path)
+                .replace("{start}", &e.start.to_string())
+                .replace("{end}", &e.end.to_string());
+            format!("    - {line}\n")
+        })
+        .collect();
+    let size = |lines: &[String]| lines.iter().map(|l| l.chars().count()).sum::<usize>();
+    while !examples.is_empty() && block.chars().count() + size(&examples) > PATTERN_CAP {
+        examples.pop();
+    }
+    block.extend(examples);
+    block
 }
 
 /// O pedido montado e o tamanho dele.
@@ -1380,7 +1465,9 @@ impl Writer<'_> {
     /// trecho que [`Self::read_hint`] calcula. Abaixo da linha vem a parte do
     /// agente ([`agent_part`]), como nos itens; o porquê fica na spec.
     /// Depois, um arquivo que o mapa do projeto conhece os testes
-    /// ([`Material::file_tests`]) ganha uma linha própria com eles.
+    /// ([`Material::file_tests`]) ganha uma linha própria com eles, e a
+    /// tarefa que toca um papel com regra ganha o bloco do padrão
+    /// ([`pattern_block`]).
     fn tasks(&self, out: &mut String) {
         let tasks: Vec<&SpecEvent> = self.wave_items().into_iter().filter(|e| e.event_type == "task").collect();
         if tasks.is_empty() {
@@ -1417,6 +1504,9 @@ impl Writer<'_> {
                 let list = tests.iter().map(|test| format!("`{test}`")).collect::<Vec<_>>().join(", ");
                 let line = self.t("prompt.task.tested_by").replace("{file}", path).replace("{tests}", &list);
                 let _ = writeln!(out, "  - {line}");
+            }
+            if let Some(pattern) = self.material.task_patterns.get(&code) {
+                out.push_str(&pattern_block(pattern, self.lang));
             }
         }
         out.push('\n');
@@ -2891,5 +2981,91 @@ mod tests {
                 assert!(!translate(key, lang).contains(said), "{lang:?} {key} repeats {said}");
             }
         }
+    }
+
+    fn direction(from: &str, to: &str, along: usize, against: usize) -> Direction {
+        Direction { from: from.to_string(), to: to.to_string(), along, against }
+    }
+
+    fn example(n: usize) -> PatternExample {
+        PatternExample {
+            name: format!("create{n}"),
+            path: format!("src/order{n}/order{n}.controller.ts"),
+            start: 10,
+            end: 40,
+        }
+    }
+
+    /// Um padrão com duas regras fortes, a do controller e a do repository, e
+    /// uma informação da entity.
+    fn two_rule_pattern() -> Pattern {
+        Pattern {
+            strong: vec![direction("controller", "service", 24, 1), direction("repository", "entity", 30, 0)],
+            info: vec![direction("entity", "helper", 17, 3)],
+            ..Pattern::default()
+        }
+    }
+
+    #[test]
+    fn a_task_touching_a_controller_gets_only_the_controller_rule() {
+        let rules = rules_for(&two_rule_pattern(), &BTreeSet::from(["controller"]));
+        assert_eq!(rules.strong, [direction("controller", "service", 24, 1)]);
+        assert!(rules.info.is_empty(), "{rules:?}");
+        let block = pattern_block(&rules, Locale::PtBr);
+        assert!(block.contains("regra: controller importa service em 24 de 25 importações"), "{block}");
+        assert!(!block.contains("repository") && !block.contains("entity"), "{block}");
+        // O papel que só aparece do lado importado também traz o par.
+        let rules = rules_for(&two_rule_pattern(), &BTreeSet::from(["entity"]));
+        assert_eq!(rules.strong, [direction("repository", "entity", 30, 0)]);
+        assert_eq!(rules.info, [direction("entity", "helper", 17, 3)]);
+    }
+
+    #[test]
+    fn over_the_cap_examples_leave_from_the_end_and_every_rule_stays() {
+        let mut rules = rules_for(&two_rule_pattern(), &BTreeSet::from(["controller", "repository", "entity"]));
+        rules.examples = (0..20).map(example).collect();
+        let block = pattern_block(&rules, Locale::PtBr);
+        assert!(block.chars().count() <= PATTERN_CAP, "{} chars: {block}", block.chars().count());
+        for rule in ["controller importa service", "repository importa entity", "costume: entity importa helper"] {
+            assert!(block.contains(rule), "{rule} missing: {block}");
+        }
+        let kept: Vec<usize> = (0..20).filter(|n| block.contains(&format!("`create{n}`"))).collect();
+        assert!(!kept.is_empty() && kept.len() < 20, "{kept:?}");
+        assert_eq!(kept, (0..kept.len()).collect::<Vec<_>>(), "the first examples stay, the last leave: {block}");
+        // Um exemplo a mais que os que ficaram já não caberia.
+        rules.examples.truncate(kept.len() + 1);
+        let whole: usize = pattern_block(&TaskPattern { examples: Vec::new(), ..rules.clone() }, Locale::PtBr)
+            .chars()
+            .count();
+        let one_more: usize = rules.examples.iter().map(|e| format!("    - exemplo: `{}` em `{}`, linhas {} a {}\n", e.name, e.path, e.start, e.end).chars().count()).sum();
+        assert!(whole + one_more > PATTERN_CAP, "{whole} + {one_more}");
+    }
+
+    #[test]
+    fn rules_alone_over_the_cap_go_out_whole_without_examples() {
+        let strong: Vec<Direction> =
+            (0..12).map(|n| direction(&format!("controller_of_area_{n:02}"), &format!("service_of_area_{n:02}"), 40, 1)).collect();
+        let pattern = TaskPattern { strong: strong.clone(), info: Vec::new(), examples: (0..3).map(example).collect() };
+        let block = pattern_block(&pattern, Locale::EnUs);
+        assert!(block.chars().count() > PATTERN_CAP, "{block}");
+        for rule in &strong {
+            assert!(block.contains(&format!("rule: {} imports {} in 40 of 41 imports", rule.from, rule.to)), "{block}");
+        }
+        assert!(!block.contains("example:"), "{block}");
+    }
+
+    #[test]
+    fn the_pattern_cap_comes_from_one_constant() {
+        let cap = PATTERN_CAP.to_string();
+        let sources = [include_str!("wave_prompt.rs"), include_str!("../io/wave_prompt.rs")];
+        let found: usize = sources.iter().map(|source| source.matches(cap.as_str()).count()).sum();
+        assert_eq!(found, 1, "the cap is written once, in its constant");
+    }
+
+    #[test]
+    fn a_task_pattern_without_rules_gives_no_block() {
+        let pattern = TaskPattern { examples: (0..3).map(example).collect(), ..TaskPattern::default() };
+        assert_eq!(pattern_block(&pattern, Locale::PtBr), "");
+        assert_eq!(pattern_block(&rules_for(&two_rule_pattern(), &BTreeSet::from(["view"])), Locale::PtBr), "");
     }
 }

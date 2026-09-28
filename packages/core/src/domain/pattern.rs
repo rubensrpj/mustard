@@ -111,6 +111,48 @@ pub struct Direction {
     pub against: usize,
 }
 
+impl Pattern {
+    /// A regra forte que a importação do papel `from` para o papel `to`
+    /// contraria: a direção em que `to` importa `from`. `None` quando a
+    /// importação segue as regras, ou quando os dois papéis são o mesmo.
+    #[must_use]
+    pub fn strong_against(&self, from: &str, to: &str) -> Option<&Direction> {
+        against(&self.strong, from, to)
+    }
+
+    /// A informação (a direção fraca) que a importação do papel `from` para o
+    /// papel `to` contraria, como [`Pattern::strong_against`].
+    #[must_use]
+    pub fn info_against(&self, from: &str, to: &str) -> Option<&Direction> {
+        against(&self.info, from, to)
+    }
+
+    /// As importações do arquivo `module` seguem as regras fortes: nenhuma
+    /// vai de encontro a uma delas, pelos papéis que este padrão dá.
+    #[must_use]
+    pub fn follows(&self, module: &MapModule) -> bool {
+        let Some(own) = self.roles.get(&module.path) else { return true };
+        module.deps.iter().filter_map(|dep| self.roles.get(dep)).all(|role| self.strong_against(own, role).is_none())
+    }
+}
+
+/// A direção de `list` em que `to` importa `from`, com papéis diferentes.
+fn against<'d>(list: &'d [Direction], from: &str, to: &str) -> Option<&'d Direction> {
+    (from != to).then(|| list.iter().find(|d| d.from == to && d.to == from)).flatten()
+}
+
+/// A língua do arquivo `module`: a que o mapa gravou, ou, no mapa lido só
+/// em parte, sem ela, a que a extensão do caminho diz. É por ela que o
+/// arquivo de entrada da pasta se reconhece, e a leitura em parte dá os
+/// mesmos papéis que o mapa inteiro.
+fn language_of(module: &MapModule) -> &str {
+    if module.language.is_empty() {
+        crate::domain::source_lang::language_of_path(&module.path).unwrap_or_default()
+    } else {
+        &module.language
+    }
+}
+
 /// O padrão do projeto do mapa `map`: os três passos do começo do módulo.
 #[must_use]
 pub fn learn(map: &ProjectMap) -> Pattern {
@@ -252,7 +294,7 @@ fn roles_of(files: &[&MapModule], projects: &[MapProject]) -> BTreeMap<String, S
     let groups = groups_of(files, projects);
     let several = groups.len() > 1;
     let entries: BTreeSet<&str> =
-        files.iter().filter(|m| is_entry_file(&m.path, &m.language)).map(|m| m.path.as_str()).collect();
+        files.iter().filter(|m| is_entry_file(&m.path, language_of(m))).map(|m| m.path.as_str()).collect();
     let suffixes = repeated_suffixes(files);
     let single_words = repeated_single_words(files);
     let folders = repeated_folders(&groups);
@@ -623,6 +665,39 @@ mod tests {
         // A língua sem arquivo de entrada dá papel ao `main` repetido.
         let mains = in_folders("cmd", &FOLDERS[..3], "main.go", "go");
         assert_eq!(not_in_role(&roles_of_files(&mains), &paths_of(&mains), "main"), []);
+    }
+
+    /// O mapa lido só em parte, sem a língua de cada arquivo, dá os mesmos
+    /// papéis que o mapa inteiro: o arquivo de entrada se reconhece pela
+    /// extensão do caminho.
+    #[test]
+    fn a_map_read_without_languages_gives_the_same_roles() {
+        let files = [
+            in_folders("src", &FOLDERS, "index.ts", "typescript"),
+            in_folders("lib", &FOLDERS, "mod.rs", "rust"),
+            in_folders("app", &FOLDERS[..3], "views.py", "python"),
+        ]
+        .concat();
+        let without: Vec<(String, &str)> = files.iter().map(|(path, _)| (path.clone(), "")).collect();
+        assert_eq!(roles_of_files(&without), roles_of_files(&files));
+    }
+
+    /// A importação contra a regra forte é achada pelos dois papéis, só no
+    /// sentido contrário ao da regra; a que vai contra a informação, só como
+    /// informação; e o arquivo que importa contra a regra forte não a segue.
+    #[test]
+    fn the_import_against_a_rule_is_found_by_its_roles() {
+        let strong = learn(&two_roles(5, 5, 24, 1));
+        assert_eq!(strong.strong_against("service", "controller"), Some(&direction("controller", "service", 24, 1)));
+        assert_eq!(strong.strong_against("controller", "service"), None);
+        assert_eq!(strong.info_against("service", "controller"), None);
+        let weak = learn(&two_roles(5, 5, 17, 3));
+        assert_eq!(weak.strong_against("service", "controller"), None);
+        assert_eq!(weak.info_against("service", "controller"), Some(&direction("controller", "service", 17, 3)));
+        let map = two_roles(5, 5, 24, 1);
+        let against = map.modules.iter().find(|m| m.path.ends_with(".service.ts") && !m.deps.is_empty()).unwrap();
+        assert!(!strong.follows(against), "{against:?}");
+        assert!(map.modules.iter().filter(|m| m.path.ends_with(".controller.ts")).all(|m| strong.follows(m)));
     }
 
     /// Os caminhos de `files`, sem a língua.

@@ -18,17 +18,22 @@
 //! onda. A skill cujo arquivo citado mudou no git depois do arquivo dela sai
 //! marcada como a revisar.
 
-use std::cell::OnceCell;
+use std::cell::{OnceCell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
 use crate::domain::lessons::{in_scope, related_to_tasks, serving_wave, Scope};
+use crate::domain::pattern::Pattern;
 use crate::domain::normalize::Languages;
-use crate::domain::project_map::{check_skill, cited_paths, file_history, tests_for, History, MapRefusal, ProjectMap};
+use crate::domain::project_map::{
+    check_skill, cited_paths, examples_following, file_history, tests_for, History, MapModule, MapRefusal, ProjectMap,
+};
 use crate::domain::spec_events::{Block, BlockQuery, SpecEvent, SpecLog};
-use crate::domain::wave_prompt::{self, tasks_text, wave_files, Choice, Execution, Material, Skill, WaveCopy};
+use crate::domain::wave_prompt::{
+    self, tasks_text, wave_files, Choice, Execution, Material, PatternExample, Skill, TaskPattern, WaveCopy,
+};
 use crate::io::project_map::{MapReader, Need};
 use crate::platform::i18n::Locale;
 
@@ -88,7 +93,15 @@ fn prompts_reading(
     let bank = lesson_bank(root);
     let base = project_execution(root);
     let languages = Languages::of_project(root);
-    let map = MapParts { read, paths: OnceCell::new(), summary: OnceCell::new() };
+    let map = MapParts {
+        read,
+        paths: OnceCell::new(),
+        summary: OnceCell::new(),
+        pattern: OnceCell::new(),
+        learned: OnceCell::new(),
+        picks: RefCell::default(),
+        examples: RefCell::default(),
+    };
     let context = Context {
         root,
         spec,
@@ -415,6 +428,13 @@ struct MapParts<'a> {
     read: &'a MapReader<'a>,
     paths: OnceCell<Option<ProjectMap>>,
     summary: OnceCell<Option<ProjectMap>>,
+    pattern: OnceCell<Option<ProjectMap>>,
+    learned: OnceCell<Option<Pattern>>,
+    /// Os exemplos de cada arquivo de tarefa, pelo caminho, e o exemplo de
+    /// cada arquivo escolhido: o mesmo arquivo volta em várias ondas, e se
+    /// calcula uma vez só por montagem.
+    picks: RefCell<BTreeMap<String, Vec<String>>>,
+    examples: RefCell<BTreeMap<String, Option<PatternExample>>>,
 }
 
 impl MapParts<'_> {
@@ -436,6 +456,50 @@ impl MapParts<'_> {
     /// O arquivo `file` com os testes que o cobrem.
     fn tests(&self, file: &str) -> Option<ProjectMap> {
         (self.read)(Need::Tests(file)).ok()
+    }
+
+    /// O que o padrão do projeto e os exemplos leem: cada arquivo com as
+    /// importações, o tamanho, a classe, os testes e os nomes que declara, a
+    /// história e os subprojetos. Lido uma vez só por montagem.
+    fn pattern(&self) -> Option<&ProjectMap> {
+        self.pattern
+            .get_or_init(|| {
+                let mut map = (self.read)(Need::Examples { words: true }).ok()?;
+                let summary = self.summary.get_or_init(|| (self.read)(Need::Summary).ok()).as_ref();
+                map.projects = summary.map(|s| s.projects.clone()).unwrap_or_default();
+                Some(map)
+            })
+            .as_ref()
+    }
+
+    /// O exemplo do padrão no arquivo `path` ([`pattern_example`]),
+    /// calculado uma vez só por montagem.
+    fn example(&self, read: &ProjectMap, path: &str) -> Option<PatternExample> {
+        let known = self.examples.borrow().get(path).cloned();
+        known.unwrap_or_else(|| {
+            let found = pattern_example(self, read, path);
+            self.examples.borrow_mut().insert(path.to_string(), found.clone());
+            found
+        })
+    }
+
+    /// O padrão do projeto aprendido de [`Self::pattern`], com os arquivos
+    /// `new_files` que o mapa ainda não tem: o papel de um arquivo que uma
+    /// tarefa cria sai do nome dele, como o de um que já existe. Aprendido
+    /// uma vez só por montagem.
+    fn learned(&self, new_files: impl FnOnce() -> Vec<String>) -> Option<&Pattern> {
+        self.learned
+            .get_or_init(|| {
+                let read = self.pattern()?;
+                let mut with_new = read.clone();
+                for path in new_files() {
+                    if with_new.module(&path).is_none() {
+                        with_new.modules.push(MapModule { path, ..MapModule::default() });
+                    }
+                }
+                Some(crate::domain::pattern::learn(&with_new))
+            })
+            .as_ref()
     }
 }
 
@@ -538,6 +602,7 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
     // arquivo que o mapa não conhece, ou sem teste externo conhecido, fica
     // de fora — a linha continua como hoje, sem inventar nada.
     let file_tests = task_file_tests(map, &of_type("task"));
+    let task_patterns = task_patterns(map, log, &of_type("task"), &codes, lang);
 
     let mut skills = Vec::new();
     let mut bad_skills = Vec::new();
@@ -579,6 +644,7 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
         changes: Vec::new(),
         since_verdict: Vec::new(),
         codes,
+        task_patterns,
     };
     let text = wave_prompt::write(&material, lang);
     let lines = wave_prompt::count_lines(&text);
@@ -712,6 +778,98 @@ fn task_file_tests(map: &MapParts<'_>, tasks: &[&SpecEvent]) -> BTreeMap<String,
         }
     }
     out
+}
+
+/// O padrão do projeto sob cada tarefa de `tasks`, pelo código dela: as
+/// regras dos papéis que os arquivos dela tocam e os exemplos que seguem as
+/// regras fortes. O papel de um arquivo que uma tarefa do plano `log` cria
+/// sai do nome dele, como o de um arquivo que já existe. Os exemplos saem
+/// dos arquivos da tarefa, um de cada por vez, o melhor de cada primeiro
+/// ([`pattern_example`]). Sem mapa, sem regra, ou para a tarefa que não toca
+/// papel com regra, nada.
+fn task_patterns(
+    map: &MapParts<'_>,
+    log: &SpecLog,
+    tasks: &[&SpecEvent],
+    codes: &BTreeMap<u64, String>,
+    lang: Locale,
+) -> BTreeMap<String, TaskPattern> {
+    let files_of = |task: &SpecEvent| -> Vec<String> {
+        let files = task.fields.get("files").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+        files.iter().filter_map(|file| file.get("path").and_then(Value::as_str)).map(str::to_string).collect()
+    };
+    let every_task = || log.events.iter().filter(|e| e.event_type == "task").flat_map(files_of).collect();
+    let (Some(read), Some(pattern)) = (map.pattern(), map.learned(every_task)) else { return BTreeMap::new() };
+    if pattern.strong.is_empty() && pattern.info.is_empty() {
+        return BTreeMap::new();
+    }
+    let mut out = BTreeMap::new();
+    for task in tasks {
+        let files = files_of(task);
+        let roles: BTreeSet<&str> = files.iter().filter_map(|path| pattern.roles.get(path)).map(String::as_str).collect();
+        let mut rules = wave_prompt::rules_for(pattern, &roles);
+        if rules.strong.is_empty() && rules.info.is_empty() {
+            continue;
+        }
+        let picks: Vec<Vec<String>> = files
+            .iter()
+            .map(|file| {
+                let known = map.picks.borrow().get(file).cloned();
+                known.unwrap_or_else(|| {
+                    let found: Vec<String> =
+                        examples_following(read, file, lang, pattern).picks.into_iter().map(|p| p.path).collect();
+                    map.picks.borrow_mut().insert(file.clone(), found.clone());
+                    found
+                })
+            })
+            .collect();
+        let deepest = picks.iter().map(Vec::len).max().unwrap_or_default();
+        let mut seen: BTreeSet<String> = BTreeSet::new();
+        for path in (0..deepest).flat_map(|rank| picks.iter().filter_map(move |list| list.get(rank))) {
+            if seen.insert(path.clone())
+                && let Some(example) = map.example(read, path)
+            {
+                rules.examples.push(example);
+            }
+        }
+        out.insert(codes.get(&task.id).cloned().unwrap_or_else(|| task.id.to_string()), rules);
+    }
+    out
+}
+
+/// Quantas declarações de um arquivo o exemplo lê, uma a uma, atrás de uma
+/// função.
+const EXAMPLE_NAMES_READ: usize = 6;
+
+/// O exemplo do padrão no arquivo `path`, com as linhas: a declaração com o
+/// nome do arquivo (sem a extensão e sem diferença de caixa, `_` ou `-`);
+/// senão, a primeira função ou método entre as primeiras
+/// [`EXAMPLE_NAMES_READ`] que ele declara; senão, a primeira delas com
+/// linhas. `None` quando nenhuma tem linhas conhecidas.
+fn pattern_example(map: &MapParts<'_>, read: &ProjectMap, path: &str) -> Option<PatternExample> {
+    let module = read.module(path)?;
+    let plain = |text: &str| -> String { text.chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase() };
+    let file = path.rsplit('/').next().unwrap_or(path);
+    let stem = plain(file.split('.').next().unwrap_or(file));
+    let mut names: Vec<&str> = Vec::new();
+    for name in module.declarations.iter().map(|d| d.name.as_str()) {
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    names.sort_by_key(|name| plain(name) != stem);
+    let mut first: Option<PatternExample> = None;
+    for name in names.into_iter().take(EXAMPLE_NAMES_READ) {
+        let Some(named) = map.declarations(path, name) else { continue };
+        let found = named.modules.iter().filter(|m| m.path == path).flat_map(|m| &m.declarations);
+        let Some(decl) = found.filter(|d| d.name == name && d.end_line > 0).next() else { continue };
+        let example = PatternExample { name: name.to_string(), path: path.to_string(), start: decl.line, end: decl.end_line };
+        if plain(name) == stem || matches!(decl.kind.as_str(), "function" | "method") {
+            return Some(example);
+        }
+        first.get_or_insert(example);
+    }
+    first
 }
 
 /// As faixas de linha (começo, fim) de cada declaração de nome `name` no
@@ -1683,6 +1841,102 @@ mod tests {
         assert!(text.contains("leia só as linhas 3-5, 9-12 de `soma` em `rt/src/a.rs`"), "{text}");
         assert!(text.contains("quem testa `apps/rt/src/a.rs`: `apps/rt/tests/a_test.rs`"), "{text}");
         assert_eq!(built[0].stale_skills, ["somar"]);
+    }
+
+    /// Um projeto com dois pares de papéis, cada um com regra forte:
+    /// controller importa service em 24 de 25 importações (a que vai contra
+    /// é do `service4`, testado e o mais recente da pasta) e repository
+    /// importa entity em todas as 25. Cada arquivo declara a classe com o
+    /// nome dele, com as linhas, e o código dele está no disco. A onda tem
+    /// uma tarefa que cria um controller e outra que cria um service.
+    fn project_with_a_pattern() -> (tempfile::TempDir, SpecLog) {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let named = |role: &str, n: usize| format!("src/{role}/{role}{n}.{role}.ts");
+        let mut modules = Vec::new();
+        for (from, to) in [("controller", "service"), ("repository", "entity")] {
+            for a in 0..5 {
+                let mut deps: Vec<String> = (0..5).map(|b| named(to, b)).collect();
+                if from == "controller" && a == 4 {
+                    deps.pop();
+                }
+                modules.push(json!({"path": named(from, a), "language": "typescript", "loc": 50, "deps": deps,
+                    "declarations": [{"kind": "class", "name": format!("{}{a}", capitalized(from)), "line": 3, "end_line": 9}]}));
+            }
+            for b in 0..5 {
+                let against = from == "controller" && b == 4;
+                let deps = if against { vec![named(from, 4)] } else { Vec::new() };
+                let tests = if against { vec![format!("test/{to}{b}.spec.ts")] } else { Vec::new() };
+                modules.push(json!({"path": named(to, b), "language": "typescript", "loc": 50, "deps": deps, "tests": tests,
+                    "declarations": [{"kind": "class", "name": format!("{}{b}", capitalized(to)), "line": 2, "end_line": 8}]}));
+            }
+        }
+        for module in &modules {
+            let path = root.join(module["path"].as_str().unwrap());
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, "export class Example {\n  handle() {\n    return this.orders.list();\n  }\n}\n").unwrap();
+        }
+        write_map(
+            root,
+            &json!({
+                "modules": modules,
+                "history": {"paths": [named("service", 4)], "commits": [{"id": "abc1234", "at": 1_789_000_000, "changed": [0]}]}
+            }),
+        );
+        let log = log_of(&[
+            ("wave", json!({"n": 1, "text": "A onda", "criteria": [], "done_when": "passa"})),
+            ("task", json!({"wave": 1, "text": "Criar o controller", "files": [{"path": named("controller", 5)}]})),
+            ("task", json!({"wave": 1, "text": "Criar o service", "files": [{"path": named("service", 5)}]})),
+        ]);
+        (dir, log)
+    }
+
+    fn capitalized(word: &str) -> String {
+        let mut chars = word.chars();
+        chars.next().map(|c| c.to_uppercase().chain(chars).collect()).unwrap_or_default()
+    }
+
+    /// As linhas de uma tarefa no pedido: a dela e as de baixo, até a
+    /// próxima tarefa.
+    fn task_lines<'t>(text: &'t str, title: &str) -> Vec<&'t str> {
+        let mut lines = text.lines().skip_while(|line| !line.contains(title));
+        let first = lines.next().into_iter();
+        first.chain(lines.take_while(|line| !line.starts_with("- ") && !line.is_empty())).collect()
+    }
+
+    #[test]
+    fn a_task_request_carries_the_rules_of_its_roles_and_examples_that_follow_them() {
+        let (dir, log) = project_with_a_pattern();
+        let root = dir.path();
+        let by_question = prompts(root, "teste", &log, Locale::PtBr, &Flight::default());
+        let whole = prompts_reading(root, "teste", &log, Locale::PtBr, &Flight::default(), &|_| {
+            crate::io::project_map::read(root)
+        });
+        assert_eq!(by_question, whole, "the map parts give the same pattern as the whole map");
+        let text = &by_question[0].text;
+        let controller = task_lines(text, "Criar o controller").join("\n");
+        assert!(controller.contains("regra: controller importa service em 24 de 25 importações"), "{controller}");
+        // Só a regra do papel que a tarefa toca: a do repository fica fora.
+        assert!(!controller.contains("repository"), "{controller}");
+        assert!(controller.contains("exemplo: `Controller0` em `src/controller/controller0.controller.ts`, linhas 3 a 9"), "{controller}");
+        let service = task_lines(text, "Criar o service").join("\n");
+        assert!(service.contains("regra: controller importa service"), "{service}");
+        assert!(service.contains("exemplo: `Service0`"), "{service}");
+        // O service que importa um controller vai contra a regra: nunca é
+        // exemplo, mesmo testado e o mais recente da pasta.
+        assert!(!service.contains("service4"), "{service}");
+        // O exemplo é nome, arquivo e linhas: o código dele não entra.
+        assert!(!text.contains("return this.orders"), "{text}");
+        assert!(!text.contains("export class"), "{text}");
+    }
+
+    #[test]
+    fn a_project_without_rules_gets_no_pattern_block() {
+        let (dir, log) = project_using_every_map_part(false);
+        let built = prompts(dir.path(), "teste", &log, Locale::PtBr, &Flight::default());
+        let head = crate::platform::i18n::translate("prompt.pattern.head", Locale::PtBr);
+        assert!(!built[0].text.contains(head), "{}", built[0].text);
+        assert!(!built[0].text.contains("regra:") && !built[0].text.contains("costume:"), "{}", built[0].text);
     }
 
     /// O pedido marca a skill como a revisar pelo que diz a linha dela: `true`
