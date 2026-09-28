@@ -13,6 +13,12 @@
 //! sai, na hora da resposta, da história por função já montada do arquivo,
 //! e sem ela o commit liga só ao arquivo. Este módulo nunca monta história.
 //!
+//! O commit de onda casa com a história do arquivo pelo hash. O squash e o
+//! rebase dão ao commit outro hash na base; aí ele casa pelos commits da base
+//! do pull request da spec: cada spec guarda os números dos pull requests
+//! que a rodada abriu para ela, e o commit da base tem o número no título ou
+//! o que o provedor achou para ele.
+//!
 //! O bloco se põe em dia antes de cada resposta do mapa e depois de cada
 //! gravação na spec ([`sync`] e [`sync_spec`]): o tamanho e a hora de cada
 //! arquivo de eventos se comparam com os gravados no bloco, sem abrir o
@@ -25,7 +31,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, Statement};
 use serde_json::Value;
 
 use crate::domain::normalize::Languages;
@@ -183,8 +189,8 @@ fn stored_marks(conn: &Connection) -> Result<HashMap<String, Mark>> {
 /// `mark`, até `size` bytes, quando nenhuma delas mexe nos itens. `None`
 /// quando o arquivo não só cresceu (encolheu, ou mudou antes do fim
 /// gravado), quando uma linha nova não se entende ou não vem depois do
-/// último número, ou quando alguma é item, remoção, expurgo ou commit: aí a
-/// spec se relê inteira.
+/// último número, ou quando alguma é item, remoção, expurgo, commit ou o
+/// estado que traz o número de um pull request: aí a spec se relê inteira.
 fn quiet_tail(path: &Path, mark: Mark, size: u64) -> Option<u64> {
     if mark.size == 0 || size <= mark.size {
         return None;
@@ -201,9 +207,15 @@ fn quiet_tail(path: &Path, mark: Mark, size: u64) -> Option<u64> {
     let quiet = log.skipped.is_empty()
         && log.events.iter().all(|event| {
             let kind = event.event_type.as_str();
-            event.id > mark.last_id && !KINDS.contains(&kind) && !TOUCHING.contains(&kind)
+            event.id > mark.last_id && !KINDS.contains(&kind) && !TOUCHING.contains(&kind) && pull_number(event).is_none()
         });
     quiet.then(|| log.max_id().max(mark.last_id))
+}
+
+/// O número do pull request que o estado `event` traz, gravado pela rodada
+/// ao abrir o pull request da spec.
+fn pull_number(event: &SpecEvent) -> Option<u64> {
+    (event.event_type == "state").then(|| event.fields.get("pr")?.get("number")?.as_u64()).flatten()
 }
 
 /// Um item vigente, como o bloco o guarda.
@@ -232,14 +244,15 @@ struct CommitRow {
 struct SpecRows {
     items: Vec<ItemRow>,
     commits: Vec<CommitRow>,
+    pulls: Vec<u64>,
 }
 
-/// Os itens vigentes da spec lida e os commits das ondas dela. Cada item
-/// leva os arquivos que cita e, na tarefa, os que ela muda; a tarefa passa
-/// os dela aos itens que cobre. Cada commit leva as tarefas das ondas dele,
-/// os itens que dizem essas ondas e os que as tarefas cobrem. A tarefa e o
-/// item citados por uma versão antiga valem pela versão vigente, que tem o
-/// mesmo código.
+/// Os itens vigentes da spec lida, os commits das ondas dela e os números
+/// dos pull requests que os estados dela trazem. Cada item leva os arquivos
+/// que cita e, na tarefa, os que ela muda; a tarefa passa os dela aos itens
+/// que cobre. Cada commit leva as tarefas das ondas dele, os itens que dizem
+/// essas ondas e os que as tarefas cobrem. A tarefa e o item citados por uma
+/// versão antiga valem pela versão vigente, que tem o mesmo código.
 fn rows_of(log: &SpecLog) -> SpecRows {
     let codes = log.codes();
     let visible = log.visible();
@@ -306,7 +319,9 @@ fn rows_of(log: &SpecLog) -> SpecRows {
             }
         })
         .collect();
-    SpecRows { items, commits }
+    let mut pulls = Vec::new();
+    push_new(&mut pulls, visible.iter().copied().filter_map(pull_number));
+    SpecRows { items, commits, pulls }
 }
 
 /// Acrescenta a `list` o que ela ainda não tem, na ordem.
@@ -370,6 +385,7 @@ fn apply(tx: &Connection, change: &Change, languages: Option<&Languages>) -> Res
     };
     tx.execute("DELETE FROM spec_items WHERE spec = ?1", [spec])?;
     tx.execute("DELETE FROM spec_commits WHERE spec = ?1", [spec])?;
+    tx.execute("DELETE FROM spec_pulls WHERE spec = ?1", [spec])?;
     if let Some(rows) = rows {
         let mut item = tx.prepare(
             "INSERT INTO spec_items(spec, id, code, kind, title, text, agent, search, files) \
@@ -392,6 +408,10 @@ fn apply(tx: &Connection, change: &Change, languages: Option<&Languages>) -> Res
         for row in &rows.commits {
             commit.execute(params![spec, row.sha, serde_json::to_string(&row.items).unwrap_or_default(), json_list(&row.files)])?;
         }
+        let mut pull = tx.prepare("INSERT INTO spec_pulls(spec, pr) VALUES (?1, ?2)")?;
+        for number in &rows.pulls {
+            pull.execute(params![spec, i64::try_from(*number).unwrap_or(i64::MAX)])?;
+        }
     }
     if let Some(languages) = languages {
         map_search::unindex_specs(tx, &old)?;
@@ -405,34 +425,68 @@ fn json_list(list: &[String]) -> Option<String> {
     (!list.is_empty()).then(|| serde_json::to_string(list).unwrap_or_default())
 }
 
-/// O item de spec de cada commit de onda cujo começo do hash está em `ids`
-/// — de todos, sem `ids` —, pelo começo do hash: entre os itens das ondas do
-/// commit, a decisão antes da regra, e a tarefa por último ([`KINDS`]); no
-/// mesmo tipo, o de número menor.
+/// A nota escolhida até aqui e a ordem dela: o lugar do tipo em [`KINDS`] e
+/// o número do item.
+type Ranked = ((usize, i64), SpecNote);
+
+/// O item de spec de cada commit cujo começo do hash está em `ids` — de
+/// todos, sem `ids` —, pelo começo do hash. O commit de onda leva o dos
+/// itens das ondas dele; o commit da base que não é de onda e veio pelo
+/// pull request de uma spec, como o do squash, leva o de todos os commits de
+/// onda dela. Nos dois, a decisão antes da regra, e a tarefa por último
+/// ([`KINDS`]); no mesmo tipo, o de número menor.
 pub(crate) fn notes_of(conn: &Connection, ids: Option<&[&str]>) -> Result<BTreeMap<String, SpecNote>> {
     let wanted: Option<BTreeSet<&str>> = ids.map(|ids| ids.iter().copied().collect());
     if wanted.as_ref().is_some_and(BTreeSet::is_empty) {
         return Ok(BTreeMap::new());
     }
+    let asked = |id: &str| wanted.as_ref().is_none_or(|wanted| wanted.contains(id));
+    let squashed: Vec<(String, String)> = {
+        let mut stmt = conn.prepare(&format!("SELECT b.id, s.spec FROM ({BASE_PULL}) b JOIN spec_pulls s ON s.pr = b.pr"))?;
+        let rows: Vec<(String, String)> =
+            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
+        rows.into_iter().filter(|(id, _)| asked(id)).collect()
+    };
+    let pulled: BTreeSet<&str> = squashed.iter().map(|(_, spec)| spec.as_str()).collect();
     let mut stmt = conn.prepare(
         "SELECT c.sha, i.spec, i.code, i.kind, i.text, i.id FROM spec_commits c, json_each(c.items) j \
          JOIN spec_items i ON i.spec = c.spec AND i.id = j.value ORDER BY c.rowid",
     )?;
     let mut rows = stmt.query([])?;
-    let mut best: BTreeMap<String, ((usize, i64), SpecNote)> = BTreeMap::new();
+    let mut best: BTreeMap<String, Ranked> = BTreeMap::new();
+    let mut of_spec: BTreeMap<String, Ranked> = BTreeMap::new();
+    let beats = |kept: Option<&Ranked>, rank: (usize, i64)| kept.is_none_or(|(seen, _)| *seen > rank);
     while let Some(row) = rows.next()? {
         let sha: String = row.get(0)?;
         let short: String = sha.chars().take(SHORT_ID).collect();
-        if wanted.as_ref().is_some_and(|wanted| !wanted.contains(short.as_str())) {
-            continue;
-        }
+        let spec: String = row.get(1)?;
         let kind: String = row.get(3)?;
         let rank = (KINDS.iter().position(|k| *k == kind).unwrap_or(KINDS.len()), row.get::<_, i64>(5)?);
-        if best.get(&short).is_some_and(|(seen, _)| *seen <= rank) {
+        let for_commit = asked(&short) && beats(best.get(&short), rank);
+        let for_spec = pulled.contains(spec.as_str()) && beats(of_spec.get(&spec), rank);
+        if !for_commit && !for_spec {
             continue;
         }
-        let note = SpecNote { spec: row.get(1)?, code: row.get(2)?, sentence: spec_sentence(&row.get::<_, String>(4)?) };
-        best.insert(short, (rank, note));
+        let note = SpecNote { spec: spec.clone(), code: row.get(2)?, sentence: spec_sentence(&row.get::<_, String>(4)?) };
+        if for_spec {
+            of_spec.insert(spec, (rank, note.clone()));
+        }
+        if for_commit {
+            best.insert(short, (rank, note));
+        }
+    }
+    if !squashed.is_empty() {
+        let waves: BTreeSet<String> = {
+            let mut stmt = conn.prepare("SELECT sha FROM spec_commits")?;
+            let shas = stmt.query_map([], |row| row.get::<_, String>(0))?;
+            shas.map(|sha| sha.map(|sha| sha.chars().take(SHORT_ID).collect())).collect::<rusqlite::Result<_>>()?
+        };
+        for (id, spec) in squashed {
+            let Some((rank, note)) = of_spec.get(&spec) else { continue };
+            if !waves.contains(&id) && beats(best.get(&id), *rank) {
+                best.insert(id, (*rank, note.clone()));
+            }
+        }
     }
     Ok(best.into_iter().map(|(short, (_, note))| (short, note)).collect())
 }
@@ -440,16 +494,29 @@ pub(crate) fn notes_of(conn: &Connection, ids: Option<&[&str]>) -> Result<BTreeM
 /// Quantos caracteres do hash a história por função guarda.
 const SHORT_ID: usize = 10;
 
+/// Os commits da história por arquivo, cada um com o número do pull request
+/// que o trouxe à base: o do título e, sem ele, o que o provedor achou.
+const BASE_PULL: &str = "SELECT c.id AS id, COALESCE(NULLIF(c.pr, 0), p.pr) AS pr FROM lineage_commits c \
+     LEFT JOIN pr_commits p ON p.id = c.id AND p.pr > 0";
+
 /// Os lugares ligados ao item `id` da spec `spec`, até `limit`: primeiro as
 /// funções que os commits das ondas dele mudaram, do commit mais novo ao
 /// mais velho, pela história por função do arquivo, como `arquivo:nome`; o
 /// arquivo do commit que ainda não tem essa história, ou em que ela não
 /// achou função do commit, entra inteiro; depois os arquivos que o item
-/// cita ou que as tarefas dele mudam.
+/// cita ou que as tarefas dele mudam. O commit de onda que a história do
+/// arquivo não tem casa pelos commits da base do pull request da spec
+/// ([`sought_ids`]).
 pub(crate) fn links_of(conn: &Connection, spec: &str, id: i64, files: &[String], limit: usize) -> Result<Vec<String>> {
     let mut commits = conn.prepare("SELECT sha, items, files FROM spec_commits WHERE spec = ?1 ORDER BY rowid DESC")?;
     let mut traced = conn.prepare("SELECT 1 FROM lineage_files WHERE path = ?1")?;
+    let mut history = conn.prepare(&format!("{BASE_PULL} WHERE c.path = ?1"))?;
     let mut decls = conn.prepare("SELECT name, commits FROM lineage_decls WHERE path = ?1 ORDER BY rowid")?;
+    let pulls: BTreeSet<i64> = {
+        let mut stmt = conn.prepare("SELECT pr FROM spec_pulls WHERE spec = ?1")?;
+        let numbers = stmt.query_map([spec], |row| row.get(0))?;
+        numbers.collect::<rusqlite::Result<_>>()?
+    };
     let mut out: Vec<String> = Vec::new();
     let mut rows = commits.query([spec])?;
     while let Some(row) = rows.next()? {
@@ -467,11 +534,12 @@ pub(crate) fn links_of(conn: &Connection, spec: &str, id: i64, files: &[String],
         for path in changed {
             let mut found: Vec<String> = Vec::new();
             if traced.query_row([&path], |_| Ok(())).optional()?.is_some() {
+                let sought = sought_ids(&mut history, &path, &short, &pulls)?;
                 let mut names = decls.query([&path])?;
                 while let Some(decl) = names.next()? {
                     let changes: Vec<Value> =
                         decl.get::<_, Option<String>>(1)?.and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default();
-                    if changes.iter().any(|change| change.get("id").and_then(Value::as_str) == Some(short.as_str())) {
+                    if changes.iter().filter_map(|change| change.get("id").and_then(Value::as_str)).any(|id| sought.contains(id)) {
                         found.push(format!("{path}:{}", decl.get::<_, String>(0)?));
                     }
                 }
@@ -490,10 +558,25 @@ pub(crate) fn links_of(conn: &Connection, spec: &str, id: i64, files: &[String],
     Ok(out)
 }
 
+/// Os commits da história do arquivo `path`, lida por `history`, que dizem o
+/// que o commit de onda de hash `short` mudou nele: o próprio, quando a
+/// história o tem; senão, os da base cujo pull request é um dos da spec,
+/// `pulls`, porque o squash e o rebase dão outro hash ao commit na base. O
+/// squash junta as ondas num commit só, e o que outra onda mudou no mesmo
+/// arquivo vem junto: é o que a base deixa saber. Sem número na spec, nada.
+fn sought_ids(history: &mut Statement, path: &str, short: &str, pulls: &BTreeSet<i64>) -> Result<BTreeSet<String>> {
+    let base: Vec<(String, Option<i64>)> =
+        history.query_map([path], |row| Ok((row.get(0)?, row.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
+    if base.iter().any(|(id, _)| id == short) {
+        return Ok(BTreeSet::from([short.to_string()]));
+    }
+    Ok(base.into_iter().filter(|(_, pr)| pr.is_some_and(|pr| pulls.contains(&pr))).map(|(id, _)| id).collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::project_map::{DeclChange, DeclLineage, FileLineage, LineageCommit};
+    use crate::domain::project_map::{DeclChange, DeclLineage, FileLineage, LineageCommit, PullOfCommit};
     use crate::io::project_map as store;
     use serde_json::json;
     use tempfile::{tempdir, TempDir};
@@ -670,5 +753,150 @@ mod tests {
             notes["abcdef0123"],
             SpecNote { spec: "obra".to_string(), code: "MSTD-DEC-0001".to_string(), sentence: "O boleto arredonda o centavo.".to_string() }
         );
+    }
+
+    /// A spec `obra` com a decisão, a tarefa da onda 3 que a cobre e muda
+    /// `src/pay.rs`, e o commit da onda 3 nesse arquivo, seguidos de `more`.
+    fn wave_three(root: &Path, more: &[Value]) {
+        let mut lines = vec![
+            decision(1, "Boleto arredonda", "O boleto arredonda o centavo. Depois conta."),
+            json!({"id": 2, "type": "task", "wave": 3, "title": "Arredonda", "text": "Arredonda o boleto.",
+                   "files": [{"path": "src/pay.rs"}], "covers": [1], "depends_on": []}),
+            json!({"id": 3, "type": "commit", "sha": "abcdef0123456789", "title": "t", "waves": [3],
+                   "files": ["src/pay.rs"], "repo": "r"}),
+        ];
+        lines.extend_from_slice(more);
+        append(root, "obra", &lines);
+    }
+
+    /// O estado que a rodada grava ao abrir o pull request `number`.
+    fn pull_opened(id: u64, number: u64) -> Value {
+        json!({"id": id, "type": "state", "phase": "pr_open", "pr": {"number": number, "url": "u"}})
+    }
+
+    /// Grava a história da base de `src/pay.rs`: cada commit com o título,
+    /// o número tirado dele e as funções que mudou.
+    fn pay_history(root: &Path, commits: &[(&str, &str, Option<u32>, &[&str])]) {
+        let names: BTreeSet<&str> = commits.iter().flat_map(|(.., changed)| changed.iter().copied()).collect();
+        let lineage = FileLineage {
+            path: "src/pay.rs".to_string(),
+            base: "main".to_string(),
+            commits: commits
+                .iter()
+                .map(|(id, title, pr, _)| LineageCommit { id: (*id).to_string(), at: 1, title: (*title).to_string(), pr: *pr })
+                .collect(),
+            declarations: names
+                .iter()
+                .map(|name| DeclLineage {
+                    name: (*name).to_string(),
+                    nth: 0,
+                    commits: commits
+                        .iter()
+                        .filter(|(.., changed)| changed.contains(name))
+                        .map(|(id, ..)| DeclChange { id: (*id).to_string(), form: false })
+                        .collect(),
+                    comments: Vec::new(),
+                })
+                .collect(),
+            ..FileLineage::default()
+        };
+        store::save_lineage_at(&model_path(root), &lineage).unwrap();
+    }
+
+    /// Os lugares que a busca mostra da decisão da spec `obra`.
+    fn decision_links(root: &Path) -> Vec<String> {
+        sync(root, &languages()).unwrap();
+        let items = map_search::search_specs(root, "centavo", &languages(), 5).unwrap();
+        assert_eq!(items[0].code, "MSTD-DEC-0001");
+        items[0].links.clone()
+    }
+
+    /// A nota da decisão da spec `obra`.
+    fn decision_note() -> SpecNote {
+        SpecNote { spec: "obra".to_string(), code: "MSTD-DEC-0001".to_string(), sentence: "O boleto arredonda o centavo.".to_string() }
+    }
+
+    /// O pull request entrou na base por squash: a base não tem o hash do
+    /// commit da onda, e o commit dela diz no título o número do pull
+    /// request que a spec abriu. A decisão liga à função que esse commit
+    /// mudou, e não ao arquivo inteiro.
+    #[test]
+    fn a_wave_commit_squashed_into_the_base_links_to_the_function_by_the_pull_request_number() {
+        let dir = project();
+        let root = dir.path();
+        wave_three(root, &[pull_opened(4, 7)]);
+        pay_history(root, &[("9999999999", "Arredonda (#7)", Some(7), &["pay"])]);
+
+        assert_eq!(decision_links(root), ["src/pay.rs:pay"], "the function of the squash commit");
+    }
+
+    /// O commit do squash sem número no título liga do mesmo jeito pelo
+    /// número que o provedor achou para ele.
+    #[test]
+    fn a_squash_commit_numbered_by_the_provider_links_the_same_way() {
+        let dir = project();
+        let root = dir.path();
+        wave_three(root, &[pull_opened(4, 7)]);
+        pay_history(root, &[("9999999999", "Arredonda", None, &["pay"])]);
+        store::save_pull_commits_at(&model_path(root), &[PullOfCommit { id: "9999999999".to_string(), pr: 7 }]).unwrap();
+
+        assert_eq!(decision_links(root), ["src/pay.rs:pay"], "the number the provider found");
+    }
+
+    /// A linha da história do commit do squash traz a nota da spec cujo pull
+    /// request ele trouxe, na pergunta pelos commits e na leitura do mapa
+    /// inteiro.
+    #[test]
+    fn the_history_line_of_a_squash_commit_brings_the_spec_note() {
+        let dir = project();
+        let root = dir.path();
+        wave_three(root, &[pull_opened(4, 7)]);
+        pay_history(root, &[("9999999999", "Arredonda (#7)", Some(7), &["pay"])]);
+        sync(root, &languages()).unwrap();
+
+        let db = open_existing(&model_path(root)).unwrap();
+        let notes = notes_of(db.conn(), Some(&["9999999999"])).unwrap();
+        assert_eq!(notes.get("9999999999"), Some(&decision_note()), "the decision comes before the task");
+        assert_eq!(store::read(root).unwrap().spec_notes.get("9999999999"), Some(&decision_note()));
+    }
+
+    /// Com o hash da onda na história do arquivo, a ligação segue por ele: o
+    /// outro commit do mesmo pull request no arquivo não entra.
+    #[test]
+    fn a_wave_commit_in_the_file_history_links_by_its_hash_and_not_by_the_pull_request() {
+        let dir = project();
+        let root = dir.path();
+        wave_three(root, &[pull_opened(4, 7)]);
+        pay_history(root, &[("abcdef0123", "t", None, &["pay"]), ("8888888888", "Estorna (#7)", Some(7), &["refund"])]);
+
+        assert_eq!(decision_links(root), ["src/pay.rs:pay"], "only the function of the wave commit");
+    }
+
+    /// A spec sem estado com o número de um pull request liga o commit que a
+    /// base não tem ao arquivo inteiro, e a linha da história fica sem nota.
+    #[test]
+    fn a_spec_without_a_pull_request_number_links_to_the_file() {
+        let dir = project();
+        let root = dir.path();
+        wave_three(root, &[]);
+        pay_history(root, &[("9999999999", "Arredonda (#7)", Some(7), &["pay"])]);
+
+        assert_eq!(decision_links(root), ["src/pay.rs"], "the file, as without the number");
+        let db = open_existing(&model_path(root)).unwrap();
+        assert!(notes_of(db.conn(), Some(&["9999999999"])).unwrap().is_empty());
+    }
+
+    /// O pull request aberto depois da última leitura da spec, sem item novo,
+    /// faz a spec ser relida: o número entra no mapa, e a ligação o usa.
+    #[test]
+    fn a_pull_request_opened_after_the_last_read_reads_the_spec_again() {
+        let dir = project();
+        let root = dir.path();
+        wave_three(root, &[]);
+        pay_history(root, &[("9999999999", "Arredonda (#7)", Some(7), &["pay"])]);
+        assert_eq!(decision_links(root), ["src/pay.rs"]);
+
+        append(root, "obra", &[json!({"id": 4, "type": "message", "author": "user", "text": "abre"}), pull_opened(5, 7)]);
+        assert_eq!(decision_links(root), ["src/pay.rs:pay"], "the state with the number is read");
     }
 }

@@ -111,8 +111,10 @@ pub const PROJECT_CAPABILITIES: &str = r#"{"db":{"rules":[{"path":"","read":"vie
 
 /// A versão do layout da página da spec, escrita na marca do molde. Sobe a
 /// cada mudança no molde montado (o template ou o catálogo dele): é ela, e
-/// não a versão do Mustard, que manda publicar de novo a página já
-/// publicada. A trava dos testes falha quando o molde muda sem ela subir.
+/// não a versão do Mustard, que faz o marco avisar o usuário de que o
+/// desenho da página já publicada mudou; a página só é publicada de novo
+/// quando ele pede. A trava dos testes falha quando o molde muda sem ela
+/// subir.
 pub const SPEC_LAYOUT_VERSION: u32 = 7;
 
 /// A versão do layout da página do projeto, com a mesma regra de
@@ -172,8 +174,8 @@ const LAYOUT_PREFIX: &str = "layout-";
 
 /// `body` com o carimbo do modelo na frente, numa linha só: a versão do
 /// layout do molde, `layout`, e a impressão do conteúdo montado, o template
-/// com o catálogo já no lugar. A versão decide se a página já publicada é
-/// publicada de novo ([`layout_version`]); a impressão fica para o modelo
+/// com o catálogo já no lugar. A versão decide se o desenho da página já
+/// publicada mudou ([`layout_version`]); a impressão fica para o modelo
 /// instalado no projeto, que o passo que publica compara pelo carimbo
 /// inteiro, sem reconstruir o catálogo: dois programas com a mesma versão de
 /// layout e moldes diferentes, um instalado e outro compilado no meio de uma
@@ -410,8 +412,8 @@ mod tests {
     /// A trava das versões de layout: cada molde montado, nas duas páginas e
     /// nos dois idiomas, tem a versão e a impressão da tabela. Mudar o molde
     /// — o template ou o catálogo dele — sem subir a versão do layout falha
-    /// aqui, porque a página já publicada só é publicada de novo quando a
-    /// versão sobe.
+    /// aqui, porque o usuário só é avisado de que o desenho da página já
+    /// publicada mudou quando a versão sobe.
     #[test]
     fn a_template_change_needs_a_new_layout_version() {
         let mut failures = Vec::new();

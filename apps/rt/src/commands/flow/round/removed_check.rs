@@ -12,16 +12,21 @@
 //!   prosa ([`distinctive`]).
 //! - Órfão: a declaração que tinha uso fora de teste no mapa da base, e cujo
 //!   último uso a onda tirou, e ficou sem nenhum. Teste chamando não conta
-//!   como uso. A declaração já sem uso na base não entra, e o ponto de
+//!   como uso. A declaração escrita dentro do trecho de teste do arquivo,
+//!   que o scan reconhece e o mapa guarda pelas linhas, é do teste e não
+//!   entra. A declaração já sem uso na base não entra, e o ponto de
 //!   entrada nunca é órfão: a função principal, a que atende uma rota do
 //!   mapa, o método que cumpre um contrato (chamado por quem registra o
 //!   tipo) e a declarada no arquivo de entrada da pasta, que exporta o
-//!   pacote.
+//!   pacote. O órfão cujo nome ainda aparece como palavra inteira fora de
+//!   teste e fora das linhas dele, pela mesma busca do resto pelo nome, vai
+//!   só como aviso: o texto pode ser um uso que o mapa não ligou.
 
 use std::collections::BTreeSet;
 use std::path::Path;
 
 use mustard_core::domain::ast::{is_entry_file, is_test_path};
+use mustard_core::domain::project_map::{MapDecl, MapModule};
 use mustard_core::platform::git as git_exec;
 use mustard_core::platform::i18n::{translate, Locale};
 
@@ -70,17 +75,19 @@ pub(super) fn findings(root: &Path, maps: &AfterWave, lang: Locale) -> Vec<Findi
             }
         }
     }
-    out.extend(orphans(maps, lang));
+    out.extend(orphans(root, maps, &created, lang));
     out
 }
 
 /// As declarações que ficaram sem uso fora de teste porque uma onda tirou o
-/// último, cada uma com a onda que tirou.
-fn orphans(maps: &AfterWave, lang: Locale) -> Vec<Finding> {
+/// último, cada uma com a onda que tirou. A que ainda tem o nome escrito
+/// fora de teste ([`cited_outside_tests`]) vai só como aviso: o texto pode
+/// ser um uso que o mapa não ligou.
+fn orphans(root: &Path, maps: &AfterWave, created: &[String], lang: Locale) -> Vec<Finding> {
     let mut out = Vec::new();
     for module in maps.after.modules.iter().filter(|m| !is_test_path(&m.path) && !is_entry_file(&m.path, &m.language)) {
         let Some(before) = maps.base.module(&module.path) else { continue };
-        for decl in &module.declarations {
+        for decl in module.declarations.iter().filter(|decl| !in_test_lines(module, decl.line)) {
             let routed = module.routes.iter().chain(&before.routes).any(|route| route.handler == decl.name);
             let entry = decl.name == "main" || routed || !decl.implements.is_empty();
             if entry || decl.used_by.iter().any(|site| !is_test_path(&site.file)) {
@@ -95,10 +102,32 @@ fn orphans(maps: &AfterWave, lang: Locale) -> Vec<Finding> {
                 .replace("{name}", &decl.name)
                 .replace("{file}", &module.path)
                 .replace("{line}", &decl.line.to_string());
-            out.push(Finding { wave: *wave, refuses: true, text });
+            let refuses = !cited_outside_tests(root, maps, created, module, decl);
+            out.push(Finding { wave: *wave, refuses, text });
         }
     }
     out
+}
+
+/// A linha `line` cai dentro de um trecho de teste do arquivo `module`, pelas
+/// linhas que o mapa guarda de cada um.
+fn in_test_lines(module: &MapModule, line: u64) -> bool {
+    module.test_lines.iter().any(|&(first, last)| (first..=last).contains(&line))
+}
+
+/// O nome de `decl`, declarada em `module`, aparece como palavra inteira
+/// num arquivo que o git rastreia ou que a onda criou ([`cited`]), fora de
+/// arquivo de teste, fora dos trechos de teste de cada arquivo no mapa de
+/// depois e fora das linhas da própria declaração.
+fn cited_outside_tests(root: &Path, maps: &AfterWave, created: &[String], module: &MapModule, decl: &MapDecl) -> bool {
+    let own = decl.line..=decl.end_line.max(decl.line);
+    cited(root, &decl.name, created).iter().any(|(file, line)| {
+        let line = u64::try_from(*line).unwrap_or(u64::MAX);
+        let own_lines = *file == module.path && own.contains(&line);
+        let test_block = maps.after.module(file).is_some_and(|site| in_test_lines(site, line));
+        let skipped = is_test_path(file) || own_lines || test_block;
+        !skipped
+    })
 }
 
 /// O nome de arquivo de `path`, sem as pastas.
@@ -237,7 +266,7 @@ mod tests {
             module("src/a.rs", &[("run_sum", 1, &[])]),
             module("src/lib_sum.rs", &[("compute_total", 5, &["src/a.rs:2:run_sum", "tests/lib_sum_test.rs:3:checks"])]),
         ]});
-        project(root, &[("src/lib_sum.rs", "fn compute_total() {}\n")], &before);
+        project(root, &[("src/lib_sum.rs", "\n\n\n\nfn compute_total() {}\n")], &before);
         let after = json!({"modules": [
             module("src/a.rs", &[("run_sum", 1, &[])]),
             module("src/lib_sum.rs", &[("compute_total", 5, &["tests/lib_sum_test.rs:3:checks"])]),
@@ -295,5 +324,79 @@ mod tests {
         };
         project(root, &[("src/routes.rs", "fn list_orders() {}\n")], &routed(&["src/a.rs:2:run_sum"]));
         silent(&back(root, routed(&[])));
+    }
+
+    /// O mapa de `src/a.rs`, com o trecho de teste nas linhas 10 a 30: a
+    /// função `compute_total`, do programa, na linha 5, e a ajudante
+    /// `sample_rows`, do teste, na linha 12, cada uma com quem a usa.
+    fn with_test_block(total_used: &[&str], rows_used: &[&str]) -> Value {
+        let mut file = module("src/a.rs", &[
+            ("run_sum", 1, &[]),
+            ("compute_total", 5, total_used),
+            ("sample_rows", 12, rows_used),
+            ("checks_total", 15, &[]),
+        ]);
+        file["test_lines"] = json!([[10, 30]]);
+        json!({"modules": [file]})
+    }
+
+    #[test]
+    fn a_helper_inside_the_test_block_that_loses_its_use_is_not_an_orphan() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let base = with_test_block(&["src/a.rs:2:run_sum"], &["src/a.rs:16:checks_total"]);
+        project(root, &[("src/a.rs", "fn run_sum() {}\n")], &base);
+        silent(&back(root, with_test_block(&["src/a.rs:2:run_sum"], &[])));
+    }
+
+    #[test]
+    fn a_program_function_beside_the_test_block_that_loses_its_use_is_still_an_orphan() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let base = with_test_block(&["src/a.rs:2:run_sum"], &["src/a.rs:16:checks_total"]);
+        project(root, &[("src/a.rs", "fn run_sum() {}\n")], &base);
+        let out = back(root, with_test_block(&[], &[]));
+        assert_eq!(out["reason"], json!("round-after-wave"), "{out}");
+        let hint = out["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains("`compute_total` em `src/a.rs` linha 5 ficou sem uso fora de teste"), "{hint}");
+        assert!(!hint.contains("sample_rows"), "the test helper is not listed: {hint}");
+    }
+
+    #[test]
+    fn a_program_function_still_cited_in_another_file_outside_tests_only_warns() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let files = [("src/a.rs", "fn run_sum() {}\n"), ("src/b.rs", "use crate::a as calc;\n\nfn go() {\n    calc::compute_total();\n}\n")];
+        project(root, &files, &with_test_block(&["src/a.rs:2:run_sum"], &["src/a.rs:16:checks_total"]));
+        let out = back(root, with_test_block(&[], &[]));
+        assert_eq!(out["ok"], json!(true), "{out}");
+        let warned = out["warnings"].as_array().cloned().unwrap_or_default();
+        let hint = warned.iter().find(|w| w["reason"] == json!("round-after-wave-warnings")).map(|w| w["hint"].to_string());
+        let hint = hint.unwrap_or_else(|| panic!("the warning: {out}"));
+        assert!(hint.contains("`compute_total` em `src/a.rs` linha 5 ficou sem uso fora de teste"), "{hint}");
+    }
+
+    #[test]
+    fn a_program_function_cited_only_by_tests_or_its_own_lines_still_refuses() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        // O nome aparece na linha da declaração, dentro do corpo dela, no
+        // trecho de teste do arquivo (linhas 10 a 30) e num arquivo de teste.
+        let mut lines = vec![""; 30];
+        lines[0] = "fn run_sum() {}";
+        lines[4] = "fn compute_total() {";
+        lines[5] = "    compute_total();";
+        lines[6] = "}";
+        lines[9] = "#[cfg(test)]";
+        lines[10] = "mod tests {";
+        lines[11] = "    fn sample_rows() { super::compute_total(); }";
+        lines[29] = "}";
+        let text = lines.join("\n") + "\n";
+        let files = [("src/a.rs", text.as_str()), ("tests/total_test.rs", "fn checks() { compute_total(); }\n")];
+        project(root, &files, &with_test_block(&["src/a.rs:2:run_sum"], &["src/a.rs:16:checks_total"]));
+        let out = back(root, with_test_block(&[], &[]));
+        assert_eq!(out["reason"], json!("round-after-wave"), "{out}");
+        let hint = out["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains("`compute_total` em `src/a.rs` linha 5 ficou sem uso fora de teste"), "{hint}");
     }
 }

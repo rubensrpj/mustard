@@ -29,10 +29,16 @@
 ; é da biblioteca e não liga ao projeto, mesmo com uma pasta `fs` nele.
 (call_expression function: (scoped_identifier path: (_) @call.path))
 
-; O módulo marcado como teste: o atributo `#[cfg(test)]` logo antes do `mod`.
-; O que se importa, se chama e se cita dentro dele é do teste, e não uso do
-; código do arquivo.
-((attribute_item) @_marker . (mod_item) @test_block
+; O módulo marcado como teste: o atributo `#[cfg(test)]` em qualquer ponto da
+; fila de atributos colada ao `mod`, com outros no meio (`#[allow(dead_code)]`);
+; um item que não é atributo entre a marca e o `mod` corta a fila. O que se
+; importa, se chama e se cita dentro dele é do teste, e não uso do código do
+; arquivo.
+((attribute_item) @_marker
+  .
+  (attribute_item)*
+  .
+  (mod_item) @test_block
   (#eq? @_marker "#[cfg(test)]"))
 
 ; Todo módulo com corpo escrito dentro do arquivo, o de teste incluído: o

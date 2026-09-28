@@ -907,6 +907,147 @@ fn a_method_named_like_the_bare_call_is_not_a_screen_call() {
     assert_eq!(called_by(&map, "servidor/src/pedidos.ts", "GET", "api/pedidos"), json!([]));
 }
 
+/// O controlador de pedidos de um servidor C#: `GET api/pedidos/{}`, atendido
+/// por `Get`, e `POST api/pedidos`, por `Criar`.
+const PEDIDOS_CONTROLLER: &str = "[ApiController]\n[Route(\"api/[controller]\")]\npublic class PedidosController : ControllerBase\n{\n    \
+                                  [HttpGet(\"{id}\")]\n    public string Get(int id) => \"um\";\n\n    \
+                                  [HttpPost]\n    public string Criar() => \"ok\";\n}\n";
+
+/// O servidor C# de pedidos, sob `Api/`, com a tela dada nos `files`.
+fn with_orders_api(files: &[(&str, &str)]) -> tempfile::TempDir {
+    let mut all: Vec<(&str, &str)> = vec![("Api/Controllers/PedidosController.cs", PEDIDOS_CONTROLLER)];
+    all.extend_from_slice(files);
+    web_project(&all)
+}
+
+/// No JavaScript, o `require('axios')` liga a regra como o import: o cliente
+/// feito com a base e chamado com o `${id}` liga provado ao `GET` do
+/// controlador. O objeto feito pelo `create` de outra coisa, que não é a
+/// biblioteca, não é cliente: a chamada dele não é chamada da tela.
+#[test]
+fn a_javascript_screen_that_requires_axios_links_proven_to_the_route() {
+    let screen = "const axios = require('axios');\n\nconst client = axios.create({ baseURL: '/api' });\n\n\
+                  function carregar(id) {\n  return client.get(`/pedidos/${id}`);\n}\n\n\
+                  const outro = cache.create({ baseURL: '/api' });\noutro.get('/pedidos/2');\n\nmodule.exports = { carregar };\n";
+    let temp = with_orders_api(&[("tela/tela.js", screen)]);
+    let (map, _) = scan(temp.path());
+    assert_eq!(
+        route_calls(&map, "tela/tela.js"),
+        json!([{"method": "GET", "path": "pedidos/{}", "written": "/pedidos/${id}", "line": 6, "owner": "carregar",
+                "framework": "axios", "base": {"written": "/api", "path": "api"}}])
+    );
+    assert_eq!(
+        called_by(&map, "Api/Controllers/PedidosController.cs", "GET", "api/pedidos/{}"),
+        json!(["tela/tela.js:6:carregar"])
+    );
+}
+
+/// No Dart, o `http` que o import traz chama com o endereço inteiro no
+/// `Uri.parse`, que vale sem o esquema e a máquina, e com o `$id` como
+/// lacuna; o cliente feito com `http.Client()` chama com o caminho do
+/// `Uri.https`. As duas ligam provadas às rotas do controlador.
+#[test]
+fn a_dart_screen_calling_the_http_package_links_proven_to_the_routes() {
+    let screen = "import 'package:http/http.dart' as http;\n\nFuture<String> ler(String id) async {\n  \
+                  final resposta = await http.get(Uri.parse('https://api.loja.com/api/pedidos/$id'));\n  return resposta.body;\n}\n\n\
+                  Future<void> criar(String corpo) async {\n  final cliente = http.Client();\n  \
+                  await cliente.post(Uri.https('api.loja.com', '/api/pedidos'), body: corpo);\n}\n";
+    let temp = with_orders_api(&[("app/lib/tela.dart", screen)]);
+    let (map, _) = scan(temp.path());
+    assert_eq!(
+        route_calls(&map, "app/lib/tela.dart"),
+        json!([
+            {"method": "GET", "path": "api/pedidos/{}", "written": "https://api.loja.com/api/pedidos/$id", "line": 4,
+             "owner": "ler", "framework": "dart-http"},
+            {"method": "POST", "path": "api/pedidos", "written": "/api/pedidos", "line": 10, "owner": "criar",
+             "framework": "dart-http"}
+        ])
+    );
+    let api = "Api/Controllers/PedidosController.cs";
+    assert_eq!(called_by(&map, api, "GET", "api/pedidos/{}"), json!(["app/lib/tela.dart:4:ler"]));
+    assert_eq!(called_by(&map, api, "POST", "api/pedidos"), json!(["app/lib/tela.dart:10:criar"]));
+}
+
+/// O cliente do dio feito com `BaseOptions(baseUrl: …)` põe a base, sem o
+/// esquema e a máquina, na frente do caminho que ele chama: liga provado.
+#[test]
+fn a_dio_client_with_a_base_url_links_proven_to_the_route() {
+    let screen = "import 'package:dio/dio.dart';\n\nfinal dio = Dio(BaseOptions(baseUrl: 'https://host/api'));\n\n\
+                  Future<void> abrir(String id) async {\n  await dio.get('/pedidos/$id');\n}\n";
+    let temp = with_orders_api(&[("app/lib/pedidos.dart", screen)]);
+    let (map, _) = scan(temp.path());
+    assert_eq!(
+        route_calls(&map, "app/lib/pedidos.dart"),
+        json!([{"method": "GET", "path": "pedidos/{}", "written": "/pedidos/$id", "line": 6, "owner": "abrir",
+                "framework": "dio", "base": {"written": "https://host/api", "path": "api"}}])
+    );
+    assert_eq!(
+        called_by(&map, "Api/Controllers/PedidosController.cs", "GET", "api/pedidos/{}"),
+        json!(["app/lib/pedidos.dart:6:abrir"])
+    );
+}
+
+/// A página Blazor, num projeto cujo SDK traz o `System.Net.Http` sem escrevê-lo,
+/// chama o `Http` que recebe do framework sem o declarar: o
+/// `GetFromJsonAsync` liga provado ao `GET` do controlador, com o número como
+/// lacuna, e o `PostAsJsonAsync`, ao `POST`.
+#[test]
+fn a_blazor_page_calling_the_http_client_links_proven_to_the_controller() {
+    let page = "using Microsoft.AspNetCore.Components;\n\nnamespace Web.Pages;\n\npublic partial class PedidosPage : ComponentBase\n{\n    \
+                protected override async Task OnInitializedAsync()\n    {\n        \
+                var pedido = await Http.GetFromJsonAsync<string>(\"api/pedidos/1\");\n    }\n\n    \
+                private async Task Salvar(Pedido p)\n    {\n        await Http.PostAsJsonAsync(\"api/pedidos\", p);\n    }\n}\n";
+    let blazor = csproj("Microsoft.NET.Sdk.BlazorWebAssembly");
+    let temp = with_orders_api(&[("Web/Web.csproj", &blazor), ("Web/Pages/PedidosPage.cs", page)]);
+    let (map, _) = scan(temp.path());
+    let api = "Api/Controllers/PedidosController.cs";
+    assert_eq!(called_by(&map, api, "GET", "api/pedidos/{}"), json!(["Web/Pages/PedidosPage.cs:9:OnInitializedAsync"]));
+    assert_eq!(called_by(&map, api, "POST", "api/pedidos"), json!(["Web/Pages/PedidosPage.cs:14:Salvar"]));
+}
+
+/// O cliente declarado com o tipo e com a base posta depois
+/// (`_http.BaseAddress = new Uri(…)`) é um cliente só: o `GetAsync` dele liga
+/// provado com a base na frente. O `GetAsync` de outro objeto, que não é
+/// cliente, não é chamada da tela.
+#[test]
+fn a_declared_http_client_with_its_base_set_later_links_and_another_object_does_not() {
+    let service = "using System.Net.Http;\n\npublic class PedidosService\n{\n    private readonly HttpClient _http;\n    \
+                   private readonly IDistributedCache _cache;\n\n    public PedidosService(HttpClient http, IDistributedCache cache)\n    {\n        \
+                   _http = http;\n        _http.BaseAddress = new Uri(\"https://loja.com/api/\");\n        _cache = cache;\n    }\n\n    \
+                   public Task<HttpResponseMessage> Ler(int id) => _http.GetAsync($\"pedidos/{id}\");\n\n    \
+                   public Task<byte[]> Guardado() => _cache.GetAsync(\"pedidos/1\");\n}\n";
+    let temp = with_orders_api(&[("Loja/PedidosService.cs", service)]);
+    let (map, _) = scan(temp.path());
+    assert_eq!(
+        route_calls(&map, "Loja/PedidosService.cs"),
+        json!([{"method": "GET", "path": "pedidos/{}", "written": "pedidos/{id}", "line": 15, "owner": "Ler",
+                "framework": "httpclient", "base": {"written": "https://loja.com/api/", "path": "api"}}])
+    );
+    assert_eq!(
+        called_by(&map, "Api/Controllers/PedidosController.cs", "GET", "api/pedidos/{}"),
+        json!(["Loja/PedidosService.cs:15:Ler"])
+    );
+}
+
+/// Sem o import do cliente, a chamada com a forma de uma chamada da tela não
+/// é chamada da tela: nem no JavaScript, nem no Dart — também com um pacote
+/// cujo nome começa pelo do cliente —, nem no C# fora de projeto .NET.
+#[test]
+fn a_call_in_a_file_that_imports_no_client_is_not_a_screen_call() {
+    let files = [
+        ("tela/sem.js", "const x = require('outra');\n\nx.get('/api/pedidos/1');\n"),
+        ("app/lib/sem.dart", "import 'package:outra/outra.dart' as x;\n\nvoid f() {\n  x.get('/api/pedidos/1');\n}\n"),
+        ("app/lib/parecido.dart", "import 'package:http_parser/http_parser.dart' as http;\n\nvoid f() {\n  http.get('/api/pedidos/1');\n}\n"),
+        ("Solto/Sem.cs", "public class Sem\n{\n    public void F(dynamic x) => x.GetFromJsonAsync<string>(\"api/pedidos/1\");\n}\n"),
+    ];
+    let temp = with_orders_api(&files);
+    let (map, _) = scan(temp.path());
+    for (file, _) in files {
+        assert_eq!(route_calls(&map, file), json!([]), "{file}");
+    }
+    assert_eq!(called_by(&map, "Api/Controllers/PedidosController.cs", "GET", "api/pedidos/{}"), json!([]));
+}
+
 // ---------------------------------------------------------------------------
 // As rotas dos decoradores e da lista de caminhos
 // ---------------------------------------------------------------------------

@@ -32,21 +32,35 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              `mustard-rt run write publish --spec {spec} --json '{\"page\":\"{key}\",\"milestone\":\"{milestone}\",\"ok\":true,\"template\":true,\"stamp\":\"{stamp}\",\"url\":\"…\"}'`, \
              with `\"ok\":false` and a `\"reason\"` when it fails."
         }
+        // Entra logo depois de `page.copy.publish`: a página acabou de sair, e o
+        // usuário fica sabendo, sem o endereço, que mora na barra de status.
+        ("page.copy.tell_published", Locale::PtBr) => {
+            "Depois, conte ao usuário que a {page} foi publicada. O link dela fica na barra de status: não \
+             escreva o endereço."
+        }
+        ("page.copy.tell_published", Locale::EnUs) => {
+            "Then tell the user the {page} is published. Its link is in the status line: do not write the \
+             address."
+        }
         // A página já publicada com outra versão do layout, ou com a marca de
-        // antes da versão do layout, é publicada de novo no mesmo endereço,
-        // antes do lote de cópia: o banco dela continua lá, e a cópia segue de
-        // onde parou.
-        ("page.copy.republish", Locale::PtBr) => {
-            "O layout da {page} mudou de versão. Antes de copiar os lotes, publique de novo o template \
+        // antes da versão do layout, não é publicada de novo sozinha: o marco
+        // avisa uma vez por versão, e ela só sai de novo, no mesmo endereço,
+        // quando o usuário pede. O banco dela segue recebendo a cópia.
+        ("page.copy.layout_changed", Locale::PtBr) => {
+            "O desenho da {page} mudou de versão, e a página segue com o desenho de antes. Conte isso ao \
+             usuário e diga que ela só é publicada de novo quando ele pedir. Sem o pedido dele, não publique \
+             nada: a cópia para o banco segue no mesmo endereço. Se ele pedir, publique de novo o template \
              `{template}` com a ferramenta `Artifact` no mesmo endereço, {url}, passando em `capabilities` o \
              valor `{capabilities}`. Grave a publicação com \
              `mustard-rt run write publish --spec {spec} --json '{\"page\":\"{key}\",\"milestone\":\"{milestone}\",\"ok\":true,\"template\":true,\"stamp\":\"{stamp}\",\"url\":\"{url}\"}'`, \
              com `\"ok\":false` e `\"reason\"` quando falhar."
         }
-        ("page.copy.republish", Locale::EnUs) => {
-            "The {page}'s layout has a new version. Before copying the batches, publish the template \
-             `{template}` again with the `Artifact` tool at the same address, {url}, passing `{capabilities}` \
-             as `capabilities`. Record the publication with \
+        ("page.copy.layout_changed", Locale::EnUs) => {
+            "The {page}'s design has a new version, and the page keeps the old design. Tell the user, and \
+             say it is published again only when they ask. Without their request, publish nothing: the copy \
+             into the database goes on at the same address. If they ask, publish the template `{template}` \
+             again with the `Artifact` tool at the same address, {url}, passing `{capabilities}` as \
+             `capabilities`. Record the publication with \
              `mustard-rt run write publish --spec {spec} --json '{\"page\":\"{key}\",\"milestone\":\"{milestone}\",\"ok\":true,\"template\":true,\"stamp\":\"{stamp}\",\"url\":\"{url}\"}'`, \
              with `\"ok\":false` and a `\"reason\"` when it fails."
         }
@@ -1014,25 +1028,52 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("page.rs"),
             super::PREFIXES,
-            387,
-            0x0302_859c_4575_20d2,
+            388,
+            0xc5a2_550b_11c8_e6f0,
         );
     }
 
-    /// As duas ordens de publicar levam o carimbo do molde na gravação da
-    /// publicação, nos dois idiomas; a de publicar de novo leva também o
-    /// endereço de agora, na publicação e na gravação.
+    /// A ordem de publicar leva o carimbo do molde na gravação da publicação,
+    /// nos dois idiomas; o aviso de desenho novo, que ensina a publicar de
+    /// novo quando o usuário pedir, leva também o endereço de agora, na
+    /// publicação e na gravação.
     #[test]
     fn the_publish_orders_record_the_template_stamp() {
         for lang in [Locale::PtBr, Locale::EnUs] {
             let publish = super::text("page.copy.publish", lang).expect("page.copy.publish");
             assert!(publish.contains(r#""stamp":"{stamp}""#), "{publish}");
-            let again = super::text("page.copy.republish", lang).expect("page.copy.republish");
+            let again = super::text("page.copy.layout_changed", lang).expect("page.copy.layout_changed");
             for slot in ["{page}", "{template}", "{capabilities}", "{spec}", "{key}", "{milestone}"] {
                 assert!(again.contains(slot), "{slot}: {again}");
             }
             assert!(again.contains(r#""stamp":"{stamp}","url":"{url}""#), "{again}");
             assert!(again.matches("{url}").count() >= 2, "{again}");
+        }
+    }
+
+    /// O aviso de desenho novo manda contar ao usuário e esperar o pedido
+    /// dele, sem mandar publicar antes dos lotes; a frase da primeira
+    /// publicação manda contar que a página saiu e que o link está na barra
+    /// de status, sem escrever o endereço. As duas passam na conferência de
+    /// escrita nos dois idiomas, com cada vaga trocada por uma palavra.
+    #[test]
+    fn the_page_notices_tell_the_user_and_read_clearly() {
+        for (lang, user, ask, status, word) in [
+            (Locale::PtBr, "Conte isso ao usuário", "só é publicada de novo quando ele pedir", "barra de status", "página"),
+            (Locale::EnUs, "Tell the user", "published again only when they ask", "status line", "page"),
+        ] {
+            let changed = super::text("page.copy.layout_changed", lang).expect("page.copy.layout_changed");
+            assert!(changed.contains(user) && changed.contains(ask), "{lang:?}: {changed}");
+            assert!(!changed.contains("Antes de copiar") && !changed.contains("Before copying"), "{changed}");
+            let told = super::text("page.copy.tell_published", lang).expect("page.copy.tell_published");
+            assert!(told.contains("{page}") && told.contains(status), "{lang:?}: {told}");
+            for (key, text) in [("page.copy.layout_changed", changed), ("page.copy.tell_published", told)] {
+                let filled = ["{page}", "{template}", "{capabilities}", "{spec}", "{key}", "{milestone}", "{stamp}", "{url}"]
+                    .iter()
+                    .fold(text.to_string(), |text, slot| text.replace(slot, word));
+                let report = crate::domain::clarity::measure(&filled, &[], Some(lang));
+                assert!(report.passed, "{key} {lang:?}: {report:?}");
+            }
         }
     }
 

@@ -172,8 +172,9 @@ fn survey(project: &Project) {
 
 /// O plano de uma tarefa só: o critério com a prova e a tarefa que o cobre,
 /// sem onda — a onda nasce da rodada, pelo backlog; devolve o número da
-/// mensagem que o origina e o do critério.
-fn plan(project: &Project) -> (u64, u64) {
+/// mensagem que o origina, o do critério e a resposta do plano, que é a da
+/// aprovação.
+fn plan(project: &Project) -> (u64, u64, Value) {
     let said = user_says(project, "O plano é uma tarefa só, que soma dois números.");
     let criterion = project.write(
         "criterion",
@@ -187,8 +188,8 @@ fn plan(project: &Project) -> (u64, u64) {
         &json!({"agent": "- conferir pelo teste", "title": "Entregar a tarefa", "text": "Somar dois números no programa.", "files": [{"path": "src/main.rs"}],
             "depends_on": [], "covers": [criterion], "origin": said}),
     );
-    project.run(&["plan", "--spec", SPEC]);
-    (said, criterion)
+    let report = project.run(&["plan", "--spec", SPEC]);
+    (said, criterion, report)
 }
 
 /// O clique em "Aprovar" na pergunta da aprovação, pelo gancho da testemunha.
@@ -282,7 +283,7 @@ fn a_ultima_gravacao_do_pedido_prepara_uma_copia_com_as_tarefas() {
     let opened = project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
     assert_eq!(opened["step"], json!("ask_goal"), "{opened}");
     survey(&project);
-    let (said, _criterion) = plan(&project);
+    let (said, _criterion, _approval) = plan(&project);
     approve(&project);
 
     // A primeira rodada depois da aprovação é o marco que publica a página e
@@ -391,33 +392,32 @@ fn read_order(lang: Locale) -> String {
 }
 
 /// Uma cópia gravada com `versions` poupa a leitura da seguinte, nas duas
-/// páginas e nos dois idiomas. A primeira rodada publica as duas páginas e
-/// copia; a da spec é gravada com a versão que o banco devolveu a cada
-/// documento, e a do projeto como uma cópia de antes das versões. A página
-/// do projeto ficou com o molde de outra versão do Mustard, e por isso a
-/// linha da spec vai de novo a cada cópia, no mesmo endereço.
+/// páginas e nos dois idiomas. A aprovação publica as duas páginas e copia;
+/// a da spec é gravada com a versão que o banco devolveu a cada documento, e
+/// a do projeto como uma cópia de antes das versões. A linha da spec na
+/// página do projeto vai de novo a cada cópia em que a fase dela mudou, no
+/// mesmo endereço: a spec aprovada, e depois a primeira rodada.
 ///
-/// A cópia seguinte, de uma gravação com `--copy`, troca a faixa e o
-/// documento calculado da spec com a versão guardada, e a ordem pede a
-/// leitura só da linha do projeto, a única sem versão guardada. Gravadas as
-/// duas com versões novas, a cópia depois dela troca os três documentos com a
-/// versão mais nova, e a ordem não pede leitura nenhuma. Em cada ordem, a
-/// gravação da cópia manda guardar essas versões.
+/// A cópia seguinte, de uma gravação com `--copy` na spec aprovada, troca a
+/// faixa e o documento calculado da spec com a versão guardada, e a ordem
+/// pede a leitura só da linha do projeto, a única sem versão guardada.
+/// Gravadas as duas com versões novas, a primeira rodada, depois de uma nota
+/// nova, troca os três documentos com a versão mais nova, e a ordem não pede
+/// leitura nenhuma. Em cada ordem, a gravação da cópia manda guardar essas
+/// versões.
 #[test]
 fn a_copia_seguinte_leva_a_versao_guardada_sem_pedir_leitura() {
     for lang in [Locale::PtBr, Locale::EnUs] {
         let project = Project::in_language(lang);
         project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
         survey(&project);
-        let (said, _criterion) = plan(&project);
-        approve(&project);
+        let (said, _criterion, first) = plan(&project);
         let read = read_order(lang);
         let spec_docs = ["ranges/0", "computed/current"];
         let row = format!("specs/{SPEC}");
 
-        // A primeira rodada publica e copia as duas páginas: nada existe
-        // ainda no banco, e nenhuma escrita leva versão.
-        let first = project.run(&["round", "--spec", SPEC]);
+        // A aprovação publica e copia as duas páginas: nada existe ainda no
+        // banco, e nenhuma escrita leva versão.
         assert_eq!(first["publish"], json!(["spec", "project"]), "{lang:?}: {first}");
         for page in ["spec", "project"] {
             let writes = writes_of(&project, &first, page);
@@ -425,16 +425,17 @@ fn a_copia_seguinte_leva_a_versao_guardada_sem_pedir_leitura() {
         }
         project.write(
             "publish",
-            &json!({"page": "spec", "milestone": "round", "ok": true, "template": true,
+            &json!({"page": "spec", "milestone": "approval", "ok": true, "template": true,
                 "stamp": stamp_of("spec", lang), "url": SPEC_URL}),
         );
         project.write(
             "publish",
-            &json!({"page": "project", "milestone": "round", "ok": true, "template": true,
-                "stamp": "0.0.1 0123456789abcdef", "url": "https://claude.ai/code/artifact/projeto"}),
+            &json!({"page": "project", "milestone": "approval", "ok": true, "template": true,
+                "stamp": stamp_of("project", lang), "url": "https://claude.ai/code/artifact/projeto"}),
         );
         record_copy(&project, &first, "spec", Some(1));
         record_copy(&project, &first, "project", None);
+        approve(&project);
 
         // A cópia seguinte: a spec troca com a versão guardada, e só a linha
         // do projeto, sem versão guardada, é nomeada para ler.
@@ -460,9 +461,12 @@ fn a_copia_seguinte_leva_a_versao_guardada_sem_pedir_leitura() {
         record_copy(&project, &second, "spec", Some(2));
         record_copy(&project, &second, "project", Some(2));
 
-        // Gravadas as duas com versões, a cópia depois dela troca tudo com a
-        // versão mais nova, sem leitura nenhuma.
-        let third = project.write_copying("note", &json!({"title": "Combinar o item", "text": "Outra nota.", "keys": ["k"], "origin": said}));
+        // Gravadas as duas com versões, a primeira rodada, depois de uma nota
+        // nova, troca tudo com a versão mais nova, sem leitura nenhuma e sem
+        // publicar de novo.
+        project.write("note", &json!({"title": "Combinar o item", "text": "Outra nota.", "keys": ["k"], "origin": said}));
+        let third = project.run(&["round", "--spec", SPEC]);
+        assert!(third["publish"].is_null(), "{lang:?}: both pages have their address: {third}");
         let next = third["next"].as_str().unwrap_or_default();
         for doc in spec_docs {
             assert_eq!(if_version(&project, &third, "spec", doc), json!(2), "{lang:?}: {doc}: {third}");

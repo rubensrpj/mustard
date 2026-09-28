@@ -414,16 +414,19 @@ fn kept_as_is(_: &Connection, _: u32) -> Result<()> {
 /// título, a parte do usuário, a parte do agente, as palavras de busca que a
 /// gravação calculou e os arquivos que ele cita ou que as tarefas dele
 /// mudam; de cada commit de onda, os itens que ele cumpriu e os arquivos
-/// dele; e, de cada spec, o último número lido e o tamanho e a hora do
-/// arquivo quando se leu. Junto mora o índice da busca dos itens, com o
-/// título, a parte do usuário e as palavras como campos próprios. Quem o
-/// enche é `io::map_specs`; a montagem não o grava nem o confere.
-pub const SPECS: MapBlock = rebuilt_by(block!("specs", version 1, {
+/// dele; de cada spec, os números dos pull requests dela, que ligam os
+/// commits da base que o squash ou o rebase criou; e, de cada spec, o último
+/// número lido e o tamanho e a hora do arquivo quando se leu. Junto mora o
+/// índice da busca dos itens, com o título, a parte do usuário e as palavras
+/// como campos próprios. Quem o enche é `io::map_specs`; a montagem não o
+/// grava nem o confere.
+pub const SPECS: MapBlock = rebuilt_by(block!("specs", version 2, {
     "spec_items" at list(&["items"]) => [
         "spec" Text, "id" Int, "code" Text, "kind" Text, "title" Text, "text" Text, "agent" Text, "search" Text,
         "files" Json
     ],
     "spec_commits" at list(&["commits"]) => ["spec" Text, "sha" Text, "items" Json, "files" Json],
+    "spec_pulls" at list(&["pulls"]) => ["spec" Text, "pr" Int],
     "spec_marks" at list(&["marks"]) => ["spec" Text, "last_id" Int, "size" Int, "modified" Int]
 }, index [
     "spec_vocab", "spec_fts", "spec_lengths", "spec_meta"
@@ -2426,7 +2429,8 @@ mod tests {
             [
                 "census", "projects", "languages", "manifests", "skeleton", "files", "decls", "texts", "routes", "links",
                 "graph", "fan_in", "history_base", "history_paths", "commits", "lineage_files", "lineage_commits",
-                "lineage_decls", "pr_texts", "pr_comments", "pr_commits", "spec_items", "spec_commits", "spec_marks", "blocks"
+                "lineage_decls", "pr_texts", "pr_comments", "pr_commits", "spec_items", "spec_commits", "spec_pulls",
+                "spec_marks", "blocks"
             ]
         );
         let decls = &dump[6]["rows"];

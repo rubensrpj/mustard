@@ -637,8 +637,9 @@ pub struct ProjectMap {
     /// do que a montagem grava.
     #[serde(skip)]
     pub pulls: Pulls,
-    /// O item de spec de cada commit de onda da história guardada, pelo
-    /// começo do hash, como o bloco das specs o liga.
+    /// O item de spec de cada commit de onda da história guardada, e do
+    /// commit da base que o pull request de uma spec trouxe por squash ou
+    /// rebase, pelo começo do hash, como o bloco das specs o liga.
     #[serde(skip)]
     pub spec_notes: BTreeMap<String, SpecNote>,
 }
@@ -700,6 +701,10 @@ pub struct MapModule {
     pub tests: Vec<String>,
     /// O arquivo traz os próprios testes.
     pub has_tests: bool,
+    /// As linhas, da primeira à última, de cada trecho de teste escrito
+    /// dentro do arquivo, como o scan o reconhece.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub test_lines: Vec<(u64, u64)>,
     /// As rotas do servidor registradas no arquivo, com as chamadas da tela
     /// que alcançam cada uma.
     pub routes: Vec<MapRoute>,

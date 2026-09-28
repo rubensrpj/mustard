@@ -178,3 +178,61 @@ fn a_pass_that_keeps_the_file_without_reading_it_knows_the_same() {
         assert_eq!(lista(&module(v, "src/regra.rs")["tests"]), vec!["src/conta.rs".to_string()]);
     }
 }
+
+/// O trecho de teste com outros atributos entre o `#[cfg(test)]` e o `mod`
+/// (`src/lib.rs`), o do `#[cfg(test)]` colado ao `mod` (`src/colado.rs`) e o
+/// de um `#[cfg(test)]` separado do `mod` por um item que não é atributo
+/// (`src/cortado.rs`): os três importam `src/x.rs` de dentro do `mod tests`.
+const FILA_DE_ATRIBUTOS: &[(&str, &str)] = &[
+    ("Cargo.toml", "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n"),
+    ("src/x.rs", "pub fn y() {}\n"),
+    (
+        "src/lib.rs",
+        "pub mod colado;\npub mod cortado;\npub mod x;\n\n\
+         #[cfg(test)]\n#[allow(dead_code)]\nmod tests {\n    use crate::x::y;\n}\n",
+    ),
+    ("src/colado.rs", "#[cfg(test)]\nmod tests {\n    use crate::x::y;\n}\n"),
+    (
+        "src/cortado.rs",
+        "#[cfg(test)]\nconst LIMITE: u8 = 0;\n#[allow(dead_code)]\nmod tests {\n    use crate::x::y;\n}\n",
+    ),
+];
+
+/// Monta o projeto da fila de atributos e devolve, de `path`, as dependências
+/// do código e as do teste, lado a lado.
+fn deps_and_test_deps(label: &str, path: &str) -> (Vec<String>, Vec<String>, Value) {
+    let temp = pasta_do_projeto(label);
+    for (rel, body) in FILA_DE_ATRIBUTOS {
+        write(temp.path(), rel, body);
+    }
+    let (v, _) = scan(temp.path());
+    let deps = lista(&module(&v, path)["deps"]);
+    let test_deps = lista(&module(&v, path)["test_deps"]);
+    (deps, test_deps, v)
+}
+
+/// Com `#[allow(dead_code)]` entre o `#[cfg(test)]` e o `mod tests`, o
+/// `use crate::x::y` do trecho põe `src/x.rs` só nas dependências de teste de
+/// `src/lib.rs`, e `src/x.rs` lista `src/lib.rs` entre os testes que o cobrem.
+#[test]
+fn another_attribute_between_the_test_marker_and_the_module_keeps_the_block_a_test() {
+    let (deps, test_deps, v) = deps_and_test_deps("fila-meio", "src/lib.rs");
+    assert_eq!((deps, test_deps), (Vec::<String>::new(), vec!["src/x.rs".to_string()]));
+    assert!(lista(&module(&v, "src/x.rs")["tests"]).contains(&"src/lib.rs".to_string()));
+}
+
+/// O `#[cfg(test)]` colado ao `mod tests` segue marcando o trecho como teste.
+#[test]
+fn the_test_marker_glued_to_the_module_still_marks_the_block() {
+    let (deps, test_deps, _) = deps_and_test_deps("fila-colado", "src/colado.rs");
+    assert_eq!((deps, test_deps), (Vec::<String>::new(), vec!["src/x.rs".to_string()]));
+}
+
+/// Um item que não é atributo entre o `#[cfg(test)]` e o `mod` corta a fila:
+/// a marca é do item, o `mod` não é teste, e o import dele é dependência do
+/// código, mesmo com outro atributo colado ao `mod`.
+#[test]
+fn an_item_that_is_not_an_attribute_between_them_cuts_the_queue() {
+    let (deps, test_deps, _) = deps_and_test_deps("fila-cortada", "src/cortado.rs");
+    assert_eq!((deps, test_deps), (vec!["src/x.rs".to_string()], Vec::<String>::new()));
+}

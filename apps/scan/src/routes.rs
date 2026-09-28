@@ -92,16 +92,24 @@
 //!   chamada.
 //! - `client.path`: o literal do caminho. O que começa por um parâmetro é
 //!   montado sobre um valor, como a base guardada numa variável, e não liga.
+//!   O endereço inteiro (`https://loja.com/api/pedidos`) vale sem o esquema e
+//!   a máquina, como a base.
 //! - `client.option`: o método escrito nas opções da chamada, que vale no
 //!   lugar do que o nome diz.
 //! - `client.receiver`: o objeto antes do nome. A chamada conta quando ele é
 //!   o objeto da biblioteca — um nome que o import dela traz —, um cliente
 //!   feito no arquivo ou um nome trazido de outro arquivo, cujo cliente a
 //!   ligação acha lá. Sem objeto, a chamada solta conta.
-//! - `client.made`: a chamada que faz um cliente, com o objeto que a faz em
-//!   `client.factory` — que precisa ser o da biblioteca —, o nome que o
-//!   recebe em `client.instance` e o literal da base em `client.base`. Sem
-//!   `client.instance`, o cliente é o que o arquivo exporta como padrão.
+//! - `client.receiver.any`: o mesmo objeto, no nome que só a biblioteca tem:
+//!   a chamada conta com qualquer objeto, e o que não é cliente conhecido vai
+//!   sem base.
+//! - `client.made`: o que faz um cliente — a chamada, ou o nome declarado com
+//!   o tipo dele —, com o objeto que o faz em `client.factory`, o nome que o
+//!   recebe em `client.instance` e o literal da base em `client.base`. O
+//!   `client.factory` capturado precisa ser o objeto da biblioteca; sem ele,
+//!   a consulta mesma diz quem faz o cliente. Sem `client.instance`, o
+//!   cliente é o que o arquivo exporta como padrão. O mesmo nome feito mais
+//!   de uma vez no arquivo é um cliente só, com a primeira base escrita.
 //!
 //! Uma regra é do servidor ou da tela: a consulta dela usa as capturas de um
 //! lado só.
@@ -213,6 +221,7 @@ enum Role {
     ClientPath,
     ClientOption,
     ClientReceiver,
+    ClientAnyReceiver,
     ClientMade,
     ClientFactory,
     ClientInstance,
@@ -229,6 +238,7 @@ impl Role {
                 | Self::ClientPath
                 | Self::ClientOption
                 | Self::ClientReceiver
+                | Self::ClientAnyReceiver
                 | Self::ClientMade
                 | Self::ClientFactory
                 | Self::ClientInstance
@@ -270,6 +280,7 @@ fn role(capture: &str) -> Role {
         "client.path" => Role::ClientPath,
         "client.option" => Role::ClientOption,
         "client.receiver" => Role::ClientReceiver,
+        "client.receiver.any" => Role::ClientAnyReceiver,
         "client.made" => Role::ClientMade,
         "client.factory" => Role::ClientFactory,
         "client.instance" => Role::ClientInstance,
@@ -1012,6 +1023,7 @@ impl RouteRule {
                     Role::ClientPath => here.path = node,
                     Role::ClientOption => here.option = node,
                     Role::ClientReceiver => here.receiver = node,
+                    Role::ClientAnyReceiver => (here.receiver, here.any_receiver) = (node, true),
                     Role::ClientMade => here.made = node,
                     Role::ClientFactory => here.factory = node,
                     Role::ClientInstance => here.instance = node,
@@ -1020,7 +1032,7 @@ impl RouteRule {
                 }
             }
             if let Some(at) = here.made {
-                if skipped(at) || !here.factory.is_some_and(|factory| library.contains(&text(factory))) {
+                if skipped(at) || here.factory.is_some_and(|factory| !library.contains(&text(factory))) {
                     continue;
                 }
                 let entry = made.entry(span(at)).or_insert_with(|| (here.instance.map(text).unwrap_or_default(), None));
@@ -1029,16 +1041,29 @@ impl RouteRule {
                 if skipped(method) {
                     continue;
                 }
-                let entry = written.entry(span(method)).or_insert(CallAt { method, path, receiver: here.receiver, option: None });
+                let entry = written.entry(span(method)).or_insert(CallAt {
+                    method,
+                    path,
+                    receiver: here.receiver,
+                    any_receiver: here.any_receiver,
+                    option: None,
+                });
                 entry.option = here.option.or(entry.option);
             }
         }
 
         let framework = self.raw.framework.to_string();
-        let clients: Vec<Client> = made
-            .into_values()
-            .map(|(name, base)| Client { framework: framework.clone(), name, base: self.base_path(base.as_deref()) })
-            .collect();
+        // O nome feito mais de uma vez — declarado com o tipo do cliente e
+        // feito depois com a base, ou com a base posta depois — é um cliente
+        // só, com a primeira base escrita.
+        let mut clients: Vec<Client> = Vec::new();
+        for (name, base) in made.into_values() {
+            match clients.iter_mut().find(|c| c.name == name) {
+                Some(known) if known.base.written.is_empty() => known.base = self.base_path(base.as_deref()),
+                Some(_) => {}
+                None => clients.push(Client { framework: framework.clone(), name, base: self.base_path(base.as_deref()) }),
+            }
+        }
         let mut calls = Vec::new();
         for call in written.into_values() {
             let Some(named) = self.method(&text(call.method)) else { continue };
@@ -1055,13 +1080,14 @@ impl RouteRule {
                 Some(receiver) => match clients.iter().find(|c| !c.name.is_empty() && c.name == receiver) {
                     Some(client) => ((!client.base.path.is_empty()).then(|| client.base.clone()), String::new()),
                     None if elsewhere.contains(&receiver) => (None, receiver),
+                    None if call.any_receiver => (None, String::new()),
                     None => continue,
                 },
             };
             let line = call.method.start_position().row + 1;
             calls.push(RouteCall {
                 method,
-                path: self.normalized(without_query(&path), None),
+                path: self.normalized(without_query(without_host(&path)), None),
                 written: path,
                 line,
                 owner: enclosing(source.declarations, line).map(|i| source.declarations[i].name.clone()).unwrap_or_default(),
@@ -1077,8 +1103,7 @@ impl RouteRule {
     /// (`http://localhost:3000`), que não fazem parte do caminho da rota.
     fn base_path(&self, written: Option<&str>) -> RoutePath {
         let Some(written) = written else { return RoutePath::default() };
-        let path = written.split_once("://").map_or(written, |(_, rest)| rest.find('/').map_or("", |at| &rest[at..]));
-        RoutePath { written: written.to_string(), path: self.normalized(without_query(path), None) }
+        RoutePath { written: written.to_string(), path: self.normalized(without_query(without_host(written)), None) }
     }
 
     /// Um prefixo, escrito com os pedaços juntados por barra e padronizado.
@@ -1172,6 +1197,12 @@ fn is_id(piece: &str) -> bool {
         && piece.chars().any(|c| c.is_ascii_digit())
 }
 
+/// O endereço sem o esquema e a máquina (`https://loja.com:8080`), que não
+/// fazem parte do caminho da rota; o que não os escreve fica como está.
+fn without_host(written: &str) -> &str {
+    written.split_once("://").map_or(written, |(_, rest)| rest.find('/').map_or("", |at| &rest[at..]))
+}
+
 /// O caminho sem a busca e sem a âncora do endereço (`?status=1`, `#fim`).
 fn without_query(path: &str) -> &str {
     path.split(['?', '#']).next().unwrap_or_default()
@@ -1196,6 +1227,8 @@ struct CallAt<'t> {
     method: Node<'t>,
     path: Node<'t>,
     receiver: Option<Node<'t>>,
+    /// A chamada conta com qualquer objeto (`client.receiver.any`).
+    any_receiver: bool,
     option: Option<Node<'t>>,
 }
 
@@ -1206,6 +1239,7 @@ struct CallCaptured<'t> {
     path: Option<Node<'t>>,
     option: Option<Node<'t>>,
     receiver: Option<Node<'t>>,
+    any_receiver: bool,
     made: Option<Node<'t>>,
     factory: Option<Node<'t>>,
     instance: Option<Node<'t>>,

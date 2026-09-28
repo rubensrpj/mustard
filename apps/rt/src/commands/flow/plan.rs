@@ -280,7 +280,7 @@ pub(crate) fn plan_for(opts: &PlanOpts, session: Option<&str>) -> Value {
     // link mora na barra de status. O item que ainda guarda um trecho com
     // cara de segredo sai dito, para ser expurgado, sem segurar a cópia nem a
     // pergunta.
-    let prepared = match spec_events::pages::copy::prepare(&project.root, &spec, lang) {
+    let prepared = match spec_events::pages::copy::prepare_milestone(&project.root, &spec, "approval", lang) {
         Ok(prepared) => prepared,
         Err(refusal) => return refuse(&refusal),
     };

@@ -79,8 +79,13 @@
 //!
 //! Quando o template nasce num marco que não é a aprovação — a spec foi
 //! aprovada por uma versão antiga —, a cópia segue igual, sem nota nenhuma.
+//! A ordem de publicar manda também contar ao usuário que a página saiu e que
+//! o link dela fica na barra de status, sem escrever o endereço.
 //!
-//! ## O layout novo na página já publicada
+//! ## O desenho novo na página já publicada
+//!
+//! A página é publicada uma vez, quando nasce; depois, só o banco dela muda.
+//! Ela só é publicada de novo quando o usuário pede.
 //!
 //! A publicação do template grava em `stamp` o carimbo do molde publicado: a
 //! versão do layout dele e a impressão do conteúdo montado
@@ -88,15 +93,21 @@
 //! (`page_templates::layout_version`). Num marco, quando a versão do layout
 //! que o programa rodando monta é outra que a da última publicação que deu
 //! certo, ou ela tem o carimbo de antes da versão do layout, ou nenhum, o
-//! molde novo é escrito no projeto e a ordem manda publicá-lo de novo no
-//! mesmo endereço, antes dos lotes, e gravar a publicação com o carimbo. O
-//! banco da página continua no mesmo endereço: a cópia depois da república
-//! segue de onde parou, sem levar a spec inteira de novo. Com a mesma versão
-//! de layout, nada é publicado de novo, mesmo com o Mustard noutra versão ou
-//! outra impressão. A publicação que o usuário pede segue pelo caminho de
-//! sempre, fora dos marcos. O mesmo vale para a página do projeto, cujo
-//! carimbo é o da última publicação dela gravada em qualquer spec do
-//! projeto.
+//! molde novo é escrito no projeto, mas a ordem não manda publicá-lo: ela
+//! manda contar ao usuário que o desenho mudou e que a página só é publicada
+//! de novo quando ele pedir. O aviso sai uma vez por versão do layout: o
+//! marco que o dá grava uma publicação que não aconteceu (`"ok":false`), com
+//! o motivo [`LAYOUT_CHANGED`] e o carimbo novo, e o marco seguinte com a
+//! mesma versão acha esse registro e não avisa de novo. A cópia depois de um
+//! pedido, fora dos marcos, não avisa nem grava nada. Com ou sem aviso, os
+//! lotes seguem para o banco no endereço de sempre, com o desenho antigo. Se
+//! o usuário pede, a publicação segue pelo caminho de sempre
+//! (`run write publish` com `"template":true` e o carimbo novo), no mesmo
+//! endereço: a cópia depois dela segue de onde parou, sem levar a spec
+//! inteira de novo. Com a mesma versão de layout, nada muda, mesmo com o
+//! Mustard noutra versão ou outra impressão. O mesmo vale para a página do
+//! projeto, cujo carimbo é o da última publicação dela gravada em qualquer
+//! spec do projeto, e cujo aviso gravado em qualquer spec vale para todas.
 //!
 //! ## A linha da spec na página do projeto
 //!
@@ -127,6 +138,7 @@ use std::path::{Path, PathBuf};
 
 use mustard_core::domain::spec_events::{BlockQuery, Hidden, Refusal, SpecEvent, SpecLog, PURGED_MARK};
 use mustard_core::domain::spec_index::{is_template, project_page, published_to, ProjectRow, PROJECT_PAGE, SPEC_PAGE};
+use mustard_core::domain::spec_state::PhaseWriter;
 use mustard_core::io::spec_events as store;
 use mustard_core::io::spec_index::later;
 use mustard_core::platform::i18n::{translate, Locale};
@@ -165,6 +177,11 @@ pub(crate) const SPEC_TEMPLATE: &str = ".claude/mustard/pages/spec.html";
 /// O template da página do projeto, como a instalação o deixa no projeto.
 pub(crate) const PROJECT_TEMPLATE: &str = ".claude/mustard/pages/project.html";
 
+/// O motivo da publicação que não aconteceu porque o desenho da página mudou
+/// de versão e o usuário ainda não pediu para publicar de novo: é o registro
+/// de que o aviso dessa versão já foi dado.
+pub(crate) const LAYOUT_CHANGED: &str = "layout-changed";
+
 /// A cópia preparada.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Prepared {
@@ -195,9 +212,10 @@ pub(crate) struct Target {
     /// template sai num link novo, e a antiga fica parada.
     pub old: bool,
     /// A página já tem endereço, mas foi publicada com outra versão de
-    /// layout, com o carimbo de antes dela ou sem carimbo: o marco a publica
-    /// de novo no mesmo endereço, antes dos lotes.
-    pub republish: bool,
+    /// layout, com o carimbo de antes dela ou sem carimbo, e o aviso dessa
+    /// versão ainda não tinha sido dado: o marco manda contar ao usuário, e a
+    /// preparação grava o aviso. Só num marco; fora dele, sempre `false`.
+    pub layout_changed: bool,
     /// O carimbo do molde que o programa rodando monta, gravado com a
     /// publicação.
     pub stamp: String,
@@ -211,23 +229,36 @@ pub(crate) struct Target {
 
 /// Prepara a cópia da spec `spec` do projeto `root` para o banco da página
 /// dela e a da linha dela para o banco da página do projeto, quando a fase
-/// mudou desde a última cópia dela. É a mesma cópia nos marcos e depois de um
-/// pedido do usuário: quem manda publicar a página que ainda não tem endereço
-/// é a ordem de um marco ([`Prepared::order`]).
+/// mudou desde a última cópia dela, depois de um pedido do usuário, fora dos
+/// marcos: quem manda publicar a página que ainda não tem endereço é a ordem
+/// de um marco ([`Prepared::order`]), e o aviso de desenho novo também só sai
+/// num marco ([`prepare_milestone`]).
 ///
 /// # Errors
 ///
 /// A recusa do nome da spec, a da spec sem arquivo de eventos e a falha de
 /// gravação dos arquivos.
 pub(crate) fn prepare(root: &Path, spec: &str, lang: Locale) -> Result<Prepared, Refusal> {
-    prepare_then(root, spec, lang, |_| ()).map(|(prepared, ())| prepared)
+    prepare_for(root, spec, None, lang, |_| ()).map(|(prepared, ())| prepared)
 }
 
-/// [`prepare`], e depois `finish` com a cópia preparada, ainda com a trava
-/// do arquivo de eventos presa: o que mais vai para a pasta da cópia, como a
-/// ordem por extenso que a rodada deixa ali, entra no mesmo trecho que a
-/// apaga e a grava de novo. A preparação de outra rodada, que começa
-/// apagando a pasta, nunca acha ali um arquivo sendo gravado.
+/// A mesma cópia de [`prepare`], no marco `milestone` (`approval` ou
+/// `close`): a página que já tem endereço e foi publicada com outra versão de
+/// layout ganha o aviso, uma vez por versão, e a preparação o grava.
+///
+/// # Errors
+///
+/// As recusas de [`prepare`].
+pub(crate) fn prepare_milestone(root: &Path, spec: &str, milestone: &str, lang: Locale) -> Result<Prepared, Refusal> {
+    prepare_for(root, spec, Some(milestone), lang, |_| ()).map(|(prepared, ())| prepared)
+}
+
+/// A cópia do marco da rodada, como [`prepare_milestone`] a faz com `round`,
+/// e depois `finish` com a cópia preparada, ainda com a trava do arquivo de
+/// eventos presa: o que mais vai para a pasta da cópia, como a ordem por
+/// extenso que a rodada deixa ali, entra no mesmo trecho que a apaga e a
+/// grava de novo. A preparação de outra rodada, que começa apagando a pasta,
+/// nunca acha ali um arquivo sendo gravado.
 ///
 /// # Errors
 ///
@@ -238,16 +269,30 @@ pub(crate) fn prepare_then<R>(
     lang: Locale,
     finish: impl FnOnce(&Prepared) -> R,
 ) -> Result<(Prepared, R), Refusal> {
+    prepare_for(root, spec, Some("round"), lang, finish)
+}
+
+/// A cópia da spec `spec` na pasta dela, no marco `milestone`, ou fora dos
+/// marcos com `None`, e depois `finish`, com a trava presa.
+fn prepare_for<R>(
+    root: &Path,
+    spec: &str,
+    milestone: Option<&str>,
+    lang: Locale,
+    finish: impl FnOnce(&Prepared) -> R,
+) -> Result<(Prepared, R), Refusal> {
     let paths = ClaudePaths::for_project(root).map_err(|e| Refusal::Io { detail: e.to_string() })?;
     let spec_paths = paths.for_spec(spec.trim()).map_err(|_| Refusal::BadSpecName { spec: spec.to_string() })?;
-    prepare_in(root, spec, &spec_paths.spec_ndjson_path(), spec_paths.dir().join(FOLDER), lang, finish)
+    prepare_in(root, spec, &spec_paths.spec_ndjson_path(), spec_paths.dir().join(FOLDER), milestone, lang, finish)
 }
 
 /// A cópia de um marco da spec `spec`, lida do arquivo de eventos
 /// `spec_ndjson` e gravada em `copy_folder`, em vez de onde [`ClaudePaths`]
 /// os poria: o descarte usa isto para ler o arquivo já movido para a pasta
 /// arquivada, ou para gravar os lotes numa pasta temporária quando a pasta da
-/// spec vai ser apagada, e não sobreviveria até a cópia acabar.
+/// spec vai ser apagada, e não sobreviveria até a cópia acabar. A spec
+/// descartada não tem marco seguinte nem publicação a pedir: nenhum aviso de
+/// desenho novo sai nem se grava aqui.
 ///
 /// # Errors
 ///
@@ -259,17 +304,19 @@ pub(crate) fn prepare_milestone_at(
     copy_folder: PathBuf,
     lang: Locale,
 ) -> Result<Prepared, Refusal> {
-    prepare_in(root, spec, spec_ndjson, copy_folder, lang, |_| ()).map(|(prepared, ())| prepared)
+    prepare_in(root, spec, spec_ndjson, copy_folder, None, lang, |_| ()).map(|(prepared, ())| prepared)
 }
 
-/// O núcleo de [`prepare_then`] e [`prepare_milestone_at`]: lê `spec_ndjson`
-/// com a trava presa, grava os lotes em `copy_folder` e roda `finish` antes
-/// de soltar a trava.
+/// O núcleo de [`prepare_for`] e [`prepare_milestone_at`]: lê `spec_ndjson`
+/// com a trava presa, grava os lotes em `copy_folder`, grava no marco
+/// `milestone` o aviso de cada página com desenho novo ([`record_notices`])
+/// e roda `finish` antes de soltar a trava.
 fn prepare_in<R>(
     root: &Path,
     spec: &str,
     spec_ndjson: &Path,
     copy_folder: PathBuf,
+    milestone: Option<&str>,
     lang: Locale,
     finish: impl FnOnce(&Prepared) -> R,
 ) -> Result<(Prepared, R), Refusal> {
@@ -283,14 +330,56 @@ fn prepare_in<R>(
     // publicada como template há carimbo a conferir.
     let others =
         if template_project_url(&index).is_some() { other_project_logs(root, spec.trim()) } else { Vec::new() };
-    store::with_locked_log(spec_ndjson, |log| {
-        let place = Place { root, spec: spec.trim(), folder: copy_folder, index, mark: log.max_id() };
-        build(&place, log, &rtk, &others, lang).map(|prepared| {
+    store::with_locked_writer(spec_ndjson, |locked| {
+        let place = Place { root, spec: spec.trim(), folder: copy_folder, index, mark: locked.log().max_id() };
+        build(&place, locked.log(), &rtk, &others, milestone.is_some(), lang).map(|prepared| {
+            if let Some(milestone) = milestone {
+                record_notices(locked, &place, &prepared, milestone);
+            }
             let finished = finish(&prepared);
             (prepared, finished)
         })
     })?
     .unwrap_or_else(|| Err(Refusal::NoSpecFile { spec: spec.trim().to_string() }))
+}
+
+/// Grava, sem soltar a trava, o aviso de cada página de `prepared` cujo
+/// desenho mudou de versão sem aviso ainda: uma publicação que não aconteceu
+/// (`"ok":false`), no marco `milestone`, com o motivo [`LAYOUT_CHANGED`] e o
+/// carimbo do molde novo. É por ele que o marco seguinte, com a mesma versão
+/// de layout, não avisa de novo. A gravação que falha não segura o marco: o
+/// aviso sai agora e sai de novo no marco seguinte.
+fn record_notices(locked: &mut store::LockedLog, place: &Place, prepared: &Prepared, milestone: &str) {
+    for (target, key) in [(Some(&prepared.spec), SPEC_PAGE), (prepared.project.as_ref(), PROJECT_PAGE)] {
+        let Some(target) = target.filter(|target| target.layout_changed) else { continue };
+        let notice = json!({
+            "page": key, "milestone": milestone, "ok": false, "reason": LAYOUT_CHANGED, "template": true,
+            "stamp": target.stamp, "author": "binary",
+        });
+        let draft = notice.as_object().cloned().unwrap_or_default();
+        let _ = crate::commands::spec_events::write::record_locked(
+            locked,
+            place.root,
+            place.spec,
+            "publish",
+            draft,
+            PhaseWriter::Binary,
+        );
+    }
+}
+
+/// A versão de layout cujo aviso o evento `event` registra para a página
+/// `page`: a publicação que não aconteceu, com o motivo [`LAYOUT_CHANGED`] e
+/// o carimbo do molde novo. `None` em qualquer outro evento.
+fn notice_of(event: &SpecEvent, page: &str) -> Option<u32> {
+    let notice = event.event_type == "publish"
+        && event.str_field("page") == Some(page)
+        && event.fields.get("ok").and_then(Value::as_bool) == Some(false)
+        && event.str_field("reason") == Some(LAYOUT_CHANGED);
+    if !notice {
+        return None;
+    }
+    event.str_field("stamp").and_then(layout_version)
 }
 
 /// Onde a cópia de uma spec é preparada.
@@ -306,12 +395,14 @@ struct Place<'a> {
     mark: u64,
 }
 
-/// Monta e grava a cópia a partir de `log`, lido com a trava presa.
+/// Monta e grava a cópia a partir de `log`, lido com a trava presa. Só num
+/// marco (`milestone`) a página com desenho novo ganha o aviso.
 fn build(
     place: &Place,
     log: &SpecLog,
     rtk: &[RtkDay],
     others: &[ProjectLog],
+    milestone: bool,
     lang: Locale,
 ) -> Result<Prepared, Refusal> {
     let SpecPage { url, since, old, republished, stamp: published, versions } = spec_page(log);
@@ -342,19 +433,22 @@ fn build(
     let existing = pin(&mut writes, existing, |doc| versions.get(doc).cloned());
     let template = spec_page_template(lang);
     let stamp = template_stamp(&template).unwrap_or_default().to_string();
-    // A ordem de um marco publica de novo; depois de um pedido, a página com
-    // layout velho fica para o próximo marco. Só a versão do layout conta:
-    // outra versão do Mustard, ou outra impressão, com o mesmo layout não
-    // publica de novo.
-    let republish = url.is_some() && !same_layout(published.as_deref(), SPEC_LAYOUT_VERSION);
-    if url.is_none() || republish {
+    // A página publicada com outro layout não é publicada de novo: o molde
+    // novo fica no projeto para quando o usuário pedir, e o marco avisa uma
+    // vez por versão. Só a versão do layout conta: outra versão do Mustard,
+    // ou outra impressão, com o mesmo layout não muda nada.
+    let old_layout = url.is_some() && !same_layout(published.as_deref(), SPEC_LAYOUT_VERSION);
+    if url.is_none() || old_layout {
         ensure_template(place.root, SPEC_TEMPLATE, &template)?;
     }
+    let noticed = log.visible().iter().any(|e| notice_of(e, SPEC_PAGE) == Some(SPEC_LAYOUT_VERSION));
+    let layout_changed = milestone && old_layout && !noticed;
     let (files, sent) = batches(place, "spec", &writes)?;
     let record = json!({ "page": SPEC_PAGE, "last": log.max_id() });
     write_spec_record(place, &record, &sent)?;
-    let spec = Target { url, batches: files, writes: absolute(place.root, sent), record, old, republish, stamp, existing };
-    let project = project_rows(place, log, others, lang)?;
+    let spec =
+        Target { url, batches: files, writes: absolute(place.root, sent), record, old, layout_changed, stamp, existing };
+    let project = project_rows(place, log, others, milestone, lang)?;
     Ok(Prepared { folder: relative(place.root, &place.folder), spec, project, withheld: withheld(log) })
 }
 
@@ -474,13 +568,15 @@ struct ProjectCopy {
 }
 
 /// A página do projeto como o arquivo de eventos de uma spec a conta: a hora
-/// do primeiro evento, quando a pasta da spec nasceu, e as publicações do
-/// template e as cópias para o banco dela, na ordem do arquivo.
+/// do primeiro evento, quando a pasta da spec nasceu, as publicações do
+/// template e as cópias para o banco dela, na ordem do arquivo, e as versões
+/// de layout cujo aviso essa spec gravou.
 #[derive(Debug, Clone, Default)]
 struct ProjectLog {
     born: Option<String>,
     publications: Vec<ProjectPublication>,
     copies: Vec<ProjectCopy>,
+    notices: Vec<u32>,
 }
 
 /// A página do projeto como o arquivo `log` a conta.
@@ -503,7 +599,8 @@ fn project_log(log: &SpecLog) -> ProjectLog {
         .filter(|e| copy_of(e) == Some(PROJECT_PAGE))
         .map(|e| ProjectCopy { id: e.id, at: e.at().to_string(), versions: versions_of(e) })
         .collect();
-    ProjectLog { born: log.events.first().map(|e| e.at().to_string()), publications, copies }
+    let notices = visible.iter().filter_map(|e| notice_of(e, PROJECT_PAGE)).collect();
+    ProjectLog { born: log.events.first().map(|e| e.at().to_string()), publications, copies, notices }
 }
 
 /// A página do projeto como a contam as specs vivas do projeto `root` fora
@@ -824,13 +921,15 @@ fn state_name(state: WaveState) -> &'static str {
 /// As linhas do índice que vão para o banco da página do projeto: todas,
 /// quando ela ainda não tem endereço ou foi publicada de novo nesta spec
 /// depois da última cópia; senão, a linha desta spec, quando a fase dela
-/// mudou desde a última cópia; senão, nenhuma. A página antiga, publicada
+/// mudou desde a última cópia, ou quando o marco (`milestone`) leva o aviso
+/// de desenho novo dela; senão, nenhuma. A página antiga, publicada
 /// inteira por uma versão antiga, conta como a que ainda não tem endereço: o
 /// endereço dela nunca recebe lote.
 fn project_rows(
     place: &Place,
     log: &SpecLog,
     others: &[ProjectLog],
+    milestone: bool,
     lang: Locale,
 ) -> Result<Option<Target>, Refusal> {
     let page = mustard_core::io::fs::lock::read_shared(&place.index).ok().and_then(|content| project_page(&content));
@@ -868,15 +967,21 @@ fn project_rows(
     let published_stamp = latest.filter(|p| url.as_deref() == Some(p.url.as_str())).and_then(|p| p.stamp.as_deref());
     let template = project_page_template(lang);
     let stamp = template_stamp(&template).unwrap_or_default().to_string();
-    let republish = url.is_some() && !same_layout(published_stamp, PROJECT_LAYOUT_VERSION);
+    let old_layout = url.is_some() && !same_layout(published_stamp, PROJECT_LAYOUT_VERSION);
+    // O aviso da página do projeto gravado em qualquer spec vale para todas:
+    // a página é uma só.
+    let noticed = others.iter().chain(std::iter::once(&own_log)).any(|l| l.notices.contains(&PROJECT_LAYOUT_VERSION));
+    let layout_changed = milestone && old_layout && !noticed;
+    // A linha desta spec vai também quando só o aviso sai: é a cópia que
+    // leva o aviso na ordem do marco.
     let chosen: Vec<&ProjectRow> = if url.is_none() || fresh {
         rows.iter().collect()
-    } else if copied.is_none() || own.phase != copied_phase || republish {
+    } else if copied.is_none() || own.phase != copied_phase || layout_changed {
         vec![own]
     } else {
         return Ok(None);
     };
-    if url.is_none() || republish {
+    if url.is_none() || old_layout {
         ensure_template(place.root, PROJECT_TEMPLATE, &template)?;
     }
     // A linha desta spec já está no banco do endereço de agora quando uma
@@ -910,7 +1015,16 @@ fn project_rows(
         record["phase"] = json!(phase);
     }
     let (files, sent) = batches(place, "project", &writes)?;
-    Ok(Some(Target { url, batches: files, writes: absolute(place.root, sent), record, old, republish, stamp, existing }))
+    Ok(Some(Target {
+        url,
+        batches: files,
+        writes: absolute(place.root, sent),
+        record,
+        old,
+        layout_changed,
+        stamp,
+        existing,
+    }))
 }
 
 /// A publicação `p`, gravada na spec de posição `p_spec` em `logs`, veio
@@ -1075,7 +1189,8 @@ fn clear(folder: &Path) -> Result<(), Refusal> {
     mustard_core::io::fs::remove_dir_all(folder).map_err(|e| Refusal::Io { detail: e.to_string() })
 }
 
-/// Deixa no projeto o template que a ordem manda publicar, `built`, o que o
+/// Deixa no projeto o template que a ordem manda publicar, ou que o usuário
+/// pode pedir para publicar de novo, `built`, o que o
 /// binário rodando monta: escreve quando ele falta, e também quando o carimbo
 /// gravado no começo dele — a versão e a impressão do conteúdo, que
 /// [`spec_page_template`] e [`project_page_template`] deixam
@@ -1098,13 +1213,14 @@ fn write(path: &Path, text: &str) -> Result<(), Refusal> {
 }
 
 impl Prepared {
-    /// A cópia como a resposta de um passo a mostra.
+    /// A cópia como a resposta de um passo a mostra. A página cujo desenho
+    /// mudou de versão, no marco que dá o aviso, leva `layout_changed`.
     pub(crate) fn to_value(&self) -> Value {
         let target = |t: &Target| {
             let mut out =
                 json!({ "published": t.url.is_some(), "batches": t.batches, "writes": t.writes, "record": t.record });
-            if t.republish {
-                out["republish"] = json!(true);
+            if t.layout_changed {
+                out["layout_changed"] = json!(true);
             }
             out
         };
@@ -1115,15 +1231,15 @@ impl Prepared {
         out
     }
 
-    /// As páginas que o marco publica, na ordem em que são publicadas: a que
-    /// ainda não tem endereço e a que é publicada de novo no mesmo endereço,
-    /// com o molde novo.
+    /// As páginas que o marco publica, na ordem em que são publicadas: só as
+    /// que ainda não têm endereço. A publicada com outro desenho não entra:
+    /// ela só é publicada de novo quando o usuário pede.
     pub(crate) fn to_publish(&self) -> Vec<&'static str> {
         let mut out = Vec::new();
-        if self.spec.url.is_none() || self.spec.republish {
+        if self.spec.url.is_none() {
             out.push(SPEC_PAGE);
         }
-        if self.project.as_ref().is_some_and(|p| p.url.is_none() || p.republish) {
+        if self.project.as_ref().is_some_and(|p| p.url.is_none()) {
             out.push(PROJECT_PAGE);
         }
         out
@@ -1131,8 +1247,10 @@ impl Prepared {
 
     /// A ordem da cópia, uma frase por passo: publicar a página que ainda não
     /// tem endereço, no marco `milestone`, num link novo quando ela ainda é a
-    /// página inteira de uma versão antiga, e publicar de novo no mesmo
-    /// endereço a que foi publicada com outra versão de layout; copiar os
+    /// página inteira de uma versão antiga, e contar ao usuário que ela saiu,
+    /// sem escrever o endereço; na página publicada com outra versão de
+    /// layout, no marco que dá o aviso, contar ao usuário que o desenho mudou
+    /// e que ela só é publicada de novo quando ele pedir; copiar os
     /// lotes de cada página, mandando as escritas que a resposta já traz,
     /// nomeando só os documentos que já existem no banco sem versão guardada,
     /// para ler a versão de cada um antes de trocar, e, fora do descarte,
@@ -1152,23 +1270,23 @@ impl Prepared {
             let page = translate(name, lang);
             if target.url.is_none() {
                 let Some(milestone) = milestone else { continue };
-                out.push(
-                    translate("page.copy.publish", lang)
-                        .replace("{page}", page)
-                        .replace("{template}", template)
-                        .replace("{capabilities}", capabilities)
-                        .replace("{spec}", spec)
-                        .replace("{key}", key)
-                        .replace("{milestone}", milestone)
-                        .replace("{stamp}", &target.stamp),
-                );
+                let publish = translate("page.copy.publish", lang)
+                    .replace("{page}", page)
+                    .replace("{template}", template)
+                    .replace("{capabilities}", capabilities)
+                    .replace("{spec}", spec)
+                    .replace("{key}", key)
+                    .replace("{milestone}", milestone)
+                    .replace("{stamp}", &target.stamp);
+                let tell = translate("page.copy.tell_published", lang).replace("{page}", page);
+                out.push(format!("{publish} {tell}"));
                 if target.old {
                     out.push(translate("page.copy.old_page", lang).replace("{page}", page));
                 }
             }
-            if let (true, Some(milestone), Some(url)) = (target.republish, milestone, target.url.as_deref()) {
+            if let (true, Some(milestone), Some(url)) = (target.layout_changed, milestone, target.url.as_deref()) {
                 out.push(
-                    translate("page.copy.republish", lang)
+                    translate("page.copy.layout_changed", lang)
                         .replace("{page}", page)
                         .replace("{template}", template)
                         .replace("{capabilities}", capabilities)
@@ -2371,22 +2489,93 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&path).unwrap(), current, "o mesmo carimbo fica como está");
     }
 
-    /// A página já publicada com um layout velho é publicada de novo no mesmo
-    /// endereço, antes do lote de cópia: sem carimbo, com a marca de antes da
-    /// versão do layout (a versão do Mustard) e com outra versão de layout,
-    /// as três. O molde novo é escrito no projeto, e a ordem manda gravar a
-    /// publicação com o carimbo. Gravada a publicação, nada é publicado de
-    /// novo. O mesmo vale para a página do projeto.
-    #[test]
-    fn a_pagina_publicada_com_layout_antigo_e_publicada_de_novo_no_mesmo_endereco() {
-        let lang = Locale::PtBr;
-        // A versão de layout anterior à de cada molde, com a impressão de
-        // agora: só a versão difere.
-        let older = |page: &str| {
-            let version = if page == PROJECT_PAGE { PROJECT_LAYOUT_VERSION } else { SPEC_LAYOUT_VERSION };
-            let print = stamp_of(page).split_whitespace().nth(1).expect("the fingerprint").to_string();
-            format!("layout-{} {print}", version - 1)
+    /// O carimbo com a versão de layout anterior à do molde da página `page`,
+    /// com a impressão de agora: só a versão difere.
+    fn older(page: &str) -> String {
+        let version = if page == PROJECT_PAGE { PROJECT_LAYOUT_VERSION } else { SPEC_LAYOUT_VERSION };
+        let print = stamp_of(page).split_whitespace().nth(1).expect("the fingerprint").to_string();
+        format!("layout-{} {print}", version - 1)
+    }
+
+    /// Um projeto aprovado com as duas páginas já publicadas como template,
+    /// com os carimbos `stamps` (o da página da spec e o da do projeto; sem
+    /// carimbo com `None`), a cópia de cada uma gravada com a versão 3 de
+    /// cada documento e o molde velho instalado no projeto.
+    fn published_with(stamps: Option<(String, String)>) -> tempfile::TempDir {
+        let dir = approved_project();
+        let root = dir.path();
+        for (page, url) in [(SPEC_PAGE, SPEC_URL), (PROJECT_PAGE, PROJECT_URL)] {
+            let mut publish = json!({"page": page, "milestone": "approval", "ok": true, "template": true, "url": url});
+            if let Some((spec, project)) = &stamps {
+                publish["stamp"] = json!(if page == SPEC_PAGE { spec } else { project });
+            }
+            write(root, "publish", publish);
+        }
+        write(root, "copy", json!({"page": "spec", "last": log(root).max_id(),
+            "versions": {"ranges/0": 3, "computed/current": 3}}));
+        write(root, "copy", json!({"page": "project", "phase": "approved", "versions": {"specs/x": 3}}));
+        std::fs::create_dir_all(root.join(SPEC_TEMPLATE).parent().expect("a pasta")).unwrap();
+        for template in [SPEC_TEMPLATE, PROJECT_TEMPLATE] {
+            std::fs::write(root.join(template), "<!-- mustard: 0.0.1 -->\nmolde velho").unwrap();
+        }
+        dir
+    }
+
+    /// O aviso de desenho novo da página `page`, no endereço `url`, no marco
+    /// `milestone`, como a ordem o monta.
+    fn layout_notice(page: &str, url: &str, milestone: &str, lang: Locale) -> String {
+        let (name, template, capabilities) = if page == PROJECT_PAGE {
+            ("page.name.project", PROJECT_TEMPLATE, PROJECT_CAPABILITIES)
+        } else {
+            ("page.name.spec", SPEC_TEMPLATE, SPEC_CAPABILITIES)
         };
+        translate("page.copy.layout_changed", lang)
+            .replace("{page}", translate(name, lang))
+            .replace("{template}", template)
+            .replace("{capabilities}", capabilities)
+            .replace("{spec}", "x")
+            .replace("{key}", page)
+            .replace("{milestone}", milestone)
+            .replace("{stamp}", &stamp_of(page))
+            .replace("{url}", url)
+    }
+
+    /// A frase dos lotes da página `page` para o banco no endereço `url`,
+    /// sem o registro da cópia.
+    fn batches_to(page: &str, url: &str, lang: Locale) -> String {
+        let name = if page == PROJECT_PAGE { "page.name.project" } else { "page.name.spec" };
+        translate("page.copy.batches", lang).replace("{page}", translate(name, lang)).replace("{url}", url).replace("{key}", page)
+    }
+
+    /// Os avisos de desenho novo gravados na spec `x`, na ordem: a página, o
+    /// marco e o carimbo de cada um.
+    fn notices(root: &Path) -> Vec<(String, String, String)> {
+        log(root)
+            .visible()
+            .iter()
+            .filter(|e| e.event_type == "publish" && e.fields.get("ok") == Some(&json!(false)))
+            .filter(|e| e.str_field("reason") == Some(LAYOUT_CHANGED))
+            .map(|e| {
+                let field = |name: &str| e.str_field(name).unwrap_or_default().to_string();
+                (field("page"), field("milestone"), field("stamp"))
+            })
+            .collect()
+    }
+
+    /// A página já publicada com um layout velho — sem carimbo, com a marca
+    /// de antes da versão do layout (a versão do Mustard) ou com outra versão
+    /// de layout — não é publicada de novo no marco: a ordem não manda
+    /// publicar o template, e manda contar ao usuário que o desenho mudou e
+    /// que a página só sai de novo quando ele pedir. O banco segue recebendo
+    /// a cópia no mesmo endereço, com a versão guardada de cada documento, e
+    /// o molde novo fica no projeto para quando ele pedir. O marco grava o
+    /// aviso; o seguinte, com a mesma versão, não avisa de novo e segue
+    /// copiando. Pedida pelo usuário, a publicação no mesmo endereço, com o
+    /// carimbo novo, encerra o assunto. O mesmo vale para a página do
+    /// projeto.
+    #[test]
+    fn a_page_with_an_old_layout_is_not_published_again_and_the_user_is_told_once() {
+        let lang = Locale::PtBr;
         let old_mark = "0.2.0 0123456789abcdef".to_string();
         // O carimbo velho de cada caso, o da página da spec e o da do projeto.
         let cases: [(&str, Option<(String, String)>); 3] = [
@@ -2394,49 +2583,26 @@ mod tests {
             ("marca antiga", Some((old_mark.clone(), old_mark))),
             ("outra versão de layout", Some((older(SPEC_PAGE), older(PROJECT_PAGE)))),
         ];
+        let pages = [(SPEC_PAGE, SPEC_URL, SPEC_TEMPLATE), (PROJECT_PAGE, PROJECT_URL, PROJECT_TEMPLATE)];
         for (case, old) in cases {
-            let dir = approved_project();
+            let dir = published_with(old);
             let root = dir.path();
-            for (page, url) in [(SPEC_PAGE, SPEC_URL), (PROJECT_PAGE, PROJECT_URL)] {
-                let mut publish =
-                    json!({"page": page, "milestone": "approval", "ok": true, "template": true, "url": url});
-                if let Some((spec, project)) = &old {
-                    publish["stamp"] = json!(if page == SPEC_PAGE { spec } else { project });
-                }
-                write(root, "publish", publish);
-            }
-            write(root, "copy", json!({"page": "spec", "last": log(root).max_id(),
-                "versions": {"ranges/0": 3, "computed/current": 3}}));
-            write(root, "copy", json!({"page": "project", "phase": "approved", "versions": {"specs/x": 3}}));
-            std::fs::create_dir_all(root.join(SPEC_TEMPLATE).parent().expect("a pasta")).unwrap();
-            for template in [SPEC_TEMPLATE, PROJECT_TEMPLATE] {
-                std::fs::write(root.join(template), "<!-- mustard: 0.0.1 -->\nmolde velho").unwrap();
-            }
 
             let first = round(root);
-            assert_eq!(first["publish"], json!(["spec", "project"]), "{case}: {first}");
+            assert!(first.get("publish").is_none(), "{case}: no page is published again: {first}");
             let next = full_next(root, &first);
-            for (page, url, template, capabilities, name) in [
-                (SPEC_PAGE, SPEC_URL, SPEC_TEMPLATE, SPEC_CAPABILITIES, "page.name.spec"),
-                (PROJECT_PAGE, PROJECT_URL, PROJECT_TEMPLATE, PROJECT_CAPABILITIES, "page.name.project"),
-            ] {
-                let republish = translate("page.copy.republish", lang)
-                    .replace("{page}", translate(name, lang))
-                    .replace("{template}", template)
-                    .replace("{capabilities}", capabilities)
-                    .replace("{spec}", "x")
-                    .replace("{key}", page)
-                    .replace("{milestone}", "round")
-                    .replace("{stamp}", &stamp_of(page))
-                    .replace("{url}", url);
-                let copy = translate("page.copy.batches", lang)
-                    .replace("{page}", translate(name, lang))
-                    .replace("{url}", url)
-                    .replace("{key}", page);
+            for (page, url, template) in pages {
+                let notice = layout_notice(page, url, "round", lang);
                 let at = |s: &str| next.find(s).unwrap_or_else(|| panic!("{case}: missing «{s}» in {next}"));
-                assert!(at(&republish) < at(&copy), "{case}: publish again before the batches: {next}");
+                assert!(at(&notice) < at(&batches_to(page, url, lang)), "{case}: tell, then copy: {next}");
+                assert_eq!(first["copy"][page]["layout_changed"], json!(true), "{case}: {first}");
                 let installed = std::fs::read_to_string(root.join(template)).unwrap();
                 assert_eq!(template_stamp(&installed), Some(stamp_of(page).as_str()), "{case}: the new template");
+            }
+            let publish = translate("page.copy.publish", lang).split(':').next().unwrap_or_default().to_string();
+            for name in ["page.name.spec", "page.name.project"] {
+                let publish = publish.replace("{page}", translate(name, lang));
+                assert!(!next.contains(&publish), "{case}: no order to publish: {next}");
             }
             assert!(!next.contains(translate("page.copy.new_address", lang)), "{case}: the same address: {next}");
             // O banco continua lá: cada troca leva a versão guardada, sem
@@ -2445,22 +2611,141 @@ mod tests {
                 assert_eq!(pinned(root, &first, page, doc), json!(3), "{case}: {doc} keeps its version");
             }
             assert!(!next.contains(&read_order(lang)), "{case}: nothing to read: {next}");
+            let told = vec![
+                (SPEC_PAGE.to_string(), "round".to_string(), stamp_of(SPEC_PAGE)),
+                (PROJECT_PAGE.to_string(), "round".to_string(), stamp_of(PROJECT_PAGE)),
+            ];
+            assert_eq!(notices(root), told, "{case}: the notice is recorded");
 
-            // A conversa publica de novo com o carimbo: o marco seguinte não
-            // publica mais.
-            follow(root, &first);
+            // O marco seguinte, com o mesmo layout, não avisa de novo, e a
+            // cópia segue para o mesmo endereço.
             let second = round(root);
-            assert!(second.get("publish").is_none(), "{case}: the same layout publishes nothing: {second}");
+            assert!(second.get("publish").is_none(), "{case}: {second}");
             let next = full_next(root, &second);
-            assert!(!next.contains("write publish"), "{case}: {next}");
+            assert!(!next.contains("write publish"), "{case}: the notice goes once: {next}");
+            assert!(second["copy"]["spec"].get("layout_changed").is_none(), "{case}: {second}");
+            assert!(next.contains(&batches_to(SPEC_PAGE, SPEC_URL, lang)), "{case}: the copy still goes: {next}");
+            assert_eq!(notices(root), told, "{case}: nothing new is recorded");
+
+            // O usuário pede: a conversa publica de novo no mesmo endereço,
+            // com o carimbo novo, e nada mais é dito.
+            for (page, url, _) in pages {
+                write(root, "publish", json!({"page": page, "milestone": "round", "ok": true, "template": true,
+                    "stamp": stamp_of(page), "url": url}));
+            }
+            let third = round(root);
+            let next = full_next(root, &third);
+            assert!(third.get("publish").is_none() && !next.contains("write publish"), "{case}: {next}");
+            assert!(next.contains(&batches_to(SPEC_PAGE, SPEC_URL, lang)), "{case}: the same address: {next}");
         }
     }
 
-    /// A página publicada com a versão de layout de agora não é publicada de
-    /// novo, mesmo com outra impressão no carimbo — o molde que outra versão
-    /// do Mustard montou com o mesmo layout — nem com o modelo instalado no
-    /// projeto velho: a ordem só copia. O mesmo vale para a página do
-    /// projeto.
+    /// O aviso gravado para outra versão de layout não vale para a de agora:
+    /// a página que já foi avisada numa versão e ficou com o desenho antigo
+    /// ganha o aviso de novo quando o layout muda outra vez.
+    #[test]
+    fn a_notice_for_another_layout_version_does_not_count() {
+        let lang = Locale::PtBr;
+        let dir = published_with(Some(("layout-1 0123456789abcdef".into(), "layout-0 0123456789abcdef".into())));
+        let root = dir.path();
+        for page in [SPEC_PAGE, PROJECT_PAGE] {
+            write(root, "publish", json!({"page": page, "milestone": "round", "ok": false,
+                "reason": LAYOUT_CHANGED, "template": true, "stamp": older(page)}));
+        }
+
+        let first = round(root);
+        let next = full_next(root, &first);
+        for (page, url) in [(SPEC_PAGE, SPEC_URL), (PROJECT_PAGE, PROJECT_URL)] {
+            assert!(next.contains(&layout_notice(page, url, "round", lang)), "{page}: {next}");
+        }
+        assert_eq!(notices(root).len(), 4, "the new version gets its own notice");
+    }
+
+    /// O aviso da página do projeto gravado noutra spec vale para esta: a
+    /// página do projeto é uma só, e o usuário já foi avisado.
+    #[test]
+    fn the_project_page_notice_recorded_in_another_spec_counts() {
+        let lang = Locale::PtBr;
+        let dir = published_with(Some((stamp_of(SPEC_PAGE), older(PROJECT_PAGE))));
+        let root = dir.path();
+        let other = root.join(".claude/spec/y/spec.ndjson");
+        store::write(&other, "state", json!({"phase": "survey"}).as_object().cloned().unwrap(), &[]).unwrap();
+        let notice = json!({"page": "project", "milestone": "round", "ok": false, "reason": LAYOUT_CHANGED,
+            "template": true, "stamp": stamp_of(PROJECT_PAGE)});
+        store::write(&other, "publish", notice.as_object().cloned().unwrap(), &[]).unwrap();
+
+        let first = round(root);
+        let next = full_next(root, &first);
+        assert!(!next.contains(&layout_notice(PROJECT_PAGE, PROJECT_URL, "round", lang)), "{next}");
+        assert!(first["copy"]["project"].get("layout_changed").is_none(), "{first}");
+        assert!(notices(root).is_empty(), "{:?}", notices(root));
+    }
+
+    /// A cópia depois de um pedido do usuário, fora dos marcos, não avisa do
+    /// desenho novo nem grava o aviso: ele fica para o marco seguinte, que o
+    /// dá.
+    #[test]
+    fn a_copy_after_a_request_leaves_the_notice_to_the_next_milestone() {
+        let lang = Locale::PtBr;
+        let dir = published_with(Some((older(SPEC_PAGE), older(PROJECT_PAGE))));
+        let root = dir.path();
+        let said = id_of(&write(root, "message", json!({"author": "user", "text": "inclua a divisão"})));
+        let crit = log(root).visible().iter().find(|e| e.event_type == "criterion").map(|e| e.id).expect("a criterion");
+        let task = json!({"title": "Dividir", "text": "Dividir dois números.", "agent": "- dividir",
+            "files": [], "depends_on": [], "covers": [crit], "origin": said});
+        let asked = crate::commands::spec_events::write::write_at_with(
+            &WriteOpts { root: root.to_path_buf(), spec: Some("x".into()), event_type: "task".into(),
+                json: task.to_string() },
+            true,
+        );
+        assert_eq!(asked["ok"], json!(true), "{asked}");
+        let next = asked["next"].as_str().unwrap_or_default();
+        assert!(next.contains(&batches_to(SPEC_PAGE, SPEC_URL, lang)), "the copy goes: {asked}");
+        assert!(!next.contains(&layout_notice(SPEC_PAGE, SPEC_URL, "round", lang)), "no notice: {next}");
+        assert!(asked["copy"]["spec"].get("layout_changed").is_none(), "{asked}");
+        assert!(notices(root).is_empty(), "{:?}", notices(root));
+
+        let first = round(root);
+        let next = full_next(root, &first);
+        assert!(next.contains(&layout_notice(SPEC_PAGE, SPEC_URL, "round", lang)), "the milestone tells: {next}");
+    }
+
+    /// A página que ainda não tem endereço é publicada no marco, e a ordem
+    /// manda, logo depois de publicar, contar ao usuário que ela saiu e que o
+    /// link fica na barra de status, sem escrever o endereço.
+    #[test]
+    fn a_new_page_is_published_and_the_user_is_told_where_the_link_is() {
+        let lang = Locale::PtBr;
+        let dir = approved_project();
+        let root = dir.path();
+
+        let first = round(root);
+        assert_eq!(first["publish"], json!(["spec", "project"]), "{first}");
+        let next = full_next(root, &first);
+        for (page, name, template, capabilities) in [
+            (SPEC_PAGE, "page.name.spec", SPEC_TEMPLATE, SPEC_CAPABILITIES),
+            (PROJECT_PAGE, "page.name.project", PROJECT_TEMPLATE, PROJECT_CAPABILITIES),
+        ] {
+            let publish = translate("page.copy.publish", lang)
+                .replace("{page}", translate(name, lang))
+                .replace("{template}", template)
+                .replace("{capabilities}", capabilities)
+                .replace("{spec}", "x")
+                .replace("{key}", page)
+                .replace("{milestone}", "round")
+                .replace("{stamp}", &stamp_of(page));
+            let tell = translate("page.copy.tell_published", lang).replace("{page}", translate(name, lang));
+            assert!(next.contains(&format!("{publish} {tell}")), "{page}: publish, then tell: {next}");
+            assert!(first["copy"][page].get("layout_changed").is_none(), "{first}");
+        }
+        assert!(notices(root).is_empty(), "a new page has no layout notice: {:?}", notices(root));
+    }
+
+    /// A página publicada com a versão de layout de agora não ganha aviso
+    /// nem é publicada de novo, mesmo com outra impressão no carimbo — o
+    /// molde que outra versão do Mustard montou com o mesmo layout — nem com
+    /// o modelo instalado no projeto velho: a ordem só copia. O mesmo vale
+    /// para a página do projeto.
     #[test]
     fn another_mustard_version_with_the_same_layout_does_not_publish_again() {
         let dir = approved_project();
@@ -2484,11 +2769,13 @@ mod tests {
         for template in [SPEC_TEMPLATE, PROJECT_TEMPLATE] {
             assert!(!root.join(template).exists(), "no template to publish: {template}");
         }
+        assert!(notices(root).is_empty(), "the same layout says nothing: {:?}", notices(root));
     }
 
     /// A página do projeto publicada de novo noutra spec, com o carimbo de
     /// agora, vale para esta: o carimbo da página do projeto é o da última
-    /// publicação dela em qualquer spec do projeto.
+    /// publicação dela em qualquer spec do projeto, e não há desenho novo a
+    /// avisar.
     #[test]
     fn the_project_page_stamp_recorded_in_another_spec_counts() {
         let dir = approved_project();
@@ -2513,6 +2800,10 @@ mod tests {
 
         let first = round(root);
         assert!(first.get("publish").is_none(), "the other spec already published the new template: {first}");
+        let next = full_next(root, &first);
+        assert!(!next.contains(&layout_notice(PROJECT_PAGE, PROJECT_URL, "round", Locale::PtBr)), "{next}");
+        assert!(first["copy"]["project"].get("layout_changed").is_none(), "{first}");
+        assert!(notices(root).is_empty(), "{:?}", notices(root));
     }
 
     /// Um projeto aprovado com as duas páginas já publicadas no layout de
