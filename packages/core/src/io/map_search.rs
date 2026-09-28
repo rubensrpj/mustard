@@ -48,8 +48,9 @@
 //! quatro listas do nível das declarações — a de base, a dos nomes, a de
 //! todos os campos e a dos arquivos — juntadas por rodízio
 //! (`domain::search::round_robin`) numa lista inteira, de onde saem os
-//! primeiros até o teto. Só as declarações do nível entram nas quatro: a de
-//! teste nunca é candidata. Cada candidato leva o que o mapa guarda dele: o
+//! primeiros até o teto. Na de todos os campos, os três campos dos textos
+//! fixos contam como um só. Só as declarações do nível entram nas quatro: a
+//! de teste nunca é candidata. Cada candidato leva o que o mapa guarda dele: o
 //! dono, os membros, os comentários do corpo e os títulos dos commits mais
 //! novos do arquivo. As ligações ([`links`]) dão ao corte do filtro os
 //! métodos de cada tipo e as implementações de cada método de contrato.
@@ -599,10 +600,51 @@ fn best_text(
 }
 
 /// A nota de cada documento do nível para as palavras da pergunta, cada uma
-/// com as suas formas, contando só os campos `fields` do nível: a lista de
-/// cada forma e o tamanho dos campos de cada documento dela saem numa
-/// consulta só.
+/// com as suas formas, contando só os campos `fields` do nível, cada um à
+/// parte: a lista de cada forma e o tamanho dos campos de cada documento dela
+/// saem numa consulta só.
 fn by_words(conn: &Connection, level: &Level, fields: &[&str], words: &[Vec<String>]) -> Result<Vec<(i64, f64)>> {
+    by_words_as(conn, level, fields, Texts::Apart, words)
+}
+
+/// Como os campos dos textos fixos entram na conta: cada marca no seu campo,
+/// ou as três num campo só, com o tamanho e a média somados.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Texts {
+    Apart,
+    Together,
+}
+
+/// O campo da conta de cada coluna de `fields`, na ordem: cada coluna no
+/// seu; com `Texts::Together`, os campos dos textos fixos no mesmo.
+fn slots(fields: &[&str], texts: Texts) -> Vec<usize> {
+    let mut out: Vec<usize> = Vec::with_capacity(fields.len());
+    let (mut count, mut text_slot) = (0, None);
+    for field in fields {
+        let joined = texts == Texts::Together && TEXT_FIELDS.contains(field);
+        let slot = match text_slot {
+            Some(slot) if joined => slot,
+            _ => {
+                count += 1;
+                count - 1
+            }
+        };
+        if joined {
+            text_slot = Some(slot);
+        }
+        out.push(slot);
+    }
+    out
+}
+
+/// [`by_words`] com os campos dos textos fixos como `texts` diz.
+fn by_words_as(
+    conn: &Connection,
+    level: &Level,
+    fields: &[&str],
+    texts: Texts,
+    words: &[Vec<String>],
+) -> Result<Vec<(i64, f64)>> {
     let words = as_indexed(conn, words)?;
     let sizes: Vec<String> = fields.iter().map(|field| format!("l.{field}")).collect();
     let mut lists = conn.prepare(&format!(
@@ -611,11 +653,12 @@ fn by_words(conn: &Connection, level: &Level, fields: &[&str], words: &[Vec<Stri
         level.vocab,
         level.lengths
     ))?;
+    let slots = slots(fields, texts);
     let postings = words
         .iter()
-        .map(|forms| forms.iter().map(|form| postings(&mut lists, fields, form)).collect::<Result<Vec<_>>>())
+        .map(|forms| forms.iter().map(|form| postings(&mut lists, fields, &slots, form)).collect::<Result<Vec<_>>>())
         .collect::<Result<Vec<_>>>()?;
-    Ok(bm25f(&postings, &fields_of(conn, level, fields)?))
+    Ok(bm25f(&postings, &fields_of(conn, level, fields, &slots)?))
 }
 
 /// As formas de cada palavra da pergunta como o tokenizador do índice as
@@ -659,29 +702,40 @@ fn through_tokenizer(conn: &Connection, words: &[Vec<String>]) -> Result<Vec<Vec
     Ok(out)
 }
 
-/// As ocorrências da forma `form` nos campos `fields`, com o tamanho do
-/// campo de cada uma.
-fn postings(lists: &mut Statement<'_>, fields: &[&str], form: &str) -> Result<Vec<Posting>> {
+/// As ocorrências da forma `form` nas colunas `fields`, cada uma no campo da
+/// conta que `slots` dá à coluna dela, com o tamanho desse campo: a soma das
+/// colunas que caem nele.
+fn postings(lists: &mut Statement<'_>, fields: &[&str], slots: &[usize], form: &str) -> Result<Vec<Posting>> {
     let mut rows = lists.query([form])?;
     let mut out = Vec::new();
     while let Some(row) = rows.next()? {
         let column = text(row, 1)?;
-        let Some(field) = fields.iter().position(|name| *name == column) else { continue };
-        out.push(Posting { doc: row.get(0)?, field, field_len: row.get::<_, i64>(2 + field)?.max(0) as u64 });
+        let Some(at) = fields.iter().position(|name| *name == column) else { continue };
+        let field = slots[at];
+        let mut field_len = 0u64;
+        for (column, _) in slots.iter().enumerate().filter(|(_, slot)| **slot == field) {
+            field_len += row.get::<_, i64>(2 + column)?.max(0) as u64;
+        }
+        out.push(Posting { doc: row.get(0)?, field, field_len });
     }
     Ok(out)
 }
 
-/// O número de documentos do nível e o tamanho médio de cada campo de
-/// `fields`, como o índice os gravou, com o mesmo peso em todos.
-fn fields_of(conn: &Connection, level: &Level, fields: &[&str]) -> Result<Fields> {
+/// O número de documentos do nível e o tamanho médio de cada campo da conta,
+/// a soma das médias das colunas de `fields` que `slots` põe nele, como o
+/// índice as gravou, com o mesmo peso em todos.
+fn fields_of(conn: &Connection, level: &Level, fields: &[&str], slots: &[usize]) -> Result<Fields> {
     let mut meta = conn.prepare(&format!("SELECT value FROM {} WHERE key = ?1", level.meta))?;
     let mut number = |key: String| -> Result<f64> {
         Ok(meta.query_row([key], |row| row.get::<_, f64>(0)).optional()?.unwrap_or(0.0))
     };
     let docs = number(format!("{}.docs", level.fts))? as usize;
-    let avg_len = fields.iter().map(|name| number(format!("{}.{name}", level.fts))).collect::<Result<Vec<_>>>()?;
-    Ok(Fields { docs, avg_len, weights: vec![FIELD_WEIGHT; fields.len()] })
+    let count = slots.iter().max().map_or(0, |last| last + 1);
+    let mut avg_len = vec![0.0; count];
+    for (name, slot) in fields.iter().zip(slots) {
+        avg_len[*slot] += number(format!("{}.{name}", level.fts))?;
+    }
+    Ok(Fields { docs, avg_len, weights: vec![FIELD_WEIGHT; count] })
 }
 
 /// `true` quando o índice dos itens das specs foi feito nas línguas
@@ -911,16 +965,20 @@ pub fn links(root: &Path, ids: &[i64]) -> std::result::Result<Links, MapRefusal>
 
 /// A lista inteira: o rodízio das listas de base, dos nomes, de tudo e dos
 /// arquivos, nesta ordem. As listas de palavras leem a `query` seguida da
-/// `intent`; a dos nomes, só as palavras da `query`.
+/// `intent`; a dos nomes, só as palavras da `query`. Na lista de tudo, os
+/// textos fixos da declaração contam como um campo só, como no laboratório
+/// que afinou a busca com filtro: cada marca num campo à parte dava ao texto
+/// de erro, que quase nenhuma declaração tem, uma média perto de zero, e a
+/// palavra dele quase não pesava.
 fn whole_list(conn: &Connection, query: &str, intent: &str, languages: &Languages) -> Result<Vec<i64>> {
     let words = Normalizer::new(languages).query(format!("{query} {intent}").trim());
     let base = base_list(conn, &words)?;
     let every_decl_field: Vec<&str> = DECL_LEVEL.columns().collect();
-    let everything = by_words(conn, &DECL_LEVEL, &every_decl_field, &words)?;
+    let everything = by_words_as(conn, &DECL_LEVEL, &every_decl_field, Texts::Together, &words)?;
     let every_file_field: Vec<&str> = FILE_LEVEL.columns().collect();
     let file_scores: HashMap<i64, f64> = by_words(conn, &FILE_LEVEL, &every_file_field, &words)?.into_iter().collect();
     let base_scores: HashMap<i64, f64> = base.iter().copied().collect();
-    let names = name_list(&name_hits(conn, query)?, fields_of(conn, &DECL_LEVEL, &[])?.docs);
+    let names = name_list(&name_hits(conn, query)?, fields_of(conn, &DECL_LEVEL, &[], &[])?.docs);
     let files = file_list(&decl_files(conn)?, &file_scores, &base_scores);
     let ids = |list: Vec<(i64, f64)>| list.into_iter().map(|(id, _)| id).collect::<Vec<_>>();
     Ok(round_robin(&[ids(base), ids(names), ids(everything), files]))
@@ -1602,6 +1660,35 @@ mod tests {
         assert_eq!(named(&hits[1]), ["buscarPedido", "listarPedidos", "pagarPedido"]);
         assert_eq!(hits[0].word_chars, 9);
         assert_eq!(hits[0].names[0].1, "estornarpagamento".chars().count());
+    }
+
+    /// Na lista de todos os campos, os textos fixos de uma declaração contam
+    /// como um campo só: a marca do texto não muda o peso da palavra, e o
+    /// texto mais curto pesa mais. Com uma marca por campo, o texto de erro,
+    /// que quase nenhuma declaração tem, ficava com a média perto de zero, e a
+    /// declaração do erro curto vinha atrás da do texto comum mais longo.
+    #[test]
+    fn a_short_error_text_weighs_like_any_text_of_its_size_in_the_list_of_every_field() {
+        let module = |path: &str, name: &str, kind: &str, value: &str| {
+            json!({"path": path,
+                   "declarations": [{"kind": "function", "name": name, "line": 1, "end_line": 5,
+                                     "signature": format!("fn {name}()")}],
+                   "texts": [{"line": 3, "kind": kind, "value": value, "owner": name}]})
+        };
+        let mut modules = vec![
+            module("src/baixa.rs", "baixar", "error", "estoque vazio"),
+            module("src/aviso.rs", "avisar", "text", "estoque em falta agora"),
+        ];
+        // Oito declarações com um texto comum de quatro palavras, sem erro:
+        // a média do texto comum é 3,6 palavras, e a do erro, 0,2.
+        for n in 0..8 {
+            modules.push(module(&format!("src/outro{n}.rs"), &format!("fazer{n}"), "text", "algo bem diferente aqui"));
+        }
+        let dir = saved_json(&json!({ "modules": modules }));
+        let found = candidates(dir.path(), "estoque", "", &languages(), CANDIDATES).unwrap();
+        // Só a lista de tudo e a dos arquivos acham a palavra, e a de tudo
+        // entra primeiro no rodízio: o primeiro da lista inteira é o dela.
+        assert_eq!(found.whole, vec![id_of(dir.path(), "baixar"), id_of(dir.path(), "avisar")], "{found:?}");
     }
 
     /// A medida do primeiro elo da busca com filtro: em quantas buscas de
