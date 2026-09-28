@@ -262,11 +262,12 @@ pub(crate) fn forget(conn: &Connection) -> Result<()> {
 /// arquivo; os nomes, a documentação e os textos fixos do arquivo são as
 /// palavras das declarações dele e dos textos dele, sem repetir a palavra de
 /// mesmas formas — o mesmo que preparar o texto delas junto. Cada texto fixo
-/// é também da declaração mais interna que contém a linha dele; cada chamada
-/// é de toda declaração cujas linhas a contêm. A documentação inteira que o
-/// scan não guardou à parte é a mesma de `doc`. A declaração é de teste
-/// quando o arquivo dela é de teste ou quando a primeira linha dela cai num
-/// trecho de teste do arquivo. A de teste e o parâmetro escrito no
+/// e cada chamada são também de toda declaração cujas linhas os contêm: a
+/// mensagem escrita num método conta para ele e para o tipo que o traz; a
+/// declaração sem a última linha gravada cobre só a primeira. A documentação
+/// inteira que o scan não guardou à parte é a mesma de `doc`. A declaração é
+/// de teste quando o arquivo dela é de teste ou quando a primeira linha dela
+/// cai num trecho de teste do arquivo. A de teste e o parâmetro escrito no
 /// cabeçalho do dono ([`HEADER_PARAMETER_KIND`]) ficam fora do nível das
 /// declarações.
 fn documents(conn: &Connection, normalizer: &mut Normalizer) -> Result<(Vec<Doc>, Vec<Decl>)> {
@@ -335,8 +336,11 @@ fn documents(conn: &Connection, normalizer: &mut Normalizer) -> Result<(Vec<Doc>
             let words = normalizer.forms(&written.value);
             let field = written.field();
             add_new(&mut files[owner].fields[3 + field], &mut seen[owner][2 + field], &words);
-            if let Some(decl) = innermost(&rows_of, &decls_of[owner], written.line) {
-                rows_of[decl].texts[field].push(words);
+            for &decl in &decls_of[owner] {
+                let (first, last) = rows_of[decl].lines;
+                if (first..=last.max(first)).contains(&written.line) {
+                    rows_of[decl].texts[field].push(words.clone());
+                }
             }
         }
     }
@@ -427,20 +431,6 @@ fn add_new(into: &mut Words, seen: &mut HashSet<Vec<String>>, words: &Words) {
             into.push(word.clone());
         }
     }
-}
-
-/// Das declarações `of` um arquivo, a que contém a linha `line`: a mais
-/// interna, a que começa mais abaixo; empatadas, a última. A declaração sem a
-/// última linha gravada cobre só o que vem depois dela.
-fn innermost(rows: &[DeclRow], of: &[usize], line: u64) -> Option<usize> {
-    let mut best: Option<usize> = None;
-    for &at in of {
-        let (first, last) = rows[at].lines;
-        if first <= line && (last == 0 || last >= line) && best.is_none_or(|b| rows[b].lines.0 <= first) {
-            best = Some(at);
-        }
-    }
-    best
 }
 
 /// As palavras dos comentários de um arquivo fora os do começo, cada uma
@@ -1830,6 +1820,42 @@ mod tests {
         // Só a lista de tudo e a dos arquivos acham a palavra, e a de tudo
         // entra primeiro no rodízio: o primeiro da lista inteira é o dela.
         assert_eq!(found.whole, vec![id_of(dir.path(), "baixar"), id_of(dir.path(), "avisar")], "{found:?}");
+    }
+
+    /// O texto fixo escrito num método conta também para o tipo que o traz,
+    /// como a chamada: o tipo cujo método escreve o texto mais curto com a
+    /// palavra vem à frente das funções dos outros arquivos, de texto mais
+    /// longo. Só com o método, o tipo ficava para depois delas, trazido
+    /// apenas pela lista dos arquivos, e a pergunta pela mensagem não o
+    /// achava entre os primeiros.
+    #[test]
+    fn a_text_written_in_a_method_also_counts_for_the_type_that_contains_it() {
+        let text = |line: u64, value: &str, owner: &str| json!({"line": line, "kind": "text", "value": value, "owner": owner});
+        let mut modules = vec![json!({"path": "src/pedidos.rs",
+            "declarations": [
+                {"kind": "class", "name": "Pedidos", "line": 1, "end_line": 20, "signature": "pub struct Pedidos"},
+                {"kind": "method", "name": "gravar", "line": 3, "end_line": 10, "signature": "fn gravar(&self)",
+                 "owner": ["Pedidos"]},
+                {"kind": "function", "name": "resumir", "line": 22, "end_line": 30, "signature": "fn resumir()"}],
+            "texts": [text(5, "fornecedor bloqueado", "gravar"),
+                      text(25, "total do dia somado por loja com desconto frete imposto taxa e troco devolvido", "resumir")]})];
+        // Três funções de outros arquivos com a palavra num texto de quatro
+        // palavras: o arquivo delas pesa mais que o dos pedidos, cujo texto
+        // inteiro é longo.
+        for n in 1..=3 {
+            modules.push(json!({"path": format!("src/aviso{n}.rs"),
+                "declarations": [{"kind": "function", "name": format!("avisar{n}"), "line": 1, "end_line": 5,
+                                  "signature": format!("fn avisar{n}()")}],
+                "texts": [text(3, "fornecedor em falta hoje", &format!("avisar{n}"))]}));
+        }
+        let dir = saved_json(&json!({ "modules": modules }));
+        let found = candidates(dir.path(), "fornecedor", "", &languages(), CANDIDATES).unwrap();
+        let id = |name: &str| id_of(dir.path(), name);
+        assert_eq!(
+            found.whole,
+            vec![id("Pedidos"), id("avisar1"), id("gravar"), id("avisar2"), id("avisar3"), id("resumir")],
+            "{found:?}"
+        );
     }
 
     /// A medida do primeiro elo da busca com filtro: em quantas buscas de
