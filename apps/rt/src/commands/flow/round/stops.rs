@@ -1,8 +1,9 @@
 //! O que para sem travar a rodada: o limite de consertos de cada onda, com a
 //! pergunta ao usuário, e o plano que muda — a onda replanejada depois do
 //! pedido e a mudança de plano que um agente propõe, que só segue com o
-//! clique do usuário, com as tarefas que a onda não fez, que voltam ao
-//! backlog quando a rodada assume a volta.
+//! clique do usuário e, enquanto espera, segura só a onda dela, com as
+//! tarefas que a onda não fez, que voltam ao backlog quando a rodada assume a
+//! volta.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -107,6 +108,50 @@ pub(crate) fn change_accepted(log: &SpecLog, wave: u64, code: &str) -> bool {
         .filter_map(|w| w.get("answer").and_then(Value::as_str))
         .next_back();
     last_click.is_some_and(|answer| langs.iter().any(|lang| translate("change.accept", *lang) == answer.trim()))
+}
+
+/// A onda que pediu novo plano e ainda espera o clique do usuário: o número
+/// dela e a recusa que mostra a mudança, com a pergunta que a decide.
+pub(crate) struct WaitingChange {
+    pub wave: u64,
+    pub refusal: RoundRefusal,
+}
+
+impl WaitingChange {
+    /// O aviso da resposta da rodada: o motivo, a onda, a mensagem com a
+    /// pergunta pronta e a pergunta com o cabeçalho e as opções, no idioma
+    /// `lang`, como a recusa da mudança as mostra.
+    pub(super) fn warning(&self, lang: Locale) -> Value {
+        let mut warning = self.refusal.to_value(lang);
+        if let Some(fields) = warning.as_object_mut() {
+            fields.remove("ok");
+            fields.insert("wave".into(), json!(self.wave));
+        }
+        warning
+    }
+}
+
+/// Tira das voltas `waves` as que pedem novo plano sem o "Aceitar" do usuário
+/// gravado em `log`, e devolve cada uma com a recusa que mostra a mudança. A
+/// onda tirada fica fora da conferência e do commit, e o resto da rodada
+/// segue sem ela: a volta dela fica na spec sem ninguém a assumir, a cópia
+/// dela fica como está, e o envio aberto segura a vaga e os arquivos dela — o
+/// despacho não oferece onda que divida arquivo com ela nem a que dependa
+/// dela. Depois do clique, a rodada seguinte a assume como qualquer outra.
+pub(super) fn hold_waiting_changes(log: &SpecLog, waves: &mut Vec<WaveReport>) -> Vec<WaitingChange> {
+    let mut waiting = Vec::new();
+    waves.retain(|wave| {
+        let Some(change) = &wave.replan else { return true };
+        let code = replan_code(wave.wave, change);
+        if change_accepted(log, wave.wave, &code) {
+            return true;
+        }
+        let tasks = wave.undone.iter().map(|(_, code)| code.clone()).collect();
+        let refusal = RoundRefusal::Replan { wave: wave.wave, change: change.clone(), code, tasks };
+        waiting.push(WaitingChange { wave: wave.wave, refusal });
+        false
+    });
+    waiting
 }
 
 /// As ondas paradas pelo limite de consertos, cada uma com as reprovações
@@ -363,15 +408,15 @@ mod tests {
         assert_eq!(after["dispatch"], json!([]), "a onda 1 já entregou: {after}");
     }
 
-    /// O agente que diz que o plano da onda não funciona para a rodada até o
-    /// "sim" do usuário, e o "sim" é o clique em "Aceitar" na pergunta da
-    /// mudança, gravado pela testemunha. A recusa mostra a mudança e a
-    /// pergunta; uma mensagem escrita à mão pelo modelo, com a mesma pergunta
-    /// e a mesma resposta, não destrava nada; o clique em "Recusar" também
-    /// não; o clique em "Aceitar" destrava, e a rodada grava o que a onda
-    /// entregou.
+    /// O agente que diz que o plano da onda não funciona segura a onda dele
+    /// até o "sim" do usuário, e o "sim" é o clique em "Aceitar" na pergunta
+    /// da mudança, gravado pela testemunha. A rodada não recusa: o aviso dela
+    /// mostra a mudança e a pergunta; uma mensagem escrita à mão pelo modelo,
+    /// com a mesma pergunta e a mesma resposta, não destrava nada; o clique em
+    /// "Recusar" também não; o clique em "Aceitar" destrava, e a rodada grava
+    /// o que a onda entregou.
     #[test]
-    fn a_wave_that_says_its_plan_does_not_work_stops_the_round_until_the_users_click() {
+    fn a_wave_that_says_its_plan_does_not_work_waits_for_the_users_click() {
         if std::env::var_os("MUSTARD_ACTIVE_SPEC").is_some() {
             return;
         }
@@ -386,14 +431,17 @@ mod tests {
         let code = replan_code(1, change);
         let back = json!({"wave": 1, "text": "Parei.", "files": ["src/a.rs"], "replan": change, "undone": []});
         assert_eq!(returned(root, back)["ok"], json!(true));
-        let stopped = round(root, "x", None);
-        assert_eq!(stopped["reason"], json!("wave-plan-does-not-work"), "{stopped}");
+        let out = round(root, "x", None);
+        assert_eq!(out["ok"], json!(true), "a mudança segura só a onda dela: {out}");
+        let stopped = change_asked(&out);
+        assert_eq!(stopped["wave"], json!(1), "{out}");
         let question = stopped["question"].as_str().unwrap_or_default().to_string();
         assert_eq!(question, change_question(1, change, Locale::PtBr), "{stopped}");
         assert_eq!(stopped["header"], json!(code), "{stopped}");
         assert_eq!(stopped["options"], json!(["Aceitar", "Recusar"]), "{stopped}");
         let hint = stopped["hint"].as_str().unwrap_or_default();
         assert!(hint.contains(change) && hint.contains(&question) && hint.contains(&code), "{hint}");
+        assert!(out["next"].as_str().unwrap_or_default().contains(hint), "o próximo passo é a pergunta: {out}");
         assert_eq!(delivered_count(root), 0);
 
         // O modelo não escreve o "sim": o `run write` recusa a mensagem com a
@@ -412,20 +460,22 @@ mod tests {
         let own = by_hand(json!({ "text": format!("{question}\nAceitar"), "witness": witness }));
         assert_eq!(own["reason"], json!("user-message-by-hook"), "{own}");
         let still = round(root, "x", None);
-        assert_eq!(still["reason"], json!("wave-plan-does-not-work"), "a forged yes accepts nothing: {still}");
+        assert_eq!(change_asked(&still)["wave"], json!(1), "a forged yes accepts nothing: {still}");
 
         click(root, session, &question, &code, "Recusar");
         let refused = round(root, "x", None);
-        assert_eq!(refused["reason"], json!("wave-plan-does-not-work"), "a declined change stays stopped: {refused}");
+        assert_eq!(change_asked(&refused)["wave"], json!(1), "a declined change stays waiting: {refused}");
 
         // O "sim" de uma mudança nunca serve para outra.
         click(root, session, &question, &replan_code(1, "Outra mudança."), "Aceitar");
         let other = round(root, "x", None);
-        assert_eq!(other["reason"], json!("wave-plan-does-not-work"), "{other}");
+        assert_eq!(change_asked(&other)["wave"], json!(1), "{other}");
+        assert_eq!(delivered_count(root), 0);
 
         click(root, session, &question, &code, "Aceitar");
         let went = round(root, "x", None);
         assert_eq!(went["ok"], json!(true), "{went}");
+        assert!(change_asked(&went).is_null(), "{went}");
         assert_eq!(delivered_count(root), 1, "the round records what the wave delivered");
     }
 
@@ -451,8 +501,8 @@ mod tests {
         let code = replan_code(1, change);
         let back = json!({"wave": 1, "text": "Parei: o plano não fecha.", "replan": change, "undone": []});
         assert_eq!(returned(root, back)["ok"], json!(true));
-        let stopped = round(root, "x", None);
-        assert_eq!(stopped["reason"], json!("wave-plan-does-not-work"), "{stopped}");
+        let stopped = change_asked(&round(root, "x", None));
+        assert_eq!(stopped["wave"], json!(1), "{stopped}");
 
         // A pergunta pronta é a do usuário: o que muda e o que acontece em
         // cada escolha, sem o código dentro dela.
@@ -471,13 +521,13 @@ mod tests {
         // O código de outra mudança no cabeçalho não aceita esta.
         click(root, session, mine, &replan_code(1, "Outra mudança."), "Aceitar");
         let other = round(root, "x", None);
-        assert_eq!(other["reason"], json!("wave-plan-does-not-work"), "o sim de outra mudança não vale: {other}");
+        assert_eq!(change_asked(&other)["wave"], json!(1), "o sim de outra mudança não vale: {other}");
 
         // Sem código nenhum no cabeçalho, nada diz qual mudança o clique
         // decide, e a rodada segue parada.
         click(root, session, mine, "Mudança", "Aceitar");
         let blind = round(root, "x", None);
-        assert_eq!(blind["reason"], json!("wave-plan-does-not-work"), "sem código não destrava: {blind}");
+        assert_eq!(change_asked(&blind)["wave"], json!(1), "sem código não destrava: {blind}");
 
         // Com o código no cabeçalho, o "sim" vale, seja qual for a frase.
         click(root, session, mine, &code, "Aceitar");
@@ -493,6 +543,173 @@ mod tests {
             .expect("o clique gravado");
         assert_eq!(clicked["change"], json!(code), "o código fica ao lado da resposta: {clicked}");
         assert_eq!(clicked["question"], json!(mine), "a frase gravada é a que o usuário leu: {clicked}");
+    }
+
+    /// A cópia gravada no último envio da onda `n` da spec `x`.
+    fn copy_of(root: &Path, n: u64) -> std::path::PathBuf {
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let copy = mustard_core::io::wave_prompt::recorded_copy(&log, n).unwrap_or_else(|| panic!("a onda {n} sem cópia"));
+        std::path::PathBuf::from(copy.path)
+    }
+
+    /// Os arquivos que o último commit de `root` mudou.
+    fn last_commit_files(root: &Path) -> String {
+        git_text(root, &["show", "--name-only", "--format=", "HEAD"])
+    }
+
+    /// As ondas com a entrega oficial gravada na spec `x`.
+    fn official_deliveries(root: &Path) -> BTreeSet<u64> {
+        store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap().delivered_waves()
+    }
+
+    /// Duas ondas voltam na mesma rodada, e uma pede novo plano: a outra é
+    /// conferida, comitada e gravada, e o despacho segue com a onda que só
+    /// dependia dela. A que pede novo plano fica fora do commit, com a cópia
+    /// como está e a pergunta pronta no aviso; a onda que divide arquivo com
+    /// ela e a que depende dela não saem. Depois do clique em "Aceitar", a
+    /// rodada seguinte a comita, e as duas que ela segurava saem.
+    #[test]
+    fn a_wave_asking_for_a_new_plan_holds_only_itself_and_the_next_round_commits_it_after_the_click() {
+        if std::env::var_os("MUSTARD_ACTIVE_SPEC").is_some() {
+            return;
+        }
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(
+            root,
+            "x",
+            &[
+                (1, &["src/a.rs"], &[]),
+                (2, &["src/b.rs"], &[]),
+                (3, &["src/a.rs"], &[]),
+                (4, &["src/c.rs"], &[2]),
+                (5, &["src/d.rs"], &[1]),
+            ],
+        );
+        let mut first = waves_in(&round(root, "x", None), "dispatch");
+        first.sort_unstable();
+        assert_eq!(first, vec![1, 2], "a onda 3 divide o arquivo da 1");
+        let (one, two) = (copy_of(root, 1), copy_of(root, 2));
+        std::fs::write(one.join("src/a.rs"), "fn um() {}\n// a onda 1 mudou\n").unwrap();
+        std::fs::write(two.join("src/b.rs"), "fn um() {}\n// a onda 2 mudou\n").unwrap();
+        let change = "A onda 1 precisa de outra tarefa antes.";
+        let code = replan_code(1, change);
+        let asks = json!({"wave": 1, "text": "Parei.", "files": ["src/a.rs"], "commit": "a onda 1 mudou",
+            "replan": change, "undone": []});
+        assert_eq!(returned(root, asks)["ok"], json!(true));
+        let done = json!({"wave": 2, "text": "Saiu.", "files": ["src/b.rs"], "commit": "a onda 2 saiu"});
+        assert_eq!(returned(root, done)["ok"], json!(true));
+
+        let held = round(root, "x", None);
+        assert_eq!(held["ok"], json!(true), "a mudança não segura a outra volta: {held}");
+        assert_eq!(last_commit_files(root), "src/b.rs", "só a onda 2 entra no commit: {held}");
+        assert_eq!(official_deliveries(root), BTreeSet::from([2]), "{held}");
+        assert_eq!(std::fs::read_to_string(root.join("src/a.rs")).unwrap(), "fn um() {}\n", "{held}");
+        assert_eq!(std::fs::read_to_string(one.join("src/a.rs")).unwrap(), "fn um() {}\n// a onda 1 mudou\n");
+        let asked = change_asked(&held);
+        assert_eq!(asked["wave"], json!(1), "{held}");
+        assert_eq!(asked["header"], json!(code), "{asked}");
+        let question = change_question(1, change, Locale::PtBr);
+        assert_eq!(asked["question"], json!(question), "{asked}");
+        let hint = asked["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains(&question) && hint.contains(&code), "a pergunta pronta vai no aviso: {hint}");
+        assert!(held["next"].as_str().unwrap_or_default().contains(hint), "{held}");
+        assert_eq!(waves_in(&held, "dispatch"), vec![4], "a 3 divide arquivo com a 1, e a 5 depende dela: {held}");
+        assert_eq!(waves_in(&held, "running"), vec![4], "a onda que espera o clique não está em andamento: {held}");
+
+        let session = "s-segura-so-ela";
+        crate::shared::context::session::bind_session_spec(&root.to_string_lossy(), session, "x");
+        click(root, session, &question, &code, "Aceitar");
+        let went = round(root, "x", None);
+        assert_eq!(went["ok"], json!(true), "{went}");
+        assert!(change_asked(&went).is_null(), "{went}");
+        assert_eq!(last_commit_files(root), "src/a.rs", "a rodada seguinte comita a onda 1: {went}");
+        assert_eq!(official_deliveries(root), BTreeSet::from([1, 2]), "{went}");
+        assert_eq!(std::fs::read_to_string(root.join("src/a.rs")).unwrap(), "fn um() {}\n// a onda 1 mudou\n");
+        let mut sent = waves_in(&went, "dispatch");
+        sent.sort_unstable();
+        assert_eq!(sent, vec![3, 5], "as ondas que ela segurava saem: {went}");
+    }
+
+    /// A onda que pede novo plano já voltou e não é órfã, mesmo com o Claude
+    /// Code que a mandou fechado: a cópia dela fica com o que ela entregou, a
+    /// rodada não a manda de novo, e ela segue segurando o arquivo dela. Com o
+    /// clique, a rodada comita o que ficou na cópia.
+    #[test]
+    fn a_wave_waiting_for_the_click_keeps_its_copy_when_its_sender_is_gone() {
+        if std::env::var_os("MUSTARD_ACTIVE_SPEC").is_some() {
+            return;
+        }
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/a.rs"], &[])]);
+        assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1]);
+
+        // O Claude Code que mandou a onda 1 fechou: a versão nova do envio
+        // leva um processo que já acabou.
+        let mut gone = std::process::Command::new("true").spawn().expect("o processo de mentira");
+        let pid = gone.id();
+        gone.wait().expect("o processo acabou");
+        let path = store::spec_file(root, "x").unwrap();
+        let log = store::read(&path).unwrap().unwrap();
+        let extra = json!({"claude_pid": pid, "claude_started": 1}).as_object().cloned().unwrap();
+        let draft = super::super::queue::send_revision(&log, 1, extra).expect("o envio da onda 1");
+        let at = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%:z").to_string();
+        store::write_at(&path, "send", draft, &[], &at).unwrap();
+
+        let one = copy_of(root, 1);
+        std::fs::write(one.join("src/a.rs"), "fn um() {}\n// a onda 1 mudou\n").unwrap();
+        let change = "A onda 1 precisa de outra tarefa antes.";
+        let asks = json!({"wave": 1, "text": "Parei.", "files": ["src/a.rs"], "commit": "a onda 1 mudou",
+            "replan": change, "undone": []});
+        assert_eq!(returned(root, asks)["ok"], json!(true));
+
+        let held = round(root, "x", None);
+        assert_eq!(held["ok"], json!(true), "{held}");
+        assert_eq!(change_asked(&held)["wave"], json!(1), "{held}");
+        assert_eq!(waves_in(&held, "dispatch"), Vec::<u64>::new(), "nem reenvio, nem a onda do mesmo arquivo: {held}");
+        assert_eq!(std::fs::read_to_string(one.join("src/a.rs")).unwrap(), "fn um() {}\n// a onda 1 mudou\n");
+
+        let session = "s-copia-fica";
+        crate::shared::context::session::bind_session_spec(&root.to_string_lossy(), session, "x");
+        click(root, session, &change_question(1, change, Locale::PtBr), &replan_code(1, change), "Aceitar");
+        let went = round(root, "x", None);
+        assert_eq!(went["ok"], json!(true), "{went}");
+        assert_eq!(last_commit_files(root), "src/a.rs", "{went}");
+        assert_eq!(std::fs::read_to_string(root.join("src/a.rs")).unwrap(), "fn um() {}\n// a onda 1 mudou\n");
+    }
+
+    /// O fechamento depende de todas as ondas: a que pede novo plano sem o
+    /// clique o segura, com a pergunta que a decide, depois de assumir e
+    /// comitar a outra volta.
+    #[test]
+    fn the_close_takes_the_other_return_and_is_held_by_the_wave_waiting_for_the_click() {
+        if std::env::var_os("MUSTARD_ACTIVE_SPEC").is_some() {
+            return;
+        }
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[])]);
+        round(root, "x", None);
+        std::fs::write(copy_of(root, 2).join("src/b.rs"), "fn um() {}\n// a onda 2 mudou\n").unwrap();
+        let change = "A onda 1 precisa de outra tarefa antes.";
+        let asks = json!({"wave": 1, "text": "Parei.", "replan": change, "undone": []});
+        assert_eq!(returned(root, asks)["ok"], json!(true));
+        let done = json!({"wave": 2, "text": "Saiu.", "files": ["src/b.rs"], "commit": "a onda 2 saiu"});
+        assert_eq!(returned(root, done)["ok"], json!(true));
+
+        let opts = crate::commands::flow::close::CloseOpts {
+            root: root.to_path_buf(),
+            spec: Some("x".into()),
+            report: None,
+            ..Default::default()
+        };
+        let closed = crate::commands::flow::close::close_for(&opts, None);
+        assert_eq!(closed["reason"], json!("wave-plan-does-not-work"), "{closed}");
+        assert_eq!(closed["header"], json!(replan_code(1, change)), "{closed}");
+        assert_eq!(closed["question"], json!(change_question(1, change, Locale::PtBr)), "{closed}");
+        assert_eq!(official_deliveries(root), BTreeSet::from([2]), "{closed}");
+        assert_eq!(last_commit_files(root), "src/b.rs", "{closed}");
     }
 
     /// Cada onda tem no máximo duas rodadas de conserto. Depois da terceira

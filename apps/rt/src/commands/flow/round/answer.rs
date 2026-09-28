@@ -82,9 +82,11 @@ pub(crate) enum RoundRefusal {
     /// O campo `commit` do relatório de entrega chegou com cara de código de
     /// commit, e não com o título em palavras que ele pede.
     CommitLooksLikeSha { found: String },
-    /// Um agente disse que o plano da onda não funciona: a rodada para e
-    /// mostra a mudança proposta, com a pergunta que decide e as tarefas que
-    /// o agente não fez, que voltam à fila com o aceite.
+    /// Um agente disse que o plano da onda não funciona: a onda espera o
+    /// clique do usuário fora do commit, e isto mostra a mudança proposta, com
+    /// a pergunta que decide e as tarefas que o agente não fez, que voltam à
+    /// fila com o aceite. Na rodada vira aviso, e o resto segue; no
+    /// fechamento, que depende de todas as ondas, é a resposta.
     Replan { wave: u64, change: String, code: String, tasks: Vec<String> },
     /// A entrega muda o plano e não diz quais tarefas da onda ficaram por
     /// fazer: sem a lista, a rodada daria todas por feitas. Leva as tarefas
@@ -628,7 +630,7 @@ pub(super) fn run_entered_round(
     // despacha. Sem volta e sem linha a assumir, nada é juntado, e a rodada
     // vai direto ao despacho, com a escolha de cada onda.
     let raw = opts.report.as_deref().map(str::trim).filter(|r| !r.is_empty());
-    let Taken { mut recorded, formatted, mut warnings, commit, paused } =
+    let Taken { mut recorded, formatted, mut warnings, commit, paused, waiting: changes } =
         super::report::take_report_with_mine(&opts.root, root, &spec, raw, &log, lang, caller, mine)?;
     let (given, unread) = analysis_lines(raw, lang);
     warnings.extend(unread);
@@ -684,7 +686,12 @@ pub(super) fn run_entered_round(
     // projeto deixa compilar ao mesmo tempo contando as que já estão em
     // andamento, e nenhuma que a onda parada pelo limite de consertos segura.
     // Cada uma sai com a sua vaga, a cópia fixa em que ela compila.
-    let running = waves_in_progress(&log);
+    // A onda que pede novo plano já voltou: o agente dela terminou, e ela
+    // espera o clique do usuário, não o agente. O envio aberto segue segurando
+    // a vaga e os arquivos dela (`occupied`), mas ela não aparece em
+    // andamento nem manda esperar por ela.
+    let running: BTreeMap<u64, u64> =
+        waves_in_progress(&log).into_iter().filter(|(n, _)| changes.iter().all(|one| one.wave != *n)).collect();
     // A órfã segue ocupando a vaga dela até o reenvio, mais abaixo: quem
     // conta vaga livre soma as vivas e as órfãs, e só a viva entra no
     // "esperando" da resposta.
@@ -863,7 +870,7 @@ pub(super) fn run_entered_round(
     } else if !running.is_empty() {
         let waves: Vec<String> = running.keys().map(u64::to_string).collect();
         format!("{} {report_back}", translate("round.waiting", lang).replace("{waves}", &waves.join(", ")))
-    } else if !stuck.is_empty() {
+    } else if !stuck.is_empty() || !changes.is_empty() {
         String::new()
     } else if let Some(wave) = first_unfinished(&log, &running) {
         translate("round.missing", lang).replace("{wave}", &wave.to_string())
@@ -909,8 +916,9 @@ pub(super) fn run_entered_round(
         command = step;
         text
     };
-    // A pergunta da onda parada vem antes do resto, que segue sem ela; o
-    // pedido da escolha vem logo depois.
+    // A pergunta da onda parada vem antes do resto, que segue sem ela; a da
+    // mudança de plano de cada onda que espera o clique vem em seguida, e o
+    // pedido da escolha logo depois.
     let (stopped, question) = stopped_waves(&stuck, &codes, lang);
     let waiting: Vec<String> = asked.iter().filter_map(|a| a["wave"].as_u64()).map(|n| n.to_string()).collect();
     // A conferência das tarefas no código só entra quando um commit mudou
@@ -927,6 +935,7 @@ pub(super) fn run_entered_round(
     });
     let then = question
         .into_iter()
+        .chain(changes.iter().map(|one| one.refusal.message(lang)))
         .chain(analysis)
         .chain(Some(then).filter(|t| !t.is_empty()))
         .collect::<Vec<_>>()
@@ -2405,8 +2414,8 @@ mod tests {
         round(root, "x", None);
         let back = json!({"wave": 1, "text": "Parei.", "replan": "Dividir a onda em duas.", "undone": []});
         assert_eq!(returned(root, back)["ok"], json!(true));
-        let stopped = round(root, "x", None);
-        assert_eq!(stopped["reason"], json!("wave-plan-does-not-work"), "{stopped}");
+        let stopped = change_asked(&round(root, "x", None));
+        assert_eq!(stopped["wave"], json!(1), "{stopped}");
         let hint = stopped["hint"].as_str().unwrap_or_default();
         assert!(hint.contains("Mudança proposta: Dividir a onda em duas. Com o aceite"), "{hint}");
         assert!(!hint.contains(".."), "{hint}");

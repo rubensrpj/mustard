@@ -31,7 +31,7 @@ use super::commit::{
 use super::agreed::{covered_codes, settle_agreed};
 use super::leftovers::{leftover_tasks, leftovers_of, Leftover};
 use super::queue::{backlog_wave, open_review, open_sends, waves_in_progress, ANALYSIS_LINE};
-use super::stops::{change_accepted, replan_code, tasks_returned, undone_of, undone_returns};
+use super::stops::{hold_waiting_changes, tasks_returned, undone_of, undone_returns, WaitingChange};
 use super::usage::{measure_usage, Caller, Usage};
 use crate::commands::review::qa_run::ProofFault;
 use crate::commands::spec_events::write::{record, RecordCheck};
@@ -122,6 +122,9 @@ pub(crate) struct Taken {
     pub commit: Option<Value>,
     /// As ondas que pausaram, pela linha `PAUSED`.
     pub paused: Vec<u64>,
+    /// As ondas que pedem novo plano e esperam o clique do usuário, fora do
+    /// commit: o aviso de cada uma já vai em `warnings`.
+    pub waiting: Vec<WaitingChange>,
 }
 
 /// Assume o que voltou de uma rodada: a volta que cada onda gravou na spec
@@ -137,7 +140,9 @@ pub(crate) struct Taken {
 /// recusa junta e grava tudo uma vez só, e o commit de outra onda nunca leva
 /// nada da recusada. A entrega que a junção segura por conflito fica de fora,
 /// e a resposta traz a recusa dela; só quando não há mais nada a assumir a
-/// recusa é a resposta. O consumo de cada onda assumida é medido nos
+/// recusa é a resposta. A volta que pede novo plano sem o clique do usuário
+/// também fica de fora, com o aviso dela, e nunca vira a resposta: ela segura
+/// só a própria onda. O consumo de cada onda assumida é medido nos
 /// arquivos de conversa da plataforma de quem chama (`caller`). A rodada e o
 /// fechamento assumem por aqui.
 pub(crate) fn take_report(
@@ -186,22 +191,30 @@ pub(crate) fn take_report_with_mine(
     report.waves = returned_waves(&fresh)?;
     report.verdicts = returned_verdict(&fresh);
     let cut = match_usage(&fresh, &mut report)?;
+    // A onda que diz que o plano dela não funciona espera o clique do usuário
+    // fora do commit, e só ela: as outras voltas seguem.
+    let waiting = hold_waiting_changes(&fresh, &mut report.waves);
     if nothing(&report) {
         // A onda de lote cortada não entra no commit: as tarefas dela voltam
         // ao backlog soltas, sem a onda que as levou.
         let mut taken = Taken::only_paused(report.paused);
         taken.recorded = return_cut_batches(start, spec, &fresh, &cut).map_err(RoundRefusal::Refused)?;
+        taken.warnings = waiting.iter().map(|one| one.warning(lang)).collect();
+        taken.waiting = waiting;
         return Ok(taken);
     }
     let measured = report.waves.iter_mut().map(|w| (w.wave, &mut w.usage));
     measure_usage(&fresh, caller, measured.chain(report.usage.iter_mut().map(|(n, u)| (*n, u))));
-    take_returns(start, root, spec, report, &fresh, lang, mine, held_lock, &cut)
+    let mut taken = take_returns(start, root, spec, report, &fresh, lang, mine, held_lock, &cut)?;
+    taken.warnings.splice(0..0, waiting.iter().map(|one| one.warning(lang)));
+    taken.waiting = waiting;
+    Ok(taken)
 }
 
 impl Taken {
     /// Nada assumido: só as ondas que pausaram, que a rodada reenvia.
     fn only_paused(paused: Vec<u64>) -> Self {
-        Taken { recorded: Vec::new(), formatted: Vec::new(), warnings: Vec::new(), commit: None, paused }
+        Taken { recorded: Vec::new(), formatted: Vec::new(), warnings: Vec::new(), commit: None, paused, waiting: Vec::new() }
     }
 }
 
@@ -220,19 +233,6 @@ fn take_returns(
     held_lock: LockedFile,
     cut: &[u64],
 ) -> Result<Taken, RoundRefusal> {
-    // O agente que diz que o plano da onda não funciona para a rodada: a
-    // mudança proposta é mostrada, com as tarefas que voltam à fila, e só o
-    // clique do usuário em "Aceitar", gravado pela testemunha, a deixa
-    // seguir.
-    for wave in &report.waves {
-        if let Some(change) = &wave.replan {
-            let code = replan_code(wave.wave, change);
-            if !change_accepted(log, wave.wave, &code) {
-                let tasks = wave.undone.iter().map(|(_, code)| code.clone()).collect();
-                return Err(RoundRefusal::Replan { wave: wave.wave, change: change.clone(), code, tasks });
-            }
-        }
-    }
     // Da leitura das voltas e do repositório à junção, ao commit e ao desfazer
     // quando o git recusa, a trava do passo do git fica presa, uma vez: outra
     // rodada ao mesmo tempo no mesmo checkout espera, e nunca junta sobre o
@@ -423,7 +423,7 @@ fn take_returns(
         };
         warnings.push(json!({ "reason": reason, "hint": hint }));
     }
-    Ok(Taken { recorded, formatted: outcome.formatted, warnings, commit, paused: report.paused })
+    Ok(Taken { recorded, formatted: outcome.formatted, warnings, commit, paused: report.paused, waiting: Vec::new() })
 }
 
 /// O envio que despachou a onda `wave` por último: o mais novo dela que não é
@@ -1428,13 +1428,13 @@ mod tests {
         let change = "o plano não serve mais";
         let with_replan = json!({"wave": 1, "text": "Parei sem mexer em arquivo.", "replan": change, "undone": []});
         assert_eq!(returned(root, with_replan)["ok"], json!(true));
-        let stopped = round(root, "x", None);
-        assert_eq!(stopped["reason"], json!("wave-plan-does-not-work"), "{stopped}");
+        let stopped = change_asked(&round(root, "x", None));
+        assert_eq!(stopped["wave"], json!(1), "{stopped}");
         let session = "s-replan-sem-arquivo";
         crate::shared::context::session::bind_session_spec(&root.to_string_lossy(), session, "x");
         let question = stopped["question"].as_str().unwrap_or_default().to_string();
         assert_eq!(question, super::super::stops::change_question(1, change, Locale::PtBr), "{stopped}");
-        click(root, session, &question, &replan_code(1, change), "Aceitar");
+        click(root, session, &question, &super::super::stops::replan_code(1, change), "Aceitar");
         let out = round(root, "x", None);
         assert_eq!(out["ok"], json!(true), "{out}");
         assert_eq!(delivered_count(root), 1, "{out}");

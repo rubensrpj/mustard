@@ -524,6 +524,13 @@ mod tests {
         (subject.to_string(), body.trim().to_string())
     }
 
+    /// O aviso da resposta `out` com a onda que pede novo plano e espera o
+    /// clique do usuário; nulo quando nenhuma espera.
+    pub(super) fn change_asked(out: &Value) -> Value {
+        let mut warnings = out["warnings"].as_array().into_iter().flatten();
+        warnings.find(|w| w["reason"] == json!("wave-plan-does-not-work")).cloned().unwrap_or(Value::Null)
+    }
+
     /// As ondas de uma resposta da rodada, num campo dela.
     pub(super) fn waves_in(out: &Value, field: &str) -> Vec<u64> {
         out[field].as_array().cloned().unwrap_or_default().iter().filter_map(|d| d["wave"].as_u64()).collect()

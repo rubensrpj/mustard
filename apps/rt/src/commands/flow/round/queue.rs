@@ -525,9 +525,24 @@ pub(crate) fn waves_in_progress(log: &SpecLog) -> BTreeMap<u64, u64> {
 
 /// As ondas órfãs, cada uma com o número do pedido dela: as com pedido aberto
 /// ([`open_sends`]) cujo Claude Code já fechou. A rodada as reenvia com o
-/// mesmo pedido de antes.
+/// mesmo pedido de antes, na cópia que volta limpa ao commit atual. A onda
+/// que já voltou ([`waves_returned`]) nunca é órfã: o agente dela terminou, e
+/// a cópia guarda o que ele entregou até a rodada o assumir.
 pub(crate) fn orphaned_waves(log: &SpecLog) -> BTreeMap<u64, u64> {
-    open_sends(log).into_iter().filter(|(_, sent)| !claude_still_here(log, *sent)).collect()
+    let returned = waves_returned(log);
+    open_sends(log).into_iter().filter(|(n, sent)| !returned.contains(n) && !claude_still_here(log, *sent)).collect()
+}
+
+/// As ondas que voltaram e esperam a rodada: a entrega que o agente gravou
+/// depois do envio que a despachou e que nenhuma rodada assumiu ainda — a
+/// que pede novo plano sem o clique do usuário, ou a que a junção segurou
+/// por conflito.
+fn waves_returned(log: &SpecLog) -> BTreeSet<u64> {
+    log.unassumed_returns()
+        .into_iter()
+        .filter(|e| e.event_type == "delivered")
+        .filter_map(|e| e.wave().filter(|n| e.id > super::report::dispatched_at(log, *n).unwrap_or_default()))
+        .collect()
 }
 
 /// A onda `n` é de lote — o binário a formou a partir do backlog, com autor
@@ -3557,7 +3572,7 @@ mod tests {
         pub(crate) b_decision: String,
         /// A mudança de plano que a onda propôs.
         pub(crate) change: String,
-        /// A resposta da rodada que parou pela mudança, antes do clique.
+        /// O aviso da rodada que segurou a onda pela mudança, antes do clique.
         pub(crate) stopped: Value,
         /// A resposta da rodada que assumiu a volta, depois do clique.
         pub(crate) accepted: Value,
@@ -3638,8 +3653,8 @@ mod tests {
         let wrote = returned(root, back);
         assert_eq!(wrote["ok"], json!(true), "{wrote}");
 
-        let stopped = round(root, "x", None);
-        assert_eq!(stopped["reason"], json!("wave-plan-does-not-work"), "{stopped}");
+        let stopped = change_asked(&round(root, "x", None));
+        assert_eq!(stopped["wave"], json!(1), "{stopped}");
         let question = stopped["question"].as_str().unwrap_or_default().to_string();
         let header = stopped["header"].as_str().unwrap_or_default().to_string();
         click(root, session, &question, &header, "Aceitar");

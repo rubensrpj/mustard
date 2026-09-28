@@ -269,10 +269,15 @@ fn run_close(
     // é assumida aqui, com ou sem relatório, e é o commit dela que fecha a
     // última onda.
     let raw = opts.report.as_deref().map(str::trim).filter(|r| !r.is_empty());
-    let recorded: Vec<Value> =
-        crate::commands::flow::round::take_report(&opts.root, root, &spec, raw, &log, lang, caller)
-            .map_err(CloseRefusal::Report)?
-            .recorded;
+    let taken = crate::commands::flow::round::take_report(&opts.root, root, &spec, raw, &log, lang, caller)
+        .map_err(CloseRefusal::Report)?;
+    // A onda que pede novo plano sem o clique do usuário ficou fora do commit
+    // e segura o fechamento, que depende de todas: as outras voltas já foram
+    // assumidas acima, e a recusa traz a pergunta que a decide.
+    if let Some(waiting) = taken.waiting.into_iter().next() {
+        return Err(CloseRefusal::Report(waiting.refusal));
+    }
+    let recorded: Vec<Value> = taken.recorded;
 
     // A spec antiga passa para o backlog antes de ler as ondas: a onda
     // desenhada à mão que nunca saiu não recusa o fechamento, porque a versão
