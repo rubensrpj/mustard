@@ -1,14 +1,24 @@
 # As rotas do Django. O nome deste arquivo é o nome do framework; a consulta
 # que acha as rotas está em `django/routes.scm`, e o que cada captura dela
-# diz, em `src/routes.rs`. A rota é cada `path('pedidos/<int:id>/', …)` e
-# cada `re_path(r'^aves/(?P<id>\d+)/$', …)` da lista `urlpatterns`, sem
-# método: vale qualquer um. Quem atende é o nome escrito no segundo
-# argumento, o que vem depois do último ponto (`views.ler_pedido`), ou a
-# classe da `PedidoView.as_view()`.
+# diz, em `src/routes.rs`. A rota é cada `path('pedidos/<int:id>/', …)`,
+# `re_path(r'^aves/(?P<id>\d+)/$', …)` ou `url()` escrito numa lista — a
+# `urlpatterns`, outra guardada num nome ou a escrita dentro de um
+# `include` —, sem método: vale qualquer um. Quem atende é o nome escrito no
+# segundo argumento, o que vem depois do último ponto (`views.ler_pedido`),
+# ou a classe da `PedidoView.as_view()`.
 #
-# O `path('api/', include('loja.urls'))` monta o arquivo que o texto nomeia,
-# lido como import do arquivo que o escreve (`route.target.module`): o
-# prefixo vale para todas as rotas de lá.
+# O `include` soma o prefixo do caminho que o chama às rotas do que ele
+# inclui:
+# - `include('loja.urls')`: o arquivo que o texto nomeia, lido como import do
+#   arquivo que o escreve (`route.target.module`); o prefixo vale para todas
+#   as rotas de lá.
+# - `include([path('pedidos/', views.ler)])`: a lista escrita ali mesmo
+#   (`route.scope`).
+# - `include(extra)`: a lista guardada no nome `extra` (`route.target`), a
+#   deste arquivo ou, quando um import traz o nome
+#   (`from .api import extra`), a do arquivo de onde ele vem.
+# - `include((extra, 'loja'))`: a lista, escrita ali ou guardada num nome,
+#   numa tupla com o nome do app; o prefixo é o mesmo.
 #
 # Os campos:
 # - `language`: as línguas do registro (`languages.toml`) cujos arquivos a

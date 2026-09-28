@@ -1090,6 +1090,82 @@ fn an_include_adds_its_prefix_to_every_route_of_the_file_the_module_names() {
     assert_eq!(routes(&map, "projeto/urls.py"), json!([]), "the include is not a route");
 }
 
+/// As funções que atendem as rotas das listas incluídas.
+const DJANGO_LIST_VIEWS: &str = "def ler(request, id):\n    return id\n\n\ndef listar(request):\n    return 1\n";
+
+/// O app `loja`, com as views e a lista de caminhos `urls`.
+fn django_list_app(urls: &'static str) -> Vec<(&'static str, &'static str)> {
+    vec![("loja/__init__.py", ""), ("loja/views.py", DJANGO_LIST_VIEWS), ("loja/urls.py", urls)]
+}
+
+#[test]
+fn a_list_written_inside_an_include_gives_its_routes_under_the_include_prefix() {
+    let urls = "from django.urls import include, path\n\nfrom . import views\n\n\
+                urlpatterns = [\n    path('api/', include([path('pedidos/<int:id>/', views.ler)])),\n]\n";
+    let temp = project_with(&django_list_app(urls));
+    let (map, _) = scan(temp.path());
+    assert_eq!(served(&map, "loja/urls.py"), ["* api/pedidos/{} -> ler"]);
+}
+
+#[test]
+fn a_list_kept_in_a_name_and_included_by_it_gives_its_routes_only_under_the_include_prefix() {
+    let urls = "from django.urls import include, path\n\nfrom . import views\n\n\
+                extra = [\n    path('pedidos/', views.listar),\n]\n\n\
+                urlpatterns = [\n    path('api/', include(extra)),\n]\n";
+    let temp = project_with(&django_list_app(urls));
+    let (map, _) = scan(temp.path());
+    assert_eq!(served(&map, "loja/urls.py"), ["* api/pedidos -> listar"]);
+}
+
+#[test]
+fn a_list_brought_from_another_file_gives_its_routes_under_the_include_prefix_where_it_is_written() {
+    let api = "from django.urls import path\n\nfrom . import views\n\nextra = [\n    path('pedidos/', views.listar),\n]\n";
+    let urls = "from django.urls import include, path\n\nfrom .api import extra\n\n\
+                urlpatterns = [\n    path('api/', include(extra)),\n]\n";
+    let mut files = django_list_app(urls);
+    files.push(("loja/api.py", api));
+    let temp = project_with(&files);
+    let (map, _) = scan(temp.path());
+    assert_eq!(served(&map, "loja/api.py"), ["* api/pedidos -> listar"]);
+    assert_eq!(routes(&map, "loja/urls.py"), json!([]), "the include is not a route");
+}
+
+#[test]
+fn a_list_included_with_the_app_name_in_a_tuple_takes_the_same_prefix() {
+    let urls = "from django.urls import include, path\n\nfrom . import views\n\n\
+                extra = [\n    path('pedidos/', views.listar),\n]\n\n\
+                urlpatterns = [\n    path('api/', include((extra, 'loja'))),\n    \
+                path('v1/', include(([path('pedidos/<int:id>/', views.ler)], 'loja'))),\n]\n";
+    let temp = project_with(&django_list_app(urls));
+    let (map, _) = scan(temp.path());
+    assert_eq!(served(&map, "loja/urls.py"), ["* api/pedidos -> listar", "* v1/pedidos/{} -> ler"]);
+}
+
+/// As listas incluídas, escritas ali ou guardadas num nome, num arquivo que
+/// não importa o Django.
+#[test]
+fn an_included_list_of_paths_in_a_file_that_imports_no_django_has_no_route() {
+    let urls = "from . import views\n\nextra = [\n    path('pedidos/', views.listar),\n]\n\n\
+                urlpatterns = [\n    path('api/', include(extra)),\n    \
+                path('v1/', include([path('pedidos/<int:id>/', views.ler)])),\n]\n";
+    let temp = project_with(&django_list_app(urls));
+    let (map, _) = scan(temp.path());
+    assert_eq!(routes(&map, "loja/urls.py"), json!([]));
+}
+
+/// O projeto Django dos testes de pilha: a rota da lista `urlpatterns`.
+#[test]
+fn the_django_fixture_keeps_the_route_of_its_list() {
+    let temp = project_with(&[
+        ("manage.py", include_str!("fixtures/python_django/manage.py")),
+        ("blog/models.py", include_str!("fixtures/python_django/blog/models.py")),
+        ("mysite/settings.py", include_str!("fixtures/python_django/mysite/settings.py")),
+        ("mysite/urls.py", include_str!("fixtures/python_django/mysite/urls.py")),
+    ]);
+    let (map, _) = scan(temp.path());
+    assert_eq!(served(&map, "mysite/urls.py"), ["*  -> index"]);
+}
+
 /// O decorador e a lista com a forma de rota, num arquivo que não importa o
 /// framework, ou que importa um pacote cujo nome começa pelo dele.
 #[test]
