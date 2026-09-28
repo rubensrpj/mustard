@@ -29,7 +29,7 @@ use crate::domain::project_map::{
 };
 use crate::domain::normalize::Languages;
 use crate::io::map_db::{self, Block, Kind, MapDb};
-use crate::io::map_search;
+use crate::io::{map_fill, map_search};
 use crate::platform::error::{Error, Result};
 
 /// A pasta do projeto onde o mapa mora.
@@ -454,6 +454,10 @@ const fn rebuilt_by(mut declared: MapBlock, rebuild: crate::io::map_db::Rebuild)
 /// Os blocos do mapa, na ordem em que se leem: os arquivos antes das
 /// declarações, das rotas e das ligações deles.
 pub const BLOCKS: [MapBlock; 6] = [CENSUS, FILES, DECLS, ROUTES, GRAPH, HISTORY];
+
+/// Os blocos de que o índice de busca lê: os arquivos, as declarações e as
+/// ligações, onde moram as chamadas.
+pub(crate) const SEARCHED: [&MapBlock; 3] = [&FILES, &DECLS, &GRAPH];
 
 /// Todo bloco que a porta declara, na ordem do despejo: os da montagem e,
 /// depois deles, o da história de cada declaração, o dos pull requests e o
@@ -1507,8 +1511,10 @@ fn blobs_under(root: &Path, skip: &[String]) -> Option<(BTreeMap<String, String>
 
 /// O mapa de `root` ficou atrás do conteúdo de agora: o commit do checkout,
 /// a branch de partida, a ponta dela ou algum arquivo mudou desde a passada
-/// que o gravou. Lê só o estado gravado, nunca o mapa inteiro. `false` sem mapa,
-/// com um mapa que não se lê e fora do git: não há com que comparar.
+/// que o gravou, ou um bloco que ela grava voltou vazio numa troca de formato
+/// ([`map_fill::unfilled`]). Lê só o estado gravado e as marcas dos blocos,
+/// nunca o mapa inteiro. `false` sem mapa, com um mapa que não se lê e fora
+/// do git: não há com que comparar.
 #[must_use]
 pub fn is_behind(root: &Path) -> bool {
     let Ok(db) = open_existing(&model_path(root)) else { return false };
@@ -1517,7 +1523,10 @@ pub fn is_behind(root: &Path) -> bool {
     let (head, digest, base) = rows.first().map_or_else(Default::default, |row| {
         (text_cell(&row[0]), text_cell(&row[1]), Base { name: text_cell(&row[2]), tip: text_cell(&row[3]) })
     });
-    head != now.head || digest != now.digest() || base != now.base
+    head != now.head
+        || digest != now.digest()
+        || base != now.base
+        || map_fill::unfilled(&db, &BLOCKS).is_ok_and(|blocks| !blocks.is_empty())
 }
 
 /// O banco em `model`, que já tem de existir: sem o arquivo, a recusa de
@@ -1991,7 +2000,7 @@ fn save_rows<'b>(
             }
             map_db::set_mark(tx, block.name(), mark)?;
         }
-        if changed.iter().any(|(block, _)| [FILES.name(), DECLS.name(), GRAPH.name()].contains(&block.name())) {
+        if changed.iter().any(|(block, _)| SEARCHED.iter().any(|searched| searched.name() == block.name())) {
             match languages {
                 Some(languages) => map_search::rebuild(tx, languages)?,
                 None => map_search::forget(tx)?,

@@ -277,9 +277,11 @@ pub(super) fn refresh_map(root: &Path, mine: &dyn Fn(&Path, &Path) -> mustard_co
 /// A conferência do mapa com o conteúdo de agora, antes de toda resposta
 /// dele: quando o commit do checkout `root` ou o conteúdo de algum arquivo
 /// não é o da passada que gravou o mapa — um arquivo editado sem commit,
-/// uma troca de branch, um commit à mão ou um pull —, chama [`refresh_map`]
-/// com o mesmo `mine`, que relê só os arquivos de blob novo. Decide pelo
-/// estado gravado, sem ler o mapa inteiro. Sem git, sem mapa ou com o
+/// uma troca de branch, um commit à mão ou um pull —, ou quando um bloco que
+/// a passada grava voltou vazio numa troca de formato, chama [`refresh_map`]
+/// com o mesmo `mine`, que relê só os arquivos de blob novo, ou todos quando
+/// o bloco voltou vazio. Decide pelo estado gravado e pelas marcas dos
+/// blocos, sem ler o mapa inteiro. Sem git, sem mapa ou com o
 /// mapeador falhando, segue sem travar e sem aviso novo, e nunca cria o
 /// mapa.
 pub(crate) fn refresh_map_if_stale(root: &Path, mine: &dyn Fn(&Path, &Path) -> mustard_core::platform::error::Result<ScanReport>) {

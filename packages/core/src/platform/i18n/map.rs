@@ -82,6 +82,16 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("map.unreadable", Locale::EnUs) => {
             "The project map could not be read ({detail}). Run `mustard-rt run scan` again."
         }
+        ("map.unfilled", Locale::PtBr) => {
+            "Os blocos {blocks} do mapa voltaram vazios numa troca de formato, e o scan ainda não os encheu de novo. \
+             Rode `mustard-rt run scan`. Se a recusa voltar, o scan ao lado do mustard-rt é de outra compilação: \
+             compile ou instale os dois juntos."
+        }
+        ("map.unfilled", Locale::EnUs) => {
+            "The map blocks {blocks} came back empty in a format change, and the scan has not filled them again. \
+             Run `mustard-rt run scan`. If this refusal comes back, the scan beside mustard-rt is from another build: \
+             build or install both together."
+        }
         ("map.unknown_file", Locale::PtBr) => {
             "O arquivo `{file}` não está no mapa. Confira o caminho a partir da raiz do projeto, ou \
              rode `mustard-rt run scan` se ele é novo."
@@ -335,8 +345,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("map.rs"),
             super::PREFIXES,
-            64,
-            0x6b09_6be8_b829_ca71,
+            65,
+            0xef22_6037_9285_df67,
         );
     }
 
@@ -516,6 +526,7 @@ mod tests {
         for (key, slots) in [
             ("map.missing", &[][..]),
             ("map.unreadable", &["{detail}"][..]),
+            ("map.unfilled", &["{blocks}"][..]),
             ("map.unknown_file", &["{file}"][..]),
             ("map.unknown_declaration", &["{file}", "{name}"][..]),
             ("map.file_unreadable", &["{file}", "{detail}"][..]),

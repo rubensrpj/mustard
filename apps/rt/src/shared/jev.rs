@@ -74,8 +74,13 @@ const CHARS_PER_TOKEN: f64 = 3.2;
 /// Quanto se espera para abrir a conexão.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Quanto se espera pelo pedido inteiro, da conexão ao fim da resposta.
-const RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
+/// Quanto a busca espera o filtro inteiro, repetições e esperas inclusive;
+/// passado o prazo, a resposta vem do banco. O serviço saudável responde um
+/// pedido de 50 candidatos em menos de 1,1 s (o pior de 25 mil pedidos do
+/// laboratório). Num período lento do serviço, 100 buscas esperaram de 0,4
+/// a 30 s, sem degrau no meio: com 10 s, 9 delas iriam ao banco, e nenhuma
+/// esperaria mais que isso.
+const RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Quantas vezes se repete um pedido recusado por excesso (429, 529) ou por
 /// falha do serviço (5xx). A chave recusada (401) e a falta de crédito (402)
@@ -221,19 +226,27 @@ impl JevFilter {
         }
     }
 
-    /// Um pedido, com as repetições. Devolve o documento da resposta.
-    fn send(&self, payload: &str) -> Result<Value, FilterError> {
+    /// Um pedido, com as repetições, até `deadline`. Devolve o documento da
+    /// resposta. Cada tentativa leva só o tempo que falta até o prazo, e a
+    /// repetição cuja espera passaria do prazo não se faz.
+    fn send(&self, payload: &str, deadline: Instant) -> Result<Value, FilterError> {
         let agent: ureq::Agent = ureq::Agent::config_builder()
             .timeout_connect(Some(self.timeouts.connect))
-            .timeout_global(Some(self.timeouts.response))
             .http_status_as_error(false)
             .build()
             .new_agent();
         let auth = format!("Bearer {}", self.key.0);
         let mut retries = 0;
         loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Err(FilterError::Timeout);
+            }
             let mut response = agent
                 .post(&self.endpoint)
+                .config()
+                .timeout_global(Some(left))
+                .build()
                 .header("Authorization", &auth)
                 .header("Content-Type", "application/json")
                 .send(payload.as_bytes())
@@ -244,10 +257,11 @@ impl JevFilter {
                 return serde_json::from_str(&text)
                     .map_err(|_| FilterError::Unreadable("the body is not JSON".to_string()));
             }
-            if retryable(status) && retries < MAX_RETRIES {
+            let asked = response.headers().get("retry-after").and_then(|value| value.to_str().ok());
+            let wait = retry_wait(asked);
+            if retryable(status) && retries < MAX_RETRIES && Instant::now() + wait < deadline {
                 retries += 1;
-                let asked = response.headers().get("retry-after").and_then(|value| value.to_str().ok());
-                std::thread::sleep(retry_wait(asked));
+                std::thread::sleep(wait);
                 continue;
             }
             return Err(FilterError::Refused { status });
@@ -258,6 +272,9 @@ impl JevFilter {
 impl MapFilter for JevFilter {
     fn filter(&self, request: &FilterRequest) -> Result<Filtered, FilterError> {
         let started = Instant::now();
+        // Um prazo só para todos os grupos: eles correm juntos, e o agente
+        // espera o mais lento.
+        let deadline = started + self.timeouts.response;
         let state = state(request);
         let groups: Vec<&[FilterCandidate]> = request.candidates.chunks(GROUP_SIZE).collect();
         let mut payloads = Vec::with_capacity(groups.len());
@@ -271,7 +288,8 @@ impl MapFilter for JevFilter {
             payloads.push(payload);
         }
         let answers: Vec<Result<Value, FilterError>> = std::thread::scope(|scope| {
-            let running: Vec<_> = payloads.iter().map(|payload| scope.spawn(move || self.send(payload))).collect();
+            let running: Vec<_> =
+                payloads.iter().map(|payload| scope.spawn(move || self.send(payload, deadline))).collect();
             running
                 .into_iter()
                 .map(|thread| {
@@ -977,6 +995,43 @@ mod tests {
         filter.timeouts.response = Duration::from_millis(200);
         let error = filter.filter(&request(vec![candidate(1)])).unwrap_err();
         assert_eq!(error, FilterError::Timeout);
+    }
+
+    #[test]
+    fn the_deadline_covers_the_repeats_too() {
+        // Cada tentativa falha em 300 ms; com o prazo de 500 ms, a segunda
+        // tentativa leva só os 200 ms que faltam, e não há terceira.
+        let service = FakeService::start(1, |_, _| {
+            std::thread::sleep(Duration::from_millis(300));
+            Reply { status: 503, headers: vec![("Retry-After", "0".to_string())], body: String::new() }
+        });
+        let mut filter = service.filter();
+        filter.timeouts.response = Duration::from_millis(500);
+        let started = Instant::now();
+        let error = filter.filter(&request(vec![candidate(1)])).unwrap_err();
+        let waited = started.elapsed();
+        assert_eq!(error, FilterError::Timeout);
+        assert_eq!(service.received().len(), 2);
+        assert!(waited < Duration::from_millis(800), "waited {waited:?} past the 500 ms deadline");
+    }
+
+    #[test]
+    fn a_repeat_whose_wait_passes_the_deadline_is_not_made() {
+        // O serviço pede 2 s antes de repetir; com o prazo de 500 ms, a
+        // recusa volta na hora, sem esperar nem repetir.
+        let service = FakeService::start(1, |_, _| Reply {
+            status: 429,
+            headers: vec![("Retry-After", "2".to_string())],
+            body: "{}".to_string(),
+        });
+        let mut filter = service.filter();
+        filter.timeouts.response = Duration::from_millis(500);
+        let started = Instant::now();
+        let error = filter.filter(&request(vec![candidate(1)])).unwrap_err();
+        let waited = started.elapsed();
+        assert_eq!(error, FilterError::Refused { status: 429 });
+        assert_eq!(service.received().len(), 1);
+        assert!(waited < Duration::from_millis(500), "waited {waited:?} for a repeat that could not finish in time");
     }
 
     #[test]

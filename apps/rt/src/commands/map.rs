@@ -2758,4 +2758,116 @@ mod tests {
         assert_eq!(calls[0]["filter"], json!("jev:busy"));
         assert!(calls[0].get("tokens").is_none(), "{calls:?}");
     }
+
+    /// O mapa `map` gravado como a passada do scan o grava: com a marca dela
+    /// em cada bloco e o índice nas línguas do projeto.
+    fn written_by_the_scan(root: &Path, map: &Value) {
+        let languages = crate::commands::spec_events::project(root).languages;
+        store::save_at(&store::model_path(root), map, "scan 1", &languages).unwrap();
+    }
+
+    /// O scan de uma compilação mais velha abre o mapa: ele declara o bloco
+    /// das declarações noutra versão, e o bloco perde a marca da passada. A
+    /// abertura seguinte, na versão deste programa, o refaz vazio.
+    fn opened_by_an_older_scan(root: &Path) {
+        use mustard_core::io::map_db::{Block, Kind, MapDb};
+        let older = Block { name: store::DECLS.name(), version: 1, tables: &[], schema: "", kind: Kind::Rebuilt(|_, _| Ok(())) };
+        MapDb::open(&store::model_path(root), root, &[older]).unwrap();
+    }
+
+    /// Um repositório git de verdade, com o texto e o código em português e
+    /// o mapa `map` gravado pela passada do scan no commit e no conteúdo de
+    /// agora.
+    fn scanned_repo(map: &str) -> (tempfile::TempDir, Value) {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(["-c", "user.email=t@example.com", "-c", "user.name=t", "-c", "commit.gpgsign=false"])
+                .args(args)
+                .current_dir(root)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        std::fs::write(root.join("mustard.json"), json!({"language": {"text": "pt-BR", "code": "pt-BR"}}).to_string())
+            .unwrap();
+        git(&["init", "-q"]);
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "semente"]);
+        let now = store::listing(root).unwrap();
+        let mut map: Value = serde_json::from_str(map).unwrap();
+        map["state"] = json!({"head": now.head, "listing": now.digest()});
+        written_by_the_scan(root, &map);
+        (dir, map)
+    }
+
+    fn no_history(_: &Path, _: &Path, _: &str, _: usize) -> mustard_core::platform::error::Result<HistoryReport> {
+        panic!("a map without a base never reads a history")
+    }
+
+    /// A busca num mapa cujas declarações voltaram vazias numa troca de
+    /// formato, sem passada do scan que as encha, recusa com a saída: não
+    /// chama o filtro pago nem grava chamada, que entraria na conta do mês
+    /// sem nenhum candidato.
+    #[test]
+    fn a_search_on_declarations_emptied_by_a_format_change_is_refused_and_records_no_call() {
+        let dir = search_project_on("zerada");
+        let root = dir.path();
+        written_by_the_scan(root, &serde_json::from_str(FILTER_MAP).unwrap());
+        opened_by_an_older_scan(root);
+        let fake = FakeFilter::scoring(&[0.9]);
+        let report = searched(&search_opts(root, "pedido", Some("onde o pedido é gravado"), None), &fake.assemble());
+        assert_eq!(report["ok"], json!(false), "{report}");
+        assert_eq!(report["reason"], json!("map-unfilled"), "{report}");
+        let refusal = MapRefusal::MapUnfilled { blocks: vec!["decls".to_string()] };
+        assert_eq!(report["hint"], json!(refusal.message(Locale::PtBr)), "{report}");
+        assert!(report["hint"].as_str().unwrap().contains("mustard-rt run scan"), "{report}");
+        assert_eq!(fake.calls(), 0, "the paid filter is not called");
+        assert!(calls_of(root, "zerada").is_empty(), "no call enters the month's count");
+    }
+
+    /// Com o scan da mesma compilação, a pergunta relê o mapa cujas
+    /// declarações voltaram vazias, mesmo sem commit nem arquivo novo, e a
+    /// busca com filtro manda os 100 candidatos, não nenhum.
+    #[test]
+    fn declarations_emptied_by_a_format_change_are_read_again_and_the_search_sends_its_hundred_candidates() {
+        let (dir, map) = scanned_repo(&many_orders(120));
+        let root = dir.path();
+        opened_by_an_older_scan(root);
+        let passes = std::cell::Cell::new(0);
+        let same_build = |root: &Path, _: &Path| {
+            passes.set(passes.get() + 1);
+            written_by_the_scan(root, &map);
+            Ok(ScanReport::default())
+        };
+        let fake = FakeFilter::scoring(&[0.9]);
+        let report = super::map_at(&search_opts(root, "pedido", None, None), &same_build, &no_history, &fake.assemble());
+        assert_eq!(passes.get(), 1, "{report}");
+        assert_eq!(report["ok"], json!(true), "{report}");
+        assert_eq!(fake.last().candidates.len(), 100, "{report}");
+    }
+
+    /// Com o scan de outra compilação, que grava as declarações no formato
+    /// dele, a pergunta relê o mapa uma vez e a busca recusa, com a saída,
+    /// em vez de responder vazio.
+    #[test]
+    fn a_scan_from_another_build_leaves_the_search_refused_instead_of_empty() {
+        let (dir, map) = scanned_repo(FILTER_MAP);
+        let root = dir.path();
+        opened_by_an_older_scan(root);
+        let passes = std::cell::Cell::new(0);
+        let older_build = |root: &Path, _: &Path| {
+            passes.set(passes.get() + 1);
+            written_by_the_scan(root, &map);
+            opened_by_an_older_scan(root);
+            Ok(ScanReport::default())
+        };
+        let fake = FakeFilter::scoring(&[0.9]);
+        let opts = search_opts(root, "pedido", Some("onde o pedido é gravado"), None);
+        let report = super::map_at(&opts, &older_build, &no_history, &fake.assemble());
+        assert_eq!(passes.get(), 1, "{report}");
+        assert_eq!(report["reason"], json!("map-unfilled"), "{report}");
+        assert_eq!(fake.calls(), 0, "{report}");
+    }
 }

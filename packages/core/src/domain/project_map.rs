@@ -1079,6 +1079,9 @@ pub enum MapRefusal {
     MapMissing,
     /// O mapa existe e não se entende.
     MapUnreadable { detail: String },
+    /// Blocos que a pergunta lê voltaram vazios numa troca de formato, e o
+    /// scan ainda não os encheu de novo: `blocks` traz o nome de cada um.
+    MapUnfilled { blocks: Vec<String> },
     /// O arquivo perguntado não está no mapa.
     UnknownFile { file: String },
     /// A pergunta precisa de uma opção que não veio.
@@ -1104,6 +1107,7 @@ impl MapRefusal {
         match self {
             Self::MapMissing => "map-missing",
             Self::MapUnreadable { .. } => "map-unreadable",
+            Self::MapUnfilled { .. } => "map-unfilled",
             Self::UnknownFile { .. } => "unknown-file",
             Self::MissingArgument { .. } => "missing-argument",
             Self::SkillUnreadable { .. } => "skill-unreadable",
@@ -1124,6 +1128,10 @@ impl MapRefusal {
         match self {
             Self::MapMissing => fill("map.missing", &[]),
             Self::MapUnreadable { detail } => fill("map.unreadable", &[("{detail}", detail.clone())]),
+            Self::MapUnfilled { blocks } => {
+                let blocks: Vec<String> = blocks.iter().map(|block| format!("`{block}`")).collect();
+                fill("map.unfilled", &[("{blocks}", blocks.join(", "))])
+            }
             Self::UnknownFile { file } => fill("map.unknown_file", &[("{file}", file.clone())]),
             Self::MissingArgument { question, flag } => {
                 fill("map.missing_argument", &[("{question}", question.clone()), ("{flag}", flag.clone())])
