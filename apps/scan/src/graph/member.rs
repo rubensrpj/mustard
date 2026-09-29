@@ -24,6 +24,10 @@ pub(super) const KINDS: &[&str] = &["property", "field"];
 ///   nome antes do separador só junta caminho (`path_only`), o nome que não
 ///   estreita é módulo ou tipo de fora, e não liga;
 /// - escrito sozinho, as que o arquivo tem à vista, provada quando é uma só;
+///   dentro da desestruturação de um objeto (`destructured`, na língua em que
+///   o nome sozinho não é membro do próprio tipo), o membro é lido de um
+///   objeto que o arquivo não nomeia, e fica suspeito como o escrito depois de
+///   um nome que não estreita;
 /// - escrito depois de um valor (`Outro().Total`, `pedido.total` na língua
 ///   cujo separador de membro só liga valor), nenhuma: sem saber o tipo do
 ///   valor, nada diz de quem é o membro.
@@ -36,11 +40,12 @@ pub(super) fn verdict(
     seen: Vec<DeclId>,
     narrowed: impl FnOnce() -> Option<(Vec<DeclId>, bool)>,
     path_only: bool,
+    destructured: bool,
     max_same_name: usize,
 ) -> Option<Verdict> {
     match before {
         _ if not_ours => None,
-        Before::Nothing => Verdict::of(seen, true, max_same_name),
+        Before::Nothing => Verdict::of(seen, !destructured, max_same_name),
         Before::Itself | Before::Name(_) => match narrowed() {
             Some((kept, provable)) => Verdict::of(kept, provable, max_same_name),
             None if matches!(before, Before::Name(_)) && path_only => None,

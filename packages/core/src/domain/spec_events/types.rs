@@ -673,12 +673,13 @@ pub const TYPES: &[TypeSpec] = &[
             req("mustard", Kind::Text),
             opt("lessons", Kind::Ints),
             opt("skills", Kind::Objects),
-            // O modelo pedido para o agente, no envio; o que ele usou de
-            // verdade, os passos que deu e os tokens que gastou só se sabem
-            // na volta, e entram na versão nova do mesmo envio
+            // O modelo e o esforço pedidos para o agente, no envio; o que ele
+            // usou de verdade, os passos que deu e os tokens que gastou só se
+            // sabem na volta, e entram na versão nova do mesmo envio
             // (`replaces`). O consumo de quem despacha até ali — a conta do
             // orquestrador, não da onda — vem junto, na mesma volta.
             opt("model", Kind::Text),
+            opt("effort", Kind::Text),
             opt("model_used", Kind::Text),
             opt("steps", Kind::Int),
             opt("tokens", Kind::Int),

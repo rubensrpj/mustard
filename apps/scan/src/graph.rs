@@ -648,9 +648,14 @@ fn resolve_declaration_links(
             };
             let Some(all) = by_name.get(looked) else { continue };
             let from = enclosing(&m.declarations, site.line);
+            // O membro escrito sozinho, dentro da desestruturação de um
+            // objeto (`const { total } = pedido`), é lido do objeto e não do
+            // próprio tipo: vale como o membro escrito depois de um nome que
+            // não estreita, entre o que o arquivo tem à vista.
+            let destructured = matches!(written, Written::Member) && matches!(before, Before::Nothing) && !implicit_self;
             // O nome sozinho só alcança um membro na língua que o chama sem
             // escrever o objeto.
-            let member_out = matches!(before, Before::Nothing) && !implicit_self;
+            let member_out = matches!(before, Before::Nothing) && !implicit_self && !destructured;
             // O próprio arquivo vence: o nome sozinho que ele declara fora de
             // todo tipo é essa declaração, e nenhuma outra.
             let own: Vec<DeclId> = match before {
@@ -719,7 +724,7 @@ fn resolve_declaration_links(
             let seen: Vec<DeclId> = all
                 .iter()
                 .copied()
-                .filter(|&(mi, _)| if matches!(before, Before::Nothing) { sees_alone(mi) } else { sees(mi) })
+                .filter(|&(mi, _)| if matches!(before, Before::Nothing) && !destructured { sees_alone(mi) } else { sees(mi) })
                 .collect();
             let named_by = |mi: usize, q: &str| named_by(mi, q) || named_files.contains(&modules[mi].path);
             // O nome que um import de fora do projeto trouxe, escrito sozinho
@@ -788,7 +793,7 @@ fn resolve_declaration_links(
                 });
                 value::verdict(named, not_ours, &before, seen, || narrowed(&all), max_same_name)
             } else if matches!(written, Written::Member) {
-                member::verdict(not_ours, &before, seen, || narrowed(&all), path_only, max_same_name)
+                member::verdict(not_ours, &before, seen, || narrowed(&all), path_only, destructured, max_same_name)
             } else if is_call {
                 let named = through.get(site).and_then(|paths| path_files(&resolver, m, site.line, paths));
                 match (named, &before) {

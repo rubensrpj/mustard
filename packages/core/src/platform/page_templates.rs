@@ -115,11 +115,11 @@ pub const PROJECT_CAPABILITIES: &str = r#"{"db":{"rules":[{"path":"","read":"vie
 /// desenho da página já publicada mudou; a página só é publicada de novo
 /// quando ele pede. A trava dos testes falha quando o molde muda sem ela
 /// subir.
-pub const SPEC_LAYOUT_VERSION: u32 = 8;
+pub const SPEC_LAYOUT_VERSION: u32 = 9;
 
 /// A versão do layout da página do projeto, com a mesma regra de
 /// [`SPEC_LAYOUT_VERSION`].
-pub const PROJECT_LAYOUT_VERSION: u32 = 2;
+pub const PROJECT_LAYOUT_VERSION: u32 = 3;
 
 /// O template da página da spec, com o catálogo no idioma `lang`.
 #[must_use]
@@ -377,10 +377,10 @@ mod tests {
     /// sobe a versão do layout dele e grava aqui a impressão nova que a falha
     /// mostra.
     const LAYOUT_TABLE: &[(&str, Locale, u32, &str)] = &[
-        ("spec", Locale::PtBr, 8, "9d5e548cb6ad80bd"),
-        ("spec", Locale::EnUs, 8, "191c606540393022"),
-        ("project", Locale::PtBr, 2, "5c7b4eee3a7b2603"),
-        ("project", Locale::EnUs, 2, "4d85adda20bd8de6"),
+        ("spec", Locale::PtBr, 9, "2cb680c80c5fb667"),
+        ("spec", Locale::EnUs, 9, "ab92d1374079268d"),
+        ("project", Locale::PtBr, 3, "e0c425df74e09675"),
+        ("project", Locale::EnUs, 3, "79b45f84601d5349"),
     ];
 
     /// Confere o carimbo `built` do molde `page` em `lang` contra a linha
@@ -931,7 +931,7 @@ mod tests {
             json!({"v":1,"id":2,"at":"2026-09-19T09:01:00-03:00","type":"send","author":"binary","wave":9,
                 "role":"wave","template":"# molde\n\nTexto do molde.","text":"# pedido\n\nTexto do pedido.",
                 "lines":2,"chars":40,"items":[1],"mustard":"0.2.1",
-                "model":"sonnet","model_used":"sonnet","steps":12,"tokens":3400,"origin":1}),
+                "model":"sonnet","effort":"xhigh","model_used":"sonnet","steps":12,"tokens":3400,"origin":1}),
             json!({"v":1,"id":3,"at":"2026-09-19T09:02:00-03:00","type":"verdict","author":"review",
                 "wave":9,"result":"approved","final":false,"text":"A onda fecha certo.","origin":1}),
         ];
@@ -952,7 +952,7 @@ mod tests {
         let detail = &page["detail"];
         assert_eq!(detail["wave"], json!(9), "the only wave opens: {detail}");
         let labels: Vec<Value> = detail["measures"].as_array().expect("measures").iter().map(|f| f[0].clone()).collect();
-        for key in ["page.field.model", "page.field.model_used", "page.field.steps", "page.field.tokens", "page.metrics.col.delivery"] {
+        for key in ["page.field.model", "page.field.effort", "page.field.model_used", "page.field.steps", "page.field.tokens", "page.metrics.col.delivery"] {
             let label = json!(translate(key, Locale::PtBr));
             assert!(labels.contains(&label), "{key} ({label}) is not shown among {labels:?}");
         }

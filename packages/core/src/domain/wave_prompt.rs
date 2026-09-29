@@ -136,6 +136,9 @@ pub struct Execution {
     /// O modelo dos agentes que o `mustard.json` declara em `agents.model`;
     /// vazio, o padrão da instalação ([`Execution::requested_model`]).
     pub model: String,
+    /// O esforço dos agentes que o `mustard.json` declara em `agents.effort`;
+    /// vazio, o padrão da instalação ([`Execution::requested_effort`]).
+    pub effort: String,
 }
 
 impl Execution {
@@ -148,6 +151,18 @@ impl Execution {
             crate::domain::config::DEFAULT_AGENT_MODEL
         } else {
             &self.model
+        }
+    }
+
+    /// O esforço que o pedido diz e o envio grava: o da configuração do
+    /// projeto, o mesmo que a instalação escreve no cabeçalho de cada agente,
+    /// ou o padrão quando a configuração não o traz.
+    #[must_use]
+    pub fn requested_effort(&self) -> &str {
+        if self.effort.trim().is_empty() {
+            crate::domain::config::DEFAULT_AGENT_EFFORT
+        } else {
+            &self.effort
         }
     }
 }
@@ -1388,7 +1403,13 @@ impl Writer<'_> {
             "# {}\n",
             self.t("prompt.title").replace("{spec}", &m.spec).replace("{n}", &m.wave.to_string())
         );
-        let _ = writeln!(out, "{}\n", self.t("prompt.model.wave").replace("{model}", m.execution.requested_model()));
+        let _ = writeln!(
+            out,
+            "{}\n",
+            self.t("prompt.model.wave")
+                .replace("{model}", m.execution.requested_model())
+                .replace("{effort}", m.execution.requested_effort())
+        );
         let _ = writeln!(out, "{}\n", language_line(&m.execution.language));
         out.push_str(self.t("prompt.fixed"));
         out.push_str("\n\n");
@@ -1974,8 +1995,8 @@ mod tests {
         let tasks_at = text.find(translate("prompt.part.tasks", Locale::PtBr)).expect("as tarefas aparecem");
         assert!(delivers_at < tasks_at, "{text}");
 
-        // Diz o modelo da onda.
-        assert!(text.contains("Modelo desta onda: sonnet."), "{text}");
+        // Diz o modelo e o esforço da onda.
+        assert!(text.contains("Modelo desta onda: sonnet. Esforço: xhigh."), "{text}");
 
         // A onda declara `order: [3, 2]`: a tarefa 2 (id 3) vem antes da 1
         // (id 2).
@@ -2001,26 +2022,33 @@ mod tests {
         }
     }
 
-    /// A linha do modelo do pedido da onda diz o modelo que a execução traz,
-    /// o mesmo que o `mustard.json` declara para os agentes, nos dois
-    /// idiomas; a execução sem modelo diz o padrão da instalação, e o pedido
-    /// nunca fixa um modelo por conta própria.
+    /// A linha do modelo do pedido da onda diz o modelo e o esforço que a
+    /// execução traz, os mesmos que o `mustard.json` declara para os agentes,
+    /// nos dois idiomas; a execução sem um deles diz o padrão da instalação, e
+    /// o pedido nunca fixa um modelo nem um esforço por conta própria.
     #[test]
-    fn the_request_states_the_model_the_execution_carries() {
+    fn the_request_states_the_model_and_effort_the_execution_carries() {
         let log = log(&[
             ("wave", json!({"n": 1, "text": "Onda", "criteria": [], "done_when": "a suíte passa"})),
             ("task", json!({"wave": 1, "text": "Primeiro passo", "files": [{"path": "src/a.rs"}]})),
         ]);
-        for (model, said_pt, said_en) in [
-            ("opus", "Modelo desta onda: opus.", "This wave's model: opus."),
-            ("claude-sonnet-5-5", "Modelo desta onda: claude-sonnet-5-5.", "This wave's model: claude-sonnet-5-5."),
-            ("", "Modelo desta onda: sonnet.", "This wave's model: sonnet."),
+        for (model, effort, said_pt, said_en) in [
+            ("opus", "medium", "Modelo desta onda: opus. Esforço: medium.", "This wave's model: opus. Effort: medium."),
+            (
+                "claude-sonnet-5-5",
+                "max",
+                "Modelo desta onda: claude-sonnet-5-5. Esforço: max.",
+                "This wave's model: claude-sonnet-5-5. Effort: max.",
+            ),
+            ("", "", "Modelo desta onda: sonnet. Esforço: xhigh.", "This wave's model: sonnet. Effort: xhigh."),
+            ("opus", "", "Modelo desta onda: opus. Esforço: xhigh.", "This wave's model: opus. Effort: xhigh."),
+            ("", "low", "Modelo desta onda: sonnet. Esforço: low.", "This wave's model: sonnet. Effort: low."),
         ] {
             let mut m = material(&log, 1);
-            m.execution = Execution { model: model.into(), ..Execution::default() };
+            m.execution = Execution { model: model.into(), effort: effort.into(), ..Execution::default() };
             for (lang, said) in [(Locale::PtBr, said_pt), (Locale::EnUs, said_en)] {
                 let text = build(&m, lang).text;
-                assert!(text.contains(said), "`{model}` em {lang:?}: {text}");
+                assert!(text.contains(said), "`{model}` `{effort}` em {lang:?}: {text}");
                 assert!(!text.contains("Opus"), "o pedido ainda fixa o Opus: {text}");
             }
         }

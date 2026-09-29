@@ -391,10 +391,10 @@ fn the_agents_state_that_the_marked_line_is_mandatory_and_the_ledger_is_not_thei
     }
 }
 
-/// Os dois moldes — onda e revisão — declaram o modelo padrão da
-/// configuração e o esforço xhigh, nos dois idiomas: cada agente sabe o
-/// próprio modelo e o próprio esforço, sem herdar o da sessão em silêncio. O
-/// modelo do molde é o mesmo padrão que a instalação escreve no
+/// Os dois moldes — onda e revisão — declaram o modelo e o esforço padrão da
+/// configuração, nos dois idiomas: cada agente sabe o próprio modelo e o
+/// próprio esforço, sem herdar o da sessão em silêncio. O modelo e o esforço
+/// do molde são os mesmos padrões que a instalação escreve no
 /// `mustard.json`, para o molde copiado sem instalação valer o mesmo. Teto de
 /// idas e voltas não anda junto: o molde de onda não traz um, e quem prende
 /// isso é o teste do teto. Nenhum teste desta obra recusa um molde pelo
@@ -402,6 +402,7 @@ fn the_agents_state_that_the_marked_line_is_mandatory_and_the_ledger_is_not_thei
 #[test]
 fn each_agent_template_declares_its_own_model_and_effort() {
     let default = mustard_core::domain::config::DEFAULT_AGENT_MODEL;
+    let effort = mustard_core::domain::config::DEFAULT_AGENT_EFFORT;
     for lang in ["pt-BR", "en-US"] {
         for name in ["wave", "review"] {
             let text = template(lang, name);
@@ -409,7 +410,10 @@ fn each_agent_template_declares_its_own_model_and_effort() {
                 text.contains(&format!("\nmodel: {default}\n")),
                 "the {lang} `{name}` agent does not declare the default model {default}:\n{text}",
             );
-            assert!(text.contains("\neffort: xhigh\n"), "the {lang} `{name}` agent does not declare the xhigh effort:\n{text}");
+            assert!(
+                text.contains(&format!("\neffort: {effort}\n")),
+                "the {lang} `{name}` agent does not declare the default effort {effort}:\n{text}",
+            );
             assert!(!text.contains("model: inherit"), "the {lang} `{name}` agent still inherits the session's model");
             assert!(!text.contains("model: opus"), "the {lang} `{name}` agent still fixes the opus model:\n{text}");
         }
@@ -436,7 +440,7 @@ fn the_installed_agents_use_the_model_of_the_project_config() {
     for lang in ["pt-BR", "en-US"] {
         let dir = tempfile::tempdir().unwrap();
         let (root, home) = installed(dir.path(), &format!(r#"{{"version":"1.0.0","language":{{"text":"{lang}"}}}}"#));
-        assert_eq!(declared(&root), json!({"model": "sonnet"}), "the install did not write the default model");
+        assert_eq!(declared(&root)["model"], json!("sonnet"), "the install did not write the default model");
         for name in ["wave", "review"] {
             assert_eq!(model_of(&root, name), "sonnet", "the {lang} `{name}` agent");
         }
@@ -448,7 +452,7 @@ fn the_installed_agents_use_the_model_of_the_project_config() {
         .unwrap();
         let report = rt(&root, &home, &["run", "upsert"], None);
         assert!(report.get("error").is_none(), "{report}");
-        assert_eq!(declared(&root), json!({"model": "opus"}), "the install rewrote the model the person chose");
+        assert_eq!(declared(&root)["model"], json!("opus"), "the install rewrote the model the person chose");
         for name in ["wave", "review"] {
             assert_eq!(model_of(&root, name), "opus", "the {lang} `{name}` agent kept the mold's model");
             let installed = std::fs::read_to_string(root.join(format!(".claude/agents/mustard/{name}.md"))).unwrap();
@@ -457,6 +461,53 @@ fn the_installed_agents_use_the_model_of_the_project_config() {
                 template(lang, name).replacen("\nmodel: sonnet\n", "\nmodel: opus\n", 1),
                 "the {lang} `{name}` agent changed more than its model line",
             );
+        }
+    }
+}
+
+/// O esforço dos agentes vem do `mustard.json` do projeto, pelo instalador
+/// de verdade: sem o campo, os dois agentes saem no padrão e o arquivo ganha o
+/// campo; com `medium` no arquivo, os dois saem em medium e o campo fica onde
+/// estava; um valor fora da lista do Claude Code fica no arquivo e os agentes
+/// voltam ao padrão; em todos os casos só a linha do esforço muda no agente.
+#[test]
+fn the_installed_agents_use_the_effort_of_the_project_config() {
+    let effort_of = |root: &Path, name: &str| -> String {
+        let text = std::fs::read_to_string(root.join(format!(".claude/agents/mustard/{name}.md"))).unwrap();
+        frontmatter(&text).lines().find_map(|line| line.strip_prefix("effort: ")).unwrap_or_default().to_string()
+    };
+    let declared = |root: &Path| -> Value {
+        let raw = std::fs::read_to_string(root.join("mustard.json")).unwrap();
+        serde_json::from_str::<Value>(&raw).unwrap()["agents"].clone()
+    };
+    for lang in ["pt-BR", "en-US"] {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, home) = installed(dir.path(), &format!(r#"{{"version":"1.0.0","language":{{"text":"{lang}"}}}}"#));
+        assert_eq!(declared(&root), json!({"model": "sonnet", "effort": "xhigh"}), "the install did not write the defaults");
+        for name in ["wave", "review"] {
+            assert_eq!(effort_of(&root, name), "xhigh", "the {lang} `{name}` agent");
+        }
+
+        for (written, expected) in [("medium", "medium"), ("max", "max"), ("ultra", "xhigh")] {
+            std::fs::write(
+                root.join("mustard.json"),
+                format!(
+                    r#"{{"version":"1.0.0","language":{{"text":"{lang}"}},"agents":{{"model":"sonnet","effort":"{written}"}}}}"#
+                ),
+            )
+            .unwrap();
+            let report = rt(&root, &home, &["run", "upsert"], None);
+            assert!(report.get("error").is_none(), "{report}");
+            assert_eq!(declared(&root)["effort"], json!(written), "the install rewrote the effort the person chose");
+            for name in ["wave", "review"] {
+                assert_eq!(effort_of(&root, name), expected, "the {lang} `{name}` agent with `{written}`");
+                let installed = std::fs::read_to_string(root.join(format!(".claude/agents/mustard/{name}.md"))).unwrap();
+                assert_eq!(
+                    installed,
+                    template(lang, name).replacen("\neffort: xhigh\n", &format!("\neffort: {expected}\n"), 1),
+                    "the {lang} `{name}` agent changed more than its effort line",
+                );
+            }
         }
     }
 }

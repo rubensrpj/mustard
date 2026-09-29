@@ -72,6 +72,19 @@
 (member_access_expression name: (identifier) @member)
 (member_binding_expression name: (identifier) @member)
 
+; A propriedade ou o campo escrito num padrão de propriedade (`x is { Total: > 0 }`,
+; `x is { Name: var n }`, `x switch { { Desconto: 0 } => ... }`): o nome antes
+; dos dois-pontos é lido do objeto que o padrão confere, escrito sozinho e sem
+; chamada ali. Quando o padrão escreve o tipo antes das chaves
+; (`x is Pedido { Total: var t }`), o tipo é o dono das propriedades do mesmo
+; padrão, como o tipo escrito antes das chaves em Rust. A desconstrução
+; posicional (`var (a, b) = x;`, `x is (var a, var b)`) não escreve o nome de
+; membro nenhum: `a` e `b` são variáveis novas, e não há o que ligar.
+(property_pattern_clause (subpattern (identifier) @member ":"))
+(recursive_pattern
+  type: [(identifier) (qualified_name)] @member.of
+  (property_pattern_clause (subpattern (identifier) @member ":")))
+
 ; Decorations — an attribute list (`[HttpGet("{id}")]`, `[Fact]`) is not code
 ; of the declaration it adorns: the engine starts the header after it and reads
 ; no call out of it.

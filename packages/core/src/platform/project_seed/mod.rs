@@ -340,7 +340,7 @@ pub fn upsert_project_with(
     for (name, outcome) in seed_settings(&claude_dir, false, mode, config.rtk(), text)? {
         report.record(name, outcome);
     }
-    for (rel, outcome) in seed_harness_texts(&claude_dir, text, config.agent_model())? {
+    for (rel, outcome) in seed_harness_texts(&claude_dir, text, config.agent_settings())? {
         report.record(&format!(".claude/{rel}"), outcome);
     }
     report.record(CLAUDE_GITIGNORE_PATH, seed_gitignore(&claude_dir, false)?);
@@ -444,17 +444,30 @@ mod tests {
         assert_eq!(config.version, None, "no stamp when the caller withheld a version");
     }
 
-    /// O `model:` do cabeçalho de cada agente instalado em `root`, na ordem
-    /// onda, revisão.
-    fn installed_agent_models(root: &Path) -> Vec<String> {
+    /// O valor da linha `key:` do cabeçalho de cada agente instalado em
+    /// `root`, na ordem onda, revisão.
+    fn installed_agent_header(root: &Path, key: &str) -> Vec<String> {
         ["wave", "review"]
             .iter()
             .map(|name| {
                 let text = std_fs::read_to_string(root.join(format!(".claude/agents/mustard/{name}.md"))).unwrap();
                 let header = text.split("\n---\n").next().unwrap();
-                header.lines().find_map(|line| line.strip_prefix("model: ")).unwrap_or_default().to_string()
+                let prefix = format!("{key}: ");
+                header.lines().find_map(|line| line.strip_prefix(&prefix)).unwrap_or_default().to_string()
             })
             .collect()
+    }
+
+    fn installed_agent_models(root: &Path) -> Vec<String> {
+        installed_agent_header(root, "model")
+    }
+
+    fn installed_agent_efforts(root: &Path) -> Vec<String> {
+        installed_agent_header(root, "effort")
+    }
+
+    fn written_config(root: &Path) -> Value {
+        serde_json::from_str(&std_fs::read_to_string(root.join("mustard.json")).unwrap()).unwrap()
     }
 
     /// A instalação nova escreve o modelo padrão em `agents.model` e no
@@ -467,16 +480,15 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         upsert_project(root, Some("9.9.9"), InstallMode::Shared).unwrap();
-        let config: Value = serde_json::from_str(&std_fs::read_to_string(root.join("mustard.json")).unwrap()).unwrap();
-        assert_eq!(config["agents"], json!({"model": "sonnet"}));
+        assert_eq!(written_config(root)["agents"]["model"], json!("sonnet"));
         assert_eq!(installed_agent_models(root), ["sonnet", "sonnet"]);
 
         std_fs::write(root.join("mustard.json"), r#"{"version":"9.9.9","acronyms":["PI"],"agents":{"model":"opus"}}"#)
             .unwrap();
         upsert_project(root, Some("9.9.9"), InstallMode::Shared).unwrap();
         assert_eq!(installed_agent_models(root), ["opus", "opus"]);
-        let config: Value = serde_json::from_str(&std_fs::read_to_string(root.join("mustard.json")).unwrap()).unwrap();
-        assert_eq!(config["agents"], json!({"model": "opus"}), "the declared model is kept");
+        let config = written_config(root);
+        assert_eq!(config["agents"]["model"], json!("opus"), "the declared model is kept");
         assert_eq!(config["acronyms"], json!(["PI"]));
 
         std_fs::write(root.join("mustard.json"), r#"{"version":"9.9.9","agents":{"model":"claude-sonnet-5-5"}}"#).unwrap();
@@ -488,14 +500,58 @@ mod tests {
         assert_eq!(installed_agent_models(root), ["sonnet", "sonnet"]);
         let text = std_fs::read_to_string(root.join(".claude/agents/mustard/wave.md")).unwrap();
         assert!(!text.contains("effort: low"), "a model with a line break wrote another key: {text}");
-        let config: Value = serde_json::from_str(&std_fs::read_to_string(root.join("mustard.json")).unwrap()).unwrap();
-        assert_eq!(config["agents"]["model"], json!("opus\neffort: low"), "what the person wrote stays");
+        assert_eq!(written_config(root)["agents"]["model"], json!("opus\neffort: low"), "what the person wrote stays");
     }
 
-    /// Um `mustard.json` de antes do campo ganha `agents.model` com o padrão
-    /// na atualização, e nada do que ele já tinha se perde.
+    /// A instalação nova escreve o esforço padrão em `agents.effort` e no
+    /// cabeçalho dos dois agentes; com um esforço já declarado, ela o mantém
+    /// no arquivo e o escreve nos agentes; e a linha do arquivo, trocada, muda
+    /// os dois agentes na instalação seguinte. Um esforço fora da lista que o
+    /// Claude Code aceita, ou com quebra de linha, fica onde está no arquivo, e
+    /// os agentes recebem o padrão, sem outra chave escrita no cabeçalho.
     #[test]
-    fn an_older_config_gains_the_agent_model_and_keeps_the_rest() {
+    fn the_agents_are_installed_with_the_effort_the_project_declares() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        upsert_project(root, Some("9.9.9"), InstallMode::Shared).unwrap();
+        assert_eq!(written_config(root)["agents"], json!({"model": "sonnet", "effort": "xhigh"}));
+        assert_eq!(installed_agent_efforts(root), ["xhigh", "xhigh"]);
+
+        for effort in ["low", "medium", "high", "max"] {
+            std_fs::write(
+                root.join("mustard.json"),
+                format!(r#"{{"version":"9.9.9","acronyms":["PI"],"agents":{{"effort":"{effort}"}}}}"#),
+            )
+            .unwrap();
+            upsert_project(root, Some("9.9.9"), InstallMode::Shared).unwrap();
+            assert_eq!(installed_agent_efforts(root), [effort, effort], "the agents did not take `{effort}`");
+            let config = written_config(root);
+            assert_eq!(config["agents"], json!({"model": "sonnet", "effort": effort}), "the declared effort is kept");
+            assert_eq!(config["acronyms"], json!(["PI"]));
+            assert_eq!(installed_agent_models(root), ["sonnet", "sonnet"], "the model line was touched");
+        }
+
+        for invalid in ["ultra", "", "high\nmodel: opus", "high max"] {
+            std_fs::write(
+                root.join("mustard.json"),
+                serde_json::to_string(&json!({"version": "9.9.9", "agents": {"effort": invalid}})).unwrap(),
+            )
+            .unwrap();
+            upsert_project(root, Some("9.9.9"), InstallMode::Shared).unwrap();
+            assert_eq!(installed_agent_efforts(root), ["xhigh", "xhigh"], "`{invalid}` reached the agents");
+            assert_eq!(installed_agent_models(root), ["sonnet", "sonnet"], "`{invalid}` wrote the model line");
+            assert_eq!(written_config(root)["agents"]["effort"], json!(invalid), "what the person wrote stays");
+            let text = std_fs::read_to_string(root.join(".claude/agents/mustard/review.md")).unwrap();
+            let header = text.split("\n---\n").next().unwrap();
+            assert_eq!(header.matches("effort:").count(), 1, "{header}");
+        }
+    }
+
+    /// Um `mustard.json` de antes dos campos ganha `agents.model` e
+    /// `agents.effort` com os padrões na atualização, e nada do que ele já
+    /// tinha se perde; o que a pessoa já declarou em `agents` fica como está.
+    #[test]
+    fn an_older_config_gains_the_agent_model_and_effort_and_keeps_the_rest() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         std_fs::write(
@@ -507,11 +563,20 @@ mod tests {
         let report = upsert_project(root, Some("1.0.0"), InstallMode::Shared).unwrap();
 
         assert!(report.updated.iter().any(|name| name == "mustard.json"), "{report:?}");
-        let config: Value = serde_json::from_str(&std_fs::read_to_string(root.join("mustard.json")).unwrap()).unwrap();
-        assert_eq!(config["agents"], json!({"model": "sonnet", "note": "mine"}));
+        let config = written_config(root);
+        assert_eq!(config["agents"], json!({"model": "sonnet", "effort": "xhigh", "note": "mine"}));
         assert_eq!(config["acronyms"], json!(["PI"]));
         assert_eq!(config["language"], json!({"text": "en-US"}));
         assert_eq!(installed_agent_models(root), ["sonnet", "sonnet"]);
+        assert_eq!(installed_agent_efforts(root), ["xhigh", "xhigh"]);
+
+        // A configuração da onda anterior, com o modelo e sem o esforço,
+        // ganha só o esforço.
+        std_fs::write(root.join("mustard.json"), r#"{"version":"1.0.0","agents":{"model":"opus"}}"#).unwrap();
+        upsert_project(root, Some("1.0.0"), InstallMode::Shared).unwrap();
+        assert_eq!(written_config(root)["agents"], json!({"model": "opus", "effort": "xhigh"}));
+        assert_eq!(installed_agent_models(root), ["opus", "opus"]);
+        assert_eq!(installed_agent_efforts(root), ["xhigh", "xhigh"]);
     }
 
     #[test]

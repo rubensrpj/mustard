@@ -336,10 +336,10 @@ fn run_close(
         let prompt = mustard_core::io::wave_prompt::final_review(root, &spec, &log, lang);
         // O pedido do agente de revisão final é gravado como evento de
         // envio antes de sair daqui, pela mesma porta que grava o pedido de
-        // cada onda: o texto inteiro, o papel de revisão, o modelo e a vaga
-        // em que o revisor trabalha, no mesmo formato do envio de onda —
-        // nunca um segundo caminho de gravação. O molde do revisor não vai
-        // junto: ele mora no projeto, e o papel já diz qual é.
+        // cada onda: o texto inteiro, o papel de revisão, o modelo, o esforço
+        // e a vaga em que o revisor trabalha, no mesmo formato do envio de
+        // onda — nunca um segundo caminho de gravação. O molde do revisor não
+        // vai junto: ele mora no projeto, e o papel já diz qual é.
         let copy = mustard_core::io::wave_prompt::shown(&review_copy);
         let mut draft = Map::new();
         draft.insert("role".into(), json!("review"));
@@ -347,7 +347,9 @@ fn run_close(
         draft.insert("lines".into(), json!(count_lines(&prompt)));
         draft.insert("chars".into(), json!(prompt.chars().count()));
         draft.insert("text".into(), json!(prompt));
-        draft.insert("model".into(), json!(mustard_core::ProjectConfig::load(root).agent_model()));
+        let agents = mustard_core::ProjectConfig::load(root);
+        draft.insert("model".into(), json!(agents.agent_model()));
+        draft.insert("effort".into(), json!(agents.agent_effort()));
         draft.insert("mustard".into(), json!(env!("CARGO_PKG_VERSION")));
         draft.insert("author".into(), json!("binary"));
         record(&opts.root, &spec, "send", draft, PhaseWriter::Binary).map_err(CloseRefusal::Refused)?;
@@ -1369,7 +1371,7 @@ mod tests {
 
     /// O pedido do agente de revisão final vira evento de envio no
     /// spec.ndjson antes de sair para quem despacha: o texto inteiro, o
-    /// papel de revisão e o modelo — pela mesma porta que já grava o pedido
+    /// papel de revisão, o modelo e o esforço — pela mesma porta que já grava o pedido
     /// de cada onda, sem onda dona nenhuma.
     #[test]
     fn o_pedido_da_revisao_vira_evento_de_envio() {
@@ -1408,18 +1410,20 @@ mod tests {
         assert_eq!(sent.str_field("role"), Some("review"), "{sent:?}");
         assert_eq!(sent.str_field("text"), Some(prompt.as_str()), "o texto gravado é o pedido inteiro que voltou: {sent:?}");
         assert_eq!(sent.str_field("model"), Some("sonnet"), "o modelo pedido vai junto, o padrão da instalação: {sent:?}");
+        assert_eq!(sent.str_field("effort"), Some("xhigh"), "o esforço pedido vai junto, o padrão da instalação: {sent:?}");
         assert!(sent.wave().is_none(), "a revisão final não é dona de onda nenhuma: {sent:?}");
     }
 
-    /// O envio do pedido da revisão final grava o modelo que o `mustard.json`
-    /// declara em `agents.model`, o mesmo que a instalação escreve no agente
-    /// de revisão, e não um modelo fixo.
+    /// O envio do pedido da revisão final grava o modelo e o esforço que o
+    /// `mustard.json` declara em `agents.model` e `agents.effort`, os mesmos
+    /// que a instalação escreve no agente de revisão, e não valores fixos; um
+    /// esforço fora da lista do Claude Code grava o padrão.
     #[test]
-    fn the_final_review_send_carries_the_model_of_the_project_config() {
+    fn the_final_review_send_carries_the_model_and_effort_of_the_project_config() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         ready_to_close(root, "x", &["git --version"]);
-        std::fs::write(root.join("mustard.json"), br#"{"agents":{"model":"opus"}}"#).unwrap();
+        std::fs::write(root.join("mustard.json"), br#"{"agents":{"model":"opus","effort":"medium"}}"#).unwrap();
         git_at(root, &["add", "-A"]);
         git_at(root, &["commit", "-q", "-m", "modelo dos agentes"]);
 
@@ -1431,6 +1435,7 @@ mod tests {
         let sent = log.visible().into_iter().rfind(|e| e.event_type == "send").unwrap_or_else(|| panic!("nenhum envio gravado"));
         assert_eq!(sent.str_field("role"), Some("review"), "{sent:?}");
         assert_eq!(sent.str_field("model"), Some("opus"), "o envio segue o modelo da configuração: {sent:?}");
+        assert_eq!(sent.str_field("effort"), Some("medium"), "o envio segue o esforço da configuração: {sent:?}");
     }
 
     /// O revisor grava o veredito, e o fechamento o assume sem relatório. A

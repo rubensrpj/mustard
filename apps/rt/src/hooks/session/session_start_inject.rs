@@ -650,7 +650,7 @@ mod tests {
                 "inject": mustard_core::platform::project_seed::default_inject_entries(),
             });
             std::fs::write(root.join("mustard.json"), config.to_string()).unwrap();
-            mustard_core::platform::project_seed::seed_harness_texts(&root.join(".claude"), lang, "sonnet").unwrap();
+            mustard_core::platform::project_seed::seed_harness_texts(&root.join(".claude"), lang, Default::default()).unwrap();
             std::fs::write(root.join("README.md"), "loja\n").unwrap();
             git(root, &["add", "README.md"]);
             git(root, &["commit", "-q", "-m", "seed"]);

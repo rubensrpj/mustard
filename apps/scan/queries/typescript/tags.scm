@@ -169,6 +169,38 @@
 ; depois do mesmo objeto.
 (member_expression property: (property_identifier) @member)
 
+; O campo escrito numa desestruturação (`const { total, troco: t } = pedido;`,
+; `function fechar({ total }: Pedido)`, `({ titulo = '' }) => titulo`): o nome
+; do campo é lido do objeto desmontado, escrito sozinho e sem chamada ali. O
+; nome que a desestruturação dá ao valor (`t`) é local, e não o campo. Quando o
+; padrão escreve o tipo do objeto (`{ total }: Pedido`), o tipo é o dono dos
+; campos do mesmo padrão, como o tipo escrito antes das chaves em Rust; o tipo
+; embrulhado (`Partial<Pedido>`) ou a união não nomeiam o dono e ficam de fora.
+(object_pattern (shorthand_property_identifier_pattern) @member)
+(object_pattern (object_assignment_pattern left: (shorthand_property_identifier_pattern) @member))
+(object_pattern (pair_pattern key: (property_identifier) @member))
+(required_parameter
+  pattern: (object_pattern (shorthand_property_identifier_pattern) @member)
+  type: (type_annotation [(type_identifier) (nested_type_identifier)] @member.of))
+(required_parameter
+  pattern: (object_pattern (object_assignment_pattern left: (shorthand_property_identifier_pattern) @member))
+  type: (type_annotation [(type_identifier) (nested_type_identifier)] @member.of))
+(required_parameter
+  pattern: (object_pattern (pair_pattern key: (property_identifier) @member))
+  type: (type_annotation [(type_identifier) (nested_type_identifier)] @member.of))
+(optional_parameter
+  pattern: (object_pattern (shorthand_property_identifier_pattern) @member)
+  type: (type_annotation [(type_identifier) (nested_type_identifier)] @member.of))
+(variable_declarator
+  name: (object_pattern (shorthand_property_identifier_pattern) @member)
+  type: (type_annotation [(type_identifier) (nested_type_identifier)] @member.of))
+(variable_declarator
+  name: (object_pattern (object_assignment_pattern left: (shorthand_property_identifier_pattern) @member))
+  type: (type_annotation [(type_identifier) (nested_type_identifier)] @member.of))
+(variable_declarator
+  name: (object_pattern (pair_pattern key: (property_identifier) @member))
+  type: (type_annotation [(type_identifier) (nested_type_identifier)] @member.of))
+
 ; Os textos fixos: o literal de texto escrito no código. O motor guarda o que
 ; tem duas palavras ou forma de caminho ou chave, com a marca (log, erro ou
 ; texto) e a declaração que o contém.

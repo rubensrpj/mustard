@@ -794,6 +794,7 @@ pub(super) fn run_entered_round(
         draft.insert("agent".into(), json!(agent));
         draft.insert("text".into(), json!(prompt.text));
         draft.insert("model".into(), json!(prompt.model));
+        draft.insert("effort".into(), json!(prompt.effort));
         draft.insert("lines".into(), json!(prompt.lines));
         draft.insert("chars".into(), json!(prompt.text.chars().count()));
         // Os itens que ficaram, e à parte a escolha do orquestrador: o que
@@ -848,14 +849,17 @@ pub(super) fn run_entered_round(
         draft.insert("chars".into(), json!(text.chars().count()));
         draft.insert("lines".into(), json!(text.lines().count()));
         draft.insert("text".into(), json!(text));
-        // O modelo pedido é o do envio original: um reenvio não remonta o
-        // input, só acrescenta o aviso do que mudou na cópia. O agente é o
+        // O modelo e o esforço pedidos são os do envio original: um reenvio
+        // não remonta o input, só acrescenta o aviso do que mudou na cópia. O agente é o
         // `wave`, o de toda onda, mesmo quando o envio antigo chamou o agente
         // de tarefa única, que foi juntado a ele e não existe mais no projeto.
         let agent = "wave";
         draft.insert("agent".into(), json!(agent));
         if let Some(model) = prior.str_field("model") {
             draft.insert("model".into(), json!(model));
+        }
+        if let Some(effort) = prior.str_field("effort") {
+            draft.insert("effort".into(), json!(effort));
         }
         draft.insert("items".into(), prior.fields.get("items").cloned().unwrap_or_else(|| json!([])));
         draft.insert("mustard".into(), json!(env!("CARGO_PKG_VERSION")));
@@ -1873,6 +1877,10 @@ mod tests {
             log.visible().into_iter().filter(|e| e.event_type == "send" && e.wave() == Some(1)).collect();
         let (previous, resent_send) = (sends_of_1[sends_of_1.len() - 2], sends_of_1[sends_of_1.len() - 1]);
         assert_eq!(resent_send.int("resends"), Some(previous.id), "{out}");
+        // O reenvio leva o modelo e o esforço do envio original, sem remontar.
+        assert_eq!(previous.str_field("effort"), Some("xhigh"), "{previous:?}");
+        assert_eq!(resent_send.str_field("model"), previous.str_field("model"), "{resent_send:?}");
+        assert_eq!(resent_send.str_field("effort"), Some("xhigh"), "{resent_send:?}");
         // O envio antigo da onda 2, com a pasta de compilação, é lido e
         // reenviado na mesma cópia; o envio novo não grava a pasta.
         let resent2 = log.visible().into_iter().rfind(|e| e.event_type == "send" && e.wave() == Some(2)).unwrap();

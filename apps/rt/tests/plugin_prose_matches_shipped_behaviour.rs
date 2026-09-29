@@ -1442,7 +1442,7 @@ fn every_surface_that_describes_upsert_states_the_always_rewritten_contract() {
     let text = mustard_core::platform::i18n::Locale::PtBr;
     let dir = tempfile::tempdir().unwrap();
     let claude = dir.path().join(".claude");
-    let created = mustard_core::seed_harness_texts(&claude, text, "sonnet").unwrap();
+    let created = mustard_core::seed_harness_texts(&claude, text, Default::default()).unwrap();
     assert_eq!(created.len(), mustard_core::harness_text_paths().len(), "the seeder wrote a different set");
     for (rel, outcome) in &created {
         assert_eq!(*outcome, mustard_core::SeedOutcome::Created, "{rel} on a fresh project");
@@ -1451,7 +1451,7 @@ fn every_surface_that_describes_upsert_states_the_always_rewritten_contract() {
     for rel in mustard_core::harness_text_paths() {
         std::fs::write(claude.join(rel), "AN OPERATOR EDIT").unwrap();
     }
-    let rewritten = mustard_core::seed_harness_texts(&claude, text, "sonnet").unwrap();
+    let rewritten = mustard_core::seed_harness_texts(&claude, text, Default::default()).unwrap();
     for (rel, outcome) in &rewritten {
         assert_eq!(
             *outcome,
@@ -1461,7 +1461,7 @@ fn every_surface_that_describes_upsert_states_the_always_rewritten_contract() {
         );
     }
 
-    let settled = mustard_core::seed_harness_texts(&claude, text, "sonnet").unwrap();
+    let settled = mustard_core::seed_harness_texts(&claude, text, Default::default()).unwrap();
     for (rel, outcome) in &settled {
         assert_eq!(
             *outcome,

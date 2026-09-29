@@ -481,6 +481,15 @@ impl Language {
 /// do Sonnet. A instalação o grava em `agents.model` quando o campo falta.
 pub const DEFAULT_AGENT_MODEL: &str = "sonnet";
 
+/// O esforço dos agentes do Mustard quando o `mustard.json` não declara
+/// nenhum. A instalação o grava em `agents.effort` quando o campo falta.
+pub const DEFAULT_AGENT_EFFORT: &str = "xhigh";
+
+/// Os valores que o Claude Code aceita no `effort:` do cabeçalho de um agente
+/// (os mesmos do `--effort` dele), do mais leve ao mais pesado. Um esforço
+/// fora desta lista não chega ao cabeçalho: o agente recebe o padrão.
+pub const AGENT_EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+
 /// A seção `agents` do `mustard.json`: o que a pessoa escolhe para os agentes
 /// que o Mustard instala em `.claude/agents/mustard/`. As chaves internas vão
 /// em snake_case, como as de `git`. O valor fica como o arquivo o traz, e o
@@ -492,6 +501,10 @@ pub struct AgentsConfig {
     /// de um modelo. Lido só por [`ProjectConfig::agent_model`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<Value>,
+    /// O esforço dos agentes, um dos [`AGENT_EFFORTS`]. Lido só por
+    /// [`ProjectConfig::agent_effort`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effort: Option<Value>,
     /// Qualquer outra chave da seção, guardada como veio.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -500,7 +513,22 @@ pub struct AgentsConfig {
 impl AgentsConfig {
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.model.is_none() && self.extra.is_empty()
+        self.model.is_none() && self.effort.is_none() && self.extra.is_empty()
+    }
+}
+
+/// O modelo e o esforço que a instalação escreve no cabeçalho de cada agente,
+/// já conferidos: o que o projeto declara em `agents`, ou o padrão de cada
+/// campo. O `Default` é o padrão dos dois.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AgentSettings<'a> {
+    pub model: &'a str,
+    pub effort: &'a str,
+}
+
+impl Default for AgentSettings<'_> {
+    fn default() -> Self {
+        Self { model: DEFAULT_AGENT_MODEL, effort: DEFAULT_AGENT_EFFORT }
     }
 }
 
@@ -633,7 +661,7 @@ pub struct ProjectConfig {
     pub acronyms: Vec<String>,
 
     /// Os agentes do Mustard no projeto — veja [`AgentsConfig`]. Lida só por
-    /// [`ProjectConfig::agent_model`].
+    /// [`ProjectConfig::agent_model`] e [`ProjectConfig::agent_effort`].
     #[serde(skip_serializing_if = "AgentsConfig::is_empty")]
     pub agents: AgentsConfig,
 
@@ -992,6 +1020,35 @@ impl ProjectConfig {
         }
         self.agents.model = Some(Value::String(DEFAULT_AGENT_MODEL.to_string()));
         true
+    }
+
+    /// O esforço que a instalação escreve no cabeçalho de cada agente: o de
+    /// `agents.effort`, sem espaço em volta e sem distinguir maiúscula, se for
+    /// um dos [`AGENT_EFFORTS`]; do contrário — campo faltando, em branco, sem
+    /// ser texto ou fora da lista —, [`DEFAULT_AGENT_EFFORT`].
+    #[must_use]
+    pub fn agent_effort(&self) -> &'static str {
+        let declared = self.agents.effort.as_ref().and_then(Value::as_str).map(str::trim);
+        declared
+            .and_then(|effort| AGENT_EFFORTS.into_iter().find(|known| known.eq_ignore_ascii_case(effort)))
+            .unwrap_or(DEFAULT_AGENT_EFFORT)
+    }
+
+    /// Escreve [`DEFAULT_AGENT_EFFORT`] em `agents.effort` quando o campo
+    /// falta, para a pessoa vê-lo no arquivo e trocá-lo; diz se escreveu. O
+    /// que já está lá, valendo ou não, fica como está.
+    pub fn ensure_agent_effort(&mut self) -> bool {
+        if self.agents.effort.is_some() {
+            return false;
+        }
+        self.agents.effort = Some(Value::String(DEFAULT_AGENT_EFFORT.to_string()));
+        true
+    }
+
+    /// O modelo e o esforço dos agentes, os dois já conferidos.
+    #[must_use]
+    pub fn agent_settings(&self) -> AgentSettings<'_> {
+        AgentSettings { model: self.agent_model(), effort: self.agent_effort() }
     }
 }
 
@@ -1704,5 +1761,71 @@ mod tests {
         std::fs::write(&path, r#"{"agents":{"model":"a b"}}"#).unwrap();
         let mut invalid = ProjectConfig::load(dir.path());
         assert!(!invalid.ensure_agent_model(), "what is written is never overwritten, valid or not");
+    }
+
+    /// O esforço dos agentes é o de `agents.effort`, sem espaço em volta e sem
+    /// distinguir maiúscula, quando é um dos que o Claude Code aceita no
+    /// cabeçalho de um agente; sem o campo, em branco, sem ser texto ou fora
+    /// da lista, vale o padrão.
+    #[test]
+    fn the_agent_effort_is_the_declared_one_or_the_default() {
+        let dir = tempdir().unwrap();
+        assert_eq!(ProjectConfig::load(dir.path()).agent_effort(), DEFAULT_AGENT_EFFORT);
+        assert_eq!(DEFAULT_AGENT_EFFORT, "xhigh");
+        assert_eq!(AGENT_EFFORTS, ["low", "medium", "high", "xhigh", "max"]);
+
+        let path = dir.path().join("mustard.json");
+        for (agents, effort) in [
+            (r#"{"effort":"low"}"#, "low"),
+            (r#"{"effort":"medium"}"#, "medium"),
+            (r#"{"effort":"high"}"#, "high"),
+            (r#"{"effort":"xhigh"}"#, "xhigh"),
+            (r#"{"effort":"max"}"#, "max"),
+            (r#"{"effort":"  high "}"#, "high"),
+            (r#"{"effort":"HIGH"}"#, "high"),
+            (r#"{"effort":"ultra"}"#, DEFAULT_AGENT_EFFORT),
+            (r#"{"effort":""}"#, DEFAULT_AGENT_EFFORT),
+            (r#"{"effort":"   "}"#, DEFAULT_AGENT_EFFORT),
+            (r#"{"effort":7}"#, DEFAULT_AGENT_EFFORT),
+            (r#"{"effort":"high\nmodel: opus"}"#, DEFAULT_AGENT_EFFORT),
+            (r#"{"effort":"high max"}"#, DEFAULT_AGENT_EFFORT),
+            ("{}", DEFAULT_AGENT_EFFORT),
+        ] {
+            std::fs::write(&path, format!(r#"{{"agents":{agents}}}"#)).unwrap();
+            let cfg = ProjectConfig::load(dir.path());
+            assert!(!cfg.unreadable, "{agents} must not make the file unreadable");
+            assert_eq!(cfg.agent_effort(), effort, "{agents}");
+        }
+
+        std::fs::write(&path, r#"{"agents":{"model":"opus","effort":"max"}}"#).unwrap();
+        let cfg = ProjectConfig::load(dir.path());
+        assert_eq!(cfg.agent_settings(), AgentSettings { model: "opus", effort: "max" });
+        assert_eq!(AgentSettings::default(), AgentSettings { model: "sonnet", effort: "xhigh" });
+    }
+
+    /// O padrão do esforço só é escrito com o campo faltando: o que a pessoa
+    /// já escreveu, valendo ou não, não muda, e o resto da seção `agents`
+    /// (o modelo e as chaves que o Mustard não conhece) fica como estava.
+    #[test]
+    fn the_default_effort_is_written_only_when_missing_and_keeps_the_rest_of_the_section() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("mustard.json");
+
+        std::fs::write(&path, r#"{"agents":{"model":"opus","note":"keep"}}"#).unwrap();
+        let mut cfg = ProjectConfig::load(dir.path());
+        assert!(cfg.ensure_agent_effort(), "the effort was missing");
+        assert!(!cfg.ensure_agent_effort(), "the second time it is there");
+        cfg.write(dir.path()).unwrap();
+        let written: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(written["agents"], serde_json::json!({"model": "opus", "effort": "xhigh", "note": "keep"}));
+
+        std::fs::write(&path, r#"{"agents":{"effort":"medium"}}"#).unwrap();
+        let mut cfg = ProjectConfig::load(dir.path());
+        assert!(!cfg.ensure_agent_effort(), "a declared effort is left alone");
+        assert_eq!(cfg.agent_effort(), "medium");
+        std::fs::write(&path, r#"{"agents":{"effort":"ultra"}}"#).unwrap();
+        let mut invalid = ProjectConfig::load(dir.path());
+        assert!(!invalid.ensure_agent_effort(), "what is written is never overwritten, valid or not");
+        assert_eq!(invalid.agent_effort(), DEFAULT_AGENT_EFFORT, "the agent falls back to the default");
     }
 }

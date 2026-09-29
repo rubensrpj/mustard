@@ -51,6 +51,9 @@ pub struct WavePrompt {
     /// O modelo pedido para a onda: o que o `mustard.json` declara para os
     /// agentes ([`Execution::requested_model`]).
     pub model: String,
+    /// O esforço pedido para a onda: o que o `mustard.json` declara para os
+    /// agentes ([`Execution::requested_effort`]).
+    pub effort: String,
     /// O texto do pedido, sempre: a página mostra mesmo o pedido recusado,
     /// que é justamente o que precisa ser visto antes da aprovação.
     pub text: String,
@@ -272,6 +275,7 @@ fn project_execution(root: &Path) -> Execution {
         root: shown(root),
         language: config.language(),
         model: config.agent_model().to_string(),
+        effort: config.agent_effort().to_string(),
         ..Execution::default()
     }
 }
@@ -829,7 +833,8 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
     // molde com esse nome mora no projeto, e o envio grava só o nome.
     let agent = "wave".to_string();
     let model = context.base.requested_model().to_string();
-    WavePrompt { wave, agent, model, text, lines, bad_skills, stale_skills, bad_settings: Vec::new() }
+    let effort = context.base.requested_effort().to_string();
+    WavePrompt { wave, agent, model, effort, text, lines, bad_skills, stale_skills, bad_settings: Vec::new() }
 }
 
 /// As regras da execução da onda `wave`: os comandos do projeto, as outras

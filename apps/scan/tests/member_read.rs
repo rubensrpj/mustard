@@ -248,6 +248,76 @@ fn a_rust_field_named_in_a_destructuring_is_read_from_the_type_the_pattern_write
     assert_eq!(proven, ["src/main.rs:20:cortar"], "a field the pattern names is a proven use");
 }
 
+/// No TypeScript, o campo escrito numa desestruturação é lido do objeto
+/// desmontado: `const { total, troco: t } = pedido` lê `total` e `troco`
+/// (`t` é o nome novo do valor, e não campo), também no parâmetro
+/// desestruturado, com valor padrão ou sem. Quando o parâmetro escreve o tipo
+/// (`{ desconto }: Pedido`) ou a variável o escreve (`const { desconto }:
+/// Nota = n`), o campo é do tipo escrito, e não o de mesmo nome de outra
+/// classe à vista. O campo que nenhuma desestruturação nem leitura
+/// nomeia segue sem uso.
+#[test]
+fn a_typescript_field_named_in_a_destructuring_is_read_from_the_object() {
+    let map = scanned(
+        "typescript-destructuring",
+        &[
+            (
+                "src/pedido.ts",
+                "export class Pedido {\n  total = 0;\n  troco = 0;\n  desconto = 0;\n  frete = 0;\n  nunca = 0;\n}\n",
+            ),
+            ("src/nota.ts", "export class Nota {\n  desconto = 1;\n}\n"),
+            (
+                "src/caixa.ts",
+                "import { Pedido } from './pedido';\nimport { Nota } from './nota';\n\n\
+                 export function fechar(pedido) {\n  const { total, troco: t } = pedido;\n  return total + t;\n}\n\n\
+                 export function abrir({ desconto }: Pedido) {\n  return desconto;\n}\n\n\
+                 export function ajustar({ frete = 0 }: Pedido) {\n  return frete + 1;\n}\n\n\
+                 export function ler(n) {\n  const { desconto }: Nota = n;\n  return desconto;\n}\n",
+            ),
+        ],
+    );
+    assert_eq!(suspect_uses(&map, "src/pedido.ts", "total"), ["src/caixa.ts:5:fechar"], "an object the file does not type");
+    assert_eq!(proven_uses(&map, "src/pedido.ts", "total"), Vec::<String>::new());
+    assert_eq!(every_use(&map, "src/pedido.ts", "troco"), ["src/caixa.ts:5:fechar"], "the key of a renamed field");
+    assert_eq!(owned_uses(&map, "src/pedido.ts", "Pedido", "desconto"), ["src/caixa.ts:9:abrir"], "typed by the parameter");
+    assert_eq!(owned_uses(&map, "src/nota.ts", "Nota", "desconto"), ["src/caixa.ts:18:ler"], "typed by the variable");
+    assert_eq!(every_use(&map, "src/pedido.ts", "frete"), ["src/caixa.ts:13:ajustar"], "a parameter with a default value");
+    assert_eq!(every_use(&map, "src/pedido.ts", "nunca"), Vec::<String>::new(), "a field nobody names");
+}
+
+/// No C#, a propriedade escrita num padrão de propriedade é lida do objeto
+/// que o padrão confere: `x is { Total: > 0 }` e `x is { Troco: var t }` leem
+/// `Total` e `Troco`. Quando o padrão escreve o tipo antes das chaves
+/// (`x is Pedido { Desconto: var d }`), a propriedade é do tipo escrito, e não
+/// a de mesmo nome de outra classe à vista. A propriedade que nenhum padrão
+/// nem leitura nomeia segue sem uso.
+#[test]
+fn a_csharp_property_named_in_a_property_pattern_is_read_from_the_object() {
+    let map = scanned(
+        "csharp-pattern",
+        &[
+            (
+                "Loja/Pedido.cs",
+                "namespace Loja;\n\npublic class Pedido\n{\n    public int Total { get; set; }\n    public int Desconto;\n    \
+                 public int Troco { get; set; }\n    public int Nunca { get; set; }\n}\n",
+            ),
+            ("Loja/Nota.cs", "namespace Loja;\n\npublic class Nota\n{\n    public int Desconto;\n}\n"),
+            (
+                "Loja/Caixa.cs",
+                "namespace Loja;\n\npublic class Caixa\n{\n    public bool Fechar(object x)\n    {\n        \
+                 return x is { Total: > 0 };\n    }\n\n    public int Abrir(object x)\n    {\n        \
+                 return x is Pedido { Desconto: var d } ? d : 0;\n    }\n\n    public int Ler(object x)\n    {\n        \
+                 if (x is { Troco: var t })\n        {\n            return t;\n        }\n        return 0;\n    }\n}\n",
+            ),
+        ],
+    );
+    assert_eq!(every_use(&map, "Loja/Pedido.cs", "Total"), ["Loja/Caixa.cs:7:Fechar"]);
+    assert_eq!(every_use(&map, "Loja/Pedido.cs", "Troco"), ["Loja/Caixa.cs:17:Ler"], "a property named with a new variable");
+    assert_eq!(owned_uses(&map, "Loja/Pedido.cs", "Pedido", "Desconto"), ["Loja/Caixa.cs:12:Abrir"], "typed by the pattern");
+    assert_eq!(owned_uses(&map, "Loja/Nota.cs", "Nota", "Desconto"), Vec::<String>::new(), "the same name in another class");
+    assert_eq!(every_use(&map, "Loja/Pedido.cs", "Nunca"), Vec::<String>::new(), "a property nobody names");
+}
+
 /// No Rust, o campo lido depois de um nome que a assinatura tipa é do tipo
 /// escrito, até o nome ser ligado de novo: o `let` sem tipo tira o tipo do
 /// nome, e o `let` com outro tipo troca. O tipo que o arquivo não enxerga e o

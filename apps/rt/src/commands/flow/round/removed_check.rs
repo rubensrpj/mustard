@@ -21,9 +21,14 @@
 //!   órfão: a função principal, a que atende uma rota do
 //!   mapa, o método que cumpre um contrato (chamado por quem registra o
 //!   tipo) e a declarada no arquivo de entrada da pasta, que exporta o
-//!   pacote. O órfão cujo nome ainda aparece como palavra inteira fora de
-//!   teste e fora das linhas dele, pela mesma busca do resto pelo nome, vai
-//!   só como aviso: o texto pode ser um uso que o mapa não ligou.
+//!   pacote. O campo, a propriedade ou o membro de enum que ainda é lido
+//!   pelo texto (`objeto.nome`, `objeto->nome`) fora de teste, num arquivo
+//!   que uma onda mudou ou que o lia na base, não é órfão: o mapa não liga a
+//!   leitura depois de uma variável cujo tipo o arquivo não escreve
+//!   ([`member_read_remains`]). O órfão cujo nome ainda aparece como palavra
+//!   inteira fora de teste e fora das linhas dele, pela mesma busca do resto
+//!   pelo nome, vai só como aviso: o texto pode ser um uso que o mapa não
+//!   ligou.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -101,6 +106,9 @@ fn orphans(root: &Path, maps: &AfterWave, created: &[String], lang: Locale) -> V
                 old.used_by.iter().filter(|site| from_program(&maps.base, site)).map(|site| site.file.as_str()).collect();
             let wave = maps.changed.iter().find(|(_, files)| files.iter().any(|f| callers.contains(&f.as_str())));
             let Some((wave, _)) = wave else { continue };
+            if member_read_remains(root, maps, module, decl, &callers) {
+                continue;
+            }
             let text = translate("round.after_wave.orphan", lang)
                 .replace("{name}", &decl.name)
                 .replace("{file}", &module.path)
@@ -110,6 +118,57 @@ fn orphans(root: &Path, maps: &AfterWave, created: &[String], lang: Locale) -> V
         }
     }
     out
+}
+
+/// Os tipos de declaração que se leem depois do objeto, sem chamada:
+/// `pedido.total`, `cor.Vermelho`.
+const READ_KINDS: &[&str] = &["field", "property", "enum_member"];
+
+/// O campo, a propriedade ou o membro de enum `decl`, declarado em `module`,
+/// ainda é lido pelo texto fora de teste: alguma linha de código escreve
+/// `objeto.nome` ou `objeto->nome` (o nome como palavra inteira) num arquivo
+/// que uma onda mudou ou num dos que o liam na base (`callers`). O mapa liga
+/// a leitura ao campo pelo tipo que o arquivo escreve para o objeto; depois
+/// de uma variável cujo tipo vem de uma chamada (`let walked = Walked::of(x)`)
+/// ele não liga, e o campo parece sem uso ainda que o texto o leia. Fora
+/// deste texto ficam o arquivo de teste, o trecho de teste do arquivo, a
+/// linha de comentário e as linhas da própria declaração.
+fn member_read_remains(root: &Path, maps: &AfterWave, module: &MapModule, decl: &MapDecl, callers: &[&str]) -> bool {
+    if !READ_KINDS.contains(&decl.kind.as_str()) {
+        return false;
+    }
+    let own = decl.line..=decl.end_line.max(decl.line);
+    let files: BTreeSet<&str> =
+        maps.changed.iter().flat_map(|(_, files)| files).map(String::as_str).chain(callers.iter().copied()).collect();
+    files.into_iter().filter(|file| !is_test_path(file)).any(|file| {
+        let Ok(text) = std::fs::read_to_string(root.join(file)) else { return false };
+        let tests = maps.after.module(file).or_else(|| maps.base.module(file));
+        text.lines().enumerate().any(|(at, line)| {
+            let number = u64::try_from(at + 1).unwrap_or(u64::MAX);
+            let own_lines = file == module.path && own.contains(&number);
+            let test_block = tests.is_some_and(|site| in_test_lines(site, number));
+            !own_lines && !test_block && !is_comment_line(line) && reads_member(line, &decl.name)
+        })
+    })
+}
+
+/// A linha só tem comentário, de linha ou de bloco, pelo começo dela.
+fn is_comment_line(line: &str) -> bool {
+    let line = line.trim_start();
+    line.starts_with("//") || line.starts_with("/*") || line.starts_with('*') || line.starts_with('#')
+}
+
+/// A linha escreve `objeto.name` ou `objeto->name`, com `name` como palavra
+/// inteira. O `..name` de uma faixa e o `...name` de um espalhamento não são
+/// leitura de membro.
+fn reads_member(line: &str, name: &str) -> bool {
+    let is_word = |c: char| c.is_alphanumeric() || c == '_';
+    line.match_indices(name).any(|(at, _)| {
+        let before = &line[..at];
+        let after = &line[at + name.len()..];
+        let member_access = (before.ends_with('.') && !before.ends_with("..")) || before.ends_with("->");
+        member_access && !after.starts_with(is_word)
+    })
 }
 
 /// `before` e `now` são a mesma peça em dois mapas: o mesmo nome, o mesmo tipo
@@ -243,7 +302,12 @@ mod tests {
     /// `files` comitados no projeto; a onda já enviada; e o mapa da base
     /// `base`.
     fn project(root: &Path, files: &[(&str, &str)], base: &Value) {
-        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        project_at(root, "src/a.rs", files, base);
+    }
+
+    /// Como [`project`], com a onda 1 mudando o arquivo `changed`.
+    fn project_at(root: &Path, changed: &str, files: &[(&str, &str)], base: &Value) {
+        approved(root, "x", &[(1, &[changed], &[])]);
         for (path, text) in files {
             let path = root.join(path);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -259,7 +323,12 @@ mod tests {
 
     /// A volta da onda 1 mudando `src/a.rs`, com o mapa de depois `after`.
     fn back(root: &Path, after: Value) -> Value {
-        let report = delivered(root, 1, "A soma mudou.", &["src/a.rs"]);
+        back_at(root, "src/a.rs", after)
+    }
+
+    /// Como [`back`], com a onda 1 mudando o arquivo `changed`.
+    fn back_at(root: &Path, changed: &str, after: Value) -> Value {
+        let report = delivered(root, 1, "A soma mudou.", &[changed]);
         round_with_mine(root, "x", Some(&report), &mine_giving(after))
     }
 
@@ -527,5 +596,93 @@ mod tests {
         assert_eq!(out["reason"], json!("round-after-wave"), "{out}");
         let hint = out["hint"].as_str().unwrap_or_default();
         assert!(hint.contains("`compute_total` em `src/a.rs` linha 5 ficou sem uso fora de teste"), "{hint}");
+    }
+
+    /// As três línguas dos testes do membro lido pelo texto: a língua do mapa,
+    /// o arquivo que a onda muda, o arquivo de um leitor que ela não muda, o
+    /// tipo da declaração e o nome dela.
+    const MEMBERS: [(&str, &str, &str, &str, &str); 3] = [
+        ("rust", "src/a.rs", "src/reader.rs", "field", "comments"),
+        ("typescript", "src/a.ts", "src/reader.ts", "field", "comments"),
+        ("csharp", "src/A.cs", "src/Reader.cs", "property", "Comments"),
+    ];
+
+    /// O mapa com o membro `name` do tipo `Walked`, declarado na linha 1 de
+    /// `file`, lido pelos `used` (`arquivo:linha:quem`).
+    fn member_map(language: &str, kind: &str, file: &str, name: &str, used: &[String]) -> Value {
+        let member = json!({"kind": kind, "name": name, "line": 1, "end_line": 1, "used_by": used, "owner": ["Walked"]});
+        json!({"modules": [{"path": file, "language": language, "declarations": [member]}]})
+    }
+
+    #[test]
+    fn a_field_read_by_text_after_a_variable_of_an_inferred_type_is_not_an_orphan() {
+        // O caso do campo `comments`: lido em `walked.comments` depois de
+        // `let walked = Walked::of(root)`, cujo tipo o arquivo não escreve, e
+        // que o mapa de depois não liga ao campo.
+        for (language, file, _, kind, name) in MEMBERS {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            let text = format!(
+                "struct Walked {{}}\n\nfn walk() {{\n    let walked = Walked::of(root);\n    let n = walked.{name}.len();\n}}\n"
+            );
+            let read = [format!("{file}:5:walk")];
+            project_at(root, file, &[(file, text.as_str())], &member_map(language, kind, file, name, &read));
+            silent(&back_at(root, file, member_map(language, kind, file, name, &[])));
+        }
+    }
+
+    #[test]
+    fn a_field_read_by_text_in_a_file_that_read_it_in_the_base_is_not_an_orphan() {
+        // O leitor está num arquivo que a onda não mudou, e o mapa de depois
+        // deixou de ligar a leitura dele ao campo.
+        for (language, file, reader, kind, name) in MEMBERS {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            let text = format!("fn show(walked: &Walked) -> usize {{\n    let w = view(walked);\n    w.{name}.len()\n}}\n");
+            let read = [format!("{file}:5:walk"), format!("{reader}:3:show")];
+            let files = [(file, "struct Walked {}\n"), (reader, text.as_str())];
+            project_at(root, file, &files, &member_map(language, kind, file, name, &read));
+            silent(&back_at(root, file, member_map(language, kind, file, name, &[])));
+        }
+    }
+
+    #[test]
+    fn a_field_no_text_reads_any_more_is_still_an_orphan_in_every_language() {
+        // O nome só aparece dentro de outro maior (`comments_total`,
+        // `xcomments`): não é leitura dele, e ele nem está citado.
+        for (language, file, _, kind, name) in MEMBERS {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            let text = format!("struct Walked {{}}\n\nfn walk() {{\n    let n = walked.{name}_total + x{name};\n}}\n");
+            let read = [format!("{file}:5:walk")];
+            project_at(root, file, &[(file, text.as_str())], &member_map(language, kind, file, name, &read));
+            let out = back_at(root, file, member_map(language, kind, file, name, &[]));
+            assert_eq!(out["reason"], json!("round-after-wave"), "{language}: {out}");
+            let hint = out["hint"].as_str().unwrap_or_default();
+            assert!(hint.contains(&format!("`{name}` em `{file}` linha 1 ficou sem uso fora de teste")), "{language}: {hint}");
+        }
+    }
+
+    #[test]
+    fn a_name_written_only_in_a_comment_a_range_or_a_test_file_is_not_a_read_of_the_field() {
+        // O nome está escrito fora de teste (comentário, faixa `0..nome`), e
+        // por isso o aviso não recusa, mas segue saindo: nenhuma dessas
+        // linhas lê o campo, e o arquivo de teste não conta.
+        for (language, file, _, kind, name) in MEMBERS {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            let text =
+                format!("struct Walked {{}}\n\n// lê o walked.{name} depois\nfn walk() {{\n    for i in 0..{name} {{}}\n}}\n");
+            let tested = format!("fn checks() {{ walked.{name}; }}\n");
+            let files = [(file, text.as_str()), ("tests/walked_test.rs", tested.as_str())];
+            let read = [format!("{file}:5:walk")];
+            project_at(root, file, &files, &member_map(language, kind, file, name, &read));
+            let out = back_at(root, file, member_map(language, kind, file, name, &[]));
+            assert_eq!(out["ok"], json!(true), "{language}: {out}");
+            let warned = out["warnings"].as_array().cloned().unwrap_or_default();
+            let hint = warned.iter().find(|w| w["reason"] == json!("round-after-wave-warnings")).map(|w| w["hint"].to_string());
+            let hint = hint.unwrap_or_else(|| panic!("{language}: the warning: {out}"));
+            assert!(hint.contains(&format!("`{name}` em `{file}` linha 1 ficou sem uso fora de teste")), "{language}: {hint}");
+        }
     }
 }

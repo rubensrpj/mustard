@@ -754,6 +754,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.field.mustard", Locale::EnUs) => "Mustard version",
         ("page.field.model", Locale::PtBr) => "Modelo pedido",
         ("page.field.model", Locale::EnUs) => "Requested model",
+        ("page.field.effort", Locale::PtBr) => "Esforço pedido",
+        ("page.field.effort", Locale::EnUs) => "Requested effort",
         ("page.field.model_used", Locale::PtBr) => "Modelo usado",
         ("page.field.model_used", Locale::EnUs) => "Model used",
         // O nome do agente chamado, gravado no envio da onda.
@@ -1028,8 +1030,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("page.rs"),
             super::PREFIXES,
-            388,
-            0xc5a2_550b_11c8_e6f0,
+            389,
+            0x78c3_a76a_686a_1bbc,
         );
     }
 
