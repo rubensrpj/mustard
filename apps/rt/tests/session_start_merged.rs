@@ -92,7 +92,10 @@ impl Scene {
         std::fs::write(work.join(".git/info/exclude"), ".claude/\nmustard.json\n").unwrap();
         let config = json!({
             "language": {"text": "pt-BR"},
-            "git": {"flow": {"*": "dev"}, "provider": "github", "deleteRemoteBranch": delete_remote}
+            "git": {"flow": {"*": "dev"}, "provider": "github", "deleteRemoteBranch": delete_remote,
+                // O texto dos pull requests da história do mapa é outra
+                // pergunta ao provedor, que este teste não conta.
+                "pullRequestText": false}
         });
         std::fs::write(work.join("mustard.json"), config.to_string()).unwrap();
         std::fs::write(work.join("README.md"), "loja\n").unwrap();
@@ -163,7 +166,30 @@ impl Scene {
             !scene.work.join(".claude/pending/charges.json").exists(),
             "opening the pull request arms no charge"
         );
+        scene.install_the_map();
         scene
+    }
+
+    /// O mapa que a instalação deixa no projeto: sem ele, o primeiro início de
+    /// sessão o criaria antes de qualquer aviso, e o que essa criação fizesse
+    /// entraria na conta deste teste. O que o provedor falso receber aqui não
+    /// conta.
+    fn install_the_map(&self) {
+        let out = Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+            .args(["run", "map", "search", "--query", "entrega", "--root"])
+            .arg(&self.work)
+            .current_dir(&self.work)
+            .env("PATH", self.path())
+            .env("FAKE_GH_LOG", self.dir.path().join("gh-map.log"))
+            .env("FAKE_GH_EXIT", "1")
+            .env_remove("MUSTARD_ACTIVE_SPEC")
+            .output()
+            .expect("run mustard-rt");
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            mustard_core::io::project_map::model_path(&self.work).is_file(),
+            "the map is on disk, as the install leaves it"
+        );
     }
 
     /// Roda o `pr-open` da spec pelo binário, com o `gh` falso. Devolve a

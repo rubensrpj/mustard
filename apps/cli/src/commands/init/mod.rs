@@ -36,7 +36,11 @@
 //!    older Mustard wrote under another rule ([`refresh_search`]): the
 //!    ordinary write to a spec only appends, so this is where an old line is
 //!    brought up to date. A failure is a warning, never an abort;
-//! 6. list what an older Mustard left in files that are not its own — the
+//! 6. create the project map ([`map`]): the scan reads the project once, so
+//!    the first search of the assistant already has a map to answer from,
+//!    also with `--yes` and in a project with no code yet. A scan that fails
+//!    is a warning: the next session start or search creates the map;
+//! 7. list what an older Mustard left in files that are not its own — the
 //!    marks in the `CLAUDE.md` files, the seed's lines in the team's
 //!    `.claude/settings.json`, a planted `.claude/CLAUDE.md` — and say how to
 //!    take it out. Nothing of it is removed here: that happens through
@@ -68,6 +72,7 @@
 //! - this file — the flow and its library entry point;
 //! - [`questions`] — what to do with an existing `.claude/`;
 //! - [`seeding`] — the guard, the footprint and the narration;
+//! - [`map`] — the project map, created at the end of the install;
 //! - [`project_config`] — the one write of `mustard.json`;
 //! - [`tools`] — the rtk gate, the ripgrep installer and the call into the
 //!   code-tool step.
@@ -79,6 +84,7 @@ use anyhow::{Context, Result};
 use mustard_core::io::fs as mfs;
 use mustard_core::{InstallMode, ProjectConfig, Runtime};
 
+mod map;
 mod project_config;
 mod questions;
 mod seeding;
@@ -149,6 +155,17 @@ pub fn init(project_path: &Path, options: &InitOptions) -> Result<InitOutcome> {
     // The gate itself is not softened — it moved to `cli::dispatch`, where the
     // terminal user still meets it before any disk write. See `probe_rtk`.
 
+    init_with_scan(project_path, options, &map::located_scan)
+}
+
+/// [`init`] com o scan que cria o mapa dado por `scan`, no lugar do que está
+/// ao lado deste programa. O scan é a única peça da instalação que roda outro
+/// programa, e os testes da instalação não dependem de qual a máquina tem.
+fn init_with_scan(
+    project_path: &Path,
+    options: &InitOptions,
+    scan: &dyn Fn(&Path, &Path) -> mustard_core::platform::error::Result<mustard_core::domain::scan::ScanReport>,
+) -> Result<InitOutcome> {
     let project_path = project_path
         .canonicalize()
         .with_context(|| format!("resolving project path {}", project_path.display()))?;
@@ -252,6 +269,11 @@ pub fn init(project_path: &Path, options: &InitOptions) -> Result<InitOutcome> {
     // tudo semeado: a gravação comum só acrescenta no fim do arquivo.
     refresh_search(&project_path, &mut std::io::stdout());
 
+    // O mapa do projeto, por último de tudo o que se grava: a primeira busca
+    // do assistente responde por ele, e o projeto sem código ganha um mapa
+    // vazio. O scan que falha vira aviso, nunca aborta.
+    map::build(&project_path, &mut std::io::stdout(), scan);
+
     // What an older Mustard left in files that are not its own: listed, never
     // taken out from here.
     seeding::report_cleanup(
@@ -313,9 +335,18 @@ fn print_next_steps() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
     use std::fs;
     use std::process::Command;
+    use mustard_core::domain::scan::ScanReport;
     use tempfile::tempdir;
+
+    /// O `init` dos testes: a instalação com um scan que não cria nada, para
+    /// nenhum teste depender do scan que a máquina tem. Os testes do mapa dão o
+    /// scan deles a [`init_with_scan`].
+    fn init(project_path: &Path, options: &InitOptions) -> Result<InitOutcome> {
+        init_with_scan(project_path, options, &|_, _| Ok(ScanReport::default()))
+    }
 
 
     #[test]
@@ -437,8 +468,8 @@ mod tests {
             "no .claude/mustard.json — config lives only at the project root"
         );
 
-        // init seeds no entity-registry — the repo model is grain's
-        // `.claude/grain.db`, produced on demand by `mustard-rt run scan`.
+        // init seeds no entity-registry — the repo model is the map in
+        // `.claude/grain.db`, which the scan builds at the end of the install.
         assert!(!claude.join("entity-registry.json").exists());
     }
 
@@ -886,5 +917,67 @@ mod tests {
         .unwrap();
 
         assert!(project.join(".claude").join("settings.local.json").exists());
+    }
+
+    /// A instalação pede o mapa do projeto ao scan uma vez, por último de tudo
+    /// o que grava — os ajustes e o `mustard.json` já estão no disco —, sobre o
+    /// projeto e o lugar onde o mapa mora, e termina como instalada.
+    #[test]
+    fn init_builds_the_map_once_after_the_install_is_on_disk() {
+        let work = tempdir().unwrap();
+        let project = work.path().join("project");
+        fs::create_dir_all(project.join(".git")).unwrap();
+
+        let calls = RefCell::new(Vec::new());
+        let scan = |root: &Path, out: &Path| {
+            let installed = root.join(".claude").join("settings.local.json").exists() && root.join("mustard.json").exists();
+            calls.borrow_mut().push((root.to_path_buf(), out.to_path_buf(), installed));
+            Ok(ScanReport::default())
+        };
+        let outcome = init_with_scan(&project, &InitOptions { yes: true, ..InitOptions::default() }, &scan).unwrap();
+
+        assert_eq!(outcome, InitOutcome::Installed);
+        let root = project.canonicalize().unwrap();
+        let calls = calls.into_inner();
+        assert_eq!(
+            calls,
+            vec![(root.clone(), mustard_core::io::project_map::model_path(&root), true)],
+            "one pass over the project, into its map, with the install already written"
+        );
+    }
+
+    /// O scan que falha — ausente da máquina, ou saindo com erro — não derruba
+    /// a instalação: o que ela instala está no disco e a rodada termina como
+    /// instalada.
+    #[test]
+    fn init_installs_even_when_the_scan_fails() {
+        let work = tempdir().unwrap();
+        let project = work.path().join("project");
+        fs::create_dir_all(project.join(".git")).unwrap();
+
+        let failing = |_: &Path, _: &Path| Err(mustard_core::platform::error::Error::check_failed("scan: not found"));
+        let outcome = init_with_scan(&project, &InitOptions { yes: true, ..InitOptions::default() }, &failing).unwrap();
+
+        assert_eq!(outcome, InitOutcome::Installed);
+        assert!(project.join(".claude").join("settings.local.json").exists());
+        assert!(project.join("mustard.json").exists());
+    }
+
+    /// A simulação não toca em nada, então também não roda o scan.
+    #[test]
+    fn init_dry_run_does_not_run_the_scan() {
+        let work = tempdir().unwrap();
+        let dry = work.path().join("dry");
+        fs::create_dir_all(&dry).unwrap();
+
+        let calls = RefCell::new(0);
+        let scan = |_: &Path, _: &Path| {
+            *calls.borrow_mut() += 1;
+            Ok(ScanReport::default())
+        };
+        let options = InitOptions { yes: true, dry_run: true, ..InitOptions::default() };
+        assert_eq!(init_with_scan(&dry, &options, &scan).unwrap(), InitOutcome::DryRun);
+
+        assert_eq!(*calls.borrow(), 0);
     }
 }

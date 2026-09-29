@@ -285,8 +285,9 @@ pub(super) fn refresh_map(root: &Path, mine: &dyn Fn(&Path, &Path) -> mustard_co
 /// pelo estado gravado e pelas marcas dos blocos, sem ler o mapa inteiro. A
 /// marca da compilação de agora é a que o scan achado ao lado deste programa
 /// diz ([`mustard_core::Scan::format`]), pedida só quando o mapa traz marca
-/// com que comparar. Sem git, sem mapa ou com o mapeador falhando, segue
-/// sem travar e sem aviso novo, e nunca cria o mapa.
+/// com que comparar. Dentro do git e sem o arquivo do mapa, o mapa é criado
+/// pela mesma passada: é o único lugar que o cria fora da instalação. Sem git
+/// ou com o mapeador falhando, segue sem travar e sem aviso novo.
 pub(crate) fn refresh_map_if_stale(root: &Path, mine: &dyn Fn(&Path, &Path) -> mustard_core::platform::error::Result<ScanReport>) {
     refresh_map_if_behind(root, mine, &installed_scan_format);
 }
@@ -1021,11 +1022,11 @@ mod tests {
         }
     }
 
-    /// Sem mapa no disco, sem git no diretório e com um mapa que já é o do
-    /// commit e do conteúdo de agora, a ferramenta do scan nunca roda por
-    /// [`refresh_map_if_stale`]; um arquivo editado sem commit, um commit à
-    /// mão e o mapa gravado sem a listagem a fazem rodar; e, quando ela
-    /// falha, a chamada não trava nem propaga o erro.
+    /// Sem git no diretório e com um mapa que já é o do commit e do conteúdo
+    /// de agora, a ferramenta do scan nunca roda por [`refresh_map_if_stale`];
+    /// um arquivo editado sem commit, um commit à mão e o mapa gravado sem a
+    /// listagem a fazem rodar; e, quando ela falha, a chamada não trava nem
+    /// propaga o erro.
     #[test]
     fn a_stale_map_without_what_it_needs_never_breaks() {
         let dir = tempdir().unwrap();
@@ -1046,11 +1047,11 @@ mod tests {
             project_map::write_text(root, &format!(r#"{{"state": {{"head": "{head}", "listing": "{listing}"}}}}"#)).unwrap();
         };
 
-        // Sem mapa: nada a comparar, a ferramenta não roda, e nenhum mapa
-        // nasce.
+        // Sem mapa e sem git: nada de que ler o mapa, a ferramenta não roda,
+        // e nenhum mapa nasce.
         refresh_map_if_stale(root, &mine_counting(&calls));
-        assert_eq!(calls.get(), 0, "sem mapa, a ferramenta não é chamada");
-        assert!(!project_map::model_path(root).exists(), "a conferência não cria mapa");
+        assert_eq!(calls.get(), 0, "sem mapa e sem git, a ferramenta não é chamada");
+        assert!(!project_map::model_path(root).exists(), "fora do git a conferência não cria mapa");
 
         // Mapa fora de um repositório git: sem como comparar, a ferramenta
         // não roda.
@@ -1088,6 +1089,59 @@ mod tests {
         map_at(&now.head, "");
         refresh_map_if_stale(root, &mine_counting(&calls));
         assert_eq!(calls.get(), 3, "o mapa sem a listagem é relido");
+    }
+
+    /// Dentro do git e sem o arquivo do mapa, [`refresh_map_if_stale`] chama a
+    /// ferramenta do scan uma vez e o mapa que ela grava passa a existir; com
+    /// ele em dia, a chamada seguinte não a roda de novo. Uma ferramenta que
+    /// falha deixa o projeto sem mapa, sem travar nem propagar o erro, e a
+    /// conferência seguinte tenta de novo. Apagado o mapa, ele volta.
+    #[test]
+    fn a_project_in_git_without_a_map_has_it_created_and_again_after_it_is_deleted() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(["-c", "user.email=t@example.com", "-c", "user.name=t", "-c", "commit.gpgsign=false"])
+                .args(args)
+                .current_dir(root)
+                .output()
+                .expect("git");
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        git(&["init", "-q"]);
+        std::fs::write(root.join("a.txt"), "x").unwrap();
+        git(&["add", "a.txt"]);
+        git(&["commit", "-q", "-m", "semente"]);
+        let calls = std::cell::Cell::new(0);
+        let model = project_map::model_path(root);
+
+        // Uma ferramenta que falha: o projeto segue sem mapa, e a conferência
+        // seguinte tenta de novo.
+        refresh_map_if_stale(root, &mine_counting(&calls));
+        assert_eq!(calls.get(), 1, "sem o mapa, a ferramenta roda uma vez");
+        assert!(!model.exists(), "a ferramenta falhou: nada foi criado");
+        refresh_map_if_stale(root, &mine_counting(&calls));
+        assert_eq!(calls.get(), 2, "o mapa continua faltando: a conferência tenta de novo");
+
+        // Uma ferramenta que grava o mapa do commit e do conteúdo de agora.
+        let writing = |root: &Path, _out: &Path| {
+            calls.set(calls.get() + 1);
+            let now = project_map::listing(root).expect("dentro do git");
+            project_map::write_text(root, &format!(r#"{{"state": {{"head": "{}", "listing": "{}"}}}}"#, now.head, now.digest()))
+                .expect("o mapa é gravado");
+            Ok(ScanReport::default())
+        };
+        refresh_map_if_stale(root, &writing);
+        assert_eq!(calls.get(), 3, "a ferramenta cria o mapa que faltava");
+        assert!(model.exists(), "o mapa existe depois da conferência");
+        refresh_map_if_stale(root, &writing);
+        assert_eq!(calls.get(), 3, "o mapa criado já é o do conteúdo de agora: a ferramenta não roda de novo");
+
+        std::fs::remove_file(&model).unwrap();
+        refresh_map_if_stale(root, &writing);
+        assert_eq!(calls.get(), 4, "o mapa apagado é criado de novo");
+        assert!(model.exists(), "o mapa apagado voltou");
     }
 
     /// Com o commit e o conteúdo da passada que gravou o mapa, a ferramenta

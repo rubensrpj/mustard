@@ -97,6 +97,36 @@ mod tests {
         assert!(is_behind(root, &|| Some("scan 1".into())), "and behind for the old one");
     }
 
+    /// Dentro do git e sem o arquivo do mapa, o mapa está atrás de tudo e a
+    /// marca do scan nem se pede: falta criá-lo. Fora do git não há de onde
+    /// ler o mapa, e ele não está atrás. Um arquivo que não é um banco
+    /// continua sem julgamento, e criado o mapa, ele volta a estar em dia.
+    #[test]
+    fn a_project_in_git_without_a_map_is_behind_and_one_outside_git_is_not() {
+        let asked = Cell::new(0);
+        let format = || {
+            asked.set(asked.get() + 1);
+            Some("scan 1".to_string())
+        };
+
+        let (dir, map) = mapped_by("scan 1");
+        let root = dir.path();
+        assert!(!is_behind(root, &format), "the map of the project is there and up to date");
+        asked.set(0);
+        std::fs::remove_file(model_path(root)).unwrap();
+        assert!(is_behind(root, &format), "the map was deleted: it has to be created");
+        assert_eq!(asked.get(), 0, "there is no mark to compare");
+
+        save(root, &map, "scan 1");
+        assert!(!is_behind(root, &format), "created again by the pass, it is up to date");
+
+        std::fs::write(model_path(root), "not a database").unwrap();
+        assert!(!is_behind(root, &format), "a file that is not a database is not created over");
+
+        let outside = tempdir().unwrap();
+        assert!(!is_behind(outside.path(), &format), "no git, nothing to read the map from");
+    }
+
     /// O scan só se pergunta quando o mapa traz marca com que comparar e o
     /// conteúdo ainda não o pôs atrás: sem mapa, com o mapa escrito à mão e
     /// com um arquivo editado, a marca não se pede.
@@ -110,7 +140,7 @@ mod tests {
 
         let empty = tempdir().unwrap();
         git(empty.path(), &["init", "-q"]);
-        assert!(!is_behind(empty.path(), &format), "no map");
+        assert!(is_behind(empty.path(), &format), "no map: it is missing, not stale by mark");
 
         let (dir, map) = mapped_by("scan 1");
         let root = dir.path();

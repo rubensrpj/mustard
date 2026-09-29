@@ -354,6 +354,7 @@ fn agreed_versions(
 mod tests {
     use std::path::Path;
 
+    use mustard_core::domain::scan::ScanReport;
     use mustard_core::io::spec_events as store;
     use serde_json::{json, Value};
     use tempfile::tempdir;
@@ -714,7 +715,9 @@ mod tests {
         let rule = seed_event(root, "x", "rule", json!({"text": "A parte três segue o molde da parte um.",
             "keys": ["molde"], "example": "o mesmo formato da um", "waves": [3], "origin": said}));
 
-        let out = round(root, "x", None);
+        // Sem mapa e sem passada do scan: com o mapa, as tarefas ganham
+        // arquivos parecidos e a rodada pede a análise por eles.
+        let out = round_with_mine(root, "x", None, &|_, _| Ok(ScanReport::default()));
         assert_ne!(out["ok"], json!(false), "a rodada não trava: {out}");
         assert_converted(root, &old);
         let log = log_of(root);

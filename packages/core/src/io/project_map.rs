@@ -1582,10 +1582,15 @@ fn blobs_under(root: &Path, skip: &[String]) -> Option<(BTreeMap<String, String>
 /// projeto parado. `scan_format` só é chamado quando o mapa traz marca com
 /// que comparar, e sem marca do scan (`None`) a compilação dele não conta:
 /// quem não acha o scan não tem como refazer o mapa. Lê só o estado gravado e
-/// as marcas dos blocos, nunca o mapa inteiro. `false` sem mapa, com um mapa
-/// que não se lê e fora do git: não há com que comparar.
+/// as marcas dos blocos, nunca o mapa inteiro. Sem o arquivo do mapa, dentro
+/// do git, o mapa está atrás de tudo: falta criá-lo, e quem refaz o mapa o
+/// cria. `false` com um mapa que não se lê e fora do git: não há com que
+/// comparar.
 #[must_use]
 pub fn is_behind(root: &Path, scan_format: &dyn Fn() -> Option<String>) -> bool {
+    if !exists_at(&model_path(root)) {
+        return inside_work_tree(root);
+    }
     let Ok(db) = open_existing(&model_path(root)) else { return false };
     let Ok(rows) = picked(db.conn(), "census", &["head", "listing", "base", "base_tip"], "", &[]) else { return false };
     let Some(now) = listing(root) else { return false };
@@ -1597,6 +1602,12 @@ pub fn is_behind(root: &Path, scan_format: &dyn Fn() -> Option<String>) -> bool 
         || base != now.base
         || map_fill::unfilled(&db, &BLOCKS).is_ok_and(|blocks| !blocks.is_empty())
         || map_format::written_by_another(&db, scan_format).unwrap_or(false)
+}
+
+/// `true` quando `root` está dentro da árvore de trabalho de um repositório
+/// git, a condição para o mapa se ler do projeto.
+fn inside_work_tree(root: &Path) -> bool {
+    git_out(root, &["rev-parse", "--is-inside-work-tree"]).is_some_and(|out| out.trim() == "true")
 }
 
 /// O banco em `model`, que já tem de existir: sem o arquivo, a recusa de

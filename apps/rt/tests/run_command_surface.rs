@@ -696,9 +696,10 @@ fn a_historia_traz_o_texto_do_pull_request_lido_uma_vez_depois_do_scan() {
     assert!(project.calls().contains(&"api -i repos/{owner}/{repo}/pulls/9".to_string()));
 }
 
-/// Perguntar a um projeto que ainda não tem mapa recusa com mapa ausente e não
-/// deixa um banco vazio no lugar: a pergunta seguinte recusa igual, e o scan é
-/// quem cria o mapa.
+/// Perguntar a um projeto fora do git, que ainda não tem mapa, recusa com mapa
+/// ausente e não deixa um banco vazio no lugar: a pergunta seguinte recusa
+/// igual. Dentro do git a pergunta cria o mapa antes de responder (ver
+/// `map_created_when_missing.rs`); fora dele não há de onde ler o mapa.
 #[test]
 fn perguntar_ao_projeto_sem_mapa_recusa_e_nao_cria_o_arquivo() {
     let dir = tempfile::tempdir().unwrap();
