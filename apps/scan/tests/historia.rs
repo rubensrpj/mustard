@@ -474,6 +474,50 @@ fn a_change_in_the_comment_right_above_a_function_belongs_to_it() {
 /// o preso a uma linha fora de qualquer função fica sem função; e o do
 /// commit que o clone não tem, o do ramo apagado depois de um squash, cai
 /// pelas linhas do commit da base com o número do pull request.
+/// A variante de enumeração escrita com os campos na mesma linha ocupa
+/// exatamente as mesmas linhas que eles: o commit que mexeu na linha é da
+/// variante e de cada campo, e não só do último que o arquivo declara. A
+/// enumeração, que tem linhas próprias, não recebe o commit que mexeu só na
+/// linha da variante.
+#[test]
+fn every_declaration_written_on_the_same_line_gets_the_commit_that_touched_the_line() {
+    let temp = project("scan-linhagem-mesma-linha-");
+    let dir = temp.path();
+    declare_base(dir, "main");
+    let body = |reason: &str| {
+        format!("pub enum Action {{\n    List,\n    Add {{ title: String, detail: String }},\n    Close {{ id: String, reason: {reason} }},\n}}\n")
+    };
+    commit(dir, "src/action.rs", &body("String"), "cria a ação");
+    commit(dir, "src/action.rs", &body("Vec<u8>"), "muda o motivo");
+    scan(dir);
+
+    let found = lineage(dir, "src/action.rs");
+    for name in ["Add", "title", "detail"] {
+        assert_eq!(
+            changes(&found, name),
+            listed(&["cria a ação"]),
+            "{name}: the line was written once"
+        );
+    }
+    for name in ["Close", "id", "reason"] {
+        assert_eq!(
+            changes(&found, name),
+            listed(&["muda o motivo", "cria a ação"]),
+            "{name}: the line changed twice"
+        );
+    }
+    assert_eq!(
+        changes(&found, "Action"),
+        listed(&["cria a ação"]),
+        "the enum's own lines did not change"
+    );
+}
+
+/// Um comentário de revisão preso a uma linha cai na função que continha a
+/// linha no commit comentado, mesmo que ela tenha descido no arquivo depois;
+/// o preso a uma linha fora de qualquer função fica sem função; e o do
+/// commit que o clone não tem, o do ramo apagado depois de um squash, cai
+/// pelas linhas do commit da base com o número do pull request.
 #[test]
 fn a_review_comment_joins_the_function_that_held_its_line_in_the_commented_commit() {
     use mustard_core::domain::project_map::{PullComment, PullText};

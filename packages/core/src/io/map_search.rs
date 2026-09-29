@@ -14,7 +14,10 @@
 //! Depois desses, cada nível guarda o texto de dentro das peças, em campos
 //! que a lista de base da busca com filtro não lê: da declaração, a
 //! documentação inteira, os comentários, os nomes e as chamadas escritos nas
-//! linhas dela, o dono e os membros; do arquivo, os comentários do começo e
+//! linhas dela, o dono e os membros, os títulos dos commits que a mudaram e
+//! os comentários de revisão presos às linhas dela — a história por
+//! declaração dos arquivos que o mapa já leu — e os nomes de quem a usa; do
+//! arquivo, os comentários do começo e
 //! os outros, juntados dos que o scan guardou fora das declarações e dos de
 //! cada declaração de fora, que ele guarda uma vez só, nela, e os títulos dos
 //! commits mais novos que mudaram o arquivo. A busca dos arquivos da triagem e
@@ -79,7 +82,8 @@ use serde::Deserialize;
 use crate::domain::ast::is_test_path;
 use crate::domain::normalize::{Languages, Normalizer};
 use crate::domain::project_map::{
-    outer_declarations, spec_sentence, Found, FoundItem, FoundText, MapRefusal, SPEC_SENTENCE_CHARS,
+    clean_title, outer_declarations, spec_sentence, DeclChange, DeclComment, Found, FoundItem, FoundText, MapRefusal, UseSite,
+    SPEC_SENTENCE_CHARS,
 };
 use crate::domain::map_filter::FilterCandidate;
 use crate::domain::map_select::{Linked, Links};
@@ -175,16 +179,23 @@ const FILE_LEVEL: Level = Level {
 /// O nível das declarações, com os pesos medidos como os do nível dos
 /// arquivos. O nome da declaração pesa pouco e o caminho nada: o arquivo
 /// dono já os traz, e a assinatura, que traz o nome com o tipo, pesa mais. Os
-/// membros ficam com peso 0: entram no índice, mas nenhum peso acima de zero
-/// subiu a régua.
+/// membros e os nomes de quem usa a declaração ficam com peso 0: entram no
+/// índice, mas nenhum peso acima de zero subiu a régua (o dos nomes de quem
+/// usa a baixou em todos os pesos medidos). Os títulos dos commits e os
+/// comentários de revisão pesam 0,25, como a documentação do arquivo: a
+/// régua, feita de perguntas sobre o código, não tem pergunta sobre o que o
+/// histórico diz, e por isso qualquer peso acima de zero lhe custa quase o
+/// mesmo — uma busca a menos entre os cinco primeiros e até quatro entre os
+/// cem, em 119 —, e 0,25 é o que menos custa; com peso 0 o histórico não
+/// acharia declaração nenhuma.
 const DECL_LEVEL: Level = Level {
     fts: "decl_fts",
     vocab: "decl_vocab",
     lengths: "decl_lengths",
     meta: "search_meta",
     fields: &["name", "path", "signature", "doc", "log", "error", "text"],
-    unread: &["whole_doc", "body_comment", "body_names", "body_calls", "owner", "members"],
-    weights: &[0.1, 0.0, 2.0, 1.0, 1.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 0.5, 0.0],
+    unread: &["whole_doc", "body_comment", "body_names", "body_calls", "owner", "members", "commits", "callers"],
+    weights: &[0.1, 0.0, 2.0, 1.0, 1.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 0.5, 0.0, 0.25, 0.0],
     learned: Some(Learned::Decls),
 };
 
@@ -373,7 +384,7 @@ fn documents(conn: &Connection, normalizer: &mut Normalizer) -> Result<(Vec<Doc>
     let mut rows_of: Vec<DeclRow> = Vec::new();
     let mut stmt = conn.prepare(
         "SELECT rowid, file, name, signature, doc, line, end_line, whole_doc, body_comment, body_names, kind, \
-         owner, contract, members FROM decls ORDER BY rowid",
+         owner, contract, members, used_by FROM decls ORDER BY rowid",
     )?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
@@ -406,6 +417,7 @@ fn documents(conn: &Connection, normalizer: &mut Normalizer) -> Result<(Vec<Doc>
                 .map(|member| member.name)
                 .collect::<Vec<_>>()
                 .join(" "),
+            callers: callers_of(&text(row, 14)?, &text(row, 2)?),
         });
     }
     // Os textos de cada arquivo: as palavras vão para o arquivo e para a
@@ -440,8 +452,15 @@ fn documents(conn: &Connection, normalizer: &mut Normalizer) -> Result<(Vec<Doc>
         }
     }
     let calls = written_calls(conn, &at, normalizer)?;
+    let history = decl_history_texts(conn)?;
+    let mut path_of: Vec<&str> = vec![""; files.len()];
+    for (path, &owner) in &at {
+        path_of[owner] = path;
+    }
+    let nth = nth_among_same_name(&rows_of);
     let mut decls = Vec::new();
-    for row in rows_of {
+    for (row, nth) in rows_of.into_iter().zip(nth) {
+        let commits = history.get(&(path_of[row.owner].to_string(), row.name.clone(), nth)).cloned().unwrap_or_default();
         let (name_words, doc_words) = (normalizer.forms(&row.name), normalizer.forms(&row.doc));
         let whole_doc = if row.whole_doc.is_empty() { doc_words.clone() } else { normalizer.forms(&row.whole_doc) };
         let file = &mut files[row.owner];
@@ -469,10 +488,94 @@ fn documents(conn: &Connection, normalizer: &mut Normalizer) -> Result<(Vec<Doc>
             called,
             normalizer.forms(&row.parents),
             normalizer.forms(&row.members),
+            normalizer.forms(&commits),
+            normalizer.forms(&row.callers),
         ]);
         decls.push(Decl { doc: Doc { id: row.id, fields }, name: row.name, file: file.id, unlisted: row.unlisted });
     }
     Ok((files, decls))
+}
+
+/// Os nomes de quem usa a declaração `name`, cada um uma vez, lidos do texto
+/// dos usos que o scan grava: o uso provado e o suspeito valem. A própria
+/// declaração, quando se chama, não conta.
+fn callers_of(used_by: &str, name: &str) -> String {
+    let mut seen: HashSet<String> = HashSet::new();
+    let uses: Vec<UseSite> = serde_json::from_str(used_by).unwrap_or_default();
+    uses.into_iter()
+        .map(|site| site.from)
+        .filter(|from| !from.is_empty() && from != name && seen.insert(from.clone()))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Quantos commits, dos mais novos, e quantos comentários de revisão de cada
+/// declaração entram no índice, e quantas letras de cada comentário: a
+/// declaração que mais mudou tem centenas de títulos, e o índice inteiro
+/// levaria vários minutos para ler o que nenhuma busca pesa.
+const HISTORY_COMMITS: usize = 10;
+const HISTORY_REVIEWS: usize = 10;
+const REVIEW_CHARS: usize = 300;
+
+/// As primeiras `chars` letras de `text`.
+fn head(text: &str, chars: usize) -> &str {
+    text.char_indices().nth(chars).map_or(text, |(end, _)| &text[..end])
+}
+
+/// O texto da história de cada declaração, pela história por declaração que
+/// o mapa guarda dos arquivos já lidos: a chave é o arquivo, o nome e a ordem
+/// entre as de mesmo nome. Vêm os títulos dos commits que a mudaram — o que só
+/// mudou a forma não conta, e o título perde o tipo e o número do pull request
+/// — e, em seguida, os comentários de revisão presos às linhas dela, uns e
+/// outros até o teto de [`HISTORY_COMMITS`] e [`HISTORY_REVIEWS`]. O arquivo
+/// cuja história o mapa ainda não leu não tem declaração nenhuma aqui, e o
+/// projeto sem comentário de revisão só tem os títulos.
+fn decl_history_texts(conn: &Connection) -> Result<HashMap<(String, String, u32), String>> {
+    let mut titles: HashMap<(String, String), String> = HashMap::new();
+    let mut stmt = conn.prepare("SELECT path, id, title FROM lineage_commits")?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        titles.insert((text(row, 0)?, text(row, 1)?), clean_title(&text(row, 2)?));
+    }
+    let mut out = HashMap::new();
+    let mut stmt = conn.prepare("SELECT path, name, nth, commits, comments FROM lineage_decls")?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        let path = text(row, 0)?;
+        let changes: Vec<DeclChange> = serde_json::from_str(&text(row, 3)?).unwrap_or_default();
+        let reviews: Vec<DeclComment> = serde_json::from_str(&text(row, 4)?).unwrap_or_default();
+        let joined = changes
+            .iter()
+            .filter(|change| !change.form)
+            .filter_map(|change| titles.get(&(path.clone(), change.id.clone())))
+            .map(String::as_str)
+            .filter(|title| !title.is_empty())
+            .take(HISTORY_COMMITS)
+            .chain(reviews.iter().take(HISTORY_REVIEWS).map(|review| head(&review.body, REVIEW_CHARS)))
+            .filter(|words| !words.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+        if !joined.is_empty() {
+            let nth = u32::try_from(row.get::<_, Option<i64>>(2)?.unwrap_or(0)).unwrap_or(0);
+            out.insert((path, text(row, 1)?, nth), joined);
+        }
+    }
+    Ok(out)
+}
+
+/// A ordem de cada declaração de `rows` entre as de mesmo nome do arquivo
+/// dela, pela linha — a primeira é 0 —, como a história por declaração conta.
+fn nth_among_same_name(rows: &[DeclRow]) -> Vec<u32> {
+    let mut order: Vec<usize> = (0..rows.len()).collect();
+    order.sort_by_key(|&at| (rows[at].owner, rows[at].lines.0));
+    let mut seen: HashMap<(usize, &str), u32> = HashMap::new();
+    let mut nth = vec![0; rows.len()];
+    for at in order {
+        let count = seen.entry((rows[at].owner, rows[at].name.as_str())).or_default();
+        nth[at] = *count;
+        *count += 1;
+    }
+    nth
 }
 
 /// As chamadas de cada arquivo do índice, pela posição dele em `at`, cada
@@ -528,6 +631,8 @@ struct DeclRow {
     parents: String,
     /// Os nomes dos membros do tipo.
     members: String,
+    /// Os nomes de quem usa a declaração.
+    callers: String,
 }
 
 /// Acrescenta a `into` cada palavra de `words` que `seen` ainda não tem.
@@ -1494,6 +1599,7 @@ fn by_piece(conn: &Connection, query: &str) -> Result<Vec<i64>> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::domain::project_map::{DeclLineage, FileLineage, LineageCommit};
     use crate::domain::search::{CANDIDATES, TOP};
     use crate::io::project_map as store;
     use serde_json::{json, Value};
@@ -1754,6 +1860,138 @@ pub(crate) mod tests {
     fn id_of(dir: &Path, name: &str) -> i64 {
         let db = open_existing(&model_path(dir)).unwrap();
         db.conn().query_row("SELECT rowid FROM decls WHERE name = ?1", [name], |row| row.get(0)).unwrap()
+    }
+
+    /// Os termos que o índice guarda na coluna `column` da declaração que
+    /// começa na linha `line`, depois de refeito o que estiver desfeito.
+    fn indexed_terms(dir: &Path, line: i64, column: &str) -> Vec<String> {
+        let model = model_path(dir);
+        let db = indexed(&model, &languages(), &SEARCHED).unwrap();
+        let id: i64 = db.conn().query_row("SELECT rowid FROM decls WHERE line = ?1", [line], |row| row.get(0)).unwrap();
+        let mut stmt = db.conn().prepare("SELECT DISTINCT term FROM decl_vocab WHERE doc = ?1 AND col = ?2 ORDER BY term").unwrap();
+        stmt.query_map(rusqlite::params![id, column], |row| row.get(0)).unwrap().collect::<std::result::Result<_, _>>().unwrap()
+    }
+
+    /// O id da declaração que começa na linha `line`.
+    fn id_of_line(dir: &Path, line: i64) -> i64 {
+        let db = open_existing(&model_path(dir)).unwrap();
+        db.conn().query_row("SELECT rowid FROM decls WHERE line = ?1", [line], |row| row.get(0)).unwrap()
+    }
+
+    /// Um arquivo com duas funções de mesmo nome, `total`, uma na linha 1 e
+    /// outra na 10, e uma terceira, `outra`, que só uma delas chama.
+    fn two_of_the_same_name() -> TempDir {
+        saved_json(&json!({"modules": [{"path": "src/a.rs", "declarations": [
+            {"kind": "function", "name": "total", "line": 1, "end_line": 3, "signature": "fn total()"},
+            {"kind": "function", "name": "total", "line": 10, "end_line": 12, "signature": "fn total(x: u32)",
+             "used_by": ["src/a.rs:20:fechar", "src/a.rs:21:fechar", "src/a.rs:22:total", "src/a.rs:23:conferir"]},
+            {"kind": "function", "name": "outra", "line": 20, "end_line": 22, "signature": "fn outra()"}
+        ]}]}))
+    }
+
+    #[test]
+    fn each_declaration_of_the_same_name_gets_only_the_titles_of_its_own_commits() {
+        let dir = two_of_the_same_name();
+        let model = model_path(dir.path());
+        assert_eq!(indexed_terms(dir.path(), 1, "commits"), Vec::<String>::new(), "no history read yet");
+        let commit = |id: &str, title: &str| LineageCommit { id: id.into(), title: title.into(), ..LineageCommit::default() };
+        let change = |id: &str, form: bool| DeclChange { id: id.into(), form };
+        let lineage = FileLineage {
+            path: "src/a.rs".into(),
+            commits: vec![
+                commit("c1", "feat(caixa): cobra o desconto (#3)"),
+                commit("c2", "corrige o arredondamento"),
+                commit("c3", "formata o arquivo todo"),
+            ],
+            declarations: vec![
+                DeclLineage { name: "total".into(), nth: 0, commits: vec![change("c1", false)], comments: Vec::new() },
+                DeclLineage { name: "total".into(), nth: 1, commits: vec![change("c3", true), change("c2", false)], comments: Vec::new() },
+            ],
+            ..FileLineage::default()
+        };
+        store::save_lineage_at(&model, &lineage).unwrap();
+
+        let first = indexed_terms(dir.path(), 1, "commits");
+        assert!(first.iter().any(|term| term.starts_with("desconto")), "{first:?}");
+        assert!(first.iter().all(|term| !term.starts_with("arredond") && !term.starts_with("caixa") && !term.starts_with("feat")), "{first:?}");
+        let second = indexed_terms(dir.path(), 10, "commits");
+        assert!(second.iter().any(|term| term.starts_with("arredond")), "{second:?}");
+        assert!(second.iter().all(|term| !term.starts_with("desconto") && !term.starts_with("format")), "the format-only commit is left out: {second:?}");
+        assert_eq!(indexed_terms(dir.path(), 20, "commits"), Vec::<String>::new(), "a declaration no commit touched");
+    }
+
+    #[test]
+    fn a_declaration_only_a_review_comment_names_is_found_and_a_map_without_comments_keeps_only_the_titles() {
+        let dir = two_of_the_same_name();
+        let model = model_path(dir.path());
+        let commit = |id: &str, title: &str| LineageCommit { id: id.into(), title: title.into(), ..LineageCommit::default() };
+        let review = |body: &str| DeclComment { pr: 5, commit: "c1".into(), body: body.into() };
+        let lineage = |comments: Vec<DeclComment>| FileLineage {
+            path: "src/a.rs".into(),
+            commits: vec![commit("c1", "cobra o desconto")],
+            declarations: vec![DeclLineage {
+                name: "total".into(),
+                nth: 1,
+                commits: vec![DeclChange { id: "c1".into(), form: false }],
+                comments,
+            }],
+            ..FileLineage::default()
+        };
+        let found = |word: &str| -> Vec<i64> {
+            let db = indexed(&model, &languages(), &SEARCHED).unwrap();
+            whole_list(db.conn(), word, "", &languages()).unwrap()
+        };
+        let total = id_of_line(dir.path(), 10);
+
+        store::save_lineage_at(&model, &lineage(Vec::new())).unwrap();
+        assert!(!found("reembolso").contains(&total), "no comment yet");
+        assert!(found("desconto").contains(&total), "the title of the commit finds it");
+        let titles_only = indexed_terms(dir.path(), 10, "commits");
+
+        store::save_lineage_at(&model, &lineage(vec![review("falta tratar o reembolso parcial")])).unwrap();
+        assert!(found("reembolso").contains(&total), "the word only the review comment has finds the declaration");
+        let both = indexed_terms(dir.path(), 10, "commits");
+        assert!(both.iter().any(|term| term.starts_with("reembols")) && titles_only.iter().all(|term| both.contains(term)), "{both:?}");
+        assert!(!titles_only.iter().any(|term| term.starts_with("reembols")), "{titles_only:?}");
+    }
+
+    #[test]
+    fn only_the_newest_commits_and_the_first_letters_of_the_review_comments_reach_the_index() {
+        let dir = two_of_the_same_name();
+        let model = model_path(dir.path());
+        let commits: Vec<LineageCommit> =
+            (0..12).map(|n| LineageCommit { id: format!("c{n}"), title: format!("passo{n:02}xyz"), ..LineageCommit::default() }).collect();
+        let changes: Vec<DeclChange> = commits.iter().map(|commit| DeclChange { id: commit.id.clone(), form: false }).collect();
+        let mut comments: Vec<DeclComment> =
+            (1..12).map(|n| DeclComment { pr: 5, commit: "c0".into(), body: format!("revisao{n:02}xyz") }).collect();
+        comments.insert(0, DeclComment { pr: 5, commit: "c0".into(), body: format!("{}tardio", "letra ".repeat(60)) });
+        let lineage = FileLineage {
+            path: "src/a.rs".into(),
+            commits,
+            declarations: vec![DeclLineage { name: "total".into(), nth: 0, commits: changes, comments }],
+            ..FileLineage::default()
+        };
+        store::save_lineage_at(&model, &lineage).unwrap();
+
+        let terms = indexed_terms(dir.path(), 1, "commits");
+        let has = |prefix: &str| terms.iter().any(|term| term.starts_with(prefix));
+        for kept in ["passo00", "passo09", "letra", "revisao01", "revisao09"] {
+            assert!(has(kept), "{kept} in {terms:?}");
+        }
+        for left_out in ["passo10", "passo11", "tardio", "revisao10", "revisao11"] {
+            assert!(!has(left_out), "{left_out} not in {terms:?}");
+        }
+    }
+
+    #[test]
+    fn the_callers_of_a_declaration_are_the_names_of_who_uses_it_and_not_itself() {
+        let dir = two_of_the_same_name();
+        let callers = indexed_terms(dir.path(), 10, "callers");
+        for name in ["fechar", "conferir"] {
+            assert!(callers.contains(&name.to_string()), "{name} in {callers:?}");
+        }
+        assert!(!callers.contains(&"total".to_string()), "a call from itself is not a caller: {callers:?}");
+        assert_eq!(indexed_terms(dir.path(), 1, "callers"), Vec::<String>::new());
     }
 
     #[test]

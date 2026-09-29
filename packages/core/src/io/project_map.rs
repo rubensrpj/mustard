@@ -300,11 +300,13 @@ pub const FILES: MapBlock = block!("files", version 2, {
 /// tamanho de cada campo, em palavras; os nomes das declarações numa tabela
 /// trigram, inteiros e dobrados (minúsculas, sem acento, só letras e
 /// números), para o pedaço do nome; e as línguas e as médias com que ele foi
-/// feito. As listas saem antes das tabelas de que elas leem. Os campos que a
+/// feito. Cada declaração leva também, nos dois últimos campos, os títulos
+/// dos commits que a mudaram — a história por declaração que o mapa guarda
+/// dos arquivos já lidos — e os nomes de quem a usa. As listas saem antes das tabelas de que elas leem. Os campos que a
 /// busca sem filtro lê vêm primeiro; os do texto de dentro das peças vêm
 /// depois, e só a busca com filtro os lê. A declaração de teste fica fora do
 /// nível das declarações, e só a tabela trigram a guarda.
-pub const DECLS: MapBlock = block!("decls", version 11, {
+pub const DECLS: MapBlock = block!("decls", version 12, {
     "decls" at Place::Decls => [
         "file" Owner ["path"], "kind" Text, "name" Text, "line" Int, "end_line" Int,
         "signature" Text, "doc" Text, "whole_doc" Text, "body_comment" Text, "body_names" Text,
@@ -319,7 +321,8 @@ pub const DECLS: MapBlock = block!("decls", version 11, {
 ] "CREATE VIRTUAL TABLE file_fts USING fts5(name, path, doc, log, error, text, file_doc, file_comment, commits, content='', \
      contentless_delete=1, tokenize='unicode61 remove_diacritics 2');\
    CREATE VIRTUAL TABLE decl_fts USING fts5(name, path, signature, doc, log, error, text, whole_doc, body_comment, \
-     body_names, body_calls, owner, members, content='', contentless_delete=1, tokenize='unicode61 remove_diacritics 2');\
+     body_names, body_calls, owner, members, commits, callers, content='', contentless_delete=1, \
+     tokenize='unicode61 remove_diacritics 2');\
    CREATE VIRTUAL TABLE file_vocab USING fts5vocab(file_fts, instance);\
    CREATE VIRTUAL TABLE decl_vocab USING fts5vocab(decl_fts, instance);\
    CREATE VIRTUAL TABLE decl_trigram USING fts5(name, folded, file UNINDEXED, tokenize='trigram');\
@@ -327,7 +330,7 @@ pub const DECLS: MapBlock = block!("decls", version 11, {
      error INTEGER, text INTEGER, file_doc INTEGER, file_comment INTEGER, commits INTEGER);\
    CREATE TABLE decl_lengths(id INTEGER PRIMARY KEY, name INTEGER, path INTEGER, signature INTEGER, doc INTEGER, \
      log INTEGER, error INTEGER, text INTEGER, whole_doc INTEGER, body_comment INTEGER, body_names INTEGER, \
-     body_calls INTEGER, owner INTEGER, members INTEGER);\
+     body_calls INTEGER, owner INTEGER, members INTEGER, commits INTEGER, callers INTEGER);\
    CREATE TABLE search_meta(key TEXT PRIMARY KEY, value);");
 
 /// As rotas do servidor de cada arquivo: o método, o caminho padronizado e o
@@ -1025,6 +1028,13 @@ pub fn save_pull_commits_at(model: &Path, found: &[PullOfCommit]) -> Result<()> 
 /// Troca, numa transação só, as linhas de cada tabela em que a coluna dada
 /// vale o valor dado pelas linhas novas, na ordem das colunas declaradas.
 fn replace_rows(model: &Path, changes: Vec<(&str, &str, Sql, Vec<Row>)>) -> Result<()> {
+    replace_rows_indexed(model, changes, false)
+}
+
+/// A troca de [`replace_rows`]; com `reindex`, o índice de busca sai na mesma
+/// transação, porque o que se trocou é lido por ele: a primeira busca o
+/// refaz.
+fn replace_rows_indexed(model: &Path, changes: Vec<(&str, &str, Sql, Vec<Row>)>, reindex: bool) -> Result<()> {
     let mut db = open_existing(model).map_err(|refusal| Error::Parse(format!("{refusal:?}")))?;
     db.write(|tx| {
         for (table, key, value, rows) in &changes {
@@ -1036,6 +1046,9 @@ fn replace_rows(model: &Path, changes: Vec<(&str, &str, Sql, Vec<Row>)>) -> Resu
             for row in rows {
                 insert.execute(params_from_iter(row))?;
             }
+        }
+        if reindex {
+            map_search::forget(tx)?;
         }
         Ok(())
     })
@@ -2015,7 +2028,9 @@ pub fn save_block_at(model: &Path, block: &MapBlock, map: &Value, mark: &str) ->
 
 /// Grava a história das declarações de um arquivo, `lineage`, no mapa em
 /// `model`, que já tem de existir: troca só as linhas daquele arquivo, numa
-/// transação; as dos outros arquivos ficam como estavam.
+/// transação; as dos outros arquivos ficam como estavam. Os títulos dos
+/// commits de cada declaração entram no índice de busca, que sai na mesma
+/// transação e se refaz na primeira busca.
 ///
 /// # Errors
 ///
@@ -2044,7 +2059,7 @@ pub fn save_lineage_at(model: &Path, lineage: &FileLineage) -> Result<()> {
         .zip(fresh)
         .map(|(table, rows)| (table.name, "path", Sql::Text(path.to_string()), rows))
         .collect();
-    replace_rows(model, changes)
+    replace_rows_indexed(model, changes, true)
 }
 
 /// As linhas de cada tabela de cada bloco, na ordem de [`BLOCKS`].

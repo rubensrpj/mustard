@@ -261,6 +261,125 @@ fn the_comment_at_the_top_of_the_file_is_its_doc_and_not_its_other_comments() {
     assert!(other.starts_with("regra0 regra1") && !other.contains("cupom de frete"), "{other}");
 }
 
+/// Lê a história por declaração de `file` (`scan history`), que o mapa guarda
+/// por arquivo e só quando alguém a pede.
+fn trace(dir: &Path, file: &str) {
+    let model = model::path_in(&dir.join(".claude"));
+    let run = Command::new(env!("CARGO_BIN_EXE_scan"))
+        .args([
+            "history",
+            dir.to_str().unwrap(),
+            "--out",
+            model.to_str().unwrap(),
+            "--file",
+            file,
+            "--json",
+        ])
+        .output()
+        .expect("run scan history");
+    assert!(
+        run.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+}
+
+/// Faz uma busca qualquer sobre o mapa de `dir`, o que refaz o índice que
+/// estiver desfeito.
+fn search(dir: &Path, query: &str) {
+    let languages = Languages::of(&ProjectConfig::default());
+    map_search::search_at(&model::path_in(&dir.join(".claude")), query, &languages, 10)
+        .expect("a busca lê o mapa");
+}
+
+#[test]
+fn the_names_of_who_uses_a_function_reach_its_callers_and_the_function_itself_does_not() {
+    let temp = project();
+    scan(temp.path());
+    let used = indexed(temp.path(), "estoque_disponivel", "callers");
+    assert!(
+        used.contains(&"conferir".to_string())
+            && used.iter().all(|term| term.starts_with("confer")),
+        "{used:?}"
+    );
+    assert_eq!(
+        indexed(temp.path(), "conferir", "callers"),
+        Vec::<String>::new(),
+        "nobody calls it"
+    );
+    let coupon = indexed(temp.path(), "aplicarCupom", "callers");
+    assert!(coupon.contains(&"somar".to_string()), "{coupon:?}");
+    assert!(!coupon.contains(&"aplicarcupom".to_string()), "{coupon:?}");
+    let method = indexed(temp.path(), "Consultar", "callers");
+    assert!(
+        method.contains(&"reservar".to_string()),
+        "a method called from another method of the class: {method:?}"
+    );
+}
+
+#[test]
+fn the_titles_of_the_commits_that_changed_a_function_reach_its_commits_once_the_history_is_read() {
+    let temp = project_with(&[(
+        "src/conta.rs",
+        "pub fn saldo() -> u32 {\n    1\n}\n\npub fn saque() -> u32 {\n    10\n}\n",
+    )]);
+    let dir = temp.path();
+    let body = |saldo: &str, saque: &str| {
+        format!("pub fn saldo() -> u32 {{\n    {saldo}\n}}\n\npub fn saque() -> u32 {{\n    {saque}\n}}\n")
+    };
+    write(dir, &[("src/conta.rs", &body("2", "10"))]);
+    git(
+        dir,
+        &[
+            "commit",
+            "-q",
+            "-am",
+            "feat(zeta): soma o rendimento no saldo (#77)",
+        ],
+    );
+    write(dir, &[("src/conta.rs", &body("2", "20"))]);
+    git(dir, &["commit", "-q", "-am", "trava o limite do saque"]);
+    write(dir, &[("src/conta.rs", &body("2", "  20  "))]);
+    git(
+        dir,
+        &["commit", "-q", "-am", "alinha os espaços do xilofone"],
+    );
+    scan(dir);
+    search(dir, "saldo");
+    assert_eq!(
+        indexed(dir, "saldo", "commits"),
+        Vec::<String>::new(),
+        "the history of the file is not read yet"
+    );
+
+    trace(dir, "src/conta.rs");
+    search(dir, "saldo");
+    let saldo = indexed(dir, "saldo", "commits");
+    for word in ["rendiment", "soma"] {
+        assert!(
+            saldo.iter().any(|term| term.starts_with(word)),
+            "{word} in {saldo:?}"
+        );
+    }
+    for word in ["feat", "zeta", "77", "limit", "xilofon"] {
+        assert!(
+            !saldo.iter().any(|term| term.starts_with(word)),
+            "{word} not in {saldo:?}"
+        );
+    }
+    let saque = indexed(dir, "saque", "commits");
+    assert!(
+        saque.iter().any(|term| term.starts_with("limit")),
+        "{saque:?}"
+    );
+    assert!(
+        !saque
+            .iter()
+            .any(|term| term.starts_with("rendiment") || term.starts_with("xilofon")),
+        "{saque:?}"
+    );
+}
+
 #[test]
 fn the_history_answers_the_three_newest_titles_of_the_file() {
     let temp = project_with(&[("src/conta.rs", "pub fn conta() {}\n"), ("src/leitor.rs", "pub fn leitor() {}\n")]);

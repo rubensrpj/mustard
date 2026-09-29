@@ -7,7 +7,9 @@
 //! só a língua dela compilada, e cada declaração vira uma faixa de linhas que
 //! inclui a documentação e os enfeites logo acima. Cada linha tirada ou posta
 //! vai para a declaração mais interna que a contém, do seu lado; a linha entre
-//! declarações não vai a nenhuma.
+//! declarações não vai a nenhuma. As declarações escritas na mesma linha —
+//! a variante de enumeração com os campos ao lado, a estrutura de uma linha
+//! só — ocupam as mesmas linhas, e a linha é de todas elas.
 //!
 //! A declaração que some de um lado e nasce do outro no mesmo commit se casa
 //! pelo corpo idêntico, depois por pelo menos metade das linhas em comum:
@@ -216,13 +218,22 @@ impl Span {
 #[derive(Default)]
 struct Layout {
     spans: Vec<Span>,
-    owner: Vec<Option<usize>>,
+    /// De cada linha, as declarações mais internas que a contêm: mais de uma
+    /// só quando várias ocupam exatamente as mesmas linhas.
+    owners: Vec<Vec<usize>>,
     lines: Vec<String>,
 }
 
 impl Layout {
+    /// A declaração mais interna da linha; entre as que ocupam as mesmas
+    /// linhas, a última do arquivo.
     fn owner_of(&self, line: usize) -> Option<usize> {
-        self.owner.get(line).copied().flatten()
+        self.owners_of(line).last().copied()
+    }
+
+    /// Todas as declarações mais internas da linha, na ordem do arquivo.
+    fn owners_of(&self, line: usize) -> &[usize] {
+        self.owners.get(line).map_or(&[], Vec::as_slice)
     }
 
     fn index(&self) -> HashMap<Key, usize> {
@@ -441,13 +452,13 @@ impl<'r> Pass<'r> {
             let counterpart = counterparts(new, old, &new_index, &old_index);
             let mut added_to: HashMap<usize, Vec<&str>> = HashMap::new();
             for (line, text) in &step.added {
-                if let Some(owner) = new.owner_of(*line) {
+                for &owner in new.owners_of(*line) {
                     added_to.entry(owner).or_default().push(text);
                 }
             }
             let mut removed_from: HashMap<usize, Vec<&str>> = HashMap::new();
             for (line, text) in &step.removed {
-                if let Some(owner) = old.owner_of(*line) {
+                for &owner in old.owners_of(*line) {
                     removed_from.entry(owner).or_default().push(text);
                 }
             }
@@ -587,16 +598,23 @@ fn layout(analyzer: Option<&Analyzer>, path: &str, text: &str) -> Layout {
             span
         })
         .collect();
-    let mut owner = vec![None; lines.len() + 2];
-    let mut widest_first: Vec<usize> = (0..spans.len()).collect();
-    widest_first.sort_by_key(|&i| Reverse(spans[i].end - spans[i].start));
-    for i in widest_first {
-        let (start, end) = (spans[i].start.max(1), spans[i].end.min(lines.len() + 1));
-        for slot in owner.iter_mut().take(end + 1).skip(start) {
-            *slot = Some(i);
+    let mut owners: Vec<Vec<usize>> = vec![Vec::new(); lines.len() + 2];
+    let mut widths: Vec<usize> = vec![usize::MAX; lines.len() + 2];
+    for (i, span) in spans.iter().enumerate() {
+        let (start, end) = (span.start.max(1), span.end.min(lines.len() + 1));
+        let width = span.end - span.start;
+        for (slot, narrowest) in owners.iter_mut().zip(widths.iter_mut()).take(end + 1).skip(start) {
+            let same_lines = slot.first().is_some_and(|&first| (spans[first].start, spans[first].end) == (span.start, span.end));
+            if width < *narrowest || (width == *narrowest && !same_lines) {
+                *narrowest = width;
+                slot.clear();
+            }
+            if width == *narrowest {
+                slot.push(i);
+            }
         }
     }
-    Layout { spans, owner, lines }
+    Layout { spans, owners, lines }
 }
 
 /// Os commits que o projeto manda ignorar na autoria, um por linha no
