@@ -14,6 +14,34 @@
 //!   campo no mapa. A chamada liga ao método desse tipo. Quando o tipo não sai
 //!   assim — nome que dois tipos têm, campo que o mapa não guarda, tipo de
 //!   fora do projeto —, a chamada segue como sempre seguiu.
+//!
+//! # Limites
+//!
+//! O tipo do receptor é lido só do que está escrito e do que o mapa guarda
+//! por tipo e por nome. Três casos, por isso, não saem, e a chamada neles
+//! fica onde ficava, suspeita entre as declarações de mesmo nome que o
+//! arquivo tem à vista, nunca ligada a uma só:
+//!
+//! - **Método de extensão.** O receptor `pedido.Total()` tem o tipo `Pedido`,
+//!   mas o `Total` mora numa classe estática à parte (`this Pedido`), e a
+//!   chamada só liga ao método cujo dono é o tipo do receptor.
+//! - **Campo de classe base.** O campo de um tipo é só o que o próprio tipo
+//!   declara, no arquivo dele. `_repo` declarado em `Base` e chamado por
+//!   `Filho : Base` não é campo do `Filho` para esta leitura, e o tipo do
+//!   receptor não sai; o mapa não segue a herança para achar campo.
+//! - **Nome repetido num módulo em linha.** Os tipos são indexados pelo nome,
+//!   sem separar o módulo escrito dentro do arquivo. Dois tipos de mesmo nome
+//!   no mesmo arquivo, um deles dentro de `mod interno { }`, empatam, e nem o
+//!   tipo do objeto nem o dos campos dele saem; o módulo em linha não
+//!   sombreia o nome de fora.
+//!
+//! O custo entra no tempo do scan: montar o índice dos tipos e ler o tipo de
+//! cada receptor deixam a passada de 5 a 9 por cento mais lenta (medida de
+//! quando a leitura entrou, não refeita desde então). E o que as
+//! declarações guardam mudou com ela: o formato do bloco `decls` do mapa
+//! ([`mustard_core::io::project_map::DECLS`]) é o da versão 11, o mapa gravado
+//! na anterior perde o bloco na troca e o scan seguinte lê o projeto inteiro
+//! de novo, uma vez.
 
 use std::collections::{HashMap, HashSet};
 

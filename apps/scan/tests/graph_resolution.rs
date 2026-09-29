@@ -2059,3 +2059,90 @@ fn a_call_on_a_parameter_with_a_written_type_links_to_the_method_of_that_type_in
     assert!(proven_uses_of(&v, "src/repo.ts", "save").contains(&"src/servico.ts:13:solto".to_string()), "{v}");
     assert!(!use_places_of(&v, "src/outro.ts", "save").contains(&"src/servico.ts:13:solto".to_string()), "{v}");
 }
+
+/// Um tipo `Pedido` sem método algum, o método `Total` de extensão dele
+/// (`this Pedido`) numa classe estática à parte, um homônimo de outro tipo e
+/// um serviço que chama `pedido.Total()` com o parâmetro de tipo escrito.
+const CSHARP_EXTENSION_METHOD: &[(&str, &str)] = &[
+    ("src/Pedido.cs", "namespace Loja;\n\npublic class Pedido\n{\n}\n"),
+    (
+        "src/PedidoExtensions.cs",
+        "namespace Loja;\n\npublic static class PedidoExtensions\n{\n    public static int Total(this Pedido pedido)\n    {\n        return 1;\n    }\n}\n",
+    ),
+    ("src/Carrinho.cs", "namespace Loja;\n\npublic class Carrinho\n{\n    public int Total()\n    {\n        return 2;\n    }\n}\n"),
+    (
+        "src/Servico.cs",
+        "namespace Loja;\n\npublic class Servico\n{\n    public int Somar(Pedido pedido)\n    {\n        return pedido.Total();\n    }\n}\n",
+    ),
+];
+
+/// O método de extensão mora na classe estática, não no tipo do receptor: o
+/// tipo de `pedido` é `Pedido`, que não tem `Total`, e a chamada não liga ao
+/// método de extensão por isso. Fica suspeita entre os dois `Total` que o
+/// arquivo vê.
+#[test]
+fn a_call_on_an_extension_method_is_not_proven_by_the_type_of_the_receiver() {
+    let v = scan_files("csharp-extension-method", CSHARP_EXTENSION_METHOD);
+    let site = "src/Servico.cs:7:Somar".to_string();
+    assert!(proven_uses_of(&v, "src/PedidoExtensions.cs", "Total").is_empty(), "{v}");
+    assert!(proven_uses_of(&v, "src/Carrinho.cs", "Total").is_empty(), "{v}");
+    assert!(use_places_of(&v, "src/PedidoExtensions.cs", "Total").contains(&site), "{v}");
+    assert!(use_places_of(&v, "src/Carrinho.cs", "Total").contains(&site), "{v}");
+}
+
+/// Dois tipos com `Salvar`, um campo `_repo` do tipo `IRepo` declarado na
+/// classe base e um filho que o chama pelo nome sozinho.
+const CSHARP_BASE_CLASS_FIELD: &[(&str, &str)] = &[
+    ("src/IRepo.cs", "namespace Loja;\n\npublic interface IRepo\n{\n    void Salvar(int id);\n}\n"),
+    ("src/ILog.cs", "namespace Loja;\n\npublic interface ILog\n{\n    void Salvar(int id);\n}\n"),
+    ("src/Base.cs", "namespace Loja;\n\npublic class Base\n{\n    protected readonly IRepo _repo;\n}\n"),
+    (
+        "src/Filho.cs",
+        "namespace Loja;\n\npublic class Filho : Base\n{\n    public void Gravar()\n    {\n        _repo.Salvar(1);\n    }\n}\n",
+    ),
+];
+
+/// O campo lido pelo tipo em volta é só o que o tipo declara: `_repo` é do
+/// `Base`, e o `Filho` não o herda para o mapa. O tipo do receptor não sai, e
+/// a chamada fica suspeita entre os dois `Salvar`, sem provar o do `IRepo`.
+#[test]
+fn a_call_on_a_field_of_the_base_class_is_not_proven_by_the_type_of_the_field() {
+    let v = scan_files("csharp-base-class-field", CSHARP_BASE_CLASS_FIELD);
+    let site = "src/Filho.cs:7:Gravar".to_string();
+    assert!(proven_uses_of(&v, "src/IRepo.cs", "Salvar").is_empty(), "{v}");
+    assert!(use_places_of(&v, "src/IRepo.cs", "Salvar").contains(&site), "{v}");
+    assert!(use_places_of(&v, "src/ILog.cs", "Salvar").contains(&site), "{v}");
+}
+
+/// Um `Ctx` com o campo `config` do tipo `Config` e, dentro de um módulo em
+/// linha do mesmo arquivo, outro `Ctx` de mesmo nome; a função de fora chama
+/// `ctx.config.language()` pelo `Ctx` de fora, e `Outra` tem um `language`
+/// homônimo.
+const RUST_INLINE_MODULE_SHADOW: &[(&str, &str)] = &[
+    ("Cargo.toml", "[package]\nname = \"loja\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"),
+    ("src/main.rs", "mod app;\nmod config;\nmod outra;\n\nfn main() {}\n"),
+    (
+        "src/config.rs",
+        "pub struct Config;\n\nimpl Config {\n    pub fn language(&self) -> u8 {\n        1\n    }\n}\n",
+    ),
+    (
+        "src/outra.rs",
+        "pub struct Outra;\n\nimpl Outra {\n    pub fn language(&self) -> u8 {\n        2\n    }\n}\n",
+    ),
+    (
+        "src/app.rs",
+        "use crate::config::Config;\nuse crate::outra::Outra;\n\npub struct Ctx {\n    pub config: Config,\n}\n\nmod interno {\n    use crate::outra::Outra;\n\n    pub struct Ctx {\n        pub config: Outra,\n    }\n}\n\npub fn ler(ctx: &Ctx) -> u8 {\n    ctx.config.language()\n}\n",
+    ),
+];
+
+/// O mapa não separa os nomes por módulo em linha: os dois `Ctx` do arquivo
+/// empatam, o tipo do receptor não sai, e a chamada não liga ao `language` do
+/// `Config` por ele. Fica suspeita entre os dois.
+#[test]
+fn a_type_that_an_inline_module_of_the_file_repeats_does_not_give_the_type_of_the_receiver() {
+    let v = scan_files("rust-inline-module-shadow", RUST_INLINE_MODULE_SHADOW);
+    let site = "src/app.rs:17:ler".to_string();
+    assert!(proven_uses_of(&v, "src/config.rs", "language").is_empty(), "{v}");
+    assert!(use_places_of(&v, "src/config.rs", "language").contains(&site), "{v}");
+    assert!(use_places_of(&v, "src/outra.rs", "language").contains(&site), "{v}");
+}
