@@ -178,7 +178,12 @@ const FILE_LEVEL: Level = Level {
 
 /// O nível das declarações, com os pesos medidos como os do nível dos
 /// arquivos. O nome da declaração pesa pouco e o caminho nada: o arquivo
-/// dono já os traz, e a assinatura, que traz o nome com o tipo, pesa mais. Os
+/// dono já os traz, e a assinatura, que traz o nome com o tipo, pesa mais. O
+/// caminho entra no índice quebrado em palavras, como o nome, nos dois níveis;
+/// no das declarações, o peso 0,5 ou 1 baixou o ganho da régua de 360 buscas
+/// nos assuntos pares (de 42 para 38 e 36) e não o subiu nos ímpares, e no dos
+/// arquivos o peso 0,5 o baixou e o 2 o deixou igual, por isso o do arquivo
+/// fica em 1. Os
 /// membros e os nomes de quem usa a declaração ficam com peso 0: entram no
 /// índice, mas nenhum peso acima de zero subiu a régua (o dos nomes de quem
 /// usa a baixou em todos os pesos medidos). Os títulos dos commits e os
@@ -1330,7 +1335,33 @@ pub fn links(root: &Path, ids: &[i64]) -> std::result::Result<Links, MapRefusal>
 /// língua, a do texto do projeto, como no laboratório, e a das outras só na
 /// palavra que a primeira não acha em nenhum documento dos dois níveis
 /// ([`map_question::in_text_language`]).
+#[cfg(test)]
 pub(super) fn whole_list(conn: &Connection, query: &str, intent: &str, languages: &Languages) -> Result<Vec<i64>> {
+    Ok(sources(conn, query, intent, languages)?.whole())
+}
+
+/// As quatro listas de declarações que o rodízio de [`whole_list`] junta, cada
+/// uma na ordem da nota dela.
+pub(super) struct Sources {
+    /// A de base: o nome, o caminho, a assinatura e a documentação.
+    pub base: Vec<i64>,
+    /// A dos nomes, pelo pedaço do nome.
+    pub names: Vec<i64>,
+    /// A de todos os campos da declaração.
+    pub everything: Vec<i64>,
+    /// As declarações dos arquivos, na ordem da nota do arquivo.
+    pub files: Vec<i64>,
+}
+
+impl Sources {
+    /// A lista inteira: o rodízio das quatro, nesta ordem.
+    pub(super) fn whole(&self) -> Vec<i64> {
+        round_robin(&[self.base.clone(), self.names.clone(), self.everything.clone(), self.files.clone()])
+    }
+}
+
+/// As quatro listas de [`whole_list`], antes do rodízio.
+pub(super) fn sources(conn: &Connection, query: &str, intent: &str, languages: &Languages) -> Result<Sources> {
     let levels = [
         map_question::Vocabulary { vocab: DECL_LEVEL.vocab, lengths: DECL_LEVEL.lengths },
         map_question::Vocabulary { vocab: FILE_LEVEL.vocab, lengths: FILE_LEVEL.lengths },
@@ -1345,7 +1376,7 @@ pub(super) fn whole_list(conn: &Connection, query: &str, intent: &str, languages
     let names = name_list(&name_hits(conn, query)?, fields_of(conn, &DECL_LEVEL, &[], &[])?.docs);
     let files = file_list(&decl_files(conn)?, &file_scores, &base_scores);
     let ids = |list: Vec<(i64, f64)>| list.into_iter().map(|(id, _)| id).collect::<Vec<_>>();
-    Ok(round_robin(&[ids(base), ids(names), ids(everything), files]))
+    Ok(Sources { base: ids(base), names: ids(names), everything: ids(everything), files })
 }
 
 /// A lista de base: o BM25F no nível das declarações, sobre o nome, o
@@ -2257,10 +2288,11 @@ pub(crate) mod tests {
             modules.push(module(&format!("src/outro{n}.rs"), &format!("fazer{n}"), "text", "algo bem diferente aqui"));
         }
         let dir = saved_json(&json!({ "modules": modules }));
-        let found = candidates(dir.path(), "estoque", "", &languages(), CANDIDATES).unwrap();
-        // Só a lista de tudo e a dos arquivos acham a palavra, e a de tudo
-        // entra primeiro no rodízio: o primeiro da lista inteira é o dela.
-        assert_eq!(found.whole, vec![id_of(dir.path(), "baixar"), id_of(dir.path(), "avisar")], "{found:?}");
+        let db = open_existing(&model_path(dir.path())).unwrap();
+        // Só a lista de tudo e a dos arquivos acham a palavra; a de tudo põe
+        // primeiro a declaração do erro curto.
+        let every = sources(db.conn(), "estoque", "", &languages()).unwrap().everything;
+        assert_eq!(every, vec![id_of(dir.path(), "baixar"), id_of(dir.path(), "avisar")]);
     }
 
     /// O texto fixo escrito num método conta também para o tipo que o traz,

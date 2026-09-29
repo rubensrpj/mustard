@@ -1,33 +1,45 @@
 //! `map_order` — a ordem única dos arquivos da busca do mapa.
 //!
-//! A busca tinha duas ordens que discordavam. A lista das declarações que
-//! vai ao filtro ([`map_search::whole_list`]) junta quatro listas por rodízio
-//! e vê o pedido inteiro, a frase e as palavras, nos campos das declarações.
-//! A resposta do banco, a que sai sem filtro, ordenava os arquivos só pela
-//! nota deles ([`map_search::ranked_files`]). Na régua de 360 buscas cada uma
+//! A busca tinha ordens que discordavam. A lista das declarações que vai ao
+//! filtro ([`map_search::sources`]) junta quatro listas por rodízio e vê o
+//! pedido inteiro, a frase e as palavras, nos campos das declarações. A
+//! resposta do banco, a que sai sem filtro, ordenava os arquivos só pela nota
+//! deles ([`map_search::ranked_files`]). Na régua de 360 buscas cada uma
 //! acerta arquivos que a outra perde: com os nomes, 50 dos erros da resposta
 //! tinham o certo entre os 5 primeiros da lista; só com a frase, a lista
 //! perde para o banco em 47 buscas e ganha em 27.
 //!
-//! Aqui as duas se somam numa ordem só, por posição recíproca: cada arquivo
-//! vale `1/(60+posição)` na lista, contando os arquivos distintos dela, mais
-//! `1/(60+posição)` no banco; ganha o de maior soma e, no empate, o que está
-//! antes na lista. A resposta ao Claude e a cabeça da lista de candidatos
-//! saem dessa ordem: a primeira declaração de cada um dos [`TOP`] primeiros
-//! arquivos vai para o começo da lista, na ordem deles, e o resto segue na
-//! ordem do rodízio. Assim os cinco primeiros arquivos da lista são os cinco
-//! da resposta, e o filtro não perde nenhuma declaração que a lista já
-//! trazia além das poucas que a cabeça empurra para baixo.
+//! Aqui as ordens se somam numa só, por posição recíproca: cada arquivo vale
+//! `peso/(60+posição)` em cada uma destas ordens, contando os arquivos
+//! distintos de cada lista, e ganha o de maior soma; no empate, o que está
+//! antes na lista inteira e depois no banco.
+//!
+//! - a lista inteira do rodízio, com peso 0,5;
+//! - a lista de todos os campos das declarações, com peso 0,5;
+//! - a lista dos arquivos, com peso 1;
+//! - o banco dos arquivos, com peso 1.
+//!
+//! A lista de base e a dos nomes não somam por conta própria: elas escolhem a
+//! declaração de nome ou assinatura curtos que casa com uma palavra da
+//! pergunta, e numa frase longa esse é o primeiro do rodízio (no Suzano, o
+//! arquivo certo é o primeiro da lista de base em 2 das 120 buscas só com a
+//! frase). Elas entram só pelo rodízio, com o peso pequeno dele.
+//!
+//! A resposta ao Claude e a cabeça da lista de candidatos saem dessa ordem: a
+//! primeira declaração de cada um dos [`TOP`] primeiros arquivos vai para o
+//! começo da lista, na ordem deles, e o resto segue na ordem do rodízio.
+//! Assim os cinco primeiros arquivos da lista são os cinco da resposta, e o
+//! filtro não perde nenhuma declaração que a lista já trazia além das poucas
+//! que a cabeça empurra para baixo.
 
-use std::collections::hash_map::Entry;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use rusqlite::{Connection, OptionalExtension};
 
 use crate::domain::normalize::Languages;
 use crate::domain::project_map::Found;
 use crate::domain::search::TOP;
-use crate::io::map_search::{decl_files, ranked_files, whole_list};
+use crate::io::map_search::{decl_files, ranked_files, sources};
 use crate::platform::error::Result;
 
 /// A constante da posição recíproca: `1/(60+posição)`, a de sempre.
@@ -56,65 +68,118 @@ pub(super) struct Ordered {
     pub bank: Vec<Found>,
 }
 
-/// Um arquivo na soma das duas ordens.
+/// Quantas ordens de declarações entram na soma, além do banco dos arquivos:
+/// a lista inteira do rodízio, a de todos os campos das declarações e a dos
+/// arquivos, nesta ordem.
+const LISTS: usize = 3;
+
+/// O peso de cada ordem na soma das posições.
+///
+/// A lista inteira do rodízio abre com o melhor de cada uma das quatro listas,
+/// e a de base e a dos nomes escolhem pela declaração de nome curto que casa
+/// com uma palavra da pergunta: na régua de 360 buscas só com a frase, o
+/// arquivo certo é o primeiro da lista de base em 2 das 120 do Suzano, e o
+/// rodízio herda esse primeiro. As duas listas que leem o arquivo — a dos
+/// arquivos e o banco — juntam as palavras da pergunta no mesmo arquivo, e
+/// por isso pesam o dobro das que só leem a declaração. Os pesos saem da
+/// medida nos assuntos pares da régua e da conferência nos ímpares, com os
+/// três projetos de prova, só com a frase e com os nomes.
+const WEIGHTS: Weights = Weights { lists: [0.5, 0.5, 1.0], bank: 1.0 };
+
+#[derive(Clone, Copy)]
+struct Weights {
+    lists: [f64; LISTS],
+    bank: f64,
+}
+
+/// Os pesos da tabela; nos testes, `MAP_ORDER_WEIGHTS` (`ordem=peso`, com as
+/// ordens `whole`, `everything`, `files` e `bank`, separadas por espaço) põe
+/// outros no lugar, para uma medida comparar com eles.
+fn weights() -> Weights {
+    #[cfg(test)]
+    if let Ok(spec) = std::env::var("MAP_ORDER_WEIGHTS") {
+        let mut out = Weights { lists: [0.0; LISTS], bank: 0.0 };
+        for pair in spec.split_whitespace() {
+            let (name, weight) = pair.split_once('=').unwrap();
+            let weight: f64 = weight.parse().unwrap();
+            match name {
+                "whole" => out.lists[0] = weight,
+                "everything" => out.lists[1] = weight,
+                "files" => out.lists[2] = weight,
+                "bank" => out.bank = weight,
+                other => panic!("{other}"),
+            }
+        }
+        return out;
+    }
+    WEIGHTS
+}
+
+/// Um arquivo na soma das ordens.
 struct Standing {
     path: String,
-    /// O número do arquivo, quando veio da lista.
+    /// O número do arquivo, quando veio de alguma das listas.
     file: Option<i64>,
-    list_rank: Option<usize>,
+    /// A posição entre os arquivos distintos de cada lista de declarações.
+    ranks: [Option<usize>; LISTS],
     bank_rank: Option<usize>,
     bank_score: u64,
 }
 
 impl Standing {
-    fn sum(&self) -> f64 {
+    /// A soma das posições recíprocas, cada uma com o peso da sua ordem.
+    fn sum(&self, weight: &Weights) -> f64 {
         let part = |rank: Option<usize>| rank.map_or(0.0, |at| 1.0 / (RECIPROCAL_FROM + at as f64));
-        part(self.list_rank) + part(self.bank_rank)
+        let lists: f64 = self.ranks.iter().zip(weight.lists).map(|(rank, weight)| weight * part(*rank)).sum();
+        lists + weight.bank * part(self.bank_rank)
     }
 }
 
 /// A ordem única da busca de `query` e `intent` no banco aberto.
 pub(super) fn ordered(conn: &Connection, query: &str, intent: &str, languages: &Languages) -> Result<Ordered> {
-    let whole = whole_list(conn, query, intent, languages)?;
+    let sources = sources(conn, query, intent, languages)?;
+    let whole = sources.whole();
     let file_of: HashMap<i64, i64> = decl_files(conn)?.into_iter().collect();
     let mut first_decl: HashMap<i64, i64> = HashMap::new();
-    let mut listed: Vec<i64> = Vec::new();
     for id in &whole {
-        let Some(&file) = file_of.get(id) else { continue };
-        if let Entry::Vacant(slot) = first_decl.entry(file) {
-            slot.insert(*id);
-            listed.push(file);
+        if let Some(&file) = file_of.get(id) {
+            first_decl.entry(file).or_insert(*id);
         }
     }
     let bank = ranked_files(conn, query, languages, BANK_DEPTH)?;
+    let weight = weights();
     let mut path_of = conn.prepare("SELECT path FROM files WHERE rowid = ?1")?;
     let mut entries: Vec<Standing> = Vec::new();
     let mut at: HashMap<String, usize> = HashMap::new();
-    for (rank, file) in listed.iter().take(LIST_DEPTH).enumerate() {
-        let Some(path) = path_of.query_row([file], |row| row.get::<_, String>(0)).optional()? else { continue };
-        at.insert(path.clone(), entries.len());
-        entries.push(Standing { path, file: Some(*file), list_rank: Some(rank + 1), bank_rank: None, bank_score: 0 });
-    }
-    for (rank, found) in bank.iter().enumerate() {
-        match at.get(&found.path) {
-            Some(&index) => {
-                entries[index].bank_rank = Some(rank + 1);
-                entries[index].bank_score = found.score;
+    let lists: [&[i64]; LISTS] = [&whole, &sources.everything, &sources.files];
+    for (slot, list) in lists.iter().enumerate() {
+        let mut seen: HashSet<i64> = HashSet::new();
+        for id in list.iter() {
+            let Some(&file) = file_of.get(id) else { continue };
+            if !seen.insert(file) {
+                continue;
             }
-            None => {
-                at.insert(found.path.clone(), entries.len());
-                entries.push(Standing {
-                    path: found.path.clone(),
-                    file: None,
-                    list_rank: None,
-                    bank_rank: Some(rank + 1),
-                    bank_score: found.score,
-                });
+            if seen.len() > LIST_DEPTH {
+                break;
             }
+            let Some(path) = path_of.query_row([file], |row| row.get::<_, String>(0)).optional()? else { continue };
+            let index = *at.entry(path.clone()).or_insert_with(|| {
+                entries.push(Standing { path, file: Some(file), ranks: [None; LISTS], bank_rank: None, bank_score: 0 });
+                entries.len() - 1
+            });
+            entries[index].ranks[slot] = Some(seen.len());
         }
     }
-    // `sort_by` é estável: no empate, a ordem da lista e depois a do banco.
-    entries.sort_by(|a, b| b.sum().total_cmp(&a.sum()));
+    for (rank, found) in bank.iter().enumerate() {
+        let index = *at.entry(found.path.clone()).or_insert_with(|| {
+            entries.push(Standing { path: found.path.clone(), file: None, ranks: [None; LISTS], bank_rank: None, bank_score: 0 });
+            entries.len() - 1
+        });
+        entries[index].bank_rank = Some(rank + 1);
+        entries[index].bank_score = found.score;
+    }
+    // `sort_by` é estável: no empate, a ordem da lista inteira e depois a do banco.
+    entries.sort_by(|a, b| b.sum(&weight).total_cmp(&a.sum(&weight)));
     let mut head: Vec<i64> = Vec::new();
     let mut by_path = conn.prepare("SELECT rowid FROM files WHERE path = ?1")?;
     for entry in entries.iter().take(TOP) {
@@ -135,7 +200,7 @@ pub(super) fn ordered(conn: &Connection, query: &str, intent: &str, languages: &
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::io::map_search::candidates_at;
+    use crate::io::map_search::{candidates_at, whole_list};
     use crate::io::project_map::{self as store, model_path, open_existing};
     use serde_json::{json, Value};
     use tempfile::{tempdir, TempDir};
@@ -185,6 +250,153 @@ mod tests {
 
     fn paths(files: &[Found]) -> Vec<&str> {
         files.iter().map(|file| file.path.as_str()).collect()
+    }
+
+    /// Onde está o arquivo certo na ordem de cada uma das listas que a ordem
+    /// única junta (`MAP_RANKS_RULER`, o arquivo JSON da régua; com
+    /// `MAP_RANKS_PHRASE`, a pergunta é só a frase): por busca, a posição do
+    /// primeiro arquivo certo entre os arquivos distintos de cada lista (0:
+    /// fora), uma linha em `MAP_RANKS_OUT`.
+    #[test]
+    #[ignore = "mede com os mapas dos projetos de prova"]
+    fn measure_where_each_list_puts_the_right_file() {
+        let ruler = std::env::var("MAP_RANKS_RULER").unwrap();
+        let out = std::env::var("MAP_RANKS_OUT").unwrap();
+        let phrase = std::env::var("MAP_RANKS_PHRASE").is_ok();
+        let ruler: Value = serde_json::from_str(&std::fs::read_to_string(ruler).unwrap()).unwrap();
+        let languages = languages();
+        let mut lines: Vec<String> = Vec::new();
+        for search in ruler["searches"].as_array().unwrap() {
+            let text = |key: &str| search[key].as_str().unwrap().to_string();
+            let (key, intent) = (text("key"), text("intent"));
+            let query = if phrase { intent.clone() } else { text("query") };
+            let db = crate::io::map_search::indexed(std::path::Path::new(&text("model")), &languages, &crate::io::map_fill::READ_BY_CANDIDATES).unwrap();
+            let conn = db.conn();
+            let right: Vec<String> =
+                search["targets"].as_array().unwrap().iter().map(|t| t[0].as_str().unwrap().to_string()).collect();
+            let file_of: HashMap<i64, i64> = decl_files(conn).unwrap().into_iter().collect();
+            let mut path_of = conn.prepare("SELECT path FROM files WHERE rowid = ?1").unwrap();
+            let sources = crate::io::map_search::sources(conn, &query, &intent, &languages).unwrap();
+            let mut where_is = |list: &[i64]| -> usize {
+                let mut seen: Vec<i64> = Vec::new();
+                for id in list {
+                    let Some(&file) = file_of.get(id) else { continue };
+                    if seen.contains(&file) {
+                        continue;
+                    }
+                    seen.push(file);
+                    let path: String = path_of.query_row([file], |row| row.get(0)).unwrap();
+                    if right.contains(&path) {
+                        return seen.len();
+                    }
+                }
+                0
+            };
+            let whole = whole_list(conn, &query, &intent, &languages).unwrap();
+            let bank = ranked_files(conn, &query, &languages, 100).unwrap();
+            let bank_rank = bank.iter().position(|f| right.contains(&f.path)).map_or(0, |at| at + 1);
+            lines.push(
+                json!({
+                    "key": key, "base": where_is(&sources.base), "names": where_is(&sources.names),
+                    "everything": where_is(&sources.everything), "files": where_is(&sources.files),
+                    "whole": where_is(&whole), "bank": bank_rank,
+                })
+                .to_string(),
+            );
+        }
+        std::fs::write(out, lines.join("\n")).unwrap();
+    }
+
+    /// Uma pergunta em frase longa, num projeto onde a declaração de nome
+    /// curto de outros arquivos casa com uma palavra só: `unidade`,
+    /// `material` e `densidade` são a assinatura de uma propriedade cada, e o
+    /// arquivo certo só traz as palavras nas mensagens que escreve, que a
+    /// lista de base não lê.
+    fn phrase_map() -> Value {
+        let single = |path: &str, name: &str, signature: &str| {
+            json!({ "path": path, "declarations": [
+                {"kind": "property", "name": name, "line": 1, "end_line": 1, "signature": signature}] })
+        };
+        let mut modules = vec![
+            single("src/dto/unidade.dto.ts", "campoA", "unidade"),
+            single("src/dto/material.dto.ts", "campoB", "material"),
+            single("src/dto/densidade.dto.ts", "campoC", "densidade"),
+            json!({ "path": "src/service/importacao.service.ts",
+                "declarations": [
+                    {"kind": "function", "name": "executar", "line": 1, "end_line": 3, "signature": "executar()"},
+                    {"kind": "function", "name": "salvar", "line": 4, "end_line": 6, "signature": "salvar()"}],
+                "texts": [
+                    {"line": 2, "kind": "log", "value": "importada a planilha de densidade por unidade e material genetico", "owner": "executar"},
+                    {"line": 5, "kind": "log", "value": "gravado no banco", "owner": "salvar"}] }),
+        ];
+        modules.extend((1..=8).map(|n| {
+            json!({ "path": format!("src/outro/arquivo{n}.ts"), "declarations": [
+                {"kind": "function", "name": format!("faz{n}"), "line": 1, "end_line": 2, "signature": format!("faz{n}()")}] })
+        }));
+        json!({ "modules": modules })
+    }
+
+    /// A lista inteira do rodízio abre com o primeiro da lista de base, e ele é
+    /// a propriedade de nome curto que casa com uma palavra da frase. A resposta
+    /// e a lista de candidatos abrem com o arquivo que traz as palavras da frase
+    /// juntas, que a soma põe na frente porque a lista dos arquivos e o banco
+    /// pesam mais que a lista inteira.
+    #[test]
+    fn a_long_phrase_answers_with_the_file_that_holds_its_words_and_not_with_the_short_declaration_of_another() {
+        let dir = saved(&phrase_map());
+        let db = open_existing(&model_path(dir.path())).unwrap();
+        let phrase = "importa a planilha de densidade por unidade e material genetico";
+        let rotation = files_of(&dir, &whole_list(db.conn(), phrase, phrase, &languages()).unwrap());
+        assert_eq!(rotation[0], "src/dto/unidade.dto.ts", "the rotation opens with the short declaration: {rotation:?}");
+        let answer = ordered(db.conn(), phrase, phrase, &languages()).unwrap();
+        assert_eq!(paths(&answer.files)[0], "src/service/importacao.service.ts", "{:?}", paths(&answer.files));
+        let sent = candidates_at(&model_path(dir.path()), phrase, phrase, &languages(), 100).unwrap();
+        assert_eq!(sent.candidates[0].path, "src/service/importacao.service.ts");
+    }
+
+    /// O caminho entra no índice quebrado em palavras, como o nome: a pergunta
+    /// `contract end points` acha o arquivo `ContractEndPoints.cs` e a de
+    /// `plantio plan repository` o `plantio-plan.repository.ts`, quando as
+    /// palavras só estão no caminho.
+    #[test]
+    fn the_path_of_a_file_is_indexed_as_words() {
+        let one = |path: &str, name: &str| {
+            json!({ "path": path, "declarations": [
+                {"kind": "function", "name": name, "line": 1, "end_line": 2, "signature": format!("{name}()")}] })
+        };
+        let mut modules = vec![
+            one("src/api/ContractEndPoints.cs", "handle"),
+            one("src/plantio/plantio-plan.repository.ts", "run"),
+        ];
+        modules.extend((1..=6).map(|n| one(&format!("src/outro/arquivo{n}.ts"), &format!("faz{n}"))));
+        let dir = saved(&json!({ "modules": modules }));
+        let db = open_existing(&model_path(dir.path())).unwrap();
+        let first = |question: &str| ranked_files(db.conn(), question, &languages(), 10).unwrap().remove(0).path;
+        assert_eq!(first("contract end points"), "src/api/ContractEndPoints.cs");
+        assert_eq!(first("plantio plan repository"), "src/plantio/plantio-plan.repository.ts");
+    }
+
+    /// A palavra da camada vem do caminho: dois arquivos com a mesma
+    /// declaração e o mesmo nome de assunto se distinguem pela palavra
+    /// `repository` da pergunta, na resposta e no começo da lista de candidatos.
+    #[test]
+    fn the_layer_word_of_the_question_picks_the_file_by_its_path() {
+        let layer = |path: &str| {
+            json!({ "path": path, "declarations": [
+                {"kind": "function", "name": "reject", "line": 1, "end_line": 4, "signature": "reject()"}] })
+        };
+        let mut modules = vec![
+            layer("src/contract/contract.service.ts"),
+            layer("src/contract/contract.repository.ts"),
+            layer("src/contract/contract.controller.ts"),
+        ];
+        modules.extend((1..=6).map(|n| layer(&format!("src/outro/arquivo{n}.ts"))));
+        let dir = saved(&json!({ "modules": modules }));
+        let db = open_existing(&model_path(dir.path())).unwrap();
+        let answer = ordered(db.conn(), "reject repository", "reject repository", &languages()).unwrap();
+        assert_eq!(paths(&answer.files)[0], "src/contract/contract.repository.ts", "{:?}", paths(&answer.files));
+        let sent = candidates_at(&model_path(dir.path()), "reject repository", "reject repository", &languages(), 100).unwrap();
+        assert_eq!(sent.candidates[0].path, "src/contract/contract.repository.ts");
     }
 
     #[test]
