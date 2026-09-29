@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 use super::*;
 use crate::domain::project_map::RecipeOf;
 use crate::domain::spec_events::SpecEvent;
-use crate::domain::wave_prompt::{estimate_tokens, pattern_block, PATTERN_CAP};
+use crate::domain::wave_prompt::{estimate_tokens, pattern_block, recipe_lines, PATTERN_CAP};
 use crate::platform::i18n::translate;
 
 /// O que a régua achou num bloco do padrão.
@@ -145,6 +145,27 @@ fn example_line(e: &PatternExample, lang: Locale) -> String {
         .replace("{path}", &e.path)
         .replace("{start}", &e.start.to_string())
         .replace("{end}", &e.end.to_string())
+}
+
+/// O que as receitas do git e os exemplos pesam, em caracteres, no bloco
+/// `text` que `pattern_block` montou de `block`: só as peças que o teto
+/// deixou, cada uma como o bloco a escreve.
+fn pieces_chars(block: &TaskPattern, text: &str, lang: Locale) -> (usize, usize) {
+    let recipes = block
+        .recipes
+        .iter()
+        .map(|recipe| recipe_lines(recipe, lang))
+        .filter(|lines| text.contains(lines.as_str()))
+        .map(|lines| lines.chars().count())
+        .sum();
+    let examples = block
+        .examples
+        .iter()
+        .map(|e| format!("    - {}\n", example_line(e, lang)))
+        .filter(|line| text.contains(line.as_str()))
+        .map(|line| line.chars().count())
+        .sum();
+    (recipes, examples)
 }
 
 /// Os arquivos que uma receita cita: o que ela muda e o que mudou junto.
@@ -322,27 +343,14 @@ pub(super) fn measure(
                 let Some(block) = patterns.get(&code) else { continue };
                 let text = pattern_block(block, lang);
                 let chars = text.chars().count();
-                // O que cada peça pesa: o bloco sem os exemplos, e sem eles
-                // nem as receitas, cortados pelo mesmo teto que o pedido.
-                let plain = TaskPattern {
-                    examples: Vec::new(),
-                    ..block.clone()
-                };
-                let bare = TaskPattern {
-                    recipes: Vec::new(),
-                    ..plain.clone()
-                };
-                let (plain, bare) = (
-                    pattern_block(&plain, lang).chars().count(),
-                    pattern_block(&bare, lang).chars().count(),
-                );
+                let (recipes_chars, examples_chars) = pieces_chars(block, &text, lang);
                 blocks.push(TaskMeasure {
                     wave,
                     code,
                     block_chars: chars,
                     block_tokens: estimate_tokens(&text),
-                    recipes_chars: plain - bare,
-                    examples_chars: chars - plain,
+                    recipes_chars,
+                    examples_chars,
                     rules: block.strong.len() + block.info.len(),
                     large: block.large.len(),
                     examples_found: block.examples.len(),
@@ -540,6 +548,15 @@ mod tests {
             [(1, 3, 0), (1, 3, 0)],
             "uma regra, três exemplos e nenhuma receita por tarefa"
         );
+        // O peso dos exemplos vem da linha de cada um no bloco: sem receita,
+        // o resto é a abertura e a regra.
+        for block in &wave.blocks {
+            let lines = |text: &str| text.lines().filter(|l| l.contains("exemplo:")).map(|l| l.chars().count() + 1).sum::<usize>();
+            let text = task_lines(sent, if block.code == wave.blocks[0].code { "Criar o controller" } else { "Criar o service" }).join("\n");
+            assert_eq!(block.recipes_chars, 0, "{block:?}");
+            assert_eq!(block.examples_chars, lines(&text), "{block:?}: {text}");
+            assert!(block.examples_chars > 0 && block.examples_chars < block.block_chars, "{block:?}");
+        }
     }
 
     #[test]
@@ -634,6 +651,56 @@ mod tests {
         assert_eq!(found.recipe_cited, 2);
         assert_eq!(found.recipe_gone, ["src/lost.ts"]);
         assert!(!found.is_clean());
+    }
+
+    /// O que as receitas e os exemplos pesam é o que o bloco leva depois do
+    /// teto: com o primeiro exemplo no lugar da receita, o peso da receita é
+    /// zero e o dos exemplos é a linha do primeiro; sem corte, é o de todas
+    /// as peças.
+    #[test]
+    fn the_pieces_weigh_what_the_cap_left_in_the_block_even_when_the_first_example_replaced_the_recipe() {
+        let recipe = Recipe {
+            of: RecipeOf::Created("apps/rt/src/commands/area_0/*.rs".into()),
+            commits: 10,
+            together: vec![("apps/rt/src/commands/area_0/mod.rs".into(), 9)],
+            tests: Some(7),
+        };
+        let examples: Vec<PatternExample> = (0..3)
+            .map(|n| PatternExample {
+                name: format!("create{n}"),
+                path: format!("src/order{n}/order{n}.controller.ts"),
+                start: 10,
+                end: 40,
+            })
+            .collect();
+        let line = |e: &PatternExample| format!("    - {}\n", example_line(e, Locale::PtBr)).chars().count();
+        let recipe_size = recipe_lines(&recipe, Locale::PtBr).chars().count();
+        let strong: Vec<Direction> = (0..6)
+            .map(|n| direction(&format!("controller_of_area_{n:02}"), &format!("service_of_area_{n:02}"), 40, 1))
+            .collect();
+
+        let cut = TaskPattern {
+            strong: strong.clone(),
+            recipes: vec![recipe.clone()],
+            examples: examples.clone(),
+            ..TaskPattern::default()
+        };
+        let text = pattern_block(&cut, Locale::PtBr);
+        assert!(text.contains("`create0`") && !text.contains("Receita do git"), "{text}");
+        assert_eq!(pieces_chars(&cut, &text, Locale::PtBr), (0, line(&examples[0])));
+
+        let whole = TaskPattern {
+            strong: vec![direction("controller", "service", 24, 1)],
+            recipes: vec![recipe],
+            examples: examples.clone(),
+            ..TaskPattern::default()
+        };
+        let text = pattern_block(&whole, Locale::PtBr);
+        assert_eq!(
+            pieces_chars(&whole, &text, Locale::PtBr),
+            (recipe_size, examples.iter().map(line).sum::<usize>()),
+            "{text}"
+        );
     }
 
     #[test]

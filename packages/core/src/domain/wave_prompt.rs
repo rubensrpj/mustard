@@ -222,10 +222,11 @@ pub struct Material<'a> {
 }
 
 /// O teto, em caracteres, do bloco do padrão sob uma tarefa
-/// ([`pattern_block`]): acima dele saem os exemplos, do fim para o começo,
-/// depois as receitas, também do fim, e depois a linha dos arquivos grandes.
-/// As regras nunca saem; se só elas passam do teto, o bloco sai inteiro, e a
-/// medida do pedido mostra o tamanho.
+/// ([`pattern_block`]): acima dele saem os exemplos do fim para o começo, até
+/// sobrar o primeiro, depois as receitas, também do fim, depois a linha dos
+/// arquivos grandes e, por último, o primeiro exemplo. As regras nunca saem;
+/// se só elas passam do teto, o bloco sai inteiro, sem exemplo, e a medida do
+/// pedido mostra o tamanho.
 pub const PATTERN_CAP: usize = 875;
 
 /// O padrão do projeto sob uma tarefa: as regras fortes e as informações dos
@@ -267,9 +268,10 @@ pub fn rules_for(pattern: &Pattern, roles: &BTreeSet<&str>) -> TaskPattern {
 /// código novo em arquivo novo; uma linha por regra forte e por informação;
 /// a receita do git de cada arquivo, com o que mudou junto; e uma linha por
 /// exemplo, com o nome, o arquivo e as linhas, sem código. Cabe em
-/// [`PATTERN_CAP`] caracteres: saem os exemplos do fim, depois as receitas
-/// do fim, depois a linha dos arquivos grandes, até caber; as regras ficam
-/// todas. Sem regra, sem arquivo grande e sem receita, nenhum bloco.
+/// [`PATTERN_CAP`] caracteres: saem os exemplos do fim, até sobrar o
+/// primeiro, depois as receitas do fim, depois a linha dos arquivos grandes e
+/// só então o primeiro exemplo, até caber; as regras ficam todas. Sem regra,
+/// sem arquivo grande e sem receita, nenhum bloco.
 #[must_use]
 pub fn pattern_block(pattern: &TaskPattern, lang: Locale) -> String {
     let ruled = !pattern.strong.is_empty() || !pattern.info.is_empty();
@@ -315,7 +317,13 @@ pub fn pattern_block(pattern: &TaskPattern, lang: Locale) -> String {
     let size = |lines: &[String]| lines.iter().map(|l| l.chars().count()).sum::<usize>();
     let fixed = head.chars().count() + rules.chars().count();
     while fixed + size(&large) + size(&recipes) + size(&examples) > PATTERN_CAP {
-        if examples.pop().is_none() && recipes.pop().is_none() && large.pop().is_none() {
+        // O primeiro exemplo, o melhor da escolha, é a última peça a sair.
+        let cut = if examples.len() > 1 {
+            examples.pop().is_some()
+        } else {
+            recipes.pop().is_some() || large.pop().is_some() || examples.pop().is_some()
+        };
+        if !cut {
             break;
         }
     }
@@ -333,7 +341,7 @@ pub fn pattern_block(pattern: &TaskPattern, lang: Locale) -> String {
 /// As linhas de uma receita do git no bloco do padrão: a abertura, com o
 /// trabalho e quantos commits se contaram, e embaixo cada arquivo que mudou
 /// junto e o teste novo, com a fração.
-fn recipe_lines(recipe: &Recipe, lang: Locale) -> String {
+pub fn recipe_lines(recipe: &Recipe, lang: Locale) -> String {
     let commits = recipe.commits.to_string();
     let head = match &recipe.of {
         RecipeOf::Created(kind) => translate("prompt.pattern.recipe.created", lang).replace("{kind}", kind),
@@ -3266,7 +3274,7 @@ mod tests {
     }
 
     #[test]
-    fn over_the_cap_the_examples_leave_before_the_recipes_the_recipes_before_the_large_line_and_rules_stay() {
+    fn over_the_cap_the_examples_after_the_first_leave_before_the_recipes_the_recipes_before_the_large_line_and_the_first_example_last() {
         let mut pattern = rules_for(&two_rule_pattern(), &BTreeSet::from(["controller", "repository", "entity"]));
         pattern.large = vec!["src/order.controller.ts".to_string()];
         pattern.recipes = (0..3).map(command_recipe).collect();
@@ -3275,12 +3283,13 @@ mod tests {
         let recipes = |block: &str| (0..3).filter(|n| block.contains(&format!("commands/area_{n}/*.rs"))).count();
         let examples = |block: &str| (0..3).filter(|n| block.contains(&format!("`create{n}`"))).count();
 
-        // Três receitas e a linha grande não cabem com os exemplos: saem
-        // todos os exemplos antes da primeira receita.
+        // Três receitas e a linha grande não cabem com os exemplos: saem os
+        // exemplos do segundo em diante antes da primeira receita, e o
+        // primeiro exemplo fica.
         let block = pattern_block(&pattern, Locale::PtBr);
         assert!(block.chars().count() <= PATTERN_CAP, "{} chars: {block}", block.chars().count());
         assert!(rules.iter().all(|rule| block.contains(rule)), "{block}");
-        assert_eq!(examples(&block), 0, "{block}");
+        assert!(block.contains("`create0`") && examples(&block) == 1, "only the first example stays: {block}");
         assert!((1..3).contains(&recipes(&block)), "{block}");
         assert!(block.contains("commands/area_0/*.rs"), "the first recipe stays, the last leave: {block}");
         assert!(block.contains("5% maiores"), "{block}");
@@ -3292,12 +3301,65 @@ mod tests {
         assert_eq!(recipes(&block), 1, "{block}");
         assert!(examples(&block) >= 1, "{block}");
 
-        // Com regras que já ocupam quase o teto, sai também a linha grande,
-        // e as regras ficam todas.
+        // Com regras que já ocupam quase o teto, sai também a linha grande e,
+        // por último, o primeiro exemplo; as regras ficam todas.
         pattern.strong =
             (0..9).map(|n| direction(&format!("controller_of_area_{n:02}"), &format!("service_of_area_{n:02}"), 40, 1)).collect();
         let block = pattern_block(&pattern, Locale::PtBr);
         assert!(!block.contains("5% maiores") && recipes(&block) == 0 && examples(&block) == 0, "{block}");
         assert!(pattern.strong.iter().all(|d| block.contains(&format!("regra: {} importa {}", d.from, d.to))), "{block}");
+    }
+
+    /// Seis regras, uma receita e três exemplos: acima do teto, e com o
+    /// primeiro exemplo cabendo sem a receita.
+    fn crowded_pattern() -> TaskPattern {
+        TaskPattern {
+            strong: (0..6)
+                .map(|n| direction(&format!("controller_of_area_{n:02}"), &format!("service_of_area_{n:02}"), 40, 1))
+                .collect(),
+            recipes: vec![command_recipe(0)],
+            examples: (0..3).map(example).collect(),
+            ..TaskPattern::default()
+        }
+    }
+
+    /// Com regras, uma receita e três exemplos acima do teto, o bloco leva o
+    /// primeiro exemplo e tira a receita; sem a receita e com o primeiro
+    /// exemplo, ele cabe, e com a receita ele já não caberia.
+    #[test]
+    fn over_the_cap_the_block_keeps_the_first_example_and_drops_the_recipe() {
+        let pattern = crowded_pattern();
+        let chars = |p: &TaskPattern| pattern_block(p, Locale::PtBr).chars().count();
+        let line = |e: &PatternExample| format!("    - exemplo: `{}` em `{}`, linhas {} a {}\n", e.name, e.path, e.start, e.end).chars().count();
+        let recipe = recipe_lines(&pattern.recipes[0], Locale::PtBr).chars().count();
+        let rules = chars(&TaskPattern { recipes: Vec::new(), examples: Vec::new(), ..pattern.clone() });
+        let first = line(&pattern.examples[0]);
+        assert!(rules + first <= PATTERN_CAP, "the first example fits without the recipe: {rules} + {first}");
+        assert!(rules + recipe + first > PATTERN_CAP, "the recipe and the first example do not fit together: {rules} + {recipe} + {first}");
+
+        let block = pattern_block(&pattern, Locale::PtBr);
+        assert!(block.chars().count() <= PATTERN_CAP, "{} chars: {block}", block.chars().count());
+        assert!(block.contains("`create0`"), "the first example stays: {block}");
+        assert!(!block.contains("`create1`") && !block.contains("`create2`"), "the others leave: {block}");
+        assert!(!block.contains("Receita do git"), "the recipe goes: {block}");
+        assert!(pattern.strong.iter().all(|d| block.contains(&format!("regra: {} importa {}", d.from, d.to))), "{block}");
+    }
+
+    /// O pedido da onda leva, sob a tarefa, o primeiro exemplo do padrão
+    /// mesmo quando o bloco passa do teto, e não leva a receita que o teto
+    /// cortou.
+    #[test]
+    fn the_wave_request_carries_the_first_example_under_the_task_when_the_block_is_over_the_cap() {
+        let log = log(&[
+            ("wave", json!({"n": 1, "text": "Onda", "criteria": [], "done_when": "a suíte passa"})),
+            ("task", json!({"wave": 1, "text": "Criar o controller", "files": [{"path": "src/a.rs"}]})),
+        ]);
+        let mut m = material(&log, 1);
+        let task = log.visible()[1].id;
+        m.task_patterns = BTreeMap::from([(m.codes[&task].clone(), crowded_pattern())]);
+        let request = write(&m, Locale::PtBr);
+        assert!(request.contains("exemplo: `create0` em `src/order0/order0.controller.ts`, linhas 10 a 40"), "{request}");
+        assert!(!request.contains("exemplo: `create1`") && !request.contains("Receita do git"), "{request}");
+        assert!(request.contains("regra: controller_of_area_05 importa service_of_area_05"), "{request}");
     }
 }
