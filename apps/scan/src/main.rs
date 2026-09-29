@@ -83,6 +83,11 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Imprime a marca de formato que a passada grava em cada bloco do mapa:
+    /// a versão e o resumo das fontes deste scan. Quem só quer saber se o
+    /// mapa é de outra compilação compara a marca dele com esta, sem rodar a
+    /// passada.
+    Format,
 }
 
 /// Apaga o mapa de antes do banco, na pasta do banco em `out`, quando ele
@@ -151,6 +156,7 @@ fn main() -> Result<()> {
                 );
             }
         }
+        Command::Format => println!("{}", refresh::FORMAT),
         Command::History { path, out, file, moves, json } => {
             let report = history::run(&path, &out, &file, moves)?;
             if json {
@@ -842,7 +848,7 @@ mod tests {
         use clap::CommandFactory;
         let tree = Cli::command();
         let names: Vec<&str> = tree.get_subcommands().map(clap::Command::get_name).collect();
-        assert_eq!(names, ["scan", "history"], "the check reached every command");
+        assert_eq!(names, ["scan", "history", "format"], "the check reached every command");
         let defects = tree_defects(&tree);
         assert!(defects.is_empty(), "{} help texts break the uppercase rule:\n{}", defects.len(), defects.join("\n"));
     }

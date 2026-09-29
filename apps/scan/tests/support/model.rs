@@ -39,6 +39,20 @@ pub fn scan(root: &Path, out: &Path, extra: &[&str]) -> (Value, Value) {
     (read(out), report)
 }
 
+/// A marca de formato que o scan compilado com o teste diz gravar em cada
+/// bloco (`scan format`).
+pub fn scan_format() -> String {
+    let run = Command::new(env!("CARGO_BIN_EXE_scan")).arg("format").output().expect("run scan format");
+    assert!(run.status.success(), "stderr: {}", String::from_utf8_lossy(&run.stderr));
+    String::from_utf8(run.stdout).expect("a marca é texto").trim().to_string()
+}
+
+/// O mapa da pasta `dir` está atrás do projeto, para o scan compilado com o
+/// teste: o conteúdo mudou, ou a marca dele não é a da marca do mapa.
+pub fn is_behind(dir: &Path) -> bool {
+    store::is_behind(dir, &|| Some(scan_format()))
+}
+
 /// O mapa já gravado na pasta `dir`, no JSON do scan.
 pub fn read(dir: &Path) -> Value {
     serde_json::from_slice(&read_bytes(dir)).expect("o mapa é JSON")
@@ -62,4 +76,21 @@ pub fn edit_keeping_the_mark(dir: &Path, change: impl FnOnce(&mut Value)) {
     let mut map: Value = serde_json::from_str(&stored.json).expect("o mapa é JSON");
     change(&mut map);
     store::save_at(&model, &map, &mark, &Languages::of(&ProjectConfig::default())).expect("grava o mapa");
+}
+
+/// Grava de novo, pelo porto, o mapa da pasta `dir` (a do mapa) com a marca `mark` em
+/// cada bloco, sem mudar uma linha dele: o mapa que uma compilação do scan
+/// com outra marca deixaria para um projeto parado.
+pub fn mark_as(dir: &Path, mark: &str) {
+    let model = path_in(dir);
+    let stored = store::read_stored_at(&model).expect("o mapa foi gravado e se lê");
+    let map: Value = serde_json::from_str(&stored.json).expect("o mapa é JSON");
+    store::save_at(&model, &map, mark, &Languages::of(&ProjectConfig::default())).expect("grava o mapa");
+}
+
+/// A marca de cada bloco do mapa da pasta `dir`, sem repetir: uma só quando
+/// todos foram gravados pela mesma compilação.
+pub fn marks(dir: &Path) -> std::collections::BTreeSet<String> {
+    let stored = store::read_stored_at(&path_in(dir)).expect("o mapa foi gravado e se lê");
+    stored.marks.into_values().collect()
 }

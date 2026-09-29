@@ -88,23 +88,14 @@ pub(crate) fn held_slots(root: &Path, spec: &str, log: &SpecLog) -> BTreeSet<Str
 /// aviso diz por quê; a onda sem vaga livre também não sai, e fica para a
 /// rodada seguinte. Roda com a trava do passo do git que o despacho já
 /// prendeu (`_held`): duas rodadas ao mesmo tempo não pegam a mesma vaga.
-///
-/// A obra de até 3 pontos (`solo`, de
-/// [`crate::commands::flow::plan::is_solo_work`]) não cria cópia nenhuma: o
-/// orquestrador faz a onda no checkout principal, na própria janela, e nada
-/// aqui teria onde compilar.
 pub(super) fn open_copies(
     root: &Path,
     spec: &str,
     log: &SpecLog,
     _held: &LockedFile,
     waves: &[u64],
-    solo: bool,
     lang: Locale,
 ) -> (BTreeMap<u64, WaveCopy>, Vec<Value>) {
-    if solo {
-        return (BTreeMap::new(), Vec::new());
-    }
     // A cópia da onda órfã — em andamento sem o processo que a mandou — volta
     // ao commit atual sozinha, nesta rodada, sem esperar o reenvio pedir
     // isso: a onda falhou no meio do trabalho, e o que ela deixou para trás

@@ -191,7 +191,14 @@ scan scan ./meu-projeto --out grain.db --all
 
 # uma linha JSON com o que foi lido, no lugar do resumo
 scan scan ./meu-projeto --out grain.db --json
+
+# a marca que a passada grava em cada bloco: a versão e o resumo das fontes do scan
+scan format
 ```
+
+O `mustard-rt` compara essa marca com a dos blocos do mapa antes de responder:
+o mapa que outra compilação do scan gravou é lido de novo por inteiro, mesmo
+com o projeto parado no mesmo commit e com o mesmo conteúdo.
 
 Depois de gravar o banco, o scan apaga o mapa de antes dele (`grain.model.json`)
 na mesma pasta.

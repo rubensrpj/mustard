@@ -280,14 +280,14 @@ mod tests {
         let now = project_map::listing(root).unwrap();
         let map = map_with(json!({"head": now.head, "listing": now.digest()}));
         project_map::save_at(&model_path(root), &map, "scan 1", &languages()).unwrap();
-        assert!(!project_map::is_behind(root), "the map is the one of the commit and the content of now");
+        assert!(!project_map::is_behind(root, &|| None), "the map is the one of the commit and the content of now");
 
         opened_by_an_older_scan(root);
-        assert!(project_map::is_behind(root), "the declarations came back empty");
-        assert!(project_map::is_behind(root), "and stay behind until a pass fills them");
+        assert!(project_map::is_behind(root, &|| None), "the declarations came back empty");
+        assert!(project_map::is_behind(root, &|| None), "and stay behind until a pass fills them");
 
         project_map::save_at(&model_path(root), &map, "scan 1", &languages()).unwrap();
-        assert!(!project_map::is_behind(root));
+        assert!(!project_map::is_behind(root, &|| None));
     }
 
     /// A busca num mapa cujas declarações voltaram vazias recusa, com o nome

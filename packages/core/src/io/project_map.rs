@@ -29,7 +29,7 @@ use crate::domain::project_map::{
 };
 use crate::domain::normalize::Languages;
 use crate::io::map_db::{self, Block, Kind, MapDb};
-use crate::io::{map_fill, map_glossary, map_search};
+use crate::io::{map_fill, map_format, map_glossary, map_search};
 use crate::platform::error::{Error, Result};
 
 /// A pasta do projeto onde o mapa mora.
@@ -1555,12 +1555,16 @@ fn blobs_under(root: &Path, skip: &[String]) -> Option<(BTreeMap<String, String>
 
 /// O mapa de `root` ficou atrás do conteúdo de agora: o commit do checkout,
 /// a branch de partida, a ponta dela ou algum arquivo mudou desde a passada
-/// que o gravou, ou um bloco que ela grava voltou vazio numa troca de formato
-/// ([`map_fill::unfilled`]). Lê só o estado gravado e as marcas dos blocos,
-/// nunca o mapa inteiro. `false` sem mapa, com um mapa que não se lê e fora
-/// do git: não há com que comparar.
+/// que o gravou; um bloco que ela grava voltou vazio numa troca de formato
+/// ([`map_fill::unfilled`]); ou a passada foi de outro scan que o de
+/// `scan_format`, a marca do que refaria o mapa ([`map_format`]), mesmo com o
+/// projeto parado. `scan_format` só é chamado quando o mapa traz marca com
+/// que comparar, e sem marca do scan (`None`) a compilação dele não conta:
+/// quem não acha o scan não tem como refazer o mapa. Lê só o estado gravado e
+/// as marcas dos blocos, nunca o mapa inteiro. `false` sem mapa, com um mapa
+/// que não se lê e fora do git: não há com que comparar.
 #[must_use]
-pub fn is_behind(root: &Path) -> bool {
+pub fn is_behind(root: &Path, scan_format: &dyn Fn() -> Option<String>) -> bool {
     let Ok(db) = open_existing(&model_path(root)) else { return false };
     let Ok(rows) = picked(db.conn(), "census", &["head", "listing", "base", "base_tip"], "", &[]) else { return false };
     let Some(now) = listing(root) else { return false };
@@ -1571,6 +1575,7 @@ pub fn is_behind(root: &Path) -> bool {
         || digest != now.digest()
         || base != now.base
         || map_fill::unfilled(&db, &BLOCKS).is_ok_and(|blocks| !blocks.is_empty())
+        || map_format::written_by_another(&db, scan_format).unwrap_or(false)
 }
 
 /// O banco em `model`, que já tem de existir: sem o arquivo, a recusa de

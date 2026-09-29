@@ -46,6 +46,8 @@
 //!   total de tarefas e de arquivos.
 //! - `request-<n>` devolve, em texto puro, o pedido gravado no último envio da
 //!   onda, igual byte a byte: é por ele que o agente lê o próprio pedido.
+//!   `request-review` faz o mesmo com o último envio do revisor final, que
+//!   não tem onda: o fechamento manda o revisor ler o pedido por ele.
 //!
 //! `calls` soma as chamadas de cada comando, uma linha por comando: quantas,
 //! as falhas por motivo, a mediana, o p90 e o pior do tempo da chamada e do
@@ -117,6 +119,7 @@ pub(crate) fn read_for(opts: &ReadOpts, session: Option<&str>) -> Result<String,
     let mut extra: Vec<(&str, Value)> = Vec::new();
     let events: Vec<String> = match reading {
         ReadQuery::Request(wave) => return Ok(request_text(&log, wave)),
+        ReadQuery::ReviewRequest => return Ok(review_request_text(&log)),
         ReadQuery::Dispatch(wave) => dispatch_lines(&project.root, &log, wave, term, &codes, &project.languages),
         ReadQuery::Item(target) => item_lines(&log, &target, &codes),
         ReadQuery::Delivered(wave) => delivered_lines(&log, wave, &codes),
@@ -147,6 +150,18 @@ pub(crate) fn read_for(opts: &ReadOpts, session: Option<&str>) -> Result<String,
 /// texto puro. A onda sem envio não tem pedido: o texto vem vazio.
 fn request_text(log: &SpecLog, wave: u64) -> String {
     let sent = log.last_by_wave("send").get(&wave).and_then(|id| log.get(*id));
+    sent.and_then(|send| send.str_field("text")).unwrap_or_default().to_string()
+}
+
+/// O pedido gravado no último envio do revisor final, igual byte a byte, em
+/// texto puro. O envio dele não tem onda, então `request-<n>` não o alcança.
+/// Sem envio de revisão na spec, o texto vem vazio.
+fn review_request_text(log: &SpecLog) -> String {
+    let sent = log
+        .visible()
+        .into_iter()
+        .filter(|event| event.event_type == "send" && event.str_field("role") == Some("review"))
+        .max_by_key(|event| event.id);
     sent.and_then(|send| send.str_field("text")).unwrap_or_default().to_string()
 }
 
@@ -474,11 +489,32 @@ fn render(spec: &str, block: &str, events: &[String], extra: &[(&str, Value)], w
     out
 }
 
+/// Roda o comando `mustard-rt run read <bloco> --root <raiz> --spec <spec>`
+/// que uma resposta do Mustard entrega no lugar do texto, pela mesma leitura
+/// do comando, e devolve o que ele imprime. O texto que não é esse comando
+/// derruba o teste. Os testes leem por aqui como o agente lê.
+#[cfg(test)]
+pub(crate) fn read_by_command(command: &str) -> String {
+    let words: Vec<&str> = command.split_whitespace().collect();
+    assert_eq!(words.get(..3), Some(&["mustard-rt", "run", "read"][..]), "{command}");
+    let flag = |name: &str| words.iter().position(|w| *w == name).and_then(|i| words.get(i + 1)).map(|w| (*w).to_string());
+    let opts = ReadOpts {
+        root: PathBuf::from(flag("--root").unwrap_or_else(|| panic!("no --root: {command}"))),
+        spec: flag("--spec"),
+        block: words[3].to_string(),
+        term: None,
+    };
+    read_at(&opts).unwrap_or_else(|refusal| panic!("{command}: {refusal}"))
+}
+
 /// Run `read` and print the block; exit 1 on a refusal. The recorded request
-/// of a wave prints byte for byte, with no newline added.
+/// of a wave, or of the final review, prints byte for byte, with no newline
+/// added.
 pub fn run(opts: &ReadOpts) {
     match read_at(opts) {
-        Ok(text) if matches!(ReadQuery::parse(&opts.block), Some(ReadQuery::Request(_))) => print!("{text}"),
+        Ok(text) if matches!(ReadQuery::parse(&opts.block), Some(ReadQuery::Request(_) | ReadQuery::ReviewRequest)) => {
+            print!("{text}");
+        }
         Ok(report) => println!("{report}"),
         Err(refusal) => {
             println!("{}", serde_json::to_string_pretty(&refusal).unwrap_or_else(|_| "{}".into()));

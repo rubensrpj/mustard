@@ -743,7 +743,7 @@ pub(super) fn run_entered_round(
     let resends = resend_targets(&log, &paused);
     let moved: Vec<u64> = sharing_copy(&log, resends.keys().copied()).into_iter().collect();
     let wanted: Vec<u64> = moved.iter().chain(&go).copied().collect();
-    let (mut copies, not_copied) = open_copies(root, &spec, &log, &held_lock, &wanted, false, lang);
+    let (mut copies, not_copied) = open_copies(root, &spec, &log, &held_lock, &wanted, lang);
     // O código que a limpeza de uma cópia guardou vai também no que vem
     // depois: a resposta diz de que onda era e como trazê-lo de volta.
     let kept_lines: Vec<String> = not_copied
@@ -1028,8 +1028,16 @@ pub(super) fn run_entered_round(
 /// próprio pedido por ele, de dentro da cópia dele: por isso o comando leva o
 /// caminho do repositório principal, onde a spec mora.
 fn request_command(root: &Path, spec: &str, wave: u64) -> String {
+    read_command(root, spec, &format!("request-{wave}"))
+}
+
+/// O comando `read` de uma leitura da spec (`block`), com o caminho do
+/// repositório principal, onde a spec mora, e não o da cópia de quem o roda.
+/// É o comando que a resposta entrega no lugar do texto, da onda ou da
+/// revisão final.
+pub(crate) fn read_command(root: &Path, spec: &str, block: &str) -> String {
     let main = mustard_core::io::wave_prompt::shown(root);
-    format!("mustard-rt run read request-{wave} --root {main} --spec {spec}")
+    format!("mustard-rt run read {block} --root {main} --spec {spec}")
 }
 
 /// O fim de toda resposta da rodada, a que despacha e a que recusa um ciclo

@@ -141,7 +141,7 @@ use serde_json::Value;
 use crate::commands::spec_events;
 use crate::shared::spec_state::session_from_env;
 
-pub(crate) use answer::RoundRefusal;
+pub(crate) use answer::{read_command, RoundRefusal};
 pub(crate) use convert::convert_hand_waves;
 pub(crate) use queue::{backlog_left, open_review, tasks_left, wave_states, waves_in_progress, waves_pending_fix};
 #[cfg(test)]
@@ -563,18 +563,8 @@ mod tests {
     /// request-<n> --root <raiz> --spec <spec>` — pela mesma leitura do
     /// comando, e devolve o que ele imprime.
     fn request_by_command(entry: &Value, out: &Value) -> String {
-        use crate::commands::spec_events::read::{read_at, ReadOpts};
         let command = entry["read"].as_str().unwrap_or_else(|| panic!("the dispatch carries no read command: {out}"));
-        let words: Vec<&str> = command.split_whitespace().collect();
-        assert_eq!(words.get(..3), Some(&["mustard-rt", "run", "read"][..]), "{command}");
-        let flag = |name: &str| words.iter().position(|w| *w == name).and_then(|i| words.get(i + 1)).map(|w| (*w).to_string());
-        let opts = ReadOpts {
-            root: PathBuf::from(flag("--root").unwrap_or_else(|| panic!("no --root: {command}"))),
-            spec: flag("--spec"),
-            block: words[3].to_string(),
-            term: None,
-        };
-        read_at(&opts).unwrap_or_else(|refusal| panic!("{command}: {refusal}"))
+        crate::commands::spec_events::read::read_by_command(command)
     }
 
     /// A versão nova da tarefa da onda `n`: o plano da onda muda depois do

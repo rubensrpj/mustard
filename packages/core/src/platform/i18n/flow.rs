@@ -332,17 +332,19 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "The build folder `{folder}` stayed on disk: {detail}. Delete it when nothing is building."
         }
         ("close.final_review", Locale::PtBr) => {
-            "A máquina passou: antes do pull request, despache ao agente de teste dedicado o pedido \
-             em `review.prompt`; ele grava o veredito na spec com `mustard-rt run write verdict`. \
+            "A máquina passou. Antes do pull request, despache o agente de teste dedicado, \
+             `mustard-review`. Mande a ele o comando em `review.read`, e ele lê o próprio pedido. \
+             Ele grava o veredito na spec com `mustard-rt run write verdict`. \
              Quando ele voltar, feche de novo: `mustard-rt run close --spec {spec}`. \
              Rode-o em segundo plano e espere o aviso de fim. A suíte inteira pode passar dos 10 \
              minutos que o terminal espera por um comando. Se o veredito não estiver na spec, mande o \
              agente gravá-lo de novo pela ferramenta."
         }
         ("close.final_review", Locale::EnUs) => {
-            "The machine passed: before the pull request, dispatch the request in `review.prompt` to \
-             the dedicated test agent; it records its verdict in the spec with \
-             `mustard-rt run write verdict`. When it comes back, close again: \
+            "The machine passed. Before the pull request, dispatch the dedicated test agent, \
+             `mustard-review`. Send it the command in `review.read`, and it reads its own request. \
+             It records its verdict in the spec with `mustard-rt run write verdict`. \
+             When it comes back, close again: \
              `mustard-rt run close --spec {spec}`. Run it in the background and wait for the notice \
              that it ended. The whole suite can take longer than the 10 minutes the terminal waits \
              for a command. If the verdict is not in the spec, have the agent record it again \
@@ -867,17 +869,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Dispatch this round's requests: each wave to the `mustard-wave` agent and each review \
              to the `mustard-review` agent. The wave's request is not in this answer. Send the agent \
              the `read` command, and it reads its own request."
-        }
-        // A obra de até 3 pontos: sem cópia separada e sem agente, é o
-        // orquestrador — a própria conversa que chamou a rodada — quem faz a
-        // onda, na própria janela, no checkout principal.
-        ("round.next.solo", Locale::PtBr) => {
-            "Faça a onda desta rodada você mesmo, nesta janela, no checkout principal e sem cópia \
-             separada: leia o pedido abaixo e implemente."
-        }
-        ("round.next.solo", Locale::EnUs) => {
-            "Do this round's wave yourself, in this window, on the main checkout and without a \
-             separate copy: read the request below and implement it."
         }
         // O pedido de publicar e copiar a página fica por extenso só no
         // arquivo, e a resposta leva a linha curta.
@@ -1581,8 +1572,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            197,
-            0x5e03_144e_2309_eb94,
+            196,
+            0x57b2_5ce6_b3e2_e03d,
         );
     }
 
@@ -1797,7 +1788,6 @@ mod tests {
             ("round.git_refused", &["{detail}"][..]),
             ("round.next", &[][..]),
             ("round.next.copy_file", &["{path}"][..]),
-            ("round.next.solo", &[][..]),
             ("round.report", &[][..]),
             ("round.waiting", &["{waves}"][..]),
             ("round.close", &["{command}"][..]),
@@ -1975,6 +1965,41 @@ mod tests {
             assert!(text.contains("`read`"), "{lang:?}: {text}");
             let report = crate::domain::clarity::measure(text, &[], Some(lang));
             assert!(report.passed, "{lang:?}: {report:?}");
+        }
+    }
+
+    /// O passo do fechamento que despacha o revisor final manda o agente ler o
+    /// próprio pedido pelo comando do campo `review.read`, e não fala mais do
+    /// pedido inteiro no campo `review.prompt`, nos dois idiomas. A frase que
+    /// manda o comando tem 13 palavras em português e 12 em inglês, e o passo
+    /// inteiro passa na conferência de escrita, com a lacuna trocada por uma
+    /// palavra.
+    #[test]
+    fn the_final_review_step_sends_the_read_command_and_reads_clearly() {
+        for (lang, sentence_words) in [(Locale::PtBr, 13), (Locale::EnUs, 12)] {
+            let text = translate("close.final_review", lang).replace("{spec}", "teste");
+            assert!(text.contains("review.read"), "{lang:?}: não manda o comando do campo: {text}");
+            assert!(!text.contains("review.prompt"), "{lang:?}: ainda fala do pedido inteiro: {text}");
+            let sentence = text
+                .split(". ")
+                .find(|sentence| sentence.contains("review.read"))
+                .unwrap_or_else(|| panic!("{lang:?}: nenhuma frase cita o campo: {text}"));
+            assert_eq!(sentence.split_whitespace().count(), sentence_words, "{lang:?}: {sentence}");
+            let report = crate::domain::clarity::measure(&text, &[], Some(lang));
+            assert!(report.passed, "{lang:?}: {report:?}");
+        }
+    }
+
+    /// O texto do modo solo mandava ler o pedido "abaixo", que a resposta da
+    /// rodada não traz mais, e nenhum código o usava: a chave saiu do
+    /// catálogo nos dois idiomas, e o próximo passo que despacha fala do
+    /// comando de leitura, não de um pedido dentro da resposta.
+    #[test]
+    fn the_solo_mode_text_left_the_catalog() {
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            assert_eq!(translate("round.next.solo", lang), "<missing-key>", "{lang:?}");
+            let next = translate("round.next", lang);
+            assert!(!next.contains("abaixo") && !next.contains("below"), "{lang:?}: {next}");
         }
     }
 

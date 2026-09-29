@@ -95,7 +95,16 @@ impl BlockQuery {
     pub fn accepted_names() -> String {
         let mut names: Vec<&str> = Block::ALL.iter().map(|b| b.name()).collect();
         if let Some(i) = names.iter().position(|n| *n == "waves") {
-            let beside = ["wave-<n>", "dispatch-<n>", "request-<n>", "delivered-<n>", "backlog", "calls", "item-<code|n>"];
+            let beside = [
+                "wave-<n>",
+                "dispatch-<n>",
+                "request-<n>",
+                "request-review",
+                "delivered-<n>",
+                "backlog",
+                "calls",
+                "item-<code|n>",
+            ];
             for (step, name) in beside.into_iter().enumerate() {
                 names.insert(i + 1 + step, name);
             }
@@ -106,15 +115,17 @@ impl BlockQuery {
 
 /// O que o `read` pede: um bloco da spec ou uma das leituras que ele monta
 /// fora dos blocos. `dispatch-2` é tudo o que o pedido da onda 2 lista;
-/// `request-2`, o pedido exato gravado no envio dela; `delivered-2`, a entrega
-/// vigente dela; `backlog`, as tarefas ainda por entregar; `calls`, a soma
-/// das chamadas de cada comando; e `item-<código>` ou `item-<número>`, um
-/// item só, pelo código ou pela versão de número dado.
+/// `request-2`, o pedido exato gravado no envio dela; `request-review`, o
+/// pedido exato gravado no último envio do revisor final, que não tem onda;
+/// `delivered-2`, a entrega vigente dela; `backlog`, as tarefas ainda por
+/// entregar; `calls`, a soma das chamadas de cada comando; e `item-<código>`
+/// ou `item-<número>`, um item só, pelo código ou pela versão de número dado.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReadQuery {
     Block(BlockQuery),
     Dispatch(u64),
     Request(u64),
+    ReviewRequest,
     Delivered(u64),
     Backlog,
     Calls,
@@ -130,6 +141,9 @@ impl ReadQuery {
         let number = |rest: &str| rest.parse::<u64>().ok();
         if let Some(rest) = name.strip_prefix("dispatch-") {
             return number(rest).map(Self::Dispatch);
+        }
+        if name == "request-review" {
+            return Some(Self::ReviewRequest);
         }
         if let Some(rest) = name.strip_prefix("request-") {
             return number(rest).map(Self::Request);
@@ -867,12 +881,12 @@ mod tests {
         assert_eq!(BlockQuery::parse("wave-x"), None);
         assert_eq!(BlockQuery::parse("everything"), None);
         assert!(BlockQuery::accepted_names().contains(
-            "waves, wave-<n>, dispatch-<n>, request-<n>, delivered-<n>, backlog, calls, item-<code|n>, review"
+            "waves, wave-<n>, dispatch-<n>, request-<n>, request-review, delivered-<n>, backlog, calls, item-<code|n>, review"
         ));
     }
 
     /// Além dos blocos, a leitura aceita o pedido de uma onda, o pedido
-    /// gravado, a entrega, o backlog, a soma das chamadas e um item pelo
+    /// gravado, o pedido do revisor final, a entrega, o backlog, a soma das chamadas e um item pelo
     /// código ou pelo número; sem o número ou com um código fora do formato,
     /// o nome não é aceito.
     #[test]
@@ -881,6 +895,7 @@ mod tests {
         assert_eq!(ReadQuery::parse("wave-3"), Some(ReadQuery::Block(BlockQuery::Wave(3))));
         assert_eq!(ReadQuery::parse("dispatch-3"), Some(ReadQuery::Dispatch(3)));
         assert_eq!(ReadQuery::parse("request-3"), Some(ReadQuery::Request(3)));
+        assert_eq!(ReadQuery::parse(" request-review "), Some(ReadQuery::ReviewRequest));
         assert_eq!(ReadQuery::parse(" delivered-3 "), Some(ReadQuery::Delivered(3)));
         assert_eq!(ReadQuery::parse("backlog"), Some(ReadQuery::Backlog));
         assert_eq!(ReadQuery::parse("calls"), Some(ReadQuery::Calls));

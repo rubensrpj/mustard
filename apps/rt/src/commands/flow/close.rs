@@ -352,13 +352,16 @@ fn run_close(
         draft.insert("author".into(), json!("binary"));
         record(&opts.root, &spec, "send", draft, PhaseWriter::Binary).map_err(CloseRefusal::Refused)?;
         let next = translate("close.final_review", lang).replace("{spec}", &spec);
+        // A resposta não leva o pedido inteiro: leva o comando que o lê, e o
+        // revisor lê o próprio pedido por ele, de dentro da cópia dele.
+        let read = crate::commands::flow::round::read_command(root, &spec, "request-review");
         let mut out = json!({
             "ok": true,
             "spec": spec,
             "phase": "running",
             "recorded": recorded,
             "criteria": runs,
-            "review": { "final": true, "prompt": prompt },
+            "review": { "final": true, "lines": count_lines(&prompt), "read": read },
             "next": next,
         });
         if let Some(hint) = &stuck_hint {
@@ -1312,6 +1315,14 @@ mod tests {
         std::fs::write(root.join("mustard.json"), b"{}").unwrap();
     }
 
+    /// O pedido do revisor final, lido como o revisor o lê: rodando o comando
+    /// que a resposta do fechamento traz em `review.read`, no lugar do texto.
+    fn review_prompt(asked: &Value) -> String {
+        let command =
+            asked["review"]["read"].as_str().unwrap_or_else(|| panic!("a resposta não traz o comando de leitura: {asked}"));
+        crate::commands::spec_events::read::read_by_command(command)
+    }
+
     /// O veredito que o revisor grava pela porta do binário. Devolve a
     /// resposta da gravação, com a recusa quando ela recusa.
     fn judged(root: &Path, spec: &str, body: Value) -> Value {
@@ -1372,8 +1383,22 @@ mod tests {
         let asked =
             close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None, ..Default::default() }, None);
         assert_eq!(asked["review"]["final"], json!(true), "{asked}");
-        let prompt = asked["review"]["prompt"].as_str().unwrap_or_default().to_string();
+        assert!(asked["review"].get("prompt").is_none(), "a resposta não leva o pedido inteiro: {asked}");
+        assert_eq!(
+            asked["review"]["read"],
+            json!(format!(
+                "mustard-rt run read request-review --root {} --spec x",
+                mustard_core::io::wave_prompt::shown(root)
+            )),
+            "{asked}"
+        );
+        let prompt = review_prompt(&asked);
         assert!(!prompt.is_empty(), "{asked}");
+        assert_eq!(asked["review"]["lines"], json!(count_lines(&prompt)), "{asked}");
+        let opening = prompt.lines().next().unwrap_or_default();
+        assert!(!opening.is_empty() && !asked.to_string().contains(opening), "o texto do pedido não está na resposta: {asked}");
+        let next = asked["next"].as_str().unwrap_or_default();
+        assert!(next.contains("review.read") && !next.contains("review.prompt"), "o passo cita o campo que a resposta traz: {next}");
 
         let after = store::read(&path).unwrap().unwrap();
         let sent: Vec<&SpecEvent> = after.visible().into_iter().filter(|e| e.event_type == "send").collect();
@@ -1637,7 +1662,7 @@ mod tests {
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let commit = mustard_core::io::wave_prompt::final_review_commit(root, &log).expect("a obra comitou");
         assert_eq!(git_out(&copy, &["rev-parse", "HEAD"]), commit, "a cópia está no commit da obra");
-        let prompt = asked["review"]["prompt"].as_str().unwrap_or_default();
+        let prompt = review_prompt(&asked);
         assert!(prompt.contains(&format!("`{shown}`")) && prompt.contains(&format!("`{commit}`")), "{prompt}");
 
         // O revisor corta uma prova, não desfaz e reprova a obra: o
@@ -2772,7 +2797,7 @@ exit "${2:-0}"
         // teste — sempre verde, para a rodada não travar a entrega.
         assert_eq!(asked["criteria"].as_array().map(Vec::len), Some(2), "{asked}");
         assert_eq!(asked["review"]["final"], json!(true), "{asked}");
-        let prompt = asked["review"]["prompt"].as_str().unwrap_or_default();
+        let prompt = review_prompt(&asked);
         assert!(prompt.contains(translate("prompt.final.fixed", Locale::PtBr)), "{prompt}");
         assert!(prompt.contains("código repetido entre ondas") && prompt.contains("verificação que uma apagou da outra"), "{prompt}");
         for n in [1, 2] {
@@ -2807,7 +2832,7 @@ exit "${2:-0}"
         let again = close_with_lint(root, lint, None);
         assert_eq!(again["review"]["final"], json!(true), "{again}");
         assert!(ran(root), "{again}");
-        let fix_prompt = again["review"]["prompt"].as_str().unwrap_or_default();
+        let fix_prompt = review_prompt(&again);
         assert!(fix_prompt.contains(translate("prompt.final.look_again", Locale::PtBr)), "{fix_prompt}");
         assert!(fix_prompt.contains("MSTD-WAVE-0002") && !fix_prompt.contains("MSTD-WAVE-0001"), "só o conserto: {fix_prompt}");
 
@@ -2861,7 +2886,7 @@ exit "${2:-0}"
         ready_with_waves(root, "x", &["git --version"], 2);
         let asked = close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None, ..Default::default() }, None);
         assert_eq!(asked["review"]["final"], json!(true), "{asked}");
-        let prompt = asked["review"]["prompt"].as_str().unwrap_or_default();
+        let prompt = review_prompt(&asked);
         for n in [1, 2] {
             assert!(prompt.contains(&format!("MSTD-DELIV-000{n}")), "a entrega da onda {n} está no pedido: {prompt}");
         }
@@ -2872,7 +2897,7 @@ exit "${2:-0}"
         ready_to_close(solo_root, "x", &["git --version"]);
         let asked_solo = close_for(&CloseOpts { root: solo_root.to_path_buf(), spec: Some("x".into()), report: None, ..Default::default() }, None);
         assert_eq!(asked_solo["review"]["final"], json!(true), "uma onda só também pede o agente: {asked_solo}");
-        let solo_prompt = asked_solo["review"]["prompt"].as_str().unwrap_or_default();
+        let solo_prompt = review_prompt(&asked_solo);
         assert!(solo_prompt.contains("MSTD-DELIV-0001"), "a entrega da onda única está no pedido: {solo_prompt}");
         let round_solo =
             round_for(&RoundOpts { root: solo_root.to_path_buf(), spec: Some("x".into()), report: None }, None);
@@ -2902,7 +2927,7 @@ exit "${2:-0}"
         // para conferir o conserto — não a obra inteira de novo.
         let rechecked = close(None);
         assert_eq!(rechecked["review"]["final"], json!(true), "{rechecked}");
-        let fix_prompt = rechecked["review"]["prompt"].as_str().unwrap_or_default();
+        let fix_prompt = review_prompt(&rechecked);
         assert!(fix_prompt.contains(translate("prompt.final.look_again", Locale::PtBr)), "{fix_prompt}");
         assert!(fix_prompt.contains("MSTD-WAVE-0002") && !fix_prompt.contains("MSTD-WAVE-0001"), "só o conserto: {fix_prompt}");
 
@@ -2978,7 +3003,7 @@ exit "${2:-0}"
         // O agente de teste dedicado confere só o conserto, e aprova a obra
         // inteira: a aprovação sem onda é gravada sem onda nenhuma — nem na 1,
         // que foi a reprovada, nem na 2, a última do plano.
-        let fix_prompt = close(None)["review"]["prompt"].as_str().unwrap_or_default().to_string();
+        let fix_prompt = review_prompt(&close(None));
         assert!(fix_prompt.contains("MSTD-WAVE-0001") && !fix_prompt.contains("MSTD-WAVE-0002"), "{fix_prompt}");
         let approved = json!({"final": true, "result": "approved", "text": "O conserto ficou certo."});
         let closed = close(verdict_written(root, "x", approved));
@@ -3026,9 +3051,9 @@ exit "${2:-0}"
 
         let first = close(None);
         assert_eq!(first["review"]["final"], json!(true), "{first}");
-        let prompt = first["review"]["prompt"].as_str().unwrap_or_default();
-        assert!(listed(prompt).is_empty(), "a primeira revisão confere a obra inteira: {prompt}");
-        suite_line(prompt);
+        let prompt = review_prompt(&first);
+        assert!(listed(&prompt).is_empty(), "a primeira revisão confere a obra inteira: {prompt}");
+        suite_line(&prompt);
 
         let reject = json!({"final": true, "wave": 2, "result": "rejected", "text": "A onda 2 repete a 1."});
         assert_eq!(close(verdict_written(root, "x", reject))["reason"], json!("wave-rejected"));
@@ -3039,7 +3064,7 @@ exit "${2:-0}"
 
         let again = close(None);
         assert_eq!(again["review"]["final"], json!(true), "{again}");
-        let prompt = again["review"]["prompt"].as_str().unwrap_or_default();
+        let prompt = review_prompt(&again);
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let codes = log.codes();
         let verdict = log
@@ -3051,7 +3076,7 @@ exit "${2:-0}"
         let commits: Vec<u64> = log.visible().into_iter().filter(|e| e.event_type == "commit").map(|e| e.id).collect();
         let (before, after): (Vec<u64>, Vec<u64>) = commits.into_iter().partition(|id| *id < verdict);
         assert!(!before.is_empty() && !after.is_empty(), "um commit antes do veredito e o do conserto depois: {prompt}");
-        let part = listed(prompt);
+        let part = listed(&prompt);
         assert!(part.contains(&format!("- `review`: {}", codes[&verdict])), "{prompt}");
         for id in after {
             assert!(part.contains(&codes[&id]), "o commit do conserto está no que mudou: {prompt}");
@@ -3059,7 +3084,7 @@ exit "${2:-0}"
         for id in before {
             assert!(!part.contains(&codes[&id]), "o commit de antes do veredito fica fora do que mudou: {prompt}");
         }
-        suite_line(prompt);
+        suite_line(&prompt);
     }
 
     /// Um veredito de onda do fluxo antigo, sem o campo `final` — como o
@@ -3090,7 +3115,7 @@ exit "${2:-0}"
         // inteira, sem entrar em modo de conserto.
         let asked = close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None, ..Default::default() }, None);
         assert_eq!(asked["review"]["final"], json!(true), "{asked}");
-        let prompt = asked["review"]["prompt"].as_str().unwrap_or_default();
+        let prompt = review_prompt(&asked);
         assert!(!prompt.contains(translate("prompt.final.look_again", Locale::PtBr)), "não é modo de conserto: {prompt}");
         for n in [1, 2] {
             assert!(prompt.contains(&format!("MSTD-WAVE-000{n}")), "a onda {n} está no pedido: {prompt}");

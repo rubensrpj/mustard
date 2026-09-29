@@ -145,15 +145,15 @@ fn the_history_comes_from_the_server_tip_the_clone_has_before_the_local_branch()
     git(dir, &["checkout", "-q", "main"]);
     let checked_out = git(dir, &["rev-parse", "HEAD"]);
     scan(dir);
-    assert!(!store::is_behind(dir));
+    assert!(!model::is_behind(dir));
     git(dir, &["update-ref", "refs/remotes/origin/main", newer.trim()]);
     assert_eq!(git(dir, &["rev-parse", "HEAD"]), checked_out, "the checkout stays as it was");
-    assert!(store::is_behind(dir), "the base that moved puts the map behind");
+    assert!(model::is_behind(dir), "the base that moved puts the map behind");
     assert_eq!(
         commits(&scan(dir)),
         titled(&[("primeiro", None), ("entrou no servidor", None), ("mais um no servidor", None)])
     );
-    assert!(!store::is_behind(dir));
+    assert!(!model::is_behind(dir));
 }
 
 #[test]

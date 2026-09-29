@@ -888,6 +888,38 @@ fn the_request_reading_prints_the_sent_text_byte_for_byte() {
     assert!(none.stdout.is_empty(), "{}", String::from_utf8_lossy(&none.stdout));
 }
 
+/// O pedido do revisor final, que não tem onda, sai pela leitura
+/// `request-review` igual byte a byte ao texto do último envio de revisão: o
+/// envio de uma onda não entra, o envio de revisão mais novo vence o antigo, e
+/// a spec sem envio de revisão devolve texto vazio. O pedido de uma onda segue
+/// saindo por `request-<n>`, sem trocar de lugar com o da revisão.
+#[test]
+fn the_final_review_request_reading_prints_the_last_review_text_byte_for_byte() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    seed_state(root, &json!({"author": "binary", "phase": "running", "branch": "feature/teste", "base": "dev"}));
+    let wave = "# teste — onda 1\n\nO pedido da onda.\n";
+    seed_binary(root, "send", &json!({"author": "binary", "wave": 1, "role": "wave", "agent": "wave",
+        "text": wave, "lines": wave.lines().count(), "chars": wave.chars().count(), "mustard": "0"}));
+
+    let none = rt(root, &["read", "request-review", "--spec", "teste"]).output().expect("read");
+    assert!(none.status.success(), "{}", String::from_utf8_lossy(&none.stdout));
+    assert!(none.stdout.is_empty(), "o envio de onda não é o da revisão: {}", String::from_utf8_lossy(&none.stdout));
+
+    let first = "# teste — revisão final\n\nO primeiro.\n";
+    let last = "# teste — revisão final\n\nLeia a `spec` só pelo binário: ação, acentuação.\n\n- uma linha\n  - recuada\n";
+    for body in [first, last] {
+        seed_binary(root, "send", &json!({"author": "binary", "role": "review",
+            "text": body, "lines": body.lines().count(), "chars": body.chars().count(), "mustard": "0"}));
+    }
+    let out = rt(root, &["read", "request-review", "--spec", "teste"]).output().expect("read");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
+    assert_eq!(out.stdout, last.as_bytes(), "{}", String::from_utf8_lossy(&out.stdout));
+
+    let of_wave = rt(root, &["read", "request-1", "--spec", "teste"]).output().expect("read");
+    assert_eq!(of_wave.stdout, wave.as_bytes(), "{}", String::from_utf8_lossy(&of_wave.stdout));
+}
+
 /// Cada item forma uma fila de versões, e a versão nova só entra no fim dela.
 /// Com a versão 2 no lugar da 1, gravar outra versão sobre a 1 é recusado sem
 /// gravar nada, e a recusa diz a 2 pelo código e pelo número; sobre a 2

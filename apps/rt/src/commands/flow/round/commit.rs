@@ -277,15 +277,40 @@ pub(super) fn refresh_map(root: &Path, mine: &dyn Fn(&Path, &Path) -> mustard_co
 /// A conferência do mapa com o conteúdo de agora, antes de toda resposta
 /// dele: quando o commit do checkout `root` ou o conteúdo de algum arquivo
 /// não é o da passada que gravou o mapa — um arquivo editado sem commit,
-/// uma troca de branch, um commit à mão ou um pull —, ou quando um bloco que
-/// a passada grava voltou vazio numa troca de formato, chama [`refresh_map`]
-/// com o mesmo `mine`, que relê só os arquivos de blob novo, ou todos quando
-/// o bloco voltou vazio. Decide pelo estado gravado e pelas marcas dos
-/// blocos, sem ler o mapa inteiro. Sem git, sem mapa ou com o
-/// mapeador falhando, segue sem travar e sem aviso novo, e nunca cria o
-/// mapa.
+/// uma troca de branch, um commit à mão ou um pull —, quando um bloco que
+/// a passada grava voltou vazio numa troca de formato, ou quando o mapa é
+/// de outra compilação do scan que a de agora, mesmo com o projeto parado,
+/// chama [`refresh_map`] com o mesmo `mine`, que relê só os arquivos de blob
+/// novo, ou todos quando o bloco voltou vazio ou a marca é outra. Decide
+/// pelo estado gravado e pelas marcas dos blocos, sem ler o mapa inteiro. A
+/// marca da compilação de agora é a que o scan achado ao lado deste programa
+/// diz ([`mustard_core::Scan::format`]), pedida só quando o mapa traz marca
+/// com que comparar. Sem git, sem mapa ou com o mapeador falhando, segue
+/// sem travar e sem aviso novo, e nunca cria o mapa.
 pub(crate) fn refresh_map_if_stale(root: &Path, mine: &dyn Fn(&Path, &Path) -> mustard_core::platform::error::Result<ScanReport>) {
-    if mustard_core::io::project_map::is_behind(root) {
+    refresh_map_if_behind(root, mine, &installed_scan_format);
+}
+
+/// A marca de formato do scan achado ao lado deste programa. Os testes da
+/// biblioteca nunca a pedem a um scan de verdade: o que existe na máquina que
+/// os roda mudaria o resultado deles, e os mapas que eles gravam trazem a
+/// marca que o teste escolheu. O programa inteiro, com o scan ao lado, é
+/// provado pelo teste de integração `map_of_another_scan`.
+fn installed_scan_format() -> Option<String> {
+    if cfg!(test) {
+        return None;
+    }
+    mustard_core::Scan::locate().format()
+}
+
+/// [`refresh_map_if_stale`] com a marca de formato do scan dada por `format`,
+/// em vez da do scan achado ao lado deste programa.
+fn refresh_map_if_behind(
+    root: &Path,
+    mine: &dyn Fn(&Path, &Path) -> mustard_core::platform::error::Result<ScanReport>,
+    format: &dyn Fn() -> Option<String>,
+) {
+    if mustard_core::io::project_map::is_behind(root, format) {
         refresh_map(root, mine);
     }
 }
@@ -1213,6 +1238,50 @@ mod tests {
         map_at(&now.head, "");
         refresh_map_if_stale(root, &mine_counting(&calls));
         assert_eq!(calls.get(), 3, "o mapa sem a listagem é relido");
+    }
+
+    /// Com o commit e o conteúdo da passada que gravou o mapa, a ferramenta
+    /// do scan roda por [`refresh_map_if_behind`] só quando a marca de formato
+    /// que o scan diz não é a dos blocos do mapa: a mesma, ou a de um scan que
+    /// não responde, deixa o mapa como está. A marca dos blocos é a de uma
+    /// compilação do scan; o projeto parado e o mapa no mesmo commit não a
+    /// mudam.
+    #[test]
+    fn a_map_of_another_scan_build_is_read_again_even_with_the_project_parked() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(["-c", "user.email=t@example.com", "-c", "user.name=t", "-c", "commit.gpgsign=false"])
+                .args(args)
+                .current_dir(root)
+                .output()
+                .expect("git");
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        git(&["init", "-q"]);
+        std::fs::write(root.join("a.txt"), "x").unwrap();
+        git(&["add", "a.txt"]);
+        git(&["commit", "-q", "-m", "semente"]);
+        let now = project_map::listing(root).expect("dentro do git");
+        let map = serde_json::json!({
+            "state": {"head": now.head, "listing": now.digest()},
+            "modules": [{"path": "src/a.rs", "loc": 1, "declarations": [{"kind": "function", "name": "a", "line": 1, "end_line": 1}]}]
+        });
+        let languages = mustard_core::domain::normalize::Languages::new(["pt-BR", "en-US"]);
+        project_map::save_at(&project_map::model_path(root), &map, "scan 1", &languages).unwrap();
+
+        let calls = std::cell::Cell::new(0);
+        let same = || Some("scan 1".to_string());
+        refresh_map_if_behind(root, &mine_counting(&calls), &same);
+        assert_eq!(calls.get(), 0, "a marca é a do scan: a ferramenta não roda");
+        let silent = || None;
+        refresh_map_if_behind(root, &mine_counting(&calls), &silent);
+        assert_eq!(calls.get(), 0, "o scan que não responde não põe o mapa atrás");
+
+        let newer = || Some("scan 2".to_string());
+        refresh_map_if_behind(root, &mine_counting(&calls), &newer);
+        assert_eq!(calls.get(), 1, "o scan é de outra compilação: a ferramenta roda, mesmo com o projeto parado");
     }
 
     /// A mensagem do commit tem título e corpo dentro do teto e nunca traz o

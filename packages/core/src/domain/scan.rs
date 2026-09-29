@@ -166,6 +166,18 @@ impl Scan {
         serde_json::from_str(line).map_err(|e| Error::check_failed(format!("scan history report: {e}")))
     }
 
+    /// A marca de formato que este scan grava em cada bloco do mapa
+    /// (`scan format`): a versão e o resumo das fontes dele. Com ela se sabe,
+    /// sem rodar a passada, se o mapa é de outra compilação do scan e o
+    /// mesmo projeto, parado, rende outro mapa. `None` quando o scan não
+    /// roda ou não diz a marca: quem pergunta não julga o mapa por ela.
+    #[must_use]
+    pub fn format(&self) -> Option<String> {
+        let stdout = self.run(&["format".to_string()]).ok()?;
+        let mark = stdout.trim();
+        (!mark.is_empty()).then(|| mark.to_string())
+    }
+
     /// Run grain with `args`, returning stdout. Maps a non-zero exit (with
     /// stderr) to [`Error::CheckFailed`].
     fn run(&self, args: &[String]) -> Result<String> {
@@ -249,6 +261,38 @@ mod tests {
     fn history_args_shape() {
         let a = history_args(&PathBuf::from("repo"), &PathBuf::from("m.db"), "src/a.rs", 3);
         assert_eq!(a, vec!["history", "repo", "--out", "m.db", "--file", "src/a.rs", "--moves", "3", "--json"]);
+    }
+
+    #[test]
+    fn a_scan_that_cannot_be_run_has_no_format() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(Scan::new(dir.path().join("no-such-scan").to_string_lossy()).format(), None);
+    }
+
+    /// A marca é a linha que o comando `format` do scan imprime, sem a
+    /// quebra de linha; um scan que sai com erro ou não diz nada não tem
+    /// marca. O programa falso é gravado por um shell à parte: os testes
+    /// rodam em paralelo no mesmo processo, e o arquivo que este processo
+    /// mantém aberto para escrita o Linux recusa rodar ("Text file busy").
+    #[cfg(unix)]
+    #[test]
+    fn the_format_is_what_the_format_command_of_the_scan_prints() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = |name: &str, body: &str| {
+            let path = dir.path().join(name);
+            let written = Command::new("/bin/sh")
+                .args(["-c", "printf '%s' \"$2\" > \"$1\" && chmod 755 \"$1\"", "sh"])
+                .arg(&path)
+                .arg(format!("#!/bin/sh\n{body}\n"))
+                .status()
+                .unwrap();
+            assert!(written.success());
+            Scan::new(path.to_string_lossy())
+        };
+        let says = script("says", r#"[ "$1" = format ] && echo "0.2.4+map-0011223344556677""#);
+        assert_eq!(says.format().as_deref(), Some("0.2.4+map-0011223344556677"));
+        assert_eq!(script("fails", "exit 3").format(), None);
+        assert_eq!(script("silent", "true").format(), None);
     }
 
     #[test]

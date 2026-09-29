@@ -497,7 +497,7 @@ fn only_the_census_is_redone(dir: &Path, file: &str, change: impl FnOnce()) {
     let report = scan(dir, &[]);
     assert_eq!((report["full"].clone(), report["read"].clone()), (json!(false), json!([])), "{report}");
     assert!(deps_in_the_map(dir, file).contains(&json!(FAKE)), "the graph was not rebuilt");
-    assert!(!mustard_core::io::project_map::is_behind(dir), "the new listing mark is written");
+    assert!(!model::is_behind(dir), "the new listing mark is written");
     fake_dependency(dir, file, false);
 }
 
@@ -539,14 +539,42 @@ fn editing_a_file_that_is_not_code_writes_only_the_new_mark() {
     fake_dependency(dir, "src/a.rs", true);
 
     write(dir, "README.md", "# Demo\n\nMais uma linha.\n");
-    assert!(mustard_core::io::project_map::is_behind(dir), "the edit puts the map behind");
+    assert!(model::is_behind(dir), "the edit puts the map behind");
     let report = scan(dir, &[]);
     assert_eq!(report["full"], json!(false), "{report}");
     assert_eq!(report["read"], json!([]), "{report}");
     assert_eq!(report["files"], json!(2), "{report}");
     assert_eq!(report["head"], json!(git(dir, &["rev-parse", "HEAD"]).trim()), "{report}");
-    assert!(!mustard_core::io::project_map::is_behind(dir), "the new listing mark is written");
+    assert!(!model::is_behind(dir), "the new listing mark is written");
     assert!(deps_in_the_map(dir, "src/a.rs").contains(&json!(FAKE)), "the graph was not rebuilt");
+}
+
+/// O mapa que uma passada deste scan grava leva a marca que `scan format`
+/// diz, em todo bloco, e por ela não está atrás do projeto. O mesmo mapa
+/// regravado com a marca de outra compilação do scan está atrás com o
+/// projeto parado, no mesmo commit e com o mesmo conteúdo; a passada
+/// seguinte lê tudo, grava a marca de agora, e o mapa volta a estar em dia.
+#[test]
+fn a_map_of_another_scan_build_is_behind_until_a_pass_of_this_one_writes_it() {
+    let temp = project("scan-format-mark-", &[("src/a.rs", "pub fn alpha() {}\n"), ("src/b.rs", "pub fn beta() {}\n")]);
+    let dir = temp.path();
+    assert_eq!(scan(dir, &[])["full"], json!(true));
+    let format = model::scan_format();
+    assert!(format.contains("+map-"), "the mark carries the digest of the scan sources: {format}");
+    assert_eq!(model::marks(&map_folder(dir)), std::collections::BTreeSet::from([format.clone()]), "every block carries it");
+    assert!(!model::is_behind(dir), "the map of this build is not behind");
+
+    model::mark_as(&map_folder(dir), "0.0.0+map-other");
+    assert!(model::is_behind(dir), "the same project, parked, but a map of another build");
+    assert!(
+        !mustard_core::io::project_map::is_behind(dir, &|| None),
+        "without a scan to ask, the mark does not count and the content is the same"
+    );
+
+    let report = scan(dir, &[]);
+    assert_eq!(report["full"], json!(true), "the pass reads everything again: {report}");
+    assert_eq!(model::marks(&map_folder(dir)), std::collections::BTreeSet::from([format]));
+    assert!(!model::is_behind(dir), "written by this build, the map is up to date again");
 }
 
 /// Um arquivo que não é código entra, muda e sai, e um deles marca o

@@ -105,6 +105,16 @@ impl Project {
             .unwrap_or_else(|e| panic!("{args:?} did not answer JSON ({e}): {text}{}", String::from_utf8_lossy(&out.stderr)))
     }
 
+    /// O texto que um comando `mustard-rt run read …`, entregue por uma
+    /// resposta no lugar do pedido, imprime quando o binário o roda, cru.
+    fn read_command(&self, command: &str) -> String {
+        let words: Vec<&str> = command.split_whitespace().collect();
+        assert_eq!(words.get(..3), Some(&["mustard-rt", "run", "read"][..]), "{command}");
+        let out = self.command(&words[1..], "");
+        assert!(out.status.success(), "{command}: {}", String::from_utf8_lossy(&out.stdout));
+        String::from_utf8(out.stdout).expect("the request is text")
+    }
+
     fn write(&self, event_type: &str, fields: &Value) -> Value {
         self.run(&["write", event_type, "--spec", SPEC, "--json", &fields.to_string()])
     }
@@ -284,7 +294,8 @@ fn a_revisao_final_recebe_o_acordado_inteiro() {
     let asked = project.run(&["close", "--spec", SPEC]);
     assert_eq!(asked["phase"], json!("running"), "{asked}");
     assert_eq!(asked["review"]["final"], json!(true), "{asked}");
-    let prompt = asked["review"]["prompt"].as_str().unwrap_or_default();
+    assert!(asked["review"].get("prompt").is_none(), "a resposta não leva o pedido inteiro: {asked}");
+    let prompt = project.read_command(asked["review"]["read"].as_str().unwrap_or_default());
     for decision in &decisions {
         let code = decision["code"].as_str().expect("the decision code");
         assert!(prompt.contains(code), "o pedido da revisão final não traz o item {code}: {prompt}");
