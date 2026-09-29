@@ -2,10 +2,10 @@
 //! leitura e cada busca.
 //!
 //! A leitura inteira de um arquivo grande de código volta com as partes dele
-//! e o comando que traz só a parte certa ([`whole_read`]). A busca de um nome
-//! de declaração em pastas de código volta com o comando de quem usa o nome e
-//! o da busca por assunto ([`folder_search`]). O que o mapa não guarda passa:
-//! documento, configuração, dados, pasta fora do projeto.
+//! e o comando que traz só a parte certa ([`whole_read`]). A busca por palavra
+//! em pastas de código é assunto do mapa ([`holds_code`]); a resposta dela mora
+//! em [`super::word_search`]. O que o mapa não guarda passa: documento,
+//! configuração, dados, pasta fora do projeto.
 //!
 //! Nunca falha: sem mapa, com o mapa ilegível ou o banco travado, a resposta
 //! é nenhuma, e a ação segue.
@@ -13,14 +13,14 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use mustard_core::domain::project_map::{self, FilePart, FileParts};
+use mustard_core::domain::project_map::{self, FilePart, FileParts, ProjectMap};
 use mustard_core::io::project_map::{self as store, Need};
 use mustard_core::io::workspace::{is_git_repo_root, linked_worktree_main};
 use mustard_core::platform::i18n::Locale;
 
-use crate::hooks::write::write_gate::say;
 use crate::shared::config_key::{surely_takes, NameFilter, Walk};
 use crate::shared::paths::relative_to_cwd;
+use crate::shared::say::say;
 
 /// Acima deste tanto de linhas, a leitura inteira de um arquivo de código do
 /// mapa volta com as partes dele.
@@ -264,14 +264,6 @@ fn in_order(pairs: &[(usize, usize)]) -> Vec<(usize, usize)> {
     chain
 }
 
-/// `true` quando `pattern` pode ser um nome de declaração: letras, números e
-/// sublinhado, sem começar por número. Texto com espaço ou expressão não é.
-pub(crate) fn is_name(pattern: &str) -> bool {
-    let mut chars = pattern.chars();
-    chars.next().is_some_and(|first| first.is_alphabetic() || first == '_')
-        && chars.all(|c| c.is_alphanumeric() || c == '_')
-}
-
 /// As extensões que `glob` aceita, quando ele termina nelas (`*.md`,
 /// `docs/**/*.{md,toml}`). `None` quando o fim tem curinga ou não tem
 /// extensão: a busca então vale para qualquer arquivo.
@@ -304,18 +296,16 @@ fn left_out(path: &str, filters: &[NameFilter], braces: bool) -> bool {
     })
 }
 
-/// A recusa da busca de `pattern` nas pastas `folders` (relativas à raiz;
-/// vazia é a raiz), com os filtros de nome de arquivo `filters`, de entrada
-/// e de saída, na ordem da linha: o comando de quem usa o nome e o da busca
-/// por assunto. Só quando o padrão é um nome de declaração que o mapa de
-/// `root` conhece e alguma das pastas guarda código do mapa que os filtros
-/// deixam passar: os de entrada estreitam a busca aos arquivos que nomeiam, e
-/// os de saída tiram os que casam com certeza. `walk` diz como a busca lê as
-/// chaves dos filtros. `None` em todo o resto, sem mapa e em todo erro de
-/// leitura do mapa.
-pub(crate) fn folder_search(root: &Path, pattern: &str, folders: &[String], filters: &[NameFilter], walk: Walk, lang: Locale) -> Option<String> {
-    if !is_name(pattern) || folders.is_empty() {
-        return None;
+/// `true` quando alguma das pastas `folders` (relativas à raiz; vazia é a
+/// raiz) guarda código do mapa `paths` que os filtros de nome de arquivo
+/// `filters`, de entrada e de saída, na ordem da linha, deixam passar: os de
+/// entrada estreitam a busca aos arquivos que nomeiam, e os de saída tiram os
+/// que casam com certeza. `walk` diz como a busca lê as chaves dos filtros.
+/// Só a busca que passa por código do mapa é assunto do mapa: a de um arquivo
+/// só, de documentos ou de pastas sem código passa.
+pub(crate) fn holds_code(paths: &ProjectMap, folders: &[String], filters: &[NameFilter], walk: Walk) -> bool {
+    if folders.is_empty() {
+        return false;
     }
     // Os filtros de entrada juntam o que aceitam; um sem extensão aceita tudo.
     let mut only: Vec<String> = Vec::new();
@@ -329,23 +319,13 @@ pub(crate) fn folder_search(root: &Path, pattern: &str, folders: &[String], filt
         }
     }
     let braces = walk != Walk::Grep;
-    let paths = store::read_for(root, Need::Paths).ok()?;
     let inside = |path: &str, folder: &str| folder.is_empty() || path.starts_with(&format!("{}/", folder.trim_end_matches('/')));
     let wanted = |path: &str| {
         (only.is_empty()
             || Path::new(path).extension().and_then(|ext| ext.to_str()).is_some_and(|ext| only.iter().any(|o| o == ext)))
             && !left_out(path, filters, braces)
     };
-    let holds_code =
-        paths.modules.iter().any(|module| wanted(&module.path) && folders.iter().any(|folder| inside(&module.path, folder)));
-    if !holds_code {
-        return None;
-    }
-    let named = store::read_for(root, Need::Declarations { file: None, name: pattern }).ok()?;
-    if named.modules.iter().all(|module| module.declarations.is_empty()) {
-        return None;
-    }
-    Some(say("code_route.name_search", lang, &[("{name}", pattern)]))
+    paths.modules.iter().any(|module| wanted(&module.path) && folders.iter().any(|folder| inside(&module.path, folder)))
 }
 
 /// O projeto que as travas da leitura e da busca usam nos testes.

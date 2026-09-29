@@ -42,10 +42,10 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("scan.map.type_line", Locale::PtBr) => "Tipo: {kind} · {count} arquivos",
         ("scan.map.type_line", Locale::EnUs) => "Type: {kind} · {count} files",
         ("scan.map.pointer", Locale::PtBr) => {
-            "O terreno já está na sua janela (o resumo do mapa injetado no início da sessão). Para localizar: `grep` para termo exato conhecido; `mustard-rt run map search --query \"<palavras>\" --intent \"<frase>\"` para conceito. Na mesma busca, junte as palavras do pedido do usuário, as mesmas palavras em {code_language}, soltas, e os nomes prováveis no código. Os nomes vão em {code_language}, camelCase ou snake_case: `--query \"{example}\"`. Em `--intent` vai a frase do que você procura e para quê. O pedaço de um nome vai só em `--query`. Depois leia os arquivos apontados: o mapa acha onde olhar, não substitui ler."
+            "O terreno já está na sua janela (o resumo do mapa injetado no início da sessão). Para localizar: `grep` para termo exato conhecido; `mustard-rt run map search --query \"<palavras>\" --intent \"<frase>\"` para conceito. Na mesma busca, junte as palavras do pedido do usuário, as mesmas palavras em {code_language}, soltas, e os nomes prováveis no código. Os nomes vão em {code_language}, camelCase ou snake_case: `--query \"{example}\"`. Em `--intent` vai a frase do que você procura e para quê. O pedaço de um nome vai só em `--query`. A resposta traz `grade`, de 0 a 5, e `mark`. Cravado, `pinned`: o mapa achou tudo o que você pediu, e o primeiro arquivo vale. Parcial, `partial`: achou parte, e `missing` lista as palavras que faltam. Não achou, `not_found`: use `grep`. O `Grep` e o `grep` por palavra recebem a mesma marca. Na busca que mostra linhas, o cravado e o parcial recebem a resposta do Mustard no lugar da busca comum. A resposta vem agrupada por função, com o arquivo e as linhas de começo e fim. A busca que só lista nomes de arquivo ou conta roda como veio, com uma linha da marca. A mesma busca, repetida, passa. Depois leia os arquivos apontados: o mapa acha onde olhar, não substitui ler."
         }
         ("scan.map.pointer", Locale::EnUs) => {
-            "The terrain is already in your window (the map summary injected at session start). To locate: `grep` for a known exact term; `mustard-rt run map search --query \"<words>\" --intent \"<sentence>\"` for a concept. In one search, join the words of the user's request, the same words in {code_language} as plain words, and the likely names in the code. The names go in {code_language}, camelCase or snake_case: `--query \"{example}\"`. In `--intent` goes the sentence of what you are looking for and why. Part of a name goes only in `--query`. Then read the files it points to: the map finds where to look, it does not replace reading."
+            "The terrain is already in your window (the map summary injected at session start). To locate: `grep` for a known exact term; `mustard-rt run map search --query \"<words>\" --intent \"<sentence>\"` for a concept. In one search, join the words of the user's request, the same words in {code_language} as plain words, and the likely names in the code. The names go in {code_language}, camelCase or snake_case: `--query \"{example}\"`. In `--intent` goes the sentence of what you are looking for and why. Part of a name goes only in `--query`. The answer carries `grade`, from 0 to 5, and `mark`. Pinned, `pinned`: the map found everything you asked for, and the first file stands. Partial, `partial`: it found part, and `missing` lists the words it lacks. Not found, `not_found`: use `grep`. A word search with `Grep` or `grep` gets the same mark. In a search that shows lines, pinned and partial get Mustard's answer in place of the plain search. The answer is grouped by function, with the file and the first and last lines. A search that only lists file names or counts runs as it came, with one line of the mark. The same search, repeated, passes. Then read the files it points to: the map finds where to look, it does not replace reading."
         }
         // O exemplo da busca na dica do mapa, pela língua dos nomes do código:
         // preenche o `{example}`. Junta as palavras do pedido no idioma do
@@ -317,6 +317,55 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // próxima busca, exata, com as palavras já quebradas.
         ("map.search.not_found", Locale::PtBr) => "Não achei {words} no mapa. Próxima busca, exata: {next}",
         ("map.search.not_found", Locale::EnUs) => "Found nothing for {words} in the map. Next search, exact: {next}",
+        // A resposta no lugar da busca por palavra: a marca com o que o mapa
+        // achou, o que faltou, o aviso do arquivo mudado e a contagem do que
+        // o corte deixou de fora.
+        ("map.answer.pinned", Locale::PtBr) => {
+            "Cravado. O mapa achou {words} pelo nome."
+        }
+        ("map.answer.pinned", Locale::EnUs) => {
+            "Pinned. The map found {words} by name."
+        }
+        ("map.answer.partial", Locale::PtBr) => {
+            "Parcial. O mapa achou parte. Falta {missing}. Busque de novo com o que falta."
+        }
+        ("map.answer.partial", Locale::EnUs) => {
+            "Partial. The map found part. It lacks {missing}. Search again for what is missing."
+        }
+        ("map.answer.partial_unsure", Locale::PtBr) => {
+            "Parcial. O mapa achou, mas não tem certeza de que este é o lugar."
+        }
+        ("map.answer.partial_unsure", Locale::EnUs) => {
+            "Partial. The map found it, but it is not sure this is the place."
+        }
+        ("map.answer.instead", Locale::PtBr) => "Esta resposta vale no lugar da busca comum.",
+        ("map.answer.instead", Locale::EnUs) => "This answer stands in for the plain search.",
+        ("map.answer.names_only", Locale::PtBr) => {
+            "Esta busca só lista nomes de arquivo ou conta, e roda como veio. A busca que mostra linhas recebe a resposta por função."
+        }
+        ("map.answer.names_only", Locale::EnUs) => {
+            "This search only lists file names or counts, and runs as it came. A search that shows lines gets the answer by function."
+        }
+        ("map.answer.lines", Locale::PtBr) => {
+            "Cada função vem com o começo e o fim, e as linhas achadas entre parênteses:"
+        }
+        ("map.answer.lines", Locale::EnUs) => {
+            "Each function comes with its first and last line, and the lines found in parentheses:"
+        }
+        ("map.answer.map_only", Locale::PtBr) => {
+            "A busca comum não acharia nenhuma linha com esse texto. O mapa aponta estes arquivos: {files}."
+        }
+        ("map.answer.map_only", Locale::EnUs) => {
+            "The plain search would find no line with this text. The map points to these files: {files}."
+        }
+        ("map.answer.changed", Locale::PtBr) => "mudado nesta onda",
+        ("map.answer.changed", Locale::EnUs) => "changed in this wave",
+        ("map.answer.rest", Locale::PtBr) => {
+            "Fora do corte, lugares: {places}, arquivos: {files}. Repita a busca para ver a lista inteira."
+        }
+        ("map.answer.rest", Locale::EnUs) => {
+            "Left out by the cut, places: {places}, files: {files}. Repeat the search to see the whole list."
+        }
         ("map.search.name_piece", Locale::PtBr) => "pedaço de nome: {word}",
         ("map.search.name_piece", Locale::EnUs) => "part of a name: {word}",
         ("map.search.filter_failed", Locale::PtBr) => {
@@ -392,8 +441,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("map.rs"),
             super::PREFIXES,
-            71,
-            0xf7cd_cdc1_2ac3_b082,
+            80,
+            0x8bae_ed99_1d22_861e,
         );
     }
 
@@ -428,6 +477,15 @@ mod tests {
                 "map.changed_in_copy",
                 "map.changed_in_copy_range",
                 "map.search.not_found",
+                "map.answer.pinned",
+                "map.answer.partial",
+                "map.answer.partial_unsure",
+                "map.answer.instead",
+                "map.answer.names_only",
+                "map.answer.lines",
+                "map.answer.map_only",
+                "map.answer.changed",
+                "map.answer.rest",
                 "map.search.filter_failed",
                 "map.search.bad_number",
                 "map.search.bad_filter",
@@ -453,6 +511,9 @@ mod tests {
                     .replace("{sentence}", "O pedido sai em uma frase.")
                     .replace("{reason}", translate("map.search.reason.timeout", lang))
                     .replace("{words}", "\"boleto\", \"vencido\"")
+                    .replace("{missing}", "\"desconto\"")
+                    .replace("{places}", "9")
+                    .replace("{files}", "`a.rs`, `b.rs`")
                     .replace("{next}", "grep -rniE \"boleto|vencido\" .")
                     .replace("{value}", "dois");
                 let report = crate::domain::clarity::measure(&text, &[], Some(lang));
@@ -574,6 +635,20 @@ mod tests {
         }
     }
 
+    /// A dica do mapa ensina o grau e as três marcas da resposta, com o nome
+    /// de cada marca como a resposta a escreve, e diz que a busca por palavra
+    /// do `Grep` e do `grep` recebe a marca e que a busca repetida passa,
+    /// nos dois idiomas.
+    #[test]
+    fn the_map_hint_teaches_the_grade_and_the_mark() {
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let text = filled_hint(lang, lang);
+            for word in ["`grade`", "`mark`", "`pinned`", "`partial`", "`missing`", "`not_found`", "`Grep`"] {
+                assert!(text.contains(word), "{lang:?}: {word} in {text}");
+            }
+        }
+    }
+
     /// A recusa da declaração mudada na cópia diz, nos dois idiomas, a faixa
     /// que ela ocupa na cópia (linhas 4 a 6) e não cita a linha do mapa (3);
     /// sem a faixa, diz a linha do mapa.
@@ -648,6 +723,15 @@ mod tests {
             ("map.history.spec", &["{spec}", "{code}", "{sentence}"][..]),
             ("map.history_unreadable", &["{file}", "{detail}"][..]),
             ("map.search.not_found", &["{words}", "{next}"][..]),
+            ("map.answer.pinned", &["{words}"][..]),
+            ("map.answer.partial", &["{missing}"][..]),
+            ("map.answer.partial_unsure", &[][..]),
+            ("map.answer.instead", &[][..]),
+            ("map.answer.names_only", &[][..]),
+            ("map.answer.lines", &[][..]),
+            ("map.answer.map_only", &["{files}"][..]),
+            ("map.answer.changed", &[][..]),
+            ("map.answer.rest", &["{places}", "{files}"][..]),
             ("map.search.name_piece", &["{word}"][..]),
             ("map.search.filter_failed", &["{reason}"][..]),
             ("map.search.reason.no_credit", &[][..]),

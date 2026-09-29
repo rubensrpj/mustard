@@ -196,8 +196,9 @@ impl MapConfig {
 }
 
 /// A seção `search` do `mustard.json`: a busca por assunto do mapa, com o
-/// filtro que dá nota aos candidatos do banco e os números que trocam custo
-/// por acerto. As chaves internas vão em snake_case, como as de `git`. Cada
+/// filtro que dá nota aos candidatos do banco, os números que trocam custo
+/// por acerto e a chave que liga a resposta do mapa no lugar da busca por
+/// palavra do Claude. As chaves internas vão em snake_case, como as de `git`. Cada
 /// valor fica como o arquivo o traz; quem o lê diz se ele falta, vale ou é
 /// inválido.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -215,12 +216,20 @@ pub struct SearchConfig {
     /// Quantas peças a busca com filtro devolve, no máximo.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_returned: Option<Value>,
+    /// Se o gancho responde no lugar do `Grep` e do `grep`/`rg` do terminal
+    /// quando o mapa cravou ou achou parte: `true` ou `false`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub answer: Option<Value>,
 }
 
 impl SearchConfig {
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.candidates.is_none() && self.filter.is_none() && self.cut_min.is_none() && self.max_returned.is_none()
+        self.candidates.is_none()
+            && self.filter.is_none()
+            && self.cut_min.is_none()
+            && self.max_returned.is_none()
+            && self.answer.is_none()
     }
 }
 
@@ -292,6 +301,17 @@ impl<'de> Deserialize<'de> for JevConfig {
 /// e as ligações suspeitas crescem 10% sem nenhuma provada a mais. O tempo da
 /// passada não muda com o teto.
 pub const MAX_SAME_NAME: usize = 8;
+
+/// Se a resposta do mapa vale no lugar da busca por palavra quando o
+/// `mustard.json` não diz. Ligada, porque nas buscas reais dos agentes que o
+/// mapa respondeu (padrão e pasta, 1.680 repetidas sobre uma cópia do
+/// projeto) as 728 que trazem as linhas recebem uma resposta de 16% do
+/// tamanho da busca comum: 0,52 MB contra 3,2 MB. As 159 que só listam
+/// arquivos ou contam rodam como vieram, com uma linha da marca de 187 bytes
+/// em média: 30 KB em 58 KB. Junto, as duas somam 19% da busca comum, 0,60 MB
+/// contra 3,2 MB. A ordem dos arquivos vem da triagem, e a régua dela dá os
+/// mesmos números com ou sem a resposta.
+pub const SEARCH_ANSWER: bool = true;
 
 /// O filtro da busca por assunto como o `mustard.json` o escolhe. Ausente, a
 /// montagem decide pela chave da máquina; o inválido não filtra e pede o
@@ -683,8 +703,9 @@ pub struct ProjectConfig {
     pub map: MapConfig,
     /// A busca por assunto do mapa — veja [`SearchConfig`]. Lida só por
     /// [`ProjectConfig::search_candidates`], [`ProjectConfig::search_filter`],
-    /// [`ProjectConfig::search_cut_min`] e
-    /// [`ProjectConfig::search_max_returned`].
+    /// [`ProjectConfig::search_cut_min`],
+    /// [`ProjectConfig::search_max_returned`] e
+    /// [`ProjectConfig::search_answer`].
     #[serde(skip_serializing_if = "SearchConfig::is_empty")]
     pub search: SearchConfig,
     /// Os números da ligação do scan — veja [`ScanConfig`]. Lida só por
@@ -905,6 +926,14 @@ impl ProjectConfig {
     #[must_use]
     pub fn search_max_returned(&self) -> Setting {
         Setting::of(self.search.max_returned.as_ref())
+    }
+
+    /// `search.answer`: se o gancho responde no lugar da busca por palavra.
+    /// Sem a chave, ou com um valor que não é `true` nem `false`, vale
+    /// [`SEARCH_ANSWER`].
+    #[must_use]
+    pub fn search_answer(&self) -> bool {
+        self.search.answer.as_ref().and_then(Value::as_bool).unwrap_or(SEARCH_ANSWER)
     }
 
     /// `jev.key`: a chave do filtro da busca escrita no arquivo, sem espaço em
@@ -1338,6 +1367,31 @@ mod tests {
         ProjectConfig::default().write(bare.path()).unwrap();
         let raw = std::fs::read_to_string(bare.path().join("mustard.json")).unwrap();
         assert!(!raw.contains("search"), "{raw}");
+    }
+
+    /// A resposta do mapa no lugar da busca por palavra liga por
+    /// `search.answer`: `true` liga, `false` desliga, e sem a chave ou com um
+    /// valor que não é um dos dois vale o padrão do Mustard. Sem nada
+    /// escrito, a chave não vai para o arquivo.
+    #[test]
+    fn the_answer_key_is_on_off_or_the_default() {
+        let dir = tempdir().unwrap();
+        let load = |text: &str| {
+            std::fs::write(dir.path().join("mustard.json"), text).unwrap();
+            ProjectConfig::load(dir.path())
+        };
+        assert_eq!(load("{}").search_answer(), SEARCH_ANSWER);
+        assert!(load(r#"{"search": {"answer": true}}"#).search_answer());
+        assert!(!load(r#"{"search": {"answer": false}}"#).search_answer());
+        for bad in ["\"sim\"", "1", "0", "null"] {
+            let cfg = load(&format!(r#"{{"search": {{"answer": {bad}}}}}"#));
+            assert_eq!(cfg.search_answer(), SEARCH_ANSWER, "{bad}");
+            assert!(!cfg.unreadable, "{bad}: o valor inválido não torna o arquivo ilegível");
+        }
+        let bare = tempdir().unwrap();
+        ProjectConfig::default().write(bare.path()).unwrap();
+        let raw = std::fs::read_to_string(bare.path().join("mustard.json")).unwrap();
+        assert!(!raw.contains("answer"), "{raw}");
     }
 
     /// O teto do nome comum vem de `scan.max_same_name`: sem a chave vale 8;

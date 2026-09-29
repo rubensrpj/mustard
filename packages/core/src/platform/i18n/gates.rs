@@ -264,20 +264,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // Onde começam os testes escritos dentro do arquivo.
         ("code_route.tests_from", Locale::PtBr) => "testes a partir da linha {line}",
         ("code_route.tests_from", Locale::EnUs) => "tests from line {line}",
-        // A busca de um nome de declaração em pastas de código volta com o
-        // comando de quem usa o nome e o da busca por assunto.
-        ("code_route.name_search", Locale::PtBr) => {
-            "[Mustard] {name} é uma declaração do mapa. Quem a usa sai em \
-             `mustard-rt run map users --name {name}`. O assunto sai em \
-             `mustard-rt run map search --query \"{name}\" --intent \"<o que procura e para quê>\"`. \
-             A busca num arquivo só, ou só em documentos, passa."
-        }
-        ("code_route.name_search", Locale::EnUs) => {
-            "[Mustard] {name} is a declaration in the map. Who uses it comes from \
-             `mustard-rt run map users --name {name}`. The subject comes from \
-             `mustard-rt run map search --query \"{name}\" --intent \"<what you look for and why>\"`. \
-             A search in one file, or only in documents, passes."
-        }
         // A leitura do arquivo de configuração que guarda a chave do Jev
         // volta com o arquivo, e a chave trocada. `{text}` vem do chamador:
         // o arquivo inteiro, já sem o valor da chave.
@@ -586,15 +572,15 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("gates.rs"),
             super::PREFIXES,
-            73,
-            0xab83_db51_9676_be99,
+            72,
+            0xf0a5_7b66_3c4f_8917,
         );
     }
 
-    /// As recusas da leitura inteira, da busca de um nome e do arquivo com a
-    /// chave passam na conferência de escrita das respostas, nos dois
-    /// idiomas, com cada vaga trocada por uma palavra. As duas frases curtas
-    /// que fecham a lista de partes existem nos dois idiomas, com as vagas.
+    /// As recusas da leitura inteira e do arquivo com a chave passam na
+    /// conferência de escrita das respostas, nos dois idiomas, com cada vaga
+    /// trocada por uma palavra. As duas frases curtas que fecham a lista de
+    /// partes existem nos dois idiomas, com as vagas.
     #[test]
     fn the_map_route_refusals_read_clearly() {
         for (key, slots) in [("code_route.more_parts", &["{count}", "{file}"][..]), ("code_route.tests_from", &["{line}"][..])] {
@@ -605,7 +591,6 @@ mod tests {
         for (lang, word) in [(Locale::PtBr, "partes"), (Locale::EnUs, "parts")] {
             for (key, slots) in [
                 ("code_route.whole_read", &[("{file}", "mapa"), ("{lines}", "400"), ("{parts}", word)][..]),
-                ("code_route.name_search", &[("{name}", "Alpha")][..]),
                 ("config_key.hidden", &[("{file}", "mustard"), ("{text}", word)][..]),
                 ("config_key.swept", &[("{file}", "mustard"), ("{fix}", word)][..]),
                 ("config_key.swept_tool", &[("{file}", "mustard")][..]),
@@ -630,7 +615,6 @@ mod tests {
             ("write_gate.other_branch", &["{spec}", "{branch}", "{current}"][..]),
             ("write_gate.read_cut", &["{line}"][..]),
             ("code_route.whole_read", &["{file}", "{lines}", "{parts}"][..]),
-            ("code_route.name_search", &["{name}"][..]),
             ("config_key.hidden", &["{file}", "{text}"][..]),
             ("config_key.swept", &["{file}", "{fix}"][..]),
             ("config_key.swept_tool", &["{file}"][..]),

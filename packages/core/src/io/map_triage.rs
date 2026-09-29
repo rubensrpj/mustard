@@ -118,8 +118,20 @@ pub struct Triaged {
     pub signals: Signals,
     /// As palavras da pergunta, quebradas e sem as de ligação.
     pub words: Vec<String>,
+    /// As palavras da pergunta que o primeiro achado não traz em campo forte:
+    /// todas, sem achado nenhum.
+    pub missing: Vec<String>,
     pub files: Vec<Found>,
     pub deeper: Vec<Deeper>,
+}
+
+impl Triaged {
+    /// A marca da resposta: cravado, parcial ou não achou
+    /// ([`triage::mark`]).
+    #[must_use]
+    pub fn mark(&self) -> triage::Mark {
+        triage::mark(self.grade, triage::chance(&self.signals), self.missing.len())
+    }
 }
 
 /// A busca dos arquivos do mapa do projeto em `root`, triada: as recusas são
@@ -181,15 +193,16 @@ fn triaged(conn: &Connection, query: &str, languages: &Languages, limit: usize, 
         second: files.get(1).map(|file| scale(file.score)),
     };
     let mut grade = triage::grade(&signals);
+    let missing: Vec<&Word> = words.iter().zip(&strong).filter(|(_, hit)| !**hit).map(|(word, _)| word).collect();
     let mut deeper = Vec::new();
     if grade <= triage::DEEP_UNTIL || whole {
-        let missing: Vec<&Word> = words.iter().zip(&strong).filter(|(_, hit)| !**hit).map(|(word, _)| word).collect();
         deeper = search_deeper(conn, &mut normalizer, &missing, (!whole).then_some(TOP))?;
     }
     if grade == 0 && !deeper.is_empty() {
         grade = 1;
     }
-    Ok(Triaged { grade, signals, words: words.into_iter().map(|word| word.plain).collect(), files, deeper })
+    let missing: Vec<String> = missing.into_iter().map(|word| word.plain.clone()).collect();
+    Ok(Triaged { grade, signals, words: words.into_iter().map(|word| word.plain).collect(), missing, files, deeper })
 }
 
 /// De cada palavra da pergunta, se o primeiro achado a traz em campo forte:
@@ -881,8 +894,12 @@ mod tests {
     /// busca, com os sinais, a posição do primeiro arquivo certo entre os
     /// achados e a busca funda inteira, com a nota de cada entrada e se ela
     /// acerta. Imprime, por grau, em quantas buscas o primeiro achado é o
-    /// certo e em quantas o certo está entre os cinco, e, por corte da busca
-    /// funda, quantas sobras a resposta leva e quantas buscas o corte resgata.
+    /// certo e em quantas o certo está entre os cinco; por corte da chance
+    /// para o cravado, com e sem a exigência de nenhuma palavra faltando,
+    /// quantas buscas ficam cravadas, em quantas o primeiro achado é o certo
+    /// e quantas a régua reprova (o arquivo certo fora dos cinco da
+    /// resposta); e, por corte da busca funda, quantas sobras a resposta leva
+    /// e quantas buscas o corte resgata.
     #[test]
     #[ignore = "mede com os mapas dos projetos de prova"]
     fn measure_the_ruler() {
@@ -896,6 +913,9 @@ mod tests {
         // do certo entre os achados e as notas com o acerto de cada entrada.
         let mut grades: BTreeMap<u8, [usize; 3]> = BTreeMap::new();
         let mut deep: Vec<(usize, Vec<(f64, bool)>)> = Vec::new();
+        // Por busca de grau 5: a chance, quantas palavras faltam nos campos
+        // fortes e a posição do primeiro arquivo certo (0: fora da lista).
+        let mut top: Vec<(f64, usize, usize)> = Vec::new();
         for search in ruler["searches"].as_array().unwrap() {
             let text = |key: &str| search[key].as_str().unwrap().to_string();
             let db = indexed(Path::new(&text("model")), &languages, &SEARCHED).unwrap();
@@ -912,6 +932,9 @@ mod tests {
             let rank = got.files.iter().position(|file| right(&file.path)).map_or(0, |at| at + 1);
             let seen = grades.entry(got.grade).or_default();
             *seen = [seen[0] + 1, seen[1] + usize::from(rank == 1), seen[2] + usize::from(rank >= 1)];
+            if got.grade >= 5 {
+                top.push((triage::chance(&got.signals), got.missing.len(), rank));
+            }
             if got.grade <= triage::DEEP_UNTIL && !got.deeper.is_empty() {
                 deep.push((rank, got.deeper.iter().map(|entry| (entry.score, right(&entry.path))).collect()));
             }
@@ -936,6 +959,7 @@ mod tests {
                 json!({
                     "key": text("key"), "words": got.signals.words, "strong": got.signals.strong,
                     "first": got.signals.first, "second": got.signals.second, "found": got.files.len(),
+                    "chance": triage::chance(&got.signals), "missing": got.missing.len(),
                     "rank": rank, "millis": millis, "deeper": deeper,
                 })
                 .to_string(),
@@ -944,6 +968,19 @@ mod tests {
         std::fs::write(out, lines.join("\n")).unwrap();
         for (grade, [all, first, five]) in grades.iter().rev() {
             eprintln!("grade {grade}: {all} searches, first right {first}, right among five {five}");
+        }
+        for (cut, whole_question) in
+            [0.8, 0.85, 0.9, 0.93, 0.95, 0.97, 0.98, 0.99].into_iter().flat_map(|cut| [(cut, false), (cut, true)])
+        {
+            let pinned: Vec<&(f64, usize, usize)> =
+                top.iter().filter(|(chance, missing, _)| *chance >= cut && (!whole_question || *missing == 0)).collect();
+            let first = pinned.iter().filter(|(_, _, rank)| *rank == 1).count();
+            let wrong = pinned.iter().filter(|(_, _, rank)| *rank == 0).count();
+            eprintln!(
+                "pinned from chance {cut}{}: {} searches, first right {first}, ruler rejects {wrong}",
+                if whole_question { " with no word missing" } else { "" },
+                pinned.len()
+            );
         }
         for ratio in [0.0, 0.5, 0.6, 0.7, 0.75, 0.8, 0.9, 1.0] {
             let (mut kept, mut leftovers, mut rescued) = (0, 0, 0);

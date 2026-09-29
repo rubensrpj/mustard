@@ -15,6 +15,8 @@
 //! do ajuste e medido com os pesos dos outros dois dá a mesma ordem das
 //! faixas.
 
+use crate::platform::i18n::{translate, Locale};
+
 /// Os sinais da busca por palavra de que o grau sai.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Signals {
@@ -77,6 +79,66 @@ pub fn grade(signals: &Signals) -> u8 {
         return 0;
     }
     band(chance(signals))
+}
+
+/// O quanto o mapa achou de uma busca por palavra, em três marcas: a nota de
+/// 0 a 5 dita em palavras que quem busca entende na hora.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mark {
+    /// Todas as palavras estão em campo forte do primeiro achado e a chance
+    /// de ele ser o certo passa do corte: a resposta do mapa vale no lugar
+    /// da busca comum.
+    Pinned,
+    /// O mapa achou parte: a resposta vale, e as palavras que faltam pedem
+    /// outra busca.
+    Partial,
+    /// O mapa não achou nada: a busca comum é a saída.
+    NotFound,
+}
+
+impl Mark {
+    /// A chave da marca na resposta do mapa.
+    #[must_use]
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Pinned => "pinned",
+            Self::Partial => "partial",
+            Self::NotFound => "not_found",
+        }
+    }
+}
+
+/// O corte da chance para a marca de cravado, acima do da nota 5 (0,8). Sai
+/// da régua das 360 buscas: das 34 buscas de nota 5, a régua reprova 3 (o
+/// arquivo certo fora dos cinco da resposta), todas com chance abaixo de
+/// 0,91; de 0,93 para cima ficam 14 buscas cravadas, o primeiro achado é o
+/// certo nas 14, e a régua não reprova nenhuma.
+pub const PINNED_FROM: f64 = 0.93;
+
+/// A marca de uma resposta de grau `grade`, de chance `chance` de o primeiro
+/// achado ser o certo, com `missing` palavras da pergunta fora dos campos
+/// fortes dele: nota 0 é não achou; cravado exige a nota mais alta, o corte
+/// [`PINNED_FROM`] da chance e nenhuma palavra faltando; o resto é parcial.
+#[must_use]
+pub fn mark(grade: u8, chance: f64, missing: usize) -> Mark {
+    if grade == 0 {
+        Mark::NotFound
+    } else if grade >= 5 && chance >= PINNED_FROM && missing == 0 {
+        Mark::Pinned
+    } else {
+        Mark::Partial
+    }
+}
+
+/// A linha de quando o mapa não achou: as palavras da pergunta, já
+/// quebradas, e a próxima busca, exata, no texto dos arquivos. A pergunta
+/// que só tinha palavras de ligação entra como veio.
+#[must_use]
+pub fn not_found(query: &str, words: &[String], lang: Locale) -> String {
+    let words: Vec<&str> = if words.is_empty() { vec![query.trim()] } else { words.iter().map(String::as_str).collect() };
+    let shown = words.iter().map(|word| format!("\"{word}\"")).collect::<Vec<_>>().join(", ");
+    let next = format!("grep -rniE \"{}\" .", words.join("|"));
+    translate("map.search.not_found", lang).replace("{words}", &shown).replace("{next}", &next)
 }
 
 /// A parte da nota do primeiro abaixo da qual um achado da busca funda é
@@ -149,6 +211,63 @@ mod tests {
     fn a_lone_finding_counts_as_fully_ahead() {
         let alone = chance(&signals(1, 1, 9.0, None));
         assert!((alone - chance(&signals(1, 1, 9.0, Some(0.0)))).abs() < 1e-12);
+    }
+
+    #[test]
+    fn no_finding_is_not_found_and_any_other_grade_below_the_pinned_cut_is_partial() {
+        assert_eq!(mark(0, 0.0, 3), Mark::NotFound);
+        assert_eq!(mark(0, 1.0, 0), Mark::NotFound);
+        for grade in 1..=4 {
+            assert_eq!(mark(grade, 0.99, 0), Mark::Partial, "grade {grade}");
+        }
+    }
+
+    #[test]
+    fn the_pinned_cut_is_the_measured_chance_of_ninety_three_hundredths() {
+        assert_eq!(mark(5, 0.93, 0), Mark::Pinned);
+        assert_eq!(mark(5, 0.929_999, 0), Mark::Partial);
+        assert_eq!(mark(4, 0.99, 0), Mark::Partial, "only the highest grade is pinned");
+        assert!((PINNED_FROM - 0.93).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn the_pinned_mark_needs_the_measured_chance_and_no_word_missing() {
+        assert_eq!(mark(5, PINNED_FROM, 0), Mark::Pinned);
+        assert_eq!(mark(5, 1.0, 0), Mark::Pinned);
+        assert_eq!(mark(5, PINNED_FROM - 1e-9, 0), Mark::Partial, "grade five below the cut is not pinned");
+        assert_eq!(mark(5, 0.8, 0), Mark::Partial, "the edge of grade five is below the pinned cut");
+        assert_eq!(mark(5, 1.0, 1), Mark::Partial, "a word the first finding lacks leaves it partial");
+    }
+
+    #[test]
+    fn the_pinned_cut_sits_above_the_grade_five_edge_and_below_certainty() {
+        const { assert!(EDGES[3] < PINNED_FROM && PINNED_FROM < 1.0) };
+        let lone = signals(1, 1, 9.0, None);
+        assert_eq!(mark(grade(&lone), chance(&lone), 0), Mark::Pinned);
+        let tied = signals(1, 1, 2.0, Some(2.0));
+        assert_eq!(mark(grade(&tied), chance(&tied), 0), Mark::Partial);
+    }
+
+    #[test]
+    fn the_mark_keys_are_the_words_of_the_answer() {
+        assert_eq!(
+            [Mark::Pinned, Mark::Partial, Mark::NotFound].map(Mark::key),
+            ["pinned", "partial", "not_found"]
+        );
+    }
+
+    #[test]
+    fn the_not_found_line_carries_the_split_words_and_the_next_exact_search() {
+        let words = ["boleto".to_string(), "vencido".to_string()];
+        assert_eq!(
+            not_found("boletoVencido", &words, Locale::PtBr),
+            "Não achei \"boleto\", \"vencido\" no mapa. Próxima busca, exata: grep -rniE \"boleto|vencido\" ."
+        );
+        assert_eq!(
+            not_found("boletoVencido", &words, Locale::EnUs),
+            "Found nothing for \"boleto\", \"vencido\" in the map. Next search, exact: grep -rniE \"boleto|vencido\" ."
+        );
+        assert!(not_found("de", &[], Locale::PtBr).contains("grep -rniE \"de\" ."));
     }
 
     #[test]

@@ -222,6 +222,22 @@ pub(crate) fn surely_takes(glob: &str, name: &str, braces: bool) -> bool {
     !glob.contains('/') && glob_fits(glob, name, braces) == Some(true)
 }
 
+/// Se o filtro de nome `glob` casa com o arquivo de nome `name`: `Some` quando
+/// a leitura entende o filtro, `None` quando ele usa o que ela não conhece
+/// (`[`, `\`, chaves dentro de chaves, pasta no `rg`). Com `braces` (o `rg`),
+/// o `**/` do começo vale por qualquer pasta; sem ele (o `grep`, que compara
+/// só o nome), um filtro com `/` nunca casa.
+pub(crate) fn takes(glob: &str, name: &str, braces: bool) -> Option<bool> {
+    let mut glob = glob;
+    while braces && let Some(rest) = glob.strip_prefix("**/") {
+        glob = rest;
+    }
+    if glob.contains('/') {
+        return (!braces).then_some(false);
+    }
+    glob_fits(glob, name, braces)
+}
+
 /// Se `name` casa com o filtro `glob`: `*` vale por qualquer trecho, `?` por
 /// uma letra e, com `braces`, `{a,b}` por uma das opções. `None` quando o
 /// filtro usa outra coisa (`[`, `\`, chaves dentro de chaves).

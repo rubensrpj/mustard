@@ -1,9 +1,11 @@
 //! `map_triage` — o que a triagem do mapa põe na resposta da busca: o grau,
-//! a busca funda do grau 3 para baixo e, sem nenhum achado, a linha que diz
+//! a marca (cravado, parcial ou não achou) com as palavras que faltam, a
+//! busca funda do grau 3 para baixo e, sem nenhum achado, a linha que diz
 //! que não achou e dá a próxima busca. A triagem em si mora em
 //! `mustard_core::io::map_triage`; aqui só se monta o JSON.
 
 use mustard_core::domain::project_map::Found;
+use mustard_core::domain::triage::{not_found, Mark};
 use mustard_core::io::map_triage::{Deeper, Link, Triaged, Via};
 use mustard_core::platform::i18n::Locale;
 use serde_json::{json, Value};
@@ -20,10 +22,17 @@ pub(crate) fn bank_report(query: &str, triaged: &Triaged, lang: Locale) -> Value
     report
 }
 
-/// O grau e a busca funda na resposta `report`, seja ela a do banco ou a das
-/// peças do filtro. A busca funda só entra quando achou algo.
+/// O grau, a marca e a busca funda na resposta `report`, seja ela a do banco
+/// ou a das peças do filtro. Na marca parcial, as palavras da pergunta que o
+/// primeiro achado não traz em campo forte. A busca funda só entra quando
+/// achou algo.
 pub(crate) fn add_to(report: &mut Value, triaged: &Triaged) {
     report["grade"] = json!(triaged.grade);
+    let mark = triaged.mark();
+    report["mark"] = json!(mark.key());
+    if mark == Mark::Partial && !triaged.missing.is_empty() {
+        report["missing"] = json!(triaged.missing);
+    }
     if !triaged.deeper.is_empty() {
         report["deeper"] = json!(triaged.deeper.iter().map(entry).collect::<Vec<_>>());
     }
@@ -77,19 +86,10 @@ fn via(via: &Via) -> String {
     }
 }
 
-/// A linha do que não se achou: as palavras da pergunta, já quebradas, e a
-/// próxima busca, exata, no texto dos arquivos. A pergunta que só tinha
-/// palavras de ligação entra como veio.
-fn not_found(query: &str, words: &[String], lang: Locale) -> String {
-    let words: Vec<&str> = if words.is_empty() { vec![query.trim()] } else { words.iter().map(String::as_str).collect() };
-    let shown = words.iter().map(|word| format!("\"{word}\"")).collect::<Vec<_>>().join(", ");
-    let next = format!("grep -rniE \"{}\" .", words.join("|"));
-    mustard_core::translate("map.search.not_found", lang).replace("{words}", &shown).replace("{next}", &next)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mustard_core::domain::triage::Signals;
     use mustard_core::io::map_triage::Located;
 
     fn deeper(path: &str, decl: Option<(&str, u64)>, via: Vec<Via>, link: Link) -> Deeper {
@@ -129,17 +129,31 @@ mod tests {
         );
     }
 
+    fn triaged(grade: u8, signals: Signals, words: &[&str], missing: &[&str]) -> Triaged {
+        let owned = |items: &[&str]| items.iter().map(|word| (*word).to_string()).collect::<Vec<_>>();
+        Triaged { grade, signals, words: owned(words), missing: owned(missing), files: Vec::new(), deeper: Vec::new() }
+    }
+
+    /// A resposta do banco traz a marca em palavras: cravado quando a nota é
+    /// a mais alta, a chance passa do corte e nenhuma palavra falta; parcial,
+    /// com as palavras que faltam, no resto; não achou, com a linha da
+    /// próxima busca, sem achado nenhum.
     #[test]
-    fn the_not_found_line_carries_the_split_words_and_the_next_exact_search() {
-        let words = ["boleto".to_string(), "vencido".to_string()];
-        assert_eq!(
-            not_found("boletoVencido", &words, Locale::PtBr),
-            "Não achei \"boleto\", \"vencido\" no mapa. Próxima busca, exata: grep -rniE \"boleto|vencido\" ."
-        );
-        assert_eq!(
-            not_found("boletoVencido", &words, Locale::EnUs),
-            "Found nothing for \"boleto\", \"vencido\" in the map. Next search, exact: grep -rniE \"boleto|vencido\" ."
-        );
-        assert!(not_found("de", &[], Locale::PtBr).contains("grep -rniE \"de\" ."));
+    fn the_report_carries_the_mark_and_the_words_the_map_lacks() {
+        let lone = Signals { words: 1, strong: 1, first: Some(9.0), second: None };
+        let pinned = bank_report("boleto", &triaged(5, lone, &["boleto"], &[]), Locale::PtBr);
+        assert_eq!((pinned["grade"].clone(), pinned["mark"].clone()), (json!(5), json!("pinned")));
+        assert!(pinned.get("missing").is_none() && pinned.get("not_found").is_none(), "{pinned}");
+
+        let half = Signals { words: 2, strong: 1, first: Some(9.0), second: None };
+        let partial = bank_report("boleto vencido", &triaged(4, half, &["boleto", "vencido"], &["vencido"]), Locale::PtBr);
+        assert_eq!(partial["mark"], json!("partial"), "{partial}");
+        assert_eq!(partial["missing"], json!(["vencido"]), "{partial}");
+
+        let nothing = Signals { words: 1, strong: 0, first: None, second: None };
+        let lost = bank_report("nada", &triaged(0, nothing, &["nada"], &["nada"]), Locale::PtBr);
+        assert_eq!(lost["mark"], json!("not_found"), "{lost}");
+        assert!(lost["not_found"].as_str().is_some_and(|line| line.contains("grep -rniE \"nada\" .")), "{lost}");
+        assert!(lost.get("missing").is_none(), "no missing list without a partial finding: {lost}");
     }
 }

@@ -725,6 +725,23 @@ pub fn read_for_at(model: &Path, need: Need<'_>) -> std::result::Result<ProjectM
     part_of(&db, need).map_err(unreadable)
 }
 
+/// O blob do git do conteúdo de cada arquivo de `paths` como o mapa em
+/// `model` o leu, pelo caminho: com ele se vê se o arquivo mudou depois da
+/// passada do scan. O arquivo que o mapa não guarda fica de fora. Lê só as
+/// linhas dos arquivos pedidos, com as mesmas recusas de [`read`].
+pub fn blobs_of(model: &Path, paths: &[&str]) -> std::result::Result<BTreeMap<String, String>, MapRefusal> {
+    let db = open_existing(model)?;
+    let mut blobs = BTreeMap::new();
+    for path in paths {
+        let rows = file_rows(db.conn(), &["path", "blob"], Some(&crate::domain::project_map::clean_path(path)))
+            .map_err(unreadable)?;
+        if let Some(row) = rows.first() {
+            blobs.insert(text_cell(&row[0]), text_cell(&row[1]));
+        }
+    }
+    Ok(blobs)
+}
+
 /// A história do git guardada no mapa em `model`, sem ler outra tabela, com
 /// as mesmas recusas de [`read`].
 pub fn history_at(model: &Path) -> std::result::Result<History, MapRefusal> {
@@ -2400,6 +2417,20 @@ mod tests {
             "history": {"base": "dev", "paths": ["src/a.rs", "src/b.rs"],
                         "commits": [{"id": "c1", "at": 10, "title": "Cria o leitor (#12)", "pr": 12, "added": [0, 1]}, {"id": "c2", "at": 20, "changed": [1]}]}
         })
+    }
+
+    /// O blob que o mapa guardou vem pelo caminho pedido, e só dos arquivos
+    /// pedidos que o mapa tem.
+    #[test]
+    fn the_blob_the_map_read_comes_back_for_the_files_asked() {
+        let dir = tempdir().unwrap();
+        let model = model_path(dir.path());
+        assert!(save_at(&model, &scan_map(), "scan 1", &languages()).unwrap());
+        let blobs = blobs_of(&model, &["src/a.rs", "src/nao_existe.rs"]).unwrap();
+        assert_eq!(blobs.len(), 1, "{blobs:?}");
+        assert_eq!(blobs["src/a.rs"], "a1");
+        assert!(blobs_of(&model, &[]).unwrap().is_empty());
+        assert!(blobs_of(&dir.path().join("nada.db"), &["src/a.rs"]).is_err(), "sem mapa, recusa");
     }
 
     /// O mapa do scan volta do banco igual, fora as chaves que nenhuma coluna

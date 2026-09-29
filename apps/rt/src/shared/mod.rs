@@ -67,10 +67,14 @@ pub mod pr_provider;
 pub mod pr_history;
 pub mod proc;
 pub mod prompt;
+/// O texto do catálogo com as vagas preenchidas.
+pub mod say;
 pub mod spec_state;
 // Test-only: cloning git fixture scenery instead of rebuilding it per test.
 #[cfg(test)]
 pub mod test_fixture;
+/// A resposta do mapa no lugar da busca por palavra do Claude.
+pub mod word_search;
 pub mod work_kind;
 
 // Veio da economia quando ela saiu: a barra de status le o ganho do rtk.

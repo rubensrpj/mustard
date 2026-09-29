@@ -28,6 +28,12 @@ const HARNESS_PREFIXES: &[&str] = &[".claude/plans/", ".claude/scratch/"];
 /// Artefacts and infrastructure, never project code.
 const ARTIFACT_PREFIXES: &[&str] = &[".claude/", "dist/", "node_modules/", ".git/", "target/"];
 
+/// `true` quando o caminho `rel`, relativo à raiz do projeto, mora numa pasta
+/// de artefato: estado do harness, dependências ou saída de compilação.
+pub(crate) fn is_artifact(rel: &str) -> bool {
+    ARTIFACT_PREFIXES.iter().any(|prefix| rel.starts_with(prefix))
+}
+
 /// The path of `file_path` relative to `cwd`, with forward slashes. A relative
 /// path is read from `cwd`. `None` when the file lies outside `cwd`;
 /// `Some("")` for the root itself.

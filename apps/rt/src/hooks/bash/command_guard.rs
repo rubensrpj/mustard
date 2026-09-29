@@ -12,8 +12,11 @@
 //!   teste do `cargo` mandados para segundo plano ou chamados pelo caminho
 //!   completo;
 //! - [`reading`] — recusa a leitura do `mustard.json` que guarda a chave do
-//!   Jev, com o arquivo sem a chave no motivo, e a busca de um nome de
-//!   declaração do mapa em pastas de código, com o comando de quem usa o nome.
+//!   Jev, com o arquivo sem a chave no motivo, e responde a busca por palavra
+//!   em pastas de código com a marca do mapa: a resposta agrupada por função
+//!   no lugar da busca que mostra linhas, a busca comum com uma linha da marca
+//!   quando ela só lista nomes ou conta, ou, sem achado, a busca comum com uma
+//!   linha do que o mapa não achou.
 //!
 //! A primeira que decide vence. Trocar o `cargo` da linha de comando por
 //! `rtk` não é feito aqui: o gancho do próprio rtk faz isso; `waiting` só

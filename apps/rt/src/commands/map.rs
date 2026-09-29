@@ -3102,7 +3102,7 @@ mod tests {
         assert_eq!(searched(&opts, &|_, _| Err(FilterError::MissingKey)), report, "the same question answers the same way");
     }
 
-    /// A busca com filtro também traz o grau e a busca funda.
+    /// A busca com filtro também traz o grau, a marca e a busca funda.
     #[test]
     fn a_filtered_answer_carries_the_grade_and_the_deep_search() {
         let dir = search_project(TIED_MAP, &json!({}));
@@ -3111,6 +3111,7 @@ mod tests {
         assert_eq!(fake.calls(), 1);
         assert_eq!(report["filter"], json!("jev"), "{report}");
         assert!(report["grade"].as_u64().is_some_and(|grade| (1..=3).contains(&grade)), "{report}");
+        assert_eq!(report["mark"], json!("partial"), "a middle grade is partial: {report}");
         assert!(report["deeper"].as_array().is_some_and(|deeper| !deeper.is_empty()), "{report}");
     }
 
@@ -3126,7 +3127,7 @@ mod tests {
         let line = "Não achei \"quebra\", \"cabeca\", \"zzyzx\" no mapa. Próxima busca, exata: grep -rniE \"quebra|cabeca|zzyzx\" .";
         assert_eq!(
             report,
-            json!({"ok": true, "question": "search", "query": "quebra-cabeca zzyzx", "files": [], "grade": 0, "not_found": line})
+            json!({"ok": true, "question": "search", "query": "quebra-cabeca zzyzx", "files": [], "grade": 0, "mark": "not_found", "not_found": line})
         );
         assert_eq!(fake.calls(), 0);
 
