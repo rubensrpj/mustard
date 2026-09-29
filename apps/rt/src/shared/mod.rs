@@ -55,19 +55,14 @@ pub mod context;
 /// backlog: the same peel over a task graph instead of a wave graph, plus
 /// readiness, packing into dispatch batches under a work cap (tasks and
 /// files), and the waiting task that joins the batch it depends on.
-// O backlog ainda não tem chamador: o allow sai com o primeiro (próxima onda).
+// A rodada chama o backlog. O allow segura só `task_levels`, que nenhum
+// código de produção chama: só os testes dele.
 #[allow(dead_code)]
 pub mod dag;
-// O filtro pago da busca do mapa: sem chamador até a busca o ligar; o allow
-// sai com o primeiro.
-#[allow(dead_code)]
 pub mod jev;
-// The Azure adapter behind the pr_provider port — reached through the factory.
 pub mod paths;
+// The Azure adapter behind the pr_provider port — reached through the factory.
 pub mod pr_azure;
-// The bin target sees this port as unreached until the pr/git doors move
-// behind it (next waves) — the allow leaves with the first caller.
-#[allow(dead_code)]
 pub mod pr_provider;
 pub mod pr_history;
 pub mod proc;

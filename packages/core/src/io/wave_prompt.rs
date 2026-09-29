@@ -403,8 +403,8 @@ pub fn is_slot_of(root: &Path, spec: &str, copy: &str) -> bool {
 
 /// A pasta da cópia do revisor final da spec `spec`: a vaga do último envio
 /// de onda que gravou uma vaga desta spec, que já tem a compilação da obra.
-/// Sem envio assim — a obra solo, ou só envios com o endereço antigo —, a
-/// vaga `a`. Quem a prepara, no commit de [`final_review_commit`], é o
+/// Sem envio assim — a spec sem nenhum envio de onda, ou só com envios de
+/// endereço antigo —, a vaga `a`. Quem a prepara, no commit de [`final_review_commit`], é o
 /// fechamento (`mustard-rt run close`); o pedido do revisor só diz onde ela
 /// está.
 #[must_use]
@@ -2569,7 +2569,7 @@ mod tests {
     /// O revisor final trabalha na vaga do último envio de onda que gravou
     /// uma vaga desta spec, a que já tem a compilação da obra. O envio de
     /// revisão e o envio com o endereço antigo (`<spec>-<onda>`) não contam.
-    /// Sem envio de onda com vaga — a obra solo —, a vaga `a`.
+    /// Sem envio de onda com vaga — a spec sem nenhum envio —, a vaga `a`.
     #[test]
     fn the_final_review_uses_the_slot_of_the_last_wave() {
         let dir = tempdir().unwrap();
@@ -2592,8 +2592,8 @@ mod tests {
         assert_eq!(shown(&final_copy_path(root, "teste", &log)), slot(1));
         assert!(final_review(root, "teste", &log, Locale::PtBr).contains(&format!("`{}`", slot(1))));
 
-        let solo = log_of(&[("wave", json!({"n": 1, "text": "A onda", "criteria": [], "done_when": "passa"}))]);
-        assert_eq!(shown(&final_copy_path(root, "teste", &solo)), slot(0));
+        let unsent = log_of(&[("wave", json!({"n": 1, "text": "A onda", "criteria": [], "done_when": "passa"}))]);
+        assert_eq!(shown(&final_copy_path(root, "teste", &unsent)), slot(0));
         let other_spec = log_of(&[send(1, &shown(&slot_path(root, "outra", 3)))]);
         assert_eq!(shown(&final_copy_path(root, "teste", &other_spec)), slot(0));
         assert_eq!(slot_name(0), "a");

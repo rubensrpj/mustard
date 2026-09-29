@@ -190,12 +190,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("map.summary.recent", Locale::EnUs) => "Recently changed: {files}.",
         ("map.summary.ask", Locale::PtBr) => {
             "Pergunte ao mapa: `mustard-rt run map examples --file <caminho>`, `importers`, `tests`, \
-             `slice --file <caminho> --name <declaração>`, `users --name <declaração>`, \
+             `summary --file <caminho>`, `slice --file <caminho> --name <declaração>`, `users --name <declaração>`, \
              `history --name <declaração>` ou `search --query \"<palavras>\"`."
         }
         ("map.summary.ask", Locale::EnUs) => {
             "Ask the map: `mustard-rt run map examples --file <path>`, `importers`, `tests`, \
-             `slice --file <path> --name <declaration>`, `users --name <declaration>`, \
+             `summary --file <path>`, `slice --file <path> --name <declaration>`, `users --name <declaration>`, \
              `history --name <declaration>` or `search --query \"<words>\"`."
         }
         ("map.users.head", Locale::PtBr) => {
@@ -389,7 +389,7 @@ mod tests {
             include_str!("map.rs"),
             super::PREFIXES,
             70,
-            0xc499_b58a_9054_a78c,
+            0x0d42_51a8_a84a_6b8a,
         );
     }
 
@@ -402,6 +402,7 @@ mod tests {
     fn the_users_texts_read_clearly() {
         for lang in [Locale::PtBr, Locale::EnUs] {
             for key in [
+                "map.summary.ask",
                 "map.users.head",
                 "map.users.none",
                 "map.users.suspect",

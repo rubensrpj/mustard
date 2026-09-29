@@ -445,11 +445,14 @@ pub const TYPES: &[TypeSpec] = &[
     // dados guardado junto da página, traz `template: true`; a que não traz é
     // a página inteira de uma versão antiga, que fica parada como está. O
     // `stamp` é o carimbo do molde publicado, a versão do layout dele e a
-    // impressão do conteúdo: só a versão do layout conta para publicar de
-    // novo no mesmo endereço. O molde que o programa rodando monta com outra
-    // versão de layout, ou a publicação com o carimbo de antes dela (a versão
-    // do Mustard) ou sem carimbo, manda publicar de novo; a mesma versão de
-    // layout com outra impressão, não.
+    // impressão do conteúdo: só a versão do layout conta. O molde que o
+    // programa rodando monta com outra versão de layout, ou a publicação com o
+    // carimbo de antes dela (a versão do Mustard) ou sem carimbo, não manda
+    // publicar de novo: o marco avisa o usuário, uma vez por versão, e grava o
+    // aviso como uma publicação que não aconteceu (`ok` falso e o motivo
+    // `layout-changed`). A página só se publica de novo, no mesmo endereço,
+    // quando o usuário pede. A mesma versão de layout com outra impressão não
+    // muda nada.
     ty(
         "publish",
         "PUB",

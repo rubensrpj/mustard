@@ -284,16 +284,13 @@ pub(crate) struct PrOpened {
 /// branch em jogo chega por opção, e não é necessariamente aquela em que o
 /// checkout está. Perguntar pelo checkout onde se queria perguntar pela branch
 /// faz a porta reescrever o corpo do pull request de outra unidade e relatar
-/// que editou aquele.
+/// que editou aquele. Por isso não existe forma que pergunte pelo checkout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PrRef<'a> {
     /// Pelo número do pull request.
     Number(u64),
     /// Pela branch que o pull request leva.
     Head(&'a str),
-    /// Pela branch em que o checkout está — a forma que as portas usam de
-    /// dentro da unidade.
-    Checkout,
 }
 
 /// O texto de um pull request como o provedor o guarda: o título, a
@@ -670,21 +667,18 @@ impl PrProvider for GithubPrCli {
     }
 
     fn view(&self, which: PrRef<'_>) -> Result<PrView, String> {
-        // `gh pr view` aceita o número ou a branch no mesmo lugar, e sem
-        // argumento nenhum responde pela branch do checkout.
+        // `gh pr view` aceita o número ou a branch no mesmo lugar.
         let pointed = match which {
-            PrRef::Number(n) => Some(n.to_string()),
-            PrRef::Head(head) => Some(head.to_string()),
-            PrRef::Checkout => None,
+            PrRef::Number(n) => n.to_string(),
+            PrRef::Head(head) => head.to_string(),
         };
-        let mut args: Vec<&str> = vec!["pr", "view"];
-        if let Some(n) = pointed.as_deref() {
-            args.push(n);
-        }
-        args.extend_from_slice(&[
+        let args: Vec<&str> = vec![
+            "pr",
+            "view",
+            &pointed,
             "--json",
             "number,title,state,headRefName,baseRefName,isDraft,url",
-        ]);
+        ];
         view_from_github(&gh_json(&self.repo, &args)?)
     }
 

@@ -2594,13 +2594,15 @@ mod tests {
     }
 
     /// O convite do resumo, que diz como perguntar ao mapa, cita a pergunta da
-    /// história de uma declaração nos dois idiomas, ao lado das outras.
+    /// história de uma declaração e o resumo de um arquivo nos dois idiomas,
+    /// ao lado das outras.
     #[test]
     fn the_session_summary_invites_the_history_question() {
         for lang in [Locale::PtBr, Locale::EnUs] {
             let text = summary(&ProjectMap::default(), lang);
             let ask = text.lines().last().unwrap_or_default();
             assert!(ask.contains("`history --name <"), "{lang:?}: {ask}");
+            assert!(ask.contains("`summary --file <"), "{lang:?}: {ask}");
             assert!(ask.contains("`users --name <") && ask.contains("`search --query"), "{lang:?}: {ask}");
         }
     }

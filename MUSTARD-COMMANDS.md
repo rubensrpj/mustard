@@ -46,7 +46,7 @@ Não há comando de entrada: um pedido que muda arquivo, dito na conversa, abre 
 - **O mapa do início da sessão** (`.claude/mustard/session-map.md`, até 3 kB): o fluxo, quando uma spec abre e onde cada coisa mora. Entra no início da sessão, depois de `/clear` e da compactação.
 - **A linha de cada mensagem** (até 100 caracteres): o idioma do texto e "texto simples". Depois de uma resposta com erro de escrita, ela leva mais uma frase curta com o erro, como "Na última resposta: frase com 29 palavras.", uma vez só.
 - **O estilo de resposta** do plugin, um por idioma (`mustard:mustard-pt-BR`, `mustard:mustard-en-US`), escolhido pelo instalador na chave `outputStyle` do `.claude/settings.local.json`.
-- **Os três agentes**, em `.claude/agents/mustard/`, no idioma do texto: `wave` implementa uma onda, `review` confere uma onda, um levantamento ou o pull request de um colega, e `skill` escreve uma skill a partir dos exemplos que o binário escolhe.
+- **Os dois agentes**, em `.claude/agents/mustard/`, no idioma do texto: `wave` implementa uma onda, e `review` confere uma onda, um levantamento ou o pull request de um colega. O modelo e o esforço de cada um vêm de `agents.model` e `agents.effort` do `mustard.json`; sem esses campos, a instalação os grava com `sonnet` e `xhigh`.
 
 ---
 
@@ -96,7 +96,7 @@ Quase todos aceitam `--root <pasta>`, que diz de que pasta o repositório é lid
 `mustard-rt run upsert` grava, escondidos do git do projeto:
 
 - `.claude/settings.local.json`, `.claude/.gitignore` e `mustard.json`, que são da pessoa: o que existe fica, e só o que falta é acrescentado;
-- o mapa `.claude/mustard/session-map.md`, os dois templates das páginas em `.claude/mustard/pages/` (`spec.html` e `project.html`) e os três agentes em `.claude/agents/mustard/`, no idioma do `language.text`. Esses são textos do próprio Mustard: toda execução regrava o texto embarcado, então uma cópia editada volta em `updated`, e uma idêntica volta em `preserved`, porque não havia o que escrever.
+- o mapa `.claude/mustard/session-map.md`, os dois templates das páginas em `.claude/mustard/pages/` (`spec.html` e `project.html`) e os dois agentes em `.claude/agents/mustard/`, no idioma do `language.text`. Esses são textos do próprio Mustard: toda execução regrava o texto embarcado, então uma cópia editada volta em `updated`, e uma idêntica volta em `preserved`, porque não havia o que escrever.
 
 O `.claude/settings.local.json` recebe as liberações do próprio Mustard, na instalação nova e na atualização: os comandos `mustard-rt run`, a ferramenta `ArtifactData`, que grava no banco de dados das páginas publicadas, e a pasta das cópias das ondas, que mora fora do projeto, em `permissions.additionalDirectories`. As liberações que a pessoa já tem ficam como estão.
 

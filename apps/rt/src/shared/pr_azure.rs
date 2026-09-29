@@ -695,12 +695,6 @@ impl PrProvider for AzurePrRest {
         match which {
             PrRef::Number(n) => do_view_number(&remote, self.transport.as_ref(), &auth, n),
             PrRef::Head(head) => do_view_branch(&remote, self.transport.as_ref(), &auth, head),
-            PrRef::Checkout => {
-                let branch = mustard_core::current_branch(&self.repo).ok_or_else(|| {
-                    "azure-branch-unreadable: the checkout names no branch".to_string()
-                })?;
-                do_view_branch(&remote, self.transport.as_ref(), &auth, &branch)
-            }
         }
     }
 

@@ -134,7 +134,7 @@ mustard init
 
 Isso escreve, escondidos do git do projeto, o `mustard.json` na raiz e a pasta
 `.claude/`: o `.claude/settings.local.json` (com o gancho do rtk e o estilo de
-resposta do idioma do projeto), o mapa do início da sessão e os três agentes do
+resposta do idioma do projeto), o mapa do início da sessão e os dois agentes do
 Mustard. Os **hooks** do Mustard **não** vêm daqui: chegam junto com o plugin,
 que é o passo do item 6, e é por isso que ele não é opcional.
 

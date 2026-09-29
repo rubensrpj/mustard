@@ -21,7 +21,7 @@ flowchart LR
     anchors -->|"IA lê só estes"| work["pipeline de feature/bugfix"]
 ```
 
-1. A **varredura** minera o repositório para um modelo durável (`grain.db`, um banco SQLite em blocos que só regrava o bloco que mudou) — de forma **determinística, sem IA e agnóstica de linguagem/arquitetura**: módulos, declarações, grafo de dependências, *roles*, *slices*, contratos e *touchpoints*. Não é comando: o **porteiro de base** a dispara sozinho quando o censo está velho e a árvore limpa.
+1. A **varredura** minera o repositório para um modelo durável (`grain.db`, um banco SQLite em blocos que só regrava o bloco que mudou) — de forma **determinística, sem IA e agnóstica de linguagem/arquitetura**: módulos, declarações, grafo de dependências, *roles*, *slices* e contratos. Não é comando: o **porteiro de base** a dispara sozinho quando o censo está velho e a árvore limpa.
 2. Os comandos do fluxo consultam esse modelo pelo **mapa** (`mustard-rt run map`) e leem apenas os arquivos que ele aponta.
 3. Resultado: **economia de contexto** — o mapa acha *onde olhar*, não substitui ler.
 

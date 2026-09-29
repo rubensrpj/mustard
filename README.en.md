@@ -21,7 +21,7 @@ flowchart LR
     anchors -->|"AI reads only these"| work["feature/bugfix pipeline"]
 ```
 
-1. The **census** mines the repository into a durable model (`grain.db`, a SQLite database in blocks that rewrites only the block that changed) — **deterministic, AI-free, language- and architecture-agnostic**: modules, declarations, dependency graph, roles, slices, contracts, and touchpoints. It is not a command: the **base gate** triggers it on its own whenever the census is stale and the tree is clean.
+1. The **census** mines the repository into a durable model (`grain.db`, a SQLite database in blocks that rewrites only the block that changed) — **deterministic, AI-free, language- and architecture-agnostic**: modules, declarations, dependency graph, roles, slices, and contracts. It is not a command: the **base gate** triggers it on its own whenever the census is stale and the tree is clean.
 2. The flow's commands query that model through the **map** (`mustard-rt run map`) and read only the files it points at.
 3. Result: **context economy** — the map finds *where to look*; it does not replace reading.
 

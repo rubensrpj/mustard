@@ -691,7 +691,6 @@ mod tests {
             self.seen.borrow_mut().push(match which {
                 PrRef::Number(n) => format!("view number={n}"),
                 PrRef::Head(head) => format!("view head={head}"),
-                PrRef::Checkout => "view checkout".to_string(),
             });
             let PrRef::Head(asked) = which else {
                 return Err("view-not-under-test".to_string());
