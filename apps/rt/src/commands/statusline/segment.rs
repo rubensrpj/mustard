@@ -9,11 +9,9 @@
 use super::theme::Color;
 use crate::shared::rtk_gain::RtkGain;
 use crate::shared::spec_state::DiskSpecState;
-use mustard_core::domain::spec_events::{Block, BlockQuery};
 use mustard_core::domain::spec_state::SpecState;
 use mustard_core::SupportedLocale;
 use serde_json::Value;
-use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::path::Path;
 use mustard_core::platform::git as git_exec;
@@ -302,10 +300,11 @@ pub fn model_segment(data: &Value) -> Segment {
 /// link dela (OSC 8, aceito pela barra do Claude Code) fica no nome e, sem o
 /// nome, passa para a fase. Sem fase conhecida, o nome aparece sempre, para o
 /// link não sumir. O andamento aparece com a spec aprovada ou em execução e
-/// com ondas no plano, como contagem: quantas ondas foram entregues e quantas
-/// o plano tem. O número de uma onda não aparece, porque os números não seguem
-/// a ordem; o da onda que vem fica na linha de retomada. `None` fora de um
-/// projeto com o Mustard e sem spec atual.
+/// com ondas que contam, como contagem: quantas ondas foram entregues e
+/// quantas contam — a onda que ficou sem tarefa não entra, e a retomada da
+/// obra conta igual. O número de uma onda não aparece, porque os números não
+/// seguem a ordem; o da onda que vem fica na linha de retomada. `None` fora de
+/// um projeto com o Mustard e sem spec atual.
 ///
 /// [`current_spec`]: crate::shared::context::checkout::current_spec
 #[must_use]
@@ -345,22 +344,18 @@ pub fn unit_segment(cwd: &Path, branch: Option<&str>) -> Option<Segment> {
     Some(Segment::new(SegmentKind::Unit, text))
 }
 
-/// O andamento das ondas da spec `slug`: quantas ondas do plano foram
-/// entregues e quantas o plano tem. `None` sem arquivo de eventos ou sem onda
-/// no plano.
+/// O andamento das ondas da spec `slug`: quantas ondas que contam foram
+/// entregues e quantas contam, pela mesma conta da retomada da obra
+/// ([`mustard_core::domain::spec_events::SpecLog::counted_waves`]): a onda
+/// esvaziada não entra. `None` sem arquivo de eventos e sem onda que conte.
 fn wave_progress(cwd: &Path, slug: &str) -> Option<(usize, usize)> {
     let log = DiskSpecState::new(cwd).log(slug)?;
-    let planned: BTreeSet<u64> = log
-        .block(BlockQuery::Block(Block::Waves))
-        .into_iter()
-        .filter(|e| e.event_type == "wave")
-        .filter_map(|e| e.wave())
-        .collect();
-    if planned.is_empty() {
+    let counted = log.counted_waves();
+    if counted.is_empty() {
         return None;
     }
-    let delivered = log.delivered_waves().intersection(&planned).count();
-    Some((delivered, planned.len()))
+    let delivered = log.delivered_waves().intersection(&counted).count();
+    Some((delivered, counted.len()))
 }
 
 /// `label` como hiperlink OSC 8 para `url`: `ESC ]8;;URL ESC \ label ESC ]8;; ESC \`.
@@ -582,6 +577,77 @@ mod tests {
                 "only the name is the link ({branch:?})"
             );
         }
+    }
+
+    /// A barra de status e o bloco de retomada da obra contam as mesmas ondas
+    /// quando há ondas esvaziadas — a que perdeu a tarefa para outra onda, a
+    /// que teve a tarefa removida, a que voltou ao backlog e a combinada sem
+    /// tarefa, de autor do binário ou não. Conta a entregue, mesmo sem
+    /// tarefa, e a que ainda tem tarefa: o total da barra é o das entregues
+    /// mais o da lista do que falta.
+    #[test]
+    fn the_bar_and_the_resume_block_count_the_same_waves_with_emptied_waves() {
+        use serde_json::json;
+
+        if std::env::var_os("MUSTARD_ACTIVE_SPEC").is_some() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), r#"{"version":"1.0.0","language":{"text":"pt-BR"}}"#).unwrap();
+        crate::shared::spec_state::stand_on_spec_branch(root, "x");
+        crate::commands::spec_events::write::record_open(root, "x", "feature/x", "dev").expect("open");
+        crate::shared::spec_state::approve_in(&root.join(".claude").join("spec").join("x"));
+        let seed = |event_type: &str, body: Value| crate::shared::spec_state::seed_event(root, "x", event_type, body);
+        seed("state", json!({"phase": "running", "author": "binary"}));
+        let said = seed("message", json!({"author": "user", "text": "o plano"}));
+        let crit = seed("criterion", json!({"when": "a", "then": "b", "proof": "p", "form": "ubiquitous", "origin": said}));
+        for n in 1..=8 {
+            let author = if n % 2 == 0 { "binary" } else { "assistant" };
+            seed("wave", json!({"n": n, "text": format!("Onda {n}."), "criteria": [crit], "done_when": "x",
+                "origin": said, "author": author}));
+        }
+        let task = |wave: Option<u64>, text: &str, replaces: Option<u64>| {
+            let mut body = json!({"text": text, "files": [], "depends_on": [], "origin": said});
+            if let Some(wave) = wave {
+                body["wave"] = json!(wave);
+            }
+            if let Some(old) = replaces {
+                body["replaces"] = json!(old);
+            }
+            seed("task", body)
+        };
+        // Onda 1: entregue, com a tarefa. Onda 7: entregue, sem tarefa.
+        task(Some(1), "Um.", None);
+        seed("delivered", json!({"wave": 1, "text": "Pronta.", "files": ["a.rs"], "author": "wave"}));
+        seed("delivered", json!({"wave": 7, "text": "Pronta.", "files": ["g.rs"], "author": "wave"}));
+        // Onda 3: a tarefa passou para a onda 2. Onda 4: a tarefa foi removida.
+        // Onda 6: a tarefa voltou ao backlog. Onda 5: nunca teve tarefa.
+        let three = task(Some(3), "Três.", None);
+        task(Some(2), "Três, na dois.", Some(three));
+        let four = task(Some(4), "Quatro.", None);
+        seed("remove", json!({"targets": [four], "reason": "Saiu da obra."}));
+        let six = task(Some(6), "Seis.", None);
+        task(None, "Seis, no backlog.", Some(six));
+        // Onda 8: com tarefa, ainda por fazer.
+        task(Some(8), "Oito.", None);
+
+        let bar = unit_segment(root, Some("feature/x")).expect("the running unit reaches the bar");
+        let block = crate::commands::flow::resume::current_block(root, Some("s1")).expect("the resume block");
+        let between = |text: &str, from: &str, to: &str| -> Vec<String> {
+            let rest = text.split(from).nth(1).unwrap_or_else(|| panic!("no {from:?} in {text}"));
+            let list = rest.split(to).next().unwrap();
+            list.split(", ").map(str::to_string).collect()
+        };
+        let delivered = between(&block, "Ondas entregues: ", ". Em andamento");
+        let missing = between(&block, "Falta: ", ". Gravado depois");
+        assert_eq!(delivered, ["1", "7"], "{block}");
+        assert_eq!(missing, ["2", "8"], "the emptied waves are not missing: {block}");
+        let progress = mustard_core::translate("statusline.wave", mustard_core::SupportedLocale::PtBr)
+            .replace("{delivered}", &delivered.len().to_string())
+            .replace("{total}", &(delivered.len() + missing.len()).to_string());
+        assert_eq!(progress, "2 de 4 ondas");
+        assert!(bar.text.ends_with(&progress), "the bar counts what the block counts: {}", bar.text);
     }
 
     /// O nome do projeto vira link para a página do projeto quando o índice

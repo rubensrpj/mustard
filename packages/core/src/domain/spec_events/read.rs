@@ -515,6 +515,30 @@ impl SpecLog {
             .collect()
     }
 
+    /// As ondas que contam no andamento da obra: das que a leitura mostra, a
+    /// que já tem entrega e a que a última versão de alguma tarefa não
+    /// removida aponta. A onda esvaziada — as tarefas dela foram para outra
+    /// onda, voltaram ao backlog ou saíram da obra — não conta, seja qual for
+    /// o autor dela, e assim não infla o total nem a lista do que falta. É
+    /// a única conta das ondas que a barra de status e a retomada mostram, para
+    /// as duas dizerem o mesmo número; [`Self::planned_waves`] segue sendo o
+    /// que a rodada despacha e confere.
+    #[must_use]
+    pub fn counted_waves(&self) -> BTreeSet<u64> {
+        let waves = self.block(BlockQuery::Block(Block::Waves));
+        let alive: BTreeSet<u64> = waves
+            .iter()
+            .filter(|e| matches!(e.event_type.as_str(), "task" | "delivered"))
+            .filter_map(|e| e.wave())
+            .collect();
+        waves
+            .into_iter()
+            .filter(|e| e.event_type == "wave")
+            .filter_map(SpecEvent::wave)
+            .filter(|n| alive.contains(n))
+            .collect()
+    }
+
     /// O maior número de onda que a leitura mostra, com a onda que saiu do
     /// plano por ficar vazia ([`Self::planned_waves`]) incluída; zero sem
     /// onda nenhuma. A onda nova nasce depois dele, para nunca repetir o
@@ -795,6 +819,47 @@ mod tests {
         assert_eq!(log.planned_waves(), BTreeSet::from([1, 2]));
         assert_eq!(log.last_wave_number(), 4);
         assert_eq!(parse_log("").last_wave_number(), 0);
+    }
+
+    /// Conta a onda entregue e a que a última versão de uma tarefa não
+    /// removida aponta, e só elas, de qualquer autor: a que perdeu a tarefa
+    /// para outra onda, a que a remoção esvaziou e a combinada à mão sem
+    /// tarefa nenhuma ficam de fora, e a entregue sem tarefa fica. A onda que
+    /// só tem entrega gravada em nome de um número fora do plano não entra.
+    #[test]
+    fn as_ondas_que_contam_sao_a_entregue_e_a_que_alguma_tarefa_ainda_aponta() {
+        let waves: Vec<serde_json::Value> = (1..=8)
+            .map(|n| {
+                serde_json::json!({"v":1,"id":n,"at":"t","type":"wave","n":n,"text":"Onda.","author":
+                    if n % 2 == 0 { "binary" } else { "assistant" }})
+            })
+            .collect();
+        let mut lines = waves;
+        lines.extend([
+            // Onda 1: entregue, com a tarefa.
+            serde_json::json!({"v":1,"id":11,"at":"t","type":"task","wave":1,"text":"Um."}),
+            serde_json::json!({"v":1,"id":12,"at":"t","type":"delivered","wave":1,"text":"Saiu."}),
+            // Onda 2: a tarefa vive; a 3 perdeu a dela para a 2 numa versão nova.
+            serde_json::json!({"v":1,"id":13,"at":"t","type":"task","wave":3,"text":"Três."}),
+            serde_json::json!({"v":1,"id":14,"at":"t","type":"task","wave":2,"text":"Três, na dois.","replaces":13}),
+            // Onda 4: a tarefa foi removida.
+            serde_json::json!({"v":1,"id":15,"at":"t","type":"task","wave":4,"text":"Quatro."}),
+            serde_json::json!({"v":1,"id":16,"at":"t","type":"remove","targets":[15]}),
+            // Onda 5: combinada à mão, nunca teve tarefa.
+            // Onda 6: a tarefa voltou ao backlog, sem onda.
+            serde_json::json!({"v":1,"id":17,"at":"t","type":"task","wave":6,"text":"Seis."}),
+            serde_json::json!({"v":1,"id":18,"at":"t","type":"task","text":"Seis, no backlog.","replaces":17}),
+            // Onda 7: entregue, sem tarefa nenhuma.
+            serde_json::json!({"v":1,"id":19,"at":"t","type":"delivered","wave":7,"text":"Saiu."}),
+            // Onda 8: só tem a tarefa e vale; a 9 não está no plano.
+            serde_json::json!({"v":1,"id":20,"at":"t","type":"task","wave":8,"text":"Oito."}),
+            serde_json::json!({"v":1,"id":21,"at":"t","type":"task","wave":9,"text":"Nove."}),
+            serde_json::json!({"v":1,"id":22,"at":"t","type":"delivered","wave":9,"text":"Saiu."}),
+        ]);
+        let log = log_of(&lines);
+        assert_eq!(log.counted_waves(), BTreeSet::from([1, 2, 7, 8]));
+        // O plano da rodada segue como era: a combinada à mão sem tarefa fica.
+        assert!(log.planned_waves().contains(&5), "a rodada continua vendo a onda combinada à mão");
     }
 
     /// Os arquivos entregues são os dos eventos `commit`, sem repetir, e não

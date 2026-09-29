@@ -157,11 +157,7 @@ pub(crate) fn resume_block(spec: &str, log: &SpecLog, lang: Locale) -> String {
         waves_in_progress(log).into_keys().filter(|n| !returned.contains(n)).collect();
     let stuck: Vec<String> = waves_stuck(log).into_keys().map(|n| n.to_string()).collect();
     let missing: Vec<String> = log
-        .block(BlockQuery::Block(Block::Waves))
-        .into_iter()
-        .filter(|e| e.event_type == "wave")
-        .filter_map(|e| e.wave())
-        .collect::<BTreeSet<u64>>()
+        .counted_waves()
         .into_iter()
         .filter(|n| !delivered.contains(n) && !running.contains(n) && !returned.contains(n))
         .map(|n| n.to_string())

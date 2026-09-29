@@ -474,6 +474,11 @@ mod tests {
             seed_event(&root, "checkout", "wave", json!({"n": n, "text": format!("Onda {n}."), "criteria": [said],
                 "done_when": "x", "origin": said}));
         }
+        // A onda 1 já saiu; as outras três seguem com tarefa, e por isso contam.
+        for n in 2..=4 {
+            seed_event(&root, "checkout", "task", json!({"wave": n, "text": format!("Tarefa {n}."), "files": [],
+                "depends_on": [], "origin": said}));
+        }
         crate::shared::spec_state::approve_in(&root.join(".claude").join("spec").join("checkout"));
         seed_event(&root, "checkout", "state", json!({"phase": "running", "author": "binary"}));
         seed_event(&root, "checkout", "delivered", json!({"wave": 1, "text": "Pronta.", "files": ["a.rs"], "author": "wave"}));
