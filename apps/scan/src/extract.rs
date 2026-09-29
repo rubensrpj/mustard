@@ -38,6 +38,8 @@ use std::sync::OnceLock;
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Language, Node, Parser, Query, QueryCursor};
 
+mod typed;
+
 #[derive(Default)]
 pub(crate) struct Extracted {
     pub imports: Vec<String>,
@@ -479,6 +481,14 @@ enum CapKind {
     /// (`x.Total`, `self.total`): ele é usado quando nomeia uma propriedade
     /// ou um campo que o objeto alcança.
     Member,
+    /// O tipo escrito antes dos membros de uma desestruturação
+    /// (`Piece::Block` em `Piece::Block { open, close }`): os `Member` do
+    /// mesmo pattern são campos desse tipo.
+    MemberOf,
+    /// O tipo que a assinatura escreve para o `Local` do mesmo pattern
+    /// (`Pedido` em `pedido: &Pedido`): o membro lido depois desse nome é do
+    /// tipo.
+    LocalType,
     /// Um literal de texto escrito no código: vira texto fixo do arquivo
     /// quando tem cara de texto e não cai num import, num trecho de teste
     /// nem numa documentação. `plain` é o texto escrito sem aspas (o texto
@@ -500,6 +510,8 @@ fn classify(cap: &str) -> CapKind {
         "call.path" => CapKind::CallPath,
         "call.value" => CapKind::CallValue,
         "member" => CapKind::Member,
+        "member.of" => CapKind::MemberOf,
+        "local.type" => CapKind::LocalType,
         "name" => CapKind::Name,
         "supertype" => CapKind::Supertype,
         "owner" => CapKind::Owner,
@@ -649,6 +661,11 @@ impl Analyzer {
         // membro escrito depois do objeto.
         let mut value_at: BTreeSet<usize> = BTreeSet::new();
         let mut member_at: BTreeSet<usize> = BTreeSet::new();
+        // O tipo escrito antes de cada membro de uma desestruturação, pelo
+        // byte do membro, e o tipo que a assinatura escreve para cada nome
+        // local (o número dele em `locals` e o tipo).
+        let mut member_of: HashMap<usize, String> = HashMap::new();
+        let mut local_types: Vec<(usize, String)> = Vec::new();
         // Os literais de texto do arquivo, cada um dizendo se foi escrito sem
         // aspas, e o que a documentação escrita dentro das declarações cobre:
         // o literal que a contém não é texto fixo.
@@ -693,6 +710,13 @@ impl Analyzer {
             // O nome trazido e o de origem, quando o pattern escreve os dois.
             let mut offered_at: Option<usize> = None;
             let mut original: Option<String> = None;
+            // O que este match diz do dono dos membros: o nome local que ele
+            // liga e o tipo que escreve para ele, os membros e o tipo escrito
+            // antes deles.
+            let mut here_local: Option<usize> = None;
+            let mut here_local_type: Option<String> = None;
+            let mut here_members: Vec<usize> = Vec::new();
+            let mut here_member_of: Option<String> = None;
 
             for cap in m.captures {
                 let node = cap.node;
@@ -734,14 +758,18 @@ impl Analyzer {
                         if let Ok(t) = node.utf8_text(bytes)
                             && is_identifier(t)
                         {
+                            here_local = Some(locals.len());
                             locals.push((node.start_position().row + 1, node.start_byte(), t.to_string()));
                         }
                     }
+                    CapKind::LocalType => here_local_type = node.utf8_text(bytes).ok().and_then(simple_type_name),
+                    CapKind::MemberOf => here_member_of = node.utf8_text(bytes).ok().map(str::to_string),
                     CapKind::CallValue => {
                         value_at.insert(node.start_byte());
                     }
                     CapKind::Member => {
                         member_at.insert(node.start_byte());
+                        here_members.push(node.start_byte());
                     }
                     CapKind::CallPath => {
                         // Só o caminho que começa no próprio projeto é import;
@@ -829,6 +857,13 @@ impl Analyzer {
                     }
                     CapKind::Ignore => {}
                 }
+            }
+
+            if let (Some(at), Some(ty)) = (here_local, here_local_type) {
+                local_types.push((at, ty));
+            }
+            if let Some(ty) = here_member_of {
+                member_of.extend(here_members.into_iter().map(|byte| (byte, ty.clone())));
             }
 
             // O import relativo feito só do separador nomeia uma pasta, e não
@@ -988,7 +1023,11 @@ impl Analyzer {
         let quiet = Pruned::of(decorations.union(&import_spans).copied());
         let heads;
         let brought: HashSet<&str> = imported_at.iter().map(|(_, name)| name.as_str()).collect();
-        let marks = Marks { value_at: &value_at, member_at: &member_at };
+        let owners = typed::Owners::new(
+            member_of,
+            typed::Bindings::of(&out.declarations, &locals, &local_types, &names_at),
+        );
+        let marks = Marks { value_at: &value_at, member_at: &member_at, owners: &owners };
         let found = use_sites(&walked.leaves, bytes, &comments, &quiet, &names_at, &name_kinds, &self.name, &brought, &marks);
         (out.calls, out.cites, out.value_uses, out.member_reads, heads) = found;
         drop_local_uses(
@@ -1819,7 +1858,9 @@ fn glob(entry: &str, text: &str) -> bool {
 /// (`xs.map(dobro)`) ou guardada num nome (`let f = dobro;`). A escrita num
 /// dos bytes de `member_at` (`@member`) é também o membro lido pelo objeto
 /// escrito antes dele (`pedido.Total`); o nome que abre a cadeia antes dele
-/// conta como o da chamada.
+/// conta como o da chamada. Quando o arquivo escreve o dono do membro — o tipo
+/// da desestruturação ou o tipo que a assinatura dá ao objeto —, o membro sai
+/// qualificado por esse tipo ([`typed::Owners`]).
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn use_sites(
     leaves: &[Leaf],
@@ -1867,7 +1908,12 @@ fn use_sites(
                 if opens_chain(node, bytes, comments, lang, &site.2) {
                     heads.insert(site.2.clone());
                 }
-                members.insert(site.clone());
+                match marks.owners.of(node, bytes, comments, lang) {
+                    Some(owners) => members.extend(owners.into_iter().map(|owner| (site.0, site.1.clone(), owner))),
+                    None => {
+                        members.insert(site.clone());
+                    }
+                }
             }
             cites.insert(site);
         }
@@ -1883,6 +1929,8 @@ fn use_sites(
 struct Marks<'a> {
     value_at: &'a BTreeSet<usize>,
     member_at: &'a BTreeSet<usize>,
+    /// O dono que o arquivo escreve para os membros ([`typed::Owners`]).
+    owners: &'a typed::Owners,
 }
 
 /// O qualificador `qualifier`, escrito antes do nó, é um nome sem nada ligado

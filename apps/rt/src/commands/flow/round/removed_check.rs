@@ -11,7 +11,9 @@
 //!   aconteceu. Só se procura o nome que não se confunde com uma palavra da
 //!   prosa ([`distinctive`]).
 //! - Órfão: a declaração que tinha uso fora de teste no mapa da base, e cujo
-//!   último uso a onda tirou, e ficou sem nenhum. Teste chamando não conta
+//!   último uso a onda tirou, e ficou sem nenhum. A de antes é a de mesmo
+//!   nome, tipo e dono ([`same_piece`]): o campo de mesmo nome de outro tipo
+//!   do arquivo é outra peça. Teste chamando não conta
 //!   como uso: nem o arquivo de teste, nem o trecho de teste de um arquivo
 //!   do programa, que o scan reconhece e o mapa guarda pelas linhas. A
 //!   declaração escrita dentro desse trecho é do teste e não entra. A
@@ -94,7 +96,7 @@ fn orphans(root: &Path, maps: &AfterWave, created: &[String], lang: Locale) -> V
             if entry || decl.used_by.iter().any(|site| from_program(&maps.after, site)) {
                 continue;
             }
-            let Some(old) = before.declarations.iter().find(|d| d.name == decl.name && d.kind == decl.kind) else { continue };
+            let Some(old) = before.declarations.iter().find(|d| same_piece(d, decl)) else { continue };
             let callers: Vec<&str> =
                 old.used_by.iter().filter(|site| from_program(&maps.base, site)).map(|site| site.file.as_str()).collect();
             let wave = maps.changed.iter().find(|(_, files)| files.iter().any(|f| callers.contains(&f.as_str())));
@@ -108,6 +110,15 @@ fn orphans(root: &Path, maps: &AfterWave, created: &[String], lang: Locale) -> V
         }
     }
     out
+}
+
+/// `before` e `now` são a mesma peça em dois mapas: o mesmo nome, o mesmo tipo
+/// de declaração e o mesmo dono mais interno. O campo `total` de `Pedido` não
+/// é o de `Nota`, ainda que os dois morem no mesmo arquivo: quem tinha uso na
+/// base é a peça de mesmo dono, e uma peça nova, ou sem uso antes, não vira
+/// órfã por causa da homônima de outro tipo.
+fn same_piece(before: &MapDecl, now: &MapDecl) -> bool {
+    before.name == now.name && before.kind == now.kind && before.owner.first() == now.owner.first()
 }
 
 /// O uso `site` é do programa, pelo mapa `map` em que ele está: fora de
@@ -216,6 +227,18 @@ mod tests {
         json!({"path": path, "language": "rust", "declarations": declarations})
     }
 
+    /// Um arquivo do mapa só com campos: cada um é `(dono, nome, linha, quem o
+    /// usa)`, como o scan grava.
+    fn fields_module(path: &str, fields: &[(&str, &str, u64, &[&str])]) -> Value {
+        let declarations: Vec<Value> = fields
+            .iter()
+            .map(|(owner, name, line, used)| {
+                json!({"kind": "field", "name": name, "line": line, "end_line": line, "used_by": used, "owner": [owner]})
+            })
+            .collect();
+        json!({"path": path, "language": "rust", "declarations": declarations})
+    }
+
     /// Uma spec aprovada com a onda 1, que muda `src/a.rs`; os arquivos
     /// `files` comitados no projeto; a onda já enviada; e o mapa da base
     /// `base`.
@@ -283,6 +306,80 @@ mod tests {
         assert_eq!(out["reason"], json!("round-after-wave"), "{out}");
         let hint = out["hint"].as_str().unwrap_or_default();
         assert!(hint.contains("`compute_total` em `src/lib_sum.rs` linha 5 ficou sem uso fora de teste"), "{hint}");
+    }
+
+    #[test]
+    fn a_new_field_named_like_a_used_field_of_another_type_of_the_file_is_not_an_orphan() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        // Antes, só `Keeping` e `Finding` existem, com leitor; a onda mexe em
+        // quem os lê. Depois, `Kept` nasce com campos de mesmo nome e sem
+        // leitor no mapa, e a lista de tarefas ganha o `files` de outro tipo.
+        let base = json!({"modules": [fields_module(
+            "src/a.rs",
+            &[
+                ("Keeping", "wave", 5, &["src/a.rs:40:read"]),
+                ("Keeping", "copy", 6, &["src/a.rs:41:show"]),
+                ("Finding", "wave", 9, &["src/a.rs:42:report"]),
+                ("Pending", "files", 12, &["src/a.rs:43:list"]),
+            ],
+        )]});
+        project(root, &[("src/a.rs", "struct Keeping {}\n")], &base);
+        let after = json!({"modules": [fields_module(
+            "src/a.rs",
+            &[
+                ("Kept", "wave", 3, &[]),
+                ("Kept", "copy", 4, &[]),
+                ("Keeping", "wave", 5, &["src/a.rs:40:read"]),
+                ("Keeping", "copy", 6, &["src/a.rs:41:show"]),
+                ("Finding", "wave", 9, &["src/a.rs:42:report"]),
+                ("Pending", "files", 12, &["src/a.rs:43:list"]),
+                ("LeftTask", "files", 15, &[]),
+            ],
+        )]});
+        silent(&back(root, after));
+    }
+
+    #[test]
+    fn a_field_with_no_reader_in_the_map_before_and_after_is_not_an_orphan_for_the_used_field_of_the_same_name() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        // O campo de um tipo tem leitor e o de mesmo nome de outro tipo do
+        // arquivo não tem, antes e depois (o mapa não liga a leitura dele): o
+        // que a onda mexeu foi o leitor do primeiro, que segue lá.
+        let map = |used: &str| {
+            json!({"modules": [fields_module(
+                "src/a.rs",
+                &[
+                    ("Markup", "open", 4, &[used]),
+                    ("Piece", "open", 8, &[]),
+                    ("Level", "fields", 12, &[used]),
+                    ("Doc", "fields", 16, &[]),
+                    ("WrittenText", "comments", 20, &[used]),
+                    ("Walked", "comments", 24, &[]),
+                ],
+            )]})
+        };
+        project(root, &[("src/a.rs", "struct Markup {}\n")], &map("src/a.rs:30:code_of"));
+        silent(&back(root, map("src/a.rs:31:code_of")));
+    }
+
+    #[test]
+    fn a_field_of_the_same_type_that_loses_its_last_reader_is_still_an_orphan() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let map = |kept_used: &[&str]| {
+            json!({"modules": [fields_module(
+                "src/a.rs",
+                &[("Kept", "wave", 3, kept_used), ("Keeping", "wave", 5, &["src/a.rs:41:show"])],
+            )]})
+        };
+        project(root, &[("src/a.rs", "struct Kept {}\n")], &map(&["src/a.rs:40:read"]));
+        let out = back(root, map(&[]));
+        assert_eq!(out["reason"], json!("round-after-wave"), "{out}");
+        let hint = out["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains("`wave` em `src/a.rs` linha 3 ficou sem uso fora de teste"), "{hint}");
+        assert!(!hint.contains("linha 5"), "the field of the other type keeps its reader: {hint}");
     }
 
     #[test]

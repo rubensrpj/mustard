@@ -39,6 +39,23 @@ fn declaration<'a>(map: &'a Value, path: &str, name: &str) -> &'a Value {
     decls.iter().find(|d| d["name"] == name).unwrap_or_else(|| panic!("{name} em {path}: {decls:?}"))
 }
 
+/// A declaração `name` do arquivo `path` cujo dono mais interno é `owner`.
+fn owned<'a>(map: &'a Value, path: &str, owner: &str, name: &str) -> &'a Value {
+    let module = map["modules"].as_array().unwrap().iter().find(|m| m["path"] == path).unwrap_or_else(|| panic!("{path} no mapa"));
+    let decls = module["declarations"].as_array().unwrap();
+    decls
+        .iter()
+        .find(|d| d["name"] == name && d["owner"][0] == owner)
+        .unwrap_or_else(|| panic!("{owner}.{name} em {path}: {decls:?}"))
+}
+
+/// Todos os usos da declaração `name` de `owner` em `path`, provados ou
+/// suspeitos, só pelo lugar.
+fn owned_uses(map: &Value, path: &str, owner: &str, name: &str) -> Vec<String> {
+    let used = owned(map, path, owner, name)["used_by"].as_array().cloned().unwrap_or_default();
+    used.iter().filter_map(|u| u.as_str().or_else(|| u["at"].as_str()).map(str::to_string)).collect()
+}
+
 /// Os usos provados da declaração `name` do arquivo `path`, como
 /// `arquivo:linha:de onde`.
 fn proven_uses(map: &Value, path: &str, name: &str) -> Vec<String> {
@@ -169,9 +186,12 @@ fn a_python_attribute_read_after_the_object_is_a_use_of_it() {
 }
 
 /// No Rust, o campo lido pelo próprio objeto (`self.total`) é usado, provado,
-/// pelo método que o lê. O campo lido de uma variável (`pedido.troco`) não ganha
-/// uso: o ponto só liga valor, e sem o tipo dele nada diz de quem é o campo.
-/// O campo de mesmo nome de um arquivo que nenhum `mod` alcança também não.
+/// pelo método que o lê, e o lido de um nome que a assinatura tipa
+/// (`pedido: &Pedido`, depois `pedido.troco`) é usado pela função que o lê. O
+/// campo lido de uma variável sem tipo escrito (`p.desconto`) ou do que uma
+/// função devolve (`criar().desconto`) não ganha uso: o ponto só liga valor, e
+/// sem o tipo dele nada diz de quem é o campo. O campo de mesmo nome de um
+/// arquivo que nenhum `mod` alcança também não.
 #[test]
 fn a_rust_field_read_through_self_is_a_use_of_it() {
     let map = scanned(
@@ -180,17 +200,110 @@ fn a_rust_field_read_through_self_is_a_use_of_it() {
             ("Cargo.toml", "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"),
             (
                 "src/main.rs",
-                "struct Pedido {\n    total: u32,\n    troco: u32,\n}\n\n\
+                "struct Pedido {\n    total: u32,\n    troco: u32,\n    desconto: u32,\n}\n\n\
                  impl Pedido {\n    fn dobro(&self) -> u32 {\n        self.total * 2\n    }\n}\n\n\
                  fn fechar(pedido: &Pedido) -> u32 {\n    pedido.troco\n}\n\n\
-                 fn main() {\n    let p = Pedido { total: 1, troco: 2 };\n    let _ = fechar(&p) + p.dobro();\n}\n",
+                 fn criar() -> Pedido {\n    Pedido { total: 1, troco: 2, desconto: 3 }\n}\n\n\
+                 fn conta() -> u32 {\n    criar().desconto\n}\n\n\
+                 fn main() {\n    let p = criar();\n    let _ = fechar(&p) + p.dobro() + p.desconto + conta();\n}\n",
             ),
             ("src/solto.rs", "pub struct Nota {\n    pub total: u32,\n}\n"),
         ],
     );
-    assert_eq!(proven_uses(&map, "src/main.rs", "total"), ["src/main.rs:8:dobro"]);
-    assert_eq!(every_use(&map, "src/main.rs", "troco"), Vec::<String>::new(), "a field read from a value");
+    assert_eq!(proven_uses(&map, "src/main.rs", "total"), ["src/main.rs:9:dobro"]);
+    assert_eq!(proven_uses(&map, "src/main.rs", "troco"), ["src/main.rs:14:fechar"], "a name the signature types");
+    assert_eq!(every_use(&map, "src/main.rs", "desconto"), Vec::<String>::new(), "a field read from a value");
     assert_eq!(every_use(&map, "src/solto.rs", "total"), Vec::<String>::new(), "a file out of sight");
+}
+
+const RUST_MANIFEST: &str = "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n";
+
+/// No Rust, o campo escrito numa desestruturação é lido do tipo que o padrão
+/// escreve antes das chaves: `Piece::Block { open, close, .. }` lê o `open` e
+/// o `close` do enum `Piece`, e não o `open` de outro tipo do arquivo. O campo
+/// da variante escrita em várias linhas (`Piece::Line { start }`), o de uma
+/// struct (`Pedido { total, .. }`) e o de `Self::Block { open, .. }` dentro do
+/// `impl` também ligam, provados; o que o padrão cobre com `..` não é lido.
+#[test]
+fn a_rust_field_named_in_a_destructuring_is_read_from_the_type_the_pattern_writes() {
+    let main = "pub struct Markup {\n    open: u32,\n}\n\n\
+        pub enum Piece {\n    Block { open: usize, close: usize, body: bool },\n    Line {\n        start: usize,\n    },\n    Expr { end: usize },\n}\n\n\
+        pub struct Pedido {\n    total: u32,\n    troco: u32,\n}\n\n\
+        fn cortar(piece: &Piece) -> usize {\n    match piece {\n        Piece::Block { open, close, .. } => open + close,\n        \
+        Piece::Line { start } => *start,\n        Piece::Expr { .. } => 0,\n    }\n}\n\n\
+        fn somar(pedido: Pedido) -> u32 {\n    let Pedido { total, .. } = pedido;\n    total\n}\n\n\
+        impl Piece {\n    fn abre(&self) -> usize {\n        match self {\n            Self::Block { open, .. } => *open,\n            \
+        _ => 0,\n        }\n    }\n}\n";
+    let map = scanned("rust-destructuring", &[("Cargo.toml", RUST_MANIFEST), ("src/main.rs", main)]);
+    let mut open = owned_uses(&map, "src/main.rs", "Piece", "open");
+    open.sort();
+    assert_eq!(open, ["src/main.rs:20:cortar", "src/main.rs:34:abre"]);
+    assert_eq!(owned_uses(&map, "src/main.rs", "Piece", "close"), ["src/main.rs:20:cortar"]);
+    assert_eq!(owned_uses(&map, "src/main.rs", "Markup", "open"), Vec::<String>::new(), "the same name in another type");
+    assert_eq!(owned_uses(&map, "src/main.rs", "Line", "start"), ["src/main.rs:21:cortar"], "a variant written on several lines");
+    assert_eq!(owned_uses(&map, "src/main.rs", "Piece", "body"), Vec::<String>::new(), "covered by `..`");
+    assert_eq!(owned_uses(&map, "src/main.rs", "Pedido", "total"), ["src/main.rs:27:somar"]);
+    assert_eq!(owned_uses(&map, "src/main.rs", "Pedido", "troco"), Vec::<String>::new(), "covered by `..`");
+    let proven = proven_uses(&map, "src/main.rs", "close");
+    assert_eq!(proven, ["src/main.rs:20:cortar"], "a field the pattern names is a proven use");
+}
+
+/// No Rust, o campo lido depois de um nome que a assinatura tipa é do tipo
+/// escrito, até o nome ser ligado de novo: o `let` sem tipo tira o tipo do
+/// nome, e o `let` com outro tipo troca. O tipo que o arquivo não enxerga e o
+/// de biblioteca não ligam a campo nenhum do projeto, nem ao de mesmo nome.
+#[test]
+fn a_rust_field_read_after_a_typed_name_is_read_from_that_type_until_the_name_is_bound_again() {
+    let main = "use std::time::Duration;\n\n\
+        pub struct Pedido {\n    total: u32,\n    troco: u32,\n}\n\n\
+        pub struct Nota {\n    troco: u32,\n}\n\n\
+        pub struct Relogio {\n    secs: u64,\n}\n\n\
+        fn ler(pedido: &Pedido) -> u32 {\n    pedido.total\n}\n\n\
+        fn religar(pedido: &Pedido) -> u32 {\n    let pedido = criar();\n    pedido.troco\n}\n\n\
+        fn trocar(item: &Pedido) -> u32 {\n    let item: &Nota = nota();\n    item.troco\n}\n\n\
+        fn outra(item: &mut Nota) -> u32 {\n    item.troco\n}\n\n\
+        fn medir(d: &Duration) -> u64 {\n    d.secs\n}\n\n\
+        fn de_fora(x: &Outro) -> u32 {\n    x.troco\n}\n";
+    let map = scanned(
+        "rust-typed",
+        &[
+            ("Cargo.toml", RUST_MANIFEST),
+            ("src/main.rs", main),
+            ("src/solto.rs", "pub struct Outro {\n    pub troco: u32,\n}\n"),
+        ],
+    );
+    assert_eq!(owned_uses(&map, "src/main.rs", "Pedido", "total"), ["src/main.rs:17:ler"]);
+    assert_eq!(owned_uses(&map, "src/main.rs", "Pedido", "troco"), Vec::<String>::new(), "bound again with no type");
+    let mut nota = owned_uses(&map, "src/main.rs", "Nota", "troco");
+    nota.sort();
+    assert_eq!(nota, ["src/main.rs:27:trocar", "src/main.rs:31:outra"], "bound again with another type");
+    assert_eq!(owned_uses(&map, "src/main.rs", "Relogio", "secs"), Vec::<String>::new(), "a type of the library");
+    assert_eq!(owned_uses(&map, "src/solto.rs", "Outro", "troco"), Vec::<String>::new(), "a type out of sight");
+}
+
+/// No Rust, o campo lido dentro dos argumentos de uma macro também é usado:
+/// `self.total` no `format!` do método, provado, e `pedido.troco`, de um nome
+/// que a assinatura tipa, provado; a lista de uma macro com vários campos
+/// (`json!({ "total": pedido.total, "troco": pedido.troco })`) liga cada um
+/// deles, e não só o primeiro. O nome solto ao lado dele na lista (`resto`, o
+/// parâmetro) não é campo, e o que vem depois de um parêntese
+/// (`criar().troco`) é valor e não liga.
+#[test]
+fn a_rust_field_read_inside_the_arguments_of_a_macro_is_a_use_of_it() {
+    let main = "pub struct Pedido {\n    total: u32,\n    troco: u32,\n    resto: u32,\n}\n\n\
+        impl Pedido {\n    fn mostrar(&self) -> String {\n        format!(\"{} {}\", self.total, self.resto)\n    }\n}\n\n\
+        fn dizer(pedido: &Pedido, resto: u32) -> String {\n    format!(\"{} {} {}\", pedido.troco, resto, criar().troco)\n}\n\n\
+        fn resumir(pedido: &Pedido) -> Value {\n    \
+        json!({ \"total\": pedido.total, \"troco\": pedido.troco, \"resto\": pedido.resto })\n}\n";
+    let map = scanned("rust-macro", &[("Cargo.toml", RUST_MANIFEST), ("src/main.rs", main)]);
+    let sorted = |name: &str| {
+        let mut uses = owned_uses(&map, "src/main.rs", "Pedido", name);
+        uses.sort();
+        uses
+    };
+    assert_eq!(sorted("total"), ["src/main.rs:18:resumir", "src/main.rs:9:mostrar"]);
+    assert_eq!(sorted("resto"), ["src/main.rs:18:resumir", "src/main.rs:9:mostrar"], "a bare name beside it is no field");
+    assert_eq!(sorted("troco"), ["src/main.rs:14:dizer", "src/main.rs:18:resumir"], "a typed name, and not the value");
 }
 
 /// No Go, o campo lido pelo receptor do método (`pedido.Total`) é usado,

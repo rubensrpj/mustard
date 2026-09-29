@@ -61,6 +61,22 @@
 ; tipo; depois de um valor, nada.
 (field_expression field: (field_identifier) @member)
 
+; O mesmo campo escrito dentro dos argumentos de uma macro (`format!("{}",
+; self.total)`, `json!({ "onda": pedido.onda })`): a gramática não lê o
+; argumento como expressão e deixa os nomes e o ponto soltos na lista, um ao
+; lado do outro. O nome colado depois do ponto conta, e o que vem antes dele
+; se lê pelo texto, como na expressão: o objeto, o tipo do nome, ou um valor
+; (`criar().troco`), que não liga. A chamada de método (`pedido.dobro()`)
+; segue sendo chamada.
+(token_tree "." . (identifier) @member)
+
+; O campo escrito numa desestruturação (`Piece::Block { open, close, .. }`,
+; `let Pedido { total } = pedido;`): o tipo escrito antes das chaves é o dono
+; dos campos do mesmo padrão, e o motor os liga a ele como liga o campo
+; escrito depois de um objeto desse tipo. O caminho do tipo pode ser a
+; variante de um enum (`Piece::Block`); os dois últimos trechos valem.
+(struct_pattern type: (_) @member.of (field_pattern name: (_) @member))
+
 ; O módulo marcado como teste: o atributo `#[cfg(test)]` em qualquer ponto da
 ; fila de atributos colada ao `mod`, com outros no meio (`#[allow(dead_code)]`);
 ; um item que não é atributo entre a marca e o `mod` corta a fila. O que se
@@ -177,6 +193,16 @@
 (closure_parameters (identifier) @local)
 (closure_parameters (parameter pattern: (identifier) @local))
 (for_expression pattern: (identifier) @local)
+
+; O tipo que a assinatura ou a variável escreve para um nome local
+; (`pedido: &Pedido`, `let pedido: Pedido = ...;`): o campo lido depois do nome
+; (`pedido.total`) é do tipo, até o nome ser ligado de novo na declaração. Só
+; o tipo nomeado vale, com a referência por fora ou sem ela; o tipo
+; embrulhado (`Vec<Pedido>`, `Option<Pedido>`) é o de fora.
+(parameter pattern: (identifier) @local type: [(type_identifier) (generic_type) (scoped_type_identifier)] @local.type)
+(parameter pattern: (identifier) @local type: (reference_type type: [(type_identifier) (generic_type) (scoped_type_identifier)] @local.type))
+(let_declaration pattern: (identifier) @local type: [(type_identifier) (generic_type) (scoped_type_identifier)] @local.type)
+(let_declaration pattern: (identifier) @local type: (reference_type type: [(type_identifier) (generic_type) (scoped_type_identifier)] @local.type))
 
 ; Os textos fixos: o literal de texto escrito no código. O motor guarda o que
 ; tem duas palavras ou forma de caminho ou chave, com a marca (log, erro ou
