@@ -51,6 +51,6 @@ pub(super) fn verdict(
             None if matches!(before, Before::Name(_)) && path_only => None,
             None => Verdict::of(seen, false, max_same_name),
         },
-        Before::Value => None,
+        Before::Value | Before::Chain(_) => None,
     }
 }

@@ -21,10 +21,10 @@ use std::collections::{BTreeSet, HashMap};
 use tree_sitter::Node;
 
 use super::{
-    before_separator, code_before, is_name, member_separators, opens_chain, qualifier_separators, simple_type_name,
-    without_type_arguments, Spans,
+    before_separator, code_before, implicit_self, is_name, member_separators, opens_chain, qualifier_separators,
+    self_receivers, simple_type_name, without_type_arguments, Spans,
 };
-use crate::model::Decl;
+use crate::model::{Decl, BARE, RECEIVER};
 
 /// Uma ligação de um nome local, com o tipo que a assinatura escreve para ele.
 struct Binding {
@@ -73,13 +73,17 @@ impl Bindings {
     /// ligação mais recente antes dele, dentro da declaração em volta. `None`
     /// quando a ligação mais recente não escreve tipo, ou quando não há.
     fn type_of(&self, name: &str, line: usize, byte: usize) -> Option<&str> {
-        self.0
-            .get(name)?
-            .iter()
-            .filter(|b| b.byte < byte && b.line <= line && line <= b.last)
-            .max_by_key(|b| (b.byte, b.ty.is_some()))?
-            .ty
-            .as_deref()
+        self.binding_of(name, line, byte)?.ty.as_deref()
+    }
+
+    /// Se o nome `name` escrito na linha `line`, no byte `byte`, está ligado
+    /// na declaração em volta, com tipo ou sem ele.
+    fn is_bound(&self, name: &str, line: usize, byte: usize) -> bool {
+        self.binding_of(name, line, byte).is_some()
+    }
+
+    fn binding_of(&self, name: &str, line: usize, byte: usize) -> Option<&Binding> {
+        self.0.get(name)?.iter().filter(|b| b.byte < byte && b.line <= line && line <= b.last).max_by_key(|b| (b.byte, b.ty.is_some()))
     }
 }
 
@@ -111,6 +115,74 @@ impl Owners {
         let ty = self.bindings.type_of(&object, line, node.start_byte())?;
         Some(vec![ty.to_string()])
     }
+}
+
+impl Owners {
+    /// O qualificador que o arquivo escreve para o receptor da chamada cujo
+    /// nome está no nó `node`, quando o objeto que abre a cadeia tem tipo
+    /// escrito ou é o próprio objeto:
+    ///
+    /// - o objeto tipado (`pedido.total()` com `pedido: &Pedido`) é o
+    ///   [`RECEIVER`] com o tipo escrito: `?Pedido`;
+    /// - o nome sozinho, sem tipo e sem ligação, numa língua que chama o
+    ///   membro do próprio objeto pelo nome sozinho (`_logger.Log()`), é o
+    ///   [`RECEIVER`], a [`BARE`] e o nome: `?@_logger`;
+    /// - o objeto tipado ou o próprio objeto seguido de campos
+    ///   (`ctx.config.language()`, `this.repo.save()`) é o [`RECEIVER`], o
+    ///   tipo, ou o nome do próprio objeto, e os campos: `?Ctx.config`,
+    ///   `?this.repo`. O grafo lê o tipo de cada campo no mapa.
+    ///
+    /// `None` quando nada diz o tipo: o objeto sem tipo escrito, uma cadeia
+    /// que passa por chamada ou índice (`f().a.b()`), ou o próprio objeto sem
+    /// campo, que o grafo já liga pelos membros do tipo em volta.
+    pub(super) fn receiver_of(&self, node: Node, bytes: &[u8], comments: &Spans, lang: &str) -> Option<String> {
+        let chain = receiver_chain(node, bytes, comments, lang)?;
+        let (head, fields) = chain.split_first()?;
+        let line = node.start_position().row + 1;
+        let object = if self_receivers(lang).contains(&head.as_str()) {
+            if fields.is_empty() {
+                return None;
+            }
+            head.clone()
+        } else if let Some(ty) = self.bindings.type_of(head, line, node.start_byte()) {
+            ty.to_string()
+        } else if implicit_self(lang) && !self.bindings.is_bound(head, line, node.start_byte()) {
+            // O nome sozinho, que nenhuma ligação do arquivo explica: campo do
+            // tipo em volta, ou tipo.
+            format!("{BARE}{head}")
+        } else {
+            return None;
+        };
+        let mut receiver = format!("{RECEIVER}{object}");
+        for field in fields {
+            receiver.push('.');
+            receiver.push_str(field);
+        }
+        Some(receiver)
+    }
+}
+
+/// Os nomes escritos antes do nó, do objeto que abre a cadeia até o último
+/// campo (`ctx`, `config` em `ctx.config.language()`), quando a cadeia é só
+/// nomes ligados pelo separador que liga o valor ao membro: nas línguas que
+/// separam o caminho do membro (`::` e `.`), o separador de membro; nas
+/// outras, o de nome qualificado. `None` quando não há nada antes do nó ou
+/// quando a cadeia passa por outra coisa que nome (`f().a.b()`, `a[0].b()`).
+fn receiver_chain(node: Node, bytes: &[u8], comments: &Spans, lang: &str) -> Option<Vec<String>> {
+    let separators = if member_separators(lang).is_empty() { qualifier_separators(lang) } else { member_separators(lang) };
+    let mut chain: Vec<String> = Vec::new();
+    let mut at = node.start_byte();
+    loop {
+        let before = code_before(bytes, comments, at);
+        let Some(before) = separators.iter().find_map(|sep| before.strip_suffix(sep.as_bytes())) else { break };
+        let before = before_separator(bytes, comments, before.len());
+        let start = before.iter().rposition(|b| !(b.is_ascii_alphanumeric() || *b == b'_' || *b >= 0x80)).map_or(0, |i| i + 1);
+        let name = std::str::from_utf8(&before[start..]).ok().filter(|name| is_name(name))?;
+        chain.push(name.to_string());
+        at = start;
+    }
+    chain.reverse();
+    (!chain.is_empty()).then_some(chain)
 }
 
 /// Os nomes que o tipo escrito em `text` pode ter: os dois últimos trechos do

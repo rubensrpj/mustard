@@ -302,8 +302,12 @@ fn a_pass_that_does_not_read_the_file_again_keeps_its_texts_and_titles() {
     assert_eq!(file_history(&map.history, "src/outro.rs").unwrap().titles, ["segundo"]);
 }
 
+/// A busca sem filtro lista os mesmos arquivos, na mesma ordem, de antes de o
+/// índice guardar os comentários, os títulos de commit e o resto do texto de
+/// dentro das peças; a nota é a dos pesos de cada campo, e a palavra que só um
+/// desses campos novos tem não faz o arquivo aparecer.
 #[test]
-fn the_unfiltered_search_gives_the_same_list_as_before() {
+fn the_unfiltered_search_lists_the_same_files_as_before_with_the_weight_of_each_field() {
     let temp = project();
     scan(temp.path());
     let languages = Languages::of(&ProjectConfig::default());
@@ -313,11 +317,11 @@ fn the_unfiltered_search_gives_the_same_list_as_before() {
         found.into_iter().map(|f| (f.path, f.score)).collect()
     };
     let list = |pairs: &[(&str, u64)]| -> Vec<(String, u64)> { pairs.iter().map(|(p, s)| (p.to_string(), *s)).collect() };
-    assert_eq!(got("conferir pedido"), list(&[("src/pedido.rs", 2391), ("Loja/Estoque.cs", 698)]));
+    assert_eq!(got("conferir pedido"), list(&[("src/pedido.rs", 2465), ("Loja/Estoque.cs", 345)]));
     assert_eq!(got("armazém central"), list(&[]));
-    assert_eq!(got("cupom frete"), list(&[("web/carrinho.service.ts", 1281)]));
-    assert_eq!(got("reserva trinta minutos"), list(&[("Loja/Estoque.cs", 1643)]));
-    assert_eq!(got("regra7 regra8"), list(&[("web/carrinho.service.ts", 1255)]));
+    assert_eq!(got("cupom frete"), list(&[("web/carrinho.service.ts", 1930)]));
+    assert_eq!(got("reserva trinta minutos"), list(&[("Loja/Estoque.cs", 1859)]));
+    assert_eq!(got("regra7 regra8"), list(&[("web/carrinho.service.ts", 399)]));
 }
 
 /// Um arquivo com comentário em todo lugar: o do começo escrito na primeira

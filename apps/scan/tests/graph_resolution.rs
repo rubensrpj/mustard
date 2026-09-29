@@ -1854,3 +1854,208 @@ fn a_blank_name_brought_by_an_import_is_not_a_use() {
     );
     assert!(use_places_of(&v, "src/traco.rs", "Traco").is_empty(), "{v}");
 }
+
+/// O `Cargo.toml` de um crate solto de nome `name`.
+fn cargo_of(name: &str) -> String {
+    format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n")
+}
+
+/// Um crate `demo-core` com `traduzir` declarada em `texto.rs` e repassada
+/// pelo `lib.rs`, e um `app` que chama `demo_core::traduzir(` com o caminho do
+/// pacote, sem nenhum `use`, ao lado de um `traduzir` homônimo dele.
+fn package_call(app_main: &'static str) -> Vec<(&'static str, String)> {
+    vec![
+        ("Cargo.toml", "[workspace]\nmembers = [\"core\", \"app\"]\n".to_string()),
+        ("core/Cargo.toml", cargo_of("demo-core")),
+        ("core/src/lib.rs", "pub mod texto;\npub use texto::traduzir;\n".to_string()),
+        ("core/src/texto.rs", "pub fn traduzir(chave: &str) -> String {\n    chave.to_string()\n}\n".to_string()),
+        (
+            "app/Cargo.toml",
+            format!("{}\n[dependencies]\ndemo-core = {{ path = \"../core\" }}\n", cargo_of("demo-app")),
+        ),
+        ("app/src/main.rs", app_main.to_string()),
+        (
+            "app/src/local.rs",
+            "pub fn traduzir(chave: &str) -> String {\n    chave.to_uppercase()\n}\n".to_string(),
+        ),
+    ]
+}
+
+/// A chamada escrita com o nome do pacote antes do nome (`demo_core::traduzir(`)
+/// liga ao arquivo que declara o nome que o `lib.rs` repassa, e não ao
+/// `traduzir` homônimo do próprio crate da chamada.
+#[test]
+fn a_call_by_the_package_name_links_to_the_file_the_package_passes_the_name_on_from() {
+    let files = package_call(
+        "mod local;\n\nfn main() {\n    println!(\"{}\", demo_core::traduzir(\"a\"));\n}\n",
+    );
+    let v = scan_owned("call-package-reexport", &files);
+    assert_eq!(proven_uses_of(&v, "core/src/texto.rs", "traduzir"), vec!["app/src/main.rs:4:main".to_string()]);
+    assert!(use_places_of(&v, "app/src/local.rs", "traduzir").is_empty(), "{v}");
+}
+
+/// O nome do pacote nomeia o arquivo raiz dele e o que ele repassa: o
+/// `formatar` de um módulo que o `lib.rs` não repassa não é alcançado por
+/// `demo_core::formatar(`, e o `formatar` homônimo do crate da chamada
+/// também não.
+#[test]
+fn a_call_by_the_package_name_of_a_name_the_root_does_not_pass_on_links_to_nothing() {
+    let mut files = package_call("mod formato;\nmod local;\n\nfn main() {\n    demo_core::formatar(\"a\");\n}\n");
+    files.push(("core/src/formato.rs", "pub fn formatar(texto: &str) -> String {\n    texto.to_string()\n}\n".to_string()));
+    files.push(("app/src/formato.rs", "pub fn formatar(texto: &str) -> String {\n    texto.to_string()\n}\n".to_string()));
+    let v = scan_owned("call-package-not-passed-on", &files);
+    assert!(use_places_of(&v, "core/src/formato.rs", "formatar").is_empty(), "{v}");
+    assert!(use_places_of(&v, "app/src/formato.rs", "formatar").is_empty(), "{v}");
+}
+
+/// Dois tipos com o mesmo método e um deles no parâmetro: `pedido.cobrar()`
+/// com `pedido: &Pedido` é o `cobrar` do `Pedido`, provado, e o `cobrar` da
+/// `Nota` não é tocado.
+#[test]
+fn a_call_on_a_parameter_with_a_written_type_links_to_the_method_of_that_type() {
+    let v = scan_files(
+        "call-typed-parameter",
+        &[
+            ("Cargo.toml", &cargo_of("loja")),
+            ("src/main.rs", "mod app;\nmod nota;\nmod pedido;\n\nfn main() {}\n"),
+            (
+                "src/pedido.rs",
+                "pub struct Pedido {\n    pub total: u32,\n}\n\nimpl Pedido {\n    pub fn cobrar(&self) -> u32 {\n        self.total\n    }\n}\n",
+            ),
+            (
+                "src/nota.rs",
+                "pub struct Nota;\n\nimpl Nota {\n    pub fn cobrar(&self) -> u32 {\n        0\n    }\n}\n",
+            ),
+            (
+                "src/app.rs",
+                "use crate::nota::Nota;\nuse crate::pedido::Pedido;\n\npub fn fechar(pedido: &Pedido, _nota: &Nota) -> u32 {\n    pedido.cobrar()\n}\n",
+            ),
+        ],
+    );
+    assert_eq!(proven_uses_of(&v, "src/pedido.rs", "cobrar"), vec!["src/app.rs:5:fechar".to_string()]);
+    assert!(use_places_of(&v, "src/nota.rs", "cobrar").is_empty(), "{v}");
+}
+
+/// A cadeia de campos depois do parâmetro (`ctx.config.language()`) usa o
+/// tipo escrito de cada campo, lido do mapa: `Ctx.config` é `Config`, e a
+/// chamada é o `language` de `Config`, não o de `Outra`.
+#[test]
+fn a_call_on_a_field_of_a_typed_parameter_links_to_the_method_of_the_field_type() {
+    let v = scan_files(
+        "call-typed-field",
+        &[
+            ("Cargo.toml", &cargo_of("loja")),
+            ("src/main.rs", "mod app;\nmod config;\nmod contexto;\nmod outra;\n\nfn main() {}\n"),
+            (
+                "src/config.rs",
+                "pub struct Config {\n    pub lingua: u8,\n}\n\nimpl Config {\n    pub fn language(&self) -> u8 {\n        self.lingua\n    }\n}\n",
+            ),
+            (
+                "src/outra.rs",
+                "pub struct Outra;\n\nimpl Outra {\n    pub fn language(&self) -> u8 {\n        0\n    }\n}\n",
+            ),
+            ("src/contexto.rs", "use crate::config::Config;\n\npub struct Ctx {\n    pub config: Config,\n}\n"),
+            (
+                "src/app.rs",
+                "use crate::contexto::Ctx;\n\npub fn ler(ctx: &Ctx) -> u8 {\n    ctx.config.language()\n}\n",
+            ),
+        ],
+    );
+    assert_eq!(proven_uses_of(&v, "src/config.rs", "language"), vec!["src/app.rs:4:ler".to_string()]);
+    assert!(use_places_of(&v, "src/outra.rs", "language").is_empty(), "{v}");
+}
+
+/// Receptor de tipo que o projeto não tem (`Vec<u8>`) não vira ligação a um
+/// método do projeto de mesmo nome: `itens.len()` num arquivo que não vê o
+/// `len` da `Fila` não a toca, e o tipo de dois nomes iguais no projeto
+/// também não decide.
+#[test]
+fn a_call_on_a_receiver_whose_type_is_not_the_project_does_not_link_by_the_name() {
+    let v = scan_files(
+        "call-untyped-receiver",
+        &[
+            ("Cargo.toml", &cargo_of("loja")),
+            ("src/main.rs", "mod app;\nmod fila;\n\nfn main() {}\n"),
+            (
+                "src/fila.rs",
+                "pub struct Fila {\n    pub itens: Vec<u8>,\n}\n\nimpl Fila {\n    pub fn len(&self) -> usize {\n        0\n    }\n}\n",
+            ),
+            ("src/app.rs", "pub fn contar(itens: &Vec<u8>) -> usize {\n    itens.len()\n}\n"),
+        ],
+    );
+    assert!(use_places_of(&v, "src/fila.rs", "len").is_empty(), "{v}");
+}
+
+/// Dois tipos do mesmo namespace com o método `Salvar`, e um serviço que o
+/// chama pelo campo `_repo`, pelo parâmetro `repo` e pela classe estática
+/// `Util`; o segundo tipo (`ILog`) só existe para o nome não ser único.
+const CSHARP_TYPED_RECEIVERS: &[(&str, &str)] = &[
+    ("src/IRepo.cs", "namespace Loja;\n\npublic interface IRepo\n{\n    void Salvar(int id);\n}\n"),
+    ("src/ILog.cs", "namespace Loja;\n\npublic interface ILog\n{\n    void Salvar(int id);\n}\n"),
+    ("src/Util.cs", "namespace Loja;\n\npublic static class Util\n{\n    public static void Fazer()\n    {\n    }\n}\n"),
+    (
+        "src/Servico.cs",
+        "namespace Loja;\n\npublic class Servico\n{\n    private readonly IRepo _repo;\n\n    public void Gravar()\n    {\n        _repo.Salvar(1);\n        Util.Fazer();\n    }\n\n    public void Outro(IRepo repo)\n    {\n        repo.Salvar(2);\n    }\n}\n",
+    ),
+];
+
+/// O campo do tipo em volta, escrito pelo nome sozinho (`_repo.Salvar(1)`),
+/// liga ao método do tipo do campo, provado, e não ao `Salvar` do `ILog`.
+#[test]
+fn a_call_on_a_field_written_alone_links_to_the_method_of_the_field_type() {
+    let v = scan_files("csharp-field-receiver", CSHARP_TYPED_RECEIVERS);
+    assert!(
+        proven_uses_of(&v, "src/IRepo.cs", "Salvar").contains(&"src/Servico.cs:9:Gravar".to_string()),
+        "{v}"
+    );
+    assert!(!use_places_of(&v, "src/ILog.cs", "Salvar").contains(&"src/Servico.cs:9:Gravar".to_string()), "{v}");
+}
+
+/// O parâmetro com tipo escrito (`IRepo repo`) dá o tipo do receptor.
+#[test]
+fn a_call_on_a_parameter_with_a_written_type_links_to_the_method_of_that_type_in_csharp() {
+    let v = scan_files("csharp-parameter-receiver", CSHARP_TYPED_RECEIVERS);
+    assert!(
+        proven_uses_of(&v, "src/IRepo.cs", "Salvar").contains(&"src/Servico.cs:15:Outro".to_string()),
+        "{v}"
+    );
+    assert!(!use_places_of(&v, "src/ILog.cs", "Salvar").contains(&"src/Servico.cs:15:Outro".to_string()), "{v}");
+}
+
+/// O nome escrito sozinho que não é campo do tipo em volta (`Util.Fazer()`,
+/// a classe estática) segue pelo caminho de sempre, ao tipo que o nome diz.
+#[test]
+fn a_name_written_alone_that_is_not_a_field_still_names_the_type() {
+    let v = scan_files("csharp-static-receiver", CSHARP_TYPED_RECEIVERS);
+    assert_eq!(proven_uses_of(&v, "src/Util.cs", "Fazer"), vec!["src/Servico.cs:10:Gravar".to_string()], "{v}");
+}
+
+/// Dois tipos com o método `save`, e um serviço que o chama pelo campo
+/// declarado no parâmetro do construtor (`private readonly repo: Repo`) e pelo
+/// parâmetro de função com tipo (`repo: Repo`).
+const TYPESCRIPT_TYPED_RECEIVERS: &[(&str, &str)] = &[
+    ("src/repo.ts", "export class Repo {\n  save(id: number) {\n    return id;\n  }\n}\n"),
+    ("src/outro.ts", "export class Outro {\n  save(id: number) {\n    return id;\n  }\n}\n"),
+    (
+        "src/servico.ts",
+        "import { Repo } from './repo';\nimport { Outro } from './outro';\n\nexport class Servico {\n  constructor(private readonly repo: Repo, private outro: Outro) {}\n\n  gravar() {\n    return this.repo.save(1);\n  }\n}\n\nexport function solto(repo: Repo) {\n  return repo.save(2);\n}\n",
+    ),
+];
+
+/// O parâmetro do construtor com modificador é campo da classe: a chamada
+/// `this.repo.save(1)` liga ao `save` do `Repo`, provado, e não ao do `Outro`.
+#[test]
+fn a_call_on_a_constructor_property_links_to_the_method_of_its_type() {
+    let v = scan_files("typescript-property-receiver", TYPESCRIPT_TYPED_RECEIVERS);
+    assert!(proven_uses_of(&v, "src/repo.ts", "save").contains(&"src/servico.ts:8:gravar".to_string()), "{v}");
+    assert!(!use_places_of(&v, "src/outro.ts", "save").contains(&"src/servico.ts:8:gravar".to_string()), "{v}");
+}
+
+/// O parâmetro de função com tipo escrito (`repo: Repo`) dá o tipo do
+/// receptor.
+#[test]
+fn a_call_on_a_parameter_with_a_written_type_links_to_the_method_of_that_type_in_typescript() {
+    let v = scan_files("typescript-parameter-receiver", TYPESCRIPT_TYPED_RECEIVERS);
+    assert!(proven_uses_of(&v, "src/repo.ts", "save").contains(&"src/servico.ts:13:solto".to_string()), "{v}");
+    assert!(!use_places_of(&v, "src/outro.ts", "save").contains(&"src/servico.ts:13:solto".to_string()), "{v}");
+}

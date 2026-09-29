@@ -414,9 +414,9 @@ mod tests {
         }
         match run_in(&root, "grep -rlE 'calcular_frete|imposto' .", Some("nomes")) {
             Verdict::Inject { context } => {
-                assert!(context.starts_with("Parcial.") && context.contains(r#"Falta "imposto"."#), "{context}");
+                assert!(context.starts_with("Cravado.") && !context.contains("imposto"), "{context}");
             }
-            other => panic!("the partial search runs with a line, got {other:?}"),
+            other => panic!("the pinned search runs with a line, got {other:?}"),
         }
         let reason = refused(run_in(&root, "grep -rn calcular_frete src/", Some("nomes")), "the search that shows lines");
         assert!(reason.contains("src/frete.rs\n  2-6 calcular_frete (2)"), "{reason}");
@@ -456,10 +456,10 @@ mod tests {
     }
 
     /// A busca com palavra que o primeiro arquivo do mapa não traz em campo
-    /// forte é parcial e diz qual falta, no `grep` básico (`\|`), no estendido
-    /// e no `rg`; quem busca o comentário `fn calcular` também.
+    /// forte continua cravada e não pede nova busca, no `grep` básico (`\|`),
+    /// no estendido e no `rg`.
     #[test]
-    fn a_search_with_a_word_the_map_lacks_is_answered_as_partial() {
+    fn a_search_with_a_word_the_map_lacks_is_answered_as_pinned() {
         let (_dir, root) = word_search::fixture::repo("{}");
         for (n, command) in [
             r"grep -r 'calcular_frete\|imposto' .",
@@ -471,8 +471,8 @@ mod tests {
         .enumerate()
         {
             let reason = refused(run_in(&root, command, Some(&format!("p{n}"))), command);
-            assert!(reason.starts_with("Parcial."), "{command}: {reason}");
-            assert!(reason.contains(r#"Falta "imposto""#), "{command}: {reason}");
+            assert!(reason.starts_with("Cravado."), "{command}: {reason}");
+            assert!(!reason.contains("Falta"), "{command}: {reason}");
             assert!(reason.contains("src/frete.rs\n  2-6 calcular_frete (2, 3)"), "{command}: {reason}");
             assert!(reason.contains("docs/notas.md\n  1: O calcular_frete soma o imposto."), "{command}: {reason}");
         }

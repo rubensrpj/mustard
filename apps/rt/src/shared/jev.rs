@@ -1,10 +1,14 @@
 //! `jev` — o filtro da busca por assunto do mapa pelo Jev, um serviço pago
-//! de fora que não escreve texto: lê um estado e uma pergunta por candidato e
-//! devolve a chance do sim.
+//! de fora que não escreve texto: lê um estado e uma pergunta de escolha e
+//! devolve a chance de cada opção.
 //!
-//! Implementa a tomada [`MapFilter`] do núcleo. Os candidatos vão em grupos de
-//! [`GROUP_SIZE`], na ordem do banco, todos ao mesmo tempo; cada grupo é um
-//! pedido. As notas voltam para o [`cut`] do núcleo, o mesmo de toda
+//! Implementa a tomada [`MapFilter`] do núcleo. Todos os candidatos vão num
+//! pedido só, na ordem do banco, como uma pergunta de escolha: o estado traz
+//! a frase, as palavras e um candidato por linha, e as opções são os ids dos
+//! candidatos mais `none`, "nenhum destes". Só um pedido acima de
+//! [`MAX_REQUEST_TOKENS`] se divide, no menor número de pedidos que mantém a
+//! ordem do banco. A chance de cada id, a de `none` e a confiança da escolha
+//! voltam para o veredito e o corte do núcleo ([`judged`]), os mesmos de toda
 //! implementação.
 //!
 //! De cada candidato vão só nomes, caminho, assinatura, documentação,
@@ -24,15 +28,18 @@
 //! resposta do serviço.
 
 use std::fmt;
-use std::io::ErrorKind;
+use std::io::{self, ErrorKind};
+use std::ops::Range;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
 use mustard_core::domain::map_filter::{
-    FilterCandidate, FilterError, FilterRequest, FilterUsage, Filtered, MapFilter, Scored, cut,
+    FilterCandidate, FilterError, FilterRequest, FilterUsage, Filtered, MapFilter, Scored, Verdict, judged, verdict,
 };
 use mustard_core::domain::normalize::split_identifier;
 use mustard_core::ProjectConfig;
+use serde::Serialize;
+use serde_json::ser::Formatter;
 use serde_json::{Map, Value, json};
 
 use crate::commands::spec_events::pages::secret::without_secrets;
@@ -55,11 +62,8 @@ pub const PRICE_PER_MILLION_INPUT_TOKENS: f64 = 0.042;
 /// A variável de ambiente da chave; vence o `mustard.json`.
 pub const KEY_ENV: &str = "TYPESAFE_API_KEY";
 
-/// Candidatos por pedido. Com os 100 candidatos do banco, são 2 pedidos.
-pub const GROUP_SIZE: usize = 50;
-
-/// O maior pedido que o serviço aceita, em tokens. Com 50 candidatos, um
-/// pedido fica perto de 10 mil.
+/// O maior pedido que o serviço aceita, em tokens. Os 100 candidatos do banco
+/// cabem num pedido só, de uns 20 mil.
 const MAX_REQUEST_TOKENS: u64 = 64_000;
 
 /// Caracteres por token, para estimar o pedido antes de mandar, como o
@@ -74,11 +78,11 @@ const CHARS_PER_TOKEN: f64 = 3.2;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Quanto a busca espera o filtro inteiro, repetições e esperas inclusive;
-/// passado o prazo, a resposta vem do banco. O serviço saudável responde um
-/// pedido de 50 candidatos em menos de 1,1 s (o pior de 25 mil pedidos do
-/// laboratório). Num período lento do serviço, 100 buscas esperaram de 0,4
-/// a 30 s, sem degrau no meio: com 10 s, 9 delas iriam ao banco, e nenhuma
-/// esperaria mais que isso.
+/// passado o prazo, a resposta vem do banco. O serviço saudável responde a
+/// escolha entre 100 candidatos num pedido só em 0,5 s em média e em no
+/// máximo 1,0 s (as 120 buscas do laboratório). Num período lento do
+/// serviço, 100 buscas esperaram de 0,4 a 30 s, sem degrau no meio: com 10 s,
+/// 9 delas iriam ao banco, e nenhuma esperaria mais que isso.
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Quantas vezes se repete um pedido recusado por excesso (429, 529) ou por
@@ -99,8 +103,8 @@ const MAX_RETRY_WAIT: Duration = Duration::from_secs(5);
 // Cada campo que `candidate_fields` põe no candidato, pela chave, entre
 // crases, na ordem dele: o teste confere os dois lados.
 const ABOUT: &str = "A coding agent is searching a codebase. `request` is what it asked for, in Portuguese or English: either a \
-description of what some code does, or the name, or part of the name, of an identifier. Each question shows \
-one candidate declaration with what the code index knows about it: `kind`, `name` (its name split into words), \
+description of what some code does, or the name, or part of the name, of an identifier. The state lists \
+candidate declarations, one per line with what the code index knows about it: `kind`, `name` (its name split into words), \
 `path` (its file path), `signature`, `documentation`, `last commits of the file` (the titles of the last commits \
 that changed its file), `owner` (the names of the type or block that holds it), `comments in the body` (the \
 comments inside its code) and `members` (the members it declares, when it is a type). The body of the code is \
@@ -112,7 +116,22 @@ or its name is the identifier the request names.";
 const ANSWER_NO_WHEN: &str = "The candidate is only on a related topic, only uses or calls the thing the request describes, or only \
 shares some words with the request.";
 
-const QUESTION: &str = "Is `candidate` the code that the `request` in the state is looking for?";
+/// A pergunta da escolha. A última frase é a saída da opção `none`.
+const QUESTION: &str = "Which one of the candidates is the code that the `request` is looking for? Answer with the id of the single \
+candidate that best is that code. If none of them is that code, answer `none`.";
+
+/// O texto da opção "nenhum destes".
+const NONE_CRITERION: &str = "None of the candidates is the code the request asks for: each one is only on a related topic, only uses or \
+calls it, is only used by it, or only shares some words with the request.";
+
+/// A chave da opção "nenhum destes" nos critérios e nas chances.
+const NONE_KEY: &str = "none";
+
+/// A chave da pergunta única do pedido.
+const CHOICE_KEY: &str = "q";
+
+/// A chave do estado que traz os candidatos.
+const CANDIDATES_KEY: &str = "candidates (one per line: id| fields as JSON)";
 
 const GUESSED_WORDS: &str = "guessed words (the agent's guesses, they may not exist in the code)";
 
@@ -268,44 +287,35 @@ impl JevFilter {
 impl MapFilter for JevFilter {
     fn filter(&self, request: &FilterRequest) -> Result<Filtered, FilterError> {
         let started = Instant::now();
-        // Um prazo só para todos os grupos: eles correm juntos, e o agente
-        // espera o mais lento.
+        // Um prazo só para todos os pedidos: o agente espera a busca inteira.
         let deadline = started + self.timeouts.response;
-        let state = state(request);
-        let groups: Vec<&[FilterCandidate]> = request.candidates.chunks(GROUP_SIZE).collect();
-        let mut payloads = Vec::with_capacity(groups.len());
-        for group in &groups {
-            let payload = serde_json::to_string(&body(&state, group))
-                .map_err(|_| FilterError::Unreadable("the request did not serialize".to_string()))?;
-            let estimated_tokens = estimated_tokens(&payload);
-            if estimated_tokens > MAX_REQUEST_TOKENS {
-                return Err(FilterError::TooLarge { estimated_tokens });
-            }
-            payloads.push(payload);
+        if request.candidates.is_empty() {
+            return Ok(Filtered {
+                verdict: Verdict::NotFound,
+                kept: Vec::new(),
+                usage: FilterUsage { model: String::new(), ..FilterUsage::default() },
+            });
         }
-        let answers: Vec<Result<Value, FilterError>> = std::thread::scope(|scope| {
-            let running: Vec<_> =
-                payloads.iter().map(|payload| scope.spawn(move || self.send(payload, deadline))).collect();
-            running
-                .into_iter()
-                .map(|thread| {
-                    thread.join().unwrap_or_else(|_| Err(FilterError::Network("the request thread stopped".to_string())))
-                })
-                .collect()
-        });
-        let mut scores = Vec::with_capacity(request.candidates.len());
+        let head = Head::of(request);
+        let lines: Vec<String> = request.candidates.iter().enumerate().map(|(at, c)| candidate_line(at, c)).collect();
+        let mut reads = Vec::new();
         let mut input_tokens = 0;
         let mut models: Vec<String> = Vec::new();
-        for (group, answer) in groups.iter().zip(answers) {
-            let doc = answer?;
-            input_tokens += read_scores(&doc, group, &mut scores)?;
+        for (range, payload) in batches(&head, &lines)? {
+            let doc = self.send(&payload, deadline)?;
+            let read = read_choice(&doc, range.start, &request.candidates[range])?;
+            input_tokens += read.input_tokens;
+            reads.push(read);
             let model = doc.get("model").and_then(Value::as_str).map(str::trim).unwrap_or_default();
             if !model.is_empty() && !models.iter().any(|seen| seen == model) {
                 models.push(model.to_string());
             }
         }
+        let Merged { scores, none, confidence } = merge(reads);
+        let (verdict, kept) = judged(&scores, none, confidence, request.share);
         Ok(Filtered {
-            kept: cut(&scores, request.minimum),
+            verdict,
+            kept,
             usage: FilterUsage {
                 input_tokens,
                 millis: started.elapsed().as_millis() as u64,
@@ -323,23 +333,82 @@ fn cost_micro_usd(input_tokens: u64) -> u64 {
     (input_tokens as f64 * PRICE_PER_MILLION_INPUT_TOKENS).round() as u64
 }
 
-/// As notas de um grupo, na ordem do banco, somadas a `scores`; devolve os
-/// tokens de entrada que o pedido custou. Falta de `answers` ou de uma nota é
-/// resposta ilegível.
-fn read_scores(doc: &Value, group: &[FilterCandidate], scores: &mut Vec<Scored>) -> Result<u64, FilterError> {
-    let answers = doc
+/// O que a pergunta de escolha de um pedido respondeu.
+#[derive(Debug, Clone, PartialEq)]
+struct Choice {
+    /// A chance de cada candidato do pedido, na ordem do banco.
+    scores: Vec<Scored>,
+    /// A chance de "nenhum destes".
+    none: f64,
+    /// A confiança do serviço na escolha.
+    confidence: f64,
+    /// Os tokens de entrada que o pedido custou.
+    input_tokens: u64,
+}
+
+/// A escolha lida da resposta de um pedido: a chance de cada id, a de `none`
+/// e a confiança. `first` é a posição do primeiro candidato do pedido na
+/// lista inteira, de onde vem o id de cada um. Falta de `answers`, de uma
+/// chance ou da confiança é resposta ilegível.
+fn read_choice(doc: &Value, first: usize, group: &[FilterCandidate]) -> Result<Choice, FilterError> {
+    let answer = doc
         .get("answers")
         .and_then(Value::as_object)
-        .ok_or_else(|| FilterError::Unreadable("no answers".to_string()))?;
-    for (index, candidate) in group.iter().enumerate() {
-        let score = answers
-            .get(&question_id(index))
-            .and_then(|answer| answer.get("noul"))
+        .ok_or_else(|| FilterError::Unreadable("no answers".to_string()))?
+        .get(CHOICE_KEY)
+        .ok_or_else(|| FilterError::Unreadable("no answer to the choice".to_string()))?;
+    let chances = answer
+        .get("probabilities")
+        .and_then(Value::as_object)
+        .ok_or_else(|| FilterError::Unreadable("no chances".to_string()))?;
+    let chance = |key: &str| {
+        chances
+            .get(key)
             .and_then(Value::as_f64)
-            .ok_or_else(|| FilterError::Unreadable(format!("no score for {}", question_id(index))))?;
-        scores.push(Scored { id: candidate.id, score });
+            .ok_or_else(|| FilterError::Unreadable(format!("no chance for {key}")))
+    };
+    let mut scores = Vec::with_capacity(group.len());
+    for (at, candidate) in group.iter().enumerate() {
+        scores.push(Scored { id: candidate.id, score: chance(&candidate_id(first + at))? });
     }
-    Ok(doc.pointer("/usage/input_tokens").and_then(Value::as_u64).unwrap_or(0))
+    let confidence = answer
+        .get("confidence")
+        .and_then(Value::as_f64)
+        .ok_or_else(|| FilterError::Unreadable("no confidence".to_string()))?;
+    Ok(Choice {
+        scores,
+        none: chance(NONE_KEY)?,
+        confidence,
+        input_tokens: doc.pointer("/usage/input_tokens").and_then(Value::as_u64).unwrap_or(0),
+    })
+}
+
+/// O que sobra de todos os pedidos juntos.
+#[derive(Debug, Clone, PartialEq)]
+struct Merged {
+    scores: Vec<Scored>,
+    none: f64,
+    confidence: f64,
+}
+
+/// As escolhas de todos os pedidos numa só. Com um pedido, é a escolha dele.
+/// Com mais, o pedido que diz "nenhum destes" não tem o certo: as chances dele
+/// saem, e vale o que os outros disseram, com a menor chance de "nenhum
+/// destes" e a menor confiança entre eles. Se todos dizem "nenhum destes", a
+/// menor chance de "nenhum destes" fica.
+fn merge(reads: Vec<Choice>) -> Merged {
+    let found = |read: &Choice| verdict(read.none, read.confidence) != Verdict::NotFound;
+    if !reads.iter().any(found) {
+        let none = reads.iter().map(|read| read.none).fold(1.0, f64::min);
+        return Merged { scores: Vec::new(), none, confidence: 0.0 };
+    }
+    let mut merged = Merged { scores: Vec::new(), none: 1.0, confidence: 1.0 };
+    for read in reads.into_iter().filter(found) {
+        merged.none = merged.none.min(read.none);
+        merged.confidence = merged.confidence.min(read.confidence);
+        merged.scores.extend(read.scores);
+    }
+    merged
 }
 
 /// O erro de transporte, sem nada do pedido: o tempo esgotado à parte, o
@@ -376,39 +445,129 @@ fn estimated_tokens(payload: &str) -> u64 {
 // O pedido
 // ---------------------------------------------------------------------------
 
-/// O estado, igual em todos os grupos: a frase (ou, sem ela, as palavras), as
-/// palavras como palpites, o que é a busca e quando responder sim ou não.
-fn state(request: &FilterRequest) -> Value {
-    let asked = if request.phrase.trim().is_empty() { request.words.join(" ") } else { request.phrase.clone() };
-    let words: Vec<String> = request.words.iter().map(|word| without_secrets(word)).collect();
-    let mut state = Map::new();
-    state.insert("request".to_string(), Value::String(without_secrets(&asked)));
-    state.insert(GUESSED_WORDS.to_string(), json!(words));
-    state.insert("about".to_string(), Value::String(ABOUT.to_string()));
-    state.insert("answer yes when".to_string(), Value::String(ANSWER_YES_WHEN.to_string()));
-    state.insert("answer no when".to_string(), Value::String(ANSWER_NO_WHEN.to_string()));
-    Value::Object(state)
+/// O que é igual em todos os pedidos de uma busca: a frase (ou, sem ela, as
+/// palavras), as palavras como palpites e a instrução da escolha. Nada aqui
+/// leva segredo.
+struct Head {
+    request: String,
+    words: Vec<String>,
+    instructions: String,
 }
 
-/// O corpo de um pedido: o estado, o modelo e uma pergunta por candidato, de
-/// `c00` em diante.
-fn body(state: &Value, group: &[FilterCandidate]) -> Value {
-    let mut questions = Map::new();
-    for (index, candidate) in group.iter().enumerate() {
-        questions.insert(
-            question_id(index),
-            json!({"type": "noul", "instructions": {"question": QUESTION, "candidate": candidate_fields(candidate)}}),
-        );
+impl Head {
+    fn of(request: &FilterRequest) -> Self {
+        let asked = if request.phrase.trim().is_empty() { request.words.join(" ") } else { request.phrase.clone() };
+        Self {
+            request: without_secrets(&asked),
+            words: request.words.iter().map(|word| without_secrets(word)).collect(),
+            instructions: format!(
+                "{ABOUT}\n\nThe right candidate: {ANSWER_YES_WHEN}\nA wrong candidate: {ANSWER_NO_WHEN}\n\n{QUESTION}"
+            ),
+        }
     }
+}
+
+/// O corpo de um pedido com uma pergunta de escolha: o estado (a frase, as
+/// palavras e os candidatos, um por linha), o modelo e a pergunta, cujas
+/// opções são os ids dos candidatos de `lines`, a partir da posição `first`, e
+/// `none`.
+fn body(head: &Head, first: usize, lines: &[String]) -> Value {
+    let mut state = Map::new();
+    state.insert("request".to_string(), Value::String(head.request.clone()));
+    state.insert(GUESSED_WORDS.to_string(), json!(head.words));
+    state.insert(CANDIDATES_KEY.to_string(), Value::String(lines.join("\n")));
+    let mut criteria = Map::new();
+    for at in 0..lines.len() {
+        criteria.insert(candidate_id(first + at), Value::Null);
+    }
+    criteria.insert(NONE_KEY.to_string(), Value::String(NONE_CRITERION.to_string()));
+    let mut question = Map::new();
+    question.insert("type".to_string(), json!("choice"));
+    question.insert("instructions".to_string(), Value::String(head.instructions.clone()));
+    question.insert("criteria".to_string(), Value::Object(criteria));
     let mut body = Map::new();
-    body.insert("state".to_string(), state.clone());
+    body.insert("state".to_string(), Value::Object(state));
     body.insert("model".to_string(), Value::String(JEV_MODEL.to_string()));
-    body.insert("questions".to_string(), Value::Object(questions));
+    body.insert("questions".to_string(), json!({ CHOICE_KEY: question }));
     Value::Object(body)
 }
 
-fn question_id(index: usize) -> String {
-    format!("c{index:02}")
+/// O id de um candidato no pedido: `c000` em diante, pela posição dele na
+/// lista inteira.
+fn candidate_id(at: usize) -> String {
+    format!("c{at:03}")
+}
+
+/// A linha de um candidato no estado: `id| {campos em JSON}`.
+fn candidate_line(at: usize, candidate: &FilterCandidate) -> String {
+    format!("{}| {}", candidate_id(at), spaced_json(&candidate_fields(candidate)))
+}
+
+/// O JSON com um espaço depois de cada vírgula e de cada dois-pontos, como o
+/// laboratório mandava os candidatos. O texto acentuado sai como está.
+fn spaced_json(value: &Value) -> String {
+    let mut out = Vec::new();
+    let mut serializer = serde_json::Serializer::with_formatter(&mut out, Spaced);
+    if value.serialize(&mut serializer).is_err() {
+        return String::new();
+    }
+    String::from_utf8(out).unwrap_or_default()
+}
+
+/// O formato de [`spaced_json`].
+struct Spaced;
+
+impl Formatter for Spaced {
+    fn begin_array_value<W: ?Sized + io::Write>(&mut self, writer: &mut W, first: bool) -> io::Result<()> {
+        if first { Ok(()) } else { writer.write_all(b", ") }
+    }
+
+    fn begin_object_key<W: ?Sized + io::Write>(&mut self, writer: &mut W, first: bool) -> io::Result<()> {
+        if first { Ok(()) } else { writer.write_all(b", ") }
+    }
+
+    fn begin_object_value<W: ?Sized + io::Write>(&mut self, writer: &mut W) -> io::Result<()> {
+        writer.write_all(b": ")
+    }
+}
+
+/// O texto de um pedido com os candidatos de `lines` a partir de `first`.
+fn payload(head: &Head, first: usize, lines: &[String]) -> Result<String, FilterError> {
+    serde_json::to_string(&body(head, first, lines))
+        .map_err(|_| FilterError::Unreadable("the request did not serialize".to_string()))
+}
+
+/// Os pedidos da busca, cada um com os candidatos que leva (a faixa da lista
+/// inteira) e o texto. Um pedido só, quando cabe em [`MAX_REQUEST_TOKENS`];
+/// senão, o menor número de pedidos que mantém a ordem do banco, cada um
+/// levando quantos candidatos couberem. Um candidato que sozinho passa do
+/// limite é [`FilterError::TooLarge`], e nada sai.
+fn batches(head: &Head, lines: &[String]) -> Result<Vec<(Range<usize>, String)>, FilterError> {
+    let whole = payload(head, 0, lines)?;
+    if estimated_tokens(&whole) <= MAX_REQUEST_TOKENS {
+        return Ok(vec![(0..lines.len(), whole)]);
+    }
+    let mut out = Vec::new();
+    let mut start = 0;
+    while start < lines.len() {
+        let mut end = start + 1;
+        let mut text = payload(head, start, &lines[start..end])?;
+        let estimated = estimated_tokens(&text);
+        if estimated > MAX_REQUEST_TOKENS {
+            return Err(FilterError::TooLarge { estimated_tokens: estimated });
+        }
+        while end < lines.len() {
+            let more = payload(head, start, &lines[start..=end])?;
+            if estimated_tokens(&more) > MAX_REQUEST_TOKENS {
+                break;
+            }
+            text = more;
+            end += 1;
+        }
+        out.push((start..end, text));
+        start = end;
+    }
+    Ok(out)
 }
 
 /// O que vai de um candidato, na ordem medida, sem os campos vazios. Cada
@@ -491,9 +650,9 @@ fn owner_names(owner: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mustard_core::domain::map_filter::CUT_SHARE;
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::{TcpListener, TcpStream};
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
     const SECRET: &str = "sk-test-0123456789abcdef";
@@ -534,37 +693,27 @@ mod tests {
 
     /// Um serviço HTTP em 127.0.0.1, numa thread, que grava cada pedido e
     /// devolve o que `respond` monta para ele (o número do pedido, a partir de
-    /// 0, e o corpo). Cada conexão tem a sua thread; `gather` segura as
-    /// respostas até haver tantas conexões abertas ao mesmo tempo (ou 3 s),
-    /// e `peak` guarda o maior número de conexões abertas juntas.
+    /// 0, e o corpo). Cada conexão tem a sua thread.
     struct FakeService {
         url: String,
         received: Arc<Mutex<Vec<Received>>>,
-        peak: Arc<AtomicUsize>,
     }
 
     impl FakeService {
-        fn start(gather: usize, respond: impl Fn(usize, &Value) -> Reply + Send + Sync + 'static) -> Self {
+        fn start(respond: impl Fn(usize, &Value) -> Reply + Send + Sync + 'static) -> Self {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             let url = format!("http://{}/v1/systemone", listener.local_addr().unwrap());
             let received = Arc::new(Mutex::new(Vec::new()));
-            let peak = Arc::new(AtomicUsize::new(0));
-            let open = Arc::new(AtomicUsize::new(0));
             let respond: Arc<Responder> = Arc::new(respond);
-            let (log, top) = (Arc::clone(&received), Arc::clone(&peak));
+            let log = Arc::clone(&received);
             std::thread::spawn(move || {
                 for stream in listener.incoming() {
                     let Ok(stream) = stream else { continue };
-                    let now = open.fetch_add(1, Ordering::SeqCst) + 1;
-                    top.fetch_max(now, Ordering::SeqCst);
-                    let (log, open, respond) = (Arc::clone(&log), Arc::clone(&open), Arc::clone(&respond));
-                    std::thread::spawn(move || {
-                        serve_one(stream, gather, &open, &log, respond.as_ref());
-                        open.fetch_sub(1, Ordering::SeqCst);
-                    });
+                    let (log, respond) = (Arc::clone(&log), Arc::clone(&respond));
+                    std::thread::spawn(move || serve_one(stream, &log, respond.as_ref()));
                 }
             });
-            Self { url, received, peak }
+            Self { url, received }
         }
 
         fn received(&self) -> Vec<Received> {
@@ -576,23 +725,13 @@ mod tests {
         }
     }
 
-    fn serve_one(
-        mut stream: TcpStream,
-        gather: usize,
-        open: &AtomicUsize,
-        log: &Mutex<Vec<Received>>,
-        respond: &Responder,
-    ) {
+    fn serve_one(mut stream: TcpStream, log: &Mutex<Vec<Received>>, respond: &Responder) {
         let Some(received) = read_request(&stream) else { return };
         let number = {
             let mut log = log.lock().unwrap();
             log.push(received.clone());
             log.len() - 1
         };
-        let deadline = Instant::now() + Duration::from_secs(3);
-        while open.load(Ordering::SeqCst) < gather && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(5));
-        }
         let reply = respond(number, &received.body);
         let mut head = format!("HTTP/1.1 {} X\r\nContent-Type: application/json\r\nConnection: close\r\n", reply.status);
         for (name, value) in &reply.headers {
@@ -630,15 +769,37 @@ mod tests {
         Some(Received { authorization, body: serde_json::from_slice(&body).ok()? })
     }
 
-    /// A resposta do serviço a um pedido: a nota de cada pergunta pelo nome
-    /// do candidato, e 1000 tokens de entrada.
-    fn answer_by_name(body: &Value, score_of: impl Fn(&str) -> f64) -> Value {
-        let mut answers = Map::new();
-        for (id, question) in body["questions"].as_object().unwrap() {
-            let name = question["instructions"]["candidate"]["name"].as_str().unwrap_or_default();
-            answers.insert(id.clone(), json!({"type": "noul", "noul": score_of(name)}));
+    /// Os candidatos do estado de um pedido, na ordem: o id e os campos.
+    fn listed(body: &Value) -> Vec<(String, Value)> {
+        body["state"][CANDIDATES_KEY]
+            .as_str()
+            .unwrap()
+            .lines()
+            .map(|line| {
+                let (id, fields) = line.split_once("| ").unwrap();
+                (id.to_string(), serde_json::from_str(fields).unwrap())
+            })
+            .collect()
+    }
+
+    /// A resposta do serviço à escolha de um pedido: a chance de cada
+    /// candidato pelo nome dele, a de `none` e a confiança, e 1000 tokens de
+    /// entrada.
+    fn choice_by_name(body: &Value, chance_of: impl Fn(&str) -> f64, none: f64, confidence: f64) -> Value {
+        let mut chances = Map::new();
+        for (id, fields) in listed(body) {
+            chances.insert(id, json!(chance_of(fields["name"].as_str().unwrap_or_default())));
         }
-        json!({"answers": answers, "usage": {"input_tokens": 1000, "output_tokens": 0}})
+        chances.insert("none".to_string(), json!(none));
+        json!({
+            "answers": {"q": {"type": "choice", "choice": "c000", "confidence": confidence, "probabilities": chances}},
+            "usage": {"input_tokens": 1000, "output_tokens": 0},
+        })
+    }
+
+    /// A escolha sem chance para ninguém e o serviço seguro: só `none` baixo.
+    fn sure_answer(body: &Value) -> Value {
+        choice_by_name(body, |_| 0.5, 0.01, 0.9)
     }
 
     fn candidate(id: i64) -> FilterCandidate {
@@ -657,7 +818,7 @@ mod tests {
         FilterRequest {
             words: vec!["cand".to_string()],
             phrase: "the candidate that answers".to_string(),
-            minimum: 0,
+            share: CUT_SHARE,
             candidates,
         }
     }
@@ -693,19 +854,20 @@ mod tests {
         let asked = FilterRequest {
             words: texts(&input["words"]),
             phrase: text(&input["phrase"]),
-            minimum: 0,
+            share: CUT_SHARE,
             candidates,
         };
-        let service = FakeService::start(1, |_, body| Reply::json(200, &answer_by_name(body, |_| 0.5)));
+        let service = FakeService::start(|_, body| Reply::json(200, &sure_answer(body)));
         service.filter().filter(&asked).unwrap();
 
         let sent = service.received();
         assert_eq!(sent.len(), 1);
         // O arquivo guarda o pedido como o laboratório o mandou. As diferenças
-        // planejadas são só duas: o `about`, que cita cada campo que vai no
-        // candidato, e a versão fixa do modelo.
+        // planejadas são só duas: o texto do `about`, que cita cada campo que
+        // vai no candidato, e a versão fixa do modelo.
         let mut expected = example["body"].clone();
-        expected["state"]["about"] = json!(ABOUT);
+        let instructions = expected["questions"]["q"]["instructions"].as_str().unwrap().replace("@ABOUT@", ABOUT);
+        expected["questions"]["q"]["instructions"] = json!(instructions);
         expected["model"] = json!(JEV_MODEL);
         // Com a ordem dos campos: o texto inteiro é igual ao do laboratório.
         assert_eq!(sent[0].body.to_string(), expected.to_string());
@@ -763,7 +925,7 @@ mod tests {
         let mut asked = request(vec![leaky]);
         asked.words.push(key.clone());
         asked.phrase = format!("a senha do banco: {secret}");
-        let service = FakeService::start(1, |_, body| Reply::json(200, &answer_by_name(body, |_| 0.5)));
+        let service = FakeService::start(|_, body| Reply::json(200, &sure_answer(body)));
         service.filter().filter(&asked).unwrap();
 
         let sent = service.received()[0].body.to_string();
@@ -775,21 +937,21 @@ mod tests {
 
     #[test]
     fn the_usage_keeps_the_model_that_answered_and_the_cost_of_the_tokens() {
-        let service = FakeService::start(2, |_, body| {
-            let mut answer = answer_by_name(body, |_| 0.5);
+        let service = FakeService::start(|_, body| {
+            let mut answer = sure_answer(body);
             answer["model"] = json!("jev-1.13.0");
             answer["usage"]["input_tokens"] = json!(10_500);
             Reply::json(200, &answer)
         });
         let got = service.filter().filter(&request((1..=100).map(candidate).collect())).unwrap();
-        assert_eq!(service.received().len(), 2);
+        assert_eq!(service.received().len(), 1);
         assert!(service.received().iter().all(|sent| sent.body["model"] == json!("jev-1.13.0")));
-        assert_eq!(got.usage.input_tokens, 21_000);
+        assert_eq!(got.usage.input_tokens, 10_500);
         assert_eq!(got.usage.model, "jev-1.13.0");
-        // 21 mil tokens a US$ 0,042 o milhão: US$ 0,000882.
-        assert_eq!(got.usage.cost_micro_usd, 882);
+        // 10.500 tokens a US$ 0,042 o milhão: US$ 0,000441.
+        assert_eq!(got.usage.cost_micro_usd, 441);
 
-        let silent = FakeService::start(1, |_, body| Reply::json(200, &answer_by_name(body, |_| 0.5)));
+        let silent = FakeService::start(|_, body| Reply::json(200, &sure_answer(body)));
         let got = silent.filter().filter(&request(vec![candidate(1)])).unwrap();
         assert_eq!(got.usage.model, "", "an answer that does not say the model leaves it empty");
     }
@@ -800,10 +962,10 @@ mod tests {
         long.body_comments = "abcdefghi ".repeat(70);
         assert_eq!(long.body_comments.chars().count(), 700);
         long.members = (1..=20).map(|n| format!("member{n}()")).collect();
-        let service = FakeService::start(1, |_, body| Reply::json(200, &answer_by_name(body, |_| 0.5)));
+        let service = FakeService::start(|_, body| Reply::json(200, &sure_answer(body)));
         service.filter().filter(&request(vec![long])).unwrap();
 
-        let sent = &service.received()[0].body["questions"]["c00"]["instructions"]["candidate"];
+        let sent = &listed(&service.received()[0].body)[0].1;
         let comments = sent["comments in the body"].as_str().unwrap();
         assert_eq!(comments, format!("{} …", vec!["abcdefghi"; 60].join(" ")));
         assert!(comments.chars().count() <= BODY_COMMENTS_CHARS + 2);
@@ -851,56 +1013,184 @@ mod tests {
         let mut asked = request(vec![candidate(1)]);
         asked.phrase = "  ".to_string();
         asked.words = vec!["split".to_string(), "identifier".to_string()];
-        assert_eq!(state(&asked)["request"], "split identifier");
+        assert_eq!(Head::of(&asked).request, "split identifier");
     }
 
-    // -- os grupos e a nota ----------------------------------------------------
+    // -- a escolha e a nota ------------------------------------------------------
 
     #[test]
-    fn two_hundred_candidates_go_as_four_requests_at_the_same_time() {
-        let service = FakeService::start(4, |_, body| {
-            Reply::json(
-                200,
-                &answer_by_name(body, |name| match name {
-                    "cand7" => 0.9,
-                    "cand180" => 0.8,
-                    "cand120" => 0.55,
-                    _ => 0.1,
-                }),
-            )
+    fn a_hundred_candidates_go_in_one_choice_with_none_and_no_yes_or_no_question() {
+        let service = FakeService::start(|_, body| {
+            Reply::json(200, &choice_by_name(body, |name| if name == "cand7" { 0.9 } else { 0.001 }, 0.05, 0.9))
         });
-        let got = service.filter().filter(&request((1..=200).map(candidate).collect())).unwrap();
+        let got = service.filter().filter(&request((1..=100).map(candidate).collect())).unwrap();
 
         let sent = service.received();
-        assert_eq!(sent.len(), 4);
-        assert_eq!(service.peak.load(Ordering::SeqCst), 4, "the four requests were not open at the same time");
-        for received in &sent {
-            let ids: Vec<&String> = received.body["questions"].as_object().unwrap().keys().collect();
-            assert_eq!(ids.len(), GROUP_SIZE);
-            assert_eq!(ids.first().map(|s| s.as_str()), Some("c00"));
-            assert_eq!(ids.last().map(|s| s.as_str()), Some("c49"));
-        }
+        assert_eq!(sent.len(), 1, "the hundred candidates must go in one request");
+        let body = &sent[0].body;
+        assert!(!body.to_string().contains("noul"), "no yes-or-no question is asked");
+        let questions = body["questions"].as_object().unwrap();
+        assert_eq!(questions.len(), 1);
+        let question = &questions["q"];
+        assert_eq!(question["type"], "choice");
+        let criteria = question["criteria"].as_object().unwrap();
+        let keys: Vec<&str> = criteria.keys().map(String::as_str).collect();
+        let expected: Vec<String> = (0..100).map(|at| format!("c{at:03}")).chain(["none".to_string()]).collect();
+        assert_eq!(keys, expected.iter().map(String::as_str).collect::<Vec<_>>());
+        assert!(criteria.iter().all(|(key, value)| (key == "none") != value.is_null()));
+        let instructions = question["instructions"].as_str().unwrap();
+        assert!(instructions.starts_with(ABOUT));
+        assert!(instructions.ends_with("If none of them is that code, answer `none`."));
+        let lines = listed(body);
+        assert_eq!(lines.len(), 100);
+        assert_eq!(lines.first().map(|(id, _)| id.as_str()), Some("c000"));
+        assert_eq!(lines.last().map(|(id, _)| id.as_str()), Some("c099"));
+        assert_eq!(body["model"], json!("jev-1.13.0"));
+
+        assert_eq!(got.verdict, Verdict::Sure);
         let kept: Vec<(i64, f64)> = got.kept.iter().map(|s| (s.id, s.score)).collect();
-        assert_eq!(kept, vec![(7, 0.9), (180, 0.8), (120, 0.55)]);
-        assert_eq!(got.usage.input_tokens, 4000);
+        assert_eq!(kept, vec![(7, 0.9)]);
+        assert_eq!(got.usage.input_tokens, 1000);
     }
 
     #[test]
-    fn the_minimum_travels_to_the_cut() {
-        let service = FakeService::start(1, |_, body| {
-            Reply::json(200, &answer_by_name(body, |name| if name == "cand2" { 0.95 } else { 0.3 }))
+    fn a_chance_of_none_of_six_tenths_is_not_found_and_keeps_nothing() {
+        let service = FakeService::start(|_, body| {
+            Reply::json(200, &choice_by_name(body, |name| if name == "cand2" { 0.3 } else { 0.05 }, 0.6, 0.8))
+        });
+        let got = service.filter().filter(&request((1..=3).map(candidate).collect())).unwrap();
+        assert_eq!(got.verdict, Verdict::NotFound);
+        assert!(got.kept.is_empty(), "{:?}", got.kept);
+
+        // Abaixo de meio, e a confiança alta: certo, e o corte vale.
+        let sure = FakeService::start(|_, body| {
+            Reply::json(200, &choice_by_name(body, |name| if name == "cand2" { 0.9 } else { 0.03 }, 0.04, 0.9))
+        });
+        let got = sure.filter().filter(&request((1..=3).map(candidate).collect())).unwrap();
+        assert_eq!(got.verdict, Verdict::Sure);
+        assert_eq!(got.kept.iter().map(|s| s.id).collect::<Vec<_>>(), vec![2]);
+    }
+
+    #[test]
+    fn a_low_confidence_is_split_and_the_relative_cut_delivers() {
+        let service = FakeService::start(|_, body| {
+            Reply::json(
+                200,
+                &choice_by_name(
+                    body,
+                    |name| match name {
+                        "cand1" => 0.5,
+                        "cand2" => 0.45,
+                        _ => 0.05,
+                    },
+                    0.0,
+                    0.5,
+                ),
+            )
+        });
+        let got = service.filter().filter(&request((1..=3).map(candidate).collect())).unwrap();
+        assert_eq!(got.verdict, Verdict::Split);
+        assert_eq!(got.kept.iter().map(|s| s.id).collect::<Vec<_>>(), vec![1, 2]);
+    }
+
+    #[test]
+    fn the_share_of_the_request_travels_to_the_cut() {
+        let service = FakeService::start(|_, body| {
+            Reply::json(
+                200,
+                &choice_by_name(body, |name| if name == "cand2" { 0.5 } else { 0.4 }, 0.0, 0.5),
+            )
         });
         let mut asked = request((1..=3).map(candidate).collect());
-        asked.minimum = 2;
+        asked.share = 0.5;
         let got = service.filter().filter(&asked).unwrap();
         let ids: Vec<i64> = got.kept.iter().map(|s| s.id).collect();
-        assert_eq!(ids, vec![2, 1]);
+        assert_eq!(ids, vec![2, 1, 3], "0,4 is above half of 0,5 and the bank order breaks the tie");
+        asked.share = 0.9;
+        let got = service.filter().filter(&asked).unwrap();
+        assert_eq!(got.kept.iter().map(|s| s.id).collect::<Vec<_>>(), vec![2]);
+    }
+
+    /// Um candidato com 16 membros de mil caracteres: uns 16 mil caracteres
+    /// no pedido. Doze deles enchem um pedido do limite.
+    fn heavy_candidate(id: i64) -> FilterCandidate {
+        FilterCandidate { members: vec!["x".repeat(1000); 16], ..candidate(id) }
+    }
+
+    #[test]
+    fn a_batch_above_the_ceiling_splits_in_the_smallest_number_of_requests_in_the_bank_order() {
+        for (count, requests) in [(12, 1), (13, 2), (24, 2), (25, 3), (36, 3), (37, 4)] {
+            let service = FakeService::start(|_, body| Reply::json(200, &sure_answer(body)));
+            let candidates: Vec<FilterCandidate> = (1..=count).map(heavy_candidate).collect();
+            service.filter().filter(&request(candidates)).unwrap();
+
+            let sent = service.received();
+            assert_eq!(sent.len(), requests, "{count} heavy candidates");
+            let mut next = 0;
+            for received in &sent {
+                let payload = received.body.to_string();
+                assert!(estimated_tokens(&payload) <= MAX_REQUEST_TOKENS, "{count}: a request passed the limit");
+                for (id, _) in listed(&received.body) {
+                    assert_eq!(id, format!("c{next:03}"), "{count}: the bank order broke");
+                    next += 1;
+                }
+            }
+            assert_eq!(next, count as usize, "{count}: every candidate goes once");
+        }
+    }
+
+    #[test]
+    fn split_requests_sum_the_usage_and_the_group_that_found_something_wins() {
+        // O primeiro pedido não tem o certo e diz "nenhum destes"; o segundo
+        // acha o cand20.
+        let service = FakeService::start(|number, body| {
+            let mut answer = if number == 0 {
+                choice_by_name(body, |_| 0.01, 0.9, 0.9)
+            } else {
+                choice_by_name(body, |name| if name == "cand20" { 0.8 } else { 0.01 }, 0.05, 0.9)
+            };
+            answer["model"] = json!("jev-1.13.0");
+            Reply::json(200, &answer)
+        });
+        let candidates: Vec<FilterCandidate> = (1..=24).map(heavy_candidate).collect();
+        let got = service.filter().filter(&request(candidates)).unwrap();
+        assert_eq!(service.received().len(), 2);
+        assert_eq!(got.verdict, Verdict::Sure);
+        assert_eq!(got.kept.iter().map(|s| s.id).collect::<Vec<_>>(), vec![20]);
+        assert_eq!(got.usage.input_tokens, 2000);
+        assert_eq!(got.usage.cost_micro_usd, 84);
+        assert_eq!(got.usage.model, "jev-1.13.0");
+
+        // Nenhum pedido acha: não achei.
+        let none = FakeService::start(|_, body| Reply::json(200, &choice_by_name(body, |_| 0.01, 0.8, 0.9)));
+        let candidates: Vec<FilterCandidate> = (1..=24).map(heavy_candidate).collect();
+        let got = none.filter().filter(&request(candidates)).unwrap();
+        assert_eq!(got.verdict, Verdict::NotFound);
+        assert!(got.kept.is_empty());
+    }
+
+    #[test]
+    fn merging_takes_the_lowest_none_and_confidence_of_the_groups_that_found_something() {
+        let read = |id: i64, chance: f64, none: f64, confidence: f64| Choice {
+            scores: vec![Scored { id, score: chance }],
+            none,
+            confidence,
+            input_tokens: 0,
+        };
+        let merged = merge(vec![read(1, 0.7, 0.2, 0.8), read(2, 0.1, 0.9, 0.9), read(3, 0.6, 0.3, 0.75)]);
+        assert_eq!(merged.scores.iter().map(|s| s.id).collect::<Vec<_>>(), vec![1, 3]);
+        assert!((merged.none - 0.2).abs() < f64::EPSILON);
+        assert!((merged.confidence - 0.75).abs() < f64::EPSILON);
+        let merged = merge(vec![read(1, 0.1, 0.9, 0.5), read(2, 0.1, 0.7, 0.6)]);
+        assert!(merged.scores.is_empty());
+        assert!((merged.none - 0.7).abs() < f64::EPSILON);
     }
 
     #[test]
     fn no_candidates_send_no_request() {
         // Porta que ninguém ouve: um pedido que saísse viraria erro de rede.
         let got = JevFilter::at(test_key(), &closed_url()).filter(&request(Vec::new())).unwrap();
+        assert_eq!(got.verdict, Verdict::NotFound);
         assert!(got.kept.is_empty());
         assert_eq!(got.usage.input_tokens, 0);
     }
@@ -910,7 +1200,7 @@ mod tests {
     #[test]
     fn a_refused_key_or_missing_credit_fails_without_repeating() {
         for status in [401, 402] {
-            let service = FakeService::start(1, move |_, _| {
+            let service = FakeService::start(move |_, _| {
                 Reply::json(status, &json!({"error": format!("bad key {SECRET}")}))
             });
             let error = service.filter().filter(&request(vec![candidate(1)])).unwrap_err();
@@ -921,7 +1211,7 @@ mod tests {
 
     #[test]
     fn too_many_requests_repeats_twice_and_gives_up() {
-        let service = FakeService::start(1, |_, _| Reply {
+        let service = FakeService::start(|_, _| Reply {
             status: 429,
             headers: vec![("Retry-After", "0".to_string())],
             body: "{}".to_string(),
@@ -933,11 +1223,11 @@ mod tests {
 
     #[test]
     fn a_service_failure_is_repeated_and_the_next_answer_counts() {
-        let service = FakeService::start(1, |number, body| {
+        let service = FakeService::start(|number, body| {
             if number == 0 {
                 Reply { status: 503, headers: vec![("Retry-After", "0".to_string())], body: String::new() }
             } else {
-                Reply::json(200, &answer_by_name(body, |_| 0.7))
+                Reply::json(200, &choice_by_name(body, |_| 0.7, 0.01, 0.9))
             }
         });
         let got = service.filter().filter(&request(vec![candidate(1)])).unwrap();
@@ -956,36 +1246,48 @@ mod tests {
 
     #[test]
     fn an_answer_without_answers_is_unreadable() {
-        let service = FakeService::start(1, |_, _| Reply::json(200, &json!({"usage": {"input_tokens": 10}})));
+        let service = FakeService::start(|_, _| Reply::json(200, &json!({"usage": {"input_tokens": 10}})));
         let error = service.filter().filter(&request(vec![candidate(1)])).unwrap_err();
         assert!(matches!(error, FilterError::Unreadable(_)), "{error:?}");
     }
 
     #[test]
     fn an_answer_missing_a_score_is_unreadable() {
-        let service = FakeService::start(1, |_, _| Reply::json(200, &json!({"answers": {"c00": {"noul": 0.5}}})));
-        let error = service.filter().filter(&request(vec![candidate(1), candidate(2)])).unwrap_err();
-        assert!(matches!(error, FilterError::Unreadable(_)), "{error:?}");
+        // Falta a chance de um candidato, a de `none` ou a confiança: cada
+        // ausência é uma resposta ilegível.
+        let answers = [
+            json!({"q": {"confidence": 0.9, "probabilities": {"c000": 0.5, "none": 0.1}}}),
+            json!({"q": {"confidence": 0.9, "probabilities": {"c000": 0.5, "c001": 0.4}}}),
+            json!({"q": {"probabilities": {"c000": 0.5, "c001": 0.4, "none": 0.1}}}),
+            json!({"q": {"confidence": 0.9}}),
+            json!({"c00": {"noul": 0.5}}),
+        ];
+        for answer in answers {
+            let service = FakeService::start(move |_, _| Reply::json(200, &json!({"answers": answer.clone()})));
+            let error = service.filter().filter(&request(vec![candidate(1), candidate(2)])).unwrap_err();
+            assert!(matches!(error, FilterError::Unreadable(_)), "{error:?}");
+        }
     }
 
     #[test]
-    fn one_failing_group_fails_the_whole_filter() {
-        let service = FakeService::start(1, |number, body| {
+    fn one_failing_request_of_a_split_batch_fails_the_whole_filter() {
+        let service = FakeService::start(|number, body| {
             if number == 1 {
                 Reply::json(402, &json!({}))
             } else {
-                Reply::json(200, &answer_by_name(body, |_| 0.9))
+                Reply::json(200, &sure_answer(body))
             }
         });
-        let error = service.filter().filter(&request((1..=120).map(candidate).collect())).unwrap_err();
+        let candidates: Vec<FilterCandidate> = (1..=24).map(heavy_candidate).collect();
+        let error = service.filter().filter(&request(candidates)).unwrap_err();
         assert_eq!(error, FilterError::Refused { status: 402 });
     }
 
     #[test]
     fn a_slow_service_times_out() {
-        let service = FakeService::start(1, |_, body| {
+        let service = FakeService::start(|_, body| {
             std::thread::sleep(Duration::from_millis(1500));
-            Reply::json(200, &answer_by_name(body, |_| 0.9))
+            Reply::json(200, &sure_answer(body))
         });
         let mut filter = service.filter();
         filter.timeouts.response = Duration::from_millis(200);
@@ -997,7 +1299,7 @@ mod tests {
     fn the_deadline_covers_the_repeats_too() {
         // Cada tentativa falha em 300 ms; com o prazo de 500 ms, a segunda
         // tentativa leva só os 200 ms que faltam, e não há terceira.
-        let service = FakeService::start(1, |_, _| {
+        let service = FakeService::start(|_, _| {
             std::thread::sleep(Duration::from_millis(300));
             Reply { status: 503, headers: vec![("Retry-After", "0".to_string())], body: String::new() }
         });
@@ -1015,7 +1317,7 @@ mod tests {
     fn a_repeat_whose_wait_passes_the_deadline_is_not_made() {
         // O serviço pede 2 s antes de repetir; com o prazo de 500 ms, a
         // recusa volta na hora, sem esperar nem repetir.
-        let service = FakeService::start(1, |_, _| Reply {
+        let service = FakeService::start(|_, _| Reply {
             status: 429,
             headers: vec![("Retry-After", "2".to_string())],
             body: "{}".to_string(),
@@ -1039,7 +1341,7 @@ mod tests {
 
     #[test]
     fn a_request_above_the_service_limit_is_not_sent() {
-        let service = FakeService::start(1, |_, body| Reply::json(200, &answer_by_name(body, |_| 0.9)));
+        let service = FakeService::start(|_, body| Reply::json(200, &sure_answer(body)));
         let mut asked = request(vec![candidate(1)]);
         asked.phrase = "x".repeat(250_000);
         let error = service.filter().filter(&asked).unwrap_err();
@@ -1063,7 +1365,7 @@ mod tests {
 
     #[test]
     fn the_key_goes_only_in_the_authorization_header() {
-        let service = FakeService::start(1, |_, body| Reply::json(200, &answer_by_name(body, |_| 0.9)));
+        let service = FakeService::start(|_, body| Reply::json(200, &sure_answer(body)));
         service.filter().filter(&request(vec![candidate(1)])).unwrap();
         let sent = &service.received()[0];
         assert_eq!(sent.authorization, format!("Bearer {SECRET}"));
@@ -1080,12 +1382,12 @@ mod tests {
         // O serviço devolve a chave no corpo da recusa e da resposta sem notas:
         // nenhuma mensagem de erro a repete.
         let echo = json!({"error": format!("key {SECRET} refused"), "usage": {"input_tokens": 1}});
-        let refused = FakeService::start(1, {
+        let refused = FakeService::start({
             let echo = echo.clone();
             move |_, _| Reply::json(401, &echo)
         });
-        let unreadable = FakeService::start(1, move |_, _| Reply::json(200, &echo));
-        let garbled = FakeService::start(1, |_, _| Reply {
+        let unreadable = FakeService::start(move |_, _| Reply::json(200, &echo));
+        let garbled = FakeService::start(|_, _| Reply {
             status: 200,
             headers: Vec::new(),
             body: format!("not json {SECRET}"),
@@ -1154,8 +1456,8 @@ mod tests {
         let project = project_with_key(SECRET, false);
         let loaded = project_key(project.path(), None).unwrap();
         assert!(loaded.warning.is_none());
-        let service = FakeService::start(1, |_, body| {
-            Reply::json(200, &answer_by_name(body, |name| if name == "cand1" { 0.9 } else { 0.1 }))
+        let service = FakeService::start(|_, body| {
+            Reply::json(200, &choice_by_name(body, |name| if name == "cand1" { 0.9 } else { 0.05 }, 0.05, 0.9))
         });
         let got = JevFilter::at(loaded.key, &service.url).filter(&request(vec![candidate(1), candidate(2)])).unwrap();
         assert_eq!(service.received()[0].authorization, format!("Bearer {SECRET}"));
@@ -1202,7 +1504,7 @@ mod tests {
         let asked = FilterRequest {
             words: vec!["split_identifier".to_string()],
             phrase: "The function that splits an identifier into words.".to_string(),
-            minimum: 0,
+            share: CUT_SHARE,
             candidates: vec![target, other],
         };
         let got = JevFilter::new(JevKey(key)).filter(&asked).unwrap();

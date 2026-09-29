@@ -3,8 +3,9 @@
 //! O `Grep` do Claude e o `grep`/`rg` do terminal, numa pasta de código do
 //! projeto, recebem uma de três marcas, dadas pela triagem do mapa:
 //!
-//! - **cravado** — o mapa achou todas as palavras da busca em campo forte do
-//!   primeiro arquivo, com a chance do corte medido na régua;
+//! - **cravado** — o primeiro arquivo tem a nota mais alta e a chance do
+//!   corte medido na régua, mesmo com palavras da busca fora dos campos
+//!   fortes dele: a resposta cita só as que ele traz;
 //! - **parcial** — o mapa achou parte, e a resposta diz quais palavras faltam;
 //! - **não achou** — o mapa não achou nada: a busca comum roda, e uma linha
 //!   diz as palavras já quebradas e a próxima busca, exata.
@@ -615,7 +616,15 @@ fn entries_of(scene: &Scene<'_>, tree: &Path, file: &FileHits) -> Option<(Vec<En
 fn header(mark: Mark, triaged: &Triaged, lang: Locale) -> String {
     let quoted = |words: &[String]| words.iter().map(|word| format!("\"{word}\"")).collect::<Vec<_>>().join(", ");
     match mark {
-        Mark::Pinned => say("map.answer.pinned", lang, &[("{words}", &quoted(&triaged.words))]),
+        Mark::Pinned => {
+            // Cravado não exige todas as palavras: o texto cita as que o
+            // primeiro achado traz em campo forte, e só sem nenhuma delas cita
+            // as da pergunta inteira.
+            let found: Vec<String> =
+                triaged.words.iter().filter(|word| !triaged.missing.contains(word)).cloned().collect();
+            let shown = if found.is_empty() { &triaged.words } else { &found };
+            say("map.answer.pinned", lang, &[("{words}", &quoted(shown))])
+        }
         Mark::Partial if !triaged.missing.is_empty() => {
             say("map.answer.partial", lang, &[("{missing}", &quoted(&triaged.missing))])
         }
@@ -753,7 +762,7 @@ pub(crate) mod fixture {
         let map = serde_json::json!({ "modules": [
             { "path": "src/frete.rs", "language": "rust", "loc": 10, "declarations": [
                 { "kind": "function", "name": "calcular_frete", "line": 2, "end_line": 6,
-                  "signature": "pub fn calcular_frete(peso: u32) -> u32" },
+                  "signature": "pub fn calcular_frete(peso: u32) -> u32", "body_comment": "imposto embutido" },
                 { "kind": "function", "name": "desconto_frete", "line": 8, "end_line": 10 }
             ] },
             { "path": "src/pedido.rs", "language": "rust", "loc": 4, "declarations": [
@@ -768,6 +777,7 @@ pub(crate) mod fixture {
 mod tests {
     use super::fixture::{self, git};
     use super::*;
+    use mustard_core::domain::triage::Signals;
     use crate::shared::code_route::project_path;
 
     fn owned(items: &[&str]) -> Vec<String> {
@@ -893,13 +903,37 @@ mod tests {
         assert!(!text.contains("Fora do corte"), "nothing was cut: {text}");
     }
 
+    /// A palavra que o mapa não traz não tira o cravado: o texto cita só as
+    /// palavras que o primeiro achado tem em campo forte, sem pedir nova
+    /// busca, e a linha com a palavra solta entra como achado do mesmo jeito.
     #[test]
-    fn a_search_with_a_word_the_map_lacks_is_partial_and_names_it() {
+    fn a_search_with_a_word_the_map_lacks_stays_pinned_and_names_only_the_found_words() {
         let (_dir, root) = fixture::repo("{}");
         let text = answer(search_in(&root, &root, &["calcular_frete|imposto"], &["."]));
-        assert!(text.starts_with("Parcial."), "{text}");
-        assert!(text.contains(r#"Falta "imposto". Busque de novo"#), "only the word the map lacks is named: {text}");
+        assert!(text.starts_with("Cravado."), "{text}");
+        assert!(text.contains(r#""calcular", "frete""#), "the words the map found: {text}");
+        let first_line = text.lines().next().unwrap_or_default();
+        assert!(!first_line.contains("imposto"), "the word the map lacks is not named: {first_line}");
+        assert!(!text.contains("Falta"), "no search again is asked for: {text}");
         assert!(text.contains("src/frete.rs\n  2-6 calcular_frete (2, 3)"), "the comment with the word is a hit too: {text}");
+    }
+
+    /// A marca parcial com palavra fora dos campos fortes cita a que falta e
+    /// pede nova busca; sem palavra faltando, diz só que não tem certeza.
+    #[test]
+    fn a_partial_mark_names_the_missing_words_and_without_them_says_it_is_unsure() {
+        let answer = |missing: &[&str]| Triaged {
+            grade: 4,
+            signals: Signals { words: 2, strong: 1, first: Some(3.0), second: Some(2.5) },
+            words: owned(&["calcular", "imposto"]),
+            missing: owned(missing),
+            files: Vec::new(),
+            deeper: Vec::new(),
+        };
+        let with_missing = header(Mark::Partial, &answer(&["imposto"]), Locale::PtBr);
+        assert!(with_missing.starts_with("Parcial.") && with_missing.contains(r#"Falta "imposto"."#), "{with_missing}");
+        let without = header(Mark::Partial, &answer(&[]), Locale::PtBr);
+        assert!(without.starts_with("Parcial.") && !without.contains("Falta"), "{without}");
     }
 
     #[test]
@@ -920,14 +954,14 @@ mod tests {
     }
 
     #[test]
-    fn a_partial_search_that_only_counts_names_the_missing_word_in_one_line() {
+    fn a_pinned_search_with_a_missing_word_that_only_counts_answers_in_one_line_without_it() {
         let (_dir, root) = fixture::repo("{}");
         let Reply::Note(line) = search_showing(&root, &root, &["calcular_frete|imposto"], &["."], false) else {
             panic!("a note was expected");
         };
         assert_eq!(line.lines().count(), 1, "{line}");
-        assert!(line.starts_with("Parcial."), "{line}");
-        assert!(line.contains(r#"Falta "imposto"."#), "{line}");
+        assert!(line.starts_with("Cravado."), "{line}");
+        assert!(!line.contains("imposto"), "{line}");
     }
 
     #[test]

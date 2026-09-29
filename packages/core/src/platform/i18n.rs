@@ -657,6 +657,39 @@ mod tests {
         }
     }
 
+    /// Nenhum texto do catálogo, em nenhuma das duas línguas, diz que o mapa
+    /// ou o terreno já está na janela de quem lê: o mapa não vem mais
+    /// injetado no início da sessão, e um texto que dissesse isso mandaria o
+    /// modelo confiar num resumo que não existe.
+    #[test]
+    fn no_catalog_text_says_the_map_is_in_the_window() {
+        let says_in_window = |text: &str, window: &str, subjects: &[&str]| {
+            let text = text.to_lowercase();
+            let words: Vec<&str> = text.split(|c: char| !c.is_alphanumeric()).collect();
+            words.contains(&window) && subjects.iter().any(|subject| words.contains(subject))
+        };
+        let mut found = Vec::new();
+        let mut swept = 0;
+        for source in PART_SOURCES {
+            for key in part_keys(source) {
+                for (lang, window, subjects) in [
+                    (Locale::PtBr, "janela", &["mapa", "terreno", "resumo"][..]),
+                    (Locale::EnUs, "window", &["map", "terrain", "summary"][..]),
+                ] {
+                    swept += 1;
+                    if says_in_window(translate(key, lang), window, subjects) {
+                        found.push(format!("{key} ({lang})"));
+                    }
+                }
+            }
+        }
+        assert!(swept > 1_000, "the sweep reached every part, in both languages: {swept} texts");
+        assert!(found.is_empty(), "these texts put the map in the window: {found:?}");
+        assert!(says_in_window("O terreno já está na sua janela.", "janela", &["terreno"]));
+        assert!(says_in_window("The map is already in your window.", "window", &["map"]));
+        assert!(!says_in_window("Começa numa janela limpa.", "janela", &["mapa", "terreno", "resumo"]));
+    }
+
     /// Cada começo de chave é respondido por uma parte só do catálogo.
     #[test]
     fn each_key_prefix_belongs_to_one_part() {

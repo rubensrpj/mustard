@@ -12,11 +12,16 @@
 //!   campos.
 //!
 //! Depois desses, cada nível guarda o texto de dentro das peças, em campos
-//! que a busca sem filtro não lê — a nota dela não muda com eles: da
-//! declaração, a documentação inteira, os comentários, os nomes e as
-//! chamadas escritos nas linhas dela; do arquivo, os comentários do começo e
+//! que a lista de base da busca com filtro não lê: da declaração, a
+//! documentação inteira, os comentários, os nomes e as chamadas escritos nas
+//! linhas dela, o dono e os membros; do arquivo, os comentários do começo e
 //! os outros, juntados dos que o scan guardou fora das declarações e dos de
-//! cada declaração de fora, que ele guarda uma vez só, nela.
+//! cada declaração de fora, que ele guarda uma vez só, nela, e os títulos dos
+//! commits mais novos que mudaram o arquivo. A busca dos arquivos da triagem e
+//! a lista de todos os campos leem todas as colunas, cada uma com o peso do
+//! nível; a busca de [`search`], sem triagem, lê só os campos da lista de
+//! base, para que um arquivo só apareça se uma palavra da pergunta está no
+//! nome, no caminho, na documentação ou nos textos fixos dele.
 //!
 //! Cada texto passa pela normalização de toda busca (`domain::normalize`),
 //! nas línguas do projeto, antes de entrar: o nome colado entra quebrado
@@ -80,7 +85,8 @@ use crate::domain::map_filter::FilterCandidate;
 use crate::domain::map_select::{Linked, Links};
 use crate::domain::project_map::DeclAt;
 use crate::domain::search::{
-    bm25f, file_list, folded_name, name_list, name_words, ranked, round_robin, score_x1024, Fields, NameHits, Posting,
+    bm25f, file_list, folded_name, name_list, name_words, ranked, round_robin, score_x1024,
+    Fields, NameHits, Posting,
 };
 use crate::io::map_db::MapDb;
 use crate::io::map_fill;
@@ -90,8 +96,8 @@ use crate::io::project_map::{model_path, open_existing, unreadable, MapBlock, SE
 use crate::platform::error::Result;
 
 /// Um nível do índice: a tabela FTS5, a lista de cada forma por ela, a tabela
-/// dos tamanhos, os campos que a busca sem filtro lê e, depois deles, os que
-/// o índice guarda sem que ela os leia, na ordem das colunas.
+/// dos tamanhos, os campos que a lista de base lê e, depois deles, os que o
+/// índice guarda sem que ela os leia, na ordem das colunas.
 struct Level {
     fts: &'static str,
     vocab: &'static str,
@@ -100,6 +106,8 @@ struct Level {
     meta: &'static str,
     fields: &'static [&'static str],
     unread: &'static [&'static str],
+    /// O peso de cada coluna na nota, na ordem de [`Level::columns`].
+    weights: &'static [f64],
     /// Como o nível lê as marcas do glossário; `None` no que não as lê.
     learned: Option<Learned>,
 }
@@ -109,27 +117,73 @@ impl Level {
     fn columns(&self) -> impl Iterator<Item = &'static str> {
         self.fields.iter().chain(self.unread).copied()
     }
+
+    /// O peso da coluna `column` na nota do nível.
+    fn weight(&self, column: &str) -> f64 {
+        #[cfg(test)]
+        if let Some(tuned) = tuning::weight(self.fts, column) {
+            return tuned;
+        }
+        self.columns().position(|name| name == column).map_or(1.0, |at| self.weights[at])
+    }
 }
 
 /// O nível dos arquivos: o que a busca devolve.
+///
+/// Os pesos saem de uma subida coordenada, coluna a coluna, sobre os assuntos
+/// 0 a 19 da régua de 120 buscas de cada um dos três projetos de prova,
+/// medida só com a frase e com os nomes, e conferida nos assuntos 20 a 39. O
+/// ganho é o do arquivo certo entre os cinco primeiros (vale mais o mais
+/// perto do primeiro) e entre os cem, nos candidatos do filtro, mais o dos
+/// cinco da resposta sem o filtro. Nos assuntos de conferência o ganho foi de
+/// 575 para 611; só com a frase, o certo entre os cinco da resposta foi de 85
+/// para 101 das 180 buscas, e entre os cinco candidatos, de 77 para 84. Na
+/// régua inteira de 120 buscas por projeto, os cinco da resposta só com a
+/// frase foram de 65 para 75 (Mustard), de 49 para 66 (Sialia) e de 33 para
+/// 63 (Suzano); com os nomes, de 112 para 113, de 62 para 68 e de 83 para 95.
+/// Nome, log, erro e texto fixo pesam mais que o caminho e a documentação: o
+/// nome e a mensagem escrita são o que a pergunta quase copia. Os títulos dos
+/// commits ficam com peso 0: entram no índice, mas nenhum peso acima de zero
+/// subiu a régua.
+///
+/// Três técnicas foram medidas na mesma régua e ficaram de fora, porque
+/// nenhuma subiu o arquivo certo entre os cinco primeiros nas 360 buscas só
+/// com a frase (184 nos candidatos e 204 na resposta do banco, sem elas):
+/// reescrever a pergunta com até cinco palavras da documentação e dos
+/// comentários dos cinco primeiros achados, com peso 0,3, deixou o primeiro
+/// do banco certo em 91 buscas contra 110 e os cinco candidatos em 172
+/// contra 184, e com peso 0,1 ou 0,2 ficou igual ou abaixo; o passeio
+/// aleatório pelas chamadas, semeado pelos dez primeiros e somando de 0,15 a
+/// 1 da nota da última semente, ficou igual ou abaixo em todos os pontos e
+/// derrubou os cem candidatos do Suzano de 95 para 91 a 87; e o corte de
+/// "não achei" pela chance, pela nota do primeiro e pela distância ao
+/// segundo, que sem errar nenhuma busca com o arquivo certo entre os
+/// candidatos pegou 1 dos 20 pedidos inventados só com a frase e 5 com os
+/// nomes.
 const FILE_LEVEL: Level = Level {
     fts: "file_fts",
     vocab: "file_vocab",
     lengths: "file_lengths",
     meta: "search_meta",
     fields: &["name", "path", "doc", "log", "error", "text"],
-    unread: &["file_doc", "file_comment"],
+    unread: &["file_doc", "file_comment", "commits"],
+    weights: &[5.0, 1.0, 0.25, 5.0, 5.0, 5.0, 0.1, 1.0, 0.0],
     learned: Some(Learned::Files),
 };
 
-/// O nível das declarações.
+/// O nível das declarações, com os pesos medidos como os do nível dos
+/// arquivos. O nome da declaração pesa pouco e o caminho nada: o arquivo
+/// dono já os traz, e a assinatura, que traz o nome com o tipo, pesa mais. Os
+/// membros ficam com peso 0: entram no índice, mas nenhum peso acima de zero
+/// subiu a régua.
 const DECL_LEVEL: Level = Level {
     fts: "decl_fts",
     vocab: "decl_vocab",
     lengths: "decl_lengths",
     meta: "search_meta",
     fields: &["name", "path", "signature", "doc", "log", "error", "text"],
-    unread: &["whole_doc", "body_comment", "body_names", "body_calls"],
+    unread: &["whole_doc", "body_comment", "body_names", "body_calls", "owner", "members"],
+    weights: &[0.1, 0.0, 2.0, 1.0, 1.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 0.5, 0.0],
     learned: Some(Learned::Decls),
 };
 
@@ -144,6 +198,7 @@ const SPEC_LEVEL: Level = Level {
     meta: "spec_meta",
     fields: &["title", "text", "words"],
     unread: &[],
+    weights: &[1.0; 3],
     learned: None,
 };
 
@@ -151,6 +206,27 @@ const SPEC_LEVEL: Level = Level {
 /// texto entra no campo da marca que o scan deu a ele, e a marca que não é
 /// nenhuma destas entra no último.
 const TEXT_FIELDS: [&str; 3] = ["log", "error", "text"];
+
+/// Os pesos que uma medida põe no lugar dos da tabela, só nos testes.
+#[cfg(test)]
+mod tuning {
+    use std::collections::HashMap;
+    use std::sync::RwLock;
+
+    static WEIGHTS: RwLock<Option<HashMap<(String, String), f64>>> = RwLock::new(None);
+
+    pub(super) fn weight(table: &str, column: &str) -> Option<f64> {
+        WEIGHTS.read().unwrap().as_ref()?.get(&(table.to_string(), column.to_string())).copied()
+    }
+
+    pub(super) fn set(table: &str, column: &str, weight: f64) {
+        WEIGHTS
+            .write()
+            .unwrap()
+            .get_or_insert_with(HashMap::new)
+            .insert((table.to_string(), column.to_string()), weight);
+    }
+}
 
 /// Um texto fixo como o scan o grava, na tabela dos textos de cada arquivo.
 #[derive(Deserialize)]
@@ -172,10 +248,9 @@ impl Written {
     }
 }
 
-/// O peso de cada campo na nota: todos o mesmo, como na prova da busca que
-/// achou 119 dos 140 pontos da régua de perguntas. Os campos dos textos
-/// fixos entraram com o mesmo peso: nesta busca, a régua foi de 101 para
-/// 114 pontos com eles.
+/// O peso de cada campo na nota da busca dos comentários ([`by_fields`]):
+/// todos o mesmo, que é a nota em que a triagem mede a prova de cada
+/// comentário.
 const FIELD_WEIGHT: f64 = 1.0;
 
 /// O peso do campo das palavras aprendidas, com o tamanho de uma palavra e a
@@ -296,8 +371,8 @@ fn documents(conn: &Connection, normalizer: &mut Normalizer) -> Result<(Vec<Doc>
     }
     let mut rows_of: Vec<DeclRow> = Vec::new();
     let mut stmt = conn.prepare(
-        "SELECT rowid, file, name, signature, doc, line, end_line, whole_doc, body_comment, body_names, kind \
-         FROM decls ORDER BY rowid",
+        "SELECT rowid, file, name, signature, doc, line, end_line, whole_doc, body_comment, body_names, kind, \
+         owner, contract, members FROM decls ORDER BY rowid",
     )?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
@@ -319,6 +394,17 @@ fn documents(conn: &Connection, normalizer: &mut Normalizer) -> Result<(Vec<Doc>
             whole_doc: text(row, 7)?,
             body_comment: text(row, 8)?,
             body_names: text(row, 9)?,
+            parents: [11, 12]
+                .into_iter()
+                .map(|at| Ok(serde_json::from_str::<Vec<String>>(&text(row, at)?).unwrap_or_default().join(" ")))
+                .collect::<Result<Vec<_>>>()?
+                .join(" "),
+            members: serde_json::from_str::<Vec<DeclAt>>(&text(row, 13)?)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|member| member.name)
+                .collect::<Vec<_>>()
+                .join(" "),
         });
     }
     // Os textos de cada arquivo: as palavras vão para o arquivo e para a
@@ -345,6 +431,13 @@ fn documents(conn: &Connection, normalizer: &mut Normalizer) -> Result<(Vec<Doc>
             }
         }
     }
+    let paths: HashSet<&str> = at.keys().map(String::as_str).collect();
+    let commits = FILE_LEVEL.fields.len() + 2;
+    for (path, titles) in newest_titles(conn, &paths)? {
+        if let Some(&owner) = at.get(&path) {
+            files[owner].fields[commits] = normalizer.forms(&titles.join(" "));
+        }
+    }
     let calls = written_calls(conn, &at, normalizer)?;
     let mut decls = Vec::new();
     for row in rows_of {
@@ -368,7 +461,14 @@ fn documents(conn: &Connection, normalizer: &mut Normalizer) -> Result<(Vec<Doc>
         for (_, words) in &file_calls[start..end.max(start)] {
             add_new(&mut called, &mut seen_calls, words);
         }
-        fields.extend([whole_doc, normalizer.forms(&row.body_comment), normalizer.forms(&row.body_names), called]);
+        fields.extend([
+            whole_doc,
+            normalizer.forms(&row.body_comment),
+            normalizer.forms(&row.body_names),
+            called,
+            normalizer.forms(&row.parents),
+            normalizer.forms(&row.members),
+        ]);
         decls.push(Decl { doc: Doc { id: row.id, fields }, name: row.name, file: file.id, unlisted: row.unlisted });
     }
     Ok((files, decls))
@@ -423,6 +523,10 @@ struct DeclRow {
     whole_doc: String,
     body_comment: String,
     body_names: String,
+    /// Os nomes do dono e do contrato da declaração.
+    parents: String,
+    /// Os nomes dos membros do tipo.
+    members: String,
 }
 
 /// Acrescenta a `into` cada palavra de `words` que `seen` ainda não tem.
@@ -534,7 +638,9 @@ fn fill<'d>(conn: &Connection, level: &Level, docs: impl IntoIterator<Item = &'d
 /// Os arquivos que mais casam com a pergunta `query` no mapa do projeto em
 /// `root`, até `limit`, com as palavras cortadas nas línguas `languages`:
 /// primeiro os que o pedaço do nome acha, depois os das palavras, da nota
-/// mais alta para a mais baixa. As recusas são as de todo leitor do mapa —
+/// mais alta para a mais baixa. As palavras contam só no nome, no caminho, na
+/// documentação e nos textos fixos do arquivo: o comentário e o título de
+/// commit dele não o fazem aparecer. As recusas são as de todo leitor do mapa —
 /// sem o arquivo, [`MapRefusal::MapMissing`] — e, com um bloco de que o
 /// índice lê ainda vazio depois de uma troca de formato,
 /// [`MapRefusal::MapUnfilled`].
@@ -550,7 +656,7 @@ pub fn search_at(
     limit: usize,
 ) -> std::result::Result<Vec<Found>, MapRefusal> {
     let db = indexed(model, languages, &SEARCHED)?;
-    found(db.conn(), query, languages, limit).map_err(unreadable)
+    found_in(db.conn(), query, languages, limit, FILE_LEVEL.fields).map_err(unreadable)
 }
 
 /// O banco em `model`, com o índice feito nas línguas `languages`: o feito
@@ -575,10 +681,24 @@ fn made_in(conn: &Connection, languages: &Languages) -> Result<bool> {
     Ok(stored.is_some_and(|stored| stored == languages.codes().join(",")))
 }
 
+/// A busca dos arquivos que a triagem lê: todas as colunas do nível, cada uma
+/// com o peso dele.
 pub(super) fn found(conn: &Connection, query: &str, languages: &Languages, limit: usize) -> Result<Vec<Found>> {
+    let every: Vec<&str> = FILE_LEVEL.columns().collect();
+    found_in(conn, query, languages, limit, &every)
+}
+
+/// A busca dos arquivos contando só as colunas `columns` do nível.
+fn found_in(
+    conn: &Connection,
+    query: &str,
+    languages: &Languages,
+    limit: usize,
+    columns: &[&str],
+) -> Result<Vec<Found>> {
     let mut normalizer = Normalizer::new(languages);
     let words = normalizer.query(query);
-    let by_words = by_words(conn, &FILE_LEVEL, FILE_LEVEL.fields, &words)?;
+    let by_words = by_words(conn, &FILE_LEVEL, columns, &words)?;
     let scores: HashMap<i64, f64> = by_words.iter().copied().collect();
     let mut path_of = conn.prepare("SELECT path FROM files WHERE rowid = ?1")?;
     let mut out: Vec<Found> = Vec::new();
@@ -733,7 +853,8 @@ fn counted(
 /// dos campos de comentário é só do que está escrito neles.
 pub(super) fn by_fields(conn: &Connection, decl: bool, fields: &[&str], words: &[Vec<String>]) -> Result<Vec<(i64, f64)>> {
     let level = if decl { &DECL_LEVEL } else { &FILE_LEVEL };
-    let (postings, numbers, _) = counted(conn, level, fields, Texts::Apart, words)?;
+    let (postings, mut numbers, _) = counted(conn, level, fields, Texts::Apart, words)?;
+    numbers.weights.iter_mut().for_each(|weight| *weight = FIELD_WEIGHT);
     Ok(bm25f(&postings, &numbers))
 }
 
@@ -835,10 +956,12 @@ fn fields_of(conn: &Connection, level: &Level, fields: &[&str], slots: &[usize])
     let docs = number(format!("{}.docs", level.fts))? as usize;
     let count = slots.iter().max().map_or(0, |last| last + 1);
     let mut avg_len = vec![0.0; count];
+    let mut weights: Vec<Option<f64>> = vec![None; count];
     for (name, slot) in fields.iter().zip(slots) {
         avg_len[*slot] += number(format!("{}.{name}", level.fts))?;
+        weights[*slot].get_or_insert_with(|| level.weight(name));
     }
-    Ok(Fields { docs, avg_len, weights: vec![FIELD_WEIGHT; count] })
+    Ok(Fields { docs, avg_len, weights: weights.into_iter().map(|weight| weight.unwrap_or(FIELD_WEIGHT)).collect() })
 }
 
 /// `true` quando o índice dos itens das specs foi feito nas línguas
@@ -1346,7 +1469,7 @@ fn by_piece(conn: &Connection, query: &str) -> Result<Vec<i64>> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::domain::search::{CANDIDATES, TOP};
     use crate::io::project_map as store;
@@ -1402,6 +1525,27 @@ mod tests {
                 (path, score_x1024(score))
             })
             .collect()
+    }
+
+    /// O arquivo que só o comentário dele cita não entra na busca de
+    /// [`search`], que lê os campos da lista de base, mas a busca da triagem,
+    /// que lê todas as colunas, o acha.
+    #[test]
+    fn a_file_only_its_comment_names_is_left_out_of_the_plain_search_and_found_by_the_triage_one() {
+        let dir = tempdir().unwrap();
+        let map = json!({ "modules": [
+            { "path": "src/a.rs", "file_comment": "grava o estorno do pagamento", "declarations": [] },
+            { "path": "src/b.rs", "declarations": [
+                { "kind": "function", "name": "estornoPagamento", "line": 1, "signature": "fn estornoPagamento()", "doc": "" }
+            ] },
+        ] });
+        store::save_at(&model_path(dir.path()), &map, "scan 1", &languages()).unwrap();
+        assert_eq!(paths(dir.path(), "estorno"), ["src/b.rs"]);
+        let db = open_existing(&model_path(dir.path())).unwrap();
+        let mut triage: Vec<String> =
+            found(db.conn(), "estorno", &languages(), TOP).unwrap().into_iter().map(|found| found.path).collect();
+        triage.sort();
+        assert_eq!(triage, ["src/a.rs", "src/b.rs"]);
     }
 
     #[test]
@@ -1476,7 +1620,8 @@ mod tests {
                     .collect()
             })
             .collect();
-        let fields = Fields { docs: count, avg_len, weights: vec![1.0; 3] };
+        let weights = vec![FILE_LEVEL.weight("name"), FILE_LEVEL.weight("path"), FILE_LEVEL.weight("doc")];
+        let fields = Fields { docs: count, avg_len, weights };
         bm25f(&words, &fields).into_iter().map(|(doc, score)| (docs[doc as usize].0.clone(), score_x1024(score))).collect()
     }
 
@@ -1926,6 +2071,288 @@ mod tests {
         let found = candidates(dir.path(), "simula simulação pasta", "", &languages(), CANDIDATES).unwrap();
         let (first, second) = (id_of(dir.path(), "primeira"), id_of(dir.path(), "segunda"));
         assert_eq!(found.whole, vec![first, second], "{found:?}");
+    }
+
+    /// Os pesos de `MAP_WEIGHTS` (`tabela.coluna=peso`, separados por espaço)
+    /// no lugar dos da tabela, para uma medida comparar com outros pesos.
+    pub(crate) fn weights_from_env() {
+        if let Ok(list) = std::env::var("MAP_WEIGHTS") {
+            for pair in list.split_whitespace() {
+                let (name, weight) = pair.split_once('=').unwrap();
+                let (table, column) = name.split_once('.').unwrap();
+                tuning::set(table, column, weight.parse().unwrap());
+            }
+        }
+    }
+
+    /// A ordem dos candidatos numa régua de buscas (`MAP_RANKS_RULER`, o
+    /// arquivo JSON da régua do primeiro elo): por busca, em que posição da
+    /// lista inteira está a primeira declaração certa, em que posição está o
+    /// primeiro arquivo certo entre os arquivos distintos da lista e em que
+    /// posição ele está na resposta do banco sem filtro (0: fora). Com
+    /// `MAP_RANKS_PHRASE`, a pergunta é só a frase da busca. Cada linha leva
+    /// também os sinais da triagem do banco (chance, grau, palavras, palavras
+    /// em campo forte, nota do primeiro e do segundo). Grava uma linha
+    /// por busca em `MAP_RANKS_OUT` e imprime, por projeto, quantas buscas
+    /// têm o arquivo certo entre os 1, 5 e 100 primeiros candidatos e entre
+    /// os 1 e 5 primeiros do banco.
+    #[test]
+    #[ignore = "mede com os mapas dos projetos de prova"]
+    fn measure_the_candidate_ranks() {
+        let ruler = std::env::var("MAP_RANKS_RULER").expect("MAP_RANKS_RULER points to the ruler file");
+        let out = std::env::var("MAP_RANKS_OUT").expect("MAP_RANKS_OUT points to the file to write");
+        let phrase = std::env::var("MAP_RANKS_PHRASE").is_ok();
+        weights_from_env();
+        let ruler: Value = serde_json::from_str(&std::fs::read_to_string(ruler).unwrap()).unwrap();
+        let languages = Languages::new(["pt-BR", "en-US"]);
+        let mut lines: Vec<String> = Vec::new();
+        let mut totals: std::collections::BTreeMap<String, [usize; 6]> = Default::default();
+        for search in ruler["searches"].as_array().unwrap() {
+            let text = |key: &str| search[key].as_str().unwrap().to_string();
+            let (key, intent) = (text("key"), text("intent"));
+            let query = if phrase { intent.clone() } else { text("query") };
+            let db = indexed(Path::new(&text("model")), &languages, &map_fill::READ_BY_CANDIDATES).unwrap();
+            let whole = whole_list(db.conn(), &query, &intent, &languages).unwrap();
+            let shown: Vec<FilterCandidate> =
+                stored(db.conn(), &whole).unwrap().into_iter().map(|decl| decl.candidate).collect();
+            let right: Vec<(String, String, u64)> = search["targets"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|t| (t[0].as_str().unwrap().to_string(), t[1].as_str().unwrap().to_string(), t[2].as_u64().unwrap()))
+                .collect();
+            let is_file = |path: &str| right.iter().any(|(target, _, _)| target == path);
+            let decl_rank = shown
+                .iter()
+                .position(|c| right.iter().any(|(p, n, l)| &c.path == p && &c.name == n && u64::from(c.line) == *l))
+                .map_or(0, |at| at + 1);
+            let mut files: Vec<&str> = Vec::new();
+            for candidate in &shown {
+                if !files.contains(&candidate.path.as_str()) {
+                    files.push(&candidate.path);
+                }
+            }
+            let file_rank = files.iter().position(|path| is_file(path)).map_or(0, |at| at + 1);
+            let first_decl = shown.iter().position(|c| is_file(&c.path)).map_or(0, |at| at + 1);
+            let bank = found(db.conn(), &query, &languages, 100).unwrap();
+            let bank_rank = bank.iter().position(|f| is_file(&f.path)).map_or(0, |at| at + 1);
+            let triaged = crate::io::map_triage::triage_at(Path::new(&text("model")), &query, &languages, 5).unwrap();
+            let signals = triaged.signals;
+            let project = key.split('|').next().unwrap_or("").to_string();
+            let total = totals.entry(project).or_default();
+            total[0] += 1;
+            total[1] += usize::from(file_rank == 1);
+            total[2] += usize::from((1..=5).contains(&file_rank));
+            total[3] += usize::from((1..=CANDIDATES).contains(&first_decl));
+            total[4] += usize::from(bank_rank == 1);
+            total[5] += usize::from((1..=5).contains(&bank_rank));
+            let names: Vec<&str> = shown.iter().take(5).map(|c| c.name.as_str()).collect();
+            lines.push(
+                json!({
+                    "key": key, "decl_rank": decl_rank, "file_rank": file_rank, "first_decl_of_file": first_decl,
+                    "bank_rank": bank_rank, "top": names,
+                    "chance": crate::domain::triage::chance(&signals), "grade": triaged.grade,
+                    "words": signals.words, "strong": signals.strong, "first": signals.first, "second": signals.second,
+                })
+                .to_string(),
+            );
+        }
+        std::fs::write(out, lines.join("\n")).unwrap();
+        for (project, [all, first, five, hundred, bank_first, bank_five]) in &totals {
+            eprintln!(
+                "RANKS {project}: {all} searches; candidates: file first {first}, in 5 {five}, in {CANDIDATES} {hundred}; bank: first {bank_first}, in 5 {bank_five}"
+            );
+        }
+    }
+
+    /// Afina os pesos dos campos por subida de uma coordenada por vez, na
+    /// régua de `MAP_TUNE_RULER` (o arquivo JSON da régua do primeiro elo,
+    /// com os mapas de cada projeto): `MAP_TUNE_FROM`..`MAP_TUNE_TO` são os
+    /// assuntos afinados, `MAP_TUNE_CHECK_FROM`..`MAP_TUNE_CHECK_TO` os que só
+    /// conferem. Imprime os pesos e a medida de cada rodada.
+    #[test]
+    #[ignore = "mede com os mapas dos projetos de prova"]
+    fn tune_the_field_weights() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let number = |key: &str, default: usize| std::env::var(key).ok().and_then(|v| v.parse().ok()).unwrap_or(default);
+        let ruler: Value =
+            serde_json::from_str(&std::fs::read_to_string(std::env::var("MAP_TUNE_RULER").unwrap()).unwrap()).unwrap();
+        let (from, to) = (number("MAP_TUNE_FROM", 0), number("MAP_TUNE_TO", 19));
+        let (check_from, check_to) = (number("MAP_TUNE_CHECK_FROM", 20), number("MAP_TUNE_CHECK_TO", 39));
+        let rounds = number("MAP_TUNE_ROUNDS", 2);
+        let only: Option<Vec<String>> =
+            std::env::var("MAP_TUNE_PROJECTS").ok().map(|list| list.split(',').map(str::to_string).collect());
+        let languages = Languages::new(["pt-BR", "en-US"]);
+        // Cada busca: o projeto, o mapa, a pergunta só com a frase, a com nomes, a frase e o que é certo.
+        struct One {
+            subject: usize,
+            model: String,
+            names: String,
+            intent: String,
+            right: Vec<String>,
+        }
+        let mut all: Vec<One> = Vec::new();
+        let mut order: HashMap<String, Vec<String>> = HashMap::new();
+        for search in ruler["searches"].as_array().unwrap() {
+            let key = search["key"].as_str().unwrap();
+            let mut parts = key.split('|');
+            let (project, subject) = (parts.next().unwrap().to_string(), parts.next().unwrap().to_string());
+            if only.as_ref().is_some_and(|only| !only.contains(&project)) {
+                continue;
+            }
+            let subjects = order.entry(project).or_default();
+            if !subjects.contains(&subject) {
+                subjects.push(subject.clone());
+            }
+            let at = subjects.iter().position(|seen| *seen == subject).unwrap();
+            all.push(One {
+                subject: at,
+                model: search["model"].as_str().unwrap().to_string(),
+                names: search["query"].as_str().unwrap().to_string(),
+                intent: search["intent"].as_str().unwrap().to_string(),
+                right: search["targets"].as_array().unwrap().iter().map(|t| t[0].as_str().unwrap().to_string()).collect(),
+            });
+        }
+        let tuned: Vec<&One> = all.iter().filter(|one| (from..=to).contains(&one.subject)).collect();
+        let checked: Vec<&One> = all.iter().filter(|one| (check_from..=check_to).contains(&one.subject)).collect();
+        // A medida de um conjunto: o ganho e as contagens.
+        let measure = |set: &[&One]| -> [f64; 7] {
+            let next = AtomicUsize::new(0);
+            let totals = std::sync::Mutex::new([0.0f64; 7]);
+            std::thread::scope(|scope| {
+                for _ in 0..4 {
+                    scope.spawn(|| {
+                        let mut dbs: HashMap<String, (MapDb, HashMap<i64, i64>)> = HashMap::new();
+                        let mut mine = [0.0f64; 7];
+                        loop {
+                            let at = next.fetch_add(1, Ordering::SeqCst);
+                            let Some(one) = set.get(at) else { break };
+                            let (db, file_of) = dbs.entry(one.model.clone()).or_insert_with(|| {
+                                let db = indexed(Path::new(&one.model), &languages, &map_fill::READ_BY_CANDIDATES).unwrap();
+                                let file_of: HashMap<i64, i64> = decl_files(db.conn()).unwrap().into_iter().collect();
+                                (db, file_of)
+                            });
+                            let conn = db.conn();
+                            let mut path_of = conn.prepare("SELECT rowid FROM files WHERE path = ?1").unwrap();
+                            let right: HashSet<i64> = one
+                                .right
+                                .iter()
+                                .filter_map(|path| path_of.query_row([path], |row| row.get::<_, i64>(0)).ok())
+                                .collect();
+                            for (mode, query) in [(0, &one.intent), (1, &one.names)] {
+                                let whole = whole_list(conn, query, &one.intent, &languages).unwrap();
+                                let mut files: Vec<i64> = Vec::new();
+                                for id in whole.iter().take(CANDIDATES) {
+                                    if let Some(file) = file_of.get(id) {
+                                        if !files.contains(file) {
+                                            files.push(*file);
+                                        }
+                                    }
+                                }
+                                let rank = files.iter().position(|file| right.contains(file)).map(|at| at + 1);
+                                let in_hundred = whole.iter().take(CANDIDATES).any(|id| file_of.get(id).is_some_and(|f| right.contains(f)));
+                                let bank = found(conn, query, &languages, 100).unwrap();
+                                let bank_rank = bank
+                                    .iter()
+                                    .position(|f| one.right.contains(&f.path))
+                                    .map(|at| at + 1);
+                                let kind = 3 * mode;
+                                match rank {
+                                    Some(rank) if rank <= 5 => {
+                                        mine[0] += 1.0 + (6 - rank) as f64 * 0.05;
+                                        mine[kind + 1] += 1.0;
+                                    }
+                                    _ if in_hundred => mine[0] += 0.4,
+                                    _ => {}
+                                }
+                                mine[kind + 2] += f64::from(u8::from(in_hundred));
+                                match bank_rank {
+                                    Some(rank) if rank <= 5 => {
+                                        mine[0] += 1.0 + (6 - rank) as f64 * 0.05;
+                                        mine[kind + 3] += 1.0;
+                                    }
+                                    Some(_) => mine[0] += 0.1,
+                                    None => {}
+                                }
+                            }
+                        }
+                        let mut totals = totals.lock().unwrap();
+                        for (total, mine) in totals.iter_mut().zip(mine) {
+                            *total += mine;
+                        }
+                    });
+                }
+            });
+            totals.into_inner().unwrap()
+        };
+        let show = |label: &str, n: usize, m: [f64; 7]| {
+            eprintln!(
+                "TUNE {label} ({n} searches): gain {:.2} | phrase: cand5 {} in100 {} bank5 {} | names: cand5 {} in100 {} bank5 {}",
+                m[0], m[1], m[2], m[3], m[4], m[5], m[6]
+            );
+        };
+        let mut params: Vec<(&'static str, &'static str)> = Vec::new();
+        for level in [&FILE_LEVEL, &DECL_LEVEL] {
+            params.extend(level.columns().map(|column| (level.fts, column)));
+        }
+        let mut current: Vec<f64> =
+            params.iter().map(|(table, column)| if *table == FILE_LEVEL.fts { FILE_LEVEL.weight(column) } else { DECL_LEVEL.weight(column) }).collect();
+        let apply = |current: &[f64]| {
+            for ((table, column), weight) in params.iter().zip(current) {
+                tuning::set(table, column, *weight);
+            }
+        };
+        if let Ok(start) = std::env::var("MAP_TUNE_START") {
+            for pair in start.split_whitespace() {
+                let (name, value) = pair.split_once('=').unwrap();
+                let at = params.iter().position(|(t, c)| format!("{t}.{c}") == name).unwrap_or_else(|| panic!("{name}"));
+                current[at] = value.parse().unwrap();
+            }
+        }
+        let only: Option<Vec<String>> =
+            std::env::var("MAP_TUNE_ONLY").ok().map(|list| list.split_whitespace().map(str::to_string).collect());
+        apply(&current);
+        let clock = std::time::Instant::now();
+        let mut best = measure(&tuned);
+        eprintln!("TUNE one measure took {:.1}s", clock.elapsed().as_secs_f64());
+        show("start tuned", tuned.len(), best);
+        show("start check", checked.len(), measure(&checked));
+        let grid = [0.0, 0.1, 0.25, 0.5, 1.0, 2.0, 3.0, 5.0];
+        for round in 1..=rounds {
+            let mut moved = false;
+            for at in 0..params.len() {
+                if only.as_ref().is_some_and(|only| !only.contains(&format!("{}.{}", params[at].0, params[at].1))) {
+                    continue;
+                }
+                let keep = current[at];
+                let mut chosen = (keep, best);
+                for &value in &grid {
+                    if (value - keep).abs() < 1e-9 {
+                        continue;
+                    }
+                    current[at] = value;
+                    apply(&current);
+                    let got = measure(&tuned);
+                    if got[0] > chosen.1[0] + 1e-9 {
+                        chosen = (value, got);
+                    }
+                }
+                current[at] = chosen.0;
+                apply(&current);
+                if (chosen.0 - keep).abs() > 1e-9 {
+                    moved = true;
+                    best = chosen.1;
+                    eprintln!("TUNE round {round}: {}.{} {keep} -> {} gain {:.2}", params[at].0, params[at].1, chosen.0, best[0]);
+                }
+            }
+            show(&format!("round {round} tuned"), tuned.len(), best);
+            show(&format!("round {round} check"), checked.len(), measure(&checked));
+            let weights: Vec<String> = params.iter().zip(&current).map(|((t, c), w)| format!("{t}.{c}={w}")).collect();
+            eprintln!("TUNE weights: {}", weights.join(" "));
+            if !moved {
+                break;
+            }
+        }
     }
 
     /// A medida do primeiro elo da busca com filtro: em quantas buscas de

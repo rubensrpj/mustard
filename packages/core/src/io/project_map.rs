@@ -304,7 +304,7 @@ pub const FILES: MapBlock = block!("files", version 2, {
 /// busca sem filtro lê vêm primeiro; os do texto de dentro das peças vêm
 /// depois, e só a busca com filtro os lê. A declaração de teste fica fora do
 /// nível das declarações, e só a tabela trigram a guarda.
-pub const DECLS: MapBlock = block!("decls", version 10, {
+pub const DECLS: MapBlock = block!("decls", version 11, {
     "decls" at Place::Decls => [
         "file" Owner ["path"], "kind" Text, "name" Text, "line" Int, "end_line" Int,
         "signature" Text, "doc" Text, "whole_doc" Text, "body_comment" Text, "body_names" Text,
@@ -316,18 +316,18 @@ pub const DECLS: MapBlock = block!("decls", version 10, {
     ]
 }, index [
     "file_vocab", "decl_vocab", "file_fts", "decl_fts", "decl_trigram", "file_lengths", "decl_lengths", "search_meta"
-] "CREATE VIRTUAL TABLE file_fts USING fts5(name, path, doc, log, error, text, file_doc, file_comment, content='', \
+] "CREATE VIRTUAL TABLE file_fts USING fts5(name, path, doc, log, error, text, file_doc, file_comment, commits, content='', \
      contentless_delete=1, tokenize='unicode61 remove_diacritics 2');\
    CREATE VIRTUAL TABLE decl_fts USING fts5(name, path, signature, doc, log, error, text, whole_doc, body_comment, \
-     body_names, body_calls, content='', contentless_delete=1, tokenize='unicode61 remove_diacritics 2');\
+     body_names, body_calls, owner, members, content='', contentless_delete=1, tokenize='unicode61 remove_diacritics 2');\
    CREATE VIRTUAL TABLE file_vocab USING fts5vocab(file_fts, instance);\
    CREATE VIRTUAL TABLE decl_vocab USING fts5vocab(decl_fts, instance);\
    CREATE VIRTUAL TABLE decl_trigram USING fts5(name, folded, file UNINDEXED, tokenize='trigram');\
    CREATE TABLE file_lengths(id INTEGER PRIMARY KEY, name INTEGER, path INTEGER, doc INTEGER, log INTEGER, \
-     error INTEGER, text INTEGER, file_doc INTEGER, file_comment INTEGER);\
+     error INTEGER, text INTEGER, file_doc INTEGER, file_comment INTEGER, commits INTEGER);\
    CREATE TABLE decl_lengths(id INTEGER PRIMARY KEY, name INTEGER, path INTEGER, signature INTEGER, doc INTEGER, \
      log INTEGER, error INTEGER, text INTEGER, whole_doc INTEGER, body_comment INTEGER, body_names INTEGER, \
-     body_calls INTEGER);\
+     body_calls INTEGER, owner INTEGER, members INTEGER);\
    CREATE TABLE search_meta(key TEXT PRIMARY KEY, value);");
 
 /// As rotas do servidor de cada arquivo: o método, o caminho padronizado e o
@@ -472,6 +472,11 @@ pub const BLOCKS: [MapBlock; 6] = [CENSUS, FILES, DECLS, ROUTES, GRAPH, HISTORY]
 /// Os blocos de que o índice de busca lê: os arquivos, as declarações e as
 /// ligações, onde moram as chamadas.
 pub(crate) const SEARCHED: [&MapBlock; 3] = [&FILES, &DECLS, &GRAPH];
+
+/// Os blocos de que o índice de busca se faz: os lidos por ela e a história
+/// da base, de onde saem os títulos dos commits do arquivo. Quando algum
+/// deles muda, o índice se refaz.
+const INDEXED_FROM: [&MapBlock; 4] = [&FILES, &DECLS, &GRAPH, &HISTORY];
 
 /// Todo bloco que a porta declara, na ordem do despejo: os da montagem e,
 /// depois deles, o da história de cada declaração, o dos pull requests, o
@@ -669,8 +674,7 @@ pub enum Need<'a> {
     /// O resumo do início da sessão: o caminho de cada arquivo, as línguas,
     /// os subprojetos, os arquivos mais importados e a história.
     Summary,
-    /// O terreno do início da sessão: os subprojetos e a camada de cada
-    /// pasta.
+    /// O terreno: os subprojetos e a camada de cada pasta.
     Terrain,
     /// Os caminhos dos arquivos, e nada mais deles.
     Paths,
@@ -2082,7 +2086,7 @@ fn save_rows<'b>(
             }
             map_db::set_mark(tx, block.name(), mark)?;
         }
-        if changed.iter().any(|(block, _)| SEARCHED.iter().any(|searched| searched.name() == block.name())) {
+        if changed.iter().any(|(block, _)| INDEXED_FROM.iter().any(|indexed| indexed.name() == block.name())) {
             match languages {
                 Some(languages) => map_search::rebuild(tx, languages)?,
                 None => map_search::forget(tx)?,

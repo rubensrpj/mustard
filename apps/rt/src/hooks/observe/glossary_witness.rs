@@ -148,7 +148,8 @@ mod tests {
     }
 
     /// Os arquivos que a busca do mapa, sem o filtro, acha para `query`,
-    /// perguntada pela sessão do teste.
+    /// perguntada pela sessão do teste: os da resposta parcial, ou o da peça
+    /// da cravada.
     fn search(root: &Path, query: &str) -> Vec<String> {
         let opts = MapOpts {
             root: root.to_path_buf(),
@@ -169,7 +170,9 @@ mod tests {
             &|_, _| Err(FilterError::MissingKey),
         );
         assert_eq!(report["ok"], json!(true), "{report}");
-        report["files"].as_array().unwrap().iter().map(|file| file["path"].as_str().unwrap().to_string()).collect()
+        // A resposta cravada traz a peça do primeiro achado; a parcial, os arquivos.
+        let found = report.get("files").or_else(|| report.get("pieces")).and_then(|found| found.as_array());
+        found.unwrap().iter().map(|file| file["path"].as_str().unwrap().to_string()).collect()
     }
 
     /// Os nomes dos candidatos da busca com filtro para `query`.
@@ -215,7 +218,7 @@ mod tests {
         assert!(search(root, "sobra").is_empty());
         assert!(!candidates(root, "sobra").contains(&"collect_leftover".to_string()));
 
-        assert_eq!(search(root, "sobra wave"), ["src/rounds.rs"]);
+        assert_eq!(search(root, "sobra leftover"), ["src/rounds.rs"]);
         assert_eq!(hooked(&after(root, "Edit", "src/rounds.rs", 3)), Verdict::Allow);
 
         assert_eq!(search(root, "sobra"), ["src/rounds.rs"]);
@@ -229,7 +232,7 @@ mod tests {
     fn reading_what_the_search_delivered_teaches_nothing() {
         let dir = project();
         let root = dir.path();
-        assert_eq!(search(root, "sobra wave"), ["src/rounds.rs"]);
+        assert_eq!(search(root, "sobra leftover"), ["src/rounds.rs"]);
         assert_eq!(hooked(&after(root, "Read", "src/rounds.rs", 3)), Verdict::Allow);
         assert!(search(root, "sobra").is_empty());
     }
@@ -239,10 +242,10 @@ mod tests {
     fn an_edit_outside_what_the_search_delivered_teaches_nothing() {
         let dir = project();
         let root = dir.path();
-        assert_eq!(search(root, "sobra wave"), ["src/rounds.rs"]);
+        assert_eq!(search(root, "sobra leftover"), ["src/rounds.rs"]);
         hooked(&after(root, "Edit", "src/billing.rs", 3));
         assert!(search(root, "sobra").is_empty());
-        assert!(search(root, "wave").iter().all(|file| file != "src/billing.rs"));
+        assert!(search(root, "leftover").iter().all(|file| file != "src/billing.rs"));
     }
 
     /// Depois de uma busca sem resultado, a primeira declaração editada
@@ -265,7 +268,7 @@ mod tests {
         let root = dir.path();
         let languages = crate::commands::spec_events::project(root).languages;
         let model = store::model_path(root);
-        assert_eq!(search(root, "sobra wave"), ["src/rounds.rs"]);
+        assert_eq!(search(root, "sobra leftover"), ["src/rounds.rs"]);
         hooked(&after(root, "Edit", "src/rounds.rs", 3));
         assert_eq!(search(root, "sobra"), ["src/rounds.rs"]);
 
@@ -280,7 +283,7 @@ mod tests {
     fn an_unreadable_map_lets_the_edit_go_on() {
         let dir = project();
         let root = dir.path();
-        assert_eq!(search(root, "sobra wave"), ["src/rounds.rs"]);
+        assert_eq!(search(root, "sobra leftover"), ["src/rounds.rs"]);
         std::fs::write(store::model_path(root), "not a database").unwrap();
         assert_eq!(hooked(&after(root, "Edit", "src/rounds.rs", 3)), Verdict::Allow);
     }
@@ -291,7 +294,7 @@ mod tests {
     fn a_locked_map_lets_the_edit_go_on_without_waiting_for_the_lock() {
         let dir = project();
         let root = dir.path().to_path_buf();
-        assert_eq!(search(&root, "sobra wave"), ["src/rounds.rs"]);
+        assert_eq!(search(&root, "sobra leftover"), ["src/rounds.rs"]);
         let (locked_tx, locked) = std::sync::mpsc::channel();
         let (release, released) = std::sync::mpsc::channel::<()>();
         let model = store::model_path(&root);

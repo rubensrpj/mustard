@@ -727,6 +727,13 @@ pub struct CallSite {
 /// valor, a chamada pode alcançar qualquer método com o nome.
 pub const RECEIVER: &str = "?";
 
+/// A marca do receptor escrito pelo nome sozinho (`_logger` em
+/// `_logger.Log()`), sem tipo e sem ligação local, numa língua que chama o
+/// membro do próprio objeto pelo nome sozinho: `?@_logger`, com os campos
+/// depois dele (`?@_ctx.config`). O nome pode ser um campo do tipo em volta ou
+/// um tipo (`Console.WriteLine()`); o grafo vê qual pelo mapa.
+pub const BARE: &str = "@";
+
 impl Serialize for CallSite {
     fn serialize<S: Serializer>(&self, out: S) -> Result<S::Ok, S::Error> {
         if self.qualifier.is_empty() {

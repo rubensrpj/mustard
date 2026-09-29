@@ -1,5 +1,5 @@
-//! O mapa do projeto: as recusas e os motivos do comando `map`, o resumo do
-//! início da sessão, o terreno e o `scan-map`.
+//! O mapa do projeto: as recusas e os motivos do comando `map` e o
+//! `scan-map`.
 //!
 //! Uma parte do catálogo de textos: quem lê chama `translate`, a porta do
 //! catálogo, e nunca esta parte direto. Chave nova com um começo que esta
@@ -9,43 +9,29 @@ use super::Locale;
 
 /// Os começos de chave (o trecho antes do primeiro ponto) que esta parte
 /// responde. Nenhum deles é de outra parte.
-pub(super) const PREFIXES: &[&str] = &["map", "orient", "scan"];
+pub(super) const PREFIXES: &[&str] = &["map", "scan"];
 
 /// O texto de `key` em `lang`, ou `None` quando a chave não está aqui.
 pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
     Some(match (key, lang) {
-        // Orientation artifacts — the once-per-session terrain banner
-        // (`commands/orient.rs`) and the machine-owned `.claude/scan-map.md`
-        // (`commands/scan_claude.rs::render_map`). Both are DISPLAYED to the
-        // developer and injected into the session, so they follow the
-        // project's text language (`language.text` in `mustard.json`) — unlike
-        // the internal census/index/search, which stays English by policy. The
-        // `{kind}` / `{count}` / `{map}` slots are interpolated by the caller.
+        // O `.claude/scan-map.md`, o arquivo que a máquina escreve
+        // (`commands/scan_claude.rs::render_map`). Ele é MOSTRADO ao
+        // desenvolvedor e lido pelo modelo, então segue a língua do texto do
+        // projeto (`language.text` no `mustard.json`) — ao contrário do
+        // censo, do índice e da busca internos, que ficam em inglês por
+        // política. As vagas `{kind}` e `{count}` são preenchidas por quem
+        // chama.
         // A dica do mapa leva `{code_language}`, a língua dos nomes do código
         // (`language.code`): a busca por conceito junta as palavras do pedido,
         // as mesmas palavras nessa língua, soltas, e os nomes prováveis nela.
         // O `{example}` segue essa mesma língua, para o exemplo nunca fixar uma.
-        ("orient.terrain.header", Locale::PtBr) => {
-            "[Terreno] subprojetos mapeados pelo /scan — leia daqui, não grepe para se orientar:"
-        }
-        ("orient.terrain.header", Locale::EnUs) => {
-            "[Terrain] subprojects mapped by /scan — read from here, don't grep to orient yourself:"
-        }
-        ("orient.census.files_suffix", Locale::PtBr) => " · {count} arquivos",
-        ("orient.census.files_suffix", Locale::EnUs) => " · {count} files",
-        ("orient.census.truncated", Locale::PtBr) => {
-            "\n- (+{count} subprojetos não listados — o censo completo está em `{map}`)"
-        }
-        ("orient.census.truncated", Locale::EnUs) => {
-            "\n- (+{count} subprojects not listed — the full census is in `{map}`)"
-        }
         ("scan.map.type_line", Locale::PtBr) => "Tipo: {kind} · {count} arquivos",
         ("scan.map.type_line", Locale::EnUs) => "Type: {kind} · {count} files",
         ("scan.map.pointer", Locale::PtBr) => {
-            "O terreno já está na sua janela (o resumo do mapa injetado no início da sessão). Para localizar: `grep` para termo exato conhecido; `mustard-rt run map search --query \"<palavras>\" --intent \"<frase>\"` para conceito. Na mesma busca, junte as palavras do pedido do usuário, as mesmas palavras em {code_language}, soltas, e os nomes prováveis no código. Os nomes vão em {code_language}, camelCase ou snake_case: `--query \"{example}\"`. Em `--intent` vai a frase do que você procura e para quê. O pedaço de um nome vai só em `--query`. A resposta traz `grade`, de 0 a 5, e `mark`. Cravado, `pinned`: o mapa achou tudo o que você pediu, e o primeiro arquivo vale. Parcial, `partial`: achou parte, e `missing` lista as palavras que faltam. Não achou, `not_found`: use `grep`. O `Grep` e o `grep` por palavra recebem a mesma marca. Na busca que mostra linhas, o cravado e o parcial recebem a resposta do Mustard no lugar da busca comum. A resposta vem agrupada por função, com o arquivo e as linhas de começo e fim. A busca que só lista nomes de arquivo ou conta roda como veio, com uma linha da marca. A mesma busca, repetida, passa. Depois leia os arquivos apontados: o mapa acha onde olhar, não substitui ler."
+            "Para localizar: `grep` para termo exato conhecido; `mustard-rt run map search --query \"<palavras>\" --intent \"<frase>\"` para conceito. Na mesma busca, junte as palavras do pedido do usuário, as mesmas palavras em {code_language}, soltas, e os nomes prováveis no código. Os nomes vão em {code_language}, camelCase ou snake_case: `--query \"{example}\"`. Em `--intent` vai a frase do que você procura e para quê. O pedaço de um nome vai só em `--query`. A resposta traz `grade`, de 0 a 5, e `mark`. Cravado, `pinned`: o mapa achou tudo o que você pediu, e o primeiro arquivo vale. Parcial, `partial`: achou parte, e `missing` lista as palavras que faltam. Não achou, `not_found`: use `grep`. O `Grep` e o `grep` por palavra recebem a mesma marca. Na busca que mostra linhas, o cravado e o parcial recebem a resposta do Mustard no lugar da busca comum. A resposta vem agrupada por função, com o arquivo e as linhas de começo e fim. A busca que só lista nomes de arquivo ou conta roda como veio, com uma linha da marca. A mesma busca, repetida, passa. Depois leia os arquivos apontados: o mapa acha onde olhar, não substitui ler."
         }
         ("scan.map.pointer", Locale::EnUs) => {
-            "The terrain is already in your window (the map summary injected at session start). To locate: `grep` for a known exact term; `mustard-rt run map search --query \"<words>\" --intent \"<sentence>\"` for a concept. In one search, join the words of the user's request, the same words in {code_language} as plain words, and the likely names in the code. The names go in {code_language}, camelCase or snake_case: `--query \"{example}\"`. In `--intent` goes the sentence of what you are looking for and why. Part of a name goes only in `--query`. The answer carries `grade`, from 0 to 5, and `mark`. Pinned, `pinned`: the map found everything you asked for, and the first file stands. Partial, `partial`: it found part, and `missing` lists the words it lacks. Not found, `not_found`: use `grep`. A word search with `Grep` or `grep` gets the same mark. In a search that shows lines, pinned and partial get Mustard's answer in place of the plain search. The answer is grouped by function, with the file and the first and last lines. A search that only lists file names or counts runs as it came, with one line of the mark. The same search, repeated, passes. Then read the files it points to: the map finds where to look, it does not replace reading."
+            "To locate: `grep` for a known exact term; `mustard-rt run map search --query \"<words>\" --intent \"<sentence>\"` for a concept. In one search, join the words of the user's request, the same words in {code_language} as plain words, and the likely names in the code. The names go in {code_language}, camelCase or snake_case: `--query \"{example}\"`. In `--intent` goes the sentence of what you are looking for and why. Part of a name goes only in `--query`. The answer carries `grade`, from 0 to 5, and `mark`. Pinned, `pinned`: the map found everything you asked for, and the first file stands. Partial, `partial`: it found part, and `missing` lists the words it lacks. Not found, `not_found`: use `grep`. A word search with `Grep` or `grep` gets the same mark. In a search that shows lines, pinned and partial get Mustard's answer in place of the plain search. The answer is grouped by function, with the file and the first and last lines. A search that only lists file names or counts runs as it came, with one line of the mark. The same search, repeated, passes. Then read the files it points to: the map finds where to look, it does not replace reading."
         }
         // O exemplo da busca na dica do mapa, pela língua dos nomes do código:
         // preenche o `{example}`. Junta as palavras do pedido no idioma do
@@ -366,6 +352,18 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("map.answer.rest", Locale::EnUs) => {
             "Left out by the cut, places: {places}, files: {files}. Repeat the search to see the whole list."
         }
+        // A linha que a resposta cravada leva no fim: se o primeiro achado
+        // não serve, as ferramentas de sempre seguem valendo.
+        ("map.search.use_tools", Locale::PtBr) => {
+            "Se este não for o lugar, use suas ferramentas padrões: `Grep`, `Glob` e `Read`."
+        }
+        ("map.search.use_tools", Locale::EnUs) => {
+            "If this is not the place, use your standard tools: `Grep`, `Glob` and `Read`."
+        }
+        // A resposta do filtro que escolheu "nenhum destes": nada da lista é o
+        // que se procura.
+        ("map.search.filter_none", Locale::PtBr) => "não encontrei nada, use suas ferramentas padrões",
+        ("map.search.filter_none", Locale::EnUs) => "found nothing, use your standard tools",
         ("map.search.name_piece", Locale::PtBr) => "pedaço de nome: {word}",
         ("map.search.name_piece", Locale::EnUs) => "part of a name: {word}",
         ("map.search.filter_failed", Locale::PtBr) => {
@@ -441,8 +439,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("map.rs"),
             super::PREFIXES,
-            80,
-            0x8bae_ed99_1d22_861e,
+            79,
+            0xd691_5547_c58f_27b4,
         );
     }
 
@@ -486,6 +484,8 @@ mod tests {
                 "map.answer.map_only",
                 "map.answer.changed",
                 "map.answer.rest",
+                "map.search.use_tools",
+                "map.search.filter_none",
                 "map.search.filter_failed",
                 "map.search.bad_number",
                 "map.search.bad_filter",
@@ -732,6 +732,8 @@ mod tests {
             ("map.answer.map_only", &["{files}"][..]),
             ("map.answer.changed", &[][..]),
             ("map.answer.rest", &["{places}", "{files}"][..]),
+            ("map.search.use_tools", &[][..]),
+            ("map.search.filter_none", &[][..]),
             ("map.search.name_piece", &["{word}"][..]),
             ("map.search.filter_failed", &["{reason}"][..]),
             ("map.search.reason.no_credit", &[][..]),

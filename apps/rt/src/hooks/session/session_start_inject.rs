@@ -5,17 +5,16 @@
 //! texto: acrescentar um aviso é somar um item. Na ordem em que a janela os
 //! lê:
 //!
-//! 1. **O terreno** — o resumo do mapa do projeto, lido do censo do `/scan`.
-//! 2. **Os textos declarados** — as entradas `on: sessionStart` de
+//! 1. **Os textos declarados** — as entradas `on: sessionStart` de
 //!    `mustard.json#inject`, que voltam depois de `/clear` e da compactação.
-//! 3. **A retomada** — a spec atual, a fase, o último passo e o próximo item,
+//! 2. **A retomada** — a spec atual, a fase, o último passo e o próximo item,
 //!    a mesma linha que o `resume` devolve; depois da compactação, o bloco de
 //!    retomada inteiro, o mesmo que o aviso antes dela mostrou.
-//! 4. **A página do projeto** — num projeto em que ela ainda não foi
+//! 3. **A página do projeto** — num projeto em que ela ainda não foi
 //!    publicada, a ordem de publicar o template dela e gravar o endereço, que
 //!    vira o link da barra de status. Com a página publicada, nada.
-//! 5. **As pendências** — uma linha só, com a contagem.
-//! 6. **O pull request da spec atual** — com a spec atual em "pull request
+//! 4. **As pendências** — uma linha só, com a contagem.
+//! 5. **O pull request da spec atual** — com a spec atual em "pull request
 //!    aberto", o provedor é perguntado só pelo pull request dela; se ele
 //!    entrou pelas mãos de outra pessoa, o mesmo caminho do merge do Mustard
 //!    roda antes de qualquer aviso (a spec gravada como entregue, a base
@@ -25,23 +24,23 @@
 //!    e a spec mexendo em submódulo, os pull requests dos submódulos são
 //!    conferidos: o que entrou leva o ponteiro ao principal, e o aviso diz
 //!    qual falta ou que o principal ficou pronto.
-//! 7. **As branches mergeadas** — as outras branches cujo trabalho já entrou
+//! 6. **As branches mergeadas** — as outras branches cujo trabalho já entrou
 //!    na base e que seguem vivas, só pelo git local, sem pergunta nenhuma ao
 //!    provedor.
-//! 8. **O disco** — as cópias descartáveis antigas acima de 5 GB.
-//! 9. **A versão velha do Mustard** — a gravada no projeto, a do plugin
+//! 7. **O disco** — as cópias descartáveis antigas acima de 5 GB.
+//! 8. **A versão velha do Mustard** — a gravada no projeto, a do plugin
 //!    carregado ou a do plugin instalado, quando uma delas ficou para trás.
-//! 10. **Os processos presos** — o que um agente deixou rodando (um laço de
-//!     espera, ou um comando na cópia de uma onda já apagada) é encerrado
-//!     aqui também, não só a cada rodada e no fechamento, e o aviso diz qual.
+//! 9. **Os processos presos** — o que um agente deixou rodando (um laço de
+//!    espera, ou um comando na cópia de uma onda já apagada) é encerrado
+//!    aqui também, não só a cada rodada e no fechamento, e o aviso diz qual.
 //!
 //! ## Até 3 kB
 //!
 //! Tudo junto cabe em [`MAX_BYTES`]. Quando o todo passa do teto, os avisos
 //! cedem o lugar um a um, na vez de cada um, com uma linha no stderr dizendo
-//! qual saiu: o terreno primeiro, depois a versão, o disco, as branches
-//! mergeadas, a contagem das pendências e a página do projeto, e só então os
-//! textos declarados.
+//! qual saiu: os processos presos primeiro, depois a versão, o disco, as
+//! branches mergeadas, a contagem das pendências e a página do projeto, e só
+//! então os textos declarados.
 //! Entre os textos declarados está o mapa do início da sessão, que substitui
 //! as regras antigas: ele é o último a sair. A retomada e o relato do pull
 //! request da spec atual nunca cedem: um diz onde a spec está, o outro conta
@@ -109,7 +108,6 @@ struct Notice {
 /// item. Os textos declarados, onde mora o mapa do início da sessão, são os
 /// últimos a ceder.
 const NOTICES: &[Notice] = &[
-    Notice { name: "terrain", text: terrain_notice, cedes: Some(0) },
     Notice { name: "declared", text: declared_notice, cedes: Some(6) },
     Notice { name: "resume", text: resume_notice, cedes: None },
     Notice { name: "project_page", text: project_page_notice, cedes: Some(5) },
@@ -208,11 +206,6 @@ fn session_of(input: &HookInput) -> Option<String> {
 // ---------------------------------------------------------------------------
 // Os avisos
 // ---------------------------------------------------------------------------
-
-/// O terreno: o resumo do mapa do projeto, do censo do `/scan`.
-fn terrain_notice(probe: &Probe<'_>) -> Option<String> {
-    crate::commands::orient::render_terrain(&crate::commands::orient::compute_orientation(probe.root), probe.lang)
-}
 
 /// Os textos declarados para o início da sessão; com a janela renovada, eles
 /// voltam mesmo com a marca de entregue.
@@ -548,21 +541,60 @@ mod tests {
     }
 
     /// Os avisos são uma lista, na ordem em que a janela os lê, cada um com a
-    /// vez de ceder o lugar: o terreno primeiro, os textos declarados por
-    /// último, e a retomada e o relato do pull request nunca.
+    /// vez de ceder o lugar: os processos presos primeiro, os textos
+    /// declarados por último, e a retomada e o relato do pull request nunca.
     #[test]
     fn the_notices_are_a_typed_list_in_reading_order() {
         let names: Vec<&str> = NOTICES.iter().map(|n| n.name).collect();
         assert_eq!(
             names,
-            ["terrain", "declared", "resume", "project_page", "pending", "landed", "merged", "disk", "version", "stuck"]
+            ["declared", "resume", "project_page", "pending", "landed", "merged", "disk", "version", "stuck"]
         );
         let mut ceding: Vec<(u8, &str)> = NOTICES.iter().filter_map(|n| n.cedes.map(|turn| (turn, n.name))).collect();
         ceding.sort_unstable();
         let order: Vec<&str> = ceding.into_iter().map(|(_, name)| name).collect();
-        assert_eq!(order, ["stuck", "terrain", "version", "disk", "merged", "pending", "project_page", "declared"]);
+        assert_eq!(order, ["stuck", "version", "disk", "merged", "pending", "project_page", "declared"]);
         let kept: Vec<&str> = NOTICES.iter().filter(|n| n.cedes.is_none()).map(|n| n.name).collect();
         assert_eq!(kept, ["resume", "landed"]);
+    }
+
+    /// O início da sessão de um projeto com o mapa gravado não leva o resumo
+    /// do mapa: nenhuma linha de subprojeto e nenhuma das palavras que
+    /// abriam o aviso, nos dois idiomas. O texto declarado do projeto segue
+    /// chegando, para a conferência não passar só porque a saída ficou vazia.
+    #[test]
+    fn the_session_start_of_a_project_with_a_map_carries_no_terrain() {
+        const MAP: &str = r#"{
+          "projects": [
+            {"name": "rt", "dir": "apps/rt", "kind": "cargo", "code_files": 232},
+            {"name": "web", "dir": "apps/web", "kind": "npm", "code_files": 40}
+          ],
+          "skeleton": [
+            {"dir": "apps/rt", "role": "L1"},
+            {"dir": "apps/web", "role": "L0"}
+          ]
+        }"#;
+        for lang in ["pt-BR", "en-US"] {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            std::fs::write(
+                root.join("mustard.json"),
+                format!(
+                    r#"{{"version":"{}","language":{{"text":"{lang}"}},"inject":[{{"on":"sessionStart","file":".claude/mustard/regras.md","once":true}}]}}"#,
+                    mustard_core::harness_version()
+                ),
+            )
+            .unwrap();
+            std::fs::create_dir_all(root.join(".claude/mustard")).unwrap();
+            std::fs::write(root.join(".claude/mustard/regras.md"), "TEXTO-DECLARADO\n").unwrap();
+            mustard_core::io::project_map::write_text(root, MAP).unwrap();
+
+            let context = context_of(root, &session_input("s1", "startup"), NO_REGISTRY, NO_SCRATCH);
+            assert!(context.contains("TEXTO-DECLARADO"), "{lang}: the declared text still comes: {context}");
+            for gone in ["Terreno", "Terrain", "subprojeto", "subproject", "apps/rt", "cargo ·", "npm ·"] {
+                assert!(!context.contains(gone), "{lang}: `{gone}` is back in the session start: {context}");
+            }
+        }
     }
 
     /// Fora do início da sessão, nada; sem aviso nenhum, `Allow`.
@@ -575,18 +607,23 @@ mod tests {
         assert_eq!(verdict.unwrap(), Verdict::Allow);
     }
 
+    /// O aviso da lista `NOTICES` pelo nome: o teste não depende da posição.
+    fn notice(name: &str) -> &'static Notice {
+        NOTICES.iter().find(|notice| notice.name == name).expect("a notice of that name")
+    }
+
     /// O relato do pull request feito por outra pessoa, com três pendências,
     /// cabe ao lado do mapa, da retomada e da contagem; um texto declarado
     /// grande demais para caber com a retomada sai por último, depois de todos
     /// os avisos que cedem, e a retomada e o relato ficam.
     #[test]
     fn the_landing_report_fits_and_an_oversized_declared_text_goes_last() {
-        let resume = (&NOTICES[2], "Retomada: spec uma-spec-de-nome-longo, fase running; último passo: round; próximo: onda 12.".to_string());
-        let pending = (&NOTICES[4], translate("pending.count.many", Locale::PtBr).replace("{count}", "12"));
-        let merged = (&NOTICES[6], translate("session.merged", Locale::PtBr).replace("{count}", "6")
+        let resume = (notice("resume"), "Retomada: spec uma-spec-de-nome-longo, fase running; último passo: round; próximo: onda 12.".to_string());
+        let pending = (notice("pending"), translate("pending.count.many", Locale::PtBr).replace("{count}", "12"));
+        let merged = (notice("merged"), translate("session.merged", Locale::PtBr).replace("{count}", "6")
             .replace("{branches}", "feature/uma, feature/duas, feature/tres, feature/quatro (+2)"));
-        let disk = (&NOTICES[7], translate("scratch.residue.notice", Locale::PtBr).replace("{total}", "12.3 GiB").replace("{count}", "14"));
-        let version = (&NOTICES[8], translate("session.version.behind", Locale::PtBr).replace("{running}", "0.10.100").replace("{plugin}", "0.10.99"));
+        let disk = (notice("disk"), translate("scratch.residue.notice", Locale::PtBr).replace("{total}", "12.3 GiB").replace("{count}", "14"));
+        let version = (notice("version"), translate("session.version.behind", Locale::PtBr).replace("{running}", "0.10.100").replace("{plugin}", "0.10.99"));
 
         let items: Vec<crate::commands::event::pending::OpenPending> = ["Humanize", "HTML padrão da spec", "Revisor de fora"]
             .iter()
@@ -604,17 +641,16 @@ mod tests {
         assert!(landed.contains("Revisor de fora") && landed.contains("saiu desta máquina"), "{landed}");
         let map = mustard_core::session_map(Locale::PtBr).trim().to_string();
         let with_landing = vec![
-            (&NOTICES[1], map.clone()),
+            (notice("declared"), map.clone()),
             resume.clone(),
             pending.clone(),
-            (&NOTICES[5], landed.clone()),
+            (notice("landed"), landed.clone()),
         ];
         let kept = within_cap(with_landing);
         assert!(kept.contains(&map) && kept.contains(&landed), "the landing report fits beside the real map: {kept:?}");
 
         let too_big = vec![
-            (&NOTICES[0], "t".repeat(400)),
-            (&NOTICES[1], "d".repeat(2_950)),
+            (notice("declared"), "d".repeat(2_950)),
             resume.clone(),
             pending,
             merged,

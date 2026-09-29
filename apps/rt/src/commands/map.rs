@@ -46,12 +46,15 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use clap::ValueEnum;
-use mustard_core::domain::map_filter::{FilterCandidate, FilterError, FilterRequest, Filtered, MapFilter, CUT_MINIMUM};
+use mustard_core::domain::map_filter::{
+    FilterCandidate, FilterError, FilterRequest, Filtered, MapFilter, Verdict, CUT_SHARE,
+};
 use mustard_core::domain::map_select::{capped, select, Source, MAX_RETURNED};
 use mustard_core::domain::normalize::Languages;
 use mustard_core::domain::project_map::{self as project_map, DeclAt, FoundItem, MapRefusal, ProjectMap, UseSite};
 use mustard_core::domain::scan::{HistoryReport, ScanReport};
 use mustard_core::domain::search::{CANDIDATES, TOP};
+use mustard_core::domain::triage::Mark;
 use mustard_core::io::map_glossary::{self, Place};
 use mustard_core::io::map_triage::{self, Triaged};
 use mustard_core::io::map_search;
@@ -326,14 +329,17 @@ fn answer_from(
 /// inválido.
 struct SearchNumbers {
     candidates: usize,
-    cut_min: usize,
+    /// A parte da maior chance que passa do corte, em pontos percentuais.
+    cut_share: usize,
     max_returned: usize,
 }
 
 /// A busca por assunto. O filtro se escolhe aqui, num ponto só: desligado
 /// (`none`) ou com nome desconhecido, nenhum; ausente ou `jev`, o que
 /// `assemble` monta, se há chave para o projeto; sem ela, nenhum, com o
-/// aviso do motivo. Com filtro, os candidatos do
+/// aviso do motivo. Na marca cravado, nada disso roda: a resposta é o
+/// primeiro achado da triagem, como peça inteira, sem filtro, sem aviso de
+/// chave e sem chamada gravada. Com filtro, os candidatos do
 /// banco passam pela nota dele, a resposta traz as peças, e a chamada fica
 /// gravada na spec atual com o tempo, os tokens e o custo; sem filtro, ou na
 /// falha dele, a resposta é a da busca do banco. Antes dela, `trace` monta a
@@ -365,6 +371,14 @@ fn search(
     let intent = opts.intent.as_deref().map(str::trim).unwrap_or_default();
     let session = opts.session.as_deref();
     let config = mustard_core::ProjectConfig::load(root);
+    // Cravado, a resposta sai da triagem: o primeiro achado como peça inteira,
+    // sem montar o filtro, sem chamá-lo, sem chave e sem gravar chamada.
+    if triaged.mark() == Mark::Pinned
+        && let Some(piece) =
+            triage_view::pinned_piece(root, (&query, intent), languages, config.search_candidates().or(CANDIDATES), &triaged)?
+    {
+        return Ok(triage_view::pinned_report(&query, &triaged, &piece, lang));
+    }
     let mut warnings: Vec<String> = Vec::new();
     let moves = history_moves(root, session, lang, &config, &mut warnings);
     let specs = if trace_search_links(root, &specs, moves, trace) {
@@ -384,7 +398,7 @@ fn search(
     };
     let numbers = SearchNumbers {
         candidates: number("candidates", config.search_candidates(), CANDIDATES),
-        cut_min: number("cut_min", config.search_cut_min(), CUT_MINIMUM),
+        cut_share: number("cut_share", config.search_cut_share(), (CUT_SHARE * 100.0).round() as usize),
         max_returned: number("max_returned", config.search_max_returned(), MAX_RETURNED),
     };
     let assembled = match config.search_filter() {
@@ -511,10 +525,19 @@ fn filtered_search(asked: &Asked<'_>, assembled: &Assembled) -> Result<Searched,
     let found = map_search::candidates(asked.root, asked.query, asked.intent, asked.languages, asked.numbers.candidates)?;
     let words: Vec<String> = asked.query.split_whitespace().map(str::to_string).collect();
     let phrase = phrase_of(&words, asked.query, asked.intent, asked.lang);
-    let request = FilterRequest { words, phrase, minimum: asked.numbers.cut_min, candidates: found.candidates };
+    let share = (asked.numbers.cut_share as f64 / 100.0).min(1.0);
+    let request = FilterRequest { words, phrase, share, candidates: found.candidates };
     let calling = Instant::now();
     let mut measured = Map::new();
     measured.insert("candidates".to_string(), json!(request.candidates.len()));
+    if request.candidates.is_empty() {
+        // Sem declaração para classificar, o filtro não tem o que escolher:
+        // a resposta é a dos arquivos que a triagem achou.
+        let report = triage_view::bank_report(asked.query, asked.triaged, asked.lang);
+        measured.insert("filter".to_string(), json!(assembled.name));
+        measured.insert("returned".to_string(), json!(report["files"].as_array().map_or(0, Vec::len)));
+        return Ok(Searched { report, measured, failure: None });
+    }
     match assembled.filter.filter(&request) {
         Ok(filtered) => {
             let pieces = pieces(asked.root, &request.candidates, &found.whole, &filtered, asked.numbers.max_returned)?;
@@ -529,7 +552,14 @@ fn filtered_search(asked: &Asked<'_>, assembled: &Assembled) -> Result<Searched,
             let mut report = json!({
                 "ok": true, "question": "search", "query": asked.query, "filter": assembled.name, "pieces": pieces
             });
-            triage_view::add_to(&mut report, asked.triaged);
+            if filtered.verdict == Verdict::NotFound {
+                // O filtro escolheu "nenhum destes": nada da lista é o que se
+                // procura, e a resposta manda usar as ferramentas de sempre.
+                report["not_found"] = json!(mustard_core::translate("map.search.filter_none", asked.lang));
+            } else {
+                triage_view::add_to(&mut report, asked.triaged);
+                report["use_tools"] = json!(mustard_core::translate("map.search.use_tools", asked.lang));
+            }
             Ok(Searched { report, measured, failure: None })
         }
         Err(error) => {
@@ -543,10 +573,10 @@ fn filtered_search(asked: &Asked<'_>, assembled: &Assembled) -> Result<Searched,
 }
 
 /// As peças da resposta com filtro, na ordem da combinação e até o teto
-/// `max`: o corte, o que cada item dele puxou e os primeiros do banco. Cada
-/// peça traz o caminho, a linha, o fim, o tipo, o nome, a assinatura e a
-/// primeira frase da documentação; só as do corte trazem a nota. Nunca o
-/// corpo.
+/// `max`: o que passou do corte, na ordem da chance, e o que cada item dele
+/// puxou. Nada do banco entra de fora do corte. Cada peça traz o caminho, a
+/// linha, o fim, o tipo, o nome, a assinatura e a primeira frase da
+/// documentação; só as do corte trazem a chance. Nunca o corpo.
 fn pieces(
     root: &Path,
     candidates: &[FilterCandidate],
@@ -1246,7 +1276,8 @@ mod tests {
         std::fs::write(&config, r#"{"language": {"text": "pt-BR", "code": "en-US"}}"#).unwrap();
         let report = answered(&opts);
         assert_eq!(report["ok"], json!(true), "{report}");
-        assert_eq!(report["files"], json!([{"path": "src/storage.rs", "score": report["files"][0]["score"]}]), "{report}");
+        assert_eq!(report["pieces"][0]["path"], json!("src/storage.rs"), "{report}");
+        assert_eq!(report["pieces"][0]["name"], json!("UserRepository"), "{report}");
 
         std::fs::write(&config, r#"{"language": {"text": "pt-BR", "code": "pt-BR"}}"#).unwrap();
         let report = answered(&opts);
@@ -1303,7 +1334,7 @@ mod tests {
 
         std::fs::write(&config, r#"{"language": {"text": "pt-BR", "code": "en-US"}}"#).unwrap();
         let report = answered(&opts);
-        assert_eq!(report["files"][0]["path"], json!("src/queue.rs"), "{report}");
+        assert_eq!(report["pieces"][0]["path"], json!("src/queue.rs"), "{report}");
     }
 
     /// Um mapa em que uma coluna que a busca não lê guarda o tipo errado:
@@ -1323,7 +1354,7 @@ mod tests {
         opts.query = Some("buscar pedido".to_string());
         let report = answered(&opts);
         assert_eq!(report["ok"], json!(true), "{report}");
-        assert_eq!(report["files"][0]["path"], json!("src/pedido.rs"), "{report}");
+        assert_eq!(report["pieces"][0]["path"], json!("src/pedido.rs"), "{report}");
     }
 
     #[test]
@@ -1622,8 +1653,9 @@ mod tests {
         }
     }
 
-    /// A busca acha o arquivo pela mensagem que o usuário viu, e mostra o
-    /// texto que casou com a linha e a declaração onde ele nasce.
+    /// A busca acha o arquivo pela mensagem que o usuário viu, e a resposta
+    /// cravada traz a declaração onde ela nasce, com o texto que casou e a
+    /// linha dele.
     #[test]
     fn the_search_answer_shows_the_matched_text_with_its_line_and_declaration() {
         let dir = tempdir().unwrap();
@@ -1640,9 +1672,12 @@ mod tests {
         let mut opts = ask(dir.path(), Question::Search);
         opts.query = Some("pedido não encontrado".to_string());
         let report = answered(&opts);
-        assert_eq!(report["files"][0]["path"], json!("src/consulta.rs"), "{report}");
+        assert_eq!(report["mark"], json!("pinned"), "{report}");
+        let piece = &report["pieces"][0];
+        assert_eq!((&piece["path"], &piece["name"]), (&json!("src/consulta.rs"), &json!("carregar")), "{report}");
+        assert_eq!((&piece["line"], &piece["end_line"]), (&json!(1), &json!(9)), "{report}");
         assert_eq!(
-            report["files"][0]["text"],
+            piece["text"],
             json!({"line": 4, "kind": "error", "value": "pedido não encontrado", "owner": "carregar"}),
             "{report}"
         );
@@ -2808,6 +2843,21 @@ mod tests {
          "signature": "pub fn avisar_cliente()", "doc": "Avisa o cliente do pedido."}]}
     ]}"#;
 
+    /// Um mapa em que um arquivo só traz a função procurada no nome, no
+    /// caminho, na assinatura e na documentação, e o comentário do corpo dela
+    /// guarda uma palavra a mais: o primeiro achado é cravado, com palavra da
+    /// pergunta fora dos campos fortes dele ou sem.
+    const PINNED_MAP: &str = r#"{"modules": [
+      {"path": "src/cancelar_pedido.rs", "loc": 40, "declarations": [
+        {"kind": "function", "name": "cancelar_pedido", "line": 3, "end_line": 12,
+         "signature": "pub fn cancelar_pedido(pedido: &Pedido)",
+         "doc": "Cancelar o pedido: cancela o pedido pelo id. Cancelar pedido é definitivo.",
+         "body_comment": "trava a linha do pedido"}]},
+      {"path": "src/cliente.rs", "loc": 20, "declarations": [
+        {"kind": "function", "name": "avisar_cliente", "line": 1, "end_line": 5,
+         "signature": "pub fn avisar_cliente()", "doc": "Avisa o cliente."}]}
+    ]}"#;
+
     /// Um projeto com o mapa `map`, o texto em português e a seção `search`
     /// da configuração.
     fn search_project(map: &str, search: &Value) -> tempfile::TempDir {
@@ -2868,13 +2918,15 @@ mod tests {
         report
     }
 
-    /// Um filtro de mentira: guarda cada pedido e dá as notas de `notes` aos
-    /// candidatos, na ordem do banco, com o corte de verdade; ou falha com
-    /// `error`.
+    /// Um filtro de mentira: guarda cada pedido e dá as chances de `notes`
+    /// aos candidatos, na ordem do banco, com "nenhum destes" e a confiança
+    /// dados e o veredito e o corte de verdade; ou falha com `error`.
     #[derive(Clone)]
     struct FakeFilter {
         asked: std::rc::Rc<std::cell::RefCell<Vec<FilterRequest>>>,
         notes: Vec<f64>,
+        none: f64,
+        confidence: f64,
         error: Option<FilterError>,
     }
 
@@ -2896,17 +2948,27 @@ mod tests {
                 cost_micro_usd: 882,
                 model: "jev-1.13.0".to_string(),
             };
-            Ok(Filtered { kept: mustard_core::domain::map_filter::cut(&scores, request.minimum), usage })
+            let (verdict, kept) =
+                mustard_core::domain::map_filter::judged(&scores, self.none, self.confidence, request.share);
+            Ok(Filtered { verdict, kept, usage })
         }
     }
 
     impl FakeFilter {
+        /// O filtro seguro da escolha: "nenhum destes" quase sem chance.
         fn scoring(notes: &[f64]) -> Self {
-            Self { asked: std::rc::Rc::default(), notes: notes.to_vec(), error: None }
+            Self { asked: std::rc::Rc::default(), notes: notes.to_vec(), none: 0.01, confidence: 0.9, error: None }
         }
 
         fn failing(error: FilterError) -> Self {
-            Self { asked: std::rc::Rc::default(), notes: Vec::new(), error: Some(error) }
+            Self { asked: std::rc::Rc::default(), notes: Vec::new(), none: 0.0, confidence: 0.0, error: Some(error) }
+        }
+
+        /// O mesmo filtro com outra chance de "nenhum destes" e outra
+        /// confiança.
+        fn judging(mut self, none: f64, confidence: f64) -> Self {
+            (self.none, self.confidence) = (none, confidence);
+            self
         }
 
         /// A montagem que entrega este filtro, como a chave no projeto.
@@ -2944,21 +3006,22 @@ mod tests {
     fn without_a_key_the_search_is_the_bank_one_and_warns_once_per_session() {
         let dir = search_project(FILTER_MAP, &json!({}));
         let fake = FakeFilter::scoring(&[0.9, 0.9, 0.9]);
-        let bank = bank_answer(dir.path(), "cancelar");
+        let bank = bank_answer(dir.path(), "pedido");
         assert_eq!(bank["files"][0]["path"], json!("src/pedido.rs"), "{bank}");
-        let opts = search_opts(dir.path(), "cancelar", None, Some("sessao-sem-chave"));
+        assert_eq!(bank["mark"], json!("partial"), "the bank answer is the one that goes to the filter: {bank}");
+        let opts = search_opts(dir.path(), "pedido", None, Some("sessao-sem-chave"));
         let first = searched(&opts, &fake.assemble_from_the_project(None));
         let warned = mustard_core::translate("map.search.missing_key", Locale::PtBr);
         assert_eq!(first["warnings"], json!([warned]), "{first}");
         assert_eq!(without(&first, "warnings"), bank, "{first}");
         assert_eq!(searched(&opts, &fake.assemble_from_the_project(None)), bank, "the same session is not warned again");
-        let with_intent = search_opts(dir.path(), "cancelar", Some("onde avisa o cliente"), Some("sessao-sem-chave"));
+        let with_intent = search_opts(dir.path(), "pedido", Some("onde avisa o cliente"), Some("sessao-sem-chave"));
         assert_eq!(searched(&with_intent, &fake.assemble_from_the_project(None)), bank);
         assert_eq!(fake.calls(), 0);
 
         let off = search_project(FILTER_MAP, &json!({"filter": "none"}));
-        let quiet = searched(&search_opts(off.path(), "cancelar", None, None), &fake.assemble_from_the_project(None));
-        assert_eq!(quiet, bank_answer(off.path(), "cancelar"));
+        let quiet = searched(&search_opts(off.path(), "pedido", None, None), &fake.assemble_from_the_project(None));
+        assert_eq!(quiet, bank_answer(off.path(), "pedido"));
     }
 
     /// Com `search.filter: "none"`, a busca não monta o filtro, mesmo com a
@@ -3053,9 +3116,9 @@ mod tests {
         searched(&search_opts(dir.path(), "pedido", None, None), &fake.assemble());
         assert_eq!(fake.last().phrase, "pedaço de nome: pedido");
         assert_eq!(fake.last().words, ["pedido"]);
-        searched(&search_opts(dir.path(), "gravar pedido", None, None), &fake.assemble());
-        assert_eq!(fake.last().phrase, "gravar pedido");
-        assert_eq!(fake.last().words, ["gravar", "pedido"]);
+        searched(&search_opts(dir.path(), "pedido cliente", None, None), &fake.assemble());
+        assert_eq!(fake.last().phrase, "pedido cliente");
+        assert_eq!(fake.last().words, ["pedido", "cliente"]);
         searched(&search_opts(dir.path(), "pedido", Some("onde o pedido é gravado"), None), &fake.assemble());
         assert_eq!(fake.last().phrase, "onde o pedido é gravado");
     }
@@ -3065,10 +3128,10 @@ mod tests {
     /// atrás.
     #[test]
     fn the_answer_shows_the_grade_and_a_high_grade_stops_at_the_strong_fields() {
-        let dir = search_project(FILTER_MAP, &json!({}));
-        let report = searched(&search_opts(dir.path(), "cancelar trava", None, None), &|_, _| Err(FilterError::MissingKey));
+        let dir = search_project(PINNED_MAP, &json!({}));
+        let report = searched(&search_opts(dir.path(), "cancelar pedido trava", None, None), &|_, _| Err(FilterError::MissingKey));
         assert_eq!(report["grade"], json!(5), "{report}");
-        assert_eq!(report["files"][0]["path"], json!("src/pedido.rs"), "{report}");
+        assert_eq!(report["pieces"][0]["path"], json!("src/cancelar_pedido.rs"), "{report}");
         assert!(report.get("deeper").is_none(), "{report}");
     }
 
@@ -3131,7 +3194,7 @@ mod tests {
         );
         assert_eq!(fake.calls(), 0);
 
-        let found = searched(&search_opts(dir.path(), "cancelar", None, Some("sessao-nada")), &fake.assemble_from_the_project(None));
+        let found = searched(&search_opts(dir.path(), "pedido", None, Some("sessao-nada")), &fake.assemble_from_the_project(None));
         let warned = mustard_core::translate("map.search.missing_key", Locale::PtBr);
         assert_eq!(found["warnings"], json!([warned]), "the grade zero answer did not use up the warning: {found}");
     }
@@ -3170,7 +3233,7 @@ mod tests {
             searched(&opts, &counting);
             assert_eq!(assembled.get(), 0, "{:?} assembled the filter", opts.question);
         }
-        searched(&search_opts(dir.path(), "payment", None, None), &counting);
+        searched(&search_opts(dir.path(), "pay", None, None), &counting);
         assert_eq!(assembled.get(), 1);
 
         let languages = crate::commands::spec_events::project(dir.path()).languages;
@@ -3200,34 +3263,32 @@ mod tests {
         assert_eq!(sent(json!({"candidates": 0}), "s3"), (100, json!([warned]), Value::Null));
     }
 
-    /// `search.cut_min` vai no pedido: ausente, 8; com valor, o valor; com
-    /// 0, 8 e o aviso.
+    /// `search.cut_share` vai no pedido: ausente, 10 pontos, 0,10; com valor,
+    /// o valor em pontos; com 0, o padrão e o aviso.
     #[test]
-    fn the_cut_minimum_setting_goes_in_the_request() {
+    fn the_cut_share_setting_goes_in_the_request() {
         let sent = |search: Value| {
             let dir = search_project(FILTER_MAP, &search);
             let fake = FakeFilter::scoring(&[0.9]);
             let report = searched(&search_opts(dir.path(), "pedido", None, None), &fake.assemble());
-            (fake.last().minimum, report["warnings"].clone())
+            (fake.last().share, report["warnings"].clone())
         };
-        assert_eq!(sent(json!({})), (8, Value::Null));
-        assert_eq!(sent(json!({"cut_min": 3})), (3, Value::Null));
+        assert_eq!(sent(json!({})), (0.10, Value::Null));
+        assert_eq!(sent(json!({"cut_share": 25})), (0.25, Value::Null));
         let warned = mustard_core::translate("map.search.bad_number", Locale::PtBr)
-            .replace("{key}", "cut_min")
-            .replace("{default}", "8");
-        assert_eq!(sent(json!({"cut_min": 0})), (8, json!([warned])));
+            .replace("{key}", "cut_share")
+            .replace("{default}", "10");
+        assert_eq!(sent(json!({"cut_share": 0})), (0.10, json!([warned])));
     }
 
-    /// `search.max_returned`: ausente, a volta de 15 peças não se corta; com
-    /// 5, ficam os 3 primeiros do banco e as 2 primeiras do corte; com 0,
-    /// vale o padrão e avisa.
+    /// `search.max_returned`: ausente, a volta de 12 peças do corte não se
+    /// corta; com 5, ficam as 5 primeiras na ordem da chance; com 0, vale o
+    /// padrão e avisa.
     #[test]
     fn the_max_returned_setting_caps_the_answer_or_warns() {
         let map = many_orders(40);
-        // Os três primeiros do banco ficam abaixo do piso da nota; os doze
-        // seguintes passam.
-        let mut notes = vec![0.1; 3];
-        notes.extend([0.9; 12]);
+        // Doze chances que descem devagar: todas passam do corte.
+        let notes: Vec<f64> = (0..12).map(|at| 0.5 - f64::from(at) * 0.02).collect();
         let answered_with = |search: Value| {
             let dir = search_project(&map, &search);
             let fake = FakeFilter::scoring(&notes);
@@ -3235,7 +3296,7 @@ mod tests {
         };
         let whole = answered_with(json!({}));
         let pieces = whole["pieces"].as_array().unwrap();
-        assert_eq!(pieces.len(), 15, "{whole}");
+        assert_eq!(pieces.len(), 12, "{whole}");
         assert!(whole.get("warnings").is_none(), "{whole}");
 
         let capped = answered_with(json!({"max_returned": 5}));
@@ -3243,7 +3304,7 @@ mod tests {
             report["pieces"].as_array().unwrap().iter().map(|piece| piece["name"].as_str().unwrap().to_string()).collect()
         };
         let all = names(&whole);
-        assert_eq!(names(&capped), [&all[0], &all[1], &all[12], &all[13], &all[14]].map(String::clone), "{capped}");
+        assert_eq!(names(&capped), all[..5].to_vec(), "{capped}");
 
         let zero = answered_with(json!({"max_returned": 0}));
         assert_eq!(names(&zero), all);
@@ -3251,6 +3312,62 @@ mod tests {
             .replace("{key}", "max_returned")
             .replace("{default}", "15");
         assert_eq!(zero["warnings"], json!([warned]), "{zero}");
+    }
+
+    /// A resposta com filtro tem só o que passou do corte, na ordem da
+    /// chance: com as chances 0,9, 0,05 e 0,03, é uma peça, e nenhum
+    /// candidato do topo do banco entra para encher; com 0,5, 0,45 e 0,05,
+    /// são duas.
+    #[test]
+    fn the_answer_has_only_what_passed_the_cut_in_the_order_of_the_chance() {
+        let dir = search_project(FILTER_MAP, &json!({}));
+        let intent = "onde o pedido é gravado";
+        let project = crate::commands::spec_events::project(dir.path());
+        let bank = map_search::candidates(&project.root, "pedido", intent, &project.languages, CANDIDATES).unwrap();
+        assert_eq!(bank.candidates.len(), 4, "{bank:?}");
+        let names_for = |notes: &[f64]| -> Vec<String> {
+            let fake = FakeFilter::scoring(notes);
+            let report = searched(&search_opts(dir.path(), "pedido", Some(intent), None), &fake.assemble());
+            report["pieces"].as_array().unwrap().iter().map(|piece| piece["name"].as_str().unwrap().to_string()).collect()
+        };
+        let name = |at: usize| bank.candidates[at].name.clone();
+        assert_eq!(names_for(&[0.05, 0.9, 0.03]), [name(1)], "one piece: the top of the bank does not fill the answer");
+        assert_eq!(names_for(&[0.45, 0.5, 0.05]), [name(1), name(0)]);
+    }
+
+    /// "Nenhum destes" com chance de 0,6 responde que não achou nada e manda
+    /// usar as ferramentas de sempre: sem peças, sem os arquivos do banco,
+    /// sem a marca.
+    #[test]
+    fn a_chance_of_none_of_six_tenths_answers_that_nothing_was_found() {
+        let dir = search_project(FILTER_MAP, &json!({}));
+        let fake = FakeFilter::scoring(&[0.3, 0.05, 0.05]).judging(0.6, 0.9);
+        let report = searched(&search_opts(dir.path(), "pedido", Some("onde o pedido é gravado"), None), &fake.assemble());
+        assert_eq!(fake.calls(), 1);
+        assert_eq!(
+            report,
+            json!({"ok": true, "question": "search", "query": "pedido", "filter": "jev", "pieces": [],
+                   "not_found": "não encontrei nada, use suas ferramentas padrões"}),
+            "{report}"
+        );
+        assert_eq!(report["not_found"], json!(mustard_core::translate("map.search.filter_none", Locale::PtBr)));
+    }
+
+    /// Toda resposta com peças leva a linha de usar as ferramentas de sempre
+    /// se não servir: a certa, a dividida e a do banco, quando o filtro
+    /// falha ou falta a chave.
+    #[test]
+    fn every_answer_with_something_found_carries_the_use_your_tools_line() {
+        let dir = search_project(FILTER_MAP, &json!({}));
+        let tools = json!(mustard_core::translate("map.search.use_tools", Locale::PtBr));
+        let opts = search_opts(dir.path(), "pedido", Some("onde o pedido é gravado"), None);
+        let sure = searched(&opts, &FakeFilter::scoring(&[0.9, 0.05, 0.03]).assemble());
+        let split = searched(&opts, &FakeFilter::scoring(&[0.5, 0.45, 0.05]).judging(0.0, 0.5).assemble());
+        let failed = searched(&opts, &FakeFilter::failing(FilterError::Timeout).assemble());
+        let no_key = searched(&opts, &|_, _| Err(FilterError::MissingKey));
+        for (which, report) in [("sure", sure), ("split", split), ("failed", failed), ("no key", no_key)] {
+            assert_eq!(report["use_tools"], tools, "{which}: {report}");
+        }
     }
 
     /// Um projeto com a spec `spec` aberta, o checkout na branch dela e o
@@ -3298,6 +3415,66 @@ mod tests {
         let dir = search_project_on("sem-filtro");
         searched(&search_opts(dir.path(), "pedido", Some("onde o pedido é gravado"), None), &|_, _| Err(FilterError::MissingKey));
         assert!(calls_of(dir.path(), "sem-filtro").is_empty());
+    }
+
+    /// A busca cravada responde na hora, sem montar o filtro nem chamá-lo, sem
+    /// avisar chave e sem gravar chamada medida: a resposta traz a primeira
+    /// peça inteira (arquivo, tipo, nome, as duas linhas e a assinatura), a
+    /// marca e a linha de usar as ferramentas de sempre. A busca parcial da
+    /// mesma sessão chama o filtro.
+    #[test]
+    fn a_pinned_search_answers_without_the_filter_the_key_warning_or_a_measured_call() {
+        let dir = search_project_on("cravada");
+        let fake = FakeFilter::scoring(&[0.9, 0.8, 0.7]);
+        let opts = search_opts(dir.path(), "cancelar_pedido", Some("onde se cancela o pedido"), Some("sessao-cravada"));
+        let report = searched(&opts, &fake.assemble_from_the_project(None));
+        assert_eq!(report["mark"], json!("pinned"), "{report}");
+        assert_eq!(fake.calls(), 0, "a pinned search never reaches the filter: {report}");
+        assert!(report.get("warnings").is_none(), "no key warning goes with a pinned answer: {report}");
+        assert!(report.get("files").is_none(), "the answer is the piece, not the files: {report}");
+        assert_eq!(
+            report["pieces"],
+            json!([{"path": "src/pedido.rs", "line": 11, "end_line": 20, "kind": "function",
+                    "name": "cancelar_pedido", "signature": "pub fn cancelar_pedido(id: u64)"}]),
+            "{report}"
+        );
+        assert_eq!(report["use_tools"], json!(mustard_core::translate("map.search.use_tools", Locale::PtBr)), "{report}");
+        assert!(calls_of(dir.path(), "cravada").is_empty(), "no measured call is recorded for a pinned answer");
+
+        let partial = search_opts(dir.path(), "pedido", Some("onde o pedido é gravado"), Some("sessao-cravada"));
+        let filtered = searched(&partial, &fake.assemble());
+        assert_eq!(fake.calls(), 1, "the partial search still asks the filter: {filtered}");
+        assert_eq!(calls_of(dir.path(), "cravada").len(), 1);
+    }
+
+    /// Sem chave a cravada responde igual e não avisa: quem fica sem chave
+    /// só é avisado quando a busca precisaria do filtro.
+    #[test]
+    fn a_pinned_search_without_a_key_answers_the_same_and_does_not_warn() {
+        let dir = search_project(FILTER_MAP, &json!({}));
+        let with_filter = FakeFilter::scoring(&[0.9]);
+        let opts = search_opts(dir.path(), "cancelar_pedido", None, Some("sessao-cravada-sem-chave"));
+        let without_key = searched(&opts, &with_filter.assemble_from_the_project(None));
+        let with_key = searched(&opts, &with_filter.assemble());
+        assert_eq!(without_key, with_key);
+        assert!(without_key.get("warnings").is_none(), "{without_key}");
+        assert_eq!(without_key["pieces"][0]["name"], json!("cancelar_pedido"), "{without_key}");
+    }
+
+    /// Palavra da pergunta fora dos campos fortes do primeiro achado não tira
+    /// o cravado: a frase inteira nunca casa palavra por palavra.
+    #[test]
+    fn a_pinned_search_does_not_need_every_word_of_the_phrase() {
+        let dir = search_project(PINNED_MAP, &json!({}));
+        let project = crate::commands::spec_events::project(dir.path());
+        let triaged = map_triage::triage(&project.root, "cancelar pedido trava", &project.languages, TOP).unwrap();
+        assert_eq!(triaged.missing, ["trava"], "the phrase has a word the first finding lacks in a strong field");
+        let fake = FakeFilter::scoring(&[0.9]);
+        let opts = search_opts(dir.path(), "cancelar pedido trava", None, None);
+        let report = searched(&opts, &fake.assemble());
+        assert_eq!(report["mark"], json!("pinned"), "{report}");
+        assert_eq!(report["pieces"][0]["name"], json!("cancelar_pedido"), "{report}");
+        assert_eq!(fake.calls(), 0, "{report}");
     }
 
     /// Uma chave falsa, que nenhuma saída pode mostrar.

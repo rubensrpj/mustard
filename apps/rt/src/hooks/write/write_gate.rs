@@ -1466,12 +1466,12 @@ mod tests {
                 other => panic!("{tool_input}: the plain search runs with a line, got {other:?}"),
             }
         }
-        let partial = json!({ "pattern": "calcular_frete|imposto", "output_mode": "count" });
-        match hook_in(&root, "Grep", partial, Some("nomes")) {
+        let with_missing_word = json!({ "pattern": "calcular_frete|imposto", "output_mode": "count" });
+        match hook_in(&root, "Grep", with_missing_word, Some("nomes")) {
             Verdict::Inject { context } => {
-                assert!(context.starts_with("Parcial.") && context.contains(r#"Falta "imposto"."#), "{context}");
+                assert!(context.starts_with("Cravado.") && !context.contains("imposto"), "{context}");
             }
-            other => panic!("the partial search runs with a line, got {other:?}"),
+            other => panic!("the pinned search runs with a line, got {other:?}"),
         }
         let lines = json!({ "pattern": "calcular_frete", "output_mode": "content" });
         let reason = refused(hook_in(&root, "Grep", lines, Some("nomes")), "the search that shows lines");
@@ -1479,14 +1479,15 @@ mod tests {
     }
 
     /// A busca com uma palavra que o primeiro arquivo do mapa não traz em
-    /// campo forte é parcial e diz qual falta.
+    /// campo forte continua cravada: a resposta cita só as palavras achadas,
+    /// não pede nova busca e traz a linha do comentário com a palavra solta.
     #[test]
-    fn a_search_with_a_word_the_map_lacks_is_answered_as_partial() {
+    fn a_search_with_a_word_the_map_lacks_is_answered_as_pinned_without_asking_again() {
         let (_dir, root) = word_search::fixture::repo("{}");
         let tool_input = json!({ "pattern": "calcular_frete|imposto", "output_mode": "content" });
-        let reason = refused(hook_in(&root, "Grep", tool_input, Some("parcial")), "the partial search");
-        assert!(reason.starts_with("Parcial."), "{reason}");
-        assert!(reason.contains(r#"Falta "imposto". Busque de novo"#), "{reason}");
+        let reason = refused(hook_in(&root, "Grep", tool_input, Some("parcial")), "the pinned search");
+        assert!(reason.starts_with("Cravado."), "{reason}");
+        assert!(!reason.contains("Falta") && !reason.contains("Busque de novo"), "{reason}");
         assert!(reason.contains("src/frete.rs\n  2-6 calcular_frete (2, 3)"), "{reason}");
     }
 

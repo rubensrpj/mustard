@@ -124,6 +124,9 @@
 (method_signature name: (_) @name) @definition.method
 (abstract_method_signature name: (_) @name) @definition.method
 (public_field_definition name: (_) @name) @definition.field
+; O parâmetro do construtor com modificador (`private readonly repo: IRepo`)
+; é também um campo da classe.
+(required_parameter [(accessibility_modifier) "readonly"] pattern: (identifier) @name) @definition.field
 (property_signature name: (_) @name) @definition.property
 (enum_body name: (property_identifier) @name @definition.enum_member)
 (enum_assignment name: (_) @name) @definition.enum_member
@@ -147,6 +150,14 @@
 (rest_pattern (identifier) @local)
 (for_in_statement left: (identifier) @local)
 (catch_clause parameter: (identifier) @local)
+
+; O tipo que a assinatura ou a variável escreve para um nome local
+; (`pedido: Pedido`, `const repo: IRepo = ...;`): a chamada feita sobre esse
+; nome, ou sobre os campos dele, é do tipo. O tipo embrulhado (`Pedido[]`,
+; `Promise<Pedido>`) é o de fora.
+(required_parameter pattern: (identifier) @local type: (type_annotation [(type_identifier) (generic_type) (nested_type_identifier)] @local.type))
+(optional_parameter pattern: (identifier) @local type: (type_annotation [(type_identifier) (generic_type) (nested_type_identifier)] @local.type))
+(variable_declarator name: (identifier) @local type: (type_annotation [(type_identifier) (generic_type) (nested_type_identifier)] @local.type))
 
 ; A função entregue como valor, sem ser chamada ali: o nome escrito como
 ; argumento (`xs.map(dobro)`, `xs.map(this.salvar)`), como valor de uma

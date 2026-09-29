@@ -230,7 +230,7 @@ Foram três passadas.
   - **Limite do estudo:** só Python, 138 instâncias de 12 repositórios.
 
 #### 1.3a O Mustard gera ou injeta visão geral do repositório?
-- **Resposta:** injeta. É o "terreno": uma linha por subprojeto, no máximo 16 linhas (`TERRAIN_ROWS_CAP`, `apps/rt/src/commands/orient.rs:192-223`), em todo início de sessão.
+- **Resposta:** injeta. É o "terreno": uma linha por subprojeto, no máximo 16 linhas, em todo início de sessão.
 - **Fonte externa:**
   - "repository overviews, although popular and recommended by model providers, are not helpful" (versão 2) [MÉDIA];
   - na versão 1, as visões gerais não reduziram o número de passos até o agente tocar o primeiro arquivo relevante [ALTA].
@@ -269,7 +269,7 @@ Foram três passadas.
 - **Veredito:** ATENDE [ALTA]
 - **Evidência:**
   - O estilo de saída é estático.
-  - O terreno é "byte-stable… no timestamps" (`orient.rs:31`).
+  - O terreno é "byte-stable… no timestamps".
   - A linha por mensagem é fixa (`prompt_entry.rs:18-28`). A nota de clareza, que aparece uma vez, entra no fim, na mensagem do usuário.
 - **Fonte externa (`prompt-caching`) [ALTA]:** "The match is exact, so a change anywhere in the prefix recomputes everything after it."
 - **Observação [ALTA]:** a linha curta também é anexada aos avisos do próprio ambiente, como notificações de tarefa (`prompt_entry.rs:110-113`: só a gravação é pulada, a linha não). O custo é pequeno e fica no fim, então não quebra o cache.

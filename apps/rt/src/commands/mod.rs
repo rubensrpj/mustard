@@ -42,9 +42,6 @@ pub mod scan;
 pub mod scan_claude;
 pub mod map;
 pub mod map_triage;
-// O `orient` não é comando: monta o mapa do terreno que o início da sessão
-// injeta.
-pub mod orient;
 pub mod spec_events;
 pub mod flow;
 pub mod retired;

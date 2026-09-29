@@ -614,11 +614,10 @@
       "files": [
         "apps/rt/src/commands/git_settle.rs",
         "apps/rt/src/commands/maint/scratch_gc.rs",
-        "apps/rt/src/commands/orient.rs",
         "apps/rt/src/commands/review/pr_door.rs",
         "apps/rt/src/commands/review/qa_run/mod.rs"
       ],
-      "text": "O que é: comentários do código de apps/rt que ainda citam run e o nome de um comando que saiu (git-settle, scratch-gc, orient, qa-run, pr-list e outros da lista de 95 de apps/rt/tests/template_parity.rs). Pra que serve: segue a MSTD-RULE-0008 e a MSTD-DEC-0024, item 3. O que mudar: em apps/rt/src/commands/git_settle.rs (1 menção), apps/rt/src/commands/maint/scratch_gc.rs (3), apps/rt/src/commands/orient.rs (3), apps/rt/src/commands/review/pr_door.rs (1) e apps/rt/src/commands/review/qa_run/mod.rs (1), o comentário passa a descrever o que o código faz, sem o nome do comando que saiu; o código não muda. Comando: PATH=\"$HOME/.cargo/bin:$PATH\" cargo build --locked -p mustard-rt.",
+      "text": "O que é: comentários do código de apps/rt que ainda citam run e o nome de um comando que saiu (git-settle, scratch-gc, orient, qa-run, pr-list e outros da lista de 95 de apps/rt/tests/template_parity.rs). Pra que serve: segue a MSTD-RULE-0008 e a MSTD-DEC-0024, item 3. O que mudar: em apps/rt/src/commands/git_settle.rs (1 menção), apps/rt/src/commands/maint/scratch_gc.rs (3), apps/rt/src/commands/review/pr_door.rs (1) e apps/rt/src/commands/review/qa_run/mod.rs (1), o comentário passa a descrever o que o código faz, sem o nome do comando que saiu; o código não muda. Comando: PATH=\"$HOME/.cargo/bin:$PATH\" cargo build --locked -p mustard-rt.",
       "arrived": [
         6,
         9,

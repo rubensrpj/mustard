@@ -1,13 +1,15 @@
 //! `map_filter` — o filtro da busca por assunto do mapa, como uma tomada.
 //!
-//! O banco devolve os melhores candidatos na ordem dele; o filtro dá a cada um
-//! uma nota contra a frase de quem procura e devolve só o que passa do corte.
-//! A busca depende só do [`MapFilter`]: a implementação (um serviço pago, um
+//! O banco devolve os melhores candidatos na ordem dele; o filtro classifica
+//! todos de uma vez contra a frase de quem procura: dá a cada um a chance de
+//! ser o que se procura, e uma chance à opção "nenhum destes" — as chances
+//! somam 1. Devolve o veredito ([`Verdict`]) e só o que passa do corte. A
+//! busca depende só do [`MapFilter`]: a implementação (um serviço pago, um
 //! modelo baixado) é escolhida num ponto só, na montagem, e pode ser trocada
 //! sem mexer na busca.
 //!
-//! O corte ([`cut`]) é função pura e mora aqui, para que toda implementação
-//! corte do mesmo jeito.
+//! O veredito ([`verdict`]) e o corte ([`cut`]) são funções puras e moram
+//! aqui, para que toda implementação decida do mesmo jeito.
 //!
 //! Sem disco, sem rede, sem relógio.
 
@@ -54,16 +56,16 @@ pub struct FilterCandidate {
 }
 
 /// O que a busca pede ao filtro.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct FilterRequest {
     /// As palavras de quem procura: nomes do código e termos do pedido, que o
     /// banco usou; podem não existir no código.
     pub words: Vec<String>,
     /// A frase do que se procura e para quê. Vazia, o filtro usa as palavras.
     pub phrase: String,
-    /// Quantos itens no mínimo voltam, quando há candidatos acima do piso
-    /// (ver [`cut`]). Zero, vale só o corte.
-    pub minimum: usize,
+    /// A parte da maior chance que um candidato precisa ter para passar do
+    /// corte (ver [`cut`]), de 0 a 1.
+    pub share: f64,
     /// Os candidatos, na ordem do banco.
     pub candidates: Vec<FilterCandidate>,
 }
@@ -73,8 +75,22 @@ pub struct FilterRequest {
 pub struct Scored {
     /// O id do candidato no banco.
     pub id: i64,
-    /// A chance de o candidato ser o que se procura, de 0 a 1.
+    /// A chance de o candidato ser o que se procura, de 0 a 1. Somada à de
+    /// todos os outros e à de "nenhum destes", dá 1.
     pub score: f64,
+}
+
+/// O que a classificação diz da lista inteira.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verdict {
+    /// "Nenhum destes" tem a chance de [`NONE_FROM`] ou mais: nada da lista é
+    /// o que se procura.
+    NotFound,
+    /// O classificador tem a confiança de [`SURE_FROM`] ou mais na escolha:
+    /// os que passam do corte valem.
+    Sure,
+    /// O resto: a escolha está dividida entre alguns candidatos.
+    Split,
 }
 
 /// O que o filtro gastou numa chamada.
@@ -92,9 +108,11 @@ pub struct FilterUsage {
     pub model: String,
 }
 
-/// A resposta do filtro: o que passou do corte, na ordem da nota, e o uso.
-#[derive(Debug, Clone, Default, PartialEq)]
+/// A resposta do filtro: o veredito, o que passou do corte, na ordem da
+/// chance, e o uso. Com o veredito de não achei, nada passa do corte.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Filtered {
+    pub verdict: Verdict,
     pub kept: Vec<Scored>,
     pub usage: FilterUsage,
 }
@@ -149,63 +167,89 @@ impl FilterError {
 
 /// A tomada: quem dá nota aos candidatos e devolve o que passa do corte.
 pub trait MapFilter {
-    /// Dá nota a cada candidato de `request` contra a frase e devolve o que
-    /// passa do [`cut`], na ordem da nota, com o uso da chamada.
+    /// Classifica os candidatos de `request` contra a frase e devolve o
+    /// veredito e o que passa do [`cut`], na ordem da chance, com o uso da
+    /// chamada.
     fn filter(&self, request: &FilterRequest) -> Result<Filtered, FilterError>;
 }
 
 // ---------------------------------------------------------------------------
-// O corte
+// O veredito e o corte
 // ---------------------------------------------------------------------------
-
-// Os três números do corte medido com as perguntas reais dos agentes
-// (`dt:0.4:12:0.15`): fica o que está a até 0,4 da melhor nota, nunca abaixo
-// de 0,15, e no máximo 12 itens.
 
 /// Quantos itens voltam, no máximo.
 pub const MAX_KEPT: usize = 12;
 
-/// O mínimo do corte que a busca pede, quando o projeto não diz outro. Com
-/// 8, o corte empatou com 0 e com 6 nas perguntas escritas sobre o código,
-/// achou 2 buscas a mais nas perguntas tiradas das mensagens do usuário e foi
-/// o único que trouxe o serviço certo na simulação de uma tarefa real; custa
-/// perto de 1 item a mais por busca.
-pub const CUT_MINIMUM: usize = 8;
+/// A chance de "nenhum destes" a partir da qual a resposta é não achei. A
+/// documentação do serviço manda pôr a opção quando a lista pode não ter a
+/// resposta; com ela, os 20 pedidos de coisas que o projeto não tem voltaram
+/// todos como não achei, e nenhum pedido com o certo na lista voltou assim.
+pub const NONE_FROM: f64 = 0.5;
 
-/// A nota abaixo da qual nada volta, nem para completar o mínimo.
-pub const SCORE_FLOOR: f64 = 0.15;
+/// A confiança da escolha a partir da qual a classificação vale sem mais
+/// nada. Abaixo dela e com "nenhum destes" abaixo de [`NONE_FROM`], a escolha
+/// está dividida.
+pub const SURE_FROM: f64 = 0.7;
 
-/// A distância da melhor nota até a última que ainda volta.
-pub const SCORE_SPREAD: f64 = 0.4;
+/// A parte da maior chance que um candidato precisa ter para passar do
+/// corte, quando o projeto não diz outra: 0,10. Nas 120 buscas medidas o
+/// certo em primeiro foi o mesmo com qualquer corte, e o certo entre os
+/// mantidos foi de 116 com 0,5 a 119 com 0,10, com 1,9 item por busca em
+/// média; 0,25 ou mais perde o certo em 3 a 4 buscas.
+pub const CUT_SHARE: f64 = 0.10;
 
-/// O corte: ordena pela nota, da maior para a menor, e no empate fica a ordem
-/// de `scores` (a do banco). Ficam as notas de pelo menos
-/// `max(SCORE_FLOOR, melhor − SCORE_SPREAD)`, até [`MAX_KEPT`].
-///
-/// Com `minimum` maior que zero, se passarem menos que ele, voltam os
-/// `minimum` primeiros pela nota, só entre os de nota de pelo menos
-/// [`SCORE_FLOOR`].
+/// O veredito de uma classificação: "nenhum destes" com [`NONE_FROM`] ou mais
+/// de chance é não achei; senão, a confiança de [`SURE_FROM`] ou mais é certo;
+/// o resto é dividido.
 #[must_use]
-pub fn cut(scores: &[Scored], minimum: usize) -> Vec<Scored> {
+pub fn verdict(none: f64, confidence: f64) -> Verdict {
+    if none >= NONE_FROM {
+        Verdict::NotFound
+    } else if confidence >= SURE_FROM {
+        Verdict::Sure
+    } else {
+        Verdict::Split
+    }
+}
+
+/// O corte: ordena pela chance, da maior para a menor, e no empate fica a
+/// ordem de `scores` (a do banco). Fica o melhor e os de chance acima de
+/// `share` vezes a maior, até [`MAX_KEPT`]; a chance que só iguala essa linha
+/// cai (0,5, 0,45 e 0,05 com 0,10 deixam dois). Sem mínimo e sem piso: as
+/// chances somam 1 com a de "nenhum destes", e o que sobra depois do melhor é
+/// quase tudo zero.
+#[must_use]
+pub fn cut(scores: &[Scored], share: f64) -> Vec<Scored> {
     let mut ranked = scores.to_vec();
     // `sort_by` é estável: no empate, a ordem do banco fica.
     ranked.sort_by(|a, b| b.score.total_cmp(&a.score));
     let Some(best) = ranked.first().map(|s| s.score) else {
         return Vec::new();
     };
-    let threshold = SCORE_FLOOR.max(best - SCORE_SPREAD);
-    let kept: Vec<Scored> = ranked.iter().filter(|s| s.score >= threshold).take(MAX_KEPT).copied().collect();
-    if kept.len() >= minimum {
-        return kept;
-    }
-    ranked.into_iter().filter(|s| s.score >= SCORE_FLOOR).take(minimum).collect()
+    let threshold = best * share;
+    ranked
+        .into_iter()
+        .enumerate()
+        .filter(|(at, s)| *at == 0 || s.score > threshold)
+        .map(|(_, s)| s)
+        .take(MAX_KEPT)
+        .collect()
+}
+
+/// A classificação inteira posta na resposta do filtro: o veredito de `none`
+/// e `confidence` e, salvo no não achei, o que passa do [`cut`] de `share`.
+#[must_use]
+pub fn judged(scores: &[Scored], none: f64, confidence: f64, share: f64) -> (Verdict, Vec<Scored>) {
+    let verdict = verdict(none, confidence);
+    let kept = if verdict == Verdict::NotFound { Vec::new() } else { cut(scores, share) };
+    (verdict, kept)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// As notas na ordem do banco, com os ids 1, 2, 3…
+    /// As chances na ordem do banco, com os ids 1, 2, 3…
     fn scores(notes: &[f64]) -> Vec<Scored> {
         notes.iter().enumerate().map(|(i, &score)| Scored { id: i as i64 + 1, score }).collect()
     }
@@ -215,58 +259,85 @@ mod tests {
     }
 
     #[test]
-    fn the_cut_keeps_what_is_close_to_the_best_score() {
-        // 0,9 − 0,4 = 0,5: ficam 0,9 e 0,6; 0,45 e 0,1 caem.
-        let kept = cut(&scores(&[0.9, 0.6, 0.45, 0.1]), 0);
-        assert_eq!(ids(&kept), vec![1, 2]);
+    fn a_concentrated_chance_keeps_only_the_best() {
+        // 0,9 × 0,10 = 0,09: só o 0,9 passa; 0,05 e 0,03 caem.
+        let kept = cut(&scores(&[0.9, 0.05, 0.03]), CUT_SHARE);
+        assert_eq!(ids(&kept), vec![1]);
         assert!((kept[0].score - 0.9).abs() < f64::EPSILON);
     }
 
     #[test]
-    fn the_cut_line_sits_at_the_spread_below_the_best() {
-        // A divisa: a nota igual a melhor − 0,4 volta; um fio abaixo, não.
-        let edge = 0.9 - SCORE_SPREAD;
-        let kept = cut(&scores(&[0.9, edge, edge - 1e-9]), 0);
-        assert_eq!(ids(&kept), vec![1, 2]);
+    fn a_split_chance_keeps_the_two_close_ones() {
+        // 0,5 × 0,10 = 0,05: ficam 0,5 e 0,45; o 0,05 só iguala a linha e cai.
+        assert_eq!(ids(&cut(&scores(&[0.5, 0.45, 0.05]), CUT_SHARE)), vec![1, 2]);
+        assert_eq!(ids(&cut(&scores(&[0.5, 0.45, 0.04]), CUT_SHARE)), vec![1, 2]);
     }
 
     #[test]
-    fn the_cut_never_goes_below_the_floor() {
-        // Com a melhor em 0,3, a linha seria −0,1; o piso de 0,15 a segura.
-        let kept = cut(&scores(&[0.3, SCORE_FLOOR, SCORE_FLOOR - 1e-9]), 0);
-        assert_eq!(ids(&kept), vec![1, 2]);
+    fn the_cut_line_is_the_share_of_the_best_and_only_what_passes_it_stays() {
+        // A divisa: a chance igual à parte da maior cai; um fio acima, fica.
+        assert_eq!(ids(&cut(&scores(&[0.5, 0.45, 0.05 + 1e-9]), CUT_SHARE)), vec![1, 2, 3]);
+        assert_eq!(ids(&cut(&scores(&[0.5, 0.45, 0.05]), CUT_SHARE)), vec![1, 2]);
+    }
+
+    #[test]
+    fn the_best_stays_even_when_every_chance_is_zero() {
+        assert_eq!(ids(&cut(&scores(&[0.0, 0.0]), CUT_SHARE)), vec![1]);
+    }
+
+    #[test]
+    fn the_cut_has_no_minimum_and_no_floor() {
+        // Tudo abaixo de 0,15 e nenhum mínimo: volta o melhor e só ele.
+        let kept = cut(&scores(&[0.12, 0.011, 0.01]), CUT_SHARE);
+        assert_eq!(ids(&kept), vec![1]);
     }
 
     #[test]
     fn the_cut_returns_at_most_twelve() {
-        let kept = cut(&scores(&[0.8; 15]), 0);
+        let kept = cut(&scores(&[0.08; 15]), CUT_SHARE);
         assert_eq!(ids(&kept), (1..=12).collect::<Vec<_>>());
     }
 
     #[test]
     fn the_bank_order_breaks_ties() {
-        let kept = cut(&scores(&[0.5, 0.7, 0.5, 0.7]), 0);
+        let kept = cut(&scores(&[0.3, 0.4, 0.3, 0.4]), CUT_SHARE);
         assert_eq!(ids(&kept), vec![2, 4, 1, 3]);
     }
 
     #[test]
-    fn the_minimum_with_scores_that_already_pass_keeps_the_first_two() {
-        let kept = cut(&scores(&[0.3, 0.2, 0.1]), 2);
-        assert_eq!(ids(&kept), vec![1, 2]);
-    }
-
-    #[test]
-    fn the_minimum_brings_back_the_next_best_above_the_floor() {
-        // Só 0,95 passa da linha (0,55); com mínimo 3, voltam 0,95, 0,5 e 0,2,
-        // e o 0,1, abaixo do piso, fica fora mesmo faltando item.
-        let bank = scores(&[0.1, 0.5, 0.95, 0.2]);
-        assert_eq!(ids(&cut(&bank, 0)), vec![3]);
-        assert_eq!(ids(&cut(&bank, 3)), vec![3, 2, 4]);
-        assert_eq!(ids(&cut(&bank, 5)), vec![3, 2, 4]);
+    fn a_bigger_share_cuts_closer_to_the_best() {
+        let chances = scores(&[0.6, 0.25, 0.1]);
+        assert_eq!(ids(&cut(&chances, 0.10)), vec![1, 2, 3]);
+        assert_eq!(ids(&cut(&chances, 0.5)), vec![1]);
     }
 
     #[test]
     fn nothing_to_cut_returns_nothing() {
-        assert!(cut(&[], 3).is_empty());
+        assert!(cut(&[], CUT_SHARE).is_empty());
+    }
+
+    #[test]
+    fn none_at_half_is_not_found_whatever_the_confidence() {
+        assert_eq!(verdict(0.5, 0.99), Verdict::NotFound);
+        assert_eq!(verdict(0.6, 0.2), Verdict::NotFound);
+        assert_eq!(verdict(0.499_999, 0.99), Verdict::Sure);
+    }
+
+    #[test]
+    fn a_confidence_of_seven_tenths_is_sure_and_below_it_is_split() {
+        assert_eq!(verdict(0.1, 0.7), Verdict::Sure);
+        assert_eq!(verdict(0.1, 0.699_999), Verdict::Split);
+        assert_eq!(verdict(0.0, 0.0), Verdict::Split);
+    }
+
+    #[test]
+    fn a_not_found_verdict_keeps_nothing_and_the_others_keep_the_cut() {
+        let chances = scores(&[0.4, 0.1, 0.05]);
+        let (verdict, kept) = judged(&chances, 0.6, 0.9, CUT_SHARE);
+        assert_eq!((verdict, kept), (Verdict::NotFound, Vec::new()));
+        let (verdict, kept) = judged(&chances, 0.3, 0.9, CUT_SHARE);
+        assert_eq!((verdict, ids(&kept)), (Verdict::Sure, vec![1, 2, 3]));
+        let (verdict, kept) = judged(&chances, 0.3, 0.4, 0.5);
+        assert_eq!((verdict, ids(&kept)), (Verdict::Split, vec![1]));
     }
 }

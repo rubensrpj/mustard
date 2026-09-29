@@ -130,7 +130,7 @@ impl Triaged {
     /// ([`triage::mark`]).
     #[must_use]
     pub fn mark(&self) -> triage::Mark {
-        triage::mark(self.grade, triage::chance(&self.signals), self.missing.len())
+        triage::mark(self.grade, triage::chance(&self.signals))
     }
 }
 
@@ -658,6 +658,17 @@ mod tests {
         triaged(db.conn(), query, &languages(), TOP, true).unwrap()
     }
 
+    /// A busca funda da pergunta como a resposta a leva, com o corte do muito
+    /// mais fraco e o limite, sem o grau que a barra: a busca dos arquivos lê
+    /// os comentários, e a fixture de um comentário só já sobe o grau.
+    fn deeper_cut(dir: &TempDir, query: &str) -> Vec<Deeper> {
+        let db = indexed(&model_path(dir.path()), &languages(), &SEARCHED).unwrap();
+        let mut normalizer = Normalizer::new(&languages());
+        let words = question(db.conn(), &mut normalizer, query).unwrap();
+        let missing: Vec<&Word> = words.iter().collect();
+        search_deeper(db.conn(), &mut normalizer, &missing, Some(TOP)).unwrap()
+    }
+
     /// A entrada da busca funda deste arquivo e desta declaração.
     fn entry<'a>(got: &'a Triaged, path: &str, name: Option<&str>) -> Option<&'a Deeper> {
         got.deeper.iter().find(|entry| entry.path == path && entry.decl.as_ref().map(|decl| decl.name.as_str()) == name)
@@ -683,6 +694,26 @@ mod tests {
         assert!(entry(&deep, "src/pay/gateway.rs", Some("reissue")).is_some(), "the comment was there to find: {deep:?}");
     }
 
+    /// A marca da resposta triada não lê as palavras que faltam: nota 5 com a
+    /// chance do corte é cravada com três palavras fora dos campos fortes, e
+    /// a mesma resposta com nota 4 é parcial.
+    #[test]
+    fn a_grade_five_answer_is_pinned_with_three_words_missing() {
+        let lone = Signals { words: 1, strong: 1, first: Some(9.0), second: None };
+        let words: Vec<String> = ["um", "dois", "tres", "quatro"].map(String::from).to_vec();
+        let answer = |grade: u8| Triaged {
+            grade,
+            signals: lone,
+            words: words.clone(),
+            missing: words[1..].to_vec(),
+            files: Vec::new(),
+            deeper: Vec::new(),
+        };
+        assert_eq!(answer(5).mark(), triage::Mark::Pinned);
+        assert_eq!(answer(4).mark(), triage::Mark::Partial);
+        assert_eq!(Triaged { grade: 0, ..answer(5) }.mark(), triage::Mark::NotFound);
+    }
+
     #[test]
     fn a_question_nothing_answers_is_grade_zero_with_its_words_split() {
         let dir = saved(&json!({"modules": [
@@ -694,13 +725,14 @@ mod tests {
     }
 
     #[test]
-    fn a_word_only_a_comment_holds_is_grade_one_and_comes_back_to_the_function() {
+    fn a_word_only_a_comment_holds_finds_the_file_and_comes_back_to_the_function() {
         let dir = saved(&json!({"modules": [
             {"path": "src/pay/gateway.rs", "declarations": [
                 function("charge", 1, ""), function("reissue", 12, "reemite o boleto vencido")]}
         ]}));
-        let got = ask(&dir, "boleto vencido");
-        assert_eq!(got.grade, 1, "{got:?}");
+        let answer = ask(&dir, "boleto vencido");
+        assert_eq!((answer.signals.strong, answer.files.len()), (0, 1), "the comment brings the file, in no strong field: {answer:?}");
+        let got = whole(&dir, "boleto vencido");
         assert_eq!(got.deeper.len(), 1, "{:?}", got.deeper);
         let found = &got.deeper[0];
         assert_eq!((found.path.as_str(), found.decl.as_ref().map(|decl| decl.name.as_str())), ("src/pay/gateway.rs", Some("reissue")));
@@ -716,7 +748,7 @@ mod tests {
                 {"kind": "function", "name": "inner", "line": 10, "end_line": 15, "body_comment": "reemite o boleto vencido"},
                 function("apart", 40, "")]}
         ]}));
-        let got = ask(&dir, "boleto vencido");
+        let got = whole(&dir, "boleto vencido");
         let names: Vec<_> = got.deeper.iter().map(|entry| entry.decl.as_ref().map(|decl| decl.name.clone())).collect();
         assert_eq!(names, [Some("inner".to_string())], "{:?}", got.deeper);
     }
@@ -741,7 +773,7 @@ mod tests {
             {"path": "tests/pay_flow.rs", "deps": ["src/pay/gateway.rs"], "file_comment": "confere o estorno programado",
              "declarations": [function("it_works", 1, "")]}
         ]}));
-        let got = ask(&dir, "estorno programado");
+        let got = whole(&dir, "estorno programado");
         assert_eq!(got.deeper.len(), 1, "one step only, the importer of the file stays out: {:?}", got.deeper);
         let found = &got.deeper[0];
         assert_eq!((found.path.as_str(), found.decl.is_none(), found.link), ("src/pay/gateway.rs", true, Link::Proven));
@@ -755,7 +787,7 @@ mod tests {
             {"path": "src/pay/refund.rs", "tests": ["tests/flow.rs"], "declarations": [function("refund", 1, "")]},
             {"path": "tests/flow.rs", "file_comment": "cobre o cancelamento do carne", "declarations": [function("it_works", 1, "")]}
         ]}));
-        let got = ask(&dir, "cancelamento carne");
+        let got = whole(&dir, "cancelamento carne");
         let paths: Vec<_> = got.deeper.iter().map(|entry| (entry.path.as_str(), entry.link)).collect();
         assert_eq!(paths, [("src/pay/gateway.rs", Link::Suspected), ("src/pay/refund.rs", Link::Suspected)]);
         let whole_test = whole(&dir, "cancelamento carne");
@@ -774,7 +806,7 @@ mod tests {
             {"path": "src/pay/gateway.rs", "tests": ["tests/gateway.rs"], "declarations": [function("charge", 1, "")]},
             {"path": "tests/gateway.rs", "file_comment": "cobre o cancelamento do carne", "declarations": [function("it_works", 1, "")]}
         ]}));
-        let got = ask(&dir, "cancelamento carne");
+        let got = whole(&dir, "cancelamento carne");
         assert_eq!(got.deeper.iter().map(|entry| entry.link).collect::<Vec<_>>(), [Link::Proven], "{:?}", got.deeper);
     }
 
@@ -876,8 +908,8 @@ mod tests {
         let (first, weak) = (entry(&deep, "src/pay/gateway.rs", Some("reissue")), entry(&deep, "src/pay/gateway.rs", Some("remind")));
         let (first, weak) = (first.expect("first").score, weak.expect("weak").score);
         assert!(!triage::keeps(weak, first), "the fixture needs a much weaker finding: {weak} against {first}");
-        let got = ask(&dir, "boleto vencido carne");
-        let names: Vec<_> = got.deeper.iter().filter_map(|entry| entry.decl.as_ref().map(|decl| decl.name.as_str())).collect();
+        let cut = deeper_cut(&dir, "boleto vencido carne");
+        let names: Vec<_> = cut.iter().filter_map(|entry| entry.decl.as_ref().map(|decl| decl.name.as_str())).collect();
         assert_eq!(names, ["reissue"]);
     }
 
@@ -885,7 +917,7 @@ mod tests {
     fn the_answer_keeps_the_five_best_entries_and_the_whole_search_all_of_them() {
         let functions: Vec<Value> = (0..7).map(|at| function(&format!("resend_{at}"), 1 + 10 * at, "reemite o boleto vencido")).collect();
         let dir = saved(&json!({"modules": [{"path": "src/pay/gateway.rs", "declarations": functions}]}));
-        assert_eq!(ask(&dir, "boleto vencido").deeper.len(), TOP);
+        assert_eq!(deeper_cut(&dir, "boleto vencido").len(), TOP);
         assert_eq!(whole(&dir, "boleto vencido").deeper.len(), 7);
     }
 
@@ -907,6 +939,8 @@ mod tests {
         let out = std::env::var("MAP_TRIAGE_OUT").expect("MAP_TRIAGE_OUT points to the file to write");
         let ruler: Value = serde_json::from_str(&std::fs::read_to_string(ruler).unwrap()).unwrap();
         let languages = Languages::new(["pt-BR", "en-US"]);
+        crate::io::map_search::tests::weights_from_env();
+        let phrase = std::env::var("MAP_TRIAGE_PHRASE").is_ok();
         let mut lines: Vec<String> = Vec::new();
         // Por grau: as buscas, as de primeiro achado certo e as com o certo
         // entre os cinco. Das buscas de grau baixo com busca funda: a posição
@@ -920,7 +954,8 @@ mod tests {
             let text = |key: &str| search[key].as_str().unwrap().to_string();
             let db = indexed(Path::new(&text("model")), &languages, &SEARCHED).unwrap();
             let started = std::time::Instant::now();
-            let got = triaged(db.conn(), &text("query"), &languages, TOP, true).unwrap();
+            let asked = if phrase { text("intent") } else { text("query") };
+            let got = triaged(db.conn(), &asked, &languages, TOP, true).unwrap();
             let millis = started.elapsed().as_secs_f64() * 1000.0;
             let targets: Vec<(String, String)> = search["targets"]
                 .as_array()

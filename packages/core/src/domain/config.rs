@@ -210,9 +210,10 @@ pub struct SearchConfig {
     /// O filtro: `"jev"` ou `"none"`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub filter: Option<Value>,
-    /// Quantos itens o corte do filtro devolve no mínimo.
+    /// Que parte da maior chance, em pontos percentuais, um candidato precisa
+    /// ter para passar do corte do filtro.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub cut_min: Option<Value>,
+    pub cut_share: Option<Value>,
     /// Quantas peças a busca com filtro devolve, no máximo.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_returned: Option<Value>,
@@ -227,7 +228,7 @@ impl SearchConfig {
     pub fn is_empty(&self) -> bool {
         self.candidates.is_none()
             && self.filter.is_none()
-            && self.cut_min.is_none()
+            && self.cut_share.is_none()
             && self.max_returned.is_none()
             && self.answer.is_none()
     }
@@ -703,7 +704,7 @@ pub struct ProjectConfig {
     pub map: MapConfig,
     /// A busca por assunto do mapa — veja [`SearchConfig`]. Lida só por
     /// [`ProjectConfig::search_candidates`], [`ProjectConfig::search_filter`],
-    /// [`ProjectConfig::search_cut_min`],
+    /// [`ProjectConfig::search_cut_share`],
     /// [`ProjectConfig::search_max_returned`] e
     /// [`ProjectConfig::search_answer`].
     #[serde(skip_serializing_if = "SearchConfig::is_empty")]
@@ -915,10 +916,11 @@ impl ProjectConfig {
         FilterSetting::of(self.search.filter.as_ref())
     }
 
-    /// `search.cut_min`: quantos itens o corte do filtro devolve no mínimo.
+    /// `search.cut_share`: que parte da maior chance, em pontos percentuais
+    /// (10 é 0,10), um candidato precisa ter para passar do corte do filtro.
     #[must_use]
-    pub fn search_cut_min(&self) -> Setting {
-        Setting::of(self.search.cut_min.as_ref())
+    pub fn search_cut_share(&self) -> Setting {
+        Setting::of(self.search.cut_share.as_ref())
     }
 
     /// `search.max_returned`: quantas peças a busca com filtro devolve, no
@@ -1343,20 +1345,20 @@ mod tests {
         let cfg = load(r#"{"git": {"flow": {"*": "main"}}}"#);
         assert_eq!(cfg.search_candidates(), Setting::Absent);
         assert_eq!(cfg.search_candidates().or(CANDIDATES), 100);
-        assert_eq!((cfg.search_cut_min(), cfg.search_max_returned()), (Setting::Absent, Setting::Absent));
+        assert_eq!((cfg.search_cut_share(), cfg.search_max_returned()), (Setting::Absent, Setting::Absent));
         assert_eq!(cfg.search_filter(), FilterSetting::Absent);
 
-        let cfg = load(r#"{"search": {"candidates": 40, "filter": "none", "cut_min": 6, "max_returned": 12}}"#);
+        let cfg = load(r#"{"search": {"candidates": 40, "filter": "none", "cut_share": 25, "max_returned": 12}}"#);
         assert_eq!(cfg.search_candidates().or(CANDIDATES), 40);
-        assert_eq!((cfg.search_cut_min().or(8), cfg.search_max_returned().or(15)), (6, 12));
+        assert_eq!((cfg.search_cut_share().or(10), cfg.search_max_returned().or(15)), (25, 12));
         assert_eq!(cfg.search_filter(), FilterSetting::Off);
         assert_eq!(load(r#"{"search": {"filter": "jev"}}"#).search_filter(), FilterSetting::Jev);
 
         for bad in ["0", "-3", "\"cem\""] {
-            let cfg = load(&format!(r#"{{"search": {{"candidates": {bad}, "cut_min": {bad}, "max_returned": {bad}}}}}"#));
+            let cfg = load(&format!(r#"{{"search": {{"candidates": {bad}, "cut_share": {bad}, "max_returned": {bad}}}}}"#));
             assert_eq!(cfg.search_candidates(), Setting::Invalid, "{bad}");
             assert_eq!(cfg.search_candidates().or(CANDIDATES), 100, "{bad}");
-            assert_eq!((cfg.search_cut_min().or(8), cfg.search_max_returned().or(15)), (8, 15), "{bad}");
+            assert_eq!((cfg.search_cut_share().or(10), cfg.search_max_returned().or(15)), (10, 15), "{bad}");
             assert!(!cfg.unreadable, "{bad}: o valor inválido não torna o arquivo ilegível");
         }
         for bad in ["\"outro\"", "3", "true"] {

@@ -41,6 +41,6 @@ pub(super) fn verdict(
         (None, Before::Itself | Before::Name(_)) => {
             narrowed().and_then(|(kept, provable)| Verdict::of(kept, provable, max_same_name))
         }
-        (None, Before::Value) => None,
+        (None, Before::Value | Before::Chain(_)) => None,
     }
 }

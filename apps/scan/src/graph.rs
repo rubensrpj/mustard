@@ -63,7 +63,7 @@
 //!     Nothing here switches on a language name, so a new language needs no change.
 //!     Imports that resolve to nothing internal are treated as external deps.
 
-use crate::model::{CallSite, Decl, DeclAt, GraphStats, Module, NodeDegree, UseSite, RECEIVER};
+use crate::model::{CallSite, Decl, DeclAt, GraphStats, Module, NodeDegree, UseSite, BARE, RECEIVER};
 use crate::path_aliases::PathAliases;
 use mustard_core::domain::ast::{entry_file_names, is_entry_file};
 use petgraph::graph::{DiGraph, NodeIndex};
@@ -71,6 +71,7 @@ use std::cell::{OnceCell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 mod member;
+mod reach;
 mod value;
 
 /// Catalog cap for `top_fan_in`: a bounded list (~a few KB of model) ordered
@@ -437,6 +438,10 @@ enum Before<'a> {
     Name(&'a str),
     /// Um valor que não é nome ([`RECEIVER`]).
     Value,
+    /// Um valor de tipo escrito no arquivo, com os campos depois dele
+    /// (`Ctx.config`, `this.repo`): o [`RECEIVER`] e a cadeia que o arquivo
+    /// escreveu para o receptor, lida por [`reach::Typing`].
+    Chain(&'a str),
 }
 
 impl<'a> Before<'a> {
@@ -444,6 +449,7 @@ impl<'a> Before<'a> {
         match qualifier {
             "" => Self::Nothing,
             RECEIVER => Self::Value,
+            q if q.strip_prefix(RECEIVER).is_some_and(|chain| !chain.is_empty()) => Self::Chain(&q[RECEIVER.len()..]),
             q if crate::extract::self_receivers(lang).contains(&q) => Self::Itself,
             q => Self::Name(q),
         }
@@ -532,6 +538,7 @@ fn resolve_declaration_links(
     // O caminho escrito antes do nome chamado, o import que traz nomes e o
     // import com `*` se resolvem como o import que são.
     let resolver = Resolver::new(modules, projects, aliases);
+    let typing = reach::Typing::new(modules);
     // The names a qualifier can give a file: its own name and its folder's.
     let own_names: Vec<[String; 2]> = modules
         .iter()
@@ -638,7 +645,28 @@ fn resolve_declaration_links(
         for (site, by_name, cite_at, written) in sites {
             let is_call = matches!(written, Written::Call);
             let by_value = matches!(written, Written::Value);
-            let before = Before::of(&site.qualifier, &m.language);
+            let from = enclosing(&m.declarations, site.line);
+            // O nome escrito sozinho, sem tipo e sem ligação, numa língua que
+            // chama o membro do próprio objeto pelo nome sozinho
+            // (`_logger.Log()`, `?@_logger`), é campo do tipo em volta ou
+            // tipo. Com tipo que o mapa guarda, dá o tipo do receptor; sem
+            // ele, a chamada segue como a de um nome qualificado.
+            let bare = site.qualifier.strip_prefix(RECEIVER).and_then(|rest| rest.strip_prefix(BARE));
+            let field_receiver = bare.and_then(|chain| typing.field_receiver(chain, src, &own_types(m, from)));
+            let before = match bare {
+                Some(_) if field_receiver.is_some() => Before::Value,
+                Some(chain) => Before::Name(chain.rsplit('.').next().unwrap_or(chain)),
+                None => Before::of(&site.qualifier, &m.language),
+            };
+            // O caminho escrito antes do nome e o que ele diz da biblioteca
+            // vêm pela chamada como o arquivo a escreveu, com o qualificador
+            // de um nome só.
+            let written_site = bare.map(|chain| CallSite {
+                name: site.name.clone(),
+                line: site.line,
+                qualifier: chain.rsplit('.').next().unwrap_or(chain).to_string(),
+            });
+            let written_site = written_site.as_ref().unwrap_or(site);
             // O nome que um import trouxe com troca, escrito sozinho (`L()`
             // de `import { Leitor as L }`), procura as declarações pelo nome
             // que elas têm no arquivo aonde a resolução chegou.
@@ -647,7 +675,6 @@ fn resolve_declaration_links(
                 _ => site.name.as_str(),
             };
             let Some(all) = by_name.get(looked) else { continue };
-            let from = enclosing(&m.declarations, site.line);
             // O membro escrito sozinho, dentro da desestruturação de um
             // objeto (`const { total } = pedido`), é lido do objeto e não do
             // próprio tipo: vale como o membro escrito depois de um nome que
@@ -733,7 +760,7 @@ fn resolve_declaration_links(
             let from_outside = match before {
                 Before::Name(q) => outside.contains(q),
                 Before::Nothing => outside.contains(site.name.as_str()),
-                Before::Itself | Before::Value => false,
+                Before::Itself | Before::Value | Before::Chain(_) => false,
             };
             // O nome da língua escrito sozinho só liga ao projeto quando o
             // arquivo o declara, o traz pelo nome num import ou importa com
@@ -747,7 +774,7 @@ fn resolve_declaration_links(
             // (`File.ReadAllText()`, `std::fs::read()`), e não liga; o nome
             // entregue como valor por ele (`map(std::cmp::max)`) também não.
             let by_library = cite_at.is_none()
-                && match by_path.get(site) {
+                && match by_path.get(written_site) {
                     Some(&library) => library,
                     None => matches!(before, Before::Name(q) if from_library(q, q)),
                 };
@@ -780,7 +807,7 @@ fn resolve_declaration_links(
                         let own_seen: Vec<DeclId> = own.iter().copied().filter(|&(mi, _)| sees(mi)).collect();
                         if own_seen.is_empty() { own } else { own_seen }
                     }
-                    Before::Nothing | Before::Value => Vec::new(),
+                    Before::Nothing | Before::Value | Before::Chain(_) => Vec::new(),
                 };
                 let provable = matches!(before, Before::Itself) || kept.iter().all(|&(mi, _)| sees(mi));
                 (!kept.is_empty()).then_some((kept, provable))
@@ -788,14 +815,33 @@ fn resolve_declaration_links(
             let verdict = if !own.is_empty() {
                 Verdict::of(own.into_iter().filter(|&d| !own_body(d)).collect(), true, max_same_name)
             } else if by_value {
-                let named = through.get(site).and_then(|paths| path_files(&resolver, m, site.line, paths)).map(|files| {
-                    all.iter().copied().filter(|&(mi, _)| files.contains(modules[mi].path.as_str())).collect()
-                });
+                let named = through
+                    .get(written_site)
+                    .and_then(|paths| path_files(&resolver, m, site.line, paths))
+                    .map(|files| reach::declared_in(&resolver, files, looked))
+                    .map(|files| {
+                        all.iter().copied().filter(|&(mi, _)| files.contains(modules[mi].path.as_str())).collect()
+                    });
                 value::verdict(named, not_ours, &before, seen, || narrowed(&all), max_same_name)
             } else if matches!(written, Written::Member) {
                 member::verdict(not_ours, &before, seen, || narrowed(&all), path_only, destructured, max_same_name)
             } else if is_call {
-                let named = through.get(site).and_then(|paths| path_files(&resolver, m, site.line, paths));
+                // O caminho escrito antes do nome nomeia arquivos do projeto;
+                // o nome de um pacote do projeto escrito sozinho antes dele
+                // (`mustard_core::translate(`), que nenhuma peça do arquivo
+                // traz, é um caminho de uma parte só. O arquivo que só repassa
+                // o nome vale pelo que ele repassa.
+                let package = match before {
+                    Before::Name(q) if package_root(q, m, (&brought, &declared_names)) => {
+                        path_files(&resolver, m, site.line, &[q])
+                    }
+                    _ => None,
+                };
+                let named = through
+                    .get(written_site)
+                    .and_then(|paths| path_files(&resolver, m, site.line, paths))
+                    .or(package)
+                    .map(|files| reach::declared_in(&resolver, files, looked));
                 match (named, &before) {
                     (Some(files), _) => Verdict::of(
                         all.iter().copied().filter(|&(mi, _)| files.contains(modules[mi].path.as_str())).collect(),
@@ -803,6 +849,31 @@ fn resolve_declaration_links(
                         max_same_name,
                     ),
                     (None, _) if not_ours => None,
+                    // O receptor de tipo escrito, ou com campos de tipo que o
+                    // mapa guarda, liga ao método do tipo; sem tipo que saia
+                    // assim, a chamada é a de um valor qualquer.
+                    (None, _) if field_receiver.is_some() || matches!(before, Before::Chain(_)) => {
+                        let receiver = field_receiver.or_else(|| match before {
+                            Before::Chain(chain) => typing.receiver_type(
+                                chain,
+                                src,
+                                (&own_types(m, from), crate::extract::self_receivers(&m.language)),
+                                &sees,
+                            ),
+                            _ => None,
+                        });
+                        let owned: Vec<DeclId> = receiver
+                            .map(|ty| {
+                                let name = modules[ty.0].declarations[ty.1].name.as_str();
+                                let only = typing.is_the_only(ty);
+                                all.iter()
+                                    .copied()
+                                    .filter(|&d| owner_of(d) == Some(name) && (only || d.0 == ty.0))
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        Verdict::of(owned, true, max_same_name).or_else(|| Verdict::of(seen, false, max_same_name))
+                    }
                     (None, Before::Nothing) if !seen.is_empty() => Verdict::of(seen, true, max_same_name),
                     // Sem nada à vista, a família inteira da língua, sempre
                     // suspeita: nada no arquivo diz que é uma delas.
@@ -892,6 +963,16 @@ fn path_files(resolver: &Resolver, m: &Module, line: usize, paths: &[&str]) -> O
     let files: HashSet<String> =
         paths.iter().flat_map(|path| resolver.resolve(path, m, Reach::Used, nested)).collect();
     (!files.is_empty()).then_some(files)
+}
+
+/// Se `name`, escrito sozinho antes do nome chamado, pode ser o de um pacote
+/// do projeto: nenhuma peça do arquivo o traz, nem declaração do projeto o
+/// tem, e o arquivo o escreve sem ligá-lo a nada (`Module::unbound_heads`).
+/// Se ele nomeia um pacote de verdade quem diz é a resolução do caminho.
+fn package_root(name: &str, m: &Module, (brought, declared): (&HashSet<&str>, &HashSet<&str>)) -> bool {
+    m.unbound_heads.binary_search_by(|head| head.as_str().cmp(name)).is_ok()
+        && !brought.contains(name)
+        && !declared.contains(name)
 }
 
 /// O nome que as declarações têm no arquivo de onde vem o nome `written`

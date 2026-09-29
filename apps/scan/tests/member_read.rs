@@ -6,8 +6,9 @@
 //!
 //! O membro liga pelo mesmo caminho da chamada de método escrita depois do
 //! mesmo objeto: depois do próprio objeto, ao membro do tipo em que está
-//! escrito, provado; depois de um nome que não estreita, ao que o arquivo tem
-//! à vista, suspeito; depois de um valor (`Criar().Troco`, `pedido.troco` na
+//! escrito, provado; depois de um nome de tipo escrito (`pedido: Pedido`), ao
+//! membro do tipo, provado; depois de um nome que não estreita, ao que o
+//! arquivo tem à vista, suspeito; depois de um valor (`Criar().Troco`, `pedido.troco` na
 //! língua cujo separador de membro só liga valor), a nada. O membro de um
 //! arquivo que o leitor não enxerga não ganha uso, nem o membro de mesmo nome
 //! lido depois de um nome da biblioteca (`DateTime.Now`). O membro lido não
@@ -92,8 +93,8 @@ private Pedido Criar() => new Pedido();\n}\n";
 
 /// No C#, a propriedade lida pelo próprio objeto (`this.Total`) é usada,
 /// provada, pelo método que a lê; o campo e a propriedade lidos pela
-/// variável (`pedido.Desconto`, `pedido.Total`) são usados, suspeitos, pelo
-/// método que os lê. A propriedade lida do que um método devolve
+/// variável de tipo escrito (`pedido.Desconto`, `pedido.Total`) são usados,
+/// provados, pelo método que os lê. A propriedade lida do que um método devolve
 /// (`Criar().Troco`) não ganha uso, nem a de mesmo nome de uma biblioteca
 /// (`DateTime.Now`), nem o campo de mesmo nome de um namespace que o arquivo
 /// não enxerga. O membro lido não entra nas chamadas de quem o lê.
@@ -107,9 +108,9 @@ fn a_csharp_property_or_field_read_after_the_object_is_a_use_of_it() {
             ("Fora/Nota.cs", "namespace Fora;\n\npublic class Nota\n{\n    public int Desconto;\n}\n"),
         ],
     );
-    assert_eq!(proven_uses(&map, "Loja/Pedido.cs", "Total"), ["Loja/Pedido.cs:10:Dobro"]);
-    assert_eq!(suspect_uses(&map, "Loja/Pedido.cs", "Total"), ["Loja/Caixa.cs:10:Fechar"]);
-    assert_eq!(suspect_uses(&map, "Loja/Pedido.cs", "Desconto"), ["Loja/Caixa.cs:10:Fechar"]);
+    assert_eq!(proven_uses(&map, "Loja/Pedido.cs", "Total"), ["Loja/Caixa.cs:10:Fechar", "Loja/Pedido.cs:10:Dobro"]);
+    assert_eq!(suspect_uses(&map, "Loja/Pedido.cs", "Total"), Vec::<String>::new());
+    assert_eq!(proven_uses(&map, "Loja/Pedido.cs", "Desconto"), ["Loja/Caixa.cs:10:Fechar"]);
     assert_eq!(every_use(&map, "Loja/Pedido.cs", "Troco"), Vec::<String>::new(), "a property read from a value");
     assert_eq!(every_use(&map, "Loja/Pedido.cs", "Now"), Vec::<String>::new(), "a property read from the library");
     assert_eq!(every_use(&map, "Fora/Nota.cs", "Desconto"), Vec::<String>::new(), "a namespace out of sight");
@@ -119,8 +120,9 @@ fn a_csharp_property_or_field_read_after_the_object_is_a_use_of_it() {
 
 /// No TypeScript e no JavaScript, o campo lido pelo próprio objeto
 /// (`this.total`) é usado, provado, pelo método que o lê, e o lido pela
-/// variável (`pedido.desconto`), suspeito, também no meio da marcação de uma
-/// tela (`<h1>{capa.titulo}</h1>`). O campo lido do que uma função devolve
+/// variável de tipo escrito (`pedido.desconto`), também provado, também no
+/// meio da marcação de uma tela (`<h1>{capa.titulo}</h1>`); a variável sem
+/// tipo (`velho.js`) fica suspeita. O campo lido do que uma função devolve
 /// (`criar().troco`) não ganha uso, nem o de mesmo nome de uma biblioteca
 /// (`Math.PI`), nem o de mesmo nome de um arquivo que ninguém importa.
 #[test]
@@ -149,12 +151,13 @@ fn a_typescript_or_javascript_field_read_after_the_object_is_a_use_of_it() {
         ],
     );
     assert_eq!(proven_uses(&map, "src/pedido.ts", "total"), ["src/pedido.ts:8:dobro"]);
-    assert_eq!(suspect_uses(&map, "src/pedido.ts", "desconto"), ["src/caixa.ts:8:fechar", "src/velho.js:4:antigo"]);
+    assert_eq!(proven_uses(&map, "src/pedido.ts", "desconto"), ["src/caixa.ts:8:fechar"], "a parameter with a written type");
+    assert_eq!(suspect_uses(&map, "src/pedido.ts", "desconto"), ["src/velho.js:4:antigo"], "a parameter without a type");
     assert_eq!(every_use(&map, "src/pedido.ts", "troco"), Vec::<String>::new(), "a field read from a value");
     assert_eq!(every_use(&map, "src/pedido.ts", "PI"), Vec::<String>::new(), "a field read from the library");
     assert_eq!(every_use(&map, "src/nota.ts", "desconto"), Vec::<String>::new(), "a file nobody imports");
     assert_eq!(proven_uses(&map, "src/conta.js", "saldo"), ["src/conta.js:5:ler"]);
-    assert_eq!(suspect_uses(&map, "src/capa.ts", "titulo"), ["src/tela.tsx:4:Tela"], "a field read inside the markup of a screen");
+    assert_eq!(proven_uses(&map, "src/capa.ts", "titulo"), ["src/tela.tsx:4:Tela"], "a field read inside the markup of a screen");
 }
 
 /// No Python, o atributo da classe lido pelo próprio objeto (`self.total`) é
@@ -449,8 +452,8 @@ fn a_dart_field_read_after_the_object_is_a_use_of_it() {
 
 /// O acesso opcional (`pedido?.Total`) lê o membro do mesmo objeto que o
 /// acesso comum: a propriedade lida e o método chamado depois dele ganham o
-/// mesmo uso, suspeito, que ganham depois de `pedido.`, no C#, no TypeScript,
-/// no JavaScript e no Dart.
+/// mesmo uso que ganham depois de `pedido.`, no C#, no TypeScript, no
+/// JavaScript e no Dart: suspeito sem tipo escrito, provado com ele.
 #[test]
 fn a_member_read_or_a_call_after_optional_access_is_a_use_like_after_the_plain_one() {
     let csharp = scanned(
@@ -479,8 +482,9 @@ fn a_member_read_or_a_call_after_optional_access_is_a_use_like_after_the_plain_o
             ("src/velho.js", "import { Pedido } from './pedido';\n\nexport function antigo(pedido) {\n  return pedido?.total;\n}\n"),
         ],
     );
-    assert_eq!(suspect_uses(&typescript, "src/pedido.ts", "total"), ["src/caixa.ts:4:fechar", "src/velho.js:4:antigo"]);
-    assert_eq!(suspect_uses(&typescript, "src/pedido.ts", "calcular"), ["src/caixa.ts:4:fechar"]);
+    assert_eq!(proven_uses(&typescript, "src/pedido.ts", "total"), ["src/caixa.ts:4:fechar"]);
+    assert_eq!(suspect_uses(&typescript, "src/pedido.ts", "total"), ["src/velho.js:4:antigo"]);
+    assert_eq!(proven_uses(&typescript, "src/pedido.ts", "calcular"), ["src/caixa.ts:4:fechar"]);
 
     let dart = scanned(
         "opcional-dart",
@@ -499,10 +503,11 @@ fn a_member_read_or_a_call_after_optional_access_is_a_use_like_after_the_plain_o
 
 /// O acesso com a marca de valor não nulo (`pedido!.Total`) lê o membro do
 /// mesmo objeto que o acesso comum: a propriedade lida e o método chamado
-/// depois dele ganham o mesmo uso, suspeito, que ganham depois de `pedido.`, no
-/// C#, no TypeScript e no Dart. O que vem antes da marca só é o objeto quando
-/// é um nome: a chamada (`criar()!.Troco`) segue sendo um valor e não liga. Aqui
-/// o C#, com a marca também afastada do ponto por espaço (`pedido ! .Calcular()`).
+/// depois dele ganham o mesmo uso que ganham depois de `pedido.`, no C#, no
+/// TypeScript e no Dart: suspeito sem tipo escrito, provado com ele. O que
+/// vem antes da marca só é o objeto quando é um nome: a chamada
+/// (`criar()!.Troco`) segue sendo um valor e não liga. Aqui o C#, com a marca
+/// também afastada do ponto por espaço (`pedido ! .Calcular()`).
 #[test]
 fn a_member_read_or_a_call_after_null_forgiving_access_is_a_use_like_after_the_plain_one_in_csharp() {
     let csharp = scanned(
@@ -540,8 +545,8 @@ fn a_member_read_or_a_call_after_null_forgiving_access_is_a_use_like_after_the_p
             ),
         ],
     );
-    assert_eq!(suspect_uses(&typescript, "src/pedido.ts", "total"), ["src/caixa.ts:8:fechar"]);
-    assert_eq!(suspect_uses(&typescript, "src/pedido.ts", "calcular"), ["src/caixa.ts:8:fechar"]);
+    assert_eq!(proven_uses(&typescript, "src/pedido.ts", "total"), ["src/caixa.ts:8:fechar"]);
+    assert_eq!(proven_uses(&typescript, "src/pedido.ts", "calcular"), ["src/caixa.ts:8:fechar"]);
     assert_eq!(every_use(&typescript, "src/pedido.ts", "troco"), Vec::<String>::new(), "a property read from a call");
 }
 

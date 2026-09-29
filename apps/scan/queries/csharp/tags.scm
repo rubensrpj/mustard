@@ -106,6 +106,13 @@
 (from_clause name: (identifier) @local)
 (let_clause . (identifier) @local)
 
+; O tipo que a assinatura ou a variável escreve para um nome local
+; (`Pedido pedido`, `IRepo repo = ...;`): a chamada feita sobre esse nome, ou
+; sobre os campos dele, é do tipo. O tipo embrulhado (`List<Pedido>`, o vetor)
+; é o de fora.
+(parameter type: [(identifier) (generic_name) (qualified_name)] @local.type name: (identifier) @local)
+(variable_declaration type: [(identifier) (generic_name) (qualified_name)] @local.type (variable_declarator name: (identifier) @local))
+
 ; Os textos fixos: o literal de texto escrito no código. O motor guarda o que
 ; tem duas palavras ou forma de caminho ou chave, com a marca (log, erro ou
 ; texto) e a declaração que o contém.

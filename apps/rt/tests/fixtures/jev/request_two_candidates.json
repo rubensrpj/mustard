@@ -111,68 +111,17 @@
         "tokenize",
         "acronym"
       ],
-      "about": "A coding agent is searching a codebase. `request` is what it asked for, in Portuguese or English: either a description of what some code does, or the name, or part of the name, of an identifier. Each question shows one candidate declaration with what the code index knows about it: its kind, its name split into words, its file path, its signature, its documentation, the files that import its file, the files its file imports and the titles of the last commits that changed its file. The body of the code is not shown.",
-      "answer yes when": "The candidate is the code the request asks for: it does, defines or decides what the request describes, or its name is the identifier the request names.",
-      "answer no when": "The candidate is only on a related topic, only uses or calls the thing the request describes, or only shares some words with the request."
+      "candidates (one per line: id| fields as JSON)": "c000| {\"kind\": \"struct\", \"name\": \"Project Config\", \"path\": \"packages/core/src/domain/config.rs\", \"signature\": \"pub struct ProjectConfig\", \"documentation\": \"The full `mustard.json` document — the project config, at the project root. `#[serde(rename_all = \\\"camelCase\\\")]` applies to the **top-level** keys only (`buildCommand`, `maxActiveSpecs`, …). The nested structs keep snake/lowercase naming (`amend.drift_threshold`, `git.provider`, `language.text`, `subprojects.exclude`) to match the on-disk shape. Legacy snake_case command keys are still accepted\", \"last commits of the file\": [\"feat(onda-32): Aviso de comando ausente no plano\", \"feat(onda-11): o plano avisa quando a spec pode ser dividida\", \"feat(onda-8): siglas do projeto e conteúdo longo na página\"], \"comments in the body\": \"Git promotion flow + provider + submodule flag. Version-control binary. Absent ⇒ `git` default; `\\\"\\\"` ⇒ explicit opt-out. The text and code languages — see [`LanguageConfig`]. Read only through [`ProjectConfig::language`]. As siglas do dia a dia do projeto (`[\\\"PI\\\", \\\"PCP\\\"]`), que a conferência de escrita aceita sem o nome por extenso. Lida só por [`ProjectConfig::acronyms`]. Quantas ondas saem na mesma rodada, que é quantas compilam ao mesmo tempo. Ausente ⇒ o padrão do binário; a máquina com mais memória põe um número maior aqui. A chave que liga e desliga o Mustard no projeto. Desligado …\", \"members\": [\"json_path()\", \"exists()\", \"load()\", \"write()\", \"build_command()\", \"build_command_or_fallback()\", \"commands()\", \"vcs()\", \"architecture()\", \"max_active_specs()\", \"max_compiling_waves()\", \"enabled()\", \"rtk()\", \"role_patterns()\", \"drift_threshold()\", \"injectables()\", \"... 27 more\"]}\nc001| {\"kind\": \"method\", \"name\": \"infer\", \"path\": \"packages/core/src/domain/vocabulary/stacks.rs\", \"signature\": \"pub(crate) fn infer(&self, deps: &[String], paths: &[String], contents: &[String]) -> Vec<StackDetection>\", \"documentation\": \"Run the inference engine against caller-supplied evidence. For every `[[stack]]` in this registry, three signal **classes** are matched independently: - **manifest deps** — a declared `manifest_deps` term fires when any parsed dependency name in `deps` matches it at a name boundary: the dependency IS the term, or starts with the term followed by `@` (version suffix) or `/` (path suffix). A bare\", \"last commits of the file\": [\"feat(onda-7): o scan lê só o que mudou e guarda o git\", \"refactor: remove codigo morto e reativa o lint dead_code do compilador\", \"chore: sobe trabalho em andamento acumulado (subir tudo)\"], \"owner\": \"StackRegistry\", \"comments in the body\": \"One automaton across every stack's code signatures, keyed by the stack's registry index. `NoTerms` (no stack declares signatures) simply means the code class never fires — not an error. Scan every content once; collect which signature terms fired, per registry index. Normalise path separators once so markers match both layouts. Class 1: manifest deps (boundary-aware over parsed dep names). Class 2: path markers (component-bounded presence). Class 3: code signatures (Aho-Corasick hits collected above). Iterate the declaration list so signal order stays the registry's, not the haystack's. …\"}"
     },
-    "model": "jev-latest",
+    "model": "jev-1.13.0",
     "questions": {
-      "c00": {
-        "type": "noul",
-        "instructions": {
-          "question": "Is `candidate` the code that the `request` in the state is looking for?",
-          "candidate": {
-            "kind": "struct",
-            "name": "Project Config",
-            "path": "packages/core/src/domain/config.rs",
-            "signature": "pub struct ProjectConfig",
-            "documentation": "The full `mustard.json` document — the project config, at the project root. `#[serde(rename_all = \"camelCase\")]` applies to the **top-level** keys only (`buildCommand`, `maxActiveSpecs`, …). The nested structs keep snake/lowercase naming (`amend.drift_threshold`, `git.provider`, `language.text`, `subprojects.exclude`) to match the on-disk shape. Legacy snake_case command keys are still accepted",
-            "last commits of the file": [
-              "feat(onda-32): Aviso de comando ausente no plano",
-              "feat(onda-11): o plano avisa quando a spec pode ser dividida",
-              "feat(onda-8): siglas do projeto e conteúdo longo na página"
-            ],
-            "comments in the body": "Git promotion flow + provider + submodule flag. Version-control binary. Absent ⇒ `git` default; `\"\"` ⇒ explicit opt-out. The text and code languages — see [`LanguageConfig`]. Read only through [`ProjectConfig::language`]. As siglas do dia a dia do projeto (`[\"PI\", \"PCP\"]`), que a conferência de escrita aceita sem o nome por extenso. Lida só por [`ProjectConfig::acronyms`]. Quantas ondas saem na mesma rodada, que é quantas compilam ao mesmo tempo. Ausente ⇒ o padrão do binário; a máquina com mais memória põe um número maior aqui. A chave que liga e desliga o Mustard no projeto. Desligado …",
-            "members": [
-              "json_path()",
-              "exists()",
-              "load()",
-              "write()",
-              "build_command()",
-              "build_command_or_fallback()",
-              "commands()",
-              "vcs()",
-              "architecture()",
-              "max_active_specs()",
-              "max_compiling_waves()",
-              "enabled()",
-              "rtk()",
-              "role_patterns()",
-              "drift_threshold()",
-              "injectables()",
-              "... 27 more"
-            ]
-          }
-        }
-      },
-      "c01": {
-        "type": "noul",
-        "instructions": {
-          "question": "Is `candidate` the code that the `request` in the state is looking for?",
-          "candidate": {
-            "kind": "method",
-            "name": "infer",
-            "path": "packages/core/src/domain/vocabulary/stacks.rs",
-            "signature": "pub(crate) fn infer(&self, deps: &[String], paths: &[String], contents: &[String]) -> Vec<StackDetection>",
-            "documentation": "Run the inference engine against caller-supplied evidence. For every `[[stack]]` in this registry, three signal **classes** are matched independently: - **manifest deps** — a declared `manifest_deps` term fires when any parsed dependency name in `deps` matches it at a name boundary: the dependency IS the term, or starts with the term followed by `@` (version suffix) or `/` (path suffix). A bare",
-            "last commits of the file": [
-              "feat(onda-7): o scan lê só o que mudou e guarda o git",
-              "refactor: remove codigo morto e reativa o lint dead_code do compilador",
-              "chore: sobe trabalho em andamento acumulado (subir tudo)"
-            ],
-            "owner": "StackRegistry",
-            "comments in the body": "One automaton across every stack's code signatures, keyed by the stack's registry index. `NoTerms` (no stack declares signatures) simply means the code class never fires — not an error. Scan every content once; collect which signature terms fired, per registry index. Normalise path separators once so markers match both layouts. Class 1: manifest deps (boundary-aware over parsed dep names). Class 2: path markers (component-bounded presence). Class 3: code signatures (Aho-Corasick hits collected above). Iterate the declaration list so signal order stays the registry's, not the haystack's. …"
-          }
+      "q": {
+        "type": "choice",
+        "instructions": "@ABOUT@\n\nThe right candidate: The candidate is the code the request asks for: it does, defines or decides what the request describes, or its name is the identifier the request names.\nA wrong candidate: The candidate is only on a related topic, only uses or calls the thing the request describes, or only shares some words with the request.\n\nWhich one of the candidates is the code that the `request` is looking for? Answer with the id of the single candidate that best is that code. If none of them is that code, answer `none`.",
+        "criteria": {
+          "c000": null,
+          "c001": null,
+          "none": "None of the candidates is the code the request asks for: each one is only on a related topic, only uses or calls it, is only used by it, or only shares some words with the request."
         }
       }
     }

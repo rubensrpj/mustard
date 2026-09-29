@@ -1,13 +1,19 @@
 //! `map_triage` — o que a triagem do mapa põe na resposta da busca: o grau,
 //! a marca (cravado, parcial ou não achou) com as palavras que faltam, a
 //! busca funda do grau 3 para baixo e, sem nenhum achado, a linha que diz
-//! que não achou e dá a próxima busca. A triagem em si mora em
-//! `mustard_core::io::map_triage`; aqui só se monta o JSON.
+//! que não achou e dá a próxima busca. Na marca cravado, a resposta inteira
+//! sai daqui: o primeiro achado como peça, sem filtro nenhum. A triagem em si
+//! mora em `mustard_core::io::map_triage`; aqui só se monta o JSON.
 
-use mustard_core::domain::project_map::Found;
+use std::path::Path;
+
+use mustard_core::domain::map_filter::FilterCandidate;
+use mustard_core::domain::normalize::Languages;
+use mustard_core::domain::project_map::{Found, MapRefusal};
 use mustard_core::domain::triage::{not_found, Mark};
+use mustard_core::io::map_search;
 use mustard_core::io::map_triage::{Deeper, Link, Triaged, Via};
-use mustard_core::platform::i18n::Locale;
+use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Value};
 
 /// A resposta da busca do banco, sem o filtro: os arquivos que mais casam com
@@ -18,7 +24,68 @@ pub(crate) fn bank_report(query: &str, triaged: &Triaged, lang: Locale) -> Value
     add_to(&mut report, triaged);
     if triaged.grade == 0 {
         report["not_found"] = json!(not_found(query, &triaged.words, lang));
+    } else {
+        report["use_tools"] = json!(translate("map.search.use_tools", lang));
     }
+    report
+}
+
+/// Quantas declarações além dos candidatos a busca do cravado olha, na ordem
+/// da lista inteira, para achar uma do primeiro arquivo achado.
+const PINNED_REACH: usize = 2_000;
+
+/// A peça da resposta cravada: a declaração do primeiro arquivo achado. Se o
+/// texto fixo que casou nasce numa declaração, é essa; senão, a que a lista
+/// do banco põe na frente. Olha primeiro os `limit` candidatos e, se o
+/// arquivo não tem nenhum entre eles, as [`PINNED_REACH`] seguintes da lista
+/// inteira. `None` quando não há arquivo achado ou ele não tem declaração na
+/// lista: a busca segue pelo caminho de sempre.
+pub(crate) fn pinned_piece(
+    root: &Path,
+    (query, intent): (&str, &str),
+    languages: &Languages,
+    limit: usize,
+    triaged: &Triaged,
+) -> Result<Option<FilterCandidate>, MapRefusal> {
+    let Some(file) = triaged.files.first() else { return Ok(None) };
+    let owner = file.text.as_ref().map(|text| text.owner.as_str()).filter(|owner| !owner.is_empty());
+    let pick = |list: &[FilterCandidate]| -> Option<FilterCandidate> {
+        let mut inside = list.iter().filter(|candidate| candidate.path == file.path);
+        let first = inside.next()?;
+        let named = owner.and_then(|owner| list.iter().find(|c| c.path == file.path && c.name == owner));
+        Some(named.unwrap_or(first).clone())
+    };
+    let found = map_search::candidates(root, query, intent, languages, limit)?;
+    if let Some(piece) = pick(&found.candidates) {
+        return Ok(Some(piece));
+    }
+    let beyond: Vec<i64> = found.whole.iter().skip(found.candidates.len()).take(PINNED_REACH).copied().collect();
+    let pulled = map_search::declarations(root, &beyond)?;
+    let mut in_order: Vec<FilterCandidate> = Vec::new();
+    for id in &beyond {
+        in_order.extend(pulled.iter().filter(|candidate| candidate.id == *id).cloned());
+    }
+    Ok(pick(&in_order))
+}
+
+/// A resposta da marca cravado: só o primeiro achado, como peça inteira — o
+/// caminho, o tipo, o nome, as linhas de começo e de fim e a assinatura, mais
+/// o texto fixo que casou, com a linha dele, quando o arquivo foi achado por
+/// ele —, o grau, a marca e a linha de usar as ferramentas de sempre se ele
+/// não servir. Nunca o corpo, e nenhuma chamada a filtro.
+pub(crate) fn pinned_report(query: &str, triaged: &Triaged, piece: &FilterCandidate, lang: Locale) -> Value {
+    let mut whole = json!({
+        "path": piece.path, "line": piece.line, "end_line": piece.end_line, "kind": piece.kind, "name": piece.name
+    });
+    if !piece.signature.is_empty() {
+        whole["signature"] = json!(piece.signature);
+    }
+    if let Some(text) = triaged.files.first().and_then(|file| file.text.as_ref()) {
+        whole["text"] = json!({ "line": text.line, "kind": text.kind, "value": text.value, "owner": text.owner });
+    }
+    let mut report = json!({ "ok": true, "question": "search", "query": query, "pieces": [whole] });
+    add_to(&mut report, triaged);
+    report["use_tools"] = json!(translate("map.search.use_tools", lang));
     report
 }
 

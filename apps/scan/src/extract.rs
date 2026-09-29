@@ -1899,7 +1899,13 @@ fn use_sites(
             if opens_chain(node, bytes, comments, lang, &site.2) {
                 heads.insert(site.2.clone());
             }
-            calls.insert(site);
+            // O objeto com tipo escrito, ou o próprio objeto seguido de campos,
+            // diz de que tipo é o receptor: o grafo liga pelo tipo, e não pelo
+            // nome do método.
+            match marks.owners.receiver_of(node, bytes, comments, lang) {
+                Some(receiver) => calls.insert((site.0, site.1, receiver)),
+                None => calls.insert(site),
+            };
         } else if !against_a_quote(node, bytes) {
             if marks.value_at.contains(&node.start_byte()) {
                 values.insert(site.clone());

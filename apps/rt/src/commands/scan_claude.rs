@@ -274,7 +274,7 @@ mod tests {
         assert!(out.contains("Type: rust · 12 files"), "EN header missing: {out}");
         assert!(!out.contains("arquivos"), "no pt-BR bytes in an EN map: {out}");
         assert!(
-            out.contains("The terrain is already in your window"),
+            out.contains("To locate:"),
             "EN pointer missing: {out}"
         );
     }
