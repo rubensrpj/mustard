@@ -10,6 +10,7 @@ pub mod map_db;
 pub mod map_fill;
 pub mod map_format;
 pub mod map_glossary;
+mod map_question;
 pub mod map_search;
 pub mod map_specs;
 pub mod wave_prompt;

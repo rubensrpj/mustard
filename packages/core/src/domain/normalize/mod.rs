@@ -13,7 +13,8 @@
 //!
 //! O texto guarda a raiz de todas as línguas, e a pergunta da busca com filtro
 //! ([`Normalizer::query_in_text_language`]) leva só a da primeira, a língua do
-//! texto do projeto. As outras buscas cortam a pergunta em todas as línguas
+//! texto do projeto, e a das outras só na palavra cuja forma da primeira não
+//! acha nada no índice. As outras buscas cortam a pergunta em todas as línguas
 //! ([`Normalizer::query`]).
 //!
 //! As línguas vêm do projeto e são passadas por quem busca ([`Languages`]).
@@ -280,14 +281,31 @@ impl Normalizer {
     /// `commands`. A forma que duas palavras têm em comum (`simula` e
     /// `simulação`) conta uma vez na nota, e não uma por palavra. O texto do
     /// índice segue com a raiz de todas as línguas.
-    pub fn query_in_text_language(&mut self, text: &str) -> Vec<Vec<String>> {
+    ///
+    /// `finds` diz se as formas da primeira língua acham alguma coisa no
+    /// índice. A palavra que não acha nada ganha também a raiz das outras
+    /// línguas: em um projeto de texto em português e código em inglês, `users`
+    /// não existe no índice e passa a achar `UserRepository` pela raiz
+    /// `user`; a palavra que já acha algo não muda.
+    ///
+    /// # Errors
+    ///
+    /// O erro de `finds`, sem tentar de novo.
+    pub fn query_in_text_language<E>(
+        &mut self,
+        text: &str,
+        mut finds: impl FnMut(&[String]) -> Result<bool, E>,
+    ) -> Result<Vec<Vec<String>>, E> {
         let mut words: Vec<Vec<String>> = Vec::new();
         for word in plain_words(text) {
-            if !self.is_function_word(&word) {
-                words.push(self.cut(&word, 1));
+            if self.is_function_word(&word) {
+                continue;
             }
+            let first = self.cut(&word, 1);
+            let every = self.word_forms(&word);
+            words.push(if every.len() == first.len() || finds(&first)? { first } else { every });
         }
-        merge_shared_forms(words)
+        Ok(merge_shared_forms(words))
     }
 
     fn collect(&mut self, text: &str, skip_function_words: bool) -> Vec<Vec<String>> {
@@ -383,6 +401,12 @@ mod tests {
         }
     }
 
+    /// A pergunta da busca com filtro quando a primeira língua sempre acha algo
+    /// no índice: só a raiz dela.
+    fn first_language(normalizer: &mut Normalizer, text: &str) -> Vec<Vec<String>> {
+        normalizer.query_in_text_language(text, |_| Ok::<bool, std::convert::Infallible>(true)).unwrap()
+    }
+
     fn only(words: &[Vec<String>]) -> Vec<String> {
         assert_eq!(words.len(), 1, "{words:?}");
         words[0].clone()
@@ -443,12 +467,12 @@ mod tests {
         let mut normalizer = Normalizer::new(&languages);
         let written = normalizer.word_forms("commands");
         assert!(written.contains(&"commands".to_string()) && written.contains(&"command".to_string()), "{written:?}");
-        let asked = only(&normalizer.query_in_text_language("commands"));
+        let asked = only(&first_language(&mut normalizer, "commands"));
         assert_eq!(asked, ["commands"], "the english root is not in the question");
-        let singular = only(&normalizer.query_in_text_language("command"));
+        let singular = only(&first_language(&mut normalizer, "command"));
         assert!(singular.iter().any(|form| written.contains(form)), "the singular still finds the plural: {singular:?}");
         let english_first = Languages::new(["en-US", "pt-BR"]);
-        assert_eq!(only(&Normalizer::new(&english_first).query_in_text_language("commands")), ["command"]);
+        assert_eq!(only(&first_language(&mut Normalizer::new(&english_first), "commands")), ["command"]);
         assert!(only(&normalizer.query("commands")).contains(&"command".to_string()), "the other searches keep every root");
     }
 
@@ -459,19 +483,66 @@ mod tests {
     fn two_filter_question_words_that_share_a_form_count_it_once() {
         let languages = Languages::new(["pt-BR", "en-US"]);
         let mut normalizer = Normalizer::new(&languages);
-        let plain = normalizer.query_in_text_language("simula");
-        let accented = normalizer.query_in_text_language("simulação");
+        let plain = first_language(&mut normalizer, "simula");
+        let accented = first_language(&mut normalizer, "simulação");
         assert_eq!((plain.len(), accented.len()), (1, 1));
         let shared = "simul".to_string();
         assert!(plain[0].contains(&shared) && accented[0].contains(&shared), "{plain:?} / {accented:?}");
         for question in ["simula simulação", "simulação simula"] {
-            let words = normalizer.query_in_text_language(question);
+            let words = first_language(&mut normalizer, question);
             assert_eq!(words.len(), 1, "{question}: {words:?}");
             assert_eq!(words.iter().filter(|word| word.contains(&shared)).count(), 1, "{question}: {words:?}");
             assert_eq!(words[0].len(), 2, "{question}: the forms of both words, once each: {words:?}");
         }
-        assert_eq!(normalizer.query_in_text_language("simula pasta").len(), 2, "words with no form in common stay apart");
-        assert_eq!(normalizer.query_in_text_language("a de para").len(), 0, "function words leave the question");
+        assert_eq!(first_language(&mut normalizer, "simula pasta").len(), 2, "words with no form in common stay apart");
+        assert_eq!(first_language(&mut normalizer, "a de para").len(), 0, "function words leave the question");
+    }
+
+    /// A palavra da pergunta com filtro cuja forma da primeira língua não acha
+    /// nada no índice ganha também a raiz das outras línguas; a que acha algo
+    /// fica só com a da primeira, palavra por palavra. A pergunta a `finds` é
+    /// sempre com as formas da primeira língua.
+    #[test]
+    fn a_filter_question_word_that_finds_nothing_in_the_first_language_tries_the_other_languages() {
+        let languages = Languages::new(["pt-BR", "en-US"]);
+        let mut normalizer = Normalizer::new(&languages);
+        let mut asked: Vec<Vec<String>> = Vec::new();
+        let words = normalizer
+            .query_in_text_language("users commands", |forms| {
+                asked.push(forms.to_vec());
+                Ok::<bool, std::convert::Infallible>(forms.iter().any(|form| form == "commands"))
+            })
+            .unwrap();
+        let first_users = first_language(&mut normalizer, "users");
+        assert_eq!(asked, vec![only(&first_users), vec!["commands".to_string()]], "only the first-language forms are asked");
+        assert_eq!(words.len(), 2, "{words:?}");
+        assert_eq!(words[0], normalizer.word_forms("users"), "the word that finds nothing gets the roots of every language");
+        assert!(words[0].contains(&"user".to_string()), "{words:?}");
+        assert_eq!(words[1], ["commands"], "the word that finds something keeps only the first language");
+    }
+
+    /// A pergunta de uma língua só e a palavra de ligação não perguntam nada
+    /// ao índice, e o erro de quem pergunta sobe sem devolver a pergunta.
+    #[test]
+    fn the_filter_question_asks_the_index_only_about_words_that_could_gain_a_form() {
+        let one = Languages::new(["en-US"]);
+        let mut only_english = Normalizer::new(&one);
+        let words = only_english
+            .query_in_text_language("commands of the queue", |_| -> Result<bool, ()> { panic!("one language has no other root") })
+            .unwrap();
+        assert_eq!(words, [vec!["command".to_string()], vec!["queue".to_string()]]);
+        let languages = Languages::new(["pt-BR", "en-US"]);
+        let mut normalizer = Normalizer::new(&languages);
+        let mut asked = 0;
+        let widened = normalizer
+            .query_in_text_language("a users de", |_| {
+                asked += 1;
+                Ok::<bool, std::convert::Infallible>(false)
+            })
+            .unwrap();
+        assert_eq!((asked, widened.len()), (1, 1), "the function words are not asked and leave the question");
+        let refused = normalizer.query_in_text_language("users", |_| Err("the index is unreadable"));
+        assert_eq!(refused, Err("the index is unreadable"));
     }
 
     /// O nome colado se separa nas palavras dele, e o campo guardado dá as

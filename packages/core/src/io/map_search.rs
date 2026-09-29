@@ -85,6 +85,7 @@ use crate::domain::search::{
 use crate::io::map_db::MapDb;
 use crate::io::map_fill;
 use crate::io::map_glossary::{self, Learned};
+use crate::io::map_question;
 use crate::io::project_map::{model_path, open_existing, unreadable, MapBlock, SEARCHED};
 use crate::platform::error::Result;
 
@@ -740,7 +741,7 @@ fn behind_the_names(
 /// grava: sem os acentos que ele tira, e cortadas onde ele corta. A forma
 /// feita só de letras minúsculas e algarismos do ASCII ele grava como vem;
 /// quando alguma não é assim, a pergunta passa por ele ([`through_tokenizer`]).
-fn as_indexed(conn: &Connection, words: &[Vec<String>]) -> Result<Vec<Vec<String>>> {
+pub(super) fn as_indexed(conn: &Connection, words: &[Vec<String>]) -> Result<Vec<Vec<String>>> {
     let as_is = |form: &String| !form.is_empty() && form.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit());
     if words.iter().flatten().all(as_is) {
         return Ok(words.to_vec());
@@ -1048,9 +1049,15 @@ pub fn links(root: &Path, ids: &[i64]) -> std::result::Result<Links, MapRefusal>
 /// que afinou a busca com filtro: cada marca num campo à parte dava ao texto
 /// de erro, que quase nenhuma declaração tem, uma média perto de zero, e a
 /// palavra dele quase não pesava. A pergunta leva só a raiz da primeira
-/// língua ([`Normalizer::query_in_text_language`]), como no laboratório.
+/// língua, a do texto do projeto, como no laboratório, e a das outras só na
+/// palavra que a primeira não acha em nenhum documento dos dois níveis
+/// ([`map_question::in_text_language`]).
 fn whole_list(conn: &Connection, query: &str, intent: &str, languages: &Languages) -> Result<Vec<i64>> {
-    let words = Normalizer::new(languages).query_in_text_language(format!("{query} {intent}").trim());
+    let levels = [
+        map_question::Vocabulary { vocab: DECL_LEVEL.vocab, lengths: DECL_LEVEL.lengths },
+        map_question::Vocabulary { vocab: FILE_LEVEL.vocab, lengths: FILE_LEVEL.lengths },
+    ];
+    let words = map_question::in_text_language(conn, languages, format!("{query} {intent}").trim(), &levels)?;
     let base = base_list(conn, &words)?;
     let every_decl_field: Vec<&str> = DECL_LEVEL.columns().collect();
     let everything = by_words_as(conn, &DECL_LEVEL, &every_decl_field, Texts::Together, &words)?;
@@ -1859,11 +1866,11 @@ mod tests {
         );
     }
 
-    /// A pergunta da busca com filtro leva só a raiz da língua do texto: o
-    /// plural `commands` acha a declaração que escreve `commands` e não a que
-    /// escreve `command`, que a raiz inglesa da pergunta traria junto. O
-    /// singular `command` acha as duas, porque o índice guarda as duas raízes
-    /// de `commands`.
+    /// A pergunta da busca com filtro leva só a raiz da língua do texto quando
+    /// ela acha algo no índice: o plural `commands` acha a declaração que
+    /// escreve `commands` e não a que escreve `command`, que a raiz inglesa da
+    /// pergunta traria junto. O singular `command` acha as duas, porque o
+    /// índice guarda as duas raízes de `commands`.
     #[test]
     fn a_plural_word_of_the_filter_question_does_not_reach_the_declaration_that_writes_the_singular() {
         let dir = saved(&[
