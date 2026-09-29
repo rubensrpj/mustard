@@ -128,6 +128,7 @@ fn clean_in_a_project_removes_the_copy_of_a_closed_work_and_keeps_the_open_one()
     let temp = base.path().join("tmp");
     let home = base.path().join("home");
     let root = base.path().join("obra");
+    let copies_base = base.path().join("copias");
     for dir in [&temp, &home, &root] {
         fs::create_dir_all(dir).unwrap();
     }
@@ -141,9 +142,13 @@ fn clean_in_a_project_removes_the_copy_of_a_closed_work_and_keeps_the_open_one()
     fs::write(&built, "compilado").unwrap();
     work(&root, "fechada", "closed");
     work(&root, "aberta", "running");
-    let copies = mustard_core::io::wave_prompt::copies_dir(&root);
-    let closed = mustard_core::io::wave_prompt::slot_path(&root, "fechada", 0);
-    let open = mustard_core::io::wave_prompt::slot_path(&root, "aberta", 0);
+    // As cópias moram sob a pasta-base que o teste dá ao binário, dentro da
+    // pasta temporária do teste; a variável do ambiente de quem roda o teste
+    // não entra na conta. A pasta do projeto sob a base é a que o binário
+    // monta, e o nome dela não depende da base.
+    let copies = copies_base.join(mustard_core::io::wave_prompt::copies_dir(&root).file_name().unwrap());
+    let closed = copies.join("fechada").join(mustard_core::io::wave_prompt::slot_name(0));
+    let open = copies.join("aberta").join(mustard_core::io::wave_prompt::slot_name(0));
     for slot in [&closed, &open] {
         git(&root, &["worktree", "add", "-q", "--detach", &slot.to_string_lossy()]);
         fs::create_dir_all(slot.join("target")).unwrap();
@@ -159,6 +164,7 @@ fn clean_in_a_project_removes_the_copy_of_a_closed_work_and_keeps_the_open_one()
             .env("TEMP", &temp)
             .env("HOME", &home)
             .env("USERPROFILE", &home)
+            .env("MUSTARD_COPIES_DIR", &copies_base)
             .env("MUSTARD_SESSION_ID", "scratch-gc-copies-test")
             .output()
             .unwrap();
@@ -183,7 +189,4 @@ fn clean_in_a_project_removes_the_copy_of_a_closed_work_and_keeps_the_open_one()
     assert!(open.join("target").join("compilado").is_file(), "a cópia da obra aberta fica");
     assert_eq!(fs::read_to_string(&built).unwrap(), "compilado", "a compilação principal fica");
     assert!(root.join("mustard.json").is_file() && root.join(".git").is_dir(), "a pasta principal fica");
-
-    // A cópia que ficou mora fora da pasta temporária do teste.
-    let _ = fs::remove_dir_all(&copies);
 }

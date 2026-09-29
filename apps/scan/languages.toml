@@ -286,7 +286,9 @@
 #                           `Loja.Admin` na página de `Admin/`);
 #                   folder_root o `kind` do manifesto (manifests.toml) cujo
 #                           projeto escreve o marcador de `folder_path` com o
-#                           nome dele, como um arquivo de imports na pasta do
+#                           namespace que o manifesto declara
+#                           (`namespace_pattern`) ou, sem ele, com o nome
+#                           dele, como um arquivo de imports na pasta do
 #                           manifesto, que o arquivo de imports da mesma
 #                           pasta e os de baixo vencem: sem esse marcador na
 #                           página nem num arquivo de imports acima dela, a
@@ -307,6 +309,11 @@
 #                           de `controls`, do cabeçalho e das chaves (`else`,
 #                           `else if (y)`, `catch (E e)`, `finally`), ou do
 #                           cabeçalho e de `;` (o `while (x);` do `do`);
+#                   filters os nomes que, entre o cabeçalho de um trecho de um
+#                           comando de controle, ou no lugar dele, e as chaves,
+#                           abrem uma condição entre parênteses, que fica no
+#                           trecho (`catch (E e) when (x) { … }`,
+#                           `catch when (x) { … }`). Vem só com `controls`;
 #                   component a forma do comando em que vira a tag de
 #                           componente, a tag da marcação cujo nome começa
 #                           com letra maiúscula (`<Contador />`), com `{}` no
@@ -404,6 +411,7 @@ folder_path = ["@namespace", "."]
 folder_root = "dotnet"
 controls = ["if", "foreach", "for", "while", "switch", "do", "try", "using", "lock"]
 chains = ["else", "catch", "finally", "while"]
+filters = ["when"]
 component = "_ = typeof({});"
 code_markup = ["<", "@:"]
 
@@ -463,6 +471,7 @@ folder = ["@inject", "@inherits", "@namespace"]
 folder_path = ["@namespace", "."]
 controls = ["if", "foreach", "for", "while", "switch", "do", "try", "using", "lock"]
 chains = ["else", "catch", "finally", "while"]
+filters = ["when"]
 code_markup = ["<", "@:"]
 
 [[language]]

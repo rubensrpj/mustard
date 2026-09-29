@@ -29,6 +29,9 @@ struct ManifestDef {
     /// Precompiled package-name regex (`package_pattern`); `None` when the def
     /// declares none.
     package_regex: Option<Regex>,
+    /// Precompiled namespace regex (`namespace_pattern`); `None` when the def
+    /// declares none.
+    namespace_regex: Option<Regex>,
     /// Precompiled `extra_dep_pattern`: each first-group capture, anywhere in
     /// the file, is one more dependency. `None` when the def declares none.
     extra_dep_regex: Option<Regex>,
@@ -71,6 +74,9 @@ pub(crate) struct Parsed {
     pub name: String,
     /// The package's own name, when the manifest declares one.
     pub package: Option<String>,
+    /// The namespace the manifest declares as its project's default, when it
+    /// declares one.
+    pub namespace: Option<String>,
 }
 
 /// Parse a manifest's content into kind + dependencies + scripts (+ this unit's
@@ -95,7 +101,8 @@ pub fn parse(rel: &str, filename: &str, content: &str) -> Option<Parsed> {
     };
     let module = def.module_regex.as_ref().and_then(|re| first_line_capture(content, re));
     let package = def.package_regex.as_ref().and_then(|re| first_line_capture(content, re));
-    Some(Parsed { kind: def.kind.clone(), deps, scripts, module, name: derive_name(rel, &def.name), package })
+    let namespace = def.namespace_regex.as_ref().and_then(|re| first_line_capture(content, re));
+    Some(Parsed { kind: def.kind.clone(), deps, scripts, module, name: derive_name(rel, &def.name), package, namespace })
 }
 
 fn find_def(filename: &str) -> Option<&'static ManifestDef> {
@@ -276,6 +283,7 @@ fn parse_registry(src: &str) -> Registry {
             };
             let module_regex = g("module_pattern").and_then(|p| Regex::new(&p).ok());
             let package_regex = g("package_pattern").and_then(|p| Regex::new(&p).ok());
+            let namespace_regex = g("namespace_pattern").and_then(|p| Regex::new(&p).ok());
             let extra_dep_regex = g("extra_dep_pattern").and_then(|p| Regex::new(&p).ok());
             manifests.push(ManifestDef {
                 kind: g("kind").unwrap_or_default(),
@@ -288,6 +296,7 @@ fn parse_registry(src: &str) -> Registry {
                 dep_regex,
                 module_regex,
                 package_regex,
+                namespace_regex,
                 extra_dep_regex,
             });
         }
@@ -307,6 +316,25 @@ mod tests {
         let content = std::fs::read_to_string(path).expect("the fixture manifest");
         let parsed = parse("pubspec.yaml", "pubspec.yaml", &content).expect("a known manifest");
         assert_eq!(parsed.deps, ["flutter", "collection", "flutter_test", "flutter_lints"]);
+    }
+
+    /// O namespace que o manifesto declara sai da primeira linha que o traz,
+    /// sozinha ou entre outras marcas; o escrito em comentário, o que nomeia
+    /// outra propriedade e o manifesto sem ele não declaram nenhum.
+    #[test]
+    fn the_declared_namespace_comes_from_the_first_line_that_names_it() {
+        let namespace = |body: &str| {
+            let text = format!("<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n{body}\n  </PropertyGroup>\n</Project>\n");
+            parse("Web/Loja.Web.csproj", "Loja.Web.csproj", &text).unwrap().namespace
+        };
+        assert_eq!(namespace("    <RootNamespace>Loja.Site</RootNamespace>").as_deref(), Some("Loja.Site"));
+        assert_eq!(namespace("    <RootNamespace> Loja.Site </RootNamespace>\n    <RootNamespace>Outro</RootNamespace>").as_deref(), Some("Loja.Site"));
+        assert_eq!(namespace("<TargetFramework>net8.0</TargetFramework><RootNamespace>Loja.Site</RootNamespace>").as_deref(), Some("Loja.Site"));
+        assert_eq!(namespace("    <!-- <RootNamespace>Velho</RootNamespace> -->"), None);
+        assert_eq!(namespace("    <RootNamespace>$(MSBuildProjectName)</RootNamespace>"), None);
+        assert_eq!(namespace("    <TargetFramework>net8.0</TargetFramework>"), None);
+        let package = parse("package.json", "package.json", "{\"name\": \"loja\"}\n").unwrap();
+        assert_eq!(package.namespace, None, "a manifest whose registry row has no pattern declares none");
     }
 
     /// O nome do próprio pacote sai da primeira linha `name:` do manifesto.

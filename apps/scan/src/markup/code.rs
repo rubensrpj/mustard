@@ -47,7 +47,8 @@ impl Markup {
     }
 
     /// Um trecho do comando de controle, a partir do byte `from` de `src`:
-    /// o cabeçalho entre parênteses, quando há, e as chaves, ou, depois do
+    /// o cabeçalho entre parênteses, quando há, as condições de `filters`
+    /// (um nome seguido de parênteses) e as chaves, ou, depois do
     /// cabeçalho, o `;` que fecha o comando. O byte logo depois da chave que
     /// fecha ou do `;`; `None` sem nenhum deles, ou com o parêntese que não
     /// fecha.
@@ -62,11 +63,30 @@ impl Markup {
             }
             at = skip_space(src, close + 1);
         }
+        while let Some(open) = self.filter_at(src, at) {
+            let close = matching(bytes, open);
+            if close >= bytes.len() {
+                return None;
+            }
+            at = skip_space(src, close + 1);
+        }
         match bytes.get(at) {
             Some(b'{') => Some((self.code_close(src, at) + 1).min(bytes.len())),
             Some(b';') if headed => Some(at + 1),
             _ => None,
         }
+    }
+
+    /// O byte do parêntese que abre a condição escrita no byte `at` de `src`:
+    /// um nome de `filters` seguido, depois de espaços, de `(`. `None` sem
+    /// ela.
+    fn filter_at(&self, src: &str, at: usize) -> Option<usize> {
+        let word = &src[at..at + name_len(&src[at..])];
+        if !self.filters.contains(&word) {
+            return None;
+        }
+        let open = skip_space(src, at + word.len());
+        (src.as_bytes().get(open) == Some(&b'(')).then_some(open)
     }
 
     /// A tag de componente que começa no byte `at` de `src`: o `<` seguido

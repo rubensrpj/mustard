@@ -27,8 +27,6 @@ use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Value};
 
-mod support;
-
 /// O jeito de o agente criar uma cópia do projeto por conta própria: a cópia
 /// em si, a pasta de compilação escolhida por ele, a pasta compartilhada que
 /// só servia às cópias soltas, e a porta que apagava a cópia depois. Só o
@@ -51,6 +49,20 @@ fn repo_root() -> PathBuf {
     manifest_dir::manifest_dir().join("../..")
 }
 
+/// A pasta-base das cópias que o binário cria num teste: dentro da pasta
+/// pessoal falsa dele, e por isso dentro da pasta temporária, que a leva
+/// quando sai. O binário a recebe pela variável do ambiente, sempre, para o
+/// teste e ele concordarem, qualquer que seja o ambiente de quem roda.
+fn copies_base(home: &Path) -> PathBuf {
+    home.join("copias")
+}
+
+/// A pasta das cópias do projeto `root` sob a base do teste: o nome da pasta
+/// do projeto sob a base é o que o binário monta, e não depende da base.
+fn copies_of(home: &Path, root: &Path) -> PathBuf {
+    copies_base(home).join(mustard_core::io::wave_prompt::copies_dir(root).file_name().unwrap())
+}
+
 fn git(root: &Path, args: &[&str]) {
     let ok = Command::new("git").args(args).current_dir(root).output().map(|o| o.status.success()).unwrap_or(false);
     assert!(ok, "git {args:?} failed");
@@ -64,6 +76,7 @@ fn rt(root: &Path, home: &Path, args: &[&str], stdin: Option<&str>) -> Value {
         .env("CLAUDE_PROJECT_DIR", root)
         .env("HOME", home)
         .env("USERPROFILE", home)
+        .env("MUSTARD_COPIES_DIR", copies_base(home))
         .env_remove("CLAUDE_CONFIG_DIR")
         .env_remove("CLAUDE_PLUGIN_ROOT")
         .env_remove("MUSTARD_ACTIVE_SPEC")
@@ -93,6 +106,7 @@ fn request_by_command(root: &Path, home: &Path, entry: &Value) -> String {
         .args(&words[1..])
         .current_dir(root)
         .env("HOME", home)
+        .env("MUSTARD_COPIES_DIR", copies_base(home))
         .env_remove("MUSTARD_ACTIVE_SPEC")
         .output()
         .expect("the binary runs");
@@ -118,7 +132,6 @@ fn installed(dir: &Path, config: &str) -> (PathBuf, PathBuf) {
     std::fs::write(root.join("mustard.json"), config).unwrap();
     let report = rt(&root, &home, &["run", "upsert"], None);
     assert!(report.get("error").is_none(), "{report}");
-    support::copies_leave_with_the_test(&root);
     (root, home)
 }
 
@@ -818,7 +831,7 @@ fn no_agent_text_creates_a_copy_on_its_own_and_the_request_names_the_slot_withou
         let copy = send.str_field("copy").unwrap_or_else(|| panic!("wave {wave} recorded no copy: {round}"));
         assert!(send.str_field("build_dir").is_none(), "wave {wave} recorded a build folder: {round}");
         let slot = usize::try_from(wave).unwrap() - 1;
-        let expected = mustard_core::io::wave_prompt::slot_path(&root, "copia", slot);
+        let expected = copies_of(&home, &root).join("copia").join(mustard_core::io::wave_prompt::slot_name(slot));
         assert_eq!(copy, mustard_core::io::wave_prompt::shown(&expected), "the slot lives in the project's copies folder");
         assert!(!Path::new(copy).starts_with(&root), "the copy lives outside the project: {copy}");
         assert!(Path::new(copy).join(".git").is_file(), "the copy of wave {wave} is a linked checkout");

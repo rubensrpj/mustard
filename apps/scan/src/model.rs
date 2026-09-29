@@ -183,6 +183,11 @@ pub struct Manifest {
     /// that name another package of the same project resolve inside it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub package: Option<String>,
+    /// The namespace the manifest declares as its project's default — kept so
+    /// a pass that does not re-read the manifest still names the pages of the
+    /// project the same way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]

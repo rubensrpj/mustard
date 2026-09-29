@@ -5,10 +5,12 @@
 //! de imports mais perto, e a do próprio arquivo, com o mesmo marcador, vence
 //! as herdadas. O resto herdado do marcador de `folder_path` ganha os nomes
 //! das pastas entre a do arquivo de imports e a do arquivo. O projeto do
-//! manifesto de `folder_root` escreve esse marcador com o nome dele, como um
-//! arquivo de imports na pasta do manifesto: sem `@namespace` na página nem
-//! num arquivo de imports acima dela, a página de `Web/Pages/Admin/` do
-//! `Web/Web.csproj` fica em `Web.Pages.Admin`.
+//! manifesto de `folder_root` escreve esse marcador com o namespace que o
+//! manifesto declara (`namespace_pattern`) ou, sem ele, com o nome do projeto,
+//! como um arquivo de imports na pasta do manifesto: sem `@namespace` na
+//! página nem num arquivo de imports acima dela, a página de
+//! `Web/Pages/Admin/` do `Web/Web.csproj` fica em `Web.Pages.Admin`, ou em
+//! `Loja.Web.Pages.Admin` quando o manifesto declara `Loja.Web`.
 
 use super::{LineKind, Markup, Piece};
 use crate::graph::{folder_of, is_under};
@@ -58,9 +60,10 @@ impl Markup {
 
     /// A linha que o projeto de cada manifesto de `manifests` do tipo de
     /// `folder_root` escreve na pasta dele, com o caminho do manifesto: o
-    /// marcador de `folder_path` seguido do nome do projeto, cada parte dele
-    /// com o que não é letra, algarismo nem `_` trocado por `_`
-    /// (`@namespace Loja.Web` do `Loja.Web.csproj`). Vazio sem
+    /// marcador de `folder_path` seguido do namespace que o manifesto declara
+    /// ou, sem ele, do nome do projeto, cada parte dele com o que não é
+    /// letra, algarismo nem `_` trocado por `_` (`@namespace Loja.Web` do
+    /// `Loja.Web.csproj`, ou o declarado dentro dele). Vazio sem
     /// `folder_root`.
     pub(crate) fn project_lines(&self, manifests: &[Manifest]) -> Vec<(String, String)> {
         let [marker, joiner] = self.folder_path;
@@ -72,7 +75,8 @@ impl Markup {
             .iter()
             .filter(|manifest| manifest.kind == self.folder_root && !manifest.name.is_empty())
             .map(|manifest| {
-                let name: Vec<String> = manifest.name.split(joiner).map(part).collect();
+                let declared = manifest.namespace.as_deref().filter(|namespace| !namespace.is_empty());
+                let name: Vec<String> = declared.unwrap_or(&manifest.name).split(joiner).map(part).collect();
                 (manifest.path.clone(), format!("{marker} {}", name.join(joiner)))
             })
             .collect()

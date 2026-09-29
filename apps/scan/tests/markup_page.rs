@@ -753,6 +753,28 @@ const COMMANDS: &str = "@page\n\
                         Model.Itens();\n\
                         }\n";
 
+/// O filtro `when` do `catch`, depois do cabeçalho ou no lugar dele, é do
+/// mesmo trecho que o `catch`: o método chamado na condição e o do que está
+/// entre as chaves são usados pelo `BuildRenderTree`, cada um na linha dele,
+/// e o `finally` que vem depois segue no comando.
+#[test]
+fn the_when_filter_of_a_catch_keeps_the_part_open_in_the_page() {
+    let map = scanned(&[(
+        "Web/Pages/Filtrar.razor",
+        "@try {\n    Salvar();\n} catch (Exception e) when (Falhavel(e)) {\n    Falhar();\n} catch when (Vazio()) {\n    Limpar();\n} \
+         finally {\n    Fechar();\n}\n@code {\n    private void Salvar() { }\n    private bool Falhavel(Exception e) => true;\n    \
+         private void Falhar() { }\n    private bool Vazio() => true;\n    private void Limpar() { }\n    private void Fechar() { }\n}\n",
+    )]);
+    let page = "Web/Pages/Filtrar.razor";
+    let at = |line: u32| vec![format!("{page}:{line}:BuildRenderTree")];
+    assert_eq!(every_use(&map, page, "Salvar"), at(2), "the try before the catch");
+    assert_eq!(every_use(&map, page, "Falhavel"), at(3), "the filter after the header");
+    assert_eq!(every_use(&map, page, "Falhar"), at(4), "the code inside the catch with a filter");
+    assert_eq!(every_use(&map, page, "Vazio"), at(5), "the filter of the catch without a header");
+    assert_eq!(every_use(&map, page, "Limpar"), at(6), "the code inside the catch without a header");
+    assert_eq!(every_use(&map, page, "Fechar"), at(8), "the finally after the catches");
+}
+
 /// O `@do`, o `@try`, o `@using (…)` e o `@lock` são comandos do método que
 /// desenha a página, como o `@if`: o método do modelo chamado no cabeçalho de
 /// cada um, no `while` que fecha o `do`, no `catch` e no `finally`, e no
@@ -783,4 +805,41 @@ fn do_try_using_and_lock_are_commands_of_the_method_that_draws_the_page() {
     assert_eq!(every_use(&map, model, "Itens"), at(18), "the code inside the lock");
     assert_eq!(every_use(&map, "Web/Pages/Tentar.razor", "Salvar"), ["Web/Pages/Tentar.razor:2:BuildRenderTree"]);
     assert_eq!(every_use(&map, "Web/Pages/Tentar.razor", "Falhar"), ["Web/Pages/Tentar.razor:4:BuildRenderTree"]);
+}
+
+/// O `.csproj` do projeto da tela que declara `namespace` como o namespace
+/// padrão dele, escrito na linha `line`.
+fn csproj_declaring(line: &str) -> String {
+    format!(
+        "<Project Sdk=\"Microsoft.NET.Sdk.BlazorWebAssembly\">\n  <PropertyGroup>\n    <TargetFramework>net8.0</TargetFramework>\n{line}\n  \
+         </PropertyGroup>\n</Project>\n"
+    )
+}
+
+/// O namespace padrão da página sem `@namespace` é o que o `.csproj` declara
+/// na propriedade de namespace dele, mais as pastas até a página; o nome do
+/// arquivo do projeto só vale sem a declaração, ou quando ela está em
+/// comentário ou nomeia outra propriedade. O `@namespace` do arquivo de
+/// imports mais perto e o da própria página seguem vencendo.
+#[test]
+fn a_page_without_namespace_lives_in_the_namespace_the_project_declares() {
+    let page = "<p>@Texto()</p>\n@code {\n    private string Texto() => \"\";\n}\n";
+    let project = csproj_declaring("    <RootNamespace>Loja.Site</RootNamespace>");
+    let declared = scanned(&[
+        ("Web/Web.csproj", project.as_str()),
+        ("Web/App.razor", page),
+        ("Web/Pages/Admin/Painel.razor", page),
+        ("Web/Outras/_Imports.razor", "@namespace Outro\n"),
+        ("Web/Outras/Sub/Tela.razor", page),
+        ("Web/Outras/Sub/Propria.razor", "@namespace Meu\n<p>@Texto()</p>\n@code {\n    private string Texto() => \"\";\n}\n"),
+    ]);
+    assert_eq!(module(&declared, "Web/App.razor")["namespaces"], json!(["Loja.Site"]));
+    assert_eq!(module(&declared, "Web/Pages/Admin/Painel.razor")["namespaces"], json!(["Loja.Site.Pages.Admin"]));
+    assert_eq!(module(&declared, "Web/Outras/Sub/Tela.razor")["namespaces"], json!(["Outro.Sub"]));
+    assert_eq!(module(&declared, "Web/Outras/Sub/Propria.razor")["namespaces"], json!(["Meu"]));
+    for line in ["    <!-- <RootNamespace>Velho</RootNamespace> -->", "    <RootNamespace>$(MSBuildProjectName)</RootNamespace>"] {
+        let project = csproj_declaring(line);
+        let map = scanned(&[("Web/Web.csproj", project.as_str()), ("Web/Pages/Admin/Painel.razor", page)]);
+        assert_eq!(module(&map, "Web/Pages/Admin/Painel.razor")["namespaces"], json!(["Web.Pages.Admin"]), "{line}");
+    }
 }

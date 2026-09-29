@@ -88,6 +88,9 @@ pub(crate) struct Markup {
     /// Os nomes que, depois das chaves de um comando de controle, o
     /// continuam.
     pub chains: &'static [&'static str],
+    /// Os nomes que, entre o cabeçalho de um trecho de um comando de controle
+    /// (ou no lugar dele) e as chaves, abrem uma condição entre parênteses.
+    pub filters: &'static [&'static str],
     /// A forma do comando em que vira a tag de componente, com `{}` no lugar
     /// do nome dela; vazia sem ela.
     pub component: &'static str,
@@ -659,6 +662,7 @@ mod tests {
         folder_root: "",
         controls: &[],
         chains: &[],
+        filters: &[],
         component: "",
         code_markup: ["", ""],
     };
@@ -912,6 +916,48 @@ mod tests {
             lines(&CONTROLS.code_of(src, "V.razor", &[])),
             ["class V {void Draw() { if (a > 0) {", "_ = b;", "} else if (c) {", "var d = 1;", "} else {", "", "}}}", ""]
         );
+    }
+
+    /// O registro dos comandos com o `try`, as cláusulas dele e a condição
+    /// que uma delas abre.
+    const TRIES: Markup = Markup {
+        controls: &["if", "foreach", "try"],
+        chains: &["else", "catch", "finally"],
+        filters: &["when"],
+        ..CONTROLS
+    };
+
+    #[test]
+    fn a_filter_after_the_header_of_a_chain_is_code_of_the_same_part() {
+        let src = "@try {\n    a();\n} catch (E e) when (b(e)) {\n    <p>@c</p>\n} catch when (g() == \")\") {\n    h();\n} finally {\n    d();\n}\n<p>@f</p>\n";
+        assert_eq!(
+            lines(&TRIES.code_of(src, "V.razor", &[])),
+            [
+                "class V {void Draw() { try {",
+                "a();",
+                "} catch (E e) when (b(e)) {",
+                "_ = c;",
+                "} catch when (g() == \")\") {",
+                "h();",
+                "} finally {",
+                "d();",
+                "}",
+                "_ = f;}}"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_name_that_is_not_a_filter_does_not_continue_the_part() {
+        let src = "@try {\n    a();\n} catch (E e) quando (b(e)) {\n    <p>@c</p>\n}\n<p>@f</p>\n";
+        let code = TRIES.code_of(src, "V.razor", &[]);
+        assert!(!code.contains("catch") && !code.contains("quando"), "the part that does not close is not code: {code}");
+        let without = Markup { filters: &[], ..TRIES }.code_of(
+            "@try {\n    a();\n} catch (E e) when (b(e)) {\n    d();\n}\n<p>@f</p>\n",
+            "V.razor",
+            &[],
+        );
+        assert!(!without.contains("when (b(e))"), "without the registered filter the part stops before it: {without}");
     }
 
     #[test]

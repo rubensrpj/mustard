@@ -35,6 +35,10 @@ output_dirs = ["node_modules", "target", "bin", "obj", "dist", "build", ".dart_t
 #   package_pattern regex capturing the package's own name, the first line that
 #                   matches; an import whose first segment is that name (with
 #                   `-` read as `_`) resolves inside this package's directory
+#   namespace_pattern regex capturing the namespace the manifest declares as
+#                   its project's default, the first line that matches; a page
+#                   without a namespace of its own lives in it (plus its
+#                   folders). Without a match, the default is the project name
 #   dep_pattern     (gomod) regex capturing each dependency
 #   extra_dep_pattern regex whose first group, wherever it matches in the file,
 #                   is one more dependency: what the manifest depends on
@@ -65,6 +69,10 @@ name = "stem"
 element = "PackageReference"
 attr = "Include"
 extra_dep_pattern = '<Project\s+[^>]*Sdk="([^"]+)"'
+# A property written between other tags on the line still counts; one after a
+# comment opener does not. A value that names another property (`$(...)`)
+# is not a namespace: it falls back to the project name.
+namespace_pattern = '(?:^|>)\s*<RootNamespace>\s*([^<\s$]+)\s*</RootNamespace>'
 
 [[manifest]]
 kind = "pub"

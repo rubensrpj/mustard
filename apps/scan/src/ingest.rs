@@ -285,6 +285,7 @@ pub(crate) fn ingest(root: &Path, reuse: Option<&Reuse>, listing: Option<&Listin
                     name: p.name,
                     module: p.module,
                     package: p.package,
+                    namespace: p.namespace,
                 });
                 if !source {
                     *top_other.entry(topdir).or_default() += 1;
