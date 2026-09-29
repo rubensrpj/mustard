@@ -61,6 +61,8 @@ pub mod context;
 pub mod dag;
 pub mod jev;
 pub mod paths;
+/// A porta única da busca do mapa, depois da triagem.
+pub mod search_door;
 // The Azure adapter behind the pr_provider port — reached through the factory.
 pub mod pr_azure;
 pub mod pr_provider;

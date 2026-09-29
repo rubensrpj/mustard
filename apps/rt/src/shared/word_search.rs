@@ -6,12 +6,17 @@
 //! - **cravado** — o primeiro arquivo tem a nota mais alta e a chance do
 //!   corte medido na régua, mesmo com palavras da busca fora dos campos
 //!   fortes dele: a resposta cita só as que ele traz;
-//! - **parcial** — o mapa achou parte, e a resposta diz quais palavras faltam;
-//! - **não achou** — o mapa não achou nada: a busca comum roda, e uma linha
-//!   diz as palavras já quebradas e a próxima busca, exata.
+//! - **parcial** — o mapa achou parte: os candidatos vão ao filtro (o Jev)
+//!   pela porta única da busca ([`crate::shared::search_door`]), e a resposta
+//!   traz só as peças que ele entrega; sem chave, com o filtro desligado ou
+//!   falhando, vale a resposta da triagem, que diz quais palavras faltam, e
+//!   o aviso do motivo sai uma vez por sessão;
+//! - **não achou** — o mapa não achou nada, ou o filtro disse que nenhum
+//!   candidato serve: a busca comum roda, e uma linha diz as palavras já
+//!   quebradas e a próxima busca, exata.
 //!
 //! No cravado e no parcial, a busca que mostra linhas recebe a resposta no
-//! lugar da busca comum. A que só lista nomes de arquivo ou conta (`-l`, `-c`)
+//! lugar da busca comum. O cravado responde da triagem, sem chamar o filtro. A que só lista nomes de arquivo ou conta (`-l`, `-c`)
 //! roda como veio, com uma linha só da marca, e não fica guardada como
 //! respondida: a que mostra linhas depois ainda recebe a resposta. A resposta roda a
 //! mesma busca (mesmo padrão, mesmas pastas) nos arquivos que o git conhece e
@@ -34,6 +39,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use mustard_core::domain::map_filter::Verdict;
 use mustard_core::domain::model::contract::{Ctx, HookInput};
 use mustard_core::domain::normalize::Languages;
 use mustard_core::domain::project_map::{self, FilePart, FileParts};
@@ -43,13 +49,16 @@ use mustard_core::io::map_triage::{self, Triaged};
 use mustard_core::io::project_map::{self as store, Need};
 use mustard_core::platform::git;
 use mustard_core::platform::i18n::Locale;
-use mustard_core::ClaudePaths;
+use mustard_core::{ClaudePaths, ProjectConfig};
 use regex::{Regex, RegexBuilder};
+use serde_json::json;
 
+use crate::commands::map::Assemble;
 use crate::shared::code_route::{holds_code, parts_in_copy, ProjectPath};
 use crate::shared::config_key::{takes, NameFilter, Walk, CONFIG_FILE};
 use crate::shared::paths::{is_artifact, sensitive_pattern};
 use crate::shared::say::say;
+use crate::shared::search_door::{self as door, Ask, Numbers, Outcome, Piece};
 
 /// Quantos arquivos a resposta mostra: os primeiros da triagem. É o corte da
 /// busca por assunto do mapa.
@@ -126,13 +135,21 @@ pub(crate) struct Search<'a> {
 
 /// Onde a busca roda e para quem.
 pub(crate) struct Scene<'a> {
+    /// A raiz do projeto.
+    pub(crate) root: &'a Path,
     /// O mapa do projeto.
     pub(crate) model: &'a Path,
     /// O arquivo do estado da sessão; sem ele a busca repetida não se
     /// reconhece, e quem chama só o dá a uma sessão de verdade.
     pub(crate) memory: Option<&'a Path>,
+    /// A sessão de quem busca, onde cada aviso sai uma vez.
+    pub(crate) session: Option<&'a str>,
     pub(crate) lang: Locale,
     pub(crate) languages: &'a Languages,
+    /// A configuração do projeto: o filtro e os números da busca.
+    pub(crate) config: &'a ProjectConfig,
+    /// A montagem do filtro da busca parcial, a mesma da busca por assunto.
+    pub(crate) assemble: &'a Assemble<'a>,
 }
 
 /// O que o gancho diz da busca `search`: a resposta no lugar dela, a linha
@@ -153,10 +170,14 @@ pub(crate) fn hook_reply(root: &str, input: &HookInput, ctx: &Ctx, search: &Sear
         return Reply::Pass;
     };
     let scene = Scene {
+        root,
         model: &store::model_path(root),
         memory: Some(&memory),
+        session: input.session_id.as_deref(),
         lang: ctx.config.language().text_or_default(),
         languages: &Languages::of(&ctx.config),
+        config: &ctx.config,
+        assemble: &crate::commands::map::jev,
     };
     reply(&scene, search)
 }
@@ -235,9 +256,72 @@ fn try_reply(scene: &Scene<'_>, search: &Search<'_>) -> Option<Reply> {
     }
     let regex = pattern_of(search)?;
     let hits = scan(tree, &rels, search, &regex)?;
-    let text = compose(scene, tree, &triaged, mark, &hits)?;
+    // Só o parcial vai ao filtro: o cravado responde da triagem.
+    let mut warnings: Vec<String> = Vec::new();
+    let judged = if mark == Mark::Partial { judge(scene, &question, &triaged, &mut warnings) } else { Judged::Triage };
+    if judged == Judged::NotFound {
+        remember(scene.memory, &key)?;
+        return Some(Reply::Note(not_found(&question, &triaged.words, scene.lang)));
+    }
+    let delivered = match &judged {
+        Judged::Pieces(pieces) => pieces.as_slice(),
+        _ => &[],
+    };
+    let mut text = compose(scene, tree, &triaged, mark, &hits, delivered)?;
+    for warning in warnings {
+        text.push('\n');
+        text.push_str(&warning);
+    }
     remember(scene.memory, &key)?;
     Some(Reply::Answer(text))
+}
+
+/// O que o filtro disse da busca parcial.
+#[derive(Debug, Clone, PartialEq)]
+enum Judged {
+    /// Sem filtro, sem candidato ou com o filtro falhando: vale a triagem.
+    Triage,
+    /// Nenhum candidato serve: a busca comum segue.
+    NotFound,
+    /// As peças que o filtro entrega, na ordem da chance.
+    Pieces(Vec<Piece>),
+}
+
+/// A busca parcial pela porta única: as palavras são o pedido, e num projeto
+/// com texto e código em línguas diferentes vão também como a frase, na
+/// língua do texto, para o filtro ler a palavra como ela é e não como pedaço
+/// de nome. O motivo de não haver filtro, ou de ele falhar, entra em
+/// `warnings`, uma vez por sessão.
+fn judge(scene: &Scene<'_>, question: &str, triaged: &Triaged, warnings: &mut Vec<String>) -> Judged {
+    let (root, session, lang) = (scene.root, scene.session, scene.lang);
+    let started = Instant::now();
+    let Some(assembled) = door::chosen_filter(root, session, lang, scene.config, scene.assemble, warnings) else {
+        return Judged::Triage;
+    };
+    let numbers = Numbers::read(root, session, lang, scene.config, warnings);
+    let intent = if scene.languages.codes().len() > 1 { question } else { "" };
+    let ask = Ask { root, query: question, intent, lang, languages: scene.languages, numbers: &numbers, triaged };
+    let Ok(classified) = door::classify(&ask, &assembled) else { return Judged::Triage };
+    let judged = match classified.outcome {
+        Outcome::NoCandidates => Judged::Triage,
+        Outcome::Failed(error) => {
+            door::failure_warning(root, session, lang, &error, warnings);
+            Judged::Triage
+        }
+        Outcome::Classified { verdict: Verdict::NotFound, .. } => Judged::NotFound,
+        Outcome::Classified { pieces, .. } if pieces.is_empty() => Judged::Triage,
+        Outcome::Classified { pieces, .. } => Judged::Pieces(pieces),
+    };
+    let _ = crate::commands::spec_events::conversation::record_measured_call(
+        root,
+        "word search",
+        None,
+        session,
+        started,
+        &json!({ "ok": true }),
+        classified.measured,
+    );
+    judged
 }
 
 // ---------------------------------------------------------------------------
@@ -639,10 +723,98 @@ fn names_line(mark: Mark, triaged: &Triaged, lang: Locale) -> String {
     format!("{} {}", header(mark, triaged, lang), say("map.answer.names_only", lang, &[]))
 }
 
+/// A resposta com as peças que o filtro entregou: só elas, na ordem da chance
+/// e agrupadas por arquivo (o do primeiro colocado vem primeiro), cada uma com
+/// o começo, o fim, o nome e, entre parênteses, as linhas achadas dentro dela.
+/// A peça sem linha achada vem sem parênteses, e o que a busca achou fora das
+/// peças vira a contagem do que ficou de fora. Fecha com a linha de usar as
+/// ferramentas de sempre, se o lugar não for este.
+fn compose_delivered(scene: &Scene<'_>, tree: &Path, hits: &[FileHits], delivered: &[Piece]) -> String {
+    let mut paths: Vec<&str> = Vec::new();
+    for piece in delivered {
+        if !paths.contains(&piece.path.as_str()) {
+            paths.push(&piece.path);
+        }
+    }
+    let mut out = say("map.answer.instead", scene.lang, &[]);
+    out.push('\n');
+    out.push_str(&say("map.answer.lines", scene.lang, &[]));
+    let mut places: usize = hits.iter().filter(|file| !paths.contains(&file.path.as_str())).map(|file| file.lines.len()).sum();
+    let mut cut_files = hits.iter().filter(|file| !paths.contains(&file.path.as_str())).count();
+    for path in paths {
+        let found = hits.iter().find(|file| file.path == path);
+        let view = found.and_then(|file| view_of(scene, tree, &file.path));
+        out.push('\n');
+        out.push_str(path);
+        if view.as_ref().is_some_and(|view| view.changed) {
+            out.push_str(" (");
+            out.push_str(&say("map.answer.changed", scene.lang, &[]));
+            out.push(')');
+        }
+        let mut covered: HashSet<u64> = HashSet::new();
+        for piece in delivered.iter().filter(|piece| piece.path == path) {
+            let (line, end_line) = view
+                .as_ref()
+                .and_then(|view| moved(view, piece))
+                .unwrap_or((u64::from(piece.line), u64::from(piece.end_line)));
+            let inside: Vec<u64> = found
+                .map(|file| file.lines.iter().copied().filter(|at| (line..=end_line).contains(at)).collect())
+                .unwrap_or_default();
+            covered.extend(&inside);
+            out.push_str(&format!("\n  {line}-{end_line} {}", piece.name));
+            if !inside.is_empty() {
+                let shown: Vec<String> = inside.iter().take(HITS_SHOWN).map(u64::to_string).collect();
+                let more = if inside.len() > HITS_SHOWN { ", …" } else { "" };
+                out.push_str(&format!(" ({}{more})", shown.join(", ")));
+            }
+        }
+        let outside = found.map_or(0, |file| file.lines.iter().filter(|at| !covered.contains(at)).count());
+        if outside > 0 {
+            places += outside;
+            cut_files += 1;
+        }
+    }
+    if places > 0 {
+        out.push('\n');
+        out.push_str(&say(
+            "map.answer.rest",
+            scene.lang,
+            &[("{places}", &places.to_string()), ("{files}", &cut_files.to_string())],
+        ));
+    }
+    out.push('\n');
+    out.push_str(&say("map.search.use_tools", scene.lang, &[]));
+    out
+}
+
+/// As linhas de começo e de fim da peça `piece` no arquivo como está agora: a
+/// parte do mapa de mesmo nome e mais perto da linha dela. `None` quando o
+/// arquivo mudou e o mapa não sabe mais onde a peça está.
+fn moved(view: &View, piece: &Piece) -> Option<(u64, u64)> {
+    let found = view.parts.as_ref()?;
+    found
+        .parts
+        .iter()
+        .filter(|part| part.name == piece.name)
+        .min_by_key(|part| part.line.abs_diff(u64::from(piece.line)))
+        .map(|part| (part.line, part.end_line))
+}
+
 /// A resposta inteira: a marca, os arquivos da triagem com as funções e as
-/// linhas soltas, e a contagem do que o corte deixou de fora. `None` quando a
+/// linhas soltas, e a contagem do que o corte deixou de fora; com peças
+/// entregues pelo filtro, só elas ([`compose_delivered`]). `None` quando a
 /// busca não achou linha e o mapa não aponta arquivo.
-fn compose(scene: &Scene<'_>, tree: &Path, triaged: &Triaged, mark: Mark, hits: &[FileHits]) -> Option<String> {
+fn compose(
+    scene: &Scene<'_>,
+    tree: &Path,
+    triaged: &Triaged,
+    mark: Mark,
+    hits: &[FileHits],
+    delivered: &[Piece],
+) -> Option<String> {
+    if !delivered.is_empty() {
+        return Some(compose_delivered(scene, tree, hits, delivered));
+    }
     let rank: HashMap<&str, usize> = triaged.files.iter().enumerate().map(|(at, file)| (file.path.as_str(), at)).collect();
     let mut ordered: Vec<&FileHits> = hits.iter().collect();
     ordered.sort_by(|a, b| {
@@ -777,8 +949,12 @@ pub(crate) mod fixture {
 mod tests {
     use super::fixture::{self, git};
     use super::*;
-    use mustard_core::domain::triage::Signals;
+    use crate::commands::map::Assembled;
     use crate::shared::code_route::project_path;
+    use mustard_core::domain::map_filter::{
+        judged, FilterError, FilterRequest, FilterUsage, Filtered, MapFilter, Scored,
+    };
+    use mustard_core::domain::triage::Signals;
 
     fn owned(items: &[&str]) -> Vec<String> {
         items.iter().map(|item| (*item).to_string()).collect()
@@ -790,8 +966,38 @@ mod tests {
         search_showing(root, tree, patterns, folders, true)
     }
 
+    /// A montagem sem chave: a busca parcial responde só com a triagem.
+    fn without_key(_: &Path, _: &ProjectConfig) -> Result<Assembled, FilterError> {
+        Err(FilterError::MissingKey)
+    }
+
     /// A mesma busca, mostrando as linhas achadas ou só listando nomes.
     fn search_showing(root: &Path, tree: &Path, patterns: &[&str], folders: &[&str], shows_lines: bool) -> Reply {
+        search_through(root, tree, patterns, folders, shows_lines, &without_key)
+    }
+
+    /// A mesma busca, com o filtro que `assemble` monta.
+    fn search_through(
+        root: &Path,
+        tree: &Path,
+        patterns: &[&str],
+        folders: &[&str],
+        shows_lines: bool,
+        assemble: &Assemble<'_>,
+    ) -> Reply {
+        let both = Languages::new(["pt-BR", "en-US"]);
+        let rg = (Dialect::Rust, Walk::Rg { unignored: false });
+        search_as(root, tree, (patterns, folders, shows_lines), (&both, rg), assemble)
+    }
+
+    /// A mesma busca, nas línguas e com o programa dados.
+    fn search_as(
+        root: &Path,
+        tree: &Path,
+        (patterns, folders, shows_lines): (&[&str], &[&str], bool),
+        (languages, (dialect, walk)): (&Languages, (Dialect, Walk)),
+        assemble: &Assemble<'_>,
+    ) -> Reply {
         let patterns = owned(patterns);
         let folders: Vec<ProjectPath> = folders
             .iter()
@@ -799,20 +1005,25 @@ mod tests {
             .collect();
         let search = Search {
             patterns: &patterns,
-            dialect: Dialect::Rust,
+            dialect,
             ignore_case: false,
             whole_word: false,
             folders: &folders,
             filters: &[],
-            walk: Walk::Rg { unignored: false },
+            walk,
             shows_lines,
         };
         let memory = root.join(".claude/.session/teste/word-searches");
+        let config = ProjectConfig::load(root);
         let scene = Scene {
+            root,
             model: &store::model_path(root),
             memory: Some(&memory),
+            session: Some("teste"),
             lang: Locale::PtBr,
-            languages: &Languages::new(["pt-BR", "en-US"]),
+            languages,
+            config: &config,
+            assemble,
         };
         reply(&scene, &search)
     }
@@ -909,7 +1120,12 @@ mod tests {
     #[test]
     fn a_search_with_a_word_the_map_lacks_stays_pinned_and_names_only_the_found_words() {
         let (_dir, root) = fixture::repo("{}");
-        let text = answer(search_in(&root, &root, &["calcular_frete|imposto"], &["."]));
+        let triaged =
+            map_triage::triage_at(&store::model_path(&root), ("calcular_frete desconto_frete imposto", ""), &Languages::new(["pt-BR", "en-US"]), RANKED_FILES)
+                .expect("triage");
+        let chance = mustard_core::domain::triage::chance(&triaged.signals);
+        assert!(chance >= mustard_core::domain::triage::PINNED_FROM + 0.01, "the fixture sits clear of the pinned cut, not on it: {chance}");
+        let text = answer(search_in(&root, &root, &["calcular_frete|desconto_frete|imposto"], &["."]));
         assert!(text.starts_with("Cravado."), "{text}");
         assert!(text.contains(r#""calcular", "frete""#), "the words the map found: {text}");
         let first_line = text.lines().next().unwrap_or_default();
@@ -956,7 +1172,7 @@ mod tests {
     #[test]
     fn a_pinned_search_with_a_missing_word_that_only_counts_answers_in_one_line_without_it() {
         let (_dir, root) = fixture::repo("{}");
-        let Reply::Note(line) = search_showing(&root, &root, &["calcular_frete|imposto"], &["."], false) else {
+        let Reply::Note(line) = search_showing(&root, &root, &["calcular_frete|desconto_frete|imposto"], &["."], false) else {
             panic!("a note was expected");
         };
         assert_eq!(line.lines().count(), 1, "{line}");
@@ -1012,11 +1228,16 @@ mod tests {
             walk: Walk::Rg { unignored: false },
             shows_lines: true,
         };
+        let config = ProjectConfig::load(&root);
         let scene = Scene {
+            root: &root,
             model: &store::model_path(&root),
             memory: None,
+            session: None,
             lang: Locale::PtBr,
             languages: &Languages::new(["pt-BR"]),
+            config: &config,
+            assemble: &without_key,
         };
         assert!(matches!(reply(&scene, &search), Reply::Answer(_)));
         assert!(matches!(reply(&scene, &search), Reply::Answer(_)));
@@ -1090,6 +1311,214 @@ mod tests {
         assert_eq!(search_in(&bare, &bare, &["calcular_frete"], &["src"]), Reply::Pass, "no map, no answer, no error");
     }
 
+    /// Um filtro de mentira: guarda cada pedido e dá a chance de cada
+    /// candidato pelo nome (`chances`, e 0,01 para os outros), com a chance
+    /// de "nenhum destes" e a confiança dadas; ou falha com `error`.
+    #[derive(Clone)]
+    struct Judge {
+        asked: std::rc::Rc<std::cell::RefCell<Vec<FilterRequest>>>,
+        chances: Vec<(&'static str, f64)>,
+        none: f64,
+        confidence: f64,
+        error: Option<FilterError>,
+    }
+
+    impl MapFilter for Judge {
+        fn filter(&self, request: &FilterRequest) -> Result<Filtered, FilterError> {
+            self.asked.borrow_mut().push(request.clone());
+            if let Some(error) = &self.error {
+                return Err(error.clone());
+            }
+            let scores: Vec<Scored> = request
+                .candidates
+                .iter()
+                .map(|candidate| {
+                    let chance = self.chances.iter().find(|(name, _)| *name == candidate.name).map_or(0.01, |(_, chance)| *chance);
+                    Scored { id: candidate.id, score: chance }
+                })
+                .collect();
+            let (verdict, kept) = judged(&scores, self.none, self.confidence, request.share);
+            Ok(Filtered { verdict, kept, usage: FilterUsage::default() })
+        }
+    }
+
+    impl Judge {
+        /// O filtro seguro: dá `chances` e quase nenhuma a "nenhum destes".
+        fn sure_of(chances: &[(&'static str, f64)]) -> Self {
+            Self { asked: std::rc::Rc::default(), chances: chances.to_vec(), none: 0.01, confidence: 0.9, error: None }
+        }
+
+        /// O filtro que acha que nenhum candidato serve.
+        fn finding_none() -> Self {
+            Self { none: 0.9, ..Self::sure_of(&[]) }
+        }
+
+        fn failing(error: FilterError) -> Self {
+            Self { error: Some(error), ..Self::sure_of(&[]) }
+        }
+
+        /// A montagem que entrega este filtro, como a chave no projeto.
+        fn assemble(&self) -> impl Fn(&Path, &ProjectConfig) -> Result<Assembled, FilterError> + '_ {
+            move |_, _| Ok(Assembled { name: "jev", filter: Box::new(self.clone()), warning: None })
+        }
+
+        fn calls(&self) -> usize {
+            self.asked.borrow().len()
+        }
+
+        fn last(&self) -> FilterRequest {
+            self.asked.borrow().last().cloned().expect("the filter was called")
+        }
+    }
+
+    /// A palavra cravada responde da triagem: o filtro não é chamado, nem a
+    /// montagem dele, e nenhum aviso de chave sai.
+    #[test]
+    fn a_pinned_word_never_reaches_the_filter() {
+        let (_dir, root) = fixture::repo("{}");
+        let judge = Judge::sure_of(&[]);
+        let text = answer(search_through(&root, &root, &["calcular_frete"], &["."], true, &judge.assemble()));
+        assert!(text.starts_with("Cravado."), "{text}");
+        assert_eq!(judge.calls(), 0);
+        let no_key = answer(search_through(&root, &root, &["fechar_pedido"], &["."], true, &without_key));
+        assert!(!no_key.contains("chave"), "a pinned answer warns of no key: {no_key}");
+    }
+
+    /// A palavra parcial vai ao filtro num pedido só, com todos os candidatos
+    /// do banco, e a resposta traz só a peça entregue, com as linhas achadas
+    /// dentro dela; o que a busca achou fora dela vira a contagem do que
+    /// ficou de fora, e a linha de usar as ferramentas fecha a resposta.
+    #[test]
+    fn a_partial_word_goes_to_the_filter_once_and_the_answer_shows_only_the_delivered_pieces() {
+        let (_dir, root) = fixture::repo("{}");
+        let judge = Judge::sure_of(&[("calcular_frete", 0.9)]);
+        let text = answer(search_through(&root, &root, &["imposto"], &["."], true, &judge.assemble()));
+        assert_eq!(judge.calls(), 1);
+        let asked = judge.last();
+        let bank = mustard_core::io::map_search::candidates(&root, "imposto", "imposto", &Languages::new(["pt-BR", "en-US"]), 100)
+            .expect("the bank candidates");
+        assert_eq!(bank.candidates.len(), 2, "the bank lists the two functions of the file");
+        assert_eq!(asked.candidates, bank.candidates, "every candidate of the bank goes in one request");
+        assert_eq!(asked.words, ["imposto"]);
+        assert!(text.contains("src/frete.rs\n  2-6 calcular_frete (3)"), "the delivered piece with the line found inside it: {text}");
+        assert!(!text.contains("desconto_frete") && !text.contains("fechar_pedido"), "only what the filter delivered: {text}");
+        assert!(text.contains("Fora do corte, lugares: 1, arquivos: 1."), "the line in the note is left out: {text}");
+        assert!(!text.contains("docs/notas.md"), "{text}");
+        assert!(text.trim_end().ends_with(&mustard_core::translate("map.search.use_tools", Locale::PtBr)), "{text}");
+    }
+
+    /// A peça entregue vem na ordem da chance, mesmo sem linha achada nela.
+    #[test]
+    fn the_delivered_pieces_come_in_the_order_of_the_chance_even_without_a_line_found() {
+        let (_dir, root) = fixture::repo("{}");
+        let judge = Judge::sure_of(&[("desconto_frete", 0.6), ("calcular_frete", 0.35)]);
+        let text = answer(search_through(&root, &root, &["imposto"], &["."], true, &judge.assemble()));
+        let discount = text.find("\n  8-10 desconto_frete\n").unwrap_or_else(|| panic!("{text}"));
+        let freight = text.find("\n  2-6 calcular_frete (3)\n").unwrap_or_else(|| panic!("{text}"));
+        assert!(discount < freight, "the better piece comes first: {text}");
+    }
+
+    /// O filtro que acha que nada serve deixa a busca comum rodar, com a
+    /// linha de não achei; a mesma busca repetida passa sem chamar o filtro
+    /// de novo.
+    #[test]
+    fn a_word_the_filter_finds_nothing_for_lets_the_plain_search_run() {
+        let (_dir, root) = fixture::repo("{}");
+        let judge = Judge::finding_none();
+        let Reply::Note(line) = search_through(&root, &root, &["imposto"], &["."], true, &judge.assemble()) else {
+            panic!("a note was expected");
+        };
+        assert!(line.starts_with("Não achei") && line.contains(r#"grep -rniE "imposto" ."#), "{line}");
+        assert_eq!(search_through(&root, &root, &["imposto"], &["."], true, &judge.assemble()), Reply::Pass);
+        assert_eq!(judge.calls(), 1, "the repeat does not ask again");
+    }
+
+    /// A busca que só lista nomes ou conta segue sem o filtro.
+    #[test]
+    fn a_names_only_search_never_reaches_the_filter() {
+        let (_dir, root) = fixture::repo("{}");
+        let judge = Judge::sure_of(&[("calcular_frete", 0.9)]);
+        let reply = search_through(&root, &root, &["imposto"], &["."], false, &judge.assemble());
+        assert!(matches!(reply, Reply::Note(_)), "{reply:?}");
+        assert_eq!(judge.calls(), 0);
+    }
+
+    /// Sem chave, a busca parcial responde com a triagem e o aviso do motivo,
+    /// e a mesma sessão não o recebe de novo.
+    #[test]
+    fn without_a_key_a_partial_word_gets_the_triage_answer_and_one_warning_per_session() {
+        let (_dir, root) = fixture::repo("{}");
+        let warned = mustard_core::translate("map.search.missing_key", Locale::PtBr);
+        let first = answer(search_in(&root, &root, &["imposto"], &["."]));
+        assert!(first.starts_with("Parcial."), "the triage answer: {first}");
+        assert!(first.trim_end().ends_with(&*warned), "{first}");
+        let second = answer(search_in(&root, &root, &["frete pedido"], &["."]));
+        assert!(second.starts_with("Parcial.") && !second.contains(&*warned), "the same session is not warned again: {second}");
+    }
+
+    /// O filtro que falha deixa a resposta da triagem, com o motivo dito uma
+    /// vez por sessão.
+    #[test]
+    fn a_failing_filter_leaves_the_triage_answer_with_the_reason_once() {
+        let (_dir, root) = fixture::repo("{}");
+        let judge = Judge::failing(FilterError::Timeout);
+        let first = answer(search_through(&root, &root, &["imposto"], &["."], true, &judge.assemble()));
+        assert!(first.starts_with("Parcial."), "{first}");
+        assert!(first.contains("tempo esgotado"), "{first}");
+        let second = answer(search_through(&root, &root, &["frete pedido"], &["."], true, &judge.assemble()));
+        assert!(second.starts_with("Parcial.") && !second.contains("tempo esgotado"), "{second}");
+        assert_eq!(judge.calls(), 2);
+    }
+
+    /// A ferramenta `Grep` e o `grep` do terminal chegam à mesma porta: a
+    /// mesma palavra dá a mesma resposta.
+    #[test]
+    fn the_grep_tool_and_the_terminal_grep_get_the_same_answer() {
+        let judge = Judge::sure_of(&[("calcular_frete", 0.9)]);
+        let both = Languages::new(["pt-BR", "en-US"]);
+        let (_tool_dir, tool) = fixture::repo("{}");
+        let (_shell_dir, shell) = fixture::repo("{}");
+        let by_tool = search_as(&tool, &tool, (&["imposto"], &["."], true), (&both, (Dialect::Rust, Walk::Rg { unignored: false })), &judge.assemble());
+        let by_shell = search_as(&shell, &shell, (&["imposto"], &["."], true), (&both, (Dialect::Basic, Walk::Grep)), &judge.assemble());
+        assert!(matches!(by_tool, Reply::Answer(_)), "{by_tool:?}");
+        assert_eq!(by_tool, by_shell);
+        assert_eq!(judge.calls(), 2);
+    }
+
+    /// Num projeto com o texto em português e o código em inglês, a palavra
+    /// em português chega ao nome em inglês pela documentação: o filtro lê a
+    /// palavra como ela é, e não como pedaço de nome, e a peça certa volta.
+    /// Num projeto de uma língua só, a palavra única segue como pedaço de nome.
+    #[test]
+    fn a_word_in_the_text_language_reaches_the_english_name_through_the_filter() {
+        let map = serde_json::json!({ "modules": [
+            { "path": "src/users.rs", "language": "rust", "loc": 4, "declarations": [
+                { "kind": "struct", "name": "UserRepository", "line": 2, "end_line": 4,
+                  "doc": "Repositório dos usuários do sistema." }
+            ] },
+            { "path": "src/orders.rs", "language": "rust", "loc": 3, "declarations": [
+                { "kind": "struct", "name": "OrderService", "line": 1, "end_line": 3 }
+            ] }
+        ] });
+        let files = [
+            ("src/users.rs", "// usuários\npub struct UserRepository {\n    id: u32,\n}\n"),
+            ("src/orders.rs", "pub struct OrderService {\n    id: u32,\n}\n"),
+        ];
+        let (_dir, root) = fixture::repo_with("{}", &files, map);
+        let judge = Judge::sure_of(&[("UserRepository", 0.9)]);
+        let mixed = Languages::new(["pt-BR", "en-US"]);
+        let rg = (Dialect::Rust, Walk::Rg { unignored: false });
+        let text = answer(search_as(&root, &root, (&["usuários"], &["."], true), (&mixed, rg), &judge.assemble()));
+        assert_eq!(judge.last().phrase, "usuários", "the word is the request, in the text language");
+        assert!(judge.last().candidates.iter().any(|candidate| candidate.name == "UserRepository"));
+        assert!(text.contains("src/users.rs\n  2-4 UserRepository"), "the English name comes back: {text}");
+        let (_same_dir, same) = fixture::repo("{}");
+        let alone = Judge::sure_of(&[("calcular_frete", 0.9)]);
+        let one = Languages::new(["pt-BR"]);
+        let _ = search_as(&same, &same, (&["imposto"], &["."], true), (&one, rg), &alone.assemble());
+        assert_eq!(alone.last().phrase, "pedaço de nome: imposto", "one language: the single word is a piece of a name");
+    }
+
     /// A medida do tamanho da resposta contra o da busca comum, sobre buscas
     /// de verdade (`WORD_SEARCH_SEARCHES`: uma por linha, com o padrão, as
     /// pastas e o programa), numa árvore com mapa (`WORD_SEARCH_TREE`, um
@@ -1137,7 +1566,17 @@ mod tests {
                 walk,
                 shows_lines: entry["mode"].as_str() == Some("content"),
             };
-            let scene = Scene { model: &model, memory: None, lang: Locale::PtBr, languages: &languages };
+            let config = ProjectConfig::load(&tree);
+            let scene = Scene {
+                root: &tree,
+                model: &model,
+                memory: None,
+                session: None,
+                lang: Locale::PtBr,
+                languages: &languages,
+                config: &config,
+                assemble: &without_key,
+            };
             let mut row = serde_json::json!({ "at": at, "program": program, "outcome": "pass", "folders_ok": !folders.is_empty() && folders.len() == wanted });
             if folders.is_empty() || folders.len() != wanted {
                 writeln!(out, "{row}").expect("write");

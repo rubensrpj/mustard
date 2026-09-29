@@ -11,6 +11,13 @@
 //! voltam para o veredito e o corte do núcleo ([`judged`]), os mesmos de toda
 //! implementação.
 //!
+//! Quando o veredito é dividido, uma segunda olhada relê só os três de maior
+//! chance, agora com os mesmos campos numa lista de três: uma escolha entre
+//! eles e `none`, e um sim ou não para cada um ("este é o código que se
+//! procura?"). A decisão é a do núcleo ([`second_look`]): volta o trecho certo,
+//! ou não achei. O segundo pedido usa o mesmo prazo do primeiro; falhando ou
+//! passando do prazo, vale o corte relativo da primeira etapa, sem erro.
+//!
 //! De cada candidato vão só nomes, caminho, assinatura, documentação,
 //! comentários, o dono, os membros e títulos de commit, com os cortes medidos
 //! no laboratório. Nunca uma linha do corpo nem um texto entre aspas: o
@@ -34,7 +41,8 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use mustard_core::domain::map_filter::{
-    FilterCandidate, FilterError, FilterRequest, FilterUsage, Filtered, MapFilter, Scored, Verdict, judged, verdict,
+    Finalist, FilterCandidate, FilterError, FilterRequest, FilterUsage, Filtered, MapFilter, Scored, Verdict,
+    finalists_of, judged, second_look, verdict,
 };
 use mustard_core::domain::normalize::split_identifier;
 use mustard_core::ProjectConfig;
@@ -110,6 +118,17 @@ that changed its file), `owner` (the names of the type or block that holds it), 
 comments inside its code) and `members` (the members it declares, when it is a type). The body of the code is \
 not shown.";
 
+/// O texto do estado da segunda olhada: o de `ABOUT`, para a lista curta dos
+/// finalistas. Cita os mesmos campos, na mesma ordem; `@COUNT@` vira quantos
+/// são.
+const ABOUT_FINALISTS: &str = "A coding agent is searching a codebase. `request` is what it asked for, in Portuguese or English: either a \
+description of what some code does, or the name, or part of the name, of an identifier. The state lists @COUNT@ \
+candidate declarations, one per line, with everything the code index knows about each one: `kind`, `name` (its name split into words), \
+`path` (its file path), `signature`, `documentation`, `last commits of the file` (the titles of the last commits \
+that changed its file), `owner` (the names of the type or block that holds it), `comments in the body` (the \
+comments inside its code) and `members` (the members it declares, when it is a type). The body of the code is \
+not shown.";
+
 const ANSWER_YES_WHEN: &str = "The candidate is the code the request asks for: it does, defines or decides what the request describes, \
 or its name is the identifier the request names.";
 
@@ -119,6 +138,13 @@ shares some words with the request.";
 /// A pergunta da escolha. A última frase é a saída da opção `none`.
 const QUESTION: &str = "Which one of the candidates is the code that the `request` is looking for? Answer with the id of the single \
 candidate that best is that code. If none of them is that code, answer `none`.";
+
+/// A pergunta de sim ou não sobre um finalista; `@ID@` vira o id dele.
+const FINALIST_QUESTION: &str = "Is candidate `@ID@` the code that the `request` is looking for?";
+
+/// O começo da chave da pergunta de sim ou não de cada finalista; o resto é o
+/// id dele.
+const FITS_PREFIX: &str = "fits_";
 
 /// O texto da opção "nenhum destes".
 const NONE_CRITERION: &str = "None of the candidates is the code the request asks for: each one is only on a related topic, only uses or \
@@ -306,13 +332,22 @@ impl MapFilter for JevFilter {
             let read = read_choice(&doc, range.start, &request.candidates[range])?;
             input_tokens += read.input_tokens;
             reads.push(read);
-            let model = doc.get("model").and_then(Value::as_str).map(str::trim).unwrap_or_default();
-            if !model.is_empty() && !models.iter().any(|seen| seen == model) {
-                models.push(model.to_string());
-            }
+            note_model(&mut models, &doc);
         }
         let Merged { scores, none, confidence } = merge(reads);
-        let (verdict, kept) = judged(&scores, none, confidence, request.share);
+        let (mut verdict, mut kept) = judged(&scores, none, confidence, request.share);
+        if verdict == Verdict::Split {
+            // A escolha ficou dividida: relê só os finalistas. A falha dessa
+            // etapa não é falha da busca, e vale o corte da primeira.
+            let second = self.second_look(&head, request, &scores, deadline);
+            input_tokens += second.input_tokens;
+            if let Some(model) = second.model {
+                note_model(&mut models, &model);
+            }
+            if let Some((decided, chosen)) = second.decided {
+                (verdict, kept) = (decided, chosen);
+            }
+        }
         Ok(Filtered {
             verdict,
             kept,
@@ -323,6 +358,49 @@ impl MapFilter for JevFilter {
                 model: models.join(","),
             },
         })
+    }
+}
+
+/// O que a segunda olhada devolve: os tokens que o pedido custou, o documento
+/// da resposta (para o nome do modelo) e, quando a resposta se leu, a decisão.
+struct Second {
+    input_tokens: u64,
+    model: Option<Value>,
+    decided: Option<(Verdict, Vec<Scored>)>,
+}
+
+impl JevFilter {
+    /// A segunda olhada sobre os finalistas de `scores`: um pedido com uma
+    /// escolha entre eles e `none` e um sim ou não para cada um, sob o mesmo
+    /// `deadline` da primeira etapa. Qualquer falha (rede, recusa, prazo,
+    /// resposta ilegível) deixa `decided` vazio, e os tokens da resposta que
+    /// chegou contam do mesmo jeito.
+    fn second_look(&self, head: &Head, request: &FilterRequest, scores: &[Scored], deadline: Instant) -> Second {
+        let nothing = Second { input_tokens: 0, model: None, decided: None };
+        let group: Vec<FilterCandidate> = finalists_of(scores)
+            .iter()
+            .filter_map(|finalist| request.candidates.iter().find(|c| c.id == finalist.id).cloned())
+            .collect();
+        if group.is_empty() {
+            return nothing;
+        }
+        let lines: Vec<String> = group.iter().enumerate().map(|(at, c)| candidate_line(at, c)).collect();
+        let Ok(payload) = serde_json::to_string(&second_body(head, &lines)) else { return nothing };
+        if estimated_tokens(&payload) > MAX_REQUEST_TOKENS {
+            return nothing;
+        }
+        let Ok(doc) = self.send(&payload, deadline) else { return nothing };
+        let input_tokens = doc.pointer("/usage/input_tokens").and_then(Value::as_u64).unwrap_or(0);
+        let decided = read_second(&doc, &group).ok();
+        Second { input_tokens, model: Some(doc), decided }
+    }
+}
+
+/// O nome do modelo que a resposta `doc` diz ter respondido, guardado uma vez.
+fn note_model(models: &mut Vec<String>, doc: &Value) {
+    let model = doc.get("model").and_then(Value::as_str).map(str::trim).unwrap_or_default();
+    if !model.is_empty() && !models.iter().any(|seen| seen == model) {
+        models.push(model.to_string());
     }
 }
 
@@ -381,6 +459,26 @@ fn read_choice(doc: &Value, first: usize, group: &[FilterCandidate]) -> Result<C
         confidence,
         input_tokens: doc.pointer("/usage/input_tokens").and_then(Value::as_u64).unwrap_or(0),
     })
+}
+
+/// A decisão lida da resposta da segunda olhada: a chance de cada finalista
+/// na escolha e o sim de cada um, postos na decisão do núcleo
+/// ([`second_look`]). `group` são os finalistas do pedido, na ordem dele;
+/// faltar a escolha ou um sim é resposta ilegível.
+fn read_second(doc: &Value, group: &[FilterCandidate]) -> Result<(Verdict, Vec<Scored>), FilterError> {
+    let choice = read_choice(doc, 0, group)?;
+    let answers = doc.get("answers").and_then(Value::as_object);
+    let mut finalists = Vec::with_capacity(group.len());
+    for (at, (candidate, scored)) in group.iter().zip(&choice.scores).enumerate() {
+        let key = format!("{FITS_PREFIX}{}", candidate_id(at));
+        let yes = answers
+            .and_then(|all| all.get(&key))
+            .and_then(|answer| answer.get("noul"))
+            .and_then(Value::as_f64)
+            .ok_or_else(|| FilterError::Unreadable(format!("no yes for {key}")))?;
+        finalists.push(Finalist { id: candidate.id, chance: scored.score, yes });
+    }
+    Ok(second_look(&finalists, choice.none))
 }
 
 /// O que sobra de todos os pedidos juntos.
@@ -460,11 +558,25 @@ impl Head {
         Self {
             request: without_secrets(&asked),
             words: request.words.iter().map(|word| without_secrets(word)).collect(),
-            instructions: format!(
-                "{ABOUT}\n\nThe right candidate: {ANSWER_YES_WHEN}\nA wrong candidate: {ANSWER_NO_WHEN}\n\n{QUESTION}"
-            ),
+            instructions: choice_instructions(ABOUT),
         }
     }
+}
+
+/// A instrução da escolha: o texto do estado, o que é certo e o que é errado,
+/// e a pergunta.
+fn choice_instructions(about: &str) -> String {
+    format!("{about}\n\nThe right candidate: {ANSWER_YES_WHEN}\nA wrong candidate: {ANSWER_NO_WHEN}\n\n{QUESTION}")
+}
+
+/// O texto do estado da segunda olhada para `count` finalistas.
+fn finalists_about(count: usize) -> String {
+    let count = match count {
+        1 => "one",
+        2 => "two",
+        _ => "three",
+    };
+    ABOUT_FINALISTS.replace("@COUNT@", count)
 }
 
 /// O corpo de um pedido com uma pergunta de escolha: o estado (a frase, as
@@ -472,24 +584,58 @@ impl Head {
 /// opções são os ids dos candidatos de `lines`, a partir da posição `first`, e
 /// `none`.
 fn body(head: &Head, first: usize, lines: &[String]) -> Value {
+    let question = choice_question(&head.instructions, first, lines.len());
+    request_body(head, lines, json!({ CHOICE_KEY: question }))
+}
+
+/// O corpo de um pedido: o estado (a frase, as palavras e os candidatos de
+/// `lines`, um por linha), o modelo e as perguntas.
+fn request_body(head: &Head, lines: &[String], questions: Value) -> Value {
     let mut state = Map::new();
     state.insert("request".to_string(), Value::String(head.request.clone()));
     state.insert(GUESSED_WORDS.to_string(), json!(head.words));
     state.insert(CANDIDATES_KEY.to_string(), Value::String(lines.join("\n")));
+    let mut body = Map::new();
+    body.insert("state".to_string(), Value::Object(state));
+    body.insert("model".to_string(), Value::String(JEV_MODEL.to_string()));
+    body.insert("questions".to_string(), questions);
+    Value::Object(body)
+}
+
+/// A pergunta de escolha entre `count` candidatos, a partir da posição
+/// `first`, e `none`.
+fn choice_question(instructions: &str, first: usize, count: usize) -> Value {
     let mut criteria = Map::new();
-    for at in 0..lines.len() {
+    for at in 0..count {
         criteria.insert(candidate_id(first + at), Value::Null);
     }
     criteria.insert(NONE_KEY.to_string(), Value::String(NONE_CRITERION.to_string()));
     let mut question = Map::new();
     question.insert("type".to_string(), json!("choice"));
-    question.insert("instructions".to_string(), Value::String(head.instructions.clone()));
+    question.insert("instructions".to_string(), Value::String(instructions.to_string()));
     question.insert("criteria".to_string(), Value::Object(criteria));
-    let mut body = Map::new();
-    body.insert("state".to_string(), Value::Object(state));
-    body.insert("model".to_string(), Value::String(JEV_MODEL.to_string()));
-    body.insert("questions".to_string(), json!({ CHOICE_KEY: question }));
-    Value::Object(body)
+    Value::Object(question)
+}
+
+/// O corpo do pedido da segunda olhada: os finalistas de `lines`, de `c000`
+/// em diante, com a escolha entre eles e `none` e, para cada um, a pergunta
+/// de sim ou não se ele é o código que se procura.
+fn second_body(head: &Head, lines: &[String]) -> Value {
+    let about = finalists_about(lines.len());
+    let mut questions = Map::new();
+    questions.insert(CHOICE_KEY.to_string(), choice_question(&choice_instructions(&about), 0, lines.len()));
+    for at in 0..lines.len() {
+        let id = candidate_id(at);
+        questions.insert(
+            format!("{FITS_PREFIX}{id}"),
+            json!({
+                "type": "noul",
+                "instructions": format!("{about}\n\n{}", FINALIST_QUESTION.replace("@ID@", &id)),
+                "criteria": { "true": ANSWER_YES_WHEN, "false": ANSWER_NO_WHEN },
+            }),
+        );
+    }
+    request_body(head, lines, Value::Object(questions))
 }
 
 /// O id de um candidato no pedido: `c000` em diante, pela posição dele na
@@ -1071,26 +1217,223 @@ mod tests {
         assert_eq!(got.kept.iter().map(|s| s.id).collect::<Vec<_>>(), vec![2]);
     }
 
+    /// A resposta do serviço à segunda olhada: a escolha entre os finalistas
+    /// (a chance de cada um pelo nome, a de `none`) e o sim de cada finalista
+    /// pelo nome.
+    fn second_by_name(
+        body: &Value,
+        chance_of: impl Fn(&str) -> f64,
+        none: f64,
+        yes_of: impl Fn(&str) -> f64,
+    ) -> Value {
+        let mut answer = choice_by_name(body, chance_of, none, 0.9);
+        for (id, fields) in listed(body) {
+            let yes = yes_of(fields["name"].as_str().unwrap_or_default());
+            answer["answers"][format!("{FITS_PREFIX}{id}")] = json!({"type": "noul", "noul": yes});
+        }
+        answer
+    }
+
+    /// A primeira resposta dividida: as chances de cand1 a cand3 são 0,4, 0,3
+    /// e 0,2, as dos outros 0,03 (abaixo de 0,10 vezes a maior), a de `none`
+    /// é 0 e a confiança 0,5.
+    fn split_first(body: &Value) -> Value {
+        choice_by_name(
+            body,
+            |name| match name {
+                "cand1" => 0.4,
+                "cand2" => 0.3,
+                "cand3" => 0.2,
+                _ => 0.03,
+            },
+            0.0,
+            0.5,
+        )
+    }
+
+    /// Um serviço que responde dividido ao primeiro pedido e ao segundo com
+    /// `second`, que recebe o corpo dele.
+    fn splitting(second: impl Fn(&Value) -> Reply + Send + Sync + 'static) -> FakeService {
+        FakeService::start(move |number, body| {
+            if number == 0 { Reply::json(200, &split_first(body)) } else { second(body) }
+        })
+    }
+
+    fn kept_ids(got: &Filtered) -> Vec<i64> {
+        got.kept.iter().map(|s| s.id).collect()
+    }
+
     #[test]
-    fn a_low_confidence_is_split_and_the_relative_cut_delivers() {
-        let service = FakeService::start(|_, body| {
+    fn a_confidence_of_seven_tenths_asks_no_second_time() {
+        let service = FakeService::start(|_, body| Reply::json(200, &choice_by_name(body, |_| 0.3, 0.0, 0.7)));
+        let got = service.filter().filter(&request((1..=5).map(candidate).collect())).unwrap();
+        assert_eq!(service.received().len(), 1, "a sure choice is delivered by the cut alone");
+        assert_eq!(got.verdict, Verdict::Sure);
+    }
+
+    #[test]
+    fn a_split_choice_asks_again_about_the_three_biggest_chances_with_one_choice_and_three_yes_questions() {
+        let service = splitting(|body| Reply::json(200, &second_by_name(body, |_| 0.3, 0.05, |_| 0.9)));
+        let got = service.filter().filter(&request((1..=5).map(candidate).collect())).unwrap();
+
+        let sent = service.received();
+        assert_eq!(sent.len(), 2, "one request for the choice and one for the second look");
+        assert_eq!(listed(&sent[0].body).len(), 5);
+        let second = &sent[1].body;
+        assert_eq!(second["model"], json!(JEV_MODEL));
+        assert_eq!(second["state"]["request"], json!("the candidate that answers"));
+        let lines = listed(second);
+        let names: Vec<(&str, &str)> =
+            lines.iter().map(|(id, fields)| (id.as_str(), fields["name"].as_str().unwrap())).collect();
+        assert_eq!(names, [("c000", "cand1"), ("c001", "cand2"), ("c002", "cand3")], "the three biggest chances, in that order");
+
+        let questions = second["questions"].as_object().unwrap();
+        let keys: Vec<&str> = questions.keys().map(String::as_str).collect();
+        assert_eq!(keys, ["q", "fits_c000", "fits_c001", "fits_c002"]);
+        let about = finalists_about(3);
+        let choice = &questions["q"];
+        assert_eq!(choice["type"], "choice");
+        let criteria: Vec<&str> = choice["criteria"].as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(criteria, ["c000", "c001", "c002", "none"]);
+        let instructions = choice["instructions"].as_str().unwrap();
+        assert!(instructions.starts_with(&about), "{instructions}");
+        assert!(instructions.ends_with("If none of them is that code, answer `none`."), "{instructions}");
+        for id in ["c000", "c001", "c002"] {
+            let fits = &questions[&format!("fits_{id}")];
+            assert_eq!(fits["type"], "noul");
+            assert_eq!(
+                fits["instructions"],
+                json!(format!("{about}\n\nIs candidate `{id}` the code that the `request` is looking for?"))
+            );
+            assert_eq!(fits["criteria"], json!({"true": ANSWER_YES_WHEN, "false": ANSWER_NO_WHEN}));
+        }
+        assert_eq!(got.verdict, Verdict::Sure);
+        assert_eq!(kept_ids(&got), vec![1], "all three say yes at 0,9 and cand1 wins the choice by name of the tie");
+    }
+
+    #[test]
+    fn the_text_of_the_second_look_names_each_field_of_the_candidate_in_its_order() {
+        let fields = candidate_fields(&full_candidate());
+        let keys: Vec<String> = fields.as_object().unwrap().keys().cloned().collect();
+        for count in 1..=3 {
+            let named: Vec<String> = quoted(&finalists_about(count)).into_iter().skip_while(|name| name == "request").collect();
+            assert_eq!(named, keys, "{count} finalists");
+        }
+        assert!(finalists_about(3).contains("lists three candidate declarations"));
+        assert!(finalists_about(2).contains("lists two candidate declarations"));
+        assert!(!finalists_about(1).contains('@'));
+    }
+
+    #[test]
+    fn the_winner_of_the_second_choice_with_a_yes_of_four_tenths_is_the_only_piece_delivered() {
+        // O vencedor da escolha (cand2) tem sim 0,4; cand1 tem 0,95 e não vence.
+        let service = splitting(|body| {
             Reply::json(
                 200,
-                &choice_by_name(
+                &second_by_name(
                     body,
+                    |name| if name == "cand2" { 0.7 } else { 0.1 },
+                    0.05,
                     |name| match name {
-                        "cand1" => 0.5,
-                        "cand2" => 0.45,
-                        _ => 0.05,
+                        "cand1" => 0.95,
+                        "cand2" => 0.4,
+                        _ => 0.1,
                     },
-                    0.0,
-                    0.5,
                 ),
             )
         });
-        let got = service.filter().filter(&request((1..=3).map(candidate).collect())).unwrap();
+        let got = service.filter().filter(&request((1..=5).map(candidate).collect())).unwrap();
+        assert_eq!(got.verdict, Verdict::Sure);
+        assert_eq!(kept_ids(&got), vec![2]);
+        assert!((got.kept[0].score - 0.4).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn a_winner_with_a_yes_below_four_tenths_gives_way_to_the_finalist_with_the_highest_yes() {
+        let service = splitting(|body| {
+            Reply::json(
+                200,
+                &second_by_name(
+                    body,
+                    |name| if name == "cand1" { 0.7 } else { 0.1 },
+                    0.05,
+                    |name| match name {
+                        "cand1" => 0.399,
+                        "cand2" => 0.5,
+                        "cand3" => 0.8,
+                        _ => 0.0,
+                    },
+                ),
+            )
+        });
+        let got = service.filter().filter(&request((1..=5).map(candidate).collect())).unwrap();
+        assert_eq!(kept_ids(&got), vec![3]);
+    }
+
+    #[test]
+    fn every_yes_below_four_tenths_is_not_found_with_nothing_kept() {
+        let service = splitting(|body| Reply::json(200, &second_by_name(body, |_| 0.3, 0.05, |_| 0.399)));
+        let got = service.filter().filter(&request((1..=5).map(candidate).collect())).unwrap();
+        assert_eq!(service.received().len(), 2);
+        assert_eq!(got.verdict, Verdict::NotFound);
+        assert!(got.kept.is_empty(), "{:?}", got.kept);
+    }
+
+    #[test]
+    fn the_second_look_adds_its_tokens_cost_and_model_to_the_usage() {
+        let service = splitting(|body| {
+            let mut answer = second_by_name(body, |_| 0.3, 0.05, |_| 0.9);
+            answer["model"] = json!("jev-1.13.0");
+            answer["usage"]["input_tokens"] = json!(2500);
+            Reply::json(200, &answer)
+        });
+        let got = service.filter().filter(&request((1..=5).map(candidate).collect())).unwrap();
+        assert_eq!(got.usage.input_tokens, 3500, "1000 of the choice and 2500 of the second look");
+        // 3.500 tokens a US$ 0,042 o milhão: 147 milionésimos de dólar.
+        assert_eq!(got.usage.cost_micro_usd, 147);
+        assert_eq!(got.usage.model, "jev-1.13.0");
+    }
+
+    #[test]
+    fn a_second_look_that_fails_falls_back_to_the_relative_cut_without_an_error() {
+        // Recusa do serviço no segundo pedido: nada de erro, e o corte da
+        // primeira etapa (só as chances acima de 0,04 ficam).
+        let refused = FakeService::start(|number, body| {
+            if number == 0 { Reply::json(200, &split_first(body)) } else { Reply::json(402, &json!({})) }
+        });
+        let got = refused.filter().filter(&request((1..=5).map(candidate).collect())).unwrap();
+        assert_eq!(refused.received().len(), 2, "a refused key is not repeated");
         assert_eq!(got.verdict, Verdict::Split);
-        assert_eq!(got.kept.iter().map(|s| s.id).collect::<Vec<_>>(), vec![1, 2]);
+        assert_eq!(kept_ids(&got), vec![1, 2, 3]);
+        assert_eq!(got.usage.input_tokens, 1000);
+
+        // Resposta legível só pela metade: falta o sim de um finalista. Os
+        // tokens da resposta que chegou contam.
+        let unreadable = splitting(|body| {
+            let mut answer = second_by_name(body, |_| 0.3, 0.05, |_| 0.9);
+            answer["answers"].as_object_mut().unwrap().remove("fits_c001");
+            Reply::json(200, &answer)
+        });
+        let got = unreadable.filter().filter(&request((1..=5).map(candidate).collect())).unwrap();
+        assert_eq!((got.verdict, kept_ids(&got)), (Verdict::Split, vec![1, 2, 3]));
+        assert_eq!(got.usage.input_tokens, 2000);
+    }
+
+    #[test]
+    fn a_second_look_past_the_deadline_falls_back_to_the_relative_cut() {
+        let service = FakeService::start(|number, body| {
+            if number == 0 {
+                return Reply::json(200, &split_first(body));
+            }
+            std::thread::sleep(Duration::from_millis(1500));
+            Reply::json(200, &second_by_name(body, |_| 0.3, 0.05, |_| 0.9))
+        });
+        let mut filter = service.filter();
+        filter.timeouts.response = Duration::from_millis(500);
+        let started = Instant::now();
+        let got = filter.filter(&request((1..=5).map(candidate).collect())).unwrap();
+        assert!(started.elapsed() < Duration::from_millis(1200), "waited {:?}", started.elapsed());
+        assert_eq!((got.verdict, kept_ids(&got)), (Verdict::Split, vec![1, 2, 3]));
     }
 
     #[test]
@@ -1098,7 +1441,7 @@ mod tests {
         let service = FakeService::start(|_, body| {
             Reply::json(
                 200,
-                &choice_by_name(body, |name| if name == "cand2" { 0.5 } else { 0.4 }, 0.0, 0.5),
+                &choice_by_name(body, |name| if name == "cand2" { 0.5 } else { 0.4 }, 0.0, 0.9),
             )
         });
         let mut asked = request((1..=3).map(candidate).collect());

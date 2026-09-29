@@ -191,6 +191,15 @@ pub const NONE_FROM: f64 = 0.5;
 /// está dividida.
 pub const SURE_FROM: f64 = 0.7;
 
+/// Quantos candidatos a segunda olhada relê: os de maior chance da primeira.
+pub const FINALISTS: usize = 3;
+
+/// O sim a partir do qual um finalista vale na segunda olhada. Na medida das
+/// 120 buscas, com esse corte a segunda olhada pôs o certo em primeiro em
+/// 115, e os 20 pedidos de coisas que o projeto não tem já voltaram como não
+/// achei na primeira etapa.
+pub const YES_FROM: f64 = 0.4;
+
 /// A parte da maior chance que um candidato precisa ter para passar do
 /// corte, quando o projeto não diz outra: 0,10. Nas 120 buscas medidas o
 /// certo em primeiro foi o mesmo com qualquer corte, e o certo entre os
@@ -245,9 +254,107 @@ pub fn judged(scores: &[Scored], none: f64, confidence: f64, share: f64) -> (Ver
     (verdict, kept)
 }
 
+/// Um finalista da segunda olhada, com o que o serviço respondeu dele.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Finalist {
+    /// O id do candidato no banco.
+    pub id: i64,
+    /// A chance dele na pergunta de escolha entre os finalistas.
+    pub chance: f64,
+    /// O sim à pergunta "este é o código que se procura?", só dele.
+    pub yes: f64,
+}
+
+/// Os finalistas da segunda olhada: até [`FINALISTS`] chances de `scores`,
+/// da maior para a menor; no empate fica a ordem de `scores` (a do banco).
+#[must_use]
+pub fn finalists_of(scores: &[Scored]) -> Vec<Scored> {
+    let mut ranked = scores.to_vec();
+    // `sort_by` é estável: no empate, a ordem do banco fica.
+    ranked.sort_by(|a, b| b.score.total_cmp(&a.score));
+    ranked.truncate(FINALISTS);
+    ranked
+}
+
+/// A decisão da segunda olhada. O finalista de maior sim precisa de
+/// [`YES_FROM`] ou mais; sem ele, é não achei e nada volta. Havendo, entrega
+/// o vencedor da escolha entre os finalistas, quando o sim dele também chega
+/// a [`YES_FROM`]; se o vencedor for "nenhum destes" (`none` maior que a
+/// chance de todos) ou o sim dele ficar abaixo, entrega o de maior sim. O
+/// que volta é um só, com o sim dele como nota, e o veredito é certo.
+#[must_use]
+pub fn second_look(finalists: &[Finalist], none: f64) -> (Verdict, Vec<Scored>) {
+    // `max_by` devolve o último dos iguais; no empate vale o primeiro.
+    let first_of = |key: fn(&Finalist) -> f64| {
+        finalists.iter().rev().max_by(|a, b| key(a).total_cmp(&key(b))).copied()
+    };
+    let Some(surest) = first_of(|f| f.yes).filter(|f| f.yes >= YES_FROM) else {
+        return (Verdict::NotFound, Vec::new());
+    };
+    let winner = first_of(|f| f.chance).filter(|f| f.chance >= none && f.yes >= YES_FROM);
+    let chosen = winner.unwrap_or(surest);
+    (Verdict::Sure, vec![Scored { id: chosen.id, score: chosen.yes }])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn finalist(id: i64, chance: f64, yes: f64) -> Finalist {
+        Finalist { id, chance, yes }
+    }
+
+    fn delivered(finalists: &[Finalist], none: f64) -> (Verdict, Vec<i64>) {
+        let (verdict, kept) = second_look(finalists, none);
+        (verdict, kept.iter().map(|s| s.id).collect())
+    }
+
+    #[test]
+    fn the_finalists_are_the_three_biggest_chances_and_the_bank_order_breaks_ties() {
+        let top = finalists_of(&scores(&[0.1, 0.4, 0.2, 0.4, 0.3]));
+        assert_eq!(ids(&top), vec![2, 4, 5]);
+        assert_eq!(ids(&finalists_of(&scores(&[0.6, 0.4]))), vec![1, 2], "fewer than three stay whole");
+        assert!(finalists_of(&[]).is_empty());
+    }
+
+    #[test]
+    fn the_winner_of_the_choice_is_delivered_when_its_yes_is_four_tenths_or_more() {
+        // O vencedor da escolha (id 1) tem sim 0,4 e o outro tem 0,95: fica o vencedor.
+        let both = [finalist(1, 0.6, 0.4), finalist(2, 0.3, 0.95), finalist(3, 0.05, 0.1)];
+        assert_eq!(delivered(&both, 0.05), (Verdict::Sure, vec![1]));
+        let (_, kept) = second_look(&both, 0.05);
+        assert!((kept[0].score - 0.4).abs() < f64::EPSILON, "the note is the yes of the delivered one");
+    }
+
+    #[test]
+    fn a_winner_below_four_tenths_gives_way_to_the_highest_yes() {
+        let below = [finalist(1, 0.6, 0.399_999), finalist(2, 0.3, 0.95), finalist(3, 0.05, 0.6)];
+        assert_eq!(delivered(&below, 0.05), (Verdict::Sure, vec![2]));
+    }
+
+    #[test]
+    fn every_yes_below_four_tenths_is_not_found_and_keeps_nothing() {
+        let all = [finalist(1, 0.6, 0.39), finalist(2, 0.3, 0.2), finalist(3, 0.05, 0.0)];
+        assert_eq!(second_look(&all, 0.05), (Verdict::NotFound, Vec::new()));
+        assert_eq!(second_look(&[], 0.5), (Verdict::NotFound, Vec::new()));
+    }
+
+    #[test]
+    fn none_winning_the_choice_leaves_the_highest_yes_to_deliver() {
+        // "Nenhum destes" tem mais chance que todos: o vencedor não é finalista.
+        let none_wins = [finalist(1, 0.2, 0.5), finalist(2, 0.1, 0.8)];
+        assert_eq!(delivered(&none_wins, 0.7), (Verdict::Sure, vec![2]));
+        // Empatada com a melhor chance, a escolha é do finalista.
+        assert_eq!(delivered(&[finalist(1, 0.4, 0.5), finalist(2, 0.2, 0.8)], 0.4), (Verdict::Sure, vec![1]));
+    }
+
+    #[test]
+    fn equal_chances_and_equal_yes_answers_keep_the_first_in_the_order_given() {
+        let tied = [finalist(1, 0.3, 0.7), finalist(2, 0.3, 0.7), finalist(3, 0.3, 0.7)];
+        assert_eq!(delivered(&tied, 0.1), (Verdict::Sure, vec![1]));
+        let by_yes = [finalist(1, 0.1, 0.9), finalist(2, 0.5, 0.2), finalist(3, 0.2, 0.9)];
+        assert_eq!(delivered(&by_yes, 0.1), (Verdict::Sure, vec![1]), "the winner has no yes, so the first of the highest");
+    }
 
     /// As chances na ordem do banco, com os ids 1, 2, 3…
     fn scores(notes: &[f64]) -> Vec<Scored> {

@@ -286,8 +286,11 @@ pub(crate) fn run_rules(rules: &[&dyn WriteRule], input: &HookInput, ctx: &Ctx) 
 /// `path`, ou uma cópia de trabalho dele —, a resposta do mapa
 /// ([`word_search`]): com o mapa cravado ou parcial, a busca que traz as
 /// linhas (`output_mode` `content`) é recusada com a resposta agrupada por
-/// função no lugar dela; a que só lista arquivos ou conta segue, com uma linha
-/// da marca; sem achado, a busca segue com uma linha do que o mapa não
+/// função no lugar dela (o parcial passa antes pelo filtro do mapa, que
+/// entrega só as peças certas, e sem chave ou com o filtro falhando vale a
+/// triagem, com o aviso uma vez por sessão); a que só lista arquivos ou conta
+/// segue, sem filtro e com uma linha da marca; sem achado, ou com o filtro
+/// dizendo que nada serve, a busca segue com uma linha do que o mapa não
 /// achou. A busca num arquivo só, fora do projeto,
 /// com um `glob` que deixa só arquivos fora do mapa — pelos filtros de entrada
 /// ou pelos de saída (`!*.rs`) — ou com a chave `search.answer` desligada
@@ -1466,7 +1469,7 @@ mod tests {
                 other => panic!("{tool_input}: the plain search runs with a line, got {other:?}"),
             }
         }
-        let with_missing_word = json!({ "pattern": "calcular_frete|imposto", "output_mode": "count" });
+        let with_missing_word = json!({ "pattern": "calcular_frete|desconto_frete|imposto", "output_mode": "count" });
         match hook_in(&root, "Grep", with_missing_word, Some("nomes")) {
             Verdict::Inject { context } => {
                 assert!(context.starts_with("Cravado.") && !context.contains("imposto"), "{context}");
@@ -1484,7 +1487,7 @@ mod tests {
     #[test]
     fn a_search_with_a_word_the_map_lacks_is_answered_as_pinned_without_asking_again() {
         let (_dir, root) = word_search::fixture::repo("{}");
-        let tool_input = json!({ "pattern": "calcular_frete|imposto", "output_mode": "content" });
+        let tool_input = json!({ "pattern": "calcular_frete|desconto_frete|imposto", "output_mode": "content" });
         let reason = refused(hook_in(&root, "Grep", tool_input, Some("parcial")), "the pinned search");
         assert!(reason.starts_with("Cravado."), "{reason}");
         assert!(!reason.contains("Falta") && !reason.contains("Busque de novo"), "{reason}");

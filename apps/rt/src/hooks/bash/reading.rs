@@ -16,9 +16,12 @@
 //! - **A busca por palavra em pastas.** O `grep` recursivo e o `rg`, numa
 //!   pasta de código do projeto, recebem a marca do mapa
 //!   ([`word_search`]): com o mapa cravado ou parcial, a busca que mostra
-//!   linhas é recusada com a resposta agrupada por função no lugar dela; a que
-//!   só lista nomes ou conta (`-l`, `-c`) segue, com uma linha da marca; sem
-//!   achado, a busca segue com uma linha do que o mapa não achou. A busca num arquivo só, fora do projeto, em
+//!   linhas é recusada com a resposta agrupada por função no lugar dela (o
+//!   parcial passa antes pelo filtro do mapa, que entrega só as peças certas,
+//!   e sem chave ou com o filtro falhando vale a triagem, com o aviso uma vez
+//!   por sessão); a que só lista nomes ou conta (`-l`, `-c`) segue, sem
+//!   filtro e com uma linha da marca; sem achado, ou com o filtro dizendo que
+//!   nada serve, a busca segue com uma linha do que o mapa não achou. A busca num arquivo só, fora do projeto, em
 //!   pasta sem código do mapa, com filtros de nome que deixam só documentos ou
 //!   que tiram todo o código do mapa (`-g '!*.rs'`, `--exclude=*.rs`), com
 //!   opção que esta leitura não entende (`-v`, `-x`) ou com a chave
@@ -412,7 +415,7 @@ mod tests {
                 other => panic!("{command}: the plain search runs with a line, got {other:?}"),
             }
         }
-        match run_in(&root, "grep -rlE 'calcular_frete|imposto' .", Some("nomes")) {
+        match run_in(&root, "grep -rlE 'calcular_frete|desconto_frete|imposto' .", Some("nomes")) {
             Verdict::Inject { context } => {
                 assert!(context.starts_with("Cravado.") && !context.contains("imposto"), "{context}");
             }
@@ -462,10 +465,10 @@ mod tests {
     fn a_search_with_a_word_the_map_lacks_is_answered_as_pinned() {
         let (_dir, root) = word_search::fixture::repo("{}");
         for (n, command) in [
-            r"grep -r 'calcular_frete\|imposto' .",
-            "grep -rE 'calcular_frete|imposto' .",
-            "rg 'calcular_frete|imposto'",
-            "rg -e calcular_frete -e imposto",
+            r"grep -r 'calcular_frete\|desconto_frete\|imposto' .",
+            "grep -rE 'calcular_frete|desconto_frete|imposto' .",
+            "rg 'calcular_frete|desconto_frete|imposto'",
+            "rg -e calcular_frete -e desconto_frete -e imposto",
         ]
         .into_iter()
         .enumerate()

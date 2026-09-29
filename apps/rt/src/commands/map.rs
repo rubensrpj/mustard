@@ -41,20 +41,16 @@
 //! se leem o mapa, a skill e o arquivo de onde sai o trecho, e se imprime o
 //! JSON.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use clap::ValueEnum;
-use mustard_core::domain::map_filter::{
-    FilterCandidate, FilterError, FilterRequest, Filtered, MapFilter, Verdict, CUT_SHARE,
-};
-use mustard_core::domain::map_select::{capped, select, Source, MAX_RETURNED};
+use mustard_core::domain::map_filter::{FilterError, MapFilter, Verdict};
 use mustard_core::domain::normalize::Languages;
 use mustard_core::domain::project_map::{self as project_map, DeclAt, FoundItem, MapRefusal, ProjectMap, UseSite};
 use mustard_core::domain::scan::{HistoryReport, ScanReport};
-use mustard_core::domain::search::{CANDIDATES, TOP};
-use mustard_core::domain::triage::Mark;
+use mustard_core::domain::search::TOP;
 use mustard_core::io::map_glossary::{self, Place};
 use mustard_core::io::map_triage::{self, Triaged};
 use mustard_core::io::map_search;
@@ -62,11 +58,12 @@ use mustard_core::io::map_specs;
 use mustard_core::io::project_map::{self as store, Need};
 use mustard_core::io::wave_prompt::recipe_for;
 use mustard_core::platform::i18n::Locale;
-use mustard_core::{FilterSetting, Setting};
-use serde_json::{json, Map, Value};
+use mustard_core::Setting;
+use serde_json::{json, Value};
 
 use super::map_triage as triage_view;
 use crate::shared::code_route;
+use crate::shared::search_door::{self as door, Numbers};
 
 /// A pergunta feita ao mapa.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -156,7 +153,7 @@ pub(crate) type Assemble<'a> = dyn Fn(&Path, &mustard_core::ProjectConfig) -> Re
 
 /// A montagem de verdade: o Jev, com a chave do ambiente ou do
 /// `mustard.json` do projeto.
-fn jev(root: &Path, config: &mustard_core::ProjectConfig) -> Result<Assembled, FilterError> {
+pub(crate) fn jev(root: &Path, config: &mustard_core::ProjectConfig) -> Result<Assembled, FilterError> {
     let loaded = crate::shared::jev::load_key(root, config)?;
     Ok(Assembled {
         name: "jev",
@@ -325,15 +322,6 @@ fn answer_from(
     }
 }
 
-/// Os números da busca com filtro, com o padrão no lugar do ausente e do
-/// inválido.
-struct SearchNumbers {
-    candidates: usize,
-    /// A parte da maior chance que passa do corte, em pontos percentuais.
-    cut_share: usize,
-    max_returned: usize,
-}
-
 /// A busca por assunto. O filtro se escolhe aqui, num ponto só: desligado
 /// (`none`) ou com nome desconhecido, nenhum; ausente ou `jev`, o que
 /// `assemble` monta, se há chave para o projeto; sem ela, nenhum, com o
@@ -373,10 +361,7 @@ fn search(
     let config = mustard_core::ProjectConfig::load(root);
     // Cravado, a resposta sai da triagem: o primeiro achado como peça inteira,
     // sem montar o filtro, sem chamá-lo, sem chave e sem gravar chamada.
-    if triaged.mark() == Mark::Pinned
-        && let Some(piece) =
-            triage_view::pinned_piece(root, (&query, intent), languages, config.search_candidates().or(CANDIDATES), &triaged)?
-    {
+    if let Some(piece) = door::pinned(root, (&query, intent), languages, &config, &triaged)? {
         return Ok(triage_view::pinned_report(&query, &triaged, &piece, lang));
     }
     let mut warnings: Vec<String> = Vec::new();
@@ -386,52 +371,17 @@ fn search(
     } else {
         specs
     };
-    let mut number = |key: &str, setting: Setting, default: usize| {
-        if setting == Setting::Invalid && first_warning(root, session, &format!("search.{key}")) {
-            warnings.push(
-                mustard_core::translate("map.search.bad_number", lang)
-                    .replace("{key}", key)
-                    .replace("{default}", &default.to_string()),
-            );
-        }
-        setting.or(default)
-    };
-    let numbers = SearchNumbers {
-        candidates: number("candidates", config.search_candidates(), CANDIDATES),
-        cut_share: number("cut_share", config.search_cut_share(), (CUT_SHARE * 100.0).round() as usize),
-        max_returned: number("max_returned", config.search_max_returned(), MAX_RETURNED),
-    };
-    let assembled = match config.search_filter() {
-        FilterSetting::Off => None,
-        FilterSetting::Invalid => {
-            if first_warning(root, session, "search.filter") {
-                warnings.push(mustard_core::translate("map.search.bad_filter", lang).to_string());
-            }
-            None
-        }
-        FilterSetting::Absent | FilterSetting::Jev => match assemble(root, &config) {
-            Ok(assembled) => Some(assembled),
-            Err(error) => {
-                key_warning(root, session, &error, lang, &mut warnings);
-                None
-            }
-        },
-    };
+    let numbers = Numbers::read(root, session, lang, &config, &mut warnings);
+    let assembled = door::chosen_filter(root, session, lang, &config, assemble, &mut warnings);
     let (mut report, measured) = match assembled {
         None => (triage_view::bank_report(&query, &triaged, lang), None),
         Some(assembled) => {
-            if let Some(error) = &assembled.warning {
-                key_warning(root, session, error, lang, &mut warnings);
+            let ask = door::Ask { root, query: &query, intent, lang, languages, numbers: &numbers, triaged: &triaged };
+            let classified = door::classify(&ask, &assembled)?;
+            if let door::Outcome::Failed(error) = &classified.outcome {
+                door::failure_warning(root, session, lang, error, &mut warnings);
             }
-            let asked = Asked { root, query: &query, intent, lang, languages, numbers: &numbers, triaged: &triaged };
-            let searched = filtered_search(&asked, &assembled)?;
-            if let Some(error) = searched.failure
-                && first_warning(root, session, "search.filter_failed")
-            {
-                let reason = mustard_core::translate(&format!("map.search.reason.{}", error.reason()), lang);
-                warnings.push(mustard_core::translate("map.search.filter_failed", lang).replace("{reason}", reason));
-            }
-            (searched.report, Some(searched.measured))
+            (filtered_report(&query, &triaged, lang, assembled.name, &classified.outcome), Some(classified.measured))
         }
     };
     add_specs(&mut report, &specs);
@@ -450,6 +400,30 @@ fn search(
         );
     }
     Ok(report)
+}
+
+/// A resposta da busca depois do filtro: as peças que passaram, com o grau, a
+/// marca e a linha de usar as ferramentas de sempre; a linha de não achei
+/// quando o filtro escolheu "nenhum destes"; e, sem candidato para
+/// classificar ou com o filtro falhando, a resposta do banco.
+fn filtered_report(query: &str, triaged: &Triaged, lang: Locale, filter: &str, outcome: &door::Outcome) -> Value {
+    match outcome {
+        door::Outcome::NoCandidates | door::Outcome::Failed(_) => triage_view::bank_report(query, triaged, lang),
+        door::Outcome::Classified { verdict, pieces } => {
+            let pieces: Vec<Value> = pieces.iter().map(door::Piece::to_value).collect();
+            let mut report =
+                json!({ "ok": true, "question": "search", "query": query, "filter": filter, "pieces": pieces });
+            if *verdict == Verdict::NotFound {
+                // O filtro escolheu "nenhum destes": nada da lista é o que se
+                // procura, e a resposta manda usar as ferramentas de sempre.
+                report["not_found"] = json!(mustard_core::translate("map.search.filter_none", lang));
+            } else {
+                triage_view::add_to(&mut report, triaged);
+                report["use_tools"] = json!(mustard_core::translate("map.search.use_tools", lang));
+            }
+            report
+        }
+    }
 }
 
 /// Os itens das specs que casam com a pergunta na resposta `report`, cada um
@@ -472,150 +446,6 @@ fn add_specs(report: &mut Value, specs: &[FoundItem]) {
     if !items.is_empty() {
         report["specs"] = json!(items);
     }
-}
-
-/// O aviso da chave do filtro, uma vez por sessão para cada motivo: a chave
-/// que falta, ou a do `mustard.json` que o git guarda. Nenhum dos dois leva
-/// a chave.
-fn key_warning(root: &Path, session: Option<&str>, error: &FilterError, lang: Locale, warnings: &mut Vec<String>) {
-    let key = match error {
-        FilterError::KeyInGit => "map.search.key_in_git",
-        _ => "map.search.missing_key",
-    };
-    if first_warning(root, session, &format!("search.{}", error.reason())) {
-        warnings.push(mustard_core::translate(key, lang).to_string());
-    }
-}
-
-/// O que a busca com filtro leva: o projeto, as palavras, a frase, o idioma
-/// do texto, as línguas das palavras e os números.
-struct Asked<'a> {
-    root: &'a Path,
-    query: &'a str,
-    intent: &'a str,
-    lang: Locale,
-    languages: &'a Languages,
-    numbers: &'a SearchNumbers,
-    /// A triagem da pergunta: o grau, os arquivos do banco e a busca funda.
-    triaged: &'a Triaged,
-}
-
-/// A frase que o filtro lê: a de `--intent`; sem ela, as palavras da
-/// `--query`, e a palavra só vira o pedido de um pedaço de nome, no idioma do
-/// texto do projeto.
-fn phrase_of(words: &[String], query: &str, intent: &str, lang: Locale) -> String {
-    match (intent.is_empty(), words) {
-        (false, _) => intent.to_string(),
-        (true, [word]) => mustard_core::translate("map.search.name_piece", lang).replace("{word}", word),
-        (true, _) => query.to_string(),
-    }
-}
-
-/// O que a busca com o filtro devolve: a resposta, os campos da medida da
-/// chamada e, na falha do filtro, o erro dele.
-struct Searched {
-    report: Value,
-    measured: Map<String, Value>,
-    failure: Option<FilterError>,
-}
-
-/// A busca com o filtro montado; na falha dele, a resposta é a da busca do
-/// banco.
-fn filtered_search(asked: &Asked<'_>, assembled: &Assembled) -> Result<Searched, MapRefusal> {
-    let found = map_search::candidates(asked.root, asked.query, asked.intent, asked.languages, asked.numbers.candidates)?;
-    let words: Vec<String> = asked.query.split_whitespace().map(str::to_string).collect();
-    let phrase = phrase_of(&words, asked.query, asked.intent, asked.lang);
-    let share = (asked.numbers.cut_share as f64 / 100.0).min(1.0);
-    let request = FilterRequest { words, phrase, share, candidates: found.candidates };
-    let calling = Instant::now();
-    let mut measured = Map::new();
-    measured.insert("candidates".to_string(), json!(request.candidates.len()));
-    if request.candidates.is_empty() {
-        // Sem declaração para classificar, o filtro não tem o que escolher:
-        // a resposta é a dos arquivos que a triagem achou.
-        let report = triage_view::bank_report(asked.query, asked.triaged, asked.lang);
-        measured.insert("filter".to_string(), json!(assembled.name));
-        measured.insert("returned".to_string(), json!(report["files"].as_array().map_or(0, Vec::len)));
-        return Ok(Searched { report, measured, failure: None });
-    }
-    match assembled.filter.filter(&request) {
-        Ok(filtered) => {
-            let pieces = pieces(asked.root, &request.candidates, &found.whole, &filtered, asked.numbers.max_returned)?;
-            measured.insert("filter".to_string(), json!(assembled.name));
-            measured.insert("filter_ms".to_string(), json!(filtered.usage.millis));
-            measured.insert("tokens".to_string(), json!(filtered.usage.input_tokens));
-            measured.insert("cost_micro_usd".to_string(), json!(filtered.usage.cost_micro_usd));
-            measured.insert("returned".to_string(), json!(pieces.len()));
-            if !filtered.usage.model.is_empty() {
-                measured.insert("model".to_string(), json!(filtered.usage.model));
-            }
-            let mut report = json!({
-                "ok": true, "question": "search", "query": asked.query, "filter": assembled.name, "pieces": pieces
-            });
-            if filtered.verdict == Verdict::NotFound {
-                // O filtro escolheu "nenhum destes": nada da lista é o que se
-                // procura, e a resposta manda usar as ferramentas de sempre.
-                report["not_found"] = json!(mustard_core::translate("map.search.filter_none", asked.lang));
-            } else {
-                triage_view::add_to(&mut report, asked.triaged);
-                report["use_tools"] = json!(mustard_core::translate("map.search.use_tools", asked.lang));
-            }
-            Ok(Searched { report, measured, failure: None })
-        }
-        Err(error) => {
-            let report = triage_view::bank_report(asked.query, asked.triaged, asked.lang);
-            measured.insert("filter".to_string(), json!(format!("{}:{}", assembled.name, error.reason())));
-            measured.insert("filter_ms".to_string(), json!(u64::try_from(calling.elapsed().as_millis()).unwrap_or(u64::MAX)));
-            measured.insert("returned".to_string(), json!(report["files"].as_array().map_or(0, Vec::len)));
-            Ok(Searched { report, measured, failure: Some(error) })
-        }
-    }
-}
-
-/// As peças da resposta com filtro, na ordem da combinação e até o teto
-/// `max`: o que passou do corte, na ordem da chance, e o que cada item dele
-/// puxou. Nada do banco entra de fora do corte. Cada peça traz o caminho, a
-/// linha, o fim, o tipo, o nome, a assinatura e a primeira frase da
-/// documentação; só as do corte trazem a chance. Nunca o corpo.
-fn pieces(
-    root: &Path,
-    candidates: &[FilterCandidate],
-    whole: &[i64],
-    filtered: &Filtered,
-    max: usize,
-) -> Result<Vec<Value>, MapRefusal> {
-    let cut: Vec<i64> = filtered.kept.iter().map(|scored| scored.id).collect();
-    let scores: HashMap<i64, f64> = filtered.kept.iter().map(|scored| (scored.id, scored.score)).collect();
-    let bank: Vec<i64> = candidates.iter().map(|candidate| candidate.id).collect();
-    let picks = capped(&select(&cut, &bank, whole, &map_search::links(root, &cut)?), max);
-    let outside: Vec<i64> = picks.iter().map(|pick| pick.id).filter(|id| !bank.contains(id)).collect();
-    let pulled = map_search::declarations(root, &outside)?;
-    let known: HashMap<i64, &FilterCandidate> =
-        candidates.iter().chain(&pulled).map(|candidate| (candidate.id, candidate)).collect();
-    Ok(picks
-        .iter()
-        .filter_map(|pick| {
-            let decl = known.get(&pick.id)?;
-            let mut piece = json!({
-                "path": decl.path, "line": decl.line, "end_line": decl.end_line, "kind": decl.kind, "name": decl.name
-            });
-            if !decl.signature.is_empty() {
-                piece["signature"] = json!(decl.signature);
-            }
-            // O começo da documentação: a primeira frase, como a de um item
-            // de spec.
-            let doc = project_map::spec_sentence(&decl.documentation);
-            if !doc.is_empty() {
-                piece["doc"] = json!(doc);
-            }
-            if pick.source == Source::Cut
-                && let Some(score) = scores.get(&pick.id)
-            {
-                piece["score"] = json!((score * 100.0).round() / 100.0);
-            }
-            Some(piece)
-        })
-        .collect())
 }
 
 /// As partes do arquivo de `--file`, para quem vai ler só um trecho dele: cada
@@ -1179,6 +1009,8 @@ pub fn run(opts: &MapOpts) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mustard_core::domain::map_filter::{FilterRequest, Filtered};
+    use mustard_core::domain::search::CANDIDATES;
     use mustard_core::domain::project_map::{
         DeclChange, DeclComment, DeclLineage, FileLineage, LineageCommit, PullComment, PullText,
     };
@@ -2850,7 +2682,7 @@ mod tests {
     const PINNED_MAP: &str = r#"{"modules": [
       {"path": "src/cancelar_pedido.rs", "loc": 40, "declarations": [
         {"kind": "function", "name": "cancelar_pedido", "line": 3, "end_line": 12,
-         "signature": "pub fn cancelar_pedido(pedido: &Pedido)",
+         "signature": "pub fn cancelar_pedido(pedido: &Pedido, motivo: &str, usuario: &str)",
          "doc": "Cancelar o pedido: cancela o pedido pelo id. Cancelar pedido é definitivo.",
          "body_comment": "trava a linha do pedido"}]},
       {"path": "src/cliente.rs", "loc": 20, "declarations": [
@@ -3513,10 +3345,13 @@ mod tests {
     fn a_pinned_search_does_not_need_every_word_of_the_phrase() {
         let dir = search_project(PINNED_MAP, &json!({}));
         let project = crate::commands::spec_events::project(dir.path());
-        let triaged = map_triage::triage(&project.root, ("cancelar pedido trava", ""), &project.languages, TOP).unwrap();
+        let phrase = "cancelar pedido motivo usuario trava";
+        let triaged = map_triage::triage(&project.root, (phrase, ""), &project.languages, TOP).unwrap();
         assert_eq!(triaged.missing, ["trava"], "the phrase has a word the first finding lacks in a strong field");
+        let chance = mustard_core::domain::triage::chance(&triaged.signals);
+        assert!(chance >= mustard_core::domain::triage::PINNED_FROM + 0.005, "the fixture sits clear of the pinned cut, not on it: {chance}");
         let fake = FakeFilter::scoring(&[0.9]);
-        let opts = search_opts(dir.path(), "cancelar pedido trava", None, None);
+        let opts = search_opts(dir.path(), phrase, None, None);
         let report = searched(&opts, &fake.assemble());
         assert_eq!(report["mark"], json!("pinned"), "{report}");
         assert_eq!(report["pieces"][0]["name"], json!("cancelar_pedido"), "{report}");
