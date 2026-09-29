@@ -314,6 +314,75 @@ fn a_member_read_or_a_call_after_optional_access_is_a_use_like_after_the_plain_o
     assert_eq!(suspect_uses(&dart, "lib/pedido.dart", "calcular"), ["lib/caixa.dart:5:somar"]);
 }
 
+/// O acesso com a marca de valor não nulo (`pedido!.Total`) lê o membro do
+/// mesmo objeto que o acesso comum: a propriedade lida e o método chamado
+/// depois dele ganham o mesmo uso, suspeito, que ganham depois de `pedido.`, no
+/// C#, no TypeScript e no Dart. O que vem antes da marca só é o objeto quando
+/// é um nome: a chamada (`criar()!.Troco`) segue sendo um valor e não liga. Aqui
+/// o C#, com a marca também afastada do ponto por espaço (`pedido ! .Calcular()`).
+#[test]
+fn a_member_read_or_a_call_after_null_forgiving_access_is_a_use_like_after_the_plain_one_in_csharp() {
+    let csharp = scanned(
+        "afirmado-csharp",
+        &[
+            (
+                "Loja/Pedido.cs",
+                "namespace Loja;\n\npublic class Pedido\n{\n    public int Total { get; set; }\n    public int Troco { get; set; }\n    \
+                 public int Calcular() => 1;\n}\n",
+            ),
+            (
+                "Loja/Caixa.cs",
+                "namespace Loja;\n\npublic class Caixa\n{\n    public Pedido Criar() => new Pedido();\n\n    \
+                 public int Fechar(Pedido? pedido)\n    {\n        return pedido!.Total + pedido ! .Calcular() + Criar()!.Troco;\n    }\n}\n",
+            ),
+        ],
+    );
+    assert_eq!(suspect_uses(&csharp, "Loja/Pedido.cs", "Total"), ["Loja/Caixa.cs:9:Fechar"]);
+    assert_eq!(suspect_uses(&csharp, "Loja/Pedido.cs", "Calcular"), ["Loja/Caixa.cs:9:Fechar"]);
+    assert_eq!(every_use(&csharp, "Loja/Pedido.cs", "Troco"), Vec::<String>::new(), "a property read from a call");
+}
+
+/// O mesmo no TypeScript: `pedido!.total` e `pedido!.calcular()` leem o membro
+/// do objeto, e `criar()!.troco`, que vem de uma chamada, não liga.
+#[test]
+fn a_member_read_or_a_call_after_null_forgiving_access_is_a_use_like_after_the_plain_one_in_typescript() {
+    let typescript = scanned(
+        "afirmado-typescript",
+        &[
+            ("src/pedido.ts", "export class Pedido {\n  total = 0;\n  troco = 0;\n\n  calcular() {\n    return 1;\n  }\n}\n"),
+            (
+                "src/caixa.ts",
+                "import { Pedido } from './pedido';\n\nexport function criar(): Pedido | undefined {\n  return undefined;\n}\n\n\
+                 export function fechar(pedido?: Pedido) {\n  return pedido!.total + pedido!.calcular() + criar()!.troco;\n}\n",
+            ),
+        ],
+    );
+    assert_eq!(suspect_uses(&typescript, "src/pedido.ts", "total"), ["src/caixa.ts:8:fechar"]);
+    assert_eq!(suspect_uses(&typescript, "src/pedido.ts", "calcular"), ["src/caixa.ts:8:fechar"]);
+    assert_eq!(every_use(&typescript, "src/pedido.ts", "troco"), Vec::<String>::new(), "a property read from a call");
+}
+
+/// O mesmo no Dart: `pedido!.total` e `pedido!.calcular()` leem o membro do
+/// objeto, e `criar()!.troco`, que vem de uma chamada, não liga.
+#[test]
+fn a_member_read_or_a_call_after_null_forgiving_access_is_a_use_like_after_the_plain_one_in_dart() {
+    let dart = scanned(
+        "afirmado-dart",
+        &[
+            ("pubspec.yaml", "name: loja\n"),
+            ("lib/pedido.dart", "class Pedido {\n  int total = 0;\n  int troco = 0;\n\n  int calcular() => 1;\n}\n"),
+            (
+                "lib/caixa.dart",
+                "import 'pedido.dart';\n\nPedido? criar() => null;\n\nint fechar(Pedido? pedido) => pedido!.total;\n\n\
+                 int somar(Pedido? pedido) => pedido!.calcular() + criar()!.troco;\n",
+            ),
+        ],
+    );
+    assert_eq!(suspect_uses(&dart, "lib/pedido.dart", "total"), ["lib/caixa.dart:5:fechar"]);
+    assert_eq!(suspect_uses(&dart, "lib/pedido.dart", "calcular"), ["lib/caixa.dart:7:somar"]);
+    assert_eq!(every_use(&dart, "lib/pedido.dart", "troco"), Vec::<String>::new(), "a property read from a call");
+}
+
 /// O nome de uma letra antes do separador é um nome como o de duas: o
 /// receptor do método no Go (`func (p *Pedido)`) e o parâmetro da função
 /// anônima no C# (`p => p.Total`) leem o campo e a propriedade, que ganham

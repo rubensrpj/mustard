@@ -54,17 +54,23 @@ pub(crate) fn project_path(root: &str, base: &str, given: &str) -> Option<Projec
         return Some(ProjectPath { tree: PathBuf::from(root), rel: rel.trim_start_matches("./").to_string(), abs });
     }
     let start = if abs.is_dir() { abs.as_path() } else { abs.parent()? };
+    let top = linked_copy(start, Path::new(root))?;
+    let rel = relative_to_cwd(&top.to_string_lossy(), &abs_text)?;
+    Some(ProjectPath { tree: top, rel: rel.trim_start_matches("./").to_string(), abs })
+}
+
+/// A raiz da cópia de trabalho em que `start` mora, quando ela é uma cópia
+/// ligada ao repositório do projeto `root`, como a de uma onda. `None` no
+/// próprio projeto e em qualquer outra pasta. Lê só os arquivos que o git
+/// deixa, sem rodar o git.
+pub(crate) fn linked_copy(start: &Path, root: &Path) -> Option<PathBuf> {
+    let start = std::path::absolute(start).ok()?;
     let top = start.ancestors().find(|folder| is_git_repo_root(folder))?;
     let main = linked_worktree_main(top)?;
-    let same = |a: &Path, b: &Path| match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
-        (Ok(a), Ok(b)) => a == b,
-        _ => false,
-    };
-    if !same(&main, Path::new(root)) {
-        return None;
+    match (std::fs::canonicalize(&main), std::fs::canonicalize(root)) {
+        (Ok(main), Ok(root)) if main == root => Some(top.to_path_buf()),
+        _ => None,
     }
-    let rel = relative_to_cwd(&top.to_string_lossy(), &abs_text)?;
-    Some(ProjectPath { tree: top.to_path_buf(), rel: rel.trim_start_matches("./").to_string(), abs })
 }
 
 /// A recusa da leitura inteira do arquivo `file`, de texto `text`, que
@@ -387,7 +393,65 @@ pub(crate) mod fixture {
 
 #[cfg(test)]
 mod tests {
-    use super::CopyLines;
+    use std::path::Path;
+
+    use super::{CopyLines, linked_copy, project_path};
+
+    /// Um repositório com um commit em `dir`.
+    fn repo_in(dir: &Path) {
+        std::fs::create_dir_all(dir.join("src")).expect("src");
+        std::fs::write(dir.join("src/a.rs"), "fn a() {}\n").expect("file");
+        for args in [&["init", "-q"][..], &["add", "-A"], &["commit", "-q", "-m", "semente"]] {
+            let out = std::process::Command::new("git")
+                .args(["-c", "user.email=t@example.com", "-c", "user.name=t", "-c", "commit.gpgsign=false"])
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .expect("git");
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        }
+    }
+
+    /// Liga a `copy` como cópia de trabalho do repositório em `root`.
+    fn link_copy(root: &Path, copy: &Path) {
+        let out = std::process::Command::new("git")
+            .args(["worktree", "add", "-q", "-b", "onda"])
+            .arg(copy)
+            .current_dir(root)
+            .output()
+            .expect("git");
+        assert!(out.status.success(), "git worktree: {}", String::from_utf8_lossy(&out.stderr));
+    }
+
+    /// De dentro da cópia de trabalho ligada ao projeto, a raiz da cópia sai
+    /// de qualquer pasta dela, e o caminho de um arquivo dela é do projeto,
+    /// com a árvore da cópia. O próprio projeto, a cópia de outro repositório
+    /// e uma pasta fora do git não são cópia do projeto.
+    #[test]
+    fn only_a_copy_linked_to_the_project_repository_is_its_working_copy() {
+        let project = tempfile::tempdir().expect("project");
+        let other = tempfile::tempdir().expect("other");
+        let copies = tempfile::tempdir().expect("copies");
+        repo_in(project.path());
+        repo_in(other.path());
+        let copy = copies.path().join("c");
+        let foreign = copies.path().join("f");
+        link_copy(project.path(), &copy);
+        link_copy(other.path(), &foreign);
+
+        assert_eq!(linked_copy(&copy.join("src"), project.path()), Some(copy.clone()));
+        assert_eq!(linked_copy(&copy, project.path()), Some(copy.clone()));
+        assert_eq!(linked_copy(project.path(), project.path()), None);
+        assert_eq!(linked_copy(&foreign, project.path()), None);
+        assert_eq!(linked_copy(copies.path(), project.path()), None);
+
+        let root = project.path().to_string_lossy().to_string();
+        let file = copy.join("src/a.rs").to_string_lossy().to_string();
+        let found = project_path(&root, &root, &file).expect("a file of the copy");
+        assert_eq!((found.tree, found.rel.as_str()), (copy, "src/a.rs"));
+        let foreign_file = foreign.join("src/a.rs").to_string_lossy().to_string();
+        assert_eq!(project_path(&root, &root, &foreign_file), None);
+    }
 
     /// A declaração cuja primeira linha a cópia trocou vai da linha seguinte
     /// à última igual antes dela até a igual em que ela termina, e o tipo

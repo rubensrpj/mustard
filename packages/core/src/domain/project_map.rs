@@ -1099,8 +1099,10 @@ pub enum MapRefusal {
     FileUnreadable { file: String, detail: String },
     /// Numa cópia de trabalho, a declaração mudou depois do mapa, que tem a
     /// do projeto a partir da linha `line`: o trecho dela na cópia não se
-    /// acha pelas linhas do mapa.
-    ChangedInCopy { file: String, name: String, line: u64 },
+    /// acha pelas linhas do mapa. `copy` traz o começo e o fim da faixa que
+    /// ela ocupa na cópia, quando o casamento das linhas a acha, para quem
+    /// lê o arquivo por linhas; sem ela, a recusa só diz a linha do mapa.
+    ChangedInCopy { file: String, name: String, line: u64, copy: Option<(u64, u64)> },
     /// A história das declarações do arquivo não pôde ser lida do git.
     HistoryUnreadable { file: String, detail: String },
 }
@@ -1157,9 +1159,18 @@ impl MapRefusal {
             Self::FileUnreadable { file, detail } => {
                 fill("map.file_unreadable", &[("{file}", file.clone()), ("{detail}", detail.clone())])
             }
-            Self::ChangedInCopy { file, name, line } => fill(
+            Self::ChangedInCopy { file, name, line, copy: None } => fill(
                 "map.changed_in_copy",
                 &[("{file}", file.clone()), ("{name}", name.clone()), ("{line}", line.to_string())],
+            ),
+            Self::ChangedInCopy { file, name, copy: Some((first, last)), .. } => fill(
+                "map.changed_in_copy_range",
+                &[
+                    ("{file}", file.clone()),
+                    ("{name}", name.clone()),
+                    ("{first}", first.to_string()),
+                    ("{last}", last.to_string()),
+                ],
             ),
             Self::HistoryUnreadable { file, detail } => {
                 fill("map.history_unreadable", &[("{file}", file.clone()), ("{detail}", detail.clone())])

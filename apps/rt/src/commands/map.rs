@@ -52,7 +52,6 @@ use mustard_core::domain::search::{CANDIDATES, TOP};
 use mustard_core::io::map_glossary::{self, Place};
 use mustard_core::io::{map_search, map_specs};
 use mustard_core::io::project_map::{self as store, Need};
-use mustard_core::io::workspace::{is_git_repo_root, linked_worktree_main};
 use mustard_core::io::wave_prompt::recipe_for;
 use mustard_core::platform::i18n::Locale;
 use mustard_core::{FilterSetting, Setting};
@@ -588,7 +587,7 @@ fn pieces(
 /// do arquivo da cópia ([`code_route::parts_in_copy`]), como as do trecho.
 fn parts(opts: &MapOpts, root: &Path, file: &str, read: &Reader<'_>) -> Result<Value, MapRefusal> {
     let mut found = project_map::parts(&read(Need::Parts(file))?, file)?;
-    if let Some(copy) = working_copy(&opts.root, root) {
+    if let Some(copy) = code_route::linked_copy(&opts.root, root) {
         let text = std::fs::read_to_string(copy.join(&found.file))
             .map_err(|e| MapRefusal::FileUnreadable { file: found.file.clone(), detail: e.to_string() })?;
         if let Ok(project) = std::fs::read_to_string(root.join(&found.file)) {
@@ -618,7 +617,7 @@ fn slice(opts: &MapOpts, root: &Path, read: &Reader<'_>) -> Result<Value, MapRef
     let (line, end_line) = (place.line, place.end_line);
     let unreadable = |e: std::io::Error| MapRefusal::FileUnreadable { file: place.file.clone(), detail: e.to_string() };
     let project_text = std::fs::read_to_string(root.join(&place.file));
-    let (text, line, end_line) = match working_copy(&opts.root, root) {
+    let (text, line, end_line) = match code_route::linked_copy(&opts.root, root) {
         None => (project_text.map_err(unreadable)?, line, end_line),
         Some(copy) => {
             let text = std::fs::read_to_string(copy.join(&place.file)).map_err(unreadable)?;
@@ -640,21 +639,6 @@ fn slice(opts: &MapOpts, root: &Path, read: &Reader<'_>) -> Result<Value, MapRef
     }))
 }
 
-/// A raiz da cópia de trabalho de onde a pergunta vem (`start`), quando ela
-/// é uma cópia ligada ao repositório do projeto `root`, como a de uma onda.
-/// `None` no próprio projeto e em qualquer outra pasta. Lê só os arquivos
-/// que o git deixa, sem rodar o git.
-fn working_copy(start: &Path, root: &Path) -> Option<PathBuf> {
-    let start = std::path::absolute(start).ok()?;
-    let top = start.ancestors().find(|folder| is_git_repo_root(folder))?;
-    let main = linked_worktree_main(top)?;
-    let same = match (std::fs::canonicalize(&main), std::fs::canonicalize(root)) {
-        (Ok(main), Ok(root)) => main == root,
-        _ => false,
-    };
-    same.then(|| top.to_path_buf())
-}
-
 /// As linhas da declaração `place` no texto `copy` do arquivo numa cópia de
 /// trabalho, dado o texto `project` do mesmo arquivo no projeto, de onde o
 /// mapa tirou as linhas. Com os dois iguais, as linhas do mapa valem. Com o
@@ -662,18 +646,28 @@ fn working_copy(start: &Path, root: &Path) -> Option<PathBuf> {
 /// mesma regra das partes do arquivo ([`code_route::CopyLines`]). Quando o
 /// que está ali na cópia não é a declaração do projeto, linha a linha, ela
 /// mudou na cópia, e a recusa [`MapRefusal::ChangedInCopy`] manda ler o
-/// arquivo da cópia por faixa de linhas.
+/// arquivo da cópia por faixa de linhas, com a faixa que o casamento das
+/// linhas deu à declaração na cópia, quando ele a deu.
 fn slice_in_copy(place: &project_map::DeclPlace, copy: &str, project: Option<&str>) -> Result<(u64, u64), MapRefusal> {
     if project == Some(copy) {
         return Ok((place.line, place.end_line));
     }
     let (line, end_line) = (place.line.max(1), place.end_line.max(place.line.max(1)));
-    let changed = || MapRefusal::ChangedInCopy { file: place.file.clone(), name: place.name.clone(), line };
-    let project = project.ok_or_else(changed)?;
+    let changed = |range: Option<(u64, u64)>| MapRefusal::ChangedInCopy {
+        file: place.file.clone(),
+        name: place.name.clone(),
+        line,
+        copy: range,
+    };
+    let project = project.ok_or_else(|| changed(None))?;
     let block = project_map::lines_of(project, line, end_line);
-    let (first, last) = code_route::CopyLines::between(project, copy).range(line, end_line).ok_or_else(changed)?;
-    if block.is_empty() || project_map::lines_of(copy, first, last) != block {
-        return Err(changed());
+    let (first, last) =
+        code_route::CopyLines::between(project, copy).range(line, end_line).ok_or_else(|| changed(None))?;
+    if block.is_empty() {
+        return Err(changed(None));
+    }
+    if project_map::lines_of(copy, first, last) != block {
+        return Err(changed(Some((first, last))));
     }
     Ok((first, last))
 }
@@ -3554,6 +3548,61 @@ mod tests {
         let in_the_project = slice_from(root, "gravar_pedido");
         assert_eq!((&in_the_project["line"], &in_the_project["end_line"]), (&json!(3), &json!(5)), "{in_the_project}");
         assert_eq!(in_the_project["slice"], json!(declaration), "{in_the_project}");
+    }
+
+    /// A declaração que a cópia mudou recusa o trecho dizendo a faixa que ela
+    /// ocupa na cópia, e não só a linha do mapa: com uma linha nova no topo e
+    /// `?` no corpo de `gravar_pedido`, ela está entre as linhas 4 e 6 da
+    /// cópia, e a recusa não cita a linha 3 do projeto. Com a declaração
+    /// apagada da cópia não há faixa, e a recusa segue dizendo a linha do
+    /// mapa, a 3.
+    #[test]
+    fn the_slice_refusal_in_a_working_copy_names_the_copy_range() {
+        let (dir, map) = scanned_repo_with(ORDER_MAP, &[("src/pedido.rs", ORDER_FILE)]);
+        let root = dir.path();
+        let copies = tempdir().unwrap();
+        let copy = copies.path().join("c");
+        let out = std::process::Command::new("git")
+            .args(["worktree", "add", "-q", "-b", "onda"])
+            .arg(&copy)
+            .current_dir(root)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git worktree: {}", String::from_utf8_lossy(&out.stderr));
+        let rescan = |root: &Path, _: &Path| {
+            written_by_the_scan(root, &map);
+            Ok(ScanReport::default())
+        };
+        let refusal_from = |start: &Path| {
+            let opts = MapOpts {
+                file: Some("src/pedido.rs".to_string()),
+                name: Some("gravar_pedido".to_string()),
+                ..ask(start, Question::Slice)
+            };
+            let report = super::map_at(&opts, &rescan, &no_history, &|_, _| Err(FilterError::MissingKey));
+            assert_eq!(report["reason"], json!("changed-in-copy"), "{report}");
+            report["hint"].as_str().unwrap().to_string()
+        };
+        let said = |key: &str, slots: &[(&str, &str)]| {
+            slots.iter().fold(mustard_core::translate(key, Locale::PtBr).to_string(), |text, (slot, value)| {
+                text.replace(slot, value)
+            })
+        };
+        let slots = |extra: &[(&'static str, &'static str)]| {
+            [&[("{name}", "gravar_pedido"), ("{file}", "src/pedido.rs")][..], extra].concat()
+        };
+        let file = copy.join("src/pedido.rs");
+
+        let changed = ORDER_FILE.replace("banco::gravar(pedido);", "banco::gravar(pedido)?;");
+        std::fs::write(&file, format!("use banco;\n{changed}")).unwrap();
+        let ranged = refusal_from(&copy);
+        assert_eq!(ranged, said("map.changed_in_copy_range", &slots(&[("{first}", "4"), ("{last}", "6")])));
+        assert!(!ranged.contains("linha 3"), "the project line is not the one to read: {ranged}");
+
+        let without = ORDER_FILE.replace("pub fn gravar_pedido(pedido: &Pedido) {\n    banco::gravar(pedido);\n}\n", "");
+        std::fs::write(&file, without).unwrap();
+        let erased = refusal_from(&copy);
+        assert_eq!(erased, said("map.changed_in_copy", &slots(&[("{line}", "3")])));
     }
 
     /// As partes do arquivo perguntadas de dentro de uma cópia de trabalho

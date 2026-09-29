@@ -2012,8 +2012,9 @@ fn code_before<'b>(bytes: &'b [u8], comments: &Spans, at: usize) -> &'b [u8] {
 /// separador não é um nome (`f().total`, `a[0].total`, `...total`), ou é um
 /// valor, a marca [`RECEIVER`]. Vazio quando o nó está sozinho. O comentário
 /// escrito no meio não conta ([`code_before`]), nem a marca de acesso
-/// opcional ([`before_separator`]). O nome de uma letra é nome como o de
-/// duas: o `p` do receptor em `p.total`, o `u` de `import * as u`.
+/// opcional ou de valor não nulo ([`before_separator`]). O nome de uma letra é
+/// nome como o de duas: o `p` do receptor em `p.total`, o `u` de
+/// `import * as u`.
 fn qualifier_before(node: Node, bytes: &[u8], comments: &Spans, lang: &str) -> String {
     let before = code_before(bytes, comments, node.start_byte());
     let strip = |separators: &[&str]| separators.iter().find_map(|sep| before.strip_suffix(sep.as_bytes()));
@@ -2034,19 +2035,18 @@ fn qualifier_before(node: Node, bytes: &[u8], comments: &Spans, lang: &str) -> S
 }
 
 /// O código escrito antes do separador que começa no byte `at`, sem o espaço
-/// e os comentários ([`code_before`]) e sem a marca de acesso opcional escrita
-/// entre o objeto e o separador (o `?` de `pedido?.Total` e de
-/// `$pedido?->total`): o objeto é o mesmo do acesso comum, e o membro também.
+/// e os comentários ([`code_before`]) e sem a marca de acesso escrita entre o
+/// objeto e o separador: a de acesso opcional (o `?` de `pedido?.Total` e de
+/// `$pedido?->total`) e a de valor não nulo (o `!` de `pedido!.Total`). O
+/// objeto é o mesmo do acesso comum, e o membro também.
 fn before_separator<'b>(bytes: &'b [u8], comments: &Spans, at: usize) -> &'b [u8] {
     let before = code_before(bytes, comments, at);
-    match before.strip_suffix(b"?") {
+    match before.strip_suffix(b"?").or_else(|| before.strip_suffix(b"!")) {
         Some(object) => code_before(bytes, comments, object.len()),
         None => before,
     }
 }
 
-/// A primeira parte de um nome qualificado: o texto até o primeiro dos
-/// `separators`, ou o texto inteiro quando não há nenhum.
 /// O caminho sem os argumentos de tipo escritos nele (`<u8>` em
 /// `crate::a::Caixa::<u8>`): cada trecho entre `<` e o `>` que o fecha sai, e
 /// o separador que fica sem parte de um lado ou do outro sai junto.
@@ -2076,6 +2076,8 @@ fn without_type_arguments(path: &str, separators: &[&str]) -> String {
     out
 }
 
+/// A primeira parte de um nome qualificado: o texto até o primeiro dos
+/// `separators`, ou o texto inteiro quando não há nenhum.
 fn first_segment<'a>(path: &'a str, separators: &[&str]) -> &'a str {
     let cut = separators.iter().filter_map(|sep| path.find(sep)).min().unwrap_or(path.len());
     &path[..cut]

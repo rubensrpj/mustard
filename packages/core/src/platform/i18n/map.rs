@@ -132,6 +132,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "The declaration `{name}` in `{file}` changed in this copy after the map, which has the project's one \
              from line {line}. Read the file of this copy by a line range."
         }
+        ("map.changed_in_copy_range", Locale::PtBr) => {
+            "A declaração `{name}` de `{file}` mudou nesta cópia depois do mapa. Nesta cópia ela está entre as \
+             linhas {first} e {last}. Leia essa faixa do arquivo."
+        }
+        ("map.changed_in_copy_range", Locale::EnUs) => {
+            "The declaration `{name}` in `{file}` changed in this copy after the map. In this copy it sits between \
+             lines {first} and {last}. Read that range of the file."
+        }
         ("map.missing_argument", Locale::PtBr) => "A pergunta `{question}` precisa de `{flag}`.",
         ("map.missing_argument", Locale::EnUs) => "The `{question}` question needs `{flag}`.",
         ("map.skill_unreadable", Locale::PtBr) => "A skill `{path}` não pôde ser lida ({detail}).",
@@ -380,8 +388,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("map.rs"),
             super::PREFIXES,
-            69,
-            0x4b87_f65a_8131_8f75,
+            70,
+            0xc499_b58a_9054_a78c,
         );
     }
 
@@ -413,6 +421,7 @@ mod tests {
                 "map.history.spec",
                 "map.history_unreadable",
                 "map.changed_in_copy",
+                "map.changed_in_copy_range",
                 "map.search.filter_failed",
                 "map.search.bad_number",
                 "map.search.bad_filter",
@@ -426,6 +435,8 @@ mod tests {
                     .replace("{count}", "12")
                     .replace("{base}", "dev")
                     .replace("{line}", "4")
+                    .replace("{first}", "4")
+                    .replace("{last}", "9")
                     .replace("{commit}", "abc")
                     .replace("{detail}", "falha")
                     .replace("{key}", "historyCommits")
@@ -555,6 +566,27 @@ mod tests {
         }
     }
 
+    /// A recusa da declaração mudada na cópia diz, nos dois idiomas, a faixa
+    /// que ela ocupa na cópia (linhas 4 a 6) e não cita a linha do mapa (3);
+    /// sem a faixa, diz a linha do mapa.
+    #[test]
+    fn the_changed_in_copy_refusal_names_the_copy_range_when_it_has_one() {
+        use crate::domain::project_map::MapRefusal;
+        let refusal = |copy| MapRefusal::ChangedInCopy {
+            file: "src/a.rs".to_string(),
+            name: "run".to_string(),
+            line: 3,
+            copy,
+        };
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let ranged = refusal(Some((4, 6))).message(lang);
+            assert!(ranged.contains('4') && ranged.contains('6') && !ranged.contains('3'), "{lang:?}: {ranged}");
+            assert!(ranged.contains("`run`") && ranged.contains("`src/a.rs`"), "{lang:?}: {ranged}");
+            let unranged = refusal(None).message(lang);
+            assert!(unranged.contains('3') && !unranged.contains('4'), "{lang:?}: {unranged}");
+        }
+    }
+
     /// The refusals and texts of the project map, and the `doctor` advisory on
     /// what the scan writes, come from the catalog in both languages, with the
     /// slots.
@@ -569,6 +601,7 @@ mod tests {
             ("map.unknown_name", &["{name}"][..]),
             ("map.file_unreadable", &["{file}", "{detail}"][..]),
             ("map.changed_in_copy", &["{name}", "{file}", "{line}"][..]),
+            ("map.changed_in_copy_range", &["{name}", "{file}", "{first}", "{last}"][..]),
             ("map.missing_argument", &["{question}", "{flag}"][..]),
             ("map.skill_unreadable", &["{path}", "{detail}"][..]),
             ("map.skill_missing_path", &["{paths}"][..]),
