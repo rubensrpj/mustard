@@ -1277,7 +1277,17 @@ pub fn fix_lines(log: &SpecLog, wave: u64) -> Vec<&SpecEvent> {
         own.iter().copied().rfind(|e| e.event_type == event_type && e.id < verdict.id)
     };
     let delivered = last_before("delivered");
-    let anchor = last_before("send").or(delivered).map(|e| e.id);
+    // O envio que a reprovação julgou conta no lugar em que despachou a onda:
+    // a versão dele que só traz o consumo não levou item nenhum a ela, e o
+    // envio despachado antes do veredito vale mesmo com a versão do consumo
+    // gravada depois dele.
+    let dispatched = own
+        .iter()
+        .filter(|e| e.event_type == "send")
+        .map(|e| log.dispatch_position(e.id))
+        .filter(|at| *at < verdict.id)
+        .max();
+    let anchor = dispatched.or(delivered.map(|e| e.id));
     let mut out = vec![verdict];
     out.extend(delivered);
     if let Some(anchor) = anchor {
@@ -2869,6 +2879,36 @@ mod tests {
         for id in [8, 7, 9, 10] {
             assert!(dispatched.contains(&id) && reviewed.contains(&id), "{id}: {dispatched:?} {reviewed:?}");
         }
+    }
+
+    /// A versão do envio que só traz o consumo, gravada depois do veredito
+    /// que reprovou, não muda a âncora do conserto: o item do pedido da onda
+    /// gravado entre o envio e a entrega continua nas linhas dele, como se a
+    /// versão do consumo não existisse.
+    #[test]
+    fn a_consumption_version_of_the_send_after_the_verdict_keeps_the_fix_anchor() {
+        let send = json!({"wave": 1, "role": "wave", "text": "p", "lines": 1, "chars": 1, "items": [1], "mustard": "0"});
+        let mut events: Vec<(&str, Value)> = vec![
+            ("decision", json!({"text": "Antes do envio", "keys": ["a"], "why": "w"})),
+            ("wave", json!({"n": 1, "text": "Onda", "criteria": [], "done_when": "pronto"})),
+            ("task", json!({"wave": 1, "text": "Fazer", "files": [{"path": "src/a.rs"}]})),
+            ("wave", json!({"n": 2, "text": "Outra", "criteria": [], "done_when": "pronto"})),
+            ("send", send.clone()),
+            ("decision", json!({"text": "Entre o envio e a entrega", "keys": ["b"], "why": "w", "waves": [1]})),
+            ("delivered", json!({"wave": 1, "text": "Feito", "files": ["src/a.rs"]})),
+            ("verdict", json!({"wave": 1, "result": "rejected", "text": "Falta o teste", "criteria": []})),
+            ("decision", json!({"text": "Depois da reprovação", "keys": ["c"], "why": "w", "waves": [1]})),
+        ];
+        assert_eq!(ids(&fix_lines(&log(&events), 1)), [8, 7, 6, 9], "o item gravado depois do envio entra");
+
+        let mut revised = send;
+        revised["replaces"] = json!(5);
+        events.push(("send", revised));
+        assert_eq!(
+            ids(&fix_lines(&log(&events), 1)),
+            [8, 7, 6, 9],
+            "a versão do consumo, gravada depois do veredito, não desloca a âncora"
+        );
     }
 
     /// O pedido do conserto (o da própria onda) leva as linhas do conserto

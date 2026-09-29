@@ -34,7 +34,7 @@ use serde::Serialize;
 
 use super::scratch_gc::ErrorRecord;
 use crate::commands::flow::discard::{sweep_old_discard_copies, DISCARD_COPIES};
-use crate::commands::flow::round::{remove_copy, remove_spec_copies};
+use crate::commands::flow::round::{remove_single_copy, remove_spec_copies, Removal};
 
 /// O prefixo das cópias antigas dentro do projeto.
 const OLD_PREFIX: &str = "mustard-";
@@ -69,6 +69,18 @@ pub(crate) struct CopyRecord {
     leaves: bool,
 }
 
+/// O código que a limpeza guardou antes de apagar uma cópia: de onde saiu, a
+/// ref que o guarda no repositório principal, os arquivos e o comando que o
+/// traz de volta.
+#[derive(Debug, Serialize)]
+pub(crate) struct KeptRecord {
+    pub copy: String,
+    #[serde(rename = "ref")]
+    pub refname: String,
+    pub files: Vec<String>,
+    pub restore: String,
+}
+
 /// A parte das cópias de obra no relatório da limpeza.
 #[derive(Debug, Serialize)]
 pub(crate) struct CopiesReport {
@@ -78,6 +90,9 @@ pub(crate) struct CopiesReport {
     pub kept: Vec<CopyRecord>,
     pub removed: Vec<String>,
     pub errors: Vec<ErrorRecord>,
+    /// O código que as cópias tinham além do commit, guardado antes de saírem.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub code_kept: Vec<KeptRecord>,
 }
 
 /// As cópias de obra do projeto em que `start` está: lista as que saem e as
@@ -90,7 +105,14 @@ pub(crate) fn clean(start: &Path, apply: bool) -> Option<CopiesReport> {
         return None;
     }
     let (candidates, kept): (Vec<CopyRecord>, Vec<CopyRecord>) = found(&root).into_iter().partition(|record| record.leaves);
-    let mut report = CopiesReport { root: shown(&root), candidates, kept, removed: Vec::new(), errors: Vec::new() };
+    let mut report = CopiesReport {
+        root: shown(&root),
+        candidates,
+        kept,
+        removed: Vec::new(),
+        errors: Vec::new(),
+        code_kept: Vec::new(),
+    };
     if apply {
         remove(&root, &mut report);
     }
@@ -112,34 +134,48 @@ pub(crate) fn clean(start: &Path, apply: bool) -> Option<CopiesReport> {
 
 /// Tira as candidatas: a pasta nova de cada obra por [`remove_spec_copies`],
 /// que prende a trava do passo do git; as cópias antigas por
-/// [`remove_copy`], com a mesma trava presa.
+/// [`remove_single_copy`], com a mesma trava presa. Cada cópia guarda antes o
+/// código que tem além do commit: a que não pôde guardar não sai, e o motivo
+/// vai entre os erros; o que ficou guardado vai nomeado em `code_kept`.
 fn remove(root: &Path, report: &mut CopiesReport) {
     let (whole, single): (Vec<&CopyRecord>, Vec<&CopyRecord>) = report.candidates.iter().partition(|record| record.whole);
     let mut removed = Vec::new();
     let mut errors = Vec::new();
-    for record in whole {
-        let left = remove_spec_copies(root, &record.spec);
-        if left.is_empty() {
+    let mut code_kept = Vec::new();
+    let mut absorb = |record: &CopyRecord, outcome: Removal, only_path: bool| {
+        if outcome.left.is_empty() && outcome.unkept.is_empty() {
             removed.push(record.path.clone());
         }
-        errors.extend(left.into_iter().map(|(path, error)| ErrorRecord { path, error }));
+        errors.extend(outcome.left.into_iter().chain(outcome.unkept).map(|(path, error)| ErrorRecord {
+            path: if only_path { record.path.clone() } else { path },
+            error,
+        }));
+        code_kept.extend(outcome.kept.iter().map(|kept| KeptRecord {
+            copy: kept.copy.clone(),
+            refname: kept.refname.clone(),
+            files: kept.files.clone(),
+            restore: format!("git cherry-pick --no-commit {}", kept.refname),
+        }));
+    };
+    for record in whole {
+        absorb(record, remove_spec_copies(root, &record.spec, None), false);
     }
+    let mut lock_error = None;
     if !single.is_empty() {
         match crate::commands::git_settle::git_step_lock(root) {
             Ok(_held) => {
                 for record in single {
-                    match remove_copy(root, &record.dir) {
-                        Ok(()) => removed.push(record.path.clone()),
-                        Err(error) => errors.push(ErrorRecord { path: record.path.clone(), error }),
-                    }
+                    absorb(record, remove_single_copy(root, &record.dir, &record.spec), true);
                 }
             }
-            Err(error) => errors.push(ErrorRecord { path: shown(root), error }),
+            Err(error) => lock_error = Some(ErrorRecord { path: shown(root), error }),
         }
     }
+    errors.extend(lock_error);
     removed.sort();
     report.removed = removed;
     report.errors = errors;
+    report.code_kept = code_kept;
 }
 
 /// Toda cópia de obra dos dois lugares, em ordem de caminho, cada uma com o
@@ -504,5 +540,53 @@ mod tests {
         assert_eq!(applied.removed, vec![shown(&old)], "{applied:?}");
         assert!(!old.exists(), "{old:?}: the copy older than a day stayed");
         assert!(recent.is_dir(), "{recent:?}: the copy younger than a day left");
+    }
+    /// A limpeza guarda, sob uma ref do repositório principal, o código que
+    /// cada cópia tem além do commit antes de tirá-la — a de obra fechada e a
+    /// do lugar antigo —, e o relatório nomeia a ref e o comando para trazê-lo
+    /// de volta. A cópia cujo código o git não deixa guardar não sai, e o
+    /// motivo vai entre os erros.
+    #[test]
+    fn clean_keeps_the_code_a_copy_holds_beyond_the_commit_before_removing_it() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        project(root);
+        work(root, "fechada", "closed");
+        work(root, "velha", "closed");
+        let slot = slot_path(root, "fechada", 0);
+        let old = root.join(".claude").join("worktrees").join("mustard-velha-7");
+        for path in [&slot, &old] {
+            copy(root, path);
+            std::fs::write(path.join("depois.txt"), format!("código de {}", path.display())).unwrap();
+        }
+
+        let applied = clean(root, true).expect("um projeto git");
+        assert!(applied.errors.is_empty(), "{applied:?}");
+        assert!(!slot.exists() && !old.exists(), "{applied:?}");
+        assert_eq!(applied.code_kept.len(), 2, "{applied:?}");
+        for kept in &applied.code_kept {
+            assert_eq!(kept.files, vec!["depois.txt".to_string()], "{kept:?}");
+            assert_eq!(kept.restore, format!("git cherry-pick --no-commit {}", kept.refname), "{kept:?}");
+            let shown_copy = kept.copy.clone();
+            let out = std::process::Command::new("git")
+                .args(["show", &format!("{}:depois.txt", kept.refname)])
+                .current_dir(root)
+                .output()
+                .expect("git");
+            assert_eq!(String::from_utf8_lossy(&out.stdout), format!("código de {shown_copy}"), "{kept:?}");
+        }
+
+        // O git não cria ref dentro de outra: sem lugar para guardar, a cópia fica.
+        work(root, "outra", "closed");
+        let stuck = slot_path(root, "outra", 0);
+        copy(root, &stuck);
+        std::fs::write(stuck.join("depois.txt"), "sem lugar").unwrap();
+        let head = std::process::Command::new("git").args(["rev-parse", "HEAD"]).current_dir(root).output().unwrap();
+        git(root, &["update-ref", "refs/mustard/kept/outra", String::from_utf8_lossy(&head.stdout).trim()]);
+        let again = clean(root, true).expect("um projeto git");
+        assert!(stuck.join("depois.txt").is_file(), "a cópia sem onde guardar fica: {again:?}");
+        assert!(again.removed.is_empty(), "{again:?}");
+        assert_eq!(again.errors.len(), 1, "{again:?}");
+        assert!(again.errors[0].path.contains("outra"), "{again:?}");
     }
 }

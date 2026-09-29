@@ -213,9 +213,20 @@ pub(crate) fn close_for(opts: &CloseOpts, session: Option<&str>) -> Value {
 fn close_in(opts: &CloseOpts, caller: Caller<'_>) -> Value {
     let project = spec_events::project(&opts.root);
     let lang = project.lang;
-    match run_close(opts, &project.root, lang, caller) {
+    // O código que a cópia do revisor guardou antes de zerar vai na resposta
+    // também quando o fechamento recusa depois disso: a ref já existe, e a
+    // próxima chamada acha a cópia limpa e não teria mais o que dizer.
+    let mut review_kept = Vec::new();
+    match run_close(opts, &project.root, lang, caller, &mut review_kept) {
         Ok(report) => report,
-        Err(refusal) => refusal.to_value(lang),
+        Err(refusal) => {
+            let mut value = refusal.to_value(lang);
+            for kept in &review_kept {
+                let hint = crate::commands::flow::round::code_kept_hint(kept, lang);
+                spec_events::pages::push_warning(&mut value, "code-kept", &hint);
+            }
+            value
+        }
     }
 }
 
@@ -224,6 +235,7 @@ fn run_close(
     root: &Path,
     lang: Locale,
     caller: Caller<'_>,
+    review_kept: &mut Vec<crate::commands::flow::round::Kept>,
 ) -> Result<Value, CloseRefusal> {
     let session = caller.session;
     let spec = match opts.spec.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
@@ -301,7 +313,13 @@ fn run_close(
     // escolhida uma vez só: a mesma que é preparada vai gravada no envio da
     // revisão, e fica presa por ele até o veredito.
     let review_copy = mustard_core::io::wave_prompt::final_copy_path(root, &spec, &log);
-    let not_copied = if final_approved(&log) { Vec::new() } else { prepare_review_copy(root, &review_copy, &log)? };
+    let not_copied = if final_approved(&log) {
+        Vec::new()
+    } else {
+        let (not_copied, kept) = prepare_review_copy(root, &spec, &review_copy, &log)?;
+        *review_kept = kept;
+        not_copied
+    };
 
     // A máquina antes do agente de teste dedicado: os dois comandos do
     // servidor e cada critério, uma vez por fechamento. A volta que só
@@ -356,6 +374,10 @@ fn run_close(
             let hint = crate::commands::flow::round::local_file_missing(file, &copy, lang);
             spec_events::pages::push_warning(&mut out, "local-file-missing", &hint);
         }
+        for kept in review_kept.iter() {
+            let hint = crate::commands::flow::round::code_kept_hint(kept, lang);
+            spec_events::pages::push_warning(&mut out, "code-kept", &hint);
+        }
         return Ok(out);
     }
 
@@ -385,7 +407,7 @@ fn run_close(
     // daqui, cada vaga com o que tiver dentro e com a compilação — o que o
     // revisor cortou para ver a prova cair não é trabalho de ninguém. A que
     // não sai vira aviso, e a obra fecha do mesmo jeito.
-    let copies_kept = copies_kept_hint(&crate::commands::flow::round::remove_spec_copies(root, &spec), lang);
+    let removal = crate::commands::flow::round::remove_spec_copies(root, &spec, Some(&log));
     // Por último, a pasta de compilação que o projeto declarou descartável
     // sai da pasta principal: ela só cresce, e a próxima obra a refaz uma vez.
     let build_output = remove_build_output(root, lang);
@@ -411,8 +433,8 @@ fn run_close(
         let hint = warning["hint"].as_str().unwrap_or_default();
         spec_events::pages::push_warning(&mut out, "binary-not-reinstalled", hint);
     }
-    if let Some(hint) = &copies_kept {
-        spec_events::pages::push_warning(&mut out, "copies-kept", hint);
+    for (reason, hint) in removal_warnings(&removal, lang) {
+        spec_events::pages::push_warning(&mut out, reason, &hint);
     }
     build_output.tell(&mut out);
     for hint in &undeclared {
@@ -652,8 +674,14 @@ fn clean_env(command: &str) -> String {
 /// fosse o da obra; a limpa vai para o commit. Sem revisão depois da última
 /// onda, a mudança é da onda, que a rodada já comitou no principal, e a vaga
 /// é zerada no commit. Como a cópia de onda, ela recebe os arquivos locais do
-/// projeto pelo conteúdo; devolve os que não chegaram.
-fn prepare_review_copy(root: &Path, path: &Path, log: &SpecLog) -> Result<Vec<String>, CloseRefusal> {
+/// projeto pelo conteúdo; devolve os que não chegaram e o código que a limpeza
+/// da vaga guardou antes de zerá-la.
+fn prepare_review_copy(
+    root: &Path,
+    spec: &str,
+    path: &Path,
+    log: &SpecLog,
+) -> Result<(Vec<String>, Vec<crate::commands::flow::round::Kept>), CloseRefusal> {
     use mustard_core::io::wave_prompt::{final_review_commit, shown};
     use mustard_core::platform::git;
     let copy = shown(path);
@@ -678,9 +706,9 @@ fn prepare_review_copy(root: &Path, path: &Path, log: &SpecLog) -> Result<Vec<St
     let prepared = if reviewed {
         crate::commands::flow::round::ensure_copy(root, path, &commit)
     } else {
-        crate::commands::flow::round::reset_slot(root, path, &commit)
+        crate::commands::flow::round::reset_slot(root, path, &commit, &crate::commands::flow::round::slot_owner(spec, log, path))
     };
-    prepared.map(|prepared| prepared.missing).map_err(failed)
+    prepared.map(|prepared| (prepared.missing, prepared.kept)).map_err(failed)
 }
 
 /// Um revisor já recebeu pedido depois do último envio de onda: o envio de
@@ -707,6 +735,32 @@ pub(crate) fn copies_kept_hint(left: &[(String, String)], lang: Locale) -> Optio
             .replace("{copies}", &copies.join(", "))
             .replace("{detail}", &details.join("; ")),
     )
+}
+
+/// Os avisos do que a remoção das cópias da obra fez, cada um com o motivo da
+/// resposta: as cópias que não saíram, as que ficaram porque o código delas
+/// não pôde ser guardado, e o código que ficou guardado, com o comando para
+/// trazê-lo de volta.
+pub(crate) fn removal_warnings(
+    removal: &crate::commands::flow::round::Removal,
+    lang: Locale,
+) -> Vec<(&'static str, String)> {
+    let mut warnings = Vec::new();
+    if let Some(hint) = copies_kept_hint(&removal.left, lang) {
+        warnings.push(("copies-kept", hint));
+    }
+    if !removal.unkept.is_empty() {
+        let copies: Vec<String> = removal.unkept.iter().map(|(copy, _)| format!("`{copy}`")).collect();
+        let details: Vec<&str> = removal.unkept.iter().map(|(_, detail)| detail.as_str()).collect();
+        let hint = translate("close.code_not_kept", lang)
+            .replace("{copies}", &copies.join(", "))
+            .replace("{detail}", &details.join("; "));
+        warnings.push(("code-not-kept", hint));
+    }
+    warnings.extend(
+        removal.kept.iter().map(|kept| ("code-kept", crate::commands::flow::round::code_kept_hint(kept, lang))),
+    );
+    warnings
 }
 
 /// O que [`remove_build_output`] fez com as pastas de compilação declaradas:
@@ -1618,6 +1672,155 @@ mod tests {
         assert!(!listed.contains(&shown) && !listed.contains(&mustard_core::io::wave_prompt::shown(&second)), "{listed}");
         assert_eq!(std::fs::read_to_string(&built).unwrap(), "compilado", "a compilação principal fica");
         assert!(root.join(wave_file(1)).is_file() && root.join(".git").is_dir(), "a pasta principal fica");
+    }
+
+    /// As refs em que a limpeza das cópias guarda código, no repositório
+    /// principal.
+    fn kept_refs(root: &Path) -> Vec<String> {
+        let out = Command::new("git")
+            .args(["for-each-ref", "--format=%(refname)", "refs/mustard/kept"])
+            .current_dir(root)
+            .output()
+            .expect("git");
+        String::from_utf8_lossy(&out.stdout).lines().map(str::to_string).collect()
+    }
+
+    /// O conteúdo de `file` na ref `refname` do repositório `root`.
+    fn kept_content(root: &Path, refname: &str, file: &str) -> String {
+        let out = Command::new("git")
+            .args(["show", &format!("{refname}:{file}")])
+            .current_dir(root)
+            .output()
+            .expect("git");
+        String::from_utf8_lossy(&out.stdout).to_string()
+    }
+
+    /// Os textos de aviso da resposta `out` com o motivo `reason`.
+    fn hints_of<'a>(out: &'a Value, reason: &str) -> Vec<&'a str> {
+        out["warnings"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|w| w["reason"] == json!(reason))
+            .filter_map(|w| w["hint"].as_str())
+            .collect()
+    }
+
+    /// A vaga da última onda, zerada para o revisor, guarda antes o que a
+    /// onda deixou nela além do commit, e a resposta que pede a revisão
+    /// nomeia a onda, a ref e o comando para trazer o código de volta.
+    #[test]
+    fn the_close_names_the_code_it_kept_when_it_cleans_the_review_copy() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        ready_to_close(root, "x", &["git --version"]);
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let copy = mustard_core::io::wave_prompt::final_copy_path(root, "x", &log);
+        std::fs::write(copy.join("sobra.txt"), "o que a onda deixou").unwrap();
+
+        let asked =
+            close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), ..Default::default() }, None);
+        assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+        let refs = kept_refs(root);
+        assert_eq!(refs.len(), 1, "{refs:?}");
+        assert_eq!(kept_content(root, &refs[0], "sobra.txt"), "o que a onda deixou", "{refs:?}");
+        let hints = hints_of(&asked, "code-kept");
+        assert_eq!(hints.len(), 1, "{asked}");
+        let shown = mustard_core::io::wave_prompt::shown(&copy);
+        assert!(hints[0].contains(&refs[0]) && hints[0].contains("onda 1") && hints[0].contains(&shown), "{}", hints[0]);
+        assert!(hints[0].contains(&format!("git cherry-pick --no-commit {}", refs[0])), "{}", hints[0]);
+    }
+
+    /// O código guardado ao zerar a cópia do revisor é nomeado também quando
+    /// o fechamento recusa logo depois (a suíte vermelha): a ref existe, e a
+    /// chamada seguinte acharia a cópia já limpa e nada diria dele.
+    #[test]
+    fn the_close_names_the_code_it_kept_even_when_it_refuses_right_after() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        ready_to_close(root, "x", &["git --version"]);
+        std::fs::write(root.join("mustard.json"), json!({ "testCommand": "false" }).to_string()).unwrap();
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let copy = mustard_core::io::wave_prompt::final_copy_path(root, "x", &log);
+        std::fs::write(copy.join("sobra.txt"), "o que a onda deixou").unwrap();
+
+        let refused =
+            close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), ..Default::default() }, None);
+        assert_eq!(refused["reason"], json!("suite-failed"), "{refused}");
+        let refs = kept_refs(root);
+        assert_eq!(refs.len(), 1, "{refs:?}");
+        assert_eq!(kept_content(root, &refs[0], "sobra.txt"), "o que a onda deixou", "{refs:?}");
+        let hints = hints_of(&refused, "code-kept");
+        assert_eq!(hints.len(), 1, "{refused}");
+        assert!(hints[0].contains(&format!("git cherry-pick --no-commit {}", refs[0])), "{}", hints[0]);
+    }
+
+    /// Uma vaga a mais da obra, com um arquivo dentro que o git do projeto
+    /// não tem: o que o fechamento apagaria sem guardar.
+    fn second_slot_with_code(root: &Path) -> PathBuf {
+        let second = mustard_core::io::wave_prompt::slot_path(root, "x", 1);
+        git_at(root, &["worktree", "add", "-q", "--detach", &second.to_string_lossy()]);
+        std::fs::write(second.join("depois.txt"), "código de última hora").unwrap();
+        second
+    }
+
+    /// O fechamento guarda o código que uma vaga tem além do commit antes de
+    /// apagá-la: a vaga sai, o código fica sob uma ref do repositório
+    /// principal, e a resposta nomeia a ref e o comando para trazê-lo de volta.
+    #[test]
+    fn the_close_keeps_the_code_a_copy_holds_beyond_the_commit_before_removing_it() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        ready_to_close(root, "x", &["git --version"]);
+        let ask = |report: Option<String>| {
+            close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report, ..Default::default() }, None)
+        };
+        assert_eq!(ask(None)["review"]["final"], json!(true));
+        let second = second_slot_with_code(root);
+
+        let closed = ask(approve(root, "x"));
+        assert_eq!(closed["phase"], json!("closed"), "{closed}");
+        assert!(!second.exists(), "a vaga saiu: {closed}");
+        let refs = kept_refs(root);
+        assert_eq!(refs.len(), 1, "{refs:?}");
+        assert!(refs[0].starts_with("refs/mustard/kept/x/"), "{refs:?}");
+        assert_eq!(kept_content(root, &refs[0], "depois.txt"), "código de última hora", "{refs:?}");
+        let hints = hints_of(&closed, "code-kept");
+        assert_eq!(hints.len(), 1, "{closed}");
+        assert!(hints[0].contains(&format!("git cherry-pick --no-commit {}", refs[0])), "{}", hints[0]);
+    }
+
+    /// A vaga cujo código o git não deixa guardar não é apagada: fica no
+    /// disco com o arquivo dentro, a resposta nomeia a vaga e o motivo, e a
+    /// obra fecha do mesmo jeito. A vaga que não tem o que guardar sai.
+    #[test]
+    fn a_copy_whose_code_could_not_be_kept_is_not_removed_and_the_close_says_why() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        ready_to_close(root, "x", &["git --version"]);
+        let ask = |report: Option<String>| {
+            close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report, ..Default::default() }, None)
+        };
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let clean = mustard_core::io::wave_prompt::final_copy_path(root, "x", &log);
+        assert_eq!(ask(None)["review"]["final"], json!(true));
+        let second = second_slot_with_code(root);
+        // Uma ref no lugar da pasta das refs da obra: o git não cria as de dentro.
+        let head = {
+            let out = Command::new("git").args(["rev-parse", "HEAD"]).current_dir(root).output().expect("git");
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        git_at(root, &["update-ref", "refs/mustard/kept/x", &head]);
+
+        let closed = ask(approve(root, "x"));
+        assert_eq!(closed["phase"], json!("closed"), "{closed}");
+        assert_eq!(std::fs::read_to_string(second.join("depois.txt")).unwrap(), "código de última hora", "{closed}");
+        assert!(!clean.exists(), "a vaga sem código a guardar saiu: {closed}");
+        let hints = hints_of(&closed, "code-not-kept");
+        assert_eq!(hints.len(), 1, "{closed}");
+        let shown = mustard_core::io::wave_prompt::shown(&second);
+        assert!(hints[0].contains(&shown) && hints[0].contains("nada delas foi apagado"), "{}", hints[0]);
+        assert!(hints_of(&closed, "code-kept").is_empty(), "nada foi guardado: {closed}");
     }
 
     /// O que a pasta principal compilou: um arquivo em `target`, que o git

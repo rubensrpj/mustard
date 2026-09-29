@@ -372,12 +372,11 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("spec_events.return_missing", Locale::PtBr) => {
             "A onda {wave} terminou sem gravar a entrega: peça ao agente que a grave com `mustard-rt \
-             run write delivered` e rode a rodada de novo com o mesmo relatório. Nada foi gravado."
+             run write delivered` e rode a rodada de novo com a linha `USAGE` dela."
         }
         ("spec_events.return_missing", Locale::EnUs) => {
             "Wave {wave} ended without writing its delivery: ask the agent to write it with \
-             `mustard-rt run write delivered` and run the round again with the same report. Nothing \
-             was written."
+             `mustard-rt run write delivered` and run the round again with its `USAGE` line."
         }
         ("spec_events.return_needs_commit", Locale::PtBr) => {
             "A cópia da onda {wave} mudou arquivo, e a entrega que ela gravou não traz o resumo do \
@@ -872,7 +871,7 @@ mod tests {
             include_str!("events.rs"),
             super::PREFIXES,
             115,
-            0xc37a_2eea_6fbd_5c1f,
+            0x2dd0_f23d_41b8_5d1e,
         );
     }
 

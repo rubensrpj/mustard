@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use mustard_core::domain::normalize::Languages;
 use mustard_core::domain::spec_events::{Block, BlockQuery, Refusal, SpecEvent, SpecLog};
 use mustard_core::domain::spec_state::{not_closed_yet, returns_to_running, PhaseWriter, SpecState, State};
-use mustard_core::domain::wave_prompt::{estimate_tokens, token_cap_message, wave_files};
+use mustard_core::domain::wave_prompt::{estimate_tokens, token_cap_message, wave_files, WaveCopy};
 use mustard_core::io::spec_events as store;
 use mustard_core::io::wave_prompt::{prompts, recorded_copy, Flight};
 use mustard_core::platform::i18n::{translate, Locale};
@@ -20,10 +20,11 @@ use serde_json::{json, Map, Value};
 use super::commit::git_lock;
 use super::queue::{
     analyse, analysis_lines, backlog_left, backlog_ready, dispatch_backlog, first_unfinished, max_parallel, next_waves,
-    open_review, open_sends, orphaned_waves, sent_items, silent_minutes, task_files, waves_in_progress, Analysed,
+    open_review, open_sends, orphaned_waves, sent_items, silent_minutes, task_files, waves_in_progress, waves_returned,
+    Analysed,
 };
 use super::report::Taken;
-use super::slots::open_copies;
+use super::slots::{open_copies, sharing_copy};
 use super::stops::{change_question, stopped_waves, waves_stuck};
 use super::usage::Caller;
 use super::{can_run, RoundOpts, DONE_STEP};
@@ -299,11 +300,16 @@ fn wave_loop_message(cycle: &[u64], lang: Locale) -> String {
 /// entra aqui: a de lote que perdeu todas as tarefas para o backlog — o que o
 /// corte de uma onda de lote, no mesmo relatório, acabou de fazer — saiu dele
 /// ([`SpecLog::planned_waves`]), e reenviá-la seria despachar uma onda vazia.
+/// A pausada tem de estar com o pedido aberto e sem volta: a onda que já
+/// voltou, ou já entregou, não tem o que refazer, e reenviá-la a poria por
+/// cima da cópia que guarda o que ela entregou.
 fn resend_targets(log: &SpecLog, paused: &[u64]) -> BTreeMap<u64, u64> {
     let last_sends = log.last_by_wave("send");
     let planned = log.planned_waves();
+    let open = open_sends(log);
+    let returned = waves_returned(log);
     let mut out = orphaned_waves(log);
-    for wave in paused.iter().filter(|wave| planned.contains(wave)) {
+    for wave in paused.iter().filter(|wave| planned.contains(wave) && open.contains_key(wave) && !returned.contains(wave)) {
         if let Some(sent) = last_sends.get(wave) {
             out.entry(*wave).or_insert(*sent);
         }
@@ -731,8 +737,22 @@ pub(super) fn run_entered_round(
     let languages = Languages::of_project(root);
     let Analysed { go, choices, asked, warnings: ignored } = analyse(root, &log, &ready, &given, lang, &languages);
     warnings.extend(ignored);
-    let (copies, not_copied) = open_copies(root, &spec, &log, &held_lock, &go, false, lang);
+    // A onda a reenviar cuja cópia gravada outra onda também segura não volta
+    // a ela: sai numa vaga livre, como a onda nova, e antes dela, porque já
+    // estava em andamento.
+    let resends = resend_targets(&log, &paused);
+    let moved: Vec<u64> = sharing_copy(&log, resends.keys().copied()).into_iter().collect();
+    let wanted: Vec<u64> = moved.iter().chain(&go).copied().collect();
+    let (mut copies, not_copied) = open_copies(root, &spec, &log, &held_lock, &wanted, false, lang);
+    // O código que a limpeza de uma cópia guardou vai também no que vem
+    // depois: a resposta diz de que onda era e como trazê-lo de volta.
+    let kept_lines: Vec<String> = not_copied
+        .iter()
+        .filter(|warning| warning["reason"] == json!("code-kept"))
+        .filter_map(|warning| warning["hint"].as_str().map(str::to_string))
+        .collect();
     warnings.extend(not_copied);
+    let mut moved_copies: BTreeMap<u64, WaveCopy> = moved.iter().filter_map(|w| copies.remove(w).map(|c| (*w, c))).collect();
     let next: Vec<u64> = go.into_iter().filter(|wave| copies.contains_key(wave)).collect();
     // O pedido de cada onda lista as outras em andamento, contando as órfãs,
     // que saem de novo nesta rodada, e as que saem junto com ela, e traz a
@@ -801,9 +821,21 @@ pub(super) fn run_entered_round(
     // palavra por palavra, na mesma cópia — sem
     // montar o pedido de novo —, mais os passos já gravados e o aviso de
     // começar vendo o que mudou na cópia. O envio novo aponta o anterior.
-    for (wave, previous) in resend_targets(&log, &paused) {
+    for (wave, previous) in resends {
         let Some(prior) = log.get(previous) else { continue };
-        let Some(copy) = recorded_copy(&log, wave) else { continue };
+        let Some(own) = recorded_copy(&log, wave) else { continue };
+        let copy = if moved.contains(&wave) {
+            let Some(fresh) = moved_copies.remove(&wave) else {
+                let hint = translate("round.resend_no_copy", lang).replace("{wave}", &wave.to_string());
+                warnings.push(json!({ "reason": "resend-no-copy", "wave": wave, "hint": hint }));
+                continue;
+            };
+            let hint = translate("round.resend_moved", lang).replace("{wave}", &wave.to_string()).replace("{copy}", &own.path);
+            warnings.push(json!({ "reason": "resend-copy-moved", "wave": wave, "hint": hint }));
+            fresh
+        } else {
+            own
+        };
         let steps = wave_steps(&log, wave, &codes);
         let mut draft = Map::new();
         draft.insert("wave".into(), json!(wave));
@@ -940,6 +972,7 @@ pub(super) fn run_entered_round(
     let then = question
         .into_iter()
         .chain(held.iter().map(|one| one.next_line(lang)))
+        .chain(kept_lines)
         .chain(analysis)
         .chain(Some(then).filter(|t| !t.is_empty()))
         .collect::<Vec<_>>()
@@ -1796,6 +1829,111 @@ mod tests {
         let header = format!("## {}", translate("prompt.part.execution", Locale::PtBr));
         let before = |text: &str| text.split(&header).next().unwrap_or_default().to_string();
         assert_eq!(before(&resent), before(&first_prompt), "{resent}");
+    }
+
+    /// Duas ondas em andamento, a 1 com o último envio gravando a cópia da 2 —
+    /// o estado de uma vaga que passou de uma onda para a outra: o envio da
+    /// onda 1 sai vivo (`alive`) ou de um Claude Code que fechou, e a cópia
+    /// da onda 2 guarda o trabalho dela sem commit. Devolve essa cópia.
+    #[cfg(target_os = "linux")]
+    fn two_waves_on_one_copy(root: &Path, alive: bool) -> PathBuf {
+        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[])]);
+        std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":2}"#).unwrap();
+        let first = round(root, "x", None);
+        assert_eq!(waves_in(&first, "dispatch").len(), 2, "{first}");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let sent_of = |wave: u64| log.visible().into_iter().find(|e| e.wave() == Some(wave) && e.event_type == "send").unwrap();
+        let shared = recorded_copy(&log, 2).map(|copy| copy.path).expect("a cópia da onda 2");
+        let mut draft = resend_draft(sent_of(1));
+        draft["copy"] = json!(shared);
+        let (claude_pid, claude_started) = if alive {
+            crate::commands::flow::stuck::sender_process()
+        } else {
+            let mut dead = std::process::Command::new("true").spawn().expect("spawn the fixture process");
+            let dead_pid = dead.id();
+            dead.wait().expect("reap the fixture process");
+            (dead_pid, 1)
+        };
+        draft["claude_pid"] = json!(claude_pid);
+        draft["claude_started"] = json!(claude_started);
+        seed_send_at(root, draft, &chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%:z").to_string());
+        let copy = PathBuf::from(shared);
+        std::fs::write(copy.join("src/b.rs"), "fn um() {}\n// o trabalho da onda 2\n").unwrap();
+        copy
+    }
+
+    /// O reenvio da pausa não volta à cópia que outra onda viva também segura:
+    /// escolhe uma vaga livre, como o envio de uma onda nova, avisa a troca, e
+    /// a cópia da outra onda segue com o trabalho dela.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn the_resend_of_a_paused_wave_never_lands_on_the_copy_another_live_wave_holds() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let shared = two_waves_on_one_copy(root, true);
+
+        let out = round(root, "x", Some(&line("PAUSED", json!({"wave": 1}))));
+        assert_eq!(out["ok"], json!(true), "{out}");
+        assert_eq!(waves_in(&out, "dispatch"), vec![1], "a onda pausada é reenviada: {out}");
+        assert_eq!(warning_of(&out, "resend-copy-moved")["wave"], json!(1), "{out}");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let resent = recorded_copy(&log, 1).map(|copy| copy.path).expect("a cópia do reenvio");
+        assert_ne!(PathBuf::from(&resent), shared, "o reenvio sai em outra vaga: {out}");
+        assert_eq!(
+            std::fs::read_to_string(shared.join("src/b.rs")).unwrap(),
+            "fn um() {}\n// o trabalho da onda 2\n",
+            "a cópia da onda 2 fica como estava: {out}"
+        );
+    }
+
+    /// A onda órfã cuja cópia outra onda viva segura não zera essa cópia: o
+    /// trabalho da onda viva fica, e o reenvio da órfã sai em outra vaga.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn an_orphan_wave_never_cleans_the_copy_another_live_wave_holds() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let shared = two_waves_on_one_copy(root, false);
+
+        let out = round(root, "x", None);
+        assert_eq!(out["ok"], json!(true), "{out}");
+        assert_eq!(
+            std::fs::read_to_string(shared.join("src/b.rs")).unwrap(),
+            "fn um() {}\n// o trabalho da onda 2\n",
+            "a limpeza da órfã não apaga o trabalho da onda viva: {out}"
+        );
+        assert_eq!(waves_in(&out, "dispatch"), vec![1], "a órfã é reenviada: {out}");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let resent = recorded_copy(&log, 1).map(|copy| copy.path).expect("a cópia do reenvio");
+        assert_ne!(PathBuf::from(&resent), shared, "o reenvio sai em outra vaga: {out}");
+    }
+
+    /// A pausa de uma onda que já voltou não a reenvia: a volta espera a
+    /// rodada, e o reenvio poria a onda por cima da cópia que guarda o que ela
+    /// entregou.
+    #[test]
+    fn a_pause_of_a_wave_that_already_returned_does_not_resend_it() {
+        if std::env::var_os("MUSTARD_ACTIVE_SPEC").is_some() {
+            return;
+        }
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1]);
+        let copy = PathBuf::from(recorded_copy(&log_of(root), 1).map(|copy| copy.path).expect("a cópia"));
+        std::fs::write(copy.join("src/a.rs"), "fn um() {}\n// a onda 1 mudou\n").unwrap();
+        let asks = json!({"wave": 1, "text": "Parei.", "files": ["src/a.rs"], "commit": "a onda 1 mudou",
+            "replan": "A onda 1 precisa de outra tarefa antes.", "undone": []});
+        assert_eq!(returned(root, asks)["ok"], json!(true));
+        let sends = |root: &Path| log_of(root).events.iter().filter(|e| e.event_type == "send").count();
+        let before = sends(root);
+
+        let out = round(root, "x", Some(&line("PAUSED", json!({"wave": 1}))));
+        assert_eq!(out["ok"], json!(true), "{out}");
+        assert_eq!(waves_in(&out, "dispatch"), Vec::<u64>::new(), "{out}");
+        assert_eq!(sends(root), before, "nenhum envio novo: {out}");
+        assert_eq!(change_asked(&out)["wave"], json!(1), "a volta segue esperando o clique: {out}");
+        assert_eq!(std::fs::read_to_string(copy.join("src/a.rs")).unwrap(), "fn um() {}\n// a onda 1 mudou\n");
     }
 
     /// A onda órfã segue ocupando a vaga dela até o reenvio: com o teto de

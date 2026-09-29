@@ -298,6 +298,16 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "These copies of the work stayed on disk: {copies}. Git said: {detail}. Delete each one \
              with `git worktree remove --force <copy>`, then run `git worktree prune`."
         }
+        ("close.code_not_kept", Locale::PtBr) => {
+            "Estas cópias da obra ficaram no disco: {copies}. O código que elas têm além do commit não \
+             pôde ser guardado antes de apagar. Motivo: {detail}. Resolva o motivo e rode de novo; nada \
+             delas foi apagado."
+        }
+        ("close.code_not_kept", Locale::EnUs) => {
+            "These copies of the work stayed on disk: {copies}. The code they hold beyond the commit \
+             could not be kept before wiping. Reason: {detail}. Fix the reason and run again; none of \
+             them was wiped."
+        }
         ("close.build_output_unsafe", Locale::PtBr) => {
             "A pasta de compilação `{folder}`, declarada no `mustard.json`, ficou no disco. Ela precisa \
              ser uma pasta dentro do projeto, fora do `.git` e diferente da raiz."
@@ -789,6 +799,48 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Wave {wave} did not do tasks {tasks}, and they went back to the backlog, with the plan \
              change noted when there was one. If the change alters a decision or what the task asks, \
              record the decision and rewrite the task before the next round."
+        }
+        ("round.resend_moved", Locale::PtBr) => {
+            "A onda {wave} recomeça numa cópia livre: a cópia do envio anterior, {copy}, também é de \
+             outra onda, e nenhuma delas a apaga."
+        }
+        ("round.resend_moved", Locale::EnUs) => {
+            "Wave {wave} starts again in a free copy: the previous send's copy, {copy}, is also \
+             another wave's, and neither wave wipes it."
+        }
+        ("round.resend_no_copy", Locale::PtBr) => {
+            "A onda {wave} não foi reenviada: a cópia do envio anterior é também de outra onda, e não \
+             há cópia livre. Rode a rodada de novo quando uma onda terminar."
+        }
+        ("round.resend_no_copy", Locale::EnUs) => {
+            "Wave {wave} was not resent: the previous send's copy is also another wave's, and no copy \
+             is free. Run the round again when a wave finishes."
+        }
+        ("round.code_kept", Locale::PtBr) => {
+            "O código que a onda {wave} deixou sem commit na cópia {copy} ficou guardado na ref `{ref}`. \
+             Para trazê-lo de volta, rode `git cherry-pick --no-commit {ref}` na cópia que continua o \
+             trabalho."
+        }
+        ("round.code_kept", Locale::EnUs) => {
+            "The code wave {wave} left uncommitted in the copy {copy} is kept under the ref `{ref}`. \
+             To bring it back, run `git cherry-pick --no-commit {ref}` in the copy that carries on the \
+             work."
+        }
+        ("round.code_kept_slot", Locale::PtBr) => {
+            "O código que a cópia {copy} tinha sem commit ficou guardado na ref `{ref}`. Para trazê-lo \
+             de volta, rode `git cherry-pick --no-commit {ref}` na cópia que continua o trabalho."
+        }
+        ("round.code_kept_slot", Locale::EnUs) => {
+            "The uncommitted code the copy {copy} had is kept under the ref `{ref}`. To bring it back, \
+             run `git cherry-pick --no-commit {ref}` in the copy that carries on the work."
+        }
+        ("round.copy_not_cleaned", Locale::PtBr) => {
+            "A cópia da onda {wave} não foi limpa: o código dela não pôde ser guardado antes ({detail}). \
+             A vaga segue com ela; resolva e rode a rodada de novo."
+        }
+        ("round.copy_not_cleaned", Locale::EnUs) => {
+            "Wave {wave}'s copy was not wiped: its code could not be kept first ({detail}). The slot \
+             stays with it; fix that and run the round again."
         }
         ("round.held_return", Locale::PtBr) => {
             "A volta da onda {wave} ficou fora desta rodada, e só ela: o resto seguiu. {hint}"
@@ -1529,8 +1581,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            191,
-            0x8e03_68b0_7826_4178,
+            197,
+            0x5e03_144e_2309_eb94,
         );
     }
 
@@ -1654,6 +1706,7 @@ mod tests {
             ("close.review_copy_dirty", &["{copy}", "{files}"][..]),
             ("close.review_copy_failed", &["{copy}", "{detail}"][..]),
             ("close.review_copy_kept", &["{copies}", "{detail}"][..]),
+            ("close.code_not_kept", &["{copies}", "{detail}"][..]),
             ("close.build_output_unsafe", &["{folder}"][..]),
             ("close.build_output_not_ignored", &["{folder}"][..]),
             ("close.build_output_failed", &["{folder}", "{detail}"][..]),
@@ -1736,6 +1789,11 @@ mod tests {
             ("round.leftover_joined", &["{wave}", "{title}", "{detail}"][..]),
             ("round.tasks_returned", &["{wave}", "{tasks}"][..]),
             ("round.held_return", &["{wave}", "{hint}"][..]),
+            ("round.code_kept", &["{wave}", "{copy}", "{ref}"][..]),
+            ("round.code_kept_slot", &["{copy}", "{ref}"][..]),
+            ("round.copy_not_cleaned", &["{wave}", "{detail}"][..]),
+            ("round.resend_moved", &["{wave}", "{copy}"][..]),
+            ("round.resend_no_copy", &["{wave}"][..]),
             ("round.git_refused", &["{detail}"][..]),
             ("round.next", &[][..]),
             ("round.next.copy_file", &["{path}"][..]),

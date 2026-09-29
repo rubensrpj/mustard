@@ -87,6 +87,10 @@ pub(super) fn next_waves(
         .filter(|n| !replanned.contains(n))
         .chain(delivered.iter().copied())
         .filter(|n| !to_redo.contains(n))
+        // A onda cuja volta espera a rodada já saiu, mesmo replanejada depois
+        // do envio: despachá-la de novo deixaria a volta sem ser assumida, e
+        // a cópia dela, com o código entregue, seria a de uma onda nova.
+        .chain(waves_returned(log))
         .collect();
     // Só a onda do plano é candidata: a de lote que ficou sem tarefa saiu
     // dele, e despachá-la seria um pedido sem nada dentro — o backlog já
@@ -107,7 +111,13 @@ pub(super) fn next_waves(
     // só o teto de quantas ondas prontas entram na disputa pelas vagas.
     let orphans = orphaned_waves(log);
     let effective_running = running.keys().filter(|n| !orphans.contains_key(n)).count();
-    let slots = limit.saturating_sub(effective_running);
+    // A onda replanejada que ainda tem o pedido aberto segue dona da vaga que
+    // o envio dela gravou: ao sair de novo volta a ela, sem pedir vaga
+    // nenhuma. Por isso sai antes das outras e fora da conta do teto delas;
+    // o que a vaga dela tira das outras é o que ela já tirava enquanto
+    // esperava, mesmo que ela não saia nesta rodada.
+    let holding: BTreeSet<u64> = unanswered_sends(log).into_keys().filter(|n| replanned.contains(n)).collect();
+    let slots = limit.saturating_sub(effective_running + holding.len());
     // O arquivo que cada onda em andamento já declarou trava a vaga dela: uma
     // onda pronta cujo arquivo cruza com ele — o mesmo caminho, ou um padrão
     // que o casa — espera, mesmo com vaga livre, e a que sai primeiro nesta
@@ -119,8 +129,12 @@ pub(super) fn next_waves(
     let mut busy = !running.is_empty();
     let mut whole_tree_out = running.keys().any(|n| graph.files.get(n).is_some_and(touches_whole_tree));
     let mut go = Vec::new();
-    for n in ready_in_order(&depends, &graph, &already_out, &delivered, &done)? {
-        if go.len() >= slots || whole_tree_out {
+    let mut fresh = 0;
+    let (own, rest): (Vec<u64>, Vec<u64>) = ready_in_order(&depends, &graph, &already_out, &delivered, &done)?
+        .into_iter()
+        .partition(|n| holding.contains(n));
+    for n in own.into_iter().chain(rest) {
+        if whole_tree_out || (!holding.contains(&n) && fresh >= slots) {
             break;
         }
         if stuck.contains_key(&n) || dependencies_of(n, &depends).iter().any(|d| stuck.contains_key(d)) {
@@ -134,6 +148,7 @@ pub(super) fn next_waves(
         taken.extend(files);
         busy = true;
         whole_tree_out = whole_tree;
+        fresh += usize::from(!holding.contains(&n));
         go.push(n);
     }
     Ok(go)
@@ -445,8 +460,16 @@ fn shown_candidates(
 /// [`waves_in_progress`] e [`orphaned_waves`] que decidem isso, cada uma para
 /// o seu lado.
 pub(crate) fn open_sends(log: &SpecLog) -> BTreeMap<u64, u64> {
-    let planned = log.planned_waves();
     let replanned = waves_replanned(log);
+    unanswered_sends(log).into_iter().filter(|(n, _)| !replanned.contains(n)).collect()
+}
+
+/// As ondas do plano com pedido despachado e sem volta ([`open_sends`]),
+/// inclusive a que ganhou versão nova do plano depois do pedido: a onda que o
+/// agente ainda trabalha continua dona da cópia dela, mesmo com o plano
+/// mudado, até sair de novo ou voltar.
+pub(crate) fn unanswered_sends(log: &SpecLog) -> BTreeMap<u64, u64> {
+    let planned = log.planned_waves();
     let verdicts = log.verdicts_by_wave();
     let mut deliveries: BTreeMap<u64, Vec<u64>> = BTreeMap::new();
     for delivered in log.block(BlockQuery::Block(Block::Waves)).into_iter().filter(|e| e.event_type == "delivered") {
@@ -456,17 +479,22 @@ pub(crate) fn open_sends(log: &SpecLog) -> BTreeMap<u64, u64> {
     }
     log.last_by_wave("send")
         .into_iter()
-        .filter(|(n, _)| planned.contains(n) && !replanned.contains(n))
+        .filter(|(n, _)| planned.contains(n))
         .filter(|(n, sent)| {
+            // A entrega e o veredito se comparam com o lugar em que o envio
+            // despachou a onda, e não com a versão mais nova dele: a versão
+            // que só traz o consumo, gravada depois de uma entrega ou de uma
+            // reprovação, não reabre a onda.
+            let sent = log.dispatch_position(*sent);
             let ids = deliveries.get(n).map(Vec::as_slice).unwrap_or_default();
-            if ids.iter().any(|id| id > sent) {
+            if ids.iter().any(|id| *id > sent) {
                 return false;
             }
             let judged_before = verdicts
                 .get(n)
-                .and_then(|list| list.iter().rev().find(|v| v.id < *sent))
+                .and_then(|list| list.iter().rev().find(|v| v.id < sent))
                 .and_then(|v| v.str_field("result"));
-            !ids.iter().any(|id| id < sent) || judged_before == Some("rejected")
+            !ids.iter().any(|id| *id < sent) || judged_before == Some("rejected")
         })
         .collect()
 }
@@ -544,11 +572,12 @@ pub(crate) fn orphaned_waves(log: &SpecLog) -> BTreeMap<u64, u64> {
 /// depois do envio que a despachou e que nenhuma rodada assumiu ainda — a
 /// que pede novo plano sem o clique do usuário, a que uma conferência da
 /// própria volta segurou, ou a que a junção segurou por conflito.
-fn waves_returned(log: &SpecLog) -> BTreeSet<u64> {
+pub(crate) fn waves_returned(log: &SpecLog) -> BTreeSet<u64> {
+    let dispatched = log.last_dispatch_by_wave();
     log.unassumed_returns()
         .into_iter()
         .filter(|e| e.event_type == "delivered")
-        .filter_map(|e| e.wave().filter(|n| e.id > super::report::dispatched_at(log, *n).unwrap_or_default()))
+        .filter_map(|e| e.wave().filter(|n| e.id > dispatched.get(n).copied().unwrap_or_default()))
         .collect()
 }
 
@@ -653,7 +682,7 @@ fn dependencies_of(n: u64, depends: &BTreeMap<u64, Vec<u64>>) -> BTreeSet<u64> {
 /// não existisse: a onda volta para a fila e sai com o pedido do plano
 /// atual.
 pub(crate) fn waves_to_redo(log: &SpecLog) -> BTreeSet<u64> {
-    let last_send = log.last_by_wave("send");
+    let last_send = log.last_dispatch_by_wave();
     let replanned = waves_replanned(log);
     waves_pending_fix(log)
         .into_iter()

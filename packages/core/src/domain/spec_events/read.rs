@@ -576,6 +576,43 @@ impl SpecLog {
         last
     }
 
+    /// A posição em que o envio `id` despachou a onda: o número do envio
+    /// original da cadeia de `replaces`. A versão de um envio que só
+    /// acrescenta o consumo não despacha nada de novo — ela substitui o
+    /// envio e o mantém no lugar em que a onda saiu —, então a entrega, o
+    /// veredito, o clique do usuário e a mudança de plano que chegam depois do
+    /// despacho valem depois dele, esteja a versão do consumo gravada antes ou
+    /// depois deles. É a única conta de "antes ou depois do envio": quem
+    /// compara um número da spec com o envio de uma onda lê daqui, nunca do
+    /// número da versão mais nova. O envio que não substitui nada — o pedido
+    /// novo e o reenvio — é a própria posição.
+    #[must_use]
+    pub fn dispatch_position(&self, id: u64) -> u64 {
+        chain_root(&self.send_versions(), id)
+    }
+
+    /// O último envio de cada onda do bloco das ondas, na posição em que ele
+    /// despachou a onda ([`Self::dispatch_position`]): o número que a entrega,
+    /// o veredito e o plano que vêm depois dele são comparados. A onda sem
+    /// envio não aparece.
+    #[must_use]
+    pub fn last_dispatch_by_wave(&self) -> BTreeMap<u64, u64> {
+        let versions = self.send_versions();
+        self.last_by_wave("send").into_iter().map(|(n, id)| (n, chain_root(&versions, id))).collect()
+    }
+
+    /// Cada versão de envio que substitui outro envio, com o número do que ela
+    /// substitui.
+    fn send_versions(&self) -> BTreeMap<u64, u64> {
+        let sends: BTreeSet<u64> =
+            self.events.iter().filter(|e| e.event_type == "send").map(|e| e.id).collect();
+        self.events
+            .iter()
+            .filter(|e| e.event_type == "send")
+            .filter_map(|e| e.int("replaces").filter(|older| sends.contains(older)).map(|older| (e.id, older)))
+            .collect()
+    }
+
     /// Um bloco, só com o que a leitura mostra. Uma onda (`wave-2`) traz a
     /// onda, as tarefas, os envios e os entregou dela, e as skills que as
     /// tarefas dela nomeiam.
@@ -654,6 +691,21 @@ impl SpecLog {
         picked.into_values().collect()
     }
 
+}
+
+/// O envio original da cadeia de versões que começa em `id`: segue cada versão
+/// até a que ela substitui, até uma que não substitui nada. O limite só
+/// protege a leitura de um arquivo editado à mão que feche a cadeia em
+/// círculo.
+fn chain_root(versions: &BTreeMap<u64, u64>, id: u64) -> u64 {
+    let mut at = id;
+    for _ in 0..=versions.len() {
+        match versions.get(&at) {
+            Some(older) => at = *older,
+            None => break,
+        }
+    }
+    at
 }
 
 /// Junta eventos por número, sem repetição.
@@ -766,6 +818,51 @@ mod tests {
 
     fn log_of(lines: &[serde_json::Value]) -> SpecLog {
         parse_log(&lines.iter().map(serde_json::Value::to_string).collect::<Vec<_>>().join("\n"))
+    }
+
+    /// A versão de um envio que só traz o consumo mantém o lugar em que o
+    /// envio despachou a onda, gravada antes ou depois da entrega, do
+    /// veredito ou de uma mudança de plano; o reenvio, que não substitui
+    /// nada, é um despacho novo. Só um envio conta como envio substituído, e
+    /// a cadeia fechada em círculo por um arquivo editado à mão termina.
+    #[test]
+    fn a_consumption_version_of_a_send_keeps_the_place_where_the_send_dispatched_the_wave() {
+        use serde_json::json;
+        let log = log_of(&[
+            json!({"v":1,"id":1,"at":"t","type":"wave","n":2,"text":"Duas."}),
+            json!({"v":1,"id":2,"at":"t","type":"send","wave":2,"role":"wave","text":"Pedido."}),
+            json!({"v":1,"id":3,"at":"t","type":"delivered","wave":2,"text":"Saiu.","returned":true}),
+            json!({"v":1,"id":4,"at":"t","type":"send","wave":2,"role":"wave","text":"Pedido.","replaces":2}),
+            json!({"v":1,"id":5,"at":"t","type":"send","wave":2,"role":"wave","text":"Pedido.","replaces":4}),
+        ]);
+        assert_eq!(log.last_by_wave("send").get(&2), Some(&5), "a versão mais nova é a que a leitura mostra");
+        assert_eq!((log.dispatch_position(2), log.dispatch_position(4), log.dispatch_position(5)), (2, 2, 2));
+        assert_eq!(log.last_dispatch_by_wave().get(&2), Some(&2), "a versão do consumo não despacha nada de novo");
+
+        let mut resent = log_of(&[
+            json!({"v":1,"id":1,"at":"t","type":"wave","n":2,"text":"Duas."}),
+            json!({"v":1,"id":2,"at":"t","type":"send","wave":2,"role":"wave","text":"Pedido."}),
+            json!({"v":1,"id":3,"at":"t","type":"send","wave":2,"role":"wave","text":"Pedido.","replaces":2}),
+            json!({"v":1,"id":4,"at":"t","type":"send","wave":2,"role":"wave","text":"Pedido.","resends":3}),
+            json!({"v":1,"id":5,"at":"t","type":"send","wave":2,"role":"wave","text":"Pedido.","replaces":4}),
+        ]);
+        assert_eq!(resent.last_dispatch_by_wave().get(&2), Some(&4), "o reenvio é um despacho novo");
+        assert_eq!(resent.dispatch_position(3), 2);
+
+        // Uma versão que aponta outra coisa que não um envio não substitui envio nenhum.
+        resent = log_of(&[
+            json!({"v":1,"id":1,"at":"t","type":"wave","n":2,"text":"Duas."}),
+            json!({"v":1,"id":2,"at":"t","type":"delivered","wave":2,"text":"Saiu."}),
+            json!({"v":1,"id":3,"at":"t","type":"send","wave":2,"role":"wave","text":"Pedido.","replaces":2}),
+        ]);
+        assert_eq!(resent.dispatch_position(3), 3);
+
+        let circle = log_of(&[
+            json!({"v":1,"id":1,"at":"t","type":"send","wave":2,"role":"wave","text":"A.","replaces":2}),
+            json!({"v":1,"id":2,"at":"t","type":"send","wave":2,"role":"wave","text":"B.","replaces":1}),
+        ]);
+        assert!([1, 2].contains(&circle.dispatch_position(1)), "a leitura termina");
+        assert_eq!(parse_log("").dispatch_position(7), 7);
     }
 
     /// A volta do agente que a rodada assumiu segue substituída pela entrega

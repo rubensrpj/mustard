@@ -18,26 +18,55 @@ use mustard_core::platform::git;
 use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Value};
 
-use super::queue::{max_parallel, open_review, open_sends, orphaned_waves};
+use super::commit::{Kept, Keeping};
+use super::queue::{max_parallel, open_review, orphaned_waves, unanswered_sends};
 use crate::commands::git_settle::{enter_unit_branch, submodule_holding, submodules_of};
 use crate::commands::wave::wave_overlap_check::wave_graph;
 
+/// Cada cópia gravada por uma onda que ainda a segura, com as ondas que a
+/// seguram: a do envio sem volta oficial ([`unanswered_sends`]) — a órfã
+/// inclusive, que a rodada reenvia na mesma vaga, a que ganhou plano novo
+/// depois do pedido e a da onda que voltou e espera a rodada, cuja entrega
+/// ainda não é oficial e guarda o código até o commit. A cópia é a gravada no
+/// último envio de cada onda, como o envio a grava.
+fn copy_holders(log: &SpecLog) -> BTreeMap<String, BTreeSet<u64>> {
+    let mut holders: BTreeMap<String, BTreeSet<u64>> = BTreeMap::new();
+    for wave in unanswered_sends(log).into_keys() {
+        if let Some(copy) = recorded_copy(log, wave) {
+            holders.entry(copy.path).or_default().insert(wave);
+        }
+    }
+    holders
+}
+
+/// As ondas de `waves` cuja cópia gravada é também a de outra onda que a
+/// segura ([`copy_holders`]): a cópia que duas ondas dividem não é de
+/// nenhuma das duas, e nenhuma delas a apaga nem volta a ela.
+pub(super) fn sharing_copy(log: &SpecLog, waves: impl IntoIterator<Item = u64>) -> BTreeSet<u64> {
+    let holders = copy_holders(log);
+    waves
+        .into_iter()
+        .filter(|wave| {
+            recorded_copy(log, *wave)
+                .and_then(|copy| holders.get(&copy.path).cloned())
+                .is_some_and(|by| by.iter().any(|other| other != wave))
+        })
+        .collect()
+}
+
 /// As vagas presas da spec `spec`, lida em `log`, cada uma pelo caminho como
-/// o envio a grava: a cópia gravada em cada envio aberto de onda — a órfã
-/// inclusive, que a rodada reenvia na mesma vaga — e, com a revisão final
-/// aberta, a vaga que o envio dela gravou. A vaga da revisão é a que o
-/// fechamento preparou, e continua dela até o veredito, mesmo que outra onda
-/// saia e comite depois. O envio de revisão antigo, sem a cópia gravada, cai
-/// na vaga da última onda ([`final_copy_path`]). É a conta única da vaga
-/// ocupada: o despacho não entrega nenhuma delas a outra onda, e a busca dos
-/// processos presos não encerra o que roda nelas.
+/// o envio a grava: a cópia de cada onda que a segura ([`copy_holders`]) — a
+/// do envio aberto, a órfã inclusive, e a da onda com volta ainda não
+/// assumida — e, com a revisão final aberta, a vaga que o envio dela gravou.
+/// A vaga da revisão é a que o fechamento preparou, e continua dela até o
+/// veredito, mesmo que outra onda saia e comite depois. O envio de revisão
+/// antigo, sem a cópia gravada, cai na vaga da última onda
+/// ([`final_copy_path`]). É a conta única da vaga ocupada: o despacho não
+/// entrega nenhuma delas a outra onda, e a busca dos processos presos não
+/// encerra o que roda nelas.
 pub(crate) fn held_slots(root: &Path, spec: &str, log: &SpecLog) -> BTreeSet<String> {
-    let mut held: BTreeSet<String> = open_sends(log)
-        .keys()
-        .filter_map(|wave| recorded_copy(log, *wave))
-        .map(|copy| copy.path)
-        .filter(|copy| is_slot_of(root, spec, copy))
-        .collect();
+    let mut held: BTreeSet<String> =
+        copy_holders(log).into_keys().filter(|copy| is_slot_of(root, spec, copy)).collect();
     if let Some(review) = open_review(log) {
         let recorded = log.get(review).and_then(|sent| sent.str_field("copy")).map(str::to_string);
         held.insert(recorded.unwrap_or_else(|| shown(&final_copy_path(root, spec, log))));
@@ -80,16 +109,41 @@ pub(super) fn open_copies(
     // ao commit atual sozinha, nesta rodada, sem esperar o reenvio pedir
     // isso: a onda falhou no meio do trabalho, e o que ela deixou para trás
     // não é uma retomada em curso. A vaga continua dela até o reenvio.
-    for wave in orphaned_waves(log).keys() {
-        super::commit::clean_orphan_copy(root, log, *wave);
+    // A cópia que outra onda também segura fica como está: limpá-la apagaria o
+    // trabalho da outra.
+    // O que ela tem e o commit atual não tem fica guardado antes; a que não
+    // pôde guardar segue como está, com a vaga presa, e o aviso diz por quê.
+    let mut warnings = Vec::new();
+    let shared = sharing_copy(log, orphaned_waves(log).into_keys());
+    for wave in orphaned_waves(log).keys().filter(|wave| !shared.contains(wave)) {
+        match super::commit::clean_orphan_copy(root, log, spec, *wave) {
+            Ok(kept) => warnings.extend(kept.iter().map(|one| code_kept(one, lang))),
+            Err(detail) => {
+                let hint = translate("round.copy_not_cleaned", lang)
+                    .replace("{wave}", &wave.to_string())
+                    .replace("{detail}", &detail);
+                warnings.push(json!({ "reason": "copy-not-cleaned", "wave": wave, "hint": hint }));
+            }
+        }
     }
     let held = held_slots(root, spec, log);
-    let mut free: Vec<PathBuf> =
-        (0..max_parallel(root)).map(|slot| slot_path(root, spec, slot)).filter(|slot| !held.contains(&shown(slot))).collect();
+    // A onda que sai de novo e é a única dona da vaga que o último envio dela
+    // gravou — a replanejada — volta a ela: é a vaga dela, não a de outra.
+    let holders = copy_holders(log);
+    let own: BTreeSet<String> = waves
+        .iter()
+        .filter_map(|wave| recorded_copy(log, *wave).map(|copy| (*wave, copy.path)))
+        .filter(|(wave, path)| holders.get(path).is_some_and(|by| by.iter().all(|other| other == wave)))
+        .map(|(_, path)| path)
+        .collect();
+    let mut free: Vec<PathBuf> = (0..max_parallel(root))
+        .map(|slot| slot_path(root, spec, slot))
+        .filter(|slot| !held.contains(&shown(slot)) || own.contains(&shown(slot)))
+        .collect();
 
     // A onda que volta à vaga que o último envio dela gravou pega essa vaga
     // antes de as outras escolherem.
-    let sends = log.last_by_wave("send");
+    let sends = log.last_dispatch_by_wave();
     let delivered = log.last_by_wave("delivered");
     let mut chosen: BTreeMap<u64, (PathBuf, bool)> = BTreeMap::new();
     for wave in waves {
@@ -97,7 +151,7 @@ pub(super) fn open_copies(
         if delivered.get(wave).is_some_and(|id| id > sent) {
             continue;
         }
-        let Some(copy) = log.get(*sent).and_then(|event| event.str_field("copy")) else { continue };
+        let Some(copy) = recorded_copy(log, *wave).map(|copy| copy.path) else { continue };
         if let Some(at) = free.iter().position(|slot| shown(slot) == copy) {
             chosen.insert(*wave, (free.remove(at), true));
         }
@@ -109,7 +163,6 @@ pub(super) fn open_copies(
     }
 
     let mut copies = BTreeMap::new();
-    let mut warnings = Vec::new();
     let failed = |wave: u64, detail: String| {
         let hint = translate("round.copy_failed", lang).replace("{wave}", &wave.to_string()).replace("{detail}", &detail);
         json!({ "reason": "copy-not-created", "wave": wave, "hint": hint })
@@ -128,14 +181,19 @@ pub(super) fn open_copies(
             .collect();
         let made = match &head {
             Err(detail) => Err(detail.clone()),
-            Ok(head) => if own { ensure_copy(root, &path, head) } else { reset_slot(root, &path, head) }
-                .and_then(|prepared| {
+            Ok(head) => if own {
+                ensure_copy(root, &path, head)
+            } else {
+                reset_slot(root, &path, head, &slot_owner(spec, log, &path))
+            }
+            .and_then(|prepared| {
                     touched.iter().try_for_each(|sub| copy_submodule(root, &path, sub, &unit)).map(|()| prepared)
                 }),
         };
         match made {
             Ok(prepared) => {
                 let copy = shown(&path);
+                warnings.extend(prepared.kept.iter().map(|one| code_kept(one, lang)));
                 for file in prepared.missing {
                     let hint = local_file_missing(&file, &copy, lang);
                     warnings.push(json!({ "reason": "local-file-missing", "wave": wave, "file": file, "hint": hint }));
@@ -162,6 +220,9 @@ pub(crate) struct Prepared {
     /// O commit em que a vaga estava e os arquivos que mudaram de lá até o
     /// commit atual; `None` na vaga nova.
     pub(crate) reused: Option<Reuse>,
+    /// O que a preparação guardou antes de zerar a vaga: o código que ela
+    /// tinha e o commit atual não tem.
+    pub(crate) kept: Vec<Kept>,
 }
 
 /// A cópia em `path`, no commit `head` do checkout `root`, com o que ela já
@@ -182,10 +243,10 @@ pub(crate) fn ensure_copy(root: &Path, path: &Path, head: &str) -> Result<Prepar
         .out()
         .is_some_and(|status| status.is_empty());
     if !clean {
-        return Ok(Prepared { missing: Vec::new(), reused: Some(Reuse { since: before, changed: Vec::new() }) });
+        return Ok(Prepared { missing: Vec::new(), reused: Some(Reuse { since: before, changed: Vec::new() }), kept: Vec::new() });
     }
     git::run(path, &["checkout", "--detach", head]).result()?;
-    Ok(Prepared { missing: copy_local_files(root, path), reused: changed_since(root, &before, head) })
+    Ok(Prepared { missing: copy_local_files(root, path), reused: changed_since(root, &before, head), kept: Vec::new() })
 }
 
 /// A vaga em `path` zerada no commit `head` do checkout `root`: a cópia viva
@@ -195,15 +256,54 @@ pub(crate) fn ensure_copy(root: &Path, path: &Path, head: &str) -> Result<Prepar
 /// instaladas — fica, e o git só troca o arquivo que mudou: o resto guarda a
 /// data, e a compilação refaz só o que mudou. A pasta que não é cópia viva
 /// nasce de novo ([`new_copy`]). Depois, os arquivos locais do projeto.
-pub(crate) fn reset_slot(root: &Path, path: &Path, head: &str) -> Result<Prepared, String> {
+pub(crate) fn reset_slot(root: &Path, path: &Path, head: &str, owner: &Keeping) -> Result<Prepared, String> {
     if !live_copy(path) {
         return new_copy(root, path, head);
     }
     let before = git::run(path, &["rev-parse", "HEAD"]).out().unwrap_or_default();
-    if !super::commit::reset_with_submodules(root, path, head) {
-        return Err(format!("git checkout --detach --force {head}: {}", shown(path)));
+    let kept = super::commit::reset_with_submodules(root, path, head, owner)?;
+    Ok(Prepared { missing: copy_local_files(root, path), reused: changed_since(root, &before, head), kept })
+}
+
+/// De quem é o que a vaga `path` da obra `spec` tem, para o que a limpeza
+/// guarda ([`Keeping`]): a onda do envio mais novo que gravou essa vaga, e
+/// esse envio no nome da ref; a vaga que nenhum envio gravou fica com o nome
+/// dela.
+pub(crate) fn slot_owner(spec: &str, log: &SpecLog, path: &Path) -> Keeping {
+    let slot = shown(path);
+    let owner = log
+        .visible()
+        .into_iter()
+        .filter(|sent| sent.event_type == "send" && sent.str_field("copy") == Some(slot.as_str()))
+        .filter_map(|sent| sent.wave().map(|wave| (wave, sent.id)))
+        .max_by_key(|(_, id)| *id);
+    match owner {
+        Some((wave, sent)) => Keeping { label: format!("{spec}/{wave}-{sent}"), wave: Some(wave) },
+        None => {
+            let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+            Keeping { label: format!("{spec}/{name}"), wave: None }
+        }
     }
-    Ok(Prepared { missing: copy_local_files(root, path), reused: changed_since(root, &before, head) })
+}
+
+/// O texto que diz o código que uma limpeza guardou: de quem era, onde ficou
+/// e como trazê-lo de volta.
+pub(crate) fn code_kept_hint(kept: &Kept, lang: Locale) -> String {
+    match kept.wave {
+        Some(wave) => translate("round.code_kept", lang).replace("{wave}", &wave.to_string()),
+        None => translate("round.code_kept_slot", lang).to_string(),
+    }
+    .replace("{copy}", &kept.copy)
+    .replace("{ref}", &kept.refname)
+}
+
+/// O aviso do código que uma limpeza guardou, com o texto de
+/// [`code_kept_hint`].
+fn code_kept(kept: &Kept, lang: Locale) -> Value {
+    json!({
+        "reason": "code-kept", "wave": kept.wave, "ref": kept.refname, "files": kept.files,
+        "hint": code_kept_hint(kept, lang),
+    })
 }
 
 /// A pasta `path` é uma cópia viva do git: tem o arquivo `.git` de uma cópia
@@ -230,7 +330,7 @@ fn new_copy(root: &Path, path: &Path, head: &str) -> Result<Prepared, String> {
     git::run(root, &["worktree", "prune"]).result()?;
     let target = path.to_string_lossy();
     git::run(root, &["worktree", "add", "--detach", &target, head]).result()?;
-    Ok(Prepared { missing: copy_local_files(root, path), reused: None })
+    Ok(Prepared { missing: copy_local_files(root, path), reused: None, kept: Vec::new() })
 }
 
 /// Os arquivos que mudaram do commit `before` ao commit `head`, que o git do
@@ -318,38 +418,100 @@ pub(crate) fn spec_copies(root: &Path, spec: &str) -> Vec<String> {
     slots
 }
 
+/// De quem é o que a cópia `path` tem, quando nenhum envio a gravou: o nome
+/// da obra (`spec`, ou `copy` sem obra) e o nome da pasta dela.
+fn named_keeping(spec: &str, path: &Path) -> Keeping {
+    let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+    let owner = if spec.is_empty() { "copy" } else { spec };
+    Keeping { label: format!("{owner}/{name}"), wave: None }
+}
+
+/// Guarda o código de `slot` além do commit atual ([`keep_copy_code`]) e só
+/// então a tira ([`remove_copy`]): a cópia que não pôde guardar fica como
+/// está, em `removal.unkept`, com o motivo. O que guardou vai em
+/// `removal.kept`, e a que o git não deixou sair, em `removal.left`.
+fn remove_keeping(root: &Path, slot: &Path, keeping: &Keeping, removal: &mut Removal) {
+    match super::commit::keep_copy_code(root, slot, keeping) {
+        Ok(kept) => removal.kept.extend(kept),
+        Err(detail) => {
+            removal.unkept.push((shown(slot), detail));
+            return;
+        }
+    }
+    if let Err(detail) = remove_copy(root, slot) {
+        removal.left.push((shown(slot), detail));
+    }
+}
+
+/// Tira a cópia solta `path` — de um lugar antigo, sem a pasta da obra em
+/// volta — guardando antes o que ela tem além do commit, como
+/// [`remove_spec_copies`]. `spec` é a obra dela, quando se sabe.
+pub(crate) fn remove_single_copy(root: &Path, path: &Path, spec: &str) -> Removal {
+    let mut removal = Removal::default();
+    if !inside_copies(root, path) {
+        removal.left.push((shown(path), format!("not a copy folder: {}", shown(path))));
+        return removal;
+    }
+    remove_keeping(root, path, &named_keeping(spec, path), &mut removal);
+    removal
+}
+
+/// O que [`remove_spec_copies`] fez: as cópias que não saíram e o código que
+/// guardou antes de apagar.
+#[derive(Debug, Default)]
+pub(crate) struct Removal {
+    /// Cada cópia que não saiu, com o motivo que o git deu.
+    pub(crate) left: Vec<(String, String)>,
+    /// Cada cópia que ficou intacta porque o código que ela tem além do
+    /// commit não pôde ser guardado antes, com o motivo.
+    pub(crate) unkept: Vec<(String, String)>,
+    /// O código que a remoção guardou antes de apagar, cópia por cópia.
+    pub(crate) kept: Vec<Kept>,
+}
+
 /// Tira todas as cópias da obra `spec` — cada vaga, com as cópias dos
 /// submódulos dentro dela ([`remove_copy`]) — e apaga a pasta dela
 /// ([`spec_copies_dir`]), com a trava do passo do git presa. Chamado pelo
-/// fechamento, pelo descarte e por `mustard-rt run clean`. Devolve cada
-/// cópia que não saiu, com o motivo; a pasta principal e a compilação dela
-/// nunca entram.
-pub(crate) fn remove_spec_copies(root: &Path, spec: &str) -> Vec<(String, String)> {
+/// fechamento, pelo descarte e por `mustard-rt run clean`. Antes de apagar
+/// cada vaga, guarda o que ela tem além do commit atual ([`keep_copy_code`],
+/// com o dono lido de `log` quando há): a vaga que não pôde guardar não é
+/// apagada, e o motivo vai em `unkept`. Devolve cada cópia que não saiu, com
+/// o motivo, e o que guardou; a pasta principal e a compilação dela nunca
+/// entram.
+pub(crate) fn remove_spec_copies(root: &Path, spec: &str, log: Option<&SpecLog>) -> Removal {
     let dir = spec_copies_dir(root, spec);
     let single = Path::new(spec).components().count() == 1
         && matches!(Path::new(spec).components().next(), Some(std::path::Component::Normal(_)));
     if !single || dir.parent() != Some(copies_dir(root).as_path()) {
-        return vec![(shown(&dir), format!("not a copy folder: {}", shown(&dir)))];
+        return Removal { left: vec![(shown(&dir), format!("not a copy folder: {}", shown(&dir)))], ..Removal::default() };
     }
     if !dir.exists() {
-        return Vec::new();
+        return Removal::default();
     }
     let _held = match crate::commands::git_settle::git_step_lock(root) {
         Ok(held) => held,
-        Err(detail) => return vec![(shown(&dir), detail)],
+        Err(detail) => return Removal { left: vec![(shown(&dir), detail)], ..Removal::default() },
     };
-    let slots: Vec<PathBuf> = std::fs::read_dir(&dir)
+    let mut slots: Vec<PathBuf> = std::fs::read_dir(&dir)
         .map(|entries| entries.flatten().map(|entry| entry.path()).filter(|path| path.is_dir()).collect())
         .unwrap_or_default();
-    let mut left: Vec<(String, String)> =
-        slots.iter().filter_map(|slot| remove_copy(root, slot).err().map(|detail| (shown(slot), detail))).collect();
-    if left.is_empty()
+    slots.sort();
+    let mut removal = Removal::default();
+    for slot in &slots {
+        let keeping = match log {
+            Some(log) => slot_owner(spec, log, slot),
+            None => named_keeping(spec, slot),
+        };
+        remove_keeping(root, slot, &keeping, &mut removal);
+    }
+    if removal.left.is_empty()
+        && removal.unkept.is_empty()
         && dir.exists()
         && let Err(err) = std::fs::remove_dir_all(&dir)
     {
-        left.push((shown(&dir), err.to_string()));
+        removal.left.push((shown(&dir), err.to_string()));
     }
-    left
+    removal
 }
 
 /// Os arquivos locais que o projeto `root` declara (`localFiles`, no
@@ -571,7 +733,7 @@ mod tests {
 
         for spec in ["x/a", ".."] {
             let folder = shown(&spec_copies_dir(root, spec));
-            let refused = remove_spec_copies(root, spec);
+            let refused = remove_spec_copies(root, spec, None).left;
             assert_eq!(refused, vec![(folder.clone(), format!("not a copy folder: {folder}"))], "{spec}");
         }
         assert_eq!(std::fs::read_to_string(slot.join("src").join("lib.rs")).unwrap(), "fn um() {}\n", "a vaga fica");

@@ -134,9 +134,9 @@ pub(crate) fn discard_for(opts: &DiscardOpts, session: Option<&str>) -> Value {
     // da spec sair do lugar. A cópia que não sai vira aviso, sem derrubar o
     // descarte.
     let copies_left = if phase_written {
-        crate::commands::flow::round::remove_spec_copies(&project.root, &spec)
+        crate::commands::flow::round::remove_spec_copies(&project.root, &spec, Some(&log))
     } else {
-        Vec::new()
+        crate::commands::flow::round::Removal::default()
     };
     // Depois das cópias, a pasta de compilação que o projeto declarou
     // descartável sai da pasta principal, como no fechamento.
@@ -197,8 +197,8 @@ pub(crate) fn discard_for(opts: &DiscardOpts, session: Option<&str>) -> Value {
         out["reason"] = json!("discard-incomplete");
         out["hint"] = json!(translate("discard.incomplete", lang));
     }
-    if let Some(hint) = crate::commands::flow::close::copies_kept_hint(&copies_left, lang) {
-        spec_events::pages::push_warning(&mut out, "copies-kept", &hint);
+    for (reason, hint) in crate::commands::flow::close::removal_warnings(&copies_left, lang) {
+        spec_events::pages::push_warning(&mut out, reason, &hint);
     }
     if let Some(swept) = &build_output {
         swept.tell(&mut out);
@@ -424,6 +424,41 @@ mod tests {
         let built = root.join("target").join("debug").join("mustard");
         assert_eq!(std::fs::read_to_string(built).unwrap(), "compilado", "a compilação principal fica");
         assert!(root.join("mustard.json").is_file() && root.join(".git").is_dir(), "a pasta principal fica");
+    }
+
+    /// O descarte guarda o código que uma vaga tem além do commit antes de
+    /// apagá-la: a vaga sai, o código fica sob uma ref do repositório
+    /// principal, e a resposta nomeia a ref e o comando para trazê-lo de volta.
+    #[test]
+    fn discarding_keeps_the_code_a_copy_holds_beyond_the_commit_before_removing_it() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let slots = project_with_copies(root, "x");
+        std::fs::write(slots[0].join("depois.txt"), "código de última hora").unwrap();
+
+        let preview = discard(root, "x", None, false, false);
+        let code = preview["token"].as_str().unwrap_or_default().to_string();
+        let done = discard(root, "x", Some(&code), false, false);
+        assert_eq!(done["ok"], json!(true), "{done}");
+        assert!(slots.iter().all(|slot| !slot.exists()), "{done}");
+        let listed = std::process::Command::new("git")
+            .args(["for-each-ref", "--format=%(refname)", "refs/mustard/kept"])
+            .current_dir(root)
+            .output()
+            .expect("git");
+        let refs: Vec<String> = String::from_utf8_lossy(&listed.stdout).lines().map(str::to_string).collect();
+        assert_eq!(refs.len(), 1, "{refs:?}");
+        let shown = std::process::Command::new("git")
+            .args(["show", &format!("{}:depois.txt", refs[0])])
+            .current_dir(root)
+            .output()
+            .expect("git");
+        assert_eq!(String::from_utf8_lossy(&shown.stdout), "código de última hora", "{refs:?}");
+        let warnings = done["warnings"].as_array().cloned().unwrap_or_default();
+        let hints: Vec<&str> =
+            warnings.iter().filter(|w| w["reason"] == json!("code-kept")).filter_map(|w| w["hint"].as_str()).collect();
+        assert_eq!(hints.len(), 1, "{done}");
+        assert!(hints[0].contains(&format!("git cherry-pick --no-commit {}", refs[0])), "{}", hints[0]);
     }
 
     /// O descarte confirmado apaga da pasta principal a pasta de compilação

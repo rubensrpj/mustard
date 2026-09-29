@@ -99,7 +99,7 @@ fn is_change_code(word: &str) -> bool {
 /// uma delas: só a testemunha grava o clique.
 pub(crate) fn change_accepted(log: &SpecLog, wave: u64, code: &str) -> bool {
     let langs = [Locale::PtBr, Locale::EnUs];
-    let sent = log.last_by_wave("send").get(&wave).copied().unwrap_or(0);
+    let sent = log.last_dispatch_by_wave().get(&wave).copied().unwrap_or(0);
     let last_click = log
         .block(BlockQuery::Block(Block::Conversation))
         .into_iter()
@@ -267,7 +267,7 @@ fn last_reset_by_user(log: &SpecLog, verdicts: &BTreeMap<u64, Vec<&SpecEvent>>) 
 /// As ondas replanejadas depois do último pedido: a onda, ou uma tarefa dela,
 /// ganhou versão nova depois do envio.
 pub(super) fn waves_replanned(log: &SpecLog) -> BTreeSet<u64> {
-    let last_send = log.last_by_wave("send");
+    let last_send = log.last_dispatch_by_wave();
     last_planned(log)
         .into_iter()
         .filter(|(n, planned)| last_send.get(n).is_some_and(|sent| sent < planned))

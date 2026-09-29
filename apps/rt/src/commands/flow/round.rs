@@ -146,9 +146,10 @@ pub(crate) use convert::convert_hand_waves;
 pub(crate) use queue::{backlog_left, open_review, tasks_left, wave_states, waves_in_progress, waves_pending_fix};
 #[cfg(test)]
 pub(crate) use slots::copies_leave_with_the_test;
+pub(crate) use commit::Kept;
 pub(crate) use slots::{
-    ensure_copy, held_slots, local_file_ignored, local_file_missing, remove_copy, remove_spec_copies, reset_slot,
-    spec_copies,
+    code_kept_hint, ensure_copy, held_slots, local_file_ignored, local_file_missing, remove_single_copy,
+    remove_spec_copies, reset_slot, slot_owner, spec_copies, Removal,
 };
 pub(crate) use report::{check_return, check_verdict_return, take_report};
 pub(crate) use usage::Caller;
@@ -530,6 +531,13 @@ mod tests {
     pub(super) fn change_asked(out: &Value) -> Value {
         let mut warnings = out["warnings"].as_array().into_iter().flatten();
         warnings.find(|w| w["reason"] == json!("wave-plan-does-not-work")).cloned().unwrap_or(Value::Null)
+    }
+
+    /// O aviso da resposta `out` com o motivo `reason`, que precisa existir:
+    /// o teste que o pede falha, com a resposta inteira, quando ele não saiu.
+    pub(super) fn warning_of(out: &Value, reason: &str) -> Value {
+        let mut warnings = out["warnings"].as_array().into_iter().flatten();
+        warnings.find(|w| w["reason"] == json!(reason)).cloned().unwrap_or_else(|| panic!("no {reason} warning: {out}"))
     }
 
     /// As ondas de uma resposta da rodada, num campo dela.
