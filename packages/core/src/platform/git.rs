@@ -152,6 +152,14 @@ impl GitRun {
 /// that a commit, an add or a merge needs is not optional and stays as it is.
 #[must_use]
 pub fn run(root: &Path, args: &[&str]) -> GitRun {
+    run_env(root, args, &[])
+}
+
+/// O mesmo que [`run`], com variáveis de ambiente a mais para esta chamada só:
+/// `GIT_INDEX_FILE` é o caso de quem monta uma árvore num índice temporário
+/// sem tocar o do repositório. Continua sendo o único lugar que roda o git.
+#[must_use]
+pub fn run_env(root: &Path, args: &[&str], env: &[(&str, &str)]) -> GitRun {
     let config = owner_of(root).map(|owner| ProjectConfig::load(&owner)).unwrap_or_default();
     let Some(binary) = config.vcs() else {
         return GitRun { ok: false, stdout: String::new(), stderr: OPTED_OUT.to_string() };
@@ -162,6 +170,7 @@ pub fn run(root: &Path, args: &[&str]) -> GitRun {
         .stdin(std::process::Stdio::null())
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_OPTIONAL_LOCKS", "0")
+        .envs(env.iter().copied())
         .output()
     {
         Ok(out) => GitRun {

@@ -706,10 +706,11 @@ fn prepare_review_copy(
         None => git::run(root, &["rev-parse", "HEAD"]).result().map_err(&failed)?,
     };
     let _held = crate::commands::git_settle::git_step_lock(root).map_err(&failed)?;
+    let owner = crate::commands::flow::round::slot_owner(spec, log, path);
     let prepared = if reviewed {
-        crate::commands::flow::round::ensure_copy(root, path, &commit)
+        crate::commands::flow::round::ensure_copy(root, path, &commit, &owner)
     } else {
-        crate::commands::flow::round::reset_slot(root, path, &commit, &crate::commands::flow::round::slot_owner(spec, log, path))
+        crate::commands::flow::round::reset_slot(root, path, &commit, &owner)
     };
     prepared.map(|prepared| (prepared.missing, prepared.kept)).map_err(failed)
 }

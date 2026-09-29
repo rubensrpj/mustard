@@ -118,6 +118,7 @@ mod commit;
 mod convert;
 mod copy_check;
 mod imports_check;
+mod keep;
 mod leftovers;
 mod queue;
 mod removed_check;
@@ -146,7 +147,7 @@ pub(crate) use convert::convert_hand_waves;
 pub(crate) use queue::{backlog_left, open_review, tasks_left, wave_states, waves_in_progress, waves_pending_fix};
 #[cfg(test)]
 pub(crate) use slots::copies_leave_with_the_test;
-pub(crate) use commit::Kept;
+pub(crate) use keep::Kept;
 pub(crate) use slots::{
     code_kept_hint, ensure_copy, held_slots, local_file_ignored, local_file_missing, remove_single_copy,
     remove_spec_copies, reset_slot, slot_owner, spec_copies, Removal,

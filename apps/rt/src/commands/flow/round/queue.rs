@@ -1673,6 +1673,165 @@ mod tests {
         assert_eq!(git_text(&slot, &["rev-parse", "HEAD"]), git_text(root, &["rev-parse", "HEAD"]));
     }
 
+    /// As refs que guardam código de cópia, no repositório principal.
+    fn folder_refs(root: &Path) -> Vec<String> {
+        git_text(root, &["for-each-ref", "--format=%(refname)", "refs/mustard/kept"])
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// Uma pasta de vaga que o git já não conhece: sem cópia ligada, com o
+    /// trabalho de quem a usou — um arquivo mudado (`src/a.rs`), um arquivo
+    /// igual ao do commit (`src/b.rs`) e dois arquivos novos — e um `.git`
+    /// que aponta para um registro que sumiu.
+    fn broken_slot_with_code(slot: &Path) {
+        std::fs::create_dir_all(slot.join("src")).unwrap();
+        std::fs::create_dir_all(slot.join("lixo")).unwrap();
+        std::fs::write(slot.join("src/a.rs"), "fn um() {}\n// o meio do trabalho\n").unwrap();
+        std::fs::write(slot.join("src/b.rs"), "fn um() {}\n").unwrap();
+        std::fs::write(slot.join("src/novo.rs"), "fn novo() {}\n").unwrap();
+        std::fs::write(slot.join("lixo/velho.txt"), "sobra\n").unwrap();
+        std::fs::write(slot.join(".git"), "gitdir: /sumiu/.git/worktrees/a\n").unwrap();
+    }
+
+    /// A pasta da vaga que o git esqueceu e tem código dentro não é apagada
+    /// sem antes ir para uma ref do repositório principal: a ref traz cada
+    /// arquivo novo ou mudado com o conteúdo de antes, o aviso lista só esses
+    /// e diz como trazê-los de volta, o arquivo igual ao do commit não conta,
+    /// o índice do principal não muda, e a onda sai numa cópia nova e limpa.
+    #[test]
+    fn a_broken_slot_folder_keeps_its_code_under_a_ref_before_it_is_rebuilt() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs", "src/b.rs"], &[])]);
+        let slot = slot_path(root, "x", 0);
+        broken_slot_with_code(&slot);
+
+        let out = round(root, "x", None);
+        assert_eq!(waves_in(&out, "dispatch"), vec![1], "{out}");
+        assert_eq!(sent_copy(root, 1), shown(&slot), "{out}");
+        let refs = folder_refs(root);
+        assert_eq!(refs.len(), 1, "{refs:?}");
+        assert!(refs[0].starts_with("refs/mustard/kept/x/a-"), "a ref diz a vaga: {refs:?}");
+        let show = |file: &str| git_text(root, &["show", &format!("{}:{file}", refs[0])]);
+        assert_eq!(show("src/novo.rs"), "fn novo() {}");
+        assert_eq!(show("lixo/velho.txt"), "sobra");
+        assert_eq!(show("src/a.rs"), "fn um() {}\n// o meio do trabalho");
+        let kept = warning_of(&out, "code-kept");
+        assert_eq!(kept["ref"], json!(refs[0]), "{out}");
+        assert_eq!(kept["files"], json!(["lixo/velho.txt", "src/a.rs", "src/novo.rs"]), "{out}");
+        let hint = translate("round.code_kept_slot", Locale::PtBr)
+            .replace("{copy}", &shown(&slot))
+            .replace("{ref}", &refs[0]);
+        assert_eq!(kept["hint"], json!(hint), "{kept}");
+        assert!(slot.join(".git").is_file() && !slot.join("src/novo.rs").exists(), "a cópia nova sai limpa: {out}");
+        assert_eq!(git_text(&slot, &["status", "--porcelain"]), "", "{out}");
+        assert_eq!(git_text(root, &["ls-files", "src/novo.rs", "lixo"]), "", "o índice do principal não muda");
+        let stray: Vec<String> = std::fs::read_dir(root.join(".git"))
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with("mustard-kept-index"))
+            .collect();
+        assert!(stray.is_empty(), "o índice temporário não fica: {stray:?}");
+    }
+
+    /// A pasta da vaga que o git esqueceu e não tem arquivo nenhum — só
+    /// pastas vazias e o `.git` solto — é apagada como sempre: nada é
+    /// guardado e nenhum aviso de código sai.
+    #[test]
+    fn a_broken_slot_folder_with_no_files_is_rebuilt_without_keeping_anything() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        let slot = slot_path(root, "x", 0);
+        std::fs::create_dir_all(slot.join("lixo/fundo")).unwrap();
+        std::fs::write(slot.join(".git"), "gitdir: /sumiu/.git/worktrees/a\n").unwrap();
+
+        let out = round(root, "x", None);
+        assert_eq!(waves_in(&out, "dispatch"), vec![1], "{out}");
+        assert_eq!(folder_refs(root), Vec::<String>::new(), "{out}");
+        let warned = out["warnings"].as_array().cloned().unwrap_or_default();
+        assert!(warned.iter().all(|w| w["reason"] != json!("code-kept")), "{out}");
+        assert!(slot.join(".git").is_file() && !slot.join("lixo").exists(), "a pasta virou cópia: {out}");
+    }
+
+    /// A pasta da vaga que o git esqueceu e cujo código não pôde ser
+    /// guardado não é apagada: o arquivo fica onde estava, a onda não sai, e o
+    /// aviso diz que a cópia não foi criada.
+    #[test]
+    fn a_broken_slot_folder_whose_code_could_not_be_kept_stays_and_the_wave_does_not_go_out() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        let slot = slot_path(root, "x", 0);
+        broken_slot_with_code(&slot);
+        // Uma ref no lugar da pasta das refs da spec: o git não cria as de dentro.
+        let head = git_text(root, &["rev-parse", "HEAD"]);
+        git_at(root, &["update-ref", "refs/mustard/kept/x", &head]);
+
+        let out = round(root, "x", None);
+        assert_eq!(waves_in(&out, "dispatch"), Vec::<u64>::new(), "{out}");
+        let failed = warning_of(&out, "copy-not-created");
+        assert_eq!(failed["wave"], json!(1), "{out}");
+        assert_eq!(std::fs::read_to_string(slot.join("src/novo.rs")).unwrap(), "fn novo() {}\n", "{out}");
+        assert_eq!(std::fs::read_to_string(slot.join("lixo/velho.txt")).unwrap(), "sobra\n", "{out}");
+        assert_eq!(folder_refs(root), vec!["refs/mustard/kept/x".to_string()], "nada foi guardado: {out}");
+    }
+
+    /// A vaga que uma onda usou e o git esqueceu guarda o código no nome
+    /// da onda: o dono que quem prepara a cópia passa vai para a ref e para
+    /// o que foi guardado.
+    #[test]
+    fn a_broken_folder_is_kept_under_the_owner_the_caller_names() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs", "src/b.rs"], &[])]);
+        let slot = slot_path(root, "x", 0);
+        broken_slot_with_code(&slot);
+        let head = git_text(root, &["rev-parse", "HEAD"]);
+
+        let owner = super::super::keep::Keeping { label: "x/1-7".to_string(), wave: Some(1) };
+        let prepared = crate::commands::flow::round::ensure_copy(root, &slot, &head, &owner).unwrap();
+        assert_eq!(prepared.kept.len(), 1);
+        let kept = &prepared.kept[0];
+        assert_eq!(kept.wave, Some(1));
+        assert!(kept.refname.starts_with("refs/mustard/kept/x/1-7-"), "{}", kept.refname);
+        assert_eq!(kept.files, ["lixo/velho.txt", "src/a.rs", "src/novo.rs"]);
+        assert_eq!(kept.copy, shown(&slot));
+        assert!(slot.join(".git").is_file() && !slot.join("src/novo.rs").exists());
+    }
+
+    /// Quem tira as cópias da obra (fechamento, descarte, limpeza) também
+    /// guarda antes o código da pasta que o git esqueceu: a ref tem o
+    /// arquivo, e só então a pasta sai. Com a guarda falhando, a pasta fica e
+    /// o motivo vai em `unkept`.
+    #[test]
+    fn removing_a_broken_slot_folder_keeps_its_code_first_and_leaves_it_when_it_cannot() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs", "src/b.rs"], &[])]);
+        let slot = slot_path(root, "x", 0);
+        broken_slot_with_code(&slot);
+        let head = git_text(root, &["rev-parse", "HEAD"]);
+        git_at(root, &["update-ref", "refs/mustard/kept/x", &head]);
+
+        let blocked = crate::commands::flow::round::remove_spec_copies(root, "x", None);
+        assert_eq!(blocked.unkept.len(), 1, "{blocked:?}");
+        assert!(slot.join("src/novo.rs").exists(), "a pasta fica quando não pôde guardar");
+
+        git_at(root, &["update-ref", "-d", "refs/mustard/kept/x"]);
+        let removal = crate::commands::flow::round::remove_spec_copies(root, "x", None);
+        assert!(removal.unkept.is_empty() && removal.left.is_empty(), "{removal:?}");
+        assert_eq!(removal.kept.len(), 1, "{removal:?}");
+        let refs = folder_refs(root);
+        assert_eq!(refs.len(), 1, "{refs:?}");
+        assert!(refs[0].starts_with("refs/mustard/kept/x/a-"), "{refs:?}");
+        assert_eq!(git_text(root, &["show", &format!("{}:src/novo.rs", refs[0])]), "fn novo() {}");
+        assert!(!slot.exists(), "só depois de guardar a pasta sai");
+    }
+
     /// Os avisos de arquivo local que não chegou à cópia, na resposta da
     /// rodada: o item da lista de cada um.
     fn local_files_missing(out: &Value) -> Vec<String> {

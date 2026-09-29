@@ -18,7 +18,7 @@ use mustard_core::platform::git;
 use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Value};
 
-use super::commit::{Kept, Keeping};
+use super::keep::{Kept, Keeping};
 use super::queue::{max_parallel, open_review, orphaned_waves, unanswered_sends};
 use crate::commands::git_settle::{enter_unit_branch, submodule_holding, submodules_of};
 use crate::commands::wave::wave_overlap_check::wave_graph;
@@ -107,7 +107,7 @@ pub(super) fn open_copies(
     let mut warnings = Vec::new();
     let shared = sharing_copy(log, orphaned_waves(log).into_keys());
     for wave in orphaned_waves(log).keys().filter(|wave| !shared.contains(wave)) {
-        match super::commit::clean_orphan_copy(root, log, spec, *wave) {
+        match super::keep::clean_orphan_copy(root, log, spec, *wave) {
             Ok(kept) => warnings.extend(kept.iter().map(|one| code_kept(one, lang))),
             Err(detail) => {
                 let hint = translate("round.copy_not_cleaned", lang)
@@ -173,7 +173,7 @@ pub(super) fn open_copies(
         let made = match &head {
             Err(detail) => Err(detail.clone()),
             Ok(head) => if own {
-                ensure_copy(root, &path, head)
+                ensure_copy(root, &path, head, &slot_owner(spec, log, &path))
             } else {
                 reset_slot(root, &path, head, &slot_owner(spec, log, &path))
             }
@@ -211,8 +211,8 @@ pub(crate) struct Prepared {
     /// O commit em que a vaga estava e os arquivos que mudaram de lá até o
     /// commit atual; `None` na vaga nova.
     pub(crate) reused: Option<Reuse>,
-    /// O que a preparação guardou antes de zerar a vaga: o código que ela
-    /// tinha e o commit atual não tem.
+    /// O que a preparação guardou antes de zerar ou apagar a vaga: o código
+    /// que ela tinha e o commit atual não tem.
     pub(crate) kept: Vec<Kept>,
 }
 
@@ -221,13 +221,13 @@ pub(crate) struct Prepared {
 /// commit `head`, porque um commit fora da rodada pode ter avançado o
 /// checkout principal desde o último uso dela. A que tem mudança, como a de
 /// uma retomada em andamento, fica como está. A pasta que não é cópia viva
-/// nasce de novo ([`new_copy`]).
+/// nasce de novo ([`new_copy`]), guardando antes o que ela tinha de `owner`.
 ///
 /// A cópia recebe os arquivos locais do projeto ([`copy_local_files`]): o git
 /// não os leva. A cópia sai mesmo com um deles faltando.
-pub(crate) fn ensure_copy(root: &Path, path: &Path, head: &str) -> Result<Prepared, String> {
+pub(crate) fn ensure_copy(root: &Path, path: &Path, head: &str, owner: &Keeping) -> Result<Prepared, String> {
     if !live_copy(path) {
-        return new_copy(root, path, head);
+        return new_copy(root, path, head, owner);
     }
     let before = git::run(path, &["rev-parse", "HEAD"]).out().unwrap_or_default();
     let clean = git::run(path, &["status", "--porcelain", "--untracked-files=all"])
@@ -246,13 +246,14 @@ pub(crate) fn ensure_copy(root: &Path, path: &Path, head: &str) -> Result<Prepar
 /// mesmo no commit dele. O que o git ignora — a compilação, as dependências
 /// instaladas — fica, e o git só troca o arquivo que mudou: o resto guarda a
 /// data, e a compilação refaz só o que mudou. A pasta que não é cópia viva
-/// nasce de novo ([`new_copy`]). Depois, os arquivos locais do projeto.
+/// nasce de novo ([`new_copy`]), guardando antes o que ela tinha de `owner`.
+/// Depois, os arquivos locais do projeto.
 pub(crate) fn reset_slot(root: &Path, path: &Path, head: &str, owner: &Keeping) -> Result<Prepared, String> {
     if !live_copy(path) {
-        return new_copy(root, path, head);
+        return new_copy(root, path, head, owner);
     }
     let before = git::run(path, &["rev-parse", "HEAD"]).out().unwrap_or_default();
-    let kept = super::commit::reset_with_submodules(root, path, head, owner)?;
+    let kept = super::keep::reset_with_submodules(root, path, head, owner)?;
     Ok(Prepared { missing: copy_local_files(root, path), reused: changed_since(root, &before, head), kept })
 }
 
@@ -300,19 +301,25 @@ fn code_kept(kept: &Kept, lang: Locale) -> Value {
 /// A pasta `path` é uma cópia viva do git: tem o arquivo `.git` de uma cópia
 /// ligada e o git ainda acha o commit dela. A pasta cujo registro o git já
 /// esqueceu não é.
-fn live_copy(path: &Path) -> bool {
+pub(super) fn live_copy(path: &Path) -> bool {
     path.join(".git").is_file() && git::run(path, &["rev-parse", "--verify", "HEAD"]).ok
 }
 
 /// Cria a cópia `path` no commit `head` do checkout `root`. A pasta que
 /// existe sem ser cópia viva sai antes, só dentro da pasta das cópias do
-/// projeto; o registro velho do git, de uma pasta que sumiu, sai pelo
-/// `worktree prune` antes do `add`. A pasta mãe nasce antes da cópia.
-fn new_copy(root: &Path, path: &Path, head: &str) -> Result<Prepared, String> {
+/// projeto, e só depois de o que ela tem de arquivo e o commit não tem ficar
+/// guardado sob uma ref do repositório principal ([`keep_copy_code`], com o
+/// dono `owner`): a pasta que não pôde guardar fica como está, e o motivo é o
+/// erro. A pasta sem arquivo nenhum sai sem guardar nada. O registro velho do
+/// git, de uma pasta que sumiu, sai pelo `worktree prune` antes do `add`. A
+/// pasta mãe nasce antes da cópia.
+fn new_copy(root: &Path, path: &Path, head: &str, owner: &Keeping) -> Result<Prepared, String> {
+    let mut kept = Vec::new();
     if path.exists() {
         if !inside_copies(root, path) {
             return Err(format!("not a copy folder: {}", shown(path)));
         }
+        kept = super::keep::keep_copy_code(root, path, owner)?;
         std::fs::remove_dir_all(path).map_err(|err| format!("{}: {err}", shown(path)))?;
     }
     if let Some(parent) = path.parent() {
@@ -321,7 +328,7 @@ fn new_copy(root: &Path, path: &Path, head: &str) -> Result<Prepared, String> {
     git::run(root, &["worktree", "prune"]).result()?;
     let target = path.to_string_lossy();
     git::run(root, &["worktree", "add", "--detach", &target, head]).result()?;
-    Ok(Prepared { missing: copy_local_files(root, path), reused: None, kept: Vec::new() })
+    Ok(Prepared { missing: copy_local_files(root, path), reused: None, kept })
 }
 
 /// Os arquivos que mudaram do commit `before` ao commit `head`, que o git do
@@ -422,7 +429,7 @@ fn named_keeping(spec: &str, path: &Path) -> Keeping {
 /// está, em `removal.unkept`, com o motivo. O que guardou vai em
 /// `removal.kept`, e a que o git não deixou sair, em `removal.left`.
 fn remove_keeping(root: &Path, slot: &Path, keeping: &Keeping, removal: &mut Removal) {
-    match super::commit::keep_copy_code(root, slot, keeping) {
+    match super::keep::keep_copy_code(root, slot, keeping) {
         Ok(kept) => removal.kept.extend(kept),
         Err(detail) => {
             removal.unkept.push((shown(slot), detail));

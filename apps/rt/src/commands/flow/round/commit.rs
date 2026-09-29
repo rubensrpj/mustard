@@ -13,7 +13,7 @@ use mustard_core::domain::spec_events::{
 };
 use mustard_core::domain::spec_state::PhaseWriter;
 use mustard_core::io::fs::lock::LockedFile;
-use mustard_core::io::wave_prompt::{recorded_copy, shown};
+use mustard_core::io::wave_prompt::recorded_copy;
 use mustard_core::platform::git as git_exec;
 use mustard_core::platform::i18n::{translate, Locale};
 use mustard_core::platform::process;
@@ -531,164 +531,8 @@ fn repo_of(dir: &Path, subs: &[String], file: &str) -> (PathBuf, String) {
 
 /// A pasta da cópia que a rodada criou para a onda `wave`, quando o envio
 /// dela gravou uma e ela ainda está no disco.
-fn copy_of(log: &SpecLog, wave: u64) -> Option<PathBuf> {
+pub(super) fn copy_of(log: &SpecLog, wave: u64) -> Option<PathBuf> {
     recorded_copy(log, wave).map(|copy| PathBuf::from(copy.path)).filter(|path| path.is_dir())
-}
-
-/// O que uma limpeza guardou antes de zerar uma cópia: a ref, no repositório
-/// principal, sob a qual ficou o código que ainda não tinha ido ao commit, e
-/// quais arquivos ele trazia.
-#[derive(Debug, Clone)]
-pub(crate) struct Kept {
-    /// A onda de quem era o código, quando o envio que gravou a cópia diz qual.
-    pub(crate) wave: Option<u64>,
-    /// A ref que guarda o código.
-    pub(crate) refname: String,
-    /// Os arquivos que a cópia tinha e o commit atual não tem, como estavam.
-    pub(crate) files: Vec<String>,
-    /// A cópia de onde o código saiu.
-    pub(crate) copy: String,
-}
-
-/// De quem é o código que uma limpeza pode guardar: o nome da ref (`label`,
-/// já sem a barra do começo e sem o que o git recusa) e a onda, quando se
-/// sabe.
-#[derive(Debug, Clone)]
-pub(crate) struct Keeping {
-    pub(crate) label: String,
-    pub(crate) wave: Option<u64>,
-}
-
-/// Limpa a cópia da onda órfã `wave` — um Claude Code que fechou no meio do
-/// trabalho: o que ele deixou sem commitar, na cópia da onda e na cópia de
-/// cada submódulo dentro dela, volta ao commit atual, sem esperar o reenvio
-/// pedir isso — quem falhou no meio não deixou uma retomada em curso, deixou
-/// só o resto do que não terminou. Antes, o que a cópia tem e o commit atual
-/// não tem fica guardado ([`keep_unsaved`]): a cópia que não pôde guardar não
-/// é limpa, e o erro diz por quê. A compilação, que o git ignora, fica. A
-/// cópia que nunca existiu, ou que já não é mais um checkout ligado ao
-/// repositório, não faz nada.
-pub(super) fn clean_orphan_copy(root: &Path, log: &SpecLog, spec: &str, wave: u64) -> Result<Vec<Kept>, String> {
-    let Some(copy) = copy_of(log, wave) else { return Ok(Vec::new()) };
-    let head = head(root);
-    if !copy.join(".git").is_file() || head.is_empty() {
-        return Ok(Vec::new());
-    }
-    let sent = log.last_by_wave("send").get(&wave).copied().unwrap_or_default();
-    reset_with_submodules(root, &copy, &head, &Keeping { label: format!("{spec}/{wave}-{sent}"), wave: Some(wave) })
-}
-
-/// Cada cópia que uma limpeza mexe, com o commit a que ela volta e de quem é
-/// o que ela guarda: a própria `copy`, no commit `head`, e cada cópia de
-/// submódulo dentro dela, no commit do submódulo no checkout `root`.
-fn copy_targets(root: &Path, copy: &Path, head: &str, keeping: &Keeping) -> Vec<(PathBuf, String, Keeping)> {
-    let mut targets: Vec<(PathBuf, String, Keeping)> = vec![(copy.to_path_buf(), head.to_string(), keeping.clone())];
-    for sub in submodules_of(root).iter().filter(|sub| copy.join(sub).join(".git").is_file()) {
-        let inside = Keeping { label: format!("{}-{}", keeping.label, sub.replace('/', "_")), wave: keeping.wave };
-        targets.push((copy.join(sub), self::head(&root.join(sub)), inside));
-    }
-    targets
-}
-
-/// Guarda o que cada cópia de `targets` tem e o commit dela não tem
-/// ([`keep_unsaved`]), sem mexer em nenhuma. Com `strict`, a cópia que não é
-/// mais um checkout ligado ao git é erro; sem ele, a que o git não lê mais
-/// não tem o que guardar, e fica de fora.
-fn keep_targets(targets: &[(PathBuf, String, Keeping)], strict: bool) -> Result<Vec<Kept>, String> {
-    let mut kept = Vec::new();
-    for (dir, head, keeping) in targets {
-        let linked = dir.join(".git").is_file() && !head.is_empty();
-        if !linked || (!strict && git(dir, &["rev-parse", "HEAD"]).is_err()) {
-            if strict {
-                return Err(format!("git checkout --detach --force {head}: {}", shown(dir)));
-            }
-            continue;
-        }
-        // O refresh sai com erro quando algum arquivo mudou de fato; é o
-        // checkout que o desfaz logo abaixo.
-        let _ = git(dir, &["update-index", "-q", "--refresh"]);
-        kept.extend(keep_unsaved(dir, head, keeping)?);
-    }
-    Ok(kept)
-}
-
-/// Guarda o código que a cópia `copy` — e cada cópia de submódulo dentro
-/// dela — tem além do commit atual do checkout `root`, antes de a cópia ser
-/// apagada. O erro diz por que não guardou, e a cópia não deve ser apagada.
-pub(super) fn keep_copy_code(root: &Path, copy: &Path, keeping: &Keeping) -> Result<Vec<Kept>, String> {
-    keep_targets(&copy_targets(root, copy, &head(root), keeping), false)
-}
-
-/// Volta a cópia `copy` ao commit `head` ([`reset_copy`]) e cada cópia de
-/// submódulo dentro dela ao commit do submódulo no checkout `root`. Antes de
-/// zerar qualquer uma, guarda o que ela tem e o commit não tem: se uma não
-/// pôde guardar, nenhuma é zerada, e o erro diz por quê. Devolve o que ficou
-/// guardado.
-pub(super) fn reset_with_submodules(
-    root: &Path,
-    copy: &Path,
-    head: &str,
-    keeping: &Keeping,
-) -> Result<Vec<Kept>, String> {
-    let targets = copy_targets(root, copy, head, keeping);
-    let kept = keep_targets(&targets, true)?;
-    let mut failed = Vec::new();
-    for (dir, head, _) in &targets {
-        if let Err(detail) = reset_copy(dir, head) {
-            failed.push(format!("{}: {detail}", shown(dir)));
-        }
-    }
-    if failed.is_empty() { Ok(kept) } else { Err(failed.join("; ")) }
-}
-
-/// Volta o checkout ligado `dir` ao commit `head`, descartando qualquer
-/// mudança sem commitar e qualquer arquivo novo que o git não ignora. O que
-/// ele ignora — a compilação, as dependências instaladas — fica, e é por
-/// isso que a vaga não compila do zero. O que se perderia já foi guardado
-/// por quem chama ([`keep_unsaved`]).
-fn reset_copy(dir: &Path, head: &str) -> Result<(), String> {
-    git(dir, &["checkout", "--detach", "--force", head])?;
-    git(dir, &["clean", "-fd"]).map(|_| ())
-}
-
-/// Guarda o que a cópia `dir` tem e o commit `head` não tem, antes de ela ser
-/// zerada: o que mudou em arquivo versionado, o arquivo novo que o git não
-/// ignora e o commit que só a cópia fez. O que o commit já traz — a entrega
-/// que a rodada juntou e comitou, e que a cópia guarda de uma onda que já
-/// terminou — não conta: só o arquivo que o agente mudou na cópia e que o
-/// commit atual tem diferente. Tudo vai num commit solto, sob uma ref do
-/// repositório principal que as cópias dividem, e o código volta com
-/// `git cherry-pick --no-commit <ref>`. `None` quando não há nada a guardar; o
-/// erro é o motivo de o git não ter guardado, e quem chama não zera a cópia.
-fn keep_unsaved(dir: &Path, head: &str, keeping: &Keeping) -> Result<Option<Kept>, String> {
-    let at = git(dir, &["rev-parse", "HEAD"])?.trim().to_string();
-    let clean = git(dir, &["status", "--porcelain", "--untracked-files=all"])?.trim().is_empty();
-    if clean && (at == head || git(dir, &["merge-base", "--is-ancestor", &at, head]).is_ok()) {
-        return Ok(None);
-    }
-    git(dir, &["add", "-A"])?;
-    let tree = git(dir, &["write-tree"])?.trim().to_string();
-    let names = |from: &str| -> Result<BTreeSet<String>, String> {
-        let listed = git(dir, &["diff", "--name-only", "-z", "--no-renames", from, &tree])?;
-        Ok(listed.split('\0').filter(|name| !name.is_empty()).map(str::to_string).collect())
-    };
-    let differs = names(head)?;
-    let lost: BTreeSet<String> = match git(dir, &["merge-base", &at, head]) {
-        Ok(base) => differs.intersection(&names(base.trim())?).cloned().collect(),
-        Err(_) => differs,
-    };
-    if lost.is_empty() {
-        return Ok(None);
-    }
-    let refname = format!("refs/mustard/kept/{}-{}", keeping.label, &tree[..tree.len().min(8)]);
-    let said = format!("Código guardado antes de zerar a cópia {}", shown(dir));
-    let commit = git(
-        dir,
-        &["-c", "user.name=Mustard", "-c", "user.email=mustard@localhost", "-c", "commit.gpgsign=false",
-            "commit-tree", &tree, "-p", &at, "-m", &said],
-    )?;
-    git(dir, &["update-ref", &refname, commit.trim()])?;
-    Ok(Some(Kept { wave: keeping.wave, refname, files: lost.into_iter().collect(), copy: shown(dir) }))
 }
 
 /// Um arquivo que a junção muda no repositório principal: o que ele era e o
@@ -1140,8 +984,14 @@ fn repo_name(root: &Path) -> String {
 }
 
 /// Roda o git na raiz do projeto e devolve a saída; o erro vem como texto.
-fn git(root: &Path, args: &[&str]) -> Result<String, String> {
-    let out = git_exec::run(root, args);
+pub(super) fn git(root: &Path, args: &[&str]) -> Result<String, String> {
+    git_with(root, args, &[])
+}
+
+/// O mesmo que [`git`], com variáveis de ambiente a mais para esta chamada.
+pub(super) fn git_with(root: &Path, args: &[&str], env: &[(&str, String)]) -> Result<String, String> {
+    let env: Vec<(&str, &str)> = env.iter().map(|(name, value)| (*name, value.as_str())).collect();
+    let out = git_exec::run_env(root, args, &env);
     if out.ok {
         return Ok(out.stdout);
     }
