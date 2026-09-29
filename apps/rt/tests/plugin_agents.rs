@@ -331,6 +331,45 @@ fn the_wave_agent_never_uses_the_git_stash() {
     }
 }
 
+/// O molde da onda, nos dois idiomas, diz o que `met:true` quer dizer para o
+/// item combinado que nenhuma tarefa da onda faz e que só vale para os
+/// arquivos dela: que ele continua valendo depois da mudança. O `met:false`
+/// fica para a mudança que o quebra e para a tarefa que o faz e ficou por
+/// fazer, e o item não cumprido segue virando tarefa no backlog.
+#[test]
+fn the_wave_agent_calls_an_agreed_item_met_when_it_still_holds_after_the_change() {
+    let said = [
+        (
+            "pt-BR",
+            [
+                "Para o item que nenhuma tarefa da onda faz e que só vale para os arquivos dela",
+                "`met:true` quer dizer que ele continua valendo depois da sua mudança",
+                "`met:false` só quando a mudança o quebra ou quando a tarefa que o faz ficou por fazer",
+                "vira tarefa no backlog",
+            ],
+        ),
+        (
+            "en-US",
+            [
+                "For an item no task of the wave does and that only holds for its files",
+                "`met:true` means it still holds after your change",
+                "`met:false` only when the change undoes it or when the task that does it was not done",
+                "becomes a backlog task",
+            ],
+        ),
+    ];
+    for (lang, phrases) in said {
+        let wave = template(lang, "wave");
+        let rule = wave
+            .lines()
+            .find(|line| line.contains("\"agreed\":[{"))
+            .unwrap_or_else(|| panic!("the {lang} wave agent lost its agreed line"));
+        for phrase in phrases {
+            assert!(rule.contains(phrase), "the {lang} agreed line does not say `{phrase}`: {rule}");
+        }
+    }
+}
+
 /// Os dois agentes que gravam a própria volta dizem que a gravação é
 /// obrigatória: sem isso um relatório em prosa vira entrega perdida, e a
 /// rodada não acha nada na spec. Os dois também dizem que a lista de

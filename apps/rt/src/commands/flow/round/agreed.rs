@@ -1,15 +1,18 @@
 //! A resposta de uma volta pelo combinado: cada item que a entrega de uma
 //! onda ou o veredito final responde em `agreed`, pelo número vigente, e o
 //! item não cumprido que vira tarefa no backlog — uma vez só: a tarefa ainda
-//! por entregar que já cobre o item basta, e nenhuma outra nasce.
+//! por entregar que já cobre o item basta, e nenhuma outra nasce, e o item
+//! que a análise da onda tirou do pedido dela não vira tarefa nenhuma.
 
 use std::collections::BTreeSet;
 
+use mustard_core::domain::normalize::Languages;
 use mustard_core::domain::spec_events::{Refusal, SpecEvent, SpecLog};
+use mustard_core::domain::wave_prompt as agreed_prompt;
 use serde_json::{json, Map, Value};
 
 use super::queue::tasks_not_delivered;
-use super::report::agreed_item_id;
+use super::report::{agreed_item_id, as_dispatched};
 
 /// O que [`settle_agreed`] devolve: a tarefa de cada item não cumprido e o
 /// código de cada item esperado que ficou sem resposta.
@@ -28,6 +31,20 @@ pub(super) fn covered_codes(log: &SpecLog, returning: &BTreeSet<u64>) -> BTreeSe
         .collect()
 }
 
+/// Os códigos dos itens do projeto todo que a análise da onda `wave` tirou do
+/// pedido dela: a escolha gravada no envio que a despachou, lida sobre a spec
+/// como estava nele ([`as_dispatched`]) e reduzida aos candidatos de então,
+/// a mesma que monta o pedido ([`agreed_prompt::dispatch_items`]). O pedido
+/// não levou esses itens: a entrega não é cobrada por eles, e a resposta que
+/// der a algum deles não cria tarefa.
+pub(super) fn removed_by_analysis(log: &SpecLog, wave: u64, languages: &Languages) -> BTreeSet<String> {
+    let then = as_dispatched(log, wave);
+    let Some(choice) = agreed_prompt::recorded_choice(&then, wave) else { return BTreeSet::new() };
+    let codes = then.codes();
+    let choice = choice.within(&agreed_prompt::candidates(&then, wave, languages));
+    choice.removed.iter().filter_map(|(id, _)| codes.get(id).cloned()).collect()
+}
+
 /// A resposta `agreed` de uma volta — a entrega de uma onda ou o veredito
 /// final — resolvida contra os itens combinados que ela precisa responder
 /// (`expected`): cada item citado vira o número vigente dele, e o que não
@@ -35,8 +52,9 @@ pub(super) fn covered_codes(log: &SpecLog, returning: &BTreeSet<u64>) -> BTreeSe
 /// cobrindo o item, com o que a resposta diz em `text` — sem ele, o texto do
 /// próprio item — e os arquivos que ela cita. O item cujo código está em
 /// `covered`, que alguma tarefa ainda por entregar cobre, fica na resposta
-/// como veio, sem tarefa nova; cada tarefa que nasce entra em `covered`.
-/// Devolve essas tarefas e o código de cada item esperado que ficou sem
+/// como veio, sem tarefa nova; cada tarefa que nasce entra em `covered`. O
+/// item cujo código está em `removed`, que a análise da onda tirou do pedido
+/// ([`removed_by_analysis`]), também fica como veio e não vira tarefa. Devolve essas tarefas e o código de cada item esperado que ficou sem
 /// resposta. O item citado que a spec não tem é recusado.
 pub(super) fn settle_agreed(
     log: &SpecLog,
@@ -44,6 +62,7 @@ pub(super) fn settle_agreed(
     expected: &[&SpecEvent],
     author: &str,
     covered: &mut BTreeSet<String>,
+    removed: &BTreeSet<String>,
 ) -> Result<SettledAgreed, Refusal> {
     let (mut answered, mut tasks) = (Vec::new(), Vec::new());
     let codes = log.codes();
@@ -55,7 +74,7 @@ pub(super) fn settle_agreed(
             continue;
         }
         let code = codes.get(&id).cloned().unwrap_or_else(|| id.to_string());
-        if !covered.insert(code) {
+        if removed.contains(&code) || !covered.insert(code) {
             continue;
         }
         let said = item.get("text").and_then(Value::as_str).map(str::trim).filter(|t| !t.is_empty());

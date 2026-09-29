@@ -28,7 +28,7 @@ use super::commit::{
     head, join_copies, make_commit, record_commit, refresh_map, round_repos, unknown_file, write_joined, UNMADE_SHA,
 };
 use super::copy_check::check_against_copies;
-use super::agreed::{covered_codes, settle_agreed};
+use super::agreed::{covered_codes, removed_by_analysis, settle_agreed};
 use super::leftovers::{leftover_tasks, leftovers_of, Leftover};
 use super::queue::{backlog_wave, open_review, open_sends, waves_in_progress, ANALYSIS_LINE};
 use super::stops::{hold_waiting_changes, tasks_returned, undone_of, undone_returns, HeldReturn};
@@ -564,7 +564,8 @@ pub(crate) fn check_return(
     // os códigos. O pedido sem item combinado não exige o campo.
     let expected = request_agreed(&log, wave, &project.languages);
     let (_, missing) =
-        settle_agreed(&log, &mut draft.clone(), &expected, "wave", &mut BTreeSet::new()).map_err(RoundRefusal::Refused)?;
+        settle_agreed(&log, &mut draft.clone(), &expected, "wave", &mut BTreeSet::new(), &BTreeSet::new())
+            .map_err(RoundRefusal::Refused)?;
     if !missing.is_empty() {
         return Err(RoundRefusal::Refused(Refusal::DeliveryAgreedMissing { wave, missing }));
     }
@@ -613,7 +614,7 @@ fn settle_verdict(log: &SpecLog, draft: &mut Map<String, Value>) -> Result<Vec<M
         return Ok(Vec::new());
     }
     let mut covered = covered_codes(log, &BTreeSet::new());
-    let (tasks, missing) = settle_agreed(log, draft, &agreed_prompt::all_agreed(log), "review", &mut covered)?;
+    let (tasks, missing) = settle_agreed(log, draft, &agreed_prompt::all_agreed(log), "review", &mut covered, &BTreeSet::new())?;
     if !missing.is_empty() {
         return Err(Refusal::AgreedItemsMissing { missing });
     }
@@ -642,8 +643,7 @@ fn settle_verdict(log: &SpecLog, draft: &mut Map<String, Value>) -> Result<Vec<M
 /// levou. O que o pedido levou e ganhou versão nova depois é cobrado pela
 /// versão de agora, pelo mesmo código; o que saiu da spec depois, não.
 pub(super) fn request_agreed<'a>(log: &'a SpecLog, wave: u64, languages: &Languages) -> Vec<&'a SpecEvent> {
-    let sent = dispatched_at(log, wave).unwrap_or(u64::MAX);
-    let then = SpecLog { events: log.events.iter().filter(|e| e.id <= sent).cloned().collect(), ..SpecLog::default() };
+    let then = as_dispatched(log, wave);
     let then_codes = then.codes();
     let carried: Vec<&String> =
         agreed_prompt::dispatch_items(&then, wave, None, languages).iter().filter_map(|item| then_codes.get(&item.id)).collect();
@@ -653,6 +653,13 @@ pub(super) fn request_agreed<'a>(log: &'a SpecLog, wave: u64, languages: &Langua
         .into_iter()
         .filter_map(|code| agreed.iter().copied().find(|item| codes.get(&item.id) == Some(code)))
         .collect()
+}
+
+/// A spec como estava no envio que despachou a onda `wave`: só os eventos de
+/// número até o dele. Sem envio, a spec inteira.
+pub(super) fn as_dispatched(log: &SpecLog, wave: u64) -> SpecLog {
+    let sent = dispatched_at(log, wave).unwrap_or(u64::MAX);
+    SpecLog { events: log.events.iter().filter(|e| e.id <= sent).cloned().collect(), ..SpecLog::default() }
 }
 
 /// O `replaces` do evento oficial que assume as voltas `returns`: o número
@@ -1007,7 +1014,8 @@ fn check_reports(
             }
             // A resposta pelo combinado do pedido fica na entrega oficial,
             // com cada item pelo número; o item não cumprido vira tarefa,
-            // a menos que uma tarefa ainda por entregar já o cubra. As da
+            // a menos que uma tarefa ainda por entregar já o cubra ou que a
+            // análise da onda o tenha tirado do pedido. As da
             // onda que volta e das que o conserto dela fecha não contam: a
             // entrega as fecha agora. A falta de resposta já foi recusada
             // na gravação da volta.
@@ -1017,7 +1025,9 @@ fn check_reports(
                 let mut covered = covered_codes(check.log(), &returning);
                 covered.extend(covered_now.iter().cloned());
                 let known = covered.clone();
-                let (tasks, _) = settle_agreed(check.log(), &mut draft, &[], "wave", &mut covered)?;
+                let languages = crate::commands::spec_events::project(start).languages;
+                let removed = removed_by_analysis(check.log(), wave, &languages);
+                let (tasks, _) = settle_agreed(check.log(), &mut draft, &[], "wave", &mut covered, &removed)?;
                 covered_now.extend(covered.difference(&known).cloned());
                 wave_tasks.extend(tasks.into_iter().map(|task| (wave, task)));
             }
@@ -2786,6 +2796,101 @@ mod tests {
         let official = log.visible().into_iter().find(|e| e.event_type == "delivered" && e.wave() == Some(1)).unwrap();
         let expected = json!([{"item": decision, "met": false, "text": "Falta arredondar para baixo."}]);
         assert_eq!(official.fields["agreed"], expected, "the item stays in the delivery: {:?}", official.fields);
+    }
+
+    /// A spec `x` com a onda 1 sobre `src/a.rs` e duas regras do projeto
+    /// todo, a primeira e a segunda que a spec grava. A rodada pede a escolha
+    /// da onda; ela vem tirando a segunda regra do pedido quando
+    /// `drop_second` é verdadeiro, e a onda sai. Devolve a resposta do envio.
+    fn sent_with_two_project_rules(root: &Path, drop_second: bool) -> Value {
+        approved_with(root, "x", &[(1, &["src/a.rs"], &[])], |said| {
+            for text in ["Vale sempre: a tabela nova tem chave.", "Vale sempre: a spec vira um PR só."] {
+                let rule = json!({"title": text, "text": text, "example": "e", "keys": ["k"],
+                    "applies_to": {"files": ["**"]}, "origin": said});
+                assert_eq!(write(root, "x", "rule", rule)["ok"], json!(true));
+            }
+        });
+        let asked = round(root, "x", None);
+        assert_eq!(waves_in(&asked, "analysis"), vec![1], "the round asks for the choice first: {asked}");
+        let removed = if drop_second {
+            json!([{"item": "MSTD-RULE-0002", "why": "Fala da entrega, e não da tabela."}])
+        } else {
+            json!([])
+        };
+        let sent = round(root, "x", Some(&line("ANALYSIS", json!({"wave": 1, "removed": removed, "added": []}))));
+        assert_eq!(waves_in(&sent, "dispatch"), vec![1], "{sent}");
+        let prompt = request_at(&sent, 0);
+        assert!(prompt.contains("MSTD-RULE-0001"), "the request carries the first rule: {prompt}");
+        assert_eq!(prompt.contains("MSTD-RULE-0002"), !drop_second, "the second rule follows the choice: {prompt}");
+        sent
+    }
+
+    /// Os textos das tarefas do backlog da spec `x` que cobrem o item de
+    /// código `code`, em qualquer versão.
+    fn backlog_tasks_covering(root: &Path, code: &str) -> Vec<String> {
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let codes = log.codes();
+        log.visible()
+            .into_iter()
+            .filter(|e| e.event_type == "task" && e.wave().is_none())
+            .filter(|t| t.ints("covers").iter().any(|id| codes.get(id).map(String::as_str) == Some(code)))
+            .map(|t| t.str_field("text").unwrap_or_default().to_string())
+            .collect()
+    }
+
+    /// O item do projeto todo que a escolha da onda tirou do pedido e que a
+    /// entrega mesmo assim responde `met:false` fica na entrega como veio e
+    /// não vira tarefa; o item que ficou no pedido, com a mesma resposta,
+    /// vira a tarefa dele.
+    #[test]
+    fn an_unmet_item_the_analysis_removed_from_the_request_gets_no_task() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        sent_with_two_project_rules(root, true);
+        let answered = json!([
+            {"item": "MSTD-RULE-0001", "met": false, "text": "Falta a chave da tabela."},
+            {"item": "MSTD-RULE-0002", "met": false, "text": "Falta o PR único."},
+        ]);
+        let wrote = returned(root, json!({"wave": 1, "text": "A onda 1 saiu.", "agreed": answered}));
+        assert_eq!(wrote["ok"], json!(true), "{wrote}");
+        let took = round(root, "x", None);
+        assert_eq!(took["ok"], json!(true), "{took}");
+
+        assert_eq!(backlog_tasks_covering(root, "MSTD-RULE-0001"), vec!["Falta a chave da tabela."]);
+        let dropped = backlog_tasks_covering(root, "MSTD-RULE-0002");
+        assert!(dropped.is_empty(), "the item out of the request is not a task: {dropped:?}");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let official = log.visible().into_iter().find(|e| e.event_type == "delivered" && e.wave() == Some(1)).unwrap();
+        let (first, second) = (current_id(root, "MSTD-RULE-0001"), current_id(root, "MSTD-RULE-0002"));
+        let expected = json!([
+            {"item": first, "met": false, "text": "Falta a chave da tabela."},
+            {"item": second, "met": false, "text": "Falta o PR único."},
+        ]);
+        assert_eq!(official.fields["agreed"], expected, "the delivery keeps both answers: {:?}", official.fields);
+    }
+
+    /// A entrega só cobra o combinado que o pedido levou: sem a escolha, a
+    /// regra fica no pedido e a entrega que não responde por ela é recusada;
+    /// com a regra fora do pedido pela escolha, a mesma entrega grava.
+    #[test]
+    fn the_delivery_does_not_answer_for_an_item_the_analysis_removed_from_the_request() {
+        let kept = tempdir().unwrap();
+        sent_with_two_project_rules(kept.path(), false);
+        let only_first = json!([{"item": "MSTD-RULE-0001", "met": true}]);
+        let refused = returned(kept.path(), json!({"wave": 1, "text": "A onda 1 saiu.", "agreed": only_first}));
+        assert_eq!(refused["reason"], json!("delivery-agreed-missing"), "{refused}");
+        let expected = translate("spec_events.delivery_agreed_missing", Locale::PtBr)
+            .replace("{wave}", "1")
+            .replace("{missing}", "MSTD-RULE-0002");
+        assert_eq!(refused["hint"], json!(expected), "{refused}");
+
+        let dropped = tempdir().unwrap();
+        sent_with_two_project_rules(dropped.path(), true);
+        let wrote = returned(dropped.path(), json!({"wave": 1, "text": "A onda 1 saiu.", "agreed": only_first}));
+        assert_eq!(wrote["ok"], json!(true), "the removed item is not charged: {wrote}");
+        let took = round(dropped.path(), "x", None);
+        assert_eq!(took["ok"], json!(true), "{took}");
+        assert!(backlog_tasks_covering(dropped.path(), "MSTD-RULE-0002").is_empty());
     }
 
     /// A tarefa que já foi entregue não cobre mais nada: o item que só ela

@@ -39,7 +39,7 @@ Record the delivery with `run write delivered --json '<the line>'`, same --root 
 - `text`: in the text language, up to 8,000 characters: each changed file in a sentence; for each criterion, the test and its red verification (what was cut, what fell); what you decided outside the request; what's left open, and why.
 - `commit`: what the wave did, no spec code, at most 45 characters; the round adds a prefix, refusing over 60.
 - A criterion's test got a new name: `"proofs":[{"criterion":"<code>","proof":"<the new command>"}]`.
-- A request with agreed items (rule, edge case, decision, contract): `"agreed":[{"item":"<code>","met":true}]`, one per item; one not met goes as `{"item":"<code>","met":false,"text":"<what is missing>"}` and becomes a backlog task, unless a task not yet delivered already covers it.
+- A request with agreed items (rule, edge case, decision, contract): `"agreed":[{"item":"<code>","met":true}]`, one per item. For an item no task of the wave does and that only holds for its files, `met:true` means it still holds after your change; `met:false` only when the change undoes it or when the task that does it was not done. One not met goes as `{"item":"<code>","met":false,"text":"<what is missing>"}` and becomes a backlog task, unless a task not yet delivered already covers it.
 - In a fix: `"fixes":[<waves it closes>]`.
 - A task in the request you did not do: `"undone":["<code>"]`, and its agreed item goes `met:false`; it goes back to the backlog.
 - The plan does not work: `"replan":"<the change, in one sentence>"`, always with `undone` (`[]` if you did them all).
