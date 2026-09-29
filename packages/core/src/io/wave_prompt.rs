@@ -48,8 +48,8 @@ pub struct WavePrompt {
     /// O nome do agente que recebe a onda: sempre `"wave"`, numa tarefa só
     /// ou em várias — o molde que o projeto instalou com esse nome.
     pub agent: String,
-    /// O modelo pedido para a onda: fixo, pelo papel `wave`
-    /// ([`wave_prompt::requested_model`]).
+    /// O modelo pedido para a onda: o que o `mustard.json` declara para os
+    /// agentes ([`Execution::requested_model`]).
     pub model: String,
     /// O texto do pedido, sempre: a página mostra mesmo o pedido recusado,
     /// que é justamente o que precisa ser visto antes da aprovação.
@@ -271,6 +271,7 @@ fn project_execution(root: &Path) -> Execution {
         local_files: local_files(&config),
         root: shown(root),
         language: config.language(),
+        model: config.agent_model().to_string(),
         ..Execution::default()
     }
 }
@@ -827,7 +828,7 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
     // O nome do agente, o mesmo em toda onda, de uma tarefa ou de várias: o
     // molde com esse nome mora no projeto, e o envio grava só o nome.
     let agent = "wave".to_string();
-    let model = wave_prompt::requested_model(&agent).to_string();
+    let model = context.base.requested_model().to_string();
     WavePrompt { wave, agent, model, text, lines, bad_skills, stale_skills, bad_settings: Vec::new() }
 }
 
@@ -1284,10 +1285,10 @@ mod tests {
 
     /// A leitura obrigatória de uma tarefa que aponta uma função
     /// (`caminho#função`) faz a linha da tarefa dizer o que ler antes, e
-    /// manda ler só aquela função, não o arquivo inteiro. As frases de ler
-    /// por trecho, rodar só os testes do que mudou e a suíte inteira uma vez
-    /// no fim, em primeiro plano, saíram do catálogo — moraram para o molde
-    /// do agente — e não voltam a aparecer no pedido.
+    /// manda ler só aquela função, não o arquivo inteiro. As frases de achar
+    /// e ler o código pelo mapa, rodar só os testes do que mudou e a suíte
+    /// inteira uma vez no fim, em primeiro plano, saíram do catálogo —
+    /// moraram para o molde do agente — e não voltam a aparecer no pedido.
     #[test]
     fn the_wave_request_asks_to_read_by_excerpt() {
         let dir = tempdir().unwrap();
@@ -1302,7 +1303,7 @@ mod tests {
         let built = prompts(root, "teste", &log, Locale::PtBr, &Flight::default());
         assert!(built[0].text.contains("leia antes: leia só `soma` em `apps/rt/src/a.rs`"), "{}", built[0].text);
         assert!(!built[0].text.contains("`apps/rt/src/a.rs#soma`"), "{}", built[0].text);
-        for phrase in ["Leia por trecho", "só os testes do que mudou", "A suíte inteira roda uma vez no fim, em primeiro plano"] {
+        for phrase in ["Ache e leia o código pelo mapa", "só os testes do que mudou", "A suíte inteira roda uma vez no fim, em primeiro plano"] {
             assert!(!built[0].text.contains(phrase), "{phrase}: {}", built[0].text);
         }
     }

@@ -38,6 +38,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use mustard_core::domain::config::DEFAULT_AGENT_MODEL;
 use mustard_core::platform::i18n::Locale;
 use mustard_core::{footprint_rules, harness_texts, upsert_project, InstallMode, CLAUDE_GITIGNORE, SETTINGS_SEED};
 
@@ -218,7 +219,7 @@ fn shared_install_is_byte_identical_to_today() {
         serde_json::to_string_pretty(&seed).expect("re-render the seed"),
     );
     assert_eq!(read(&root.join(".claude/settings.json")), Some(expected_settings));
-    for (rel, body) in harness_texts(Locale::PtBr) {
+    for (rel, body) in harness_texts(Locale::PtBr, DEFAULT_AGENT_MODEL) {
         assert_eq!(read(&root.join(".claude").join(&rel)), Some(body), "{rel}");
     }
     assert_eq!(read(&root.join(".claude/.gitignore")), Some(CLAUDE_GITIGNORE.to_string()));

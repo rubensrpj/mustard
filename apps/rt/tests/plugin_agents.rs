@@ -391,26 +391,73 @@ fn the_agents_state_that_the_marked_line_is_mandatory_and_the_ledger_is_not_thei
     }
 }
 
-/// Os dois moldes — onda e revisão —
-/// declaram o modelo opus com o esforço xhigh, nos dois idiomas: cada agente
-/// sabe o próprio modelo e o próprio esforço, sem herdar o da sessão em
-/// silêncio. Teto de idas e voltas não anda junto: o molde de onda não traz
-/// um, e quem prende isso é o teste do teto. Nenhum teste desta
-/// obra recusa um molde pelo tamanho em bytes — o que prende o texto é o que
-/// ele diz.
+/// Os dois moldes — onda e revisão — declaram o modelo padrão da
+/// configuração e o esforço xhigh, nos dois idiomas: cada agente sabe o
+/// próprio modelo e o próprio esforço, sem herdar o da sessão em silêncio. O
+/// modelo do molde é o mesmo padrão que a instalação escreve no
+/// `mustard.json`, para o molde copiado sem instalação valer o mesmo. Teto de
+/// idas e voltas não anda junto: o molde de onda não traz um, e quem prende
+/// isso é o teste do teto. Nenhum teste desta obra recusa um molde pelo
+/// tamanho em bytes — o que prende o texto é o que ele diz.
 #[test]
 fn each_agent_template_declares_its_own_model_and_effort() {
+    let default = mustard_core::domain::config::DEFAULT_AGENT_MODEL;
     for lang in ["pt-BR", "en-US"] {
         for name in ["wave", "review"] {
             let text = template(lang, name);
-            assert!(text.contains("\nmodel: opus\n"), "the {lang} `{name}` agent does not declare the opus model:\n{text}");
+            assert!(
+                text.contains(&format!("\nmodel: {default}\n")),
+                "the {lang} `{name}` agent does not declare the default model {default}:\n{text}",
+            );
             assert!(text.contains("\neffort: xhigh\n"), "the {lang} `{name}` agent does not declare the xhigh effort:\n{text}");
             assert!(!text.contains("model: inherit"), "the {lang} `{name}` agent still inherits the session's model");
-            assert!(!text.contains("model: sonnet"), "the {lang} `{name}` agent still asks for sonnet:\n{text}");
+            assert!(!text.contains("model: opus"), "the {lang} `{name}` agent still fixes the opus model:\n{text}");
         }
 
         let wave = template(lang, "wave");
         assert!(wave.len() as u64 > 3_072, "the {lang} wave agent is not over the old byte cap, so it proves nothing");
+    }
+}
+
+/// O modelo dos agentes vem do `mustard.json` do projeto, pelo instalador de
+/// verdade: sem o campo, os dois agentes saem no padrão e o arquivo ganha o
+/// campo; com `opus` no arquivo, os dois saem em opus e o campo fica onde
+/// estava; trocada a linha, a instalação seguinte troca os dois agentes.
+#[test]
+fn the_installed_agents_use_the_model_of_the_project_config() {
+    let model_of = |root: &Path, name: &str| -> String {
+        let text = std::fs::read_to_string(root.join(format!(".claude/agents/mustard/{name}.md"))).unwrap();
+        frontmatter(&text).lines().find_map(|line| line.strip_prefix("model: ")).unwrap_or_default().to_string()
+    };
+    let declared = |root: &Path| -> Value {
+        let raw = std::fs::read_to_string(root.join("mustard.json")).unwrap();
+        serde_json::from_str::<Value>(&raw).unwrap()["agents"].clone()
+    };
+    for lang in ["pt-BR", "en-US"] {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, home) = installed(dir.path(), &format!(r#"{{"version":"1.0.0","language":{{"text":"{lang}"}}}}"#));
+        assert_eq!(declared(&root), json!({"model": "sonnet"}), "the install did not write the default model");
+        for name in ["wave", "review"] {
+            assert_eq!(model_of(&root, name), "sonnet", "the {lang} `{name}` agent");
+        }
+
+        std::fs::write(
+            root.join("mustard.json"),
+            format!(r#"{{"version":"1.0.0","language":{{"text":"{lang}"}},"agents":{{"model":"opus"}}}}"#),
+        )
+        .unwrap();
+        let report = rt(&root, &home, &["run", "upsert"], None);
+        assert!(report.get("error").is_none(), "{report}");
+        assert_eq!(declared(&root), json!({"model": "opus"}), "the install rewrote the model the person chose");
+        for name in ["wave", "review"] {
+            assert_eq!(model_of(&root, name), "opus", "the {lang} `{name}` agent kept the mold's model");
+            let installed = std::fs::read_to_string(root.join(format!(".claude/agents/mustard/{name}.md"))).unwrap();
+            assert_eq!(
+                installed,
+                template(lang, name).replacen("\nmodel: sonnet\n", "\nmodel: opus\n", 1),
+                "the {lang} `{name}` agent changed more than its model line",
+            );
+        }
     }
 }
 
@@ -730,7 +777,8 @@ fn o_revisor_propoe_o_conserto_com_teste_no_lugar_da_licao() {
 #[test]
 fn the_wave_and_review_agents_carry_the_project_wide_execution_rules() {
     let pt_br = [
-        "Leia por trecho: ache a função com a busca e leia só ela",
+        "Ache e leia o código pelo mapa, cada comando na sua hora",
+        "Leia com faixa de linhas o que o `summary` mostrou",
         "Não releia o arquivo depois de editar: a edição já mostra o trecho mudado",
         "A suíte inteira roda uma vez no fim, em primeiro plano",
         "Nunca mande compilação ou teste para segundo plano",
@@ -739,7 +787,8 @@ fn the_wave_and_review_agents_carry_the_project_wide_execution_rules() {
         "o corte que mexe no mesmo trecho de outro vai sozinho",
     ];
     let en_us = [
-        "Read by excerpt: find the function with search and read only it",
+        "Find and read the code through the map, each command at its moment",
+        "Read with a line range what `summary` showed",
         "Do not reread the file after editing: the edit already shows the changed excerpt",
         "The whole suite runs once at the end, in the foreground",
         "Never send a build or test to the background",

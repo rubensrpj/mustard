@@ -44,16 +44,6 @@ use crate::domain::spec_index::{cut, title_of};
 use crate::domain::spec_state::State;
 use crate::platform::i18n::{translate, Locale};
 
-/// O modelo pedido no envio, seja qual for o papel (`wave`, `review` ou
-/// `skill`): todo agente do Mustard sai em Opus, pelo apelido que
-/// a plataforma resolve sempre para a versão mais nova. Quem manda isso é o
-/// binário, no próprio pedido — sem escolha explícita, o agente herda o
-/// modelo da sessão e a decisão morre em silêncio.
-#[must_use]
-pub fn requested_model(_role: &str) -> &'static str {
-    "Opus"
-}
-
 /// A linha dos dois idiomas do projeto, no topo de todo pedido a um agente:
 /// o dos textos que a pessoa lê e o dos nomes no código. Sai no idioma do
 /// texto; o projeto que não declara o do código escreve os nomes em inglês.
@@ -143,6 +133,23 @@ pub struct Execution {
     /// Os idiomas que o projeto declara, lidos do `mustard.json`: o pedido
     /// abre com eles ([`language_line`]).
     pub language: Language,
+    /// O modelo dos agentes que o `mustard.json` declara em `agents.model`;
+    /// vazio, o padrão da instalação ([`Execution::requested_model`]).
+    pub model: String,
+}
+
+impl Execution {
+    /// O modelo que o pedido diz e o envio grava: o da configuração do
+    /// projeto, o mesmo que a instalação escreve no cabeçalho de cada agente,
+    /// ou o padrão quando a configuração não o traz.
+    #[must_use]
+    pub fn requested_model(&self) -> &str {
+        if self.model.trim().is_empty() {
+            crate::domain::config::DEFAULT_AGENT_MODEL
+        } else {
+            &self.model
+        }
+    }
 }
 
 /// Os blocos já lidos de que o pedido de uma onda é feito.
@@ -1381,7 +1388,7 @@ impl Writer<'_> {
             "# {}\n",
             self.t("prompt.title").replace("{spec}", &m.spec).replace("{n}", &m.wave.to_string())
         );
-        let _ = writeln!(out, "{}\n", self.t("prompt.model.wave"));
+        let _ = writeln!(out, "{}\n", self.t("prompt.model.wave").replace("{model}", m.execution.requested_model()));
         let _ = writeln!(out, "{}\n", language_line(&m.execution.language));
         out.push_str(self.t("prompt.fixed"));
         out.push_str("\n\n");
@@ -1968,7 +1975,7 @@ mod tests {
         assert!(delivers_at < tasks_at, "{text}");
 
         // Diz o modelo da onda.
-        assert!(text.contains(translate("prompt.model.wave", Locale::PtBr)), "{text}");
+        assert!(text.contains("Modelo desta onda: sonnet."), "{text}");
 
         // A onda declara `order: [3, 2]`: a tarefa 2 (id 3) vem antes da 1
         // (id 2).
@@ -1979,7 +1986,7 @@ mod tests {
         // Nenhuma das frases que o molde do agente já dá volta a aparecer.
         for phrase in [
             "Não comite e não use `git add`: o commit é da rodada.",
-            "Leia por trecho: ache a função",
+            "Ache e leia o código pelo mapa, cada comando na sua hora",
             "Não releia o arquivo depois de editar",
             "Durante o trabalho, rode só os testes do que mudou.",
             "A suíte inteira roda uma vez no fim, em primeiro plano",
@@ -1991,6 +1998,31 @@ mod tests {
         // O que sobra da execução é só o desta rodada e deste projeto.
         for kept in ["/copia", "cargo build", "cargo test", "Onda 9", "`src/c.rs`"] {
             assert!(text.contains(kept), "{kept:?} devia continuar no pedido: {text}");
+        }
+    }
+
+    /// A linha do modelo do pedido da onda diz o modelo que a execução traz,
+    /// o mesmo que o `mustard.json` declara para os agentes, nos dois
+    /// idiomas; a execução sem modelo diz o padrão da instalação, e o pedido
+    /// nunca fixa um modelo por conta própria.
+    #[test]
+    fn the_request_states_the_model_the_execution_carries() {
+        let log = log(&[
+            ("wave", json!({"n": 1, "text": "Onda", "criteria": [], "done_when": "a suíte passa"})),
+            ("task", json!({"wave": 1, "text": "Primeiro passo", "files": [{"path": "src/a.rs"}]})),
+        ]);
+        for (model, said_pt, said_en) in [
+            ("opus", "Modelo desta onda: opus.", "This wave's model: opus."),
+            ("claude-sonnet-5-5", "Modelo desta onda: claude-sonnet-5-5.", "This wave's model: claude-sonnet-5-5."),
+            ("", "Modelo desta onda: sonnet.", "This wave's model: sonnet."),
+        ] {
+            let mut m = material(&log, 1);
+            m.execution = Execution { model: model.into(), ..Execution::default() };
+            for (lang, said) in [(Locale::PtBr, said_pt), (Locale::EnUs, said_en)] {
+                let text = build(&m, lang).text;
+                assert!(text.contains(said), "`{model}` em {lang:?}: {text}");
+                assert!(!text.contains("Opus"), "o pedido ainda fixa o Opus: {text}");
+            }
         }
     }
 

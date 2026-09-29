@@ -46,12 +46,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // O pedido de uma onda: o texto que o agente dela recebe.
         ("prompt.title", Locale::PtBr) => "{spec} — onda {n}",
         ("prompt.title", Locale::EnUs) => "{spec} — wave {n}",
-        // O modelo em que a onda roda, dito no cabeçalho do próprio pedido —
-        // do mesmo jeito que ele já diz a cópia —, porque o molde do agente
-        // sozinho não bastou: em 20/09 a onda saiu em Opus por herdar o
-        // modelo da sessão.
-        ("prompt.model.wave", Locale::PtBr) => "Modelo desta onda: Opus.",
-        ("prompt.model.wave", Locale::EnUs) => "This wave's model: Opus.",
+        // O modelo em que a onda roda — o que o `mustard.json` declara em
+        // `agents.model` —, dito no cabeçalho do próprio pedido, do mesmo
+        // jeito que ele já diz a cópia, porque o molde do agente sozinho não
+        // bastou: em 20/09 a onda saiu em Opus por herdar o modelo da sessão.
+        ("prompt.model.wave", Locale::PtBr) => "Modelo desta onda: {model}.",
+        ("prompt.model.wave", Locale::EnUs) => "This wave's model: {model}.",
         // Os dois idiomas do projeto, lidos do `mustard.json`, no topo de todo
         // pedido a um agente: o dos textos que a pessoa lê e o dos nomes no
         // código. Sem ela, o agente só adivinhava o idioma dos nomes.
@@ -446,7 +446,7 @@ mod tests {
             include_str!("prompt.rs"),
             super::PREFIXES,
             59,
-            0x8708_3aae_ebbf_181b,
+            0x602b_52cb_7836_29db,
         );
     }
 

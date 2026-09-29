@@ -238,7 +238,7 @@ pub fn init(project_path: &Path, options: &InitOptions) -> Result<InitOutcome> {
     // Mustard's own texts — so the answer to "merge or overwrite?" does not
     // reach them: the seeder takes no such argument and always lays the
     // shipped text down again, in the text language.
-    for (rel, outcome) in mustard_core::seed_harness_texts(&claude_path, text)
+    for (rel, outcome) in mustard_core::seed_harness_texts(&claude_path, text, config.agent_model())
         .context("seeding Mustard's texts under .claude/")?
     {
         seeding::report_seed(&format!(".claude/{rel}"), outcome, true);
@@ -659,6 +659,46 @@ mod tests {
         refresh_search(&project, &mut out);
         let out = String::from_utf8(out).unwrap();
         assert!(out.starts_with("  warning: ") && out.contains("mustard-rt run index"), "{out}");
+    }
+
+    /// O `init --yes` numa pasta vazia escreve `agents.model` com o modelo
+    /// padrão no `mustard.json` e o mesmo modelo no cabeçalho dos dois
+    /// agentes. Com `opus` no arquivo, uma instalação por cima escreve `opus`
+    /// nos dois agentes e mantém o campo; um `mustard.json` sem o campo o
+    /// ganha, sem perder o que já tinha.
+    #[test]
+    fn init_writes_the_agent_model_and_the_agents_carry_it() {
+        let model_of = |project: &Path, name: &str| -> String {
+            let text = fs::read_to_string(project.join(format!(".claude/agents/mustard/{name}.md"))).unwrap();
+            let header = text.split("\n---\n").next().unwrap().to_string();
+            header.lines().find_map(|line| line.strip_prefix("model: ")).unwrap_or_default().to_string()
+        };
+        let agents = |project: &Path| {
+            crate::fs_ops::read_json_object(&project.join("mustard.json")).get("agents").cloned().unwrap_or_default()
+        };
+
+        let work = tempdir().unwrap();
+        let project = work.path().join("project");
+        fs::create_dir_all(&project).unwrap();
+        init(&project, &InitOptions { yes: true, ..InitOptions::default() }).unwrap();
+        assert_eq!(agents(&project), serde_json::json!({"model": "sonnet"}));
+        assert_eq!((model_of(&project, "wave"), model_of(&project, "review")), ("sonnet".into(), "sonnet".into()));
+
+        let mut config = crate::fs_ops::read_json_object(&project.join("mustard.json"));
+        config.insert("agents".into(), serde_json::json!({"model": "opus"}));
+        fs::write(project.join("mustard.json"), serde_json::to_string(&config).unwrap()).unwrap();
+        init(&project, &InitOptions { yes: true, ..InitOptions::default() }).unwrap();
+        assert_eq!(agents(&project), serde_json::json!({"model": "opus"}), "the install kept the person's choice");
+        assert_eq!((model_of(&project, "wave"), model_of(&project, "review")), ("opus".into(), "opus".into()));
+
+        let mut config = crate::fs_ops::read_json_object(&project.join("mustard.json"));
+        config.remove("agents");
+        config.insert("acronyms".into(), serde_json::json!(["PI"]));
+        fs::write(project.join("mustard.json"), serde_json::to_string(&config).unwrap()).unwrap();
+        init(&project, &InitOptions { yes: true, ..InitOptions::default() }).unwrap();
+        assert_eq!(agents(&project), serde_json::json!({"model": "sonnet"}), "the missing field came back");
+        assert_eq!(crate::fs_ops::read_json_object(&project.join("mustard.json"))["acronyms"], serde_json::json!(["PI"]));
+        assert_eq!((model_of(&project, "wave"), model_of(&project, "review")), ("sonnet".into(), "sonnet".into()));
     }
 
     /// A instalação sobre um projeto de uma versão antiga, que ainda tem o

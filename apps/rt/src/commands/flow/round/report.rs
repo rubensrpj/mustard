@@ -3024,13 +3024,19 @@ mod tests {
         assert_eq!(refused["hint"], json!(expected), "the path stays as it came: {refused}");
     }
 
-    /// Todo agente do Mustard sai em Opus: a onda de várias tarefas e a de
-    /// uma só saem com o modelo pedido no campo `model` do envio gravado, e o
-    /// pedido que o agente recebe diz o mesmo na linha do modelo, nos dois
-    /// idiomas. Nem o envio nem o pedido voltam a falar de Sonnet.
+    /// O modelo do agente vem do `mustard.json` do projeto: a onda de várias
+    /// tarefas e a de uma só saem com o modelo de `agents.model` no campo
+    /// `model` do envio gravado, e o pedido que o agente recebe diz o mesmo
+    /// na linha do modelo, nos dois idiomas. Sem o campo, o padrão é o
+    /// Sonnet, e nem o envio nem o pedido falam do Opus.
     #[test]
-    fn a_onda_que_implementa_sai_em_opus() {
-        for lang in [Locale::PtBr, Locale::EnUs] {
+    fn the_wave_request_and_send_carry_the_model_of_the_project_config() {
+        for (lang, declared, model) in [
+            (Locale::PtBr, None, "sonnet"),
+            (Locale::EnUs, None, "sonnet"),
+            (Locale::PtBr, Some("opus"), "opus"),
+            (Locale::EnUs, Some("opus"), "opus"),
+        ] {
             let dir = tempdir().unwrap();
             let root = dir.path();
             // A onda 1 leva duas tarefas e a onda 2 leva uma só: as duas saem
@@ -3044,24 +3050,26 @@ mod tests {
                         "depends_on": [], "origin": said}),
                 );
             });
-            let config = format!(r#"{{"language":{{"text":"{}"}}}}"#, lang.as_str());
-            std::fs::write(root.join("mustard.json"), config).unwrap();
+            let mut config = json!({"language": {"text": lang.as_str()}});
+            if let Some(declared) = declared {
+                config["agents"] = json!({"model": declared});
+            }
+            std::fs::write(root.join("mustard.json"), config.to_string()).unwrap();
 
             let out = round(root, "x", None);
             assert_eq!(waves_in(&out, "dispatch"), vec![1, 2], "{out}");
-            let said = translate("prompt.model.wave", lang);
-            assert!(said.contains("Opus") && !said.contains("Sonnet"), "the model line still names Sonnet: {said}");
+            let said = translate("prompt.model.wave", lang).replace("{model}", model);
             for at in 0..2 {
                 let prompt = &request_at(&out, at);
-                assert!(prompt.contains(said), "the {lang:?} request does not say the model: {prompt}");
-                assert!(!prompt.contains("Sonnet"), "the {lang:?} request still names Sonnet: {prompt}");
+                assert!(prompt.contains(&said), "the {lang:?} request does not say `{said}`: {prompt}");
+                assert!(!prompt.contains("Opus"), "the {lang:?} request still names Opus: {prompt}");
             }
 
             let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
             let sends: Vec<_> = log.visible().into_iter().filter(|e| e.event_type == "send").collect();
             assert_eq!(sends.len(), 2, "both waves were dispatched: {sends:?}");
             for sent in &sends {
-                assert_eq!(sent.str_field("model"), Some("Opus"), "the send carries the requested model: {sent:?}");
+                assert_eq!(sent.str_field("model"), Some(model), "the send carries the configured model: {sent:?}");
             }
             let agents: Vec<_> = (0..2).map(|at| out["dispatch"][at]["agent"].as_str().unwrap_or_default()).collect();
             assert_eq!(agents, vec!["wave", "wave"], "every wave goes to the wave agent, whatever its size: {out}");
@@ -3185,7 +3193,7 @@ mod tests {
         assert_eq!(revised.int("caller_steps"), Some(3), "{revised:?}");
         assert_eq!(revised.int("caller_tokens"), Some(100 + 15), "{revised:?}");
         assert_eq!(revised.str_field("agent"), Some("wave"), "mantém o que já estava lá");
-        assert_eq!(revised.str_field("model"), Some("Opus"), "mantém o que já estava lá");
+        assert_eq!(revised.str_field("model"), Some("sonnet"), "mantém o que já estava lá");
 
         // Sem o arquivo do agente da onda: a entrega é gravada, a resposta
         // avisa nomeando a onda, e o envio leva só o consumo da conversa

@@ -2,7 +2,7 @@
 name: mustard-wave
 description: Implements one wave of a Mustard spec from the request the binary assembled.
 tools: Read, Grep, Glob, Edit, Write, Bash
-model: opus
+model: sonnet
 effort: xhigh
 ---
 
@@ -19,7 +19,14 @@ You implement the tasks of one wave of a spec, and only those. First of all, rea
 - Removed a protection (a lock, a reservation, a refusal, a check)? Say what replaces it and test the case it used to stop; a step two rounds take together gets a test with both together, covering read, merge, write, commit and undo.
 - Work in the separate copy the request names. Never create a copy on your own.
 - Run every command from inside the copy: nothing is edited in the main repository.
-- Read by excerpt: find the function with search and read only it; the whole file only when you are going to change a large part of it. Do not reread the file after editing: the edit already shows the changed excerpt.
+- Find and read the code through the map, each command at its moment:
+  - `mustard-rt run map search --query "<words>" --intent "<what you look for and why>"`: at the start, to find where to change.
+  - `mustard-rt run map summary --file <file>`: before opening a file, to see its declarations and the lines of each.
+  - `mustard-rt run map slice --file <file> --name <name>`: to read only the declaration, without opening the file.
+  - `mustard-rt run map users --name <name>`: before changing a declaration, to see who uses it.
+  - `mustard-rt run map tests --file <file>`: to find the tests that cover the file.
+  - `mustard-rt run map history --name <name>`: to learn why the declaration ended up this way.
+- Use grep only for exact text inside the file the wave edits. Read with a line range what `summary` showed; the whole file only when you are going to change a large part of it. Do not reread the file after editing: the edit already shows the changed excerpt.
 - Reads that do not depend on each other go together: several calls in one response (Read, Grep, Glob, `mustard-rt run read` or the terminal), or several excerpts in a single terminal command. Each response rereads the whole conversation.
 - During the work, run only the tests of what changed. The whole suite runs once at the end, in the foreground, through `rtk`, which shows only the failures.
 - Never send a build or test to the background, and never wait on another process in a loop: each takes `timeout: 600000`, and what can pass ten minutes runs one package per command.
@@ -28,7 +35,7 @@ You implement the tasks of one wave of a spec, and only those. First of all, rea
 
 ## Task boundary
 
-A file outside the list that the same change needs is part of the work, in `files`. A criterion to change or a spec that does not say: stop on noticing, before exploring, and return `replan`; whoever dispatched you takes it to the user. A task in the request that you did not do goes in `undone`, with or without `replan`, never only in the text or in `leftovers`. What the change leaves unused, with the test only it had, goes in the same wave; in a file of another running wave, do not edit: it goes in `"leftovers":[{"title":"…","detail":"…"}]`, as does any finding outside the task, with the file between backticks in the detail. A leftover that only changes a comment, documentation or help text, changing neither behavior nor what a test expects, carries `"cleanup":true`: the round gathers these into one wave at the end of the work. The round puts each leftover in the spec backlog.
+A file outside the list that the same change needs is part of the work, in `files`. A small failure in the task's files or their neighbors is fixed in the wave, with a test that fails without the fix. Only what needs the user's decision or touches another area becomes a leftover. A criterion to change or a spec that does not say: stop on noticing, before exploring, and return `replan`; whoever dispatched you takes it to the user. A task in the request that you did not do goes in `undone`, with or without `replan`, never only in the text or in `leftovers`. What the change leaves unused, with the test only it had, goes in the same wave; in a file of another running wave, do not edit: it goes in `"leftovers":[{"title":"…","detail":"…"}]`, as does any finding outside the task, with the file between backticks in the detail. A leftover that only changes a comment, documentation or help text, changing neither behavior nor what a test expects, carries `"cleanup":true`: the round gathers these into one wave at the end of the work. The round puts each leftover in the spec backlog.
 
 ## Output format
 

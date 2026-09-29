@@ -476,6 +476,34 @@ impl Language {
     }
 }
 
+/// O modelo dos agentes do Mustard quando o `mustard.json` não declara
+/// nenhum: o apelido que a plataforma resolve sempre para a versão mais nova
+/// do Sonnet. A instalação o grava em `agents.model` quando o campo falta.
+pub const DEFAULT_AGENT_MODEL: &str = "sonnet";
+
+/// A seção `agents` do `mustard.json`: o que a pessoa escolhe para os agentes
+/// que o Mustard instala em `.claude/agents/mustard/`. As chaves internas vão
+/// em snake_case, como as de `git`. O valor fica como o arquivo o traz, e o
+/// que a seção não conhece volta ao arquivo como estava.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct AgentsConfig {
+    /// O modelo dos agentes: um apelido (`sonnet`, `opus`) ou o nome inteiro
+    /// de um modelo. Lido só por [`ProjectConfig::agent_model`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<Value>,
+    /// Qualquer outra chave da seção, guardada como veio.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+impl AgentsConfig {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.model.is_none() && self.extra.is_empty()
+    }
+}
+
 /// Host runtime metadata stamped into `mustard.json` by `init`/`update`.
 ///
 /// `kind` is the literal `"native"` (the CLI is a compiled binary, not a JS
@@ -603,6 +631,11 @@ pub struct ProjectConfig {
     /// [`ProjectConfig::acronyms`].
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub acronyms: Vec<String>,
+
+    /// Os agentes do Mustard no projeto — veja [`AgentsConfig`]. Lida só por
+    /// [`ProjectConfig::agent_model`].
+    #[serde(skip_serializing_if = "AgentsConfig::is_empty")]
+    pub agents: AgentsConfig,
 
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub source_extensions: Vec<String>,
@@ -938,12 +971,41 @@ impl ProjectConfig {
         }
         out
     }
+
+    /// O modelo que a instalação escreve no cabeçalho de cada agente: o de
+    /// `agents.model`, sem espaço em volta, ou [`DEFAULT_AGENT_MODEL`] quando
+    /// o campo falta, está em branco, não é texto ou traz algo que um
+    /// cabeçalho de agente não aceita. Um modelo é apelido ou nome: letras,
+    /// dígitos e `. _ : / - [ ]`, numa linha só.
+    #[must_use]
+    pub fn agent_model(&self) -> &str {
+        let declared = self.agents.model.as_ref().and_then(Value::as_str).map(str::trim);
+        declared.filter(|model| is_model_name(model)).unwrap_or(DEFAULT_AGENT_MODEL)
+    }
+
+    /// Escreve [`DEFAULT_AGENT_MODEL`] em `agents.model` quando o campo falta,
+    /// para a pessoa vê-lo no arquivo e trocá-lo; diz se escreveu. O que já
+    /// está lá, valendo ou não, fica como está.
+    pub fn ensure_agent_model(&mut self) -> bool {
+        if self.agents.model.is_some() {
+            return false;
+        }
+        self.agents.model = Some(Value::String(DEFAULT_AGENT_MODEL.to_string()));
+        true
+    }
 }
 
 /// A declared language key read as one of the supported locales: `None` when
 /// absent, blank, in the short form (`en`, `pt`) or outside the list.
 fn declared_locale(raw: Option<&str>) -> Option<SupportedLocale> {
     raw?.trim().parse::<SupportedLocale>().ok()
+}
+
+/// Se `raw` tem cara de apelido ou nome de modelo: não vazio e só com letras,
+/// dígitos e `. _ : / - [ ]`. Impede que um valor com quebra de linha escreva
+/// outra chave no cabeçalho do agente.
+fn is_model_name(raw: &str) -> bool {
+    !raw.is_empty() && raw.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | '/' | '-' | '[' | ']'))
 }
 
 /// Trim a string-ish option, returning `None` when absent or blank.
@@ -1587,5 +1649,60 @@ mod tests {
 
         std::fs::write(dir.path().join("mustard.json"), "{ not json").unwrap();
         assert!(ProjectConfig::load(dir.path()).enabled(), "an unreadable file turns nothing off");
+    }
+
+    /// O modelo dos agentes é o de `agents.model`, sem espaço em volta; sem o
+    /// campo, em branco, sem ser texto ou com algo que um cabeçalho de agente
+    /// não aceita, vale o padrão.
+    #[test]
+    fn the_agent_model_is_the_declared_one_or_the_default() {
+        let dir = tempdir().unwrap();
+        assert_eq!(ProjectConfig::load(dir.path()).agent_model(), DEFAULT_AGENT_MODEL);
+        assert_eq!(DEFAULT_AGENT_MODEL, "sonnet");
+
+        let path = dir.path().join("mustard.json");
+        for (agents, model) in [
+            (r#"{"model":"opus"}"#, "opus"),
+            (r#"{"model":"  claude-opus-5-5 "}"#, "claude-opus-5-5"),
+            (r#"{"model":"opus[1m]"}"#, "opus[1m]"),
+            (r#"{"model":""}"#, DEFAULT_AGENT_MODEL),
+            (r#"{"model":"   "}"#, DEFAULT_AGENT_MODEL),
+            (r#"{"model":7}"#, DEFAULT_AGENT_MODEL),
+            (r#"{"model":"opus\neffort: low"}"#, DEFAULT_AGENT_MODEL),
+            (r#"{"model":"opus sonnet"}"#, DEFAULT_AGENT_MODEL),
+            ("{}", DEFAULT_AGENT_MODEL),
+        ] {
+            std::fs::write(&path, format!(r#"{{"agents":{agents}}}"#)).unwrap();
+            let cfg = ProjectConfig::load(dir.path());
+            assert!(!cfg.unreadable, "{agents} must not make the file unreadable");
+            assert_eq!(cfg.agent_model(), model, "{agents}");
+        }
+    }
+
+    /// A seção `agents` volta ao arquivo como veio, chaves desconhecidas
+    /// incluídas, e não aparece quando não há nada nela. Escrever o padrão só
+    /// acontece com o campo faltando: um modelo que já está lá não muda.
+    #[test]
+    fn the_agents_section_round_trips_and_the_default_is_written_only_when_missing() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("mustard.json");
+
+        ProjectConfig::default().write(dir.path()).unwrap();
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("agents"), "an empty section is not written");
+
+        std::fs::write(&path, r#"{"agents":{"note":"keep"}}"#).unwrap();
+        let mut cfg = ProjectConfig::load(dir.path());
+        assert!(cfg.ensure_agent_model(), "the model was missing");
+        cfg.write(dir.path()).unwrap();
+        let written: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(written["agents"], serde_json::json!({"model": "sonnet", "note": "keep"}));
+
+        std::fs::write(&path, r#"{"agents":{"model":"opus"}}"#).unwrap();
+        let mut cfg = ProjectConfig::load(dir.path());
+        assert!(!cfg.ensure_agent_model(), "a declared model is left alone");
+        assert_eq!(cfg.agent_model(), "opus");
+        std::fs::write(&path, r#"{"agents":{"model":"a b"}}"#).unwrap();
+        let mut invalid = ProjectConfig::load(dir.path());
+        assert!(!invalid.ensure_agent_model(), "what is written is never overwritten, valid or not");
     }
 }

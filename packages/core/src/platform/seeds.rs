@@ -73,6 +73,46 @@ pub fn agent_texts(text: Locale) -> [(&'static str, &'static str); 2] {
     [(AGENT_NAMES[0], bodies[0]), (AGENT_NAMES[1], bodies[1])]
 }
 
+/// O texto de um agente com o `model:` do cabeçalho trocado por `model`: o
+/// molde traz o modelo padrão, e a instalação escreve no projeto o que o
+/// `mustard.json` declara em `agents.model`. Só o cabeçalho, entre os dois
+/// `---` do começo, é lido; o corpo passa como está. Sem a linha `model:` no
+/// cabeçalho, ela entra antes do `---` que o fecha. Um texto sem cabeçalho
+/// volta igual.
+#[must_use]
+pub fn with_agent_model(body: &str, model: &str) -> String {
+    let header_line = format!("model: {model}\n");
+    let mut out = String::with_capacity(body.len() + header_line.len());
+    let mut lines = body.split_inclusive('\n');
+    match lines.next() {
+        Some(first) if first.trim_end() == "---" => out.push_str(first),
+        _ => return body.to_string(),
+    }
+    let mut placed = false;
+    let mut closed = false;
+    for line in lines.by_ref() {
+        if line.trim_end() == "---" {
+            if !placed {
+                out.push_str(&header_line);
+            }
+            out.push_str(line);
+            closed = true;
+            break;
+        }
+        if !placed && line.starts_with("model:") {
+            out.push_str(&header_line);
+            placed = true;
+        } else {
+            out.push_str(line);
+        }
+    }
+    if !closed {
+        return body.to_string();
+    }
+    out.extend(lines);
+    out
+}
+
 /// The `.claude/.gitignore` seed covering the ephemeral harness state
 /// (caches, pipeline states, per-spec event logs, worktrees).
 pub const CLAUDE_GITIGNORE: &str = include_str!("../../templates/.gitignore");
@@ -80,6 +120,7 @@ pub const CLAUDE_GITIGNORE: &str = include_str!("../../templates/.gitignore");
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::config::DEFAULT_AGENT_MODEL;
 
     /// Os moldes embutidos não estão vazios e cada um abre como deve: um
     /// caminho de `include_str!` quebrado falha a compilação, mas um molde
@@ -321,6 +362,48 @@ mod tests {
             assert!(line[..write].contains(every_agent), "the {text} map does not ask it of every agent: {line}");
             assert!(line[..write].contains(in_the_spec), "the {text} map does not say the result goes to the spec: {line}");
             assert!(line[write..].contains(two_lines), "the {text} map does not ask the agent to come back in two lines: {line}");
+        }
+    }
+
+    /// A troca do modelo mexe só na linha `model:` do cabeçalho de cada
+    /// agente: o resto do cabeçalho e o corpo inteiro passam como estão, e o
+    /// modelo do molde é o padrão da configuração, então pedir o padrão
+    /// devolve o molde igual.
+    #[test]
+    fn the_agent_model_replaces_only_the_model_line_of_the_header() {
+        for text in [Locale::PtBr, Locale::EnUs] {
+            for (name, body) in agent_texts(text) {
+                assert!(
+                    body.contains(&format!("\nmodel: {DEFAULT_AGENT_MODEL}\n")),
+                    "the {text} `{name}` mold does not carry the default model",
+                );
+                assert_eq!(
+                    with_agent_model(body, DEFAULT_AGENT_MODEL),
+                    body,
+                    "the default model must give the mold back untouched",
+                );
+
+                let opus = with_agent_model(body, "opus");
+                let expected = body.replacen(&format!("\nmodel: {DEFAULT_AGENT_MODEL}\n"), "\nmodel: opus\n", 1);
+                assert_eq!(opus, expected, "the {text} `{name}` agent changed more than the model line");
+                assert_eq!(opus.matches("model:").count(), body.matches("model:").count(), "{text} {name}");
+            }
+        }
+    }
+
+    /// Só o cabeçalho é lido: uma linha `model:` no corpo passa como está; sem
+    /// a linha no cabeçalho, ela entra antes do `---` que o fecha; sem
+    /// cabeçalho ou com ele aberto e nunca fechado, o texto volta igual.
+    #[test]
+    fn the_agent_model_is_written_in_the_header_only() {
+        let in_the_body = "---\nname: a\nmodel: sonnet\n---\nmodel: sonnet\n";
+        assert_eq!(with_agent_model(in_the_body, "opus"), "---\nname: a\nmodel: opus\n---\nmodel: sonnet\n");
+
+        let without_line = "---\nname: a\neffort: xhigh\n---\ncorpo\n";
+        assert_eq!(with_agent_model(without_line, "opus"), "---\nname: a\neffort: xhigh\nmodel: opus\n---\ncorpo\n");
+
+        for untouched in ["sem cabeçalho\nmodel: sonnet\n", "---\nname: a\nmodel: sonnet\n", ""] {
+            assert_eq!(with_agent_model(untouched, "opus"), untouched);
         }
     }
 }

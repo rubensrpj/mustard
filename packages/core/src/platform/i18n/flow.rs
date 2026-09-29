@@ -15,6 +15,26 @@ pub(super) const PREFIXES: &[&str] = &[
     "retired", "banner", "stuck", "conversation_size", "wave_prompt",
 ];
 
+/// Os comandos do mapa que os textos do catálogo citam para achar e ler o
+/// código, ditos numa frase só: o comando e a hora de usar moram aqui, num
+/// lugar único, e cada texto só põe a frase que os introduz.
+macro_rules! map_commands_pt {
+    () => {
+        "`mustard-rt run map search --query \"<assunto>\"` acha onde mexer, \
+         `mustard-rt run map slice --file <arquivo> --name <nome>` lê só a declaração e \
+         `mustard-rt run map users --name <nome>` mostra quem a usa"
+    };
+}
+
+/// A mesma frase de `map_commands_pt`, em inglês.
+macro_rules! map_commands_en {
+    () => {
+        "`mustard-rt run map search --query \"<subject>\"` finds where to change, \
+         `mustard-rt run map slice --file <file> --name <name>` reads one declaration and \
+         `mustard-rt run map users --name <name>` lists its users"
+    };
+}
+
 /// O texto de `key` em `lang`, ou `None` quando a chave não está aqui.
 pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
     Some(match (key, lang) {
@@ -611,12 +631,20 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "`{file}` line {line} imports `{target}` and closes a new import cycle. It is only a warning."
         }
         ("round.after_wave.leftover", Locale::PtBr) => {
-            "`{file}` linha {line} ainda cita `{name}`, que a onda tirou de `{from}`. Tire a citação ou \
-             troque pelo nome novo."
+            concat!(
+                "`{file}` linha {line} ainda cita `{name}`, que a onda tirou de `{from}`. Tire a citação ou \
+                 troque pelo nome novo. Ache e leia o código pelo mapa: ",
+                map_commands_pt!(),
+                "."
+            )
         }
         ("round.after_wave.leftover", Locale::EnUs) => {
-            "`{file}` line {line} still cites `{name}`, which the wave took out of `{from}`. Remove the \
-             citation or use the new name."
+            concat!(
+                "`{file}` line {line} still cites `{name}`, which the wave took out of `{from}`. Remove the \
+                 citation or use the new name. Find and read the code through the map: ",
+                map_commands_en!(),
+                "."
+            )
         }
         ("round.after_wave.orphan", Locale::PtBr) => {
             "`{name}` em `{file}` linha {line} ficou sem uso fora de teste, porque a onda tirou quem a \
@@ -790,8 +818,16 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("round.returned_change", Locale::PtBr) => "Mudança de plano aceita na volta da onda {wave}: {change}",
         ("round.returned_change", Locale::EnUs) => "Plan change accepted when wave {wave} came back: {change}",
-        ("round.leftover_joined", Locale::PtBr) => "Sobra da onda {wave}, nos mesmos arquivos — {title}: {detail}",
-        ("round.leftover_joined", Locale::EnUs) => "Leftover from wave {wave}, on the same files — {title}: {detail}",
+        ("round.leftover_joined", Locale::PtBr) => concat!(
+            "Sobra da onda {wave}, nos mesmos arquivos — {title}: {detail} (Pelo mapa: ",
+            map_commands_pt!(),
+            ".)"
+        ),
+        ("round.leftover_joined", Locale::EnUs) => concat!(
+            "Leftover from wave {wave}, on the same files — {title}: {detail} (By the map: ",
+            map_commands_en!(),
+            ".)"
+        ),
         ("round.tasks_returned", Locale::PtBr) => {
             "A onda {wave} não fez as tarefas {tasks}, e elas voltaram ao backlog, com a mudança \
              de plano anotada quando houve. Se a mudança altera uma decisão ou o que a tarefa pede, \
@@ -1005,16 +1041,24 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              Without that line, the wave does not go out."
         }
         ("round.analysis_check", Locale::PtBr) => {
-            "Um commit mudou arquivo das tarefas {tasks} depois que o texto delas foi escrito. Mande \
-             a conferência delas no código a um agente separado. Ele acha se o que cada uma pede já \
-             está feito ou ainda falta, e devolve só a tarefa ajustada para ser gravada. Você não lê \
-             arquivo inteiro nem saída longa para isso."
+            concat!(
+                "Um commit mudou arquivo das tarefas {tasks} depois que o texto delas foi escrito. Mande \
+                 a conferência delas no código a um agente separado. Ele acha se o que cada uma pede já \
+                 está feito ou ainda falta, e devolve só a tarefa ajustada para ser gravada. Ele acha e \
+                 lê o código pelo mapa: ",
+                map_commands_pt!(),
+                ". Você não lê arquivo inteiro nem saída longa para isso."
+            )
         }
         ("round.analysis_check", Locale::EnUs) => {
-            "A commit changed a file of tasks {tasks} after their text was written. Hand the check \
-             of them against the code to a separate agent. It finds whether what each one asks is \
-             already done or still missing, and returns only the adjusted task to record. You do \
-             not read a whole file nor long output for this."
+            concat!(
+                "A commit changed a file of tasks {tasks} after their text was written. Hand the check \
+                 of them against the code to a separate agent. It finds whether what each one asks is \
+                 already done or still missing, and returns only the adjusted task to record. It finds \
+                 and reads the code through the map: ",
+                map_commands_en!(),
+                ". You do not read a whole file nor long output for this."
+            )
         }
         ("round.analysis_ignored", Locale::PtBr) => {
             "Na escolha da onda {wave}, o item {item} ficou como estava. Ele não está entre os \
@@ -1526,34 +1570,50 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // Só a última gravação que o pedido gera leva `--copy`: a página
         // recebe uma cópia só, já com tudo o que o pedido mudou.
         ("request.new_waves", Locale::PtBr) => {
-            "Pedido gravado. Grave o que ele gerou, as tarefas novas, sem `wave`: elas entram no \
-             backlog, e o programa as junta em ondas na hora de despachar. Passe `--copy` só na última \
-             dessas gravações: ela prepara uma cópia da página, já com tudo o que o pedido gerou. O \
-             pedido que não gera outra gravação leva `--copy` na própria gravação. A spec e a branch \
-             continuam as mesmas, e não há nova aprovação."
+            concat!(
+                "Pedido gravado. Grave o que ele gerou, as tarefas novas, sem `wave`: elas entram no \
+                 backlog, e o programa as junta em ondas na hora de despachar. Ache e leia o código pelo \
+                 mapa antes de escrever cada tarefa: ",
+                map_commands_pt!(),
+                ". Passe `--copy` só na última dessas gravações: ela prepara uma cópia da página, já com \
+                 tudo o que o pedido gerou. O pedido que não gera outra gravação leva `--copy` na própria \
+                 gravação. A spec e a branch continuam as mesmas, e não há nova aprovação."
+            )
         }
         ("request.new_waves", Locale::EnUs) => {
-            "Request recorded. Record what it generated, the new tasks, without `wave`: they go into \
-             the backlog, and the program groups them into waves when it dispatches. Pass `--copy` \
-             only on the last of those writes: it prepares one copy of the page, already with \
-             everything the request generated. A request that generates no other write takes \
-             `--copy` on its own write. The spec and the branch stay the same, and there is no new \
-             approval."
+            concat!(
+                "Request recorded. Record what it generated, the new tasks, without `wave`: they go into \
+                 the backlog, and the program groups them into waves when it dispatches. Find and read \
+                 the code through the map before writing each task: ",
+                map_commands_en!(),
+                ". Pass `--copy` only on the last of those writes: it prepares one copy of the page, \
+                 already with everything the request generated. A request that generates no other write \
+                 takes `--copy` on its own write. The spec and the branch stay the same, and there is no \
+                 new approval."
+            )
         }
         ("request.adjust_waves", Locale::PtBr) => {
-            "Pedido gravado. Grave o que ele gerou: as versões novas das tarefas que mudam, com \
-             `replaces`. Repita o `wave` da versão antiga quando ela já está numa onda. Passe \
-             `--copy` só na última dessas gravações: ela prepara uma cópia da página, já com tudo o \
-             que o pedido gerou. O pedido que não gera outra gravação leva `--copy` na própria \
-             gravação. A spec e a branch continuam as mesmas, e não há nova aprovação."
+            concat!(
+                "Pedido gravado. Grave o que ele gerou: as versões novas das tarefas que mudam, com \
+                 `replaces`. Repita o `wave` da versão antiga quando ela já está numa onda. Ache e leia \
+                 o código pelo mapa antes de reescrever cada tarefa: ",
+                map_commands_pt!(),
+                ". Passe `--copy` só na última dessas gravações: ela prepara uma cópia da página, já com \
+                 tudo o que o pedido gerou. O pedido que não gera outra gravação leva `--copy` na própria \
+                 gravação. A spec e a branch continuam as mesmas, e não há nova aprovação."
+            )
         }
         ("request.adjust_waves", Locale::EnUs) => {
-            "Request recorded. Record what it generated: the new versions of the tasks that change, \
-             with `replaces`. Repeat the `wave` of the old version when it is already in a wave. \
-             Pass `--copy` only on the last of those writes: it prepares one copy of the page, \
-             already with everything the request generated. A request that generates no other write \
-             takes `--copy` on its own write. The spec and the branch stay the same, and there is no \
-             new approval."
+            concat!(
+                "Request recorded. Record what it generated: the new versions of the tasks that change, \
+                 with `replaces`. Repeat the `wave` of the old version when it is already in a wave. \
+                 Find and read the code through the map before rewriting each task: ",
+                map_commands_en!(),
+                ". Pass `--copy` only on the last of those writes: it prepares one copy of the page, \
+                 already with everything the request generated. A request that generates no other write \
+                 takes `--copy` on its own write. The spec and the branch stay the same, and there is no \
+                 new approval."
+            )
         }
         _ => return None,
     })
@@ -1573,7 +1633,7 @@ mod tests {
             include_str!("flow.rs"),
             super::PREFIXES,
             196,
-            0x57b2_5ce6_b3e2_e03d,
+            0x4eee_c10d_6047_5285,
         );
     }
 

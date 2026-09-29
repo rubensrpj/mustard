@@ -64,7 +64,7 @@ use std::path::{Path, PathBuf};
 use mustard_core::domain::spec_events::{Block, BlockQuery, Refusal, SpecEvent, SpecLog};
 use mustard_core::domain::spec_index::title_of;
 use mustard_core::domain::spec_state::{final_approval, last_change, PhaseWriter, SpecState, State};
-use mustard_core::domain::wave_prompt::{count_lines, recorded_choice, requested_model, unowned};
+use mustard_core::domain::wave_prompt::{count_lines, recorded_choice, unowned};
 use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Map, Value};
@@ -347,7 +347,7 @@ fn run_close(
         draft.insert("lines".into(), json!(count_lines(&prompt)));
         draft.insert("chars".into(), json!(prompt.chars().count()));
         draft.insert("text".into(), json!(prompt));
-        draft.insert("model".into(), json!(requested_model("review")));
+        draft.insert("model".into(), json!(mustard_core::ProjectConfig::load(root).agent_model()));
         draft.insert("mustard".into(), json!(env!("CARGO_PKG_VERSION")));
         draft.insert("author".into(), json!("binary"));
         record(&opts.root, &spec, "send", draft, PhaseWriter::Binary).map_err(CloseRefusal::Refused)?;
@@ -1407,8 +1407,30 @@ mod tests {
         let sent = sent.last().unwrap_or_else(|| panic!("nenhum envio gravado"));
         assert_eq!(sent.str_field("role"), Some("review"), "{sent:?}");
         assert_eq!(sent.str_field("text"), Some(prompt.as_str()), "o texto gravado é o pedido inteiro que voltou: {sent:?}");
-        assert!(sent.str_field("model").is_some_and(|m| !m.is_empty()), "o modelo pedido vai junto: {sent:?}");
+        assert_eq!(sent.str_field("model"), Some("sonnet"), "o modelo pedido vai junto, o padrão da instalação: {sent:?}");
         assert!(sent.wave().is_none(), "a revisão final não é dona de onda nenhuma: {sent:?}");
+    }
+
+    /// O envio do pedido da revisão final grava o modelo que o `mustard.json`
+    /// declara em `agents.model`, o mesmo que a instalação escreve no agente
+    /// de revisão, e não um modelo fixo.
+    #[test]
+    fn the_final_review_send_carries_the_model_of_the_project_config() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        ready_to_close(root, "x", &["git --version"]);
+        std::fs::write(root.join("mustard.json"), br#"{"agents":{"model":"opus"}}"#).unwrap();
+        git_at(root, &["add", "-A"]);
+        git_at(root, &["commit", "-q", "-m", "modelo dos agentes"]);
+
+        let asked =
+            close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None, ..Default::default() }, None);
+        assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let sent = log.visible().into_iter().rfind(|e| e.event_type == "send").unwrap_or_else(|| panic!("nenhum envio gravado"));
+        assert_eq!(sent.str_field("role"), Some("review"), "{sent:?}");
+        assert_eq!(sent.str_field("model"), Some("opus"), "o envio segue o modelo da configuração: {sent:?}");
     }
 
     /// O revisor grava o veredito, e o fechamento o assume sem relatório. A

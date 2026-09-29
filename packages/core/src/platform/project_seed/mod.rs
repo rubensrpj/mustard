@@ -340,7 +340,7 @@ pub fn upsert_project_with(
     for (name, outcome) in seed_settings(&claude_dir, false, mode, config.rtk(), text)? {
         report.record(name, outcome);
     }
-    for (rel, outcome) in seed_harness_texts(&claude_dir, text)? {
+    for (rel, outcome) in seed_harness_texts(&claude_dir, text, config.agent_model())? {
         report.record(&format!(".claude/{rel}"), outcome);
     }
     report.record(CLAUDE_GITIGNORE_PATH, seed_gitignore(&claude_dir, false)?);
@@ -442,6 +442,76 @@ mod tests {
         assert_eq!(report.version, None);
         let config = ProjectConfig::load(dir.path());
         assert_eq!(config.version, None, "no stamp when the caller withheld a version");
+    }
+
+    /// O `model:` do cabeçalho de cada agente instalado em `root`, na ordem
+    /// onda, revisão.
+    fn installed_agent_models(root: &Path) -> Vec<String> {
+        ["wave", "review"]
+            .iter()
+            .map(|name| {
+                let text = std_fs::read_to_string(root.join(format!(".claude/agents/mustard/{name}.md"))).unwrap();
+                let header = text.split("\n---\n").next().unwrap();
+                header.lines().find_map(|line| line.strip_prefix("model: ")).unwrap_or_default().to_string()
+            })
+            .collect()
+    }
+
+    /// A instalação nova escreve o modelo padrão em `agents.model` e no
+    /// cabeçalho dos dois agentes; com um modelo já declarado, ela o mantém
+    /// no arquivo e o escreve nos agentes; e a linha do arquivo, trocada, muda
+    /// os dois agentes na instalação seguinte. Um modelo que um cabeçalho não
+    /// aceita fica onde está, e os agentes recebem o padrão.
+    #[test]
+    fn the_agents_are_installed_with_the_model_the_project_declares() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        upsert_project(root, Some("9.9.9"), InstallMode::Shared).unwrap();
+        let config: Value = serde_json::from_str(&std_fs::read_to_string(root.join("mustard.json")).unwrap()).unwrap();
+        assert_eq!(config["agents"], json!({"model": "sonnet"}));
+        assert_eq!(installed_agent_models(root), ["sonnet", "sonnet"]);
+
+        std_fs::write(root.join("mustard.json"), r#"{"version":"9.9.9","acronyms":["PI"],"agents":{"model":"opus"}}"#)
+            .unwrap();
+        upsert_project(root, Some("9.9.9"), InstallMode::Shared).unwrap();
+        assert_eq!(installed_agent_models(root), ["opus", "opus"]);
+        let config: Value = serde_json::from_str(&std_fs::read_to_string(root.join("mustard.json")).unwrap()).unwrap();
+        assert_eq!(config["agents"], json!({"model": "opus"}), "the declared model is kept");
+        assert_eq!(config["acronyms"], json!(["PI"]));
+
+        std_fs::write(root.join("mustard.json"), r#"{"version":"9.9.9","agents":{"model":"claude-sonnet-5-5"}}"#).unwrap();
+        upsert_project(root, Some("9.9.9"), InstallMode::Shared).unwrap();
+        assert_eq!(installed_agent_models(root), ["claude-sonnet-5-5", "claude-sonnet-5-5"]);
+
+        std_fs::write(root.join("mustard.json"), r#"{"version":"9.9.9","agents":{"model":"opus\neffort: low"}}"#).unwrap();
+        upsert_project(root, Some("9.9.9"), InstallMode::Shared).unwrap();
+        assert_eq!(installed_agent_models(root), ["sonnet", "sonnet"]);
+        let text = std_fs::read_to_string(root.join(".claude/agents/mustard/wave.md")).unwrap();
+        assert!(!text.contains("effort: low"), "a model with a line break wrote another key: {text}");
+        let config: Value = serde_json::from_str(&std_fs::read_to_string(root.join("mustard.json")).unwrap()).unwrap();
+        assert_eq!(config["agents"]["model"], json!("opus\neffort: low"), "what the person wrote stays");
+    }
+
+    /// Um `mustard.json` de antes do campo ganha `agents.model` com o padrão
+    /// na atualização, e nada do que ele já tinha se perde.
+    #[test]
+    fn an_older_config_gains_the_agent_model_and_keeps_the_rest() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std_fs::write(
+            root.join("mustard.json"),
+            r#"{"version":"1.0.0","acronyms":["PI"],"language":{"text":"en-US"},"agents":{"note":"mine"}}"#,
+        )
+        .unwrap();
+
+        let report = upsert_project(root, Some("1.0.0"), InstallMode::Shared).unwrap();
+
+        assert!(report.updated.iter().any(|name| name == "mustard.json"), "{report:?}");
+        let config: Value = serde_json::from_str(&std_fs::read_to_string(root.join("mustard.json")).unwrap()).unwrap();
+        assert_eq!(config["agents"], json!({"model": "sonnet", "note": "mine"}));
+        assert_eq!(config["acronyms"], json!(["PI"]));
+        assert_eq!(config["language"], json!({"text": "en-US"}));
+        assert_eq!(installed_agent_models(root), ["sonnet", "sonnet"]);
     }
 
     #[test]
