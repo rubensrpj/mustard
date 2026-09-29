@@ -214,20 +214,7 @@ fn prompts_reading(
     let bank = lesson_bank(root);
     let base = project_execution(root);
     let languages = Languages::of_project(root);
-    let map = MapParts {
-        root,
-        moves: crate::ProjectConfig::load(root).history_moves(),
-        moves_bad_read: Cell::new(false),
-        trace,
-        recipes: RefCell::default(),
-        read,
-        paths: OnceCell::new(),
-        summary: OnceCell::new(),
-        pattern: OnceCell::new(),
-        learned: OnceCell::new(),
-        picks: RefCell::default(),
-        examples: RefCell::default(),
-    };
+    let map = MapParts::new(root, read, trace);
     let context = Context {
         root,
         spec,
@@ -594,6 +581,29 @@ struct MapParts<'a> {
     /// calcula uma vez só por montagem.
     picks: RefCell<BTreeMap<String, Vec<String>>>,
     examples: RefCell<BTreeMap<String, Option<PatternExample>>>,
+}
+
+impl<'a> MapParts<'a> {
+    /// O mapa do projeto `root` lido por `read`, sem nada lido ainda, com a
+    /// história além da janela lida por `trace`. É o mesmo para o pedido da
+    /// onda e para a medida do padrão, que precisam ler as mesmas partes do
+    /// mesmo jeito.
+    fn new(root: &'a Path, read: &'a MapReader<'a>, trace: &'a Trace<'a>) -> Self {
+        Self {
+            root,
+            moves: crate::ProjectConfig::load(root).history_moves(),
+            moves_bad_read: Cell::new(false),
+            trace,
+            recipes: RefCell::default(),
+            read,
+            paths: OnceCell::new(),
+            summary: OnceCell::new(),
+            pattern: OnceCell::new(),
+            learned: OnceCell::new(),
+            picks: RefCell::default(),
+            examples: RefCell::default(),
+        }
+    }
 }
 
 impl MapParts<'_> {
@@ -1106,6 +1116,9 @@ fn modified_at(path: &Path) -> Option<i64> {
 }
 
 #[cfg(test)]
+mod pattern_measure;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::domain::spec_events::{parse_log, render_line, stamp};
@@ -1113,7 +1126,7 @@ mod tests {
     use serde_json::json;
     use tempfile::tempdir;
 
-    fn log_of(events: &[(&str, Value)]) -> SpecLog {
+    pub(super) fn log_of(events: &[(&str, Value)]) -> SpecLog {
         let mut content = String::new();
         for (i, (event_type, body)) in events.iter().enumerate() {
             let mut map = crate::domain::spec_events::normalize(
@@ -1144,7 +1157,7 @@ mod tests {
     }
 
     /// O mapa de teste, gravado pela porta do mapa, como o scan o grava.
-    fn write_map(root: &Path, model: &Value) {
+    pub(super) fn write_map(root: &Path, model: &Value) {
         crate::io::project_map::write_text(root, &model.to_string()).unwrap();
     }
 
@@ -2040,7 +2053,7 @@ mod tests {
     /// importa entity em todas as 25. Cada arquivo declara a classe com o
     /// nome dele, com as linhas, e o código dele está no disco. A onda tem
     /// uma tarefa que cria um controller e outra que cria um service.
-    fn project_with_a_pattern() -> (tempfile::TempDir, SpecLog) {
+    pub(super) fn project_with_a_pattern() -> (tempfile::TempDir, SpecLog) {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let named = |role: &str, n: usize| format!("src/{role}/{role}{n}.{role}.ts");
@@ -2089,7 +2102,7 @@ mod tests {
 
     /// As linhas de uma tarefa no pedido: a dela e as de baixo, até a
     /// próxima tarefa.
-    fn task_lines<'t>(text: &'t str, title: &str) -> Vec<&'t str> {
+    pub(super) fn task_lines<'t>(text: &'t str, title: &str) -> Vec<&'t str> {
         let mut lines = text.lines().skip_while(|line| !line.contains(title));
         let first = lines.next().into_iter();
         first.chain(lines.take_while(|line| !line.starts_with("- ") && !line.is_empty())).collect()
