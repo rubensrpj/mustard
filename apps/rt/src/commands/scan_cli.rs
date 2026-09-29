@@ -50,7 +50,7 @@ pub enum ScanCmd {
     /// --query "<words>" --intent "<sentence>"` (the words and the likely
     /// names in `--query`, the sentence of what you look for and why in
     /// `--intent`; part of a name only in `--query`), `summary` (the
-    /// session-start summary, up to 3 kB; with `--file`, the parts of that
+    /// summary of the project map, up to 3 kB; with `--file`, the parts of that
     /// file: each declaration with its kind, name and lines, and the line
     /// where its tests start), `skill --path <SKILL.md>` (every cited path exists and the
     /// skill stays under 500 lines) or `dump` (the map database table by

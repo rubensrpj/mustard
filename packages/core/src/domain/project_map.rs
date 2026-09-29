@@ -15,7 +15,7 @@
 //! - [`users`]: quem usa uma declaração pelo nome, em que arquivo e linha;
 //! - [`search`]: a busca por conceito, com a mesma preparação de texto e o
 //!   mesmo BM25 das lições e das specs;
-//! - [`summary`]: o resumo para o início da sessão, até 3 kB;
+//! - [`summary`]: o resumo do mapa do projeto, até 3 kB;
 //! - [`check_skill`]: a conferência de uma skill (caminhos citados e tamanho).
 //!
 //! O histórico também mora aqui ([`History`]), porque o scan o escreve e as
@@ -47,7 +47,7 @@ pub const TOGETHER_SHOWN: usize = 5;
 /// Quantos títulos de commit do arquivo a resposta mostra, dos mais novos.
 pub const TITLES_SHOWN: usize = 3;
 
-/// O tamanho máximo do resumo do início da sessão, em bytes.
+/// O tamanho máximo do resumo do mapa, em bytes.
 pub const SUMMARY_MAX_BYTES: usize = 3 * 1024;
 
 /// O tamanho máximo de uma skill, em linhas.
@@ -1922,7 +1922,7 @@ impl RecipeSum {
 }
 
 // ---------------------------------------------------------------------------
-// Resumo do início da sessão
+// Resumo do mapa
 // ---------------------------------------------------------------------------
 
 /// Quantos subprojetos o resumo lista.
@@ -1943,7 +1943,7 @@ fn clip(line: String) -> String {
     format!("{}...", &line[..end])
 }
 
-/// O resumo do mapa para o início da sessão: quantos arquivos e de que
+/// O resumo do mapa: quantos arquivos e de que
 /// linguagens, os subprojetos, os arquivos mais importados, os mudados há
 /// pouco e como perguntar ao mapa. Nunca passa de [`SUMMARY_MAX_BYTES`]: as
 /// linhas que não cabem ficam de fora, e a última (como perguntar) sempre
@@ -2240,13 +2240,13 @@ mod tests {
     }
 
     #[test]
-    fn a_new_session_gets_no_pattern() {
+    fn the_map_summary_carries_no_pattern() {
         let map = services_against_one_rule();
         for lang in [Locale::PtBr, Locale::EnUs] {
             let text = summary(&map, lang);
             for key in ["prompt.pattern.head", "prompt.pattern.rule", "prompt.pattern.info", "prompt.pattern.example"] {
                 let fixed = translate(key, lang).split('{').next().unwrap_or_default();
-                assert!(!text.contains(fixed), "{key} in the session summary: {text}");
+                assert!(!text.contains(fixed), "{key} in the map summary: {text}");
             }
             assert!(!text.contains("importa service") && !text.contains("imports service"), "{text}");
         }
@@ -2560,7 +2560,7 @@ mod tests {
     }
 
     #[test]
-    fn the_session_summary_fits_in_three_kilobytes() {
+    fn the_map_summary_fits_in_three_kilobytes() {
         let modules: Vec<MapModule> =
             (0..5000).map(|i| module(&format!("apps/sub{}/src/{}/file_{i}.rs", i % 40, "x".repeat(60)), 10, &[])).collect();
         let projects: Vec<MapProject> = (0..40)
@@ -2597,7 +2597,7 @@ mod tests {
     /// história de uma declaração e o resumo de um arquivo nos dois idiomas,
     /// ao lado das outras.
     #[test]
-    fn the_session_summary_invites_the_history_question() {
+    fn the_map_summary_invites_the_history_question() {
         for lang in [Locale::PtBr, Locale::EnUs] {
             let text = summary(&ProjectMap::default(), lang);
             let ask = text.lines().last().unwrap_or_default();

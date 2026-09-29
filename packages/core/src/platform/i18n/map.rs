@@ -59,7 +59,7 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              whole number above zero. The scan uses the default, {default}."
         }
         // The project map (`run map`): refusals, reasons of the examples and
-        // the session-start summary.
+        // the summary of the map.
         ("map.missing", Locale::PtBr) => "O mapa do projeto ainda não existe. Rode `mustard-rt run scan`.",
         ("map.missing", Locale::EnUs) => "The project map does not exist yet. Run `mustard-rt run scan`.",
         ("map.unreadable", Locale::PtBr) => {

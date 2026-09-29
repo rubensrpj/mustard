@@ -75,8 +75,8 @@ mod reach;
 mod value;
 
 /// Catalog cap for `top_fan_in`: a bounded list (~a few KB of model) ordered
-/// strongest first. The map's session summary reads the first
-/// hubs of `top_fan_in`.
+/// strongest first. The map's summary reads the first hubs of
+/// `top_fan_in`.
 const TOP_DEGREE_CAP: usize = 64;
 
 /// Longest dependency chain below an SCC = its emergent depth (`L0` = innermost).

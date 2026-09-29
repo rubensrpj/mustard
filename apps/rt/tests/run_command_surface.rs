@@ -731,3 +731,22 @@ fn the_pending_help_shows_the_item_id_as_p_n() {
     assert!(spelled.len() >= 6, "the summary and the five options name the id: {help}");
     assert!(spelled.iter().all(|id| *id == "P-N"), "every id is spelled P-N: {spelled:?}\n{help}");
 }
+
+/// A ajuda do `run map`, como o usuário a pede, descreve o `summary` como o
+/// resumo do mapa do projeto, até 3 kB: o início da sessão não o coloca mais,
+/// e a ajuda não pode mandar o leitor procurá-lo lá.
+#[test]
+fn the_map_help_describes_the_summary_of_the_map_and_not_the_session_start() {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+        .args(["run", "map", "--help"])
+        .output()
+        .expect("mustard-rt run map --help");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let help = String::from_utf8_lossy(&out.stdout).split_whitespace().collect::<Vec<_>>().join(" ");
+
+    assert!(help.contains("`summary` (the summary of the project map, up to 3 kB;"), "the summary is described: {help}");
+    assert!(
+        !help.contains("session-start") && !help.contains("session start"),
+        "the help does not send the reader to the session start: {help}"
+    );
+}

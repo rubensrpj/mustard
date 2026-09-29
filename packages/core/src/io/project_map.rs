@@ -671,7 +671,7 @@ pub enum Need<'a> {
     /// Nada além de o mapa se abrir: só as recusas de mapa ausente e de
     /// mapa ilegível.
     Nothing,
-    /// O resumo do início da sessão: o caminho de cada arquivo, as línguas,
+    /// O resumo do mapa: o caminho de cada arquivo, as línguas,
     /// os subprojetos, os arquivos mais importados e a história.
     Summary,
     /// O terreno: os subprojetos e a camada de cada pasta.

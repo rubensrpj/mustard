@@ -27,7 +27,7 @@
 //!   traz o grau, de 0 a 5; do 3 para baixo, a busca funda por palavra não
 //!   achada (`deeper`), e, no 0, a linha do que não achou com a próxima
 //!   busca, exata;
-//! - `summary`: o resumo do início da sessão, até 3 kB; com `--file`, as
+//! - `summary`: o resumo do mapa do projeto, até 3 kB; com `--file`, as
 //!   partes do arquivo — cada declaração fora dos testes, com o tipo, o nome
 //!   e as linhas, e a linha em que os testes começam; perguntado de dentro de
 //!   uma cópia de trabalho do projeto, com as linhas do arquivo da cópia;
