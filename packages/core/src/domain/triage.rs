@@ -36,6 +36,11 @@ pub struct Signals {
 /// Do grau 3 para baixo a busca funda roda.
 pub const DEEP_UNTIL: u8 = 3;
 
+/// O maior grau de uma resposta cujo primeiro arquivo não é o primeiro do
+/// banco: a chance do grau fala do primeiro do banco, então a resposta que
+/// põe outro na frente nunca chega ao grau 5, o do cravado.
+pub const UNSURE_GRADE: u8 = 4;
+
 /// O termo fixo do ajuste.
 const BIAS: f64 = -3.3276;
 
@@ -112,12 +117,18 @@ impl Mark {
 }
 
 /// O corte da chance para a marca de cravado, acima do da nota 5 (0,8). Sai
-/// da régua das 360 buscas: das 34 buscas de nota 5, a régua reprova 2 (o
-/// arquivo certo fora dos cinco da resposta) e 4 têm o primeiro achado
-/// errado, todas com chance abaixo de 0,85; de 0,93 para cima ficam 6 buscas
-/// cravadas, o primeiro achado é o certo nas 6, e a régua não reprova
-/// nenhuma. Nas 120 buscas do Mustard com nomes a conta é a mesma: 6
-/// cravadas, o certo em primeiro nas 6.
+/// da régua das 360 buscas, com os três projetos, nos nomes e só na frase,
+/// depois de a resposta passar a seguir a ordem da lista de candidatos: das
+/// 28 buscas de nota 5, 4 têm o primeiro achado errado, todas com chance
+/// abaixo de 0,89 (duas em cada um dos projetos que não são o Mustard); a
+/// 0,8 ficam 28 cravadas e 4 erram, a 0,85 ficam 15 e 1 erra, de 0,9 para
+/// cima nenhuma erra. De 0,93 para cima ficam 6 buscas cravadas e o primeiro
+/// achado é o certo nas 6. As 6 são do Mustard: nos outros dois projetos
+/// nenhuma busca chega a 0,9, então o corte não cravou nada onde não se
+/// sabe. Ajustar os pesos de novo, com todos os grupos medidos, não ganhou
+/// nada: a área sob a curva ficou em 0,684, a mesma dos pesos de agora, e
+/// deixando um projeto de fora o ajuste empatou no Mustard e ficou pior nos
+/// outros dois. O corte e os pesos ficam.
 pub const PINNED_FROM: f64 = 0.93;
 
 /// A marca de uma resposta de grau `grade`, de chance `chance` de o primeiro

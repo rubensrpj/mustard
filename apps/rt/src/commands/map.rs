@@ -356,7 +356,8 @@ fn search(
 ) -> Result<Value, MapRefusal> {
     let started = Instant::now();
     let query = after_the_map(required(opts.query.as_deref(), opts.question, "--query"), read)?;
-    let mut triaged = map_triage::triage(root, &query, languages, TOP)?;
+    let intent = opts.intent.as_deref().map(str::trim).unwrap_or_default();
+    let mut triaged = map_triage::triage(root, (&query, intent), languages, TOP)?;
     let specs = map_search::search_specs(root, &query, languages, TOP)?;
     if triaged.grade == 0 {
         if specs.is_empty() {
@@ -368,7 +369,6 @@ fn search(
         // O item de spec que casa é achado: o grau é o mais fraco.
         triaged.grade = 1;
     }
-    let intent = opts.intent.as_deref().map(str::trim).unwrap_or_default();
     let session = opts.session.as_deref();
     let config = mustard_core::ProjectConfig::load(root);
     // Cravado, a resposta sai da triagem: o primeiro achado como peça inteira,
@@ -2858,6 +2858,18 @@ mod tests {
          "signature": "pub fn avisar_cliente()", "doc": "Avisa o cliente."}]}
     ]}"#;
 
+    /// Um mapa em que `relogio.rs` só traz a palavra "timestamp" na assinatura
+    /// de uma função e `notas.rs` a traz no comentário do arquivo: as duas
+    /// ordens da busca, a da lista de candidatos e a do banco, ficam com um
+    /// arquivo diferente na frente.
+    const CLOCK_MAP: &str = r#"{"modules": [
+      {"path": "src/relogio.rs", "loc": 10, "declarations": [
+        {"kind": "function", "name": "agora", "line": 1, "end_line": 3,
+         "signature": "pub fn agora() -> Timestamp"}]},
+      {"path": "src/notas.rs", "loc": 10, "file_comment": "guarda o timestamp de cada nota", "declarations": [
+        {"kind": "function", "name": "gravar", "line": 1, "end_line": 3, "signature": "pub fn gravar()"}]}
+    ]}"#;
+
     /// Um projeto com o mapa `map`, o texto em português e a seção `search`
     /// da configuração.
     fn search_project(map: &str, search: &Value) -> tempfile::TempDir {
@@ -2906,8 +2918,14 @@ mod tests {
 
     /// A busca do banco, a de antes do filtro, para `query`.
     fn bank_answer(root: &Path, query: &str) -> Value {
+        bank_answer_with(root, query, "")
+    }
+
+    /// A mesma busca, com a frase de `--intent`: as palavras dela entram na
+    /// lista de candidatos e por isso na ordem da resposta.
+    fn bank_answer_with(root: &Path, query: &str, intent: &str) -> Value {
         let project = crate::commands::spec_events::project(root);
-        let triaged = map_triage::triage(&project.root, query, &project.languages, TOP).unwrap();
+        let triaged = map_triage::triage(&project.root, (query, intent), &project.languages, TOP).unwrap();
         triage_view::bank_report(query, &triaged, project.lang)
     }
 
@@ -3001,7 +3019,8 @@ mod tests {
     /// Sem `search.filter` e sem chave, nem no ambiente nem no
     /// `mustard.json`, a busca é a do banco, igual à de antes do filtro, com
     /// o aviso da chave que falta uma vez por sessão; a frase de `--intent`
-    /// não a muda. Com o filtro desligado, não há aviso.
+    /// só muda a resposta pela ordem da lista, a mesma do filtro. Com o
+    /// filtro desligado, não há aviso.
     #[test]
     fn without_a_key_the_search_is_the_bank_one_and_warns_once_per_session() {
         let dir = search_project(FILTER_MAP, &json!({}));
@@ -3016,7 +3035,10 @@ mod tests {
         assert_eq!(without(&first, "warnings"), bank, "{first}");
         assert_eq!(searched(&opts, &fake.assemble_from_the_project(None)), bank, "the same session is not warned again");
         let with_intent = search_opts(dir.path(), "pedido", Some("onde avisa o cliente"), Some("sessao-sem-chave"));
-        assert_eq!(searched(&with_intent, &fake.assemble_from_the_project(None)), bank);
+        assert_eq!(
+            searched(&with_intent, &fake.assemble_from_the_project(None)),
+            bank_answer_with(dir.path(), "pedido", "onde avisa o cliente")
+        );
         assert_eq!(fake.calls(), 0);
 
         let off = search_project(FILTER_MAP, &json!({"filter": "none"}));
@@ -3105,6 +3127,30 @@ mod tests {
         let warned = mustard_core::translate("map.search.bad_filter", Locale::PtBr);
         assert_eq!(report["warnings"], json!([warned]), "{report}");
         assert_eq!(without(&report, "warnings"), bank_answer(dir.path(), "pedido"));
+    }
+
+    /// Os arquivos da resposta ao Claude, sem o filtro, vêm na ordem dos
+    /// arquivos da lista de candidatos que o filtro recebe: a lista sozinha
+    /// abriria com `relogio.rs`, o banco sozinho não o veria, e as duas
+    /// juntas põem na frente `notas.rs`, que as duas nomeiam.
+    #[test]
+    fn the_answer_lists_the_files_in_the_order_of_the_candidate_list_sent_to_the_filter() {
+        let dir = search_project(CLOCK_MAP, &json!({}));
+        let fake = FakeFilter::scoring(&[0.9, 0.8]);
+        let intent = Some("onde o timestamp é guardado");
+        searched(&search_opts(dir.path(), "timestamp", intent, None), &fake.assemble());
+        let mut sent: Vec<String> = Vec::new();
+        for candidate in fake.last().candidates {
+            if !sent.contains(&candidate.path) {
+                sent.push(candidate.path);
+            }
+        }
+        let opts = search_opts(dir.path(), "timestamp", intent, Some("sessao-ordem"));
+        let answer = searched(&opts, &fake.assemble_from_the_project(None));
+        let answered: Vec<String> =
+            answer["files"].as_array().unwrap().iter().map(|file| file["path"].as_str().unwrap().to_string()).collect();
+        assert_eq!(sent, answered, "{answer}");
+        assert_eq!(sent, ["src/notas.rs", "src/relogio.rs"]);
     }
 
     /// A frase ao filtro: a de `--intent`; sem ela, as palavras; e a palavra
@@ -3467,7 +3513,7 @@ mod tests {
     fn a_pinned_search_does_not_need_every_word_of_the_phrase() {
         let dir = search_project(PINNED_MAP, &json!({}));
         let project = crate::commands::spec_events::project(dir.path());
-        let triaged = map_triage::triage(&project.root, "cancelar pedido trava", &project.languages, TOP).unwrap();
+        let triaged = map_triage::triage(&project.root, ("cancelar pedido trava", ""), &project.languages, TOP).unwrap();
         assert_eq!(triaged.missing, ["trava"], "the phrase has a word the first finding lacks in a strong field");
         let fake = FakeFilter::scoring(&[0.9]);
         let opts = search_opts(dir.path(), "cancelar pedido trava", None, None);

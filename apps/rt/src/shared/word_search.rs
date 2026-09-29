@@ -224,7 +224,7 @@ fn try_reply(scene: &Scene<'_>, search: &Search<'_>) -> Option<Reply> {
         return None;
     }
     let question = words.join(" ");
-    let triaged = map_triage::triage_at(scene.model, &question, scene.languages, RANKED_FILES).ok()?;
+    let triaged = map_triage::triage_at(scene.model, (&question, ""), scene.languages, RANKED_FILES).ok()?;
     let mark = triaged.mark();
     if mark == Mark::NotFound {
         remember(scene.memory, &key)?;

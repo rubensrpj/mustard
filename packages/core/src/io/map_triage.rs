@@ -1,12 +1,15 @@
 //! `map_triage` — a triagem da busca do mapa: o grau da resposta e a busca
 //! funda.
 //!
-//! A busca dos arquivos ([`map_search::found`]) responde pelos campos fortes
-//! do índice: o nome (o do arquivo, o das declarações), a assinatura, as
-//! mensagens de erro e de log, os rótulos de tela e as rotas. A triagem lê
-//! dessa resposta três sinais — a nota do primeiro achado, quantas palavras
-//! da pergunta ele traz em campo forte e a distância dele para o segundo — e
-//! dá o grau de 0 a 5 ([`crate::domain::triage`]).
+//! Os arquivos da resposta saem da ordem única ([`crate::io::map_order`]):
+//! a busca dos arquivos ([`map_search::ranked_files`]) somada à lista das
+//! declarações que vai ao filtro. Os sinais do grau saem da busca dos
+//! arquivos, que responde pelos campos fortes do índice: o nome (o do
+//! arquivo, o das declarações), a assinatura, as mensagens de erro e de log,
+//! os rótulos de tela e as rotas. A triagem lê dela três sinais — a nota do
+//! primeiro achado, quantas palavras da pergunta ele traz em campo forte e a
+//! distância dele para o segundo — e dá o grau de 0 a 5
+//! ([`crate::domain::triage`]).
 //!
 //! Do grau 3 para baixo, cada palavra da pergunta que o primeiro achado não
 //! traz em campo forte é procurada nos campos fracos, um degrau por vez: os
@@ -33,7 +36,8 @@ use crate::domain::ranking::{idf_x1024, SCALE};
 use crate::domain::search::{folded_name, TOP};
 use crate::domain::triage::{self, Signals};
 use crate::io::map_glossary::{self, Learned};
-use crate::io::map_search::{as_indexed, by_fields, found, indexed, text};
+use crate::io::map_order;
+use crate::io::map_search::{add_texts, as_indexed, by_fields, indexed, text};
 use crate::io::project_map::{model_path, unreadable, SEARCHED};
 use crate::platform::error::Result;
 
@@ -135,20 +139,27 @@ impl Triaged {
 }
 
 /// A busca dos arquivos do mapa do projeto em `root`, triada: as recusas são
-/// as de [`crate::io::map_search::search`].
-pub fn triage(root: &Path, query: &str, languages: &Languages, limit: usize) -> std::result::Result<Triaged, MapRefusal> {
-    triage_at(&model_path(root), query, languages, limit)
+/// as de [`crate::io::map_search::search`]. Os arquivos saem na ordem única
+/// das palavras de `query` e da frase de `intent` ([`crate::io::map_order`]),
+/// a mesma da lista de candidatos do filtro.
+pub fn triage(
+    root: &Path,
+    (query, intent): (&str, &str),
+    languages: &Languages,
+    limit: usize,
+) -> std::result::Result<Triaged, MapRefusal> {
+    triage_at(&model_path(root), (query, intent), languages, limit)
 }
 
 /// A triagem de [`triage`] no mapa gravado em `model`.
 pub fn triage_at(
     model: &Path,
-    query: &str,
+    (query, intent): (&str, &str),
     languages: &Languages,
     limit: usize,
 ) -> std::result::Result<Triaged, MapRefusal> {
     let db = indexed(model, languages, &SEARCHED)?;
-    triaged(db.conn(), query, languages, limit, false).map_err(unreadable)
+    triaged(db.conn(), (query, intent), languages, limit, false).map_err(unreadable)
 }
 
 /// Uma palavra da pergunta: como está quebrada, as formas da normalização e
@@ -180,25 +191,43 @@ fn question(conn: &Connection, normalizer: &mut Normalizer, query: &str) -> Resu
 /// A triagem sobre o banco aberto. Com `whole`, a busca funda roda em
 /// qualquer grau e traz tudo o que achou, sem o corte do muito mais fraco e
 /// sem o limite: a medida da régua precisa dela inteira.
-fn triaged(conn: &Connection, query: &str, languages: &Languages, limit: usize, whole: bool) -> Result<Triaged> {
+///
+/// Os arquivos são os `limit` primeiros da ordem única. Os sinais do grau
+/// ficam os do banco, a nota do primeiro e do segundo achado dele: quando a
+/// ordem única põe outro arquivo na frente, o grau não passa de 4 e a marca
+/// nunca é cravado, porque a chance fala do primeiro do banco. Achado só da
+/// lista, sem nenhum do banco, tem o grau mais fraco.
+fn triaged(
+    conn: &Connection,
+    (query, intent): (&str, &str),
+    languages: &Languages,
+    limit: usize,
+    whole: bool,
+) -> Result<Triaged> {
     let mut normalizer = Normalizer::new(languages);
     let words = question(conn, &mut normalizer, query)?;
-    let files = found(conn, query, languages, limit)?;
+    let ordered = map_order::ordered(conn, query, intent, languages)?;
+    let mut files: Vec<Found> = ordered.files.into_iter().take(limit).collect();
+    add_texts(conn, query, languages, &mut files)?;
     let strong = strong_words(conn, query, &words, files.first())?;
     let scale = |score: u64| score as f64 / 1024.0;
     let signals = Signals {
         words: words.len(),
         strong: strong.iter().filter(|hit| **hit).count(),
-        first: files.first().map(|file| scale(file.score)),
-        second: files.get(1).map(|file| scale(file.score)),
+        first: ordered.bank.first().map(|file| scale(file.score)),
+        second: ordered.bank.get(1).map(|file| scale(file.score)),
     };
     let mut grade = triage::grade(&signals);
+    let agrees = files.first().map(|file| &file.path) == ordered.bank.first().map(|file| &file.path);
+    if !agrees {
+        grade = grade.min(triage::UNSURE_GRADE);
+    }
     let missing: Vec<&Word> = words.iter().zip(&strong).filter(|(_, hit)| !**hit).map(|(word, _)| word).collect();
     let mut deeper = Vec::new();
     if grade <= triage::DEEP_UNTIL || whole {
         deeper = search_deeper(conn, &mut normalizer, &missing, (!whole).then_some(TOP))?;
     }
-    if grade == 0 && !deeper.is_empty() {
+    if grade == 0 && (!deeper.is_empty() || !files.is_empty()) {
         grade = 1;
     }
     let missing: Vec<String> = missing.into_iter().map(|word| word.plain.clone()).collect();
@@ -648,14 +677,14 @@ mod tests {
 
     /// A resposta triada da pergunta, como o comando a pede.
     fn ask(dir: &TempDir, query: &str) -> Triaged {
-        triage(dir.path(), query, &languages(), TOP).unwrap()
+        triage(dir.path(), (query, ""), &languages(), TOP).unwrap()
     }
 
     /// A busca funda inteira da pergunta, sem o grau que a barra e sem o
     /// corte do muito mais fraco.
     fn whole(dir: &TempDir, query: &str) -> Triaged {
         let db = indexed(&model_path(dir.path()), &languages(), &SEARCHED).unwrap();
-        triaged(db.conn(), query, &languages(), TOP, true).unwrap()
+        triaged(db.conn(), (query, ""), &languages(), TOP, true).unwrap()
     }
 
     /// A busca funda da pergunta como a resposta a leva, com o corte do muito
@@ -712,6 +741,55 @@ mod tests {
         assert_eq!(answer(5).mark(), triage::Mark::Pinned);
         assert_eq!(answer(4).mark(), triage::Mark::Partial);
         assert_eq!(Triaged { grade: 0, ..answer(5) }.mark(), triage::Mark::NotFound);
+    }
+
+    /// Um arquivo que só a lista das declarações acha, por uma palavra da
+    /// assinatura, é achado: a resposta o traz e o grau não é o de nada
+    /// achado, embora o banco dos arquivos não o veja.
+    #[test]
+    fn a_file_only_the_list_finds_is_answered_and_is_not_reported_as_nothing_found() {
+        let dir = saved(&json!({"modules": [
+            {"path": "src/relogio.rs", "declarations": [
+                {"kind": "function", "name": "agora", "line": 1, "end_line": 3, "signature": "pub fn agora() -> Timestamp"}]},
+            {"path": "src/pedido.rs", "declarations": [function("gravar", 1, "")]}
+        ]}));
+        let got = ask(&dir, "timestamp");
+        assert_eq!(got.files.iter().map(|file| file.path.as_str()).collect::<Vec<_>>(), ["src/relogio.rs"], "{got:?}");
+        assert_eq!(got.grade, 1, "{got:?}");
+        assert_ne!(got.mark(), triage::Mark::NotFound);
+    }
+
+    /// A chance do grau fala do primeiro arquivo do banco: o banco só põe
+    /// `timestamp.rs` na frente, com a chance do cravado, mas a ordem única
+    /// empata com o arquivo da lista e fica com ele; outro primeiro arquivo
+    /// nunca é cravado.
+    #[test]
+    fn an_answer_whose_first_file_is_not_the_banks_first_is_never_pinned() {
+        let dir = saved(&json!({"modules": [
+            {"path": "src/relogio.rs", "declarations": [
+                {"kind": "function", "name": "agora", "line": 1, "end_line": 3, "signature": "pub fn agora() -> Timestamp"}]},
+            {"path": "src/timestamp.rs", "declarations": []}
+        ]}));
+        let got = ask(&dir, "timestamp");
+        assert_eq!(got.files.first().map(|file| file.path.as_str()), Some("src/relogio.rs"), "{got:?}");
+        assert!(
+            triage::chance(&got.signals) >= triage::PINNED_FROM,
+            "the bank alone would pin its first file: {:?}",
+            got.signals
+        );
+        assert_eq!((got.grade, got.mark()), (triage::UNSURE_GRADE, triage::Mark::Partial), "{got:?}");
+    }
+
+    /// Com o primeiro arquivo da ordem única o mesmo do banco, a resposta
+    /// segue cravada.
+    #[test]
+    fn an_answer_whose_first_file_is_the_banks_first_stays_pinned() {
+        let dir = saved(&json!({"modules": [
+            {"path": "src/pay/gateway.rs", "declarations": [function("charge", 1, "")]}
+        ]}));
+        let got = ask(&dir, "charge");
+        assert_eq!(got.files.first().map(|file| file.path.as_str()), Some("src/pay/gateway.rs"), "{got:?}");
+        assert_eq!((got.grade, got.mark()), (5, triage::Mark::Pinned), "{got:?}");
     }
 
     #[test]
@@ -955,7 +1033,7 @@ mod tests {
             let db = indexed(Path::new(&text("model")), &languages, &SEARCHED).unwrap();
             let started = std::time::Instant::now();
             let asked = if phrase { text("intent") } else { text("query") };
-            let got = triaged(db.conn(), &asked, &languages, TOP, true).unwrap();
+            let got = triaged(db.conn(), (&asked, &text("intent")), &languages, TOP, true).unwrap();
             let millis = started.elapsed().as_secs_f64() * 1000.0;
             let targets: Vec<(String, String)> = search["targets"]
                 .as_array()

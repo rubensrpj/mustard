@@ -91,6 +91,7 @@ use crate::domain::search::{
 use crate::io::map_db::MapDb;
 use crate::io::map_fill;
 use crate::io::map_glossary::{self, Learned};
+use crate::io::map_order;
 use crate::io::map_question;
 use crate::io::project_map::{model_path, open_existing, unreadable, MapBlock, SEARCHED};
 use crate::platform::error::Result;
@@ -681,15 +682,30 @@ fn made_in(conn: &Connection, languages: &Languages) -> Result<bool> {
     Ok(stored.is_some_and(|stored| stored == languages.codes().join(",")))
 }
 
-/// A busca dos arquivos que a triagem lê: todas as colunas do nível, cada uma
-/// com o peso dele.
-pub(super) fn found(conn: &Connection, query: &str, languages: &Languages, limit: usize) -> Result<Vec<Found>> {
-    let every: Vec<&str> = FILE_LEVEL.columns().collect();
-    found_in(conn, query, languages, limit, &every)
-}
-
 /// A busca dos arquivos contando só as colunas `columns` do nível.
 fn found_in(
+    conn: &Connection,
+    query: &str,
+    languages: &Languages,
+    limit: usize,
+    columns: &[&str],
+) -> Result<Vec<Found>> {
+    let mut out = ranked_in(conn, query, languages, limit, columns)?;
+    add_texts(conn, query, languages, &mut out)?;
+    Ok(out)
+}
+
+/// Os arquivos da busca de todas as colunas do nível, na ordem da nota,
+/// sem os textos fixos: o que a ordem única dos arquivos soma à lista das
+/// declarações ([`crate::io::map_order`]).
+pub(super) fn ranked_files(conn: &Connection, query: &str, languages: &Languages, limit: usize) -> Result<Vec<Found>> {
+    let every: Vec<&str> = FILE_LEVEL.columns().collect();
+    ranked_in(conn, query, languages, limit, &every)
+}
+
+/// Os arquivos da busca por palavras, na ordem da nota: primeiro os que o
+/// pedaço do nome acha, depois os das palavras.
+fn ranked_in(
     conn: &Connection,
     query: &str,
     languages: &Languages,
@@ -715,11 +731,18 @@ fn found_in(
         }
         out.push(Found { path, score: score.map_or(0, score_x1024), text: None });
     }
-    let mut texts = conn.prepare("SELECT texts FROM texts WHERE path = ?1")?;
-    for found in &mut out {
-        found.text = best_text(&mut texts, &found.path, &words, &mut normalizer)?;
-    }
     Ok(out)
+}
+
+/// O texto fixo que mais casa com a pergunta em cada arquivo de `found`.
+pub(super) fn add_texts(conn: &Connection, query: &str, languages: &Languages, found: &mut [Found]) -> Result<()> {
+    let mut normalizer = Normalizer::new(languages);
+    let words = normalizer.query(query);
+    let mut texts = conn.prepare("SELECT texts FROM texts WHERE path = ?1")?;
+    for one in found {
+        one.text = best_text(&mut texts, &one.path, &words, &mut normalizer)?;
+    }
+    Ok(())
 }
 
 /// O texto fixo do arquivo em `path` que mais casa com as palavras `words` da
@@ -1171,7 +1194,7 @@ pub fn candidates_at(
     limit: usize,
 ) -> std::result::Result<FilterCandidates, MapRefusal> {
     let db = indexed(model, languages, &map_fill::READ_BY_CANDIDATES)?;
-    let whole = whole_list(db.conn(), query, intent, languages).map_err(unreadable)?;
+    let whole = map_order::ordered(db.conn(), query, intent, languages).map_err(unreadable)?.list;
     let first: Vec<i64> = whole.iter().take(limit).copied().collect();
     let candidates = declarations_in(db.conn(), &first).map_err(unreadable)?;
     Ok(FilterCandidates { whole, candidates })
@@ -1202,7 +1225,7 @@ pub fn links(root: &Path, ids: &[i64]) -> std::result::Result<Links, MapRefusal>
 /// língua, a do texto do projeto, como no laboratório, e a das outras só na
 /// palavra que a primeira não acha em nenhum documento dos dois níveis
 /// ([`map_question::in_text_language`]).
-fn whole_list(conn: &Connection, query: &str, intent: &str, languages: &Languages) -> Result<Vec<i64>> {
+pub(super) fn whole_list(conn: &Connection, query: &str, intent: &str, languages: &Languages) -> Result<Vec<i64>> {
     let levels = [
         map_question::Vocabulary { vocab: DECL_LEVEL.vocab, lengths: DECL_LEVEL.lengths },
         map_question::Vocabulary { vocab: FILE_LEVEL.vocab, lengths: FILE_LEVEL.lengths },
@@ -1246,7 +1269,7 @@ fn name_hits(conn: &Connection, query: &str) -> Result<Vec<NameHits>> {
 }
 
 /// Cada declaração do nível com o número do arquivo dela.
-fn decl_files(conn: &Connection) -> Result<Vec<(i64, i64)>> {
+pub(super) fn decl_files(conn: &Connection) -> Result<Vec<(i64, i64)>> {
     let mut stmt = conn.prepare("SELECT l.id, t.file FROM decl_lengths l JOIN decl_trigram t ON t.rowid = l.id")?;
     let rows = stmt.query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)))?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -1543,7 +1566,7 @@ pub(crate) mod tests {
         assert_eq!(paths(dir.path(), "estorno"), ["src/b.rs"]);
         let db = open_existing(&model_path(dir.path())).unwrap();
         let mut triage: Vec<String> =
-            found(db.conn(), "estorno", &languages(), TOP).unwrap().into_iter().map(|found| found.path).collect();
+            ranked_files(db.conn(), "estorno", &languages(), TOP).unwrap().into_iter().map(|found| found.path).collect();
         triage.sort();
         assert_eq!(triage, ["src/a.rs", "src/b.rs"]);
     }
@@ -2029,12 +2052,13 @@ pub(crate) mod tests {
                 "texts": [text(3, "fornecedor em falta hoje", &format!("avisar{n}"))]}));
         }
         let dir = saved_json(&json!({ "modules": modules }));
-        let found = candidates(dir.path(), "fornecedor", "", &languages(), CANDIDATES).unwrap();
+        let db = open_existing(&model_path(dir.path())).unwrap();
+        let whole = whole_list(db.conn(), "fornecedor", "", &languages()).unwrap();
         let id = |name: &str| id_of(dir.path(), name);
         assert_eq!(
-            found.whole,
+            whole,
             vec![id("Pedidos"), id("avisar1"), id("gravar"), id("avisar2"), id("avisar3"), id("resumir")],
-            "{found:?}"
+            "{whole:?}"
         );
     }
 
@@ -2089,7 +2113,8 @@ pub(crate) mod tests {
     /// arquivo JSON da régua do primeiro elo): por busca, em que posição da
     /// lista inteira está a primeira declaração certa, em que posição está o
     /// primeiro arquivo certo entre os arquivos distintos da lista e em que
-    /// posição ele está na resposta do banco sem filtro (0: fora). Com
+    /// posição ele está na resposta do banco sem filtro (0: fora) e na
+    /// resposta da triagem, a que sai da ordem única (0: fora). Com
     /// `MAP_RANKS_PHRASE`, a pergunta é só a frase da busca. Cada linha leva
     /// também os sinais da triagem do banco (chance, grau, palavras, palavras
     /// em campo forte, nota do primeiro e do segundo). Grava uma linha
@@ -2112,7 +2137,8 @@ pub(crate) mod tests {
             let (key, intent) = (text("key"), text("intent"));
             let query = if phrase { intent.clone() } else { text("query") };
             let db = indexed(Path::new(&text("model")), &languages, &map_fill::READ_BY_CANDIDATES).unwrap();
-            let whole = whole_list(db.conn(), &query, &intent, &languages).unwrap();
+            let ordered = map_order::ordered(db.conn(), &query, &intent, &languages).unwrap();
+            let whole = ordered.list.clone();
             let shown: Vec<FilterCandidate> =
                 stored(db.conn(), &whole).unwrap().into_iter().map(|decl| decl.candidate).collect();
             let right: Vec<(String, String, u64)> = search["targets"]
@@ -2134,9 +2160,10 @@ pub(crate) mod tests {
             }
             let file_rank = files.iter().position(|path| is_file(path)).map_or(0, |at| at + 1);
             let first_decl = shown.iter().position(|c| is_file(&c.path)).map_or(0, |at| at + 1);
-            let bank = found(db.conn(), &query, &languages, 100).unwrap();
+            let bank = ranked_files(db.conn(), &query, &languages, 100).unwrap();
             let bank_rank = bank.iter().position(|f| is_file(&f.path)).map_or(0, |at| at + 1);
-            let triaged = crate::io::map_triage::triage_at(Path::new(&text("model")), &query, &languages, 5).unwrap();
+            let triaged = crate::io::map_triage::triage_at(Path::new(&text("model")), (&query, &intent), &languages, 100).unwrap();
+            let answer_rank = triaged.files.iter().position(|f| is_file(&f.path)).map_or(0, |at| at + 1);
             let signals = triaged.signals;
             let project = key.split('|').next().unwrap_or("").to_string();
             let total = totals.entry(project).or_default();
@@ -2150,7 +2177,7 @@ pub(crate) mod tests {
             lines.push(
                 json!({
                     "key": key, "decl_rank": decl_rank, "file_rank": file_rank, "first_decl_of_file": first_decl,
-                    "bank_rank": bank_rank, "top": names,
+                    "bank_rank": bank_rank, "answer_rank": answer_rank, "top": names,
                     "chance": crate::domain::triage::chance(&signals), "grade": triaged.grade,
                     "words": signals.words, "strong": signals.strong, "first": signals.first, "second": signals.second,
                 })
@@ -2243,15 +2270,15 @@ pub(crate) mod tests {
                                 let whole = whole_list(conn, query, &one.intent, &languages).unwrap();
                                 let mut files: Vec<i64> = Vec::new();
                                 for id in whole.iter().take(CANDIDATES) {
-                                    if let Some(file) = file_of.get(id) {
-                                        if !files.contains(file) {
-                                            files.push(*file);
-                                        }
+                                    if let Some(file) = file_of.get(id)
+                                        && !files.contains(file)
+                                    {
+                                        files.push(*file);
                                     }
                                 }
                                 let rank = files.iter().position(|file| right.contains(file)).map(|at| at + 1);
                                 let in_hundred = whole.iter().take(CANDIDATES).any(|id| file_of.get(id).is_some_and(|f| right.contains(f)));
-                                let bank = found(conn, query, &languages, 100).unwrap();
+                                let bank = ranked_files(conn, query, &languages, 100).unwrap();
                                 let bank_rank = bank
                                     .iter()
                                     .position(|f| one.right.contains(&f.path))
