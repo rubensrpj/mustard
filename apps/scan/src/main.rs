@@ -126,6 +126,11 @@ fn main() -> Result<()> {
                 analysis.model.save(&out, refresh::FORMAT, &Languages::of(&config))?
             };
             drop_legacy_map(&out)?;
+            // O sentido de cada declaração e de cada palavra do mapa recém-gravado.
+            // O mapa vale sem os vetores, então a falha só avisa.
+            if let Err(err) = mustard_core::io::map_meaning::fill_at(&out, &path) {
+                eprintln!("The meaning vectors were not written: {err}");
+            }
             if json {
                 let report = serde_json::json!({
                     "ok": true,

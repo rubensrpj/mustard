@@ -277,15 +277,17 @@ mod tests {
     }
 
     #[test]
-    fn the_not_found_line_carries_the_split_words_and_the_next_exact_search() {
+    fn the_not_found_line_carries_the_split_words_the_standard_tools_and_the_exact_search() {
         let words = ["boleto".to_string(), "vencido".to_string()];
         assert_eq!(
             not_found("boletoVencido", &words, Locale::PtBr),
-            "Não achei \"boleto\", \"vencido\" no mapa. Próxima busca, exata: grep -rniE \"boleto|vencido\" ."
+            "Não achei \"boleto\", \"vencido\" no mapa. Siga com suas ferramentas: `Grep`, `Glob` e `Read`. \
+             Para começar, busque o texto exato: grep -rniE \"boleto|vencido\" ."
         );
         assert_eq!(
             not_found("boletoVencido", &words, Locale::EnUs),
-            "Found nothing for \"boleto\", \"vencido\" in the map. Next search, exact: grep -rniE \"boleto|vencido\" ."
+            "Found nothing for \"boleto\", \"vencido\" in the map. Go on with your tools: `Grep`, `Glob` and `Read`. \
+             To start, search the exact text: grep -rniE \"boleto|vencido\" ."
         );
         assert!(not_found("de", &[], Locale::PtBr).contains("grep -rniE \"de\" ."));
     }

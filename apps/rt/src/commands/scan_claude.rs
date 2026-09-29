@@ -273,10 +273,7 @@ mod tests {
         let out = render_map("rust", 12, &no_commands(), SupportedLocale::EnUs, SupportedLocale::EnUs);
         assert!(out.contains("Type: rust · 12 files"), "EN header missing: {out}");
         assert!(!out.contains("arquivos"), "no pt-BR bytes in an EN map: {out}");
-        assert!(
-            out.contains("To locate:"),
-            "EN pointer missing: {out}"
-        );
+        assert!(out.contains("To locate code, ask Mustard:"), "EN pointer missing: {out}");
     }
 
     /// O mapa escrito pela passada pede as palavras do pedido também na
@@ -325,6 +322,42 @@ mod tests {
             assert!(map.contains(example), "{language}: {map}");
             assert!(!map.contains(other_name), "{language}: {map}");
             assert!(!map.contains("{example}"), "{language}: {map}");
+        }
+    }
+
+    /// O mapa que o `/scan` grava manda pedir a localização do código ao
+    /// Mustard, nos dois idiomas, e só manda seguir com `Grep`, `Glob` e
+    /// `Read` quando a marca for `not_found`; a escolha entre o `grep` e a
+    /// busca do mapa não está mais lá.
+    #[test]
+    fn the_map_written_by_the_scan_asks_mustard_and_names_the_standard_tools_after_not_found() {
+        for (text, first, not_found, gone) in [
+            (
+                "pt-BR",
+                "Para localizar código, peça ao Mustard: `mustard-rt run map search --query",
+                "Não achou, `not_found`: siga com `Grep`, `Glob` e `Read`.",
+                ["termo exato conhecido", "mesma marca"],
+            ),
+            (
+                "en-US",
+                "To locate code, ask Mustard: `mustard-rt run map search --query",
+                "Not found, `not_found`: go on with `Grep`, `Glob` and `Read`.",
+                ["known exact term", "same mark"],
+            ),
+        ] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let root = dir.path();
+            let config = serde_json::json!({ "language": { "text": text } }).to_string();
+            std::fs::write(root.join("mustard.json"), config).expect("write config");
+
+            run_full(root, &[project("(root)", "")]);
+
+            let map = std::fs::read_to_string(root.join(".claude").join("scan-map.md")).expect("read map");
+            assert!(map.contains(first), "{text}: {map}");
+            assert!(map.contains(not_found), "{text}: {map}");
+            for old in gone {
+                assert!(!map.contains(old), "{text}: {old} in {map}");
+            }
         }
     }
 

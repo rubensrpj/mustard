@@ -113,3 +113,45 @@ fn the_dependencies_live_in_the_manifests_and_not_in_the_projects() {
     assert_eq!(map["manifests"][0]["dependencies"], serde_json::json!(["serde"]), "{}", map["manifests"]);
     assert_eq!(map["projects"][0]["frameworks"], serde_json::json!(["serde"]), "{}", map["projects"]);
 }
+
+/// O vetor da declaração `name` no banco da pasta `folder`, e quantos vetores
+/// de declaração e de palavra o banco tem.
+fn vector_of(folder: &Path, name: &str) -> (Option<Vec<u8>>, i64, i64) {
+    let conn = rusqlite::Connection::open(model::path_in(folder)).unwrap();
+    let count = |table: &str| -> i64 {
+        conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |row| row.get(0)).unwrap()
+    };
+    let vector = conn
+        .query_row("SELECT vector FROM decl_vectors WHERE name = ?1", [name], |row| row.get::<_, Vec<u8>>(0))
+        .ok();
+    (vector, count("decl_vectors"), count("word_vectors"))
+}
+
+/// A passada do scan grava o vetor de cada declaração e de cada palavra do
+/// projeto no mapa: 256 bytes por declaração, e a que muda ganha o vetor
+/// novo, sem que a passada seguinte, sem mudança, regrave o arquivo.
+#[test]
+fn the_scan_pass_writes_a_vector_for_each_declaration_and_each_word() {
+    let temp = tempfile::Builder::new().prefix("scan-map-vectors-").tempdir().unwrap();
+    let dir = temp.path();
+    small_project(dir);
+    let folder = dir.join(".claude");
+    model::scan(dir, &folder, &[]);
+
+    let (alpha, declarations, words) = vector_of(&folder, "alpha");
+    assert_eq!(alpha.as_ref().map(Vec::len), Some(256), "one int8 number per dimension");
+    assert_eq!(declarations, 1);
+    assert!(words > 0, "the words of the project have vectors");
+
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    let before = on_disk(&folder);
+    model::scan(dir, &folder, &[]);
+    let after = on_disk(&folder);
+    assert!(after.0 == before.0 && after.1 == before.1, "a pass without change writes nothing");
+
+    write(dir, "src/a.rs", "/// Apaga o arquivo do disco.\npub fn alpha(x: u32) -> u32 {\n    x + 1\n}\n");
+    model::scan(dir, &folder, &[]);
+    let (changed, declarations, _) = vector_of(&folder, "alpha");
+    assert_eq!(declarations, 1);
+    assert!(changed != alpha, "the changed declaration gets a new vector");
+}

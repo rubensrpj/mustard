@@ -3065,7 +3065,8 @@ mod tests {
         let fake = FakeFilter::scoring(&[0.9]);
         let opts = search_opts(dir.path(), "quebra-cabeca zzyzx", Some("onde fica"), Some("sessao-nada"));
         let report = searched(&opts, &fake.assemble_from_the_project(None));
-        let line = "Não achei \"quebra\", \"cabeca\", \"zzyzx\" no mapa. Próxima busca, exata: grep -rniE \"quebra|cabeca|zzyzx\" .";
+        let line = "Não achei \"quebra\", \"cabeca\", \"zzyzx\" no mapa. Siga com suas ferramentas: `Grep`, `Glob` e `Read`. \
+                    Para começar, busque o texto exato: grep -rniE \"quebra|cabeca|zzyzx\" .";
         assert_eq!(
             report,
             json!({"ok": true, "question": "search", "query": "quebra-cabeca zzyzx", "files": [], "grade": 0, "mark": "not_found", "not_found": line})

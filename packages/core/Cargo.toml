@@ -35,6 +35,11 @@ chrono = { workspace = true }
 # The project map as one SQLite file (`io::map_db`). Version and the bundled
 # SQLite live in the workspace table.
 rusqlite = { workspace = true }
+# The static sense model behind `io::map_meaning`: a table of vectors per word
+# piece plus a mean, read from the bytes embedded in the binary. `local-only`
+# keeps the Hugging Face download out and `fancy-regex` is the pure Rust
+# regex engine of the tokenizer, so no C library is linked.
+model2vec-rs = { version = "0.3", default-features = false, features = ["local-only", "fancy-regex"] }
 [dev-dependencies]
 # Temp directories for io-layer round-trip tests (event store, pipeline repo,
 # atomic fs) and config/env tests. Test-only — never compiled into the library.

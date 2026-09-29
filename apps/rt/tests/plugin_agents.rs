@@ -815,6 +815,60 @@ fn o_revisor_propoe_o_conserto_com_teste_no_lugar_da_licao() {
     }
 }
 
+/// As posições em que a linha cita `grep`, `Grep` ou `Glob` como palavra
+/// inteira (`pgrep` não conta).
+fn search_tool_mentions(line: &str) -> Vec<usize> {
+    let lower = line.to_ascii_lowercase();
+    let mut found = Vec::new();
+    for word in ["grep", "glob"] {
+        for (at, _) in lower.match_indices(word) {
+            let before = lower[..at].chars().next_back();
+            let after = lower[at + word.len()..].chars().next();
+            if !before.is_some_and(char::is_alphanumeric) && !after.is_some_and(char::is_alphanumeric) {
+                found.push(at);
+            }
+        }
+    }
+    found.sort_unstable();
+    found
+}
+
+/// O molde da onda e o do revisor, nos dois idiomas, mandam achar código
+/// pedindo ao Mustard e só citam `Grep`, `Glob` ou `grep` para depois do "não
+/// achou" — a saída de quem não recebeu resposta. As duas citações que não
+/// mandam achar nada ficam: a lista das ferramentas do agente, no
+/// cabeçalho, e a lista das leituras que saem juntas; o `grep` proibido sobre
+/// a spec é a terceira.
+#[test]
+fn the_wave_and_review_agents_use_grep_and_glob_only_after_the_map_found_nothing() {
+    for (lang, not_found, sentence, ban) in [
+        (
+            "pt-BR",
+            "não achou",
+            "Achar código é pedir ao Mustard. Quando a resposta disser que não achou, siga com `Grep`, `Glob` e `Read`.",
+            "grep sobre o `spec.ndjson`",
+        ),
+        (
+            "en-US",
+            "found nothing",
+            "Finding code is asking Mustard. When the answer says it found nothing, go on with `Grep`, `Glob` and `Read`.",
+            "grep over `spec.ndjson`",
+        ),
+    ] {
+        for name in ["wave", "review"] {
+            let agent = template(lang, name);
+            assert!(agent.contains(sentence), "the {lang} `{name}` agent does not say to ask Mustard and follow with the tools: {agent}");
+            let body = agent.splitn(3, "---").nth(2).unwrap_or_else(|| panic!("the {lang} `{name}` agent has no front matter"));
+            for line in body.lines() {
+                let checked = line.replace(ban, "").replace("(Read, Grep, Glob, `mustard-rt run read`", "");
+                let Some(first) = search_tool_mentions(&checked).first().copied() else { continue };
+                let after_not_found = checked.find(not_found).is_some_and(|at| at < first);
+                assert!(after_not_found, "the {lang} `{name}` agent cites a search tool before the not-found answer: {line}");
+            }
+        }
+    }
+}
+
 /// As regras de execução que valem em qualquer projeto — ler por trecho, não
 /// reler depois de editar, a suíte inteira uma vez no fim pelo `rtk`, nada
 /// em segundo plano, não comitar nem usar `git add`, rodar cada comando de

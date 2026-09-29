@@ -28,10 +28,10 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("scan.map.type_line", Locale::PtBr) => "Tipo: {kind} · {count} arquivos",
         ("scan.map.type_line", Locale::EnUs) => "Type: {kind} · {count} files",
         ("scan.map.pointer", Locale::PtBr) => {
-            "Para localizar: `grep` para termo exato conhecido; `mustard-rt run map search --query \"<palavras>\" --intent \"<frase>\"` para conceito. Na mesma busca, junte as palavras do pedido do usuário, as mesmas palavras em {code_language}, soltas, e os nomes prováveis no código. Os nomes vão em {code_language}, camelCase ou snake_case: `--query \"{example}\"`. Em `--intent` vai a frase do que você procura e para quê. O pedaço de um nome vai só em `--query`. A resposta traz `grade`, de 0 a 5, e `mark`. Cravado, `pinned`: o mapa achou tudo o que você pediu, e o primeiro arquivo vale. Parcial, `partial`: achou parte, e `missing` lista as palavras que faltam. Não achou, `not_found`: use `grep`. O `Grep` e o `grep` por palavra recebem a mesma marca. Na busca que mostra linhas, o cravado e o parcial recebem a resposta do Mustard no lugar da busca comum. A resposta vem agrupada por função, com o arquivo e as linhas de começo e fim. A busca que só lista nomes de arquivo ou conta roda como veio, com uma linha da marca. A mesma busca, repetida, passa. Depois leia os arquivos apontados: o mapa acha onde olhar, não substitui ler."
+            "Para localizar código, peça ao Mustard: `mustard-rt run map search --query \"<palavras>\" --intent \"<frase>\"`. Na mesma busca, junte as palavras do pedido do usuário, as mesmas palavras em {code_language}, soltas, e os nomes prováveis no código. Os nomes vão em {code_language}, camelCase ou snake_case: `--query \"{example}\"`. Em `--intent` vai a frase do que você procura e para quê. O pedaço de um nome vai só em `--query`. A resposta traz `grade`, de 0 a 5, e `mark`. Cravado, `pinned`: o mapa achou tudo o que você pediu, e a resposta já traz o trecho. Parcial, `partial`: achou parte, e `missing` lista as palavras que faltam. A resposta vem classificada e curta, cada peça com o arquivo e as linhas de começo e fim. Não achou, `not_found`: siga com `Grep`, `Glob` e `Read`. Na busca que mostra linhas, o cravado e o parcial recebem a resposta do Mustard no lugar da busca comum. A resposta vem agrupada por função, com o arquivo e as linhas de começo e fim. A busca que só lista nomes de arquivo ou conta roda como veio, com uma linha da marca. A mesma busca, repetida, passa. Depois leia os arquivos apontados: o mapa acha onde olhar, não substitui ler."
         }
         ("scan.map.pointer", Locale::EnUs) => {
-            "To locate: `grep` for a known exact term; `mustard-rt run map search --query \"<words>\" --intent \"<sentence>\"` for a concept. In one search, join the words of the user's request, the same words in {code_language} as plain words, and the likely names in the code. The names go in {code_language}, camelCase or snake_case: `--query \"{example}\"`. In `--intent` goes the sentence of what you are looking for and why. Part of a name goes only in `--query`. The answer carries `grade`, from 0 to 5, and `mark`. Pinned, `pinned`: the map found everything you asked for, and the first file stands. Partial, `partial`: it found part, and `missing` lists the words it lacks. Not found, `not_found`: use `grep`. A word search with `Grep` or `grep` gets the same mark. In a search that shows lines, pinned and partial get Mustard's answer in place of the plain search. The answer is grouped by function, with the file and the first and last lines. A search that only lists file names or counts runs as it came, with one line of the mark. The same search, repeated, passes. Then read the files it points to: the map finds where to look, it does not replace reading."
+            "To locate code, ask Mustard: `mustard-rt run map search --query \"<words>\" --intent \"<sentence>\"`. In one search, join the words of the user's request, the same words in {code_language} as plain words, and the likely names in the code. The names go in {code_language}, camelCase or snake_case: `--query \"{example}\"`. In `--intent` goes the sentence of what you are looking for and why. Part of a name goes only in `--query`. The answer carries `grade`, from 0 to 5, and `mark`. Pinned, `pinned`: the map found everything you asked for, and the answer already carries the excerpt. Partial, `partial`: it found part, and `missing` lists the words it lacks. The answer comes ranked and short, each piece with the file and the first and last lines. Not found, `not_found`: go on with `Grep`, `Glob` and `Read`. In a search that shows lines, pinned and partial get Mustard's answer in place of the plain search. The answer is grouped by function, with the file and the first and last lines. A search that only lists file names or counts runs as it came, with one line of the mark. The same search, repeated, passes. Then read the files it points to: the map finds where to look, it does not replace reading."
         }
         // O exemplo da busca na dica do mapa, pela língua dos nomes do código:
         // preenche o `{example}`. Junta as palavras do pedido no idioma do
@@ -299,10 +299,15 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // A busca com filtro: a frase da busca de uma palavra só, os avisos
         // do filtro e dos números da seção `search`, e o motivo de cada falha
         // do filtro.
-        // A busca sem nenhum achado: a linha que diz que não achou e dá a
-        // próxima busca, exata, com as palavras já quebradas.
-        ("map.search.not_found", Locale::PtBr) => "Não achei {words} no mapa. Próxima busca, exata: {next}",
-        ("map.search.not_found", Locale::EnUs) => "Found nothing for {words} in the map. Next search, exact: {next}",
+        // A busca sem nenhum achado: a linha que diz que não achou, manda
+        // seguir com as ferramentas padrões e dá, para começar, a busca
+        // exata, com as palavras já quebradas.
+        ("map.search.not_found", Locale::PtBr) => {
+            "Não achei {words} no mapa. Siga com suas ferramentas: `Grep`, `Glob` e `Read`. Para começar, busque o texto exato: {next}"
+        }
+        ("map.search.not_found", Locale::EnUs) => {
+            "Found nothing for {words} in the map. Go on with your tools: `Grep`, `Glob` and `Read`. To start, search the exact text: {next}"
+        }
         // A resposta no lugar da busca por palavra: a marca com o que o mapa
         // achou, o que faltou, o aviso do arquivo mudado e a contagem do que
         // o corte deixou de fora.
@@ -440,7 +445,7 @@ mod tests {
             include_str!("map.rs"),
             super::PREFIXES,
             79,
-            0xd691_5547_c58f_27b4,
+            0x250b_c94b_ebae_a177,
         );
     }
 
@@ -636,16 +641,53 @@ mod tests {
     }
 
     /// A dica do mapa ensina o grau e as três marcas da resposta, com o nome
-    /// de cada marca como a resposta a escreve, e diz que a busca por palavra
-    /// do `Grep` e do `grep` recebe a marca e que a busca repetida passa,
-    /// nos dois idiomas.
+    /// de cada marca como a resposta a escreve, nos dois idiomas.
     #[test]
     fn the_map_hint_teaches_the_grade_and_the_mark() {
         for lang in [Locale::PtBr, Locale::EnUs] {
             let text = filled_hint(lang, lang);
-            for word in ["`grade`", "`mark`", "`pinned`", "`partial`", "`missing`", "`not_found`", "`Grep`"] {
+            for word in ["`grade`", "`mark`", "`pinned`", "`partial`", "`missing`", "`not_found`"] {
                 assert!(text.contains(word), "{lang:?}: {word} in {text}");
             }
+        }
+    }
+
+    /// A dica do mapa manda pedir a localização do código ao Mustard, diz o
+    /// que cada marca devolve — o cravado já traz o trecho, o parcial vem
+    /// classificado e curto com o arquivo e as linhas de cada peça — e só
+    /// manda seguir com `Grep`, `Glob` e `Read` depois do "não achou". Não
+    /// deixa o leitor escolher entre o `grep` e a busca do mapa.
+    #[test]
+    fn the_map_hint_asks_the_map_first_and_names_the_standard_tools_only_after_not_found() {
+        for (lang, first, not_found_at, gone) in [
+            (Locale::PtBr, "Para localizar código, peça ao Mustard: `mustard-rt run map search", "Não achou, `not_found`: siga com `Grep`, `Glob` e `Read`", ["termo exato conhecido", "mesma marca", "use `grep`"]),
+            (Locale::EnUs, "To locate code, ask Mustard: `mustard-rt run map search", "Not found, `not_found`: go on with `Grep`, `Glob` and `Read`", ["known exact term", "same mark", "use `grep`"]),
+        ] {
+            let text = translate("scan.map.pointer", lang);
+            assert!(text.starts_with(first), "{lang:?}: {text}");
+            assert!(text.contains(not_found_at), "{lang:?}: {text}");
+            for old in gone {
+                assert!(!text.contains(old), "{lang:?}: `{old}` in {text}");
+            }
+            for tool in ["`Grep`", "`Glob`", "`Read`"] {
+                assert_eq!(text.matches(tool).count(), 1, "{lang:?}: {tool} only in the not-found sentence: {text}");
+            }
+            assert!(text.contains("classificada e curta") || text.contains("ranked and short"), "{lang:?}: {text}");
+        }
+    }
+
+    /// A linha de quando o mapa não achou diz que não achou e manda seguir com
+    /// `Grep`, `Glob` e `Read`; a busca exata, para começar, vem depois dessa
+    /// ordem, nos dois idiomas.
+    #[test]
+    fn the_not_found_answer_sends_the_reader_on_with_the_standard_tools() {
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let text = translate("map.search.not_found", lang);
+            let tools = text.find("`Grep`, `Glob` and `Read`").or_else(|| text.find("`Grep`, `Glob` e `Read`"));
+            let next = text.find("{next}");
+            assert!(tools.is_some() && next.is_some(), "{lang:?}: {text}");
+            assert!(tools < next, "{lang:?}: the tools come before the exact search: {text}");
+            assert!(text.starts_with("Não achei {words}") || text.starts_with("Found nothing for {words}"), "{lang:?}: {text}");
         }
     }
 

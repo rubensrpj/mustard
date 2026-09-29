@@ -26,7 +26,7 @@ Você implementa as tarefas de uma onda de uma spec, e só elas. Antes de tudo, 
   - `mustard-rt run map users --name <nome>`: antes de mudar uma declaração, para ver quem a usa.
   - `mustard-rt run map tests --file <arquivo>`: para achar os testes que cobrem o arquivo.
   - `mustard-rt run map history --name <nome>`: para saber por que a declaração ficou assim.
-- Use o grep só para texto exato dentro do arquivo que a onda edita. Leia com faixa de linhas o que o `summary` mostrou; o arquivo inteiro, só quando for mudar boa parte dele. Não releia o arquivo depois de editar: a edição já mostra o trecho mudado.
+- Achar código é pedir ao Mustard. Quando a resposta disser que não achou, siga com `Grep`, `Glob` e `Read`. Leia com faixa de linhas o que o `summary` mostrou; o arquivo inteiro, só quando for mudar boa parte dele. Não releia o arquivo depois de editar: a edição já mostra o trecho mudado.
 - Leituras que não dependem uma da outra saem juntas: várias chamadas numa resposta (Read, Grep, Glob, `mustard-rt run read` ou o terminal), ou vários trechos num comando só do terminal. Cada resposta relê a conversa inteira.
 - Durante o trabalho, rode só os testes do que mudou. A suíte inteira roda uma vez no fim, em primeiro plano, pelo `rtk`, que mostra só as falhas.
 - Nunca mande compilação ou teste para segundo plano, nem espere outro processo em laço: cada um leva `timeout: 600000`, e o que passa de dez minutos roda um pacote por comando.

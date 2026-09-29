@@ -617,6 +617,58 @@ mod tests {
         );
     }
 
+    /// As posições, no texto, de cada vez que ele cita `grep`, `Grep` ou
+    /// `Glob` como palavra inteira (`pgrep` não conta).
+    fn search_tool_mentions(text: &str) -> Vec<usize> {
+        let lower = text.to_ascii_lowercase();
+        let mut found = Vec::new();
+        for word in ["grep", "glob"] {
+            for (at, _) in lower.match_indices(word) {
+                let before = lower[..at].chars().next_back();
+                let after = lower[at + word.len()..].chars().next();
+                if !before.is_some_and(char::is_alphanumeric) && !after.is_some_and(char::is_alphanumeric) {
+                    found.push(at);
+                }
+            }
+        }
+        found.sort_unstable();
+        found
+    }
+
+    /// Nenhum texto do catálogo, nos dois idiomas, manda achar código com
+    /// `Grep`, `Glob` ou `grep`: achar código é pedir ao Mustard, e essas
+    /// ferramentas só aparecem depois do "não achou". Só quatro chaves as
+    /// citam: a linha do não achou, o aviso de que o achado pode não ser o
+    /// lugar, a dica do mapa (depois da marca `not_found`) e o portão da chave,
+    /// em que `glob` é o parâmetro da busca e não uma ferramenta a usar.
+    #[test]
+    fn no_catalog_text_sends_the_reader_to_grep_or_glob_before_the_map_finds_nothing() {
+        let mut cited = BTreeSet::new();
+        for source in PART_SOURCES {
+            for key in part_keys(source) {
+                for lang in [Locale::PtBr, Locale::EnUs] {
+                    let text = translate(key, lang);
+                    let mentions = search_tool_mentions(text);
+                    let Some(first) = mentions.first().copied() else { continue };
+                    cited.insert(key);
+                    match key {
+                        "map.search.not_found" | "map.search.use_tools" | "config_key.swept_tool" => {}
+                        "scan.map.pointer" => {
+                            let not_found = text.find("`not_found`").expect("the hint names the not-found mark");
+                            assert!(not_found < first, "{key} ({lang}): a search tool comes before the not-found mark: {text}");
+                        }
+                        _ => panic!("{key} ({lang}) sends the reader to a search tool to find code: {text}"),
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            cited.into_iter().collect::<Vec<_>>(),
+            ["config_key.swept_tool", "map.search.not_found", "map.search.use_tools", "scan.map.pointer"],
+            "the four keys are the only ones that cite a search tool"
+        );
+    }
+
     /// A conferência do catálogo mede o texto como ele chega a quem lê: o
     /// marcador vira uma palavra, e a frase que passa de 25 palavras só com
     /// ele cai.

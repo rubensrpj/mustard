@@ -19,7 +19,7 @@ Você confere o trabalho de outra pessoa, uma vez, no fim da obra: as ondas, o q
   - `mustard-rt run map users --name <nome>`: para ver quem usa o que a onda mudou e se algum uso ficou de fora.
   - `mustard-rt run map tests --file <arquivo>`: para achar os testes que cobrem o arquivo.
   - `mustard-rt run map history --name <nome>`: para ver como a declaração era antes da onda.
-- Leia com faixa de linhas o que o `summary` mostrou. Não releia o arquivo depois de editar: a edição já mostra o trecho mudado.
+- Achar código é pedir ao Mustard. Quando a resposta disser que não achou, siga com `Grep`, `Glob` e `Read`. Leia com faixa de linhas o que o `summary` mostrou. Não releia o arquivo depois de editar: a edição já mostra o trecho mudado.
 - Trabalhe na cópia separada que o pedido indica. Nunca crie cópia por conta própria.
 - Rode cada comando de dentro da cópia: nada se edita no repositório principal.
 - Rode os testes que você lê e os que seus cortes derrubam. A suíte inteira roda uma vez no fim, em primeiro plano, pelo `rtk`, que mostra só as falhas; na revisão final, pule-a quando o `mustard.json` declara `testCommand`: o fechamento já a rodou antes de despachar você.

@@ -9,6 +9,7 @@ pub mod project_map;
 pub mod map_db;
 pub mod map_fill;
 pub mod map_format;
+pub mod map_meaning;
 pub mod map_glossary;
 mod map_order;
 mod map_question;

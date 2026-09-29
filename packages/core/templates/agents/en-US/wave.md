@@ -26,7 +26,7 @@ You implement the tasks of one wave of a spec, and only those. First of all, rea
   - `mustard-rt run map users --name <name>`: before changing a declaration, to see who uses it.
   - `mustard-rt run map tests --file <file>`: to find the tests that cover the file.
   - `mustard-rt run map history --name <name>`: to learn why the declaration ended up this way.
-- Use grep only for exact text inside the file the wave edits. Read with a line range what `summary` showed; the whole file only when you are going to change a large part of it. Do not reread the file after editing: the edit already shows the changed excerpt.
+- Finding code is asking Mustard. When the answer says it found nothing, go on with `Grep`, `Glob` and `Read`. Read with a line range what `summary` showed; the whole file only when you are going to change a large part of it. Do not reread the file after editing: the edit already shows the changed excerpt.
 - Reads that do not depend on each other go together: several calls in one response (Read, Grep, Glob, `mustard-rt run read` or the terminal), or several excerpts in a single terminal command. Each response rereads the whole conversation.
 - During the work, run only the tests of what changed. The whole suite runs once at the end, in the foreground, through `rtk`, which shows only the failures.
 - Never send a build or test to the background, and never wait on another process in a loop: each takes `timeout: 600000`, and what can pass ten minutes runs one package per command.
