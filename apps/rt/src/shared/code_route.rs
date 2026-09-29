@@ -19,6 +19,7 @@ use mustard_core::io::workspace::{is_git_repo_root, linked_worktree_main};
 use mustard_core::platform::i18n::Locale;
 
 use crate::hooks::write::write_gate::say;
+use crate::shared::config_key::{surely_takes, NameFilter, Walk};
 use crate::shared::paths::relative_to_cwd;
 
 /// Acima deste tanto de linhas, a leitura inteira de um arquivo de código do
@@ -285,20 +286,41 @@ pub(crate) fn glob_extensions(glob: &str) -> Option<Vec<String>> {
     tail.iter().all(plain).then_some(tail)
 }
 
+/// `true` quando os filtros `filters` (na ordem da linha) deixam de fora o
+/// arquivo `path` com certeza: o último filtro de saída que casa com o nome
+/// dele, e nenhum de entrada depois dele que possa casar, pois o último que
+/// casa decide. Filtro de saída com pasta, `[` ou `\` não conta como certo;
+/// filtro de entrada que a leitura não entende pode casar com tudo.
+fn left_out(path: &str, filters: &[NameFilter], braces: bool) -> bool {
+    let file = Path::new(path);
+    let name = file.file_name().and_then(|name| name.to_str()).unwrap_or(path);
+    let extension = file.extension().and_then(|ext| ext.to_str());
+    let Some(last) = filters.iter().rposition(|filter| filter.exclude && surely_takes(&filter.glob, name, braces)) else {
+        return false;
+    };
+    !filters[last + 1..].iter().any(|filter| {
+        !filter.exclude
+            && glob_extensions(&filter.glob).is_none_or(|only| extension.is_some_and(|ext| only.iter().any(|o| o == ext)))
+    })
+}
+
 /// A recusa da busca de `pattern` nas pastas `folders` (relativas à raiz;
-/// vazia é a raiz), com os filtros de nome de arquivo `globs`: o comando de
-/// quem usa o nome e o da busca por assunto. Só quando o padrão é um nome de
-/// declaração que o mapa de `root` conhece e alguma das pastas guarda código
-/// do mapa que os filtros deixam passar. `None` em todo o resto, sem mapa e
-/// em todo erro de leitura do mapa.
-pub(crate) fn folder_search(root: &Path, pattern: &str, folders: &[String], globs: &[String], lang: Locale) -> Option<String> {
+/// vazia é a raiz), com os filtros de nome de arquivo `filters`, de entrada
+/// e de saída, na ordem da linha: o comando de quem usa o nome e o da busca
+/// por assunto. Só quando o padrão é um nome de declaração que o mapa de
+/// `root` conhece e alguma das pastas guarda código do mapa que os filtros
+/// deixam passar: os de entrada estreitam a busca aos arquivos que nomeiam, e
+/// os de saída tiram os que casam com certeza. `walk` diz como a busca lê as
+/// chaves dos filtros. `None` em todo o resto, sem mapa e em todo erro de
+/// leitura do mapa.
+pub(crate) fn folder_search(root: &Path, pattern: &str, folders: &[String], filters: &[NameFilter], walk: Walk, lang: Locale) -> Option<String> {
     if !is_name(pattern) || folders.is_empty() {
         return None;
     }
-    // Os filtros juntam o que aceitam; um sem extensão aceita tudo.
+    // Os filtros de entrada juntam o que aceitam; um sem extensão aceita tudo.
     let mut only: Vec<String> = Vec::new();
-    for glob in globs {
-        match glob_extensions(glob) {
+    for filter in filters.iter().filter(|filter| !filter.exclude) {
+        match glob_extensions(&filter.glob) {
             Some(extensions) => only.extend(extensions),
             None => {
                 only.clear();
@@ -306,11 +328,13 @@ pub(crate) fn folder_search(root: &Path, pattern: &str, folders: &[String], glob
             }
         }
     }
+    let braces = walk != Walk::Grep;
     let paths = store::read_for(root, Need::Paths).ok()?;
     let inside = |path: &str, folder: &str| folder.is_empty() || path.starts_with(&format!("{}/", folder.trim_end_matches('/')));
     let wanted = |path: &str| {
-        only.is_empty()
-            || Path::new(path).extension().and_then(|ext| ext.to_str()).is_some_and(|ext| only.iter().any(|o| o == ext))
+        (only.is_empty()
+            || Path::new(path).extension().and_then(|ext| ext.to_str()).is_some_and(|ext| only.iter().any(|o| o == ext)))
+            && !left_out(path, filters, braces)
     };
     let holds_code =
         paths.modules.iter().any(|module| wanted(&module.path) && folders.iter().any(|folder| inside(&module.path, folder)));

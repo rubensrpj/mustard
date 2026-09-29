@@ -16,8 +16,10 @@
 //! - **A busca de um nome em pastas.** O `grep` recursivo e o `rg` numa
 //!   pasta de código, com um padrão que é nome de declaração do mapa, voltam
 //!   com o comando de quem usa o nome ([`code_route::folder_search`]). A
-//!   busca num arquivo só, fora do projeto, em pasta sem código do mapa ou
-//!   com um filtro de nome de arquivo que deixa só documentos passa.
+//!   busca num arquivo só, fora do projeto, em pasta sem código do mapa,
+//!   com um filtro de nome de arquivo que deixa só documentos ou com filtros
+//!   de saída (`-g '!*.rs'`, `--exclude=*.rs`) que tiram todo o código do
+//!   mapa das pastas passa.
 //!
 //! Lê os comandos que [`super::lex::segments`] achou, nunca o texto cru, e
 //! segue os `cd` da linha para saber de que pasta cada caminho parte.
@@ -80,7 +82,7 @@ pub(super) fn bash_reading(segments: &[Segment], input: &HookInput, ctx: &Ctx) -
                 .filter(|path| path.abs.is_dir())
                 .map(|path| path.rel)
                 .collect();
-            if let Some(reason) = code_route::folder_search(Path::new(&root), pattern, &folders, &search.globs, lang) {
+            if let Some(reason) = code_route::folder_search(Path::new(&root), pattern, &folders, &search.filters, search.walk, lang) {
                 return Some(Verdict::Deny { reason });
             }
         }
@@ -118,9 +120,8 @@ struct TextSearch {
     /// com os padrões lidos de arquivo.
     pattern: Option<String>,
     paths: Vec<String>,
-    /// Os filtros de entrada, como a busca de um nome os lê.
-    globs: Vec<String>,
-    /// Os filtros de nome de arquivo, de entrada e de saída, na ordem.
+    /// Os filtros de nome de arquivo, de entrada e de saída, na ordem da
+    /// linha: a busca de um nome e a da chave os leem.
     filters: Vec<NameFilter>,
     walk: Walk,
     /// `false` quando a busca só lista arquivos, conta ou fica quieta: a
@@ -138,7 +139,7 @@ fn text_search(segment: &Segment) -> Option<TextSearch> {
     };
     let mut recursive = rg;
     let (mut from_file, mut names_only, mut unignored) = (false, false, false);
-    let (mut patterns, mut positionals, mut globs, mut filters) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let (mut patterns, mut positionals, mut filters) = (Vec::new(), Vec::new(), Vec::new());
     let mut args = segment.args.iter().map(|word| word.text.as_str());
     let mut options_done = false;
     while let Some(arg) = args.next() {
@@ -175,20 +176,9 @@ fn text_search(segment: &Segment) -> Option<TextSearch> {
             ("files-with-matches" | "files-without-match" | "count" | "quiet" | "silent", _) => names_only = true,
             ("count-matches" | "files", _) if rg => names_only = true,
             ("no-ignore" | "no-ignore-vcs" | "no-ignore-exclude" | "unrestricted", _) if rg => unignored = true,
-            ("include", Some(value)) if !rg => {
-                filters.push(NameFilter { exclude: false, glob: value.clone() });
-                globs.push(value);
-            }
+            ("include", Some(value)) if !rg => filters.push(NameFilter { exclude: false, glob: value }),
             ("exclude", Some(value)) if !rg => filters.push(NameFilter { exclude: true, glob: value }),
-            ("g" | "glob" | "iglob", Some(value)) if rg => {
-                // O filtro com `!` deixa arquivos de fora: não estreita a
-                // busca aos que ele nomeia, e a busca de um nome não o lê.
-                let filter = NameFilter::rg(&value);
-                if !filter.exclude {
-                    globs.push(value);
-                }
-                filters.push(filter);
-            }
+            ("g" | "glob" | "iglob", Some(value)) if rg => filters.push(NameFilter::rg(&value)),
             _ => {}
         }
     }
@@ -200,7 +190,7 @@ fn text_search(segment: &Segment) -> Option<TextSearch> {
     }
     let pattern = <[String; 1]>::try_from(patterns).ok().map(|[pattern]| pattern).filter(|_| !from_file);
     let walk = if rg { Walk::Rg { unignored } } else { Walk::Grep };
-    Some(TextSearch { pattern, paths: positionals, globs, filters, walk, shows_lines: !names_only })
+    Some(TextSearch { pattern, paths: positionals, filters, walk, shows_lines: !names_only })
 }
 
 #[cfg(test)]
@@ -210,9 +200,11 @@ mod tests {
     use crate::shared::code_route::fixture;
     use mustard_core::domain::model::contract::Trigger;
 
-    /// O padrão, os caminhos e os filtros que a busca de uma linha lê.
+    /// O padrão, os caminhos e os filtros de nome de arquivo que a busca de
+    /// uma linha lê, na ordem; o de saída leva o `!` do começo.
     fn read(cmd: &str) -> Option<(String, Vec<String>, Vec<String>)> {
-        segments(cmd).iter().find_map(text_search).and_then(|s| Some((s.pattern?, s.paths, s.globs)))
+        let shown = |filter: &NameFilter| if filter.exclude { format!("!{}", filter.glob) } else { filter.glob.clone() };
+        segments(cmd).iter().find_map(text_search).and_then(|s| Some((s.pattern?, s.paths, s.filters.iter().map(shown).collect())))
     }
 
     /// O `grep` só conta como busca em pastas com a recursão; o `rg`, sempre.
@@ -228,8 +220,12 @@ mod tests {
         assert_eq!(read("grep -d recurse -e Alpha ."), Some(("Alpha".into(), owned(&["."]), vec![])));
         assert_eq!(read("rtk rg -n -g '*.rs' Alpha apps/scan"), Some(("Alpha".into(), owned(&["apps/scan"]), owned(&["*.rs"]))));
         assert_eq!(read("rg --type rust -C 2 Alpha"), Some(("Alpha".into(), vec![], vec![])));
-        assert_eq!(read("rg -g '!*.md' Alpha"), Some(("Alpha".into(), vec![], vec![])), "a negated filter only leaves files out");
-        assert_eq!(read("rg --glob='!*.md' -g '*.rs' --iglob '!*.txt' Alpha"), Some(("Alpha".into(), vec![], owned(&["*.rs"]))));
+        assert_eq!(read("rg -g '!*.md' Alpha"), Some(("Alpha".into(), vec![], owned(&["!*.md"]))), "a negated filter leaves files out");
+        assert_eq!(
+            read("rg --glob='!*.md' -g '*.rs' --iglob '!*.txt' Alpha"),
+            Some(("Alpha".into(), vec![], owned(&["!*.md", "*.rs", "!*.txt"])))
+        );
+        assert_eq!(read("grep -r --exclude=*.rs --include=*.md Alpha"), Some(("Alpha".into(), vec![], owned(&["!*.rs", "*.md"]))));
         assert_eq!(read("rg -e Alpha -e Beta src"), None, "two patterns are not one name");
         assert_eq!(read("grep -rf patterns.txt src"), None, "patterns from a file are unknown");
         assert_eq!(read("cat x | grep Alpha"), None);
@@ -276,6 +272,77 @@ mod tests {
             let reason = refused(run(&root, command), command);
             assert!(reason.contains("`mustard-rt run map users --name "), "{command}: {reason}");
         }
+    }
+
+    /// O mapa de um projeto de duas linguagens: `Alpha` em `src/big.rs` e
+    /// `render` em `web/app.ts`.
+    const TWO_LANGUAGES: &str = r#"{"modules":[
+        {"path":"src/big.rs","declarations":[{"kind":"struct","name":"Alpha","line":1,"end_line":150}]},
+        {"path":"web/app.ts","declarations":[{"kind":"function","name":"render","line":1,"end_line":20}]}
+    ]}"#;
+
+    /// A busca de um nome cujos filtros de saída deixam de fora todo o código
+    /// do mapa nas pastas buscadas passa: o `rg` com `-g '!*.rs'` num
+    /// projeto só de Rust, com chaves, com `**/`, com outro filtro de saída
+    /// depois e com um de entrada que o último de saída derruba; o `grep` com
+    /// `--exclude`.
+    #[test]
+    fn a_search_whose_exclusions_leave_out_all_the_mapped_code_passes() {
+        let (_dir, root) = fixture::project("{}", true);
+        for command in [
+            "rg -g '!*.rs' Alpha",
+            "rg --glob='!*.{rs,toml}' Alpha src",
+            "rg -g '!**/*.rs' Alpha",
+            "rg -g '!*.rs' -g '!*.md' Alpha",
+            "rg -g '*.rs' -g '!*.rs' Alpha",
+            "cd src && rg -g '!*.rs' alpha .",
+            "grep -rn --exclude=*.rs Alpha src",
+            "grep -rn --include=*.rs --exclude=*.rs Alpha",
+        ] {
+            assert_eq!(run(&root, command), Verdict::Allow, "{command}");
+        }
+    }
+
+    /// A busca cujos filtros de saída não deixam o código do mapa de fora
+    /// segue recusada: o filtro de outro tipo de arquivo, o de um arquivo só,
+    /// o com pasta, o de entrada que vem depois do de saída e traz o código
+    /// de volta, as chaves no `grep` (que as lê como texto) e, num projeto de
+    /// duas linguagens, o filtro que tira só uma delas.
+    #[test]
+    fn a_search_whose_exclusions_leave_mapped_code_in_is_still_refused() {
+        let (_dir, root) = fixture::project("{}", true);
+        for command in [
+            "rg -g '!*.md' Alpha",
+            "rg -g '!big.rs' Alpha",
+            "rg -g '!src/*.rs' Alpha",
+            "rg -g '!*.rs' -g '*.rs' Alpha",
+            "rg -g '!*.rs' -g 'src/**' Alpha",
+            "rg -g '!*.rs' -g '*.md' -g '*.rs' Alpha",
+            "grep -rn --exclude='*.{rs,md}' Alpha src",
+            "grep -rn --exclude=*.md Alpha",
+        ] {
+            let reason = refused(run(&root, command), command);
+            assert!(reason.contains("`mustard-rt run map users --name "), "{command}: {reason}");
+        }
+        mustard_core::io::project_map::write_text(&root, TWO_LANGUAGES).expect("map");
+        let reason = refused(run(&root, "rg -g '!*.rs' render"), "rg -g '!*.rs' render");
+        assert!(reason.contains("`mustard-rt run map users --name render`"), "{reason}");
+        assert_eq!(run(&root, "rg -g '!*.rs' -g '!*.ts' render"), Verdict::Allow);
+        refused(run(&root, "rg -g '!*.rs' -g '!*.ts' -g '*.ts' render"), "an input filter after the output ones");
+    }
+
+    /// A busca que a rota deixa passar continua sob a trava da chave: com
+    /// `-g '*.json'` a busca só lê documentos e configuração, e passa pela
+    /// rota, mas traz o `mustard.json` com a chave e é recusada sem mostrá-la.
+    #[test]
+    fn a_search_the_route_lets_pass_still_hides_the_key() {
+        let config = format!(r#"{{"jev": {{"key": "{}"}}}}"#, fixture::FAKE_KEY);
+        let (_dir, root) = fixture::project(&config, true);
+        let command = "rg -g '!*.rs' -g '*.json' -u Alpha";
+        let reason = refused(run(&root, command), command);
+        assert!(!reason.contains(fixture::FAKE_KEY), "the key leaked: {reason}");
+        assert!(reason.contains("mustard.json"), "{reason}");
+        assert_eq!(run(&root, "rg -g '!*.rs' Alpha"), Verdict::Allow);
     }
 
     /// A busca num arquivo só, sem recursão, de um texto que não é nome, de

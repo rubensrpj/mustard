@@ -285,7 +285,8 @@ pub(crate) fn run_rules(rules: &[&dyn WriteRule], input: &HookInput, ctx: &Ctx) 
 /// `path`, ou uma cópia de trabalho dele —, com um padrão que é nome de
 /// declaração do mapa, a recusa com o comando de quem usa o nome. A busca
 /// num arquivo só, fora do projeto, com outro padrão ou com um `glob` que
-/// deixa só arquivos fora do mapa passa. A busca que traz as linhas numa
+/// deixa só arquivos fora do mapa — pelos filtros de entrada ou pelos de
+/// saída (`!*.rs`) — passa. A busca que traz as linhas numa
 /// pasta que guarda o arquivo com a chave, com um `glob` que casa com o nome
 /// dele e passa por cima do que o git ignora, é recusada também.
 fn search_verdict(root: &str, input: &HookInput, ctx: &Ctx) -> Verdict {
@@ -301,9 +302,18 @@ fn search_verdict(root: &str, input: &HookInput, ctx: &Ctx) -> Verdict {
         };
     }
     let Some(pattern) = text("pattern") else { return Verdict::Allow };
-    let globs: Vec<String> = text("glob").map(str::to_string).into_iter().collect();
+    // O `glob` da ferramenta pode trazer vários filtros, separados por espaço
+    // ou, fora das chaves, por vírgula; o `!` do começo deixa arquivos de fora.
+    let filters: Vec<config_key::NameFilter> = text("glob")
+        .into_iter()
+        .flat_map(str::split_whitespace)
+        .flat_map(|glob| if glob.contains('{') { vec![glob] } else { glob.split(',').collect() })
+        .filter(|glob| !glob.is_empty())
+        .map(config_key::NameFilter::rg)
+        .collect();
+    let walk = config_key::Walk::Rg { unignored: false };
     if let Some(folder) = code_route::project_path(root, base, path.unwrap_or(".")).filter(|folder| folder.abs.is_dir())
-        && let Some(reason) = code_route::folder_search(Path::new(root), pattern, &[folder.rel], &globs, lang)
+        && let Some(reason) = code_route::folder_search(Path::new(root), pattern, &[folder.rel], &filters, walk, lang)
     {
         return Verdict::Deny { reason };
     }
@@ -312,17 +322,8 @@ fn search_verdict(root: &str, input: &HookInput, ctx: &Ctx) -> Verdict {
     if text("output_mode") != Some("content") {
         return Verdict::Allow;
     }
-    // O `glob` da ferramenta pode trazer vários filtros, separados por espaço
-    // ou, fora das chaves, por vírgula.
-    let filters: Vec<config_key::NameFilter> = text("glob")
-        .into_iter()
-        .flat_map(str::split_whitespace)
-        .flat_map(|glob| if glob.contains('{') { vec![glob] } else { glob.split(',').collect() })
-        .filter(|glob| !glob.is_empty())
-        .map(config_key::NameFilter::rg)
-        .collect();
     let folder = Path::new(base).join(path.unwrap_or("."));
-    match config_key::swept(&[folder], Path::new(root), config_key::Walk::Rg { unignored: false }, &filters) {
+    match config_key::swept(&[folder], Path::new(root), walk, &filters) {
         Some(file) => Verdict::Deny { reason: say("config_key.swept_tool", lang, &[("{file}", &file)]) },
         None => Verdict::Allow,
     }
@@ -1392,6 +1393,35 @@ mod tests {
         }
     }
 
+    /// A busca de um nome cujo `glob` tira todo o código do mapa da pasta —
+    /// um filtro de saída, vários separados por espaço ou vírgula, ou o de
+    /// saída que um de entrada não desfaz depois — passa; o `glob` de
+    /// entrada que vem depois do de saída traz o código de volta, e o de
+    /// saída de outro tipo de arquivo não tira o código: a busca é recusada.
+    /// Vários filtros no `glob` valem todos, não só o último.
+    #[test]
+    fn a_search_whose_glob_leaves_out_all_the_mapped_code_passes() {
+        let (_dir, root) = fixture::project("{}", true);
+        for tool_input in [
+            json!({ "pattern": "Alpha", "glob": "!*.rs" }),
+            json!({ "pattern": "Alpha", "glob": "!*.{rs,toml}", "path": abs(&root, "src") }),
+            json!({ "pattern": "Alpha", "glob": "!*.rs !*.md" }),
+            json!({ "pattern": "Alpha", "glob": "!*.rs,!*.md" }),
+            json!({ "pattern": "Alpha", "glob": "*.rs !*.rs" }),
+        ] {
+            assert_eq!(hook_on(&root, "Grep", tool_input.clone()), Verdict::Allow, "{tool_input}");
+        }
+        for tool_input in [
+            json!({ "pattern": "Alpha", "glob": "!*.md" }),
+            json!({ "pattern": "Alpha", "glob": "!*.rs *.rs" }),
+            json!({ "pattern": "Alpha", "glob": "*.rs *.md" }),
+            json!({ "pattern": "Alpha", "glob": "!big.rs" }),
+        ] {
+            let reason = refused(hook_on(&root, "Grep", tool_input.clone()), "the search for a declared name");
+            assert!(reason.contains("`mustard-rt run map users --name Alpha`"), "{tool_input}: {reason}");
+        }
+    }
+
     /// A busca num arquivo só, de um texto que não é nome, de um nome que o
     /// mapa não conhece, só em documentos, numa pasta sem código do mapa ou
     /// fora do projeto passa.
@@ -1411,6 +1441,21 @@ mod tests {
             assert_eq!(hook_on(&root, "Grep", tool_input.clone()), Verdict::Allow, "{tool_input}");
         }
     }
+    /// A busca que a rota do nome deixa passar por causa do `glob` — só
+    /// documentos e configuração, com o código de fora — continua sob a trava
+    /// da chave: traz o `mustard.json` com a chave e é recusada sem mostrá-la.
+    #[test]
+    fn a_search_the_route_lets_pass_still_hides_the_key() {
+        let config = format!(r#"{{"jev": {{"key": "{}"}}}}"#, fixture::FAKE_KEY);
+        let (_dir, root) = fixture::project(&config, true);
+        let tool_input = json!({ "pattern": "Alpha", "glob": "*.json !*.rs", "output_mode": "content" });
+        let reason = refused(hook_on(&root, "Grep", tool_input.clone()), "the search through the key file");
+        assert!(!reason.contains(fixture::FAKE_KEY), "{tool_input}: the key leaked");
+        assert!(reason.contains("mustard.json"), "{tool_input}: {reason}");
+        let names_only = json!({ "pattern": "Alpha", "glob": "!*.rs" });
+        assert_eq!(hook_on(&root, "Grep", names_only), Verdict::Allow);
+    }
+
     /// A busca que traz as linhas numa pasta com o `mustard.json` que guarda
     /// a chave, com um `glob` que casa com o nome dele, é recusada sem
     /// mostrar a chave. Sem o `glob`, com um `glob` que não casa, no modo que

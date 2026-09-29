@@ -184,7 +184,7 @@ fn reads_config(walk: Walk, filters: &[NameFilter]) -> bool {
     let braces = walk != Walk::Grep;
     let deciding = filters.iter().rev().find(|filter| {
         if filter.exclude {
-            surely_takes(&filter.glob, braces)
+            surely_takes(&filter.glob, CONFIG_FILE, braces)
         } else {
             may_take(&filter.glob, braces)
         }
@@ -210,16 +210,16 @@ fn may_take(glob: &str, braces: bool) -> bool {
     glob_fits(&last, CONFIG_FILE, braces).unwrap_or(true)
 }
 
-/// `true` só quando o filtro de nome `glob` casa com certeza com o arquivo
-/// de configuração em qualquer pasta. Com `braces` (o `rg`), o `**/` do
+/// `true` só quando o filtro de nome `glob` casa com certeza com um arquivo
+/// de nome `name` em qualquer pasta. Com `braces` (o `rg`), o `**/` do
 /// começo vale por qualquer pasta; sem ele (o `grep`, que compara o nome sem
 /// a pasta), um filtro com `/` nunca casa.
-fn surely_takes(glob: &str, braces: bool) -> bool {
+pub(crate) fn surely_takes(glob: &str, name: &str, braces: bool) -> bool {
     let mut glob = glob;
     while braces && let Some(rest) = glob.strip_prefix("**/") {
         glob = rest;
     }
-    !glob.contains('/') && glob_fits(glob, CONFIG_FILE, braces) == Some(true)
+    !glob.contains('/') && glob_fits(glob, name, braces) == Some(true)
 }
 
 /// Se `name` casa com o filtro `glob`: `*` vale por qualquer trecho, `?` por
