@@ -23,7 +23,10 @@
 //!   conceito, nos arquivos e nos itens combinados das specs, cada um com a
 //!   função ou o arquivo ligado a ele. Com o filtro, os candidatos do banco
 //!   ganham a nota dele contra a frase, e a resposta traz as peças que
-//!   passaram, com o que cada uma puxou pelas ligações do mapa;
+//!   passaram, com o que cada uma puxou pelas ligações do mapa. A resposta
+//!   traz o grau, de 0 a 5; do 3 para baixo, a busca funda por palavra não
+//!   achada (`deeper`), e, no 0, a linha do que não achou com a próxima
+//!   busca, exata;
 //! - `summary`: o resumo do início da sessão, até 3 kB; com `--file`, as
 //!   partes do arquivo — cada declaração fora dos testes, com o tipo, o nome
 //!   e as linhas, e a linha em que os testes começam; perguntado de dentro de
@@ -46,17 +49,20 @@ use clap::ValueEnum;
 use mustard_core::domain::map_filter::{FilterCandidate, FilterError, FilterRequest, Filtered, MapFilter, CUT_MINIMUM};
 use mustard_core::domain::map_select::{capped, select, Source, MAX_RETURNED};
 use mustard_core::domain::normalize::Languages;
-use mustard_core::domain::project_map::{self as project_map, DeclAt, MapRefusal, ProjectMap, UseSite};
+use mustard_core::domain::project_map::{self as project_map, DeclAt, FoundItem, MapRefusal, ProjectMap, UseSite};
 use mustard_core::domain::scan::{HistoryReport, ScanReport};
 use mustard_core::domain::search::{CANDIDATES, TOP};
 use mustard_core::io::map_glossary::{self, Place};
-use mustard_core::io::{map_search, map_specs};
+use mustard_core::io::map_triage::{self, Triaged};
+use mustard_core::io::map_search;
+use mustard_core::io::map_specs;
 use mustard_core::io::project_map::{self as store, Need};
 use mustard_core::io::wave_prompt::recipe_for;
 use mustard_core::platform::i18n::Locale;
 use mustard_core::{FilterSetting, Setting};
 use serde_json::{json, Map, Value};
 
+use super::map_triage as triage_view;
 use crate::shared::code_route;
 
 /// A pergunta feita ao mapa.
@@ -226,22 +232,19 @@ fn delivered(report: &Value) -> Vec<Place> {
 /// Cada um se lê por `trace`, do git local, um arquivo por vez, e fica
 /// gravado no mapa; a busca seguinte já o acha, sem passada. A falha de um
 /// deixa o arquivo inteiro, e a busca responde assim mesmo. A história segue
-/// até `moves` mudanças de arquivo seguidas.
-fn trace_search_links(root: &Path, query: &str, languages: &Languages, moves: usize, trace: &Trace<'_>) {
-    let query = query.trim();
-    if query.is_empty() {
-        return;
-    }
-    let Ok(found) = map_search::search_specs(root, query, languages, TOP) else { return };
+/// até `moves` mudanças de arquivo seguidas. Diz se passou por algum arquivo:
+/// então as ligações dos itens mudaram, e eles se leem de novo.
+fn trace_search_links(root: &Path, found: &[FoundItem], moves: usize, trace: &Trace<'_>) -> bool {
     if found.is_empty() {
-        return;
+        return false;
     }
     let items: Vec<(&str, &str)> = found.iter().map(|item| (item.spec.as_str(), item.code.as_str())).collect();
-    let Ok(files) = map_specs::untraced(root, &items, TOP, moves) else { return };
+    let Ok(files) = map_specs::untraced(root, &items, TOP, moves) else { return false };
     let model = store::model_path(root);
     for file in &files {
         let _ = trace(root, &model, file, moves);
     }
+    !files.is_empty()
 }
 
 /// O banco do mapa tabela por tabela, como a porta o lê.
@@ -347,12 +350,28 @@ fn search(
 ) -> Result<Value, MapRefusal> {
     let started = Instant::now();
     let query = after_the_map(required(opts.query.as_deref(), opts.question, "--query"), read)?;
+    let mut triaged = map_triage::triage(root, &query, languages, TOP)?;
+    let specs = map_search::search_specs(root, &query, languages, TOP)?;
+    if triaged.grade == 0 {
+        if specs.is_empty() {
+            // Sem achado nenhum, nem no código nem nas specs, a resposta diz
+            // que não achou e dá a próxima busca: nenhum aviso vai junto, e
+            // nenhum se gasta.
+            return Ok(triage_view::bank_report(&query, &triaged, lang));
+        }
+        // O item de spec que casa é achado: o grau é o mais fraco.
+        triaged.grade = 1;
+    }
     let intent = opts.intent.as_deref().map(str::trim).unwrap_or_default();
     let session = opts.session.as_deref();
     let config = mustard_core::ProjectConfig::load(root);
     let mut warnings: Vec<String> = Vec::new();
     let moves = history_moves(root, session, lang, &config, &mut warnings);
-    trace_search_links(root, &query, languages, moves, trace);
+    let specs = if trace_search_links(root, &specs, moves, trace) {
+        map_search::search_specs(root, &query, languages, TOP)?
+    } else {
+        specs
+    };
     let mut number = |key: &str, setting: Setting, default: usize| {
         if setting == Setting::Invalid && first_warning(root, session, &format!("search.{key}")) {
             warnings.push(
@@ -385,12 +404,12 @@ fn search(
         },
     };
     let (mut report, measured) = match assembled {
-        None => (bank_search(root, &query, languages)?, None),
+        None => (triage_view::bank_report(&query, &triaged, lang), None),
         Some(assembled) => {
             if let Some(error) = &assembled.warning {
                 key_warning(root, session, error, lang, &mut warnings);
             }
-            let asked = Asked { root, query: &query, intent, lang, languages, numbers: &numbers };
+            let asked = Asked { root, query: &query, intent, lang, languages, numbers: &numbers, triaged: &triaged };
             let searched = filtered_search(&asked, &assembled)?;
             if let Some(error) = searched.failure
                 && first_warning(root, session, "search.filter_failed")
@@ -401,24 +420,7 @@ fn search(
             (searched.report, Some(searched.measured))
         }
     };
-    // Os itens das specs que casam, cada um com o código, o título, a linha
-    // da parte do usuário que casou e os lugares ligados.
-    let items: Vec<Value> = map_search::search_specs(root, &query, languages, TOP)?
-        .into_iter()
-        .map(|item| {
-            let mut found = json!({ "spec": item.spec, "code": item.code, "title": item.title });
-            if let Some(line) = item.line {
-                found["line"] = json!(line);
-            }
-            if !item.links.is_empty() {
-                found["links"] = json!(item.links);
-            }
-            found
-        })
-        .collect();
-    if !items.is_empty() {
-        report["specs"] = json!(items);
-    }
+    add_specs(&mut report, &specs);
     if !warnings.is_empty() {
         report["warnings"] = json!(warnings);
     }
@@ -436,6 +438,28 @@ fn search(
     Ok(report)
 }
 
+/// Os itens das specs que casam com a pergunta na resposta `report`, cada um
+/// com o código, o título, a linha da parte do usuário que casou e os lugares
+/// ligados.
+fn add_specs(report: &mut Value, specs: &[FoundItem]) {
+    let items: Vec<Value> = specs
+        .iter()
+        .map(|item| {
+            let mut found = json!({ "spec": item.spec, "code": item.code, "title": item.title });
+            if let Some(line) = &item.line {
+                found["line"] = json!(line);
+            }
+            if !item.links.is_empty() {
+                found["links"] = json!(item.links);
+            }
+            found
+        })
+        .collect();
+    if !items.is_empty() {
+        report["specs"] = json!(items);
+    }
+}
+
 /// O aviso da chave do filtro, uma vez por sessão para cada motivo: a chave
 /// que falta, ou a do `mustard.json` que o git guarda. Nenhum dos dois leva
 /// a chave.
@@ -449,25 +473,6 @@ fn key_warning(root: &Path, session: Option<&str>, error: &FilterError, lang: Lo
     }
 }
 
-/// A busca do banco, sem filtro: os arquivos que mais casam com a pergunta.
-fn bank_search(root: &Path, query: &str, languages: &Languages) -> Result<Value, MapRefusal> {
-    let files: Vec<Value> = map_search::search(root, query, languages, TOP)?
-        .into_iter()
-        .map(|found| {
-            let mut file = json!({ "path": found.path, "score": found.score });
-            // O texto fixo que casou vem com a linha e a declaração onde
-            // nasce.
-            if let Some(text) = found.text {
-                file["text"] = json!({
-                    "line": text.line, "kind": text.kind, "value": text.value, "owner": text.owner
-                });
-            }
-            file
-        })
-        .collect();
-    Ok(json!({ "ok": true, "question": "search", "query": query, "files": files }))
-}
-
 /// O que a busca com filtro leva: o projeto, as palavras, a frase, o idioma
 /// do texto, as línguas das palavras e os números.
 struct Asked<'a> {
@@ -477,6 +482,8 @@ struct Asked<'a> {
     lang: Locale,
     languages: &'a Languages,
     numbers: &'a SearchNumbers,
+    /// A triagem da pergunta: o grau, os arquivos do banco e a busca funda.
+    triaged: &'a Triaged,
 }
 
 /// A frase que o filtro lê: a de `--intent`; sem ela, as palavras da
@@ -519,13 +526,14 @@ fn filtered_search(asked: &Asked<'_>, assembled: &Assembled) -> Result<Searched,
             if !filtered.usage.model.is_empty() {
                 measured.insert("model".to_string(), json!(filtered.usage.model));
             }
-            let report = json!({
+            let mut report = json!({
                 "ok": true, "question": "search", "query": asked.query, "filter": assembled.name, "pieces": pieces
             });
+            triage_view::add_to(&mut report, asked.triaged);
             Ok(Searched { report, measured, failure: None })
         }
         Err(error) => {
-            let report = bank_search(asked.root, asked.query, asked.languages)?;
+            let report = triage_view::bank_report(asked.query, asked.triaged, asked.lang);
             measured.insert("filter".to_string(), json!(format!("{}:{}", assembled.name, error.reason())));
             measured.insert("filter_ms".to_string(), json!(u64::try_from(calling.elapsed().as_millis()).unwrap_or(u64::MAX)));
             measured.insert("returned".to_string(), json!(report["files"].as_array().map_or(0, Vec::len)));
@@ -2849,7 +2857,8 @@ mod tests {
     /// A busca do banco, a de antes do filtro, para `query`.
     fn bank_answer(root: &Path, query: &str) -> Value {
         let project = crate::commands::spec_events::project(root);
-        bank_search(&project.root, query, &project.languages).unwrap()
+        let triaged = map_triage::triage(&project.root, query, &project.languages, TOP).unwrap();
+        triage_view::bank_report(query, &triaged, project.lang)
     }
 
     /// A resposta sem o campo `field`.
@@ -3051,6 +3060,96 @@ mod tests {
         assert_eq!(fake.last().phrase, "onde o pedido é gravado");
     }
 
+    /// A resposta da busca traz o grau. Com o grau alto, ela responde com os
+    /// campos fortes e para: a palavra que só um comentário guarda não vai
+    /// atrás.
+    #[test]
+    fn the_answer_shows_the_grade_and_a_high_grade_stops_at_the_strong_fields() {
+        let dir = search_project(FILTER_MAP, &json!({}));
+        let report = searched(&search_opts(dir.path(), "cancelar trava", None, None), &|_, _| Err(FilterError::MissingKey));
+        assert_eq!(report["grade"], json!(5), "{report}");
+        assert_eq!(report["files"][0]["path"], json!("src/pedido.rs"), "{report}");
+        assert!(report.get("deeper").is_none(), "{report}");
+    }
+
+    /// Um mapa em que duas funções de arquivos diferentes falam do mesmo
+    /// assunto só na documentação: nenhuma palavra da pergunta está em campo
+    /// forte, e os dois arquivos empatam.
+    const TIED_MAP: &str = r#"{"modules": [
+      {"path": "src/emissao.rs", "loc": 30, "declarations": [
+        {"kind": "function", "name": "reemitir", "line": 1, "end_line": 9, "signature": "pub fn reemitir()",
+         "doc": "Reemite o boleto vencido."}]},
+      {"path": "src/cobranca.rs", "loc": 30, "declarations": [
+        {"kind": "function", "name": "cobrar", "line": 4, "end_line": 12, "signature": "pub fn cobrar()",
+         "doc": "Cobra o boleto vencido do cliente."}]}
+    ]}"#;
+
+    /// Com o grau baixo, a resposta traz também o que a busca funda achou
+    /// para as palavras que os campos fortes não trazem: o comentário volta
+    /// à função, com o que casou e a ligação provada.
+    #[test]
+    fn a_low_grade_answer_adds_what_the_deep_search_found_for_the_missing_words() {
+        let dir = search_project(TIED_MAP, &json!({}));
+        let opts = search_opts(dir.path(), "boleto vencido", None, None);
+        let report = searched(&opts, &|_, _| Err(FilterError::MissingKey));
+        assert!(report["grade"].as_u64().is_some_and(|grade| (1..=3).contains(&grade)), "{report}");
+        assert_eq!(report["files"].as_array().unwrap().len(), 2, "{report}");
+        let found = report["deeper"].as_array().unwrap().iter().find(|entry| entry["name"] == json!("cobrar")).unwrap();
+        assert_eq!(found["path"], json!("src/cobranca.rs"), "{report}");
+        assert_eq!((&found["line"], &found["end_line"], &found["kind"]), (&json!(4), &json!(12), &json!("function")));
+        assert_eq!(found["words"], json!(["boleto", "vencido"]), "{found}");
+        assert_eq!((&found["via"], &found["link"]), (&json!(["comment"]), &json!("proven")), "{found}");
+        assert_eq!(searched(&opts, &|_, _| Err(FilterError::MissingKey)), report, "the same question answers the same way");
+    }
+
+    /// A busca com filtro também traz o grau e a busca funda.
+    #[test]
+    fn a_filtered_answer_carries_the_grade_and_the_deep_search() {
+        let dir = search_project(TIED_MAP, &json!({}));
+        let fake = FakeFilter::scoring(&[0.9, 0.8]);
+        let report = searched(&search_opts(dir.path(), "boleto vencido", Some("onde reemite"), None), &fake.assemble());
+        assert_eq!(fake.calls(), 1);
+        assert_eq!(report["filter"], json!("jev"), "{report}");
+        assert!(report["grade"].as_u64().is_some_and(|grade| (1..=3).contains(&grade)), "{report}");
+        assert!(report["deeper"].as_array().is_some_and(|deeper| !deeper.is_empty()), "{report}");
+    }
+
+    /// Nada achado, nem no código nem nas specs, é o grau 0: uma linha que
+    /// diz que não achou, com as palavras quebradas e a próxima busca exata.
+    /// Nenhum aviso vai junto, nenhum se gasta, e o filtro nem é montado.
+    #[test]
+    fn a_search_that_finds_nothing_is_grade_zero_with_one_line_and_no_warning() {
+        let dir = search_project(FILTER_MAP, &json!({}));
+        let fake = FakeFilter::scoring(&[0.9]);
+        let opts = search_opts(dir.path(), "quebra-cabeca zzyzx", Some("onde fica"), Some("sessao-nada"));
+        let report = searched(&opts, &fake.assemble_from_the_project(None));
+        let line = "Não achei \"quebra\", \"cabeca\", \"zzyzx\" no mapa. Próxima busca, exata: grep -rniE \"quebra|cabeca|zzyzx\" .";
+        assert_eq!(
+            report,
+            json!({"ok": true, "question": "search", "query": "quebra-cabeca zzyzx", "files": [], "grade": 0, "not_found": line})
+        );
+        assert_eq!(fake.calls(), 0);
+
+        let found = searched(&search_opts(dir.path(), "cancelar", None, Some("sessao-nada")), &fake.assemble_from_the_project(None));
+        let warned = mustard_core::translate("map.search.missing_key", Locale::PtBr);
+        assert_eq!(found["warnings"], json!([warned]), "the grade zero answer did not use up the warning: {found}");
+    }
+
+    /// O item de spec que casa é achado: sem nada no código, a resposta não é
+    /// a do "não achei".
+    #[test]
+    fn a_spec_item_that_matches_keeps_the_answer_from_being_grade_zero() {
+        let dir = tempdir().unwrap();
+        store::write_text(dir.path(), EVERY_PART).unwrap();
+        spec_with_a_wave_commit(dir.path(), "c3", &["apps/rt/src/commands/pay/write.rs"]);
+        let mut opts = ask(dir.path(), Question::Search);
+        opts.query = Some("estorno".to_string());
+        let report = answered(&opts);
+        assert_eq!(report["grade"], json!(1), "{report}");
+        assert!(report.get("not_found").is_none(), "{report}");
+        assert!(report["specs"].as_array().is_some_and(|items| !items.is_empty()), "{report}");
+    }
+
     /// Só a busca por assunto monta o filtro: nenhuma outra pergunta do mapa
     /// o pede, e os arquivos sugeridos à rodada e ao plano vêm do banco.
     #[test]
@@ -3070,7 +3169,7 @@ mod tests {
             searched(&opts, &counting);
             assert_eq!(assembled.get(), 0, "{:?} assembled the filter", opts.question);
         }
-        searched(&search_opts(dir.path(), "pagamento", None, None), &counting);
+        searched(&search_opts(dir.path(), "payment", None, None), &counting);
         assert_eq!(assembled.get(), 1);
 
         let languages = crate::commands::spec_events::project(dir.path()).languages;

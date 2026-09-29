@@ -313,6 +313,10 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // A busca com filtro: a frase da busca de uma palavra só, os avisos
         // do filtro e dos números da seção `search`, e o motivo de cada falha
         // do filtro.
+        // A busca sem nenhum achado: a linha que diz que não achou e dá a
+        // próxima busca, exata, com as palavras já quebradas.
+        ("map.search.not_found", Locale::PtBr) => "Não achei {words} no mapa. Próxima busca, exata: {next}",
+        ("map.search.not_found", Locale::EnUs) => "Found nothing for {words} in the map. Next search, exact: {next}",
         ("map.search.name_piece", Locale::PtBr) => "pedaço de nome: {word}",
         ("map.search.name_piece", Locale::EnUs) => "part of a name: {word}",
         ("map.search.filter_failed", Locale::PtBr) => {
@@ -388,8 +392,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("map.rs"),
             super::PREFIXES,
-            70,
-            0x0d42_51a8_a84a_6b8a,
+            71,
+            0xf7cd_cdc1_2ac3_b082,
         );
     }
 
@@ -423,6 +427,7 @@ mod tests {
                 "map.history_unreadable",
                 "map.changed_in_copy",
                 "map.changed_in_copy_range",
+                "map.search.not_found",
                 "map.search.filter_failed",
                 "map.search.bad_number",
                 "map.search.bad_filter",
@@ -447,6 +452,8 @@ mod tests {
                     .replace("{code}", "combinado")
                     .replace("{sentence}", "O pedido sai em uma frase.")
                     .replace("{reason}", translate("map.search.reason.timeout", lang))
+                    .replace("{words}", "\"boleto\", \"vencido\"")
+                    .replace("{next}", "grep -rniE \"boleto|vencido\" .")
                     .replace("{value}", "dois");
                 let report = crate::domain::clarity::measure(&text, &[], Some(lang));
                 assert!(report.passed, "{key} {lang:?}: {report:?}");
@@ -640,6 +647,7 @@ mod tests {
             ("map.history.pull_missing", &["{number}"][..]),
             ("map.history.spec", &["{spec}", "{code}", "{sentence}"][..]),
             ("map.history_unreadable", &["{file}", "{detail}"][..]),
+            ("map.search.not_found", &["{words}", "{next}"][..]),
             ("map.search.name_piece", &["{word}"][..]),
             ("map.search.filter_failed", &["{reason}"][..]),
             ("map.search.reason.no_credit", &[][..]),

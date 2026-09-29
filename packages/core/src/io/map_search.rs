@@ -491,7 +491,7 @@ fn written_texts(conn: &Connection) -> Result<Vec<FileText>> {
 }
 
 /// O texto da coluna `at`; vazio quando ela não guarda texto.
-fn text(row: &Row<'_>, at: usize) -> Result<String> {
+pub(super) fn text(row: &Row<'_>, at: usize) -> Result<String> {
     Ok(match row.get_ref(at)? {
         ValueRef::Text(bytes) => String::from_utf8_lossy(bytes).into_owned(),
         _ => String::new(),
@@ -558,7 +558,7 @@ pub fn search_at(
 /// que o scan ainda não encheu depois de uma troca de formato recusa a
 /// busca, que sem ele responderia vazio: a mesma recusa das outras perguntas
 /// ao mapa ([`map_fill::refuse`]).
-fn indexed(model: &Path, languages: &Languages, read: &[&MapBlock]) -> std::result::Result<MapDb, MapRefusal> {
+pub(super) fn indexed(model: &Path, languages: &Languages, read: &[&MapBlock]) -> std::result::Result<MapDb, MapRefusal> {
     let mut db = open_existing(model)?;
     map_fill::refuse(&db, read)?;
     if !made_in(db.conn(), languages).map_err(unreadable)? {
@@ -575,7 +575,7 @@ fn made_in(conn: &Connection, languages: &Languages) -> Result<bool> {
     Ok(stored.is_some_and(|stored| stored == languages.codes().join(",")))
 }
 
-fn found(conn: &Connection, query: &str, languages: &Languages, limit: usize) -> Result<Vec<Found>> {
+pub(super) fn found(conn: &Connection, query: &str, languages: &Languages, limit: usize) -> Result<Vec<Found>> {
     let mut normalizer = Normalizer::new(languages);
     let words = normalizer.query(query);
     let by_words = by_words(conn, &FILE_LEVEL, FILE_LEVEL.fields, &words)?;
@@ -671,20 +671,7 @@ fn by_words_as(
     texts: Texts,
     words: &[Vec<String>],
 ) -> Result<Vec<(i64, f64)>> {
-    let indexed = as_indexed(conn, words)?;
-    let sizes: Vec<String> = fields.iter().map(|field| format!("l.{field}")).collect();
-    let mut lists = conn.prepare(&format!(
-        "SELECT v.doc, v.col, {} FROM {} v JOIN {} l ON l.id = v.doc WHERE v.term = ?1",
-        sizes.join(", "),
-        level.vocab,
-        level.lengths
-    ))?;
-    let slots = slots(fields, texts);
-    let mut postings = indexed
-        .iter()
-        .map(|forms| forms.iter().map(|form| postings(&mut lists, fields, &slots, form)).collect::<Result<Vec<_>>>())
-        .collect::<Result<Vec<_>>>()?;
-    let mut numbers = fields_of(conn, level, fields, &slots)?;
+    let (mut postings, mut numbers, slots) = counted(conn, level, fields, texts, words)?;
     let Some(learned) = level.learned else { return Ok(bm25f(&postings, &numbers)) };
     let marked = map_glossary::marked(conn, learned, words)?;
     if marked.iter().all(Vec::is_empty) {
@@ -708,6 +695,46 @@ fn by_words_as(
     }
     let name_slot = fields.iter().position(|field| *field == "name").map(|at| slots[at]);
     Ok(behind_the_names(bm25f(&postings, &numbers), &postings, name_slot, learned_slot))
+}
+
+/// O que a nota precisa antes do glossário: as ocorrências de cada forma de
+/// cada palavra, os números do índice e o campo da conta de cada coluna.
+type Counted = (Vec<Vec<Vec<Posting>>>, Fields, Vec<usize>);
+
+/// As ocorrências de cada forma de cada palavra nos campos `fields` do
+/// nível, os números do índice e o campo da conta de cada coluna.
+fn counted(
+    conn: &Connection,
+    level: &Level,
+    fields: &[&str],
+    texts: Texts,
+    words: &[Vec<String>],
+) -> Result<Counted> {
+    let indexed = as_indexed(conn, words)?;
+    let sizes: Vec<String> = fields.iter().map(|field| format!("l.{field}")).collect();
+    let mut lists = conn.prepare(&format!(
+        "SELECT v.doc, v.col, {} FROM {} v JOIN {} l ON l.id = v.doc WHERE v.term = ?1",
+        sizes.join(", "),
+        level.vocab,
+        level.lengths
+    ))?;
+    let slots = slots(fields, texts);
+    let postings = indexed
+        .iter()
+        .map(|forms| forms.iter().map(|form| postings(&mut lists, fields, &slots, form)).collect::<Result<Vec<_>>>())
+        .collect::<Result<Vec<_>>>()?;
+    let numbers = fields_of(conn, level, fields, &slots)?;
+    Ok((postings, numbers, slots))
+}
+
+/// A nota BM25F de cada documento do nível das declarações (`decl`) ou dos
+/// arquivos para as palavras da pergunta, contando só os campos `fields`,
+/// cada um à parte e com o mesmo peso, sem as palavras aprendidas: a nota
+/// dos campos de comentário é só do que está escrito neles.
+pub(super) fn by_fields(conn: &Connection, decl: bool, fields: &[&str], words: &[Vec<String>]) -> Result<Vec<(i64, f64)>> {
+    let level = if decl { &DECL_LEVEL } else { &FILE_LEVEL };
+    let (postings, numbers, _) = counted(conn, level, fields, Texts::Apart, words)?;
+    Ok(bm25f(&postings, &numbers))
 }
 
 /// A nota com a regra das palavras aprendidas: o documento que só o campo
