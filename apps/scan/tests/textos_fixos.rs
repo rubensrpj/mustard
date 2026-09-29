@@ -22,6 +22,7 @@ const RUST: &str = r#"pub fn carregar(id: u32) -> Result<u32, String> {
     }
     let rota = "api/registros";
     let sozinha = "palavra";
+    let formato = "{}";
     Ok(id)
 }
 
@@ -162,14 +163,15 @@ fn values(map: &Value, path: &str) -> Vec<String> {
 }
 
 #[test]
-fn only_a_text_of_two_words_or_with_the_shape_of_a_path_or_key_is_kept() {
+fn a_text_with_a_word_is_kept_even_alone_and_one_with_no_word_is_not() {
     let temp = project();
     let (map, _) = scan(temp.path());
     let rust = values(&map, "src/consulta.rs");
     assert!(rust.contains(&"api/registros".to_string()), "a path is kept: {rust:?}");
-    assert!(!rust.contains(&"palavra".to_string()), "one word with no separator is not: {rust:?}");
+    assert!(rust.contains(&"palavra".to_string()), "one word alone is kept: {rust:?}");
+    assert!(!rust.contains(&"{}".to_string()), "a text with no word in it is not: {rust:?}");
     let typescript = values(&map, "web/clientes.service.ts");
-    assert!(!typescript.contains(&"ok".to_string()), "{typescript:?}");
+    assert!(typescript.contains(&"ok".to_string()), "a short word is kept: {typescript:?}");
     assert!(!typescript.iter().any(|value| value.contains("nestjs")), "the import is not a text: {typescript:?}");
     let path = texts(&map, "src/consulta.rs").as_array().unwrap().iter().find(|text| text["value"] == json!("api/registros")).cloned();
     assert_eq!(path.map(|path| path["kind"].clone()), Some(json!("text")), "the rest is marked text");
@@ -181,7 +183,7 @@ fn a_text_written_in_the_test_block_or_in_a_test_file_is_not_kept() {
     let (map, _) = scan(temp.path());
     let rust = values(&map, "src/consulta.rs");
     assert!(!rust.iter().any(|value| value.contains("registro de teste")), "{rust:?}");
-    assert_eq!(rust.len(), 3, "{rust:?}");
+    assert_eq!(rust.len(), 4, "{rust:?}");
     let test_file = values(&map, "web/clientes.service.test.ts");
     assert!(test_file.is_empty(), "a test file keeps no text: {test_file:?}");
 }
@@ -218,6 +220,38 @@ fn the_search_for_the_message_finds_the_file_with_the_text_its_line_and_its_func
     );
 }
 
+/// O texto de uma palavra só, como um nome de fornecedor ou de comando, é o
+/// que a pessoa procura quando não sabe o nome do código: a busca por ele acha
+/// o arquivo, a linha e a função que o escreve.
+#[test]
+fn the_search_for_a_one_word_text_finds_the_file_its_line_and_its_function() {
+    let temp = project();
+    scan(temp.path());
+    let languages = Languages::of(&ProjectConfig::default());
+    let map = model::path_in(&temp.path().join(".claude"));
+    let found = map_search::search_at(&map, "palavra", &languages, 10).expect("a busca lê o mapa");
+    let first = found.first().expect("a busca acha o arquivo");
+    assert_eq!(first.path, "src/consulta.rs", "{found:?}");
+    let text = first.text.as_ref().expect("o texto que casou");
+    assert_eq!(
+        (text.line, text.kind.as_str(), text.value.as_str(), text.owner.as_str()),
+        (7, "text", "palavra", "carregar")
+    );
+}
+
+/// A lista de candidatos da busca com filtro traz, entre os primeiros, a
+/// função que escreve o texto de uma palavra só.
+#[test]
+fn the_candidates_for_the_filter_start_with_the_function_that_writes_a_one_word_text() {
+    let temp = project();
+    scan(temp.path());
+    let languages = Languages::of(&ProjectConfig::default());
+    let map = model::path_in(&temp.path().join(".claude"));
+    let found = map_search::candidates_at(&map, "palavra", "", &languages, 10).expect("a busca lê o mapa");
+    let first = found.candidates.first().expect("a busca acha uma declaração");
+    assert_eq!((first.path.as_str(), first.name.as_str()), ("src/consulta.rs", "carregar"), "{found:?}");
+}
+
 #[test]
 fn the_text_written_loose_on_a_screen_is_kept_with_the_function_that_shows_it() {
     let temp = project();
@@ -249,6 +283,7 @@ fn a_typescript_file_keeps_the_same_texts_beside_a_screen() {
         json!([
             {"line": 5, "kind": "log", "value": "buscando o cliente ${id}", "owner": "buscar"},
             {"line": 7, "kind": "error", "value": "cliente não encontrado", "owner": "buscar"},
+            {"line": 9, "kind": "text", "value": "ok", "owner": "buscar"},
         ])
     );
 }

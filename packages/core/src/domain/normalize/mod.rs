@@ -11,6 +11,11 @@
 //! fica ela mesma, sem acento, para a raiz dela não coincidir com a de uma
 //! palavra de conteúdo parecida (a de "some" nunca é a de "somar").
 //!
+//! O texto guarda a raiz de todas as línguas, e a pergunta da busca com filtro
+//! ([`Normalizer::query_in_text_language`]) leva só a da primeira, a língua do
+//! texto do projeto. As outras buscas cortam a pergunta em todas as línguas
+//! ([`Normalizer::query`]).
+//!
 //! As línguas vêm do projeto e são passadas por quem busca ([`Languages`]).
 //! Cada língua é um arquivo de dados, `languages/<código>.txt`, embutido no
 //! binário: a linha `stem:` dá o algoritmo de raiz pelo nome, a linha
@@ -219,12 +224,14 @@ impl Normalizer {
         if let Some(forms) = self.known.get(word) {
             return forms.clone();
         }
-        let forms = self.cut(word);
+        let forms = self.cut(word, self.stemmers.len());
         self.known.insert(word.to_string(), forms.clone());
         forms
     }
 
-    fn cut(&self, word: &str) -> Vec<String> {
+    /// As formas de uma palavra com a raiz das `languages` primeiras línguas,
+    /// na ordem em que o projeto as declarou.
+    fn cut(&self, word: &str, languages: usize) -> Vec<String> {
         let folded = text::fold_accents(word);
         if self.is_function_word(word) {
             return vec![folded];
@@ -235,7 +242,7 @@ impl Normalizer {
                 out.push(form);
             }
         };
-        for stemmer in &self.stemmers {
+        for stemmer in self.stemmers.iter().take(languages) {
             match stemmer {
                 Some(stemmer) => {
                     push(text::fold_accents(&stemmer.stem(word)));
@@ -264,6 +271,25 @@ impl Normalizer {
         self.collect(text, true)
     }
 
+    /// A pergunta da busca com filtro: como [`Self::query`], mas cada palavra
+    /// leva só a raiz da primeira língua, a do texto do projeto, e as
+    /// palavras que dividem alguma forma viram uma só, com as formas de
+    /// todas. A raiz inglesa de `commands` é `command`, que espalharia a
+    /// pergunta por todo lugar que escreve `command`, caminho de pasta
+    /// inclusive; só com a do português, a pergunta acha o que escreve
+    /// `commands`. A forma que duas palavras têm em comum (`simula` e
+    /// `simulação`) conta uma vez na nota, e não uma por palavra. O texto do
+    /// índice segue com a raiz de todas as línguas.
+    pub fn query_in_text_language(&mut self, text: &str) -> Vec<Vec<String>> {
+        let mut words: Vec<Vec<String>> = Vec::new();
+        for word in plain_words(text) {
+            if !self.is_function_word(&word) {
+                words.push(self.cut(&word, 1));
+            }
+        }
+        merge_shared_forms(words)
+    }
+
     fn collect(&mut self, text: &str, skip_function_words: bool) -> Vec<Vec<String>> {
         let mut seen: HashSet<Vec<String>> = HashSet::new();
         let mut out: Vec<Vec<String>> = Vec::new();
@@ -278,6 +304,33 @@ impl Normalizer {
         }
         out
     }
+}
+
+/// As palavras da pergunta que dividem alguma forma viram uma palavra só, com
+/// as formas de todas, na ordem em que aparecem: a forma que duas palavras
+/// têm em comum conta uma vez na nota (`link` e `linked`, `capacity` e
+/// `capacidade`), e não uma por palavra.
+fn merge_shared_forms(words: Vec<Vec<String>>) -> Vec<Vec<String>> {
+    let mut out: Vec<Vec<String>> = Vec::with_capacity(words.len());
+    for word in words {
+        let mut merged = word;
+        let mut at = 0;
+        while at < out.len() {
+            if out[at].iter().any(|form| merged.contains(form)) {
+                let mut earlier = out.remove(at);
+                for form in merged {
+                    if !earlier.contains(&form) {
+                        earlier.push(form);
+                    }
+                }
+                merged = earlier;
+            } else {
+                at += 1;
+            }
+        }
+        out.push(merged);
+    }
+    out
 }
 
 /// As linhas de dado do arquivo da língua, sem as vazias e sem os
@@ -376,6 +429,49 @@ mod tests {
         assert_eq!(normalizer.word_forms("não"), ["nao"]);
         assert!(normalizer.query("a de para o the of").is_empty());
         assert_eq!(normalizer.query("apagando a pasta").len(), 2);
+    }
+
+    /// A pergunta da busca com filtro leva só a raiz da primeira língua, a do
+    /// texto do projeto, e o texto leva a de todas: `commands` na pergunta não
+    /// vira `command`, que espalharia a busca por todo lugar que escreve
+    /// `command`, e o texto que escreve `commands` ou `command` continua
+    /// achado pelas duas perguntas. A pergunta das outras buscas segue com a
+    /// raiz de todas as línguas.
+    #[test]
+    fn the_filter_question_keeps_only_the_root_of_the_first_language() {
+        let languages = Languages::new(["pt-BR", "en-US"]);
+        let mut normalizer = Normalizer::new(&languages);
+        let written = normalizer.word_forms("commands");
+        assert!(written.contains(&"commands".to_string()) && written.contains(&"command".to_string()), "{written:?}");
+        let asked = only(&normalizer.query_in_text_language("commands"));
+        assert_eq!(asked, ["commands"], "the english root is not in the question");
+        let singular = only(&normalizer.query_in_text_language("command"));
+        assert!(singular.iter().any(|form| written.contains(form)), "the singular still finds the plural: {singular:?}");
+        let english_first = Languages::new(["en-US", "pt-BR"]);
+        assert_eq!(only(&Normalizer::new(&english_first).query_in_text_language("commands")), ["command"]);
+        assert!(only(&normalizer.query("commands")).contains(&"command".to_string()), "the other searches keep every root");
+    }
+
+    /// As palavras da pergunta com filtro que dividem uma forma viram uma
+    /// palavra só, e a forma comum conta uma vez na nota; as que não dividem
+    /// nada seguem separadas, e a ordem das palavras não muda o resultado.
+    #[test]
+    fn two_filter_question_words_that_share_a_form_count_it_once() {
+        let languages = Languages::new(["pt-BR", "en-US"]);
+        let mut normalizer = Normalizer::new(&languages);
+        let plain = normalizer.query_in_text_language("simula");
+        let accented = normalizer.query_in_text_language("simulação");
+        assert_eq!((plain.len(), accented.len()), (1, 1));
+        let shared = "simul".to_string();
+        assert!(plain[0].contains(&shared) && accented[0].contains(&shared), "{plain:?} / {accented:?}");
+        for question in ["simula simulação", "simulação simula"] {
+            let words = normalizer.query_in_text_language(question);
+            assert_eq!(words.len(), 1, "{question}: {words:?}");
+            assert_eq!(words.iter().filter(|word| word.contains(&shared)).count(), 1, "{question}: {words:?}");
+            assert_eq!(words[0].len(), 2, "{question}: the forms of both words, once each: {words:?}");
+        }
+        assert_eq!(normalizer.query_in_text_language("simula pasta").len(), 2, "words with no form in common stay apart");
+        assert_eq!(normalizer.query_in_text_language("a de para").len(), 0, "function words leave the question");
     }
 
     /// O nome colado se separa nas palavras dele, e o campo guardado dá as

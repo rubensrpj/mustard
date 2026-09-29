@@ -1047,9 +1047,10 @@ pub fn links(root: &Path, ids: &[i64]) -> std::result::Result<Links, MapRefusal>
 /// textos fixos da declaração contam como um campo só, como no laboratório
 /// que afinou a busca com filtro: cada marca num campo à parte dava ao texto
 /// de erro, que quase nenhuma declaração tem, uma média perto de zero, e a
-/// palavra dele quase não pesava.
+/// palavra dele quase não pesava. A pergunta leva só a raiz da primeira
+/// língua ([`Normalizer::query_in_text_language`]), como no laboratório.
 fn whole_list(conn: &Connection, query: &str, intent: &str, languages: &Languages) -> Result<Vec<i64>> {
-    let words = Normalizer::new(languages).query(format!("{query} {intent}").trim());
+    let words = Normalizer::new(languages).query_in_text_language(format!("{query} {intent}").trim());
     let base = base_list(conn, &words)?;
     let every_decl_field: Vec<&str> = DECL_LEVEL.columns().collect();
     let everything = by_words_as(conn, &DECL_LEVEL, &every_decl_field, Texts::Together, &words)?;
@@ -1858,13 +1859,50 @@ mod tests {
         );
     }
 
+    /// A pergunta da busca com filtro leva só a raiz da língua do texto: o
+    /// plural `commands` acha a declaração que escreve `commands` e não a que
+    /// escreve `command`, que a raiz inglesa da pergunta traria junto. O
+    /// singular `command` acha as duas, porque o índice guarda as duas raízes
+    /// de `commands`.
+    #[test]
+    fn a_plural_word_of_the_filter_question_does_not_reach_the_declaration_that_writes_the_singular() {
+        let dir = saved(&[
+            ("src/plural.rs", "", &[("varios", "Runs the commands of the queue")]),
+            ("src/singular.rs", "", &[("unico", "Runs one command of the queue")]),
+            ("src/outro.rs", "", &[("outro", "Draws the page")]),
+        ]);
+        let (plural, singular) = (id_of(dir.path(), "varios"), id_of(dir.path(), "unico"));
+        let found = candidates(dir.path(), "commands", "", &languages(), CANDIDATES).unwrap();
+        assert_eq!(found.whole, vec![plural], "{found:?}");
+        let mut both = candidates(dir.path(), "command", "", &languages(), CANDIDATES).unwrap().whole;
+        both.sort_unstable();
+        assert_eq!(both, vec![plural.min(singular), plural.max(singular)]);
+    }
+
+    /// Duas palavras da pergunta que dividem uma forma contam essa forma uma
+    /// vez só: a declaração que só a tem (`simulação`, com a forma `simul` das
+    /// duas palavras) não passa à frente da que tem a outra palavra da
+    /// pergunta (`pasta`) por causa da contagem em dobro.
+    #[test]
+    fn two_words_of_the_filter_question_with_a_shared_form_weigh_it_once() {
+        let dir = saved(&[
+            ("src/pasta.rs", "", &[("primeira", "pasta")]),
+            ("src/simular.rs", "", &[("segunda", "simulação")]),
+        ]);
+        let found = candidates(dir.path(), "simula simulação pasta", "", &languages(), CANDIDATES).unwrap();
+        let (first, second) = (id_of(dir.path(), "primeira"), id_of(dir.path(), "segunda"));
+        assert_eq!(found.whole, vec![first, second], "{found:?}");
+    }
+
     /// A medida do primeiro elo da busca com filtro: em quantas buscas de
     /// uma régua a declaração certa está entre os 100 candidatos, e quanto
     /// tempo a etapa leva. A régua vem de um arquivo JSON apontado por
     /// `MAP_FIRST_LINK_RULER`: `expected` (as buscas que o laboratório
     /// acertou) e `searches`, cada uma com `key`, o `model` do projeto, a
     /// `query`, a `intent` e os `targets` (caminho, nome e linha). A
-    /// diferença acima de 3 buscas falha, com a lista das perdidas.
+    /// diferença acima de 3 buscas falha, com a lista das perdidas. Também
+    /// diz em quantas o certo é o primeiro, está entre os 3, os 12, os 50 e os
+    /// 100 primeiros da lista inteira.
     #[test]
     #[ignore = "mede com os mapas dos projetos de prova"]
     fn the_first_link_puts_the_right_declaration_among_the_hundred_candidates() {
@@ -1884,6 +1922,7 @@ mod tests {
             }
         }
         let (mut found, mut millis, mut lost) = (0usize, Vec::new(), Vec::new());
+        let mut ranks: Vec<usize> = Vec::new();
         for search in searches {
             let text = |key: &str| search[key].as_str().unwrap().to_string();
             let started = std::time::Instant::now();
@@ -1896,9 +1935,11 @@ mod tests {
                 .iter()
                 .map(|t| (t[0].as_str().unwrap().to_string(), t[1].as_str().unwrap().to_string(), t[2].as_u64().unwrap()))
                 .collect();
-            let hit = got.candidates.iter().any(|c| {
+            let place = got.candidates.iter().position(|c| {
                 targets.iter().any(|(path, name, line)| &c.path == path && &c.name == name && u64::from(c.line) == *line)
             });
+            let hit = place.is_some();
+            ranks.extend(place.map(|at| at + 1));
             found += usize::from(hit);
             if !hit {
                 lost.push(format!("{} (lab: {})", text("key"), search["lab_in_100"]));
@@ -1911,6 +1952,15 @@ mod tests {
             searches.len(),
             millis[millis.len() / 2],
             millis[millis.len() - 1]
+        );
+        let within = |top: usize| ranks.iter().filter(|&&rank| rank <= top).count();
+        println!(
+            "first link: the right one is within the first 1/3/12/50/100: {}/{}/{}/{}/{}",
+            within(1),
+            within(3),
+            within(12),
+            within(50),
+            within(100)
         );
         println!("lost: {lost:#?}");
         assert!(found.abs_diff(expected) <= 3, "{found} against {expected}: {lost:#?}");

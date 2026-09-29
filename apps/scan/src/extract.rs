@@ -1701,20 +1701,12 @@ pub(crate) fn literal_value(written: &str) -> &str {
     body.strip_suffix(quote.to_string().repeat(count).as_str()).unwrap_or(body)
 }
 
-/// O valor tem cara de texto: duas palavras ou mais — palavra é o trecho
-/// entre espaços com duas letras ou mais —, ou forma de caminho ou chave:
-/// sem espaço nem aspas, com `/`, `.`, `_` ou `-`, e com dois pedaços de duas
-/// letras ou mais entre o que não é letra nem algarismo (`pedidos/novo`,
-/// `erro.pedido_ausente`).
+/// O valor tem cara de texto: ao menos uma palavra — o trecho entre espaços
+/// com duas letras ou mais. Uma palavra só (`Fornecedor`, `tsc`, `cargo`)
+/// conta, porque é ela que a pessoa procura quando não sabe o nome do código;
+/// o que não tem palavra nenhuma (`%d`, `{}`, `x`) fica de fora.
 fn reads_as_text(value: &str) -> bool {
-    let has_letters = |piece: &str| piece.chars().filter(|c| c.is_alphabetic()).count() >= 2;
-    if value.split_whitespace().filter(|word| has_letters(word)).count() >= 2 {
-        return true;
-    }
-    !value.contains(char::is_whitespace)
-        && !value.contains(['"', '\'', '`'])
-        && value.contains(['/', '.', '_', '-'])
-        && value.split(|c: char| !c.is_alphanumeric()).filter(|piece| has_letters(piece)).count() >= 2
+    value.split_whitespace().any(|piece| piece.chars().filter(|c| c.is_alphabetic()).count() >= 2)
 }
 
 /// A marca de um texto fixo. Subindo a partir do literal, até
