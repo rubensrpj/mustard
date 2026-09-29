@@ -18,12 +18,13 @@
 //! onda. A skill cujo arquivo citado mudou no git depois do arquivo dela sai
 //! marcada como a revisar.
 
-use std::cell::{OnceCell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
+use crate::domain::config::Setting;
 use crate::domain::lessons::{in_scope, related_to_tasks, serving_wave, Scope};
 use crate::domain::pattern::Pattern;
 use crate::domain::normalize::Languages;
@@ -59,6 +60,21 @@ pub struct WavePrompt {
     pub bad_skills: Vec<(String, MapRefusal)>,
     /// As skills que a onda usa e que precisam de revisão, pelo nome.
     pub stale_skills: Vec<String>,
+    /// Os números do `mustard.json` que a montagem leu, não valiam e caíram
+    /// no padrão. A montagem não tem sessão: quem despacha o pedido decide
+    /// onde o aviso sai e quantas vezes.
+    pub bad_settings: Vec<BadSetting>,
+}
+
+/// Um número do `mustard.json` que o pedido leu e que não vale — zero,
+/// negativo ou texto —, com o aviso pronto. Vale o padrão, e o aviso diz a
+/// chave e o padrão que valeu.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BadSetting {
+    /// A chave da seção `map`, como o arquivo a escreve (`historyMoves`).
+    pub key: &'static str,
+    /// O aviso, no idioma do texto.
+    pub message: String,
 }
 
 /// As ondas que estão fora, como quem monta os pedidos as vê.
@@ -104,7 +120,7 @@ fn history_beyond_window(
     trace: &Trace<'_>,
     history: &History,
     file: &str,
-    moves: usize,
+    moves: impl FnOnce() -> usize,
 ) -> Option<FileLineage> {
     if file_history(history, file).is_some() || history.commits.len() < MAX_COMMITS || history.missing.is_some() {
         return None;
@@ -113,6 +129,9 @@ fn history_beyond_window(
     let part = read(Need::Lineage(file)).ok()?;
     let comments = part.pulls.comments.len();
     let mark = part.census_mark.clone();
+    // O número só se lê aqui, quando a história além da janela vai mesmo ser
+    // comparada com a guardada ou lida do git.
+    let moves = moves();
     if let Some(found) = stored(part).filter(|l| lineage_fresh_in(l, history, &mark, comments, moves)) {
         return Some(found);
     }
@@ -157,7 +176,7 @@ pub fn recipe_for(
     } else if file_history(history, target).is_some() {
         recipe_for_existing(history, target)
     } else if map.module(target).is_some() {
-        history_beyond_window(read, trace, history, target, moves()).as_ref().and_then(recipe_from_lineage)
+        history_beyond_window(read, trace, history, target, moves).as_ref().and_then(recipe_from_lineage)
     } else {
         None
     };
@@ -194,7 +213,8 @@ fn prompts_reading(
     let languages = Languages::of_project(root);
     let map = MapParts {
         root,
-        moves: crate::ProjectConfig::load(root).history_moves().or(MOVES_FOLLOWED),
+        moves: crate::ProjectConfig::load(root).history_moves(),
+        moves_bad_read: Cell::new(false),
         trace,
         recipes: RefCell::default(),
         read,
@@ -216,8 +236,27 @@ fn prompts_reading(
         lang,
         languages: &languages,
     };
-    log.planned_waves().into_iter().map(|n| one(&context, n)).collect()
+    let mut built: Vec<WavePrompt> = log.planned_waves().into_iter().map(|n| one(&context, n)).collect();
+    // O aviso do número inválido vai em todo pedido da montagem, e não só no
+    // da onda cuja receita o leu primeiro: quem despacha pega os pedidos das
+    // ondas que saem agora, e a receita guardada serve às seguintes.
+    if map.moves_bad_read.get() {
+        let bad = BadSetting {
+            key: MOVES_KEY,
+            message: crate::platform::i18n::translate("map.history.bad_setting", lang)
+                .replace("{key}", MOVES_KEY)
+                .replace("{default}", &MOVES_FOLLOWED.to_string()),
+        };
+        for prompt in &mut built {
+            prompt.bad_settings.push(bad.clone());
+        }
+    }
+    built
 }
+
+/// A chave de `map.historyMoves` no `mustard.json`, como o aviso do valor
+/// inválido a diz.
+const MOVES_KEY: &str = "historyMoves";
 
 /// O que os dois pedidos leem do `mustard.json` do projeto `root`: os
 /// comandos de compilar e de testar, o de preparo, os arquivos locais e os
@@ -530,8 +569,12 @@ pub fn request_items<'a>(
 struct MapParts<'a> {
     root: &'a Path,
     /// Quantas vezes a história de uma declaração segue para o arquivo de
-    /// onde ela veio (`map.historyMoves`).
-    moves: usize,
+    /// onde ela veio (`map.historyMoves`), como o `mustard.json` a escreve.
+    /// Lida só por [`Self::moves`].
+    moves: Setting,
+    /// Se a montagem pediu o número e ele estava inválido: o pedido leva o
+    /// aviso ([`BadSetting`]) só quando o padrão valeu de fato.
+    moves_bad_read: Cell<bool>,
     trace: &'a Trace<'a>,
     /// A receita do git de cada arquivo de tarefa, pelo caminho, calculada
     /// uma vez só por montagem.
@@ -549,6 +592,16 @@ struct MapParts<'a> {
 }
 
 impl MapParts<'_> {
+    /// Quantas vezes a história segue para o arquivo de origem: o número do
+    /// `mustard.json` ou, sem ele ou inválido, o padrão. O inválido deixa
+    /// marcado que o padrão valeu no lugar dele.
+    fn moves(&self) -> usize {
+        if self.moves == Setting::Invalid {
+            self.moves_bad_read.set(true);
+        }
+        self.moves.or(MOVES_FOLLOWED)
+    }
+
     /// O caminho de cada arquivo do mapa, na ordem dele.
     fn paths(&self) -> Option<&ProjectMap> {
         self.paths.get_or_init(|| (self.read)(Need::Paths).ok()).as_ref()
@@ -601,7 +654,7 @@ impl MapParts<'_> {
         if let Some(known) = self.recipes.borrow().get(file) {
             return known.clone();
         }
-        let found = recipe_for(self.root, self.read, self.trace, read, file, || self.moves);
+        let found = recipe_for(self.root, self.read, self.trace, read, file, || self.moves());
         self.recipes.borrow_mut().insert(file.to_string(), found.clone());
         found
     }
@@ -775,7 +828,7 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
     // molde com esse nome mora no projeto, e o envio grava só o nome.
     let agent = "wave".to_string();
     let model = wave_prompt::requested_model(&agent).to_string();
-    WavePrompt { wave, agent, model, text, lines, bad_skills, stale_skills }
+    WavePrompt { wave, agent, model, text, lines, bad_skills, stale_skills, bad_settings: Vec::new() }
 }
 
 /// As regras da execução da onda `wave`: os comandos do projeto, as outras
@@ -2304,6 +2357,98 @@ mod tests {
         let read = |need: Need<'_>| crate::io::project_map::read_for(root, need);
         prompts_reading(root, "teste", &log, Locale::PtBr, &Flight::default(), &read, &trace);
         assert_eq!(calls.get(), 0);
+    }
+
+    /// Os pedidos do projeto da janela cheia
+    /// ([`project_with_a_file_older_than_the_window`]) com o `mustard.json`
+    /// `config`, ou sem arquivo, quando `None`. Devolve o número de mudanças
+    /// de arquivo que a leitura da história pediu ao scan e os pedidos.
+    fn moves_asked_with(config: Option<&str>) -> (Vec<usize>, Vec<WavePrompt>) {
+        let (dir, log) = project_with_a_file_older_than_the_window();
+        let root = dir.path();
+        if let Some(config) = config {
+            std::fs::write(root.join("mustard.json"), config).unwrap();
+        }
+        let asked = RefCell::new(Vec::new());
+        let trace = |_: &str, moves: usize| {
+            asked.borrow_mut().push(moves);
+            false
+        };
+        let read = |need: Need<'_>| crate::io::project_map::read_for(root, need);
+        let built = prompts_reading(root, "teste", &log, Locale::PtBr, &Flight::default(), &read, &trace);
+        (asked.into_inner(), built)
+    }
+
+    /// Sem a chave, a história segue o padrão; com ela, o número escrito. Nos
+    /// dois casos o pedido não traz aviso nenhum.
+    #[test]
+    fn the_history_moves_follow_the_config_and_the_default_without_a_warning() {
+        let (asked, built) = moves_asked_with(None);
+        assert_eq!(asked, [MOVES_FOLLOWED], "no key: the default");
+        assert!(built.iter().all(|p| p.bad_settings.is_empty()), "{built:?}");
+
+        let (asked, built) = moves_asked_with(Some(r#"{"map": {"historyMoves": 2}}"#));
+        assert_eq!(asked, [2], "the key: its number");
+        assert!(built.iter().all(|p| p.bad_settings.is_empty()), "{built:?}");
+    }
+
+    /// O número inválido — zero, negativo, fração ou texto — cai no padrão, e
+    /// o pedido leva o aviso com a chave e o padrão que valeu, nos dois
+    /// idiomas: a montagem não tem sessão, então quem despacha o pedido diz
+    /// onde o aviso sai.
+    #[test]
+    fn an_invalid_history_moves_falls_back_to_the_default_and_the_request_carries_the_warning() {
+        for bad in ["0", "-3", "1.5", r#""tres""#] {
+            let config = format!(r#"{{"map": {{"historyMoves": {bad}}}}}"#);
+            let (asked, built) = moves_asked_with(Some(&config));
+            assert_eq!(asked, [MOVES_FOLLOWED], "{bad}: the default is what the history follows");
+            assert_eq!(built.len(), 1, "{bad}");
+            let [warning] = built[0].bad_settings.as_slice() else { panic!("{bad}: {:?}", built[0].bad_settings) };
+            assert_eq!(warning.key, "historyMoves", "{bad}");
+            assert!(
+                warning.message.contains("map.historyMoves") && warning.message.contains(&MOVES_FOLLOWED.to_string()),
+                "{bad}: {}",
+                warning.message
+            );
+        }
+    }
+
+    /// Só avisa quando o padrão valeu de fato: o número inválido que o pedido
+    /// nunca leu — nenhuma receita precisou da história além da janela — não
+    /// gera aviso.
+    #[test]
+    fn an_invalid_history_moves_is_not_warned_when_no_recipe_reads_it() {
+        let (dir, log) = project_with_one_large_file();
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), r#"{"map": {"historyMoves": 0}}"#).unwrap();
+        let read = |need: Need<'_>| crate::io::project_map::read_for(root, need);
+        let trace = |_: &str, _: usize| panic!("no recipe reads the history beyond the window");
+        let built = prompts_reading(root, "teste", &log, Locale::PtBr, &Flight::default(), &read, &trace);
+        assert!(built.iter().all(|p| p.bad_settings.is_empty()), "{built:?}");
+    }
+
+    /// A receita guardada serve às ondas seguintes sem ler o número de novo:
+    /// o aviso vai em todo pedido da montagem, e não só no da onda que o leu
+    /// primeiro, porque quem despacha pega só os pedidos das ondas que saem.
+    #[test]
+    fn the_warning_of_an_invalid_history_moves_goes_in_every_request_of_the_assembly() {
+        let (dir, _) = project_with_a_file_older_than_the_window();
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), r#"{"map": {"historyMoves": -1}}"#).unwrap();
+        let log = log_of(&[
+            ("wave", json!({"n": 1, "text": "A onda", "criteria": [], "done_when": "passa"})),
+            ("task", json!({"wave": 1, "text": "Mudar o antigo", "files": [{"path": "src/old.rs"}]})),
+            ("wave", json!({"n": 2, "text": "Outra onda", "criteria": [], "done_when": "passa"})),
+            ("task", json!({"wave": 2, "text": "Mudar o movimentado", "files": [{"path": "src/busy.rs"}]})),
+        ]);
+        let read = |need: Need<'_>| crate::io::project_map::read_for(root, need);
+        let trace = |_: &str, _: usize| false;
+        let built = prompts_reading(root, "teste", &log, Locale::PtBr, &Flight::default(), &read, &trace);
+        assert_eq!(built.iter().map(|p| p.wave).collect::<Vec<_>>(), [1, 2]);
+        for prompt in &built {
+            assert_eq!(prompt.bad_settings.len(), 1, "wave {}: {:?}", prompt.wave, prompt.bad_settings);
+            assert_eq!(prompt.bad_settings[0].key, "historyMoves");
+        }
     }
 
     /// O pedido marca a skill como a revisar pelo que diz a linha dela: `true`

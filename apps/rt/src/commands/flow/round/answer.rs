@@ -873,6 +873,17 @@ pub(super) fn run_entered_round(
     }
     drop(held_lock);
 
+    // O número do `mustard.json` que o pedido de uma onda que saiu agora leu
+    // e não vale: a montagem do pedido não tem sessão, e o aviso sai aqui,
+    // na volta, uma vez por sessão, como o das perguntas do mapa — as duas
+    // guardam a marca pela mesma chave.
+    let mut bad_seen: BTreeSet<&str> = BTreeSet::new();
+    for setting in next.iter().filter_map(|wave| built.iter().find(|p| p.wave == *wave)).flat_map(|p| &p.bad_settings) {
+        if bad_seen.insert(setting.key) && crate::commands::map::first_warning(root, session, setting.key) {
+            warnings.push(json!({ "reason": "bad-setting", "key": setting.key, "hint": setting.message }));
+        }
+    }
+
     // O sinal de vida: a onda em andamento, viva, sem nenhuma ação gravada
     // (pelo observador da cópia, ou, sem ela, a hora do próprio envio) há mais
     // de 40 minutos, sai como aviso — a pausada agora não conta, porque acabou
@@ -1402,6 +1413,93 @@ mod tests {
         assert_eq!(sent[0].str_field("text"), Some(prompt.as_str()));
         assert_eq!(sent[0].wave(), Some(1));
         assert_eq!(dispatched[0]["lines"], json!(sent[0].int("lines")), "the answer keeps the request's size: {out}");
+    }
+
+    /// A obra `x` com a onda 1 em `src/a.rs`, cujo último commit ficou fora
+    /// da janela cheia do mapa — o pedido lê `map.historyMoves` para montar a
+    /// receita do git —, com o `mustard.json` `config`.
+    fn work_reading_the_history_moves(root: &Path, config: &str) {
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        std::fs::write(root.join("mustard.json"), config).unwrap();
+        let commits: Vec<Value> = (0..mustard_core::domain::project_map::MAX_COMMITS)
+            .map(|n| json!({"id": format!("n{n:05}"), "at": 1_789_000_000 + n, "changed": [0]}))
+            .collect();
+        let model = json!({
+            "modules": [{"path": "src/a.rs", "language": "rust", "loc": 30}],
+            "history": {"base": "main", "paths": ["src/busy.rs"], "commits": commits},
+        });
+        mustard_core::io::project_map::write_text(root, &model.to_string()).unwrap();
+    }
+
+    /// Uma rodada da obra `x` na sessão `session`, com o scan de mentira que
+    /// deixa o mapa como está.
+    fn round_in_session(root: &Path, session: Option<&str>) -> Value {
+        let opts = RoundOpts { root: root.to_path_buf(), spec: Some("x".to_string()), report: None };
+        let project = crate::commands::spec_events::project(root);
+        let mine = |_: &Path, _: &Path| Ok(mustard_core::domain::scan::ScanReport::default());
+        match run_round_with_mine(&opts, &project.root, project.lang, Caller { session, config_dir: None }, &mine) {
+            Ok(out) => out,
+            Err(refusal) => refusal.to_value(project.lang),
+        }
+    }
+
+    /// Os avisos de número inválido da resposta da rodada.
+    fn bad_setting_warnings(out: &Value) -> Vec<Value> {
+        let all = out["warnings"].as_array().cloned().unwrap_or_default();
+        all.into_iter().filter(|w| w["reason"] == json!("bad-setting")).collect()
+    }
+
+    /// O pedido da onda que sai lê `map.historyMoves`; o valor inválido — zero,
+    /// negativo ou texto — cai no padrão, e a volta da rodada traz o aviso com
+    /// a chave e o padrão, uma vez só na sessão: a marca é a mesma da pergunta
+    /// do mapa, e a rodada sem sessão avisa sempre. Com o valor certo, ou sem
+    /// a chave, nenhum aviso.
+    #[test]
+    fn the_round_warns_of_an_invalid_history_moves_once_per_session() {
+        let default = mustard_core::domain::project_map::MOVES_FOLLOWED.to_string();
+        for bad in ["0", "-2", "\"dez\""] {
+            let config = format!(r#"{{"map": {{"historyMoves": {bad}}}}}"#);
+
+            // A primeira rodada da sessão avisa e deixa a marca.
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            work_reading_the_history_moves(root, &config);
+            let out = round_in_session(root, Some("sessao-1"));
+            assert_eq!(out["dispatch"].as_array().map(Vec::len), Some(1), "{bad}: {out}");
+            let warned = bad_setting_warnings(&out);
+            assert_eq!(warned.len(), 1, "{bad}: {out}");
+            assert_eq!(warned[0]["key"], json!("historyMoves"), "{bad}: {out}");
+            let hint = warned[0]["hint"].as_str().unwrap_or_default();
+            assert!(hint.contains("map.historyMoves") && hint.contains(&default), "{bad}: {hint}");
+            let marker = root.join(".claude/.session/sessao-1/warned-map-historyMoves");
+            assert!(marker.is_file(), "{bad}: the round leaves the session's mark");
+
+            // A sessão em que a pergunta do mapa já avisou não recebe o aviso
+            // de novo na rodada.
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            work_reading_the_history_moves(root, &config);
+            assert!(crate::commands::map::first_warning(root, Some("sessao-2"), "historyMoves"));
+            let out = round_in_session(root, Some("sessao-2"));
+            assert_eq!(out["dispatch"].as_array().map(Vec::len), Some(1), "{bad}: {out}");
+            assert!(bad_setting_warnings(&out).is_empty(), "{bad}: one warning per session: {out}");
+
+            // Sem sessão conhecida, avisa: calar o valor que não vale é pior.
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            work_reading_the_history_moves(root, &config);
+            let out = round_in_session(root, None);
+            assert_eq!(bad_setting_warnings(&out).len(), 1, "{bad}: {out}");
+        }
+
+        for config in [r#"{"map": {"historyMoves": 2}}"#, "{}"] {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            work_reading_the_history_moves(root, config);
+            let out = round_in_session(root, Some("sessao-3"));
+            assert_eq!(out["dispatch"].as_array().map(Vec::len), Some(1), "{config}: {out}");
+            assert!(bad_setting_warnings(&out).is_empty(), "{config}: {out}");
+        }
     }
 
     /// Uma spec aprovada sem onda nenhuma, com `src/a.rs` e `src/b.rs` no
