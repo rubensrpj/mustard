@@ -24,6 +24,11 @@
 //! item (`replaces`, os alvos de `remove` e `purge`) pode usar o número do
 //! evento ou esse código.
 //!
+//! A linha que o disco cheio cortou no meio e que começa como um evento vira,
+//! na próxima gravação, um registro do tipo [`CUT_LINE_TYPE`], que a leitura
+//! aceita sem aviso e que guarda o pedaço inteiro ([`repair_cut_lines`]). Esse
+//! tipo não está entre os 36 do gravador: só o binário o cria.
+//!
 //! Função pura: sem disco e sem relógio. A trava, a gravação e o caminho do
 //! arquivo moram em `io::spec_events`.
 //!
@@ -48,12 +53,12 @@ pub use codes::code_after;
 pub use line::{render_line, shown_line, stamp};
 pub use message::{check_message, pr_message, MessageRefusal, MESSAGE_BODY_MAX, MESSAGE_TITLE_MAX};
 pub use purge::{purge_excerpts, purge_lines};
-pub use read::{parse_log, Hidden, SkipReason, SkippedLine, SpecEvent, SpecLog, Step, TimeFilter};
+pub use read::{parse_log, repair_cut_lines, Hidden, SkipReason, SkippedLine, SpecEvent, SpecLog, Step, TimeFilter};
 pub use refusal::{ItemPart, Refusal, TaskDeclaration, TASK_TITLE_MAX};
 pub use search::{calls_command, found_by, refresh_search_lines, search_field};
 pub use types::{
-    type_names, type_spec, Block, BlockQuery, EventRef, Field, Kind, ReadQuery, TypeSpec, DELIVERED_MAX_CHARS,
-    METRIC_TYPES, PHASES, TYPES, WORK_KINDS,
+    type_names, type_spec, Block, BlockQuery, EventRef, Field, Kind, ReadQuery, TypeSpec, CUT_LINE_TYPE,
+    DELIVERED_MAX_CHARS, METRIC_TYPES, PHASES, TYPES, WORK_KINDS,
 };
 pub(crate) use types::{opt, req};
 

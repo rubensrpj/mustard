@@ -4,6 +4,7 @@
 
 use std::path::Path;
 
+use mustard_core::io::spec_index::DISCARDED_DIR;
 use mustard_core::io::{fs, project_map};
 use mustard_core::platform::i18n::{translate, Locale};
 
@@ -64,6 +65,8 @@ pub(super) fn check_state_health(claude_dir: &Path) -> CheckResult {
 }
 
 /// Collect the directory names under `.claude/spec/` (flat layout — no buckets).
+/// The folder `run discard` keeps the discarded specs in is an archive, not a
+/// spec: it has no event file of its own, and each spec inside it does.
 fn collect_active_spec_names(claude_dir: &Path) -> Vec<String> {
     // ClaudePaths-exempt: `claude_dir` is already resolved via the seam in
     // `run()`; re-deriving with `for_project` here would be circular.
@@ -73,7 +76,7 @@ fn collect_active_spec_names(claude_dir: &Path) -> Vec<String> {
     };
     entries
         .into_iter()
-        .filter(|e| e.is_dir)
+        .filter(|e| e.is_dir && e.file_name != DISCARDED_DIR)
         .map(|e| e.file_name)
         .collect()
 }
@@ -230,6 +233,25 @@ mod tests {
             "a spec é acusada pelo nome: {:?}",
             result.details
         );
+    }
+
+    /// A pasta em que o `run discard` guarda as specs descartadas não é spec:
+    /// sem arquivo de eventos próprio, ela não é acusada. Uma spec de verdade
+    /// sem o arquivo continua acusada ao lado dela.
+    #[test]
+    fn a_pasta_das_descartadas_nao_e_spec() {
+        let dir = tempdir().unwrap();
+        let claude_dir = dir.path().join(".claude");
+        let specs = claude_dir.join("spec");
+        std::fs::create_dir_all(specs.join(DISCARDED_DIR).join("velha")).unwrap();
+        project_map::write_text(dir.path(), "{}").unwrap();
+        assert_eq!(check_state_health(&claude_dir).status, Status::Ok);
+
+        std::fs::create_dir_all(specs.join("trava")).unwrap();
+        let result = check_state_health(&claude_dir);
+        assert_eq!(result.status, Status::Warn, "{:?}", result.details);
+        assert!(result.details.iter().all(|d| !d.contains(DISCARDED_DIR)), "{:?}", result.details);
+        assert!(result.details.iter().any(|d| d.contains("trava")), "{:?}", result.details);
     }
 
     /// Uma spec com arquivo de eventos não é achado nenhum — e a pasta velha

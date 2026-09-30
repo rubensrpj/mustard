@@ -40,7 +40,9 @@ use std::process::Command;
 
 use mustard_core::domain::config::AgentSettings;
 use mustard_core::platform::i18n::Locale;
-use mustard_core::{footprint_rules, harness_texts, upsert_project, InstallMode, CLAUDE_GITIGNORE, SETTINGS_SEED};
+use mustard_core::{
+    detect_install_mode, footprint_rules, harness_texts, upsert_project, InstallMode, CLAUDE_GITIGNORE, SETTINGS_SEED,
+};
 
 // ---------------------------------------------------------------------------
 // The clone-local exclude file
@@ -101,6 +103,56 @@ fn private_upsert_writes_clone_local_exclude() {
     let second = upsert_project(root, Some("9.9.9"), InstallMode::Private).expect("upsert");
     assert!(second.excluded.is_empty(), "a second run appends nothing: {second:?}");
     assert_eq!(read(&exclude), Some(body), "…and the file is byte-identical");
+}
+
+/// The repository model the scan keeps in `.claude/` (the SQLite file and the
+/// journal it leaves beside it while writing) is Mustard's, not the client's:
+/// a private install hides both, and an exclude file written before the map
+/// moved to that file — the private marks in it, the map rules not — is
+/// completed by the next update, which detects the mode from those marks.
+#[test]
+fn private_install_hides_the_map_and_an_update_completes_an_older_exclude_file() {
+    use mustard_core::io::project_map::{MAP_FILE_NAME, MAP_JOURNAL_FILE_NAME};
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let root = dir.path();
+    init_repo(root);
+    let exclude = exclude_file(root);
+    upsert_project(root, Some("9.9.9"), InstallMode::Private).expect("upsert");
+
+    // The files the scan leaves, exactly as it names them.
+    for name in [MAP_FILE_NAME, MAP_JOURNAL_FILE_NAME] {
+        write(&root.join(".claude").join(name), "SQLite format 3\0");
+    }
+    assert_eq!(git_status(root), "", "git must not see the map nor its journal");
+
+    // The exclude file of an install that predates the map: same marks, same
+    // rules, none for the map.
+    let complete = read(&exclude).expect("the exclude file exists");
+    let older: String = complete
+        .lines()
+        .filter(|line| !line.contains(MAP_FILE_NAME))
+        .map(|line| format!("{line}\n"))
+        .collect();
+    assert_ne!(older, complete, "the fixture really removes the map rules");
+    write(&exclude, &older);
+    assert!(
+        git_status(root).contains(&format!(".claude/{MAP_FILE_NAME}")),
+        "without its rules the map shows to git: {:?}",
+        git_status(root),
+    );
+
+    // An update finds the mode from the marks and gives the rules back.
+    assert_eq!(detect_install_mode(root), InstallMode::Private, "the older file still carries the marks");
+    let updated = upsert_project(root, Some("9.9.9"), detect_install_mode(root)).expect("update");
+    let mut restored = updated.excluded.clone();
+    restored.sort();
+    assert_eq!(
+        restored,
+        footprint_rules().into_iter().filter(|rule| rule.contains(MAP_FILE_NAME)).collect::<Vec<_>>(),
+        "the update appends the map rules and nothing else",
+    );
+    assert_eq!(git_status(root), "", "the map is hidden again");
 }
 
 // ---------------------------------------------------------------------------

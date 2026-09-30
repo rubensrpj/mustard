@@ -444,8 +444,9 @@ pub fn canonical(current: &str, specs: &BTreeMap<String, String>) -> String {
 }
 
 /// Onde o índice `current` difere de `expected`: o nome de cada spec cuja
-/// linha falta, sobra ou é outra, e `#<n>` para cada linha `n` que não se
-/// entende (`#1` quando falta a linha do projeto).
+/// linha falta, sobra ou é outra (o `search` de uma versão anterior vale, veja
+/// `same_line`), e `#<n>` para cada linha `n` que não se entende (`#1` quando
+/// falta a linha do projeto).
 #[must_use]
 pub fn diff(current: &str, expected: &str) -> Vec<String> {
     let (now, want) = (read_lines(current), read_lines(expected));
@@ -455,12 +456,38 @@ pub fn diff(current: &str, expected: &str) -> Vec<String> {
     }
     let names: BTreeSet<&String> = now.specs.keys().chain(want.specs.keys()).collect();
     for name in names {
-        if now.specs.get(name) != want.specs.get(name) {
+        let same = match (now.specs.get(name), want.specs.get(name)) {
+            (Some(have), Some(wanted)) => same_line(have, wanted),
+            (None, None) => true,
+            _ => false,
+        };
+        if !same {
             out.push(name.clone());
         }
     }
     out.extend(now.other.iter().map(|(n, _)| format!("#{n}")));
     out
+}
+
+/// A linha gravada `have` vale pela esperada `wanted`: é a mesma, ou é a
+/// mesma menos o `search`, que os dois trazem. O `search` é derivado do
+/// objetivo, dos títulos e do nome, que a linha já carrega, e o gravado por
+/// uma versão anterior (com as raízes das palavras, por exemplo) continua
+/// valendo, como o do arquivo de eventos: só a linha sem `search` ou com o
+/// resto diferente diverge.
+fn same_line(have: &str, wanted: &str) -> bool {
+    if have == wanted {
+        return true;
+    }
+    let (Ok(Value::Object(mut have)), Ok(Value::Object(mut wanted))) =
+        (serde_json::from_str::<Value>(have), serde_json::from_str::<Value>(wanted))
+    else {
+        return false;
+    };
+    let has_search = |line: &mut Map<String, Value>| {
+        line.remove("search").and_then(|v| v.as_str().map(|s| !s.is_empty())).unwrap_or(false)
+    };
+    has_search(&mut have) && has_search(&mut wanted) && have == wanted
 }
 
 /// O aviso de uma gravação cuja linha no índice não foi refeita: o evento já

@@ -245,23 +245,30 @@ impl LockedLog {
         then: impl FnOnce(&SpecLog),
     ) -> Result<Written, Refusal> {
         let Prepared { mut event, asked, citation_warnings } = prepared;
+        // A linha cortada pelo disco cheio vira registro na memória, antes de
+        // tudo: a gravação, a conferência e o arquivo que sai partem do
+        // arquivo já consertado, e uma recusa deixa o arquivo como estava.
+        let repaired = repaired_base(&self.content, &self.log);
+        let (base_content, base_log) = repaired.as_ref().map_or((&self.content, &self.log), |(c, l)| (c, l));
         // O `last` de uma cópia da página da spec nunca aponta além do que o
         // arquivo tem: um número maior, de uma pasta de cópia velha ou de um
         // pedido errado, é trocado pelo último item do arquivo, sem recusa —
         // senão a cópia seguinte pularia os itens até esse número para sempre.
         if event_type == "copy"
             && let Some(last) = event.get("last").and_then(Value::as_u64)
-            && last > self.log.max_id()
+            && last > base_log.max_id()
         {
-            event.insert("last".to_string(), Value::from(self.log.max_id()));
+            event.insert("last".to_string(), Value::from(base_log.max_id()));
         }
         // O arquivo como ficaria, conferido antes de qualquer escrita.
         let Staged { next, appended, after, id, code, effects } =
-            stage(&self.content, &self.log, event, asked, at, find)?;
-        guard(&self.log, &after)?;
+            stage(base_content, base_log, event, asked, at, find)?;
+        guard(base_log, &after)?;
         match appended {
-            Some(added) => self.file.append_line(&added).map_err(io_refusal)?,
-            None => self.file.replace(next.as_bytes()).map_err(io_refusal)?,
+            // O arquivo consertado é regravado inteiro; sem conserto, só
+            // acrescenta a linha.
+            Some(added) if repaired.is_none() => self.file.append_line(&added).map_err(io_refusal)?,
+            _ => self.file.replace(next.as_bytes()).map_err(io_refusal)?,
         }
         self.content = next;
         self.log = after;
@@ -286,6 +293,15 @@ impl LockedLog {
         then(log);
         Ok(Written { id, code, removed: effects.removed, purged: effects.purged, index_warning, citation_warnings })
     }
+}
+
+/// O arquivo `content`, lido como `log`, com as linhas cortadas trocadas por
+/// registros ([`model::repair_cut_lines`]), e a leitura dele; `None` quando
+/// nenhuma linha pede o conserto.
+fn repaired_base(content: &str, log: &SpecLog) -> Option<(String, SpecLog)> {
+    let repaired = model::repair_cut_lines(content, log)?;
+    let log = model::parse_log(&repaired);
+    Some((repaired, log))
 }
 
 /// O evento conferido sozinho, antes de a trava ser pega.
@@ -414,8 +430,10 @@ impl<'a> DryRun<'a> {
         guard: impl FnOnce(&SpecLog, &SpecLog) -> Result<(), Refusal>,
     ) -> Result<(), Refusal> {
         let Prepared { event, asked, .. } = prepare(event_type, draft, &self.cite_roots)?;
-        let staged = stage(&self.content, &self.log, event, asked, &now(), self.find)?;
-        guard(&self.log, &staged.after)?;
+        let repaired = repaired_base(&self.content, &self.log);
+        let (base_content, base_log) = repaired.as_ref().map_or((&self.content, &self.log), |(c, l)| (c, l));
+        let staged = stage(base_content, base_log, event, asked, &now(), self.find)?;
+        guard(base_log, &staged.after)?;
         self.content = staged.next;
         self.log = staged.after;
         Ok(())
@@ -763,9 +781,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("spec.ndjson");
         put(&path, &[], "message", &at("10:00"), json!({"author": "user", "text": "antes"}));
-        // The machine went down in the middle of the second write.
+        // The machine went down in the middle of the second write, and what is
+        // left does not start as an event line ("v" is missing): it stays as
+        // it is.
         let mut torn = std::fs::read_to_string(&path).unwrap();
-        torn.push_str(r#"{"v":1,"id":2,"at":"2026-09-11T10:01"#);
+        torn.push_str(r#"{"id":2,"at":"2026-09-11T10:01"#);
         std::fs::write(&path, &torn).unwrap();
 
         let after = put(&path, &[], "message", &at("10:02"), json!({"author": "user", "text": "depois"}));
@@ -779,6 +799,177 @@ mod tests {
         assert_eq!((log.skipped[0].line, log.skipped[0].reason), (2, SkipReason::Unreadable));
         let warning = log.skipped[0].message(crate::platform::i18n::Locale::PtBr);
         assert!(warning.contains("linha 2") && warning.contains("pulada"), "{warning}");
+    }
+
+    /// O arquivo de uma spec com três eventos, a linha 4 cortada pelo disco
+    /// cheio e dois eventos gravados depois dela: como a gravação seguinte a
+    /// um disco cheio o deixa. Devolve o caminho, o pedaço cortado e o texto
+    /// do arquivo.
+    fn spec_with_a_cut_line(dir: &Path, piece: &str) -> (PathBuf, String) {
+        let path = dir.join("spec.ndjson");
+        seed_message(&path);
+        put(&path, &[], "note", &at("09:01"), json!({"text": "um", "keys": ["k"], "origin": 1}));
+        put(&path, &[], "note", &at("09:02"), json!({"text": "dois", "keys": ["k"], "origin": 1}));
+        let tail = |id: u64, code: &str, hm: &str, text: &str| {
+            let event = model::normalize(obj(json!({"author": "user", "text": text})), "message");
+            format!("{}\n", model::render_line(&model::stamp(event, id, Some(code), &at(hm))))
+        };
+        let mut raw = std::fs::read_to_string(&path).unwrap();
+        raw.push_str(&format!("{piece}\n"));
+        raw.push_str(&tail(5, "MSTD-MSG-0002", "09:05", "depois do corte"));
+        raw.push_str(&tail(6, "MSTD-MSG-0003", "09:06", "e mais uma"));
+        std::fs::write(&path, &raw).unwrap();
+        (path, raw)
+    }
+
+    /// A linha cortada pelo disco cheio, que começa como um evento, vira um
+    /// registro que se lê na gravação seguinte: o mesmo número, o código e a
+    /// hora que o pedaço traz, o autor do binário e o pedaço todo. Nenhum
+    /// outro evento muda, o arquivo não avisa mais, e o número do código da
+    /// linha cortada não é dado de novo.
+    #[test]
+    fn a_line_cut_by_a_full_disk_becomes_a_record_on_the_next_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let piece = r#"{"v":1,"id":4,"code":"MSTD-NOTE-0003","at":"2026-09-11T09:03:00-03:00","type":"note","text":"meio da fra"#;
+        let (path, before) = spec_with_a_cut_line(dir.path(), piece);
+        let old = read(&path).unwrap().unwrap();
+        assert_eq!(old.skipped.len(), 1, "the file warns before the write: {:?}", old.skipped);
+
+        let written = put(&path, &[], "note", &at("09:07"), json!({"text": "tres", "keys": ["k"], "origin": 1}));
+
+        let log = read(&path).unwrap().unwrap();
+        assert!(log.skipped.is_empty(), "no warning after the write: {:?}", log.skipped);
+        assert_eq!(log.events.iter().map(|e| e.id).collect::<Vec<_>>(), [1, 2, 3, 4, 5, 6, 7], "the numbers stay in order");
+        let record = log.get(4).unwrap();
+        assert_eq!(record.event_type, model::CUT_LINE_TYPE);
+        assert_eq!(record.str_field("piece"), Some(piece), "the whole piece is kept");
+        assert_eq!(record.str_field("code"), Some("MSTD-NOTE-0003"));
+        assert_eq!(record.at(), "2026-09-11T09:03:00-03:00");
+        assert_eq!(record.str_field("author"), Some("binary"));
+        assert_eq!(record.line, 4, "replaced in place");
+
+        // The neighbours are the very same events, and every other line is byte-equal.
+        for id in [1, 2, 3, 5, 6] {
+            assert_eq!(log.get(id), old.get(id), "event {id} did not change");
+        }
+        let now = std::fs::read_to_string(&path).unwrap();
+        let (was, is): (Vec<&str>, Vec<&str>) = (before.lines().collect(), now.lines().collect());
+        assert_eq!(is.len(), was.len() + 1, "only the new event is a new line");
+        for (n, line) in was.iter().enumerate().filter(|(n, _)| *n != 3) {
+            assert_eq!(is[n], *line, "line {} is untouched", n + 1);
+        }
+        assert_eq!(is[3], model::render_line(&record.fields));
+
+        // The number the cut line carried stays with it: the new note is the next one.
+        assert_eq!(written.id, 7);
+        assert_eq!(written.code.as_deref(), Some("MSTD-NOTE-0004"));
+        assert_eq!(log.codes()[&4], "MSTD-NOTE-0003", "the code finds the record");
+    }
+
+    /// Do pedaço cortado só entra o que veio por inteiro: o código e a hora
+    /// cortados no meio ficam de fora, e o registro traz o número e o pedaço.
+    #[test]
+    fn the_record_of_a_cut_line_carries_only_what_the_piece_has_whole() {
+        for (piece, code, at_field) in [
+            (r#"{"v":1,"id":4,"code":"MSTD-NOTE-0003","at":"2026-09-11T09:03"#, Some("MSTD-NOTE-0003"), None),
+            (r#"{"v":1,"id":4,"code":"MSTD-NO"#, None, None),
+            (r#"{"v":1,"id":4,"at":"2026-09-11T09:03:00-03:00","ty"#, None, Some("2026-09-11T09:03:00-03:00")),
+            (r#"{"v":1,"id":4,"#, None, None),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let (path, _) = spec_with_a_cut_line(dir.path(), piece);
+            put(&path, &[], "note", &at("09:07"), json!({"text": "tres", "keys": ["k"], "origin": 1}));
+            let log = read(&path).unwrap().unwrap();
+            assert!(log.skipped.is_empty(), "{piece}: {:?}", log.skipped);
+            let record = log.get(4).unwrap();
+            assert_eq!(record.event_type, model::CUT_LINE_TYPE, "{piece}");
+            assert_eq!(record.str_field("code"), code, "{piece}");
+            assert_eq!(record.str_field("at"), at_field, "{piece}");
+            assert_eq!(record.str_field("piece"), Some(piece));
+        }
+    }
+
+    /// A linha que não começa como um evento, a que pode ter perdido dígitos
+    /// do número e a que repete o número de um evento que se lê ficam como
+    /// estão, com o aviso.
+    #[test]
+    fn a_broken_line_that_does_not_start_as_an_event_is_left_alone() {
+        for piece in [
+            r#"{"v":1,"id":41"#,
+            r#"{"id":4,"at":"2026-09-11T09:03:00-03:00","ty"#,
+            r#"{"v":1,"id":2,"at":"2026-09-11T09:03:00-03:00","ty"#,
+            r#"lixo qualquer"#,
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let (path, before) = spec_with_a_cut_line(dir.path(), piece);
+            put(&path, &[], "note", &at("09:07"), json!({"text": "tres", "keys": ["k"], "origin": 1}));
+            let log = read(&path).unwrap().unwrap();
+            assert_eq!(log.skipped.len(), 1, "{piece}: the line is still skipped");
+            assert_eq!(log.skipped[0].line, 4);
+            let now = std::fs::read_to_string(&path).unwrap();
+            assert_eq!(now.lines().nth(3), Some(piece), "the line is untouched");
+            assert!(now.starts_with(&before), "{piece}: the write only appended");
+        }
+    }
+
+    /// A conferência sem gravar parte do arquivo já consertado, como a
+    /// gravação de verdade: o arquivo em disco não muda, e o que ela vê depois
+    /// da gravação conferida não tem linha pulada.
+    #[test]
+    fn a_dry_run_sees_the_cut_line_repaired_and_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let piece = r#"{"v":1,"id":4,"code":"MSTD-NOTE-0003","at":"2026-09-11T09:03:00-03:00","type":"note","te"#;
+        let (path, before) = spec_with_a_cut_line(dir.path(), piece);
+        let find = |_: &str| Vec::new();
+
+        let mut dry = DryRun::open(&path, Vec::new(), &find).unwrap();
+        assert_eq!(dry.log().skipped.len(), 1);
+        dry.write("note", obj(json!({"text": "tres", "keys": ["k"], "origin": 1})), |before, after| {
+            assert_eq!((before.skipped.len(), after.events.len() - before.events.len()), (0, 1));
+            Ok(())
+        })
+        .unwrap();
+        assert!(dry.log().skipped.is_empty());
+        assert_eq!(dry.log().get(4).map(|e| e.event_type.as_str()), Some(model::CUT_LINE_TYPE));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before, "a dry run never writes");
+    }
+
+    /// A gravação recusada deixa o arquivo como estava, com a linha cortada
+    /// por consertar; a que passa conserta e grava de uma vez.
+    #[test]
+    fn a_refused_write_leaves_the_cut_line_unrepaired() {
+        let dir = tempfile::tempdir().unwrap();
+        let piece = r#"{"v":1,"id":4,"code":"MSTD-NOTE-0003","at":"2026-09-11T09:03:00-03:00","type":"note","te"#;
+        let (path, before) = spec_with_a_cut_line(dir.path(), piece);
+
+        let refused = write_guarded(
+            &path,
+            "note",
+            obj(json!({"text": "tres", "keys": ["k"], "origin": 1})),
+            &[],
+            &|_| Vec::new(),
+            |_, _| Err(Refusal::Io { detail: "recusada".into() }),
+            |_| {},
+        );
+        assert!(refused.is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before, "a refusal never touches the file");
+        assert_eq!(read(&path).unwrap().unwrap().skipped.len(), 1);
+
+        let mut seen = None;
+        write_guarded(
+            &path,
+            "note",
+            obj(json!({"text": "tres", "keys": ["k"], "origin": 1})),
+            &[],
+            &|_| Vec::new(),
+            |before, after| {
+                seen = Some((before.skipped.len(), after.skipped.len(), after.events.len() - before.events.len()));
+                Ok(())
+            },
+            |_| {},
+        )
+        .unwrap();
+        assert_eq!(seen, Some((0, 0, 1)), "the check sees the repaired file before and after, one event apart");
     }
 
     #[test]

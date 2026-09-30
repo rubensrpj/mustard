@@ -776,4 +776,49 @@ mod tests {
         let empty = tempfile::tempdir().unwrap();
         assert!(read(empty.path()).is_empty() && read_specs(empty.path()).is_empty());
     }
+
+    /// A linha do índice como o gravador a deixou, com o `search` trocado por
+    /// `search` (`None` tira o campo) e o objetivo por `goal`, se vier.
+    fn edit_index_line(root: &Path, spec: &str, search: Option<&str>, goal: Option<&str>) {
+        let raw = std::fs::read_to_string(index_file(root)).unwrap();
+        let edited: Vec<String> = raw
+            .lines()
+            .map(|line| {
+                if !line.contains(&format!("\"name\":\"{spec}\"")) {
+                    return line.to_string();
+                }
+                let mut value: Value = serde_json::from_str(line).unwrap();
+                let map = value.as_object_mut().unwrap();
+                match search {
+                    Some(search) => map.insert("search".into(), json!(search)),
+                    None => map.remove("search"),
+                };
+                if let Some(goal) = goal {
+                    map.insert("goal".into(), json!(goal));
+                }
+                model::render_line(map)
+            })
+            .collect();
+        std::fs::write(index_file(root), format!("{}\n", edited.join("\n"))).unwrap();
+    }
+
+    /// O `search` que uma versão anterior gravou na linha do índice, com as
+    /// raízes das palavras, continua valendo: a auditoria não acusa a spec. A
+    /// linha sem o `search`, ou com o objetivo de outra, segue acusada.
+    #[test]
+    fn a_search_written_by_an_older_version_is_not_a_divergence() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        two_specs(root);
+        assert!(divergence(root).unwrap().diverged.is_empty());
+
+        edit_index_line(root, "trava", Some("trav confer program barr coman"), None);
+        assert!(divergence(root).unwrap().diverged.is_empty(), "the older form of the field stands");
+
+        edit_index_line(root, "trava", None, None);
+        assert_eq!(divergence(root).unwrap().diverged, ["trava"], "a line without the field diverges");
+
+        edit_index_line(root, "trava", Some("trav confer program"), Some("Outro objetivo."));
+        assert_eq!(divergence(root).unwrap().diverged, ["trava"], "a line with another goal diverges");
+    }
 }

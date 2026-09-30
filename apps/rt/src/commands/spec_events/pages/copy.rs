@@ -136,7 +136,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use mustard_core::domain::spec_events::{BlockQuery, Hidden, Refusal, SpecEvent, SpecLog, PURGED_MARK};
+use mustard_core::domain::spec_events::{BlockQuery, Hidden, Refusal, SpecEvent, SpecLog, CUT_LINE_TYPE, PURGED_MARK};
 use mustard_core::domain::spec_index::{is_template, project_page, published_to, ProjectRow, PROJECT_PAGE, SPEC_PAGE};
 use mustard_core::domain::spec_state::PhaseWriter;
 use mustard_core::io::spec_events as store;
@@ -635,12 +635,15 @@ fn body_of(event: &SpecEvent) -> Option<Value> {
     (!holds_secret(&body)).then_some(body)
 }
 
-/// A linha que a cópia nunca leva: o registro interno, a linha que o formato
-/// antigo do expurgo esvaziou, que saiu da leitura, e a volta que o próprio
-/// agente gravou (`returned`), que a página só conhece pela versão oficial
-/// que a rodada ou o fechamento grava no lugar dela.
+/// A linha que a cópia nunca leva: o registro interno, o registro da linha
+/// cortada pelo disco cheio (o pedaço dele pode ser de qualquer tipo de item,
+/// mas não é item de trabalho), a linha que o formato antigo do expurgo
+/// esvaziou, que saiu da leitura, e a volta que o próprio agente gravou
+/// (`returned`), que a página só conhece pela versão oficial que a rodada ou o
+/// fechamento grava no lugar dela.
 fn never_copied(event: &SpecEvent, log_hidden: &std::collections::BTreeMap<u64, Hidden>) -> bool {
     LEFT_OUT.contains(&event.event_type.as_str())
+        || event.event_type == CUT_LINE_TYPE
         || matches!(log_hidden.get(&event.id), Some(Hidden::Purged { .. }))
         || event.returned()
 }
@@ -3214,6 +3217,25 @@ mod tests {
              (8 turnos por tarefa).",
             "{line}"
         );
+    }
+
+    /// O registro que toma o lugar da linha cortada pelo disco cheio fica
+    /// fora da cópia da página, mesmo guardando o pedaço de um item: só os
+    /// itens de trabalho vão para o banco.
+    #[test]
+    fn the_record_of_a_cut_line_never_goes_to_the_page_copy() {
+        let log = mustard_core::domain::spec_events::parse_log(
+            "{\"v\":1,\"id\":1,\"at\":\"2026-09-19T09:00:00-03:00\",\"type\":\"note\",\"text\":\"um\",\"keys\":[\"k\"]}\n\
+             {\"v\":1,\"id\":2,\"code\":\"MSTD-NOTE-0002\",\"at\":\"2026-09-19T09:01:00-03:00\",\"type\":\"cut_line\",\
+             \"author\":\"binary\",\"piece\":\"{\\\"v\\\":1,\\\"id\\\":2,\\\"type\\\":\\\"note\\\",\\\"text\\\":\\\"meio\"}\n\
+             {\"v\":1,\"id\":3,\"at\":\"2026-09-19T09:02:00-03:00\",\"type\":\"note\",\"text\":\"tres\",\"keys\":[\"k\"]}\n",
+        );
+        assert!(log.skipped.is_empty(), "{:?}", log.skipped);
+        assert_eq!(log.get(2).map(|e| e.event_type.as_str()), Some("cut_line"));
+        let ids: Vec<u64> = items_after(&log, 0).into_iter().map(|(id, _)| id).collect();
+        assert_eq!(ids, [1, 3], "the record is not a work item");
+        assert_eq!(dirty_ranges(&log, 0).len(), 1);
+        assert_eq!(range_items(&log, 0).into_iter().map(|(id, _)| id).collect::<Vec<_>>(), [1, 3]);
     }
 
     /// Sem nenhum token registrado ainda, a linha do gasto fica de fora.

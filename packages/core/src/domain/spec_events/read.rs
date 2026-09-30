@@ -11,7 +11,7 @@ use crate::platform::i18n::{translate, Locale};
 use super::check::GIVES_BACK_FIELD;
 use super::search::found_by;
 use crate::domain::normalize::Languages;
-use super::{shown_line, type_spec, Block, BlockQuery, METRIC_TYPES, PURGED_FIELD};
+use super::{render_line, shown_line, type_spec, Block, BlockQuery, CUT_LINE_TYPE, FORMAT_VERSION, METRIC_TYPES, PURGED_FIELD};
 
 /// Um evento lido do arquivo.
 #[derive(Debug, Clone, PartialEq)]
@@ -278,6 +278,79 @@ fn id_hint(raw: &str) -> Option<u64> {
     let rest = raw[at + 4..].trim_start().strip_prefix(':')?.trim_start();
     let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
     digits.parse().ok()
+}
+
+/// O arquivo `content`, lido como `log`, com cada linha cortada trocada, no
+/// lugar, por um registro que se lê. Cortada é a linha que não se entende e
+/// começa como um evento, `{"v":1,"id":N` com o número inteiro: o disco cheio
+/// parou a gravação no meio dela. O registro é do tipo [`CUT_LINE_TYPE`], com
+/// o mesmo número, o `code` e o `at` quando o pedaço os traz por inteiro, o
+/// autor `binary` e o pedaço todo em `piece`. Nenhuma outra linha muda, nem um
+/// byte, e nenhum evento muda de número. A linha que não começa assim fica
+/// como está, e a que tem o número de um evento que se lê também: trocar uma
+/// pela outra repetiria o número. `None` quando nenhuma linha pede o conserto.
+#[must_use]
+pub fn repair_cut_lines(content: &str, log: &SpecLog) -> Option<String> {
+    let mut lines: Vec<String> = content.split('\n').map(str::to_string).collect();
+    let mut taken: BTreeSet<u64> = log.events.iter().map(|e| e.id).collect();
+    let mut changed = false;
+    for skipped in log.skipped.iter().filter(|s| s.reason == SkipReason::Unreadable) {
+        let Some(slot) = skipped.line.checked_sub(1).and_then(|i| lines.get_mut(i)) else { continue };
+        let carriage_return = slot.ends_with('\r');
+        let piece = slot.trim_end_matches('\r');
+        let Some((id, record)) = cut_record(piece) else { continue };
+        if !taken.insert(id) {
+            continue;
+        }
+        let mut repaired = render_line(&record);
+        if carriage_return {
+            repaired.push('\r');
+        }
+        *slot = repaired;
+        changed = true;
+    }
+    changed.then(|| lines.join("\n"))
+}
+
+/// O número e o registro que tomam o lugar da linha cortada `piece`; `None`
+/// quando ela não começa como um evento ou quando o número pode estar
+/// incompleto — o pedaço que para logo depois dos dígitos pode ter perdido
+/// algum, e o número errado repetiria o de outro evento.
+fn cut_record(piece: &str) -> Option<(u64, Map<String, Value>)> {
+    let rest = piece.strip_prefix(&format!("{{\"v\":{FORMAT_VERSION},\"id\":"))?;
+    let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+    if digits == 0 || digits == rest.len() {
+        return None;
+    }
+    let id = rest[..digits].parse::<u64>().ok().filter(|n| *n > 0)?;
+    let mut tail = &rest[digits..];
+    let mut record = Map::new();
+    record.insert("v".into(), Value::from(FORMAT_VERSION));
+    record.insert("id".into(), Value::from(id));
+    if let Some(code) = leading_string(&mut tail, "code").filter(|code| crate::domain::mustard_id::is_id(code)) {
+        record.insert("code".into(), Value::String(code));
+    }
+    if let Some(at) = leading_string(&mut tail, "at").filter(|at| chrono::DateTime::parse_from_rfc3339(at).is_ok()) {
+        record.insert("at".into(), Value::String(at));
+    }
+    record.insert("type".into(), Value::from(CUT_LINE_TYPE));
+    record.insert("author".into(), Value::from("binary"));
+    record.insert("piece".into(), Value::String(piece.to_string()));
+    Some((id, record))
+}
+
+/// O valor de texto do campo `key` quando `tail` começa por ele
+/// (`,"key":"valor"`), com o fecho das aspas dentro do pedaço; `tail` avança
+/// para depois dele. Um valor com barra ou cortado no meio não conta.
+fn leading_string(tail: &mut &str, key: &str) -> Option<String> {
+    let after = tail.strip_prefix(&format!(",\"{key}\":\""))?;
+    let end = after.find('"')?;
+    let value = &after[..end];
+    if value.contains('\\') {
+        return None;
+    }
+    *tail = &after[end + 1..];
+    Some(value.to_string())
 }
 
 impl SpecLog {
@@ -1001,5 +1074,37 @@ mod tests {
         assert_eq!(log.events.len(), 2);
         assert!(log.skipped.is_empty());
         assert_eq!(log.events[1].block(), None, "an unknown type belongs to no block");
+    }
+
+    /// A linha cortada que começa como um evento é trocada no lugar; a linha
+    /// com fim `\r\n` guarda o `\r`, o arquivo sem `\n` no fim continua sem, e
+    /// duas linhas cortadas com o mesmo número não repetem o número.
+    #[test]
+    fn repairing_replaces_each_cut_line_in_place_and_never_repeats_a_number() {
+        let first = r#"{"v":1,"id":2,"code":"MSTD-RULE-0002","at":"2026-09-12T10:00:00-03:00","type":"ru"#;
+        let again = r#"{"v":1,"id":2,"code":"MSTD-RULE-0002","at":"2026-09-12T10:00:00-03:00","type":"r"#;
+        let content = format!(
+            "{{\"v\":1,\"id\":1,\"type\":\"note\",\"text\":\"um\"}}\r\n{first}\r\n{again}\n{{\"v\":1,\"id\":9,\"type\":\"note\"}}"
+        );
+        let log = parse_log(&content);
+        assert_eq!(log.skipped.len(), 2, "{:?}", log.skipped);
+
+        let repaired = repair_cut_lines(&content, &log).expect("a cut line is repaired");
+        let lines: Vec<&str> = repaired.split('\n').collect();
+        assert_eq!(lines.len(), 4, "no line appears or goes");
+        assert_eq!(lines[0], content.split('\n').next().unwrap(), "the first line is byte-equal");
+        assert!(lines[1].ends_with('\r'), "the line ending stays: {:?}", lines[1]);
+        assert_eq!(lines[2], again, "the second cut line with the same number is left alone");
+        assert_eq!(lines[3], content.split('\n').nth(3).unwrap(), "the last line is byte-equal, still without a newline");
+
+        let again_log = parse_log(&repaired);
+        let record = again_log.get(2).expect("the record has the number of the cut line");
+        assert_eq!(
+            (record.event_type.as_str(), record.line, record.str_field("piece")),
+            (CUT_LINE_TYPE, 2, Some(first)),
+        );
+        assert_eq!(again_log.skipped.len(), 1, "only the repeated number stays skipped");
+        assert_eq!(repair_cut_lines(&repaired, &again_log), None, "nothing else to repair");
+        assert_eq!(repair_cut_lines("", &parse_log("")), None);
     }
 }

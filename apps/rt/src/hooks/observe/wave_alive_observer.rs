@@ -11,11 +11,14 @@
 //! dele —, num arquivo por vaga sob a pasta da spec. Ele não lê o registro
 //! da spec: a rodada ([`crate::commands::flow::round::queue`]) acha a vaga de
 //! cada onda pela cópia gravada no envio e lê essa hora para avisar quando
-//! uma onda passa 40 minutos sem nenhuma.
+//! uma onda passa 40 minutos sem nenhuma. Só grava em spec que existe, isto
+//! é, que já tem o arquivo de eventos: pasta sem ele, ou que nem existe, não
+//! ganha o carimbo nem a pasta `waves`.
 
 use std::path::{Path, PathBuf};
 
 use mustard_core::domain::model::contract::{Ctx, HookInput, Observer, Trigger};
+use mustard_core::io::claude_paths::ClaudePaths;
 use mustard_core::io::fs;
 use mustard_core::io::wave_prompt::{copies_dir, shown};
 use serde_json::Value;
@@ -95,7 +98,10 @@ impl Observer for WaveAliveObserver {
         }
         let root = ctx.workspace_root.clone().unwrap_or_else(|| PathBuf::from(ctx.project_dir_or_cwd(input)));
         let Some((spec, slot)) = slot_of_call(&root, input) else { return };
-        if !root.join(".claude").join("spec").join(&spec).is_dir() {
+        let has_events = ClaudePaths::for_project(&root)
+            .and_then(|paths| paths.for_spec(&spec))
+            .is_ok_and(|paths| paths.spec_ndjson_path().is_file());
+        if !has_events {
             return;
         }
         let now = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%:z").to_string();
@@ -127,10 +133,13 @@ mod tests {
         }
     }
 
-    /// Um projeto com a pasta da spec `x`, onde o sinal de vida grava.
+    /// Um projeto com a spec `x`, a pasta dela e o arquivo de eventos, onde o
+    /// sinal de vida grava.
     fn project() -> tempfile::TempDir {
         let dir = tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join(".claude").join("spec").join("x")).unwrap();
+        let spec = dir.path().join(".claude").join("spec").join("x");
+        std::fs::create_dir_all(&spec).unwrap();
+        std::fs::write(spec.join("spec.ndjson"), "").unwrap();
         dir
     }
 
@@ -166,6 +175,31 @@ mod tests {
 
         assert!(!root.join(".claude").join("spec").join("x").join("waves").exists(), "nothing under the spec");
         assert!(!root.join(".claude").join("spec").join("sumiu").exists(), "no folder for a missing spec");
+    }
+
+    /// A pasta de spec sem o arquivo de eventos não é spec: a chamada dentro
+    /// de uma vaga dela não grava o carimbo nem cria a pasta `waves`. A que
+    /// nem existe segue sem pasta. Com o arquivo de eventos, grava.
+    #[test]
+    fn a_spec_folder_without_an_event_file_gets_no_stamp() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let specs = root.join(".claude").join("spec");
+        std::fs::create_dir_all(specs.join("solta")).unwrap();
+        let observe = |spec: &str| {
+            let copy = slot_path(root, spec, 0);
+            WaveAliveObserver.observe(&input_with_cwd(&copy), &ctx(root.to_str().unwrap(), Trigger::PostToolUse));
+        };
+
+        observe("solta");
+        observe("sumiu");
+        assert!(!specs.join("solta").join("waves").exists(), "the folder without events got no waves folder");
+        assert!(!alive_path(root, "solta", "a").exists());
+        assert!(!specs.join("sumiu").exists(), "a missing spec gets no folder");
+
+        std::fs::write(specs.join("solta").join("spec.ndjson"), "").unwrap();
+        observe("solta");
+        assert!(alive_path(root, "solta", "a").exists(), "the same folder with its event file gets the stamp");
     }
 
     /// O agente de onda lê e edita pelo caminho, sem mudar de pasta: a pasta

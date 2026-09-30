@@ -7,7 +7,7 @@ use serde_json::{Map, Value};
 
 use crate::domain::mustard_id;
 
-use super::{type_spec, SpecEvent, SpecLog};
+use super::{type_spec, SpecEvent, SpecLog, CUT_LINE_TYPE, TYPES};
 
 impl SpecLog {
     /// O código de cada evento, `MSTD-<sigla>-<NNNN>`, pelo número do evento.
@@ -60,8 +60,14 @@ impl SpecLog {
 
 /// O código gravado numa linha, como sigla e número, quando ele tem o formato
 /// e a sigla do tipo da linha. Um código de outro tipo ou fora do formato
-/// conta como ausente.
+/// conta como ausente. O registro da linha cortada ([`CUT_LINE_TYPE`]) guarda
+/// o código da linha que tomou o lugar, seja qual for o tipo dela: o número
+/// segue dado, nenhum item o recebe de novo, e o código acha o registro.
 fn recorded_code(event: &SpecEvent) -> Option<(&'static str, u64)> {
+    if event.event_type == CUT_LINE_TYPE {
+        let (kind, n) = mustard_id::parse(event.str_field("code")?.trim())?;
+        return TYPES.iter().find(|t| t.code == kind).map(|t| (t.code, n));
+    }
     let spec = type_spec(&event.event_type)?;
     let (kind, n) = mustard_id::parse(event.str_field("code")?.trim())?;
     (kind == spec.code).then_some((spec.code, n))
@@ -196,5 +202,25 @@ mod tests {
         content.push_str(&coded(8, "rule", "MSTD-RULE-0006", ""));
         let after = parse_log(&content).codes();
         assert_eq!((after[&2].as_str(), after[&7].as_str()), ("MSTD-RULE-0004", "MSTD-RULE-0005"));
+    }
+
+    /// O registro da linha cortada guarda o código que a linha trazia, seja
+    /// qual for o tipo dela: o número não é dado de novo, e o código acha o
+    /// registro. O código de uma sigla que nenhum tipo tem não conta.
+    #[test]
+    fn the_record_of_a_cut_line_keeps_the_code_of_the_line_it_replaced() {
+        let content = [
+            line(1, "rule", ",\"code\":\"MSTD-RULE-0001\",\"text\":\"a\""),
+            line(2, "cut_line", ",\"code\":\"MSTD-RULE-0002\",\"piece\":\"{...\""),
+            line(3, "cut_line", ",\"code\":\"MSTD-ZZZZ-0009\",\"piece\":\"{...\""),
+            line(4, "cut_line", ",\"piece\":\"{...\""),
+        ]
+        .concat();
+        let log = parse_log(&content);
+        let codes = log.codes();
+        assert_eq!(codes[&2], "MSTD-RULE-0002", "the record answers to the code of the lost line");
+        assert!(!codes.contains_key(&3) && !codes.contains_key(&4), "no code from a foreign or missing one: {codes:?}");
+        let next = obj(json!({"type": "rule", "text": "c"}));
+        assert_eq!(code_after(&log, &next).as_deref(), Some("MSTD-RULE-0003"), "the number 2 never returns");
     }
 }

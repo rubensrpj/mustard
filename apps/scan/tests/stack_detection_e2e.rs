@@ -127,3 +127,40 @@ fn stack_detection_e2e_django_converges_path_and_code_classes_at_medium_confiden
     assert!(!sigs.iter().any(|s| s.starts_with("dep:")), "no dep signals expected: {sigs:?}");
 
 }
+
+/// A Rust project whose strings quote what a PHP or Dart framework looks like
+/// (the registry itself and the tests of an inference do) is not a PHP or a
+/// Dart project: the scan detects no stack, in the repo and in its unit, and
+/// still detects one when a file of the stack's language is there.
+#[test]
+fn stack_detection_e2e_words_of_another_language_inside_rust_strings_detect_no_stack() {
+    let project = tempfile::Builder::new().prefix("scan-stacks-quoted-").tempdir().unwrap();
+    let write = |rel: &str, text: &str| {
+        let path = project.path().join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    };
+    write("Cargo.toml", "[package]\nname = \"quoted\"\nversion = \"0.1.0\"\nedition = \"2021\"\n");
+    write(
+        "src/lib.rs",
+        "pub const LARAVEL: &str = \"class PostController extends Controller\";\n\
+         pub const FLUTTER: &str = \"import 'package:flutter/material.dart';\";\n",
+    );
+
+    let out = tempfile::Builder::new().prefix("scan-stacks-quoted-map-").tempdir().unwrap();
+    let (v, _) = model::scan(project.path(), out.path(), &[]);
+    let stacks = v["detected_stacks"].as_array().expect("model carries detected_stacks");
+    assert!(stacks.is_empty(), "no stack from Rust strings: {stacks:?}");
+    for unit in v["projects"].as_array().expect("model carries projects") {
+        let unit_stacks = unit["detected_stacks"].as_array().expect("unit carries detected_stacks");
+        assert!(unit_stacks.is_empty(), "no stack in unit {}: {unit_stacks:?}", unit["dir"]);
+    }
+
+    // The same words in a file of the stack's own language do count.
+    write("src/Http/PostController.php", "<?php\nclass PostController extends Controller {}\n");
+    let out = tempfile::Builder::new().prefix("scan-stacks-quoted-php-").tempdir().unwrap();
+    let (v, _) = model::scan(project.path(), out.path(), &[]);
+    let names: Vec<&str> =
+        v["detected_stacks"].as_array().unwrap().iter().map(|d| d["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["laravel"], "the PHP file confirms the PHP stack; the Dart words stay text");
+}

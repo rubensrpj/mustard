@@ -68,6 +68,15 @@ impl Block {
 /// entrega que responde a ele.
 pub const METRIC_TYPES: &[&str] = &["injection", "hook", "call", "state", "verdict", "point", "send", "delivered"];
 
+/// O tipo do registro que toma o lugar da linha cortada pelo disco cheio
+/// ([`repair_cut_lines`](super::repair_cut_lines)). Fica fora de [`TYPES`] de
+/// propósito: sem bloco, sem sigla e sem entrada na página, a leitura o aceita
+/// sem aviso, o pedido da onda e a página o deixam de fora como item de
+/// trabalho, e o gravador não o aceita de quem grava — só o binário o cria.
+/// `run read` o mostra quando lido pelo número. O código que a linha cortada
+/// trazia continua dela: nenhum outro item o recebe.
+pub const CUT_LINE_TYPE: &str = "cut_line";
+
 /// O que o `read` pede: um bloco inteiro ou uma onda só (`wave-2`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockQuery {

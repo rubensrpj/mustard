@@ -844,6 +844,43 @@ mod tests {
         assert_eq!(current, by_code);
     }
 
+    /// O registro que toma o lugar de uma linha cortada pelo disco cheio se lê
+    /// pelo número e pelo código da linha que ele substituiu, sem aviso de
+    /// linha pulada, e nenhuma outra leitura o mostra como item de trabalho:
+    /// nem os blocos, nem o pedido de despacho, nem o backlog.
+    #[test]
+    fn a_cut_line_record_reads_by_number_and_never_shows_as_a_work_item() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (_, _, _, _) = plan_with_a_new_version(root);
+        let next_id = put(root, "message", json!({"author": "user", "text": "outro"}));
+        let path = store::spec_file(root, "teste").expect("spec file");
+        let piece = r#"{"v":1,"id":10,"code":"MSTD-RULE-0009","at":"2026-09-11T09:03:00-03:00","type":"rule","text":"Regra do meio","keys":["meio"],"exa"#;
+        let mut raw = std::fs::read_to_string(&path).unwrap();
+        raw.push_str(&format!("{piece}\n"));
+        std::fs::write(&path, raw).unwrap();
+        assert_eq!(next_id, 9);
+
+        let written = put(root, "message", json!({"author": "user", "text": "depois"}));
+        assert_eq!(written, 11, "the cut line's number is kept");
+
+        let (report, item) = only_line(root, "item-10");
+        assert!(!report.contains("warnings"), "{report}");
+        assert_eq!(item["type"], json!("cut_line"), "{report}");
+        assert_eq!(item["piece"], json!(piece), "{report}");
+        assert_eq!(item["code"], json!("MSTD-RULE-0009"), "{report}");
+        let (_, by_code) = only_line(root, "item-MSTD-RULE-0009");
+        assert_eq!(by_code, item, "the code of the lost line finds the record");
+
+        let mut blocks: Vec<String> = Block::ALL.iter().map(|b| b.name().to_string()).collect();
+        blocks.extend(["dispatch-1", "dispatch-2", "backlog", "wave-1", "wave-2"].map(str::to_string));
+        for block in blocks {
+            let report = read_at(&opts(root, &block, None)).unwrap();
+            assert!(!report.contains("cut_line") && !report.contains("Regra do meio"), "{block}: {report}");
+            assert!(!report.contains("warnings"), "{block}: {report}");
+        }
+    }
+
     /// O item removido ainda se lê pelo código, com a última versão e a marca
     /// de removido.
     #[test]
