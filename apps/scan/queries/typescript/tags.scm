@@ -131,6 +131,41 @@
 (enum_body name: (property_identifier) @name @definition.enum_member)
 (enum_assignment name: (_) @name) @definition.enum_member
 
+; Os itens de um objeto de constantes são membros, como os de um enum: a chave
+; de cada par de `export const ROTAS = { home: '/' }` (o nome ou o texto entre
+; aspas), com o comentário escrito em cima dela. Vale o objeto que é o valor
+; de uma constante do topo do arquivo ou exportada, escrito puro ou seguido de
+; `as const` e de `satisfies`. O objeto dentro de uma função, argumento de
+; chamada ou valor de retorno não entra: o alcance é o do `@definition.const`
+; acima. A consulta não tem como dar nome ao par, então cada forma do valor
+; escreve o par por inteiro.
+(program
+  (lexical_declaration kind: "const"
+    (variable_declarator
+      value: [
+        (object
+          (pair key: [(property_identifier) @name (string (string_fragment) @name)]) @definition.enum_member)
+        (as_expression . (object
+          (pair key: [(property_identifier) @name (string (string_fragment) @name)]) @definition.enum_member))
+        (satisfies_expression . (object
+          (pair key: [(property_identifier) @name (string (string_fragment) @name)]) @definition.enum_member))
+        (satisfies_expression . (as_expression . (object
+          (pair key: [(property_identifier) @name (string (string_fragment) @name)]) @definition.enum_member)))
+      ])))
+(export_statement
+  declaration: (lexical_declaration
+    (variable_declarator
+      value: [
+        (object
+          (pair key: [(property_identifier) @name (string (string_fragment) @name)]) @definition.enum_member)
+        (as_expression . (object
+          (pair key: [(property_identifier) @name (string (string_fragment) @name)]) @definition.enum_member))
+        (satisfies_expression . (object
+          (pair key: [(property_identifier) @name (string (string_fragment) @name)]) @definition.enum_member))
+        (satisfies_expression . (as_expression . (object
+          (pair key: [(property_identifier) @name (string (string_fragment) @name)]) @definition.enum_member)))
+      ])))
+
 ; Decorations — a decorator (`@Component()`, `@Get()`) is not code of the
 ; declaration it adorns: the engine passes over it to find the doc comment
 ; above, starts the header after it, and reads no call out of it.

@@ -38,6 +38,7 @@ use std::sync::OnceLock;
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Language, Node, Parser, Query, QueryCursor};
 
+mod line_end;
 mod typed;
 
 #[derive(Default)]
@@ -1375,6 +1376,11 @@ fn doc_above(node: Node, bytes: &[u8], decorations: &Spans, tags: &[&str]) -> Ab
                 break 'climb;
             }
             if prev.is_extra() {
+                // O comentário que fecha a linha de um código é dessa linha, e
+                // não do que vem embaixo.
+                if line_end::closes_a_line(prev) {
+                    break 'climb;
+                }
                 let Ok(text) = prev.utf8_text(bytes) else { break 'climb };
                 parts.push(clean_comment(text, tags));
                 doc_row = doc_row.min(prev.start_position().row);

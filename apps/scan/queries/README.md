@@ -81,7 +81,7 @@ navigation* do tree-sitter; mantivemos os sufixos de kind compatíveis):
 | Query set    | Gramática upstream (crate)                  | Licença | Origem dos patterns |
 |--------------|---------------------------------------------|---------|---------------------|
 | `csharp/`    | tree-sitter/tree-sitter-c-sharp (0.23)      | MIT     | tags de tipo e membro derivadas do upstream; `field` é local (o upstream não taga fields) |
-| `typescript/`| tree-sitter/tree-sitter-typescript (0.23)   | MIT     | métodos/abstract do upstream; `property`/`field`/`enum_member`/`const` locais |
+| `typescript/`| tree-sitter/tree-sitter-typescript (0.23)   | MIT     | métodos/abstract do upstream; `property`/`field`/`enum_member`/`const` locais (a chave de cada par de um objeto de constantes do topo do arquivo é `enum_member`) |
 | `go/`        | tree-sitter/tree-sitter-go (0.25)           | MIT     | `function`/`method` do upstream; `field`/`type`/`struct`/`interface` locais |
 | `python/`    | tree-sitter/tree-sitter-python (0.25)       | MIT     | `class`/`function` do upstream (que também não separa method de function); `field` local |
 | `rust/`      | tree-sitter/tree-sitter-rust (0.24)         | MIT     | itens do upstream (que também não separa method de function); `field`/`enum_member` locais |
