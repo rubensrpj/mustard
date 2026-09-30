@@ -1,7 +1,7 @@
 //! `search_door` — a porta única da busca do mapa: o caminho que toda busca
 //! do Claude faz depois da triagem, seja o pedido por assunto (`run map
 //! search`) ou a busca por palavra que o gancho responde (`Grep` e
-//! `grep`/`rg` do terminal).
+//! `grep`, `rg` e `git grep` do terminal).
 //!
 //! O caminho tem quatro passos, e a porta guarda todos:
 //!

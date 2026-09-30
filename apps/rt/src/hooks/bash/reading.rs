@@ -13,9 +13,16 @@
 //!   com o nome), são recusados com a opção que deixa o arquivo de fora
 //!   ([`config_key::swept`]). A busca que só lista arquivos ou conta
 //!   linhas não mostra a chave, e passa.
-//! - **A busca por palavra em pastas.** O `grep` recursivo e o `rg`, numa
-//!   pasta de código do projeto, recebem a marca do mapa
-//!   ([`word_search`]): com o mapa cravado ou parcial, a busca que mostra
+//! - **A busca por palavra em pastas.** O `grep` recursivo, o `rg` e o
+//!   `git grep`, numa pasta de código do projeto, recebem a marca do mapa
+//!   ([`word_search`]). O `git grep` lê as opções de padrão do `grep` (`-e`,
+//!   `-E`, `-F`, `-P`, `-i`, `-w`), busca a pasta em que roda quando não traz
+//!   caminho e só lê o que o git rastreia. O caminho com curinga que o
+//!   terminal abre (`src/*.ts`, `src/**/*.rs`; no `git grep`, também o entre
+//!   aspas, que o próprio git abre) vale pela pasta antes do primeiro curinga
+//!   e por um filtro de nome, como o `-g` do `rg`; o curinga no nome de uma
+//!   pasta (`src/*/x.rs`) deixa a busca passar. Com o mapa cravado ou
+//!   parcial, a busca que mostra
 //!   linhas é recusada com a resposta agrupada por função no lugar dela (o
 //!   parcial passa antes pelo filtro do mapa, que entrega só as peças certas,
 //!   e sem chave ou com o filtro falhando vale a triagem, com o aviso uma vez
@@ -34,7 +41,7 @@ use std::path::{Path, PathBuf};
 
 use mustard_core::domain::model::contract::{Ctx, HookInput, Verdict};
 
-use super::lex::Segment;
+use super::lex::{Segment, Word};
 use crate::hooks::write::write_gate::say;
 use crate::shared::code_route;
 use crate::shared::config_key::{self, NameFilter, Walk, CONFIG_FILE};
@@ -63,6 +70,11 @@ const RG_LONG_VALUE: &[&str] = &[
     "path-separator", "pre", "pre-glob", "engine", "dfa-size-limit", "regex-size-limit", "ignore-file",
     "hostname-bin", "hyperlink-format",
 ];
+
+/// As opções do `git grep` que levam um valor, do mesmo jeito.
+const GIT_GREP_SHORT_VALUE: &[char] = &['e', 'f', 'm', 'A', 'B', 'C'];
+const GIT_GREP_LONG_VALUE: &[&str] =
+    &["max-depth", "threads", "max-count", "after-context", "before-context", "context"];
 
 /// A conferência inteira: a primeira recusa da linha, na ordem dos comandos.
 pub(super) fn bash_reading(segments: &[Segment], input: &HookInput, ctx: &Ctx) -> Option<Verdict> {
@@ -106,12 +118,16 @@ pub(super) fn bash_reading(segments: &[Segment], input: &HookInput, ctx: &Ctx) -
                 Reply::Pass => {}
             }
         }
-        if !search.shows_lines {
+        // O `git grep` só lê o que o git rastreia, e o arquivo da chave fica no
+        // `.git/info/exclude`: só a busca que passa por cima disso o alcança.
+        let reaches_ignored = !search.git || search.walk == (Walk::Rg { unignored: true });
+        if !search.shows_lines || !reaches_ignored {
             continue;
         }
         let folders: Vec<PathBuf> = searched.iter().map(|path| cwd.join(path)).collect();
         if let Some(file) = config_key::swept(&folders, Path::new(&root), search.walk, &search.filters) {
             let fix = match search.walk {
+                _ if search.git => format!("`':!{CONFIG_FILE}'`"),
                 Walk::Grep => format!("`--exclude={CONFIG_FILE}`"),
                 Walk::Rg { .. } => format!("`-g '!{CONFIG_FILE}'`"),
             };
@@ -155,17 +171,41 @@ struct TextSearch {
     /// `false` quando a busca só lista arquivos, conta ou fica quieta: a
     /// saída não traz as linhas.
     shows_lines: bool,
+    /// `true` no `git grep`, que lê os arquivos que o git rastreia.
+    git: bool,
 }
 
-/// A busca que `segment` faz, quando é um `grep` recursivo ou um `rg`. `None`
-/// em todo o resto: outro programa, `grep` sem recursão.
+/// Os argumentos do `git grep` de `args`, depois do `grep` e das opções do
+/// `git` que não mudam a pasta. `None` em outro subcomando e em opção que
+/// muda a pasta (`-C`).
+fn git_grep_args(args: &[Word]) -> Option<&[Word]> {
+    let mut at = 0;
+    while let Some(word) = args.get(at) {
+        match word.text.as_str() {
+            "grep" => return Some(&args[at + 1..]),
+            "--no-pager" | "-P" | "--paginate" | "-p" | "--no-optional-locks" => at += 1,
+            "-c" => at += 2,
+            _ => return None,
+        }
+    }
+    None
+}
+
+/// A busca que `segment` faz, quando é um `grep` recursivo, um `rg` ou um
+/// `git grep`. `None` em todo o resto: outro programa, `grep` sem recursão.
 fn text_search(segment: &Segment) -> Option<TextSearch> {
-    let (short_value, long_value, rg) = match segment.name() {
-        "grep" | "egrep" | "fgrep" => (GREP_SHORT_VALUE, GREP_LONG_VALUE, false),
-        "rg" => (RG_SHORT_VALUE, RG_LONG_VALUE, true),
+    let mut words: &[Word] = &segment.args;
+    let (short_value, long_value, rg, git) = match segment.name() {
+        "grep" | "egrep" | "fgrep" => (GREP_SHORT_VALUE, GREP_LONG_VALUE, false, false),
+        "rg" => (RG_SHORT_VALUE, RG_LONG_VALUE, true, false),
+        "git" => {
+            words = git_grep_args(&segment.args)?;
+            (GIT_GREP_SHORT_VALUE, GIT_GREP_LONG_VALUE, false, true)
+        }
         _ => return None,
     };
-    let mut recursive = rg;
+    // O `git grep` sempre desce pelas pastas, e o `rg` também.
+    let mut recursive = rg || git;
     let (mut from_file, mut names_only, mut unignored) = (false, false, false);
     let (mut ignore_case, mut smart_case, mut whole_word, mut unsupported) = (false, false, false, false);
     let mut dialect = match segment.name() {
@@ -175,11 +215,12 @@ fn text_search(segment: &Segment) -> Option<TextSearch> {
         _ => Dialect::Basic,
     };
     let (mut patterns, mut positionals, mut filters) = (Vec::new(), Vec::new(), Vec::new());
-    let mut args = segment.args.iter().map(|word| word.text.as_str());
+    let mut args = words.iter();
     let mut options_done = false;
-    while let Some(arg) = args.next() {
+    while let Some(word) = args.next() {
+        let arg = word.text.as_str();
         if options_done || arg == "-" || !arg.starts_with('-') {
-            positionals.push(arg.to_string());
+            positionals.push((arg.to_string(), word.text == word.raw));
             continue;
         }
         if arg == "--" {
@@ -188,7 +229,7 @@ fn text_search(segment: &Segment) -> Option<TextSearch> {
         }
         let (option, value) = if let Some(long) = arg.strip_prefix("--") {
             let (name, value) = long.split_once('=').map_or((long, None), |(name, value)| (name, Some(value.to_string())));
-            let value = value.or_else(|| long_value.contains(&name).then(|| args.next().map(str::to_string)).flatten());
+            let value = value.or_else(|| long_value.contains(&name).then(|| args.next().map(|word| word.text.clone())).flatten());
             (name.to_string(), value)
         } else {
             let cluster = &arg[1..];
@@ -211,7 +252,7 @@ fn text_search(segment: &Segment) -> Option<TextSearch> {
             }
             let Some((at, short)) = found else { continue };
             let rest = &cluster[at + short.len_utf8()..];
-            let value = if rest.is_empty() { args.next().map(str::to_string) } else { Some(rest.to_string()) };
+            let value = if rest.is_empty() { args.next().map(|word| word.text.clone()) } else { Some(rest.to_string()) };
             (short.to_string(), value)
         };
         match (option.as_str(), value) {
@@ -219,7 +260,7 @@ fn text_search(segment: &Segment) -> Option<TextSearch> {
             ("f" | "file", _) => from_file = true,
             ("recursive" | "dereference-recursive", _) if !rg => recursive = true,
             ("d" | "directories", Some(value)) if !rg && value == "recurse" => recursive = true,
-            ("files-with-matches" | "count" | "quiet" | "silent", _) => names_only = true,
+            ("files-with-matches" | "name-only" | "count" | "quiet" | "silent", _) => names_only = true,
             ("files-without-match", _) => {
                 names_only = true;
                 unsupported = true;
@@ -230,6 +271,16 @@ fn text_search(segment: &Segment) -> Option<TextSearch> {
                 unsupported = true;
             }
             ("no-ignore" | "no-ignore-vcs" | "no-ignore-exclude" | "unrestricted", _) if rg => unignored = true,
+            // O `git grep` fora do índice, ou sem o que o git ignora, lê tudo.
+            ("no-index" | "no-exclude-standard", _) if git => {
+                unignored = true;
+                unsupported = true;
+            }
+            // Expressão com `--and`/`--not`, índice, submódulos e limite de
+            // profundidade mudam o que a busca acha.
+            ("and" | "or" | "not" | "all-match" | "cached" | "untracked" | "recurse-submodules" | "max-depth", _) if git => {
+                unsupported = true;
+            }
             ("include", Some(value)) if !rg => filters.push(NameFilter { exclude: false, glob: value }),
             ("exclude", Some(value)) if !rg => filters.push(NameFilter { exclude: true, glob: value }),
             ("g" | "glob" | "iglob", Some(value)) if rg => filters.push(NameFilter::rg(&value)),
@@ -241,6 +292,7 @@ fn text_search(segment: &Segment) -> Option<TextSearch> {
             ("word-regexp", _) => whole_word = true,
             ("smart-case", _) if rg => smart_case = true,
             ("fixed-strings", _) => dialect = Dialect::Fixed,
+            ("basic-regexp", _) if !rg => dialect = Dialect::Basic,
             ("extended-regexp", _) if !rg => dialect = Dialect::Extended,
             ("perl-regexp", _) if !rg => dialect = Dialect::Rust,
             (
@@ -255,15 +307,88 @@ fn text_search(segment: &Segment) -> Option<TextSearch> {
         return None;
     }
     if !from_file && patterns.is_empty() && !positionals.is_empty() {
-        patterns.push(positionals.remove(0));
+        patterns.push(positionals.remove(0).0);
     }
     if from_file {
         patterns.clear();
     }
     // O `-S` do `rg` ignora a caixa quando o padrão não tem maiúscula.
     ignore_case |= smart_case && !patterns.iter().any(|pattern| pattern.chars().any(char::is_uppercase));
-    let walk = if rg { Walk::Rg { unignored } } else { Walk::Grep };
-    Some(TextSearch { patterns, dialect, ignore_case, whole_word, unsupported, paths: positionals, filters, walk, shows_lines: !names_only })
+    let walk = if rg || git { Walk::Rg { unignored } } else { Walk::Grep };
+    if git {
+        positionals.retain(|(path, _)| match git_exclusion(path) {
+            Some(glob) => {
+                filters.push(NameFilter { exclude: true, glob: glob.to_string() });
+                false
+            }
+            None => true,
+        });
+    }
+    let paths = search_paths(positionals, git, &mut filters);
+    Some(TextSearch { patterns, dialect, ignore_case, whole_word, unsupported, paths, filters, walk, shows_lines: !names_only, git })
+}
+
+/// O nome que o filtro de caminho `path` do `git grep` deixa de fora (`:!x`,
+/// `:^x`, `:(exclude)x`); `None` em qualquer outro caminho.
+fn git_exclusion(path: &str) -> Option<&str> {
+    [":!", ":^", ":(exclude)"].iter().find_map(|magic| path.strip_prefix(magic))
+}
+
+/// Os caminhos da busca. Todo caminho com curinga do terminal (`dir/*.rs`,
+/// `src/**/*.ts`) vira a pasta antes do primeiro curinga, e o nome que vem
+/// depois entra como filtro de entrada, como o `-g` do `rg`. O `git grep` abre
+/// o curinga sozinho, também entre aspas. Os caminhos ficam como vieram
+/// quando algum não tem curinga, quando o nome varia de um caminho a outro ou
+/// quando a linha já traz filtro de entrada: um filtro só não diz de qual
+/// pasta cada nome vale. Cada `(caminho, sem_aspas)` traz se a palavra foi
+/// escrita sem aspas. Chamado depois de tirar os filtros de caminho do git.
+fn search_paths(positionals: Vec<(String, bool)>, git: bool, filters: &mut Vec<NameFilter>) -> Vec<String> {
+    let split: Option<Vec<(String, String)>> = positionals
+        .iter()
+        .map(|(path, plain)| if *plain || git { wildcard_path(path) } else { None })
+        .collect();
+    match split {
+        Some(split)
+            if !split.is_empty()
+                && split.iter().all(|(_, name)| *name == split[0].1)
+                && filters.iter().all(|filter| filter.exclude) =>
+        {
+            if split[0].1 != "*" {
+                filters.insert(0, NameFilter { exclude: false, glob: split[0].1.clone() });
+            }
+            let mut folders: Vec<String> = Vec::new();
+            for (folder, _) in split {
+                if !folders.contains(&folder) {
+                    folders.push(folder);
+                }
+            }
+            folders
+        }
+        _ => positionals.into_iter().map(|(path, _)| path).collect(),
+    }
+}
+
+/// A pasta e o filtro de nome do caminho com curinga `path`: a pasta que vem
+/// antes do primeiro `*` ou `?`, e o último trecho do caminho. Um `**` entre
+/// os dois vale por qualquer profundidade. `None` no caminho sem curinga e
+/// com curinga no nome de uma pasta (`src/*/x.rs`), com chaves ou colchetes e
+/// no filtro de caminho do git (`:!x`).
+fn wildcard_path(path: &str) -> Option<(String, String)> {
+    let first = path.find(['*', '?'])?;
+    if path.starts_with(':') || path.contains(['{', '[', '\\']) {
+        return None;
+    }
+    let (folder, rest) = match path[..first].rfind('/') {
+        Some(slash) => (&path[..slash], &path[slash + 1..]),
+        None => (".", path),
+    };
+    let mut parts: Vec<&str> = rest.split('/').collect();
+    while parts.len() > 1 && parts[0] == "**" {
+        parts.remove(0);
+    }
+    let [name] = parts[..] else { return None };
+    let name = if name == "**" { "*" } else { name };
+    Some((if folder.is_empty() { "/" } else { folder }.to_string(), name.to_string()))
 }
 
 #[cfg(test)]
@@ -333,6 +458,116 @@ mod tests {
         assert!(of("grep -rw Alpha .").whole_word);
         assert!(!of("grep -rl Alpha .").shows_lines && !of("rg -c Alpha").shows_lines);
         assert!(of("grep -rn Alpha .").shows_lines);
+    }
+
+    /// O `git grep` é uma busca em pastas: o padrão sai do `-e` ou do primeiro
+    /// argumento sem opção, o valor de uma opção não vira caminho, os caminhos
+    /// vêm depois do `--` ou soltos, e sem caminho a busca é da pasta em que
+    /// roda. As opções do `git` que não mudam a pasta antes do `grep` valem; as
+    /// que mudam, e os outros subcomandos, não.
+    #[test]
+    fn a_git_grep_is_read_like_the_grep_reads_its_patterns_and_paths() {
+        let one = |pattern: &str, paths: &[&str], filters: &[&str]| Some((owned(&[pattern]), owned(paths), owned(filters)));
+        assert_eq!(read("git grep -n Alpha -- src"), one("Alpha", &["src"], &[]));
+        assert_eq!(read("git grep Alpha src apps/rt"), one("Alpha", &["src", "apps/rt"], &[]), "loose paths count");
+        assert_eq!(read("git grep -n Alpha"), one("Alpha", &[], &[]), "no path searches the folder it runs in");
+        assert_eq!(read("git grep -n -A 3 -C2 --max-depth 4 Alpha -- src"), one("Alpha", &["src"], &[]));
+        assert_eq!(read("rtk git --no-pager grep -in Alpha -- src"), one("Alpha", &["src"], &[]));
+        assert_eq!(read("git -c color.ui=never grep Alpha src"), one("Alpha", &["src"], &[]));
+        assert_eq!(read("git grep -e Alpha -e Beta -- src"), Some((owned(&["Alpha", "Beta"]), owned(&["src"]), vec![])));
+        assert_eq!(read("git grep -f patterns.txt -- src"), Some((vec![], owned(&["src"]), vec![])), "patterns from a file are unknown");
+        assert_eq!(read("git grep -- -Alpha src"), one("-Alpha", &["src"], &[]));
+        for command in ["git status", "git log --grep Alpha", "git -C other grep Alpha", "git diff Alpha src", "git"] {
+            assert_eq!(read(command), None, "{command} is not a search of a folder");
+        }
+    }
+
+    /// As opções de padrão do `git grep` valem as do `grep`; o que muda o que
+    /// a busca acha (`-v`, `--and`, o índice, as pastas fora do git) a deixa
+    /// passar, e só a busca fora do índice ou do que o git ignora lê tudo.
+    #[test]
+    fn the_options_of_a_git_grep_are_read_like_the_ones_of_the_grep() {
+        let of = |cmd: &str| segments(cmd).iter().find_map(text_search).unwrap_or_else(|| panic!("{cmd} is a search"));
+        assert_eq!(of("git grep a").dialect, Dialect::Basic);
+        assert_eq!(of("git grep -E 'a|b'").dialect, Dialect::Extended);
+        assert_eq!(of("git grep -F a.b").dialect, Dialect::Fixed);
+        assert_eq!(of("git grep --fixed-strings a.b").dialect, Dialect::Fixed);
+        assert_eq!(of("git grep -P a").dialect, Dialect::Rust);
+        assert_eq!(of("git grep -n --perl-regexp a").dialect, Dialect::Rust);
+        assert!(of("git grep -ni a").ignore_case && of("git grep --ignore-case a").ignore_case);
+        assert!(of("git grep -nw a").whole_word && !of("git grep -n a").whole_word);
+        assert!(of("git grep -n a").shows_lines && of("git grep -e a").shows_lines);
+        assert!(!of("git grep -l a").shows_lines && !of("git grep -c a").shows_lines && !of("git grep --name-only a").shows_lines);
+        for command in ["git grep -nv a", "git grep -e a --and -e b", "git grep --not -e a", "git grep --cached a", "git grep --untracked a", "git grep --no-index a", "git grep --max-depth 1 a"] {
+            assert!(of(command).unsupported, "{command}");
+        }
+        for command in ["git grep -n a", "git grep -inw -E a", "git grep -e a -e b -- src", "git grep -h a"] {
+            assert!(!of(command).unsupported, "{command}");
+        }
+        assert_eq!(of("git grep -n a").walk, Walk::Rg { unignored: false }, "git reads what it tracks");
+        assert_eq!(of("git grep --no-index a").walk, Walk::Rg { unignored: true });
+        assert_eq!(of("git grep --no-exclude-standard --untracked a").walk, Walk::Rg { unignored: true });
+    }
+
+    /// O caminho com curinga do terminal vale pela pasta antes do primeiro
+    /// curinga e por um filtro de nome, como o `-g` do `rg`; o `**` vale por
+    /// qualquer profundidade. Os caminhos do mesmo nome dividem o filtro.
+    #[test]
+    fn a_path_with_a_wildcard_is_the_folder_before_it_and_a_name_filter() {
+        let one = |paths: &[&str], filters: &[&str]| Some((owned(&["Alpha"]), owned(paths), owned(filters)));
+        assert_eq!(read("grep -rn Alpha apps/rt/tests/*.rs"), one(&["apps/rt/tests"], &["*.rs"]));
+        assert_eq!(read("rg Alpha src/**/*.ts"), one(&["src"], &["*.ts"]));
+        assert_eq!(read("grep -rn Alpha *.rs"), one(&["."], &["*.rs"]));
+        assert_eq!(read("grep -rn Alpha /abs/dir/*.rs"), one(&["/abs/dir"], &["*.rs"]));
+        assert_eq!(read("grep -rn Alpha src/**/mod.rs"), one(&["src"], &["mod.rs"]));
+        assert_eq!(read("grep -rn Alpha src/*"), one(&["src"], &[]), "a bare star takes every name");
+        assert_eq!(read("grep -rn Alpha src/**"), one(&["src"], &[]));
+        assert_eq!(read("grep -rn Alpha src/?.rs"), one(&["src"], &["?.rs"]));
+        assert_eq!(read("grep -rn Alpha a/*.ts b/*.ts a/x/*.ts"), one(&["a", "b", "a/x"], &["*.ts"]));
+        assert_eq!(read("grep -rn Alpha src/*orchestrator*.ts a/*orchestrator*.ts"), one(&["src", "a"], &["*orchestrator*.ts"]));
+        assert_eq!(
+            read("grep -rn --exclude=*.min.js Alpha src/*.js"),
+            one(&["src"], &["*.js", "!*.min.js"]),
+            "the filter of the path comes first, and an exclusion that follows still leaves files out"
+        );
+    }
+
+    /// O curinga no nome de uma pasta, o caminho que mistura curinga e
+    /// nome, nomes diferentes, o curinga entre aspas (o terminal não o abre),
+    /// as chaves e a linha que já filtra por entrada ficam como vieram: o
+    /// caminho não é pasta, e a busca passa.
+    #[test]
+    fn a_path_whose_wildcard_the_search_cannot_place_stays_as_it_came() {
+        let one = |paths: &[&str], filters: &[&str]| Some((owned(&["Alpha"]), owned(paths), owned(filters)));
+        assert_eq!(read("grep -rn Alpha src/*/x.rs"), one(&["src/*/x.rs"], &[]));
+        assert_eq!(read("grep -rn Alpha src/mod*/x.rs"), one(&["src/mod*/x.rs"], &[]));
+        assert_eq!(read("grep -rn Alpha src/**/foo/*.ts"), one(&["src/**/foo/*.ts"], &[]));
+        assert_eq!(read("grep -rn Alpha src/*/"), one(&["src/*/"], &[]));
+        assert_eq!(read("grep -rn Alpha 'src/*.rs'"), one(&["src/*.rs"], &[]), "the terminal does not open a quoted star");
+        assert_eq!(read("rg Alpha \"src/*.rs\""), one(&["src/*.rs"], &[]));
+        assert_eq!(read("grep -rn Alpha a/*.ts b/*.rs"), one(&["a/*.ts", "b/*.rs"], &[]), "one filter cannot tell the folders apart");
+        assert_eq!(read("grep -rn Alpha src/*.rs docs"), one(&["src/*.rs", "docs"], &[]));
+        assert_eq!(read("grep -rn Alpha src/*.{ts,tsx}"), one(&["src/*.{ts,tsx}"], &[]));
+        assert_eq!(read("rg -t rust Alpha src/*.rs"), one(&["src/*.rs"], &["*.rs"]), "an input filter of the line would mix with the path one");
+        assert_eq!(read("grep -rn --include=*.md Alpha src/*.rs"), one(&["src/*.rs"], &["*.md"]));
+    }
+
+    /// O `git grep` abre o curinga sozinho, também entre aspas: o filtro de
+    /// caminho do git, sem pasta, vale pela pasta em que roda. O filtro que
+    /// deixa um nome de fora (`:!x`) vira filtro de saída; uma revisão não é
+    /// pasta e deixa o caminho como veio.
+    #[test]
+    fn a_git_grep_pathspec_with_a_wildcard_is_the_folder_and_a_name_filter() {
+        let one = |paths: &[&str], filters: &[&str]| Some((owned(&["Alpha"]), owned(paths), owned(filters)));
+        assert_eq!(read("git grep -n Alpha -- 'src/*.ts'"), one(&["src"], &["*.ts"]));
+        assert_eq!(read("git grep -n Alpha -- 'src/**/*.ts'"), one(&["src"], &["*.ts"]));
+        assert_eq!(read("git grep -n Alpha -- '*.prisma'"), one(&["."], &["*.prisma"]));
+        assert_eq!(read("git grep -n Alpha -- src/*.ts lib/*.ts"), one(&["src", "lib"], &["*.ts"]));
+        assert_eq!(read("git grep -n Alpha -- . ':!*.md'"), one(&["."], &["!*.md"]), "an exclusion is a filter that leaves names out");
+        assert_eq!(read("git grep -n Alpha -- src ':^*.md' ':(exclude)*.lock'"), one(&["src"], &["!*.md", "!*.lock"]));
+        assert_eq!(read("git grep -n Alpha -- 'src/*.ts' ':!*.d.ts'"), one(&["src"], &["*.ts", "!*.d.ts"]));
+        assert_eq!(read("git grep -n Alpha -- ':!*.md'"), one(&[], &["!*.md"]), "only exclusions search the folder it runs in");
+        assert_eq!(read("git grep -n Alpha HEAD -- 'src/*.ts'"), one(&["HEAD", "src/*.ts"], &[]), "a revision is not a folder");
     }
 
     /// A resposta do despachante ao comando `command`, rodado de `cwd`, numa
@@ -626,6 +861,138 @@ mod tests {
         }
     }
 
+    /// O `git grep` de um nome do mapa numa pasta de código é respondido no
+    /// lugar dele, agrupado por função, com o caminho depois do `--` ou solto,
+    /// sem caminho, depois de um `cd`, atrás de um envoltório, com o caminho
+    /// de curinga entre aspas que o git abre, com a caixa e com um pipe depois.
+    #[test]
+    fn a_git_grep_for_a_mapped_name_is_answered_by_function() {
+        let (_dir, root) = word_search::fixture::repo("{}");
+        for (n, command) in [
+            "git grep -n calcular_frete -- src",
+            "git grep -n calcular_frete",
+            "git grep calcular_frete src",
+            "rtk git grep -ni CALCULAR_FRETE",
+            "cd src && git grep -n calcular_frete",
+            "git --no-pager grep -n -e calcular_frete -- src",
+            "git grep -n calcular_frete -- 'src/*.rs'",
+            "git grep -n calcular_frete -- . ':!*.md'",
+            "git grep -n calcular_frete | head -20",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let reason = refused(run_in(&root, command, Some(&format!("g{n}"))), command);
+            assert!(reason.starts_with("Cravado."), "{command}: {reason}");
+            assert!(reason.contains("src/frete.rs\n  2-6 calcular_frete (2)"), "{command}: {reason}");
+            assert!(reason.contains("src/pedido.rs\n  1-4 fechar_pedido (2)"), "{command}: {reason}");
+        }
+        let words = refused(run_in(&root, "git grep -nE 'calcular_frete|desconto_frete|imposto'", Some("palavras")), "an alternation");
+        assert!(words.starts_with("Cravado.") && words.contains("src/frete.rs\n  2-6 calcular_frete (2, 3)"), "{words}");
+        let with_notes = refused(run_in(&root, "git grep -n calcular_frete", Some("notas")), "the notes are searched");
+        assert!(with_notes.contains("docs/notas.md"), "{with_notes}");
+        let without = refused(run_in(&root, "git grep -n calcular_frete -- . ':!*.md'", Some("sem-notas")), "the notes are left out");
+        assert!(!without.contains("docs/notas.md"), "the exclusion leaves the notes out: {without}");
+    }
+
+    /// O `git grep` que só lista nomes ou conta (`-l`, `-c`) roda como veio,
+    /// com uma linha da marca; o que muda o que a busca acha, a revisão, o
+    /// índice, a pasta sem código e o arquivo só passam, e sem sessão não há
+    /// resposta.
+    #[test]
+    fn a_git_grep_the_answer_cannot_stand_for_passes() {
+        let (_dir, root) = word_search::fixture::repo("{}");
+        for (n, command) in ["git grep -l calcular_frete", "git grep -c calcular_frete -- src", "git grep --name-only calcular_frete"].into_iter().enumerate() {
+            match run_in(&root, command, Some(&format!("n{n}"))) {
+                Verdict::Inject { context } => {
+                    assert!(context.starts_with("Cravado.") && context.lines().count() == 1, "{command}: {context}");
+                }
+                other => panic!("{command}: the plain search runs with a line, got {other:?}"),
+            }
+        }
+        for (n, command) in [
+            "git grep -nv calcular_frete -- src",
+            "git grep -n -e calcular_frete --and -e imposto",
+            "git grep --cached -n calcular_frete",
+            "git grep -n calcular_frete HEAD -- src",
+            "git grep -n calcular_frete -- docs",
+            "git grep -n calcular_frete -- src/frete.rs",
+            "git grep -n calcular_frete -- . ':!src/pedido.rs'",
+            "git -C src grep -n calcular_frete",
+            "git grep -n zzznada -- src",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let verdict = run_in(&root, command, Some(&format!("p{n}")));
+            assert!(!matches!(verdict, Verdict::Deny { .. }), "{command}: {verdict:?}");
+        }
+        assert_eq!(run(&root, "git grep -n calcular_frete -- src"), Verdict::Allow, "no session, no answer");
+    }
+
+    /// O caminho com curinga que o terminal abre é respondido como a pasta
+    /// dele, filtrada pelo nome: `src/*.rs`, `src/**/*.rs`, o curinga solto na
+    /// pasta em que roda, com o `rg` e depois de um `cd`. O nome do curinga
+    /// vale: `src/*.md` deixa o código de fora e a busca passa.
+    #[test]
+    fn a_path_with_a_wildcard_is_answered_as_its_folder_with_the_name_filter() {
+        let (_dir, root) = word_search::fixture::repo("{}");
+        for (n, command) in [
+            "grep -rn calcular_frete src/*.rs",
+            "rg calcular_frete src/*.rs",
+            "grep -rn calcular_frete src/**/*.rs",
+            "grep -rn calcular_frete src/*",
+            "grep -rn calcular_frete *",
+            "cd src && grep -rn calcular_frete *.rs",
+            "grep -rn calcular_frete src/*.r?",
+            "grep -rn calcular_frete src/*.rs | head",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let reason = refused(run_in(&root, command, Some(&format!("w{n}"))), command);
+            assert!(reason.starts_with("Cravado."), "{command}: {reason}");
+            assert!(reason.contains("src/frete.rs\n  2-6 calcular_frete (2)"), "{command}: {reason}");
+        }
+        for (n, command) in ["grep -rn calcular_frete src/*.md", "grep -rn calcular_frete docs/*.md", "rg calcular_frete docs/*"].into_iter().enumerate() {
+            assert_eq!(run_in(&root, command, Some(&format!("f{n}"))), Verdict::Allow, "{command}: the name leaves the code out");
+        }
+        std::fs::create_dir_all(root.join("web")).expect("web");
+        std::fs::write(root.join("web/app.ts"), "export function renderizar_tela() {}\n").expect("app");
+        let two = serde_json::json!({ "modules": [
+            { "path": "src/frete.rs", "declarations": [{ "kind": "function", "name": "calcular_frete", "line": 2, "end_line": 6 }] },
+            { "path": "web/app.ts", "declarations": [{ "kind": "function", "name": "renderizar_tela", "line": 1, "end_line": 1 }] }
+        ] });
+        mustard_core::io::project_map::write_text(&root, &two.to_string()).expect("map");
+        let reason = refused(run_in(&root, "grep -rn renderizar_tela web/*.ts", Some("dois")), "the folder with the ts");
+        assert!(reason.contains("web/app.ts\n  1-1 renderizar_tela (1)"), "{reason}");
+        assert_eq!(run_in(&root, "grep -rn renderizar_tela src/*.ts", Some("dois-b")), Verdict::Allow, "the folder has no ts");
+        assert_eq!(run_in(&root, "grep -rn renderizar_tela web/*.rs", Some("dois-c")), Verdict::Allow, "the name leaves the ts out");
+    }
+
+    /// O curinga que a busca não sabe pôr numa pasta deixa a busca passar como
+    /// antes: no nome de uma pasta, entre aspas no `grep`, junto de um nome
+    /// sem curinga, com nomes diferentes, com chaves.
+    #[test]
+    fn a_wildcard_the_search_cannot_place_passes_as_before() {
+        let (_dir, root) = word_search::fixture::repo("{}");
+        for (n, command) in [
+            "grep -rn calcular_frete src/*/frete.rs",
+            "grep -rn calcular_frete src/fre*/x.rs",
+            "grep -rn calcular_frete 'src/*.rs'",
+            "rg calcular_frete \"src/*.rs\"",
+            "grep -rn calcular_frete src/*.rs docs",
+            "grep -rn calcular_frete src/*.rs docs/*.md",
+            "grep -rn calcular_frete src/*.{rs,md}",
+            "rg -t rust calcular_frete src/*.rs",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert_eq!(run_in(&root, command, Some(&format!("k{n}"))), Verdict::Allow, "{command}");
+        }
+    }
+
     /// Numa cópia de trabalho do projeto, a busca lê a árvore da cópia: o
     /// arquivo que a onda mudou vem relido, marcado como mudado e com as
     /// linhas da cópia; o que ela não mexeu vem sem marca.
@@ -739,5 +1106,32 @@ mod tests {
         }
         let (_plain, plain) = fixture::project("{}", true);
         assert_eq!(run(&plain, "grep -r jev ."), Verdict::Allow);
+    }
+
+    /// O `git grep` só lê o que o git rastreia, e o `mustard.json` fica no
+    /// `.git/info/exclude`: a busca comum passa, mesmo com um filtro de nome
+    /// que o casa. A que lê fora do índice ou o que o git ignora passaria pela
+    /// chave e é recusada com o filtro de caminho do git que deixa o arquivo
+    /// de fora; a que só lista nomes passa.
+    #[test]
+    fn a_git_grep_that_reads_what_git_ignores_is_refused_before_it_shows_the_key() {
+        let config = format!(r#"{{"jev": {{"key": "{}"}}}}"#, fixture::FAKE_KEY);
+        let (_dir, root) = fixture::project(&config, true);
+        for command in ["git grep -n jev", "git grep -n key -- '*.json'", "git grep -n jev -- src", "git grep --no-index -l jev", "git grep --no-index -c jev"] {
+            assert_eq!(run(&root, command), Verdict::Allow, "{command}");
+        }
+        for command in ["git grep --no-index -n jev", "git grep -n --no-exclude-standard --untracked jev", "git grep --no-index -n jev -- '*.json'"] {
+            let reason = refused(run(&root, command), command);
+            assert!(!reason.contains(fixture::FAKE_KEY), "`{command}`: the key leaked");
+            assert!(reason.contains("`':!mustard.json'`") && reason.contains("mustard.json"), "{command}: {reason}");
+        }
+        for command in [
+            "git grep --no-index -n jev -- . ':!mustard.json'",
+            "git grep --no-index -n jev ':^mustard.json'",
+            "git grep --no-index -n jev -- ':(exclude)mustard.json'",
+        ] {
+            assert_eq!(run(&root, command), Verdict::Allow, "{command}: the pathspec that leaves the file out passes");
+        }
+        refused(run(&root, "git grep --no-index -n jev -- . ':!other.json'"), "an exclusion of another file");
     }
 }
