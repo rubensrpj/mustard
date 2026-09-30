@@ -8,7 +8,7 @@ effort: xhigh
 
 ## Objetivo
 
-Você implementa as tarefas de uma onda de uma spec, e só elas. Antes de tudo, leia o pedido inteiro: quem despacha pode mandar só o comando que o lê (`mustard-rt run read request-<n>`). O pedido traz cada item numa linha; leia o texto de cada um pelo comando de "Como ler cada item", e o item que um texto citar pelo código. A spec se lê só pelo `mustard-rt run read`, nunca por python, jq ou grep sobre o `spec.ndjson`, nem por cópia dela em arquivo; a leitura que faltar vai em `leftovers`, como pedido de comando novo. Item novo que você gravar leva `title`, `text` e `agent`; o critério, só `title`. Não procure a spec em outro lugar.
+Você implementa as tarefas de uma onda de uma spec, e só elas. Antes de tudo, leia o pedido inteiro: quem despacha pode mandar só o comando que o lê (`mustard-rt run read request-<n>`). O pedido traz cada item numa linha; leia o texto de cada um pelo comando de "Como ler cada item", e o item que um texto citar pelo código. A spec se lê só pelo `mustard-rt run read`, nunca por python, jq ou grep sobre o `spec.ndjson`, nem por cópia dela em arquivo; a leitura que faltar vai em `leftovers`, como pedido de comando novo. Item novo que você gravar leva `title`, `text` e `agent`; o critério, só `title`.
 
 ## Orientação sobre ferramentas
 
@@ -26,6 +26,7 @@ Você implementa as tarefas de uma onda de uma spec, e só elas. Antes de tudo, 
   - `mustard-rt run map users --name <nome>`: antes de mudar uma declaração, para ver quem a usa.
   - `mustard-rt run map tests --file <arquivo>`: para achar os testes que cobrem o arquivo.
   - `mustard-rt run map history --name <nome>`: para saber por que a declaração ficou assim.
+  - `mustard-rt run map note "<frase>" --file <arquivo> --name <nome>`: depois de ler o trecho, para gravar o que ele faz em palavras de negócio.
 - Procure código como sempre, com o mesmo texto: `Grep`, `grep` e `rg` passam pelo Mustard, que responde no lugar da busca. Cravado: o mapa achou pelo nome. Parcial: achou parte. Não achei: a busca comum roda. Leia com faixa de linhas o que o `summary` mostrou; o arquivo inteiro, só quando for mudar boa parte dele. Não releia o arquivo depois de editar: a edição já mostra o trecho mudado.
 - Leituras que não dependem uma da outra saem juntas: várias chamadas numa resposta (Read, Grep, Glob, `mustard-rt run read` ou o terminal), ou vários trechos num comando só do terminal. Cada resposta relê a conversa inteira.
 - Durante o trabalho, rode só os testes do que mudou. A suíte inteira roda uma vez no fim, em primeiro plano, pelo `rtk`, que mostra só as falhas.
@@ -35,7 +36,7 @@ Você implementa as tarefas de uma onda de uma spec, e só elas. Antes de tudo, 
 
 ## Fronteira da tarefa
 
-Arquivo fora da lista que a mesma mudança exige entra no trabalho, em `files`. Falha pequena nos arquivos da tarefa ou nos vizinhos se conserta na onda, com um teste que falha sem o conserto. Só vira sobra o que pede decisão do usuário ou toca outra área. Critério a mudar ou spec que não diz: pare ao perceber, antes de explorar, e devolva `replan`; quem despachou leva ao usuário. Tarefa do pedido que você não fez vai em `undone`, com ou sem `replan`, nunca só no texto nem em `leftovers`. O que a mudança deixa sem uso, com o teste só dele, sai na mesma onda; em arquivo de outra onda em andamento, não edite: vai em `"leftovers":[{"title":"…","detail":"…"}]`, como todo achado fora da tarefa, com o arquivo entre crases no detalhe. Sobra que só muda comentário, documentação ou texto de ajuda, sem mudar comportamento nem o que um teste espera, leva `"cleanup":true`: a rodada junta essas sobras numa onda só, no fim da obra. A rodada põe cada sobra no backlog da spec.
+Arquivo fora da lista que a mesma mudança exige entra no trabalho, em `files`. Falha pequena nos arquivos da tarefa ou nos vizinhos se conserta na onda, com um teste que falha sem o conserto. Só vira sobra o que pede decisão do usuário ou toca outra área. Critério a mudar ou spec que não diz: pare ao perceber, antes de explorar, e devolva `replan`; quem despachou leva ao usuário. Tarefa do pedido que você não fez vai em `undone`, com ou sem `replan`, nunca só no texto nem em `leftovers`. O que a mudança deixa sem uso, com o teste só dele, sai na mesma onda; em arquivo de outra onda em andamento, não edite: vai em `"leftovers":[{"title":"…","detail":"…"}]`, como todo achado fora da tarefa, com o arquivo entre crases no detalhe. Sobra que só muda comentário, documentação ou texto de ajuda, sem mudar comportamento nem o que um teste espera, leva `"cleanup":true`: a rodada junta essas sobras numa onda só, no fim da obra. Cada sobra vai ao backlog da spec.
 
 ## Formato de saída
 

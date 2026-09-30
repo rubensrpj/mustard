@@ -53,8 +53,12 @@ pub enum ScanCmd {
     /// summary of the project map, up to 3 kB; with `--file`, the parts of that
     /// file: each declaration with its kind, name and lines, and the line
     /// where its tests start), `skill --path <SKILL.md>` (every cited path exists and the
-    /// skill stays under 500 lines) or `dump` (the map database table by
-    /// table, in a fixed order, for debugging). Reads `.claude/grain.db`;
+    /// skill stays under 500 lines), `dump` (the map database table by
+    /// table, in a fixed order, for debugging) or `note "<sentence>" --file
+    /// <file> [--name <declaration>]` (writes the one-sentence meaning of that
+    /// file, or declaration, in business words, so the search finds it by
+    /// them; it stays valid until the file changes, and `slice` shows it, as
+    /// stale once the file changed). Reads `.claude/grain.db`;
     /// prints JSON and exits 1 on a refusal.
     #[command(display_order = 16)]
     Map {
@@ -62,7 +66,8 @@ pub enum ScanCmd {
         #[arg(value_enum)]
         question: crate::commands::map::Question,
         /// The text to look for (`search`), the same you would give `Grep`:
-        /// a regular expression, or plain text with `-F`.
+        /// a regular expression, or plain text with `-F`; for `note`, the
+        /// sentence of what the file or declaration is for.
         #[arg(value_name = "PATTERN")]
         pattern: Option<String>,
         /// The folder to look in (`search`); the current one by default.
@@ -105,7 +110,7 @@ pub enum ScanCmd {
         #[arg(long)]
         path: Option<PathBuf>,
         /// The declaration the question is about (`slice`, `users`,
-        /// `history`).
+        /// `history`, `note`).
         #[arg(long)]
         name: Option<String>,
         /// The pull request whose description `history` shows, first

@@ -428,6 +428,18 @@ pub const GLOSSARY: MapBlock = written(block!("glossary", version 1, {
     "glossary_marks" at list(&["marks"]) => ["forms" Json, "file" Text, "name" Text]
 }));
 
+/// As notas de sentido: de cada arquivo ou declaração, uma frase curta em
+/// palavras de negócio, escrita pelo agente que leu o trecho — o arquivo, o
+/// nome da declaração (vazio na nota do arquivo inteiro), o texto, a spec que
+/// a escreveu e o blob do arquivo no momento em que foi escrita. A nota vale
+/// enquanto o blob do arquivo no mapa for o dela; arquivo mudado a deixa
+/// velha, e quem lê o trecho a reescreve. Quem grava e lê é `io::map_notes`.
+/// Não se refaz do código: fica fora de [`BLOCKS`] e, na troca de versão, é
+/// convertido, nunca apagado.
+pub const NOTES: MapBlock = written(block!("notes", version 1, {
+    "notes" at list(&["notes"]) => ["file" Text, "name" Text, "text" Text, "spec" Text, "blob" Text]
+}));
+
 /// O bloco declarado por [`block!`] como escrito: convertido na troca de
 /// versão, nunca apagado.
 const fn written(mut declared: MapBlock) -> MapBlock {
@@ -494,12 +506,12 @@ const INDEXED_FROM: [&MapBlock; 4] = [&FILES, &DECLS, &GRAPH, &HISTORY];
 
 /// Todo bloco que a porta declara, na ordem do despejo: os da montagem e,
 /// depois deles, o da história de cada declaração, o dos pull requests, o
-/// das specs e o do glossário.
-const DECLARED: [&MapBlock; 10] =
-    [&CENSUS, &FILES, &DECLS, &ROUTES, &GRAPH, &HISTORY, &LINEAGE, &PULLS, &SPECS, &GLOSSARY];
+/// das specs, o do glossário e o das notas de sentido.
+const DECLARED: [&MapBlock; 11] =
+    [&CENSUS, &FILES, &DECLS, &ROUTES, &GRAPH, &HISTORY, &LINEAGE, &PULLS, &SPECS, &GLOSSARY, &NOTES];
 
 /// Os mesmos blocos, como o banco os abre.
-const DB_BLOCKS: [Block; 10] = [
+const DB_BLOCKS: [Block; 11] = [
     CENSUS.block,
     FILES.block,
     DECLS.block,
@@ -510,6 +522,7 @@ const DB_BLOCKS: [Block; 10] = [
     PULLS.block,
     SPECS.block,
     GLOSSARY.block,
+    NOTES.block,
 ];
 
 /// As chaves da lista dos arquivos e da lista das declarações de cada um.
@@ -2743,7 +2756,7 @@ mod tests {
                 "census", "projects", "languages", "manifests", "skeleton", "files", "decls", "texts", "routes", "links",
                 "graph", "fan_in", "history_base", "history_paths", "commits", "lineage_files", "lineage_commits",
                 "lineage_decls", "pr_texts", "pr_comments", "pr_commits", "spec_items", "spec_commits", "spec_pulls",
-                "spec_marks", "glossary_asks", "glossary_marks", "blocks"
+                "spec_marks", "glossary_asks", "glossary_marks", "notes", "blocks"
             ]
         );
         let decls = &dump[6]["rows"];

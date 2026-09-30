@@ -181,6 +181,26 @@ fn the_molds_list_each_map_command_with_its_moment_of_use() {
     }
 }
 
+/// O molde da onda manda deixar a frase de sentido do trecho lido, com o
+/// arquivo e o nome que o comando exige e a hora de usar; o de revisão, que
+/// não escreve no mapa, não a traz.
+#[test]
+fn the_wave_molds_tell_the_agent_to_leave_a_note_for_the_excerpt_it_read() {
+    let accepted = accepted_by_the_command();
+    assert!(accepted.questions.contains(&"note".to_string()), "the command has no `note`: {:?}", accepted.questions);
+    for lang in ["pt-BR", "en-US"] {
+        let wave = template(lang, "wave");
+        let note = citations(&wave).into_iter().find(|c| c.question == "note");
+        let note = note.unwrap_or_else(|| panic!("the {lang} wave mold does not list `run map note`"));
+        for option in ["--file", "--name"] {
+            assert!(note.options.iter().any(|o| o == option), "the {lang} wave mold cites `note` without `{option}`");
+        }
+        let line = wave.lines().find(|line| line.contains("run map note ")).unwrap();
+        assert!(line.split("`: ").nth(1).unwrap_or_default().split_whitespace().count() >= 3, "no moment of use: {line}");
+        assert!(!template(lang, "review").contains("run map note"), "the {lang} reviewer does not write notes");
+    }
+}
+
 /// A conferência pega o texto que cita subcomando ou opção que o `run map`
 /// não aceita, e deixa passar o que ele aceita.
 #[test]

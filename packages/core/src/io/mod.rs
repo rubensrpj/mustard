@@ -11,6 +11,7 @@ pub mod map_fill;
 pub mod map_format;
 pub mod map_meaning;
 pub mod map_glossary;
+pub mod map_notes;
 pub mod map_lineage;
 mod map_check;
 mod map_grouped;
