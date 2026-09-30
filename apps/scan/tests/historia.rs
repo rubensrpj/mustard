@@ -24,6 +24,10 @@ fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
         .args(["-c", "user.email=scan@example.com", "-c", "user.name=scan", "-c", "commit.gpgsign=false"])
         .args(args)
+        // Todos os commits nascem no mesmo segundo: a ordem entre eles só se
+        // sabe pelo lugar que têm na história, como num rebase.
+        .env("GIT_AUTHOR_DATE", "2026-01-01T12:00:00Z")
+        .env("GIT_COMMITTER_DATE", "2026-01-01T12:00:00Z")
         .current_dir(dir)
         .output()
         .expect("run git");
@@ -359,10 +363,11 @@ fn a_declaration_keeps_its_own_history_when_another_of_the_same_name_above_it_is
     assert_eq!(changes(&found, "Old"), listed(&["cria a antiga"]), "{found:?}");
 }
 
-/// O campo nasce de uma linha que o diff dá por igual: a mesma linha era o
-/// parâmetro de uma função, que sumiu. O commit que o criou é dele.
+/// O campo é a linha que o diff dá por igual: a mesma linha era o parâmetro de
+/// uma função, que sumiu. A linha foi escrita no primeiro commit e é dele; o
+/// tipo, que junta as linhas dos dois commits, lista os dois.
 #[test]
-fn a_declaration_born_from_a_line_the_diff_calls_unchanged_still_gets_the_commit_that_made_it() {
+fn a_declaration_made_of_a_line_the_diff_calls_unchanged_keeps_the_commit_that_wrote_the_line() {
     let temp = project("scan-linhagem-nasce-de-linha-igual-");
     let dir = temp.path();
     declare_base(dir, "main");
@@ -376,8 +381,9 @@ fn a_declaration_born_from_a_line_the_diff_calls_unchanged_still_gets_the_commit
     scan(dir);
 
     let found = lineage(dir, "src/pedido.rs");
-    assert_eq!(changes(&found, "lang"), listed(&["os dois viram um tipo"]), "{found:?}");
-    assert_eq!(changes(&found, "root"), listed(&["os dois viram um tipo"]), "{found:?}");
+    assert_eq!(changes(&found, "lang"), listed(&["a função recebe os dois"]), "{found:?}");
+    assert_eq!(changes(&found, "root"), listed(&["a função recebe os dois"]), "{found:?}");
+    assert_eq!(changes(&found, "Context"), listed(&["os dois viram um tipo", "a função recebe os dois"]), "{found:?}");
 }
 
 #[test]
@@ -733,9 +739,11 @@ fn the_whole_reading_does_not_read_again_a_file_whose_history_is_still_valid() {
     commit(dir, "src/c.rs", "pub fn gama() {}\n", "cria o gama");
     scan(dir);
 
-    assert_eq!(history_all(dir, &[])["files"], json!(3), "the first reading takes every file");
+    let first = history_all(dir, &[]);
+    assert_eq!((first["files"].clone(), first["read"].clone()), (json!(3), json!(3)), "the first reading takes every file and every commit: {first}");
     let before_b = stored_lineage(dir, "src/b.rs").expect("read");
-    assert_eq!(history_all(dir, &[])["files"], json!(0), "nothing changed: no file is read again");
+    let nothing = history_all(dir, &[]);
+    assert_eq!((nothing["files"].clone(), nothing["read"].clone()), (json!(0), json!(0)), "nothing changed: nothing is read again: {nothing}");
 
     commit(dir, "src/c.rs", "pub fn gama() { 2 }\n", "muda o gama");
     scan(dir);
@@ -745,7 +753,236 @@ fn the_whole_reading_does_not_read_again_a_file_whose_history_is_still_valid() {
     assert_eq!(changes(&c, "gama"), listed(&["muda o gama", "cria o gama"]), "{c:?}");
     assert_eq!(stored_lineage(dir, "src/b.rs").expect("kept"), before_b, "the file that did not change kept its history");
 
-    assert_eq!(history_all(dir, &["--moves", "1"])["files"], json!(3), "another number of file moves is another reading of every file");
+    let moved = history_all(dir, &["--moves", "1"]);
+    assert_eq!(
+        (moved["files"].clone(), moved["read"].clone()),
+        (json!(3), json!(4)),
+        "another number of file moves is another reading of every file, from the first commit: {moved}"
+    );
+}
+
+/// A leitura seguinte parte do que a anterior guardou e pede ao git só os
+/// commits que vieram depois dela; o que sai é o mesmo que uma leitura do
+/// começo da história daria.
+#[test]
+fn the_second_reading_reads_only_the_commits_that_came_after_the_first() {
+    let temp = project("scan-historia-toda-incremental-");
+    let dir = temp.path();
+    commit(dir, "src/b.rs", "pub fn beta() {}\n", "cria o beta");
+    commit(dir, "src/c.rs", "pub fn gama(a: u32) -> u32 {\n    a + 1\n}\n", "cria o gama");
+    scan(dir);
+    let first = history_all(dir, &[]);
+    assert_eq!(first["read"], json!(3), "the first reading takes the three commits of the base: {first}");
+
+    write(dir, "src/c.rs", "pub fn gama(a: u32) -> u32 {\n    a + 2\n}\n");
+    write(dir, "src/d.rs", "pub fn delta() {}\n");
+    git(dir, &["add", "-A"]);
+    git(dir, &["commit", "-q", "-m", "muda o gama e cria o delta"]);
+    scan(dir);
+    let second = history_all(dir, &[]);
+    assert_eq!(second["read"], json!(1), "only the commit that came after the first reading is read: {second}");
+    assert_eq!(second["files"], json!(2), "the file it changed and the file it created: {second}");
+
+    let gama = stored_lineage(dir, "src/c.rs").expect("read");
+    assert_eq!(changes(&gama, "gama"), listed(&["muda o gama e cria o delta", "cria o gama"]), "{gama:?}");
+    let delta = stored_lineage(dir, "src/d.rs").expect("read");
+    assert_eq!(changes(&delta, "delta"), listed(&["muda o gama e cria o delta"]), "{delta:?}");
+
+    // A leitura do começo da história dá a mesma lista que a soma das duas.
+    let whole = lineage(dir, "src/c.rs");
+    assert_eq!(gama, whole, "the list built on top of the first reading is the list the whole history gives");
+}
+
+/// Os arquivos lidos em momentos diferentes têm pontas diferentes: cada grupo
+/// soma o que veio depois da sua, e nenhum lê o projeto desde o começo.
+#[test]
+fn files_read_at_different_moments_are_each_brought_up_to_date_from_their_own_point() {
+    let temp = project("scan-historia-toda-pontas-");
+    let dir = temp.path();
+    commit(dir, "src/b.rs", "pub fn beta() {}\n", "cria o beta");
+    commit(dir, "src/c.rs", "pub fn gama() {}\n", "cria o gama");
+    scan(dir);
+    assert_eq!(history_all(dir, &[])["read"], json!(3));
+
+    commit(dir, "src/b.rs", "pub fn beta() { 2 }\n", "muda o beta");
+    scan(dir);
+    let only_b = history_all(dir, &[]);
+    assert_eq!((only_b["files"].clone(), only_b["read"].clone()), (json!(1), json!(1)), "{only_b}");
+
+    write(dir, "src/b.rs", "pub fn beta() { 3 }\n");
+    write(dir, "src/c.rs", "pub fn gama() { 3 }\n");
+    git(dir, &["add", "-A"]);
+    git(dir, &["commit", "-q", "-m", "muda os dois"]);
+    scan(dir);
+    let both = history_all(dir, &[]);
+    assert_eq!(both["files"], json!(2), "{both}");
+    assert_eq!(both["read"], json!(2), "each file reads the one commit that came after its own reading: {both}");
+    let b = stored_lineage(dir, "src/b.rs").expect("read");
+    assert_eq!(changes(&b, "beta"), listed(&["muda os dois", "muda o beta", "cria o beta"]), "{b:?}");
+    let c = stored_lineage(dir, "src/c.rs").expect("read");
+    assert_eq!(changes(&c, "gama"), listed(&["muda os dois", "cria o gama"]), "{c:?}");
+}
+
+/// A primeira leitura de uma história grande lê só os commits mais novos e
+/// diz que parou neles; a que cabe inteira no limite não diz.
+#[test]
+fn a_first_reading_of_a_long_history_stops_at_the_newest_commits_and_says_so() {
+    let temp = project("scan-historia-toda-limite-");
+    let dir = temp.path();
+    commit(dir, "src/b.rs", "pub fn beta() {}\n", "cria o beta");
+    commit(dir, "src/b.rs", "pub fn beta() { 2 }\n", "muda o beta");
+    commit(dir, "src/b.rs", "pub fn beta() { 3 }\n", "muda o beta de novo");
+    scan(dir);
+
+    let cut = history_all(dir, &["--newest", "2"]);
+    assert_eq!((cut["read"].clone(), cut["limited"].clone()), (json!(2), json!(true)), "{cut}");
+    let b = stored_lineage(dir, "src/b.rs").expect("read");
+    assert_eq!(changes(&b, "beta"), listed(&["muda o beta de novo", "muda o beta"]), "only the two newest commits are in the list: {b:?}");
+    let a = stored_lineage(dir, "src/a.rs").expect("read");
+    assert_eq!(
+        changes(&a, "alpha"),
+        listed(&["muda o beta"]),
+        "the function no commit of the window touched is older than all of them: it keeps the oldest commit read: {a:?}"
+    );
+
+    let whole = history_all(dir, &["--newest", "4", "--moves", "1"]);
+    assert_eq!((whole["read"].clone(), whole["limited"].clone()), (json!(4), json!(false)), "the four commits fit the limit: {whole}");
+    let b = stored_lineage(dir, "src/b.rs").expect("read");
+    assert_eq!(changes(&b, "beta"), listed(&["muda o beta de novo", "muda o beta", "cria o beta"]), "{b:?}");
+}
+
+/// Quando a base foi reescrita, o commit em que a leitura anterior parou não
+/// está mais nela: soma-se nada ao que ficou, lê-se a história de novo.
+#[test]
+fn a_base_rewritten_after_the_first_reading_is_read_from_its_first_commit_again() {
+    let temp = project("scan-historia-toda-reescrita-");
+    let dir = temp.path();
+    commit(dir, "src/b.rs", "pub fn beta() {}\n", "cria o beta");
+    commit(dir, "src/c.rs", "pub fn gama() {}\n", "cria o gama");
+    scan(dir);
+    assert_eq!(history_all(dir, &[])["read"], json!(3));
+
+    write(dir, "src/c.rs", "pub fn gama() { 2 }\n");
+    git(dir, &["add", "-A"]);
+    git(dir, &["commit", "-q", "--amend", "-m", "cria o gama de outro jeito"]);
+    scan(dir);
+    let again = history_all(dir, &[]);
+    assert_eq!(again["read"], json!(3), "the last commit read is not in the base any more: every commit is read again: {again}");
+    let c = stored_lineage(dir, "src/c.rs").expect("read");
+    assert_eq!(changes(&c, "gama"), listed(&["cria o gama de outro jeito"]), "{c:?}");
+    let b = stored_lineage(dir, "src/b.rs").expect("read");
+    assert_eq!(changes(&b, "beta"), listed(&["cria o beta"]), "{b:?}");
+}
+
+/// Um arquivo que o mapa passou a ter sem que a leitura anterior o tenha
+/// visto, mas que já existia na ponta onde ela parou, tem passado que só a
+/// leitura do começo vê.
+#[test]
+fn a_file_that_existed_before_the_last_reading_and_has_no_history_is_read_from_the_first_commit() {
+    let temp = project("scan-historia-toda-arquivo-antigo-");
+    let dir = temp.path();
+    commit(dir, "src/b.rs", "pub fn beta() {}\n", "cria o beta");
+    commit(dir, "src/c.rs", "pub fn gama() {}\n", "cria o gama");
+    scan(dir);
+    assert_eq!(history_all(dir, &[])["read"], json!(3));
+    // A história de um arquivo some do mapa (a leitura dele venceu por outra
+    // razão que não a base), e outro muda: o mapa quer os dois de volta.
+    let model = model::path_in(&dir.join(".claude"));
+    let kept = stored_lineage(dir, "src/b.rs").expect("read");
+    store::save_lineage_at(&model, &FileLineage { mark: "another scan".into(), ..kept }).expect("the mark of a file is stale");
+    commit(dir, "src/c.rs", "pub fn gama() { 2 }\n", "muda o gama");
+    scan(dir);
+    let again = history_all(dir, &[]);
+    assert_eq!(again["files"], json!(2), "{again}");
+    assert_eq!(
+        again["read"],
+        json!(5),
+        "the file with no valid list existed in the tip of the last reading, so its history is read from the first commit (4), and the other file from where its own reading stopped (1): {again}"
+    );
+    let b = stored_lineage(dir, "src/b.rs").expect("read");
+    assert_eq!(changes(&b, "beta"), listed(&["cria o beta"]), "{b:?}");
+}
+
+/// O arquivo renomeado e mudado no mesmo commit, lido na passada do projeto
+/// inteiro: as declarações levam o commit em que nasceram no nome velho.
+#[test]
+fn a_file_renamed_and_edited_in_one_commit_keeps_the_birth_of_its_declarations_in_the_whole_reading() {
+    let temp = project("scan-historia-toda-renomeia-");
+    let dir = temp.path();
+    declare_base(dir, "main");
+    let junta = |n: u32| {
+        format!("pub fn junta(a: u32, b: u32) -> u32 {{\n    let soma = a + b;\n    let dobro = soma * 2;\n    soma + dobro + {n}\n}}\n")
+    };
+    commit(dir, "src/velho.rs", &junta(1), "cria o junta");
+    git(dir, &["mv", "src/velho.rs", "src/novo.rs"]);
+    write(dir, "src/novo.rs", &junta(2));
+    git(dir, &["add", "-A"]);
+    git(dir, &["commit", "-q", "-m", "renomeia e muda o junta"]);
+    scan(dir);
+
+    let report = history_all(dir, &[]);
+    assert_eq!(report["failed"], json!(0), "{report}");
+    let found = stored_lineage(dir, "src/novo.rs").expect("the history of the renamed file was written");
+    assert_eq!(changes(&found, "junta"), listed(&["renomeia e muda o junta", "cria o junta"]), "{found:?}");
+}
+
+/// A declaração cujas linhas só existem na junção — a que resolve o conflito
+/// escrevendo o que nenhum dos lados tinha — é do commit da junção.
+#[test]
+fn a_declaration_written_only_in_the_merge_gets_the_merge_commit() {
+    let temp = project("scan-historia-junta-");
+    let dir = temp.path();
+    declare_base(dir, "main");
+    let escolhe = |n: u32| format!("pub fn escolhe() -> u32 {{\n    {n}\n}}\n");
+    commit(dir, "src/escolha.rs", &escolhe(0), "cria o escolhe");
+    git(dir, &["checkout", "-q", "-b", "lado"]);
+    commit(dir, "src/escolha.rs", &escolhe(1), "o lado escolhe 1");
+    git(dir, &["checkout", "-q", "main"]);
+    commit(dir, "src/escolha.rs", &escolhe(2), "a main escolhe 2");
+    let merge = Command::new("git")
+        .args(["-c", "user.email=scan@example.com", "-c", "user.name=scan", "-c", "commit.gpgsign=false", "merge", "-q", "lado"])
+        .current_dir(dir)
+        .output()
+        .expect("run git merge");
+    assert!(!merge.status.success(), "the two sides changed the same line: the merge stops on the conflict");
+    write(
+        dir,
+        "src/escolha.rs",
+        "pub fn escolhe() -> u32 {\n    3\n}\n\npub fn soma_das_escolhas(a: u32, b: u32) -> u32 {\n    let total = a + b;\n    total + escolhe()\n}\n",
+    );
+    git(dir, &["add", "-A"]);
+    git(dir, &["commit", "-q", "-m", "junta os dois lados"]);
+    scan(dir);
+
+    let report = history_all(dir, &[]);
+    assert_eq!(report["failed"], json!(0), "{report}");
+    let found = stored_lineage(dir, "src/escolha.rs").expect("the history of the file was written");
+    assert_eq!(changes(&found, "soma_das_escolhas"), listed(&["junta os dois lados"]), "{found:?}");
+    assert_eq!(
+        changes(&found, "escolhe"),
+        listed(&["junta os dois lados", "cria o escolhe"]),
+        "the line the merge wrote is the merge's, and the header of the function is from the commit that created it: {found:?}"
+    );
+}
+
+/// A linha de fechar um bloco, ou um `else`, se repete pelo projeto todo: se
+/// ela contasse, a função que nasce com as mesmas linhas de fechar de outra
+/// que sai no mesmo commit herdaria o commit da que saiu.
+#[test]
+fn a_closing_line_repeated_elsewhere_does_not_give_a_declaration_the_commit_of_another() {
+    let temp = project("scan-linhagem-linha-banal-");
+    let dir = temp.path();
+    declare_base(dir, "main");
+    let ramos = |name: &str, arg: &str, case: u32| {
+        format!("pub fn {name}({arg}: u32) -> u32 {{\n    if {arg} > {case} {{\n        {arg} + {case}\n    }} else {{\n        {case}\n    }}\n}}\n")
+    };
+    commit(dir, "src/ramos.rs", &format!("{}\n{}", ramos("zero", "a", 10), ramos("dois", "c", 12)), "cria o zero e o dois");
+    commit(dir, "src/ramos.rs", &format!("{}\n{}", ramos("dois", "c", 12), ramos("um", "b", 11)), "troca o zero pelo um");
+    scan(dir);
+
+    let found = lineage(dir, "src/ramos.rs");
+    assert_eq!(changes(&found, "um"), listed(&["troca o zero pelo um"]), "{found:?}");
+    assert_eq!(changes(&found, "dois"), listed(&["cria o zero e o dois"]), "{found:?}");
 }
 
 /// Uma busca feita enquanto a leitura roda responde com o que já foi gravado e
@@ -758,10 +995,12 @@ fn the_whole_reading_does_not_read_again_a_file_whose_history_is_still_valid() {
 fn a_search_made_while_the_history_is_being_read_answers_with_what_is_stored() {
     let temp = project("scan-historia-toda-busca-");
     let dir = temp.path();
-    let total = 24;
+    let total = 60;
     for at in 0..total {
-        commit(dir, &format!("src/f{at}.rs"), &format!("pub fn f{at}() {{}}\n"), &format!("ajusta a f{at} do guardanapo"));
+        write(dir, &format!("src/f{at}.rs"), &format!("pub fn f{at}() {{}}\n"));
     }
+    git(dir, &["add", "-A"]);
+    git(dir, &["commit", "-q", "-m", "ajusta as funções do guardanapo"]);
     scan(dir);
     let model = model::path_in(&dir.join(".claude"));
     let languages = Languages::of(&ProjectConfig::default());
@@ -769,20 +1008,22 @@ fn a_search_made_while_the_history_is_being_read_answers_with_what_is_stored() {
         candidates_at(&model, asked, "", &languages, 100).expect("the candidates answer");
         triage_at(&model, (asked, ""), &languages, 100).expect("the search answers").files.len()
     };
-    assert_eq!(found("guardanapo"), 0, "the word is only in the commit titles, which are not read yet");
+    assert_eq!(found("guardanapo"), 0, "the word is only in the commit title, which is not read yet");
 
     let mut reading = Command::new(env!("CARGO_BIN_EXE_scan"))
-        .args(["history-all", dir.to_str().unwrap(), "--out", model.to_str().unwrap(), "--batch", "2"])
+        .args(["history-all", dir.to_str().unwrap(), "--out", model.to_str().unwrap(), "--batch", "1"])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
         .expect("run scan history-all");
     let mut seen: Vec<usize> = Vec::new();
-    while reading.try_wait().expect("wait").is_none() {
+    loop {
         seen.push(found("guardanapo"));
+        if reading.try_wait().expect("wait").is_some() {
+            break;
+        }
     }
     assert!(reading.wait().expect("wait").success(), "the reading ends well");
-    assert!(!seen.is_empty(), "the search was asked while the reading ran");
     assert!(seen.windows(2).all(|pair| pair[0] <= pair[1]), "the search only sees more as the batches are written: {seen:?}");
-    assert_eq!(found("guardanapo"), total, "after the reading every function is found by the word of its commit");
+    assert_eq!(found("guardanapo"), total, "after the reading every function is found by the word of its commit: {seen:?}");
 }

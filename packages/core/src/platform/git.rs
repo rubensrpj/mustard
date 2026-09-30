@@ -64,8 +64,9 @@
 //! propagate.
 
 use crate::domain::config::ProjectConfig;
+use std::io::{Read, Write};
 use std::path::Path;
-use std::process::Command;
+use std::process::{Child, ChildStdout, Command, Stdio};
 
 /// What a call reports when the project declares no version control at all.
 ///
@@ -160,25 +161,117 @@ pub fn run(root: &Path, args: &[&str]) -> GitRun {
 /// sem tocar o do repositório. Continua sendo o único lugar que roda o git.
 #[must_use]
 pub fn run_env(root: &Path, args: &[&str], env: &[(&str, &str)]) -> GitRun {
-    let config = owner_of(root).map(|owner| ProjectConfig::load(&owner)).unwrap_or_default();
-    let Some(binary) = config.vcs() else {
-        return GitRun { ok: false, stdout: String::new(), stderr: OPTED_OUT.to_string() };
+    let mut command = match command(root, args, env) {
+        Ok(command) => command,
+        Err(refusal) => return refusal,
     };
-    match Command::new(binary)
-        .args(args)
-        .current_dir(root)
-        .stdin(std::process::Stdio::null())
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .envs(env.iter().copied())
-        .output()
-    {
+    match command.stdin(std::process::Stdio::null()).output() {
         Ok(out) => GitRun {
             ok: out.status.success(),
             stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
             stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
         },
         Err(err) => GitRun { ok: false, stdout: String::new(), stderr: err.to_string() },
+    }
+}
+
+/// The command every call here spawns: the program the project declares, in
+/// `root`, with `args` and `env`, and nothing that could stop to ask the
+/// operator. The refusal, a [`GitRun`] that did not run, when the project
+/// controls no versions.
+fn command(root: &Path, args: &[&str], env: &[(&str, &str)]) -> Result<Command, GitRun> {
+    let config = owner_of(root).map(|owner| ProjectConfig::load(&owner)).unwrap_or_default();
+    let Some(binary) = config.vcs() else {
+        return Err(GitRun { ok: false, stdout: String::new(), stderr: OPTED_OUT.to_string() });
+    };
+    let mut command = Command::new(binary);
+    command
+        .args(args)
+        .current_dir(root)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .envs(env.iter().copied());
+    Ok(command)
+}
+
+/// A git that runs on its own while the caller reads what it prints, piece by
+/// piece, instead of waiting for the whole answer to sit in memory. It is the
+/// same program, in the same place and with the same care as [`run`]; what
+/// changes is only that the output is a stream: the history of a large project
+/// is hundreds of megabytes, and nothing needs it all at once.
+///
+/// Reading it is [`Read`]; [`GitStream::finish`] waits for git and says whether
+/// it ended well. Standard error is drained on the side, so a git that writes
+/// a lot of it never blocks against a caller that is reading standard output.
+pub struct GitStream {
+    child: Child,
+    stdout: ChildStdout,
+    stderr: Option<std::thread::JoinHandle<String>>,
+    feeder: Option<std::thread::JoinHandle<()>>,
+}
+
+impl GitStream {
+    /// Starts git in `root` with `args`. `input`, when it comes, is written to
+    /// its standard input from a thread of its own, so a git that answers as it
+    /// reads (`cat-file --batch`) never blocks against a caller that is still
+    /// reading; without it, standard input is closed.
+    ///
+    /// # Errors
+    ///
+    /// Why git did not start: the project that controls no versions, or the
+    /// program that could not be spawned.
+    pub fn spawn(root: &Path, args: &[&str], input: Option<Vec<u8>>) -> Result<GitStream, String> {
+        let mut command = command(root, args, &[]).map_err(|refusal| refusal.stderr)?;
+        command
+            .stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() })
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = command.spawn().map_err(|err| err.to_string())?;
+        let stdout = child.stdout.take().ok_or("git has no standard output")?;
+        let mut stderr = child.stderr.take().ok_or("git has no standard error")?;
+        let stderr = std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let _ = stderr.read_to_end(&mut bytes);
+            String::from_utf8_lossy(&bytes).into_owned()
+        });
+        let feeder = match (input, child.stdin.take()) {
+            (Some(input), Some(mut stdin)) => Some(std::thread::spawn(move || {
+                // Quem fecha a saída antes de mandar tudo deixa o git sem quem
+                // leia: a escrita quebrada não é erro de quem alimenta.
+                let _ = stdin.write_all(&input);
+            })),
+            _ => None,
+        };
+        Ok(GitStream { child, stdout, stderr: Some(stderr), feeder })
+    }
+
+    /// Waits for git to end and says how it went: `Ok` only when it exited
+    /// zero, and otherwise its standard error, trimmed.
+    ///
+    /// # Errors
+    ///
+    /// The trimmed standard error of a git that failed.
+    pub fn finish(self) -> Result<(), String> {
+        let GitStream { mut child, stdout, stderr, feeder } = self;
+        // Fechar a leitura antes de esperar: o git que ainda escreve recebe o
+        // aviso de que ninguém lê mais e termina, em vez de esperar para sempre.
+        drop(stdout);
+        if let Some(feeder) = feeder {
+            let _ = feeder.join();
+        }
+        let status = child.wait().map_err(|err| err.to_string())?;
+        let stderr = stderr.and_then(|handle| handle.join().ok()).unwrap_or_default();
+        if status.success() {
+            Ok(())
+        } else {
+            Err(stderr.trim().to_string())
+        }
+    }
+}
+
+impl Read for GitStream {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.stdout.read(buf)
     }
 }
 
@@ -246,6 +339,58 @@ mod tests {
         assert!(!refused.ok);
         let message = refused.result().unwrap_err();
         assert!(!message.is_empty(), "o motivo da recusa é passado adiante");
+    }
+
+    /// Um repositório com um arquivo comitado, para os testes da leitura em
+    /// fluxo; `None` onde não há git utilizável.
+    fn repository_with_a_file() -> Option<tempfile::TempDir> {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        if !run(root, &["init", "-q", "-b", "trunk", "."]).ok {
+            return None;
+        }
+        std::fs::write(root.join("a.txt"), "um\ndois\n").unwrap();
+        assert!(run(root, &["add", "."]).ok);
+        assert!(run(root, &["-c", "user.email=t@t.t", "-c", "user.name=t", "commit", "-q", "-m", "primeiro"]).ok);
+        Some(tmp)
+    }
+
+    /// A saída do git chega por quem lê o fluxo, e o fim dele diz que deu
+    /// certo.
+    #[test]
+    fn a_stream_of_git_hands_over_the_output_and_ends_well() {
+        let Some(tmp) = repository_with_a_file() else { return };
+        let mut stream = GitStream::spawn(tmp.path(), &["log", "--format=%s"], None).unwrap();
+        let mut text = String::new();
+        stream.read_to_string(&mut text).unwrap();
+        assert_eq!(text.trim(), "primeiro");
+        assert_eq!(stream.finish(), Ok(()));
+    }
+
+    /// O git que recusa termina com o texto da recusa, como a corrida comum.
+    #[test]
+    fn a_stream_of_a_git_that_refuses_ends_with_the_reason() {
+        let Some(tmp) = repository_with_a_file() else { return };
+        let mut stream = GitStream::spawn(tmp.path(), &["rev-parse", "--verify", "naoexiste"], None).unwrap();
+        let mut text = String::new();
+        stream.read_to_string(&mut text).unwrap();
+        let reason = stream.finish().unwrap_err();
+        assert!(!reason.is_empty(), "the reason of the refusal is not lost");
+    }
+
+    /// O que se manda à entrada do git chega a ele, e a resposta volta pelo
+    /// mesmo fluxo: é assim que um `cat-file --batch` lê muitos arquivos numa
+    /// chamada só.
+    #[test]
+    fn what_a_stream_is_given_as_input_reaches_git_and_the_answer_comes_back() {
+        let Some(tmp) = repository_with_a_file() else { return };
+        let input = b"HEAD:a.txt\nHEAD:missing.txt\n".to_vec();
+        let mut stream = GitStream::spawn(tmp.path(), &["cat-file", "--batch"], Some(input)).unwrap();
+        let mut text = String::new();
+        stream.read_to_string(&mut text).unwrap();
+        assert!(text.contains("blob 8\num\ndois\n"), "the file came with its size: {text:?}");
+        assert!(text.contains("HEAD:missing.txt missing"), "the file that is not there is said to be missing: {text:?}");
+        assert_eq!(stream.finish(), Ok(()));
     }
 
     /// A marca que só o programa falso imprime: o git nunca a responderia.

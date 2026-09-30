@@ -46,7 +46,9 @@ fn the_scan_writes_the_database_and_deletes_the_json_map_of_before() {
     let db = std::fs::read(model::path_in(&folder)).unwrap();
     assert!(db.starts_with(b"SQLite format 3\0"), "the map is a SQLite database");
     assert!(!folder.join(store::LEGACY_MAP_FILE_NAME).exists(), "the JSON map of before is deleted");
-    assert!(!folder.join(store::MAP_JOURNAL_FILE_NAME).exists(), "no journal is left behind");
+    for beside in [store::MAP_JOURNAL_FILE_NAME, store::MAP_WAL_FILE_NAME, store::MAP_SHARED_FILE_NAME] {
+        assert!(!folder.join(beside).exists(), "{beside} is not left behind");
+    }
 
     let alpha = map["modules"]
         .as_array()

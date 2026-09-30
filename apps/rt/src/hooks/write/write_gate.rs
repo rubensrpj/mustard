@@ -576,9 +576,47 @@ fn local_tree_of(input: &HookInput, root: &str) -> String {
     root.to_string()
 }
 
+/// A conversa de teste da busca: a spec aberta e a sessão ligada a ela, e as
+/// chamadas medidas que a busca por palavra gravou nela.
+#[cfg(test)]
+pub(crate) mod conversation_fixture {
+    use std::path::Path;
+
+    use mustard_core::domain::spec_state::SpecState;
+    use serde_json::{json, Map, Value};
+
+    use crate::shared::context::session::bind_session_spec;
+    use crate::shared::spec_state::DiskSpecState;
+
+    /// Abre a spec `spec` no projeto e liga a sessão `session` a ela: a spec
+    /// da conversa, onde a chamada medida da busca é gravada.
+    pub(crate) fn converse(root: &Path, spec: &str, session: &str) {
+        std::fs::create_dir_all(root.join(".claude/spec").join(spec)).expect("spec folder");
+        let opened = crate::commands::spec_events::write::record_open(root, spec, &format!("feature/{spec}"), "dev");
+        assert_eq!(opened, Ok(true), "the spec opens");
+        bind_session_spec(&root.to_string_lossy(), session, spec);
+    }
+
+    /// As chamadas `word search` gravadas na spec `spec`, com os campos de
+    /// cada uma.
+    pub(crate) fn word_searches(root: &Path, spec: &str) -> Vec<Map<String, Value>> {
+        DiskSpecState::new(root)
+            .log(spec)
+            .map(|log| {
+                log.visible()
+                    .into_iter()
+                    .filter(|event| event.event_type == "call" && event.fields.get("command") == Some(&json!("word search")))
+                    .map(|event| event.fields.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::conversation_fixture::{converse, word_searches};
     use crate::shared::code_route::fixture;
     use crate::shared::context::session::bind_session_spec;
     use crate::shared::spec_state::stand_on_spec_branch;
@@ -1738,5 +1776,80 @@ mod tests {
         let (_plain, plain) = fixture::project("{}", true);
         let tool_input = json!({ "pattern": "key", "glob": "*.json", "output_mode": "content" });
         assert_eq!(hook_on(&plain, "Grep", tool_input), Verdict::Allow);
+    }
+
+    /// A busca parcial do `Grep`, pelo gancho de verdade, vai ao filtro que a
+    /// sessão tem, e a chamada medida dela fica gravada na spec da conversa:
+    /// o comando, o filtro, quantos candidatos foram e quantas peças
+    /// voltaram. A resposta traz só a peça que o filtro entregou.
+    #[test]
+    fn a_partial_grep_through_the_hook_records_its_measured_call_in_the_conversation_spec() {
+        let (_dir, root) = word_search::fixture::repo("{}");
+        converse(&root, "conversa", "s-grava");
+        let judge = word_search::fixture::Judge::sure_of(&[("calcular_frete", 0.9)]);
+        let tool_input = json!({ "pattern": "imposto", "output_mode": "content" });
+
+        let verdict = judge.installed(|| hook_in(&root, "Grep", tool_input, Some("s-grava")));
+
+        let reason = refused(verdict, "the partial search that shows lines");
+        assert!(reason.contains("src/frete.rs\n  2-6 calcular_frete (3)"), "{reason}");
+        assert!(!reason.contains("desconto_frete"), "only what the filter delivered: {reason}");
+        assert_eq!(judge.calls(), 1, "the filter of the session is the one asked");
+        let calls = word_searches(&root, "conversa");
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        let call = &calls[0];
+        assert_eq!(call["author"], json!("binary"));
+        assert_eq!(call["result"], json!("ok"));
+        assert_eq!(
+            [&call["filter"], &call["candidates"], &call["returned"]],
+            [&json!("jev"), &json!(2), &json!(1)],
+            "the measure of the filter travels with the call: {call:?}"
+        );
+    }
+
+    /// O filtro que falha na busca parcial deixa a resposta da triagem, e a
+    /// chamada fica gravada mesmo assim, com o motivo no nome do filtro.
+    #[test]
+    fn a_partial_grep_whose_filter_fails_records_the_call_with_the_reason() {
+        let (_dir, root) = word_search::fixture::repo("{}");
+        converse(&root, "conversa", "s-falha");
+        let judge = word_search::fixture::Judge::failing(mustard_core::domain::map_filter::FilterError::Timeout);
+        let tool_input = json!({ "pattern": "imposto", "output_mode": "content" });
+
+        let verdict = judge.installed(|| hook_in(&root, "Grep", tool_input, Some("s-falha")));
+
+        let reason = refused(verdict, "the partial search with a failing filter");
+        assert!(reason.contains("src/frete.rs"), "the triage answers: {reason}");
+        let calls = word_searches(&root, "conversa");
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        assert!(calls[0]["filter"].as_str().is_some_and(|name| name.starts_with("jev:")), "{:?}", calls[0]);
+    }
+
+    /// Nenhuma chamada é gravada quando a busca não chega ao filtro — a
+    /// cravada, a que só lista nomes e a busca por nome de arquivo — nem
+    /// quando a sessão não tem spec para receber a conversa; a resposta sai
+    /// do mesmo jeito.
+    #[test]
+    fn a_search_the_filter_never_judges_or_a_session_with_no_spec_records_no_call() {
+        let (_dir, root) = word_search::fixture::repo("{}");
+        converse(&root, "conversa", "s-cala");
+        let judge = word_search::fixture::Judge::sure_of(&[("calcular_frete", 0.9)]);
+
+        judge.installed(|| {
+            let pinned = json!({ "pattern": "fechar_pedido", "output_mode": "content" });
+            refused(hook_in(&root, "Grep", pinned, Some("s-cala")), "the pinned search");
+            let names_only = json!({ "pattern": "imposto", "output_mode": "files_with_matches" });
+            assert!(matches!(hook_in(&root, "Grep", names_only, Some("s-cala")), Verdict::Inject { .. }));
+            let by_name = json!({ "pattern": "**/*frete*.rs" });
+            assert!(matches!(hook_in(&root, "Glob", by_name, Some("s-cala")), Verdict::Inject { .. }));
+        });
+        assert_eq!(judge.calls(), 0, "the filter is never asked");
+        assert!(word_searches(&root, "conversa").is_empty());
+
+        let lines = json!({ "pattern": "imposto", "output_mode": "content" });
+        let reason = refused(judge.installed(|| hook_in(&root, "Grep", lines, Some("s-sem-spec"))), "the search with no spec");
+        assert!(reason.contains("src/frete.rs\n  2-6 calcular_frete (3)"), "the answer does not need the spec: {reason}");
+        assert_eq!(judge.calls(), 1);
+        assert!(word_searches(&root, "conversa").is_empty(), "a session bound to no spec writes to no spec");
     }
 }

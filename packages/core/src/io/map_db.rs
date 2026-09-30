@@ -22,10 +22,14 @@
 //! novo gravou — fica como está: não se apaga, e o resto do mapa se lê.
 //!
 //! Toda gravação passa pela mesma porta ([`MapDb::write`]), numa transação
-//! só, e quem lê nunca vê um bloco pela metade. O diário é o `DELETE` do
-//! SQLite: existe só enquanto a transação dura e some no commit, sem arquivo
-//! permanente ao lado do mapa. Duas gravações ao mesmo tempo esperam a vez
-//! pela espera de trava, em vez de uma recusar a outra.
+//! só, e quem lê nunca vê um bloco pela metade. O diário é o `WAL` do SQLite:
+//! quem lê não espera quem grava, e quem grava não derruba quem lê, que é o
+//! que a busca precisa enquanto o scan grava a história do projeto em lotes.
+//! Com o diário `DELETE`, o leitor que chega entre dois commits seguidos podia
+//! voltar com o banco travado sem passar pela espera de trava. Os arquivos que
+//! o `WAL` põe ao lado do mapa existem só enquanto há conexão aberta: o último
+//! a fechar os junta ao mapa e os apaga. Duas gravações ao mesmo tempo esperam
+//! a vez pela espera de trava, em vez de uma recusar a outra.
 //!
 //! Bloco novo se declara no módulo dono, e este módulo não muda.
 
@@ -42,7 +46,7 @@ const BLOCKS_TABLE: &str = "blocks";
 
 /// Quanto uma gravação espera a trava de outra antes de desistir. O scan
 /// inteiro regrava o mapa em cerca de um segundo num projeto grande.
-const BUSY_WAIT: Duration = Duration::from_secs(10);
+const BUSY_WAIT: Duration = Duration::from_secs(5);
 
 /// Refaz um bloco a partir do código, do git ou das specs do projeto em
 /// `root`. Roda dentro da transação que já apagou e recriou as tabelas do
@@ -119,10 +123,12 @@ impl MapDb {
         let mut conn = Connection::open(path)?;
         // A espera vem antes de tudo: até trocar o diário pede a trava.
         conn.busy_timeout(wait)?;
-        // Um mapa que outro programa tenha posto em outro diário volta ao
-        // `DELETE`, que não deixa arquivo ao lado depois do commit.
-        let mode: String = conn.pragma_update_and_check(None, "journal_mode", "DELETE", |row| row.get(0))?;
-        if !mode.eq_ignore_ascii_case("delete") {
+        // Um mapa em outro diário passa ao `WAL`, que fica gravado no arquivo:
+        // as aberturas seguintes não pedem trava nenhuma. O disco que não
+        // guarda o `WAL` (memória compartilhada que ele não dá) deixa o mapa
+        // no `DELETE`, que também vale; qualquer outro diário é recusado.
+        let mode: String = conn.pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get(0))?;
+        if !mode.eq_ignore_ascii_case("wal") && !mode.eq_ignore_ascii_case("delete") {
             return Err(Error::Io(std::io::Error::other(format!("map journal stayed `{mode}`"))));
         }
         for block in blocks {
@@ -488,24 +494,43 @@ mod tests {
         );
     }
 
+    /// O modo de diário que a conexão `conn` vê no arquivo do mapa.
+    fn journal_of(conn: &Connection) -> String {
+        conn.pragma_query_value(None, "journal_mode", |row| row.get(0)).unwrap()
+    }
+
     #[test]
-    fn no_journal_file_is_left_beside_the_map_after_a_write() {
+    fn a_map_left_in_the_rollback_journal_passes_to_wal_when_it_is_opened() {
         let dir = tempdir().unwrap();
-        // Outro programa deixou o mapa num diário que fica ao lado do arquivo.
         std::fs::create_dir_all(dir.path().join(".claude")).unwrap();
         let other = Connection::open(map_in(dir.path())).unwrap();
-        let mode: String = other.pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get(0)).unwrap();
-        assert_eq!(mode, "wal");
+        let mode: String = other.pragma_update_and_check(None, "journal_mode", "DELETE", |row| row.get(0)).unwrap();
+        assert_eq!(mode, "delete");
         drop(other);
 
         let mut db = MapDb::open(&map_in(dir.path()), dir.path(), &[DECLS_V1, NOTES_V1]).unwrap();
         put(&mut db, "INSERT INTO notes VALUES ('a.rs', 'reads the git log');");
-        // Com a conexão ainda aberta: um diário que ficasse estaria aqui.
-        let mut files: Vec<String> = std::fs::read_dir(dir.path().join(".claude"))
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-            .collect();
-        files.sort();
-        assert_eq!(files, vec![MAP_FILE_NAME]);
+        assert_eq!(journal_of(db.conn()), "wal");
+        assert_eq!(journal_of(&Connection::open(map_in(dir.path())).unwrap()), "wal", "the mode stays in the file");
+    }
+
+    #[test]
+    fn no_file_is_left_beside_the_map_once_the_last_connection_closes() {
+        let dir = tempdir().unwrap();
+        let mut db = MapDb::open(&map_in(dir.path()), dir.path(), &[DECLS_V1, NOTES_V1]).unwrap();
+        put(&mut db, "INSERT INTO notes VALUES ('a.rs', 'reads the git log');");
+        let beside = || -> Vec<String> {
+            let mut files: Vec<String> = std::fs::read_dir(dir.path().join(".claude"))
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            files.sort();
+            files
+        };
+        let reader = MapDb::open(&map_in(dir.path()), dir.path(), &[]).unwrap();
+        drop(db);
+        assert!(beside().len() > 1, "while a connection is open the log of the writes is beside the map: {:?}", beside());
+        drop(reader);
+        assert_eq!(beside(), vec![MAP_FILE_NAME], "the last one to close joins the log to the map and deletes it");
     }
 }

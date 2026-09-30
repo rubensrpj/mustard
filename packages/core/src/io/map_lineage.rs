@@ -8,8 +8,8 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
 use crate::domain::ast::is_test_path;
-use crate::domain::project_map::{lineage_fresh_in, MapRefusal};
-use crate::io::project_map::{history_at, lineage_heads, open_existing, unreadable, CENSUS};
+use crate::domain::project_map::{lineage_fresh_in, FileLineage, MapRefusal};
+use crate::io::project_map::{history_at, lineage_heads, lineages, open_existing, unreadable, CENSUS};
 use crate::platform::error::Result;
 
 /// O arquivo de trava da leitura da história do mapa em `model`: na pasta
@@ -74,11 +74,32 @@ pub fn wanted_at(model: &Path, moves: usize) -> std::result::Result<Vec<String>,
     read().map_err(unreadable)
 }
 
+/// Quantos caminhos vão numa pergunta só ao banco: o limite de variáveis de
+/// uma consulta é de centenas nas versões mais antigas do SQLite.
+const PATHS_PER_QUERY: usize = 500;
+
+/// A história guardada dos arquivos `paths` do mapa em `model`, inteira — os
+/// commits e as declarações —, na ordem em que se gravou. O arquivo sem
+/// história guardada não vem. É de onde a leitura que só soma o que é novo
+/// parte: a história que já vale de cada arquivo.
+///
+/// # Errors
+///
+/// As recusas de todo leitor do mapa.
+pub fn stored_at(model: &Path, paths: &[&str]) -> std::result::Result<Vec<FileLineage>, MapRefusal> {
+    let db = open_existing(model)?;
+    let mut found = Vec::new();
+    for chunk in paths.chunks(PATHS_PER_QUERY) {
+        found.extend(lineages(db.conn(), Some(chunk)).map_err(unreadable)?);
+    }
+    Ok(found)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::domain::normalize::Languages;
-    use crate::domain::project_map::FileLineage;
+    use crate::domain::project_map::{DeclChange, DeclLineage, LineageCommit};
     use crate::io::project_map::{model_path, save_at, save_lineage_at};
     use serde_json::{json, Value};
     use tempfile::{tempdir, TempDir};
@@ -167,6 +188,32 @@ mod tests {
         none["history"] = json!({"missing": "no_base", "paths": [], "commits": []});
         let dir = saved(&none);
         assert!(wanted_at(&model_path(dir.path()), 3).unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_stored_history_of_the_asked_files_comes_whole_with_the_tip_it_was_read_at() {
+        let dir = saved(&map());
+        let model = model_path(dir.path());
+        let with_tip = |path: &str, tip: &str| FileLineage {
+            tip: tip.into(),
+            commits: vec![LineageCommit { id: "c1".into(), at: 10, title: "cria".into(), ..LineageCommit::default() }],
+            declarations: vec![DeclLineage {
+                name: "f".into(),
+                commits: vec![DeclChange { id: "c1".into(), form: false }],
+                ..DeclLineage::default()
+            }],
+            ..read(path, 3, 0)
+        };
+        save_lineage_at(&model, &with_tip("src/a.rs", "tip-a")).unwrap();
+        save_lineage_at(&model, &with_tip("src/b.rs", "tip-b")).unwrap();
+
+        let found = stored_at(&model, &["src/b.rs", "src/c.rs"]).unwrap();
+        assert_eq!(found, [with_tip("src/b.rs", "tip-b")], "the asked file with a history comes whole, and the one without does not");
+
+        // Mais caminhos que o banco aceita numa pergunta só: nenhum some.
+        let many: Vec<String> = (0..1_200).map(|at| format!("src/none{at}.rs")).chain(["src/a.rs".to_string()]).collect();
+        let many: Vec<&str> = many.iter().map(String::as_str).collect();
+        assert_eq!(stored_at(&model, &many).unwrap(), [with_tip("src/a.rs", "tip-a")]);
     }
 
     #[test]

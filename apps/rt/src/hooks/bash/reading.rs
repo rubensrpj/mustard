@@ -549,6 +549,7 @@ fn wildcard_path(path: &str) -> Option<(String, String)> {
 mod tests {
     use super::*;
     use super::super::lex::segments;
+    use crate::hooks::write::write_gate::conversation_fixture::{converse, word_searches};
     use crate::shared::code_route::fixture;
     use mustard_core::domain::model::contract::Trigger;
 
@@ -1469,5 +1470,34 @@ mod tests {
             assert_eq!(run(&root, command), Verdict::Allow, "{command}: the pathspec that leaves the file out passes");
         }
         refused(run(&root, "git grep --no-index -n jev -- . ':!other.json'"), "an exclusion of another file");
+    }
+
+    /// A busca parcial do terminal, pelo gancho de verdade, vai ao filtro que
+    /// a sessão tem, e a chamada medida dela fica gravada na spec da conversa,
+    /// como a da ferramenta de busca; a cravada não chega ao filtro e não
+    /// grava nada.
+    #[test]
+    fn a_partial_terminal_search_records_its_measured_call_in_the_conversation_spec() {
+        let (_dir, root) = word_search::fixture::repo("{}");
+        converse(&root, "conversa", "s-terminal");
+        let judge = word_search::fixture::Judge::sure_of(&[("calcular_frete", 0.9)]);
+
+        let reason = refused(judge.installed(|| run_in(&root, "grep -rn imposto .", Some("s-terminal"))), "grep -rn imposto .");
+
+        assert!(reason.contains("src/frete.rs\n  2-6 calcular_frete (3)"), "{reason}");
+        assert!(!reason.contains("desconto_frete"), "only what the filter delivered: {reason}");
+        assert_eq!(judge.calls(), 1);
+        let calls = word_searches(&root, "conversa");
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        assert_eq!(
+            [&calls[0]["filter"], &calls[0]["candidates"], &calls[0]["returned"]],
+            [&serde_json::json!("jev"), &serde_json::json!(2), &serde_json::json!(1)],
+            "{:?}",
+            calls[0]
+        );
+
+        refused(judge.installed(|| run_in(&root, "grep -rn fechar_pedido .", Some("s-terminal"))), "the pinned search");
+        assert_eq!(judge.calls(), 1, "the pinned search never reaches the filter");
+        assert_eq!(word_searches(&root, "conversa").len(), 1, "and records no call");
     }
 }

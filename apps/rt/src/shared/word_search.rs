@@ -49,7 +49,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use mustard_core::domain::map_filter::Verdict;
+use mustard_core::domain::map_filter::{FilterError, Verdict};
 use mustard_core::domain::model::contract::{Ctx, HookInput};
 use mustard_core::domain::normalize::Languages;
 use mustard_core::domain::project_map::{self, FilePart, FileParts};
@@ -69,7 +69,7 @@ use crate::shared::code_route::{admitted, holds_code, parts_in_copy, ProjectPath
 use crate::shared::config_key::{NameFilter, Walk, CONFIG_FILE};
 use crate::shared::paths::{is_artifact, sensitive_pattern};
 use crate::shared::say::say;
-use crate::shared::search_door::{self as door, Ask, Assemble, Numbers, Outcome, Piece};
+use crate::shared::search_door::{self as door, Ask, Assemble, Assembled, Numbers, Outcome, Piece};
 
 /// Quantos arquivos a resposta mostra: os primeiros da triagem. É o corte da
 /// busca por assunto do mapa.
@@ -225,10 +225,21 @@ fn with_scene<T>(
         lang: ctx.config.language().text_or_default(),
         languages: &Languages::of(&ctx.config),
         config: &ctx.config,
-        assemble: &door::jev,
+        assemble: &hook_assemble,
         record,
     };
     run(&scene)
+}
+
+/// A montagem do filtro da cena do gancho: o Jev de verdade, com a chave do
+/// projeto. Nos testes, o filtro que `fixture::with_filter` pôs nesta linha
+/// de execução tem a vez, e o gancho inteiro roda sem rede e sem chave.
+fn hook_assemble(root: &Path, config: &ProjectConfig) -> Result<Assembled, FilterError> {
+    #[cfg(test)]
+    if let Some(assemble) = fixture::installed_filter() {
+        return assemble(root, config);
+    }
+    door::jev(root, config)
 }
 
 /// O arquivo do estado da sessão `session` do projeto `root`, e o do
@@ -1150,6 +1161,11 @@ pub(crate) mod fixture {
     use std::path::{Path, PathBuf};
     use std::process::Command;
 
+    use mustard_core::domain::map_filter::{judged, FilterError, FilterRequest, FilterUsage, Filtered, MapFilter, Scored};
+    use mustard_core::ProjectConfig;
+
+    use crate::shared::search_door::Assembled;
+
     /// O arquivo do frete: `calcular_frete` nas linhas 2 a 6 (a palavra
     /// `imposto` só aparece num comentário) e `desconto_frete` de 8 a 10.
     pub(crate) const FRETE: &str = "// Frete do pedido.\npub fn calcular_frete(peso: u32) -> u32 {\n    // imposto embutido\n    let base = peso * 2;\n    base + 10\n}\n\npub fn desconto_frete(total: u32) -> u32 {\n    total / 10\n}\n";
@@ -1212,17 +1228,113 @@ pub(crate) mod fixture {
         ] });
         repo_with(config, &[("src/frete.rs", FRETE), ("src/pedido.rs", PEDIDO), ("docs/notas.md", NOTAS)], map)
     }
+
+    /// A montagem do filtro que um teste põe no lugar do Jev.
+    pub(crate) type TestAssemble = std::rc::Rc<dyn Fn(&Path, &ProjectConfig) -> Result<Assembled, FilterError>>;
+
+    thread_local! {
+        /// O filtro que o gancho monta nesta linha de execução no lugar do Jev.
+        static FILTER: std::cell::RefCell<Option<TestAssemble>> = const { std::cell::RefCell::new(None) };
+    }
+
+    /// O filtro que o teste pôs nesta linha de execução, se pôs.
+    pub(crate) fn installed_filter() -> Option<TestAssemble> {
+        FILTER.with(|cell| cell.borrow().clone())
+    }
+
+    /// Roda `run` com o filtro que `assemble` monta no lugar do Jev em todo
+    /// gancho de busca desta linha de execução, e o tira ao fim, também quando
+    /// `run` falha.
+    pub(crate) fn with_filter<T>(assemble: TestAssemble, run: impl FnOnce() -> T) -> T {
+        struct Leaves;
+        impl Drop for Leaves {
+            fn drop(&mut self) {
+                FILTER.with(|cell| *cell.borrow_mut() = None);
+            }
+        }
+        FILTER.with(|cell| *cell.borrow_mut() = Some(assemble));
+        let _leaves = Leaves;
+        run()
+    }
+
+    /// Um filtro de mentira: guarda cada pedido e dá a chance de cada
+    /// candidato pelo nome (`chances`, e 0,01 para os outros), com a chance
+    /// de "nenhum destes" e a confiança dadas; ou falha com `error`.
+    #[derive(Clone)]
+    pub(crate) struct Judge {
+        asked: std::rc::Rc<std::cell::RefCell<Vec<FilterRequest>>>,
+        chances: Vec<(&'static str, f64)>,
+        none: f64,
+        confidence: f64,
+        error: Option<FilterError>,
+    }
+
+    impl MapFilter for Judge {
+        fn filter(&self, request: &FilterRequest) -> Result<Filtered, FilterError> {
+            self.asked.borrow_mut().push(request.clone());
+            if let Some(error) = &self.error {
+                return Err(error.clone());
+            }
+            let scores: Vec<Scored> = request
+                .candidates
+                .iter()
+                .map(|candidate| {
+                    let chance = self.chances.iter().find(|(name, _)| *name == candidate.name).map_or(0.01, |(_, chance)| *chance);
+                    Scored { id: candidate.id, score: chance }
+                })
+                .collect();
+            let (verdict, kept) = judged(&scores, self.none, self.confidence, request.share);
+            Ok(Filtered { verdict, kept, usage: FilterUsage::default() })
+        }
+    }
+
+    impl Judge {
+        /// O filtro seguro: dá `chances` e quase nenhuma a "nenhum destes".
+        pub(crate) fn sure_of(chances: &[(&'static str, f64)]) -> Self {
+            Self { asked: std::rc::Rc::default(), chances: chances.to_vec(), none: 0.01, confidence: 0.9, error: None }
+        }
+
+        /// O filtro que acha que nenhum candidato serve.
+        pub(crate) fn finding_none() -> Self {
+            Self { none: 0.9, ..Self::sure_of(&[]) }
+        }
+
+        pub(crate) fn failing(error: FilterError) -> Self {
+            Self { error: Some(error), ..Self::sure_of(&[]) }
+        }
+
+        /// A montagem que entrega este filtro, como a chave no projeto.
+        pub(crate) fn assemble(&self) -> impl Fn(&Path, &ProjectConfig) -> Result<Assembled, FilterError> + '_ {
+            move |_, _| Ok(Assembled { name: "jev", filter: Box::new(self.clone()), warning: None })
+        }
+
+        /// Roda `run` com este filtro no lugar do Jev em todo gancho de busca
+        /// desta linha de execução: o gancho inteiro, sem rede e sem chave.
+        pub(crate) fn installed<T>(&self, run: impl FnOnce() -> T) -> T {
+            let judge = self.clone();
+            with_filter(
+                std::rc::Rc::new(move |_: &Path, _: &ProjectConfig| {
+                    Ok(Assembled { name: "jev", filter: Box::new(judge.clone()), warning: None })
+                }),
+                run,
+            )
+        }
+
+        pub(crate) fn calls(&self) -> usize {
+            self.asked.borrow().len()
+        }
+
+        pub(crate) fn last(&self) -> FilterRequest {
+            self.asked.borrow().last().cloned().expect("the filter was called")
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::fixture::{self, git};
+    use super::fixture::{self, git, Judge};
     use super::*;
-    use crate::shared::search_door::Assembled;
     use crate::shared::code_route::project_path;
-    use mustard_core::domain::map_filter::{
-        judged, FilterError, FilterRequest, FilterUsage, Filtered, MapFilter, Scored,
-    };
     use mustard_core::domain::triage::{Lead, Signals};
 
     fn owned(items: &[&str]) -> Vec<String> {
@@ -1724,64 +1836,57 @@ mod tests {
         assert_eq!(search_in(&bare, &bare, &["calcular_frete"], &["src"]), Reply::Pass, "no map, no answer, no error");
     }
 
-    /// Um filtro de mentira: guarda cada pedido e dá a chance de cada
-    /// candidato pelo nome (`chances`, e 0,01 para os outros), com a chance
-    /// de "nenhum destes" e a confiança dadas; ou falha com `error`.
-    #[derive(Clone)]
-    struct Judge {
-        asked: std::rc::Rc<std::cell::RefCell<Vec<FilterRequest>>>,
-        chances: Vec<(&'static str, f64)>,
-        none: f64,
-        confidence: f64,
-        error: Option<FilterError>,
+    /// O filtro que um teste põe no gancho vale só enquanto o teste o pede:
+    /// a montagem do gancho o entrega dentro do escopo, e depois dele — na
+    /// volta normal ou com o teste em pânico — a montagem é a de verdade.
+    #[test]
+    fn the_filter_a_test_installs_answers_the_hook_only_inside_its_scope() {
+        let (_dir, root) = fixture::repo("{}");
+        let config = ProjectConfig::load(&root);
+        let judge = Judge::sure_of(&[]);
+        let stub: fixture::TestAssemble = std::rc::Rc::new(move |_: &Path, _: &ProjectConfig| {
+            Ok(Assembled { name: "de-mentira", filter: Box::new(judge.clone()), warning: None })
+        });
+        let named = |root: &Path| hook_assemble(root, &config).map(|assembled| assembled.name);
+
+        assert_eq!(fixture::with_filter(stub.clone(), || named(&root)), Ok("de-mentira"));
+        assert_ne!(named(&root), Ok("de-mentira"), "the scope is over");
+
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| fixture::with_filter(stub, || panic!("o teste falhou"))));
+        assert!(panicked.is_err());
+        assert_ne!(named(&root), Ok("de-mentira"), "a failing test leaves no filter behind");
     }
 
-    impl MapFilter for Judge {
-        fn filter(&self, request: &FilterRequest) -> Result<Filtered, FilterError> {
-            self.asked.borrow_mut().push(request.clone());
-            if let Some(error) = &self.error {
-                return Err(error.clone());
-            }
-            let scores: Vec<Scored> = request
-                .candidates
-                .iter()
-                .map(|candidate| {
-                    let chance = self.chances.iter().find(|(name, _)| *name == candidate.name).map_or(0.01, |(_, chance)| *chance);
-                    Scored { id: candidate.id, score: chance }
-                })
-                .collect();
-            let (verdict, kept) = judged(&scores, self.none, self.confidence, request.share);
-            Ok(Filtered { verdict, kept, usage: FilterUsage::default() })
-        }
-    }
+    /// O gancho de busca entrega a chamada medida à gravação que recebe,
+    /// com o filtro que o teste pôs no lugar do Jev: sem rede e sem chave.
+    #[test]
+    fn the_hook_reply_asks_the_installed_filter_and_hands_its_call_to_the_recorder() {
+        let (_dir, root) = fixture::repo("{}");
+        let judge = Judge::sure_of(&[("calcular_frete", 0.9)]);
+        let calls = Calls::default();
+        let patterns = owned(&["imposto"]);
+        let folders = [project_path(&root.to_string_lossy(), &root.to_string_lossy(), ".").expect("the root")];
+        let search = Search {
+            patterns: &patterns,
+            dialect: Dialect::Rust,
+            ignore_case: false,
+            whole_word: false,
+            folders: &folders,
+            filters: &[],
+            walk: Walk::Rg { unignored: false },
+            shows_lines: true,
+        };
+        let input = HookInput { session_id: Some("s-gancho".to_string()), ..HookInput::default() };
+        let mut ctx = Ctx::for_test(root.to_string_lossy().into_owned(), None);
+        ctx.config = ProjectConfig::load(&root);
 
-    impl Judge {
-        /// O filtro seguro: dá `chances` e quase nenhuma a "nenhum destes".
-        fn sure_of(chances: &[(&'static str, f64)]) -> Self {
-            Self { asked: std::rc::Rc::default(), chances: chances.to_vec(), none: 0.01, confidence: 0.9, error: None }
-        }
+        let text = answer(judge.installed(|| hook_reply(&root.to_string_lossy(), &input, &ctx, &search, &*calls.recorder())));
 
-        /// O filtro que acha que nenhum candidato serve.
-        fn finding_none() -> Self {
-            Self { none: 0.9, ..Self::sure_of(&[]) }
-        }
-
-        fn failing(error: FilterError) -> Self {
-            Self { error: Some(error), ..Self::sure_of(&[]) }
-        }
-
-        /// A montagem que entrega este filtro, como a chave no projeto.
-        fn assemble(&self) -> impl Fn(&Path, &ProjectConfig) -> Result<Assembled, FilterError> + '_ {
-            move |_, _| Ok(Assembled { name: "jev", filter: Box::new(self.clone()), warning: None })
-        }
-
-        fn calls(&self) -> usize {
-            self.asked.borrow().len()
-        }
-
-        fn last(&self) -> FilterRequest {
-            self.asked.borrow().last().cloned().expect("the filter was called")
-        }
+        assert!(text.contains("src/frete.rs\n  2-6 calcular_frete (3)"), "{text}");
+        assert_eq!(judge.calls(), 1);
+        let taken = calls.taken();
+        assert_eq!(taken.len(), 1, "{taken:?}");
+        assert_eq!((taken[0].0.as_str(), taken[0].2.as_deref()), ("word search", Some("s-gancho")));
     }
 
     /// A palavra cravada responde da triagem: o filtro não é chamado, nem a

@@ -45,8 +45,19 @@ pub const MAP_FILE: &str = ".claude/grain.db";
 pub const MAP_FILE_NAME: &str = MAP_FILE.split_at(MAP_DIR.len() + 1).1;
 
 /// O diário que o SQLite cria ao lado do mapa enquanto uma gravação dura, e
-/// apaga quando ela termina: o nome do mapa com `-journal` no fim.
+/// apaga quando ela termina: o nome do mapa com `-journal` no fim. O mapa
+/// grava em `WAL`; o diário de antes só aparece num mapa que um programa mais
+/// velho ainda grave.
 pub const MAP_JOURNAL_FILE_NAME: &str = "grain.db-journal";
+
+/// O registro das gravações que o SQLite mantém ao lado do mapa enquanto há
+/// conexão aberta: o nome do mapa com `-wal` no fim. A última conexão a
+/// fechar o junta ao mapa e o apaga.
+pub const MAP_WAL_FILE_NAME: &str = "grain.db-wal";
+
+/// A memória compartilhada das conexões abertas do mapa: o nome do mapa com
+/// `-shm` no fim. Some com a última conexão.
+pub const MAP_SHARED_FILE_NAME: &str = "grain.db-shm";
 
 /// O mapa de antes do banco, em JSON. O scan o apaga depois de gravar o
 /// banco; o nome fica para as listas do censo, que tratam o sumiço dele como
@@ -383,9 +394,9 @@ pub const HISTORY: MapBlock = block!("history", version 3, {
 /// dela. A montagem não o grava nem o confere: ele fica
 /// fora de [`BLOCKS`], volta vazio na troca de versão, e a pergunta seguinte
 /// o enche de novo.
-pub const LINEAGE: MapBlock = block!("lineage", version 3, {
+pub const LINEAGE: MapBlock = block!("lineage", version 4, {
     "lineage_files" at list(&["files"]) => [
-        "path" Text, "base" Text, "last_commit" Text, "mark" Text, "moves" Int, "comments" Int
+        "path" Text, "base" Text, "last_commit" Text, "tip" Text, "mark" Text, "moves" Int, "comments" Int
     ],
     "lineage_commits" at list(&["commits"]) => ["path" Text, "id" Text, "at" Int, "title" Text, "pr" Int, "files" Json],
     "lineage_decls" at list(&["declarations"]) => ["path" Text, "name" Text, "nth" Int, "commits" Json, "comments" Json]
@@ -1225,16 +1236,17 @@ fn lineage_rows(conn: &Connection, table: &str, columns: &[&str], paths: Option<
 /// só o desses arquivos. A pergunta da história e a busca o leem por aqui,
 /// e por isso conferem a validade pelos mesmos valores.
 pub(crate) fn lineage_heads(conn: &Connection, paths: Option<&[&str]>) -> Result<Vec<FileLineage>> {
-    let columns = ["path", "base", "last_commit", "mark", "moves", "comments"];
+    let columns = ["path", "base", "last_commit", "tip", "mark", "moves", "comments"];
     Ok(lineage_rows(conn, "lineage_files", &columns, paths)?
         .iter()
         .map(|row| FileLineage {
             path: text_cell(&row[0]),
             base: text_cell(&row[1]),
             last_commit: text_cell(&row[2]),
-            mark: text_cell(&row[3]),
-            moves: u32::try_from(int_cell(&row[4])).unwrap_or_default(),
-            comments: u32::try_from(int_cell(&row[5])).unwrap_or_default(),
+            tip: text_cell(&row[3]),
+            mark: text_cell(&row[4]),
+            moves: u32::try_from(int_cell(&row[5])).unwrap_or_default(),
+            comments: u32::try_from(int_cell(&row[6])).unwrap_or_default(),
             ..FileLineage::default()
         })
         .collect())
@@ -1242,7 +1254,7 @@ pub(crate) fn lineage_heads(conn: &Connection, paths: Option<&[&str]>) -> Result
 
 /// A história guardada das declarações de cada arquivo, na ordem em que se
 /// gravou; com `paths`, só a desses arquivos.
-fn lineages(conn: &Connection, paths: Option<&[&str]>) -> Result<Vec<FileLineage>> {
+pub(crate) fn lineages(conn: &Connection, paths: Option<&[&str]>) -> Result<Vec<FileLineage>> {
     let mut files = lineage_heads(conn, paths)?;
     let at: HashMap<String, usize> = files.iter().enumerate().map(|(at, file)| (file.path.clone(), at)).collect();
     for row in lineage_rows(conn, "lineage_commits", &["path", "id", "at", "title", "pr", "files"], paths)? {
@@ -1504,7 +1516,8 @@ fn git_out(root: &Path, args: &[&str]) -> Option<String> {
 /// O conteúdo do projeto em `root` agora, pelo git. `None` fora do git.
 #[must_use]
 pub fn listing(root: &Path) -> Option<Listing> {
-    let own = [MAP_FILE_NAME, MAP_JOURNAL_FILE_NAME].map(|name| format!("{MAP_DIR}/{name}"));
+    let own = [MAP_FILE_NAME, MAP_JOURNAL_FILE_NAME, MAP_WAL_FILE_NAME, MAP_SHARED_FILE_NAME]
+        .map(|name| format!("{MAP_DIR}/{name}"));
     let (blobs, indexed) = blobs_under(root, &own)?;
     let head = git_out(root, &["rev-parse", "--verify", "-q", "HEAD"]).map(|out| out.trim().to_string()).unwrap_or_default();
     Some(Listing { head, blobs, indexed, base: base_of(root) })
@@ -2091,8 +2104,8 @@ fn lineage_changes(lineage: &FileLineage) -> Result<Vec<Replacement<'static>>> {
     let path = lineage.path.as_str();
     let rows_in_map = serde_json::json!({
         "files": [{
-            "path": path, "base": lineage.base, "last_commit": lineage.last_commit, "mark": lineage.mark,
-            "moves": lineage.moves, "comments": lineage.comments,
+            "path": path, "base": lineage.base, "last_commit": lineage.last_commit, "tip": lineage.tip,
+            "mark": lineage.mark, "moves": lineage.moves, "comments": lineage.comments,
         }],
         "commits": lineage.commits.iter().map(|commit| serde_json::json!({
             "path": path, "id": commit.id, "at": commit.at, "title": commit.title, "pr": commit.pr,
@@ -2287,12 +2300,15 @@ pub fn write_text_at(model: &Path, text: &str) -> Result<()> {
     }
 }
 
-/// Apaga o mapa em `model` e o diário ao lado dele, quando existem: o diário
-/// que sobrasse seria aplicado ao mapa novo.
+/// Apaga o mapa em `model` e os arquivos ao lado dele, quando existem: o
+/// diário ou o registro de gravações que sobrasse seria aplicado ao mapa novo.
 fn remove(model: &Path) -> Result<()> {
-    let mut journal = model.as_os_str().to_owned();
-    journal.push("-journal");
-    for path in [model.to_path_buf(), PathBuf::from(journal)] {
+    let beside = |suffix: &str| {
+        let mut name = model.as_os_str().to_owned();
+        name.push(suffix);
+        PathBuf::from(name)
+    };
+    for path in [model.to_path_buf(), beside("-journal"), beside("-wal"), beside("-shm")] {
         match std::fs::remove_file(&path) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -2442,19 +2458,23 @@ mod tests {
         assert!(!repo.join("mustard.json").exists(), "the project configuration was only read");
     }
 
-    /// O nome do arquivo e o caminho saem do mesmo texto, e o diário é o nome
-    /// do mapa com o fim que o SQLite dá.
+    /// O nome do arquivo e o caminho saem do mesmo texto, e o diário, o
+    /// registro de gravações e a memória compartilhada são o nome do mapa com
+    /// o fim que o SQLite dá.
     #[test]
     fn the_file_name_and_the_path_come_from_one_text() {
         assert_eq!(format!("{MAP_DIR}/{MAP_FILE_NAME}"), MAP_FILE);
         assert!(model_path(Path::new("raiz")).ends_with(MAP_FILE));
         assert_eq!(MAP_JOURNAL_FILE_NAME, format!("{MAP_FILE_NAME}-journal"));
+        assert_eq!(MAP_WAL_FILE_NAME, format!("{MAP_FILE_NAME}-wal"));
+        assert_eq!(MAP_SHARED_FILE_NAME, format!("{MAP_FILE_NAME}-shm"));
     }
 
     /// A listagem dá, pelo caminho relativo à pasta lida, o blob do que cada
     /// arquivo guarda agora: o do índice para o intocado, o do conteúdo para
-    /// o editado e para o novo, nada para o apagado; o próprio mapa e o
-    /// diário dele ficam de fora, e a marca muda com o conteúdo.
+    /// o editado e para o novo, nada para o apagado; o próprio mapa e os
+    /// arquivos que o SQLite põe ao lado dele ficam de fora, e a marca muda
+    /// com o conteúdo.
     #[test]
     fn the_listing_gives_the_blob_of_what_each_file_holds_now() {
         let dir = tempdir().unwrap();
@@ -2488,7 +2508,9 @@ mod tests {
         std::fs::remove_file(root.join("gone.txt")).unwrap();
         std::fs::create_dir_all(root.join(MAP_DIR)).unwrap();
         std::fs::write(root.join(MAP_DIR).join(MAP_FILE_NAME), "mapa").unwrap();
-        std::fs::write(root.join(MAP_DIR).join(MAP_JOURNAL_FILE_NAME), "diário").unwrap();
+        for beside in [MAP_JOURNAL_FILE_NAME, MAP_WAL_FILE_NAME, MAP_SHARED_FILE_NAME] {
+            std::fs::write(root.join(MAP_DIR).join(beside), "ao lado").unwrap();
+        }
         let now = listing(&root).expect("dentro do git");
         assert_eq!(now.blobs.keys().collect::<Vec<_>>(), ["a.txt", "new.txt"]);
         assert_eq!(now.blobs["a.txt"], git(&["hash-object", "sub/a.txt"]));

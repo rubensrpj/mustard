@@ -84,11 +84,13 @@ enum Command {
         json: bool,
     },
     /// A história de cada declaração de todo arquivo do mapa que ainda não a
-    /// tem, ou cuja marca venceu, lida do git na branch de partida e gravada
-    /// no mapa em `--out` em lotes, um por transação: o índice de busca ganha
-    /// só as linhas dos arquivos do lote, e quem busca no meio da leitura
-    /// nunca espera por ela. Outra leitura do mesmo mapa em andamento faz esta
-    /// sair sem ler nada. O arquivo cuja história já vale não é lido de novo.
+    /// tem, ou cuja marca venceu, lida do git na branch de partida numa
+    /// passada só pelo projeto (nas seguintes, só pelos commits que vieram
+    /// depois da última leitura) e gravada no mapa em `--out` em lotes, um por
+    /// transação: o índice de busca ganha só as linhas dos arquivos do lote, e
+    /// quem busca no meio da leitura nunca espera por ela. Outra leitura do
+    /// mesmo mapa em andamento faz esta sair sem ler nada. O arquivo cuja
+    /// história já vale não é lido de novo.
     HistoryAll {
         path: PathBuf,
         #[arg(long, default_value = store::MAP_FILE_NAME)]
@@ -101,6 +103,10 @@ enum Command {
         /// Quantos arquivos vão numa gravação só.
         #[arg(long, default_value_t = history::BATCH)]
         batch: usize,
+        /// Quantos commits, no máximo, a primeira leitura lê, dos mais
+        /// novos; a que soma o que veio depois não tem limite.
+        #[arg(long, default_value_t = history::NEWEST_COMMITS)]
+        newest: usize,
         /// Uma linha de JSON no lugar do resumo em texto.
         #[arg(long)]
         json: bool,
@@ -204,11 +210,11 @@ fn main() -> Result<()> {
                 );
             }
         }
-        Command::HistoryAll { path, out, moves, batch, json } => {
+        Command::HistoryAll { path, out, moves, batch, newest, json } => {
             let moves = moves.unwrap_or_else(|| {
                 ProjectConfig::load(&path).history_moves().or(mustard_core::domain::project_map::MOVES_FOLLOWED)
             });
-            let report = history::run_all(&path, &out, moves, batch)?;
+            let report = history::run_all(&path, &out, moves, batch, newest)?;
             if json {
                 let line = serde_json::json!({
                     "ok": true,
@@ -216,6 +222,8 @@ fn main() -> Result<()> {
                     "files": report.files,
                     "commits": report.commits,
                     "declarations": report.declarations,
+                    "read": report.read,
+                    "limited": report.limited,
                     "failed": report.failed,
                 });
                 println!("{line}");
@@ -223,11 +231,13 @@ fn main() -> Result<()> {
                 println!("Another reading of the history of {} is running", out.display());
             } else {
                 println!(
-                    "History of {} file(s) written to {}: {} commit(s), {} declaration(s), {} not read",
+                    "History of {} file(s) written to {}: {} commit(s), {} declaration(s), {} commit(s) read from git{}, {} not read",
                     report.files,
                     out.display(),
                     report.commits,
                     report.declarations,
+                    report.read,
+                    if report.limited { " (only the newest ones)" } else { "" },
                     report.failed
                 );
             }

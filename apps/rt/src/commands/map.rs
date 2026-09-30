@@ -1898,6 +1898,7 @@ mod tests {
             path: "apps/rt/src/commands/pay/write.rs".to_string(),
             base: "main".to_string(),
             last_commit: "c3".to_string(),
+            tip: String::new(),
             mark: String::new(),
             moves: u32::try_from(project_map::MOVES_FOLLOWED).unwrap(),
             commits: vec![

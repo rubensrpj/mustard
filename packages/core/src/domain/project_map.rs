@@ -284,6 +284,10 @@ pub struct FileLineage {
     /// O começo do hash do commit mais novo do arquivo na base, quando a
     /// história foi lida.
     pub last_commit: String,
+    /// O hash inteiro do commit da ponta da base em que a lista foi lida: a
+    /// leitura seguinte parte daí e lê só o que veio depois. Vazio quando a
+    /// lista não guarda de onde veio, e então ela se lê inteira de novo.
+    pub tip: String,
     /// A marca do scan que leu ([`lineage_is_fresh`]).
     pub mark: String,
     /// Quantas vezes seguidas a leitura podia seguir a declaração para o

@@ -106,13 +106,13 @@ fn private_upsert_writes_clone_local_exclude() {
 }
 
 /// The repository model the scan keeps in `.claude/` (the SQLite file and the
-/// journal it leaves beside it while writing) is Mustard's, not the client's:
-/// a private install hides both, and an exclude file written before the map
+/// files it leaves beside it while a connection is open) is Mustard's, not the
+/// client's: a private install hides all of them, and an exclude file written before the map
 /// moved to that file — the private marks in it, the map rules not — is
 /// completed by the next update, which detects the mode from those marks.
 #[test]
 fn private_install_hides_the_map_and_an_update_completes_an_older_exclude_file() {
-    use mustard_core::io::project_map::{MAP_FILE_NAME, MAP_JOURNAL_FILE_NAME};
+    use mustard_core::io::project_map::{MAP_FILE_NAME, MAP_JOURNAL_FILE_NAME, MAP_SHARED_FILE_NAME, MAP_WAL_FILE_NAME};
 
     let dir = tempfile::tempdir().expect("temp dir");
     let root = dir.path();
@@ -121,10 +121,10 @@ fn private_install_hides_the_map_and_an_update_completes_an_older_exclude_file()
     upsert_project(root, Some("9.9.9"), InstallMode::Private).expect("upsert");
 
     // The files the scan leaves, exactly as it names them.
-    for name in [MAP_FILE_NAME, MAP_JOURNAL_FILE_NAME] {
+    for name in [MAP_FILE_NAME, MAP_JOURNAL_FILE_NAME, MAP_WAL_FILE_NAME, MAP_SHARED_FILE_NAME] {
         write(&root.join(".claude").join(name), "SQLite format 3\0");
     }
-    assert_eq!(git_status(root), "", "git must not see the map nor its journal");
+    assert_eq!(git_status(root), "", "git must not see the map nor the files beside it");
 
     // The exclude file of an install that predates the map: same marks, same
     // rules, none for the map.

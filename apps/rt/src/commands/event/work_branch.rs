@@ -882,6 +882,8 @@ const HARNESS_SCRATCH_FILES: &[&str] = &[
 const CENSUS_FILES: &[&str] = &[
     mustard_core::io::project_map::MAP_FILE_NAME,
     mustard_core::io::project_map::MAP_JOURNAL_FILE_NAME,
+    mustard_core::io::project_map::MAP_WAL_FILE_NAME,
+    mustard_core::io::project_map::MAP_SHARED_FILE_NAME,
     mustard_core::io::project_map::LEGACY_MAP_FILE_NAME,
     "scan-declined.json",
     "scan-map.md",
@@ -2212,11 +2214,16 @@ mod tests {
         // Censo — escrito pela ferramenta, versionado de propósito. Nem
         // rascunho (seria descartado de todo commit) nem trabalho (recusaria o
         // corte pela saída da própria ferramenta).
-        let journal = format!(".claude/{}", mustard_core::io::project_map::MAP_JOURNAL_FILE_NAME);
+        let beside = |name: &str| format!(".claude/{name}");
+        let journal = beside(mustard_core::io::project_map::MAP_JOURNAL_FILE_NAME);
+        let wal = beside(mustard_core::io::project_map::MAP_WAL_FILE_NAME);
+        let shared = beside(mustard_core::io::project_map::MAP_SHARED_FILE_NAME);
         let legacy = format!(".claude/{}", mustard_core::io::project_map::LEGACY_MAP_FILE_NAME);
         for census in [
             mustard_core::io::project_map::MAP_FILE,
             journal.as_str(),
+            wal.as_str(),
+            shared.as_str(),
             legacy.as_str(),
             ".claude/scan-declined.json",
             ".claude/scan-map.md",

@@ -119,19 +119,35 @@ mapa; quem lê o mapa é que o deixa fora da busca e dos exemplos.
 cada commit com a data e os arquivos que ele criou e mudou. A primeira passada lê
 a história inteira; as seguintes, só os commits novos.
 
-**História por declaração.** `scan history <raiz> --out <mapa> --file <arquivo>
---json` lê só aquele arquivo, na branch de partida, da ponta para trás, sem o
-teto de commits da montagem (`git log --follow`): de cada declaração, os
-commits que a mudaram, do mais novo ao mais velho, cada um com o título e o
-número do pull request. Cada versão do arquivo se lê uma vez, com só a língua
-dele. A linha mudada vai para a declaração mais interna que a contém, e a entre
-declarações não vai a nenhuma; a declaração renomeada ou movida para outro
-arquivo no mesmo commit se casa pelo corpo (idêntico, ou pelo menos metade das
-linhas) e leva a história junto. O commit que só muda espaços, ou que o projeto
-lista no `.git-blame-ignore-revs`, fica marcado como só de forma. A montagem não
-roda esta passada: `mustard-rt run map history` a roda na primeira pergunta
-sobre o arquivo, e de novo só quando a base, a versão do scan ou o commit mais
-novo do arquivo mudam.
+**História por declaração.** `scan history-all <raiz> --out <mapa>` lê a
+história de todo arquivo do mapa que ainda não a tem, na branch de partida,
+numa passada só pelo projeto (`git log --reverse -p -U0`, do commit mais antigo
+ao mais novo, só os trechos que mudaram): cada linha se acompanha pelo texto
+dela, sem os espaços das pontas, e pelas renomeações que o git vê. Da versão da
+ponta sai, de cada declaração, a lista dos commits que escreveram as linhas
+dela, do mais novo ao mais velho, cada um com o título e o número do pull
+request; o nascimento é o commit mais antigo entre as linhas. A linha que só
+fecha um bloco ou escreve um `else` não conta, porque se repete pelo arquivo
+todo. A linha mudada vai para a declaração mais interna que a contém, e a entre
+declarações não vai a nenhuma; a linha que muda de arquivo no mesmo commit leva
+a história dela junto, até `map.historyMoves` vezes seguidas, e a que só existe
+numa junção é do commit da junção. O commit que só muda espaços, ou que o
+projeto lista no `.git-blame-ignore-revs`, fica marcado como só de forma.
+`scan history <raiz> --out <mapa> --file <arquivo>` faz a mesma passada, sem
+o limite de commits, para um arquivo só.
+
+A primeira passada lê no máximo os `--newest` commits mais novos que mexem nos
+arquivos (5.000) e o relato diz `limited` quando cortou: a linha que nenhum
+deles escreveu é mais velha que todos e fica com o mais antigo dos lidos. As seguintes partem das listas guardadas — cada
+uma guarda o commit da ponta em que foi lida — e leem só o que veio depois
+dele, o campo `read` do relato dizendo quantos commits o git deu: a lista
+somada leva aos commits novos os que a declaração já tinha, e por isso uma
+declaração de que só parte das linhas mudou pode listar mais commits que uma
+leitura do começo. Se a base foi reescrita, ou o arquivo foi renomeado por cima
+de outro, ou o arquivo não tem lista e já existia onde a leitura anterior parou,
+a passada volta ao começo. A montagem não roda esta passada: `mustard-rt run map
+history` a roda na primeira pergunta sobre o arquivo, e de novo só quando a
+base, a versão do scan ou o commit mais novo do arquivo mudam.
 
 **Leitura incremental.** Com um mapa anterior do mesmo projeto no `--out`, o
 scan relê só os arquivos que mudaram desde a passada anterior e toma o resto do
