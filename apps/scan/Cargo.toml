@@ -75,6 +75,12 @@ grammar_go = { package = "tree-sitter-go", version = "0.25" }
 grammar_php = { package = "tree-sitter-php", version = "0.24" }
 grammar_dart = { package = "tree-sitter-dart-orchard", version = "0.6" }
 
+[target.'cfg(unix)'.dependencies]
+# Baixa a prioridade da leitura da história em segundo plano (`setpriority`):
+# quem busca no mapa enquanto ela roda passa na frente. Só o scan a usa, e só
+# no Unix; a versão é a que o resto da árvore já resolve.
+libc = "0.2"
+
 [dev-dependencies]
 # Each test builds its project in a TempDir, which deletes the folder when it
 # goes out of scope — also when the test panics (the workspace keeps unwinding).

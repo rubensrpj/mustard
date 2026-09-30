@@ -133,21 +133,33 @@ declarações não vai a nenhuma; a linha que muda de arquivo no mesmo commit le
 a história dela junto, até `map.historyMoves` vezes seguidas, e a que só existe
 numa junção é do commit da junção. O commit que só muda espaços, ou que o
 projeto lista no `.git-blame-ignore-revs`, fica marcado como só de forma.
-`scan history <raiz> --out <mapa> --file <arquivo>` faz a mesma passada, sem
-o limite de commits, para um arquivo só.
+`scan history <raiz> --out <mapa> --file <arquivo>` segue o mesmo caminho e o
+mesmo limite, para um arquivo só, e o relato dele traz `read` e `limited`
+como o do projeto inteiro.
 
 A primeira passada lê no máximo os `--newest` commits mais novos que mexem nos
 arquivos (5.000) e o relato diz `limited` quando cortou: a linha que nenhum
-deles escreveu é mais velha que todos e fica com o mais antigo dos lidos. As seguintes partem das listas guardadas — cada
-uma guarda o commit da ponta em que foi lida — e leem só o que veio depois
-dele, o campo `read` do relato dizendo quantos commits o git deu: a lista
-somada leva aos commits novos os que a declaração já tinha, e por isso uma
-declaração de que só parte das linhas mudou pode listar mais commits que uma
-leitura do começo. Se a base foi reescrita, ou o arquivo foi renomeado por cima
-de outro, ou o arquivo não tem lista e já existia onde a leitura anterior parou,
-a passada volta ao começo. A montagem não roda esta passada: `mustard-rt run map
-history` a roda na primeira pergunta sobre o arquivo, e de novo só quando a
-base, a versão do scan ou o commit mais novo do arquivo mudam.
+deles escreveu é mais velha que todos e fica com o mais antigo dos lidos. As
+seguintes partem das listas guardadas — cada uma guarda o commit da ponta em
+que foi lida — e leem só o que veio depois dele, o campo `read` do relato
+dizendo quantos commits o git deu: a lista somada leva aos commits novos os que
+a declaração já tinha, e por isso uma declaração de que só parte das linhas
+mudou pode listar mais commits que uma leitura do começo. Se a base foi
+reescrita, ou o arquivo foi renomeado por cima de outro, ou o arquivo não tem
+lista e já existia onde a leitura anterior parou, a passada volta ao começo. A
+montagem não roda esta passada: `mustard-rt run map history` a roda na primeira
+pergunta sobre o arquivo, e de novo só quando a base, a versão do scan ou o
+commit mais novo do arquivo mudam.
+
+O erro da leitura que só soma o que é novo cresce a cada uma delas. O mapa
+guarda quantos commits elas leram desde a última leitura do projeto inteiro
+desde o começo; quando a soma chega a 50, a `history-all` seguinte relê todos
+os arquivos desde o começo, com o mesmo `--newest`, e a soma volta a zero; a
+história guardada dos arquivos que já saíram do mapa sai junto, e a lista de
+todos fica a de uma leitura feita do zero. A busca segue lendo o que está
+gravado durante essa releitura, que grava em lotes como qualquer outra. A
+`history-all` baixa a própria prioridade (10, no Unix) ao começar, e o git que
+ela abre herda: a busca passa na frente dela.
 
 **Leitura incremental.** Com um mapa anterior do mesmo projeto no `--out`, o
 scan relê só os arquivos que mudaram desde a passada anterior e toma o resto do

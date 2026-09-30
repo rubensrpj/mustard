@@ -1523,6 +1523,7 @@ dependencies = [
  "clap",
  "globset",
  "ignore",
+ "libc",
  "mustard-core",
  "petgraph",
  "regex",

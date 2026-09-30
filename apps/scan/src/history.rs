@@ -22,7 +22,15 @@
 //! leem só `<commit lido>..<ponta>`. A passada do começo da história lê no
 //! máximo os [`NEWEST_COMMITS`] commits mais novos: a de um projeto de cem mil
 //! declarações leva o que leva o git, e o commit muito velho diz pouco da
-//! declaração de hoje.
+//! declaração de hoje. A leitura de um arquivo e a do projeto inteiro seguem
+//! o mesmo caminho e o mesmo limite.
+//!
+//! A leitura que só soma o que é novo é aproximada, porque a lista guardada é
+//! por declaração, e não por linha: o erro se soma a cada leitura curta e só
+//! some quando a história é lida de novo desde o começo. O mapa guarda quantos
+//! commits as leituras curtas leram desde a última leitura inteira, e, quando
+//! a soma chega a [`WHOLE_AFTER`], a leitura seguinte do projeto inteiro relê
+//! todos os arquivos desde o começo e volta a soma a zero.
 
 mod diff;
 mod tracker;
@@ -34,8 +42,8 @@ use std::path::Path;
 
 use anyhow::{anyhow, Result};
 use mustard_core::domain::project_map::{
-    file_history, CommitFiles, DeclChange, DeclComment, DeclLineage, FileLineage, History, LineageCommit, PullComment,
-    CO_CHANGE_MAX_FILES,
+    file_history, CommitFiles, DeclChange, DeclComment, DeclLineage, FileLineage, History, LineageCommit, MapRefusal,
+    PullComment, CO_CHANGE_MAX_FILES,
 };
 use mustard_core::io::fs::lock::LockedFile;
 use mustard_core::io::map_lineage;
@@ -59,6 +67,11 @@ const HEADER: &str = "--format=%x00%H %ct %P%x1f%s";
 /// escreveu fica com o mais antigo dos lidos.
 pub(crate) const NEWEST_COMMITS: usize = 5_000;
 
+/// Quantos commits as leituras curtas somam, no mapa, antes de a leitura
+/// seguinte do projeto inteiro reler todos os arquivos desde o começo: a lista
+/// que só somou o que era novo é aproximada, e essa releitura a acerta.
+pub(crate) const WHOLE_AFTER: u64 = 50;
+
 /// Quantos arquivos, no máximo, uma leitura que só soma o que é novo aceita:
 /// passando disso, ler o projeto inteiro custa menos que listar os arquivos.
 const SINCE_MAX_FILES: usize = 400;
@@ -67,12 +80,19 @@ const SINCE_MAX_FILES: usize = 400;
 /// de uma leitura que só soma o que é novo.
 const SINCE_MAX_PATHS: usize = 24_000;
 
-/// O que a passada leu: o arquivo, quantos commits ficaram na lista dele e
-/// quantas declarações ele tem na ponta da base.
+/// O que a passada leu: o arquivo, quantos commits ficaram na lista dele,
+/// quantas declarações ele tem na ponta da base, quantos commits vieram do git
+/// e se ela parou nos mais novos.
 pub(crate) struct Report {
     pub file: String,
     pub commits: usize,
     pub declarations: usize,
+    /// Quantos commits vieram do git: todos os da base na leitura do começo da
+    /// história, só os novos na que parte da lista guardada.
+    pub read: usize,
+    /// A leitura do começo da história só leu os commits mais novos: o que
+    /// veio antes deles não está na lista.
+    pub limited: bool,
 }
 
 /// Uma declaração dentro de uma versão do arquivo: o nome e a ordem entre as
@@ -80,26 +100,41 @@ pub(crate) struct Report {
 type Key = (String, u32);
 
 /// Monta a história das declarações de `file` na ponta da base de `root` e a
-/// grava no mapa em `out`, no lugar da que ele tinha, lendo todos os commits.
-/// Uma linha que veio de outro arquivo é seguida nele até `moves` vezes
+/// grava no mapa em `out`, no lugar da que ele tinha, pelo mesmo caminho da
+/// leitura do projeto inteiro ([`run_all`]): o arquivo que já tem lista lida
+/// numa ponta que a base ainda contém só lê os commits que vieram depois dela,
+/// e a leitura do começo da história lê no máximo os `newest` commits mais
+/// novos. Uma linha que veio de outro arquivo é seguida nele até `moves` vezes
 /// seguidas.
 ///
 /// # Errors
 ///
 /// Sem base ou sem ela no clone, com o mapa ilegível, quando o git não lê a
 /// história ou quando a gravação falha.
-pub(crate) fn run(root: &Path, out: &Path, file: &str, moves: usize) -> Result<Report> {
-    let mut reading = Reading::open(root, out, moves, None)?;
+pub(crate) fn run(root: &Path, out: &Path, file: &str, moves: usize, newest: usize) -> Result<Report> {
+    let mut reading = Reading::open(root, out, moves, Some(newest))?;
     let files = vec![file.to_string()];
     reading.prepare(&files);
-    let pass = reading.pass(&Group { files: files.clone(), plan: Plan::Whole })?;
+    let group = reading
+        .plan(&files, false)?
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow!("the history of {file} was not read"))?;
+    let pass = reading.pass(&group)?;
     let reviews = store::pull_comments_at(out, file).map_err(|refusal| anyhow!("{}: {}", out.display(), refusal.reason()))?;
     let lineage = reading
         .trace(&pass, &files, &reviews)
         .pop()
         .ok_or_else(|| anyhow!("the history of {file} was not read"))?;
     store::save_lineage_at(out, &lineage)?;
-    Ok(Report { file: file.to_string(), commits: lineage.commits.len(), declarations: lineage.declarations.len() })
+    note_read(out, &group, &pass, false)?;
+    Ok(Report {
+        file: file.to_string(),
+        commits: lineage.commits.len(),
+        declarations: lineage.declarations.len(),
+        read: pass.read,
+        limited: pass.limited,
+    })
 }
 
 /// Quantos arquivos vão numa gravação só da leitura do projeto inteiro: cada
@@ -131,9 +166,12 @@ pub(crate) struct AllReport {
 /// `batch` arquivos, cada lote numa transação. Só um processo lê de cada mapa
 /// de cada vez: quem chega com outro rodando sai sem ler. O git lê a história
 /// numa passada só, do projeto inteiro na primeira vez e só do que veio depois
-/// da última leitura nas seguintes. Ao fim de uma passada, vê o que faltou de
-/// novo: o mapa pode ter ganhado arquivo, ou commit, enquanto ela lia. Se o git
-/// não lê a história, os arquivos ficam de fora do resto desta leitura.
+/// da última leitura nas seguintes. Quando as leituras curtas já somam
+/// [`WHOLE_AFTER`] commits no mapa, esta lê todos os arquivos do projeto desde
+/// o começo, com o mesmo limite, e a soma volta a zero. Ao fim de uma passada,
+/// vê o que faltou de novo: o mapa pode ter ganhado arquivo, ou commit,
+/// enquanto ela lia. Se o git não lê a história, os arquivos ficam de fora do
+/// resto desta leitura.
 ///
 /// # Errors
 ///
@@ -145,23 +183,29 @@ pub(crate) fn run_all(root: &Path, out: &Path, moves: usize, batch: usize, newes
         report.busy = true;
         return Ok(report);
     };
+    let refused = |refusal: MapRefusal| anyhow!("{}: {}", out.display(), refusal.reason());
+    let mut everything = false;
+    let mut counted = false;
     let mut left_out: BTreeSet<String> = BTreeSet::new();
     loop {
         let base = store::base_of(root);
         if base.name.is_empty() || base.tip.is_empty() {
             break;
         }
-        let wanted: Vec<String> = map_lineage::wanted_at(out, moves)
-            .map_err(|refusal| anyhow!("{}: {}", out.display(), refusal.reason()))?
-            .into_iter()
-            .filter(|path| !left_out.contains(path))
-            .collect();
+        // O mapa só se abre para contar quando há de onde ler a história: sem
+        // base, a rodada sai sem tocar nele, como sempre saiu.
+        if !std::mem::replace(&mut counted, true) {
+            everything = map_lineage::short_reads_at(out).map_err(refused)? >= WHOLE_AFTER;
+        }
+        let asked = if everything { map_lineage::readable_at(out) } else { map_lineage::wanted_at(out, moves) };
+        let wanted: Vec<String> = asked.map_err(refused)?.into_iter().filter(|path| !left_out.contains(path)).collect();
         if wanted.is_empty() {
             break;
         }
         let mut reading = Reading::open(root, out, moves, Some(newest))?;
         reading.prepare(&wanted);
-        for group in reading.groups(&wanted)? {
+        let whole = std::mem::take(&mut everything);
+        for group in reading.plan(&wanted, whole)? {
             let pass = match reading.pass(&group) {
                 Ok(pass) => pass,
                 Err(_) => {
@@ -174,17 +218,31 @@ pub(crate) fn run_all(root: &Path, out: &Path, moves: usize, batch: usize, newes
             report.limited |= pass.limited;
             for files in group.files.chunks(batch.max(1)) {
                 let paths: Vec<&str> = files.iter().map(String::as_str).collect();
-                let comments = store::pull_comments_for_at(out, &paths)
-                    .map_err(|refusal| anyhow!("{}: {}", out.display(), refusal.reason()))?;
+                let comments = store::pull_comments_for_at(out, &paths).map_err(refused)?;
                 let lineages = reading.trace(&pass, files, &comments);
                 store::save_lineages_at(out, &lineages)?;
                 report.files += lineages.len();
                 report.commits += lineages.iter().map(|lineage| lineage.commits.len()).sum::<usize>();
                 report.declarations += lineages.iter().map(|lineage| lineage.declarations.len()).sum::<usize>();
             }
+            note_read(out, &group, &pass, whole)?;
         }
     }
     Ok(report)
+}
+
+/// Anota no mapa o que uma passada, já gravada, faz à soma das leituras
+/// curtas: a que só soma o que é novo a aumenta com os commits que leu, e a
+/// que releu todos os arquivos desde o começo (`whole`) a zera e tira do mapa
+/// a história dos arquivos que já saíram dele. A que lê do
+/// começo só os arquivos que não têm lista aceita não muda a soma: os outros
+/// continuam com o que as leituras curtas somaram.
+fn note_read(out: &Path, group: &Group, pass: &Pass, whole: bool) -> Result<()> {
+    match group.plan {
+        Plan::Since { .. } => Ok(map_lineage::add_short_reads_at(out, u64::try_from(pass.read).unwrap_or(u64::MAX))?),
+        Plan::Whole if whole => Ok(map_lineage::finish_whole_at(out)?),
+        Plan::Whole => Ok(()),
+    }
 }
 
 /// O que se sabe de um commit além do que o diff diz: o número do pull request
@@ -263,6 +321,15 @@ impl<'r> Reading<'r> {
                 self.analyzers.entry(language.clone()).or_insert_with(|| Analyzer::declarations_only(&language));
             }
         }
+    }
+
+    /// Como ler os arquivos `files`: com `whole`, todos desde o começo da
+    /// história, num grupo só; sem ele, como [`Self::groups`] decide.
+    fn plan(&self, files: &[String], whole: bool) -> Result<Vec<Group>> {
+        if whole {
+            return Ok(vec![Group { files: files.to_vec(), plan: Plan::Whole }]);
+        }
+        self.groups(files)
     }
 
     /// Como ler os arquivos `wanted`: os que têm lista guardada, lida na mesma

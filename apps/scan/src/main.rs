@@ -65,8 +65,10 @@ enum Command {
         json: bool,
     },
     /// A história de cada declaração de um arquivo na branch de partida, do
-    /// commit mais novo ao mais antigo, lida do git e gravada no mapa em
-    /// `--out` no lugar da que ele tinha. O resto do mapa fica como está.
+    /// commit mais novo ao mais antigo, lida do git pelo mesmo caminho da
+    /// leitura do projeto inteiro e gravada no mapa em `--out` no lugar da que
+    /// ele tinha: o arquivo que já tem história guardada só lê os commits que
+    /// vieram depois dela. O resto do mapa fica como está.
     History {
         path: PathBuf,
         #[arg(long, default_value = store::MAP_FILE_NAME)]
@@ -78,7 +80,12 @@ enum Command {
         /// seguida nele.
         #[arg(long, default_value_t = mustard_core::domain::project_map::MOVES_FOLLOWED)]
         moves: usize,
-        /// Uma linha de JSON (o arquivo, os commits e as declarações) no
+        /// Quantos commits, no máximo, a leitura do começo da história lê, dos
+        /// mais novos; a que soma o que veio depois não tem limite.
+        #[arg(long, default_value_t = history::NEWEST_COMMITS)]
+        newest: usize,
+        /// Uma linha de JSON (o arquivo, os commits, as declarações, quantos
+        /// commits vieram do git e se a leitura parou nos mais novos) no
         /// lugar do resumo em texto.
         #[arg(long)]
         json: bool,
@@ -117,6 +124,25 @@ enum Command {
     /// passada.
     Format,
 }
+
+/// A prioridade com que a leitura da história roda em segundo plano: 10 é
+/// abaixo da de quem busca no mapa, e o git que ela abre herda o valor.
+#[cfg(unix)]
+const BACKGROUND_PRIORITY: i32 = 10;
+
+/// Baixa a prioridade do processo para a da leitura em segundo plano, para a
+/// busca feita enquanto ela roda não disputar o processador com ela. Os
+/// processos do git que ela abre herdam a prioridade. Onde o sistema recusa,
+/// a leitura roda como estava; fora do Unix, não muda nada.
+#[cfg(unix)]
+fn lower_priority() {
+    // SAFETY: `setpriority` só lê os três números que recebe e não toca em
+    // memória do programa; `who` 0 é o próprio processo.
+    let _ = unsafe { libc::setpriority(libc::PRIO_PROCESS, 0, BACKGROUND_PRIORITY) };
+}
+
+#[cfg(not(unix))]
+fn lower_priority() {}
 
 /// Apaga o mapa de antes do banco, na pasta do banco em `out`, quando ele
 /// existe: o banco gravado o substitui.
@@ -190,27 +216,34 @@ fn main() -> Result<()> {
             }
         }
         Command::Format => println!("{}", refresh::FORMAT),
-        Command::History { path, out, file, moves, json } => {
-            let report = history::run(&path, &out, &file, moves)?;
+        Command::History { path, out, file, moves, newest, json } => {
+            let report = history::run(&path, &out, &file, moves, newest)?;
             if json {
                 let line = serde_json::json!({
                     "ok": true,
                     "file": report.file,
                     "commits": report.commits,
                     "declarations": report.declarations,
+                    "read": report.read,
+                    "limited": report.limited,
                 });
                 println!("{line}");
             } else {
                 println!(
-                    "History of {} written to {}: {} commit(s), {} declaration(s)",
+                    "History of {} written to {}: {} commit(s), {} declaration(s), {} commit(s) read from git{}",
                     report.file,
                     out.display(),
                     report.commits,
-                    report.declarations
+                    report.declarations,
+                    report.read,
+                    if report.limited { " (only the newest ones)" } else { "" }
                 );
             }
         }
         Command::HistoryAll { path, out, moves, batch, newest, json } => {
+            // A leitura roda em segundo plano enquanto o usuário busca no mapa:
+            // a busca passa na frente dela.
+            lower_priority();
             let moves = moves.unwrap_or_else(|| {
                 ProjectConfig::load(&path).history_moves().or(mustard_core::domain::project_map::MOVES_FOLLOWED)
             });

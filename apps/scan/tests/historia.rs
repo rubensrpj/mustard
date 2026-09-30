@@ -260,7 +260,13 @@ fn lineage(dir: &Path, file: &str) -> FileLineage {
 
 /// A passada de [`lineage`] com as opções `extra` a mais.
 fn lineage_with(dir: &Path, file: &str, extra: &[&str]) -> FileLineage {
-    let model = model::path_in(&dir.join(".claude"));
+    history_in(dir, &dir.join(".claude"), file, extra).1
+}
+
+/// A passada da história de `file` sobre o mapa da pasta `out`, do projeto em
+/// `dir`, com `extra` a mais: o relato dela e a lista gravada do arquivo.
+fn history_in(dir: &Path, out: &Path, file: &str, extra: &[&str]) -> (Value, FileLineage) {
+    let model = model::path_in(out);
     let run = Command::new(env!("CARGO_BIN_EXE_scan"))
         .args(["history", dir.to_str().unwrap(), "--out", model.to_str().unwrap(), "--file", file, "--json"])
         .args(extra)
@@ -270,7 +276,16 @@ fn lineage_with(dir: &Path, file: &str, extra: &[&str]) -> FileLineage {
     let report: Value = serde_json::from_str(String::from_utf8_lossy(&run.stdout).lines().last().unwrap_or("{}")).unwrap();
     assert_eq!(report["file"], json!(file), "{report}");
     let map = store::read_at(&model).expect("o mapa se lê");
-    map.lineage.into_iter().find(|found| found.path == file).expect("a passada gravou a lista do arquivo")
+    let found = map.lineage.into_iter().find(|found| found.path == file).expect("a passada gravou a lista do arquivo");
+    (report, found)
+}
+
+/// A lista de `file` como a leitura do começo da história a dá: num mapa novo,
+/// que ainda não guarda lista nenhuma.
+fn from_the_start(dir: &Path, file: &str) -> FileLineage {
+    let out = tempfile::tempdir().unwrap();
+    model::scan(dir, out.path(), &[]);
+    history_in(dir, out.path(), file, &[]).1
 }
 
 /// Os commits da declaração `name` na lista, do mais novo ao mais velho,
@@ -537,7 +552,9 @@ fn a_file_older_than_the_window_gets_its_old_history_with_the_number_and_the_oth
     );
 
     let other = lineage(dir, "src/outro.rs");
-    let old = lineage(dir, "src/antiga.rs");
+    // A criação do arquivo velho está fora dos 5.000 commits que a leitura lê
+    // por padrão: só um limite maior a alcança.
+    let old = lineage_with(dir, "src/antiga.rs", &["--newest", "6000"]);
     assert_eq!(changes(&old, "antiga"), listed(&["cria a antiga (#12)"]));
     assert_eq!(old.commits.iter().map(|commit| commit.pr).collect::<Vec<_>>(), vec![Some(12)]);
     let map = store::read_at(&model::path_in(&dir.join(".claude"))).unwrap();
@@ -682,7 +699,12 @@ fn a_review_comment_joins_the_function_that_held_its_line_in_the_commented_commi
 /// Roda a leitura da história de todo arquivo do mapa do projeto, com `extra`
 /// a mais, e devolve o relato dela.
 fn history_all(dir: &Path, extra: &[&str]) -> Value {
-    let model = model::path_in(&dir.join(".claude"));
+    history_all_in(dir, &dir.join(".claude"), extra)
+}
+
+/// A leitura de [`history_all`] sobre o mapa da pasta `out`.
+fn history_all_in(dir: &Path, out: &Path, extra: &[&str]) -> Value {
+    let model = model::path_in(out);
     let run = Command::new(env!("CARGO_BIN_EXE_scan"))
         .args(["history-all", dir.to_str().unwrap(), "--out", model.to_str().unwrap(), "--json"])
         .args(extra)
@@ -789,7 +811,7 @@ fn the_second_reading_reads_only_the_commits_that_came_after_the_first() {
     assert_eq!(changes(&delta, "delta"), listed(&["muda o gama e cria o delta"]), "{delta:?}");
 
     // A leitura do começo da história dá a mesma lista que a soma das duas.
-    let whole = lineage(dir, "src/c.rs");
+    let whole = from_the_start(dir, "src/c.rs");
     assert_eq!(gama, whole, "the list built on top of the first reading is the list the whole history gives");
 }
 
@@ -1026,4 +1048,217 @@ fn a_search_made_while_the_history_is_being_read_answers_with_what_is_stored() {
     assert!(reading.wait().expect("wait").success(), "the reading ends well");
     assert!(seen.windows(2).all(|pair| pair[0] <= pair[1]), "the search only sees more as the batches are written: {seen:?}");
     assert_eq!(found("guardanapo"), total, "after the reading every function is found by the word of its commit: {seen:?}");
+}
+
+/// A história de um arquivo lê os mesmos `--newest` commits da leitura do
+/// projeto inteiro: ela lê só os mais novos e diz que parou neles; o limite
+/// que cabe a história toda não diz.
+#[test]
+fn the_history_of_one_file_reads_only_the_newest_commits_and_says_so() {
+    let temp = project("scan-historia-arquivo-limite-");
+    let dir = temp.path();
+    commit(dir, "src/b.rs", "pub fn beta() {}\n", "cria o beta");
+    commit(dir, "src/b.rs", "pub fn beta() { 2 }\n", "muda o beta");
+    commit(dir, "src/b.rs", "pub fn beta() { 3 }\n", "muda o beta de novo");
+    scan(dir);
+
+    let (cut, b) = history_in(dir, &dir.join(".claude"), "src/b.rs", &["--newest", "2"]);
+    assert_eq!((cut["read"].clone(), cut["limited"].clone()), (json!(2), json!(true)), "{cut}");
+    assert_eq!(changes(&b, "beta"), listed(&["muda o beta de novo", "muda o beta"]), "only the two newest commits are in the list: {b:?}");
+
+    let other = tempfile::tempdir().unwrap();
+    model::scan(dir, other.path(), &[]);
+    let (whole, b) = history_in(dir, other.path(), "src/b.rs", &["--newest", "4"]);
+    assert_eq!((whole["read"].clone(), whole["limited"].clone()), (json!(4), json!(false)), "the four commits fit the limit: {whole}");
+    assert_eq!(changes(&b, "beta"), listed(&["muda o beta de novo", "muda o beta", "cria o beta"]), "{b:?}");
+
+    let (usual, _) = history_in(dir, other.path(), "src/a.rs", &[]);
+    assert_eq!((usual["read"].clone(), usual["limited"].clone()), (json!(4), json!(false)), "the default limit is the one of the whole reading: {usual}");
+}
+
+/// O arquivo que já tem a lista guardada numa ponta antiga parte dela: a
+/// passada de um arquivo lê só os commits que vieram depois da ponta, e dá a
+/// mesma lista que a leitura do começo.
+#[test]
+fn a_file_with_a_stored_history_reads_only_the_commits_after_the_tip_it_was_read_at() {
+    let temp = project("scan-historia-arquivo-ponta-");
+    let dir = temp.path();
+    commit(dir, "src/b.rs", "pub fn beta() {}\n", "cria o beta");
+    scan(dir);
+    assert_eq!(history_all(dir, &[])["read"], json!(2), "the two commits of the base");
+
+    commit(dir, "src/b.rs", "pub fn beta() { 2 }\n", "muda o beta");
+    scan(dir);
+    let (report, b) = history_in(dir, &dir.join(".claude"), "src/b.rs", &[]);
+    assert_eq!((report["read"].clone(), report["limited"].clone()), (json!(1), json!(false)), "only the commit after the tip is read: {report}");
+    assert_eq!(changes(&b, "beta"), listed(&["muda o beta", "cria o beta"]), "{b:?}");
+    assert_eq!(b, from_the_start(dir, "src/b.rs"), "the list built on the stored one is the list of the whole history");
+}
+
+const F_SHORT: &str = "pub fn f(a: u32) -> u32 {\n    let b = a + 1;\n    b\n}\n";
+const F_LONG: &str = "pub fn f(a: u32) -> u32 {\n    let b = a + 1;\n    let c = b * 2;\n    b\n}\n";
+
+/// Um projeto com uma função que ganhou uma linha, lido do começo da história
+/// (o mapa guarda a lista de cada arquivo). A leitura curta que vem depois de a
+/// linha sair guarda a função com o commit da linha que já não existe.
+fn read_project_with_a_line_to_lose(prefix: &str) -> tempfile::TempDir {
+    let temp = project(prefix);
+    let dir = temp.path();
+    declare_base(dir, "main");
+    commit(dir, "src/f.rs", F_SHORT, "cria o f");
+    commit(dir, "src/f.rs", F_LONG, "adiciona a linha");
+    scan(dir);
+    assert_eq!(history_all(dir, &[])["read"], json!(3), "the whole reading takes the three commits");
+    assert_eq!(changes(&stored_lineage(dir, "src/f.rs").expect("read"), "f"), listed(&["adiciona a linha", "cria o f"]));
+    temp
+}
+
+/// Uma rodada de leitura curta: `commits` commits em `src/noise.rs`, o scan e a
+/// leitura do projeto inteiro; devolve o relato dela.
+fn a_short_round(dir: &Path, commits: u32) -> Value {
+    for _ in 0..commits {
+        let at = git(dir, &["rev-list", "--count", "HEAD"]).trim().to_string();
+        commit(dir, "src/noise.rs", &format!("pub fn noise() {{ {at} }}\n"), &format!("ruído {at}"));
+    }
+    scan(dir);
+    history_all(dir, &[])
+}
+
+/// A lista gravada de cada arquivo do mapa da pasta `out`, em ordem de caminho.
+fn stored_lineages(out: &Path) -> Vec<FileLineage> {
+    let mut all = store::read_at(&model::path_in(out)).expect("o mapa se lê").lineage;
+    all.sort_by(|a, b| a.path.cmp(&b.path));
+    all
+}
+
+/// Passadas curtas que somam 50 commits deixam a lista aproximada, e a leitura
+/// seguinte volta ao começo da história com todos os arquivos: a lista fica
+/// igual, declaração a declaração, à de uma leitura feita do zero, e a soma
+/// volta a zero.
+#[test]
+fn fifty_commits_of_short_readings_bring_the_next_reading_back_to_the_start_and_the_history_becomes_exact() {
+    let temp = read_project_with_a_line_to_lose("scan-historia-releitura-");
+    let dir = temp.path();
+    let out = dir.join(".claude");
+    commit(dir, "src/f.rs", F_SHORT, "remove a linha");
+    for (round, commits) in [9, 10, 10, 10, 10].into_iter().enumerate() {
+        let report = a_short_round(dir, commits);
+        assert_eq!(report["read"], json!(10), "round {round}: only the commits after the last reading are read: {report}");
+    }
+    assert_eq!(
+        changes(&stored_lineage(dir, "src/f.rs").expect("read"), "f"),
+        listed(&["adiciona a linha", "cria o f"]),
+        "the short readings only add: the commit of the line that left is still in the list"
+    );
+
+    let total = git(dir, &["rev-list", "--count", "HEAD"]).trim().parse::<u64>().unwrap() + 1;
+    let whole = a_short_round(dir, 1);
+    assert_eq!(whole["read"], json!(total), "the 50 commits are added up: this reading is from the first commit: {whole}");
+    assert_eq!((whole["files"].clone(), whole["limited"].clone()), (json!(3), json!(false)), "every file of the map is read again: {whole}");
+    assert_eq!(changes(&stored_lineage(dir, "src/f.rs").expect("read"), "f"), listed(&["cria o f"]), "the line that left takes its commit along");
+
+    let fresh = tempfile::tempdir().unwrap();
+    model::scan(dir, fresh.path(), &[]);
+    history_all_in(dir, fresh.path(), &[]);
+    assert_eq!(stored_lineages(&out), stored_lineages(fresh.path()), "the list of every file is the one a reading from zero gives");
+
+    let short_again = a_short_round(dir, 1);
+    assert_eq!(short_again["read"], json!(1), "the sum went back to zero: the next reading is short: {short_again}");
+}
+
+/// O arquivo que saiu do mapa deixa a lista dele guardada, e nenhuma leitura
+/// curta a revê. A leitura inteira que vem aos 50 commits a leva embora, e a
+/// lista de todos os arquivos fica a de uma leitura feita do zero.
+#[test]
+fn the_whole_reading_drops_the_history_of_a_file_that_left_the_map_and_the_short_ones_keep_it() {
+    let temp = read_project_with_a_line_to_lose("scan-historia-saiu-do-mapa-");
+    let dir = temp.path();
+    let out = dir.join(".claude");
+    commit(dir, "src/gone.rs", "pub fn gone() {}\n", "cria o gone");
+    scan(dir);
+    history_all(dir, &[]);
+    let has_gone = || stored_lineages(&out).iter().any(|lineage| lineage.path == "src/gone.rs");
+    assert!(has_gone(), "the file is in the map and has its history");
+    git(dir, &["rm", "-q", "src/gone.rs"]);
+    git(dir, &["commit", "-q", "-m", "remove o gone"]);
+
+    let mut short_rounds = 0;
+    loop {
+        let report = a_short_round(dir, 10);
+        if report["files"] == json!(3) {
+            break;
+        }
+        assert!(has_gone(), "a short reading does not go back to a file that left the map: round {short_rounds}: {report}");
+        short_rounds += 1;
+        assert!(short_rounds < 10, "the whole reading never came");
+    }
+    assert!(short_rounds >= 5, "the whole reading came only after the short ones added up: {short_rounds} rounds");
+    assert!(!has_gone(), "the whole reading took the history of the file that left the map");
+
+    let fresh = tempfile::tempdir().unwrap();
+    model::scan(dir, fresh.path(), &[]);
+    history_all_in(dir, fresh.path(), &[]);
+    assert_eq!(stored_lineages(&out), stored_lineages(fresh.path()), "the list of every file is the one a reading from zero gives");
+}
+
+/// Abaixo de 50 commits somados, a leitura seguinte segue curta: só lê os
+/// commits novos e só os arquivos que mudaram.
+#[test]
+fn below_fifty_commits_of_short_readings_the_next_one_stays_short_and_reads_only_the_new_commits() {
+    let temp = read_project_with_a_line_to_lose("scan-historia-releitura-abaixo-");
+    let dir = temp.path();
+    commit(dir, "src/f.rs", F_SHORT, "remove a linha");
+    for (round, commits) in [8, 10, 10, 10, 10].into_iter().enumerate() {
+        let report = a_short_round(dir, commits);
+        let read = if round == 0 { commits + 1 } else { commits };
+        assert_eq!(report["read"], json!(read), "round {round}: {report}");
+    }
+
+    let next = a_short_round(dir, 1);
+    assert_eq!(next["read"], json!(1), "49 commits are not enough: only the new commit is read: {next}");
+    assert_eq!(next["files"], json!(1), "only the file the new commit changed: {next}");
+    assert_eq!(
+        changes(&stored_lineage(dir, "src/f.rs").expect("read"), "f"),
+        listed(&["adiciona a linha", "cria o f"]),
+        "the file that did not change was not read again"
+    );
+}
+
+/// A leitura em segundo plano baixa a prioridade do próprio processo, e o git
+/// que ela abre herda: o `git` posto na frente no `PATH` anota a prioridade
+/// que recebeu.
+#[cfg(unix)]
+#[test]
+fn the_reading_in_the_background_runs_at_a_lower_priority_and_so_does_the_git_it_opens() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let niceness = |pid: &str| -> i32 {
+        let out = Command::new("ps").args(["-o", "ni=", "-p", pid]).output().expect("run ps");
+        String::from_utf8_lossy(&out.stdout).trim().parse().expect("ps says the priority")
+    };
+    let temp = project("scan-historia-prioridade-");
+    let dir = temp.path();
+    scan(dir);
+
+    let shim = tempfile::tempdir().unwrap();
+    let log = shim.path().join("niceness.log");
+    let script = shim.path().join("git");
+    std::fs::write(&script, "#!/bin/sh\nps -o ni= -p $$ | tr -d ' ' >> \"$NICENESS_LOG\"\nPATH=\"${PATH#*:}\"\nexec git \"$@\"\n").unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!("{}:{}", shim.path().display(), std::env::var("PATH").unwrap());
+
+    let model = model::path_in(&dir.join(".claude"));
+    let run = Command::new(env!("CARGO_BIN_EXE_scan"))
+        .args(["history-all", dir.to_str().unwrap(), "--out", model.to_str().unwrap(), "--json"])
+        .env("PATH", path)
+        .env("NICENESS_LOG", &log)
+        .output()
+        .expect("run scan history-all");
+    assert!(run.status.success(), "stderr: {}", String::from_utf8_lossy(&run.stderr));
+
+    // A prioridade só se baixa: quem já roda com mais de 10 fica como está.
+    let expected = niceness(&std::process::id().to_string()).max(10);
+    let logged: Vec<i32> = std::fs::read_to_string(&log).expect("the git of the shim ran").lines().map(|line| line.parse().unwrap()).collect();
+    assert!(!logged.is_empty(), "the reading opened git");
+    assert!(logged.iter().all(|priority| *priority == expected), "every git the reading opened has the priority {expected}: {logged:?}");
 }

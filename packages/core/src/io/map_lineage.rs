@@ -1,16 +1,22 @@
 //! `map_lineage` — quais arquivos do mapa esperam a história de cada
 //! declaração. O scan a lê do git em segundo plano, arquivo por arquivo, e
 //! grava em lotes ([`crate::io::project_map::save_lineages_at`]); aqui se diz
-//! quais arquivos ainda faltam.
+//! quais arquivos ainda faltam e quantos commits as leituras curtas, as que só
+//! somam o que veio depois da última, já leram desde a última leitura inteira,
+//! e o fecho dessa leitura inteira.
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
+use rusqlite::Connection;
+
 use crate::domain::ast::is_test_path;
 use crate::domain::project_map::{lineage_fresh_in, FileLineage, MapRefusal};
-use crate::io::project_map::{history_at, lineage_heads, lineages, open_existing, unreadable, CENSUS};
-use crate::platform::error::Result;
+use crate::io::map_db::{set_mark, MapDb};
+use crate::io::map_revision;
+use crate::io::project_map::{history_at, lineage_heads, lineages, open_existing, unreadable, CENSUS, LINEAGE};
+use crate::platform::error::{Error, Result};
 
 /// O arquivo de trava da leitura da história do mapa em `model`: na pasta
 /// temporária, com o nome tirado do caminho do mapa, para não deixar arquivo no
@@ -52,16 +58,8 @@ pub fn wanted_at(model: &Path, moves: usize) -> std::result::Result<Vec<String>,
             let (path, count) = row?;
             comments.insert(path, usize::try_from(count).unwrap_or(0));
         }
-        let mut files = conn.prepare(
-            "SELECT path FROM files WHERE COALESCE(file_class, '') = '' \
-             AND EXISTS (SELECT 1 FROM decls WHERE decls.file = files.path) ORDER BY path",
-        )?;
         let mut wanted = Vec::new();
-        for path in files.query_map([], |row| row.get::<_, String>(0))? {
-            let path = path?;
-            if is_test_path(&path) {
-                continue;
-            }
+        for path in candidates(conn)? {
             let fresh = stored.get(&path).is_some_and(|head| {
                 lineage_fresh_in(head, &history, &census_mark, comments.get(&path).copied().unwrap_or(0), moves)
             });
@@ -72,6 +70,102 @@ pub fn wanted_at(model: &Path, moves: usize) -> std::result::Result<Vec<String>,
         Ok(wanted)
     };
     read().map_err(unreadable)
+}
+
+/// Todo arquivo do mapa em `model` que a história por declaração cobre, tenha
+/// ou não a dela guardada, na mesma ordem e com os mesmos cortes de
+/// [`wanted_at`]: é o que a leitura inteira relê, para que nenhuma lista
+/// guarde o que só as leituras curtas somaram. Sem a base de onde a história
+/// se lê, nenhum.
+///
+/// # Errors
+///
+/// As recusas de todo leitor do mapa.
+pub fn readable_at(model: &Path) -> std::result::Result<Vec<String>, MapRefusal> {
+    let history = history_at(model)?;
+    if history.base.is_empty() || history.missing.is_some() {
+        return Ok(Vec::new());
+    }
+    let db = open_existing(model)?;
+    candidates(db.conn()).map_err(unreadable)
+}
+
+/// Os arquivos do mapa de que a história por declaração se lê, em ordem de
+/// caminho: os que o índice de busca lê e que declaram alguma coisa, sem os de
+/// teste.
+fn candidates(conn: &Connection) -> Result<Vec<String>> {
+    let mut files = conn.prepare(
+        "SELECT path FROM files WHERE COALESCE(file_class, '') = '' \
+         AND EXISTS (SELECT 1 FROM decls WHERE decls.file = files.path) ORDER BY path",
+    )?;
+    let mut found = Vec::new();
+    for path in files.query_map([], |row| row.get::<_, String>(0))? {
+        let path = path?;
+        if !is_test_path(&path) {
+            found.push(path);
+        }
+    }
+    Ok(found)
+}
+
+/// Quantos commits as leituras curtas do mapa em `model` leram desde a última
+/// leitura inteira de todos os arquivos; zero no mapa que ainda não somou
+/// nenhuma. A soma mora na marca do bloco da história por declaração, que
+/// nenhum outro dono usa: ela nasce e volta a zero junto com o conteúdo do
+/// bloco, quando o formato dele muda.
+///
+/// # Errors
+///
+/// As recusas de todo leitor do mapa.
+pub fn short_reads_at(model: &Path) -> std::result::Result<u64, MapRefusal> {
+    let db = open_existing(model)?;
+    short_reads(&db).map_err(unreadable)
+}
+
+fn short_reads(db: &MapDb) -> Result<u64> {
+    Ok(db.mark(LINEAGE.name())?.and_then(|mark| mark.trim().parse().ok()).unwrap_or(0))
+}
+
+/// Soma `commits` ao que as leituras curtas do mapa em `model` já leram
+/// ([`short_reads_at`]). Somar zero não grava nada.
+///
+/// # Errors
+///
+/// O mapa que falta ou não se abre, e a falha do banco.
+pub fn add_short_reads_at(model: &Path, commits: u64) -> Result<()> {
+    if commits == 0 {
+        return Ok(());
+    }
+    let mut db = open_existing(model).map_err(|refusal| Error::Parse(format!("{refusal:?}")))?;
+    let total = short_reads(&db)?.saturating_add(commits);
+    db.write(|tx| set_mark(tx, LINEAGE.name(), &total.to_string()))
+}
+
+/// Fecha a leitura inteira de todos os arquivos que acabou de gravar no mapa
+/// em `model`: a soma das leituras curtas volta a zero, e a história guardada
+/// dos arquivos que já saíram do mapa sai também. Nenhuma leitura curta os
+/// revê, e sem isso a lista guardada nunca voltaria a ser a de uma leitura
+/// feita do zero. Numa transação só.
+///
+/// # Errors
+///
+/// O mapa que falta ou não se abre, e a falha do banco.
+pub fn finish_whole_at(model: &Path) -> Result<()> {
+    let mut db = open_existing(model).map_err(|refusal| Error::Parse(format!("{refusal:?}")))?;
+    let counted = short_reads(&db)? != 0;
+    db.write(|tx| {
+        let mut left = 0;
+        for table in ["lineage_decls", "lineage_commits", "lineage_files"] {
+            left += tx.execute(&format!("DELETE FROM {table} WHERE path NOT IN (SELECT path FROM files)"), [])?;
+        }
+        if counted {
+            set_mark(tx, LINEAGE.name(), "")?;
+        }
+        if left > 0 {
+            map_revision::bump(tx)?;
+        }
+        Ok(())
+    })
 }
 
 /// Quantos caminhos vão numa pergunta só ao banco: o limite de variáveis de
@@ -214,6 +308,71 @@ mod tests {
         let many: Vec<String> = (0..1_200).map(|at| format!("src/none{at}.rs")).chain(["src/a.rs".to_string()]).collect();
         let many: Vec<&str> = many.iter().map(String::as_str).collect();
         assert_eq!(stored_at(&model, &many).unwrap(), [with_tip("src/a.rs", "tip-a")]);
+    }
+
+    #[test]
+    fn the_whole_reading_takes_every_file_the_history_covers_even_the_ones_whose_history_is_valid() {
+        let dir = saved(&map());
+        let model = model_path(dir.path());
+        let all = ["src/a.rs", "src/b.rs", "src/c.rs"];
+        for path in all {
+            save_lineage_at(&model, &read(path, 3, 0)).unwrap();
+        }
+        assert!(wanted_at(&model, 3).unwrap().is_empty(), "every history is valid: the short reading has nothing to read");
+        assert_eq!(readable_at(&model).unwrap(), all, "the whole reading still takes the three, and no test, generated or empty file");
+
+        let mut none = map();
+        none["history"] = json!({"missing": "no_base", "paths": [], "commits": []});
+        let without_base = saved(&none);
+        assert!(readable_at(&model_path(without_base.path())).unwrap().is_empty(), "no base, nothing to read");
+    }
+
+    #[test]
+    fn the_commits_the_short_readings_read_add_up_in_the_map_until_a_whole_reading_zeroes_them() {
+        let dir = saved(&map());
+        let model = model_path(dir.path());
+        assert_eq!(short_reads_at(&model).unwrap(), 0, "a map no short reading has touched");
+
+        add_short_reads_at(&model, 30).unwrap();
+        add_short_reads_at(&model, 0).unwrap();
+        add_short_reads_at(&model, 20).unwrap();
+        assert_eq!(short_reads_at(&model).unwrap(), 50);
+
+        save_lineage_at(&model, &read("src/a.rs", 3, 0)).unwrap();
+        assert_eq!(short_reads_at(&model).unwrap(), 50, "saving a history does not change the sum");
+
+        finish_whole_at(&model).unwrap();
+        assert_eq!(short_reads_at(&model).unwrap(), 0);
+        finish_whole_at(&model).unwrap();
+        add_short_reads_at(&model, 7).unwrap();
+        assert_eq!(short_reads_at(&model).unwrap(), 7, "the sum starts over after the zero");
+    }
+
+    #[test]
+    fn closing_the_whole_reading_drops_the_history_of_the_files_that_left_the_map_and_keeps_the_others() {
+        let dir = saved(&map());
+        let model = model_path(dir.path());
+        let with_commit = |path: &str| FileLineage {
+            tip: "tip".into(),
+            commits: vec![LineageCommit { id: "c1".into(), at: 10, title: "cria".into(), ..LineageCommit::default() }],
+            declarations: vec![DeclLineage {
+                name: "f".into(),
+                commits: vec![DeclChange { id: "c1".into(), form: false }],
+                ..DeclLineage::default()
+            }],
+            ..read(path, 3, 0)
+        };
+        for path in ["src/a.rs", "src/gone.rs"] {
+            save_lineage_at(&model, &with_commit(path)).unwrap();
+        }
+        add_short_reads_at(&model, 12).unwrap();
+        let kept = stored_at(&model, &["src/a.rs"]).unwrap();
+        assert_eq!(stored_at(&model, &["src/gone.rs"]).unwrap().len(), 1, "the file that left the map still has its history");
+
+        finish_whole_at(&model).unwrap();
+        assert!(stored_at(&model, &["src/gone.rs"]).unwrap().is_empty(), "the history of the file that left the map is gone");
+        assert_eq!(stored_at(&model, &["src/a.rs"]).unwrap(), kept, "the file still in the map keeps its history");
+        assert_eq!(short_reads_at(&model).unwrap(), 0, "and the sum went back to zero");
     }
 
     #[test]
