@@ -1314,7 +1314,7 @@ mod tests {
     #[test]
     fn a_wave_request_of_one_line_per_item_shows_each_item_whole_under_its_line() {
         let said = "Pode liberar mais espaço, é voce que está lotando o disco e mais coisas aqui agora";
-        let request = format!(
+        let request = String::from(
             "# demo — onda 5\n\n## O que esta onda entrega\n\nA página mostra o título.\n\n\
             ## Como ler cada item\n\nLeia o texto inteiro de cada item.\n\n\
             ## O que fazer\n\n\

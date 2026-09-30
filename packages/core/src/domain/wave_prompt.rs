@@ -361,7 +361,11 @@ pub const STEP_INDENT: usize = 3;
 #[must_use]
 pub fn pattern_block_in_step(pattern: &TaskPattern, lang: Locale) -> String {
     let extra = " ".repeat(STEP_INDENT.saturating_sub(2));
-    pattern_block(pattern, lang).lines().map(|line| format!("{extra}{line}\n")).collect()
+    let mut out = String::new();
+    for line in pattern_block(pattern, lang).lines() {
+        let _ = writeln!(out, "{extra}{line}");
+    }
+    out
 }
 
 /// As linhas de uma receita do git no bloco do padrão: a abertura, com o
@@ -2824,7 +2828,7 @@ mod tests {
             assert_eq!(
                 section(&prompt.text, translate("prompt.part.return", lang)).lines().collect::<Vec<_>>(),
                 [
-                    "".to_string(),
+                    String::new(),
                     format!("- {}", translate("prompt.execution.report_lines", lang)),
                     format!("- {}", translate("prompt.execution.commit_field", lang)),
                     format!("- {}", translate("prompt.return.loose", lang)),

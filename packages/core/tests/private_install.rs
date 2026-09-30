@@ -29,7 +29,6 @@
 //!   the same bytes it wrote before the mode existed, plus the one key both
 //!   modes put in the local layer — the folder of the project's copies.
 
-#[cfg(unix)]
 // Unix-only: the refusal fixture seals a directory with mode 0o555, an API and a
 // semantic Windows does not have (an NTFS read-only directory still accepts new
 // files, so the same seal would refuse nothing there).

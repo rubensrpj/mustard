@@ -3,6 +3,7 @@
 //! arquivos da rodada, o commit, a gravação dele na spec e a cópia apagada.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Write as _;
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 
@@ -81,7 +82,7 @@ pub(super) fn commit_message(waves: &[WaveReport], lang: Locale) -> Result<Optio
         let key = if numbers.len() == 1 { "round.commit.scope.one" } else { "round.commit.scope.many" };
         let mut waves = numbers[..kept].join("-");
         if kept < numbers.len() {
-            waves.push_str(&format!("+{}", numbers.len() - kept));
+            let _ = write!(waves, "+{}", numbers.len() - kept);
         }
         format!("{kind}({}): ", translate(key, lang).replace("{waves}", &waves))
     };

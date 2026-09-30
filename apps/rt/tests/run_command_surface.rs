@@ -675,10 +675,12 @@ fn a_historia_traz_o_texto_do_pull_request_lido_uma_vez_depois_do_scan() {
     assert_eq!(project.calls().len(), 3, "a chave desligada não chama o provedor");
 
     project.config(true);
-    let git = std::process::Command::new("sh").args(["-c", "command -v git"]).output().unwrap();
     let only_git = tempfile::tempdir().unwrap();
     #[cfg(unix)]
-    std::os::unix::fs::symlink(String::from_utf8_lossy(&git.stdout).trim(), only_git.path().join("git")).unwrap();
+    {
+        let git = std::process::Command::new("sh").args(["-c", "command -v git"]).output().unwrap();
+        std::os::unix::fs::symlink(String::from_utf8_lossy(&git.stdout).trim(), only_git.path().join("git")).unwrap();
+    }
     let without_gh = only_git.path().display().to_string();
     let (ok, scanned) = project.run(&["scan"], &without_gh);
     assert!(ok, "{scanned}");
