@@ -115,7 +115,7 @@ pub const PROJECT_CAPABILITIES: &str = r#"{"db":{"rules":[{"path":"","read":"vie
 /// desenho da página já publicada mudou; a página só é publicada de novo
 /// quando ele pede. A trava dos testes falha quando o molde muda sem ela
 /// subir.
-pub const SPEC_LAYOUT_VERSION: u32 = 12;
+pub const SPEC_LAYOUT_VERSION: u32 = 13;
 
 /// A versão do layout da página do projeto, com a mesma regra de
 /// [`SPEC_LAYOUT_VERSION`].
@@ -377,8 +377,8 @@ mod tests {
     /// sobe a versão do layout dele e grava aqui a impressão nova que a falha
     /// mostra.
     const LAYOUT_TABLE: &[(&str, Locale, u32, &str)] = &[
-        ("spec", Locale::PtBr, 12, "86263463d71e5efb"),
-        ("spec", Locale::EnUs, 12, "99d57959e0010c0b"),
+        ("spec", Locale::PtBr, 13, "74d7248f663c0900"),
+        ("spec", Locale::EnUs, 13, "bc92e4984f4a074f"),
         ("project", Locale::PtBr, 3, "e0c425df74e09675"),
         ("project", Locale::EnUs, 3, "79b45f84601d5349"),
     ];
@@ -577,6 +577,22 @@ mod tests {
     /// (`downloads`): sem ele, o botão de baixar não pode nem tentar o
     /// navegador direto, porque isso não funciona dentro do claude.ai.
     fn run_with_downloads(page: &str, html: &str, db: Option<Value>, steps: Value, downloads: bool) -> Value {
+        run_refusing(page, html, db, steps, downloads, &[])
+    }
+
+    /// [`run_with_downloads`] com o banco de mentira recusando de vez o que
+    /// `refuse` lista: o caminho de uma coleção ou de um documento (a leitura
+    /// dele falha) e `db` (o claude.ai nem abre o banco). Além disso, o banco
+    /// de mentira recusa, como o servidor, a leitura de `ranges` sem limite
+    /// ou com mais de 8 documentos (`resource_exhausted`).
+    fn run_refusing(
+        page: &str,
+        html: &str,
+        db: Option<Value>,
+        steps: Value,
+        downloads: bool,
+        refuse: &[&str],
+    ) -> Value {
         let mut child = Command::new("node")
             .arg(harness())
             .stdin(Stdio::piped())
@@ -584,7 +600,8 @@ mod tests {
             .stderr(Stdio::piped())
             .spawn()
             .expect("the page templates run in Node.js during the test: install Node and put `node` on the PATH");
-        let input = json!({"page": page, "html": html, "db": db, "steps": steps, "downloads": downloads}).to_string();
+        let input = json!({"page": page, "html": html, "db": db, "steps": steps, "downloads": downloads, "refuse": refuse})
+            .to_string();
         child.stdin.take().expect("stdin").write_all(input.as_bytes()).expect("the harness reads its input");
         let out = child.wait_with_output().expect("the harness ends");
         assert!(out.status.success(), "the harness failed: {}", String::from_utf8_lossy(&out.stderr));
@@ -2094,12 +2111,12 @@ mod tests {
         assert_ne!(bars_of(&got["before"]), bars_of(&got["after"]), "the reload read the new wave state: {got}");
     }
 
-    /// Uma spec longa é lida inteira, em páginas de até 500 documentos da
+    /// Uma spec longa é lida inteira, em páginas de até 8 documentos da
     /// coleção das faixas, seguindo o cursor da mais velha para a mais nova:
     /// aqui, cada item na própria faixa (só para este teste — a faixa de
-    /// verdade tem [`RANGE_WIDTH`] itens, e só passa de 500 documentos com
-    /// mais de 50 mil itens), 1.200 itens somados aos da spec de exemplo
-    /// pedem três idas ao banco. A aba longa mostra 40 cartões e o botão de
+    /// verdade tem [`RANGE_WIDTH`] itens), 1.200 itens somados aos da spec de
+    /// exemplo pedem uma ida ao banco a cada 8 documentos, e a última ida
+    /// volta com menos de 8. A aba longa mostra 40 cartões e o botão de
     /// mostrar mais, que traz os 40 seguintes.
     #[test]
     fn a_long_spec_is_read_in_pages() {
@@ -2142,11 +2159,85 @@ mod tests {
             .filter(|r| r["path"] == json!(RANGES))
             .map(|r| (r["filters"][0][2].clone(), r["size"].clone()))
             .collect();
-        let last_of_first_page = lines.iter().map(|l| l["id"].as_u64().unwrap_or(0) * 1_000).collect::<Vec<_>>()[499];
-        assert_eq!(pages.len(), 3, "{pages:?}");
-        assert_eq!(pages[0], (json!(-1), json!(500)));
-        assert_eq!(pages[1], (json!(last_of_first_page), json!(500)));
-        assert_eq!(pages[2].1, json!(lines.len() - 1_000));
+        let mut seqs: Vec<u64> = lines.iter().map(|l| l["id"].as_u64().unwrap_or(0) * 1_000).collect();
+        seqs.sort_unstable();
+        assert_eq!(pages.len(), lines.len() / 8 + 1, "one read per 8 documents, and the last one comes short");
+        assert_eq!(pages[0], (json!(-1), json!(8)));
+        assert_eq!(pages[1], (json!(seqs[7]), json!(8)));
+        assert_eq!(pages[2], (json!(seqs[15]), json!(8)));
+        assert_eq!(pages[pages.len() - 1].1, json!(lines.len() % 8), "{pages:?}");
+        assert!(pages[..pages.len() - 1].iter().all(|p| p.1 == json!(8)), "every full read has 8 documents");
+    }
+
+    /// O servidor recusa a leitura de `ranges` que passa de uns 2 MiB
+    /// (`resource_exhausted`), e cada documento de faixa tem até 256 KiB: o
+    /// banco de mentira recusa a consulta com mais de 8 documentos. Uma spec
+    /// com 30 faixas mostra todos os itens, lidos em quatro idas de 8, 8, 8 e
+    /// 6 documentos, cada uma seguindo o cursor da anterior.
+    #[test]
+    fn a_spec_of_thirty_ranges_shows_every_item_in_reads_of_at_most_eight() {
+        let base = run(
+            "spec",
+            &spec_page_template(Locale::PtBr),
+            Some(spec_database(&spec_lines())),
+            json!([{"do": "wait"}, {"do": "scrape", "as": "page"}]),
+        );
+        let mut lines = spec_lines();
+        lines.extend((1..30).map(|k| {
+            json!({"v":1,"id":k * RANGE_WIDTH,"at":"2026-09-13T10:00:00-03:00","type":"note","author":"assistant","text":format!("Nota da faixa {k}."),"keys":["k"],"origin":2})
+        }));
+        let db = spec_database(&lines);
+        assert_eq!(db["ranges"].as_array().expect("ranges").len(), 30, "one document per range");
+        let steps = json!([{"do": "wait"}, {"do": "scrape", "as": "page"}, {"do": "reads", "as": "reads"}]);
+        let got = run("spec", &spec_page_template(Locale::PtBr), Some(db), steps);
+        assert_eq!(got["page"]["state"], json!("ready"), "the page read the database: {}", got["page"]["status"]);
+        let titles: Vec<String> =
+            cards(&got["page"], "notes").iter().map(|i| i["title"].as_str().unwrap_or_default().to_string()).collect();
+        assert_eq!(titles.len(), cards(&base["page"], "notes").len() + 29, "every item of the 30 ranges is on the page");
+        for k in 1..30 {
+            assert!(titles.contains(&format!("Nota da faixa {k}.")), "the note of range {k} is missing");
+        }
+        let reads: Vec<&Value> =
+            got["reads"].as_array().expect("reads").iter().filter(|r| r["path"] == json!(RANGES)).collect();
+        assert!(reads.iter().all(|r| r["refused"].is_null() && r["limit"].as_u64() <= Some(8)), "{reads:?}");
+        let cursors: Vec<Value> = reads.iter().map(|r| r["filters"][0][2].clone()).collect();
+        let sizes: Vec<Value> = reads.iter().map(|r| r["size"].clone()).collect();
+        assert_eq!(cursors, [json!(-1), json!(700_000), json!(1_500_000), json!(2_300_000)]);
+        assert_eq!(sizes, [json!(8), json!(8), json!(8), json!(6)]);
+    }
+
+    /// A leitura que o banco recusa ou perde não é banco vazio: a página diz
+    /// que a leitura falhou, nos dois idiomas, e não que ainda não há dados.
+    /// Vale para o molde antigo, que pedia 500 documentos de faixa e topava
+    /// com a recusa do servidor, para a coleção das faixas e o documento
+    /// calculado que falham, e para o claude.ai que nem abre o banco.
+    #[test]
+    fn a_refused_read_says_the_read_failed_and_not_that_there_is_no_data() {
+        let steps = json!([{"do": "wait"}, {"do": "scrape", "as": "page"}]);
+        let mut lines = spec_lines();
+        lines.extend((1..30).map(|k| {
+            json!({"v":1,"id":k * RANGE_WIDTH,"at":"2026-09-13T10:00:00-03:00","type":"note","author":"assistant","text":format!("Nota da faixa {k}."),"keys":["k"],"origin":2})
+        }));
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let read_failed = translate("page.read_failed", lang);
+            let no_data = translate("page.no_data", lang);
+            assert_ne!(read_failed, no_data, "{lang:?}: the two texts differ");
+            let html = spec_page_template(lang);
+            let old_size = html.replace("var PAGE = 8;", "var PAGE = 500;");
+            assert_ne!(old_size, html, "the template reads 8 ranges at a time");
+            let cases: [(&str, &str, Vec<&str>); 4] = [
+                ("the old size of 500 documents", old_size.as_str(), vec![]),
+                ("the ranges refused", html.as_str(), vec![RANGES]),
+                ("the computed document refused", html.as_str(), vec![COMPUTED]),
+                ("the database not opened", html.as_str(), vec!["db"]),
+            ];
+            for (case, template, refuse) in cases {
+                let got = run_refusing("spec", template, Some(spec_database(&lines)), steps.clone(), true, &refuse);
+                assert_eq!(got["page"]["state"], json!("failed"), "{lang:?} {case}: {got}");
+                assert_eq!(got["page"]["status"], json!(read_failed), "{lang:?} {case}");
+                assert_eq!(got["page"]["statusHidden"], json!(false), "{lang:?} {case}");
+            }
+        }
     }
 
     /// O primeiro pedaço de uma faixa leva `chunks`, quantos pedaços ela tem

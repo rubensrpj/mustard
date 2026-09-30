@@ -246,6 +246,10 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Ainda não há dados: o Mustard ainda não copiou nada para o banco de dados desta página."
         }
         ("page.no_data", Locale::EnUs) => "No data yet: Mustard has not copied anything to this page's database.",
+        // O banco recusou ou perdeu a leitura: ele pode ter dado, e dizer que
+        // não há dados seria falso.
+        ("page.read_failed", Locale::PtBr) => "Não deu para ler o banco de dados da página. Recarregue a página.",
+        ("page.read_failed", Locale::EnUs) => "Could not read the page's database. Reload the page.",
         // O banco já tem o documento calculado (uma cópia já rodou), mas
         // nenhum item aparece: o modelo instalado está velho, lendo uma
         // coleção que a cópia de agora não usa mais.
@@ -1032,8 +1036,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("page.rs"),
             super::PREFIXES,
-            389,
-            0x7121_f718_c756_dda8,
+            390,
+            0x3890_61db_374c_3c0a,
         );
     }
 
@@ -1078,6 +1082,23 @@ mod tests {
                 let report = crate::domain::clarity::measure(&filled, &[], Some(lang));
                 assert!(report.passed, "{key} {lang:?}: {report:?}");
             }
+        }
+    }
+
+    /// A frase da leitura que falhou não é a do banco vazio: conta que a
+    /// leitura falhou e manda recarregar, e passa na conferência de escrita
+    /// nos dois idiomas.
+    #[test]
+    fn the_read_failed_text_differs_from_the_empty_one_and_reads_clearly() {
+        for (lang, failed, reload) in
+            [(Locale::PtBr, "Não deu para ler", "Recarregue"), (Locale::EnUs, "Could not read", "Reload")]
+        {
+            let text = super::text("page.read_failed", lang).expect("page.read_failed");
+            let empty = super::text("page.no_data", lang).expect("page.no_data");
+            assert_ne!(text, empty, "{lang:?}");
+            assert!(text.contains(failed) && text.contains(reload), "{lang:?}: {text}");
+            let report = crate::domain::clarity::measure(text, &[], Some(lang));
+            assert!(report.passed, "{lang:?}: {report:?}");
         }
     }
 

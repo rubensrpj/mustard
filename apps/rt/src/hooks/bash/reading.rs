@@ -50,7 +50,7 @@ use std::path::{Path, PathBuf};
 use mustard_core::domain::model::contract::{Ctx, HookInput, Verdict};
 
 use super::lex::{Segment, Word};
-use crate::hooks::write::write_gate::say;
+use crate::hooks::write::write_gate::{say, search_reply};
 use crate::shared::code_route;
 use crate::shared::config_key::{self, NameFilter, Walk, CONFIG_FILE};
 use crate::shared::word_search::{self, Dialect, Reply};
@@ -134,7 +134,7 @@ pub(super) fn bash_reading(segments: &[Segment], cmd: &str, input: &HookInput, c
                 walk: search.walk,
                 shows_lines: search.shows_lines,
             };
-            match word_search::hook_reply(&root, input, ctx, &wanted) {
+            match search_reply(&root, input, ctx, &wanted) {
                 Reply::Answer(reason) => return Some(Verdict::Deny { reason }),
                 Reply::Note(context) => note = Some(context),
                 Reply::Pass => {}
@@ -285,7 +285,7 @@ fn find_note(find: &FindRead, cwd: &Path, root: &str, input: &HookInput, ctx: &C
         return None;
     }
     let filters = word_search::extension_filters(&name.glob);
-    match word_search::hook_reply(root, input, ctx, &word_search::names_search(&words, &folders, &filters)) {
+    match search_reply(root, input, ctx, &word_search::names_search(&words, &folders, &filters)) {
         Reply::Note(context) => Some(context),
         _ => None,
     }

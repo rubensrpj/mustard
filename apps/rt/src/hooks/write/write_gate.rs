@@ -75,6 +75,7 @@ use mustard_core::platform::error::Error;
 use mustard_core::platform::i18n::Locale;
 
 use crate::commands::git_settle::main_checkout_root;
+use crate::commands::spec_events::conversation::record_measured_call;
 use crate::shared::code_route::{self, ProjectPath};
 use crate::shared::config_key;
 use crate::shared::paths::{Access, PathClass, WriteTarget};
@@ -329,7 +330,7 @@ fn search_verdict(root: &str, input: &HookInput, ctx: &Ctx) -> Verdict {
                 walk,
                 shows_lines: text("output_mode") == Some("content"),
             };
-            word_search::hook_reply(root, input, ctx, &search)
+            search_reply(root, input, ctx, &search)
         }
         _ => word_search::Reply::Pass,
     };
@@ -377,10 +378,18 @@ fn glob_verdict(root: &str, input: &HookInput, ctx: &Ctx) -> Verdict {
     };
     let filters = word_search::extension_filters(pattern);
     let search = word_search::names_search(&words, std::slice::from_ref(&folder), &filters);
-    match word_search::hook_reply(root, input, ctx, &search) {
+    match search_reply(root, input, ctx, &search) {
         word_search::Reply::Note(context) => Verdict::Inject { context },
         _ => Verdict::Allow,
     }
+}
+
+/// A resposta do gancho à busca `search`, com a chamada medida da busca
+/// parcial gravada na spec da conversa. É o único lugar em que os ganchos
+/// ligam a busca por palavra, que é parte compartilhada, à gravação da
+/// conversa, que é de quem a grava.
+pub(crate) fn search_reply(root: &str, input: &HookInput, ctx: &Ctx, search: &word_search::Search<'_>) -> word_search::Reply {
+    word_search::hook_reply(root, input, ctx, search, &record_measured_call)
 }
 
 /// A primeira resposta de `rules` para `target`; sem resposta, passa.

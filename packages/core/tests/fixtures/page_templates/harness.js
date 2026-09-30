@@ -8,8 +8,8 @@
 //
 // A página roda com uma imitação pequena do DOM (só o que os templates usam)
 // e das capacidades do claude.ai: o banco de dados (`db`), com a leitura em
-// páginas, o aviso de mudança e o aviso de falha da escuta (o passo `fail`),
-// e o salvar arquivo (`downloads`).
+// páginas, a recusa da resposta grande demais, o aviso de mudança e o aviso
+// de falha da escuta (o passo `fail`), e o salvar arquivo (`downloads`).
 'use strict';
 const fs = require('fs');
 const vm = require('vm');
@@ -141,6 +141,16 @@ const document = {
 // O banco de dados e o salvar arquivo do claude.ai
 // ---------------------------------------------------------------------------
 const reads = [];
+// O servidor de verdade recusa a resposta grande demais (`resource_exhausted`):
+// cada documento de `ranges` tem até 256 KiB, e a leitura sem limite ou com
+// mais de 8 documentos passa do que ele aceita. O banco de mentira recusa do
+// mesmo jeito, e a leitura recusada fica em `reads` com `refused`.
+const RANGES_MAX_LIMIT = 8;
+// `input.refuse` lista o que o banco de mentira recusa de vez, com
+// `{code: 'unavailable'}`: o caminho de uma coleção ou de um documento (a
+// leitura dele falha) e `db` (o claude.ai nem abre o banco).
+const refuse = input.refuse || [];
+const unavailable = () => ({ code: 'unavailable', message: 'the database is not reachable' });
 function makeDb(state) {
   const listeners = [];
   const docsOf = (path) => state[path] || [];
@@ -177,7 +187,16 @@ function makeDb(state) {
         if (!(Number.isInteger(n) && n >= 1 && n <= 1000)) throw new TypeError('limit out of range: ' + n);
         return query(path, filters, order, n);
       },
-      get: async () => { const r = run(); reads.push({ path, filters, order, limit: lim, size: r.size }); return r; },
+      get: async () => {
+        if (refuse.includes(path)) throw unavailable();
+        if (path === 'ranges' && (!lim || lim > RANGES_MAX_LIMIT)) {
+          reads.push({ path, filters, order, limit: lim, refused: true });
+          throw { code: 'resource_exhausted', message: "the query's result is too large" };
+        }
+        const r = run();
+        reads.push({ path, filters, order, limit: lim, size: r.size });
+        return r;
+      },
       onSnapshot: (next, onError) => { const l = () => next(run()); listeners.push({ path, run: l, err: onError }); setTimeout(l, 0); return () => {}; },
       doc: (id) => docRef(path + '/' + id),
     };
@@ -188,7 +207,7 @@ function makeDb(state) {
     const find = () => { const d = docsOf(col).find((x) => x.id === id); return snap(id, d ? d.data : null); };
     return {
       id, path,
-      get: async () => { reads.push({ path }); return find(); },
+      get: async () => { if (refuse.includes(path)) throw unavailable(); reads.push({ path }); return find(); },
       onSnapshot: (next, onError) => { const l = () => next(find()); listeners.push({ path, run: l, err: onError }); setTimeout(l, 0); return () => {}; },
     };
   }
@@ -208,7 +227,12 @@ const saves = [];
 // verdade.
 const hasDownloads = input.downloads !== false;
 const downloads = { save: async (req) => { saves.push({ filename: req.filename, data: String(req.data) }); return { status: 'saved' }; } };
-const claude = { use: async (name) => (name === 'db' ? (store ? store.db : null) : name === 'downloads' ? (hasDownloads ? downloads : null) : null) };
+const claude = {
+  use: async (name) => {
+    if (name === 'db' && refuse.includes('db')) throw unavailable();
+    return name === 'db' ? (store ? store.db : null) : name === 'downloads' ? (hasDownloads ? downloads : null) : null;
+  },
+};
 
 // O endereço da página: `input.hash` é o `#…` com que ela abre, e o passo
 // `hash` troca o endereço e avisa, como o navegador faz.

@@ -185,7 +185,9 @@ pub(crate) fn record_call(root: &Path, command: &str, named: Option<&str>, start
 
 /// A chamada de [`record_call`], da sessão `session`, com os campos da
 /// medida de quem chamou (`measured`) além dos de toda chamada: a busca do
-/// mapa grava o filtro, o tempo dele, os tokens e o custo.
+/// mapa grava o filtro, o tempo dele, os tokens e o custo. A busca por
+/// palavra, que é parte compartilhada e não alcança este módulo, recebe esta
+/// função de quem monta a cena dela (`crate::shared::word_search::Record`).
 pub(crate) fn record_measured_call(
     root: &Path,
     command: &str,

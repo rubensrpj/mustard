@@ -229,7 +229,10 @@ details.agent>.md p:last-child{margin-bottom:0}
   var BLOCKS = CAT.blocks || [], PHASES = CAT.phases || [], APPROVED = CAT.approvedPhases || [];
   var FINDING = CAT.findingLabels || [];
   var MARK = typeof CAT.purgedMark === 'string' ? CAT.purgedMark : '';
-  var PAGE = 500;
+  // Quantos documentos de faixa cada leitura pede. Cada um tem até 256 KiB, e
+  // o servidor recusa a resposta que passa de uns 2 MiB (`resource_exhausted`):
+  // com 8, a página sempre cabe, por maior que a spec cresça.
+  var PAGE = 8;
   if (CAT.lang) D.documentElement.setAttribute('lang', CAT.lang);
 
   // As regras de mostrar cada campo, as mesmas da página que o binário montava.
@@ -1720,6 +1723,11 @@ details.agent>.md p:last-child{margin-bottom:0}
   function noData() {
     emptyState('empty', t('page.no_data'));
   }
+  // O banco recusou ou perdeu a leitura: ele pode ter dado, então dizer que
+  // não há dados seria falso. A página conta que a leitura falhou.
+  function readFailed() {
+    emptyState('failed', t('page.read_failed'));
+  }
   // O documento calculado já tem dado (uma cópia já rodou), mas nenhum item
   // veio da coleção de faixas: o modelo instalado está velho, lendo uma
   // coleção que a cópia de agora não usa mais — dizer isso vale mais do que
@@ -1805,7 +1813,7 @@ details.agent>.md p:last-child{margin-bottom:0}
       var model = build(got[0], got[1]);
       SEEN.top = model.top;
       render(model);
-    }, function () { if (!MODEL) noData(); });
+    }, function () { if (!MODEL) readFailed(); });
   }
   function watch(db) {
     var timer = 0;
@@ -1825,7 +1833,7 @@ details.agent>.md p:last-child{margin-bottom:0}
   Promise.resolve(ready).then(function (db) {
     if (!db) { noData(); return; }
     return reload(db).then(function () { watch(db); });
-  }, noData);
+  }, readFailed);
 })();
 </script>
 </body>

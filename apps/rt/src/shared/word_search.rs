@@ -63,7 +63,7 @@ use mustard_core::platform::git;
 use mustard_core::platform::i18n::Locale;
 use mustard_core::{ClaudePaths, ProjectConfig};
 use regex::{Regex, RegexBuilder};
-use serde_json::json;
+use serde_json::{json, Map, Value};
 
 use crate::shared::code_route::{admitted, holds_code, parts_in_copy, ProjectPath};
 use crate::shared::config_key::{NameFilter, Walk, CONFIG_FILE};
@@ -161,6 +161,30 @@ pub(crate) struct Scene<'a> {
     pub(crate) config: &'a ProjectConfig,
     /// A montagem do filtro da busca parcial, a mesma da busca por assunto.
     pub(crate) assemble: &'a Assemble<'a>,
+    /// A gravação da chamada medida da busca parcial. Quem monta a cena a
+    /// entrega, porque a gravação numa spec é de quem grava conversa, nunca
+    /// desta parte compartilhada.
+    pub(crate) record: &'a Record<'a>,
+}
+
+/// A gravação de uma chamada medida: a raiz do projeto, o comando, a spec
+/// nomeada, a sessão, o instante em que a chamada começou, o relatório dela e
+/// os campos da medida. Devolve o número do evento gravado, ou `None` quando
+/// nada foi gravado.
+pub(crate) type Record<'a> =
+    dyn Fn(&Path, &str, Option<&str>, Option<&str>, Instant, &Value, Map<String, Value>) -> Option<u64> + 'a;
+
+/// A gravação de quem não chama o filtro: nada é gravado.
+pub(crate) fn unrecorded(
+    _: &Path,
+    _: &str,
+    _: Option<&str>,
+    _: Option<&str>,
+    _: Instant,
+    _: &Value,
+    _: Map<String, Value>,
+) -> Option<u64> {
+    None
 }
 
 /// O que o gancho diz da busca `search`: a resposta no lugar dela, a linha
@@ -171,8 +195,9 @@ pub(crate) fn reply(scene: &Scene<'_>, search: &Search<'_>) -> Reply {
 
 /// A resposta do gancho à busca `search` de `input`, no projeto `root`: passa
 /// com a chave `search.answer` desligada e sem sessão de verdade, que não tem
-/// onde guardar a busca respondida.
-pub(crate) fn hook_reply(root: &str, input: &HookInput, ctx: &Ctx, search: &Search<'_>) -> Reply {
+/// onde guardar a busca respondida. A chamada medida da busca parcial vai a
+/// `record`.
+pub(crate) fn hook_reply(root: &str, input: &HookInput, ctx: &Ctx, search: &Search<'_>, record: &Record<'_>) -> Reply {
     if !ctx.config.search_answer() {
         return Reply::Pass;
     }
@@ -180,12 +205,18 @@ pub(crate) fn hook_reply(root: &str, input: &HookInput, ctx: &Ctx, search: &Sear
     let Some(memory) = memory_path(root, input.session_id.as_deref(), input.agent_id.as_deref()) else {
         return Reply::Pass;
     };
-    with_scene(root, input, ctx, Some(&memory), |scene| reply(scene, search))
+    with_scene(root, input, ctx, (Some(&memory), record), |scene| reply(scene, search))
 }
 
 /// Roda `run` na cena do gancho: a raiz `root`, o mapa dela, o estado da
-/// sessão `memory` e a configuração de `ctx`.
-fn with_scene<T>(root: &Path, input: &HookInput, ctx: &Ctx, memory: Option<&Path>, run: impl FnOnce(&Scene<'_>) -> T) -> T {
+/// sessão `memory`, a gravação da chamada `record` e a configuração de `ctx`.
+fn with_scene<T>(
+    root: &Path,
+    input: &HookInput,
+    ctx: &Ctx,
+    (memory, record): (Option<&Path>, &Record<'_>),
+    run: impl FnOnce(&Scene<'_>) -> T,
+) -> T {
     let scene = Scene {
         root,
         model: &store::model_path(root),
@@ -195,6 +226,7 @@ fn with_scene<T>(root: &Path, input: &HookInput, ctx: &Ctx, memory: Option<&Path
         languages: &Languages::of(&ctx.config),
         config: &ctx.config,
         assemble: &door::jev,
+        record,
     };
     run(&scene)
 }
@@ -413,7 +445,7 @@ pub(crate) fn hook_ask(root: &str, input: &HookInput, ctx: &Ctx, request: &str) 
     if !ctx.config.search_answer() {
         return None;
     }
-    with_scene(Path::new(root), input, ctx, None, |scene| ask_reply(scene, request))
+    with_scene(Path::new(root), input, ctx, (None, &unrecorded), |scene| ask_reply(scene, request))
 }
 
 /// A resposta curta do mapa ao pedido `request`: a marca, os arquivos que a
@@ -575,15 +607,7 @@ fn judge(
         Outcome::Classified { pieces, .. } if pieces.is_empty() => Judged::Triage,
         Outcome::Classified { pieces, .. } => Judged::Pieces(pieces),
     };
-    let _ = crate::commands::spec_events::conversation::record_measured_call(
-        root,
-        "word search",
-        None,
-        session,
-        started,
-        &json!({ "ok": true }),
-        classified.measured,
-    );
+    let _ = (scene.record)(root, "word search", None, session, started, &json!({ "ok": true }), classified.measured);
     judged
 }
 
@@ -1269,6 +1293,7 @@ mod tests {
             languages,
             config: &config,
             assemble,
+            record: &unrecorded,
         };
         reply(&scene, &search)
     }
@@ -1396,6 +1421,7 @@ mod tests {
             languages: &Languages::new(["pt-BR", "en-US"]),
             config: &config,
             assemble,
+            record: &unrecorded,
         };
         ask_reply(&scene, request)
     }
@@ -1624,6 +1650,7 @@ mod tests {
             languages: &Languages::new(["pt-BR"]),
             config: &config,
             assemble: &without_key,
+            record: &unrecorded,
         };
         assert!(matches!(reply(&scene, &search), Reply::Answer(_)));
         assert!(matches!(reply(&scene, &search), Reply::Answer(_)));
@@ -1791,6 +1818,121 @@ mod tests {
         assert!(text.contains("Fora do corte, lugares: 1, arquivos: 1."), "the line in the note is left out: {text}");
         assert!(!text.contains("docs/notas.md"), "{text}");
         assert!(text.trim_end().ends_with(&mustard_core::translate("map.search.use_tools", Locale::PtBr)), "{text}");
+    }
+
+    /// A chamada que a gravação de mentira recebeu: o comando, a spec
+    /// nomeada, a sessão, o relatório e os campos da medida.
+    type Call = (String, Option<String>, Option<String>, Value, Map<String, Value>);
+
+    /// A gravação de mentira: guarda cada chamada que recebe.
+    #[derive(Default)]
+    struct Calls(std::cell::RefCell<Vec<Call>>);
+
+    impl Calls {
+        fn recorder(&self) -> Box<Record<'_>> {
+            Box::new(move |_, command, named, session, _, report, measured| {
+                let call = (command.to_string(), named.map(str::to_string), session.map(str::to_string), report.clone(), measured);
+                self.0.borrow_mut().push(call);
+                Some(1)
+            })
+        }
+
+        fn taken(&self) -> Vec<Call> {
+            self.0.take()
+        }
+    }
+
+    /// A busca por palavra do gancho, na raiz toda, com o filtro que `assemble`
+    /// monta e a gravação `record`.
+    fn search_recording(root: &Path, (word, shows_lines): (&str, bool), assemble: &Assemble<'_>, record: &Record<'_>) -> Reply {
+        let patterns = owned(&[word]);
+        let folders = [project_path(&root.to_string_lossy(), &root.to_string_lossy(), ".").expect("the root")];
+        let search = Search {
+            patterns: &patterns,
+            dialect: Dialect::Rust,
+            ignore_case: false,
+            whole_word: false,
+            folders: &folders,
+            filters: &[],
+            walk: Walk::Rg { unignored: false },
+            shows_lines,
+        };
+        let memory = root.join(".claude/.session/teste/word-searches");
+        let config = ProjectConfig::load(root);
+        let scene = Scene {
+            root,
+            model: &store::model_path(root),
+            memory: Some(&memory),
+            session: Some("teste"),
+            lang: Locale::PtBr,
+            languages: &Languages::new(["pt-BR", "en-US"]),
+            config: &config,
+            assemble,
+            record,
+        };
+        reply(&scene, &search)
+    }
+
+    /// A busca parcial que o filtro julga entrega a chamada medida à gravação
+    /// da cena, uma vez: o comando `word search`, a sessão, o relatório de
+    /// sucesso e os campos da medida do filtro; o filtro que falha grava a
+    /// chamada também, com o motivo no nome do filtro.
+    #[test]
+    fn a_filtered_partial_search_hands_its_measured_call_to_the_recorder_of_the_scene() {
+        let (_dir, root) = fixture::repo("{}");
+        let calls = Calls::default();
+        let judge = Judge::sure_of(&[("calcular_frete", 0.9)]);
+        search_recording(&root, ("imposto", true), &judge.assemble(), &calls.recorder());
+        let taken = calls.taken();
+        assert_eq!(taken.len(), 1, "{taken:?}");
+        let (command, named, session, report, measured) = &taken[0];
+        assert_eq!((command.as_str(), named.as_deref(), session.as_deref()), ("word search", None, Some("teste")));
+        assert_eq!(report, &json!({ "ok": true }));
+        assert_eq!(
+            [&measured["filter"], &measured["candidates"], &measured["returned"]],
+            [&json!("jev"), &json!(2), &json!(1)],
+            "the fields of the filter's measure travel with the call: {measured:?}"
+        );
+
+        let failing = Judge::failing(FilterError::Timeout);
+        search_recording(&root, ("frete pedido", true), &failing.assemble(), &calls.recorder());
+        let failed = calls.taken();
+        assert_eq!(failed.len(), 1, "{failed:?}");
+        assert!(failed[0].4["filter"].as_str().is_some_and(|name| name.starts_with("jev:")), "{:?}", failed[0].4);
+    }
+
+    /// A busca que não chega ao filtro não grava chamada: sem chave, cravada
+    /// na triagem, ou só listando nomes.
+    #[test]
+    fn a_search_that_never_reaches_the_filter_records_no_call() {
+        let (_dir, root) = fixture::repo("{}");
+        let calls = Calls::default();
+        let judge = Judge::sure_of(&[("calcular_frete", 0.9)]);
+        search_recording(&root, ("imposto", true), &without_key, &calls.recorder());
+        search_recording(&root, ("fechar_pedido", true), &judge.assemble(), &calls.recorder());
+        search_recording(&root, ("desconto", false), &judge.assemble(), &calls.recorder());
+        assert_eq!(judge.calls(), 0, "the filter is never asked");
+        assert!(calls.taken().is_empty());
+    }
+
+    /// A busca por palavra não alcança módulo de comando: a gravação da chamada
+    /// medida chega pela cena, e quem a entrega é quem grava conversa.
+    ///
+    /// Lido como as provas de prosa: as DUAS metades. Metade um: o código deste
+    /// módulo, sem o que é só de teste, nunca escreve o caminho de um comando.
+    /// Metade dois: o comando da busca escreve, o que prova que a agulha é a
+    /// grafia real. A agulha se monta em tempo de execução, para o teste não a
+    /// pôr no arquivo sob asserção.
+    #[test]
+    fn the_word_search_reaches_no_command_module() {
+        let needle = ["crate::", "commands::"].concat();
+        let here = include_str!("word_search.rs");
+        let code = here.split("\n#[cfg(test)]").next().expect("the code comes before the tests");
+        let reached: Vec<&str> =
+            code.lines().filter(|line| !line.trim_start().starts_with("//") && line.contains(&needle)).collect();
+        assert!(reached.is_empty(), "the shared search reached a command module: {reached:?}");
+        let command = include_str!("../commands/map.rs");
+        assert!(command.contains(&needle), "the command must still name its own module, or this asserts nothing");
     }
 
     /// A peça entregue vem na ordem da chance, mesmo sem linha achada nela.
@@ -1999,6 +2141,7 @@ mod tests {
                 languages: &languages,
                 config: &config,
                 assemble: &without_key,
+                record: &unrecorded,
             };
             let mut row = serde_json::json!({ "at": at, "program": program, "outcome": "pass", "folders_ok": !folders.is_empty() && folders.len() == wanted });
             if folders.is_empty() || folders.len() != wanted {

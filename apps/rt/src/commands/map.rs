@@ -66,6 +66,7 @@ use mustard_core::platform::i18n::Locale;
 use mustard_core::Setting;
 use serde_json::{json, Value};
 
+use crate::commands::spec_events::conversation::record_measured_call;
 use crate::shared::code_route;
 use crate::shared::config_key::Walk;
 use crate::shared::search_door::{self as door, first_warning, jev, Assemble, Numbers};
@@ -394,15 +395,7 @@ fn search(
         report["warnings"] = json!(warnings);
     }
     if let Some(measured) = measured {
-        let _ = crate::commands::spec_events::conversation::record_measured_call(
-            root,
-            "map search",
-            None,
-            session,
-            started,
-            &report,
-            measured,
-        );
+        let _ = record_measured_call(root, "map search", None, session, started, &report, measured);
     }
     Ok(report)
 }
@@ -452,6 +445,7 @@ fn grep_answer(
                 languages,
                 config: &config,
                 assemble,
+                record: &record_measured_call,
             };
             word_search::reply(&scene, &search)
         }
@@ -3941,6 +3935,49 @@ mod tests {
             assert_eq!(report["ok"], json!(true), "{report}");
             assert_eq!(report["question"], json!("search"), "{report}");
             assert_eq!(report["answer"], json!(from_hook));
+        }
+
+        /// O `run map search` com o texto do `Grep`, numa spec aberta, grava a
+        /// chamada `word search` da busca parcial que o filtro julga: o
+        /// comando, o resultado, o filtro, os tokens e o que voltou. A busca
+        /// cravada, que responde sem o filtro, não grava.
+        #[test]
+        fn the_command_records_the_word_search_call_of_a_partial_search_in_an_open_spec() {
+            let (_dir, root) = fixture::repo("{}");
+            crate::shared::spec_state::stand_on_spec_branch(&root, "busca-por-texto");
+            crate::commands::spec_events::write::record_open(&root, "busca-por-texto", "feature/busca-por-texto", "dev")
+                .unwrap();
+            let fake = FakeFilter::scoring(&[0.9, 0.05]);
+            let by_command = |text: &str| {
+                let opts = MapOpts {
+                    grep: Some(pattern(text)),
+                    session: Some("s-comando".to_string()),
+                    ..ask(&root, Question::Search)
+                };
+                crate::commands::map::map_at(
+                    &opts,
+                    &|_, _| Ok(ScanReport::default()),
+                    &|_, _, _, _| panic!("a search with the text of Grep never reads a history"),
+                    &fake.assemble(),
+                )
+            };
+
+            let report = by_command("imposto");
+            assert_eq!(report["ok"], json!(true), "{report}");
+            assert_eq!(fake.calls(), 1, "the partial search asks the filter: {report}");
+            let calls = calls_of(&root, "busca-por-texto");
+            assert_eq!(calls.len(), 1, "{calls:?}");
+            let call = &calls[0];
+            assert_eq!(call["command"], json!("word search"));
+            assert_eq!(call["result"], json!("ok"));
+            assert_eq!(
+                [&call["filter"], &call["tokens"], &call["cost_micro_usd"], &call["candidates"], &call["returned"]],
+                [&json!("jev"), &json!(21_000), &json!(882), &json!(2), &json!(1)]
+            );
+
+            by_command("fechar_pedido");
+            assert_eq!(fake.calls(), 1, "a pinned search never reaches the filter");
+            assert_eq!(calls_of(&root, "busca-por-texto").len(), 1, "a pinned search records no call");
         }
 
         /// A pasta, o `-i`, o `--glob` e o `--type` do comando chegam à busca
