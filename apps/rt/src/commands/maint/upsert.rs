@@ -44,6 +44,10 @@
 //! so a project that only ever updates gets them too. What the step could not
 //! do by itself comes back in `codeToolWarnings`, each sentence naming the
 //! command a person runs to finish it; nothing it meets stops the upsert.
+//! Every command of the step has a deadline of its own
+//! (`mustard_core::platform::code_tools::COMMAND_DEADLINE`): one that passes
+//! it is cut and comes back as a "timed out" sentence, so the update never
+//! waits on a stalled install.
 //!
 //! The local settings also allow the folder where the project's separate
 //! copies live, outside the project. Two answers of the person travel as
@@ -987,6 +991,57 @@ mod tests {
         }
     }
 
+    /// The step runs on the machine's own runner, which cuts every command at
+    /// its deadline: a `claude` that never answers is killed, both plugin
+    /// commands come back as "timed out" sentences with the command to run, and
+    /// the update itself still finishes and reports its files. Unix only: the
+    /// fake programs are scripts.
+    #[test]
+    #[cfg(unix)]
+    fn a_atualizacao_com_o_comando_parado_devolve_o_aviso_de_prazo_e_termina() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path();
+        std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"x\"\n").expect("write Cargo.toml");
+        let bin = tempfile::tempdir().expect("temp dir");
+        crate::executable::write_executable(&bin.path().join("rust-analyzer"), "#!/bin/sh\nexit 0\n");
+        crate::executable::write_executable(&bin.path().join("claude"), "#!/bin/sh\nexec /bin/sleep 8\n");
+        let runner = MachineRunner::new(&bin.path().display().to_string()).with_deadline(Duration::from_secs(1));
+
+        let started = std::time::Instant::now();
+        let outcome = upsert(root, &UpsertOpts::default(), &runner, |_| skipped(None, "no registry in a test".to_string()))
+            .expect("a plain project is seeded");
+        let took = started.elapsed();
+
+        assert!(took < Duration::from_secs(6), "the stalled commands were cut at the deadline, not waited for: {took:?}");
+        let value = serde_json::to_value(&outcome).expect("serialize");
+        assert_eq!(
+            value["codeToolWarnings"],
+            serde_json::json!([
+                "rust: timed out after 1s - run manually: claude plugin install rust-analyzer-lsp@claude-plugins-official",
+                "rust: timed out after 1s - run manually: claude plugin enable rust-analyzer-lsp@claude-plugins-official",
+            ]),
+        );
+        assert!(
+            value["created"].as_array().is_some_and(|c| c.iter().any(|p| p == "mustard.json")),
+            "the upsert itself went through: {value}",
+        );
+    }
+
+    /// The command's own page tells the assistant to hand the person every
+    /// sentence of `codeToolWarnings`: without that line the warnings the step
+    /// collects stop at the JSON and the person never learns what is left.
+    #[test]
+    fn the_upsert_page_tells_to_relay_the_code_tool_warnings() {
+        let page = include_str!("../../../../../plugin/commands/upsert.md");
+        let step = page
+            .split("\n3. ")
+            .nth(1)
+            .and_then(|rest| rest.split("\n4. ").next())
+            .expect("step 3 of the install");
+        assert!(step.contains("`codeToolWarnings`"), "{step}");
+        assert!(step.contains("command"), "the page asks for the ready command: {step}");
+    }
+
     /// A project in C# and Rust, updated: the files are written first, then the
     /// same code-tool step `mustard init` runs sets up each language. Each one
     /// lands on one side of the line: `csharp-ls` is missing and so is
@@ -1033,7 +1088,8 @@ mod tests {
         assert_eq!(
             value["codeToolWarnings"],
             serde_json::json!([
-                "csharp: csharp-ls not found on PATH - install manually: dotnet tool install --global csharp-ls",
+                "csharp: csharp-ls not found on PATH - install manually: \
+                 dotnet tool install --global csharp-ls --version 0.18.0",
                 "csharp: could not install the csharp-lsp@claude-plugins-official plugin - run manually: \
                  claude plugin install csharp-lsp@claude-plugins-official",
             ]),

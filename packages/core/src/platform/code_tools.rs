@@ -11,7 +11,8 @@
 //! ([`ToolRunner`]) — a máquina, em [`MachineRunner`], ou um executor falso no
 //! teste, que assim não instala nada de verdade — e devolve o que falhou como
 //! aviso com o comando pronto, sem imprimir nada: quem chama decide onde
-//! mostrar.
+//! mostrar. Cada comando da máquina tem um prazo ([`COMMAND_DEADLINE`]): o que
+//! o passa vira o aviso de que passou do prazo, nunca uma instalação parada.
 //!
 //! A detecção de linguagem também é uma só, em [`detect_code_languages`]:
 //! quando o projeto já foi mapeado (`.claude/grain.db` existe), o
@@ -25,7 +26,8 @@
 use std::collections::BTreeSet;
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use crate::domain::scan::read_projects;
 use crate::domain::source_lang::detected_languages;
@@ -41,12 +43,14 @@ use crate::platform::process::{program_file, program_file_names};
 /// um depois do outro, sem shell, e a pessoa pode colar a linha inteira no
 /// terminal. `check`, quando há, é o comando — o programa e os argumentos —
 /// que sai com sucesso só quando o programa responde: estar no `PATH` não
-/// basta para ele.
+/// basta para ele. `start_hint`, quando há, é a frase que acompanha o aviso do
+/// programa que foi instalado mas não roda, com o comando pronto.
 pub struct CodeTool {
     pub plugin: Option<&'static str>,
     pub program: &'static str,
     pub install_cmd: &'static str,
     pub check: Option<&'static [&'static str]>,
+    pub start_hint: Option<&'static str>,
 }
 
 impl CodeTool {
@@ -81,6 +85,16 @@ const TYPESCRIPT_CHECK: &[&str] = &[
      process.exit(f.existsSync(p.join(p.dirname(t),'tsserver.js'))?0:1)",
 ];
 
+/// A instalação do servidor de C#, na versão 0.18.0: a mais nova falha no SDK
+/// 9 do dotnet (a instalação acaba sem o `DotnetToolSettings.xml`), e a 0.18.0
+/// instala.
+const CSHARP_INSTALL: &str = "dotnet tool install --global csharp-ls --version 0.18.0";
+
+/// O que fazer quando o `csharp-ls` instalado não abre: o dotnet do sistema é
+/// mais velho que o da pasta pessoal, e o programa só roda apontando para ela.
+const CSHARP_START_HINT: &str = "if csharp-ls will not start because the system dotnet is older than the one in \
+     ~/.dotnet, run it with DOTNET_ROOT=~/.dotnet - set it once: export DOTNET_ROOT=\"$HOME/.dotnet\"";
+
 /// `(linguagem, ferramenta)` — DADO, não lógica. As chaves são os nomes que
 /// `apps/scan/languages.toml` e o registro de pilhas usam.
 pub const CODE_TOOLS: &[(&str, CodeTool)] = &[
@@ -91,6 +105,7 @@ pub const CODE_TOOLS: &[(&str, CodeTool)] = &[
             program: "rust-analyzer",
             install_cmd: "rustup component add rust-analyzer",
             check: None,
+            start_hint: None,
         },
     ),
     (
@@ -100,6 +115,7 @@ pub const CODE_TOOLS: &[(&str, CodeTool)] = &[
             program: "typescript-language-server",
             install_cmd: TYPESCRIPT_INSTALL,
             check: Some(TYPESCRIPT_CHECK),
+            start_hint: None,
         },
     ),
     (
@@ -109,6 +125,7 @@ pub const CODE_TOOLS: &[(&str, CodeTool)] = &[
             program: "typescript-language-server",
             install_cmd: TYPESCRIPT_INSTALL,
             check: Some(TYPESCRIPT_CHECK),
+            start_hint: None,
         },
     ),
     (
@@ -116,8 +133,9 @@ pub const CODE_TOOLS: &[(&str, CodeTool)] = &[
         CodeTool {
             plugin: Some("csharp-lsp"),
             program: "csharp-ls",
-            install_cmd: "dotnet tool install --global csharp-ls",
+            install_cmd: CSHARP_INSTALL,
             check: None,
+            start_hint: Some(CSHARP_START_HINT),
         },
     ),
     (
@@ -127,6 +145,7 @@ pub const CODE_TOOLS: &[(&str, CodeTool)] = &[
             program: "gopls",
             install_cmd: "go install golang.org/x/tools/gopls@latest",
             check: None,
+            start_hint: None,
         },
     ),
     (
@@ -136,6 +155,7 @@ pub const CODE_TOOLS: &[(&str, CodeTool)] = &[
             program: "pyright-langserver",
             install_cmd: "npm install -g pyright",
             check: None,
+            start_hint: None,
         },
     ),
     (
@@ -145,6 +165,7 @@ pub const CODE_TOOLS: &[(&str, CodeTool)] = &[
             program: "intelephense",
             install_cmd: "npm install -g intelephense",
             check: None,
+            start_hint: None,
         },
     ),
 ];
@@ -270,6 +291,23 @@ pub fn detect_code_languages(project_root: &Path, model_path: &Path) -> BTreeSet
 /// O catálogo oficial de onde saem os plugins da tabela.
 pub const PLUGIN_CATALOG: &str = "claude-plugins-official";
 
+/// O prazo de cada comando que a máquina roda na etapa: a instalação de um
+/// servidor de linguagem ou de um plugin que passa dele é cortada, e o que era
+/// uma espera sem fim vira um aviso. O Claude Code também corta o comando que
+/// dura demais, e sem o aviso quem instala fica sem saber o que faltou.
+pub const COMMAND_DEADLINE: Duration = Duration::from_secs(60);
+
+/// Como um comando da etapa terminou.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunOutcome {
+    /// Abriu e saiu com sucesso.
+    Succeeded,
+    /// Não abriu, ou saiu com erro.
+    Failed,
+    /// Passou do prazo `after` e foi cortado.
+    TimedOut { after: Duration },
+}
+
 /// Quem roda os comandos da etapa das ferramentas de código. A máquina
 /// responde em [`MachineRunner`]; o teste responde com um executor falso, que
 /// anota o que lhe pediram sem instalar nada.
@@ -279,6 +317,16 @@ pub trait ToolRunner {
     /// Roda `program` com `args`; `true` só quando o programa abriu e saiu com
     /// sucesso. Programa que nem abre vira `false`, nunca pânico.
     fn run(&self, program: &str, args: &[&str]) -> bool;
+    /// Como [`ToolRunner::run`], dizendo também quando o comando foi cortado
+    /// por passar do prazo. Um executor sem prazo não precisa escrevê-lo: o
+    /// comando ou deu certo, ou falhou.
+    fn run_outcome(&self, program: &str, args: &[&str]) -> RunOutcome {
+        if self.run(program, args) {
+            RunOutcome::Succeeded
+        } else {
+            RunOutcome::Failed
+        }
+    }
     /// Onde `program` foi parar fora do `PATH`, numa pasta de ferramentas do
     /// usuário — `rustup component add` põe o `rust-analyzer` em
     /// `~/.cargo/bin`, por exemplo. Serve só para o aviso dizer o que fazer.
@@ -303,6 +351,12 @@ pub enum CodeToolWarning {
     PluginNotInstalled { language: String, plugin: String },
     /// `claude plugin enable` não deu certo.
     PluginNotEnabled { language: String, plugin: String },
+    /// Um comando passou do prazo e foi cortado; `command` é a linha inteira
+    /// que a pessoa roda para terminar o que ele fazia.
+    TimedOut { language: String, command: String, seconds: u64 },
+    /// O programa instalado pode não abrir sem um ajuste da pessoa; `hint` é
+    /// a frase da tabela, com o comando pronto.
+    StartHint { language: String, hint: &'static str },
 }
 
 impl fmt::Display for CodeToolWarning {
@@ -331,6 +385,10 @@ impl fmt::Display for CodeToolWarning {
                 f,
                 "{language}: could not enable the {plugin} plugin - run manually: claude plugin enable {plugin}"
             ),
+            Self::TimedOut { language, command, seconds } => {
+                write!(f, "{language}: timed out after {seconds}s - run manually: {command}")
+            }
+            Self::StartHint { language, hint } => write!(f, "{language}: {hint}"),
         }
     }
 }
@@ -345,7 +403,9 @@ impl fmt::Display for CodeToolWarning {
 /// não há plugin.
 ///
 /// O que falha vira [`CodeToolWarning`], com o comando pronto, e a etapa passa
-/// à linguagem seguinte: nada aqui aborta a instalação nem imprime.
+/// à linguagem seguinte: nada aqui aborta a instalação nem imprime. O comando
+/// que passa do prazo do executor vira [`CodeToolWarning::TimedOut`] no lugar
+/// do aviso de falha do passo dele.
 pub fn ensure_code_tools(
     project_root: &Path,
     model_path: &Path,
@@ -359,9 +419,16 @@ pub fn ensure_code_tools(
         };
 
         if !(runner.on_path(tool.program) && tool.answers(runner)) {
-            install(tool.install_cmd, runner);
-            if !runner.on_path(tool.program) {
-                warnings.push(match runner.found_off_path(tool.program) {
+            if let Some(after) = install(tool.install_cmd, runner) {
+                warnings.push(CodeToolWarning::TimedOut {
+                    language: language.clone(),
+                    command: tool.install_cmd.to_string(),
+                    seconds: after.as_secs(),
+                });
+            } else if !runner.on_path(tool.program) {
+                let found_off_path = runner.found_off_path(tool.program);
+                let off_path = found_off_path.is_some();
+                warnings.push(match found_off_path {
                     Some(found_at) => CodeToolWarning::OffPath {
                         language: language.clone(),
                         program: tool.program,
@@ -373,55 +440,85 @@ pub fn ensure_code_tools(
                         install_cmd: tool.install_cmd,
                     },
                 });
+                // O programa que a instalação deixou fora do `PATH` é o que
+                // pode não abrir; o que nem foi instalado não tem o que ajustar.
+                push_start_hint(&mut warnings, &language, tool, off_path);
             } else if !tool.answers(runner) {
                 warnings.push(CodeToolWarning::NotReady {
                     language: language.clone(),
                     program: tool.program,
                     install_cmd: tool.install_cmd,
                 });
+                push_start_hint(&mut warnings, &language, tool, true);
             }
         }
 
         if let Some(plugin) = tool.plugin {
             let plugin = format!("{plugin}@{PLUGIN_CATALOG}");
-            if !runner.run("claude", &["plugin", "install", &plugin]) {
-                warnings.push(CodeToolWarning::PluginNotInstalled {
-                    language: language.clone(),
-                    plugin: plugin.clone(),
-                });
-            }
-            if !runner.run("claude", &["plugin", "enable", &plugin]) {
-                warnings.push(CodeToolWarning::PluginNotEnabled { language, plugin });
+            for verb in ["install", "enable"] {
+                match runner.run_outcome("claude", &["plugin", verb, &plugin]) {
+                    RunOutcome::Succeeded => {}
+                    RunOutcome::Failed => warnings.push(if verb == "install" {
+                        CodeToolWarning::PluginNotInstalled { language: language.clone(), plugin: plugin.clone() }
+                    } else {
+                        CodeToolWarning::PluginNotEnabled { language: language.clone(), plugin: plugin.clone() }
+                    }),
+                    RunOutcome::TimedOut { after } => warnings.push(CodeToolWarning::TimedOut {
+                        language: language.clone(),
+                        command: format!("claude plugin {verb} {plugin}"),
+                        seconds: after.as_secs(),
+                    }),
+                }
             }
         }
     }
     warnings
 }
 
+/// Acrescenta a frase de partida da tabela, quando a ferramenta tem uma e o
+/// programa chegou à máquina (`installed`).
+fn push_start_hint(warnings: &mut Vec<CodeToolWarning>, language: &str, tool: &CodeTool, installed: bool) {
+    if let Some(hint) = tool.start_hint.filter(|_| installed) {
+        warnings.push(CodeToolWarning::StartHint { language: language.to_string(), hint });
+    }
+}
+
 /// Roda o comando de instalação `install_cmd` passo a passo: os passos se
 /// separam por `&&`, e cada um roda só quando o gerenciador com que ele
 /// começa está no `PATH` e o passo anterior deu certo. Nada aqui passa por
-/// shell: cada passo é o programa e as palavras que o seguem.
-fn install(install_cmd: &str, runner: &impl ToolRunner) {
+/// shell: cada passo é o programa e as palavras que o seguem. Devolve o prazo
+/// que um passo estourou — e os passos seguintes não rodam —, ou `None`.
+fn install(install_cmd: &str, runner: &impl ToolRunner) -> Option<Duration> {
     for step in install_cmd.split("&&") {
         let mut words = step.split_whitespace();
-        let Some(manager) = words.next() else { return };
+        let manager = words.next()?;
         let args: Vec<&str> = words.collect();
-        if !runner.on_path(manager) || !runner.run(manager, &args) {
-            return;
+        if !runner.on_path(manager) {
+            return None;
+        }
+        match runner.run_outcome(manager, &args) {
+            RunOutcome::Succeeded => {}
+            RunOutcome::Failed => return None,
+            RunOutcome::TimedOut { after } => return Some(after),
         }
     }
+    None
 }
 
 /// As pastas de ferramenta do usuário, sob a pasta pessoal, onde o executor
 /// da máquina procura o programa que não está no `PATH`.
 const USER_TOOL_DIRS: [&str; 4] = [".cargo/bin", ".local/bin", ".dotnet/tools", "go/bin"];
 
+/// De quanto em quanto tempo o executor da máquina olha se o comando que
+/// espera já acabou.
+const POLL_INTERVAL: Duration = Duration::from_millis(50);
+
 /// O executor da máquina: procura e roda os programas no `PATH` que recebe —
 /// o do processo, na instalação de verdade; uma pasta de programas falsos, no
 /// teste do binário. As pastas de ferramenta do usuário saem da pasta pessoal
 /// real, lida por [`home_dir`] como no resto do programa: `HOME`, ou
-/// `USERPROFILE` no Windows.
+/// `USERPROFILE` no Windows. Cada comando tem o prazo `deadline`
+/// ([`COMMAND_DEADLINE`], salvo o que [`MachineRunner::with_deadline`] troca).
 pub struct MachineRunner {
     path_env: String,
     home: Option<PathBuf>,
@@ -429,6 +526,8 @@ pub struct MachineRunner {
     /// que o programa aparece numa pasta. Vem da compilação; o teste o troca
     /// para conferir o Windows fora dele.
     windows: bool,
+    /// O tempo que cada comando tem para acabar antes de ser cortado.
+    deadline: Duration,
 }
 
 impl MachineRunner {
@@ -439,7 +538,15 @@ impl MachineRunner {
             path_env: path_env.to_string(),
             home: home_dir(),
             windows: cfg!(windows),
+            deadline: COMMAND_DEADLINE,
         }
+    }
+
+    /// O mesmo executor com outro prazo por comando.
+    #[must_use]
+    pub fn with_deadline(mut self, deadline: Duration) -> Self {
+        self.deadline = deadline;
+        self
     }
 
     /// As pastas de ferramenta do usuário, sob a pasta pessoal; nenhuma
@@ -457,16 +564,44 @@ impl ToolRunner for MachineRunner {
         program_file(program, self.windows, &self.path_env).is_some_and(|file| file.is_file())
     }
 
+    fn run(&self, program: &str, args: &[&str]) -> bool {
+        self.run_outcome(program, args) == RunOutcome::Succeeded
+    }
+
     /// Roda o arquivo que o `PATH` do executor tem para `program` (no
     /// Windows, o `npm.cmd` do `npm`); sem ele, o nome puro, que falha como
-    /// antes.
-    fn run(&self, program: &str, args: &[&str]) -> bool {
+    /// antes. A saída do comando não é lida, então nada a prende: o comando
+    /// que passa do prazo é morto e a espera acaba na hora.
+    fn run_outcome(&self, program: &str, args: &[&str]) -> RunOutcome {
         let file = program_file(program, self.windows, &self.path_env).unwrap_or_else(|| PathBuf::from(program));
-        Command::new(file)
+        let Ok(mut child) = Command::new(file)
             .args(args)
             .env("PATH", &self.path_env)
-            .output()
-            .is_ok_and(|o| o.status.success())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        else {
+            return RunOutcome::Failed;
+        };
+        let limit = Instant::now() + self.deadline;
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) if status.success() => return RunOutcome::Succeeded,
+                Ok(Some(_)) => return RunOutcome::Failed,
+                Ok(None) if Instant::now() < limit => std::thread::sleep(POLL_INTERVAL),
+                Ok(None) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return RunOutcome::TimedOut { after: self.deadline };
+                }
+                Err(_) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return RunOutcome::Failed;
+                }
+            }
+        }
     }
 
     fn found_off_path(&self, program: &str) -> Option<PathBuf> {
@@ -523,6 +658,7 @@ mod tests {
         on_path: std::cell::RefCell<BTreeSet<String>>,
         brings: Vec<(&'static str, &'static str)>,
         failing: Vec<&'static str>,
+        timing_out: Vec<&'static str>,
         off_path: Vec<(&'static str, &'static str)>,
         log: std::cell::RefCell<Vec<String>>,
     }
@@ -533,6 +669,7 @@ mod tests {
                 on_path: std::cell::RefCell::new(on_path.iter().map(|p| (*p).to_string()).collect()),
                 brings: Vec::new(),
                 failing: Vec::new(),
+                timing_out: Vec::new(),
                 off_path: Vec::new(),
                 log: std::cell::RefCell::new(Vec::new()),
             }
@@ -556,6 +693,21 @@ mod tests {
                 }
             }
             true
+        }
+
+        /// Um comando cuja linha contém um dos trechos de `timing_out` passa
+        /// do prazo de 60 s, sem esperar de verdade.
+        fn run_outcome(&self, program: &str, args: &[&str]) -> RunOutcome {
+            let line = std::iter::once(program).chain(args.iter().copied()).collect::<Vec<_>>().join(" ");
+            if self.timing_out.iter().any(|t| line.contains(t)) {
+                self.log.borrow_mut().push(line);
+                return RunOutcome::TimedOut { after: COMMAND_DEADLINE };
+            }
+            if self.run(program, args) {
+                RunOutcome::Succeeded
+            } else {
+                RunOutcome::Failed
+            }
         }
 
         fn found_off_path(&self, program: &str) -> Option<PathBuf> {
@@ -607,7 +759,7 @@ mod tests {
                 CodeToolWarning::ProgramMissing {
                     language: "csharp".to_string(),
                     program: "csharp-ls",
-                    install_cmd: "dotnet tool install --global csharp-ls",
+                    install_cmd: CSHARP_INSTALL,
                 },
                 CodeToolWarning::PluginNotInstalled {
                     language: "csharp".to_string(),
@@ -616,7 +768,10 @@ mod tests {
             ]
         );
         let texts: Vec<String> = warnings.iter().map(ToString::to_string).collect();
-        assert!(texts[0].ends_with("install manually: dotnet tool install --global csharp-ls"), "{texts:?}");
+        assert!(
+            texts[0].ends_with("install manually: dotnet tool install --global csharp-ls --version 0.18.0"),
+            "{texts:?}"
+        );
         assert!(
             texts[1].ends_with("run manually: claude plugin install csharp-lsp@claude-plugins-official"),
             "{texts:?}"
@@ -779,6 +934,7 @@ mod tests {
             path_env: String::new(),
             home: Some(windows_home.path().to_path_buf()),
             windows: true,
+            deadline: COMMAND_DEADLINE,
         };
         assert_eq!(windows.found_off_path("rg"), Some(windows_bin.join("rg.exe")));
         assert!(!windows.on_path("rg"));
@@ -791,7 +947,186 @@ mod tests {
             path_env: String::new(),
             home: Some(linux_home.path().to_path_buf()),
             windows: false,
+            deadline: COMMAND_DEADLINE,
         };
         assert_eq!(linux.found_off_path("rg"), Some(linux_bin.join("rg")));
+    }
+
+    /// Um projeto em C#, sem mapa ainda: o `.csproj` basta.
+    fn csharp_project() -> tempfile::TempDir {
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(project.path().join("App.csproj"), "<Project/>\n").unwrap();
+        project
+    }
+
+    /// O servidor de C# que falta é instalado na versão 0.18.0: a mais nova
+    /// falha no SDK 9 do dotnet, então a linha da tabela a fixa e a etapa roda
+    /// exatamente essa linha.
+    #[test]
+    fn o_servidor_de_csharp_e_instalado_na_versao_que_funciona() {
+        let project = csharp_project();
+        let model_path = crate::io::project_map::model_path(project.path());
+        let mut runner = FakeRunner::new(&["dotnet", "claude"]);
+        runner.brings.push(("dotnet", "csharp-ls"));
+
+        let warnings = ensure_code_tools(project.path(), &model_path, &runner);
+
+        assert_eq!(
+            *runner.log.borrow(),
+            vec![
+                "dotnet tool install --global csharp-ls --version 0.18.0",
+                "claude plugin install csharp-lsp@claude-plugins-official",
+                "claude plugin enable csharp-lsp@claude-plugins-official",
+            ]
+        );
+        assert_eq!(warnings, Vec::new());
+    }
+
+    /// O `csharp-ls` que a instalação deixou fora do `PATH` pode não abrir
+    /// quando o dotnet do sistema é mais velho que o da pasta pessoal: o
+    /// aviso do `PATH` vem seguido da frase do `DOTNET_ROOT`, com o comando
+    /// pronto. Sem o programa instalado (nada a ajustar) e em outra
+    /// linguagem, a frase não sai.
+    #[test]
+    fn o_csharp_ls_instalado_fora_do_path_traz_o_dotnet_root_no_aviso() {
+        let project = csharp_project();
+        let model_path = crate::io::project_map::model_path(project.path());
+        let mut runner = FakeRunner::new(&["claude"]);
+        runner.off_path.push(("csharp-ls", "/home/u/.dotnet/tools/csharp-ls"));
+
+        let warnings = ensure_code_tools(project.path(), &model_path, &runner);
+
+        assert_eq!(
+            warnings,
+            vec![
+                CodeToolWarning::OffPath {
+                    language: "csharp".to_string(),
+                    program: "csharp-ls",
+                    found_at: PathBuf::from("/home/u/.dotnet/tools/csharp-ls"),
+                },
+                CodeToolWarning::StartHint { language: "csharp".to_string(), hint: CSHARP_START_HINT },
+            ]
+        );
+        let text = warnings[1].to_string();
+        assert!(text.contains("DOTNET_ROOT=~/.dotnet"), "{text}");
+        assert!(text.ends_with(r#"export DOTNET_ROOT="$HOME/.dotnet""#), "{text}");
+
+        let absent = FakeRunner::new(&["claude"]);
+        let warnings = ensure_code_tools(project.path(), &model_path, &absent);
+        assert!(
+            matches!(warnings.as_slice(), [CodeToolWarning::ProgramMissing { .. }]),
+            "sem programa instalado não há o que ajustar: {warnings:?}"
+        );
+    }
+
+    /// O comando de instalação que passa do prazo vira o aviso de que passou,
+    /// com a linha inteira para a pessoa rodar, e não o de programa
+    /// ausente. Num comando de dois passos, o passo que estoura é o último:
+    /// o seguinte não roda.
+    #[test]
+    fn o_comando_de_instalacao_que_passa_do_prazo_vira_aviso() {
+        let project = csharp_project();
+        let model_path = crate::io::project_map::model_path(project.path());
+        let mut runner = FakeRunner::new(&["dotnet", "claude"]);
+        runner.timing_out.push("dotnet tool install");
+
+        let warnings = ensure_code_tools(project.path(), &model_path, &runner);
+
+        assert_eq!(
+            warnings,
+            vec![CodeToolWarning::TimedOut {
+                language: "csharp".to_string(),
+                command: CSHARP_INSTALL.to_string(),
+                seconds: 60,
+            }]
+        );
+        assert_eq!(
+            warnings[0].to_string(),
+            "csharp: timed out after 60s - run manually: dotnet tool install --global csharp-ls --version 0.18.0"
+        );
+
+        let project = typescript_project();
+        let model_path = crate::io::project_map::model_path(project.path());
+        let mut runner = FakeRunner::new(&["npm", "node", "claude"]);
+        runner.timing_out.push("npm install -g typescript-language-server");
+        let warnings = ensure_code_tools(project.path(), &model_path, &runner);
+        assert_eq!(
+            *runner.log.borrow(),
+            vec![
+                "npm install -g typescript-language-server",
+                "claude plugin install typescript-lsp@claude-plugins-official",
+                "claude plugin enable typescript-lsp@claude-plugins-official",
+            ],
+            "o passo seguinte não roda depois do que estourou o prazo"
+        );
+        assert_eq!(
+            warnings,
+            vec![CodeToolWarning::TimedOut {
+                language: "typescript".to_string(),
+                command: TYPESCRIPT_INSTALL.to_string(),
+                seconds: 60,
+            }]
+        );
+    }
+
+    /// O `claude plugin install` e o `claude plugin enable` que passam do
+    /// prazo viram o aviso de que passou, cada um com o próprio comando; o
+    /// outro passo segue.
+    #[test]
+    fn o_plugin_que_passa_do_prazo_vira_aviso() {
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(project.path().join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
+        let model_path = crate::io::project_map::model_path(project.path());
+        let plugin = "rust-analyzer-lsp@claude-plugins-official";
+
+        for verb in ["install", "enable"] {
+            let mut runner = FakeRunner::new(&["claude", "rust-analyzer"]);
+            runner.timing_out.push(if verb == "install" {
+                "claude plugin install"
+            } else {
+                "claude plugin enable"
+            });
+
+            let warnings = ensure_code_tools(project.path(), &model_path, &runner);
+
+            assert_eq!(
+                warnings,
+                vec![CodeToolWarning::TimedOut {
+                    language: "rust".to_string(),
+                    command: format!("claude plugin {verb} {plugin}"),
+                    seconds: 60,
+                }],
+                "{verb}"
+            );
+            assert_eq!(runner.log.borrow().len(), 2, "o outro passo do plugin segue: {:?}", runner.log.borrow());
+        }
+    }
+
+    /// O executor da máquina corta o comando que passa do prazo e volta na
+    /// hora, em vez de esperar o fim dele; o que acaba antes disso volta com o
+    /// resultado de sempre.
+    #[test]
+    #[cfg(unix)]
+    fn o_executor_da_maquina_corta_o_comando_que_passa_do_prazo() {
+        let path = std::env::var("PATH").unwrap_or_default();
+        let runner = MachineRunner::new(&path).with_deadline(Duration::from_millis(300));
+
+        let started = Instant::now();
+        let outcome = runner.run_outcome("sh", &["-c", "sleep 8"]);
+        assert_eq!(outcome, RunOutcome::TimedOut { after: Duration::from_millis(300) });
+        assert!(started.elapsed() < Duration::from_secs(4), "voltou depois de {:?}", started.elapsed());
+        assert!(!runner.run("sh", &["-c", "sleep 8"]), "passar do prazo não é dar certo");
+
+        assert_eq!(runner.run_outcome("sh", &["-c", "exit 0"]), RunOutcome::Succeeded);
+        assert_eq!(runner.run_outcome("sh", &["-c", "exit 3"]), RunOutcome::Failed);
+        assert_eq!(runner.run_outcome("no-such-program-here", &[]), RunOutcome::Failed);
+    }
+
+    /// O executor que a instalação e a atualização criam já nasce com o
+    /// prazo de 60 s por comando.
+    #[test]
+    fn o_executor_da_maquina_nasce_com_o_prazo_de_60_segundos() {
+        assert_eq!(COMMAND_DEADLINE, Duration::from_secs(60));
+        assert_eq!(MachineRunner::new("").deadline, COMMAND_DEADLINE);
     }
 }
