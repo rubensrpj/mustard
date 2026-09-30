@@ -44,10 +44,19 @@
 //! so a project that only ever updates gets them too. What the step could not
 //! do by itself comes back in `codeToolWarnings`, each sentence naming the
 //! command a person runs to finish it; nothing it meets stops the upsert.
-//! Every command of the step has a deadline of its own
-//! (`mustard_core::platform::code_tools::COMMAND_DEADLINE`): one that passes
-//! it is cut and comes back as a "timed out" sentence, so the update never
-//! waits on a stalled install.
+//!
+//! O comando inteiro tem um orçamento de tempo só, [`UPSERT_BUDGET`] (100 s),
+//! para tudo o que ele roda fora do processo: os dois passos do plugin (cada
+//! um com o teto de [`REFRESH_TIMEOUT`], 45 s) e a etapa das ferramentas de
+//! código. Cada comando roda com o menor entre o prazo dele e o que resta do
+//! orçamento, e a etapa das ferramentas mantém o teto de 60 s
+//! (`mustard_core::platform::code_tools::STEP_BUDGET`) dentro do que resta.
+//! O que passa do prazo é cortado e volta como uma frase de "timed out"; com o
+//! orçamento esgotado o passo seguinte nem roda, e volta como a mesma frase,
+//! com o comando para a pessoa rodar. Assim a atualização nunca espera por uma
+//! instalação parada, e o pior caso é o orçamento — 100 s —, abaixo dos 2
+//! minutos que o Bash do Claude Code dá a quem a chama. O plugin roda antes
+//! das ferramentas, e as duas partes tiram do mesmo orçamento.
 //!
 //! The local settings also allow the folder where the project's separate
 //! copies live, outside the project. Two answers of the person travel as
@@ -98,8 +107,9 @@
 //!
 //! UPDATING is a pair of commands the host already publishes —
 //! `claude plugin marketplace update <marketplace>` then
-//! `claude plugin update <plugin>` — so this command runs them as its last step
-//! and reports the version the registry records afterwards.
+//! `claude plugin update <plugin>` — so this command runs them right after the
+//! files are written, before the code tools, and reports the version the
+//! registry records afterwards.
 //!
 //! APPLYING is not reachable from here at all. `claude plugin update --help`
 //! says `(restart required to apply)`: a session loads its plugin at start and
@@ -115,7 +125,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use mustard_core::platform::code_tools::{self, MachineRunner, ToolRunner};
+use mustard_core::platform::code_tools::{self, whole_seconds, Budget, MachineRunner, ToolRunner};
 use mustard_core::platform::project_seed::{upsert_project_with, PendingList};
 use mustard_core::{InstallMode, ProjectConfig};
 use serde::Serialize;
@@ -130,16 +140,23 @@ use crate::shared::proc::{run_shell_with_deadline, ShellOutcome};
 // permanent skip nobody could see.
 use mustard_core::{claude_config_dir, INSTALLED_PLUGINS, PLUGIN_NAME};
 
-/// How long one refresh step may take. Both steps reach the network (the
-/// marketplace update is a git fetch), so an unbounded wait would hang the
+/// How long one refresh step may take, at most. Both steps reach the network
+/// (the marketplace update is a git fetch), so an unbounded wait would hang the
 /// installation door on a stalled connection.
 ///
-/// Two steps run, so this is HALF the budget the door has. The `/mustard:upsert`
-/// prose calls this command from a Bash tool call whose own timeout the host
-/// enforces; a per-step ceiling that let the pair outlast it would have the door
-/// killed from outside, and then nothing reports at all — the module's own
-/// deadline is the only one that can produce a `skipped` a person reads.
+/// The `/mustard:upsert` prose calls this command from a Bash tool call whose
+/// own timeout the host enforces (2 minutes); a wait that let the command
+/// outlast it would have the door killed from outside, and then nothing reports
+/// at all — the module's own deadline is the only one that can produce a
+/// `skipped` a person reads. So this is only the ceiling of one step: both steps
+/// and the code-tool step draw from the one [`UPSERT_BUDGET`], and a step that
+/// finds it spent does not run.
 const REFRESH_TIMEOUT: Duration = Duration::from_secs(45);
+
+/// O tempo que o comando inteiro tem para tudo o que roda fora do processo: os
+/// dois passos do plugin e a etapa das ferramentas de código. Abaixo dos 2
+/// minutos do Bash do Claude Code, com folga para gravar os arquivos.
+const UPSERT_BUDGET: Duration = Duration::from_secs(100);
 
 /// The two words `pluginRefresh.state` can carry. Both steps ran and were
 /// accepted, or the refresh did not happen and says why.
@@ -298,11 +315,12 @@ pub fn run(opts: &UpsertOpts) {
 /// `runner` runs the code-tool commands and `refresh` performs the plugin
 /// refresh. [`run`] hands both to the machine; the tests hand a fake runner and
 /// a canned refresh, so what they drive is the same sequence the command runs.
-fn upsert(
+/// The refresh is handed the [`UPSERT_BUDGET`] it shares with the code tools.
+fn upsert<R: ToolRunner>(
     root: &Path,
     opts: &UpsertOpts,
-    runner: &impl ToolRunner,
-    refresh: impl FnOnce(&Path) -> PluginRefresh,
+    runner: &R,
+    refresh: impl FnOnce(&Path, &Budget<'_, R>) -> PluginRefresh,
 ) -> mustard_core::platform::error::Result<Report> {
     // Unconditional. The mode is not read from anywhere and not asked for
     // anywhere: a harness that installs itself into someone else's repository
@@ -336,18 +354,21 @@ fn upsert(
     let search_warning = mustard_core::io::spec_index::refresh_search(root).err().map(|failed| failed.to_string());
 
     // Both steps below run only on the path where the project was really
-    // seeded: a run that wrote nothing has no installation to finish. The
-    // code tools come after the files, so a step that fails or stalls leaves
-    // the project already updated, and each failure is a sentence in the
-    // report, never an abort.
+    // seeded: a run that wrote nothing has no installation to finish. They come
+    // after the files, so a step that fails or stalls leaves the project
+    // already updated, and each failure is a sentence in the report, never an
+    // abort. The two draw from ONE budget: the plugin refresh goes first, and
+    // the code tools get what it leaves — a step with no time left does not
+    // run, and comes back as the sentence with its command.
+    let budget = Budget::start(runner, UPSERT_BUDGET);
+    let plugin_refresh = refresh(root, &budget);
     let code_tool_warnings =
-        code_tools::ensure_code_tools(root, &mustard_core::io::project_map::model_path(root), runner)
+        code_tools::ensure_code_tools_in(root, &mustard_core::io::project_map::model_path(root), &budget)
             .iter()
             .map(ToString::to_string)
             .collect();
 
-    // The refresh is the LAST step.
-    Ok(Report { project, plugin_refresh: refresh(root), code_tool_warnings, search_warning, local_files_found })
+    Ok(Report { project, plugin_refresh, code_tool_warnings, search_warning, local_files_found })
 }
 
 /// Grava no `mustard.json` as respostas que vieram em `opts`: o comando de
@@ -444,7 +465,7 @@ impl PendingList for ProjectPending<'_> {
 /// The binary name defaults to `claude` and can be pointed elsewhere with
 /// `MUSTARD_CLAUDE_BIN`, the way the rtk economy reader
 /// (`packages/core/src/domain/economy/sources/rtk.rs`) takes `MUSTARD_RTK_BIN`.
-fn refresh_plugin(root: &Path) -> PluginRefresh {
+fn refresh_plugin<R: ToolRunner>(root: &Path, budget: &Budget<'_, R>) -> PluginRefresh {
     let binary = std::env::var("MUSTARD_CLAUDE_BIN").unwrap_or_else(|_| "claude".into());
     let target = claude_config_dir()
         .and_then(|dir| std::fs::read_to_string(dir.join(INSTALLED_PLUGINS)).ok())
@@ -455,7 +476,7 @@ fn refresh_plugin(root: &Path) -> PluginRefresh {
     // another scope would be reported as the result of an update that never
     // touched it.
     let acted_on = target.as_ref().map(|t| (t.id.clone(), t.scope.clone()));
-    fold_refresh(&binary, target, |command| run_step(command, root), move || {
+    fold_refresh(&binary, target, |command| run_step(command, root, budget), move || {
         let (id, scope) = acted_on?;
         let raw = std::fs::read_to_string(claude_config_dir()?.join(INSTALLED_PLUGINS)).ok()?;
         installed_version_of(&raw, &id, &scope)
@@ -562,15 +583,29 @@ fn skipped(plugin: Option<String>, reason: String) -> PluginRefresh {
     }
 }
 
-/// Run one refresh step under [`REFRESH_TIMEOUT`]. `Ok` only on exit 0; every
-/// other path — an absent binary, a refusal, a stall, a lost child — is an
-/// `Err` carrying the excerpt the report names.
+/// Run one refresh step under [`REFRESH_TIMEOUT`] and what is left of the
+/// budget. `Ok` only on exit 0; every other path — an absent binary, a refusal,
+/// a stall, a lost child, no time left to start — is an `Err` carrying the
+/// excerpt the report names.
 ///
 /// Shares the spawn/drain/deadline machinery with the verify and QA runners
 /// ([`run_shell_with_deadline`]), including the concurrent pipe drain that
 /// keeps a chatty child from deadlocking on a full OS pipe buffer.
-fn run_step(command: &str, cwd: &Path) -> Result<(), String> {
-    match run_shell_with_deadline(command, cwd, REFRESH_TIMEOUT) {
+fn run_step<R: ToolRunner>(command: &str, cwd: &Path, budget: &Budget<'_, R>) -> Result<(), String> {
+    step_within(budget, |limit| run_shell_with_deadline(command, cwd, limit))
+}
+
+/// The budget half of [`run_step`]: `run` is handed the deadline the step gets —
+/// the smaller of [`REFRESH_TIMEOUT`] and what is left of the budget — and the
+/// step does not run at all when nothing is left.
+fn step_within<R: ToolRunner>(
+    budget: &Budget<'_, R>,
+    run: impl FnOnce(Duration) -> ShellOutcome,
+) -> Result<(), String> {
+    let Some((limit, outcome)) = budget.within(REFRESH_TIMEOUT, |limit| (limit, run(limit))) else {
+        return Err(format!("no time left: the {}s of the update were already spent", whole_seconds(budget.total())));
+    };
+    match outcome {
         ShellOutcome::Exited { status, stdout, stderr } => {
             if status.success() {
                 return Ok(());
@@ -582,9 +617,7 @@ fn run_step(command: &str, cwd: &Path) -> Result<(), String> {
         // that change on every run, and this line lands in a `run`-face report
         // the guard asks to stay byte-stable. The ceiling is also the useful
         // number: it is the one a reader could raise.
-        ShellOutcome::TimedOut { .. } => {
-            Err(format!("timed out after {}s", REFRESH_TIMEOUT.as_secs()))
-        }
+        ShellOutcome::TimedOut { .. } => Err(format!("timed out after {}s", whole_seconds(limit))),
         ShellOutcome::SpawnFailed { error } => Err(error),
     }
 }
@@ -951,6 +984,13 @@ mod tests {
         failing: Vec<&'static str>,
         log: std::cell::RefCell<Vec<String>>,
         seeded_when_called: std::cell::RefCell<Vec<bool>>,
+        /// A command line containing one of these takes that long, on the
+        /// fake clock, and is cut if the deadline it was given is shorter.
+        taking: Vec<(&'static str, Duration)>,
+        /// The deadline each command was given, in the order they came.
+        limits: std::cell::RefCell<Vec<Duration>>,
+        started: std::time::Instant,
+        spent: std::cell::Cell<Duration>,
     }
 
     impl FakeRunner {
@@ -962,7 +1002,16 @@ mod tests {
                 failing: Vec::new(),
                 log: std::cell::RefCell::new(Vec::new()),
                 seeded_when_called: std::cell::RefCell::new(Vec::new()),
+                taking: Vec::new(),
+                limits: std::cell::RefCell::new(Vec::new()),
+                started: std::time::Instant::now(),
+                spent: std::cell::Cell::new(Duration::ZERO),
             }
+        }
+
+        /// Lets `by` of the fake clock go by, as a command that took that long.
+        fn spend(&self, by: Duration) {
+            self.spent.set(self.spent.get() + by);
         }
     }
 
@@ -986,16 +1035,79 @@ mod tests {
             true
         }
 
+        fn run_outcome(&self, program: &str, args: &[&str], limit: Duration) -> code_tools::RunOutcome {
+            let line = std::iter::once(program).chain(args.iter().copied()).collect::<Vec<_>>().join(" ");
+            self.limits.borrow_mut().push(limit);
+            let cost = self.taking.iter().find(|(t, _)| line.contains(t)).map_or(Duration::ZERO, |(_, cost)| *cost);
+            if cost > limit {
+                self.spend(limit);
+                self.log.borrow_mut().push(line);
+                return code_tools::RunOutcome::TimedOut { after: limit };
+            }
+            self.spend(cost);
+            if self.run(program, args) {
+                code_tools::RunOutcome::Succeeded
+            } else {
+                code_tools::RunOutcome::Failed
+            }
+        }
+
         fn found_off_path(&self, _program: &str) -> Option<PathBuf> {
             None
         }
+
+        fn now(&self) -> std::time::Instant {
+            self.started + self.spent.get()
+        }
     }
 
-    /// The step runs on the machine's own runner, which cuts every command at
-    /// its deadline: a `claude` that never answers is killed, both plugin
-    /// commands come back as "timed out" sentences with the command to run, and
-    /// the update itself still finishes and reports its files. Unix only: the
-    /// fake programs are scripts.
+    /// O executor da máquina por dentro, anotando quanto tempo os comandos da
+    /// etapa levaram, somados: o que a etapa espera, sem o tempo que a
+    /// atualização gasta gravando os arquivos, que a carga da máquina estica.
+    #[cfg(unix)]
+    struct Timed<'a> {
+        inner: &'a MachineRunner,
+        in_commands: std::cell::Cell<Duration>,
+    }
+
+    #[cfg(unix)]
+    impl ToolRunner for Timed<'_> {
+        fn on_path(&self, program: &str) -> bool {
+            self.inner.on_path(program)
+        }
+
+        fn run(&self, program: &str, args: &[&str]) -> bool {
+            self.inner.run(program, args)
+        }
+
+        fn run_outcome(&self, program: &str, args: &[&str], limit: Duration) -> code_tools::RunOutcome {
+            let started = std::time::Instant::now();
+            let outcome = self.inner.run_outcome(program, args, limit);
+            self.in_commands.set(self.in_commands.get() + started.elapsed());
+            outcome
+        }
+
+        fn found_off_path(&self, program: &str) -> Option<PathBuf> {
+            self.inner.found_off_path(program)
+        }
+
+        fn budget(&self) -> Duration {
+            self.inner.budget()
+        }
+
+        fn command_deadline(&self) -> Duration {
+            self.inner.command_deadline()
+        }
+    }
+
+    /// A etapa roda no executor da máquina, que dá à etapa inteira um
+    /// orçamento de tempo: um `claude` que nunca responde é morto quando o
+    /// orçamento acaba, o passo seguinte nem roda e volta como frase de prazo,
+    /// com o comando para a pessoa rodar, e a atualização termina e relata os
+    /// arquivos dela. Só o primeiro comando chega a rodar (o registro do
+    /// programa falso tem uma linha), e os comandos levam, somados, perto do
+    /// orçamento, não da soma dos prazos. Só no Unix: os programas falsos são
+    /// scripts.
     #[test]
     #[cfg(unix)]
     fn a_atualizacao_com_o_comando_parado_devolve_o_aviso_de_prazo_e_termina() {
@@ -1003,16 +1115,21 @@ mod tests {
         let root = dir.path();
         std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"x\"\n").expect("write Cargo.toml");
         let bin = tempfile::tempdir().expect("temp dir");
+        let ran = bin.path().join("ran.log");
         crate::executable::write_executable(&bin.path().join("rust-analyzer"), "#!/bin/sh\nexit 0\n");
-        crate::executable::write_executable(&bin.path().join("claude"), "#!/bin/sh\nexec /bin/sleep 8\n");
-        let runner = MachineRunner::new(&bin.path().display().to_string()).with_deadline(Duration::from_secs(1));
+        crate::executable::write_executable(
+            &bin.path().join("claude"),
+            &format!("#!/bin/sh\necho \"$*\" >> \"{}\"\nexec /bin/sleep 8\n", ran.display()),
+        );
+        let machine = MachineRunner::new(&bin.path().display().to_string()).with_budget(Duration::from_secs(1));
+        let runner = Timed { inner: &machine, in_commands: std::cell::Cell::new(Duration::ZERO) };
 
-        let started = std::time::Instant::now();
-        let outcome = upsert(root, &UpsertOpts::default(), &runner, |_| skipped(None, "no registry in a test".to_string()))
+        let outcome = upsert(root, &UpsertOpts::default(), &runner, |_, _| skipped(None, "no registry in a test".to_string()))
             .expect("a plain project is seeded");
-        let took = started.elapsed();
+        let took = runner.in_commands.get();
 
-        assert!(took < Duration::from_secs(6), "the stalled commands were cut at the deadline, not waited for: {took:?}");
+        assert!(took >= Duration::from_millis(500), "the stalled command ran until the budget ended: {took:?}");
+        assert!(took < Duration::from_secs(3), "the stalled command was cut at the budget, not waited for: {took:?}");
         let value = serde_json::to_value(&outcome).expect("serialize");
         assert_eq!(
             value["codeToolWarnings"],
@@ -1021,10 +1138,155 @@ mod tests {
                 "rust: timed out after 1s - run manually: claude plugin enable rust-analyzer-lsp@claude-plugins-official",
             ]),
         );
+        let started_commands = std::fs::read_to_string(&ran).expect("the first command ran");
+        assert_eq!(
+            started_commands.lines().collect::<Vec<_>>(),
+            vec!["plugin install rust-analyzer-lsp@claude-plugins-official"],
+            "with the budget spent, the second command does not even start",
+        );
         assert!(
             value["created"].as_array().is_some_and(|c| c.iter().any(|p| p == "mustard.json")),
             "the upsert itself went through: {value}",
         );
+    }
+
+    /// A step that exited with `code`, for the plugin steps a test drives by hand.
+    #[cfg(unix)]
+    fn exited(code: i32) -> ShellOutcome {
+        use std::os::unix::process::ExitStatusExt;
+        ShellOutcome::Exited { status: std::process::ExitStatus::from_raw(code << 8), stdout: String::new(), stderr: String::new() }
+    }
+
+    /// The plugin refresh as `run upsert` makes it, with the two host commands
+    /// replaced by `step`: each one is handed the deadline it got from the
+    /// shared budget, and reports what happened.
+    #[cfg(unix)]
+    fn refresh_with<R: ToolRunner>(
+        budget: &Budget<'_, R>,
+        mut step: impl FnMut(Duration) -> ShellOutcome,
+    ) -> PluginRefresh {
+        fold_refresh("claude", refresh_target(REGISTRY), |_| step_within(budget, &mut step), || None)
+    }
+
+    /// The plugin steps and the code tools draw from ONE budget of 100 s. With
+    /// the two plugin steps spending 45 s each, the code tools get the 10 s that
+    /// are left: the first command is handed 10 s, the next the 4 s that remain
+    /// after it took 6, and the language after that does not run at all — each
+    /// of its steps comes back as the "timed out" sentence with its command.
+    /// With the plugin steps quick, every command runs.
+    #[test]
+    #[cfg(unix)]
+    fn the_plugin_steps_and_the_code_tools_share_one_budget() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path();
+        std::fs::write(root.join("go.mod"), "module x\n").expect("write go.mod");
+        std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"x\"\n").expect("write Cargo.toml");
+        let go_plugin = "gopls-lsp@claude-plugins-official";
+        let rust_plugin = "rust-analyzer-lsp@claude-plugins-official";
+
+        let mut runner = FakeRunner::new(root, &["gopls", "rustup", "claude"]);
+        runner.brings.push(("rustup", "rust-analyzer"));
+        runner.taking.push(("claude plugin install gopls-lsp", Duration::from_secs(6)));
+        runner.taking.push(("claude plugin enable gopls-lsp", Duration::from_secs(4)));
+        let outcome = upsert(root, &UpsertOpts::default(), &runner, |_, budget| {
+            refresh_with(budget, |limit| {
+                runner.spend(Duration::from_secs(45).min(limit));
+                exited(0)
+            })
+        })
+        .expect("a plain project is seeded");
+
+        let value = serde_json::to_value(&outcome).expect("serialize");
+        assert_eq!(value["pluginRefresh"]["state"], serde_json::json!(REFRESHED), "both plugin steps ran");
+        assert_eq!(
+            *runner.log.borrow(),
+            vec![format!("claude plugin install {go_plugin}"), format!("claude plugin enable {go_plugin}")],
+            "the language after the one that spent the rest does not run",
+        );
+        assert_eq!(*runner.limits.borrow(), vec![Duration::from_secs(10), Duration::from_secs(4)]);
+        assert_eq!(
+            value["codeToolWarnings"],
+            serde_json::json!([
+                "rust: timed out after 10s - run manually: rustup component add rust-analyzer",
+                format!("rust: timed out after 10s - run manually: claude plugin install {rust_plugin}"),
+                format!("rust: timed out after 10s - run manually: claude plugin enable {rust_plugin}"),
+            ]),
+        );
+
+        let mut quick = FakeRunner::new(root, &["gopls", "rustup", "claude"]);
+        quick.brings.push(("rustup", "rust-analyzer"));
+        quick.taking.push(("claude plugin install gopls-lsp", Duration::from_secs(6)));
+        quick.taking.push(("claude plugin enable gopls-lsp", Duration::from_secs(4)));
+        let outcome = upsert(root, &UpsertOpts::default(), &quick, |_, budget| {
+            refresh_with(budget, |_| {
+                quick.spend(Duration::from_secs(5));
+                exited(0)
+            })
+        })
+        .expect("a plain project is seeded");
+        let value = serde_json::to_value(&outcome).expect("serialize");
+        assert_eq!(value["codeToolWarnings"], serde_json::json!([]), "with time to spare, nothing is cut");
+        assert_eq!(quick.log.borrow().len(), 5, "{:?}", quick.log.borrow());
+        assert_eq!(
+            quick.limits.borrow()[0],
+            Duration::from_secs(60),
+            "the code tools keep their own 60 s ceiling inside what is left",
+        );
+    }
+
+    /// A plugin step with no time left does not run: the refresh comes back
+    /// skipped, naming the command a person runs, and the step that would have
+    /// run is never started. A step that runs on a short remainder is cut at
+    /// that remainder, not at the 45 s.
+    #[test]
+    #[cfg(unix)]
+    fn a_plugin_step_with_no_time_left_does_not_run_and_names_its_command() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let runner = FakeRunner::new(dir.path(), &[]);
+        let budget = Budget::start(&runner, UPSERT_BUDGET);
+        runner.spend(UPSERT_BUDGET);
+        let mut started = false;
+        let refresh = refresh_with(&budget, |_| {
+            started = true;
+            exited(0)
+        });
+        assert!(!started, "no time left: the step never starts");
+        assert_eq!(refresh.state, SKIPPED);
+        let reason = refresh.skipped.expect("skipped says why");
+        assert!(reason.contains("claude plugin marketplace update mustard-local"), "the command is named: {reason}");
+        assert!(reason.contains("no time left: the 100s of the update were already spent"), "{reason}");
+
+        let runner = FakeRunner::new(dir.path(), &[]);
+        let budget = Budget::start(&runner, UPSERT_BUDGET);
+        runner.spend(Duration::from_secs(70));
+        let mut given = Vec::new();
+        let refresh = refresh_with(&budget, |limit| {
+            given.push(limit);
+            ShellOutcome::TimedOut { after: limit }
+        });
+        assert_eq!(given, vec![Duration::from_secs(30)], "cut at what is left, not at the 45 s");
+        assert!(refresh.skipped.expect("skipped").ends_with("timed out after 30s"));
+    }
+
+    /// A refresh step that really runs is cut at what is left of the budget, not
+    /// at the 45 s, and the step after it finds nothing left and does not start
+    /// (the marker file it would have written is never created).
+    #[test]
+    #[cfg(unix)]
+    fn a_real_plugin_step_is_cut_at_the_budget_and_the_next_one_does_not_start() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let machine = MachineRunner::new(&std::env::var("PATH").unwrap_or_default());
+        let budget = Budget::start(&machine, Duration::from_secs(1));
+
+        let started = std::time::Instant::now();
+        let first = run_step("sleep 8", dir.path(), &budget);
+        assert_eq!(first, Err("timed out after 1s".to_string()));
+        assert!(started.elapsed() < Duration::from_secs(5), "cut at the budget: {:?}", started.elapsed());
+
+        let marker = dir.path().join("second-step-ran");
+        let second = run_step(&format!("touch {}", marker.display()), dir.path(), &budget);
+        assert!(second.expect_err("no time left").starts_with("no time left"), "the second step is refused");
+        assert!(!marker.exists(), "the second step never started");
     }
 
     /// The command's own page tells the assistant to hand the person every
@@ -1061,7 +1323,7 @@ mod tests {
         runner.brings.push(("rustup", "rust-analyzer"));
         runner.failing.push("claude plugin install csharp-lsp@claude-plugins-official");
 
-        let outcome = upsert(root, &UpsertOpts::default(), &runner, |_| skipped(None, "no registry in a test".to_string()))
+        let outcome = upsert(root, &UpsertOpts::default(), &runner, |_, _| skipped(None, "no registry in a test".to_string()))
             .expect("a plain project is seeded");
 
         assert_eq!(
@@ -1131,7 +1393,7 @@ mod tests {
         std::fs::set_permissions(&info_dir, std::fs::Permissions::from_mode(0o555)).expect("seal");
 
         let runner = FakeRunner::new(root, &["rustup", "claude"]);
-        let refused = upsert(root, &UpsertOpts::default(), &runner, |_| panic!("no refresh without a seeded project"));
+        let refused = upsert(root, &UpsertOpts::default(), &runner, |_, _| panic!("no refresh without a seeded project"));
 
         // Unseal before asserting, so the temp dir can always be removed.
         std::fs::set_permissions(&info_dir, std::fs::Permissions::from_mode(0o755)).expect("unseal");
@@ -1174,7 +1436,7 @@ mod tests {
         let root = dir.path();
         lay_out_rules(root);
 
-        let outcome = upsert(root, &UpsertOpts::default(), &FakeRunner::new(root, &[]), |_| skipped(None, "no registry in a test".to_string()))
+        let outcome = upsert(root, &UpsertOpts::default(), &FakeRunner::new(root, &[]), |_, _| skipped(None, "no registry in a test".to_string()))
             .expect("the project is seeded");
         let done = outcome.project.cleaned.clone().expect("the cleanup ran");
         assert!(done.failed.is_empty(), "{done:?}");
@@ -1198,7 +1460,7 @@ mod tests {
         assert!(!root.join("apps/web/CLAUDE.md").exists(), "o arquivo que era só do scan saiu");
 
         // A segunda atualização não acha regra e não repete o item.
-        let again = upsert(root, &UpsertOpts::default(), &FakeRunner::new(root, &[]), |_| skipped(None, "no registry in a test".to_string()))
+        let again = upsert(root, &UpsertOpts::default(), &FakeRunner::new(root, &[]), |_, _| skipped(None, "no registry in a test".to_string()))
             .expect("the second run");
         assert!(again.project.cleaned.is_none(), "{:?}", again.project.cleaned);
         assert_eq!(ledger_items(root).len(), 1, "a lista segue com um item");
@@ -1214,7 +1476,7 @@ mod tests {
         // A lista não se grava: no lugar do arquivo dela há uma pasta.
         std::fs::create_dir_all(root.join(".claude/pending/ledger.json")).expect("block the pending list");
 
-        let outcome = upsert(root, &UpsertOpts::default(), &FakeRunner::new(root, &[]), |_| skipped(None, "no registry in a test".to_string()))
+        let outcome = upsert(root, &UpsertOpts::default(), &FakeRunner::new(root, &[]), |_, _| skipped(None, "no registry in a test".to_string()))
             .expect("the seeding itself goes through");
         let done = outcome.project.cleaned.clone().expect("the cleanup says what it could not do");
         assert!(done.failed.iter().any(|why| why.starts_with("pending:")), "{done:?}");
@@ -1326,7 +1588,7 @@ mod tests {
     /// O upsert pelo mesmo caminho do comando, com as respostas `opts`, e a
     /// resposta como o comando a imprime.
     fn upsert_json(root: &Path, opts: &UpsertOpts) -> serde_json::Value {
-        let outcome = upsert(root, opts, &FakeRunner::new(root, &[]), |_| skipped(None, "no registry in a test".to_string()))
+        let outcome = upsert(root, opts, &FakeRunner::new(root, &[]), |_, _| skipped(None, "no registry in a test".to_string()))
             .expect("the project is seeded");
         serde_json::to_value(&outcome).expect("the report serializes")
     }
@@ -1409,7 +1671,7 @@ mod tests {
         std::fs::write(root.join(".env"), "A=1\n").expect("write");
 
         let asked = UpsertOpts { local_files: Some(".env, config/app.json".to_string()), prepare: None };
-        let refused = upsert(root, &asked, &FakeRunner::new(root, &[]), |_| -> PluginRefresh {
+        let refused = upsert(root, &asked, &FakeRunner::new(root, &[]), |_, _| -> PluginRefresh {
             panic!("a refused upsert refreshes nothing")
         });
         let Err(mustard_core::platform::error::Error::Config(text)) = refused else {
