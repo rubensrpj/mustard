@@ -257,7 +257,7 @@ mod tests {
         seed(
             root,
             "delivered",
-            serde_json::json!({"wave": n, "text": "O plano não fecha.", "replan": format!("Dividir a onda {n}."),
+            serde_json::json!({"wave": n, "text": "O plano não fecha.", "replan": format!("Dividir a onda {n}."), "changes_decision": "A ordem escolhida.",
                 "returned": true, "author": "wave"}),
         );
     }
@@ -373,6 +373,11 @@ mod tests {
                 "items": [crit], "mustard": "0", "author": "binary", "copy": copy_of(root, 2),
                 "claude_pid": pid, "claude_started": started}));
             seed_replan_return(root, 2);
+            // A onda 5 também pede mudança de plano, mas não troca decisão do
+            // usuário: não espera clique nenhum, e o bloco a lista sem aviso.
+            plan_wave(root, 5, crit, said);
+            seed(root, "delivered", json!({"wave": 5, "text": "Parei.", "replan": "Trocar o nome da função.",
+                "returned": true, "author": "wave"}));
             // A onda 3 entregue, e a 4 reprovada uma vez e depois de cada uma
             // das duas rodadas de conserto: parada no limite.
             plan_wave(root, 3, crit, said);
@@ -395,7 +400,11 @@ mod tests {
             for (moment, context) in [("session start", &started), ("precompact", &precompact)] {
                 assert_eq!(slot_value(context, lang, "{delivered}"), "3", "{lang:?} {moment}: the delivered wave");
                 assert_eq!(slot_value(context, lang, "{running}"), running, "{lang:?} {moment}: the wave in flight");
-                assert_eq!(slot_value(context, lang, "{returned}"), replan, "{lang:?} {moment}: the return");
+                assert_eq!(
+                    slot_value(context, lang, "{returned}"),
+                    format!("{replan}, 5"),
+                    "{lang:?} {moment}: the return that swaps a decision asks for the click, the other does not"
+                );
                 assert_eq!(slot_value(context, lang, "{stuck}"), "4", "{lang:?} {moment}: the wave at the fix limit");
                 assert_eq!(slot_value(context, lang, "{recorded}"), after[0], "{lang:?} {moment}: after the round");
                 assert!(!context.contains(&before), "{lang:?} {moment}: the decision before the round: {context}");

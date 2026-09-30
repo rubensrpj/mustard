@@ -35,7 +35,7 @@
 //! - [`proc`] — signal-free, cross-platform process primitives (the liveness
 //!   probe) plus [`proc::run_shell_with_deadline`]
 //!   — the ONE shell-command runner that drains both pipes concurrently and
-//!   waits under a deadline, shared by `verify-pipeline` and `qa-run`.
+//!   waits under a deadline, shared by the pipeline verifier and the QA run.
 //! - [`work_kind`] — WHAT a work unit is (`feature`/`fix`/`hotfix`), the
 //!   `{kind}/{slug}` name built from it, and the project's base model derived
 //!   from `git.flow`. The crate's ONE parser of a work-branch name, in both the
@@ -55,9 +55,6 @@ pub mod context;
 /// backlog: the same peel over a task graph instead of a wave graph, plus
 /// readiness, packing into dispatch batches under a work cap (tasks and
 /// files), and the waiting task that joins the batch it depends on.
-// A rodada chama o backlog. O allow segura só `task_levels`, que nenhum
-// código de produção chama: só os testes dele.
-#[allow(dead_code)]
 pub mod dag;
 pub mod jev;
 pub mod paths;

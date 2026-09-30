@@ -11,9 +11,9 @@ use super::session::is_placeholder_session;
 /// Resolve the pending auto-branch a session's first file mutation must check
 /// out, fail-open `None`.
 ///
-/// Sibling of [`spec_for_session`]: `emit-pipeline --kind pipeline.kind`
+/// Sibling of [`spec_for_session`]: the explicit open, given a work kind,
 /// pre-computes the `{work_kind}/{slug}` branch name and drops it here; the
-/// cut `spec-draft` takes reads it back, checks the branch out, and clears the
+/// cut the drafting step takes reads it back, checks the branch out, and clears the
 /// marker. A request that never drafts a spec never consumes it.
 ///
 /// Marker location: `.claude/.session/<session_id>/pending-work-branch` — beside
@@ -65,7 +65,7 @@ fn pending_marker_line(
 /// Persist the pending auto-branch as the `pending-work-branch` marker,
 /// best-effort.
 ///
-/// Called from `emit-pipeline` when the work-type signal (`pipeline.kind`) is
+/// Called from the explicit open when the work-type signal (`pipeline.kind`) is
 /// emitted: it computes the target branch once and stores it so the first
 /// Write/Edit can check it out without re-deriving the slug. Fail-open: any IO
 /// error is swallowed — telemetry must never block. Skips a redundant rewrite
@@ -109,7 +109,7 @@ pub fn set_pending_branch(
 
 /// Remove the pending auto-branch marker, best-effort.
 ///
-/// Called by the cut `spec-draft` takes once it has checked the branch out, so
+/// Called by the cut the drafting step takes once it has checked the branch out, so
 /// the marker is consumed once. A missing marker is a no-op and any IO error
 /// is swallowed — this teardown must never block a write.
 pub fn clear_pending_branch(project_dir: &str, session_id: &str) {

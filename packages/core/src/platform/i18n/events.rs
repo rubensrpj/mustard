@@ -836,12 +836,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // viram um item só da lista de pendências, com o texto de cada uma e o
         // arquivo de onde saiu.
         ("lessons.rules_left.title", Locale::PtBr) => {
-            "Regras que a instalação tirou dos arquivos de instrução ({count}): cada uma vira \
-             teste ou sai"
+            "Regras que a instalação tirou dos arquivos de instrução ({count}, lote {mark}): cada \
+             uma vira teste ou sai"
         }
         ("lessons.rules_left.title", Locale::EnUs) => {
-            "Rules the install took out of the instruction files ({count}): each becomes a test or \
-             goes"
+            "Rules the install took out of the instruction files ({count}, batch {mark}): each \
+             becomes a test or goes"
         }
         ("lessons.rules_left.detail", Locale::PtBr) => {
             "Um Mustard antigo escreveu estas regras entre as marcas dele nos arquivos de \
@@ -902,7 +902,7 @@ mod tests {
             include_str!("events.rs"),
             super::PREFIXES,
             118,
-            0xe610_ff7c_9597_4d85,
+            0x7cd1_e6c0_f012_8e59,
         );
     }
 
@@ -1042,7 +1042,7 @@ mod tests {
             ("lessons.defect_in_code", &[][..]),
             ("lessons.rule_by_task", &["{spec}"][..]),
             ("lessons.rule_in_code", &[][..]),
-            ("lessons.rules_left.title", &["{count}"][..]),
+            ("lessons.rules_left.title", &["{count}", "{mark}"][..]),
             ("lessons.rules_left.detail", &["{rules}"][..]),
             ("lessons.rules_left.rule", &["{n}", "{text}", "{sources}"][..]),
             ("lessons.scan_merge", &["{groups}"][..]),
@@ -1080,6 +1080,18 @@ mod tests {
             let text = translate("spec_events.depends_outside_wave", lang).replace("{wave}", "3").replace("{missing}", word);
             let report = crate::domain::clarity::measure(&text, &[], Some(lang));
             assert!(report.passed, "{lang:?}: {report:?}");
+        }
+    }
+
+    /// O título do item da limpeza da instalação passa na conferência de
+    /// escrita das respostas, nos dois idiomas, com a contagem e a marca do
+    /// lote no lugar das vagas.
+    #[test]
+    fn the_cleanup_item_title_reads_clearly() {
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let text = translate("lessons.rules_left.title", lang).replace("{count}", "2").replace("{mark}", "3f9a1c07");
+            let report = crate::domain::clarity::measure(&text, &[], Some(lang));
+            assert!(report.passed, "{lang:?}: {text}: {report:?}");
         }
     }
 

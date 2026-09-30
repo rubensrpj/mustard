@@ -407,9 +407,9 @@ mod tests {
         assert_eq!(
             settings
                 .get("env")
-                .and_then(|e| e.get("MUSTARD_BOUNDARY_MODE"))
+                .and_then(|e| e.get("FORCE_HYPERLINK"))
                 .and_then(|v| v.as_str()),
-            Some("warn"),
+            Some("1"),
             "the compiled-in seed's env is laid down verbatim"
         );
         assert!(settings.get("statusLine").is_some(), "seed statusLine present");

@@ -7,13 +7,13 @@
 //! Two Mustard gates were built around JS/TS conventions and emit GUARANTEED
 //! noise when pointed at a non-JS/TS subproject:
 //!
-//! - **`dependency-precheck`** extracts symbols with a JSX/`import {}` scanner
+//! - **The dependency precheck** extracts symbols with a JSX/`import {}` scanner
 //!   and greps for `export …` / `pub …` in `.ts/.tsx/.js/.jsx/.rs/.vue/.svelte`
 //!   files ONLY. A C# spec never matches (there is no `.cs` in the walk and no
 //!   C# `public class` in the needles), so every C# symbol is reported
 //!   "missing" — and `List<Payable>` lexes as a `<Payable>` JSX tag, tagged
 //!   `jsx`. The verdict is a false positive by construction.
-//! - **`wave-size-check`** derives a per-wave `layerCount` from folder roles and
+//! - **The wave size check** derives a per-wave `layerCount` from folder roles and
 //!   flags `multi-layer` on any cross-layer wave. That signal is only meaningful
 //!   where the role vocabulary was tuned (JS/TS); elsewhere it fires on every
 //!   intrinsically cross-layer backend feature.

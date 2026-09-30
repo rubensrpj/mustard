@@ -146,7 +146,7 @@ fn session_start_core(
     // O mapa volta ao commit atual antes de qualquer aviso: um commit à mão
     // ou um pull podem ter mudado o código fora da rodada, entre uma sessão e
     // a outra.
-    crate::commands::flow::round::refresh_map_if_stale(root, &|root, out| mustard_core::Scan::locate().scan(root, out));
+    crate::commands::flow::round::refresh_map_if_stale(root, &|root, out| mustard_core::Scan::locate().scan_then_read_history(root, out));
     let session = session_of(input);
     let source = input.raw.get("source").and_then(|v| v.as_str()).unwrap_or_default();
     let compacted = source.eq_ignore_ascii_case("compact");

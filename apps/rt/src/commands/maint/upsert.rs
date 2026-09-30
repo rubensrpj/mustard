@@ -1185,7 +1185,7 @@ mod tests {
         assert_eq!(items[0]["id"], "P-1");
         assert_eq!(items[0]["status"], "open");
         let title = items[0]["title"].as_str().expect("title");
-        assert!(title.contains("(2)"), "o título conta as regras: {title}");
+        assert!(title.contains("(2, lote "), "o título conta as regras e marca o lote: {title}");
         let detail = items[0]["detail"].as_str().expect("detail");
         for rule in ["Reuse the shared client. (saiu de apps/api/CLAUDE.md)", "Never block the render. (saiu de apps/web/CLAUDE.md)"] {
             assert!(detail.contains(rule), "cada regra com o arquivo de onde saiu: {rule} em {detail}");
@@ -1223,6 +1223,104 @@ mod tests {
         assert_eq!(std::fs::read_to_string(root.join("apps/api/CLAUDE.md")).expect("api"), team, "o arquivo do time fica igual");
         assert_eq!(std::fs::read_to_string(root.join("apps/web/CLAUDE.md")).expect("web"), only_ours, "o arquivo do scan fica");
         assert!(!root.join(".claude/spec/lessons.ndjson").exists(), "nada vai ao banco de lições");
+    }
+
+    /// Um plano de limpeza só com as regras `rules` (texto e arquivo de onde
+    /// saíram), sem arquivo a mudar.
+    fn plan_of(rules: &[(&str, &str)]) -> mustard_core::platform::project_seed::CleanupPlan {
+        use mustard_core::platform::project_seed::cleanup::LeavingRule;
+        mustard_core::platform::project_seed::CleanupPlan {
+            rules: rules
+                .iter()
+                .map(|(text, source)| LeavingRule { text: (*text).to_string(), sources: vec![(*source).to_string()] })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    /// Um projeto vazio com o `mustard.json`, onde mora a lista de pendências.
+    fn project_for_the_list() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("temp dir");
+        std::fs::write(dir.path().join("mustard.json"), "{}").expect("mustard.json");
+        dir
+    }
+
+    /// Duas limpezas que tiram o mesmo número de regras, mas regras diferentes,
+    /// viram dois itens: a segunda não é recusada como título repetido, e
+    /// nenhuma das regras fica sem lugar escrito.
+    #[test]
+    fn two_cleanups_with_as_many_rules_keep_two_items() {
+        let dir = project_for_the_list();
+        let root = dir.path();
+        let list = ProjectPending { root };
+        let first = plan_of(&[("Reuse the shared client.", "apps/api/CLAUDE.md"), ("Never block the render.", "apps/web/CLAUDE.md")]);
+        let second = plan_of(&[("Charge in cents.", "apps/billing/CLAUDE.md"), ("Log every refund.", "apps/billing/CLAUDE.md")]);
+
+        let one = mustard_core::platform::project_seed::cleanup::apply(root, &first, &list).expect("first");
+        let two = mustard_core::platform::project_seed::cleanup::apply(root, &second, &list).expect("second");
+        assert!(one.failed.is_empty() && two.failed.is_empty(), "{one:?} {two:?}");
+        assert_eq!(one.pending.as_deref(), Some("P-1"));
+        assert_eq!(two.pending.as_deref(), Some("P-2"), "the second cleanup has an item of its own");
+
+        let items = ledger_items(root);
+        assert_eq!(items.len(), 2, "{items:?}");
+        assert_ne!(items[0]["title"], items[1]["title"], "the titles tell the cleanups apart");
+        assert!(items[0]["detail"].as_str().unwrap().contains("Never block the render."));
+        assert!(items[1]["detail"].as_str().unwrap().contains("Log every refund."));
+    }
+
+    /// A mesma limpeza rodada duas vezes deixa um item só, e o segundo passe
+    /// responde o número do item que já existia.
+    #[test]
+    fn the_same_cleanup_twice_keeps_one_item() {
+        let dir = project_for_the_list();
+        let root = dir.path();
+        let list = ProjectPending { root };
+        let plan = plan_of(&[("Reuse the shared client.", "apps/api/CLAUDE.md"), ("Never block the render.", "apps/web/CLAUDE.md")]);
+        let apply = || mustard_core::platform::project_seed::cleanup::apply(root, &plan, &list).expect("apply");
+        let (one, two) = (apply(), apply());
+        assert!(one.failed.is_empty() && two.failed.is_empty(), "{one:?} {two:?}");
+        assert_eq!(one.pending, two.pending, "the same item answers both");
+        assert_eq!(ledger_items(root).len(), 1);
+    }
+
+    /// Duas limpezas ao mesmo tempo, com regras diferentes, terminam em dois
+    /// itens com as regras inteiras; com as mesmas regras, num item só.
+    #[test]
+    fn cleanups_at_the_same_time_neither_lose_a_rule_nor_repeat_an_item() {
+        let dir = project_for_the_list();
+        let root = dir.path();
+        let a = plan_of(&[("Reuse the shared client.", "apps/api/CLAUDE.md"), ("Never block the render.", "apps/web/CLAUDE.md")]);
+        let b = plan_of(&[("Charge in cents.", "apps/billing/CLAUDE.md"), ("Log every refund.", "apps/billing/CLAUDE.md")]);
+        let run = |plan: &mustard_core::platform::project_seed::CleanupPlan| {
+            mustard_core::platform::project_seed::cleanup::apply(root, plan, &ProjectPending { root }).expect("apply")
+        };
+        let done: Vec<_> = std::thread::scope(|scope| {
+            let jobs = [&a, &b, &a, &b].map(|plan| scope.spawn(|| run(plan)));
+            jobs.into_iter().map(|job| job.join().expect("thread")).collect()
+        });
+        assert!(done.iter().all(|d| d.failed.is_empty()), "{done:?}");
+        let items = ledger_items(root);
+        assert_eq!(items.len(), 2, "one item per distinct cleanup: {items:?}");
+        let details: String = items.iter().map(|i| i["detail"].as_str().unwrap().to_string()).collect();
+        for rule in ["Reuse the shared client.", "Never block the render.", "Charge in cents.", "Log every refund."] {
+            assert!(details.contains(rule), "{rule} was lost: {details}");
+        }
+    }
+
+    /// A porta da lista pelo projeto tem dois ramos para o título repetido: o
+    /// mesmo título com o mesmo detalhe responde o item que já existe, e o
+    /// mesmo título com outro detalhe é recusado, apontando o item aberto.
+    #[test]
+    fn a_repeated_title_answers_the_open_item_or_is_refused() {
+        use crate::commands::event::pending::add_for_the_project;
+        let dir = project_for_the_list();
+        let root = dir.path();
+        assert_eq!(add_for_the_project(root, "Regras que saíram", "um detalhe").as_deref(), Ok("P-1"));
+        assert_eq!(add_for_the_project(root, "regras que sairam", "um detalhe").as_deref(), Ok("P-1"), "same text: the open item");
+        let refused = add_for_the_project(root, "Regras que saíram", "outro detalhe").expect_err("another detail");
+        assert!(refused.contains("P-1"), "the refusal points at the open item: {refused}");
+        assert_eq!(ledger_items(root).len(), 1);
     }
 
     /// O upsert pelo mesmo caminho do comando, com as respostas `opts`, e a

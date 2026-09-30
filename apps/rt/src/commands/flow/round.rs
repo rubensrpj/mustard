@@ -131,7 +131,7 @@ mod usage;
 /// cabeçalho da pergunta que decide a mudança. A mudança proposta que ainda
 /// espera o clique e as ondas paradas no limite de consertos, o bloco de
 /// retomada as conta.
-pub(crate) use stops::{change_accepted, change_code_of, replan_code, waves_stuck};
+pub(crate) use stops::{change_accepted, change_code_of, replan_code, swaps_decision, waves_stuck};
 
 pub(crate) use commit::{reinstall_binary, refresh_map_if_stale, waves_checked_only};
 
@@ -527,8 +527,15 @@ mod tests {
         (subject.to_string(), body.trim().to_string())
     }
 
-    /// O aviso da resposta `out` com a onda que pede novo plano e espera o
-    /// clique do usuário; nulo quando nenhuma espera.
+    /// A decisão do usuário que a mudança de plano dos testes troca.
+    pub(super) const DECISION: &str = "A ordem das ondas que o usuário escolheu.";
+
+    /// A pergunta que quem conduz escreve ao usuário para essa mudança, com as
+    /// palavras dele.
+    pub(super) const QUESTION: &str = "A onda 1 pede a 2 antes dela, e isso troca a ordem que você escolheu. Posso seguir assim?";
+
+    /// O aviso da resposta `out` com a onda que troca uma decisão do usuário e
+    /// espera o clique dele; nulo quando nenhuma espera.
     pub(super) fn change_asked(out: &Value) -> Value {
         let mut warnings = out["warnings"].as_array().into_iter().flatten();
         warnings.find(|w| w["reason"] == json!("wave-plan-does-not-work")).cloned().unwrap_or(Value::Null)

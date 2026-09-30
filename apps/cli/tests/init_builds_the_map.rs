@@ -10,7 +10,8 @@
 //! A prova roda o programa inteiro, como a pessoa o roda: uma cópia do
 //! `mustard` ao lado de um scan de mentira, que é onde o programa procura o
 //! scan. O de mentira anota cada passada que lhe pedem e, como o de verdade,
-//! grava o banco do mapa no lugar que a passada manda.
+//! grava o banco do mapa no lugar que a passada manda; a leitura da história
+//! que a instalação começa em segundo plano ele só anota, em outro arquivo.
 
 #[path = "support/executable.rs"]
 mod executable;
@@ -31,6 +32,7 @@ struct Setup {
     project: PathBuf,
     home: PathBuf,
     calls: PathBuf,
+    reads: PathBuf,
     fail: PathBuf,
 }
 
@@ -61,12 +63,15 @@ impl Setup {
         // A passada anota os argumentos e grava o mapa no `--out` (o quarto
         // argumento); com o arquivo `fail` na pasta, ela falha sem gravar.
         let calls = dir.path().join("calls");
+        let reads = dir.path().join("reads");
         let fail = dir.path().join("fail");
         let script = format!(
-            "#!/bin/sh\nif [ \"$1\" = format ]; then exit 1; fi\necho \"$@\" >> '{calls}'\n\
+            "#!/bin/sh\nif [ \"$1\" = format ]; then exit 1; fi\n\
+             if [ \"$1\" = history-all ]; then echo \"$@\" >> '{reads}'; exit 0; fi\necho \"$@\" >> '{calls}'\n\
              if [ -f '{fail}' ]; then echo 'scan: broken' >&2; exit 1; fi\nmkdir -p \"$(dirname \"$4\")\" && cp '{template}' \"$4\"\n\
              echo '{{\"ok\":true,\"full\":true,\"read\":[],\"files\":0,\"head\":\"\"}}'\n",
             calls = calls.display(),
+            reads = reads.display(),
             fail = fail.display(),
             template = template.display(),
         );
@@ -75,7 +80,7 @@ impl Setup {
         let git = Command::new("git").args(["init", "-q"]).current_dir(&project).status().unwrap();
         assert!(git.success(), "git init");
 
-        Self { _dir: dir, mustard, bin, project, home, calls, fail }
+        Self { _dir: dir, mustard, bin, project, home, calls, reads, fail }
     }
 
     /// `mustard init --yes` no projeto, com uma pasta pessoal falsa.
@@ -95,6 +100,29 @@ impl Setup {
     /// As passadas que o scan de mentira recebeu, uma por linha.
     fn passes(&self) -> Vec<String> {
         std::fs::read_to_string(&self.calls).map(|text| text.lines().map(str::to_string).collect()).unwrap_or_default()
+    }
+
+    /// Se nenhuma leitura da história foi anotada, dando um instante ao
+    /// processo em segundo plano que a anotaria.
+    fn no_reading_started(&self) -> bool {
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        !self.reads.exists()
+    }
+
+    /// As leituras da história que o scan de mentira recebeu, uma por linha:
+    /// a instalação não espera por elas, então se espera até um tempo que o
+    /// processo em segundo plano anote a primeira.
+    fn reads_after_waiting(&self) -> Vec<String> {
+        let read = || -> Vec<String> {
+            std::fs::read_to_string(&self.reads).map(|text| text.lines().map(str::to_string).collect()).unwrap_or_default()
+        };
+        for _ in 0..200 {
+            if !read().is_empty() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        read()
     }
 }
 
@@ -134,6 +162,11 @@ fn init_yes_in_an_empty_project_builds_the_map() {
     );
     assert!(model_of(&setup.project).is_file(), "the map exists after the install");
     assert!(stdout(&out).contains("built the project map (0 code files)"), "{}", stdout(&out));
+    assert_eq!(
+        setup.reads_after_waiting(),
+        vec![format!("history-all {} --out {} --json", root.display(), model_of(&setup.project).display())],
+        "the map built by the install starts the reading of the history of every file, in the background"
+    );
 }
 
 /// Um scan que falha não derruba a instalação: o `init` termina bem, o resto
@@ -147,6 +180,8 @@ fn init_installs_and_warns_when_the_scan_fails() {
     assert_ok(&out);
 
     assert_eq!(setup.passes().len(), 1, "the scan was asked");
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    assert!(setup.no_reading_started(), "no map was built: no reading of the history starts");
     assert!(!model_of(&setup.project).exists(), "the scan wrote nothing");
     assert!(setup.project.join(".claude").join("settings.local.json").is_file(), "the install is on disk");
     assert!(setup.project.join("mustard.json").is_file(), "the install is on disk");

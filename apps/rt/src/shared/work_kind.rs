@@ -79,7 +79,7 @@ fn ref_carries(project: &Path, rev: &str, path: &str) -> bool {
 /// **Why a file of its own, and why this name.** The answer's durable home is
 /// `meta.json#base` — the sidecar that already holds every machine-parseable
 /// fact about a unit — but the CUT cannot write it there: the cut runs BEFORE
-/// the draft, and `spec-draft` refuses to draft into a directory that already
+/// the draft, and the drafting step refuses to draft into a directory that already
 /// holds anything but harness state ([`crate::commands::spec::spec_draft`]'s
 /// `holds_only_harness_state`, whose allowlist names the entries written by the
 /// steps BEFORE the draft — the dot-prefixed spill and the material channel's
@@ -162,7 +162,7 @@ pub(crate) fn forget_remote_names(root: &Path) {
 /// counts as silence too: a repository with no remote-tracking refs cannot
 /// testify about the remote, the same reading
 /// [`crate::commands::event::work_branch::resolve_kind_base`] takes of an empty
-/// catalogue and `base-candidates` reports as `measured: false`.
+/// catalogue and the candidate listing reports as `measured: false`.
 /// **Local heads count too, and leaving them out re-created the defect.** The
 /// cut that accepts the pick
 /// ([`crate::commands::event::work_branch::checkout_work_branch`]) reads it
@@ -629,7 +629,7 @@ impl BaseFlow {
     ///
     /// NOT `meta.json`, and that is the whole point: the cut runs before the
     /// draft, and a `meta.json` sitting in the directory is precisely what makes
-    /// `spec-draft` refuse the directory as already drafted — so recording the
+    /// the drafting step refuse the directory as already drafted — so recording the
     /// base there cut the unit and then denied it a spec. The file this writes is
     /// harness state the draft's guard tolerates by category, and the draft folds
     /// it into `meta.json#base` on its way past (see [`CUT_BASE_FILE`]).

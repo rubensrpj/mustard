@@ -67,8 +67,8 @@
 //!
 //! ## Why this is ONE function and not a condition at each door
 //!
-//! Two doors take this decision: the explicit `emit-pipeline` open and
-//! `spec-draft`'s cut. While each carried a condition of its own, the next
+//! Two doors take this decision: the explicit open and
+//! the cut that follows the spec's approval. While each carried a condition of its own, the next
 //! review always found the door that had missed one, or that took the steps in
 //! another order. So the doors stopped deciding AND stopped acting: a door
 //! states where the checkout stands and obeys the answer, and the base refresh

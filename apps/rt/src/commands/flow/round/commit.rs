@@ -1044,7 +1044,12 @@ mod tests {
         // O mapa gravado com o estado de uma passada: o commit e a marca da
         // listagem que ela leu.
         let map_at = |head: &str, listing: &str| {
-            project_map::write_text(root, &format!(r#"{{"state": {{"head": "{head}", "listing": "{listing}"}}}}"#)).unwrap();
+            let base = project_map::base_of(root);
+            let state = format!(
+                r#"{{"state": {{"head": "{head}", "listing": "{listing}", "base": "{}", "base_tip": "{}"}}}}"#,
+                base.name, base.tip
+            );
+            project_map::write_text(root, &state).unwrap();
         };
 
         // Sem mapa e sem git: nada de que ler o mapa, a ferramenta não roda,
@@ -1128,8 +1133,14 @@ mod tests {
         let writing = |root: &Path, _out: &Path| {
             calls.set(calls.get() + 1);
             let now = project_map::listing(root).expect("dentro do git");
-            project_map::write_text(root, &format!(r#"{{"state": {{"head": "{}", "listing": "{}"}}}}"#, now.head, now.digest()))
-                .expect("o mapa é gravado");
+            let state = format!(
+                r#"{{"state": {{"head": "{}", "listing": "{}", "base": "{}", "base_tip": "{}"}}}}"#,
+                now.head,
+                now.digest(),
+                now.base.name,
+                now.base.tip
+            );
+            project_map::write_text(root, &state).expect("o mapa é gravado");
             Ok(ScanReport::default())
         };
         refresh_map_if_stale(root, &writing);
@@ -1169,7 +1180,7 @@ mod tests {
         git(&["commit", "-q", "-m", "semente"]);
         let now = project_map::listing(root).expect("dentro do git");
         let map = serde_json::json!({
-            "state": {"head": now.head, "listing": now.digest()},
+            "state": {"head": now.head, "listing": now.digest(), "base": now.base.name, "base_tip": now.base.tip},
             "modules": [{"path": "src/a.rs", "loc": 1, "declarations": [{"kind": "function", "name": "a", "line": 1, "end_line": 1}]}]
         });
         let languages = mustard_core::domain::normalize::Languages::new(["pt-BR", "en-US"]);

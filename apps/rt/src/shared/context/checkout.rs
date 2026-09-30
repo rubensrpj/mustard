@@ -25,7 +25,7 @@ pub fn current_spec(project_dir_path: &str) -> Option<String> {
 /// `.pipeline-states/*.json` is the residue of one that once ran. Measured in
 /// the field: for a whole session the boundary gate warned on every single edit
 /// naming `contrato-plano-fixo-nasce-com`, and the prompt banner said the same
-/// pipeline was in flight — while `active-specs` listed a different unit, and
+/// pipeline was in flight — while the open-spec listing named a different unit, and
 /// the checkout was on that other unit's branch. Dozens of warnings, all
 /// pointing at the wrong target. A gate that is wrong every time is worse than
 /// no gate, because the operator learns to skip the one day it is right.

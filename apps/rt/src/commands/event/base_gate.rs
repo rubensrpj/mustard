@@ -1,5 +1,5 @@
 //! `base_gate` — the check that runs BEFORE ANALYZE, at the single
-//! pipeline-opening door (`emit-pipeline --kind pipeline.kind`).
+//! pipeline-opening door (the explicit open that states the work kind).
 //!
 //! ## What it guards
 //!
@@ -177,7 +177,7 @@ fn significant_tokens(slug: &str) -> std::collections::BTreeSet<String> {
 /// A comparação roda na MESMA derivação que nomeia a unidade
 /// ([`canonical_for_project`]), então o intent e o diretório da spec chegam
 /// aqui na mesma grafia, já sem stopwords e no idioma que o projeto declara. As
-/// specs vêm do MESMO localizador que o `active-specs` usa
+/// specs vêm do MESMO localizador que a listagem das specs abertas usa
 /// ([`active_spec_names`]) — um segundo enumerador é como o portão e o picker
 /// passariam a discordar sobre o que está aberto.
 ///
@@ -239,7 +239,7 @@ mod tests {
         settle(root, CheckoutPosition::at(current, Some(target), base), config)
     }
 
-    /// …e como a porta EXPLÍCITA do `emit-pipeline` a faz: sem alvo, porque ali
+    /// …e como a porta EXPLÍCITA de abertura a faz: sem alvo, porque ali
     /// nada é checado out e portanto nada pode viajar.
     fn settle_open(
         root: &Path,

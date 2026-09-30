@@ -31,7 +31,7 @@ use super::copy_check::check_against_copies;
 use super::agreed::{covered_codes, removed_by_analysis, settle_agreed};
 use super::leftovers::{leftover_tasks, leftovers_of, Leftover};
 use super::queue::{backlog_wave, open_review, open_sends, waves_in_progress, ANALYSIS_LINE};
-use super::stops::{hold_waiting_changes, tasks_returned, undone_of, undone_returns, HeldReturn};
+use super::stops::{hold_waiting_changes, plan_changed_alone, tasks_returned, undone_of, undone_returns, HeldReturn};
 use super::usage::{measure_usage, Caller, Usage};
 use crate::commands::review::qa_run::ProofFault;
 use crate::commands::spec_events::write::{record, RecordCheck};
@@ -53,6 +53,14 @@ const PAUSED_LINE: &str = "PAUSED";
 /// digitado pelo agente, não vira consumo.
 const USAGE_LINE: &str = "USAGE";
 
+/// A mudança de plano que um agente propõe: a mudança e, quando ela troca uma
+/// decisão do usuário, qual. Só com a decisão trocada a rodada para e pede o
+/// clique; sem ela a mudança segue e fica registrada.
+pub(crate) struct PlanChange {
+    pub change: String,
+    pub decision: Option<String>,
+}
+
 /// A volta de uma onda, como a rodada a assume.
 pub(crate) struct WaveReport {
     pub wave: u64,
@@ -64,7 +72,7 @@ pub(crate) struct WaveReport {
     pub proofs: Vec<(Value, String)>,
     /// As ondas que este conserto fecha.
     pub fixes: Vec<u64>,
-    pub replan: Option<String>,
+    pub replan: Option<PlanChange>,
     /// As tarefas da onda que o agente não fez, cada uma pelo número da
     /// versão vigente e pelo código: voltam ao backlog quando a rodada
     /// assume a volta.
@@ -326,6 +334,10 @@ fn take_returns(
     // rodada: a mudança aceita pode pedir uma decisão nova ou uma tarefa
     // reescrita antes da rodada seguinte.
     warnings.extend(report.waves.iter().filter_map(|wave| tasks_returned(wave, lang)));
+    // A mudança de plano que não troca decisão do usuário seguiu sem
+    // pergunta: a resposta manda contá-la na entrega, entre as decisões que o
+    // assistente tomou sozinho.
+    warnings.extend(report.waves.iter().filter_map(|wave| plan_changed_alone(wave, lang)));
     let commit = match made {
         Some((made, title)) => {
             let mut commit = record_commit(start, root, spec, &made.sha, &title, &waves, &files)?;
@@ -476,7 +488,9 @@ fn wave_report_of(log: &SpecLog, fields: &Map<String, Value>) -> Result<WaveRepo
         .filter(|f| !f.is_empty())
         .map(|f| own_copy_relative(log, wave, &f))
         .collect();
-    let (replan, commit) = (text("replan"), text("commit"));
+    let commit = text("commit");
+    // A decisão trocada só vale junto da mudança de plano que a troca.
+    let replan = text("replan").map(|change| PlanChange { change, decision: text("changes_decision") });
     if commit.is_none() && !files.is_empty() && replan.is_none() {
         return Err(missing("commit"));
     }
@@ -531,13 +545,23 @@ fn wave_report_of(log: &SpecLog, fields: &Map<String, Value>) -> Result<WaveRepo
 /// fechado pela entrega oficial, e é recusada; a que entra antes a rodada lê
 /// e assume. Nenhuma fica depois da entrega oficial para a rodada seguinte
 /// assumir de novo.
+///
+/// O veredito do revisor (`event_type` `verdict`) só prende a trava aqui, pelo
+/// mesmo motivo: o fechamento assume o veredito e grava o oficial com ela
+/// presa, e o veredito que chegasse depois, com o pedido de revisão já
+/// fechado, ficaria parado sem ninguém que o assumisse e a gravação
+/// responderia ok. Com a trava, a conferência do veredito
+/// ([`check_verdict_return`]) vê o pedido como o fechamento o deixou e recusa
+/// a gravação quando ele fechou; o revisor grava de novo.
 pub(crate) fn check_return(
     start: &Path,
     spec: &str,
+    event_type: &str,
     draft: &mut Map<String, Value>,
 ) -> Result<LockedFile, RoundRefusal> {
     let held = git_lock(&crate::commands::spec_events::project(start).root)?;
-    let Some(wave) = draft.get("wave").and_then(Value::as_u64) else { return Ok(held) };
+    let wave = draft.get("wave").and_then(Value::as_u64).filter(|_| event_type == "delivered");
+    let Some(wave) = wave else { return Ok(held) };
     let (project, log) = spec_log(start, spec)?;
     if !open_sends(&log).contains_key(&wave) {
         return Err(RoundRefusal::Refused(Refusal::NoOpenSend { wave }));
@@ -578,7 +602,8 @@ pub(crate) fn check_return(
 }
 
 /// As conferências do veredito que o revisor grava (`run write verdict`),
-/// feitas antes de gravar, como as da entrega: há pedido de revisão aberto;
+/// feitas antes de gravar, como as da entrega, com a trava do passo do git
+/// que [`check_return`] prendeu: há pedido de revisão aberto;
 /// cada critério e cada item do combinado citado existe; o veredito final
 /// responde por todo o combinado vigente. Passando, o veredito ganha
 /// `returned` e o autor da revisão, e fica como o revisor o escreveu: a
@@ -691,8 +716,11 @@ fn spec_log(start: &Path, spec: &str) -> Result<(crate::commands::spec_events::P
 /// fora — a segunda lista devolvida, com o pedido de que o agente grave a
 /// entrega — e só ela: as outras voltas e o despacho das ondas prontas
 /// seguem; com ele fechado, a onda de lote está cortada, e o número dela sai
-/// na primeira lista. A linha de uma onda sem entrega nenhuma não se
-/// entende. A onda com a volta recusada (`held`) já voltou: a linha dela
+/// na primeira lista. A onda desenhada à mão, com o Claude Code fechado e sem
+/// volta, não tem tarefa que o backlog empacote de novo: a linha dela vai
+/// para a segunda lista, como a da viva, e nunca some. A linha de uma onda
+/// sem entrega nenhuma não se entende. A onda com a volta recusada (`held`)
+/// já voltou: a linha dela
 /// fica sem uso, e o consumo é medido quando a volta regravada for assumida
 /// — nunca é tomada por cortada.
 fn match_usage(
@@ -717,6 +745,8 @@ fn match_usage(
         } else if open.contains_key(&wave) {
             if backlog_wave(log, wave) {
                 cut.push(wave);
+            } else if !unreturned.iter().any(|one| one.wave == wave) {
+                unreturned.push(HeldReturn { wave, refusal: RoundRefusal::ReturnMissing { wave } });
             }
         } else if delivered.contains_key(&wave) {
             assumed.push((wave, usage));
@@ -1001,7 +1031,10 @@ fn check_reports(
             let files: Vec<String> = report.files.iter().map(|file| own_copy_relative(check.log(), wave, file)).collect();
             draft.insert("files".into(), json!(files));
             if let Some(replan) = &report.replan {
-                draft.insert("replan".into(), json!(replan));
+                draft.insert("replan".into(), json!(replan.change));
+                if let Some(decision) = &replan.decision {
+                    draft.insert("changes_decision".into(), json!(decision));
+                }
             }
             if wave == report.wave && !report.undone.is_empty() {
                 let codes: Vec<&str> = report.undone.iter().map(|(_, code)| code.as_str()).collect();
@@ -1419,14 +1452,14 @@ mod tests {
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
         round(root, "x", None);
         let change = "o plano não serve mais";
-        let with_replan = json!({"wave": 1, "text": "Parei sem mexer em arquivo.", "replan": change, "undone": []});
+        let with_replan = json!({"wave": 1, "text": "Parei sem mexer em arquivo.", "replan": change,
+            "changes_decision": DECISION, "undone": []});
         assert_eq!(returned(root, with_replan)["ok"], json!(true));
         let stopped = change_asked(&round(root, "x", None));
         assert_eq!(stopped["wave"], json!(1), "{stopped}");
         let session = "s-replan-sem-arquivo";
         crate::shared::context::session::bind_session_spec(&root.to_string_lossy(), session, "x");
-        let question = stopped["question"].as_str().unwrap_or_default().to_string();
-        assert_eq!(question, super::super::stops::change_question(1, change, Locale::PtBr), "{stopped}");
+        let question = QUESTION.to_string();
         click(root, session, &question, &super::super::stops::replan_code(1, change), "Aceitar");
         let out = round(root, "x", None);
         assert_eq!(out["ok"], json!(true), "{out}");
@@ -1706,6 +1739,53 @@ mod tests {
             (done["command"].as_str(), crate::commands::flow::close::finished_refusal(&closing)),
             (Some("mustard-rt run close --spec x"), None),
             "entregue a 3, a rodada manda fechar e o fechamento não cobra commit da onda vazia: {done}"
+        );
+    }
+
+    /// A onda desenhada à mão, com o pedido aberto e o Claude Code fechado
+    /// sem gravar a entrega, não tem lote para cortar: a linha de consumo dela
+    /// não some. A rodada avisa que a onda terminou sem gravar a entrega, não
+    /// grava entrega nenhuma e a tarefa fica na onda.
+    #[test]
+    fn the_usage_line_of_a_hand_drawn_wave_whose_claude_closed_is_reported_and_not_dropped() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[]);
+        let path = store::spec_file(root, "x").unwrap();
+        let log = store::read(&path).unwrap().unwrap();
+        let crit = log.visible().into_iter().find(|e| e.event_type == "criterion").unwrap().id;
+        let said = log.visible().into_iter().find(|e| e.event_type == "message").unwrap().id;
+        crate::shared::spec_state::seed_event(
+            root,
+            "x",
+            "wave",
+            json!({"n": 1, "text": "Onda 1, à mão.", "criteria": [crit], "done_when": "A suíte passa.",
+                "origin": said, "author": "assistant"}),
+        );
+        crate::shared::spec_state::seed_event(
+            root,
+            "x",
+            "task",
+            json!({"wave": 1, "text": "Tarefa da onda 1.", "files": [{"path": "src/a.rs"}], "depends_on": [],
+                "origin": said}),
+        );
+        // O pedido segue aberto e sem o par de processo do Claude Code: no
+        // Linux ele conta como fechado.
+        seed_send(root, 1);
+        let log = store::read(&path).unwrap().unwrap();
+        assert!(!backlog_wave(&log, 1), "the wave is drawn by hand, not formed from the backlog");
+        assert!(open_sends(&log).contains_key(&1) && !waves_in_progress(&log).contains_key(&1));
+
+        let out = round(root, "x", Some(&line("USAGE", json!({"wave": 1}))));
+        assert_eq!(out["ok"], json!(true), "{out}");
+        let warning = warning_of(&out, "round-return-missing");
+        let asked = translate("spec_events.return_missing", Locale::PtBr).replace("{wave}", "1");
+        assert_eq!((&warning["wave"], &warning["hint"]), (&json!(1), &json!(asked)), "{out}");
+        assert_eq!(delivered_count(root), 0, "no delivery is written for the wave: {out}");
+        let after = store::read(&path).unwrap().unwrap();
+        assert!(
+            after.visible().iter().filter(|e| e.event_type == "task").all(|e| e.wave() == Some(1)),
+            "no task leaves the wave: {out}"
         );
     }
 
@@ -4461,7 +4541,7 @@ mod tests {
         assert_eq!(returned(root, done)["ok"], json!(true));
         let change = "A onda 2 precisa de outra tarefa antes.";
         let asks = json!({"wave": 2, "text": "Parei.", "files": ["src/b.rs"], "commit": "a onda 2 mudou",
-            "replan": change, "undone": []});
+            "replan": change, "changes_decision": DECISION, "undone": []});
         assert_eq!(returned(root, asks)["ok"], json!(true));
         record_consumption_version(root, 2);
 
@@ -4471,14 +4551,13 @@ mod tests {
         let files = git_text(root, &["show", "--name-only", "--format=", "HEAD"]);
         assert_eq!(files, "src/a.rs", "só a onda 1 vai ao commit: {held}");
         let asked = change_asked(&held);
-        assert_eq!(asked["wave"], json!(2), "a onda 2 é nomeada, com a pergunta pronta: {held}");
-        let question = super::super::stops::change_question(2, change, Locale::PtBr);
-        assert_eq!(asked["question"], json!(question), "{asked}");
+        assert_eq!(asked["wave"], json!(2), "a onda 2 é nomeada, com o que perguntar: {held}");
+        let question = QUESTION;
         assert_eq!(delivered_count(root), 1, "a entrega da onda 2 espera o clique: {held}");
 
         let session = "s-volta-antes-do-consumo";
         crate::shared::context::session::bind_session_spec(&root.to_string_lossy(), session, "x");
-        click(root, session, &question, &super::super::stops::replan_code(2, change), "Aceitar");
+        click(root, session, question, &super::super::stops::replan_code(2, change), "Aceitar");
         let took = round(root, "x", Some(&line("USAGE", json!({"wave": 2}))));
         assert_eq!(took["ok"], json!(true), "{took}");
         assert_eq!(git_text(root, &["show", "--name-only", "--format=", "HEAD"]), "src/b.rs", "{took}");
@@ -4585,7 +4664,7 @@ mod tests {
         let entregue = "fn um() {}\n// a onda 1 mudou\n";
         std::fs::write(slot_of(root, 1).join("src/a.rs"), entregue).unwrap();
         let asks = json!({"wave": 1, "text": "Parei.", "files": ["src/a.rs"], "commit": "a onda 1 mudou",
-            "replan": "A onda 1 precisa de outra tarefa antes.", "undone": []});
+            "replan": "A onda 1 precisa de outra tarefa antes.", "changes_decision": DECISION, "undone": []});
         assert_eq!(returned(root, asks)["ok"], json!(true));
         // O plano da onda 1 muda enquanto a volta espera o clique, e o projeto
         // passa a deixar duas ondas compilarem.

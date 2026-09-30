@@ -554,6 +554,9 @@ pub(crate) struct Analyzer {
     /// Onde mora o código no arquivo da língua escrita dentro de marcação;
     /// `None` quando o arquivo inteiro é código.
     markup: Option<&'static Markup>,
+    /// Só as declarações e a faixa de linhas de cada uma: a leitura para aí,
+    /// sem a caminhada pela árvore nem as chamadas, os usos e os imports.
+    declarations_only: bool,
 }
 
 impl Analyzer {
@@ -574,7 +577,9 @@ impl Analyzer {
             .filter(|pattern| pattern.contains("@definition.") || pattern.contains("@decoration"))
             .collect::<Vec<_>>()
             .join("\n");
-        Self::compiled(&raw, &declaring, false)
+        let mut analyzer = Self::compiled(&raw, &declaring, false)?;
+        analyzer.declarations_only = true;
+        Some(analyzer)
     }
 
     /// O analisador da língua `raw` com os padrões de `patterns` e, com
@@ -588,7 +593,16 @@ impl Analyzer {
         let cap_kinds = query.capture_names().iter().map(|n| classify(n)).collect();
         let routes = if with_routes { routes::rules_for(raw.name, &language) } else { Vec::new() };
         let markup = LANG_MARKUP.iter().find(|(name, _)| *name == raw.name).map(|(_, rule)| rule);
-        Some(Analyzer { name: raw.name.to_string(), language, query, cap_kinds, doc_tags: raw.doc_tags, routes, markup })
+        Some(Analyzer {
+            name: raw.name.to_string(),
+            language,
+            query,
+            cap_kinds,
+            doc_tags: raw.doc_tags,
+            routes,
+            markup,
+            declarations_only: false,
+        })
     }
 
     /// As regras de rota da língua que algum arquivo ligou até aqui, e que
@@ -698,7 +712,7 @@ impl Analyzer {
         // Uma caminhada só pela árvore junta os comentários e as folhas do
         // arquivo, que o texto escrito e os usos leem depois dos matches. O
         // separador escrito num comentário não liga um nome ao que vem antes.
-        let walked = Walked::of(root);
+        let walked = if self.declarations_only { Walked { comments: Vec::new(), leaves: Vec::new() } } else { Walked::of(root) };
         let comments: Spans = walked.comments.iter().map(|c| (c.start_byte(), c.end_byte())).collect();
         let mut matches = cursor.matches(&self.query, root, bytes);
         while let Some(m) = matches.next() {
@@ -1007,6 +1021,9 @@ impl Analyzer {
             })
             .unzip();
         owners_in_file(&mut out.declarations);
+        if self.declarations_only {
+            return out;
+        }
         // O texto das linhas de cada declaração e os comentários do arquivo
         // saem do que a caminhada juntou. O literal de texto e a documentação
         // escrita como literal não são código: os nomes e os comentários

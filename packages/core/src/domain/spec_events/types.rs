@@ -123,7 +123,7 @@ impl BlockQuery {
 }
 
 /// O que o `read` pede: um bloco da spec ou uma das leituras que ele monta
-/// fora dos blocos. `dispatch-2` é tudo o que o pedido da onda 2 lista;
+/// fora dos blocos. `dispatch-2` é tudo o que o pedido da onda `2` lista;
 /// `request-2`, o pedido exato gravado no envio dela; `request-review`, o
 /// pedido exato gravado no último envio do revisor final, que não tem onda;
 /// `delivered-2`, a entrega vigente dela; `backlog`, as tarefas ainda por
@@ -738,6 +738,10 @@ pub const TYPES: &[TypeSpec] = &[
             // sem mexer em nenhum, e o texto dela diz o que conferiu.
             opt("files", Kind::Texts),
             opt("replan", Kind::Text),
+            // Com a mudança de plano: a decisão do usuário que a mudança
+            // troca. Ausente quando a mudança não troca nenhuma, e a rodada
+            // segue sem perguntar.
+            opt("changes_decision", Kind::Text),
             // O código de cada tarefa da onda que o agente não fez. Com a
             // mudança de plano, é obrigatório, vazio quando fez todas; sem
             // ela, ausente quer dizer que fez todas. Cada tarefa citada volta

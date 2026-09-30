@@ -20,7 +20,7 @@ const PLACEHOLDER_SESSION_IDS: &[&str] = &["unknown", "otel-unattached"];
 /// `true` when `id` cannot name a session the hooks read — empty, or one of
 /// the [`PLACEHOLDER_SESSION_IDS`]. The single predicate every session-keyed
 /// marker writer and reader in this module consults, so a binding can never
-/// again land under a placeholder directory (the field defect: `emit-pipeline`
+/// again land under a placeholder directory (the field defect: the explicit open
 /// run from the CLI resolved `otel-unattached` by mtime, wrote the
 /// session→spec marker there, and every gate keyed on the real session id
 /// silently fell back to whichever spec was newest).
@@ -263,7 +263,7 @@ mod tests {
 
     /// The session→spec binding reaches the session the hooks read.
     ///
-    /// The field defect: `emit-pipeline` run from the CLI carries no harness
+    /// The field defect: the explicit open run from the CLI carries no harness
     /// session id, the mtime fallback resolved the OTEL collector's
     /// `otel-unattached` bucket (touched constantly, so newest), and the
     /// binding landed under a directory no hook ever consults — every gate

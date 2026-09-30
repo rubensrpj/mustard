@@ -60,11 +60,14 @@ impl Setup {
         assert!(copied.success(), "the copy of the program is made");
 
         // O scan de mentira: `format` diz a marca do arquivo `format`; a
-        // passada anota os argumentos e responde o relato de uma linha.
+        // passada anota os argumentos e responde o relato de uma linha; a
+        // leitura da história, que a passada começa em segundo plano, não
+        // anota nada.
         let format = dir.path().join("format");
         let calls = dir.path().join("calls");
         let script = format!(
-            "#!/bin/sh\nif [ \"$1\" = format ]; then cat '{}'; exit 0; fi\necho \"$@\" >> '{}'\n\
+            "#!/bin/sh\nif [ \"$1\" = format ]; then cat '{}'; exit 0; fi\nif [ \"$1\" = history-all ]; then exit 0; fi\n\
+             echo \"$@\" >> '{}'\n\
              echo '{{\"ok\":true,\"full\":false,\"read\":[],\"files\":1,\"head\":\"\"}}'\n",
             format.display(),
             calls.display()
@@ -90,7 +93,7 @@ impl Setup {
         git(&["commit", "-q", "-m", "semente"]);
         let now = store::listing(&project).expect("dentro do git");
         let map = json!({
-            "state": {"head": now.head, "listing": now.digest()},
+            "state": {"head": now.head, "listing": now.digest(), "base": now.base.name, "base_tip": now.base.tip},
             "modules": [{"path": "src/pedido.rs", "loc": 10, "declarations": [
                 {"kind": "function", "name": "gravar_pedido", "line": 1, "end_line": 3}]}]
         });

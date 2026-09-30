@@ -25,7 +25,7 @@ use super::queue::{
 };
 use super::report::Taken;
 use super::slots::{open_copies, sharing_copy};
-use super::stops::{change_question, stopped_waves, waves_stuck};
+use super::stops::{stopped_waves, waves_stuck};
 use super::usage::Caller;
 use super::{can_run, RoundOpts, DONE_STEP};
 use crate::commands::spec_events::{read::checkout, write::record};
@@ -83,12 +83,14 @@ pub(crate) enum RoundRefusal {
     /// O campo `commit` do relatório de entrega chegou com cara de código de
     /// commit, e não com o título em palavras que ele pede.
     CommitLooksLikeSha { found: String },
-    /// Um agente disse que o plano da onda não funciona: a onda espera o
-    /// clique do usuário fora do commit, e isto mostra a mudança proposta, com
-    /// a pergunta que decide e as tarefas que o agente não fez, que voltam à
-    /// fila com o aceite. Na rodada vira aviso, e o resto segue; no
-    /// fechamento, que depende de todas as ondas, é a resposta.
-    Replan { wave: u64, change: String, code: String, tasks: Vec<String> },
+    /// Um agente disse que a mudança de plano da onda troca uma decisão do
+    /// usuário: a onda espera o clique dele fora do commit. Manda quem
+    /// conduz escrever a pergunta com as palavras do usuário, com o código no
+    /// cabeçalho, e diz as tarefas que o agente não fez, que voltam à fila com
+    /// o aceite. O texto do agente não vai junto. Na rodada vira aviso, e o
+    /// resto segue; no fechamento, que depende de todas as ondas, é a
+    /// resposta.
+    Replan { wave: u64, code: String, tasks: Vec<String> },
     /// A entrega muda o plano e não diz quais tarefas da onda ficaram por
     /// fazer: sem a lista, a rodada daria todas por feitas. Leva as tarefas
     /// da onda, para o agente escolher.
@@ -206,12 +208,10 @@ impl RoundRefusal {
             Self::CommitLooksLikeSha { found } => {
                 fill("round.commit_looks_like_sha", &[("{found}", found.clone())])
             }
-            Self::Replan { wave, change, code, tasks } => fill(
+            Self::Replan { wave, code, tasks } => fill(
                 "round.replan",
                 &[
                     ("{wave}", wave.to_string()),
-                    ("{change}", without_final_period(change)),
-                    ("{question}", change_question(*wave, change, lang)),
                     ("{code}", code.clone()),
                     ("{yes}", translate("change.accept", lang).to_string()),
                     ("{no}", translate("change.decline", lang).to_string()),
@@ -259,12 +259,11 @@ impl RoundRefusal {
         out["ok"] = json!(false);
         out["reason"] = json!(self.reason());
         out["hint"] = json!(self.message(lang));
-        // A pergunta da mudança vai pronta, em palavras, com as opções e com
-        // o código que vai no cabeçalho dela: o enunciado quem pergunta pode
-        // reescrever com as palavras do usuário, e é o cabeçalho, não a
-        // frase, que diz à testemunha qual mudança o clique decide.
-        if let Self::Replan { wave, change, code, .. } = self {
-            out["question"] = json!(change_question(*wave, change, lang));
+        // O cabeçalho e as opções da pergunta da mudança vão prontos; o
+        // enunciado quem conduz escreve com as palavras do usuário, e é o
+        // cabeçalho, não a frase, que diz à testemunha qual mudança o clique
+        // decide.
+        if let Self::Replan { code, .. } = self {
             out["header"] = json!(code);
             out["options"] = json!([translate("change.accept", lang), translate("change.decline", lang)]);
         }
@@ -278,7 +277,7 @@ impl RoundRefusal {
 /// A mudança `change` sem o ponto final: a frase do catálogo já fecha a
 /// mudança com o ponto dela, e a que o agente mandou terminada em ponto
 /// sairia com dois.
-fn without_final_period(change: &str) -> String {
+pub(super) fn without_final_period(change: &str) -> String {
     change.trim().trim_end_matches('.').trim_end().to_string()
 }
 
@@ -2037,7 +2036,7 @@ mod tests {
         let copy = PathBuf::from(recorded_copy(&log_of(root), 1).map(|copy| copy.path).expect("a cópia"));
         std::fs::write(copy.join("src/a.rs"), "fn um() {}\n// a onda 1 mudou\n").unwrap();
         let asks = json!({"wave": 1, "text": "Parei.", "files": ["src/a.rs"], "commit": "a onda 1 mudou",
-            "replan": "A onda 1 precisa de outra tarefa antes.", "undone": []});
+            "replan": "A onda 1 precisa de outra tarefa antes.", "changes_decision": DECISION, "undone": []});
         assert_eq!(returned(root, asks)["ok"], json!(true));
         let sends = |root: &Path| log_of(root).events.iter().filter(|e| e.event_type == "send").count();
         let before = sends(root);
@@ -2660,29 +2659,26 @@ mod tests {
         assert!(out["next"].as_str().unwrap_or_default().contains(&check_of(&code)), "{out}");
     }
 
-    /// A mudança que a onda manda terminada em ponto aparece na pergunta da
-    /// rodada com um ponto só; a que vem sem ponto ganha o da frase.
+    /// A mudança que a onda manda terminada em ponto aparece no aviso da
+    /// mudança registrada com um ponto só; a que vem sem ponto ganha o da
+    /// frase.
     #[test]
-    fn a_change_ending_in_a_period_shows_one_period_in_the_round_question() {
+    fn a_change_ending_in_a_period_shows_one_period_in_the_recorded_change() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[])]);
         round(root, "x", None);
-        let back = json!({"wave": 1, "text": "Parei.", "replan": "Dividir a onda em duas.", "undone": []});
-        assert_eq!(returned(root, back)["ok"], json!(true));
-        let stopped = change_asked(&round(root, "x", None));
-        assert_eq!(stopped["wave"], json!(1), "{stopped}");
-        let hint = stopped["hint"].as_str().unwrap_or_default();
-        assert!(hint.contains("Mudança proposta: Dividir a onda em duas. Com o aceite"), "{hint}");
-        assert!(!hint.contains(".."), "{hint}");
-
-        let bare = RoundRefusal::Replan {
-            wave: 2,
-            change: "Split the wave".into(),
-            code: "onda-2-000000".into(),
-            tasks: Vec::new(),
+        let with_period = json!({"wave": 1, "text": "Parei.", "replan": "Dividir a onda em duas.", "undone": []});
+        assert_eq!(returned(root, with_period)["ok"], json!(true));
+        let bare = json!({"wave": 2, "text": "Parei.", "replan": "Dividir a onda em três", "undone": []});
+        assert_eq!(returned(root, bare)["ok"], json!(true));
+        let out = round(root, "x", None);
+        let warnings: Vec<&Value> = out["warnings"].as_array().into_iter().flatten().filter(|w| w["reason"] == json!("plan-changed")).collect();
+        let hint_of = |wave: u64| {
+            warnings.iter().find(|w| w["wave"] == json!(wave)).and_then(|w| w["hint"].as_str()).unwrap_or_default().to_string()
         };
-        let text = bare.message(Locale::EnUs);
-        assert!(text.contains("Proposed change: Split the wave. On acceptance"), "{text}");
+        assert!(hint_of(1).contains("A mudança: Dividir a onda em duas. Conte-a"), "{out}");
+        assert!(hint_of(2).contains("A mudança: Dividir a onda em três. Conte-a"), "{out}");
+        assert!(!hint_of(1).contains(".."), "{out}");
     }
 }

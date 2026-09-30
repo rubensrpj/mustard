@@ -18,7 +18,7 @@
 //! (e.g. an empty subproject list when the tool is missing).
 
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use serde::Deserialize;
 
@@ -166,6 +166,39 @@ impl Scan {
         serde_json::from_str(line).map_err(|e| Error::check_failed(format!("scan history report: {e}")))
     }
 
+    /// Como [`Self::scan`], e, com o mapa gravado, começa em segundo plano a
+    /// leitura da história de todo arquivo dele ([`Self::read_history_in_background`]).
+    /// A leitura que não começa não muda a resposta da passada.
+    ///
+    /// # Errors
+    /// Os de [`Self::scan`].
+    pub fn scan_then_read_history(&self, root: &Path, out: &Path) -> Result<ScanReport> {
+        let report = self.scan(root, out)?;
+        let _ = self.read_history_in_background(root, out);
+        Ok(report)
+    }
+
+    /// Começa, em outro processo que segue depois deste, a leitura da história
+    /// de todo arquivo do mapa em `out` que ainda não a tem (`grain
+    /// history-all`), sem esperar por ela: quem pergunta ao mapa no meio da
+    /// leitura lê o que já está gravado. O processo não herda a entrada, a
+    /// saída nem o grupo do terminal de quem o chamou. Outra leitura do mesmo
+    /// mapa em andamento faz a nova sair sem ler nada.
+    ///
+    /// # Errors
+    /// [`Error::Io`] if the tool cannot be spawned.
+    pub fn read_history_in_background(&self, root: &Path, out: &Path) -> Result<()> {
+        let mut command = Command::new(&self.binary);
+        command.args(history_all_args(root, out)).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        detach(&mut command);
+        let mut child = command.spawn()?;
+        // Só recolhe o processo quando ele acaba, se este ainda estiver de pé.
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+        Ok(())
+    }
+
     /// A marca de formato que este scan grava em cada bloco do mapa
     /// (`scan format`): a versão e o resumo das fontes dele. Com ela se sabe,
     /// sem rodar a passada, se o mapa é de outra compilação do scan e o
@@ -216,6 +249,35 @@ fn history_args(root: &Path, out: &Path, file: &str, moves: usize) -> Vec<String
     ]
 }
 
+fn history_all_args(root: &Path, out: &Path) -> Vec<String> {
+    vec![
+        "history-all".to_string(),
+        root.to_string_lossy().into_owned(),
+        "--out".to_string(),
+        out.to_string_lossy().into_owned(),
+        "--json".to_string(),
+    ]
+}
+
+/// Solta o processo de `command` do grupo e do terminal de quem o inicia: o
+/// que ele faz não morre com o fechamento do terminal.
+#[cfg(unix)]
+fn detach(command: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    command.process_group(0);
+}
+
+/// Solta o processo de `command` do console de quem o inicia
+/// (`DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP`).
+#[cfg(windows)]
+fn detach(command: &mut Command) {
+    use std::os::windows::process::CommandExt;
+    command.creation_flags(0x0000_0008 | 0x0000_0200);
+}
+
+#[cfg(not(any(unix, windows)))]
+fn detach(_command: &mut Command) {}
+
 /// What `scan history` reports on its last stdout line: the file, how many
 /// commits of the base changed it, and how many of its declarations the base
 /// has.
@@ -264,6 +326,108 @@ mod tests {
     }
 
     #[test]
+    fn history_all_args_shape() {
+        let a = history_all_args(&PathBuf::from("repo"), &PathBuf::from("m.db"));
+        assert_eq!(a, vec!["history-all", "repo", "--out", "m.db", "--json"]);
+    }
+
+    /// Um scan de mentira: o programa `name` em `dir` que roda `body`. Ele é
+    /// gravado por um shell à parte: os testes rodam em paralelo no mesmo
+    /// processo, e o arquivo que este processo mantém aberto para escrita o
+    /// Linux recusa rodar ("Text file busy").
+    #[cfg(unix)]
+    fn script_scan(dir: &Path, name: &str, body: &str) -> Scan {
+        let path = dir.join(name);
+        let written = Command::new("/bin/sh")
+            .args(["-c", "printf '%s' \"$2\" > \"$1\" && chmod 755 \"$1\"", "sh"])
+            .arg(&path)
+            .arg(format!("#!/bin/sh\n{body}\n"))
+            .status()
+            .unwrap();
+        assert!(written.success());
+        Scan::new(path.to_string_lossy())
+    }
+
+    /// Espera até um minuto por `done`, olhando a cada 20 ms; `false` se ele não veio.
+    #[cfg(unix)]
+    fn wait_until(done: impl Fn() -> bool) -> bool {
+        let limit = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while !done() {
+            if std::time::Instant::now() > limit {
+                return false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        true
+    }
+
+    /// Os pedidos que o scan de mentira anotou em `log`, um por linha.
+    #[cfg(unix)]
+    fn logged(log: &Path) -> Vec<String> {
+        std::fs::read_to_string(log).unwrap_or_default().lines().map(str::to_string).collect()
+    }
+
+    /// A leitura da história não segura quem a pede: o processo dela só acaba
+    /// quando o teste o solta, e a chamada já voltou.
+    #[cfg(unix)]
+    #[test]
+    fn the_reading_of_the_history_starts_in_the_background_and_the_call_does_not_wait_for_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (log, release) = (dir.path().join("log"), dir.path().join("release"));
+        let scan = script_scan(
+            dir.path(),
+            "reads",
+            &format!(
+                "echo \"$1\" >> '{log}'\nn=0\nwhile [ ! -e '{release}' ] && [ $n -lt 3000 ]; do sleep 0.02; n=$((n+1)); done\n\
+                 if [ -e '{release}' ]; then echo finished >> '{log}'; else echo gave-up >> '{log}'; fi",
+                log = log.display(),
+                release = release.display()
+            ),
+        );
+        scan.read_history_in_background(dir.path(), &dir.path().join("m.db")).expect("the reading starts");
+        assert!(wait_until(|| logged(&log) == ["history-all"]), "the reading was started with its command: {:?}", logged(&log));
+        assert!(!release.exists(), "the call came back while the process was still held");
+        std::fs::write(&release, "").unwrap();
+        assert!(wait_until(|| logged(&log).len() == 2), "{:?}", logged(&log));
+        assert_eq!(logged(&log), ["history-all", "finished"]);
+    }
+
+    /// Só o mapa gravado ganha a leitura: o scan que falha devolve o erro dele
+    /// e não a inicia; o que passa devolve o relato e a inicia.
+    #[cfg(unix)]
+    #[test]
+    fn the_reading_of_the_history_starts_only_after_a_scan_that_passed() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("log");
+        let fails = dir.path().join("fails");
+        let scan = script_scan(
+            dir.path(),
+            "both",
+            &format!(
+                "echo \"$1\" >> '{log}'\nif [ \"$1\" = scan ]; then [ -e '{fails}' ] && exit 3; echo '{{\"ok\":true,\"full\":true,\"read\":[],\"files\":2}}'; fi",
+                log = log.display(),
+                fails = fails.display()
+            ),
+        );
+        let out = dir.path().join("m.db");
+
+        std::fs::write(&fails, "").unwrap();
+        assert!(scan.scan_then_read_history(dir.path(), &out).is_err(), "the failed scan is the answer");
+        // Um sinal de que o scan de mentira responde depressa: a leitura pedida
+        // à mão chega ao registro, e nenhuma outra veio antes dela.
+        scan.read_history_in_background(dir.path(), &out).unwrap();
+        assert!(wait_until(|| logged(&log).contains(&"history-all".to_string())), "{:?}", logged(&log));
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert_eq!(logged(&log), ["scan", "history-all"], "the failed scan started no reading");
+
+        std::fs::remove_file(&fails).unwrap();
+        let report = scan.scan_then_read_history(dir.path(), &out).expect("the scan passed");
+        assert_eq!(report.files, 2);
+        assert!(wait_until(|| logged(&log).len() == 4), "{:?}", logged(&log));
+        assert_eq!(logged(&log)[2..], ["scan", "history-all"], "the scan that passed starts the reading after itself");
+    }
+
+    #[test]
     fn a_scan_that_cannot_be_run_has_no_format() {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(Scan::new(dir.path().join("no-such-scan").to_string_lossy()).format(), None);
@@ -278,17 +442,7 @@ mod tests {
     #[test]
     fn the_format_is_what_the_format_command_of_the_scan_prints() {
         let dir = tempfile::tempdir().unwrap();
-        let script = |name: &str, body: &str| {
-            let path = dir.path().join(name);
-            let written = Command::new("/bin/sh")
-                .args(["-c", "printf '%s' \"$2\" > \"$1\" && chmod 755 \"$1\"", "sh"])
-                .arg(&path)
-                .arg(format!("#!/bin/sh\n{body}\n"))
-                .status()
-                .unwrap();
-            assert!(written.success());
-            Scan::new(path.to_string_lossy())
-        };
+        let script = |name: &str, body: &str| script_scan(dir.path(), name, body);
         let says = script("says", r#"[ "$1" = format ] && echo "0.2.4+map-0011223344556677""#);
         assert_eq!(says.format().as_deref(), Some("0.2.4+map-0011223344556677"));
         assert_eq!(script("fails", "exit 3").format(), None);

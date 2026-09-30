@@ -81,7 +81,7 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
 
         // Work-branch REFUSAL — the checkout holds another unit's branch with
         // uncommitted files, so cutting the second unit here would carry them
-        // off. Said by the `spec-draft` cut, in the project's language.
+        // off. Said by the drafting cut, in the project's language.
         // `{current}`/`{target}`/`{paths}`/`{more}` are interpolated by
         // `work_branch::BusyCheckout::reason`.
         //
@@ -169,7 +169,7 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // Nothing is cut, and the operator is told: the harness used to take the
         // outermost candidate and mention it on stderr, which a PreToolUse hook
         // says to nobody (it exits 0). `{target}`/`{candidates}` are
-        // interpolated by the `spec-draft` cut.
+        // interpolated by the drafting cut.
         ("workbranch.base.unknown", Locale::PtBr) => {
             "Não dá para saber de qual base '{target}' deve sair. Este projeto declara várias \
              candidatas ({candidates}), e nada registrou a escolha, então a branch não foi criada. \
@@ -356,19 +356,9 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "[Mustard] The spec {spec} was already approved; nothing to record."
         }
 
-        // O gesto da mudança que parte de um agente: a pergunta, as duas
-        // opções e o que a testemunha diz depois do clique.
-        ("change.question", Locale::PtBr) => {
-            "A onda {wave} diz que o plano dela não funciona e propõe esta mudança: {change} \
-             Aceitar? Se aceitar, a rodada grava o que a onda entregou e segue com o plano mudado. \
-             Se recusar, nada é gravado, e a onda fica parada até você dizer o que fazer com ela."
-        }
-        ("change.question", Locale::EnUs) => {
-            "Wave {wave} says its plan does not work and proposes this change: {change} \
-             Accept it? If you accept, the round records what the wave delivered and goes on with \
-             the changed plan. If you decline, nothing is recorded, and the wave stays put until \
-             you say what to do with it."
-        }
+        // O gesto da mudança que troca uma decisão do usuário: as duas
+        // opções e o que a testemunha diz depois do clique. O enunciado da
+        // pergunta quem conduz escreve.
         ("change.accept", Locale::PtBr) => "Aceitar",
         ("change.accept", Locale::EnUs) => "Accept",
         ("change.decline", Locale::PtBr) => "Recusar",
@@ -572,8 +562,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("gates.rs"),
             super::PREFIXES,
-            72,
-            0xf0a5_7b66_3c4f_8917,
+            71,
+            0x1795_f9da_bb65_a486,
         );
     }
 
@@ -656,12 +646,11 @@ mod tests {
         assert_eq!(translate("approval.question", Locale::EnUs), "Approve this spec?");
         assert_eq!(translate("approval.option", Locale::PtBr), "Aprovar");
         assert_eq!(translate("approval.option", Locale::EnUs), "Approve");
-        // O gesto da mudança que parte de um agente: a pergunta leva o código
-        // da mudança, e as duas opções são as do catálogo.
+        // O gesto da mudança que troca uma decisão do usuário: as duas opções
+        // são as do catálogo, e o enunciado da pergunta o catálogo não traz —
+        // quem conduz o escreve com as palavras do usuário.
         for lang in [Locale::PtBr, Locale::EnUs] {
-            let question = translate("change.question", lang);
-            assert!(question.contains("{wave}") && question.contains("{change}"), "{question}");
-            assert!(!question.contains("{code}"), "o código nunca vai no enunciado: {question}");
+            assert_eq!(translate("change.question", lang), "<missing-key>");
         }
         assert_eq!(translate("change.accept", Locale::PtBr), "Aceitar");
         assert_eq!(translate("change.decline", Locale::PtBr), "Recusar");

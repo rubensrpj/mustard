@@ -141,6 +141,22 @@ impl Project {
         let path = store::spec_file(&self.root, SPEC).expect("spec file");
         store::write(&path, event_type, fields.as_object().cloned().expect("an object"), &[]).expect(event_type).id
     }
+
+    /// Uma linha escrita direto no arquivo da spec, como a versão antiga do
+    /// programa a deixava: a gravação de hoje recusa um campo que já saiu, e
+    /// é assim que a tarefa com ele chega à rodada. Devolve o `id` da linha.
+    fn seed_old_line(&self, event_type: &str, fields: &Value) -> u64 {
+        let path = store::spec_file(&self.root, SPEC).expect("spec file");
+        let id = self.log().max_id() + 1;
+        let mut line = json!({"v": 1, "id": id, "at": "2026-09-18T10:00:00-03:00", "type": event_type});
+        for (key, value) in fields.as_object().expect("an object") {
+            line[key] = value.clone();
+        }
+        let mut text = std::fs::read_to_string(&path).expect("the spec file");
+        text.push_str(&format!("{line}\n"));
+        std::fs::write(&path, text).expect("the spec file is written");
+        id
+    }
 }
 
 /// A fala do usuário, pelo gancho da entrada; devolve o número dela.
@@ -280,10 +296,11 @@ fn o_backlog_vira_sempre_os_mesmos_lotes() {
     assert_eq!(after.current(t6).and_then(|t| t.wave()), None, "a 6 fica no backlog, sem onda");
 }
 
-/// Uma tarefa solta no backlog, sem onda própria, forma um lote sozinha: o
-/// binário, despachado pela rodada de verdade, grava o evento de onda com o
-/// autor binário, a tarefa do lote na ordem de despacho, os critérios que são
-/// a união do que ela cobre e o pronta-quando tirado da prova desse critério.
+/// Duas tarefas soltas no backlog, cada uma com um critério, cabem no mesmo
+/// lote: o binário, despachado pela rodada de verdade, grava o evento de onda
+/// com o autor binário, as duas tarefas na ordem de despacho, os critérios que
+/// são a união do que elas cobrem e o pronta-quando tirado da prova dos dois
+/// critérios, ligadas por " && ".
 #[test]
 fn o_binario_grava_o_evento_de_onda_do_lote() {
     let project = Project::new();
@@ -295,8 +312,15 @@ fn o_binario_grava_o_evento_de_onda_do_lote() {
             "form": "ubiquitous", "origin": said}),
     );
     let crit_id = criterion["id"].as_u64().expect("the criterion has an id");
+    let other = project.write(
+        "criterion",
+        &json!({"title": "Combinar a despedida", "when": "o programa termina", "then": "a despedida nova aparece",
+            "proof": "git status --short", "form": "ubiquitous", "origin": said}),
+    );
+    let other_id = other["id"].as_u64().expect("the second criterion has an id");
 
     let t1 = backlog_task(&project, crit_id, said, &["src/b.rs"], &[]);
+    let t2 = backlog_task(&project, other_id, said, &["src/c.rs"], &[]);
 
     project.run(&["plan", "--spec", SPEC]);
     approve(&project);
@@ -309,12 +333,69 @@ fn o_binario_grava_o_evento_de_onda_do_lote() {
     let after = project.log();
     let wave = after.visible().into_iter().find(|e| e.event_type == "wave" && e.wave() == Some(1)).expect("the batch wave");
     assert_eq!(wave.str_field("author"), Some("binary"), "onda de lote é do binário: {:?}", wave.fields);
-    assert_eq!(wave.ints("order"), vec![t1], "as tarefas do lote, na ordem de despacho");
-    assert_eq!(wave.ints("criteria"), vec![crit_id], "os critérios são a união do que as tarefas cobrem");
-    assert_eq!(wave.str_field("done_when"), Some("git --version"), "a prova do critério coberto");
+    assert_eq!(wave.ints("order"), vec![t1, t2], "as duas tarefas do lote, na ordem de despacho");
+    assert_eq!(wave.ints("criteria"), vec![crit_id, other_id], "os critérios são a união do que as tarefas cobrem");
+    assert_eq!(
+        wave.str_field("done_when"),
+        Some("git --version && git status --short"),
+        "a prova dos dois critérios cobertos"
+    );
 
-    let task_now = after.current(t1).expect("the task");
-    assert_eq!(task_now.wave(), Some(1), "a tarefa ganha a onda do lote que a levou");
+    for task in [t1, t2] {
+        let task_now = after.current(task).expect("the task");
+        assert_eq!(task_now.wave(), Some(1), "a tarefa ganha a onda do lote que a levou");
+    }
+}
+
+/// A tarefa de uma spec antiga que traz a nota de trabalho (o campo `points`,
+/// que a gravação de hoje recusa), dentro de uma onda desenhada à mão que
+/// nunca saiu: a rodada de verdade converte a onda, e a versão nova da tarefa
+/// volta ao backlog sem a nota e sem o número velho de onda, já no lote que o
+/// backlog formou. A versão antiga continua na história, com a nota.
+#[test]
+fn a_rodada_tira_a_nota_de_trabalho_da_tarefa_de_spec_antiga() {
+    let project = Project::new();
+    project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    let said = survey(&project);
+    let criterion = project.write(
+        "criterion",
+        &json!({"title": "Combinar o item", "when": "o programa roda", "then": "a saudação nova aparece", "proof": "git --version",
+            "form": "ubiquitous", "origin": said}),
+    );
+    let crit_id = criterion["id"].as_u64().expect("the criterion has an id");
+
+    // A onda 1, desenhada à mão por quem não é o programa, com a tarefa que
+    // traz a nota: semeada crua, como a spec antiga a deixou.
+    project.seed(
+        "wave",
+        &json!({"author": "assistant", "n": 1, "text": "Onda 1, à mão.", "criteria": [crit_id],
+            "done_when": "git --version", "origin": said}),
+    );
+    let old = project.seed_old_line(
+        "task",
+        &json!({"title": "Entregar a tarefa", "agent": "- conferir pelo teste", "author": "assistant", "wave": 1,
+            "text": "Tarefa da onda 1.", "files": [{"path": "src/b.rs", "new": true}], "depends_on": [],
+            "covers": [crit_id], "points": 3, "origin": said}),
+    );
+
+    project.run(&["plan", "--spec", SPEC]);
+    approve(&project);
+    project.run(&["round", "--spec", SPEC]);
+
+    let after = project.log();
+    let now = after.current(old).expect("the task");
+    assert!(!now.fields.contains_key("points"), "a nota some da versão nova: {:?}", now.fields);
+    assert_ne!(now.id, old, "a tarefa ganhou versão nova");
+    let batch = after
+        .visible()
+        .into_iter()
+        .find(|e| e.event_type == "wave" && e.str_field("author") == Some("binary"))
+        .expect("o lote que o backlog formou");
+    let in_batch = batch.ints("order").into_iter().filter_map(|id| after.current(id)).any(|task| task.id == now.id);
+    assert!(in_batch, "a tarefa vigente é a do lote: {:?}", batch.fields);
+    assert_eq!(now.wave(), batch.wave(), "a tarefa está no lote: {:?}", now.fields);
+    let history = after.events.iter().find(|e| e.id == old).expect("a versão antiga fica na história");
+    assert!(history.fields.contains_key("points"), "a versão antiga guarda a nota: {:?}", history.fields);
 }
 
 /// Uma spec antiga, com a onda 1 numerada à mão e já entregue de ponta a

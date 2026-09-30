@@ -49,4 +49,4 @@ Grave a entrega com `run write delivered --json '<a linha>'`, mesmo --root e --s
 - Pedido com item combinado (regra, caso de borda, decisão, contrato): `"agreed":[{"item":"<código>","met":true}]`, um por item. Para o item que nenhuma tarefa da onda faz e que só vale para os arquivos dela, `met:true` quer dizer que ele continua valendo depois da sua mudança; `met:false` só quando a mudança o quebra ou quando a tarefa que o faz ficou por fazer. O não cumprido vai como `{"item":"<código>","met":false,"text":"<o que falta>"}` e vira tarefa no backlog, se nenhuma tarefa ainda por entregar já o cobre.
 - Num conserto: `"fixes":[<as ondas que ele fecha>]`.
 - Tarefa do pedido que não fez: `"undone":["<código>"]`, e o item combinado dela vai `met:false`; ela volta ao backlog.
-- O plano não funciona: `"replan":"<a mudança, numa frase>"`, sempre com `undone` (`[]` se fez todas).
+- O plano não funciona: `"replan":"<a mudança, numa frase>"`, sempre com `undone` (`[]` se fez todas), e `"changes_decision":"<a decisão do usuário que a mudança troca, numa frase>"`, vazio quando ela não troca nenhuma.

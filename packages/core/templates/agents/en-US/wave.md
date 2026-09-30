@@ -49,4 +49,4 @@ Record the delivery with `run write delivered --json '<the line>'`, same --root 
 - A request with agreed items (rule, edge case, decision, contract): `"agreed":[{"item":"<code>","met":true}]`, one per item. For an item no task of the wave does and that only holds for its files, `met:true` means it still holds after your change; `met:false` only when the change undoes it or when the task that does it was not done. One not met goes as `{"item":"<code>","met":false,"text":"<what is missing>"}` and becomes a backlog task, unless a task not yet delivered already covers it.
 - In a fix: `"fixes":[<waves it closes>]`.
 - A task in the request you did not do: `"undone":["<code>"]`, and its agreed item goes `met:false`; it goes back to the backlog.
-- The plan does not work: `"replan":"<the change, in one sentence>"`, always with `undone` (`[]` if you did them all).
+- The plan does not work: `"replan":"<the change, in one sentence>"`, always with `undone` (`[]` if you did them all), and `"changes_decision":"<the user decision the change swaps, in one sentence>"`, empty when it swaps none.

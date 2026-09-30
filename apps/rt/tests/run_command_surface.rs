@@ -177,8 +177,8 @@ fn nenhum_comando_divide_o_lugar_de_outro_na_ajuda() {
 /// Every `mustard-rt run <name>` a SHIPPED instruction surface tells the reader
 /// (or an agent) to type must be a name the CLI actually publishes.
 ///
-/// Field defect: `wave-scaffold` was absorbed into
-/// `plan-materialize`, but a shipped hint still told the reader to run it.
+/// Field defect: a command that was absorbed into another
+/// still had a shipped hint telling the reader to run it.
 /// Nothing broke at build time — the command simply does not exist, so an
 /// obedient agent burns a call on a clap error. `template_parity` runs the same
 /// forward check over the template/plugin/packaging corpus; this one walks the

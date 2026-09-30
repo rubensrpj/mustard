@@ -961,6 +961,14 @@ pub fn pull_comments_at(model: &Path, path: &str) -> std::result::Result<Vec<Pul
     Ok(pulls_of(db.conn(), &[path], &[]).map_err(unreadable)?.comments)
 }
 
+/// Os comentários de revisão presos a cada arquivo de `paths` no mapa em
+/// `model`, todos numa leitura só, na ordem em que se gravaram. Com as
+/// recusas de [`read`].
+pub fn pull_comments_for_at(model: &Path, paths: &[&str]) -> std::result::Result<Vec<PullComment>, MapRefusal> {
+    let db = open_existing(model)?;
+    Ok(pulls_of(db.conn(), paths, &[]).map_err(unreadable)?.comments)
+}
+
 /// Grava no mapa em `model` o texto do pull request e os comentários presos
 /// a linhas dele, no lugar do que o mapa tinha desse número.
 ///
@@ -1028,31 +1036,27 @@ pub fn save_pull_commits_at(model: &Path, found: &[PullOfCommit]) -> Result<()> 
 /// Troca, numa transação só, as linhas de cada tabela em que a coluna dada
 /// vale o valor dado pelas linhas novas, na ordem das colunas declaradas.
 fn replace_rows(model: &Path, changes: Vec<(&str, &str, Sql, Vec<Row>)>) -> Result<()> {
-    replace_rows_indexed(model, changes, false)
-}
-
-/// A troca de [`replace_rows`]; com `reindex`, o índice de busca sai na mesma
-/// transação, porque o que se trocou é lido por ele: a primeira busca o
-/// refaz.
-fn replace_rows_indexed(model: &Path, changes: Vec<(&str, &str, Sql, Vec<Row>)>, reindex: bool) -> Result<()> {
     let mut db = open_existing(model).map_err(|refusal| Error::Parse(format!("{refusal:?}")))?;
     db.write(|tx| {
-        for (table, key, value, rows) in &changes {
-            let found = declared_table(table)?;
-            tx.execute(&format!("DELETE FROM {} WHERE {} = ?1", quoted(found.name), quoted(key)), [value])?;
-            let names: Vec<String> = found.columns.iter().map(|column| quoted(column.name)).collect();
-            let slots = vec!["?"; names.len()].join(", ");
-            let mut insert = tx.prepare(&format!("INSERT INTO {}({}) VALUES ({slots})", quoted(found.name), names.join(", ")))?;
-            for row in rows {
-                insert.execute(params_from_iter(row))?;
-            }
-        }
-        if reindex {
-            map_search::forget(tx)?;
-        }
+        replace_in(tx, &changes)?;
         map_revision::bump(tx)?;
         Ok(())
     })
+}
+
+/// A troca de [`replace_rows`] dentro da transação de quem grava.
+fn replace_in(tx: &Connection, changes: &[Replacement<'_>]) -> Result<()> {
+    for (table, key, value, rows) in changes {
+        let found = declared_table(table)?;
+        tx.execute(&format!("DELETE FROM {} WHERE {} = ?1", quoted(found.name), quoted(key)), [value])?;
+        let names: Vec<String> = found.columns.iter().map(|column| quoted(column.name)).collect();
+        let slots = vec!["?"; names.len()].join(", ");
+        let mut insert = tx.prepare(&format!("INSERT INTO {}({}) VALUES ({slots})", quoted(found.name), names.join(", ")))?;
+        for row in rows {
+            insert.execute(params_from_iter(row))?;
+        }
+    }
+    Ok(())
 }
 
 /// O nome entre aspas de uma tabela declarada; a tabela que nenhum bloco
@@ -1508,10 +1512,13 @@ pub fn listing(root: &Path) -> Option<Listing> {
 
 /// A branch de partida do projeto em `root`, pela configuração dele, com a
 /// ponta que o clone tem: a do servidor antes da local, numa chamada só ao
-/// git.
+/// git. O projeto que não declara nenhuma parte da branch padrão do servidor
+/// (`refs/remotes/origin/HEAD`) e, sem servidor, da branch em que o checkout
+/// está; só se lê o git, nada se grava. Sem declaração, sem servidor e com o
+/// checkout solto de branch, não há base.
 #[must_use]
 pub fn base_of(root: &Path) -> Base {
-    let Some(name) = crate::domain::config::ProjectConfig::load(root).git.primary_base() else {
+    let Some(name) = crate::domain::config::ProjectConfig::load(root).git.primary_base().or_else(|| default_branch(root)) else {
         return Base::default();
     };
     let (remote, local) = (format!("refs/remotes/origin/{name}"), format!("refs/heads/{name}"));
@@ -1521,6 +1528,18 @@ pub fn base_of(root: &Path) -> Base {
     };
     let tip = tip_of(&remote).or_else(|| tip_of(&local)).unwrap_or_default();
     Base { name, tip }
+}
+
+/// A branch de partida de um projeto que não declara nenhuma: a que o
+/// servidor aponta como padrão, ou, sem servidor, a do checkout. `None` com o
+/// checkout solto de branch.
+fn default_branch(root: &Path) -> Option<String> {
+    let of = |args: &[&str], prefix: &str| {
+        let out = git_out(root, args)?;
+        out.trim().strip_prefix(prefix).filter(|name| !name.is_empty()).map(str::to_string)
+    };
+    of(&["symbolic-ref", "-q", "refs/remotes/origin/HEAD"], "refs/remotes/origin/")
+        .or_else(|| of(&["symbolic-ref", "-q", "HEAD"], "refs/heads/"))
 }
 
 /// O blob de cada arquivo sob `root`, com os de dentro dos submódulos
@@ -1668,6 +1687,10 @@ pub(crate) fn unreadable(err: Error) -> MapRefusal {
 
 /// As linhas de uma tabela, na ordem em que entraram.
 type Row = Vec<Sql>;
+
+/// O que uma gravação troca em uma tabela: a tabela, a coluna que a chave
+/// nomeia, o valor da chave e as linhas novas.
+type Replacement<'a> = (&'a str, &'a str, Sql, Vec<Row>);
 
 fn rows_in(conn: &Connection, table: &Table) -> Result<Vec<Row>> {
     let columns: Vec<String> = table.columns.iter().map(|column| quoted(column.name)).collect();
@@ -2030,13 +2053,41 @@ pub fn save_block_at(model: &Path, block: &MapBlock, map: &Value, mark: &str) ->
 /// Grava a história das declarações de um arquivo, `lineage`, no mapa em
 /// `model`, que já tem de existir: troca só as linhas daquele arquivo, numa
 /// transação; as dos outros arquivos ficam como estavam. Os títulos dos
-/// commits de cada declaração entram no índice de busca, que sai na mesma
-/// transação e se refaz na primeira busca.
+/// commits de cada declaração entram no índice de busca na mesma transação,
+/// só nos documentos daquele arquivo: o índice não se esvazia nem se refaz.
 ///
 /// # Errors
 ///
 /// O mapa que falta ou não se abre, e a falha do banco.
 pub fn save_lineage_at(model: &Path, lineage: &FileLineage) -> Result<()> {
+    save_lineages_at(model, std::slice::from_ref(lineage))
+}
+
+/// Grava a história de vários arquivos, `lineages`, como [`save_lineage_at`]
+/// a de um, numa transação só: quem lê nunca vê um lote pela metade, e o
+/// índice de busca é acertado uma vez para o lote todo.
+///
+/// # Errors
+///
+/// O mapa que falta ou não se abre, e a falha do banco.
+pub fn save_lineages_at(model: &Path, lineages: &[FileLineage]) -> Result<()> {
+    let mut changes = Vec::new();
+    for lineage in lineages {
+        changes.extend(lineage_changes(lineage)?);
+    }
+    let paths: Vec<&str> = lineages.iter().map(|lineage| lineage.path.as_str()).collect();
+    let mut db = open_existing(model).map_err(|refusal| Error::Parse(format!("{refusal:?}")))?;
+    db.write(|tx| {
+        replace_in(tx, &changes)?;
+        map_search::refresh_files(tx, &paths)?;
+        map_revision::bump(tx)?;
+        Ok(())
+    })
+}
+
+/// As linhas que a história de um arquivo troca em cada tabela da sua
+/// família, pelo caminho dele.
+fn lineage_changes(lineage: &FileLineage) -> Result<Vec<Replacement<'static>>> {
     let path = lineage.path.as_str();
     let rows_in_map = serde_json::json!({
         "files": [{
@@ -2054,13 +2105,12 @@ pub fn save_lineage_at(model: &Path, lineage: &FileLineage) -> Result<()> {
     });
     let fresh: BlockRows =
         LINEAGE.tables.iter().map(|table| rows(table, &rows_in_map)).collect::<std::result::Result<_, _>>().map_err(Error::Parse)?;
-    let changes = LINEAGE
+    Ok(LINEAGE
         .tables
         .iter()
         .zip(fresh)
         .map(|(table, rows)| (table.name, "path", Sql::Text(path.to_string()), rows))
-        .collect();
-    replace_rows_indexed(model, changes, true)
+        .collect())
 }
 
 /// As linhas de cada tabela de cada bloco, na ordem de [`BLOCKS`].
@@ -2338,6 +2388,58 @@ mod tests {
         assert_eq!(back.modules[0].deps, vec!["src/b.rs".to_string()]);
         assert_eq!(back.state.head, "abc123");
         assert_eq!(read_at(&model_path(&root)).unwrap().state.head, "abc123");
+    }
+
+    /// A base do mapa é a que o projeto declara; sem declaração, a que o
+    /// servidor aponta como padrão; sem servidor, a do checkout; o checkout
+    /// solto de branch, sem servidor, não tem base. O git só é lido: nem a
+    /// configuração dele nem a do projeto ganham uma linha.
+    #[test]
+    fn the_base_of_the_map_is_the_declared_one_then_the_default_of_the_server_then_the_checkout() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path();
+        let git = |args: &[&str]| -> String {
+            let out = std::process::Command::new("git")
+                .args(["-c", "user.email=t@example.com", "-c", "user.name=t", "-c", "commit.gpgsign=false"])
+                .args(args)
+                .current_dir(repo)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        git(&["init", "-q", "-b", "trunk"]);
+        std::fs::write(repo.join("a.txt"), "a\n").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "first"]);
+        let first = git(&["rev-parse", "HEAD"]);
+        std::fs::write(repo.join("a.txt"), "b\n").unwrap();
+        git(&["commit", "-q", "-am", "second"]);
+        let second = git(&["rev-parse", "HEAD"]);
+        git(&["branch", "develop", &first]);
+        let config_before = std::fs::read_to_string(repo.join(".git/config")).unwrap();
+        let named = |base: Base| (base.name, base.tip);
+
+        assert_eq!(named(base_of(repo)), ("trunk".into(), second.clone()), "no declaration, no server: the branch of the checkout");
+
+        git(&["update-ref", "refs/remotes/origin/main", &first]);
+        git(&["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]);
+        assert_eq!(
+            named(base_of(repo)),
+            ("main".into(), first.clone()),
+            "no declaration: the default branch of the server, at the tip the server has"
+        );
+
+        std::fs::write(repo.join("mustard.json"), r#"{"git": {"flow": {"*": "develop"}}}"#).unwrap();
+        assert_eq!(named(base_of(repo)), ("develop".into(), first.clone()), "the declared base wins over the server default");
+        std::fs::remove_file(repo.join("mustard.json")).unwrap();
+
+        git(&["symbolic-ref", "--delete", "refs/remotes/origin/HEAD"]);
+        git(&["checkout", "-q", "--detach"]);
+        assert_eq!(named(base_of(repo)), (String::new(), String::new()), "a loose checkout with no server has no base");
+
+        assert_eq!(std::fs::read_to_string(repo.join(".git/config")).unwrap(), config_before, "the git configuration was only read");
+        assert!(!repo.join("mustard.json").exists(), "the project configuration was only read");
     }
 
     /// O nome do arquivo e o caminho saem do mesmo texto, e o diário é o nome

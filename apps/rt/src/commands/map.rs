@@ -996,7 +996,7 @@ pub fn run(opts: &MapOpts) {
     let scan = mustard_core::Scan::locate();
     let report = map_at(
         opts,
-        &|root, out| scan.scan(root, out),
+        &|root, out| scan.scan_then_read_history(root, out),
         &|root, out, file, moves| scan.history(root, out, file, moves),
         &jev,
     );
@@ -3437,7 +3437,7 @@ mod tests {
         // marca do aviso dado na sessão não muda o conteúdo do projeto.
         std::fs::write(root.join(".git/info/exclude"), ".claude/\n").unwrap();
         let now = store::listing(root).unwrap();
-        map["state"] = json!({"head": now.head, "listing": now.digest()});
+        map["state"] = json!({"head": now.head, "listing": now.digest(), "base": now.base.name, "base_tip": now.base.tip});
         written_by_the_scan(root, &map);
         dir
     }
@@ -3530,7 +3530,7 @@ mod tests {
         git(&["commit", "-q", "-m", "semente"]);
         let now = store::listing(root).unwrap();
         let mut map: Value = serde_json::from_str(map).unwrap();
-        map["state"] = json!({"head": now.head, "listing": now.digest()});
+        map["state"] = json!({"head": now.head, "listing": now.digest(), "base": now.base.name, "base_tip": now.base.tip});
         written_by_the_scan(root, &map);
         (dir, map)
     }

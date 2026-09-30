@@ -67,7 +67,7 @@ mod tests {
         git(root, &["commit", "-q", "-m", "semente"]);
         let now = project_map::listing(root).unwrap();
         let map = json!({
-            "state": {"head": now.head, "listing": now.digest()},
+            "state": {"head": now.head, "listing": now.digest(), "base": now.base.name, "base_tip": now.base.tip},
             "modules": [{"path": "src/pedido.rs", "loc": 10, "declarations": [
                 {"kind": "function", "name": "gravar_pedido", "line": 1, "end_line": 3}]}]
         });

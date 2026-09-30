@@ -1090,8 +1090,8 @@ pub struct GivenOwner {
 /// 1. as tarefas que apontam o item — a que nasceu dele (`origin` numa versão
 ///    dele) e a que cita o código dele no texto, como as tarefas citavam o
 ///    que cobriam antes de existir `covers`;
-/// 2. as ondas que o texto do item cita, pelo número ("onda 14", "ondas 14,
-///    15 e 17") ou pelo código da onda;
+/// 2. as ondas que o texto do item cita, pelo número (como em "onda 14" ou
+///    "ondas 14, 15 e 17") ou pelo código da onda;
 /// 3. as ondas cujas tarefas mexem nos arquivos que o item cita no texto ou
 ///    diz em `applies_to`.
 ///

@@ -415,7 +415,7 @@ impl FileMarker {
 /// EN canonical first (`(create)` for [`FileMarker::Create`]). The synonyms
 /// are data in the [`translate`] catalogue (`marker.*` keys, `|`-separated per
 /// locale) — the SINGLE origin shared by the drafter and every validator
-/// (`analyze-validation`, scope-classify), so a localized marker like the
+/// (the validation analysis, the scope classifier), so a localized marker like the
 /// pt-BR `(novo)` can never drift out of recognition.
 ///
 /// Spellings are lowercase literals including the surrounding parentheses;

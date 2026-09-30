@@ -190,15 +190,6 @@ pub(crate) struct Batch<N> {
     pub(crate) files: BTreeSet<String>,
 }
 
-/// O nível topológico de cada tarefa do backlog, pelo mesmo peelamento que já
-/// ordena qualquer grafo do binário — o backlog não é um segundo motor ao lado
-/// de [`assign_levels`], é o mesmo, sobre o grafo de dependência das tarefas.
-pub(crate) fn task_levels<N: Ord + Clone>(tasks: &[BacklogTask<N>]) -> Levels<N> {
-    let deps: BTreeMap<N, BTreeSet<N>> =
-        tasks.iter().map(|t| (t.id.clone(), t.depends_on.clone())).collect();
-    assign_levels(&deps)
-}
-
 /// As tarefas prontas — todas as dependências entregues ou aprovadas —, na
 /// ordem de despacho: quem destrava mais tarefas primeiro, empate pelo
 /// próprio número, do menor para o maior. "Destravar" conta só a aresta
@@ -503,26 +494,6 @@ mod tests {
             files: files.iter().map(|f| f.to_string()).collect(),
             done,
         }
-    }
-
-    /// O nível topológico de uma tarefa do backlog espera a dependência dela:
-    /// mesmo grafo do teste de ponta a ponta do despacho
-    /// (`apps/rt/tests/round_dispatch.rs`), só que sobre o nível, não o lote.
-    #[test]
-    fn a_task_waits_the_level_of_its_dependency() {
-        let tasks = [
-            task(1, &[], &["a.rs", "b.rs"], false),
-            task(2, &[], &["c.rs"], false),
-            task(3, &[1], &["d.rs"], false),
-            task(4, &[], &["e.rs", "f.rs", "g.rs"], false),
-            task(5, &[], &["b.rs"], false),
-            task(6, &[4], &["h.rs"], false),
-        ];
-        let levels = task_levels(&tasks);
-        assert!(levels.cycle.is_empty());
-        assert_eq!(levels.level[&1], 0);
-        assert_eq!(levels.level[&3], 1, "a 3 espera a 1");
-        assert_eq!(levels.level[&6], 1, "a 6 espera a 4");
     }
 
     /// O exemplo da regra em código, com os dois lados: a tarefa 7 depende

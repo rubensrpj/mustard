@@ -3,7 +3,7 @@
 // `src/main.rs` so test panics on `.unwrap()` remain valid assertions.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-//! `scratch-gc` apaga sem volta, então o contrato de saída é travado no
+//! `clean` apaga sem volta, então o contrato de saída é travado no
 //! binário, não só na função: `--path` recusado sai com 1 e não toca em nada;
 //! `--dry-run --path` é recusado pelo parser antes de qualquer exclusão (era o
 //! defeito: a pasta sumia com `"dry_run": false`); `--path` válido apaga e sai

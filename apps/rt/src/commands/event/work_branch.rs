@@ -436,7 +436,7 @@ pub(crate) enum BaseRefresh {
 ///
 /// **Scope is the point.** This used to walk every preselected base of the
 /// declared flow and advance each one, and it ran from the explicit open too —
-/// so `emit-pipeline` moved local `main` and `release/*` refs the operator never
+/// so the explicit open moved local `main` and `release/*` refs the operator never
 /// asked about. Moving other refs was never this decision's job: a settlement
 /// is about the base the unit is cut from or opened on, and it refreshes that
 /// one.
@@ -533,7 +533,7 @@ pub(crate) fn base_for(
 /// marker that carried the name from the gate is consumed and deleted by the
 /// first checkout ([`cut_pending_work_branch`]), so after that moment the
 /// branch itself is the only thing that still remembers what the unit is
-/// called — which is what lets `spec-draft` consume the gate's name instead of
+/// called — which is what lets the drafting cut consume the gate's name instead of
 /// deriving a second one.
 ///
 /// `None` when the name carries neither a kind prefix nor a declared `{base}_`
@@ -1158,7 +1158,7 @@ impl BusyCheckout {
 /// git untouched and mean opposite things to the caller.
 ///
 /// No serde derive — the JSON shape belongs to whichever command reports it
-/// (`spec-draft` folds it into its own document).
+/// (the drafting cut folds it into its own document).
 #[derive(Debug, Clone, PartialEq, Eq)]
 // Sem chamador na produção desde a refatoração que enxugou o runtime: o que
 // ainda exercita o corte da branch pendente são os testes do portão de base,
@@ -1210,7 +1210,7 @@ pub(crate) enum CutOutcome {
 /// Consume this session's `pending-work-branch` marker and check that branch
 /// out in `project`, creating it off its base.
 ///
-/// The only cut: no hook cuts a branch on a file mutation. `spec-draft` calls
+/// The only cut: no hook cuts a branch on a file mutation. the drafting step calls
 /// it because the spec
 /// must be written INSIDE the unit: the draft is the first thing the work
 /// produces, and it used to land on the integration base (a `.claude/spec/`
@@ -1223,7 +1223,7 @@ pub(crate) enum CutOutcome {
 /// retry, exactly as the hook gate keeps it.
 ///
 /// The refusal is the point the review found missing: this door opens FIRST
-/// (`spec-draft` calls it at approval, before any `Write` reaches the hook
+/// (the drafting step calls it at approval, before any `Write` reaches the hook
 /// gate), so a guard living only in the gate never ran. The decision is
 /// [`crate::commands::event::census_settlement::settle`], the same one the gate
 /// takes — one question, one answer, and the base refresh happens inside it
@@ -1530,7 +1530,7 @@ mod tests {
         assert_eq!(flow.bases(), ["dev", "main", "qas"], "the fixture really does leave a choice");
 
         // The operator picks the MIDDLE base. That answer reaches the cut the
-        // one way it can — the pending marker `emit-pipeline` writes.
+        // one way it can — the pending marker the explicit open writes.
         let sid = "sess-hotfix-pick";
         crate::shared::context::pending_branch::set_pending_branch(&root_s, sid, "hotfix/my-unit", Some("qas"));
 
@@ -1983,7 +1983,7 @@ mod tests {
     ///
     /// This test deliberately drives [`super::cut_pending_work_branch`] and NOT
     /// the old write-hook gate: the previous round's tests all went through
-    /// that gate and passed while the real defect sat here. `spec-draft` calls
+    /// that gate and passed while the real defect sat here. The drafting step calls
     /// this function at APPROVAL — before any `Write` exists for a PreToolUse
     /// hook to see — so a guard living only in the gate was a guard on the door
     /// that opens second.
@@ -2000,7 +2000,7 @@ mod tests {
         seed_repo(root);
         a_first_unit_holds_the_checkout(root);
 
-        // A SECOND unit is signalled — this is what `spec-draft` consumes.
+        // A SECOND unit is signalled — this is what the drafting cut consumes.
         let sid = "sess-cut-refuses";
         crate::shared::context::pending_branch::set_pending_branch(&root_s, sid, "dev_second", None);
 

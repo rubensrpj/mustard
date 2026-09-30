@@ -1,4 +1,4 @@
-//! qa-run acceptance-criteria execution engine: locate the spec file, run each
+//! The acceptance-criteria execution engine: locate the spec file, run each
 //! AC command (with per-AC timeouts and self-invocation guards). Split out of
 //! `qa_run`.
 
@@ -8,14 +8,14 @@ use std::time::{Duration, Instant};
 use super::{AcResult, QaRunOptions};
 
 /// Default per-AC timeout (2 min) for non-cargo commands, matching
-/// `AC_TIMEOUT_MS` in `qa-run.js`.
+/// the default the criteria runner has always had.
 const AC_TIMEOUT_SECS: u64 = 120;
 
 /// The POSIX shell's "command not found" exit code.
 ///
 /// `pub(crate)` because the judgement it enables belongs to a CALLER, not to
 /// this module: nenhum leitor pode tomar por reprovado um critério que não
-/// unrunnable command as its red proof, while `qa-run` must still fail on one.
+/// unrunnable command as its red proof, while the QA run must still fail on one.
 /// Both read the same record and reach opposite, correct verdicts — which only
 /// works while the code is a shared constant instead of a literal each side
 /// spells for itself.
@@ -30,7 +30,7 @@ pub(super) const UNNAMEABLE_BINARY: &str = "the binary running this pass";
 /// `cargo build`/`cargo test` AC that runs right after an edit must recompile,
 /// and a cold compile routinely exceeds the 120 s default (real case:
 /// `cargo test -p mustard-rt` hit 120 s mid-recompile and degraded to a
-/// silent `skip`). Mirrors `TIMEOUT_RUST_SECS` in `verify-pipeline`.
+/// silent `skip`). Mirrors `TIMEOUT_RUST_SECS` in the pipeline verifier.
 const AC_TIMEOUT_CARGO_SECS: u64 = 600;
 
 /// Teto (uma hora) dos dois comandos que o servidor roda e que o fechamento
@@ -408,7 +408,7 @@ fn ac_timeout_secs_with_override(
 /// bimodal: seconds on a warm cache, minutes on a cold one. It is the same
 /// criterion either way. Measured in the field: `pnpm type-check` answered in
 /// 1 s on one pass and was killed at 148 s on the next, purely because the build
-/// cache had gone cold — and `close-pipeline` refused the spec for it. The spec
+/// cache had gone cold — and closing refused the spec for it. The spec
 /// was not wrong; the clock was.
 ///
 /// Three signals, in order of how much they are worth:
@@ -438,8 +438,8 @@ fn is_compile_bound(command: &str, compiling: &[String]) -> bool {
 /// Rewrite a `cargo build/test --workspace` command so the workspace build
 /// leaves out the one crate whose output IS the running binary.
 ///
-/// **The catch-22 this solves:** `complete-spec` calls
-/// o qa-run, que forks shell commands for each AC. When
+/// **The catch-22 this solves:** the acceptance-criteria runner
+/// forks shell commands for each AC. When
 /// this process is itself running from `target/debug`, an AC like
 /// `cargo build --workspace` tries to relink the very executable in the
 /// foreground — `Acesso negado. (os error 5)` on Windows.
@@ -490,7 +490,7 @@ enum ExpectVerdict {
 /// Evaluate an optional `Expect:` regex against a command's combined output.
 /// Total + pure: an absent expectation is [`ExpectVerdict::NoExpectation`], an
 /// uncompilable pattern is [`ExpectVerdict::InvalidPattern`] (never a panic),
-/// otherwise match/miss. The regex is compiled here (per-AC, once) — qa-run
+/// otherwise match/miss. The regex is compiled here (per-AC, once) — a QA run
 /// runs a handful of ACs, so there is no hot loop to cache for.
 fn evaluate_expect(expect: Option<&str>, output: &str) -> ExpectVerdict {
     let Some(pattern) = expect else {
@@ -672,7 +672,7 @@ fn run_ac_command_inner(
     };
     // The spawn + concurrent pipe drain + deadline poll live in ONE place
     // ([`crate::shared::proc::run_shell_with_deadline`]), shared with
-    // `verify-pipeline`. The drain is load-bearing here too: an AC whose
+    // the pipeline verifier. The drain is load-bearing here too: an AC whose
     // command prints more than the ~64 KB OS pipe buffer used to block writing
     // and burn its whole timeout despite having already finished its work.
     let (status, stdout, stderr) = match run_shell_with_deadline(&rewritten, cwd, timeout) {
@@ -767,7 +767,7 @@ fn run_ac_command_inner(
     //
     // NAMED, because the bare combined output is not always legible as a cause.
     //
-    // Still `fail`, because this function answers for `qa-run` too, and a
+    // Still `fail`, because this function answers for the QA run too, and a
     // criterion nobody could run must never let a QA run read green:
     // [`super::overall_verdict`] tolerates a `skip` beside a `pass` on the
     // EXTERNAL path, so grading it `skip` here turned an unrunnable criterion
@@ -822,9 +822,9 @@ fn run_ac_command_inner(
 }
 
 thread_local! {
-    /// Active [`QaRunOptions`] for the current thread's qa-run.
+    /// Active [`QaRunOptions`] for the current thread's QA run.
     ///
-    /// Set by the qa-run entry point and read by
+    /// Set by the QA run entry point and read by
     /// [`run_ac_command_with_timeout`]. A `thread_local!` Cell — not an env
     /// var — because `unsafe_code` is forbidden in this crate and Rust 2024
     /// requires `unsafe` for env mutation, but a Cell-backed `thread_local`
@@ -1024,7 +1024,7 @@ mod tests {
     /// A command the shell cannot find is graded `fail`, and NAMED.
     ///
     /// Chegou a sair como `skip`, para que ninguém o lesse
-    /// as red proof. That fixed one consumer and broke the other: `qa-run`
+    /// as red proof. That fixed one consumer and broke the other: the QA run
     /// tolerates a `skip` beside a `pass` on the external path, so a criterion
     /// whose program did not exist stopped blocking CLOSE and rode along as a
     /// pass. The discrimination moved to the caller that needs it — the exit

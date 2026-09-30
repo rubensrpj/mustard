@@ -10,8 +10,10 @@ use mustard_core::platform::error::Result;
 
 /// O scan que a instalação chama: o que está ao lado do programa em
 /// execução e, na falta dele, o do `PATH`, como o programa de execução o acha.
+/// Com o mapa gravado, a leitura da história de todo arquivo dele começa em
+/// segundo plano: a instalação não espera por ela.
 pub(super) fn located_scan(root: &Path, out: &Path) -> Result<ScanReport> {
-    mustard_core::Scan::locate().scan(root, out)
+    mustard_core::Scan::locate().scan_then_read_history(root, out)
 }
 
 /// Cria o mapa de `project` com `scan`, no lugar onde o mapa mora, e diz em

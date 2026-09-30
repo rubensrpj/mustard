@@ -1485,6 +1485,91 @@ mod tests {
         assert_eq!(asked_reviews(), 1, "{closed}");
     }
 
+    /// O revisor que grava o veredito enquanto o fechamento tem o passo do git
+    /// e assume o pedido de revisão: a gravação espera a trava e, com o
+    /// pedido já fechado pelo veredito oficial, é recusada, e o revisor grava
+    /// de novo. Ela nunca responde ok com o veredito parado, sem quem o
+    /// assuma. Sem relógio: o teste segue quando a lista de travas do sistema
+    /// mostra a gravação parada na trava, ou falha quando ela termina antes,
+    /// sem ter esperado.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_verdict_written_while_the_close_takes_the_review_is_refused_and_never_lost() {
+        use crate::commands::git_settle::{git_step_lock, waiting_for_lock};
+        use std::os::unix::fs::MetadataExt;
+
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        ready_to_close(root, "x", &["git --version"]);
+        let asked =
+            close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None, ..Default::default() }, None);
+        assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+
+        let approved = json!({"final": true, "result": "approved", "text": "A obra está pronta."});
+        let held = git_step_lock(root).unwrap();
+        let inode = std::fs::metadata(root.join(".claude").join("spec").join("round-git.lock")).unwrap().ino();
+        let refused = std::thread::scope(|scope| {
+            let reviewer = scope.spawn(|| judged(root, "x", approved.clone()));
+            while !waiting_for_lock(inode) {
+                assert!(!reviewer.is_finished(), "the verdict was written while the close held the git step");
+                std::thread::yield_now();
+            }
+            // O fechamento, com a trava presa, assume o pedido de revisão: grava
+            // o veredito oficial e solta a trava.
+            crate::shared::spec_state::seed_event(root, "x", "verdict", approved.clone());
+            drop(held);
+            reviewer.join().unwrap()
+        });
+
+        assert_eq!(refused["ok"], json!(false), "{refused}");
+        assert_eq!(refused["reason"], json!("no-open-review"), "{refused}");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let verdicts: Vec<&SpecEvent> = log.events.iter().filter(|e| e.event_type == "verdict").collect();
+        assert_eq!(verdicts.len(), 1, "no verdict is left parked after the official one: {verdicts:?}");
+        assert!(!verdicts[0].returned(), "{verdicts:?}");
+    }
+
+    /// O outro lado da mesma janela: o revisor que chega enquanto o passo do
+    /// git está preso, mas antes de o fechamento assumir o pedido, espera a
+    /// trava e grava: a resposta é ok, e o fechamento seguinte assume esse
+    /// veredito e fecha a spec com ele.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_verdict_that_waits_for_the_git_step_is_written_and_the_close_takes_it() {
+        use crate::commands::git_settle::{git_step_lock, waiting_for_lock};
+        use std::os::unix::fs::MetadataExt;
+
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        ready_to_close(root, "x", &["git --version"]);
+        let close = || {
+            close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None, ..Default::default() }, None)
+        };
+        let asked = close();
+        assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+
+        let approved = json!({"final": true, "result": "approved", "text": "A obra está pronta."});
+        let held = git_step_lock(root).unwrap();
+        let inode = std::fs::metadata(root.join(".claude").join("spec").join("round-git.lock")).unwrap().ino();
+        let wrote = std::thread::scope(|scope| {
+            let reviewer = scope.spawn(|| judged(root, "x", approved.clone()));
+            while !waiting_for_lock(inode) {
+                assert!(!reviewer.is_finished(), "the verdict was written while another step held the git lock");
+                std::thread::yield_now();
+            }
+            drop(held);
+            reviewer.join().unwrap()
+        });
+        assert_eq!(wrote["ok"], json!(true), "{wrote}");
+
+        let closed = close();
+        assert_eq!(closed["phase"], json!("closed"), "{closed}");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let verdicts: Vec<&SpecEvent> = log.visible().into_iter().filter(|e| e.event_type == "verdict").collect();
+        assert_eq!(verdicts.len(), 1, "{verdicts:?}");
+        assert_eq!(verdicts[0].fields.get("replaces"), Some(&json!(wrote["id"].as_u64().unwrap())), "{verdicts:?}");
+    }
+
     /// O caminho de volta: a onda entrega um teste novo, e o único critério
     /// da spec não o cita na prova dele. O fechamento não trava — a obra
     /// fecha do mesmo jeito —, mas a resposta traz um aviso de teste sem

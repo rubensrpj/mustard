@@ -1020,7 +1020,7 @@ use crate::shared::context::pending_branch::set_pending_branch;
 
     /// A pendência que virou a spec `spec`, pela leitura do merge.
     fn became(root: &Path, spec: &str) -> Option<String> {
-        crate::commands::event::pending::became_of(root, spec)
+        crate::commands::event::pending::carried_by(root, spec).into_iter().next()
     }
 
     /// Nada foi criado: nem branch nova, nem pasta de spec, e a lista de

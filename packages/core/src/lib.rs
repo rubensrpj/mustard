@@ -95,7 +95,7 @@ pub use domain::spec::{
 // (`mustard_config`, `git_flow::MustardConfig`, `read_mustard_tone`, …). See
 // `domain/config.rs`.
 pub use domain::config::{
-    glob_matches, Amend, Commands, GateModes, GitConfig, Injectable, Language, LanguageConfig,
+    glob_matches, Amend, Commands, GitConfig, Injectable, Language, LanguageConfig,
     FilterSetting, MapConfig, ProjectConfig, Runtime, SearchConfig, Setting, Subprojects, BUILD_COMMAND_FALLBACK,
 };
 // Agnostic build/test/lint/type-check command detection (`detect_commands` for
@@ -112,7 +112,7 @@ pub use domain::scan::{read_projects, Project, Scan};
 
 // Source-language resolution — the single owner of "what language is this target
 // (a set of file paths), and can the JS/TS-family gates reason about it?".
-// Consulted by `dependency-precheck` and `wave-size-check` so both loosen
+// Consulted by the dependency precheck and the wave size check so both loosen
 // consistently on a non-JS/TS subproject. See `domain/source_lang.rs`.
 pub use domain::source_lang::{resolve_target_languages, target_understood};
 

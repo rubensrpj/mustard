@@ -1,10 +1,10 @@
 //! O que para sem travar a rodada: o limite de consertos de cada onda, com a
 //! pergunta ao usuário; a volta recusada por uma conferência dela, que segura
 //! só a própria onda; e o plano que muda — a onda replanejada depois do
-//! pedido e a mudança de plano que um agente propõe, que só segue com o
-//! clique do usuário e, enquanto espera, segura só a onda dela, com as
-//! tarefas que a onda não fez, que voltam ao backlog quando a rodada assume a
-//! volta.
+//! pedido e a mudança de plano que um agente propõe. A mudança que não troca
+//! decisão do usuário segue e fica registrada; a que troca só segue com o
+//! clique do usuário e, enquanto espera, segura só a onda dela. As tarefas
+//! que a onda não fez voltam ao backlog quando a rodada assume a volta.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -12,8 +12,8 @@ use mustard_core::domain::spec_events::{Block, BlockQuery, SpecEvent, SpecLog};
 use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Map, Value};
 
-use super::answer::RoundRefusal;
-use super::report::{backlog_return, WaveReport};
+use super::answer::{without_final_period, RoundRefusal};
+use super::report::{backlog_return, PlanChange, WaveReport};
 
 /// Quantas rodadas de conserto uma onda tem. A reprovação que vem depois da
 /// última delas para a onda e as que dependem dela: o problema é de desenho,
@@ -56,13 +56,10 @@ pub(crate) fn replan_code(wave: u64, change: &str) -> String {
     format!("onda-{wave}-{key:06x}")
 }
 
-/// A pergunta que decide a mudança que a onda `wave` propõe, no idioma
-/// `lang`: em palavras, com o que a onda propõe e o que acontece ao aceitar e
-/// ao recusar. O código da mudança nunca entra no enunciado — quem pergunta
-/// escreve a frase com as palavras que o usuário entender, e o código viaja
-/// no cabeçalho da pergunta.
-pub(super) fn change_question(wave: u64, change: &str, lang: Locale) -> String {
-    translate("change.question", lang).replace("{wave}", &wave.to_string()).replace("{change}", change.trim())
+/// A volta `event` diz que a mudança de plano dela troca uma decisão do
+/// usuário: só essa mudança espera o clique.
+pub(crate) fn swaps_decision(event: &SpecEvent) -> bool {
+    event.str_field("changes_decision").is_some_and(|decision| !decision.trim().is_empty())
 }
 
 /// O código de mudança que `text` traz, quando traz um: a palavra com a forma
@@ -112,7 +109,7 @@ pub(crate) fn change_accepted(log: &SpecLog, wave: u64, code: &str) -> bool {
 }
 
 /// A volta de uma onda que a rodada deixa fora do commit, com a recusa que a
-/// segura: a que pede novo plano e ainda espera o clique do usuário, ou a que
+/// segura: a que troca uma decisão do usuário e ainda espera o clique dele, ou a que
 /// uma conferência da própria volta recusou — sem o título do commit, com
 /// tarefa de outra onda em `undone`, com a mudança de plano sem `undone`, com
 /// arquivo que não existe. A recusa segura só a onda dela: a volta fica na
@@ -128,8 +125,8 @@ pub(crate) struct HeldReturn {
 
 impl HeldReturn {
     /// O aviso da resposta da rodada: o motivo, a onda e a mensagem da recusa,
-    /// no idioma `lang`, com a pergunta, o cabeçalho e as opções quando é a
-    /// mudança de plano, como a recusa as mostra.
+    /// no idioma `lang`, com o cabeçalho e as opções quando é a mudança de
+    /// plano, como a recusa os mostra.
     pub(super) fn warning(&self, lang: Locale) -> Value {
         let mut warning = self.refusal.to_value(lang);
         if let Some(fields) = warning.as_object_mut() {
@@ -140,8 +137,8 @@ impl HeldReturn {
     }
 
     /// A frase do próximo passo, no idioma `lang`: a mudança de plano já diz
-    /// a onda e traz a pergunta pronta; a volta recusada diz que só ela ficou
-    /// fora da rodada, com o que falta para ela entrar.
+    /// a onda e o que perguntar; a volta recusada diz que só ela ficou fora
+    /// da rodada, com o que falta para ela entrar.
     pub(super) fn next_line(&self, lang: Locale) -> String {
         let hint = self.refusal.message(lang);
         match self.refusal {
@@ -151,19 +148,20 @@ impl HeldReturn {
     }
 }
 
-/// Tira das voltas `waves` as que pedem novo plano sem o "Aceitar" do usuário
-/// gravado em `log`, e devolve cada uma com a recusa que mostra a mudança
-/// ([`HeldReturn`]). Depois do clique, a rodada seguinte a assume como
-/// qualquer outra.
+/// Tira das voltas `waves` as que trocam uma decisão do usuário sem o "Aceitar"
+/// dele gravado em `log`, e devolve cada uma com a recusa que manda perguntar
+/// ([`HeldReturn`]). A mudança de plano que não troca decisão nenhuma não é
+/// segurada. Depois do clique, a rodada seguinte assume a volta como qualquer
+/// outra.
 pub(super) fn hold_waiting_changes(log: &SpecLog, waves: &mut Vec<WaveReport>) -> Vec<HeldReturn> {
     hold_refused(waves, |wave| {
-        let Some(change) = &wave.replan else { return Ok(()) };
+        let Some(PlanChange { change, decision: Some(_) }) = &wave.replan else { return Ok(()) };
         let code = replan_code(wave.wave, change);
         if change_accepted(log, wave.wave, &code) {
             return Ok(());
         }
         let tasks = wave.undone.iter().map(|(_, code)| code.clone()).collect();
-        Err(RoundRefusal::Replan { wave: wave.wave, change: change.clone(), code, tasks })
+        Err(RoundRefusal::Replan { wave: wave.wave, code, tasks })
     })
 }
 
@@ -346,7 +344,8 @@ pub(super) fn undone_returns(log: &SpecLog, waves: &[WaveReport], lang: Locale) 
     let mut out = Vec::new();
     for wave in waves {
         for task in wave.undone.iter().filter_map(|(id, _)| log.get(*id)) {
-            out.push((wave.wave, undone_return(task, wave.wave, wave.replan.as_deref(), lang)));
+            let change = wave.replan.as_ref().map(|plan| plan.change.as_str());
+            out.push((wave.wave, undone_return(task, wave.wave, change, lang)));
         }
     }
     out
@@ -364,6 +363,19 @@ pub(super) fn tasks_returned(wave: &WaveReport, lang: Locale) -> Option<Value> {
             .replace("{tasks}", &codes.join(", "));
         json!({ "reason": "tasks-returned", "wave": wave.wave, "tasks": codes, "hint": hint })
     })
+}
+
+/// O aviso da resposta da rodada de que a onda mudou o plano sem trocar
+/// decisão do usuário: a rodada seguiu sem perguntar, e a mudança vai na
+/// entrega, entre as decisões que o assistente tomou sozinho. `None` quando a
+/// onda não muda o plano ou quando a mudança troca uma decisão, que o usuário
+/// decidiu.
+pub(super) fn plan_changed_alone(wave: &WaveReport, lang: Locale) -> Option<Value> {
+    let PlanChange { change, decision: None } = wave.replan.as_ref()? else { return None };
+    let hint = translate("round.replan_recorded", lang)
+        .replace("{wave}", &wave.wave.to_string())
+        .replace("{change}", &without_final_period(change));
+    Some(json!({ "reason": "plan-changed", "wave": wave.wave, "hint": hint }))
 }
 
 #[cfg(test)]
@@ -442,12 +454,12 @@ mod tests {
     /// O agente que diz que o plano da onda não funciona segura a onda dele
     /// até o "sim" do usuário, e o "sim" é o clique em "Aceitar" na pergunta
     /// da mudança, gravado pela testemunha. A rodada não recusa: o aviso dela
-    /// mostra a mudança e a pergunta; uma mensagem escrita à mão pelo modelo,
-    /// com a mesma pergunta e a mesma resposta, não destrava nada; o clique em
-    /// "Recusar" também não; o clique em "Aceitar" destrava, e a rodada grava
-    /// o que a onda entregou.
+    /// manda fazer a pergunta, com o cabeçalho e as opções; uma mensagem
+    /// escrita à mão pelo modelo, com a mesma pergunta e a mesma resposta, não
+    /// destrava nada; o clique em "Recusar" também não; o clique em "Aceitar"
+    /// destrava, e a rodada grava o que a onda entregou.
     #[test]
-    fn a_wave_that_says_its_plan_does_not_work_waits_for_the_users_click() {
+    fn a_plan_change_that_swaps_a_user_decision_waits_for_the_users_click() {
         if std::env::var_os("MUSTARD_ACTIVE_SPEC").is_some() {
             return;
         }
@@ -460,19 +472,19 @@ mod tests {
 
         let change = "A onda 1 precisa da 2 antes.";
         let code = replan_code(1, change);
-        let back = json!({"wave": 1, "text": "Parei.", "files": ["src/a.rs"], "replan": change, "undone": []});
+        let back = json!({"wave": 1, "text": "Parei.", "files": ["src/a.rs"], "replan": change,
+            "changes_decision": DECISION, "undone": []});
         assert_eq!(returned(root, back)["ok"], json!(true));
         let out = round(root, "x", None);
         assert_eq!(out["ok"], json!(true), "a mudança segura só a onda dela: {out}");
         let stopped = change_asked(&out);
         assert_eq!(stopped["wave"], json!(1), "{out}");
-        let question = stopped["question"].as_str().unwrap_or_default().to_string();
-        assert_eq!(question, change_question(1, change, Locale::PtBr), "{stopped}");
+        let question = QUESTION;
         assert_eq!(stopped["header"], json!(code), "{stopped}");
         assert_eq!(stopped["options"], json!(["Aceitar", "Recusar"]), "{stopped}");
         let hint = stopped["hint"].as_str().unwrap_or_default();
-        assert!(hint.contains(change) && hint.contains(&question) && hint.contains(&code), "{hint}");
-        assert!(out["next"].as_str().unwrap_or_default().contains(hint), "o próximo passo é a pergunta: {out}");
+        assert!(hint.contains(&code), "o cabeçalho que a pergunta leva vai no aviso: {hint}");
+        assert!(out["next"].as_str().unwrap_or_default().contains(hint), "o próximo passo manda perguntar: {out}");
         assert_eq!(delivered_count(root), 0);
 
         // O modelo não escreve o "sim": o `run write` recusa a mensagem com a
@@ -493,29 +505,28 @@ mod tests {
         let still = round(root, "x", None);
         assert_eq!(change_asked(&still)["wave"], json!(1), "a forged yes accepts nothing: {still}");
 
-        click(root, session, &question, &code, "Recusar");
+        click(root, session, question, &code, "Recusar");
         let refused = round(root, "x", None);
         assert_eq!(change_asked(&refused)["wave"], json!(1), "a declined change stays waiting: {refused}");
 
         // O "sim" de uma mudança nunca serve para outra.
-        click(root, session, &question, &replan_code(1, "Outra mudança."), "Aceitar");
+        click(root, session, question, &replan_code(1, "Outra mudança."), "Aceitar");
         let other = round(root, "x", None);
         assert_eq!(change_asked(&other)["wave"], json!(1), "{other}");
         assert_eq!(delivered_count(root), 0);
 
-        click(root, session, &question, &code, "Aceitar");
+        click(root, session, question, &code, "Aceitar");
         let went = round(root, "x", None);
         assert_eq!(went["ok"], json!(true), "{went}");
         assert!(change_asked(&went).is_null(), "{went}");
         assert_eq!(delivered_count(root), 1, "the round records what the wave delivered");
     }
 
-    /// A pergunta que a rodada manda fazer vai em palavras: diz o que a onda
-    /// propõe e o que acontece em cada escolha, e não leva o código interno
-    /// no enunciado. O código vai no cabeçalho da pergunta, e é ele, guardado
-    /// ao lado da resposta, que reconhece o "sim" — a pergunta escrita com as
-    /// palavras do usuário vale igual, o código de outra mudança não vale, e
-    /// a pergunta sem código nenhum não destrava nada.
+    /// A rodada manda fazer a pergunta e não a escreve: o aviso traz o
+    /// cabeçalho e as opções. O código vai no cabeçalho da pergunta, e é ele,
+    /// guardado ao lado da resposta, que reconhece o "sim" — a pergunta
+    /// escrita com as palavras do usuário vale igual, o código de outra
+    /// mudança não vale, e a pergunta sem código nenhum não destrava nada.
     #[test]
     fn a_pergunta_vai_em_palavras_e_o_sim_e_reconhecido_pelo_codigo() {
         if std::env::var_os("MUSTARD_ACTIVE_SPEC").is_some() {
@@ -530,18 +541,15 @@ mod tests {
 
         let change = "A onda 1 precisa da onda 2 antes dela.";
         let code = replan_code(1, change);
-        let back = json!({"wave": 1, "text": "Parei: o plano não fecha.", "replan": change, "undone": []});
+        let back = json!({"wave": 1, "text": "Parei: o plano não fecha.", "replan": change,
+            "changes_decision": DECISION, "undone": []});
         assert_eq!(returned(root, back)["ok"], json!(true));
         let stopped = change_asked(&round(root, "x", None));
         assert_eq!(stopped["wave"], json!(1), "{stopped}");
 
-        // A pergunta pronta é a do usuário: o que muda e o que acontece em
-        // cada escolha, sem o código dentro dela.
-        let asked = stopped["question"].as_str().unwrap_or_default().to_string();
-        assert!(asked.contains(change), "a pergunta diz o que a onda propõe: {asked}");
-        assert!(asked.contains('1'), "a pergunta diz de que onda se trata: {asked}");
-        assert!(asked.contains("Se aceitar") && asked.contains("Se recusar"), "as duas saídas: {asked}");
-        assert!(!asked.contains(&code), "o código nunca vai no enunciado: {asked}");
+        // O enunciado é de quem conduz: o aviso não traz pergunta pronta, e o
+        // código vai no cabeçalho.
+        assert!(stopped.get("question").is_none(), "o aviso não escreve a pergunta: {stopped}");
         assert_eq!(stopped["header"], json!(code), "o código vai no cabeçalho: {stopped}");
         assert_eq!(stopped["options"], json!(["Aceitar", "Recusar"]), "{stopped}");
 
@@ -576,6 +584,75 @@ mod tests {
         assert_eq!(clicked["question"], json!(mine), "a frase gravada é a que o usuário leu: {clicked}");
     }
 
+    /// A mudança de plano que não troca decisão do usuário não pede clique: a
+    /// rodada assume a volta, comita o que a onda entregou, grava a mudança na
+    /// entrega e manda contá-la entre as decisões que o assistente tomou
+    /// sozinho. A decisão só em branco também não troca nada.
+    #[test]
+    fn a_plan_change_that_swaps_no_decision_goes_on_without_a_click_and_is_told_as_decided_alone() {
+        if std::env::var_os("MUSTARD_ACTIVE_SPEC").is_some() {
+            return;
+        }
+        for decision in [None, Some("   ")] {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+            round(root, "x", None);
+            std::fs::write(copy_of(root, 1).join("src/a.rs"), "fn um() {}\n// a onda 1 mudou\n").unwrap();
+            let change = "Dividir a soma em duas funções.";
+            let mut back = json!({"wave": 1, "text": "Parei.", "files": ["src/a.rs"], "commit": "a onda 1 mudou",
+                "replan": change, "undone": []});
+            if let Some(decision) = decision {
+                back["changes_decision"] = json!(decision);
+            }
+            assert_eq!(returned(root, back)["ok"], json!(true));
+
+            let out = round(root, "x", None);
+            assert_eq!(out["ok"], json!(true), "{out}");
+            assert!(change_asked(&out).is_null(), "sem decisão trocada não há clique a esperar: {out}");
+            assert_eq!(official_deliveries(root), BTreeSet::from([1]), "{out}");
+            assert_eq!(last_commit_files(root), "src/a.rs", "{out}");
+            let noted = warning_of(&out, "plan-changed");
+            assert_eq!(noted["wave"], json!(1), "{noted}");
+            let hint = noted["hint"].as_str().unwrap_or_default();
+            assert!(hint.contains("Dividir a soma em duas funções") && hint.contains("O que eu decidi sozinho"), "{hint}");
+            let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+            let recorded = log.visible().into_iter().find(|e| e.event_type == "delivered").expect("a entrega");
+            assert_eq!(recorded.str_field("replan"), Some(change), "a mudança fica gravada na entrega");
+            assert!(!swaps_decision(recorded), "{:?}", recorded.fields);
+        }
+    }
+
+    /// O aviso que manda perguntar não leva texto nenhum do agente — nem a
+    /// mudança, nem a decisão que ela troca, nem o que a volta disse: quem
+    /// conduz lê a volta e escreve a pergunta com as palavras do usuário, pelo
+    /// estilo de resposta.
+    #[test]
+    fn the_stop_for_a_swapped_decision_carries_none_of_the_agents_text() {
+        if std::env::var_os("MUSTARD_ACTIVE_SPEC").is_some() {
+            return;
+        }
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        round(root, "x", None);
+        let (change, decision, said) =
+            ("Mover fold_totals para src/zz_marca.rs e ajustar 37 chamadas", "Manter tudo em um arquivo só", "Parei no laboratório 1177");
+        let back = json!({"wave": 1, "text": said, "replan": change, "changes_decision": decision, "undone": []});
+        assert_eq!(returned(root, back)["ok"], json!(true));
+
+        let out = round(root, "x", None);
+        let stopped = change_asked(&out);
+        assert_eq!(stopped["wave"], json!(1), "{out}");
+        let shown = format!("{stopped} {}", out["next"]);
+        for agent_text in [change, decision, said, "fold_totals", "zz_marca"] {
+            assert!(!shown.contains(agent_text), "o aviso copiou o texto do agente ({agent_text}): {shown}");
+        }
+        assert!(!shown.contains("Pergunta pronta") && stopped.get("question").is_none(), "{shown}");
+        let hint = stopped["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains("três frases curtas") && hint.contains("no sim e no não"), "a regra da pergunta: {hint}");
+    }
+
     /// A cópia gravada no último envio da onda `n` da spec `x`.
     fn copy_of(root: &Path, n: u64) -> std::path::PathBuf {
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
@@ -596,7 +673,7 @@ mod tests {
     /// Duas ondas voltam na mesma rodada, e uma pede novo plano: a outra é
     /// conferida, comitada e gravada, e o despacho segue com a onda que só
     /// dependia dela. A que pede novo plano fica fora do commit, com a cópia
-    /// como está e a pergunta pronta no aviso; a onda que divide arquivo com
+    /// como está e o aviso que manda perguntar; a onda que divide arquivo com
     /// ela e a que depende dela não saem. Depois do clique em "Aceitar", a
     /// rodada seguinte a comita, e as duas que ela segurava saem.
     #[test]
@@ -626,7 +703,7 @@ mod tests {
         let change = "A onda 1 precisa de outra tarefa antes.";
         let code = replan_code(1, change);
         let asks = json!({"wave": 1, "text": "Parei.", "files": ["src/a.rs"], "commit": "a onda 1 mudou",
-            "replan": change, "undone": []});
+            "replan": change, "changes_decision": DECISION, "undone": []});
         assert_eq!(returned(root, asks)["ok"], json!(true));
         let done = json!({"wave": 2, "text": "Saiu.", "files": ["src/b.rs"], "commit": "a onda 2 saiu"});
         assert_eq!(returned(root, done)["ok"], json!(true));
@@ -640,17 +717,16 @@ mod tests {
         let asked = change_asked(&held);
         assert_eq!(asked["wave"], json!(1), "{held}");
         assert_eq!(asked["header"], json!(code), "{asked}");
-        let question = change_question(1, change, Locale::PtBr);
-        assert_eq!(asked["question"], json!(question), "{asked}");
+        let question = QUESTION;
         let hint = asked["hint"].as_str().unwrap_or_default();
-        assert!(hint.contains(&question) && hint.contains(&code), "a pergunta pronta vai no aviso: {hint}");
+        assert!(hint.contains(&code), "o cabeçalho da pergunta vai no aviso: {hint}");
         assert!(held["next"].as_str().unwrap_or_default().contains(hint), "{held}");
         assert_eq!(waves_in(&held, "dispatch"), vec![4], "a 3 divide arquivo com a 1, e a 5 depende dela: {held}");
         assert_eq!(waves_in(&held, "running"), vec![4], "a onda que espera o clique não está em andamento: {held}");
 
         let session = "s-segura-so-ela";
         crate::shared::context::session::bind_session_spec(&root.to_string_lossy(), session, "x");
-        click(root, session, &question, &code, "Aceitar");
+        click(root, session, question, &code, "Aceitar");
         let went = round(root, "x", None);
         assert_eq!(went["ok"], json!(true), "{went}");
         assert!(change_asked(&went).is_null(), "{went}");
@@ -692,7 +768,7 @@ mod tests {
         std::fs::write(one.join("src/a.rs"), "fn um() {}\n// a onda 1 mudou\n").unwrap();
         let change = "A onda 1 precisa de outra tarefa antes.";
         let asks = json!({"wave": 1, "text": "Parei.", "files": ["src/a.rs"], "commit": "a onda 1 mudou",
-            "replan": change, "undone": []});
+            "replan": change, "changes_decision": DECISION, "undone": []});
         assert_eq!(returned(root, asks)["ok"], json!(true));
 
         let held = round(root, "x", None);
@@ -703,7 +779,7 @@ mod tests {
 
         let session = "s-copia-fica";
         crate::shared::context::session::bind_session_spec(&root.to_string_lossy(), session, "x");
-        click(root, session, &change_question(1, change, Locale::PtBr), &replan_code(1, change), "Aceitar");
+        click(root, session, QUESTION, &replan_code(1, change), "Aceitar");
         let went = round(root, "x", None);
         assert_eq!(went["ok"], json!(true), "{went}");
         assert_eq!(last_commit_files(root), "src/a.rs", "{went}");
@@ -724,7 +800,7 @@ mod tests {
         round(root, "x", None);
         std::fs::write(copy_of(root, 2).join("src/b.rs"), "fn um() {}\n// a onda 2 mudou\n").unwrap();
         let change = "A onda 1 precisa de outra tarefa antes.";
-        let asks = json!({"wave": 1, "text": "Parei.", "replan": change, "undone": []});
+        let asks = json!({"wave": 1, "text": "Parei.", "replan": change, "changes_decision": DECISION, "undone": []});
         assert_eq!(returned(root, asks)["ok"], json!(true));
         let done = json!({"wave": 2, "text": "Saiu.", "files": ["src/b.rs"], "commit": "a onda 2 saiu"});
         assert_eq!(returned(root, done)["ok"], json!(true));
@@ -738,7 +814,7 @@ mod tests {
         let closed = crate::commands::flow::close::close_for(&opts, None);
         assert_eq!(closed["reason"], json!("wave-plan-does-not-work"), "{closed}");
         assert_eq!(closed["header"], json!(replan_code(1, change)), "{closed}");
-        assert_eq!(closed["question"], json!(change_question(1, change, Locale::PtBr)), "{closed}");
+        assert!(closed.get("question").is_none(), "{closed}");
         assert_eq!(official_deliveries(root), BTreeSet::from([2]), "{closed}");
         assert_eq!(last_commit_files(root), "src/b.rs", "{closed}");
     }
@@ -1121,7 +1197,8 @@ mod tests {
         approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[]), (3, &["src/c.rs"], &[2])]);
         round(root, "x", None);
         std::fs::write(copy_of(root, 2).join("src/b.rs"), "fn um() {}\n// a onda 2 mudou\n").unwrap();
-        let asks = json!({"wave": 1, "text": "Parei.", "replan": "A onda 1 precisa de outra tarefa antes.", "undone": []});
+        let asks = json!({"wave": 1, "text": "Parei.", "replan": "A onda 1 precisa de outra tarefa antes.",
+            "changes_decision": DECISION, "undone": []});
         assert_eq!(returned(root, asks)["ok"], json!(true));
         let done = json!({"wave": 2, "text": "Saiu.", "files": ["src/b.rs"], "commit": "a onda 2 saiu"});
         assert_eq!(returned(root, done)["ok"], json!(true));

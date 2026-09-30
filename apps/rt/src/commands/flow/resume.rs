@@ -137,13 +137,15 @@ const RECORDED_KINDS: &[&str] = &["decision", "rule", "limit", "request", "crite
 
 /// O bloco de retomada da spec `spec`: a spec e a fase; as ondas entregues;
 /// cada onda em andamento com a pasta da cópia dela; as ondas cuja volta está
-/// gravada e espera a rodada, dizendo qual pede mudança de plano ainda sem o
-/// clique do usuário; as paradas no limite de consertos; as que faltam; o
+/// gravada e espera a rodada, dizendo qual troca uma decisão do usuário ainda
+/// sem o clique dele; as paradas no limite de consertos; as que faltam; o
 /// código de cada item gravado depois da última rodada; e o próximo comando.
 /// Cabe no teto do início da sessão: quando passa, as listas encolhem na
 /// ordem de [`fit`] e cada uma diz quantos ficaram de fora.
 pub(crate) fn resume_block(spec: &str, log: &SpecLog, lang: Locale) -> String {
-    use crate::commands::flow::round::{change_accepted, replan_code, waves_in_progress, waves_stuck};
+    use crate::commands::flow::round::{
+        change_accepted, replan_code, swaps_decision, waves_in_progress, waves_stuck,
+    };
 
     let state = State::from_log(log);
     let phase = state.phase.unwrap_or("survey");
@@ -175,9 +177,9 @@ pub(crate) fn resume_block(spec: &str, log: &SpecLog, lang: Locale) -> String {
         .iter()
         .filter_map(|e| {
             let wave = e.wave()?;
-            let asks = e
-                .str_field("replan")
-                .is_some_and(|change| !change_accepted(log, wave, &replan_code(wave, change)));
+            let asks = e.str_field("replan").is_some_and(|change| {
+                swaps_decision(e) && !change_accepted(log, wave, &replan_code(wave, change))
+            });
             Some(if asks {
                 translate("conversation_size.replan", lang).replace("{wave}", &wave.to_string())
             } else {

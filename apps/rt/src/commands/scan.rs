@@ -39,7 +39,9 @@ use super::scan_claude;
 /// With a model of this project already on disk, only the files that changed
 /// since are read again; the result says how many (`read`, a count, never
 /// the list of names) and whether every file was (`full`). Nothing is
-/// written to git and nothing runs this on its own.
+/// written to git and nothing runs this on its own. With the map written, the
+/// reading of the history of every file starts in the background; the command
+/// does not wait for it.
 ///
 /// When `full` is `true`, (re)generates the mustard-owned
 /// `.claude/scan-map.md` per subproject after the model is written; no
@@ -47,7 +49,7 @@ use super::scan_claude;
 /// generator.
 pub fn run(root: &Path, out: Option<&Path>, full: bool) {
     let session = crate::shared::spec_state::session_from_env();
-    let result = scan_at(root, out, full, session.as_deref(), |root, model| Scan::locate().scan(root, model));
+    let result = scan_at(root, out, full, session.as_deref(), |root, model| Scan::locate().scan_then_read_history(root, model));
     // Com o mapa do projeto gravado, o texto dos pull requests que a
     // história dele cita e ele ainda não tem, lido do provedor sem travar.
     if out.is_none() && result["ok"] == json!(true) {

@@ -16,8 +16,8 @@
 //! legacy `### Status:` + `### Phase:` shape to the new three-line canonical
 //! form. Before this module, ~17 `mustard-rt` subcommands each carried their
 //! *own* inline `### Status:` parser (and several their own header *writers*),
-//! so the migration broke every one of them at once (`wave-tree` showed every
-//! wave "queued", `pipeline-summary` showed "unknown"). The root cause was that
+//! so the migration broke every one of them at once (the wave tree showed every
+//! wave "queued", the pipeline summary showed "unknown"). The root cause was that
 //! the spec-header format was parsed and written in a dozen-plus duplicated
 //! sites. This module is the permanent single home: a new header format is a
 //! change *here only* (Open/Closed).
@@ -446,7 +446,7 @@ pub fn serialize_header(state: &SpecState) -> [String; 3] {
 /// (`"plan"` / `"implementing"` / `"qa"` / …).
 ///
 /// This is the **compatibility accessor** for consumers that map a status
-/// string to an icon (`wave-tree`, `pipeline-summary`). New consumers should
+/// string to an icon (the wave tree, the pipeline summary). New consumers should
 /// switch on [`SpecState::stage`] / [`SpecState::outcome`] directly — the word
 /// is provided only where it minimises churn against the old string-keyed code.
 ///

@@ -2739,13 +2739,14 @@ mod tests {
         // O mapa já foi lido no commit atual (a "semente"), com a função em
         // 3-5, e guarda a listagem do git de agora.
         let head_v1 = git_text(root, &["rev-parse", "HEAD"]);
-        let listing = mustard_core::io::project_map::listing(root).expect("o projeto está no git").digest();
+        let now = mustard_core::io::project_map::listing(root).expect("o projeto está no git");
+        let listing = now.digest();
         mustard_core::io::project_map::write_text(
             root,
             &json!({
                 "modules": [{"path": "src/a.rs",
                     "declarations": [{"kind": "function", "name": "soma", "line": 3, "end_line": 5}]}],
-                "state": {"head": head_v1, "listing": listing},
+                "state": {"head": head_v1, "listing": listing, "base": now.base.name, "base_tip": now.base.tip},
             })
             .to_string(),
         )
@@ -3844,13 +3845,14 @@ mod tests {
             .collect();
         assert_eq!(agreed.len(), 2, "o pedido leva as duas decisões: {agreed:?}");
         let back = json!({"wave": 1, "text": "A saiu; B ficou por fazer.", "files": ["src/a.rs"],
-            "commit": "a soma arredonda", "replan": change, "undone": [b], "agreed": agreed});
+            "commit": "a soma arredonda", "replan": change, "changes_decision": DECISION,
+            "undone": [b], "agreed": agreed});
         let wrote = returned(root, back);
         assert_eq!(wrote["ok"], json!(true), "{wrote}");
 
         let stopped = change_asked(&round(root, "x", None));
         assert_eq!(stopped["wave"], json!(1), "{stopped}");
-        let question = stopped["question"].as_str().unwrap_or_default().to_string();
+        let question = QUESTION.to_string();
         let header = stopped["header"].as_str().unwrap_or_default().to_string();
         click(root, session, &question, &header, "Aceitar");
         let accepted = round(root, "x", None);

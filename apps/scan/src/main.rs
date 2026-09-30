@@ -83,6 +83,28 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// A história de cada declaração de todo arquivo do mapa que ainda não a
+    /// tem, ou cuja marca venceu, lida do git na branch de partida e gravada
+    /// no mapa em `--out` em lotes, um por transação: o índice de busca ganha
+    /// só as linhas dos arquivos do lote, e quem busca no meio da leitura
+    /// nunca espera por ela. Outra leitura do mesmo mapa em andamento faz esta
+    /// sair sem ler nada. O arquivo cuja história já vale não é lido de novo.
+    HistoryAll {
+        path: PathBuf,
+        #[arg(long, default_value = store::MAP_FILE_NAME)]
+        out: PathBuf,
+        /// Quantas vezes seguidas uma declaração que veio de outro arquivo é
+        /// seguida nele; sem a opção, o número de `map.historyMoves` do
+        /// `mustard.json` da pasta lida.
+        #[arg(long)]
+        moves: Option<usize>,
+        /// Quantos arquivos vão numa gravação só.
+        #[arg(long, default_value_t = history::BATCH)]
+        batch: usize,
+        /// Uma linha de JSON no lugar do resumo em texto.
+        #[arg(long)]
+        json: bool,
+    },
     /// Imprime a marca de formato que a passada grava em cada bloco do mapa:
     /// a versão e o resumo das fontes deste scan. Quem só quer saber se o
     /// mapa é de outra compilação compara a marca dele com esta, sem rodar a
@@ -179,6 +201,34 @@ fn main() -> Result<()> {
                     out.display(),
                     report.commits,
                     report.declarations
+                );
+            }
+        }
+        Command::HistoryAll { path, out, moves, batch, json } => {
+            let moves = moves.unwrap_or_else(|| {
+                ProjectConfig::load(&path).history_moves().or(mustard_core::domain::project_map::MOVES_FOLLOWED)
+            });
+            let report = history::run_all(&path, &out, moves, batch)?;
+            if json {
+                let line = serde_json::json!({
+                    "ok": true,
+                    "busy": report.busy,
+                    "files": report.files,
+                    "commits": report.commits,
+                    "declarations": report.declarations,
+                    "failed": report.failed,
+                });
+                println!("{line}");
+            } else if report.busy {
+                println!("Another reading of the history of {} is running", out.display());
+            } else {
+                println!(
+                    "History of {} file(s) written to {}: {} commit(s), {} declaration(s), {} not read",
+                    report.files,
+                    out.display(),
+                    report.commits,
+                    report.declarations,
+                    report.failed
                 );
             }
         }
@@ -853,7 +903,7 @@ mod tests {
         use clap::CommandFactory;
         let tree = Cli::command();
         let names: Vec<&str> = tree.get_subcommands().map(clap::Command::get_name).collect();
-        assert_eq!(names, ["scan", "history", "format"], "the check reached every command");
+        assert_eq!(names, ["scan", "history", "history-all", "format"], "the check reached every command");
         let defects = tree_defects(&tree);
         assert!(defects.is_empty(), "{} help texts break the uppercase rule:\n{}", defects.len(), defects.join("\n"));
     }

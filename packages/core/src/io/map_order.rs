@@ -256,7 +256,7 @@ pub(super) fn ordered(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::io::map_search::{candidates_at, whole_list};
+    use crate::io::map_search::{candidates_at, sources};
     use crate::io::project_map::{self as store, model_path, open_existing};
     use serde_json::{json, Value};
     use tempfile::{tempdir, TempDir};
@@ -348,7 +348,7 @@ mod tests {
                 }
                 0
             };
-            let whole = whole_list(conn, &query, &intent, &languages).unwrap();
+            let whole = sources.whole();
             let bank = ranked_files(conn, &query, &languages, 100).unwrap();
             let bank_rank = bank.iter().position(|f| right.contains(&f.path)).map_or(0, |at| at + 1);
             lines.push(
@@ -402,7 +402,7 @@ mod tests {
         let dir = saved(&phrase_map());
         let db = open_existing(&model_path(dir.path())).unwrap();
         let phrase = "importa a planilha de densidade por unidade e material genetico";
-        let rotation = files_of(&dir, &whole_list(db.conn(), phrase, phrase, &languages()).unwrap());
+        let rotation = files_of(&dir, &sources(db.conn(), phrase, phrase, &languages()).unwrap().whole());
         assert_eq!(rotation[0], "src/dto/unidade.dto.ts", "the rotation opens with the short declaration: {rotation:?}");
         let answer = ordered(db.conn(), Check::Off, phrase, phrase, &languages()).unwrap();
         assert_eq!(paths(&answer.files)[0], "src/service/importacao.service.ts", "{:?}", paths(&answer.files));
@@ -460,7 +460,7 @@ mod tests {
         let dir = saved(&clock_map());
         let db = open_existing(&model_path(dir.path())).unwrap();
         let by_bank = ranked_files(db.conn(), "timestamp", &languages(), 100).unwrap();
-        let by_list = files_of(&dir, &whole_list(db.conn(), "timestamp", "", &languages()).unwrap());
+        let by_list = files_of(&dir, &sources(db.conn(), "timestamp", "", &languages()).unwrap().whole());
         assert!(!paths(&by_bank).contains(&"src/relogio.rs"), "the bank does not read signatures: {by_bank:?}");
         assert!(!by_list.contains(&"src/timestamp.rs".to_string()), "a file with no declaration is not in the list: {by_list:?}");
         let answer = ordered(db.conn(), Check::Off, "timestamp", "", &languages()).unwrap().files;
@@ -474,7 +474,7 @@ mod tests {
     fn the_candidate_list_opens_with_the_files_of_the_answer_in_the_same_order() {
         let dir = saved(&clock_map());
         let db = open_existing(&model_path(dir.path())).unwrap();
-        let old = files_of(&dir, &whole_list(db.conn(), "timestamp", "", &languages()).unwrap());
+        let old = files_of(&dir, &sources(db.conn(), "timestamp", "", &languages()).unwrap().whole());
         let one = ordered(db.conn(), Check::Off, "timestamp", "", &languages()).unwrap();
         assert_eq!(old[0], "src/relogio.rs", "the round robin alone opens with the signature file: {old:?}");
         let listed = files_of(&dir, &one.list);
@@ -487,7 +487,7 @@ mod tests {
         assert_eq!(sent.whole, conferred.list, "the filter gets the list the check ordered");
         assert_eq!(files_of(&dir, &sent.whole).len(), listed.len());
         let mut sorted_new = one.list.clone();
-        let mut sorted_old = whole_list(db.conn(), "timestamp", "", &languages()).unwrap();
+        let mut sorted_old = sources(db.conn(), "timestamp", "", &languages()).unwrap().whole();
         sorted_new.sort_unstable();
         sorted_old.sort_unstable();
         assert_eq!(sorted_new, sorted_old, "the head reorders the list and drops nothing");
@@ -512,7 +512,7 @@ mod tests {
         }));
         let dir = saved(&json!({ "modules": modules }));
         let db = open_existing(&model_path(dir.path())).unwrap();
-        let old = files_of(&dir, &whole_list(db.conn(), "timestamp", "", &languages()).unwrap());
+        let old = files_of(&dir, &sources(db.conn(), "timestamp", "", &languages()).unwrap().whole());
         assert!(old[0].starts_with("src/relogio"), "the round robin alone opens with a signature file: {old:?}");
         let one = ordered(db.conn(), Check::Off, "timestamp", "", &languages()).unwrap();
         let listed = files_of(&dir, &one.list);

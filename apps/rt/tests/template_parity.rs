@@ -1003,22 +1003,80 @@ fn wave_numbers_in(comment: &str) -> Vec<String> {
     WAVE.captures_iter(&bare).map(|c| c[1].to_string()).collect()
 }
 
+/// Toda menção a uma onda por número, como em "vazou na onda 21" ou "a onda 2
+/// entrega". Só o que está entre crases ou aspas fica de fora: é dado.
+fn every_wave_number_in(comment: &str) -> Vec<String> {
+    static WAVE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?i)\b((?:onda|wave)s?\s+\d+)").expect("the wave pattern compiles"));
+    let bare = QUOTED.replace_all(comment, " ");
+    WAVE.captures_iter(&bare).map(|c| c[1].to_string()).collect()
+}
+
+/// Os comandos que saíram, escritos com o hífen, que um comentário cita, com
+/// crase ou sem ela: quem lê o código procura o nome e não o acha. O comando
+/// entre aspas é dado de exemplo e passa.
+fn hyphenated_commands_in(comment: &str) -> Vec<&'static str> {
+    static DATA: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r#""[^"]*"|“[^”]*”"#).expect("the data pattern compiles"));
+    let unquoted = DATA.replace_all(comment, " ");
+    REMOVED_COMMANDS
+        .iter()
+        .filter(|name| name.contains('-') && whole_name_at(&unquoted, name).next().is_some())
+        .copied()
+        .collect()
+}
+
 /// O que um comentário cita e quem lê o código não acha: o código de spec, o
-/// comando que saiu escrito com espaço no lugar do hífen e o número de onda.
-/// O comando entre aspas é dado de exemplo e passa; entre crases, é citado.
-fn cited_in_comment(comment: &str) -> Vec<String> {
+/// comando que saiu, escrito com hífen ou com espaço no lugar dele, e o
+/// número de onda. O comando entre aspas é dado de exemplo e passa; entre
+/// crases, é citado. A onda dada como origem (`(onda 7)`, `decidida na onda
+/// 4`) conta em qualquer lugar; qualquer outra menção a uma onda, como em
+/// "vazou na onda 21", só passa no que é de teste (`in_test`), onde a onda é
+/// a do cenário.
+fn cited_in_comment(comment: &str, in_test: bool) -> Vec<String> {
     let unquoted = QUOTED.replace_all(comment, |quoted: &regex::Captures| {
         if quoted[0].starts_with('`') { quoted[0].to_string() } else { " ".to_string() }
     });
     let commands = spaced_commands_in(&unquoted).into_iter().map(str::to_string);
-    spec_codes_in(comment).into_iter().chain(commands).chain(wave_numbers_in(comment)).collect()
+    let hyphenated = hyphenated_commands_in(comment).into_iter().map(str::to_string);
+    let mut waves = wave_numbers_in(comment);
+    if !in_test {
+        for wave in every_wave_number_in(comment) {
+            if !waves.iter().any(|seen| seen.eq_ignore_ascii_case(&wave)) {
+                waves.push(wave);
+            }
+        }
+    }
+    spec_codes_in(comment).into_iter().chain(commands).chain(hyphenated).chain(waves).collect()
+}
+
+/// A linha em que começa a parte de teste do arquivo: 1 para o que é todo de
+/// teste (a pasta `tests` e o módulo `tests.rs`) e, nos demais, a do
+/// `#[cfg(test)]` que abre um módulo. Sem ele, o arquivo não tem parte de
+/// teste e a linha é `usize::MAX`.
+fn test_area_from(relative: &Path, source: &str) -> usize {
+    let name = relative.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+    if relative.components().any(|c| c.as_os_str() == "tests") || name == "tests.rs" || name.ends_with("_tests.rs") {
+        return 1;
+    }
+    let lines: Vec<&str> = source.lines().map(str::trim).collect();
+    for (at, line) in lines.iter().enumerate() {
+        if *line != "#[cfg(test)]" && !line.starts_with("#[cfg(all(test") {
+            continue;
+        }
+        let next = lines[at + 1..].iter().find(|l| !l.is_empty() && !l.starts_with("#["));
+        if next.is_some_and(|l| l.starts_with("mod ") || (l.starts_with("pub") && l.contains(" mod "))) {
+            return at + 1;
+        }
+    }
+    usize::MAX
 }
 
 /// Nenhum comentário nem nome de teste do código cita código de spec, e
-/// nenhum comentário cita comando que saiu escrito com espaço nem número de
-/// onda: a spec fica fora do git, e o que aponta para ela ou para um comando
-/// que não existe não leva a lugar nenhum. Cada comentário diz o
-/// comportamento em palavras.
+/// nenhum comentário cita comando que saiu, com hífen ou com espaço, nem
+/// número de onda que conte a história do código: a spec fica fora do git, e
+/// o que aponta para ela ou para um comando que não existe não leva a lugar
+/// nenhum. Cada comentário diz o comportamento em palavras.
 #[test]
 fn no_comment_or_test_name_cites_a_spec_code() {
     let root = repo_root();
@@ -1031,11 +1089,14 @@ fn no_comment_or_test_name_cites_a_spec_code() {
     let mut found = Vec::new();
     let mut read = 0;
     for file in files {
-        let shown = file.strip_prefix(&root).unwrap_or(file).display().to_string();
-        let (comments, code) = comments_and_code(&read_lossy(file));
+        let relative = file.strip_prefix(&root).unwrap_or(file);
+        let shown = relative.display().to_string();
+        let source = read_lossy(file);
+        let test_from = test_area_from(relative, &source);
+        let (comments, code) = comments_and_code(&source);
         read += comments.len();
         for (line, comment) in comments {
-            for cited in cited_in_comment(&comment) {
+            for cited in cited_in_comment(&comment, line >= test_from) {
                 found.push(format!("{shown}:{line}: {cited} in {}", comment.trim()));
             }
         }
@@ -1091,35 +1152,81 @@ fn the_comment_sweep_finds_each_spec_code_and_lets_data_pass() {
     assert_eq!(spec_coded_fn_names(&code), ["ac8_host_is_clean"]);
 }
 
-/// A varredura dos comentários acha o comando que saiu escrito com espaço e o
-/// número de onda dado como origem, e deixa passar o módulo que continua, o
-/// comando que fica, as palavras soltas de outra ferramenta e a onda do
-/// cenário de um teste.
+/// A varredura dos comentários acha o comando que saiu escrito com espaço ou
+/// com hífen e o número de onda dado como origem, e deixa passar o módulo que
+/// continua, o comando que fica, as palavras soltas de outra ferramenta e o
+/// dado entre aspas.
 #[test]
-fn the_comment_sweep_finds_a_spaced_command_that_left_and_a_wave_number() {
+fn the_comment_sweep_finds_a_command_that_left_and_a_wave_number() {
     for (comment, cited) in [
         ("///    `git settle`'s containment check included, asserting", "git-settle"),
         ("/// `git delete` offered to REMOVE the release line", "git-delete"),
         ("/// and `pr list` refused to run from it", "pr-list"),
+        ("/// `qa-run` matches the command's own output", "qa-run"),
+        ("// the door `emit-pipeline` opened, now folded in", "emit-pipeline"),
+        ("/// so the cut spec-draft takes reads the marker back", "spec-draft"),
         ("/// mais essas frases (onda 11), e o molde da onda", "onda 11"),
         ("/// a prova isolada que a revisão pediu (wave 7).", "wave 7"),
         ("/// Por decisão da onda 13, o item que continua à mostra", "onda 13"),
         ("// decided in wave 4, the reader keeps both", "wave 4"),
     ] {
-        assert_eq!(cited_in_comment(comment), [cited], "{comment}");
+        for in_test in [false, true] {
+            assert_eq!(cited_in_comment(comment, in_test), [cited], "{comment} (in_test: {in_test})");
+        }
     }
     for clean in [
         "/// the exit ritual (`crate::commands::git_settle`) prunes the unit",
         "/// the tidying up `pr-merge` runs right after its merge",
         "/// `gh pr list --state open` answers the provider",
-        "// A onda 1 entrega e a onda 2 espera pela vaga.",
-        "/// Retrato da barra com uma spec em execução na onda 2 de 4",
+        "/// the module `qa_run` runs the acceptance criteria",
+        "/// `qa-runner` and `spec-drafting` are not commands",
+        r#"/// o dado de exemplo "`git settle`" de um teste"#,
+        r#"/// o exemplo de teste "mustard-rt run qa-run""#,
         r#"/// e procurar por "onda 13" acha o que é dela"#,
         "/// o rótulo `(onda 3)` é o dado da página",
-        r#"/// o dado de exemplo "`git settle`" de um teste"#,
     ] {
-        assert!(cited_in_comment(clean).is_empty(), "{clean}: {:?}", cited_in_comment(clean));
+        for in_test in [false, true] {
+            assert!(cited_in_comment(clean, in_test).is_empty(), "{clean}: {:?}", cited_in_comment(clean, in_test));
+        }
     }
+}
+
+/// A onda contada como história só passa no que é de teste, onde ela é a do
+/// cenário; no código de produção a varredura a acha, e o que está entre
+/// aspas ou crases é dado e passa dos dois lados.
+#[test]
+fn the_comment_sweep_lets_a_wave_number_through_only_in_a_test() {
+    for bad in [
+        "// vazou na onda 21 e o portão ficou cego",
+        "/// the wave 3 spec keeps its own copy",
+        "/// A onda 1 entrega e a onda 2 espera pela vaga.",
+    ] {
+        assert!(!cited_in_comment(bad, false).is_empty(), "{bad}");
+        assert!(cited_in_comment(bad, true).is_empty(), "{bad}: {:?}", cited_in_comment(bad, true));
+    }
+    for data in [
+        r#"/// e procurar por "onda 13" acha o que é dela"#,
+        "/// `Locale::PtBr` → `\"Onda 3\"`",
+        "/// Retrato da barra com uma spec em execução na `onda 2` de 4",
+    ] {
+        assert!(cited_in_comment(data, false).is_empty(), "{data}: {:?}", cited_in_comment(data, false));
+    }
+
+    let source = concat!(
+        "//! módulo de produção\n",
+        "fn produce() {}\n",
+        "\n",
+        "#[cfg(test)]\n",
+        "#[allow(clippy::x)]\n",
+        "mod tests {\n",
+        "    // a onda 1 entrega\n",
+        "}\n",
+    );
+    let path = Path::new("apps/rt/src/commands/x.rs");
+    assert_eq!(test_area_from(path, source), 4, "the test module opens at its attribute");
+    assert_eq!(test_area_from(path, "#[cfg(test)]\nuse a::b;\nfn f() {}\n"), usize::MAX);
+    assert_eq!(test_area_from(Path::new("apps/rt/tests/x.rs"), "fn f() {}\n"), 1);
+    assert_eq!(test_area_from(Path::new("apps/rt/src/x/tests.rs"), "fn f() {}\n"), 1);
 }
 
 /// Os eventos que o manifesto do Claude Code registra.

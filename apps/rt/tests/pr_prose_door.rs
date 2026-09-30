@@ -3,7 +3,7 @@
 //! The `/mustard:pr` and `/git` doors used to instruct the model to run
 //! `rtk gh pr create/edit/ready` directly — `github` fixed in text no test
 //! covered. Those writes now go through the provider port (`mustard-rt run
-//! pr-open` / `pr-edit` / `pr-ready`), and this test is what keeps them there:
+//! pr-open`, which edits an open pull request too), and this test is what keeps them there:
 //! it reads the two door files and fails on ANY line that names a direct
 //! `gh pr create` / `gh pr edit` / `gh pr ready` invocation.
 //!

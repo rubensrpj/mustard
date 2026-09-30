@@ -16,7 +16,7 @@
 //!   and refs for mentions of paths/commands that no longer exist (dead `.js`
 //!   names, `scripts/` entries with no resolvable target). WARN per hit.
 //! - **scratch-residue** (`--residue` só) — tamanho total das sobras que o
-//!   `scratch-gc` recolheria e o da compilação compartilhada, pela MESMA
+//!   `clean` recolheria e o da compilação compartilhada, pela MESMA
 //!   varredura dele. WARN quando há sobra ou quando a compilação passou do teto.
 //! - **drift** — compare by hash the folders a fresh payload owns
 //!   (`CORE_FOLDERS`) between the installed `.claude/` and the

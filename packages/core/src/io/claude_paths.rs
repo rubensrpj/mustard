@@ -185,7 +185,7 @@ const DOCUMENTED_DIRS: &[&str] = &[
     // between two hypotheses. Carved out of branch protection by the write
     // gate (`shared::paths` in the rt), alongside `plans`.
     "scratch",
-    // Rendered agent dispatch stubs (`agent-prompt-render --emit ref`), read
+    // Rendered agent dispatch stubs (the prompt renderer with `--emit ref`), read
     // back by the PreToolUse hook that expands them.
     ".dispatch",
     // Per-session event directories, read by the MCP server and the dashboard

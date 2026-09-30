@@ -366,9 +366,11 @@ pub(crate) fn write_at_with(opts: &WriteOpts, copy: bool) -> Value {
     // conferências que só leem a volta: a recusa vem antes de gravar, e o
     // agente grava de novo. A trava do passo do git que a conferência prende
     // fica presa até a volta estar no arquivo: a rodada que assume a mesma
-    // onda nunca grava a entrega oficial entre a conferência e a gravação.
-    let held = if event_type == "delivered" {
-        match crate::commands::flow::round::check_return(&opts.root, spec, &mut draft) {
+    // onda nunca grava a entrega oficial entre a conferência e a gravação. O
+    // veredito do revisor prende a mesma trava, para o fechamento não assumir
+    // o pedido de revisão entre a conferência dele e a gravação.
+    let held = if ["delivered", "verdict"].contains(&event_type) {
+        match crate::commands::flow::round::check_return(&opts.root, spec, event_type, &mut draft) {
             Ok(held) => Some(held),
             Err(refusal) => return refusal.to_value(lang),
         }
@@ -3964,7 +3966,7 @@ mod tests {
         assert_eq!(seen(root).as_deref(), Some("Travar o envio."));
     }
 
-    /// Uma spec que nasce em plano, como as do `spec-draft`, não tem a vaga do
+    /// Uma spec que nasce em plano, sem levantamento, não tem a vaga do
     /// objetivo: o primeiro `context` dela é livre, e a porta do `open` nunca
     /// a leva de volta ao levantamento.
     #[test]
@@ -4983,7 +4985,7 @@ mod tests {
         assert_eq!(armed, expected, "no closing armed at the same time was lost");
     }
 
-    /// Uma spec sem nenhum ponto, como as do `spec-draft`, grava e aprova
+    /// Uma spec sem nenhum ponto, escrita direto, grava e aprova
     /// como antes: sem passo do levantamento e sem recusa nova.
     #[test]
     fn an_old_spec_without_points_writes_and_approves_as_before() {

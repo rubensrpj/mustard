@@ -779,21 +779,35 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "The project uses {name} and it was not found: the round's files were left unformatted."
         }
         ("round.replan", Locale::PtBr) => {
-            "A onda {wave} diz que o plano dela não funciona. Mudança proposta: {change}. \
-             Com o aceite, voltam à fila as tarefas que ela não fez: {tasks}. \
-             Faça ao usuário a pergunta com opções, com \"{yes}\" e \"{no}\", e ponha {code} \
-             no cabeçalho dela. É o cabeçalho que diz qual mudança o clique decide; o enunciado \
-             você escreve com as palavras que o usuário entender. Pergunta pronta: \"{question}\". \
-             O sim é o clique em \"{yes}\": depois dele, repita a rodada com o mesmo relatório."
+            "A onda {wave} diz que a mudança de plano dela troca uma decisão do usuário. A \
+             rodada não segue com ela sem o sim dele. Leia na volta da onda qual é a mudança e \
+             qual decisão ela troca. Faça ao usuário a pergunta com opções, com \"{yes}\" e \
+             \"{no}\", e ponha {code} no cabeçalho dela. É o cabeçalho que diz qual mudança o \
+             clique decide. Escreva o enunciado pelo estilo de resposta: no máximo três frases \
+             curtas. Nada de nome de arquivo, de símbolo nem de número de laboratório. Diga o \
+             que muda para o usuário no sim e no não. Com o aceite, voltam à fila as tarefas \
+             que a onda não fez: {tasks}. O sim é o clique em \"{yes}\": depois dele, repita a \
+             rodada com o mesmo relatório."
         }
         ("round.replan", Locale::EnUs) => {
-            "Wave {wave} says its plan does not work. Proposed change: {change}. \
-             On acceptance, the tasks it did not do go back to the queue: {tasks}. \
-             Ask the user a question with options, with \"{yes}\" and \"{no}\", and put {code} \
-             in its header. The header is what says which change the click decides; the \
-             question itself you write in words the user understands. Ready question: \
-             \"{question}\". The yes is the click on \"{yes}\": after it, run the round again \
-             with the same report."
+            "Wave {wave} says its plan change swaps a decision of the user's. The round does not \
+             go on with it without their yes. Read in the wave's return what the change is and \
+             which decision it swaps. Ask the user a question with options, with \"{yes}\" and \
+             \"{no}\", and put {code} in its header. The header is what says which change the \
+             click decides. Write the question by the answer style: at most three short \
+             sentences. Use no file name, symbol or lab number. Say what changes for the user on \
+             yes and on no. On acceptance, the tasks the wave did not do go back to the queue: \
+             {tasks}. The yes is the click on \"{yes}\": after it, run the round again with the \
+             same report."
+        }
+        ("round.replan_recorded", Locale::PtBr) => {
+            "A onda {wave} mudou o plano sem trocar decisão do usuário, e a rodada seguiu sem \
+             perguntar. A mudança: {change}. Conte-a na entrega, em \"O que eu decidi sozinho\"."
+        }
+        ("round.replan_recorded", Locale::EnUs) => {
+            "Wave {wave} changed the plan without swapping a decision of the user's, and the round \
+             went on without asking. The change: {change}. Tell it in the delivery, under \"What I \
+             decided on my own\"."
         }
         ("round.no_tasks", Locale::PtBr) => "nenhuma",
         ("round.no_tasks", Locale::EnUs) => "none",
@@ -1384,6 +1398,111 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              merged, and the provider was not even asked. A new request about it is new work, through \
              `mustard-rt run open`."
         }
+        // As dicas e os avisos do merge do Mustard e da lista de pull requests
+        // abertos: cada um sai no idioma do texto do projeto.
+        ("pr.list_from_unit", Locale::PtBr) => {
+            "A lista de pull requests abertos se pede de uma base, não de dentro de uma unidade. Vá \
+             para `{base}` (`git checkout {base}`) e rode `mustard-rt run pr-review` de novo."
+        }
+        ("pr.list_from_unit", Locale::EnUs) => {
+            "The list of open pull requests is asked from a base, not from inside a unit. Switch to \
+             `{base}` (`git checkout {base}`) and run `mustard-rt run pr-review` again."
+        }
+        ("pr.list_from_unit_no_base", Locale::PtBr) => {
+            "A lista de pull requests abertos se pede de uma base, não de dentro de uma unidade. Vá \
+             para a branch em que esta unidade entra e rode `mustard-rt run pr-review` de novo."
+        }
+        ("pr.list_from_unit_no_base", Locale::EnUs) => {
+            "The list of open pull requests is asked from a base, not from inside a unit. Switch to \
+             the branch this unit integrates into and run `mustard-rt run pr-review` again."
+        }
+        ("pr.confirm_running", Locale::PtBr) => {
+            "As verificações do próprio provedor para `{unit}` ainda estão rodando. Nada foi juntado, \
+             então o resultado delas ainda tem o que barrar."
+        }
+        ("pr.confirm_running", Locale::EnUs) => {
+            "The provider's own checks for `{unit}` are still running. Nothing was merged, so their \
+             verdict still has something to stop."
+        }
+        ("pr.confirm_failed", Locale::PtBr) => {
+            "As verificações do próprio provedor para `{unit}` não voltaram verdes (falharam ou foram \
+             canceladas). Nada foi juntado."
+        }
+        ("pr.confirm_failed", Locale::EnUs) => {
+            "The provider's own checks for `{unit}` did not come back green (failed or cancelled). \
+             Nothing was merged."
+        }
+        ("pr.confirm_unreadable", Locale::PtBr) => {
+            "As verificações do próprio provedor para `{unit}` não puderam ser lidas ({checks}). Nada \
+             foi juntado."
+        }
+        ("pr.confirm_unreadable", Locale::EnUs) => {
+            "The provider's own checks for `{unit}` could not be read ({checks}). Nothing was merged."
+        }
+        ("pr.confirm_no_verdict", Locale::PtBr) => {
+            "`{unit}` não tem veredito de revisão gravado. Nada foi juntado."
+        }
+        ("pr.confirm_no_verdict", Locale::EnUs) => {
+            "`{unit}` carries no recorded review verdict. Nothing was merged."
+        }
+        ("pr.confirm_verdict", Locale::PtBr) => {
+            "A última revisão de `{unit}` voltou `{verdict}`. Nada foi juntado."
+        }
+        ("pr.confirm_verdict", Locale::EnUs) => {
+            "The last review of `{unit}` came back `{verdict}`. Nothing was merged."
+        }
+        ("pr.merge_wait_checks", Locale::PtBr) => {
+            "Espere as verificações terminarem e rode `pr merge` de novo, ou rode de novo com \
+             `--confirm` para juntar sem esperar."
+        }
+        ("pr.merge_wait_checks", Locale::EnUs) => {
+            "Wait for the checks to finish and run `pr merge` again, or re-run with `--confirm` to \
+             merge without waiting."
+        }
+        ("pr.merge_checks_failed", Locale::PtBr) => {
+            "Rode `mustard-rt run reopen --spec {unit} --fix --reason <o que o servidor informou>`. A \
+             porta de conserto abre a onda de correção dentro da spec fechada, comita na mesma branch \
+             e envia, sem reabrir a obra. Ou rode de novo com `--confirm` para juntar assim mesmo."
+        }
+        ("pr.merge_checks_failed", Locale::EnUs) => {
+            "Run `mustard-rt run reopen --spec {unit} --fix --reason <what the server reported>`. The \
+             repair door opens the fix wave inside the closed spec, commits on the same branch and \
+             pushes, without reopening the work. Or re-run with `--confirm` to merge anyway."
+        }
+        ("pr.merge_checks_unreadable", Locale::PtBr) => {
+            "O provedor não respondeu. Confira se a ferramenta dele está instalada e autenticada e rode \
+             `pr merge` de novo. Com `--confirm`, o merge sai sem a resposta dele."
+        }
+        ("pr.merge_checks_unreadable", Locale::EnUs) => {
+            "The provider did not answer. Check that its tooling is installed and authenticated, then \
+             run `pr merge` again. `--confirm` merges without it."
+        }
+        ("pr.merge_no_verdict", Locale::PtBr) => {
+            "Pergunte ao operador e rode de novo com `--confirm` para juntar assim mesmo. O veredito \
+             lido aqui é o que `mustard-rt run round` grava a cada onda."
+        }
+        ("pr.merge_no_verdict", Locale::EnUs) => {
+            "Ask the operator, then re-run with `--confirm` to merge anyway. The verdict read here is \
+             the one `mustard-rt run round` records for each wave."
+        }
+        ("pr.merge_provider_refused", Locale::PtBr) => {
+            "Nada foi podado, e a unidade segue como estava. Resolva a recusa (conflitos, rascunho, \
+             verificações obrigatórias) e rode `pr merge` de novo."
+        }
+        ("pr.merge_provider_refused", Locale::EnUs) => {
+            "Nothing was pruned, and the unit is untouched. Resolve the refusal (conflicts, draft \
+             state, required checks) and run `pr merge` again."
+        }
+        ("pr.promotion_merged", Locale::PtBr) => {
+            "`{head}` é uma base, não uma unidade: a promoção termina no merge e não há poda a fazer. \
+             Atualize as bases locais com `git fetch origin <base>:<base>`. Nenhuma branch foi \
+             apagada."
+        }
+        ("pr.promotion_merged", Locale::EnUs) => {
+            "`{head}` is a base, not a unit: the promotion ends at the merge and there is nothing to \
+             prune. Update the local bases with `git fetch origin <base>:<base>`. No branch was \
+             deleted."
+        }
         ("message.too_long", Locale::PtBr) => {
             "A parte `{part}` da mensagem tem {chars} caracteres e o limite é {max}. Escreva outro: o \
              corte automático mentiria sobre o que a mensagem diz. Nada foi enviado."
@@ -1632,8 +1751,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            196,
-            0x4eee_c10d_6047_5285,
+            210,
+            0xeabf_9aed_4d46_1baa,
         );
     }
 
@@ -1779,6 +1898,19 @@ mod tests {
             ("pr.merge_reopened", &["{spec}", "{phase}", "{pr}"][..]),
             ("pr.merge_not_closed", &["{spec}", "{phase}", "{pr}", "{command}"][..]),
             ("pr.merge_settled", &["{spec}", "{phase}", "{pr}"][..]),
+            ("pr.list_from_unit", &["{base}"][..]),
+            ("pr.list_from_unit_no_base", &[][..]),
+            ("pr.confirm_running", &["{unit}"][..]),
+            ("pr.confirm_failed", &["{unit}"][..]),
+            ("pr.confirm_unreadable", &["{unit}", "{checks}"][..]),
+            ("pr.confirm_no_verdict", &["{unit}"][..]),
+            ("pr.confirm_verdict", &["{unit}", "{verdict}"][..]),
+            ("pr.merge_wait_checks", &[][..]),
+            ("pr.merge_checks_failed", &["{unit}"][..]),
+            ("pr.merge_checks_unreadable", &[][..]),
+            ("pr.merge_no_verdict", &[][..]),
+            ("pr.merge_provider_refused", &[][..]),
+            ("pr.promotion_merged", &["{head}"][..]),
             ("reopen.same_pr", &[][..]),
             ("reopen.pr_closed", &["{pr}"][..]),
             ("stuck.ended", &["{list}"][..]),
@@ -1832,7 +1964,8 @@ mod tests {
             ("round.commit_forbidden", &["{found}"][..]),
             ("round.commit_looks_like_sha", &["{found}"][..]),
             ("round.formatter_missing", &["{name}"][..]),
-            ("round.replan", &["{wave}", "{change}", "{question}", "{yes}", "{no}", "{code}", "{tasks}"][..]),
+            ("round.replan", &["{wave}", "{yes}", "{no}", "{code}", "{tasks}"][..]),
+            ("round.replan_recorded", &["{wave}", "{change}"][..]),
             ("round.no_tasks", &[][..]),
             ("round.replan_needs_undone", &["{wave}", "{tasks}"][..]),
             ("round.undone_not_in_wave", &["{wave}", "{code}", "{tasks}"][..]),

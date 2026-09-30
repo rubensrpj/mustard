@@ -1,9 +1,9 @@
-//! `mustard-rt run pr-open` / `pr-edit` / `pr-ready` — the pull-request
-//! PUBLISH actions, behind the provider port.
+//! `mustard-rt run pr-open` — the pull-request
+//! PUBLISH action, behind the provider port.
 //!
 //! Until this module, the `/mustard:pr` and `/git` prose told the model to run
 //! `rtk gh pr create/edit/ready` directly — `github` fixed in text no test
-//! covers. Each command here resolves the provider IN FORCE through
+//! covers. The command here resolves the provider IN FORCE through
 //! [`provider_for`] (`git.provider` declared wins, then the `origin` remote,
 //! then the fallback) and speaks only the [`PrProvider`] port, so WHICH
 //! provider answers is an internal detail: the prose names this command, never

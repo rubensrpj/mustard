@@ -4,8 +4,8 @@
 //!
 //! The single canonical description of what a `spec.md` + `meta.json`
 //! (+ optional `wave-plan.md`) bundle looks like. Every consumer that
-//! generates or validates a spec — `spec-draft`, `spec-validate`, the
-//! `agent-prompt-render` task slicer, the dashboard's spec card — derives its
+//! generates or validates a spec — the drafting step, `spec-validate`, the
+//! prompt-rendering task slicer, the dashboard's spec card — derives its
 //! shape from the types in this module.
 //!
 //! ## Why
@@ -65,7 +65,7 @@ pub const PRD_SECTIONS: &[&str] = &[
 pub const PLAN_SECTIONS: &[&str] = &["files", "tasks", "boundaries"];
 
 /// Canonical heading text of the trackable checklist section. The auto-mark
-/// hook, `mark-checklist-item`, and the close-gate checklist check all key off
+/// hook, the checklist-marking command, and the close-gate checklist check all key off
 /// a literal `## Checklist` heading (EN-only, language-agnostic) — so the section is
 /// emitted under this exact heading regardless of the spec narrative locale.
 pub const CHECKLIST_HEADING: &str = "Checklist";
@@ -111,7 +111,7 @@ pub struct AcceptanceCriterion {
 
 /// One trackable checklist entry. Rendered as a `- [ ] <label> → <path>` line
 /// inside the spec's `## Checklist` section — the exact shape the auto-mark
-/// hook (`run_checklist_auto_mark`), `mark-checklist-item`, and the close-gate
+/// hook (`run_checklist_auto_mark`), the checklist-marking command, and the close-gate
 /// checklist check already parse. The optional `path` is the auto-mark anchor:
 /// when set, it is appended after an ` → ` arrow so a `Write`/`Edit` of that
 /// file flips the box (Strategy 1 in the auto-mark hook). When absent the item
@@ -126,7 +126,7 @@ pub struct ChecklistItem {
     #[serde(default)]
     pub path: Option<String>,
     /// Completion state. `false` on a fresh draft; flipped to `true` by the
-    /// auto-mark hook / `mark-checklist-item` when the task lands. Additive +
+    /// auto-mark hook / the checklist-marking command when the task lands. Additive +
     /// serde-compatible: historical JSON without the field deserialises to
     /// `false`, and [`render_checklist_item`] emits `- [x]` when set.
     #[serde(default)]
@@ -468,7 +468,7 @@ pub struct SpecInput {
     pub acceptance_criteria: Vec<AcceptanceCriterion>,
     /// Trackable checklist items — one per task (light) or per task/file-group
     /// (full). Materialised as the `## Checklist` section the close-gate +
-    /// auto-mark hook + `mark-checklist-item` consume. The validator enforces
+    /// auto-mark hook + the checklist-marking command consume. The validator enforces
     /// at least one non-empty item so the checklist gate is never orphaned.
     #[serde(default)]
     pub checklist: Vec<ChecklistItem>,
@@ -909,7 +909,7 @@ mod tests {
         // yet, so a `- [x]` arriving from a plan carries no real progress
         // state. It is stripped like any other prefix and the item
         // re-renders unchecked (`- [ ]`); progress is only ever recorded by
-        // the auto-mark hook / mark-checklist-item on the materialised spec.
+        // the auto-mark hook / the checklist-marking command on the materialised spec.
         assert_eq!(normalize_task_label("- [x] add the route"), "add the route");
         assert_eq!(normalize_task_label("- [X] add the route"), "add the route");
         let item = ChecklistItem {

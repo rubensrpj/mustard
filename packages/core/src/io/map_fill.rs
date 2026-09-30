@@ -278,7 +278,7 @@ mod tests {
         git(&["add", "a.txt"]);
         git(&["commit", "-q", "-m", "semente"]);
         let now = project_map::listing(root).unwrap();
-        let map = map_with(json!({"head": now.head, "listing": now.digest()}));
+        let map = map_with(json!({"head": now.head, "listing": now.digest(), "base": now.base.name, "base_tip": now.base.tip}));
         project_map::save_at(&model_path(root), &map, "scan 1", &languages()).unwrap();
         assert!(!project_map::is_behind(root, &|| None), "the map is the one of the commit and the content of now");
 

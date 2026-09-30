@@ -102,6 +102,10 @@ use crate::io::map_question;
 use crate::io::project_map::{model_path, open_existing, unreadable, MapBlock, SEARCHED};
 use crate::platform::error::Result;
 
+mod refresh;
+
+pub(crate) use refresh::refresh_files;
+
 /// Um nível do índice: a tabela FTS5, a lista de cada forma por ela, a tabela
 /// dos tamanhos, os campos que a lista de base lê e, depois deles, os que o
 /// índice guarda sem que ela os leia, na ordem das colunas.
@@ -321,7 +325,7 @@ struct Decl {
 /// ficam fora do nível das declarações, de onde saem os candidatos da busca
 /// com filtro, e entram na tabela trigram.
 pub(crate) fn rebuild(conn: &Connection, languages: &Languages) -> Result<()> {
-    let (files, decls) = documents(conn, &mut Normalizer::new(languages))?;
+    let (files, decls) = documents(conn, &mut Normalizer::new(languages), None)?;
     forget(conn)?;
     fill(conn, &FILE_LEVEL, &files)?;
     fill(conn, &DECL_LEVEL, decls.iter().filter(|decl| !decl.unlisted).map(|decl| &decl.doc))?;
@@ -351,6 +355,17 @@ pub(crate) fn forget(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// A consulta `select` na ordem das linhas, com as do arquivo `scope` só
+/// quando ele vem: a coluna `column` está entre os caminhos dados, ligados
+/// como `?1`, `?2`, e assim por diante. Sem `scope`, todas as linhas.
+fn scoped(select: &str, column: &str, scope: Option<&[&str]>) -> String {
+    let filter = scope.map_or_else(String::new, |paths| {
+        let slots: Vec<String> = (1..=paths.len()).map(|at| format!("?{at}")).collect();
+        format!(" WHERE {column} IN ({})", slots.join(", "))
+    });
+    format!("{select}{filter} ORDER BY rowid")
+}
+
 /// Os documentos dos dois níveis, lidos das tabelas do mapa, com as palavras
 /// já preparadas: cada arquivo que não é escrito por máquina e cada
 /// declaração dele. Cada texto se prepara uma vez: o caminho, uma vez por
@@ -364,8 +379,13 @@ pub(crate) fn forget(conn: &Connection) -> Result<()> {
 /// de teste quando o arquivo dela é de teste ou quando a primeira linha dela
 /// cai num trecho de teste do arquivo. A de teste e o parâmetro escrito no
 /// cabeçalho do dono ([`HEADER_PARAMETER_KIND`]) ficam fora do nível das
-/// declarações.
-fn documents(conn: &Connection, normalizer: &mut Normalizer) -> Result<(Vec<Doc>, Vec<Decl>)> {
+/// declarações. Com `scope`, só os arquivos dos caminhos dados e as
+/// declarações deles, com as palavras que teriam na leitura inteira.
+fn documents(
+    conn: &Connection,
+    normalizer: &mut Normalizer,
+    scope: Option<&[&str]>,
+) -> Result<(Vec<Doc>, Vec<Decl>)> {
     let mut files: Vec<Doc> = Vec::new();
     // As palavras que o arquivo já tem nos nomes, na documentação e em cada
     // campo dos textos.
@@ -373,8 +393,8 @@ fn documents(conn: &Connection, normalizer: &mut Normalizer) -> Result<(Vec<Doc>
     let mut at: HashMap<String, usize> = HashMap::new();
     // De cada arquivo, se ele é de teste e os trechos de teste dele.
     let mut tests: Vec<(bool, Vec<(u64, u64)>)> = Vec::new();
-    let mut stmt = conn.prepare("SELECT rowid, path, file_class, test_lines FROM files ORDER BY rowid")?;
-    let mut rows = stmt.query([])?;
+    let mut stmt = conn.prepare(&scoped("SELECT rowid, path, file_class, test_lines FROM files", "path", scope))?;
+    let mut rows = stmt.query(params_from_iter(scope.unwrap_or_default()))?;
     while let Some(row) = rows.next()? {
         if !text(row, 2)?.is_empty() {
             continue;
@@ -389,11 +409,13 @@ fn documents(conn: &Connection, normalizer: &mut Normalizer) -> Result<(Vec<Doc>
         seen.push(Default::default());
     }
     let mut rows_of: Vec<DeclRow> = Vec::new();
-    let mut stmt = conn.prepare(
+    let mut stmt = conn.prepare(&scoped(
         "SELECT rowid, file, name, signature, doc, line, end_line, whole_doc, body_comment, body_names, kind, \
-         owner, contract, members, used_by FROM decls ORDER BY rowid",
-    )?;
-    let mut rows = stmt.query([])?;
+         owner, contract, members, used_by FROM decls",
+        "file",
+        scope,
+    ))?;
+    let mut rows = stmt.query(params_from_iter(scope.unwrap_or_default()))?;
     while let Some(row) = rows.next()? {
         let Some(&owner) = at.get(&text(row, 1)?) else { continue };
         let line = |at: usize| -> Result<u64> { Ok(row.get::<_, Option<i64>>(at)?.unwrap_or(0).max(0) as u64) };
@@ -434,7 +456,7 @@ fn documents(conn: &Connection, normalizer: &mut Normalizer) -> Result<(Vec<Doc>
         decls_of[row.owner].push(at);
     }
     let comments = FILE_LEVEL.fields.len();
-    for FileText { path, written, file_doc, file_comment, file_doc_in_body } in written_texts(conn)? {
+    for FileText { path, written, file_doc, file_comment, file_doc_in_body } in written_texts(conn, scope)? {
         let Some(&owner) = at.get(&path) else { continue };
         files[owner].fields[comments] = normalizer.forms(&file_doc);
         files[owner].fields[comments + 1] =
@@ -458,8 +480,8 @@ fn documents(conn: &Connection, normalizer: &mut Normalizer) -> Result<(Vec<Doc>
             files[owner].fields[commits] = normalizer.forms(&titles.join(" "));
         }
     }
-    let calls = written_calls(conn, &at, normalizer)?;
-    let history = decl_history_texts(conn)?;
+    let calls = written_calls(conn, &at, normalizer, scope)?;
+    let history = decl_history_texts(conn, scope)?;
     let mut path_of: Vec<&str> = vec![""; files.len()];
     for (path, &owner) in &at {
         path_of[owner] = path;
@@ -537,16 +559,16 @@ fn head(text: &str, chars: usize) -> &str {
 /// outros até o teto de [`HISTORY_COMMITS`] e [`HISTORY_REVIEWS`]. O arquivo
 /// cuja história o mapa ainda não leu não tem declaração nenhuma aqui, e o
 /// projeto sem comentário de revisão só tem os títulos.
-fn decl_history_texts(conn: &Connection) -> Result<HashMap<(String, String, u32), String>> {
+fn decl_history_texts(conn: &Connection, scope: Option<&[&str]>) -> Result<HashMap<(String, String, u32), String>> {
     let mut titles: HashMap<(String, String), String> = HashMap::new();
-    let mut stmt = conn.prepare("SELECT path, id, title FROM lineage_commits")?;
-    let mut rows = stmt.query([])?;
+    let mut stmt = conn.prepare(&scoped("SELECT path, id, title FROM lineage_commits", "path", scope))?;
+    let mut rows = stmt.query(params_from_iter(scope.unwrap_or_default()))?;
     while let Some(row) = rows.next()? {
         titles.insert((text(row, 0)?, text(row, 1)?), clean_title(&text(row, 2)?));
     }
     let mut out = HashMap::new();
-    let mut stmt = conn.prepare("SELECT path, name, nth, commits, comments FROM lineage_decls")?;
-    let mut rows = stmt.query([])?;
+    let mut stmt = conn.prepare(&scoped("SELECT path, name, nth, commits, comments FROM lineage_decls", "path", scope))?;
+    let mut rows = stmt.query(params_from_iter(scope.unwrap_or_default()))?;
     while let Some(row) = rows.next()? {
         let path = text(row, 0)?;
         let changes: Vec<DeclChange> = serde_json::from_str(&text(row, 3)?).unwrap_or_default();
@@ -592,10 +614,11 @@ fn written_calls(
     conn: &Connection,
     at: &HashMap<String, usize>,
     normalizer: &mut Normalizer,
+    scope: Option<&[&str]>,
 ) -> Result<Vec<Vec<(u64, Words)>>> {
     let mut out: Vec<Vec<(u64, Words)>> = vec![Vec::new(); at.len()];
-    let mut stmt = conn.prepare("SELECT path, calls FROM links ORDER BY rowid")?;
-    let mut rows = stmt.query([])?;
+    let mut stmt = conn.prepare(&scoped("SELECT path, calls FROM links", "path", scope))?;
+    let mut rows = stmt.query(params_from_iter(scope.unwrap_or_default()))?;
     while let Some(row) = rows.next()? {
         let Some(&owner) = at.get(&text(row, 0)?) else { continue };
         let sites: Vec<String> = serde_json::from_str(&text(row, 1)?).unwrap_or_default();
@@ -690,10 +713,10 @@ struct FileText {
 
 /// O texto de cada arquivo. O arquivo cuja coluna dos textos fixos não se lê
 /// fica sem eles.
-fn written_texts(conn: &Connection) -> Result<Vec<FileText>> {
+fn written_texts(conn: &Connection, scope: Option<&[&str]>) -> Result<Vec<FileText>> {
     let mut stmt =
-        conn.prepare("SELECT path, texts, file_doc, file_comment, file_doc_in_body FROM texts ORDER BY rowid")?;
-    let mut rows = stmt.query([])?;
+        conn.prepare(&scoped("SELECT path, texts, file_doc, file_comment, file_doc_in_body FROM texts", "path", scope))?;
+    let mut rows = stmt.query(params_from_iter(scope.unwrap_or_default()))?;
     let mut out = Vec::new();
     while let Some(row) = rows.next()? {
         out.push(FileText {
@@ -719,6 +742,13 @@ pub(super) fn text(row: &Row<'_>, at: usize) -> Result<String> {
 /// o tamanho de cada campo em palavras, e o número de documentos e o tamanho
 /// médio de cada campo na tabela de números do nível.
 fn fill<'d>(conn: &Connection, level: &Level, docs: impl IntoIterator<Item = &'d Doc>) -> Result<()> {
+    let (count, total) = insert_docs(conn, level, docs)?;
+    write_meta(conn, level, count, &total)
+}
+
+/// Grava os documentos de `docs` no nível, sem mexer nos números dele: devolve
+/// quantos entraram e, de cada campo, quantas palavras somam.
+fn insert_docs<'d>(conn: &Connection, level: &Level, docs: impl IntoIterator<Item = &'d Doc>) -> Result<(u64, Vec<u64>)> {
     let names: Vec<&str> = level.columns().collect();
     let columns = names.join(", ");
     let slots: Vec<String> = (2..=names.len() + 1).map(|at| format!("?{at}")).collect();
@@ -739,9 +769,15 @@ fn fill<'d>(conn: &Connection, level: &Level, docs: impl IntoIterator<Item = &'d
         lengths.execute(params_from_iter(sizes))?;
         count += 1;
     }
+    Ok((count, total))
+}
+
+/// Grava, na tabela de números do nível, quantos documentos ele tem e o
+/// tamanho médio de cada campo, dadas as somas `total` em `count` documentos.
+fn write_meta(conn: &Connection, level: &Level, count: u64, total: &[u64]) -> Result<()> {
     let mut meta = conn.prepare(&format!("INSERT OR REPLACE INTO {}(key, value) VALUES (?1, ?2)", level.meta))?;
     meta.execute(params![format!("{}.docs", level.fts), count as i64])?;
-    for (field, name) in names.iter().enumerate() {
+    for (field, name) in level.columns().enumerate() {
         let avg = if count == 0 { 0.0 } else { total[field] as f64 / count as f64 };
         meta.execute(params![format!("{}.{name}", level.fts), avg])?;
     }
@@ -1328,8 +1364,8 @@ pub fn links(root: &Path, ids: &[i64]) -> std::result::Result<Links, MapRefusal>
     links_in(db.conn(), ids).map_err(unreadable)
 }
 
-/// A lista inteira: o rodízio das listas de base, dos nomes, de tudo e dos
-/// arquivos, nesta ordem. As listas de palavras leem a `query` seguida da
+/// As quatro listas de declarações que o rodízio da lista inteira junta, cada
+/// uma na ordem da nota dela. As listas de palavras leem a `query` seguida da
 /// `intent`; a dos nomes, só as palavras da `query`. Na lista de tudo, os
 /// textos fixos da declaração contam como um campo só, como no laboratório
 /// que afinou a busca com filtro: cada marca num campo à parte dava ao texto
@@ -1338,13 +1374,6 @@ pub fn links(root: &Path, ids: &[i64]) -> std::result::Result<Links, MapRefusal>
 /// língua, a do texto do projeto, como no laboratório, e a das outras só na
 /// palavra que a primeira não acha em nenhum documento dos dois níveis
 /// ([`map_question::in_text_language`]).
-#[cfg(test)]
-pub(super) fn whole_list(conn: &Connection, query: &str, intent: &str, languages: &Languages) -> Result<Vec<i64>> {
-    Ok(sources(conn, query, intent, languages)?.whole())
-}
-
-/// As quatro listas de declarações que o rodízio de [`whole_list`] junta, cada
-/// uma na ordem da nota dela.
 pub(super) struct Sources {
     /// A de base: o nome, o caminho, a assinatura e a documentação.
     pub base: Vec<i64>,
@@ -1368,7 +1397,7 @@ impl Sources {
     }
 }
 
-/// As quatro listas de [`whole_list`], antes do rodízio.
+/// As quatro listas da lista inteira, antes do rodízio.
 pub(super) fn sources(conn: &Connection, query: &str, intent: &str, languages: &Languages) -> Result<Sources> {
     let levels = [
         map_question::Vocabulary { vocab: DECL_LEVEL.vocab, lengths: DECL_LEVEL.lengths },
@@ -1979,7 +2008,7 @@ pub(crate) mod tests {
         };
         let found = |word: &str| -> Vec<i64> {
             let db = indexed(&model, &languages(), &SEARCHED).unwrap();
-            whole_list(db.conn(), word, "", &languages()).unwrap()
+            sources(db.conn(), word, "", &languages()).unwrap().whole()
         };
         let total = id_of_line(dir.path(), 10);
 
@@ -2021,6 +2050,196 @@ pub(crate) mod tests {
         for left_out in ["passo10", "passo11", "tardio", "revisao10", "revisao11"] {
             assert!(!has(left_out), "{left_out} not in {terms:?}");
         }
+    }
+
+    // -- a atualização do índice por arquivo ---------------------------------
+
+    /// Dois arquivos: `src/a.rs`, com duas funções de mesmo nome, e
+    /// `src/b.rs`, com a `pagar`.
+    fn two_files() -> TempDir {
+        saved_json(&json!({"modules": [
+            {"path": "src/a.rs", "declarations": [
+                {"kind": "function", "name": "total", "line": 1, "end_line": 3, "signature": "fn total()"},
+                {"kind": "function", "name": "total", "line": 10, "end_line": 12, "signature": "fn total(x: u32)"}
+            ]},
+            {"path": "src/b.rs", "declarations": [
+                {"kind": "function", "name": "pagar", "line": 1, "end_line": 3, "signature": "fn pagar()"}
+            ]}
+        ]}))
+    }
+
+    /// A história de `path` com o commit `id` de título `title` mudando a
+    /// declaração `name`.
+    fn history_of(path: &str, name: &str, id: &str, title: &str) -> FileLineage {
+        FileLineage {
+            path: path.into(),
+            commits: vec![LineageCommit { id: id.into(), title: title.into(), ..LineageCommit::default() }],
+            declarations: vec![DeclLineage {
+                name: name.into(),
+                nth: 0,
+                commits: vec![DeclChange { id: id.into(), form: false }],
+                comments: Vec::new(),
+            }],
+            ..FileLineage::default()
+        }
+    }
+
+    /// Tudo o que o índice guarda, em texto: as listas de cada forma dos dois
+    /// níveis, o tamanho de cada campo de cada documento e os números do
+    /// nível, fora a marca que um teste pôs nele.
+    fn index_dump(dir: &Path) -> Vec<String> {
+        let db = open_existing(&model_path(dir)).unwrap();
+        let mut out: Vec<String> = Vec::new();
+        for table in ["file_vocab", "decl_vocab"] {
+            let mut stmt = db.conn().prepare(&format!("SELECT term, col, doc, \"offset\" FROM {table} ORDER BY 1, 2, 3, 4")).unwrap();
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok(format!("{table} {} {} {} {}", row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?, row.get::<_, i64>(3)?))
+                })
+                .unwrap();
+            out.extend(rows.collect::<std::result::Result<Vec<_>, _>>().unwrap());
+        }
+        for (table, width) in [("file_lengths", FILE_LEVEL.columns().count()), ("decl_lengths", DECL_LEVEL.columns().count())] {
+            let mut stmt = db.conn().prepare(&format!("SELECT * FROM {table} ORDER BY id")).unwrap();
+            let rows = stmt
+                .query_map([], |row| {
+                    let cells: Vec<String> = (0..=width).map(|at| format!("{:?}", row.get_ref(at).unwrap())).collect();
+                    Ok(format!("{table} {}", cells.join(" ")))
+                })
+                .unwrap();
+            out.extend(rows.collect::<std::result::Result<Vec<_>, _>>().unwrap());
+        }
+        let mut stmt = db.conn().prepare("SELECT key, value FROM search_meta WHERE key <> 'sentinel' ORDER BY key").unwrap();
+        let rows = stmt.query_map([], |row| Ok(format!("meta {} {:?}", row.get::<_, String>(0)?, row.get_ref(1)?))).unwrap();
+        out.extend(rows.collect::<std::result::Result<Vec<_>, _>>().unwrap());
+        out
+    }
+
+    /// Põe no índice uma marca que só um índice refeito ou esvaziado perderia.
+    fn mark_the_index(dir: &Path) {
+        let db = open_existing(&model_path(dir)).unwrap();
+        db.conn().execute("INSERT INTO search_meta(key, value) VALUES ('sentinel', 1)", []).unwrap();
+    }
+
+    /// Se a marca de `mark_the_index` segue no índice.
+    fn index_is_marked(dir: &Path) -> bool {
+        let db = open_existing(&model_path(dir)).unwrap();
+        db.conn().query_row("SELECT count(*) FROM search_meta WHERE key = 'sentinel'", [], |row| row.get::<_, i64>(0)).unwrap() == 1
+    }
+
+    /// Refaz o índice inteiro do mapa em `dir`, como a montagem o faz.
+    fn rebuild_the_index(dir: &Path) {
+        let mut db = open_existing(&model_path(dir)).unwrap();
+        db.write(|tx| rebuild(tx, &languages())).unwrap();
+    }
+
+    #[test]
+    fn saving_the_history_of_one_file_does_not_empty_the_index_and_the_next_search_finds_the_commit_word() {
+        let dir = two_files();
+        let model = model_path(dir.path());
+        mark_the_index(dir.path());
+        store::save_lineage_at(&model, &history_of("src/a.rs", "total", "c1", "cobra o desconto do caixa")).unwrap();
+
+        assert!(index_is_marked(dir.path()), "the write left the index as it was");
+        let total = id_of_line(dir.path(), 1);
+        let db = open_existing(&model).unwrap();
+        assert!(made_in(db.conn(), &languages()).unwrap(), "the languages of the index are still there");
+        let listed: i64 = db.conn().query_row("SELECT count(*) FROM decl_lengths", [], |row| row.get(0)).unwrap();
+        assert_eq!(listed, 3, "no declaration left the index");
+        drop(db);
+
+        let found = candidates_at(&model, "desconto", "", &languages(), 10).unwrap();
+        assert!(found.whole.contains(&total), "the word only the commit title has finds the declaration: {:?}", found.whole);
+        assert!(index_is_marked(dir.path()), "the search did not redo the index either");
+    }
+
+    #[test]
+    fn the_index_after_saving_a_history_is_the_one_a_full_rebuild_makes() {
+        let dir = two_files();
+        let model = model_path(dir.path());
+        let before = index_dump(dir.path());
+        store::save_lineage_at(&model, &history_of("src/a.rs", "total", "c1", "cobra o desconto do caixa")).unwrap();
+        store::save_lineage_at(&model, &history_of("src/b.rs", "pagar", "c2", "estorna o pagamento")).unwrap();
+        let mut review = history_of("src/a.rs", "total", "c3", "arredonda o total");
+        review.declarations[0].comments = vec![DeclComment { pr: 5, commit: "c3".into(), body: "falta tratar o reembolso".into() }];
+        store::save_lineage_at(&model, &review).unwrap();
+        let incremental = index_dump(dir.path());
+        assert_ne!(incremental, before, "the history changed the index");
+
+        rebuild_the_index(dir.path());
+        assert_eq!(incremental, index_dump(dir.path()));
+    }
+
+    #[test]
+    fn saving_the_history_of_several_files_at_once_refreshes_the_index_as_a_full_rebuild_does() {
+        let dir = two_files();
+        let model = model_path(dir.path());
+        mark_the_index(dir.path());
+        store::save_lineages_at(
+            &model,
+            &[history_of("src/a.rs", "total", "c1", "cobra o desconto do caixa"), history_of("src/b.rs", "pagar", "c2", "estorna o pagamento")],
+        )
+        .unwrap();
+        assert!(index_is_marked(dir.path()));
+        for word in ["desconto", "estorna"] {
+            let found = candidates_at(&model, word, "", &languages(), 10).unwrap();
+            assert_eq!(found.whole.len(), 1, "{word}: {:?}", found.whole);
+        }
+        let incremental = index_dump(dir.path());
+        rebuild_the_index(dir.path());
+        assert_eq!(incremental, index_dump(dir.path()));
+    }
+
+    #[test]
+    fn an_index_already_emptied_stays_emptied_when_a_history_is_saved() {
+        let dir = tempdir().unwrap();
+        let map = json!({"modules": [{"path": "src/a.rs", "declarations": [
+            {"kind": "function", "name": "total", "line": 1, "end_line": 3, "signature": "fn total()"}
+        ]}]});
+        store::write_text(dir.path(), &map.to_string()).unwrap();
+        let model = model_path(dir.path());
+        store::save_lineage_at(&model, &history_of("src/a.rs", "total", "c1", "cobra o desconto")).unwrap();
+        let db = open_existing(&model).unwrap();
+        assert!(!made_in(db.conn(), &languages()).unwrap(), "no languages: the first search makes the index");
+        let indexed_docs: i64 = db.conn().query_row("SELECT count(*) FROM decl_lengths", [], |row| row.get(0)).unwrap();
+        assert_eq!(indexed_docs, 0);
+        drop(db);
+        let found = candidates_at(&model, "desconto", "", &languages(), 10).unwrap();
+        assert_eq!(found.whole, [id_of_line(dir.path(), 1)], "the search that redoes the index finds the commit word");
+    }
+
+    #[test]
+    fn a_search_made_while_a_batch_of_histories_is_being_written_answers_with_what_is_stored() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let dir = two_files();
+        let model = model_path(dir.path());
+        store::save_lineage_at(&model, &history_of("src/a.rs", "total", "c1", "cobra o desconto do caixa")).unwrap();
+        let total = id_of_line(dir.path(), 1);
+        let found = candidates_at(&model, "desconto", "", &languages(), 10).unwrap();
+        assert_eq!(found.whole, [total], "the index is made and holds the stored history");
+
+        let (inside_tx, inside_rx) = mpsc::channel::<()>();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let writer = {
+            let model = model.clone();
+            std::thread::spawn(move || {
+                let mut db = open_existing(&model).unwrap();
+                // A gravação de um lote: a trava de gravação fica com ela até o fim.
+                db.write(|_| {
+                    inside_tx.send(()).unwrap();
+                    Ok(release_rx.recv_timeout(Duration::from_secs(60)).is_ok())
+                })
+                .unwrap()
+            })
+        };
+        inside_rx.recv_timeout(Duration::from_secs(60)).expect("the batch is being written");
+
+        let during = candidates_at(&model, "desconto", "", &languages(), 10);
+        release_tx.send(()).unwrap();
+        assert!(writer.join().unwrap(), "the search ended before the batch was released");
+        assert_eq!(during.expect("the search answers while the batch is being written").whole, [total]);
     }
 
     #[test]
@@ -2332,7 +2551,7 @@ pub(crate) mod tests {
         }
         let dir = saved_json(&json!({ "modules": modules }));
         let db = open_existing(&model_path(dir.path())).unwrap();
-        let whole = whole_list(db.conn(), "fornecedor", "", &languages()).unwrap();
+        let whole = sources(db.conn(), "fornecedor", "", &languages()).unwrap().whole();
         let id = |name: &str| id_of(dir.path(), name);
         assert_eq!(
             whole,
@@ -2550,7 +2769,7 @@ pub(crate) mod tests {
                                 .filter_map(|path| path_of.query_row([path], |row| row.get::<_, i64>(0)).ok())
                                 .collect();
                             for (mode, query) in [(0, &one.intent), (1, &one.names)] {
-                                let whole = whole_list(conn, query, &one.intent, &languages).unwrap();
+                                let whole = sources(conn, query, &one.intent, &languages).unwrap().whole();
                                 let mut files: Vec<i64> = Vec::new();
                                 for id in whole.iter().take(CANDIDATES) {
                                     if let Some(file) = file_of.get(id)

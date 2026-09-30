@@ -404,39 +404,6 @@ impl Amend {
     }
 }
 
-/// Gate enforcement modes (`off` | `warn` | `strict`) — the project-level
-/// default for each gate, formerly carried as `MUSTARD_*_MODE` env vars in
-/// `settings.json`. They live here so `mustard.json` is the single source of
-/// project config; each gate resolves in cascade **env var → this field →
-/// built-in default**, so an env var still overrides per-run (CI/debug) and an
-/// absent field falls back to the gate's own default. Each is a free string
-/// parsed by the gate (an unknown value falls through to the gate default).
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct GateModes {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub skill_size: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub skill_validate_lines: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub checklist: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub boundary: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub main_budget: Option<String>,
-}
-
-impl GateModes {
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.skill_size.is_none()
-            && self.skill_validate_lines.is_none()
-            && self.checklist.is_none()
-            && self.boundary.is_none()
-            && self.main_budget.is_none()
-    }
-}
-
 /// The `language` block of `mustard.json`: the two languages a project writes
 /// in, each declared on its own key.
 ///
@@ -737,8 +704,6 @@ pub struct ProjectConfig {
     pub subprojects: Subprojects,
     #[serde(skip_serializing_if = "Amend::is_empty")]
     pub amend: Amend,
-    #[serde(skip_serializing_if = "GateModes::is_empty")]
-    pub gates: GateModes,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub runtime: Option<Runtime>,
@@ -1154,6 +1119,26 @@ mod tests {
         assert!(cfg.build_command().is_none());
         assert_eq!(cfg.vcs(), Some("git".to_string()));
         assert!(!cfg.unreadable, "no file is an answer: this project declares nothing");
+    }
+
+    /// O `mustard.json` de antes, com o bloco `gates` que nenhuma conferência lê
+    /// mais, segue lido: as outras chaves valem, o bloco não recusa o arquivo e
+    /// volta ao disco como estava.
+    #[test]
+    fn an_old_file_with_the_retired_gates_block_still_loads() {
+        let dir = tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("mustard.json"),
+            r#"{"buildCommand":"cargo build","gates":{"skillSize":"strict","boundary":"warn"},"language":{"text":"pt-BR"}}"#,
+        )
+        .unwrap();
+        let cfg = ProjectConfig::load(dir.path());
+        assert!(!cfg.unreadable, "the retired block does not refuse the file");
+        assert_eq!(cfg.build_command.as_deref(), Some("cargo build"));
+        assert_eq!(cfg.language.text.as_deref(), Some("pt-BR"));
+        cfg.write(dir.path()).unwrap();
+        let raw = std::fs::read_to_string(dir.path().join("mustard.json")).unwrap();
+        assert!(raw.contains("\"skillSize\": \"strict\""), "the block goes back as it was read: {raw}");
     }
 
     /// A file that is there and does not load gives the same defaults as no

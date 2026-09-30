@@ -9,9 +9,11 @@
 //!
 //! Dentro do git e sem o arquivo do mapa, a busca do mapa e o início da sessão
 //! pedem ao scan uma passada sobre o projeto, e o mapa passa a existir; com o
-//! mapa em dia, nenhuma das duas roda o scan. A prova roda o programa inteiro
-//! sobre um projeto parado, com uma cópia do programa ao lado de um scan de
-//! mentira que anota cada passada e grava o banco do mapa onde a passada manda.
+//! mapa em dia, nenhuma das duas roda o scan. Com o mapa criado, as duas também
+//! começam, em segundo plano, a leitura da história de todo arquivo dele. A
+//! prova roda o programa inteiro sobre um projeto parado, com uma cópia do
+//! programa ao lado de um scan de mentira que anota cada passada e cada
+//! leitura da história, e grava o banco do mapa onde a passada manda.
 
 #[path = "support/executable.rs"]
 mod executable;
@@ -32,6 +34,7 @@ struct Setup {
     project: PathBuf,
     home: PathBuf,
     calls: PathBuf,
+    reads: PathBuf,
     fail: PathBuf,
 }
 
@@ -72,7 +75,7 @@ impl Setup {
         // arquivos de agora, com uma função.
         let now = store::listing(&project).expect("dentro do git");
         let map = json!({
-            "state": {"head": now.head, "listing": now.digest()},
+            "state": {"head": now.head, "listing": now.digest(), "base": now.base.name, "base_tip": now.base.tip},
             "modules": [{"path": "src/pedido.rs", "loc": 10, "declarations": [
                 {"kind": "function", "name": "gravar_pedido", "line": 1, "end_line": 3}]}]
         });
@@ -80,20 +83,24 @@ impl Setup {
         store::save_at(&template, &map, "0.2.4+map-test", &Languages::new(["pt-BR", "en-US"])).unwrap();
 
         // A passada anota os argumentos e grava o mapa no `--out` (o quarto
-        // argumento); com o arquivo `fail` ao lado, ela falha sem gravar.
+        // argumento); com o arquivo `fail` ao lado, ela falha sem gravar. A
+        // leitura da história só anota os argumentos, em outro arquivo.
         let calls = dir.path().join("calls");
+        let reads = dir.path().join("reads");
         let fail = dir.path().join("fail");
         let script = format!(
-            "#!/bin/sh\nif [ \"$1\" = format ]; then exit 1; fi\necho \"$@\" >> '{calls}'\n\
+            "#!/bin/sh\nif [ \"$1\" = format ]; then exit 1; fi\n\
+             if [ \"$1\" = history-all ]; then echo \"$@\" >> '{reads}'; exit 0; fi\necho \"$@\" >> '{calls}'\n\
              if [ -f '{fail}' ]; then echo 'scan: broken' >&2; exit 1; fi\nmkdir -p \"$(dirname \"$4\")\" && cp '{template}' \"$4\"\n\
              echo '{{\"ok\":true,\"full\":true,\"read\":[],\"files\":1,\"head\":\"\"}}'\n",
             calls = calls.display(),
+            reads = reads.display(),
             fail = fail.display(),
             template = template.display(),
         );
         executable::write_executable(&bin.join("scan"), &script);
 
-        Self { _dir: dir, rt, project, home, calls, fail }
+        Self { _dir: dir, rt, project, home, calls, reads, fail }
     }
 
     fn model(&self) -> PathBuf {
@@ -103,6 +110,29 @@ impl Setup {
     /// As passadas que o scan de mentira recebeu, uma por linha.
     fn passes(&self) -> Vec<String> {
         std::fs::read_to_string(&self.calls).map(|text| text.lines().map(str::to_string).collect()).unwrap_or_default()
+    }
+
+    /// As leituras da história que o scan de mentira recebeu, uma por linha.
+    /// O programa não espera por elas: quem pergunta espera o processo em
+    /// segundo plano anotar, até um tempo.
+    fn reads_after_waiting(&self, at_least: usize) -> Vec<String> {
+        let read = || -> Vec<String> {
+            std::fs::read_to_string(&self.reads).map(|text| text.lines().map(str::to_string).collect()).unwrap_or_default()
+        };
+        for _ in 0..200 {
+            if read().len() >= at_least {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        read()
+    }
+
+    /// As leituras da história depois de dar ao processo em segundo plano o
+    /// tempo de anotar uma que não devia existir.
+    fn reads_after_a_pause(&self) -> Vec<String> {
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        self.reads_after_waiting(0)
     }
 
     /// Roda a cópia do programa no projeto, com uma pasta pessoal falsa, e
@@ -170,15 +200,23 @@ fn the_search_creates_a_missing_map_and_again_after_it_is_deleted() {
     );
     assert!(passes[0].contains(setup.model().to_str().unwrap()), "{passes:?}");
     assert!(setup.model().is_file(), "the map exists after the search");
+    let reads = setup.reads_after_waiting(1);
+    assert_eq!(
+        reads,
+        [format!("history-all {root} --out {} --json", setup.model().display())],
+        "the search that made the map starts the reading of the history of every file, in the background"
+    );
 
     setup.search();
     assert_eq!(setup.passes().len(), 1, "the map is up to date: no new pass");
+    assert_eq!(setup.reads_after_a_pause().len(), 1, "the map is up to date: no new reading");
 
     std::fs::remove_file(setup.model()).unwrap();
     let again = setup.search();
     assert_ne!(again["reason"], json!("map-missing"), "{again}");
     assert_eq!(setup.passes().len(), 2, "the deleted map asks for a new pass");
     assert!(setup.model().is_file(), "the map is back after the next search");
+    assert_eq!(setup.reads_after_waiting(2).len(), 2, "the map made again starts the reading again");
 }
 
 /// O início da sessão cria o mapa que falta, e o mapa em dia não o faz rodar o
@@ -190,9 +228,11 @@ fn the_session_start_creates_a_missing_map() {
     setup.session_start();
     assert_eq!(setup.passes().len(), 1, "the session start asks for one pass: {:?}", setup.passes());
     assert!(setup.model().is_file(), "the map exists after the session start");
+    assert_eq!(setup.reads_after_waiting(1).len(), 1, "the map made at the session start starts the reading of the history");
 
     setup.session_start();
     assert_eq!(setup.passes().len(), 1, "the map is up to date: no new pass");
+    assert_eq!(setup.reads_after_a_pause().len(), 1, "the map is up to date: no new reading");
 }
 
 /// O scan que falha deixa o projeto sem mapa: a busca recusa com o mapa
@@ -208,4 +248,23 @@ fn a_scan_that_fails_leaves_the_refusal_of_the_missing_map() {
 
     setup.search();
     assert_eq!(setup.passes().len(), 2, "the next search tries again");
+    assert!(setup.reads_after_a_pause().is_empty(), "no map was made: no reading of the history starts");
+}
+
+/// O comando `run scan` também começa a leitura da história de todo arquivo,
+/// em segundo plano, com o mapa gravado, e o comando não espera por ela.
+#[test]
+fn the_scan_command_starts_the_reading_of_the_history_of_every_file() {
+    let setup = Setup::new();
+    let root = setup.project.to_str().unwrap();
+
+    let printed = setup.run(&["run", "scan", "--root", root], "");
+    let report: Value = serde_json::from_str(&printed).unwrap_or_else(|e| panic!("the scan answers JSON ({e}): {printed}"));
+    assert_eq!(report["ok"], json!(true), "{report}");
+    assert_eq!(setup.passes().len(), 1, "one pass: {:?}", setup.passes());
+    assert_eq!(
+        setup.reads_after_waiting(1),
+        [format!("history-all {root} --out {} --json", setup.model().display())],
+        "the map written by the command starts the reading of the history"
+    );
 }

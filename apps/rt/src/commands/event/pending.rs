@@ -4,7 +4,7 @@
 //! Uma pendência é um trabalho que o operador e o Mustard combinaram fazer e que
 //! ainda não fechou. Ela nasce na conversa, pode existir antes de qualquer
 //! unidade e pode atravessar várias — e é justamente por isso que nem o canal de
-//! material (`material-add`) nem o caderno (`notebook`) servem: os dois vivem no
+//! material do levantamento nem o caderno (`notebook`) servem: os dois vivem no
 //! diretório da unidade, e o primeiro recusa gravar quando nenhuma existe.
 //!
 //! Medido em 09/09/2026: três trabalhos combinados na ordem 2 → 3 → 1. A ordem
@@ -49,7 +49,7 @@
 //! O início da sessão mostra só uma linha, com a contagem ([`count_line`]); a
 //! lista inteira sai da listagem.
 //!
-//! Recusa sai com exit 1 e o JSON `ok: false`, como o `material-add`.
+//! Recusa sai com exit 1 e o JSON `ok: false`, como a gravação de material.
 
 use std::path::{Path, PathBuf};
 
@@ -67,6 +67,9 @@ use mustard_core::io::fs::lock::{read_shared, LockedFile};
 use crate::commands::agent::render::prompt_ref::fnv1a64;
 use crate::commands::git_settle::main_checkout_root;
 use crate::shared::spec_state::{session_from_env, DiskSpecState};
+
+mod carried;
+pub(crate) use carried::carried_by;
 
 /// Options for `mustard-rt run pending`.
 #[derive(Debug, Clone, Default)]
@@ -192,7 +195,7 @@ struct PendingItem {
 }
 
 /// O documento inteiro. `deny_unknown_fields` pelo mesmo motivo do
-/// `material-add`: sem ele, uma chave escrita à mão seria aceita aqui e
+/// canal de material: sem ele, uma chave escrita à mão seria aceita aqui e
 /// removida em silêncio na próxima gravação.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1226,19 +1229,6 @@ pub(crate) fn arm_charge(root: &Path, spec: &str, closure: u64, session: Option<
     })
 }
 
-/// A pendência aberta que virou a spec `spec`, pela nota da lista.
-#[must_use]
-pub(crate) fn became_of(root: &Path, spec: &str) -> Option<String> {
-    let project = ledger_root(root);
-    let paths = mustard_core::ClaudePaths::for_project(&project).ok()?;
-    load(&paths.pending_ledger_path())
-        .ok()?
-        .items
-        .into_iter()
-        .find(|i| i.status == Status::Open && i.became.as_deref() == Some(spec))
-        .map(|i| i.id)
-}
-
 /// Fecha `id` como ENTREGUE com `reason`, pelo mesmo passe de `run pending`
 /// (motivo obrigatório, item já resolvido recusado). `true` só quando o
 /// arquivo foi de fato gravado.
@@ -1350,7 +1340,7 @@ mod tests {
         let dir = repo();
         let root = dir.path();
 
-        // Na base, sem unidade — o caso que o `material-add` recusa.
+        // Na base, sem unidade — o caso que a gravação de material recusa.
         let wrote = add(root, "Humanize", "terceiro trabalho combinado em 10/09");
         assert_eq!(wrote["ok"], json!(true), "report: {wrote}");
         assert_eq!(wrote["id"], json!("P-1"));
