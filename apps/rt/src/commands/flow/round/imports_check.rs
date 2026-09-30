@@ -4,15 +4,18 @@
 //! projeto, aprendidas do mapa da base. A que vai contra uma regra forte
 //! recusa a volta, com o arquivo, a linha e o papel por onde a chamada
 //! deveria passar; a que vai contra um costume, e a que fecha um ciclo novo
-//! de importações, só avisam. A importação que já existia na base nunca
-//! conta: o projeto segue como está no código. A tarefa da onda que leva o
+//! de importações, só avisam. O pai que declara o módulo filho dentro de si
+//! (`mod filho;`) e o filho que usa o que é do pai (`use super::Coisa`) não
+//! fecham ciclo: é o arranjo normal da língua, e o ciclo entre dois irmãos
+//! continua avisado. A importação que já existia na base nunca conta: o
+//! projeto segue como está no código. A tarefa da onda que leva o
 //! par de papéis (`role_pair`) libera a importação entre os dois, só nos
 //! arquivos dela.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::Path;
 
-use mustard_core::domain::ast::is_test_path;
+use mustard_core::domain::ast::{is_declared_child, is_test_path};
 use mustard_core::domain::pattern::{learn, Direction};
 use mustard_core::domain::project_map::ProjectMap;
 use mustard_core::domain::spec_events::SpecLog;
@@ -28,6 +31,7 @@ pub(super) fn findings(root: &Path, maps: &AfterWave, log: &SpecLog, lang: Local
     let after = learn(&maps.after);
     let role = |path: &str| base.roles.get(path).or_else(|| after.roles.get(path)).map(String::as_str);
     let (before, now) = (graph(&maps.base), graph(&maps.after));
+    let (before_cycles, now_cycles) = (cycle_graph(&maps.base), cycle_graph(&maps.after));
     let mut out = Vec::new();
     for (wave, files) in &maps.changed {
         let released = released_pairs(log, *wave);
@@ -60,7 +64,11 @@ pub(super) fn findings(root: &Path, maps: &AfterWave, log: &SpecLog, lang: Local
                 } else if let Some(rule) = base.info_against(from, to) {
                     out.push(Finding { wave: *wave, refuses: false, text: at("round.after_wave.weak", Some(rule)) });
                 }
-                if reaches(&now, target, file) && !(reaches(&before, file, target) && reaches(&before, target, file)) {
+                let declared = maps.after.module(file).is_some_and(|m| is_declared_child(file, target, &m.language));
+                if !declared
+                    && reaches(&now_cycles, target, file)
+                    && !(reaches(&before_cycles, file, target) && reaches(&before_cycles, target, file))
+                {
                     out.push(Finding { wave: *wave, refuses: false, text: at("round.after_wave.cycle", None) });
                 }
             }
@@ -76,6 +84,22 @@ fn graph(map: &ProjectMap) -> BTreeMap<&str, BTreeSet<&str>> {
         .iter()
         .filter(|m| !is_test_path(&m.path))
         .map(|m| (m.path.as_str(), m.deps.iter().map(String::as_str).filter(|d| !is_test_path(d)).collect()))
+        .collect()
+}
+
+/// O grafo dos ciclos: o de [`graph`] sem a aresta do arquivo para o módulo
+/// filho que ele declara dentro de si. O pai só diz que o filho existe, e o
+/// filho que usa o pai é o arranjo normal da língua; contadas, as duas
+/// arestas formariam um ciclo em todo módulo com filho.
+fn cycle_graph(map: &ProjectMap) -> BTreeMap<&str, BTreeSet<&str>> {
+    map.modules
+        .iter()
+        .filter(|m| !is_test_path(&m.path))
+        .map(|m| {
+            let deps = m.deps.iter().map(String::as_str);
+            let counted = deps.filter(|d| !is_test_path(d) && !is_declared_child(&m.path, d, &m.language));
+            (m.path.as_str(), counted.collect())
+        })
         .collect()
 }
 
@@ -181,21 +205,29 @@ pub(super) mod tests {
     /// Uma spec aprovada com a onda 1, cuja tarefa muda `file`, com o par
     /// liberado `pair` quando há; a onda já enviada; e o mapa da base `base`.
     fn project(root: &Path, file: &str, pair: Option<[&str; 2]>, base: &Value) {
+        project_of(root, &[file], pair, base);
+    }
+
+    /// [`project`] com a tarefa da onda mudando cada arquivo de `files`.
+    fn project_of(root: &Path, files: &[&str], pair: Option<[&str; 2]>, base: &Value) {
         approved_with(root, "x", &[], |said| {
             let log = mustard_core::io::spec_events::read(&mustard_core::io::spec_events::spec_file(root, "x").unwrap())
                 .unwrap()
                 .unwrap();
             let crit = log.visible().into_iter().find(|e| e.event_type == "criterion").unwrap().id;
             write(root, "x", "wave", json!({"n": 1, "text": "Onda 1.", "criteria": [crit], "done_when": "A suíte passa.", "origin": said}));
-            let mut task = json!({"wave": 1, "text": "Tarefa da onda 1.", "files": [{"path": file}], "depends_on": [], "origin": said});
+            let listed: Vec<Value> = files.iter().map(|file| json!({"path": file})).collect();
+            let mut task = json!({"wave": 1, "text": "Tarefa da onda 1.", "files": listed, "depends_on": [], "origin": said});
             if let Some(pair) = pair {
                 task["role_pair"] = json!(pair);
             }
             write(root, "x", "task", task);
         });
-        let path = root.join(file);
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, "import { Controller4 } from '../controller/controller4.controller';\n").unwrap();
+        for file in files {
+            let path = root.join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, "import { Controller4 } from '../controller/controller4.controller';\n").unwrap();
+        }
         round(root, "x", None);
         // O mapa da base entra depois do envio: a rodada relê o mapa velho
         // antes de enviar, e o scan de verdade trocaria este pelo do disco.
@@ -207,9 +239,36 @@ pub(super) mod tests {
 
     /// A volta da onda 1 mudando o service, com o mapa de depois `after`.
     fn back(root: &Path, after: Value) -> Value {
-        let report = delivered(root, 1, "O service mudou.", &[SERVICE]);
+        back_of(root, &[SERVICE], after)
+    }
+
+    /// A volta da onda 1 mudando cada arquivo de `files`, com o mapa de depois
+    /// `after`.
+    fn back_of(root: &Path, files: &[&str], after: Value) -> Value {
+        let report = delivered(root, 1, "A onda mudou.", files);
         round_with_mine(root, "x", Some(&report), &mine_giving(after))
     }
+
+    /// Um mapa de `language` com as importações de cada arquivo (`deps`), o
+    /// que a passada do scan grava de um projeto pequeno.
+    fn small_map(language: &str, deps: &[(&str, &[&str])]) -> Value {
+        let modules: Vec<Value> =
+            deps.iter().map(|(path, deps)| json!({"path": path, "language": language, "deps": deps})).collect();
+        json!({"modules": modules})
+    }
+
+    /// Os avisos da conferência de importações que a volta `out` trouxe,
+    /// juntos num texto só; vazio quando não veio nenhum.
+    fn warned(out: &Value) -> String {
+        let warnings = out["warnings"].as_array().cloned().unwrap_or_default();
+        let hints = warnings.iter().filter(|w| w["reason"] == json!("round-after-wave-warnings"));
+        hints.map(|w| w["hint"].as_str().unwrap_or_default().to_string()).collect::<Vec<_>>().join("\n")
+    }
+
+    const CYCLE: &str = "fecha um ciclo novo de importações";
+    const PENDING: &str = "src/comandos/evento/pending.rs";
+    const CARRIED: &str = "src/comandos/evento/pending/carried.rs";
+    const PR_DOOR: &str = "src/comandos/revisao/pr_door.rs";
 
     #[test]
     fn a_new_import_against_a_strong_rule_is_refused_with_the_fix() {
@@ -299,5 +358,83 @@ pub(super) mod tests {
         for said in ["round-after-wave", "conferência depois da onda", "importa"] {
             assert!(!text.contains(said), "{said}: {out}");
         }
+    }
+    /// O filho ganha o `use super::` que o liga ao pai que já o declarava
+    /// (`mod carried;`): o pai chega ao filho e o filho volta ao pai, e isso
+    /// não é ciclo.
+    #[test]
+    fn a_child_module_that_uses_its_declaring_parent_closes_no_cycle() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        project_of(root, &[CARRIED], None, &small_map("rust", &[(PENDING, &[CARRIED]), (CARRIED, &[])]));
+        let out = back_of(root, &[CARRIED], small_map("rust", &[(PENDING, &[CARRIED]), (CARRIED, &[PENDING])]));
+        assert_eq!(out["ok"], json!(true), "{out}");
+        assert!(!warned(&out).contains(CYCLE), "{out}");
+    }
+
+    /// O pai ganha o `mod carried;` de um filho que já usava o pai.
+    #[test]
+    fn a_parent_that_declares_a_child_already_using_it_closes_no_cycle() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        project_of(root, &[PENDING], None, &small_map("rust", &[(PENDING, &[]), (CARRIED, &[PENDING])]));
+        let out = back_of(root, &[PENDING], small_map("rust", &[(PENDING, &[CARRIED]), (CARRIED, &[PENDING])]));
+        assert_eq!(out["ok"], json!(true), "{out}");
+        assert!(!warned(&out).contains(CYCLE), "{out}");
+    }
+
+    /// A onda nova traz de uma vez a porta que importa o filho, o filho que
+    /// usa o pai e o pai que o declara: nenhum dos três arquivos fecha ciclo.
+    #[test]
+    fn a_door_a_child_and_its_parent_together_close_no_cycle() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let files = [PR_DOOR, CARRIED, PENDING];
+        project_of(root, &files, None, &small_map("rust", &[(PR_DOOR, &[PENDING]), (PENDING, &[]), (CARRIED, &[])]));
+        let after = small_map("rust", &[(PR_DOOR, &[PENDING, CARRIED]), (PENDING, &[CARRIED]), (CARRIED, &[PENDING])]);
+        let out = back_of(root, &files, after);
+        assert_eq!(out["ok"], json!(true), "{out}");
+        assert!(!warned(&out).contains(CYCLE), "{out}");
+    }
+
+    /// Dois irmãos, filhos do mesmo pai, que passam a se importar fecham um
+    /// ciclo de verdade: o aviso continua.
+    #[test]
+    fn two_sibling_modules_that_import_each_other_still_close_a_cycle() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let other = "src/comandos/evento/pending/other.rs";
+        let base = small_map("rust", &[(PENDING, &[CARRIED, other]), (CARRIED, &[other]), (other, &[])]);
+        project_of(root, &[other], None, &base);
+        let after = small_map("rust", &[(PENDING, &[CARRIED, other]), (CARRIED, &[other]), (other, &[CARRIED])]);
+        let out = back_of(root, &[other], after);
+        assert_eq!(out["ok"], json!(true), "{out}");
+        assert!(warned(&out).contains(CYCLE), "{out}");
+        assert!(warned(&out).contains(&format!("`{other}` linha")), "{out}");
+    }
+
+    /// Um pai que não declara o filho é só um arquivo que importa outro: se
+    /// os dois se importam, é ciclo.
+    #[test]
+    fn two_files_that_import_each_other_close_a_cycle_when_neither_declares_the_other() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (one, two) = ("src/comandos/evento/um.rs", "src/comandos/evento/dois.rs");
+        project_of(root, &[two], None, &small_map("rust", &[(one, &[two]), (two, &[])]));
+        let out = back_of(root, &[two], small_map("rust", &[(one, &[two]), (two, &[one])]));
+        assert!(warned(&out).contains(CYCLE), "{out}");
+    }
+
+    /// No TypeScript a pasta é importada pelo `index`, e o `index` que
+    /// reexporta o `./x` de onde o `./x` importa o `index` é um ciclo de
+    /// verdade: o aviso continua.
+    #[test]
+    fn an_index_and_the_file_it_reexports_still_close_a_cycle_in_typescript() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (index, x) = ("src/pasta/index.ts", "src/pasta/x.ts");
+        project_of(root, &[x], None, &small_map("typescript", &[(index, &[x]), (x, &[])]));
+        let out = back_of(root, &[x], small_map("typescript", &[(index, &[x]), (x, &[index])]));
+        assert!(warned(&out).contains(CYCLE), "{out}");
     }
 }

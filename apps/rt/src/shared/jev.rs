@@ -799,7 +799,7 @@ mod tests {
     use mustard_core::domain::map_filter::CUT_SHARE;
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::{TcpListener, TcpStream};
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Mutex, OnceLock};
 
     const SECRET: &str = "sk-test-0123456789abcdef";
 
@@ -807,10 +807,25 @@ mod tests {
         JevKey(SECRET.to_string())
     }
 
-    /// Um endereço numa porta que acabou de ser liberada: ninguém ouve ali.
+    /// Um endereço em que ninguém responde: a porta fica presa até o fim do
+    /// processo, e quem se conecta a ela cai na hora, sem resposta. Uma porta
+    /// solta logo depois do `bind` podia ser tomada por um serviço de mentira
+    /// de outro teste (deste processo ou de outro que roda ao mesmo tempo), e o
+    /// pedido de quem procurava a porta fechada chegava a esse serviço, que
+    /// contava um pedido a mais.
     fn closed_url() -> String {
-        let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-        format!("http://127.0.0.1:{port}/v1/systemone")
+        static URL: OnceLock<String> = OnceLock::new();
+        URL.get_or_init(|| {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = format!("http://{}/v1/systemone", listener.local_addr().unwrap());
+            std::thread::spawn(move || {
+                for stream in listener.incoming() {
+                    drop(stream);
+                }
+            });
+            url
+        })
+        .clone()
     }
 
     // -- o serviço de mentira ------------------------------------------------
@@ -1680,6 +1695,29 @@ mod tests {
         let filter = JevFilter::at(test_key(), &closed_url());
         let error = filter.filter(&request(vec![candidate(1)])).unwrap_err();
         assert!(matches!(error, FilterError::Network(_)), "{error:?}");
+    }
+
+    /// O endereço dado como fechado fica preso até o fim do processo: nenhum
+    /// serviço de mentira, deste processo ou de outro que roda ao mesmo
+    /// tempo, recebe a mesma porta, e quem se conecta a ela cai sem resposta.
+    /// Uma porta solta logo depois do `bind` era tomada por um serviço vizinho,
+    /// que então recebia o pedido de quem procurava a porta fechada e contava
+    /// um pedido a mais.
+    #[test]
+    fn the_closed_address_stays_taken_and_drops_whoever_connects() {
+        let url = closed_url();
+        let address = url.trim_start_matches("http://").split('/').next().unwrap();
+        let taken = TcpListener::bind(address).expect_err("another service could take the port of the closed address");
+        assert_eq!(taken.kind(), ErrorKind::AddrInUse);
+
+        let mut stream = TcpStream::connect(address).expect("the port takes the connection");
+        stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let mut byte = [0u8; 1];
+        match stream.read(&mut byte) {
+            Ok(read) => assert_eq!(read, 0, "nothing is ever answered"),
+            Err(error) => assert_eq!(error.kind(), ErrorKind::ConnectionReset, "{error:?}"),
+        }
+        assert_eq!(closed_url(), url, "every test asks the same taken address");
     }
 
     #[test]

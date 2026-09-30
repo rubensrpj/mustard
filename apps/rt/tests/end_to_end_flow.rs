@@ -24,6 +24,11 @@
 //! do submódulo que o merge não levou, envio que o servidor recusa — deixam o
 //! principal como rascunho, e duas sessões conferindo ao mesmo tempo movem o
 //! ponteiro uma vez só.
+//!
+//! Com uma cópia do programa ao lado de um scan de mentira, o mesmo projeto
+//! prova que a abertura, a rodada e o fechamento, ao criar ou reler o mapa do
+//! projeto, começam a leitura da história dos arquivos dele — e só a dele: a
+//! cópia do mapa que a conferência depois da onda joga fora fica sem leitura.
 
 #![cfg(unix)]
 
@@ -32,8 +37,10 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
+use mustard_core::domain::normalize::Languages;
 use mustard_core::domain::spec_events::SpecLog;
 use mustard_core::domain::spec_state::State;
+use mustard_core::io::project_map as map_store;
 use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Value};
@@ -122,6 +129,9 @@ struct Project {
     /// Os servidores locais do projeto: o do principal (`projeto.git`) e, com
     /// submódulo, o dele.
     remotes: PathBuf,
+    /// A cópia do programa que roda ao lado do scan de mentira, quando o
+    /// projeto tem um ([`Project::with_scan`]).
+    rt: Option<PathBuf>,
 }
 
 impl Project {
@@ -197,13 +207,100 @@ impl Project {
         };
         executable::write_executable(&gh, &script);
         support::copies_leave_with_the_test(&root);
-        Self { _dir: dir, root, home, bin, remotes }
+        Self { _dir: dir, root, home, bin, remotes, rt: None }
+    }
+
+    /// O projeto de [`Project::new`] com uma cópia do programa ao lado de um
+    /// scan de mentira: cada passada grava no `--out` o mesmo mapa pronto e é
+    /// anotada em `scan.log`, e cada leitura da história é anotada em
+    /// `history.log`. A cópia é feita por outro processo (ver
+    /// `support/executable.rs`), e o scan é o que está ao lado de quem roda.
+    fn with_scan() -> Self {
+        let mut project = Self::build(false);
+        let rt = project.bin.join("mustard-rt");
+        let copied = Command::new("cp").arg(env!("CARGO_BIN_EXE_mustard-rt")).arg(&rt).status().expect("cp runs");
+        assert!(copied.success(), "the copy of the program is made");
+
+        let now = map_store::listing(&project.root).expect("inside git");
+        let map = json!({
+            "state": {"head": now.head, "listing": now.digest(), "base": now.base.name, "base_tip": now.base.tip},
+            "modules": [{"path": "src/main.rs", "loc": 3, "declarations": [
+                {"kind": "function", "name": "main", "line": 1, "end_line": 3}]}]
+        });
+        let template = project.home.join("map.db");
+        map_store::save_at(&template, &map, "0.2.4+map-test", &Languages::new(["pt-BR", "en-US"])).expect("the map");
+
+        let script = format!(
+            "#!/bin/sh\ncase \"$1\" in\n\
+             history-all) echo \"$@\" >> '{history}'; exit 0 ;;\n\
+             scan) echo \"$@\" >> '{scans}'\n\
+             mkdir -p \"$(dirname \"$4\")\" && cp '{template}' \"$4\"\n\
+             echo '{{\"ok\":true,\"full\":true,\"read\":[],\"files\":1,\"head\":\"\"}}'; exit 0 ;;\n\
+             *) exit 1 ;;\nesac\n",
+            history = project.history_log().display(),
+            scans = project.scan_log().display(),
+            template = template.display(),
+        );
+        executable::write_executable(&project.bin.join("scan"), &script);
+        project.rt = Some(rt);
+        project
+    }
+
+    fn scan_log(&self) -> PathBuf {
+        self.home.join("scan.log")
+    }
+
+    fn history_log(&self) -> PathBuf {
+        self.home.join("history.log")
+    }
+
+    /// As passadas que o scan de mentira recebeu, na ordem, uma por linha.
+    fn scan_passes(&self) -> Vec<String> {
+        std::fs::read_to_string(self.scan_log()).unwrap_or_default().lines().map(str::to_string).collect()
+    }
+
+    /// As leituras da história que o scan de mentira recebeu, na ordem, sem
+    /// esperar por nenhuma: o programa não espera o processo em segundo plano.
+    fn history_reads(&self) -> Vec<String> {
+        std::fs::read_to_string(self.history_log()).unwrap_or_default().lines().map(str::to_string).collect()
+    }
+
+    /// As leituras da história depois de o processo em segundo plano parar de
+    /// anotar: a lista só vale quando não muda por meio segundo.
+    fn settled_history_reads(&self) -> Vec<String> {
+        let mut last = self.history_reads();
+        for _ in 0..100 {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            let now = self.history_reads();
+            if now == last {
+                return now;
+            }
+            last = now;
+        }
+        panic!("the reads of the history never stopped: {last:?}");
+    }
+
+    /// As leituras da história depois de esperar até `at_least` delas
+    /// chegarem, por um tempo.
+    fn history_reads_after_waiting(&self, at_least: usize) -> Vec<String> {
+        for _ in 0..200 {
+            if self.history_reads().len() >= at_least {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        self.history_reads()
+    }
+
+    /// A linha que a leitura da história do mapa do projeto deixa no registro.
+    fn model_read_line(&self) -> String {
+        format!("history-all {} --out {} --json", self.root.display(), map_store::model_path(&self.root).display())
     }
 
     /// O binário com `args`, no projeto, com a pasta pessoal falsa, o `gh`
     /// falso à frente do `PATH` e nenhuma sessão nem spec forçada.
     fn command(&self, args: &[&str], stdin: &str) -> Output {
-        let mut binary = Command::new(env!("CARGO_BIN_EXE_mustard-rt"));
+        let mut binary = Command::new(self.rt.as_deref().unwrap_or_else(|| Path::new(env!("CARGO_BIN_EXE_mustard-rt"))));
         let mut child = self
             .env(&mut binary)
             .args(args)
@@ -1070,4 +1167,99 @@ fn two_sessions_checking_the_submodule_at_the_same_time_move_the_pointer_once() 
     let after: usize = git_out(&project.root, &["rev-list", "--count", "HEAD"]).parse().expect("a number");
     assert_eq!(after, commits.parse::<usize>().expect("a number") + 1, "the pointer commit happened once");
     assert_eq!(pointer(&project), submodule_base_tip(&project), "the pointer is the submodule base");
+}
+
+/// A abertura da spec deixa o mapa do projeto em dia e, com ele gravado,
+/// começa em segundo plano a leitura da história de todo arquivo dele: uma
+/// passada e uma leitura, as duas sobre o mapa do projeto.
+#[test]
+fn opening_a_spec_starts_the_reading_of_the_history_of_the_map_it_refreshes() {
+    let project = Project::with_scan();
+    let opened = project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    assert_eq!(opened["step"], json!("ask_goal"), "{opened}");
+
+    let model = map_store::model_path(&project.root);
+    assert_eq!(
+        project.scan_passes(),
+        [format!("scan {} --out {} --json", project.root.display(), model.display())],
+        "the open asks one pass over the project, for its map"
+    );
+    assert_eq!(
+        project.history_reads_after_waiting(1),
+        [project.model_read_line()],
+        "the open that refreshed the map starts the reading of the history of every file, in the background"
+    );
+}
+
+/// A spec no ponto da entrega da onda 1: a cópia mudada e a entrega gravada
+/// pelo agente da onda, ainda por assumir.
+fn deliver_the_first_wave(project: &Project) {
+    project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    survey(project);
+    plan(project);
+    approve(project);
+    first_round(project);
+    let log = project.log();
+    let sent = log.visible().into_iter().rfind(|e| e.event_type == "send").expect("the send");
+    let copy = PathBuf::from(sent.str_field("copy").expect("the copy"));
+    std::fs::write(copy.join("src/main.rs"), "fn main() {\n    println!(\"olá\");\n}\n").expect("the change");
+    let delivered = json!({"wave": 1, "text": "A saudação virou olá.", "files": ["src/main.rs"],
+        "commit": "a saudação vira olá", "agreed": agreed_all_met(project)});
+    project.run(&["write", "delivered", "--spec", SPEC, "--json", &delivered.to_string()]);
+}
+
+/// As passadas e as leituras da história que uma chamada trouxe, contadas
+/// desde o ponto `(passes, reads)` anterior a ela; a lista de leituras só
+/// vale depois de o processo em segundo plano parar de anotar.
+fn since(project: &Project, before: &(usize, usize)) -> (Vec<String>, Vec<String>) {
+    let reads = project.settled_history_reads();
+    (project.scan_passes()[before.0..].to_vec(), reads[before.1..].to_vec())
+}
+
+/// A passada que leu uma cópia descartável do mapa, e não o mapa do projeto:
+/// a que a conferência depois da onda pede e joga fora.
+fn is_throwaway_pass(project: &Project, pass: &str) -> bool {
+    let model = map_store::model_path(&project.root);
+    pass.starts_with("scan ") && !pass.contains(&format!("--out {} ", model.display()))
+}
+
+/// A rodada que assume a entrega e comita relê o mapa do projeto e começa a
+/// leitura da história dele; a cópia do mapa que a conferência depois da onda
+/// relê e joga fora só ganha a passada.
+#[test]
+fn a_round_that_commits_the_return_starts_the_reading_of_the_history_of_the_project_map_only() {
+    let project = Project::with_scan();
+    deliver_the_first_wave(&project);
+    let before = (project.scan_passes().len(), project.settled_history_reads().len());
+
+    let second = project.run(&["round", "--spec", SPEC]);
+    assert!(second.get("commit").is_some(), "the round committed the return: {second}");
+
+    let (passes, reads) = since(&project, &before);
+    assert!(passes.iter().any(|pass| is_throwaway_pass(&project, pass)), "the check after the wave read a copy of the map: {passes:?}");
+    assert!(!reads.is_empty(), "the round that refreshed the map starts the reading of its history: {passes:?}");
+    assert!(
+        reads.iter().all(|read| *read == project.model_read_line()),
+        "the reading is over the map of the project, never over the copy that is thrown away: {reads:?}"
+    );
+}
+
+/// O fechamento que assume a última entrega, pela mesma porta da rodada,
+/// começa a leitura da história do mapa do projeto que ele releu.
+#[test]
+fn a_close_that_takes_the_last_return_starts_the_reading_of_the_history_of_the_project_map_only() {
+    let project = Project::with_scan();
+    deliver_the_first_wave(&project);
+    let before = (project.scan_passes().len(), project.settled_history_reads().len());
+
+    let asked = project.run(&["close", "--spec", SPEC]);
+    assert_eq!(asked["phase"], json!("running"), "{asked}");
+
+    let (passes, reads) = since(&project, &before);
+    assert!(passes.iter().any(|pass| is_throwaway_pass(&project, pass)), "the check after the wave read a copy of the map: {passes:?}");
+    assert!(!reads.is_empty(), "the close that refreshed the map starts the reading of its history: {passes:?}");
+    assert!(
+        reads.iter().all(|read| *read == project.model_read_line()),
+        "the reading is over the map of the project, never over the copy that is thrown away: {reads:?}"
+    );
 }

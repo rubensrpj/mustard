@@ -19,7 +19,6 @@ use mustard_core::io::fs::lock::LockedFile;
 use mustard_core::io::spec_events as store;
 use mustard_core::io::wave_prompt;
 use mustard_core::platform::i18n::{translate, Locale};
-use mustard_core::Scan;
 use serde_json::{json, Map, Value};
 
 use super::answer::RoundRefusal;
@@ -165,7 +164,7 @@ pub(crate) fn take_report(
     lang: Locale,
     caller: Caller<'_>,
 ) -> Result<Taken, RoundRefusal> {
-    take_report_with_mine(start, root, spec, raw, log, lang, caller, &|root, out| Scan::locate().scan(root, out))
+    take_report_with_mine(start, root, spec, raw, log, lang, caller, &super::answer::scan_mine)
 }
 
 /// [`take_report`] com quem relê o mapa depois do commit (`mine`), que um
@@ -4402,7 +4401,7 @@ mod tests {
         // A onda do conserto nasce do mapa que o scan grava: com o scan de
         // outra versão, o do `PATH`, ela não se forma. A falha diz o conserto.
         assert!(
-            Scan::locate().is_compiled_alongside(),
+            mustard_core::Scan::locate().is_compiled_alongside(),
             "o teste precisa do scan compilado junto com ele: rode `cargo build -p scan` antes de `cargo test -p mustard-rt`"
         );
         let dir = tempdir().unwrap();

@@ -425,10 +425,13 @@ fn opened(
     report
 }
 
-/// O núcleo testável de [`run`], com o mapa do projeto atualizado de verdade.
-/// Nunca entra em pânico.
+/// O núcleo testável de [`run`], com o mapa do projeto atualizado de verdade
+/// e, com o mapa gravado, a leitura da história dos arquivos dele começada em
+/// segundo plano. Nunca entra em pânico.
 pub(crate) fn open_at(opts: &OpenOpts) -> Value {
-    open_with(opts, |root| Scan::locate().scan(root, &mustard_core::io::project_map::model_path(root)).map_err(|e| e.to_string()))
+    open_with(opts, |root| {
+        Scan::locate().scan_then_read_history(root, &mustard_core::io::project_map::model_path(root)).map_err(|e| e.to_string())
+    })
 }
 
 /// O `open`, com quem atualiza o mapa do projeto dado por quem chama.

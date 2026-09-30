@@ -518,9 +518,19 @@ pub(super) fn run_round(
 }
 
 /// Quem relê o mapa depois do commit da rodada: a ferramenta do scan
-/// instalada.
+/// instalada. Só o mapa do próprio projeto começa, em segundo plano, a leitura
+/// da história dos arquivos dele: a cópia do mapa que a conferência depois da
+/// onda relê e joga fora é só passada, e a história dela seria lida à toa. Os
+/// testes da biblioteca nunca começam a leitura com um scan de verdade, que
+/// escreveria no mapa por conta própria enquanto o teste ainda o usa; o
+/// programa inteiro, com o scan ao lado, é provado pelo fluxo de ponta a ponta.
 pub(super) fn scan_mine(root: &Path, out: &Path) -> mustard_core::platform::error::Result<mustard_core::domain::scan::ScanReport> {
-    mustard_core::Scan::locate().scan(root, out)
+    let scan = mustard_core::Scan::locate();
+    if !cfg!(test) && out == mustard_core::io::project_map::model_path(root) {
+        scan.scan_then_read_history(root, out)
+    } else {
+        scan.scan(root, out)
+    }
 }
 
 /// [`run_round`] com quem relê o mapa depois do commit da rodada (`mine`),

@@ -17,6 +17,10 @@
 //! também embutido, com uma lista por língua. A língua entra só como chave: o
 //! código não conhece nenhuma. Quem lê: a importação do scan e o padrão do
 //! projeto.
+//!
+//! O módulo filho que o pai declara dentro de si também vem de dado, em
+//! `nested-modules.toml`: a lista das línguas que têm esse arranjo. Quem lê: a
+//! conferência de ciclos de importação depois da onda.
 
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
@@ -84,6 +88,45 @@ pub fn is_entry_file(rel: &str, language: &str) -> bool {
     let file = rel.rsplit(['/', '\\']).next().unwrap_or(rel);
     let stem = stem_of(file);
     entry_file_names(language).iter().any(|name| name == stem)
+}
+
+/// As línguas em que o módulo pai declara o filho dentro da pasta dele, lidas
+/// de `nested-modules.toml`, embutido na compilação: a chave é o nome da
+/// língua.
+type NestedModules = BTreeMap<String, bool>;
+
+/// Os dados dos módulos filhos, lidos uma vez. Dado ilegível vira lista vazia,
+/// sem derrubar quem pergunta; o teste deste módulo garante que o arquivo
+/// embutido se lê.
+fn nested_data() -> &'static NestedModules {
+    static DATA: OnceLock<NestedModules> = OnceLock::new();
+    DATA.get_or_init(|| toml::from_str(include_str!("nested-modules.toml")).unwrap_or_default())
+}
+
+/// Se `child` é um módulo que `parent`, escrito na língua `language`, declara
+/// dentro de si: a língua declara o filho no pai (`nested-modules.toml`) e o
+/// caminho do filho está na pasta do módulo do pai — a pasta do próprio pai,
+/// quando ele é o arquivo de entrada dela, ou a pasta com o nome dele sem a
+/// extensão, no outro caso. O arquivo nunca é filho de si mesmo. Os caminhos
+/// são relativos à raiz do projeto, com `/` ou `\`.
+#[must_use]
+pub fn is_declared_child(parent: &str, child: &str, language: &str) -> bool {
+    if !nested_data().get(language).copied().unwrap_or(false) {
+        return false;
+    }
+    let (parent, child) = (parent.replace('\\', "/"), child.replace('\\', "/"));
+    if parent == child {
+        return false;
+    }
+    let (dir, file) = parent.rsplit_once('/').unwrap_or(("", parent.as_str()));
+    let folder = if is_entry_file(&parent, language) {
+        dir.to_string()
+    } else if dir.is_empty() {
+        stem_of(file).to_string()
+    } else {
+        format!("{dir}/{}", stem_of(file))
+    };
+    folder.is_empty() || child.strip_prefix(&folder).is_some_and(|rest| rest.len() > 1 && rest.starts_with('/'))
 }
 
 /// Os marcadores que, no conteúdo de um arquivo, dizem que ele guarda os
@@ -368,6 +411,53 @@ mod tests {
         assert!(!is_entry_file("src/pasta/index.d.ts", "typescript"));
         assert!(!is_entry_file("src/pasta/Index.ts", "typescript"));
         assert!(!is_entry_file("src/pasta/reindex.ts", "typescript"));
+    }
+
+    #[test]
+    fn the_embedded_nested_module_list_reads_and_each_language_has_entry_files() {
+        let data = nested_data();
+        assert!(!data.is_empty(), "a lista dos módulos filhos saiu vazia do arquivo de dados");
+        for language in data.keys() {
+            assert!(
+                !entry_file_names(language).is_empty(),
+                "a língua {language} nomeia módulo filho e não tem arquivo de entrada para achar a pasta do pai"
+            );
+        }
+    }
+
+    #[test]
+    fn a_child_module_lives_in_the_folder_of_the_module_of_its_parent() {
+        // `a.rs` e `a/mod.rs` têm os filhos em `a/`; o crate declara os
+        // módulos de topo na pasta do `lib` e do `main`.
+        assert!(is_declared_child("src/a.rs", "src/a/x.rs", "rust"));
+        assert!(is_declared_child("src/a/mod.rs", "src/a/x.rs", "rust"));
+        assert!(is_declared_child("src/a.rs", "src/a/b/c.rs", "rust"));
+        assert!(is_declared_child("src/lib.rs", "src/x.rs", "rust"));
+        assert!(is_declared_child("src/main.rs", "src/x/y.rs", "rust"));
+        assert!(is_declared_child("a.rs", "a/x.rs", "rust"));
+        assert!(is_declared_child(r"src\a.rs", r"src\a\x.rs", "rust"));
+        assert!(is_declared_child("v1.2/a.rs", "v1.2/a/x.rs", "rust"));
+        // O irmão, o filho de outro pai, a pasta de nome parecido, a pasta de
+        // fora e o próprio arquivo não são filhos.
+        assert!(!is_declared_child("src/a.rs", "src/b.rs", "rust"));
+        assert!(!is_declared_child("src/a/x.rs", "src/a/y.rs", "rust"));
+        assert!(!is_declared_child("src/a.rs", "src/ab/x.rs", "rust"));
+        assert!(!is_declared_child("src/a.rs", "lib/a/x.rs", "rust"));
+        assert!(!is_declared_child("src/a/mod.rs", "src/b/x.rs", "rust"));
+        assert!(!is_declared_child("src/a.rs", "src/a.rs", "rust"));
+        assert!(!is_declared_child("src/a.rs", "src/a", "rust"));
+    }
+
+    #[test]
+    fn only_a_language_that_nests_its_modules_has_declared_children() {
+        // O `index` que reexporta o `./x` e o `./x` que importa o `index` são
+        // um ciclo de verdade no TypeScript; a língua sem chave não declara
+        // filho, nem a desconhecida.
+        assert!(!is_declared_child("src/pasta/index.ts", "src/pasta/x.ts", "typescript"));
+        assert!(!is_declared_child("src/a.ts", "src/a/x.ts", "typescript"));
+        assert!(!is_declared_child("src/a.py", "src/a/x.py", "python"));
+        assert!(!is_declared_child("src/a.rs", "src/a/x.rs", ""));
+        assert!(!is_declared_child("src/a.rs", "src/a/x.rs", "unknown"));
     }
 
     #[test]
