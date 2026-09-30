@@ -32,6 +32,7 @@ use crate::domain::ast::is_test_path;
 use crate::domain::pattern::Pattern;
 use crate::domain::normalize::{Languages, Normalizer};
 use crate::domain::search::SearchIndex;
+pub use crate::domain::search::{Found, FoundText};
 use crate::platform::i18n::{translate, Locale};
 
 /// Um commit que muda mais arquivos do que isto não conta para "muda junto":
@@ -1497,27 +1498,6 @@ pub fn outer_declarations(lines: &[(usize, usize)]) -> Vec<usize> {
 // ---------------------------------------------------------------------------
 // Busca por conceito
 // ---------------------------------------------------------------------------
-
-/// Um arquivo achado pela busca do mapa ([`crate::io::map_search`]), com a
-/// nota ×1024 e o texto fixo dele que mais casa com a pergunta, quando algum
-/// casa.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Found {
-    pub path: String,
-    pub score: u64,
-    pub text: Option<FoundText>,
-}
-
-/// Um texto fixo achado pela busca: a linha, a marca que o scan deu a ele
-/// (`log`, `error` ou `text`), o valor e o nome da declaração que contém a
-/// linha, vazio fora de toda declaração.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FoundText {
-    pub line: u64,
-    pub kind: String,
-    pub value: String,
-    pub owner: String,
-}
 
 /// Um item de spec achado pela busca: a spec, o código, o título, a linha
 /// da parte do usuário que mais casa com a pergunta (nenhuma quando só o

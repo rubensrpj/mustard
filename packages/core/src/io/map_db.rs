@@ -33,12 +33,30 @@
 //!
 //! Bloco novo se declara no módulo dono, e este módulo não muda.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 
 use crate::platform::error::{Error, Result};
+
+/// A pasta do projeto onde o mapa mora.
+pub(crate) const MAP_DIR: &str = ".claude";
+
+/// Onde o scan grava o mapa, a partir da raiz do projeto, com barras normais.
+/// É o texto que as recusas, os avisos e as listas do censo citam.
+pub const MAP_FILE: &str = ".claude/grain.db";
+
+/// O nome do arquivo do mapa, sem a pasta: o que as listas de arquivos de
+/// dentro de `.claude/` citam. Sai de [`MAP_FILE`], que é o único lugar do
+/// nome.
+pub const MAP_FILE_NAME: &str = MAP_FILE.split_at(MAP_DIR.len() + 1).1;
+
+/// Onde o scan grava o mapa, dentro da raiz do projeto.
+#[must_use]
+pub fn model_path(root: &Path) -> PathBuf {
+    root.join(MAP_DIR).join(MAP_FILE_NAME)
+}
 
 /// A tabela que guarda o nome e a versão do formato de cada bloco. Nenhum
 /// bloco pode usar este nome.

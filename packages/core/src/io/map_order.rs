@@ -53,11 +53,11 @@ use std::path::Path;
 use rusqlite::{Connection, OptionalExtension};
 
 use crate::domain::normalize::{Languages, Normalizer};
-use crate::domain::project_map::Found;
-use crate::domain::search::{fuse, RECIPROCAL_FROM, TOP, VECTOR_WEIGHT};
+use crate::domain::search::Found;
+use crate::domain::search::{folders_first, fuse, RECIPROCAL_FROM, TOP, VECTOR_WEIGHT};
 use crate::domain::triage::Lead;
 use crate::io::map_check;
-use crate::io::map_search::{decl_files, ranked_files_near, sources_near};
+use crate::io::map_lists::{decl_files, ranked_files_near, sources_near};
 use crate::io::map_sense::{Meaning, Sense};
 use crate::io::map_words::question;
 use crate::platform::error::Result;
@@ -67,6 +67,11 @@ const BANK_DEPTH: usize = 100;
 
 /// Quantos arquivos distintos da lista entram na soma e na ordem única.
 const LIST_DEPTH: usize = 200;
+
+/// Quantos arquivos o banco lê quando a busca é numa pasta: os de dentro dela
+/// passam à frente, e o que está fora dos cem primeiros do projeto inteiro
+/// ainda pode ser o primeiro da pasta.
+const BANK_SCOPED_DEPTH: usize = 1000;
 
 /// Quantos arquivos do topo do banco a ordem guarda para os sinais da
 /// triagem: o primeiro e o segundo.
@@ -209,6 +214,20 @@ pub(super) fn ordered_with(
     intent: &str,
     languages: &Languages,
 ) -> Result<Ordered> {
+    ordered_in(conn, check, sense, (query, intent), (languages, &[]))
+}
+
+/// A ordem única de [`ordered_with`] para uma busca pedida em `scope`, as
+/// pastas dela: os arquivos de dentro passam à frente em cada lista e na ordem
+/// final, e o primeiro e o segundo do banco, de onde saem os sinais do grau,
+/// são os de dentro. Sem pasta (`scope` vazio), é a ordem de sempre.
+pub(super) fn ordered_in(
+    conn: &Connection,
+    check: Check<'_>,
+    sense: &Sense,
+    (query, intent): (&str, &str),
+    (languages, scope): (&Languages, &[String]),
+) -> Result<Ordered> {
     let request = format!("{query} {intent}");
     let request = request.trim();
     let sources = sources_near(conn, query, intent, languages, &sense.near)?;
@@ -225,7 +244,9 @@ pub(super) fn ordered_with(
             first_decl.entry(file).or_insert(*id);
         }
     }
-    let bank = ranked_files_near(conn, query, languages, BANK_DEPTH, &sense.near)?;
+    let mut bank = ranked_files_near(conn, query, languages, if scope.is_empty() { BANK_DEPTH } else { BANK_SCOPED_DEPTH }, &sense.near)?;
+    folders_first(&mut bank, scope, |found| &found.path);
+    bank.truncate(BANK_DEPTH);
     let weight = weights();
     let mut path_of = conn.prepare("SELECT path FROM files WHERE rowid = ?1")?;
     let mut entries: Vec<Standing> = Vec::new();
@@ -233,20 +254,22 @@ pub(super) fn ordered_with(
     let lists: [&[i64]; LISTS] = [&whole, &sources.everything, &sources.files, &sources.grouped];
     for (slot, list) in lists.iter().enumerate() {
         let mut seen: HashSet<i64> = HashSet::new();
+        let mut files: Vec<(i64, String)> = Vec::new();
         for id in *list {
             let Some(&file) = file_of.get(id) else { continue };
             if !seen.insert(file) {
                 continue;
             }
-            if seen.len() > LIST_DEPTH {
-                break;
-            }
             let Some(path) = path_of.query_row([file], |row| row.get::<_, String>(0)).optional()? else { continue };
+            files.push((file, path));
+        }
+        folders_first(&mut files, scope, |(_, path)| path);
+        for (rank, (file, path)) in files.into_iter().take(LIST_DEPTH).enumerate() {
             let index = *at.entry(path.clone()).or_insert_with(|| {
                 entries.push(Standing { path, file: Some(file), ranks: [None; LISTS], bank_rank: None, bank_score: 0 });
                 entries.len() - 1
             });
-            entries[index].ranks[slot] = Some(seen.len());
+            entries[index].ranks[slot] = Some(rank + 1);
         }
     }
     for (rank, found) in bank.iter().enumerate() {
@@ -259,6 +282,7 @@ pub(super) fn ordered_with(
     }
     // `sort_by` é estável: no empate, a ordem da lista inteira e depois a do banco.
     entries.sort_by(|a, b| b.sum(&weight).total_cmp(&a.sum(&weight)));
+    folders_first(&mut entries, scope, |entry| &entry.path);
     let found: Vec<Found> =
         entries.iter().map(|e| Found { path: e.path.clone(), score: e.bank_score, text: None }).collect();
     let checked = match check {
@@ -270,7 +294,9 @@ pub(super) fn ordered_with(
             map_check::check(conn, root, &mut normalizer, &words, found)?
         }
     };
-    let (files, lead) = (checked.files, checked.lead);
+    let (mut files, lead) = (checked.files, checked.lead);
+    // A conferência reordena os primeiros: a pasta pedida volta à frente.
+    folders_first(&mut files, scope, |found| &found.path);
     let meaning = if sense.meaning { Meaning::of(conn, request, &file_of, LIST_DEPTH)? } else { Meaning::default() };
     // Os vetores entram na lista de candidatos, depois da cabeça; a ordem dos
     // arquivos da resposta fica a das palavras.

@@ -31,14 +31,13 @@ use std::path::Path;
 use rusqlite::Connection;
 
 use crate::domain::normalize::{plain_words, Normalizer};
-use crate::domain::project_map::Found;
 use crate::domain::ranking::{idf_x1024, SCALE};
+use crate::domain::search::Found;
 use crate::domain::triage::Lead;
-use crate::io::map_glossary;
-use crate::io::map_index::Learned;
-use crate::io::map_search::text;
+use crate::io::map_db::model_path;
+use crate::io::map_index::{marked, Learned};
+use crate::io::map_lists::text;
 use crate::io::map_words::Word;
-use crate::io::project_map::model_path;
 use crate::platform::error::Result;
 
 /// Quantos candidatos a conferência relê.
@@ -212,7 +211,7 @@ pub(super) fn check(
     }
 
     let forms: Vec<Vec<String>> = words.iter().map(|word| word.forms.clone()).collect();
-    for (at, docs) in map_glossary::marked(conn, Learned::Decls, &forms)?.iter().enumerate() {
+    for (at, docs) in marked(conn, Learned::Decls, &forms)?.iter().enumerate() {
         for doc in docs {
             if let Some(list) = held.get_mut(doc) {
                 list[at] = true;

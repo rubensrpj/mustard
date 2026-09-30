@@ -9,6 +9,8 @@
 //! termos que ele grava. Isso mora aqui, num módulo que só conhece o banco,
 //! para que quem depende do índice não dependa da busca inteira.
 
+use std::collections::HashMap;
+
 use rusqlite::{params, Connection};
 
 use crate::platform::error::Result;
@@ -19,6 +21,54 @@ use crate::platform::error::Result;
 pub(crate) enum Learned {
     Decls,
     Files,
+}
+
+/// De cada palavra de `words` — cada uma com as suas formas, antes do
+/// tokenizador do índice —, os documentos do nível `level` que alguma marca
+/// com uma das formas dela liga: a declaração do nível com o arquivo e o nome
+/// da marca, ou o arquivo dela, enquanto a declaração existir. Sem repetir.
+/// As marcas se leem inteiras, que são poucas; as declarações, numa consulta
+/// só, e só quando alguma marca casa com a pergunta.
+pub(crate) fn marked(conn: &Connection, level: Learned, words: &[Vec<String>]) -> Result<Vec<Vec<i64>>> {
+    let mut out: Vec<Vec<i64>> = vec![Vec::new(); words.len()];
+    if words.is_empty() {
+        return Ok(out);
+    }
+    let mut hits: HashMap<i64, Vec<usize>> = HashMap::new();
+    let mut stmt = conn.prepare("SELECT rowid, forms FROM glossary_marks")?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        let forms: Vec<String> = serde_json::from_str(&row.get::<_, String>(1)?).unwrap_or_default();
+        let hit: Vec<usize> = (0..words.len()).filter(|&at| words[at].iter().any(|form| forms.contains(form))).collect();
+        if !hit.is_empty() {
+            hits.insert(row.get(0)?, hit);
+        }
+    }
+    if hits.is_empty() {
+        return Ok(out);
+    }
+    let ids: Vec<String> = hits.keys().map(i64::to_string).collect();
+    let docs = match level {
+        Learned::Decls => {
+            "SELECT m.rowid, d.rowid FROM glossary_marks m JOIN decls d ON d.file = m.file AND d.name = m.name \
+             JOIN decl_lengths l ON l.id = d.rowid"
+        }
+        Learned::Files => {
+            "SELECT DISTINCT m.rowid, f.rowid FROM glossary_marks m JOIN decls d ON d.file = m.file AND d.name = m.name \
+             JOIN files f ON f.path = m.file JOIN file_lengths l ON l.id = f.rowid"
+        }
+    };
+    let mut stmt = conn.prepare(&format!("{docs} WHERE m.rowid IN ({}) ORDER BY m.rowid", ids.join(", ")))?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        let (mark, doc) = (row.get::<_, i64>(0)?, row.get::<_, i64>(1)?);
+        for &at in hits.get(&mark).map(Vec::as_slice).unwrap_or_default() {
+            if !out[at].contains(&doc) {
+                out[at].push(doc);
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// Um nível do índice: a tabela FTS5, a lista de cada forma por ela, a tabela

@@ -22,6 +22,27 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use crate::domain::normalize::{Languages, Normalizer};
 use crate::domain::ranking::{avgdl_x1024, bm25_x1024_default, idf_x1024, SCALE};
 
+/// Um arquivo achado pela busca do mapa ([`crate::io::map_search`]), com a
+/// nota ×1024 e o texto fixo dele que mais casa com a pergunta, quando algum
+/// casa.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Found {
+    pub path: String,
+    pub score: u64,
+    pub text: Option<FoundText>,
+}
+
+/// Um texto fixo achado pela busca: a linha, a marca que o scan deu a ele
+/// (`log`, `error` ou `text`), o valor e o nome da declaração que contém a
+/// linha, vazio fora de toda declaração.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FoundText {
+    pub line: u64,
+    pub kind: String,
+    pub value: String,
+    pub owner: String,
+}
+
 /// Quantas respostas a busca devolve.
 pub const TOP: usize = 5;
 
@@ -300,6 +321,29 @@ pub const NAME_WORD_MIN_CHARS: usize = 4;
 #[must_use]
 pub fn folded_name(name: &str) -> String {
     crate::domain::text::fold(name).chars().filter(|c| c.is_alphanumeric()).collect()
+}
+
+/// Se o arquivo `path` está dentro de alguma das pastas de `scope` (caminhos
+/// do projeto, sem a barra do fim; a pasta vazia é o projeto inteiro). O
+/// `scope` vazio não restringe nada.
+#[must_use]
+pub fn within(path: &str, scope: &[String]) -> bool {
+    scope.is_empty()
+        || scope.iter().any(|folder| {
+            let folder = folder.trim_end_matches('/');
+            folder.is_empty() || folder == "." || path == folder || path.strip_prefix(folder).is_some_and(|rest| rest.starts_with('/'))
+        })
+}
+
+/// A pasta pedida põe na frente os arquivos que estão dentro dela, cada grupo
+/// na ordem que tinha. Sem pasta, ou com o projeto inteiro, a ordem fica.
+pub fn folders_first<T>(items: &mut Vec<T>, scope: &[String], path: impl Fn(&T) -> &str) {
+    if scope.is_empty() {
+        return;
+    }
+    let (inside, outside): (Vec<T>, Vec<T>) = std::mem::take(items).into_iter().partition(|item| within(path(item), scope));
+    items.extend(inside);
+    items.extend(outside);
 }
 
 /// As palavras da pergunta, separadas por espaço, que a lista dos nomes

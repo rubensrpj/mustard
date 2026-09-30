@@ -19,6 +19,7 @@ mod map_check;
 mod map_grouped;
 mod map_revision;
 mod map_sense;
+mod map_lists;
 mod map_order;
 mod map_question;
 pub mod map_search;

@@ -44,12 +44,12 @@ use crate::domain::ranking::{idf_x1024, SCALE};
 use crate::domain::search::{folded_name, TOP};
 use crate::domain::triage::{self, Lead, Signals};
 use crate::io::map_check;
-use crate::io::map_glossary;
-use crate::io::map_index::Learned;
+use crate::io::map_index::{marked, Learned};
 use crate::io::map_order;
 use crate::io::map_sense::Sense;
 use crate::io::map_words::{question, Word};
-use crate::io::map_search::{add_texts, by_fields, indexed, text};
+use crate::io::map_lists::{by_fields, text};
+use crate::io::map_search::{add_texts, indexed};
 use crate::io::project_map::{model_path, unreadable, SEARCHED};
 use crate::platform::error::Result;
 
@@ -162,7 +162,7 @@ pub fn triage(
     languages: &Languages,
     limit: usize,
 ) -> std::result::Result<Triaged, MapRefusal> {
-    triage_in(&model_path(root), Some(root), (query, intent), languages, limit)
+    triage_in(&model_path(root), Some(root), (query, intent), languages, (limit, &[]))
 }
 
 /// A triagem de [`triage`] no mapa gravado em `model`.
@@ -172,7 +172,19 @@ pub fn triage_at(
     languages: &Languages,
     limit: usize,
 ) -> std::result::Result<Triaged, MapRefusal> {
-    triage_in(model, map_check::root_of(model), (query, intent), languages, limit)
+    triage_at_in(model, (query, intent), languages, (limit, &[]))
+}
+
+/// A triagem de [`triage_at`] para uma busca pedida nas pastas `scope` do
+/// projeto: os arquivos de dentro delas passam à frente, e os sinais do grau
+/// saem deles. Sem pasta (`scope` vazio, ou com a raiz), é a de sempre.
+pub fn triage_at_in(
+    model: &Path,
+    (query, intent): (&str, &str),
+    languages: &Languages,
+    (limit, scope): (usize, &[String]),
+) -> std::result::Result<Triaged, MapRefusal> {
+    triage_in(model, map_check::root_of(model), (query, intent), languages, (limit, scope))
 }
 
 /// A triagem no mapa gravado em `model`, com o corpo das declarações lido do
@@ -182,10 +194,10 @@ fn triage_in(
     root: Option<&Path>,
     (query, intent): (&str, &str),
     languages: &Languages,
-    limit: usize,
+    (limit, scope): (usize, &[String]),
 ) -> std::result::Result<Triaged, MapRefusal> {
     let db = indexed(model, languages, &SEARCHED)?;
-    triaged(db.conn(), root, (query, intent), languages, limit, false).map_err(unreadable)
+    triaged(db.conn(), root, (query, intent), languages, (limit, scope), false).map_err(unreadable)
 }
 
 /// A triagem sobre o banco aberto. Com `whole`, a busca funda roda em
@@ -202,7 +214,7 @@ fn triaged(
     root: Option<&Path>,
     (query, intent): (&str, &str),
     languages: &Languages,
-    limit: usize,
+    (limit, scope): (usize, &[String]),
     whole: bool,
 ) -> Result<Triaged> {
     let mut normalizer = Normalizer::new(languages);
@@ -210,7 +222,7 @@ fn triaged(
     let check = map_order::Check::On(root);
     // A resposta de sempre, só das palavras escritas: dela saem o grau, a
     // marca e o cravado, e é ela que o cravado entrega.
-    let ordered = map_order::ordered_with(conn, check, &Sense::off(), query, intent, languages)?;
+    let ordered = map_order::ordered_in(conn, check, &Sense::off(), (query, intent), (languages, scope))?;
     let lead = ordered.lead;
     let strong = strong_words(conn, query, &words, ordered.files.first())?;
     let scale = |score: u64| score as f64 / 1024.0;
@@ -234,7 +246,7 @@ fn triaged(
     if triage::mark(grade, lead) != triage::Mark::Pinned {
         let sense = Sense::read(conn, languages, (query, intent), false)?;
         if sense.changes_words() {
-            let sensed = map_order::ordered_with(conn, check, &sense, query, intent, languages)?;
+            let sensed = map_order::ordered_in(conn, check, &sense, (query, intent), (languages, scope))?;
             found = found || !sensed.files.is_empty();
             files = sensed.files;
         }
@@ -580,7 +592,7 @@ fn commits(ground: &Ground<'_>, normalizer: &mut Normalizer, add: &mut impl FnMu
 /// Quarto degrau: a marca do glossário volta à declaração que ela aponta.
 /// Uma edição confirmada ligou a palavra a ela: a ligação é provada.
 fn glossary(ground: &Ground<'_>, add: &mut impl FnMut(Owner, Evidence)) -> Result<()> {
-    for (at, docs) in map_glossary::marked(ground.conn, Learned::Decls, &ground.forms())?.into_iter().enumerate() {
+    for (at, docs) in marked(ground.conn, Learned::Decls, &ground.forms())?.into_iter().enumerate() {
         for doc in docs.into_iter().take(PER_STEP) {
             if let Some((path, place)) = located(ground.conn, doc)? {
                 add(
@@ -677,6 +689,7 @@ fn entries(found: BTreeMap<Owner, Vec<Evidence>>, missing: &[&Word], limit: Opti
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::io::map_glossary;
     use crate::io::project_map as store;
     use serde_json::{json, Value};
     use std::time::Duration;
@@ -703,7 +716,7 @@ mod tests {
     /// corte do muito mais fraco.
     fn whole(dir: &TempDir, query: &str) -> Triaged {
         let db = indexed(&model_path(dir.path()), &languages(), &SEARCHED).unwrap();
-        triaged(db.conn(), None, (query, ""), &languages(), TOP, true).unwrap()
+        triaged(db.conn(), None, (query, ""), &languages(), (TOP, &[]), true).unwrap()
     }
 
     /// A busca funda da pergunta como a resposta a leva, com o corte do muito
@@ -726,6 +739,68 @@ mod tests {
     fn function(name: &str, line: u64, body_comment: &str) -> Value {
         json!({"kind": "function", "name": name, "line": line, "end_line": line + 9,
                "signature": format!("fn {name}()"), "body_comment": body_comment})
+    }
+
+    /// Dois arquivos de cada lado da pasta pedida, para a palavra `frete`: o de
+    /// fora traz o nome e o de dentro só a assinatura de uma função.
+    fn folder_map() -> Value {
+        json!({ "modules": [
+            { "path": "src/outros/frete.rs", "declarations": [
+                {"kind": "function", "name": "frete", "line": 1, "end_line": 3, "signature": "pub fn frete()"}] },
+            { "path": "src/pedidos/fechar.rs", "declarations": [
+                {"kind": "function", "name": "fechar", "line": 1, "end_line": 3, "signature": "pub fn fechar() -> Frete"}] },
+            { "path": "src/pedidos/notas.rs", "file_comment": "guarda o frete de cada nota", "declarations": [
+                {"kind": "function", "name": "gravar", "line": 1, "end_line": 3, "signature": "pub fn gravar()"}] },
+        ]})
+    }
+
+    fn in_folders(dir: &TempDir, query: &str, folders: &[&str]) -> Triaged {
+        let scope: Vec<String> = folders.iter().map(|folder| (*folder).to_string()).collect();
+        triage_at_in(&model_path(dir.path()), (query, ""), &languages(), (TOP, &scope)).unwrap()
+    }
+
+    fn paths(got: &Triaged) -> Vec<&str> {
+        got.files.iter().map(|file| file.path.as_str()).collect()
+    }
+
+    /// A pasta em que a busca foi pedida põe os arquivos de dentro dela na
+    /// frente, cada grupo na ordem que tinha; sem pasta, ou com o projeto
+    /// inteiro, a ordem é a de sempre, e a pasta sem nada do que se procura
+    /// deixa o que o projeto achou.
+    #[test]
+    fn the_folder_the_search_was_asked_in_puts_its_files_first() {
+        let dir = saved(&folder_map());
+        let everywhere = in_folders(&dir, "frete", &[]);
+        assert_eq!(paths(&everywhere).first().copied(), Some("src/outros/frete.rs"), "{everywhere:?}");
+        assert_eq!(paths(&ask(&dir, "frete")), paths(&everywhere), "no folder is the order of always");
+        assert_eq!(paths(&in_folders(&dir, "frete", &[""])), paths(&everywhere), "the whole project is no folder");
+
+        let inside = in_folders(&dir, "frete", &["src/pedidos"]);
+        let order = paths(&inside);
+        assert!(order[..2].iter().all(|path| path.starts_with("src/pedidos/")), "the files of the folder come first: {order:?}");
+        assert_eq!(order.last().copied(), Some("src/outros/frete.rs"), "{order:?}");
+        let mut again = paths(&everywhere);
+        again.retain(|path| path.starts_with("src/pedidos/"));
+        assert_eq!(&order[..2], again.as_slice(), "each group keeps its own order");
+
+        let single = in_folders(&dir, "frete", &["src/pedidos/notas.rs"]);
+        assert_eq!(paths(&single).first().copied(), Some("src/pedidos/notas.rs"), "a file is also a scope");
+        let beside = in_folders(&dir, "frete", &["src/ped"]);
+        assert_eq!(paths(&beside), paths(&everywhere), "src/ped is no folder of src/pedidos");
+        let nothing = in_folders(&dir, "frete", &["docs"]);
+        assert_eq!(paths(&nothing), paths(&everywhere), "a folder with nothing of the question leaves the project's answer");
+    }
+
+    /// Os sinais do grau saem dos arquivos de dentro da pasta: o primeiro do
+    /// banco é o de dentro, e a busca pedida em outra pasta não fica cravada
+    /// pelo nome de um arquivo que está fora dela.
+    #[test]
+    fn the_signals_of_the_grade_come_from_the_files_inside_the_folder() {
+        let dir = saved(&folder_map());
+        let everywhere = in_folders(&dir, "frete", &[]);
+        let inside = in_folders(&dir, "frete", &["src/pedidos"]);
+        assert!(inside.signals.first.unwrap() < everywhere.signals.first.unwrap(), "{inside:?} {everywhere:?}");
+        assert!(inside.grade <= everywhere.grade, "{} {}", inside.grade, everywhere.grade);
     }
 
     #[test]
@@ -1118,7 +1193,7 @@ mod tests {
             let started = std::time::Instant::now();
             let asked = if phrase { text("intent") } else { text("query") };
             let root: Option<String> = db.conn().query_row("SELECT root FROM census", [], |row| row.get(0)).ok();
-            let got = triaged(db.conn(), root.as_deref().map(Path::new), (&asked, &text("intent")), &languages, TOP, true).unwrap();
+            let got = triaged(db.conn(), root.as_deref().map(Path::new), (&asked, &text("intent")), &languages, (TOP, &[]), true).unwrap();
             let millis = started.elapsed().as_secs_f64() * 1000.0;
             let targets: Vec<(String, String)> = search["targets"]
                 .as_array()

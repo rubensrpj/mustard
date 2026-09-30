@@ -28,21 +28,10 @@ use crate::domain::project_map::{
     MapRefusal, MapSkeleton, ProjectMap, PullComment, PullOfCommit, PullText, Pulls,
 };
 use crate::domain::normalize::Languages;
-use crate::io::map_db::{self, Block, Kind, MapDb};
+use crate::io::map_db::{self, Block, Kind, MapDb, MAP_DIR};
+pub use crate::io::map_db::{model_path, MAP_FILE, MAP_FILE_NAME};
 use crate::io::{map_fill, map_format, map_glossary, map_revision, map_search};
 use crate::platform::error::{Error, Result};
-
-/// A pasta do projeto onde o mapa mora.
-const MAP_DIR: &str = ".claude";
-
-/// Onde o scan grava o mapa, a partir da raiz do projeto, com barras normais.
-/// É o texto que as recusas, os avisos e as listas do censo citam.
-pub const MAP_FILE: &str = ".claude/grain.db";
-
-/// O nome do arquivo do mapa, sem a pasta: o que as listas de arquivos de
-/// dentro de `.claude/` citam. Sai de [`MAP_FILE`], que é o único lugar do
-/// nome.
-pub const MAP_FILE_NAME: &str = MAP_FILE.split_at(MAP_DIR.len() + 1).1;
 
 /// O diário que o SQLite cria ao lado do mapa enquanto uma gravação dura, e
 /// apaga quando ela termina: o nome do mapa com `-journal` no fim. O mapa
@@ -66,12 +55,6 @@ pub const LEGACY_MAP_FILE_NAME: &str = "grain.model.json";
 
 /// O começo de todo arquivo SQLite.
 const SQLITE_HEADER: &[u8] = b"SQLite format 3\0";
-
-/// Onde o scan grava o mapa, dentro da raiz do projeto.
-#[must_use]
-pub fn model_path(root: &Path) -> PathBuf {
-    root.join(MAP_DIR).join(MAP_FILE_NAME)
-}
 
 /// `true` quando há um mapa gravado em `model`: o caminho de [`model_path`],
 /// ou o que o scan recebeu para gravar.

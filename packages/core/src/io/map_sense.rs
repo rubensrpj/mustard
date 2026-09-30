@@ -121,7 +121,7 @@ impl Near {
             return Ok(Self::none());
         }
         let crossing = languages.codes().len() > 1;
-        let floor = if crossing { SYNONYM_COSINE.min(other_language_cosine()) } else { SYNONYM_COSINE };
+        let floor = if crossing { SYNONYM_COSINE.min(OTHER_LANGUAGE_COSINE) } else { SYNONYM_COSINE };
         let mut normalizer = Normalizer::new(languages);
         let mut pools = Pools::prepare(conn)?;
         let mut seen: HashSet<String> = HashSet::new();
@@ -187,20 +187,9 @@ impl Near {
     }
 }
 
-/// O cosseno mínimo da travessia de línguas; nos testes, uma medida põe outro
-/// no lugar.
-fn other_language_cosine() -> f32 {
-    #[cfg(test)]
-    if let Some(tuned) = tuning::cosine() {
-        return tuned;
-    }
-    OTHER_LANGUAGE_COSINE
-}
-
-/// O que uma medida muda no sentido da busca, só nos testes: o limite de
-/// cosseno da travessia de línguas e o desligamento das formas vizinhas ou da
-/// ordem dos vetores, para medir cada um contra a busca por palavras de
-/// sempre.
+/// O que uma medida muda no sentido da busca, só nos testes: o desligamento
+/// das formas vizinhas ou da ordem dos vetores, para medir cada um contra a
+/// busca por palavras de sempre.
 #[cfg(test)]
 pub(super) mod tuning {
     use std::sync::RwLock;
@@ -220,16 +209,7 @@ pub(super) mod tuning {
         ENCODED.with(std::cell::Cell::get)
     }
 
-    static COSINE: RwLock<Option<f32>> = RwLock::new(None);
     static OFF: RwLock<(bool, bool)> = RwLock::new((false, false));
-
-    pub(super) fn cosine() -> Option<f32> {
-        *COSINE.read().unwrap()
-    }
-
-    pub(crate) fn set_cosine(value: Option<f32>) {
-        *COSINE.write().unwrap() = value;
-    }
 
     /// Desliga as formas vizinhas e a ordem dos vetores, cada uma à parte.
     pub(crate) fn switch_off(near: bool, meaning: bool) {
@@ -343,7 +323,7 @@ fn choose(
         }
     }
     if let Some((pool, pools)) = other {
-        let limit = other_language_cosine();
+        let limit = OTHER_LANGUAGE_COSINE;
         let mut crossed = 0;
         for neighbor in neighbors.iter().filter(|neighbor| neighbor.cosine >= limit) {
             if crossed == OTHER_LANGUAGE {
@@ -443,7 +423,8 @@ mod tests {
     use crate::domain::triage::Mark;
     use crate::io::map_meaning::fill_at;
     use crate::io::map_order::{ordered, ordered_with, Check};
-    use crate::io::map_search::{candidates_at, decl_files, ranked_files_near, sources_near};
+    use crate::io::map_lists::{decl_files, ranked_files_near, sources_near};
+    use crate::io::map_search::candidates_at;
     use crate::io::map_triage::triage_at;
     use crate::io::project_map::{self as store, model_path, open_existing};
     use serde_json::{json, Value};

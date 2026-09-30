@@ -87,9 +87,6 @@ const ENTRIES_PER_FILE: usize = 8;
 /// Quantos caracteres a linha solta mostra.
 const LOOSE_WIDTH: usize = 100;
 
-/// Quantas palavras da busca vão à triagem.
-const MAX_WORDS: usize = 12;
-
 /// O tempo que a busca própria tem: passando dele, a busca comum roda.
 const BUDGET: Duration = Duration::from_millis(800);
 
@@ -541,7 +538,9 @@ fn try_reply(scene: &Scene<'_>, search: &Search<'_>) -> Option<Reply> {
         return None;
     }
     let question = words.join(" ");
-    let triaged = map_triage::triage_at(scene.model, (&question, ""), scene.languages, RANKED_FILES).ok()?;
+    let triaged = map_triage::triage_at_in(scene.model, (&question, ""), scene.languages, (RANKED_FILES, &rels)).ok()?;
+    #[cfg(test)]
+    ruler::remember_order(&triaged);
     let mark = triaged.mark();
     if mark == Mark::NotFound {
         remember(scene.memory, &key)?;
@@ -552,6 +551,8 @@ fn try_reply(scene: &Scene<'_>, search: &Search<'_>) -> Option<Reply> {
     }
     let regex = pattern_of(search)?;
     let hits = scan(tree, &rels, search, &regex)?;
+    #[cfg(test)]
+    ruler::remember_hits(&hits);
     // Só o parcial vai ao filtro: o cravado responde da triagem.
     let mut warnings: Vec<String> = Vec::new();
     let judged = if mark == Mark::Partial {
@@ -626,78 +627,7 @@ fn judge(
 // As palavras e o padrão
 // ---------------------------------------------------------------------------
 
-/// As palavras que a triagem do mapa lê no padrão: os trechos de letras,
-/// números e sublinhado com ao menos dois caracteres, sem os operadores da
-/// expressão (`\w`, `\(`, `[a-z]`, `{2,3}`), na ordem e sem repetir. Em texto
-/// fixo, tudo é palavra.
-pub(crate) fn words_of(patterns: &[String], fixed: bool) -> Vec<String> {
-    let mut words: Vec<String> = Vec::new();
-    for pattern in patterns {
-        let mut word = String::new();
-        let mut chars = pattern.chars();
-        let mut flush = |word: &mut String| {
-            if word.chars().count() >= 2 && !words.contains(word) {
-                words.push(std::mem::take(word));
-            } else {
-                word.clear();
-            }
-        };
-        while let Some(c) = chars.next() {
-            match c {
-                '\\' if !fixed => {
-                    chars.next();
-                    flush(&mut word);
-                }
-                '[' if !fixed => {
-                    flush(&mut word);
-                    skip_class(&mut chars);
-                }
-                '{' if !fixed => {
-                    flush(&mut word);
-                    for skipped in chars.by_ref() {
-                        if skipped == '}' {
-                            break;
-                        }
-                    }
-                }
-                c if c.is_alphanumeric() || c == '_' => word.push(c),
-                _ => flush(&mut word),
-            }
-        }
-        flush(&mut word);
-    }
-    words.truncate(MAX_WORDS);
-    words
-}
-
-/// Pula o resto de uma classe de caracteres (`[a-z]`, `[^x]`, `[[:alpha:]]`)
-/// cujo `[` já foi lido.
-fn skip_class(chars: &mut std::str::Chars<'_>) {
-    let mut rest = chars.clone().peekable();
-    if rest.peek() == Some(&'^') {
-        rest.next();
-        chars.next();
-    }
-    if rest.peek() == Some(&']') {
-        rest.next();
-        chars.next();
-    }
-    while let Some(c) = chars.next() {
-        match c {
-            '[' if chars.clone().next() == Some(':') => {
-                let mut previous = ' ';
-                for inner in chars.by_ref() {
-                    if previous == ':' && inner == ']' {
-                        break;
-                    }
-                    previous = inner;
-                }
-            }
-            ']' => return,
-            _ => {}
-        }
-    }
-}
+pub(crate) use words::{words_of, MAX_WORDS};
 
 /// A expressão básica do `grep` escrita como a do `regex`: os operadores
 /// escapados viram operadores, e os sem escape viram texto.
@@ -1153,6 +1083,13 @@ fn compose(
     Some(out)
 }
 
+/// As palavras que a triagem lê no padrão da busca.
+mod words;
+
+/// A régua do gasto: o que o Claude recebe e quanto gasta, com as buscas reais.
+#[cfg(test)]
+mod ruler;
+
 /// O projeto de teste da busca por palavra: um repositório git com fontes
 /// que têm funções conhecidas do mapa, e o mapa com o blob do que cada
 /// arquivo tinha ao ser lido.
@@ -1464,7 +1401,7 @@ mod tests {
         let words = |glob: &str, whole: bool| name_words(glob, whole);
         assert_eq!(words("**/*payment*.ts", false), ["payment"]);
         assert_eq!(words("src/**/PaymentService.ts", false), ["PaymentService"]);
-        assert_eq!(words("pay.service.ts", false), ["pay", "service"]);
+        assert_eq!(words("pay.service.ts", false), ["pay_service", "pay", "service"], "the name joined by a dot comes whole, as the code declares it");
         assert_eq!(words("*frete*", false), ["frete"], "a name with no dot stays whole");
         assert_eq!(words("Dockerfile", false), ["Dockerfile"]);
         for silent in ["**/*.ts", "*.{ts,tsx}", "**/*", "src/payments/**/*.rs"] {
@@ -1585,6 +1522,52 @@ mod tests {
         assert!(frete < pedido, "the map's first file comes first: {text}");
         assert!(text.contains("docs/notas.md\n  1: O calcular_frete soma o imposto."), "a line outside any function comes loose: {text}");
         assert!(!text.contains("Fora do corte"), "nothing was cut: {text}");
+    }
+
+    /// A busca pedida numa pasta é triada com essa pasta: com mais arquivos de
+    /// fora, de nome melhor, que o corte da triagem comporta, os de dentro
+    /// ainda vêm na ordem da triagem, e não na do grep; pedida no projeto
+    /// inteiro, a mesma busca deixa os de dentro fora do corte.
+    #[test]
+    fn a_search_asked_in_a_folder_orders_its_files_past_the_cut_of_the_triage() {
+        let mut modules = vec![
+            serde_json::json!({ "path": "src/pedidos/fechar.rs", "language": "rust", "loc": 3, "declarations": [
+                { "kind": "function", "name": "fechar", "line": 1, "end_line": 3, "signature": "pub fn fechar() -> Frete" }] }),
+            serde_json::json!({ "path": "src/pedidos/notas.rs", "language": "rust", "loc": 3, "declarations": [
+                { "kind": "function", "name": "frete_notas", "line": 1, "end_line": 3, "signature": "pub fn frete_notas()" }] }),
+        ];
+        let mut files = vec![
+            ("src/pedidos/fechar.rs".to_string(), "pub fn fechar() -> Frete {\n    // frete\n    // frete\n}\n".to_string()),
+            ("src/pedidos/notas.rs".to_string(), "pub fn frete_notas() {\n    // frete\n}\n".to_string()),
+        ];
+        for n in 0..RANKED_FILES + 5 {
+            let path = format!("src/outros/a{n}.rs");
+            modules.push(serde_json::json!({ "path": path, "language": "rust", "loc": 3, "declarations": [
+                { "kind": "function", "name": "frete", "line": 1, "end_line": 3, "signature": "pub fn frete()" }] }));
+            files.push((path, "pub fn frete() {\n    // frete\n}\n".to_string()));
+        }
+        let borrowed: Vec<(&str, &str)> = files.iter().map(|(path, text)| (path.as_str(), text.as_str())).collect();
+        let (_dir, root) = fixture::repo_with("{}", &borrowed, serde_json::json!({ "modules": modules }));
+        let place = |text: &str, file: &str| text.find(&format!("{file}\n")).unwrap_or_else(|| panic!("{file} is not in {text}"));
+        let inside = answer(search_in(&root, &root, &["frete"], &["src/pedidos"]));
+        assert!(place(&inside, "src/pedidos/notas.rs") < place(&inside, "src/pedidos/fechar.rs"), "the better name comes first: {inside}");
+        assert!(!inside.contains("src/outros"), "{inside}");
+    }
+
+    /// Um padrão de muitas palavras com uma alternativa curta no fim: o corte
+    /// das palavras deixa a alternativa do fim na triagem, e o arquivo que só
+    /// ela acha é respondido.
+    #[test]
+    fn a_short_alternative_at_the_end_of_a_long_pattern_still_reaches_the_triage() {
+        let map = serde_json::json!({ "modules": [
+            { "path": "src/zeta.rs", "language": "rust", "loc": 3, "declarations": [
+                { "kind": "function", "name": "zeta", "line": 1, "end_line": 3, "signature": "pub fn zeta()" }] },
+        ] });
+        let (_dir, root) = fixture::repo_with("{}", &[("src/zeta.rs", "pub fn zeta() {\n    // zeta\n}\n")], map);
+        let long: Vec<String> = (0..MAX_WORDS + 2).map(|n| format!("first{n}")).collect();
+        let pattern = format!("{}|zeta", long.join(" "));
+        let text = answer(search_in(&root, &root, &[pattern.as_str()], &["src"]));
+        assert!(text.contains("src/zeta.rs\n  1-3 zeta (1, 2)"), "{text}");
     }
 
     /// A palavra que o mapa não traz não tira o cravado: o texto cita só as
