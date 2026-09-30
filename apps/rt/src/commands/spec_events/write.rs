@@ -938,7 +938,7 @@ fn record_to(
         }
         Ok(())
     };
-    let find = &super::pages::secret::secret_excerpts;
+    let find = &crate::shared::secret::secret_excerpts;
     let written = match locked {
         Some(locked) => locked.write_guarded(event_type, draft, &roots, find, guard, |_| {})?,
         None => store::write_guarded(&path, event_type, draft, &roots, find, guard, |_| {})?,
@@ -1162,7 +1162,7 @@ impl RecordCheck {
         }
         let path = store::spec_file(&project.root, spec)?;
         let roots = store::citation_roots(start, &project.root);
-        let dry = store::DryRun::open(&path, roots, &super::pages::secret::secret_excerpts)?;
+        let dry = store::DryRun::open(&path, roots, &crate::shared::secret::secret_excerpts)?;
         Ok(Self { dry, name: spec.trim().to_string(), by })
     }
 

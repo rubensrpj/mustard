@@ -800,7 +800,7 @@ pub(crate) fn withheld(log: &SpecLog) -> Vec<String> {
 /// de segredo.
 fn holds_secret(value: &Value) -> bool {
     match value {
-        Value::String(text) => !super::secret::secret_excerpts(text).is_empty(),
+        Value::String(text) => !crate::shared::secret::secret_excerpts(text).is_empty(),
         Value::Array(items) => items.iter().any(holds_secret),
         Value::Object(map) => map.values().any(holds_secret),
         _ => false,
@@ -813,7 +813,7 @@ fn holds_secret(value: &Value) -> bool {
 fn redacted(value: Value) -> Value {
     match value {
         Value::String(mut text) => {
-            for excerpt in super::secret::secret_excerpts(&text) {
+            for excerpt in crate::shared::secret::secret_excerpts(&text) {
                 text = text.replace(&excerpt, PURGED_MARK);
             }
             Value::String(text)

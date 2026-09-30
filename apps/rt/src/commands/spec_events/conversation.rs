@@ -23,7 +23,7 @@ use mustard_core::domain::spec_state::{last_user_message, PhaseWriter, SpecState
 use mustard_core::domain::survey;
 use serde_json::{json, Map, Value};
 
-use super::pages::secret::without_secrets;
+use crate::shared::secret::without_secrets;
 use crate::shared::spec_state::DiskSpecState;
 
 /// As fases em que a spec já terminou, e a conversa não é mais dela.
@@ -450,7 +450,7 @@ mod tests {
         let dir = project_on("comum");
         let root = dir.path();
         let text = "o commit 13b27dc3 e o 13b27dc3a4f5e6d7c8b9a0f1e2d3c4b5a6f7e8d9 fecharam a MSTD-TASK-0092 \
-                    em apps/rt/src/commands/spec_events/pages/secret.rs:41";
+                    em apps/rt/src/shared/secret.rs:41";
         hook_event(root, "UserPromptSubmit", json!({ "prompt": text }));
         hook_event(root, "Stop", json!({ "last_assistant_message": text }));
         assert_eq!(events_of(root, "comum", "message")[0]["text"], json!(text));

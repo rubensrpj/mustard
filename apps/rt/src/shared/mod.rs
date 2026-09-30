@@ -32,6 +32,9 @@
 //! - [`jev`] — the map-search filter over the Jev paid service, behind the
 //!   core's `MapFilter` port: candidates in parallel groups, the core's cut,
 //!   and the machine-wide key that never leaves the `Authorization` header.
+//! - [`secret`] — the ONE search for text that looks like a secret, shared by
+//!   the spec page, the purge of the spec file and everything that leaves the
+//!   machine for an outside service ([`jev`] among them).
 //! - [`proc`] — signal-free, cross-platform process primitives (the liveness
 //!   probe) plus [`proc::run_shell_with_deadline`]
 //!   — the ONE shell-command runner that drains both pipes concurrently and
@@ -58,6 +61,9 @@ pub mod context;
 pub mod dag;
 pub mod jev;
 pub mod paths;
+/// A procura de segredo no texto, a mesma da página da spec, do expurgo e do
+/// envio a serviço de fora.
+pub mod secret;
 /// A porta única da busca do mapa, depois da triagem.
 pub mod search_door;
 /// O que a triagem do mapa põe na resposta da busca.

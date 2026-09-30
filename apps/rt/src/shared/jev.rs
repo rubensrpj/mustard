@@ -50,7 +50,7 @@ use serde::Serialize;
 use serde_json::ser::Formatter;
 use serde_json::{Map, Value, json};
 
-use crate::commands::spec_events::pages::secret::without_secrets;
+use crate::shared::secret::without_secrets;
 
 // ---------------------------------------------------------------------------
 // O serviço
