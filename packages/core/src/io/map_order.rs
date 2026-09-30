@@ -37,6 +37,15 @@
 //! Assim os cinco primeiros arquivos da lista são os cinco da resposta, e o
 //! filtro não perde nenhuma declaração que a lista já trazia além das poucas
 //! que a cabeça empurra para baixo.
+//!
+//! **O sentido** ([`crate::io::map_sense`]). No mapa com vetores, a ordem
+//! das palavras lê também as formas vizinhas de cada palavra da pergunta
+//! (o sinônimo, a palavra da outra língua), com metade do peso da forma
+//! escrita. O resto da lista, depois da cabeça, soma por posição recíproca a
+//! ordem dos vetores — o pedido contra todas as declarações — com metade do
+//! peso da ordem das palavras: são os cem candidatos do filtro, e a
+//! declaração que só o sentido acha entra por aí. Sem vetores no mapa, nada
+//! disso existe e a ordem é a de sempre.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -45,15 +54,13 @@ use rusqlite::{Connection, OptionalExtension};
 
 use crate::domain::normalize::{Languages, Normalizer};
 use crate::domain::project_map::Found;
-use crate::domain::search::TOP;
+use crate::domain::search::{fuse, RECIPROCAL_FROM, TOP, VECTOR_WEIGHT};
 use crate::domain::triage::Lead;
 use crate::io::map_check;
-use crate::io::map_search::{decl_files, ranked_files, sources};
+use crate::io::map_search::{decl_files, ranked_files_near, sources_near};
+use crate::io::map_sense::{Meaning, Sense};
 use crate::io::map_words::question;
 use crate::platform::error::Result;
-
-/// A constante da posição recíproca: `1/(60+posição)`, a de sempre.
-const RECIPROCAL_FROM: f64 = 60.0;
 
 /// Quantos arquivos do banco entram na soma.
 const BANK_DEPTH: usize = 100;
@@ -70,8 +77,11 @@ pub(super) struct Ordered {
     /// A lista das declarações candidatas: a cabeça na ordem dos arquivos, e
     /// depois o rodízio, sem repetir.
     pub list: Vec<i64>,
+    /// As declarações da cabeça da lista, na ordem dos arquivos.
+    pub head: Vec<i64>,
     /// Os arquivos na ordem única, cada um com a nota do banco (zero quando
-    /// o banco não o achou) e sem o texto fixo.
+    /// o banco não o achou) e sem o texto fixo. Com vetores no mapa, é a
+    /// ordem das palavras somada à dos vetores.
     pub files: Vec<Found>,
     /// Os primeiros arquivos do banco, na ordem da nota dele: de onde saem os
     /// sinais da triagem.
@@ -167,6 +177,12 @@ pub(super) enum Check<'a> {
 /// A ordem única da busca de `query` e `intent` no banco aberto. Com a
 /// conferência ligada, a lista das declarações candidatas e os arquivos
 /// seguem a ordem conferida.
+///
+/// A lista de candidatos é a das palavras que a pergunta escreve, inteira, e
+/// só depois dela vêm os achados da forma vizinha de uma palavra que o mapa
+/// não escreve e da ordem dos vetores: nenhum dos dois põe um arquivo na
+/// frente de um que as palavras escritas acharam. Os arquivos e a conferência
+/// ficam os da ordem com o sentido.
 pub(super) fn ordered(
     conn: &Connection,
     check: Check<'_>,
@@ -174,7 +190,28 @@ pub(super) fn ordered(
     intent: &str,
     languages: &Languages,
 ) -> Result<Ordered> {
-    let sources = sources(conn, query, intent, languages)?;
+    let sense = Sense::read(conn, languages, (query, intent), true)?;
+    let sensed = ordered_with(conn, check, &sense, query, intent, languages)?;
+    let written = ordered_with(conn, check, &Sense::off(), query, intent, languages)?;
+    let seen: HashSet<i64> = written.list.iter().copied().collect();
+    let mut list = written.list.clone();
+    list.extend(sensed.list.iter().filter(|id| !seen.contains(id)).copied());
+    Ok(Ordered { list, head: written.head, ..sensed })
+}
+
+/// A ordem única de [`ordered`] com o `sense` dado: [`Sense::off`] lê só as
+/// palavras escritas.
+pub(super) fn ordered_with(
+    conn: &Connection,
+    check: Check<'_>,
+    sense: &Sense,
+    query: &str,
+    intent: &str,
+    languages: &Languages,
+) -> Result<Ordered> {
+    let request = format!("{query} {intent}");
+    let request = request.trim();
+    let sources = sources_near(conn, query, intent, languages, &sense.near)?;
     let whole = sources.whole();
     let file_of: HashMap<i64, i64> = decl_files(conn)?.into_iter().collect();
     let mut first_decl: HashMap<i64, i64> = HashMap::new();
@@ -188,7 +225,7 @@ pub(super) fn ordered(
             first_decl.entry(file).or_insert(*id);
         }
     }
-    let bank = ranked_files(conn, query, languages, BANK_DEPTH)?;
+    let bank = ranked_files_near(conn, query, languages, BANK_DEPTH, &sense.near)?;
     let weight = weights();
     let mut path_of = conn.prepare("SELECT path FROM files WHERE rowid = ?1")?;
     let mut entries: Vec<Standing> = Vec::new();
@@ -196,7 +233,7 @@ pub(super) fn ordered(
     let lists: [&[i64]; LISTS] = [&whole, &sources.everything, &sources.files, &sources.grouped];
     for (slot, list) in lists.iter().enumerate() {
         let mut seen: HashSet<i64> = HashSet::new();
-        for id in list.iter() {
+        for id in *list {
             let Some(&file) = file_of.get(id) else { continue };
             if !seen.insert(file) {
                 continue;
@@ -233,30 +270,33 @@ pub(super) fn ordered(
             map_check::check(conn, root, &mut normalizer, &words, found)?
         }
     };
-    let position: HashMap<&str, usize> =
-        checked.files.iter().enumerate().map(|(at, found)| (found.path.as_str(), at)).collect();
-    entries.sort_by_key(|e| position.get(e.path.as_str()).copied().unwrap_or(usize::MAX));
+    let (files, lead) = (checked.files, checked.lead);
+    let meaning = if sense.meaning { Meaning::of(conn, request, &file_of, LIST_DEPTH)? } else { Meaning::default() };
+    // Os vetores entram na lista de candidatos, depois da cabeça; a ordem dos
+    // arquivos da resposta fica a das palavras.
+    let order = if meaning.is_empty() { whole } else { fuse(&whole, &meaning.decls, VECTOR_WEIGHT) };
+    let file_id: HashMap<&str, i64> = entries.iter().filter_map(|e| Some((e.path.as_str(), e.file?))).collect();
     let mut head: Vec<i64> = Vec::new();
     let mut by_path = conn.prepare("SELECT rowid FROM files WHERE path = ?1")?;
-    for entry in entries.iter().take(TOP) {
-        let file = match entry.file {
-            Some(file) => Some(file),
-            None => by_path.query_row([&entry.path], |row| row.get::<_, i64>(0)).optional()?,
+    for found in files.iter().take(TOP) {
+        let file = match file_id.get(found.path.as_str()) {
+            Some(&file) => Some(file),
+            None => by_path.query_row([&found.path], |row| row.get::<_, i64>(0)).optional()?,
         };
-        if let Some(id) = file.and_then(|file| first_decl.get(&file)) {
+        let decl = file.and_then(|file| first_decl.get(&file).or_else(|| meaning.best.get(&file)));
+        if let Some(id) = decl {
             head.push(*id);
         }
     }
     let mut list = head.clone();
-    list.extend(whole.into_iter().filter(|id| !head.contains(id)));
-    let (files, lead) = (checked.files, checked.lead);
-    Ok(Ordered { list, files, bank: bank.into_iter().take(BANK_TOP).collect(), lead })
+    list.extend(order.into_iter().filter(|id| !head.contains(id)));
+    Ok(Ordered { list, head, files, bank: bank.into_iter().take(BANK_TOP).collect(), lead })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::io::map_search::{candidates_at, sources};
+    use crate::io::map_search::{candidates_at, ranked_files, sources};
     use crate::io::project_map::{self as store, model_path, open_existing};
     use serde_json::{json, Value};
     use tempfile::{tempdir, TempDir};

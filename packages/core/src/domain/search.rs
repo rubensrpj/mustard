@@ -182,11 +182,23 @@ pub struct Fields {
 /// nota mais alta no documento, nunca a soma das formas.
 #[must_use]
 pub fn bm25f(words: &[Vec<Vec<Posting>>], fields: &Fields) -> Vec<(i64, f64)> {
+    bm25f_weighted(words, &[], fields)
+}
+
+/// Como [`bm25f`], com um peso por forma: a nota que uma forma dá a um
+/// documento vale `peso × nota`, e a palavra soma a maior delas. `weights[i][j]`
+/// é o peso da forma `j` da palavra `i`; a forma sem peso na lista vale 1, e
+/// a lista vazia dá a conta de [`bm25f`]. É o que põe as formas vizinhas de
+/// uma palavra (o sinônimo, a palavra da outra língua) abaixo da forma
+/// que a pergunta escreveu.
+#[must_use]
+pub fn bm25f_weighted(words: &[Vec<Vec<Posting>>], weights: &[Vec<f64>], fields: &Fields) -> Vec<(i64, f64)> {
     let n = fields.docs as f64;
     let mut scores: BTreeMap<i64, f64> = BTreeMap::new();
-    for forms in words {
+    for (word, forms) in words.iter().enumerate() {
         let mut best: BTreeMap<i64, f64> = BTreeMap::new();
-        for postings in forms {
+        for (form, postings) in forms.iter().enumerate() {
+            let form_weight = weights.get(word).and_then(|of_word| of_word.get(form)).copied().unwrap_or(1.0);
             let mut weighted: BTreeMap<i64, f64> = BTreeMap::new();
             for posting in postings {
                 let (Some(&weight), Some(&avg)) = (fields.weights.get(posting.field), fields.avg_len.get(posting.field))
@@ -204,7 +216,7 @@ pub fn bm25f(words: &[Vec<Vec<Posting>>], fields: &Fields) -> Vec<(i64, f64)> {
             }
             let idf = (1.0 + (n - df + 0.5) / (df + 0.5)).ln();
             for (doc, tf) in weighted {
-                let score = idf * tf * (K1 + 1.0) / (K1 + tf);
+                let score = form_weight * idf * tf * (K1 + 1.0) / (K1 + tf);
                 let slot = best.entry(doc).or_insert(0.0);
                 *slot = slot.max(score);
             }
@@ -220,6 +232,51 @@ pub fn bm25f(words: &[Vec<Vec<Posting>>], fields: &Fields) -> Vec<(i64, f64)> {
 #[must_use]
 pub fn score_x1024(score: f64) -> u64 {
     (score * SCALE as f64).round() as u64
+}
+
+// ---------------------------------------------------------------------------
+// O sentido: o peso das formas vizinhas e a soma da ordem dos vetores
+// ---------------------------------------------------------------------------
+
+/// A constante da posição recíproca: uma ordem dá `peso/(60 + posição)`.
+pub const RECIPROCAL_FROM: f64 = 60.0;
+
+/// O peso da ordem dos vetores contra a ordem única das palavras, que pesa 1.
+/// Saiu do laboratório que somou as duas ordens nas réguas de 360 buscas e
+/// vale sem novo ajuste.
+pub const VECTOR_WEIGHT: f64 = 0.5;
+
+/// O peso na nota da forma de uma palavra vizinha (o sinônimo, a palavra da
+/// outra língua): a metade da forma que a pergunta escreveu.
+pub const NEAR_FORM_WEIGHT: f64 = 0.5;
+
+/// As duas ordens somadas por posição recíproca: cada item vale
+/// `1/(60 + posição)` na ordem `main` e `weight/(60 + posição)` na ordem
+/// `vector`, com a posição contada de 1. Ganha a maior soma; no empate, o
+/// que está antes em `main` e depois em `vector`. O item repetido numa ordem
+/// vale pela primeira posição dele.
+#[must_use]
+pub fn fuse<T: Clone + Eq + std::hash::Hash>(main: &[T], vector: &[T], weight: f64) -> Vec<T> {
+    let mut at: HashMap<T, usize> = HashMap::new();
+    let mut scored: Vec<(T, f64)> = Vec::new();
+    let mut add = |item: &T, share: f64| {
+        let slot = *at.entry(item.clone()).or_insert_with(|| {
+            scored.push((item.clone(), 0.0));
+            scored.len() - 1
+        });
+        scored[slot].1 += share;
+    };
+    for (list, share) in [(main, 1.0), (vector, weight)] {
+        let mut seen: HashSet<&T> = HashSet::new();
+        for item in list {
+            if seen.insert(item) {
+                add(item, share / (RECIPROCAL_FROM + seen.len() as f64));
+            }
+        }
+    }
+    // `sort_by` é estável: no empate, a ordem em que os itens entraram.
+    scored.sort_by(|a, b| b.1.total_cmp(&a.1));
+    scored.into_iter().map(|(item, _)| item).collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -538,6 +595,42 @@ mod tests {
         let common_alone = bm25f(&[vec![common.clone()]], &fields)[0].1;
         let two_words = bm25f(&[vec![common], vec![rare]], &fields);
         assert!((two_words[0].1 - (best_alone + common_alone)).abs() < 1e-12, "two words add up: {two_words:?}");
+    }
+
+    /// A forma vizinha pesa a metade da que a pergunta escreveu: o documento
+    /// que só tem a vizinha ganha meia nota, o que tem as duas fica com a da
+    /// forma escrita, e sem pesos a conta é a de sempre.
+    #[test]
+    fn bm25f_weighted_scores_a_near_form_at_half_and_keeps_the_best_form_of_the_word() {
+        let fields = Fields { docs: 4, avg_len: vec![2.0], weights: vec![1.0] };
+        let written = vec![at(1, 0, 2), at(3, 0, 2)];
+        let near = vec![at(2, 0, 2), at(3, 0, 2)];
+        let forms = [vec![written.clone(), near.clone()]];
+        let weighted = bm25f_weighted(&forms, &[vec![1.0, NEAR_FORM_WEIGHT]], &fields);
+        let score = |doc: i64| weighted.iter().find(|(id, _)| *id == doc).map(|(_, score)| *score).unwrap();
+        let alone = bm25f(&[vec![written.clone()]], &fields)[0].1;
+        assert!((score(1) - alone).abs() < 1e-12, "the written form keeps its score: {weighted:?}");
+        assert!((score(2) - alone / 2.0).abs() < 1e-12, "the near form alone scores half: {weighted:?}");
+        assert!((score(3) - alone).abs() < 1e-12, "both forms count the best one: {weighted:?}");
+        assert_eq!(bm25f_weighted(&forms, &[], &fields), bm25f(&forms, &fields), "no weights, the usual score");
+    }
+
+    /// A soma das duas ordens segue os números combinados: a ordem única vale
+    /// `1/(60+posição)`, a dos vetores, a metade disso, e o empate fica com a
+    /// ordem única.
+    #[test]
+    fn fuse_adds_the_reciprocal_positions_with_the_vector_order_at_half() {
+        // O 3 é o terceiro da ordem única e o primeiro dos vetores:
+        // 1/63 + 0,5/61 = 0,02407 contra 1/62 = 0,01613 do 2 e 1/61 do 1.
+        assert_eq!(fuse(&[1, 2, 3], &[3, 4], VECTOR_WEIGHT), vec![3, 1, 2, 4]);
+        // O que só os vetores acham entra atrás, e o repetido vale pela
+        // primeira posição.
+        assert_eq!(fuse(&[1, 2], &[9, 9, 1], VECTOR_WEIGHT), vec![1, 2, 9]);
+        assert_eq!(fuse(&[7, 8], &[], VECTOR_WEIGHT), vec![7, 8], "no vector order, the single order stays");
+        assert_eq!(fuse(&[], &[5, 4], VECTOR_WEIGHT), vec![5, 4]);
+        // Com as ordens invertidas e o mesmo peso, as somas empatam e fica a
+        // ordem única.
+        assert_eq!(fuse(&[1, 2], &[2, 1], 1.0), vec![1, 2]);
     }
 
     // -- os candidatos do filtro ---------------------------------------------

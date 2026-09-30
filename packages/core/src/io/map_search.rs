@@ -89,8 +89,8 @@ use crate::domain::map_filter::FilterCandidate;
 use crate::domain::map_select::{Linked, Links};
 use crate::domain::project_map::DeclAt;
 use crate::domain::search::{
-    bm25f, file_list, folded_name, name_list, name_words, ranked, round_robin, score_x1024,
-    Fields, NameHits, Posting,
+    bm25f, bm25f_weighted, file_list, folded_name, name_list, name_words, ranked, round_robin, score_x1024,
+    Fields, NameHits, Posting, NEAR_FORM_WEIGHT,
 };
 use crate::io::map_db::MapDb;
 use crate::io::map_fill;
@@ -99,6 +99,7 @@ use crate::io::map_check;
 use crate::io::map_grouped;
 use crate::io::map_order;
 use crate::io::map_question;
+use crate::io::map_sense::Near;
 use crate::io::project_map::{model_path, open_existing, unreadable, MapBlock, SEARCHED};
 use crate::platform::error::Result;
 
@@ -199,6 +200,19 @@ const FILE_LEVEL: Level = Level {
 /// mesmo — uma busca a menos entre os cinco primeiros e até quatro entre os
 /// cem, em 119 —, e 0,25 é o que menos custa; com peso 0 o histórico não
 /// acharia declaração nenhuma.
+///
+/// Com as palavras vizinhas e a ordem dos vetores somadas à busca, os pesos
+/// e o peso do tamanho do campo foram medidos de novo, na régua de 354
+/// buscas (só a frase e com os nomes), e ficaram. O `B` do nível das
+/// declarações em 0,5 tirou 4 buscas do primeiro lugar da resposta no
+/// Mustard (de 60 para 56) e 6 dos cinco primeiros na Sialia (de 81 para
+/// 75), e em 0,3 tirou 8 e 7; o `B` do nível dos arquivos em 0,5 subiu o
+/// primeiro do banco (de 29 para 35 no Mustard) mas baixou a resposta no
+/// Suzano (de 39 para 36 em primeiro, de 69 para 67 nos cinco). O peso do
+/// nome em 0,3 e o da assinatura em 1 não subiram nenhum projeto sem
+/// baixar outro. A declaração de nome ou assinatura curtos que sobe numa
+/// frase longa fica onde a ordem única a põe: a lista de base e a dos nomes
+/// entram só pelo rodízio, com o peso pequeno dele.
 const DECL_LEVEL: Level = Level {
     fts: "decl_fts",
     vocab: "decl_vocab",
@@ -838,7 +852,7 @@ fn found_in(
     limit: usize,
     columns: &[&str],
 ) -> Result<Vec<Found>> {
-    let mut out = ranked_in(conn, query, languages, limit, columns)?;
+    let mut out = ranked_in(conn, query, languages, limit, columns, &Near::none())?;
     add_texts(conn, query, languages, &mut out)?;
     Ok(out)
 }
@@ -846,9 +860,22 @@ fn found_in(
 /// Os arquivos da busca de todas as colunas do nível, na ordem da nota,
 /// sem os textos fixos: o que a ordem única dos arquivos soma à lista das
 /// declarações ([`crate::io::map_order`]).
+#[cfg(test)]
 pub(super) fn ranked_files(conn: &Connection, query: &str, languages: &Languages, limit: usize) -> Result<Vec<Found>> {
+    ranked_files_near(conn, query, languages, limit, &Near::none())
+}
+
+/// [`ranked_files`] com as formas vizinhas das palavras da pergunta
+/// ([`Near`]), que valem metade das que ela escreveu.
+pub(super) fn ranked_files_near(
+    conn: &Connection,
+    query: &str,
+    languages: &Languages,
+    limit: usize,
+    near: &Near,
+) -> Result<Vec<Found>> {
     let every: Vec<&str> = FILE_LEVEL.columns().collect();
-    ranked_in(conn, query, languages, limit, &every)
+    ranked_in(conn, query, languages, limit, &every, near)
 }
 
 /// Os arquivos da busca por palavras, na ordem da nota: primeiro os que o
@@ -859,10 +886,11 @@ fn ranked_in(
     languages: &Languages,
     limit: usize,
     columns: &[&str],
+    near: &Near,
 ) -> Result<Vec<Found>> {
     let mut normalizer = Normalizer::new(languages);
     let words = normalizer.query(query);
-    let by_words = by_words(conn, &FILE_LEVEL, columns, &words)?;
+    let by_words = by_words_near(conn, &FILE_LEVEL, columns, Texts::Apart, &words, &near.aligned(&words))?;
     let scores: HashMap<i64, f64> = by_words.iter().copied().collect();
     let mut path_of = conn.prepare("SELECT path FROM files WHERE rowid = ?1")?;
     let mut out: Vec<Found> = Vec::new();
@@ -962,46 +990,77 @@ fn by_words_as(
     texts: Texts,
     words: &[Vec<String>],
 ) -> Result<Vec<(i64, f64)>> {
-    let (mut postings, mut numbers, slots) = counted(conn, level, fields, texts, words)?;
-    let Some(learned) = level.learned else { return Ok(bm25f(&postings, &numbers)) };
+    by_words_near(conn, level, fields, texts, words, &[])
+}
+
+/// [`by_words_as`] com as formas vizinhas de cada palavra em `near` (uma
+/// lista por palavra, ou nenhuma): cada uma vale [`NEAR_FORM_WEIGHT`] da nota
+/// e a palavra soma a melhor das suas formas. As palavras aprendidas ligam a
+/// palavra como a pergunta a escreveu, e não as vizinhas.
+fn by_words_near(
+    conn: &Connection,
+    level: &Level,
+    fields: &[&str],
+    texts: Texts,
+    words: &[Vec<String>],
+    near: &[Vec<String>],
+) -> Result<Vec<(i64, f64)>> {
+    let Counted { mut postings, mut numbers, slots, weights } = counted(conn, level, fields, texts, words, near)?;
+    let Some(learned) = level.learned else { return Ok(bm25f_weighted(&postings, &weights, &numbers)) };
     let marked = map_glossary::marked(conn, learned, words)?;
     if marked.iter().all(Vec::is_empty) {
-        return Ok(bm25f(&postings, &numbers));
+        return Ok(bm25f_weighted(&postings, &weights, &numbers));
     }
     let learned_slot = numbers.avg_len.len();
     numbers.avg_len.push(1.0);
     numbers.weights.push(LEARNED_WEIGHT);
-    for (forms, docs) in postings.iter_mut().zip(&marked) {
+    let mut weights = weights;
+    for ((forms, form_weights), docs) in postings.iter_mut().zip(weights.iter_mut()).zip(&marked) {
         let extra: Vec<Posting> = docs.iter().map(|&doc| Posting { doc, field: learned_slot, field_len: 1 }).collect();
         if extra.is_empty() {
             continue;
         }
-        if forms.is_empty() {
-            forms.push(extra);
-        } else {
-            for list in forms.iter_mut() {
+        let mut written = false;
+        for (list, weight) in forms.iter_mut().zip(form_weights.iter()) {
+            if *weight >= 1.0 {
                 list.extend(extra.iter().copied());
+                written = true;
             }
+        }
+        if !written {
+            forms.push(extra);
+            form_weights.push(1.0);
         }
     }
     let name_slot = fields.iter().position(|field| *field == "name").map(|at| slots[at]);
-    Ok(behind_the_names(bm25f(&postings, &numbers), &postings, name_slot, learned_slot))
+    Ok(behind_the_names(bm25f_weighted(&postings, &weights, &numbers), &postings, name_slot, learned_slot))
 }
 
 /// O que a nota precisa antes do glossário: as ocorrências de cada forma de
-/// cada palavra, os números do índice e o campo da conta de cada coluna.
-type Counted = (Vec<Vec<Vec<Posting>>>, Fields, Vec<usize>);
+/// cada palavra, os números do índice, o campo da conta de cada coluna e o
+/// peso de cada forma.
+struct Counted {
+    postings: Vec<Vec<Vec<Posting>>>,
+    numbers: Fields,
+    slots: Vec<usize>,
+    weights: Vec<Vec<f64>>,
+}
 
 /// As ocorrências de cada forma de cada palavra nos campos `fields` do
-/// nível, os números do índice e o campo da conta de cada coluna.
+/// nível, com as das formas vizinhas (`near`, uma lista por palavra ou
+/// nenhuma) depois das que a pergunta escreveu; os números do índice, o
+/// campo da conta de cada coluna e o peso de cada forma: 1 para a escrita e
+/// [`NEAR_FORM_WEIGHT`] para a vizinha.
 fn counted(
     conn: &Connection,
     level: &Level,
     fields: &[&str],
     texts: Texts,
     words: &[Vec<String>],
+    near: &[Vec<String>],
 ) -> Result<Counted> {
     let indexed = as_indexed(conn, words)?;
+    let near_indexed = if near.iter().all(Vec::is_empty) { Vec::new() } else { as_indexed(conn, near)? };
     let sizes: Vec<String> = fields.iter().map(|field| format!("l.{field}")).collect();
     let mut lists = conn.prepare(&format!(
         "SELECT v.doc, v.col, {} FROM {} v JOIN {} l ON l.id = v.doc WHERE v.term = ?1",
@@ -1010,12 +1069,25 @@ fn counted(
         level.lengths
     ))?;
     let slots = slots(fields, texts);
-    let postings = indexed
-        .iter()
-        .map(|forms| forms.iter().map(|form| postings(&mut lists, fields, &slots, form)).collect::<Result<Vec<_>>>())
-        .collect::<Result<Vec<_>>>()?;
+    let mut found = Vec::with_capacity(indexed.len());
+    let mut weights = Vec::with_capacity(indexed.len());
+    for (at, forms) in indexed.iter().enumerate() {
+        let extra: &[String] = near_indexed.get(at).map_or(&[], Vec::as_slice);
+        let mut lines = Vec::with_capacity(forms.len() + extra.len());
+        let mut of_word = Vec::with_capacity(forms.len() + extra.len());
+        for form in forms {
+            lines.push(postings(&mut lists, fields, &slots, form)?);
+            of_word.push(1.0);
+        }
+        for form in extra.iter().filter(|form| !forms.contains(form)) {
+            lines.push(postings(&mut lists, fields, &slots, form)?);
+            of_word.push(NEAR_FORM_WEIGHT);
+        }
+        found.push(lines);
+        weights.push(of_word);
+    }
     let numbers = fields_of(conn, level, fields, &slots)?;
-    Ok((postings, numbers, slots))
+    Ok(Counted { postings: found, numbers, slots, weights })
 }
 
 /// A nota BM25F de cada documento do nível das declarações (`decl`) ou dos
@@ -1024,7 +1096,7 @@ fn counted(
 /// dos campos de comentário é só do que está escrito neles.
 pub(super) fn by_fields(conn: &Connection, decl: bool, fields: &[&str], words: &[Vec<String>]) -> Result<Vec<(i64, f64)>> {
     let level = if decl { &DECL_LEVEL } else { &FILE_LEVEL };
-    let (postings, mut numbers, _) = counted(conn, level, fields, Texts::Apart, words)?;
+    let Counted { postings, mut numbers, .. } = counted(conn, level, fields, Texts::Apart, words, &[])?;
     numbers.weights.iter_mut().for_each(|weight| *weight = FIELD_WEIGHT);
     Ok(bm25f(&postings, &numbers))
 }
@@ -1066,6 +1138,28 @@ pub(super) fn as_indexed(conn: &Connection, words: &[Vec<String>]) -> Result<Vec
         return Ok(words.to_vec());
     }
     through_tokenizer(conn, words)
+}
+
+/// Se o índice lê alguma das `forms` da palavra em algum campo que conta na
+/// nota, no nível dos arquivos ou no das declarações: a palavra que o mapa
+/// escreve.
+pub(super) fn is_read(conn: &Connection, forms: &[String]) -> Result<bool> {
+    let indexed = as_indexed(conn, &[forms.to_vec()])?;
+    for level in [&FILE_LEVEL, &DECL_LEVEL] {
+        let columns: Vec<String> =
+            level.columns().filter(|column| level.weight(column) > 0.0).map(|column| format!("'{column}'")).collect();
+        let mut statement = conn.prepare(&format!(
+            "SELECT 1 FROM {} WHERE term = ?1 AND col IN ({}) LIMIT 1",
+            level.vocab,
+            columns.join(", ")
+        ))?;
+        for form in indexed.iter().flatten() {
+            if statement.exists([form])? {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
 }
 
 /// Cada forma passa por uma tabela temporária com o tokenizador do índice, e
@@ -1398,17 +1492,32 @@ impl Sources {
 }
 
 /// As quatro listas da lista inteira, antes do rodízio.
+#[cfg(test)]
 pub(super) fn sources(conn: &Connection, query: &str, intent: &str, languages: &Languages) -> Result<Sources> {
+    sources_near(conn, query, intent, languages, &Near::none())
+}
+
+/// [`sources`] com as formas vizinhas das palavras da pergunta ([`Near`]) nas
+/// três listas de palavras.
+pub(super) fn sources_near(
+    conn: &Connection,
+    query: &str,
+    intent: &str,
+    languages: &Languages,
+    near: &Near,
+) -> Result<Sources> {
     let levels = [
         map_question::Vocabulary { vocab: DECL_LEVEL.vocab, lengths: DECL_LEVEL.lengths },
         map_question::Vocabulary { vocab: FILE_LEVEL.vocab, lengths: FILE_LEVEL.lengths },
     ];
     let words = map_question::in_text_language(conn, languages, format!("{query} {intent}").trim(), &levels)?;
-    let base = base_list(conn, &words)?;
+    let near = near.aligned(&words);
+    let base = base_list(conn, &words, &near)?;
     let every_decl_field: Vec<&str> = DECL_LEVEL.columns().collect();
-    let everything = by_words_as(conn, &DECL_LEVEL, &every_decl_field, Texts::Together, &words)?;
+    let everything = by_words_near(conn, &DECL_LEVEL, &every_decl_field, Texts::Together, &words, &near)?;
     let every_file_field: Vec<&str> = FILE_LEVEL.columns().collect();
-    let file_scores: HashMap<i64, f64> = by_words(conn, &FILE_LEVEL, &every_file_field, &words)?.into_iter().collect();
+    let file_scores: HashMap<i64, f64> =
+        by_words_near(conn, &FILE_LEVEL, &every_file_field, Texts::Apart, &words, &near)?.into_iter().collect();
     let base_scores: HashMap<i64, f64> = base.iter().copied().collect();
     let names = name_list(&name_hits(conn, query)?, fields_of(conn, &DECL_LEVEL, &[], &[])?.docs);
     let files = file_list(&decl_files(conn)?, &file_scores, &base_scores);
@@ -1419,8 +1528,8 @@ pub(super) fn sources(conn: &Connection, query: &str, intent: &str, languages: &
 
 /// A lista de base: o BM25F no nível das declarações, sobre o nome, o
 /// caminho, a assinatura e a documentação.
-fn base_list(conn: &Connection, words: &[Vec<String>]) -> Result<Vec<(i64, f64)>> {
-    by_words(conn, &DECL_LEVEL, BASE_FIELDS, words)
+fn base_list(conn: &Connection, words: &[Vec<String>], near: &[Vec<String>]) -> Result<Vec<(i64, f64)>> {
+    by_words_near(conn, &DECL_LEVEL, BASE_FIELDS, Texts::Apart, words, near)
 }
 
 /// De cada palavra de nome da `query`, as declarações do nível cujo nome
@@ -2263,7 +2372,7 @@ pub(crate) mod tests {
         ]}));
         let db = open_existing(&model_path(dir.path())).unwrap();
         let words = Normalizer::new(&languages()).query("timestamp");
-        let base: Vec<i64> = base_list(db.conn(), &words).unwrap().into_iter().map(|(id, _)| id).collect();
+        let base: Vec<i64> = base_list(db.conn(), &words, &[]).unwrap().into_iter().map(|(id, _)| id).collect();
         assert_eq!(base, vec![id_of(dir.path(), "agora")]);
     }
 
@@ -2403,7 +2512,7 @@ pub(crate) mod tests {
         let words = Normalizer::new(&languages()).query("sobra");
         let base = |dir: &Path| -> Vec<i64> {
             let db = open_existing(&model_path(dir)).unwrap();
-            base_list(db.conn(), &words).unwrap().into_iter().map(|(id, _)| id).collect()
+            base_list(db.conn(), &words, &[]).unwrap().into_iter().map(|(id, _)| id).collect()
         };
         assert_eq!(base(dir.path()), vec![id_of(dir.path(), named)]);
 
@@ -2622,7 +2731,10 @@ pub(crate) mod tests {
     /// em campo forte, nota do primeiro e do segundo). Grava uma linha
     /// por busca em `MAP_RANKS_OUT` e imprime, por projeto, quantas buscas
     /// têm o arquivo certo entre os 1, 5 e 100 primeiros candidatos e entre
-    /// os 1 e 5 primeiros do banco.
+    /// os 1 e 5 primeiros do banco. Com `MAP_RANKS_COSINE`, o limite de
+    /// cosseno da travessia de línguas é esse e não o da tabela; com
+    /// `MAP_RANKS_SENSE_OFF` (`near`, `meaning` ou os dois), a busca corre
+    /// sem as formas vizinhas, sem a ordem dos vetores, ou sem as duas.
     #[test]
     #[ignore = "mede com os mapas dos projetos de prova"]
     fn measure_the_candidate_ranks() {
@@ -2630,6 +2742,11 @@ pub(crate) mod tests {
         let out = std::env::var("MAP_RANKS_OUT").expect("MAP_RANKS_OUT points to the file to write");
         let phrase = std::env::var("MAP_RANKS_PHRASE").is_ok();
         weights_from_env();
+        if let Some(limit) = std::env::var("MAP_RANKS_COSINE").ok().and_then(|value| value.parse().ok()) {
+            crate::io::map_sense::tuning::set_cosine(Some(limit));
+        }
+        let off = std::env::var("MAP_RANKS_SENSE_OFF").unwrap_or_default();
+        crate::io::map_sense::tuning::switch_off(off.contains("near"), off.contains("meaning"));
         let ruler: Value = serde_json::from_str(&std::fs::read_to_string(ruler).unwrap()).unwrap();
         let languages = Languages::new(["pt-BR", "en-US"]);
         let mut lines: Vec<String> = Vec::new();

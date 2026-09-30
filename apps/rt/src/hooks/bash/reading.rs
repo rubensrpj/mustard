@@ -253,7 +253,7 @@ fn find_text_search(find: &FindRead, next: Option<&Segment>, cmd: &str) -> Optio
         reader.args.insert(0, Word { text: "-r".to_string(), raw: "-r".to_string() });
     }
     let mut search = text_search(&reader)?;
-    search.paths = find.paths.clone();
+    search.paths.clone_from(&find.paths);
     match &find.name {
         Some(name) if !name.whole_path && !name.ignore_case => {
             search.filters.insert(0, NameFilter { exclude: false, glob: name.glob.clone() });

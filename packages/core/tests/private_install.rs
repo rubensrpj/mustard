@@ -132,7 +132,7 @@ fn private_install_hides_the_map_and_an_update_completes_an_older_exclude_file()
     let older: String = complete
         .lines()
         .filter(|line| !line.contains(MAP_FILE_NAME))
-        .map(|line| format!("{line}\n"))
+        .flat_map(|line| [line, "\n"])
         .collect();
     assert_ne!(older, complete, "the fixture really removes the map rules");
     write(&exclude, &older);

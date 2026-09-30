@@ -182,7 +182,8 @@ impl Project {
             line[key] = value.clone();
         }
         let mut text = std::fs::read_to_string(&path).expect("the spec file");
-        text.push_str(&format!("{line}\n"));
+        text.push_str(&line.to_string());
+        text.push('\n');
         std::fs::write(&path, text).expect("the spec file is written");
         id
     }

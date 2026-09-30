@@ -23,6 +23,14 @@
 //! mais fraco que o primeiro fica fora.
 //!
 //! Sem achado nenhum, nem nos campos fortes nem na busca funda, o grau é 0.
+//!
+//! **O sentido.** O grau, a marca e o "cravado" saem sempre da resposta das
+//! palavras que a pergunta escreve. Só a resposta que não fica cravada lê
+//! também as palavras vizinhas ([`crate::io::map_sense`]): o `apagar` que
+//! acha o projeto que só escreve `remove`, o `parcela` que acha
+//! `splitInstallments`. O "não achei" só cai quando as palavras, as vizinhas
+//! entre elas, acham algum arquivo; a ordem dos vetores sozinha nunca
+//! desfaz esse aviso.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
@@ -38,6 +46,7 @@ use crate::domain::triage::{self, Lead, Signals};
 use crate::io::map_check;
 use crate::io::map_glossary::{self, Learned};
 use crate::io::map_order;
+use crate::io::map_sense::Sense;
 use crate::io::map_words::{question, Word};
 use crate::io::map_search::{add_texts, by_fields, indexed, text};
 use crate::io::project_map::{model_path, unreadable, SEARCHED};
@@ -197,11 +206,12 @@ fn triaged(
 ) -> Result<Triaged> {
     let mut normalizer = Normalizer::new(languages);
     let words = question(conn, &mut normalizer, query)?;
-    let ordered = map_order::ordered(conn, map_order::Check::On(root), query, intent, languages)?;
+    let check = map_order::Check::On(root);
+    // A resposta de sempre, só das palavras escritas: dela saem o grau, a
+    // marca e o cravado, e é ela que o cravado entrega.
+    let ordered = map_order::ordered_with(conn, check, &Sense::off(), query, intent, languages)?;
     let lead = ordered.lead;
-    let mut files: Vec<Found> = ordered.files.into_iter().take(limit).collect();
-    add_texts(conn, query, languages, &mut files)?;
-    let strong = strong_words(conn, query, &words, files.first())?;
+    let strong = strong_words(conn, query, &words, ordered.files.first())?;
     let scale = |score: u64| score as f64 / 1024.0;
     let signals = Signals {
         words: words.len(),
@@ -210,16 +220,32 @@ fn triaged(
         second: ordered.bank.get(1).map(|file| scale(file.score)),
     };
     let mut grade = triage::grade(&signals);
-    let agrees = files.first().map(|file| &file.path) == ordered.bank.first().map(|file| &file.path);
+    let agrees = ordered.files.first().map(|file| &file.path) == ordered.bank.first().map(|file| &file.path);
     if !agrees {
         grade = grade.min(triage::UNSURE_GRADE);
     }
+    // A resposta que não é cravada lê também o sentido: as palavras vizinhas
+    // e a ordem dos vetores. O "não achei" só cai quando as palavras, as
+    // vizinhas entre elas, acham algum arquivo; a ordem dos vetores sozinha
+    // nunca acha o que as palavras não acham.
+    let mut found = !ordered.files.is_empty();
+    let mut files = ordered.files;
+    if triage::mark(grade, lead) != triage::Mark::Pinned {
+        let sense = Sense::read(conn, languages, (query, intent), false)?;
+        if sense.changes_words() {
+            let sensed = map_order::ordered_with(conn, check, &sense, query, intent, languages)?;
+            found = found || !sensed.files.is_empty();
+            files = sensed.files;
+        }
+    }
+    let mut files: Vec<Found> = files.into_iter().take(limit).collect();
+    add_texts(conn, query, languages, &mut files)?;
     let missing: Vec<&Word> = words.iter().zip(&strong).filter(|(_, hit)| !**hit).map(|(word, _)| word).collect();
     let mut deeper = Vec::new();
     if grade <= triage::DEEP_UNTIL || whole {
         deeper = search_deeper(conn, &mut normalizer, &missing, (!whole).then_some(TOP))?;
     }
-    if grade == 0 && (!deeper.is_empty() || !files.is_empty()) {
+    if grade == 0 && (!deeper.is_empty() || found) {
         grade = 1;
     }
     let missing: Vec<String> = missing.into_iter().map(|word| word.plain.clone()).collect();
@@ -1052,14 +1078,14 @@ mod tests {
     /// buscas (`MAP_TRIAGE_RULER`): grava em `MAP_TRIAGE_OUT` uma linha por
     /// busca, com os sinais, a posição do primeiro arquivo certo entre os
     /// achados e a busca funda inteira, com a nota de cada entrada e se ela
-    /// acerta. Imprime, por grau, em quantas buscas o primeiro achado é o
-    /// certo e em quantas o certo está entre os cinco; por corte da chance
-    /// para o cravado, quantas buscas ficam cravadas, em quantas o primeiro
-    /// achado é o certo e quantas a régua reprova (o arquivo certo fora dos
-    /// cinco da resposta), e a mesma conta só entre as buscas sem palavra
-    /// fora dos campos fortes do primeiro achado, que a marca de hoje não
-    /// exige; e, por corte da busca funda, quantas sobras a resposta leva e
-    /// quantas buscas o corte resgata.
+    /// acerta. Imprime, por projeto, em quantas buscas o primeiro achado é o
+    /// certo e em quantas o certo está entre os cinco, e quantas a marca da
+    /// resposta crava (o grau 5 com a frente da conferência), com o primeiro
+    /// certo e a régua reprovando; por grau, os mesmos números; por corte da
+    /// chance nas buscas de grau 5, para comparar com a marca, com e sem a
+    /// exigência de que nenhuma palavra falte nos campos fortes, quantas
+    /// ficam cravadas; e, por corte da busca funda, quantas sobras a resposta
+    /// leva e quantas buscas o corte resgata.
     #[test]
     #[ignore = "mede com os mapas dos projetos de prova"]
     fn measure_the_ruler() {
@@ -1068,6 +1094,8 @@ mod tests {
         let ruler: Value = serde_json::from_str(&std::fs::read_to_string(ruler).unwrap()).unwrap();
         let languages = Languages::new(["pt-BR", "en-US"]);
         crate::io::map_search::tests::weights_from_env();
+        let off = std::env::var("MAP_RANKS_SENSE_OFF").unwrap_or_default();
+        crate::io::map_sense::tuning::switch_off(off.contains("near"), off.contains("meaning"));
         let phrase = std::env::var("MAP_TRIAGE_PHRASE").is_ok();
         let mut lines: Vec<String> = Vec::new();
         // Por grau: as buscas, as de primeiro achado certo e as com o certo

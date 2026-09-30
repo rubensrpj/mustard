@@ -107,10 +107,10 @@ fn tuned(name: &str, default: f64) -> f64 {
     #[cfg(test)]
     if let Ok(spec) = std::env::var("MAP_CHECK_WEIGHTS") {
         for pair in spec.split_whitespace() {
-            if let Some((key, value)) = pair.split_once('=') {
-                if key == name {
-                    return value.parse().unwrap();
-                }
+            if let Some((key, value)) = pair.split_once('=')
+                && key == name
+            {
+                return value.parse().unwrap();
             }
         }
     }
@@ -194,10 +194,10 @@ pub(super) fn check(
             while let Some(row) = rows.next()? {
                 let doc = row.get::<_, i64>(0)?;
                 seen_files.insert(doc);
-                if let Some(&candidate) = file_owner.get(&doc) {
-                    if text(row, 1)? == "path" {
-                        on_path[candidate][at] = true;
-                    }
+                if let Some(&candidate) = file_owner.get(&doc)
+                    && text(row, 1)? == "path"
+                {
+                    on_path[candidate][at] = true;
                 }
             }
         }

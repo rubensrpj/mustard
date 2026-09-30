@@ -815,7 +815,8 @@ mod tests {
             format!("{}\n", model::render_line(&model::stamp(event, id, Some(code), &at(hm))))
         };
         let mut raw = std::fs::read_to_string(&path).unwrap();
-        raw.push_str(&format!("{piece}\n"));
+        raw.push_str(piece);
+        raw.push('\n');
         raw.push_str(&tail(5, "MSTD-MSG-0002", "09:05", "depois do corte"));
         raw.push_str(&tail(6, "MSTD-MSG-0003", "09:06", "e mais uma"));
         std::fs::write(&path, &raw).unwrap();
@@ -898,7 +899,7 @@ mod tests {
             r#"{"v":1,"id":41"#,
             r#"{"id":4,"at":"2026-09-11T09:03:00-03:00","ty"#,
             r#"{"v":1,"id":2,"at":"2026-09-11T09:03:00-03:00","ty"#,
-            r#"lixo qualquer"#,
+            r"lixo qualquer",
         ] {
             let dir = tempfile::tempdir().unwrap();
             let (path, before) = spec_with_a_cut_line(dir.path(), piece);

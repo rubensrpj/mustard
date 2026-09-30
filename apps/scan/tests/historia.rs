@@ -15,6 +15,7 @@ use mustard_core::domain::config::ProjectConfig;
 use mustard_core::domain::normalize::Languages;
 use mustard_core::domain::project_map::{examples, summary, FileLineage};
 use mustard_core::io::map_search::candidates_at;
+use mustard_core::io::map_triage::triage_at;
 use mustard_core::io::project_map as store;
 use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Value};
@@ -749,7 +750,10 @@ fn the_whole_reading_does_not_read_again_a_file_whose_history_is_still_valid() {
 
 /// Uma busca feita enquanto a leitura roda responde com o que já foi gravado e
 /// vê mais a cada lote gravado. Que ela não espera o lote em escrita é
-/// provado no núcleo, com a gravação aberta; aqui basta que responda.
+/// provado no núcleo, com a gravação aberta; aqui basta que responda. Os
+/// arquivos contados são os que as palavras da busca acham: a lista de
+/// candidatos leva também as declarações que o sentido do pedido põe perto,
+/// mesmo quando nenhuma palavra casa, e por isso não conta a leitura.
 #[test]
 fn a_search_made_while_the_history_is_being_read_answers_with_what_is_stored() {
     let temp = project("scan-historia-toda-busca-");
@@ -761,7 +765,10 @@ fn a_search_made_while_the_history_is_being_read_answers_with_what_is_stored() {
     scan(dir);
     let model = model::path_in(&dir.join(".claude"));
     let languages = Languages::of(&ProjectConfig::default());
-    let found = |asked: &str| candidates_at(&model, asked, "", &languages, 100).expect("the search answers").whole.len();
+    let found = |asked: &str| {
+        candidates_at(&model, asked, "", &languages, 100).expect("the candidates answer");
+        triage_at(&model, (asked, ""), &languages, 100).expect("the search answers").files.len()
+    };
     assert_eq!(found("guardanapo"), 0, "the word is only in the commit titles, which are not read yet");
 
     let mut reading = Command::new(env!("CARGO_BIN_EXE_scan"))

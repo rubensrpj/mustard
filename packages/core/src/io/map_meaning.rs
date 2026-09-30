@@ -122,17 +122,25 @@ pub fn cosine(a: &[i8], b: &[i8]) -> f32 {
     if a.len() != b.len() {
         return 0.0;
     }
-    let (mut dot, mut norm_a, mut norm_b) = (0_i64, 0_i64, 0_i64);
-    for (x, y) in a.iter().zip(b) {
-        let (x, y) = (i64::from(*x), i64::from(*y));
+    let (dot, norm_a, norm_b) = products(a.iter().zip(b).map(|(x, y)| (*x, *y)));
+    if norm_a == 0 || norm_b == 0 {
+        return 0.0;
+    }
+    (f64::from(dot) / ((f64::from(norm_a)).sqrt() * (f64::from(norm_b)).sqrt())) as f32
+}
+
+/// O produto escalar e as somas dos quadrados de duas listas de números em
+/// int8. Cada vetor tem 256 números de no máximo 127, então as somas cabem
+/// em `i32`, que o compilador lê em blocos.
+fn products(pairs: impl Iterator<Item = (i8, i8)>) -> (i32, i32, i32) {
+    let (mut dot, mut norm_a, mut norm_b) = (0_i32, 0_i32, 0_i32);
+    for (x, y) in pairs {
+        let (x, y) = (i32::from(x), i32::from(y));
         dot += x * y;
         norm_a += x * x;
         norm_b += y * y;
     }
-    if norm_a == 0 || norm_b == 0 {
-        return 0.0;
-    }
-    (dot as f64 / ((norm_a as f64).sqrt() * (norm_b as f64).sqrt())) as f32
+    (dot, norm_a, norm_b)
 }
 
 /// Uma palavra do projeto perto da palavra perguntada.
@@ -174,6 +182,120 @@ pub fn nearest_words(conn: &Connection, word: &str, k: usize, min_cosine: f32) -
     found.sort_by(|a, b| b.cosine.total_cmp(&a.cosine).then_with(|| a.word.cmp(&b.word)));
     found.truncate(k);
     Ok(found)
+}
+
+/// O vetor em int8 de um texto, como as tabelas do bloco o guardam. `None`
+/// quando o modelo não carrega.
+#[must_use]
+pub fn quantized_vector(text: &str) -> Option<Vec<i8>> {
+    text_vector(text).map(|vector| quantize(&vector))
+}
+
+/// O cosseno de um vetor em int8 com um vetor em bytes da tabela, sem
+/// montar o segundo: a conta de [`cosine`], lida direto dos bytes.
+fn cosine_with_blob(asked: &[i8], asked_norm: f64, blob: &[u8]) -> f32 {
+    if asked.len() != blob.len() || asked_norm == 0.0 {
+        return 0.0;
+    }
+    let (dot, _, norm) = products(asked.iter().zip(blob).map(|(x, byte)| (*x, i8::from_le_bytes([*byte]))));
+    if norm == 0 {
+        return 0.0;
+    }
+    (f64::from(dot) / (asked_norm * f64::from(norm).sqrt())) as f32
+}
+
+/// O tamanho de um vetor em int8.
+fn norm_of(vector: &[i8]) -> f64 {
+    f64::from(vector.iter().map(|value| i32::from(*value) * i32::from(*value)).sum::<i32>()).sqrt()
+}
+
+/// Uma declaração perto do texto perguntado.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Similar {
+    /// O número da declaração no mapa (o `rowid` de `decls`).
+    pub id: i64,
+    /// O cosseno do vetor dela com o do texto.
+    pub cosine: f32,
+}
+
+/// As declarações do mapa da mais perto para a mais longe do sentido de
+/// `text`: o cosseno do vetor do texto com o de cada declaração, e no empate
+/// o número menor primeiro. Só entra a declaração com cosseno acima de zero.
+/// Sem a tabela de vetores, sem o modelo ou com um texto sem nenhuma palavra
+/// que o modelo conheça, a lista é vazia.
+pub fn ranked_declarations(conn: &Connection, text: &str) -> Result<Vec<Similar>> {
+    if !table_exists(conn, "decl_vectors")? {
+        return Ok(Vec::new());
+    }
+    let Some(asked) = quantized_vector(text) else { return Ok(Vec::new()) };
+    let norm = norm_of(&asked);
+    if norm == 0.0 {
+        return Ok(Vec::new());
+    }
+    // A ordem entre as declarações de mesmo nome no arquivo é a da gravação
+    // dos vetores: a do `rowid`.
+    let mut statement = conn.prepare(
+        "SELECT d.id, v.vector FROM \
+           (SELECT rowid AS id, file, name, row_number() OVER (PARTITION BY file, name ORDER BY rowid) - 1 AS nth \
+            FROM decls) d \
+         JOIN decl_vectors v ON v.file = d.file AND v.name = d.name AND v.nth = d.nth",
+    )?;
+    let mut rows = statement.query([])?;
+    let mut found: Vec<Similar> = Vec::new();
+    while let Some(row) = rows.next()? {
+        let (id, blob): (i64, Vec<u8>) = (row.get(0)?, row.get(1)?);
+        let cosine = cosine_with_blob(&asked, norm, &blob);
+        if cosine > 0.0 {
+            found.push(Similar { id, cosine });
+        }
+    }
+    found.sort_by(|a, b| b.cosine.total_cmp(&a.cosine).then(a.id.cmp(&b.id)));
+    Ok(found)
+}
+
+/// As palavras do projeto com o vetor de cada uma, lidas uma vez para
+/// perguntar por várias palavras.
+pub struct ProjectWords {
+    rows: Vec<(String, String, Vec<u8>)>,
+}
+
+impl ProjectWords {
+    /// As palavras da tabela do mapa; vazia no mapa sem vetores.
+    pub fn read(conn: &Connection) -> Result<Self> {
+        if !table_exists(conn, "word_vectors")? {
+            return Ok(Self { rows: Vec::new() });
+        }
+        let mut statement = conn.prepare("SELECT word, forms, vector FROM word_vectors")?;
+        let rows = statement
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, Vec<u8>>(2)?)))?
+            .collect::<std::result::Result<_, _>>()?;
+        Ok(Self { rows })
+    }
+
+    /// Se a tabela não tem palavra nenhuma.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+
+    /// As palavras do projeto com cosseno de pelo menos `min_cosine` com
+    /// `asked`, o vetor de `word`, da mais perto para a mais longe. A própria
+    /// palavra não entra.
+    #[must_use]
+    pub fn near(&self, word: &str, asked: &[i8], min_cosine: f32) -> Vec<Neighbor> {
+        let norm = norm_of(asked);
+        let mut found: Vec<Neighbor> = self
+            .rows
+            .iter()
+            .filter(|(candidate, _, _)| candidate != word)
+            .filter_map(|(candidate, forms, blob)| {
+                let cosine = cosine_with_blob(asked, norm, blob);
+                (cosine >= min_cosine).then(|| Neighbor { word: candidate.clone(), forms: forms.clone(), cosine })
+            })
+            .collect();
+        found.sort_by(|a, b| b.cosine.total_cmp(&a.cosine).then_with(|| a.word.cmp(&b.word)));
+        found
+    }
 }
 
 /// Quantas linhas cada tabela passou a ter e quantos vetores esta passada
@@ -644,6 +766,21 @@ mod tests {
 
     fn count(dir: &TempDir, table: &str) -> i64 {
         opened(dir).conn().query_row(&format!("SELECT count(*) FROM {table}"), [], |row| row.get(0)).unwrap()
+    }
+
+    /// Enche o bloco `meaning` dos mapas de `MAP_MEANING_MAPS` (caminhos
+    /// separados por espaço), como o scan faz depois do mapa, para uma medida
+    /// da busca com vetores usar mapas gravados antes deles.
+    #[test]
+    #[ignore = "mede com os mapas dos projetos de prova"]
+    fn fill_the_meaning_of_the_maps_of_a_ruler() {
+        let maps = std::env::var("MAP_MEANING_MAPS").expect("MAP_MEANING_MAPS lists the maps to fill");
+        for map in maps.split_whitespace() {
+            let started = std::time::Instant::now();
+            let path = Path::new(map);
+            let report = fill_at(path, path.parent().unwrap()).unwrap();
+            eprintln!("FILLED {map}: {report:?} in {:?}", started.elapsed());
+        }
     }
 
     /// O modelo embutido carrega sem rede e lê um texto: o vetor tem 256

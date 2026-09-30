@@ -1001,14 +1001,14 @@ mod tests {
     /// os 2.000 do fim; uma saída curta sai inteira.
     #[test]
     fn the_end_of_the_output_is_cut_at_forty_lines_or_two_thousand_characters() {
-        let long: String = (1..=100).map(|n| format!("{n:03}{}\n", "x".repeat(97))).collect();
+        let long: String = (1..=100).flat_map(|n| [format!("{n:03}{}", "x".repeat(97)), "\n".to_string()]).collect();
         let tail = tail_excerpt(long.trim_end());
         assert_eq!(tail.chars().count(), 2000, "{tail}");
         assert!(tail.ends_with(&format!("100{}", "x".repeat(97))), "{tail}");
         assert!(tail.contains("082"), "a primeira linha inteira que cabe nos 2.000 caracteres: {tail}");
         assert!(!tail.contains("081"), "o número de uma linha cortada fica de fora: {tail}");
 
-        let short: String = (1..=12).map(|n| format!("linha {n}\n")).collect();
+        let short: String = (1..=12).flat_map(|n| [format!("linha {n}"), "\n".to_string()]).collect();
         assert_eq!(tail_excerpt(short.trim_end()), short.trim_end());
         assert_eq!(tail_excerpt(""), "");
     }

@@ -42,6 +42,7 @@
 //! Nunca falha: sem mapa, sem sessão, com regex que esta leitura não entende
 //! ou passando do tempo, a resposta é passar, e a busca comum segue.
 
+use std::fmt::Write as _;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -1006,11 +1007,11 @@ fn compose_delivered(scene: &Scene<'_>, tree: &Path, hits: &[FileHits], delivere
                 .map(|file| file.lines.iter().copied().filter(|at| (line..=end_line).contains(at)).collect())
                 .unwrap_or_default();
             covered.extend(&inside);
-            out.push_str(&format!("\n  {line}-{end_line} {}", piece.name));
+            let _ = write!(out, "\n  {line}-{end_line} {}", piece.name);
             if !inside.is_empty() {
                 let shown: Vec<String> = inside.iter().take(HITS_SHOWN).map(u64::to_string).collect();
                 let more = if inside.len() > HITS_SHOWN { ", …" } else { "" };
-                out.push_str(&format!(" ({}{more})", shown.join(", ")));
+                let _ = write!(out, " ({}{more})", shown.join(", "));
             }
         }
         let outside = found.map_or(0, |file| file.lines.iter().filter(|at| !covered.contains(at)).count());
@@ -1808,9 +1809,9 @@ mod tests {
         let warned = mustard_core::translate("map.search.missing_key", Locale::PtBr);
         let first = answer(search_in(&root, &root, &["imposto"], &["."]));
         assert!(first.starts_with("Parcial."), "the triage answer: {first}");
-        assert!(first.trim_end().ends_with(&*warned), "{first}");
+        assert!(first.trim_end().ends_with(warned), "{first}");
         let second = answer(search_in(&root, &root, &["frete pedido"], &["."]));
-        assert!(second.starts_with("Parcial.") && !second.contains(&*warned), "the same session is not warned again: {second}");
+        assert!(second.starts_with("Parcial.") && !second.contains(warned), "the same session is not warned again: {second}");
     }
 
     /// O filtro que falha deixa a resposta da triagem, com o motivo dito uma
@@ -1874,6 +1875,43 @@ mod tests {
         let one = Languages::new(["pt-BR"]);
         let _ = search_as(&same, &same, (&["imposto"], &["."], true), (&one, rg), &alone.assemble());
         assert_eq!(alone.last().phrase, "pedaço de nome: imposto", "one language: the single word is a piece of a name");
+    }
+
+    /// Num projeto todo em inglês, a palavra em português que não casa em
+    /// campo nenhum não é mais "não achei": `usuarios` chega a
+    /// `UserRepository` pela palavra `user` do projeto (cosseno 0,689). Sem os
+    /// vetores no mapa, a mesma busca segue dando "não achei".
+    #[test]
+    fn a_portuguese_word_in_an_all_english_project_finds_the_english_name() {
+        let map = serde_json::json!({ "modules": [
+            { "path": "src/users.rs", "language": "rust", "loc": 4, "declarations": [
+                { "kind": "struct", "name": "UserRepository", "line": 2, "end_line": 4,
+                  "doc": "Repository of the people registered in the system." }
+            ] },
+            { "path": "src/orders.rs", "language": "rust", "loc": 3, "declarations": [
+                { "kind": "struct", "name": "OrderService", "line": 1, "end_line": 3 }
+            ] }
+        ] });
+        let files = [
+            ("src/users.rs", "// people\npub struct UserRepository {\n    id: u32,\n}\n"),
+            ("src/orders.rs", "pub struct OrderService {\n    id: u32,\n}\n"),
+        ];
+        let config = r#"{"language": {"text": "en-US", "code": "en-US"}}"#;
+        let judge = Judge::sure_of(&[("UserRepository", 0.9)]);
+        let english = Languages::new(["en-US"]);
+        let rg = (Dialect::Rust, Walk::Rg { unignored: false });
+        let (_plain_dir, plain) = fixture::repo_with(config, &files, map.clone());
+        let Reply::Note(line) = search_as(&plain, &plain, (&["usuarios"], &["."], true), (&english, rg), &judge.assemble()) else {
+            panic!("a map without vectors answers not found");
+        };
+        assert!(line.starts_with("Não achei"), "{line}");
+        assert_eq!(judge.calls(), 0, "nothing reaches the filter");
+
+        let (_dir, root) = fixture::repo_with(config, &files, map);
+        mustard_core::io::map_meaning::fill_at(&store::model_path(&root), &root).expect("the vectors are filled");
+        let text = answer(search_as(&root, &root, (&["usuarios"], &["."], true), (&english, rg), &judge.assemble()));
+        assert!(judge.last().candidates.iter().any(|candidate| candidate.name == "UserRepository"));
+        assert!(text.contains("src/users.rs\n  2-4 UserRepository"), "the English name comes back: {text}");
     }
 
     /// A medida do tamanho da resposta contra o da busca comum, sobre buscas

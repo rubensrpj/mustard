@@ -10,6 +10,8 @@
 //! A [`stamp`] junta o contador com a versão e a marca de cada bloco, para a
 //! troca de formato de um bloco também valer como gravação.
 
+use std::fmt::Write as _;
+
 use rusqlite::{Connection, OptionalExtension};
 
 use crate::platform::error::Result;
@@ -49,7 +51,7 @@ pub fn stamp(conn: &Connection) -> Result<String> {
         })?;
         for row in rows {
             let (name, version, mark) = row?;
-            out.push_str(&format!("|{name}:{version}:{mark}"));
+            let _ = write!(out, "|{name}:{version}:{mark}");
         }
     }
     Ok(out)
