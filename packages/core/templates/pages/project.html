@@ -125,12 +125,16 @@ dl.kv dd{margin:0;min-width:0;overflow-wrap:anywhere}
     app.setAttribute('data-state', state);
     app.setAttribute('data-renders', String(RENDERS));
   }
-  function noData() {
+  function empty(state, message) {
     box.textContent = '';
-    statusEl.textContent = t('page.no_data');
+    statusEl.textContent = message;
     statusEl.hidden = false;
-    done('empty');
+    done(state);
   }
+  function noData() { empty('empty', t('page.no_data')); }
+  // O banco recusou ou perdeu a leitura: ele pode ter dado, então dizer que
+  // não há dados seria falso. A página conta que a leitura falhou.
+  function readFailed() { empty('failed', t('page.read_failed')); }
 
   // Cada documento do banco vira uma linha; o que não tem nome fica de fora.
   function rowsOf(docs) {
@@ -189,8 +193,8 @@ dl.kv dd{margin:0;min-width:0;overflow-wrap:anywhere}
   var ready = W.claude && typeof W.claude.use === 'function' ? W.claude.use('db') : Promise.resolve(null);
   Promise.resolve(ready).then(function (db) {
     if (!db) { noData(); return; }
-    db.collection(DBP.specs).onSnapshot(function (snap) { render(rowsOf(snap.docs)); }, function () { if (!RENDERS) noData(); });
-  }, noData);
+    db.collection(DBP.specs).onSnapshot(function (snap) { render(rowsOf(snap.docs)); }, function () { if (!RENDERS) readFailed(); });
+  }, readFailed);
 })();
 </script>
 </body>

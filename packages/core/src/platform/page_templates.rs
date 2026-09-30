@@ -119,7 +119,7 @@ pub const SPEC_LAYOUT_VERSION: u32 = 13;
 
 /// A versão do layout da página do projeto, com a mesma regra de
 /// [`SPEC_LAYOUT_VERSION`].
-pub const PROJECT_LAYOUT_VERSION: u32 = 3;
+pub const PROJECT_LAYOUT_VERSION: u32 = 4;
 
 /// O template da página da spec, com o catálogo no idioma `lang`.
 #[must_use]
@@ -379,8 +379,8 @@ mod tests {
     const LAYOUT_TABLE: &[(&str, Locale, u32, &str)] = &[
         ("spec", Locale::PtBr, 13, "74d7248f663c0900"),
         ("spec", Locale::EnUs, 13, "bc92e4984f4a074f"),
-        ("project", Locale::PtBr, 3, "e0c425df74e09675"),
-        ("project", Locale::EnUs, 3, "79b45f84601d5349"),
+        ("project", Locale::PtBr, 4, "5ce19b21c8d05b39"),
+        ("project", Locale::EnUs, 4, "2bc07fa8f52ae1bc"),
     ];
 
     /// Confere o carimbo `built` do molde `page` em `lang` contra a linha
@@ -2237,6 +2237,47 @@ mod tests {
                 assert_eq!(got["page"]["status"], json!(read_failed), "{lang:?} {case}");
                 assert_eq!(got["page"]["statusHidden"], json!(false), "{lang:?} {case}");
             }
+        }
+    }
+
+    /// A página do projeto também não chama de banco vazio a leitura que o
+    /// banco recusou ou perdeu: a escuta das specs que cai ao abrir e o
+    /// claude.ai que nem abre o banco dizem que a leitura falhou, nos dois
+    /// idiomas. O banco que abre e não tem spec nenhuma segue dizendo que não
+    /// há dados, e a página que já mostrou as specs não as perde quando a
+    /// escuta cai depois.
+    #[test]
+    fn a_refused_read_of_the_project_page_says_the_read_failed_and_not_that_there_is_no_data() {
+        let rows = [project_row("busca", Some("running"), None), project_row("trava", Some("plan"), None)];
+        let db = json!({"specs": rows.iter().map(|r| json!({"id": r.name, "data": {
+            "name": r.name, "goal": r.goal, "phase": r.phase, "branch": r.branch,
+            "created": r.created, "updated": r.updated, "url": r.url,
+        }})).collect::<Vec<_>>()});
+        let steps = json!([{"do": "wait"}, {"do": "scrape", "as": "page"}]);
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let read_failed = translate("page.read_failed", lang);
+            let no_data = translate("page.no_data", lang);
+            assert_ne!(read_failed, no_data, "{lang:?}: the two texts differ");
+            let html = project_page_template(lang);
+            let cases: [(&str, Vec<&str>); 2] =
+                [("the specs listener refused", vec!["listen:specs"]), ("the database not opened", vec!["db"])];
+            for (case, refuse) in cases {
+                let got = run_refusing("project", &html, Some(db.clone()), steps.clone(), true, &refuse);
+                assert_eq!(got["page"]["state"], json!("failed"), "{lang:?} {case}: {got}");
+                assert_eq!(got["page"]["status"], json!(read_failed), "{lang:?} {case}");
+                assert_eq!(got["page"]["statusHidden"], json!(false), "{lang:?} {case}");
+                assert_eq!(got["page"]["groups"], json!([]), "{lang:?} {case}: no spec is listed");
+            }
+
+            let empty = run("project", &html, Some(json!({"specs": []})), steps.clone());
+            assert_eq!(empty["page"]["state"], json!("empty"), "{lang:?}: an open database with no spec");
+            assert_eq!(empty["page"]["status"], json!(no_data), "{lang:?}: an open database with no spec");
+
+            let after = json!([{"do": "wait"}, {"do": "fail", "path": "specs"}, {"do": "scrape", "as": "page"}]);
+            let kept = run("project", &html, Some(db.clone()), after);
+            assert_eq!(kept["page"]["state"], json!("ready"), "{lang:?}: a listener that fails later keeps the page");
+            assert_eq!(kept["page"]["statusHidden"], json!(true), "{lang:?}");
+            assert_eq!(kept["page"]["groups"].as_array().map(Vec::len), Some(2), "{lang:?}: the two groups stay");
         }
     }
 

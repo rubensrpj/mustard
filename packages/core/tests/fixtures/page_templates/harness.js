@@ -148,7 +148,8 @@ const reads = [];
 const RANGES_MAX_LIMIT = 8;
 // `input.refuse` lista o que o banco de mentira recusa de vez, com
 // `{code: 'unavailable'}`: o caminho de uma coleção ou de um documento (a
-// leitura dele falha) e `db` (o claude.ai nem abre o banco).
+// leitura dele falha), `listen:<caminho>` (a escuta dele cai logo ao abrir,
+// pelo erro da própria escuta) e `db` (o claude.ai nem abre o banco).
 const refuse = input.refuse || [];
 const unavailable = () => ({ code: 'unavailable', message: 'the database is not reachable' });
 function makeDb(state) {
@@ -197,7 +198,10 @@ function makeDb(state) {
         reads.push({ path, filters, order, limit: lim, size: r.size });
         return r;
       },
-      onSnapshot: (next, onError) => { const l = () => next(run()); listeners.push({ path, run: l, err: onError }); setTimeout(l, 0); return () => {}; },
+      onSnapshot: (next, onError) => {
+        if (refuse.includes('listen:' + path)) { setTimeout(() => onError && onError(unavailable()), 0); return () => {}; }
+        const l = () => next(run()); listeners.push({ path, run: l, err: onError }); setTimeout(l, 0); return () => {};
+      },
       doc: (id) => docRef(path + '/' + id),
     };
   }
