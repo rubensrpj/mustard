@@ -1607,6 +1607,84 @@ mod tests {
         });
     }
 
+    /// Enquanto o agente grava a volta da onda, a trava do passo do git fica
+    /// presa até a volta estar no arquivo e a gravação terminar: a linha da
+    /// spec no índice é refeita depois da escrita, e é ali que a gravação
+    /// espera, com a volta já no arquivo. Outro passo do git no mesmo checkout
+    /// espera a gravação inteira, e só passa quando ela termina.
+    #[cfg(unix)]
+    #[test]
+    fn a_return_being_written_holds_the_git_step_until_the_write_is_done() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        round(root, "x", None);
+        std::fs::write(root.join("src/a.rs"), "fn um() {}\n// A soma saiu.\n").unwrap();
+        let spec = store::spec_file(root, "x").unwrap();
+        let (index, _) = mustard_core::io::spec_index::index_for(&spec).expect("the spec index");
+        let body = json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"], "commit": "a soma sai"});
+        let in_the_file = |spec: &Path| {
+            std::fs::read_to_string(spec).unwrap_or_default().lines().any(|l| l.contains("\"returned\":true"))
+        };
+
+        let index_lock = mustard_core::io::fs::lock::LockedFile::exclusive(&index).unwrap();
+        std::thread::scope(|scope| {
+            let writing = scope.spawn(|| returned(root, body));
+            for _ in 0..3000 {
+                if in_the_file(&spec) {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert!(in_the_file(&spec), "the return never reached the spec file");
+
+            let (turn_tx, turn_rx) = mpsc::channel();
+            scope.spawn(move || turn_tx.send(git_lock(root).is_ok()));
+            let early = turn_rx.recv_timeout(Duration::from_millis(500));
+
+            drop(index_lock);
+            let wrote = writing.join().unwrap();
+            assert!(early.is_err(), "another git step waits while the return is being written");
+            assert_eq!(turn_rx.recv_timeout(Duration::from_secs(30)), Ok(true), "its turn comes after the write");
+            assert_eq!(wrote["ok"], json!(true), "{wrote}");
+        });
+    }
+
+    /// A onda que grava a volta duas vezes, e a onda seguinte, saem da rodada
+    /// com uma entrega oficial cada, de números seguidos: a entrega oficial
+    /// fica com o número da volta que assume, e a segunda volta da mesma onda
+    /// divide o número da primeira.
+    #[test]
+    fn the_official_deliveries_of_the_round_take_consecutive_numbers() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[])]);
+        round(root, "x", None);
+        delivered(root, 1, "Primeira volta.", &["src/a.rs"]);
+        delivered(root, 1, "Segunda volta.", &["src/a.rs"]);
+        delivered(root, 2, "A dobra saiu.", &["src/b.rs"]);
+
+        let out = round(root, "x", None);
+        assert_eq!(out["ok"], json!(true), "{out}");
+
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let codes = log.codes();
+        let official: Vec<(Option<u64>, String)> = log
+            .visible()
+            .into_iter()
+            .filter(|e| e.event_type == "delivered")
+            .map(|e| (e.wave(), codes[&e.id].clone()))
+            .collect();
+        assert_eq!(
+            official,
+            vec![(Some(1), "MSTD-DELIV-0001".to_string()), (Some(2), "MSTD-DELIV-0002".to_string())],
+            "{out}"
+        );
+    }
+
     /// Com nada a comitar, o git recusa e dá o motivo na saída normal: a
     /// recusa traz esse motivo e não deixa nada gravado, e a chamada com o
     /// arquivo mudado grava a entrega uma vez só.

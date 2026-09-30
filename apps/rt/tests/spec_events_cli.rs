@@ -339,9 +339,9 @@ fn a_spec_written_by_the_cli_is_read_block_by_block_and_wave_2_is_only_wave_2() 
     let msg = seed_binary(root, "message", &json!({"author": "user", "text": "Revise tudo"}));
     write(root, "context", &json!({"title": "Combinar o item", "agent": "- conferir pelo teste", "text": "Revise tudo", "origin": msg}));
     let c1 = write(root, "criterion",
-        &json!({"title": "Combinar o item", "when": "a", "then": "b", "proof": "p", "form": "ubiquitous", "origin": msg}));
+        &json!({"title": "Combinar o item", "when": "a", "then": "b", "proof": "echo p", "form": "ubiquitous", "origin": msg}));
     let c2 = write(root, "criterion",
-        &json!({"title": "Combinar o item", "when": "c", "then": "d", "proof": "q", "form": "ubiquitous", "origin": msg}));
+        &json!({"title": "Combinar o item", "when": "c", "then": "d", "proof": "echo q", "form": "ubiquitous", "origin": msg}));
     // A onda nasce do backlog: as duas ondas e a tarefa da onda 2 entram como o
     // programa as grava ao montar os lotes, e a tarefa sem onda, pelo `write`.
     seed_binary(root, "wave", &json!({"author": "binary", "n": 1, "text": "Um.", "criteria": [c1], "done_when": "x", "origin": msg}));
@@ -472,8 +472,8 @@ fn the_dispatch_reading_returns_every_item_the_wave_request_lists() {
     seed_state(root, &json!({"author": "binary", "phase": "plan", "branch": "feature/teste", "base": "dev"}));
     let msg = seed_binary(root, "message", &json!({"author": "user", "text": "Somar a fatura"}));
     let context = write(root, "context", &json!({"title": "Combinar o item", "agent": "- conferir pelo teste", "text": "A fatura soma centavos.", "origin": msg}));
-    let c1 = write(root, "criterion", &json!({"title": "Combinar o item", "when": "a", "then": "b", "proof": "p", "form": "ubiquitous", "origin": msg}));
-    let c2 = write(root, "criterion", &json!({"title": "Combinar o item", "when": "c", "then": "d", "proof": "q", "form": "ubiquitous", "origin": msg}));
+    let c1 = write(root, "criterion", &json!({"title": "Combinar o item", "when": "a", "then": "b", "proof": "echo p", "form": "ubiquitous", "origin": msg}));
+    let c2 = write(root, "criterion", &json!({"title": "Combinar o item", "when": "c", "then": "d", "proof": "echo q", "form": "ubiquitous", "origin": msg}));
     let mine = write(root, "decision", &json!({"title": "Combinar o item", "agent": "- conferir pelo teste", "text": "A soma arredonda no fim.", "why": "Centavos.", "keys": ["soma"],
         "applies_to": {"files": ["src/soma.rs"]}, "origin": msg}));
     let other = write(root, "decision", &json!({"title": "Combinar o item", "agent": "- conferir pelo teste", "text": "O outro arquivo guarda o histórico.", "why": "Auditoria.", "keys": ["outro"],

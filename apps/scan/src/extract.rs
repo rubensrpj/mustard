@@ -216,8 +216,8 @@ pub fn relative_import(lang: &str) -> Option<RelativeImport> {
 
 /// Os textos que juntam as partes de um nome qualificado na língua
 /// (`qualified_separators` em languages.toml), na ordem em que o registro os
-/// escreve. `None` quando a língua não os declara: quem lê usa a regra de
-/// sempre.
+/// escreve. `None` quando a língua não os declara: para quem lê, ela não tem
+/// separador.
 pub fn qualified_separators(lang: &str) -> Option<&'static [&'static str]> {
     LANG_QUALIFIED_SEPARATORS
         .iter()
@@ -238,10 +238,19 @@ pub fn module_alias(lang: &str) -> Option<&'static str> {
     Some(text_field(LANG_MODULE_ALIAS, lang)).filter(|alias| !alias.is_empty())
 }
 
-/// Os separadores que ligam um nome ao qualificador escrito antes dele: os da
-/// língua ou, quando ela não os declara, `::` e `.`.
+/// Os separadores que ligam um nome ao qualificador escrito antes dele: os
+/// que a língua declara (`qualified_separators` em languages.toml). Vazio
+/// quando ela não declara nenhum: sem o campo, nenhum texto liga um nome ao
+/// que vem antes dele.
 fn qualifier_separators(lang: &str) -> &'static [&'static str] {
-    qualified_separators(lang).unwrap_or(&["::", "."])
+    qualified_separators(lang).unwrap_or(&[])
+}
+
+/// Todos os textos que a língua escreve entre duas partes de um caminho de
+/// nomes: os de nome qualificado e os de membro, nessa ordem. Quem lê um
+/// caminho escrito num texto de assinatura anda por eles.
+pub(crate) fn name_separators(lang: &str) -> impl Iterator<Item = &'static str> {
+    qualifier_separators(lang).iter().chain(member_separators(lang)).copied()
 }
 
 /// Os separadores que ligam o método ao valor escrito antes dele sem juntar

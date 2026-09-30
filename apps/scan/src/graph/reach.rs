@@ -142,7 +142,8 @@ impl<'a> Typing<'a> {
             .filter(|d| FIELD_KINDS.contains(&d.kind.as_str()) && d.name == field && d.owner.iter().any(|o| o == owner))
             .collect();
         let [declared] = found.as_slice() else { return None };
-        let (path, name) = written_type(&declared.signature, field, |name| self.types.contains_key(name))?;
+        let (path, name) =
+            written_type(&declared.signature, field, &module.language, |name| self.types.contains_key(name))?;
         let candidates = self.types.get(name.as_str())?;
         let by_path: Vec<DeclId> = candidates
             .iter()
@@ -198,11 +199,18 @@ fn names_part(file: &str, part: &str) -> bool {
 /// (`is_type`) depois do campo (`config: crate::domain::ProjectConfig`), ou o
 /// último antes dele (`private readonly IRepo repo`). O tipo embrulhado
 /// (`Vec<Pedido>`, `Pedido[]`, `Pedido | Outro`) não vale: o campo é de outra
-/// coisa. Os caminhos que só dizem de onde o nome vem (`crate`, `self`,
-/// `super`) não contam.
-fn written_type(signature: &str, field: &str, is_type: impl Fn(&str) -> bool) -> Option<(Vec<String>, String)> {
+/// coisa. As partes do caminho que só dizem de onde o nome vem (a raiz do
+/// pacote, o módulo de quem escreve e o módulo acima, como a língua `lang`
+/// os declara) não contam. As partes de um caminho se ligam pelos
+/// separadores que a língua declara.
+fn written_type(
+    signature: &str,
+    field: &str,
+    lang: &str,
+    is_type: impl Fn(&str) -> bool,
+) -> Option<(Vec<String>, String)> {
     let plain = without_generics(signature);
-    let tokens = path_tokens(&plain);
+    let tokens = path_tokens(&plain, lang);
     let at = tokens.iter().position(|token| token.path.len() == 1 && token.path[0] == field)?;
     let candidate = |token: &Token| token.path.last().is_some_and(|name| is_type(name));
     let after = tokens[at + 1..].iter().position(candidate).map(|found| at + 1 + found);
@@ -215,12 +223,17 @@ fn written_type(signature: &str, field: &str, is_type: impl Fn(&str) -> bool) ->
     }
     let mut path = token.path.clone();
     let name = path.pop()?;
-    path.retain(|part| !matches!(part.as_str(), "crate" | "self" | "super"));
+    let says_where_from = |part: &str| {
+        crate::extract::root_aliases(lang).contains(&part)
+            || crate::extract::parent_alias(lang) == Some(part)
+            || crate::extract::module_alias(lang) == Some(part)
+    };
+    path.retain(|part| !says_where_from(part));
     Some((path, name))
 }
 
-/// Um nome, ou caminho de nomes ligados por `::` ou `.`, escrito numa
-/// assinatura.
+/// Um nome, ou caminho de nomes ligados pelos separadores da língua, escrito
+/// numa assinatura.
 struct Token {
     path: Vec<String>,
     /// Nada que embrulhe o tipo vem logo depois dele: colchete, barra, `&` ou
@@ -229,8 +242,11 @@ struct Token {
     end: usize,
 }
 
-/// Os nomes e caminhos da assinatura, na ordem do texto.
-fn path_tokens(text: &str) -> Vec<Token> {
+/// Os nomes e caminhos da assinatura, na ordem do texto. Duas partes se
+/// ligam quando o texto entre elas é um dos separadores que a língua `lang`
+/// declara; o mais longo que casa vence.
+fn path_tokens(text: &str, lang: &str) -> Vec<Token> {
+    let separators: Vec<&str> = crate::extract::name_separators(lang).filter(|sep| !sep.is_empty()).collect();
     let is_word = |c: char| c.is_alphanumeric() || c == '_';
     let mut tokens: Vec<Token> = Vec::new();
     let chars: Vec<(usize, char)> = text.char_indices().collect();
@@ -250,13 +266,7 @@ fn path_tokens(text: &str) -> Vec<Token> {
             end = chars.get(i).map_or(text.len(), |c| c.0);
             path.push(text[start..end].to_string());
             let rest = &text[end..];
-            let step = if rest.starts_with("::") {
-                2
-            } else if rest.starts_with('.') {
-                1
-            } else {
-                0
-            };
+            let step = separators.iter().filter(|sep| rest.starts_with(**sep)).map(|sep| sep.len()).max().unwrap_or(0);
             if step == 0 || !rest[step..].chars().next().is_some_and(is_word) {
                 break;
             }
@@ -297,7 +307,7 @@ mod tests {
 
     #[test]
     fn the_type_is_read_after_the_field_or_before_it() {
-        let read = |signature: &str, field: &str| written_type(signature, field, is_type);
+        let read = |signature: &str, field: &str| written_type(signature, field, "rust", is_type);
         let name = |path: &[&str], ty: &str| Some((path.iter().map(|p| p.to_string()).collect::<Vec<_>>(), ty.to_string()));
         assert_eq!(read("pub config: crate::domain::config::ProjectConfig", "config"), name(&["domain", "config"], "ProjectConfig"));
         assert_eq!(read("private readonly IRepo _repo", "_repo"), name(&[], "IRepo"));
@@ -305,9 +315,24 @@ mod tests {
         assert_eq!(read("pub config: &'a ProjectConfig", "config"), name(&[], "ProjectConfig"));
     }
 
+    /// Os nomes que só dizem de onde o caminho parte saem dele só na língua
+    /// que os declara: numa que não os declara, o mesmo nome é uma parte
+    /// comum do caminho.
+    #[test]
+    fn only_the_language_that_declares_a_starting_name_drops_it_from_the_path() {
+        let path = |signature: &str, field: &str, lang: &str| {
+            written_type(signature, field, lang, is_type).map(|(path, _)| path)
+        };
+        let names = |parts: &[&str]| Some(parts.iter().map(|p| p.to_string()).collect::<Vec<_>>());
+        assert_eq!(path("config: self::x::ProjectConfig", "config", "rust"), names(&["x"]));
+        assert_eq!(path("config: super::x::ProjectConfig", "config", "rust"), names(&["x"]));
+        assert_eq!(path("config: crate::x::ProjectConfig", "config", "rust"), names(&["x"]));
+        assert_eq!(path("config: crate.self.ProjectConfig", "config", "typescript"), names(&["crate", "self"]));
+    }
+
     #[test]
     fn a_wrapped_type_is_not_the_type_of_the_field() {
-        let read = |signature: &str, field: &str| written_type(signature, field, is_type);
+        let read = |signature: &str, field: &str| written_type(signature, field, "rust", is_type);
         assert_eq!(read("pub items: Vec<Pedido>", "items"), None);
         assert_eq!(read("items: Pedido[]", "items"), None);
         assert_eq!(read("item: Pedido | Outro", "item"), None);

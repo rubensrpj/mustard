@@ -124,15 +124,16 @@
 #                 arquivo de entrada da pasta, da lista do núcleo; o que não
 #                 existe no projeto não liga a nada. O import que não começa
 #                 pelo separador segue como os outros.
-#   qualified_separators OPTIONAL — os textos que juntam as partes de um nome
+#   qualified_separators — os textos que juntam as partes de um nome
 #                 qualificado na língua (`crate::a::b`). Cada um vira `/` na
 #                 forma única com que o grafo compara imports e namespaces,
 #                 menos no texto que já é caminho (tem `/` ou começa por `.`)
 #                 e, no import que termina na extensão da língua, menos na
 #                 extensão. É também o que liga um nome ao qualificador
-#                 escrito antes dele (`a` em `a::f()`). Sem o campo: `\` e
-#                 `::` sempre viram `/`, o ponto só fora de caminho, e o
-#                 qualificador é o nome antes de `::` ou de `.`.
+#                 escrito antes dele (`a` em `a::f()`). Toda língua declara o
+#                 campo, e um teste recusa a que não declara: sem ele a língua
+#                 não teria separador nenhum, só o `\` viraria `/` e nenhum
+#                 nome se ligaria ao que vem antes dele.
 #   member_separators OPTIONAL — os textos que ligam o método chamado ao
 #                 valor escrito antes dele quando não juntam também as partes
 #                 de um nome qualificado (`.` em `x.f()` numa língua cujo
@@ -340,6 +341,7 @@ name = "csharp"
 extensions = ["cs"]
 dir = "csharp"
 grammar = "grammar_cs::LANGUAGE"
+qualified_separators = ["::", "."]
 namespace_scope = "nested"
 global_namespace = true
 self_receivers = ["this"]
@@ -374,6 +376,7 @@ name = "razor"
 extensions = ["razor"]
 dir = "csharp"
 grammar = "grammar_cs::LANGUAGE"
+qualified_separators = ["::", "."]
 namespace_scope = "nested"
 self_receivers = ["this"]
 parent_receivers = ["base"]
@@ -435,6 +438,7 @@ name = "cshtml"
 extensions = ["cshtml"]
 dir = "csharp"
 grammar = "grammar_cs::LANGUAGE"
+qualified_separators = ["::", "."]
 namespace_scope = "nested"
 self_receivers = ["this"]
 parent_receivers = ["base"]
@@ -479,6 +483,7 @@ name = "typescript"
 extensions = ["ts", "mts", "cts"]
 dir = "typescript"
 grammar = "grammar_ts::LANGUAGE_TYPESCRIPT"
+qualified_separators = ["."]
 self_receivers = ["this"]
 parent_receivers = ["super"]
 import_extensions = ["js", "mjs", "cjs", "jsx"]
@@ -497,6 +502,7 @@ extensions = ["tsx"]
 dir = "typescript"
 extra_queries = "tsx"
 grammar = "grammar_ts::LANGUAGE_TSX"
+qualified_separators = ["."]
 self_receivers = ["this"]
 parent_receivers = ["super"]
 import_extensions = ["js", "jsx", "mjs", "cjs"]
@@ -517,6 +523,7 @@ extensions = ["js", "jsx", "mjs", "cjs"]
 dir = "typescript"
 extra_queries = "tsx"
 grammar = "grammar_ts::LANGUAGE_TSX"
+qualified_separators = ["."]
 self_receivers = ["this"]
 parent_receivers = ["super"]
 package_entry = ["src/index", "index"]
@@ -533,6 +540,7 @@ name = "python"
 extensions = ["py", "pyi"]
 dir = "python"
 grammar = "grammar_py::LANGUAGE"
+qualified_separators = ["."]
 relative_import = { separator = "." }
 single_part_paths = true
 self_receivers = ["self", "cls"]
@@ -562,6 +570,7 @@ name = "go"
 extensions = ["go"]
 dir = "go"
 grammar = "grammar_go::LANGUAGE"
+qualified_separators = ["."]
 namespace_scope = "folder"
 prelude = ["append", "cap", "clear", "close", "complex", "copy", "delete", "imag", "len", "make", "max", "min", "new", "panic", "print", "println", "real", "recover"]
 log_calls = ["log.*", "fmt.Print*", "fmt.Fprint*", "slog.*"]
@@ -572,6 +581,7 @@ name = "php"
 extensions = ["php"]
 dir = "php"
 grammar = "grammar_php::LANGUAGE_PHP"
+qualified_separators = ["::"]
 member_separators = ["->"]
 self_receivers = ["this", "self", "static"]
 log_calls = ["error_log", "Log::*", "logger->*", "logger"]
@@ -582,6 +592,7 @@ name = "dart"
 extensions = ["dart"]
 dir = "dart"
 grammar = "grammar_dart::LANGUAGE"
+qualified_separators = ["."]
 self_receivers = ["this"]
 parent_receivers = ["super"]
 implicit_self = true

@@ -34,6 +34,8 @@
 
 #[path = "support/manifest_dir.rs"]
 mod manifest_dir;
+#[path = "support/model.rs"]
+mod model;
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -178,4 +180,50 @@ fn the_vocabulary_comes_from_the_registry_and_nowhere_else() {
         terms.iter().all(|t| t.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')),
         "registry ids are lowercase slugs: {terms:?}"
     );
+}
+
+/// Cada arquivo de um projeto de teste com o que ele importa, como o scan o
+/// lê: o caminho e as dependências que o mapa grava para ele.
+fn dependencies(files: &[(&str, &str)]) -> Vec<(String, Vec<String>)> {
+    let project = tempfile::Builder::new().prefix("scan-language-blind-").tempdir().unwrap();
+    for (path, text) in files {
+        let file = project.path().join(path);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, text).unwrap();
+    }
+    let out = tempfile::Builder::new().prefix("scan-language-blind-map-").tempdir().unwrap();
+    let (map, _) = model::scan(project.path(), out.path(), &[]);
+    let mut modules: Vec<(String, Vec<String>)> = map["modules"]
+        .as_array()
+        .expect("model.modules")
+        .iter()
+        .map(|m| {
+            let deps = m["deps"].as_array().map(|d| d.iter().map(|d| d.as_str().unwrap().to_string()).collect());
+            (m["path"].as_str().unwrap().to_string(), deps.unwrap_or_default())
+        })
+        .collect();
+    modules.sort();
+    modules
+}
+
+/// Uma língua que não escreve `::` entre as partes de um nome nunca vê o `::`
+/// virar barra: o import `"a::b"` de um arquivo dela é o texto de um pacote,
+/// e não o caminho `a/b` do projeto. Quem declara o `::` como separador (a
+/// língua do controle) o lê como caminho, com o mesmo formato de projeto.
+#[test]
+fn a_language_that_does_not_write_double_colons_never_sees_them_become_slashes() {
+    for (importer, target, import) in [
+        ("main.ts", "a/b.ts", "import { b } from \"a::b\";\nconsole.log(b);\n"),
+        ("main.js", "a/b.js", "import { b } from \"a::b\";\nconsole.log(b);\n"),
+    ] {
+        let modules = dependencies(&[(target, "export const b = 1;\n"), (importer, import)]);
+        let importer_deps = &modules.iter().find(|(path, _)| path == importer).expect("the importer is mapped").1;
+        assert!(importer_deps.is_empty(), "`a::b` in {importer} became the path of {target}: {modules:?}");
+    }
+    let control = dependencies(&[
+        ("src/main.rs", "mod util;\n\nuse crate::util::helper;\n\nfn main() {\n    let _ = helper();\n}\n"),
+        ("src/util.rs", "pub fn helper() -> usize {\n    1\n}\n"),
+    ]);
+    let main = &control.iter().find(|(path, _)| path == "src/main.rs").expect("the importer is mapped").1;
+    assert_eq!(main, &["src/util.rs"], "a language that declares `::` still reads it as a path: {control:?}");
 }

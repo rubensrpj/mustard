@@ -39,11 +39,7 @@ impl SpecLog {
                 *top = (*top).max(n);
                 continue;
             }
-            let inherited = event
-                .int("replaces")
-                .filter(|old| self.get(*old).is_some_and(|o| o.event_type == event.event_type))
-                .and_then(|old| codes.get(&old).cloned());
-            if let Some(code) = inherited {
+            if let Some(code) = inherited_code(self, &codes, &event.event_type, &event.replaced()) {
                 codes.insert(event.id, code);
                 continue;
             }
@@ -73,21 +69,64 @@ fn recorded_code(event: &SpecEvent) -> Option<(&'static str, u64)> {
     (kind == spec.code).then_some((spec.code, n))
 }
 
+/// O código herdado de uma versão nova: o da mais antiga das versões que ela
+/// substitui (`replaced`) que são do tipo `event_type` e têm código. A versão
+/// que junta várias voltas numa só fica com o número da primeira, e não com
+/// um número novo depois de todas.
+fn inherited_code(
+    log: &SpecLog,
+    codes: &BTreeMap<u64, String>,
+    event_type: &str,
+    replaced: &[u64],
+) -> Option<String> {
+    let mut olds: Vec<u64> = replaced.to_vec();
+    olds.sort_unstable();
+    olds.into_iter()
+        .filter(|old| log.get(*old).is_some_and(|o| o.event_type == event_type))
+        .find_map(|old| codes.get(&old).cloned())
+}
+
+/// O código que uma volta nova de agente divide com a volta anterior da mesma
+/// onda que a rodada ainda não assumiu: as duas são versões da mesma entrega,
+/// e a rodada grava uma entrega oficial só, com o número delas. Sem isso cada
+/// volta gastaria um número, e a entrega da onda seguinte sairia com um
+/// número pulado. `None` para o evento que não é volta, ou que abre a entrega
+/// da onda.
+fn pending_return_code(
+    log: &SpecLog,
+    codes: &BTreeMap<u64, String>,
+    event_type: &str,
+    event: &Map<String, Value>,
+) -> Option<String> {
+    if event.get("returned") != Some(&Value::Bool(true)) {
+        return None;
+    }
+    let wave = event.get("wave").and_then(Value::as_u64);
+    log.unassumed_returns()
+        .into_iter()
+        .find(|back| back.event_type == event_type && back.wave() == wave)
+        .and_then(|back| codes.get(&back.id).cloned())
+}
+
 /// O código que o evento `event` grava ao entrar no fim de `log`: o da versão
-/// que ele substitui, quando `replaces` aponta um item do mesmo tipo; senão, o
-/// maior número que o tipo já tem na spec, mais 1. Nunca a posição: um número
-/// que saiu do meio do arquivo não volta. `None` para um tipo desconhecido.
+/// que ele substitui, quando `replaces` aponta itens do mesmo tipo — a mais
+/// antiga, se são vários —; o da volta da mesma onda que ainda espera a
+/// rodada, quando ele é outra volta dela; senão, o maior número que o tipo já
+/// tem na spec, mais 1. Nunca a posição: um número que saiu do meio do
+/// arquivo não volta. `None` para um tipo desconhecido.
 #[must_use]
 pub fn code_after(log: &SpecLog, event: &Map<String, Value>) -> Option<String> {
     let spec = type_spec(event.get("type").and_then(Value::as_str)?)?;
     let codes = log.codes();
-    let inherited = event
-        .get("replaces")
-        .and_then(Value::as_u64)
-        .filter(|old| log.get(*old).is_some_and(|o| o.event_type == spec.name))
-        .and_then(|old| codes.get(&old).cloned());
-    if inherited.is_some() {
-        return inherited;
+    let replaced = match event.get("replaces") {
+        Some(Value::Array(list)) => list.iter().filter_map(Value::as_u64).collect(),
+        Some(other) => other.as_u64().into_iter().collect(),
+        None => Vec::new(),
+    };
+    if let Some(code) =
+        inherited_code(log, &codes, spec.name, &replaced).or_else(|| pending_return_code(log, &codes, spec.name, event))
+    {
+        return Some(code);
     }
     let top = codes
         .values()
@@ -222,5 +261,62 @@ mod tests {
         assert!(!codes.contains_key(&3) && !codes.contains_key(&4), "no code from a foreign or missing one: {codes:?}");
         let next = obj(json!({"type": "rule", "text": "c"}));
         assert_eq!(code_after(&log, &next).as_deref(), Some("MSTD-RULE-0003"), "the number 2 never returns");
+    }
+
+    /// Uma linha de entrega com o código já gravado.
+    fn delivery(id: u64, code: &str, extra: &str) -> String {
+        line(id, "delivered", &format!(",\"code\":\"{code}\",\"wave\":1{extra}"))
+    }
+
+    /// A onda que volta duas vezes gasta um número só: a segunda volta divide
+    /// o código da primeira, que a rodada ainda não assumiu, e a volta de
+    /// outra onda, ou a entrega que não é volta, segue com o próximo número.
+    #[test]
+    fn a_second_return_of_the_same_wave_shares_the_number_of_the_first() {
+        let content = delivery(1, "MSTD-DELIV-0001", ",\"returned\":true");
+        let log = parse_log(&content);
+        let again = obj(json!({"type": "delivered", "wave": 1, "returned": true}));
+        assert_eq!(code_after(&log, &again).as_deref(), Some("MSTD-DELIV-0001"));
+        let other_wave = obj(json!({"type": "delivered", "wave": 2, "returned": true}));
+        assert_eq!(code_after(&log, &other_wave).as_deref(), Some("MSTD-DELIV-0002"));
+        let not_a_return = obj(json!({"type": "delivered", "wave": 1}));
+        assert_eq!(code_after(&log, &not_a_return).as_deref(), Some("MSTD-DELIV-0002"));
+    }
+
+    /// A entrega oficial que assume várias voltas fica com o número da mais
+    /// antiga, e a entrega da onda seguinte vem logo depois, sem pulo; a volta
+    /// que chega depois da entrega oficial abre um número novo.
+    #[test]
+    fn the_official_delivery_that_replaces_several_returns_takes_the_first_number() {
+        let mut content = [
+            delivery(1, "MSTD-DELIV-0001", ",\"returned\":true"),
+            delivery(2, "MSTD-DELIV-0001", ",\"returned\":true"),
+        ]
+        .concat();
+        let official = obj(json!({"type": "delivered", "wave": 1, "replaces": [1, 2]}));
+        assert_eq!(code_after(&parse_log(&content), &official).as_deref(), Some("MSTD-DELIV-0001"));
+
+        content.push_str(&delivery(3, "MSTD-DELIV-0001", ",\"replaces\":[1,2]"));
+        let next_wave = obj(json!({"type": "delivered", "wave": 2, "returned": true}));
+        assert_eq!(code_after(&parse_log(&content), &next_wave).as_deref(), Some("MSTD-DELIV-0002"));
+        let after_the_official = obj(json!({"type": "delivered", "wave": 1, "returned": true}));
+        assert_eq!(
+            code_after(&parse_log(&content), &after_the_official).as_deref(),
+            Some("MSTD-DELIV-0002"),
+            "a return written after the official delivery is a new number"
+        );
+    }
+
+    /// A linha sem código, de uma edição à mão, que substitui várias voltas,
+    /// recebe o número da mais antiga delas.
+    #[test]
+    fn a_line_without_a_code_that_replaces_several_returns_reads_the_first_number() {
+        let content = [
+            delivery(1, "MSTD-DELIV-0001", ",\"returned\":true"),
+            delivery(2, "MSTD-DELIV-0001", ",\"returned\":true"),
+            line(3, "delivered", ",\"wave\":1,\"replaces\":[1,2]"),
+        ]
+        .concat();
+        assert_eq!(parse_log(&content).codes()[&3], "MSTD-DELIV-0001");
     }
 }

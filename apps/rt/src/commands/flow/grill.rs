@@ -559,7 +559,7 @@ mod tests {
             None,
             "lesson",
             json!({"class": "environment_trap", "text": LESSON, "keys": ["merge", "pendência"],
-                   "applies_to": {"files": ["**"]}, "found_in": {"spec": "antiga"}}),
+                   "applies_to": {"skill": "backend"}, "found_in": {"spec": "antiga"}}),
         );
         assert_eq!(lesson["ok"], json!(true), "{lesson}");
         open_spec(root, "antiga");
@@ -773,6 +773,42 @@ mod tests {
         record_list(root, "x", &report);
     }
 
+    /// A lição da armadilha do ambiente que casa com o objetivo mas diz os
+    /// arquivos onde vale não vira ponto do `grill`: o pedido de cada onda que mexe neles a
+    /// leva. A que só diz a skill, com o mesmo texto, continua virando.
+    #[test]
+    fn a_lesson_that_names_files_is_left_to_the_wave_and_not_asked() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let by_files = write(
+            root,
+            None,
+            "lesson",
+            json!({"class": "environment_trap", "text": LESSON, "keys": ["merge", "pendência"],
+                   "applies_to": {"files": ["apps/rt/src/**"]}, "found_in": {"spec": "antiga"}}),
+        );
+        assert_eq!(by_files["ok"], json!(true), "{by_files}");
+        surveyed(root, "x");
+        let report = grill(root, "x", Some("fix"), false);
+        assert_eq!(report["ok"], json!(true), "{report}");
+        assert!(
+            !items(&report).iter().any(|item| item["from"] == json!("lesson")),
+            "a lição por arquivo não vira ponto: {report}"
+        );
+        let by_skill = write(
+            root,
+            None,
+            "lesson",
+            json!({"class": "environment_trap", "text": "**Merge sem trava.** O merge passa com pendência aberta.",
+                   "keys": ["merge", "pendência"], "applies_to": {"skill": "backend"}, "found_in": {"spec": "antiga"}}),
+        );
+        assert_eq!(by_skill["ok"], json!(true), "{by_skill}");
+        let again = grill(root, "x", Some("fix"), false);
+        let asked: Vec<&Value> = items(&again).iter().filter(|item| item["from"] == json!("lesson")).collect();
+        assert_eq!(asked.len(), 1, "{again}");
+        assert_eq!(asked[0]["gap"], json!("Merge sem trava."));
+    }
+
     /// Uma pasta com 300 regras do projeto que casam com o objetivo, e um
     /// defeito que também casa: o levantamento não traz regra nenhuma como
     /// ponto, e o defeito continua virando ponto, sem perder o lugar para
@@ -786,7 +822,7 @@ mod tests {
             None,
             "lesson",
             json!({"class": "environment_trap", "text": LESSON, "keys": ["merge", "pendência"],
-                   "applies_to": {"files": ["apps/rt/src/**"]}, "found_in": {"spec": "antiga"}}),
+                   "applies_to": {"subproject": "apps/rt"}, "found_in": {"spec": "antiga"}}),
         );
         assert_eq!(written["ok"], json!(true), "{written}");
         let path = root.join(".claude").join("spec").join("lessons.ndjson");

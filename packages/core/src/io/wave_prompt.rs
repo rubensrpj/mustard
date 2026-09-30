@@ -310,7 +310,9 @@ pub fn lesson_bank(root: &Path) -> Option<SpecLog> {
 /// que cita um arquivo vai só à onda que mexe nele, e a onda só de texto não
 /// recebe lição do projeto todo nem do subprojeto ([`serving_wave`]). São as
 /// que a rodada mostra ao orquestrador antes do envio, e as que o pedido
-/// leva, menos as que a escolha dele tirou.
+/// leva, menos as que a escolha dele tirou. A lição que diz os arquivos onde
+/// vale chega assim a toda onda que mexe neles, e por isso o levantamento
+/// não pergunta por ela ([`crate::domain::lessons::reaches_waves_by_files`]).
 #[must_use]
 pub fn wave_lessons<'a>(bank: &'a SpecLog, log: &SpecLog, wave: u64, languages: &Languages) -> Vec<&'a SpecEvent> {
     let files = wave_files(log, wave);

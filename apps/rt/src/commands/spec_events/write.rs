@@ -375,6 +375,15 @@ pub(crate) fn write_at_with(opts: &WriteOpts, copy: bool) -> Value {
     } else {
         None
     };
+    // A prova do critério é o comando que a rodada e o fechamento rodam: a que
+    // não roda, liga comandos por `;` ou é uma busca sem `!` recusa antes de
+    // gravar.
+    if event_type == "criterion"
+        && let Some(refusal) =
+            draft.get("proof").and_then(Value::as_str).and_then(super::proof_check::proof_defect)
+    {
+        return refuse(refusal);
+    }
     // A volta do revisor só entra com pedido de revisão aberto, e o veredito
     // final que não responde por todo o combinado recusa antes de gravar.
     if event_type == "verdict"
@@ -2156,7 +2165,7 @@ mod tests {
         born(root);
         let said = write(root, "message", r#"{"author":"user","text":"decidi"}"#)["id"].as_u64().unwrap();
         let crit = write(root, "criterion",
-            &json!({"when": "a", "then": "b", "proof": "p", "form": "ubiquitous", "origin": said}).to_string());
+            &json!({"when": "a", "then": "b", "proof": "echo p", "form": "ubiquitous", "origin": said}).to_string());
         let wave = json!({"n": 1, "text": "Onda.", "criteria": [crit["id"]], "done_when": "passa", "origin": said});
         assert_eq!(write(root, "wave", &wave.to_string())["ok"], json!(true));
         let decision = |extra: Value| {
@@ -2185,6 +2194,60 @@ mod tests {
         }
     }
 
+    /// A prova de um critério é o comando que a rodada e o fechamento rodam,
+    /// e a gravação recusa a que não se sustenta, dizendo o termo que falhou
+    /// e o que escrever no lugar, sem gravar nada: a frase no lugar do
+    /// comando, os comandos ligados por `;` e a busca sozinha sem `!` na
+    /// frente. O comando de verdade passa, inclusive o programa que só está
+    /// nos diretórios de ferramenta do usuário. O critério já gravado com uma
+    /// prova assim segue lido como estava, e só a regravação dele é recusada.
+    #[test]
+    fn the_proof_of_a_criterion_has_to_be_a_real_command() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        born(root);
+        let said = write(root, "message", r#"{"author":"user","text":"o pedido"}"#)["id"].as_u64().unwrap();
+        let criterion = |proof: &str| {
+            json!({"when": "a", "then": "b", "proof": proof, "form": "ubiquitous", "origin": said}).to_string()
+        };
+
+        let before = lines(root);
+        for (proof, reason, said_in_hint) in [
+            ("sai vazio", "proof-program-unknown", "sai"),
+            ("a_soma_sai_certa", "proof-program-unknown", "a_soma_sai_certa"),
+            ("git --version ; git --help", "proof-chained-by-semicolon", "&&"),
+            ("git grep -n x", "proof-search-not-negated", "!"),
+        ] {
+            let refused = write(root, "criterion", &criterion(proof));
+            assert_eq!(refused["reason"], json!(reason), "{proof}: {refused}");
+            let hint = refused["hint"].as_str().unwrap_or_default();
+            assert!(hint.contains(said_in_hint), "{proof}: a recusa diz o que escrever: {hint}");
+            assert_eq!(lines(root), before, "{proof}: nada foi gravado");
+        }
+        for proof in ["! git grep -n x", "cargo test", "git --version && git --help"] {
+            let accepted = write(root, "criterion", &criterion(proof));
+            assert_eq!(accepted["ok"], json!(true), "{proof}: {accepted}");
+        }
+
+        let old = crate::shared::spec_state::seed_event(
+            root,
+            "teste",
+            "criterion",
+            json!({"when": "a", "then": "b", "proof": "sai vazio", "form": "ubiquitous", "origin": said}),
+        );
+        let log = store::read(&store::spec_file(root, "teste").unwrap()).unwrap().unwrap();
+        assert!(log.visible().iter().any(|e| e.id == old), "o critério antigo segue lido");
+        let revise = |proof: &str| {
+            let mut body: Value = serde_json::from_str(&criterion(proof)).unwrap();
+            body["replaces"] = json!(old);
+            body.to_string()
+        };
+        let kept = write(root, "criterion", &revise("sai vazio"));
+        assert_eq!(kept["reason"], json!("proof-program-unknown"), "a regravação é conferida: {kept}");
+        let fixed = write(root, "criterion", &revise("git --version"));
+        assert_eq!(fixed["ok"], json!(true), "{fixed}");
+    }
+
     /// A onda não nasce mais pequena por contagem: a quarta tarefa é gravada
     /// que nem a terceira, e do mesmo jeito a quarta prova de critério — a
     /// gravação não corta o custo da onda. Este é o caso que a recusa
@@ -2197,7 +2260,7 @@ mod tests {
         born(root);
         let said = write(root, "message", r#"{"author":"user","text":"o pedido"}"#)["id"].as_u64().unwrap();
         let crit1 = write(root, "criterion",
-            &json!({"when": "a", "then": "b", "proof": "p1", "form": "ubiquitous", "origin": said}).to_string())["id"].as_u64().unwrap();
+            &json!({"when": "a", "then": "b", "proof": "echo p1", "form": "ubiquitous", "origin": said}).to_string())["id"].as_u64().unwrap();
         let wave = write(root, "wave",
             &json!({"n": 1, "text": "Onda 1.", "criteria": [crit1], "done_when": "passa", "origin": said}).to_string());
         assert_eq!(wave["ok"], json!(true), "{wave}");
@@ -2219,7 +2282,7 @@ mod tests {
                 .as_u64()
                 .unwrap()
         };
-        let crit2 = crit("p2");
+        let crit2 = crit("echo p2");
         let revise = |criteria: &[u64], replaces: u64| {
             json!({
                 "n": 1, "text": "Onda 1.", "criteria": criteria, "done_when": "passa",
@@ -2230,12 +2293,12 @@ mod tests {
         let revised = write(root, "wave", &revise(&[crit1, crit2], wave_id));
         assert_eq!(revised["ok"], json!(true), "{revised}");
         let revised_id = revised["id"].as_u64().unwrap();
-        let crit3 = crit("p3");
+        let crit3 = crit("echo p3");
         let revised = write(root, "wave", &revise(&[crit1, crit2, crit3], revised_id));
         assert_eq!(revised["ok"], json!(true), "a terceira prova passa: {revised}");
         let revised_id = revised["id"].as_u64().unwrap();
 
-        let crit4 = crit("p4");
+        let crit4 = crit("echo p4");
         let revised = write(root, "wave", &revise(&[crit1, crit2, crit3, crit4], revised_id));
         assert_eq!(revised["ok"], json!(true), "a quarta prova também passa: {revised}");
     }
@@ -2365,7 +2428,7 @@ mod tests {
         // O mesmo campo, agora declarado pelo tipo da onda, passa.
         let said = write(root, "message", r#"{"author":"user","text":"o pedido"}"#)["id"].as_u64().unwrap();
         let crit = write(root, "criterion",
-            &json!({"when": "a", "then": "b", "proof": "p", "form": "ubiquitous", "origin": said}).to_string())["id"]
+            &json!({"when": "a", "then": "b", "proof": "echo p", "form": "ubiquitous", "origin": said}).to_string())["id"]
             .as_u64()
             .unwrap();
         let wave = write(root, "wave",

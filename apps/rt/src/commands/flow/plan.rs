@@ -13,8 +13,10 @@
 //!
 //! **O que trava** e segura a pergunta até ser corrigido: ponto do
 //! levantamento aberto; skill que a conferência recusa; arquivo citado que
-//! não existe e não está marcado como novo; e tarefa que mexe em código sem
-//! dizer em que arquivo, que volta com os arquivos que o mapa sugere.
+//! não existe e não está marcado como novo; critério cuja prova não é um
+//! comando de verdade (programa que não roda, comandos ligados por `;`, busca
+//! sozinha que devia sair vazia); e tarefa que mexe em código sem dizer em
+//! que arquivo, que volta com os arquivos que o mapa sugere.
 //!
 //! O item combinado sem dono — nenhuma tarefa de uma onda do plano o cobre,
 //! ele não diz as ondas dele nem vale no projeto todo — não trava nem avisa:
@@ -102,13 +104,16 @@ enum PlanFinding {
     /// O comando de compilar ou de testar que o projeto ainda não declarou
     /// no `mustard.json`, pelo nome do campo (`buildCommand`/`testCommand`).
     CommandNotDeclared { field: &'static str },
+    /// Um critério cuja prova não é um comando que se sustente: a rodada e o
+    /// fechamento a rodariam e ela passaria ou falharia sem provar nada.
+    Proof { criterion: String, refusal: Refusal },
 }
 
 impl PlanFinding {
     /// `true` para o achado que segura a pergunta de aprovação.
     fn blocks(&self) -> bool {
         match self {
-            Self::Refused(_) | Self::Skill { .. } | Self::TaskWithoutFile { .. } => true,
+            Self::Refused(_) | Self::Skill { .. } | Self::TaskWithoutFile { .. } | Self::Proof { .. } => true,
             Self::Cited { finding, .. } => finding.is_refusal(),
             Self::FileOutsideGit { .. }
             | Self::ItemWithoutTask { .. }
@@ -121,7 +126,7 @@ impl PlanFinding {
     /// A razão curta, estável, para quem lê a saída por máquina.
     fn reason(&self) -> String {
         match self {
-            Self::Refused(refusal) => refusal.reason().to_string(),
+            Self::Refused(refusal) | Self::Proof { refusal, .. } => refusal.reason().to_string(),
             Self::Skill { refusal, .. } => refusal.reason().to_string(),
             Self::FileOutsideGit { .. } => "file-outside-git".into(),
             Self::Cited { finding, .. } => match finding {
@@ -149,6 +154,7 @@ impl PlanFinding {
             Self::Skill { name, refusal } => {
                 format!("{name}: {}", refusal.message(lang))
             }
+            Self::Proof { criterion, refusal } => format!("{criterion}: {}", refusal.message(lang)),
             Self::FileOutsideGit { task, path } => {
                 fill("plan.file_outside_git", &[("{task}", task.clone()), ("{path}", path.clone())])
             }
@@ -481,6 +487,16 @@ fn check(
         }
     }
 
+    // A prova de cada critério é o comando que a rodada e o fechamento
+    // rodam: a que não roda, liga comandos por `;` ou é uma busca sem `!`
+    // segura a pergunta de aprovação.
+    for criterion in log.block(BlockQuery::Block(Block::Criteria)).into_iter().filter(|e| e.event_type == "criterion") {
+        let refusal = criterion.str_field("proof").and_then(spec_events::proof_check::proof_defect);
+        if let Some(refusal) = refusal {
+            out.push(PlanFinding::Proof { criterion: code_of(criterion), refusal });
+        }
+    }
+
     let with_criterion: BTreeSet<u64> = log
         .block(BlockQuery::Block(Block::Criteria))
         .into_iter()
@@ -810,6 +826,43 @@ mod tests {
 
         let report = plan(root, "x");
         assert!(!reasons(&report, "blocking").contains(&"wave-too-big".to_string()), "{report}");
+    }
+
+    /// O plano segura a pergunta de aprovação quando a prova de um critério
+    /// não é um comando de verdade — a frase no lugar do comando, os
+    /// comandos ligados por `;` ou a busca sozinha sem `!` —, e a recusa
+    /// nomeia o critério e o termo que falhou. O critério com prova boa não
+    /// trava o plano.
+    #[test]
+    fn a_criterion_proof_that_is_not_a_real_command_holds_the_question() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = surveyed(root, "x");
+        sound_plan(root, "x", said);
+        assert_eq!(plan(root, "x")["ok"], json!(true), "a prova boa não trava o plano");
+
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let mut next = log.max_id();
+        for proof in ["sai vazio", "git --version ; git --help", "git grep -n x"] {
+            next += 1;
+            append_raw(root, "x", "criterion", json!({"when": "a", "then": "b", "proof": proof, "form": "ubiquitous",
+                "origin": said}), next);
+        }
+
+        let report = plan(root, "x");
+        assert_eq!(report["ok"], json!(false), "{report}");
+        let blocking = reasons(&report, "blocking");
+        for reason in ["proof-program-unknown", "proof-chained-by-semicolon", "proof-search-not-negated"] {
+            assert!(blocking.contains(&reason.to_string()), "{reason}: {report}");
+        }
+        let hints: Vec<String> = report["blocking"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|f| f["hint"].as_str().map(str::to_string))
+            .collect();
+        assert!(hints.iter().any(|h| h.starts_with("MSTD-CRIT-") && h.contains("sai")), "{hints:?}");
     }
 
     /// As citações do plano passam pela mesma conferência do ponto do

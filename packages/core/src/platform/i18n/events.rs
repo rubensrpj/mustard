@@ -154,6 +154,37 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              criterion, and {found} arrived instead. Merge the proofs of the same criterion into a \
              single command and run the round again. Nothing was written."
         }
+        ("spec_events.proof_program_unknown", Locale::PtBr) => {
+            "A prova do critério precisa ser um comando que roda, e o primeiro termo dela, {term}, \
+             não é um programa que o shell ache. Escreva no lugar o comando que demonstra o \
+             critério. A conferência que só se faz à mão vai para o texto do critério, e não para \
+             a prova. Nada foi gravado."
+        }
+        ("spec_events.proof_program_unknown", Locale::EnUs) => {
+            "A criterion's proof must be a command that runs, and its first term, {term}, is not a \
+             program the shell can find. Write the command that demonstrates the criterion \
+             instead. A check that can only be done by hand goes in the criterion's text, not in \
+             the proof. Nothing was written."
+        }
+        ("spec_events.proof_chained_by_semicolon", Locale::PtBr) => {
+            "A prova liga comandos por ponto e vírgula, e só o último decide o resultado: {found}. \
+             Ligue os comandos por && e a prova falha se qualquer um falhar. Nada foi gravado."
+        }
+        ("spec_events.proof_chained_by_semicolon", Locale::EnUs) => {
+            "The proof chains commands with a semicolon, and only the last one decides the result: \
+             {found}. Join the commands with && and the proof fails if any of them fails. Nothing \
+             was written."
+        }
+        ("spec_events.proof_search_not_negated", Locale::PtBr) => {
+            "A prova é uma busca sozinha, {found}, e uma busca sai com sucesso quando acha texto. \
+             Se ela deve sair vazia, escreva ! na frente: a prova passa quando nada é achado. Se \
+             ela deve achar o texto, acrescente -q. Nada foi gravado."
+        }
+        ("spec_events.proof_search_not_negated", Locale::EnUs) => {
+            "The proof is a lone search, {found}, and a search succeeds when it finds text. If it \
+             must come out empty, put ! in front: the proof then passes when nothing is found. If \
+             it must find the text, add -q. Nothing was written."
+        }
         ("spec_events.invalid_value", Locale::PtBr) => {
             "O campo {field} do evento {type} precisa ser {expected}. Nada foi gravado."
         }
@@ -870,8 +901,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("events.rs"),
             super::PREFIXES,
-            115,
-            0x2dd0_f23d_41b8_5d1e,
+            118,
+            0xe610_ff7c_9597_4d85,
         );
     }
 
@@ -903,6 +934,9 @@ mod tests {
             ("spec_events.delivery_agreed_missing", &["{wave}", "{missing}"][..]),
             ("spec_events.criterion_form_missing", &[][..]),
             ("spec_events.proof_not_a_command", &["{criterion}", "{found}"][..]),
+            ("spec_events.proof_program_unknown", &["{term}"][..]),
+            ("spec_events.proof_chained_by_semicolon", &["{found}"][..]),
+            ("spec_events.proof_search_not_negated", &["{found}"][..]),
             ("spec_events.invalid_value", &["{type}", "{field}", "{expected}"][..]),
             ("spec_events.wrong_count", &["{type}", "{field}", "{min}", "{max}", "{count}"][..]),
             ("spec_events.fact_without_source", &["{fact}"][..]),

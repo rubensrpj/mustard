@@ -124,3 +124,29 @@ fn kinds_manifest_matches_fixture_declarations_both_ways() {
         }
     }
 }
+
+/// Toda língua do registro declara os textos que juntam as partes de um nome
+/// qualificado (`qualified_separators`): o motor não guarda separador nenhum
+/// por conta própria, e a língua sem o campo não teria como ler um import
+/// nem ligar um nome ao qualificador escrito antes dele.
+#[test]
+fn every_language_declares_its_qualified_separators() {
+    let raw = std::fs::read_to_string(manifest_dir::manifest_dir().join("languages.toml")).expect("read languages.toml");
+    let languages: toml::Value = toml::from_str(&raw).expect("languages.toml is valid TOML");
+    let entries = languages
+        .get("language")
+        .and_then(|v| v.as_array())
+        .expect("languages.toml declares [[language]] entries");
+    assert!(!entries.is_empty(), "languages.toml declares at least one language");
+    let without: Vec<&str> = entries
+        .iter()
+        .filter(|entry| {
+            entry
+                .get("qualified_separators")
+                .and_then(|v| v.as_array())
+                .is_none_or(|separators| separators.iter().all(|s| s.as_str().is_none_or(str::is_empty)))
+        })
+        .map(|entry| entry.get("name").and_then(|n| n.as_str()).unwrap_or("?"))
+        .collect();
+    assert!(without.is_empty(), "languages without `qualified_separators` in languages.toml: {without:?}");
+}

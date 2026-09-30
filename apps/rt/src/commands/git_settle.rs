@@ -1088,14 +1088,12 @@ fn settle(start: &Path, unit: Option<&str>, ask_about_others: bool) -> Value {
     // settle that could not free the local floor has no business killing the
     // server branch: that branch is then the only ref of the unit this pass is
     // certain it did not strand, and deleting it is the single step of the three
-    // no rerun can undo. `worktreeRemoved` is permanently `false` on every one of
-    // the three outcomes below — no pass removes a worktree any more; the field
-    // survives only so a caller reading the old shape keeps reading valid JSON.
-    let (action, worktree_removed, branch_deleted, remote_deleted) =
+    // no rerun can undo.
+    let (action, branch_deleted, remote_deleted) =
         if unit_entry.is_some_and(|e| cwd.starts_with(&e.path)) {
             // Inside our own worktree we cannot remove our floor; verify+update
             // already ran, so hand back the finish step and touch nothing else.
-            ("exit-and-rerun", false, false, false)
+            ("exit-and-rerun", false, false)
         } else if !base_advanced {
             // THE authorisation for the prune, and the ONLY one: the base
             // advanced, so the local tree now HOLDS the merged work. Nothing else
@@ -1119,16 +1117,13 @@ fn settle(start: &Path, unit: Option<&str>, ask_about_others: bool) -> Value {
             // verified merged but is NOT off the local stage. `pass_is_ok` turns
             // `base_advanced == false` into `ok:false` + `reason:"base-behind"`
             // below — now without having spent the branch to say so.
-            ("partial", false, false, false)
+            ("partial", false, false)
         } else {
             // The work-branch gate cuts every unit IN PLACE — no worktree of
             // its own — so a `Some(e)` here can only be a copy of the unit
             // left on disk by an older install, never something this pass
             // created. This pass does not remove it, so the floor is clear
             // only when there is no such copy to begin with.
-            // `worktreeRemoved` stays in the report, permanently `false`, so
-            // a caller reading the old field shape keeps reading valid JSON.
-            let worktree_removed = false;
             let floor_clear = match unit_entry {
                 Some(_) => false,
                 // In-place: the "floor" is the unit branch checked out on the
@@ -1147,7 +1142,7 @@ fn settle(start: &Path, unit: Option<&str>, ask_about_others: bool) -> Value {
             // this pass could not free → "partial", and nothing was deleted on
             // either side; the per-field booleans tell the true story.
             let action = if floor_clear { "settled" } else { "partial" };
-            (action, worktree_removed, branch_deleted, remote_deleted)
+            (action, branch_deleted, remote_deleted)
         };
 
     // An IN-PLACE unit that did NOT prune was checked out onto its base above —
@@ -1244,7 +1239,6 @@ fn settle(start: &Path, unit: Option<&str>, ask_about_others: bool) -> Value {
             "merged": true,
             "inPlace": in_place,
             "action": action,
-            "worktreeRemoved": worktree_removed,
             "branchDeleted": branch_deleted,
             "remoteDeleted": remote_deleted,
             "restoredToUnit": restored_to_unit,
@@ -1703,7 +1697,7 @@ mod tests {
         let v = settle_at(&main, Some("dev_done"));
         assert_eq!(v["ok"], json!(true), "{v}");
         assert_eq!(v["unit"]["action"], json!("settled"), "{v}");
-        assert_eq!(v["unit"]["worktreeRemoved"], json!(false));
+        assert!(v["unit"].get("worktreeRemoved").is_none(), "the report keeps no worktree flag: {v}");
         assert_eq!(v["unit"]["branchDeleted"], json!(true));
         assert_eq!(v["baseCheckout"]["updated"], json!(true), "base ff'd: {v}");
         assert!(
@@ -1780,7 +1774,6 @@ mod tests {
             json!(true),
             "the BASE advanced — so only the blocked FLOOR can explain what follows: {v}",
         );
-        assert_eq!(v["unit"]["worktreeRemoved"], json!(false), "{v}");
         assert_eq!(v["unit"]["branchDeleted"], json!(false), "{v}");
         assert_eq!(v["unit"]["remoteDeleted"], json!(false), "{v}");
         assert!(wt.exists(), "settle never touches the copy — it survives untouched");
@@ -2467,7 +2460,6 @@ mod tests {
         assert_eq!(v["ok"], json!(false), "{v}");
         assert_eq!(v["reason"], json!("base-behind"), "{v}");
         assert_eq!(v["baseCheckout"]["updated"], json!(false), "{v}");
-        assert_eq!(v["unit"]["worktreeRemoved"], json!(false), "{v}");
         assert_eq!(v["unit"]["branchDeleted"], json!(false), "{v}");
         assert_eq!(v["unit"]["remoteDeleted"], json!(false), "{v}");
         assert_eq!(

@@ -89,6 +89,43 @@ fn user_says(root: &Path, text: &str) -> u64 {
     log.events.last().expect("the message just written").id
 }
 
+/// A fala do usuário pelo gancho da entrada, como o Claude Code o chama: o
+/// binário lê o evento no `stdin` e grava a fala na spec atual. Devolve o
+/// número da fala gravada.
+fn hook_says(root: &Path, home: &Path, text: &str) -> u64 {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let payload = json!({"hook_event_name": "UserPromptSubmit", "prompt": text, "session_id": "s-levantamento",
+        "cwd": root.to_string_lossy()});
+    let mut child = Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+        .args(["on", "UserPromptSubmit"])
+        .current_dir(root)
+        .env("HOME", home)
+        .env("USERPROFILE", home)
+        .env("CLAUDE_PROJECT_DIR", root)
+        .env("MUSTARD_ACTIVE_SPEC", SPEC)
+        .env_remove("CLAUDE_CONFIG_DIR")
+        .env_remove("CLAUDE_PLUGIN_ROOT")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the binary runs");
+    if let Some(mut pipe) = child.stdin.take() {
+        let _ = pipe.write_all(payload.to_string().as_bytes());
+    }
+    let out = child.wait_with_output().expect("the binary finishes");
+    assert_eq!(out.status.code(), Some(0), "a hook always exits 0: {}", String::from_utf8_lossy(&out.stderr));
+    let path = store::spec_file(root, SPEC).expect("the spec's file");
+    let log = store::read(&path).expect("a readable file").expect("the spec has its file");
+    log.visible()
+        .into_iter()
+        .rfind(|e| e.event_type == "message" && e.str_field("text") == Some(text))
+        .unwrap_or_else(|| panic!("the entry hook did not record the message: {text}"))
+        .id
+}
+
 fn id(report: &Value) -> u64 {
     report["id"].as_u64().unwrap_or_else(|| panic!("no id: {report}"))
 }
@@ -136,6 +173,9 @@ fn a_test_survey_goes_through_every_point_and_the_plan_is_refused_while_one_is_o
     let items = report(&grilled)["points"].as_array().cloned().expect("the point list");
     assert_eq!(items.len(), 9, "{items:?}");
 
+    // Duas falas que chegam sem ponto aberto e sem registro que as aponte.
+    let loose = [user_says(root, "E o painel?"), user_says(root, "E o aviso por e-mail?")];
+
     // A lista gravada como o assistente grava: a última gravação devolve o
     // primeiro ponto.
     let mut last = Value::Null;
@@ -147,8 +187,6 @@ fn a_test_survey_goes_through_every_point_and_the_plan_is_refused_while_one_is_o
     }
     let mut current = last["point"].clone();
     assert_eq!(current["gap"], items[0]["gap"], "{last}");
-
-    let loose = [user_says(root, "E o painel?"), user_says(root, "E o aviso por e-mail?")];
 
     let mut reviewed = Vec::new();
     for (i, item) in items.iter().enumerate() {
@@ -280,6 +318,130 @@ fn a_task_missing_one_of_the_three_declarations_is_refused_naming_it_and_writes_
     );
     assert!(written.get("id").is_some(), "{written}");
     assert_eq!(std::fs::read_to_string(&path).expect("the spec file").lines().count(), lines_before + 1);
+}
+
+/// A tarefa gravada pela porta do binário sem o texto (o que ela faz), com o
+/// título, o agente, os arquivos, as dependências, os itens cobertos e a
+/// origem certos, é recusada nomeando só o texto, e nada entra no arquivo da
+/// spec; com o texto, a gravação passa.
+#[test]
+fn a_task_without_its_text_is_refused_naming_it_and_writes_nothing() {
+    let dir = repo();
+    let root = dir.path();
+    let opened = rt(root, &["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    assert_eq!(opened.status.code(), Some(0), "{}", String::from_utf8_lossy(&opened.stdout));
+    let said = user_says(root, GOAL);
+    let crit = criterion(root, said);
+    let path = store::spec_file(root, SPEC).expect("the spec's file");
+    let lines_before = std::fs::read_to_string(&path).expect("the spec file").lines().count();
+
+    let out = rt(
+        root,
+        &[
+            "write",
+            "task",
+            "--spec",
+            SPEC,
+            "--json",
+            &json!({"agent": "- conferir pelo teste", "title": "Entregar a tarefa", "files": [], "depends_on": [], "covers": [crit], "origin": said}).to_string(),
+        ],
+    );
+    let refused = report(&out);
+    assert_eq!(refused["reason"], json!("task-declaration-missing"), "{refused}");
+    let hint = refused["hint"].as_str().unwrap_or_default();
+    assert!(hint.contains("o que ela faz"), "{hint}");
+    assert!(
+        !hint.contains("os arquivos que toca") && !hint.contains("de quais tarefas depende"),
+        "só o texto falta: {hint}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("the spec file").lines().count(),
+        lines_before,
+        "nothing was written"
+    );
+
+    let blank = rt(
+        root,
+        &[
+            "write",
+            "task",
+            "--spec",
+            SPEC,
+            "--json",
+            &json!({"agent": "- conferir pelo teste", "title": "Entregar a tarefa", "text": "   ", "files": [], "depends_on": [], "covers": [crit], "origin": said}).to_string(),
+        ],
+    );
+    assert_eq!(report(&blank)["reason"], json!("task-declaration-missing"), "a blank text is a missing text");
+
+    let written = write(
+        root,
+        "task",
+        &json!({"agent": "- conferir pelo teste", "title": "Entregar a tarefa", "text": "Somar dois números.", "files": [], "depends_on": [], "covers": [crit], "origin": said}),
+    );
+    assert!(written.get("id").is_some(), "{written}");
+}
+
+/// A pergunta feita no meio de um ponto aberto, pelo gancho da entrada, leva
+/// o número do ponto e não fica solta no fim do levantamento, embora o ponto
+/// feche com uma decisão que não a cita; a fala que chegou sem ponto aberto
+/// continua solta, e a fala pelo gancho com os pontos já fechados também.
+#[test]
+fn a_question_said_during_an_open_point_is_not_left_loose_at_the_end() {
+    let dir = repo();
+    let home = tempfile::tempdir().expect("home");
+    let root = dir.path();
+    let opened = rt(root, &["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    assert_eq!(opened.status.code(), Some(0), "{}", String::from_utf8_lossy(&opened.stdout));
+    let said = user_says(root, GOAL);
+    write(root, "context", &json!({"title": "Combinar o item", "agent": "- conferir pelo teste", "text": GOAL, "origin": said}));
+    let items = report(&rt(root, &["grill", "--kinds", "feature", "--spec", SPEC]))["points"]
+        .as_array()
+        .cloned()
+        .expect("the point list");
+
+    let before_points = hook_says(root, home.path(), "E o painel?");
+
+    let mut last = Value::Null;
+    for item in &items {
+        let mut point = item.clone();
+        point["status"] = json!("open");
+        point["facts"] = json!([{"text": "O merge começa no arquivo de entrada.", "source": "src/main.rs:2"}]);
+        last = write(root, "point", &point);
+    }
+    let mut current = last["point"].clone();
+    let first_open = current["id"].as_u64().expect("the first open point");
+    let question = hook_says(root, home.path(), "8 é fixo?");
+
+    let path = store::spec_file(root, SPEC).expect("the spec's file");
+    let log = store::read(&path).expect("a readable file").expect("the spec has its file");
+    let said_during = |id: u64| log.get(id).and_then(|m| m.int("during"));
+    assert_eq!(said_during(question), Some(first_open), "the question carries the point that was open");
+    assert_eq!(said_during(before_points), None, "a message without an open point carries nothing");
+
+    let mut ended = Value::Null;
+    for item in &items {
+        let code = current["code"].as_str().expect("the point's code").to_string();
+        let answer = write(
+            root,
+            "decision",
+            &json!({"title": "Combinar o item", "agent": format!("- ponto {code}"), "text": "O usuário respondeu ao ponto.", "keys": ["levantamento"], "why": "o usuário respondeu", "origin": said}),
+        );
+        let closed = write(
+            root,
+            "point",
+            &json!({"block": item["block"], "gap": item["gap"], "from": "gap", "status": "closed", "closes": code,
+                "result": [id(&answer)], "origin": said}),
+        );
+        current = closed["point"].clone();
+        ended = closed;
+    }
+    let unrouted: Vec<u64> =
+        ended["unrouted"].as_array().expect("the end of the survey").iter().map(|m| m["id"].as_u64().expect("a number")).collect();
+    assert_eq!(unrouted, [before_points], "only the message that came with no open point is left loose: {ended}");
+
+    let late = hook_says(root, home.path(), "E agora?");
+    let log = store::read(&path).expect("a readable file").expect("the spec has its file");
+    assert_eq!(log.get(late).and_then(|m| m.int("during")), None, "with every point closed nothing is carried");
 }
 
 /// A tarefa gravada só com texto, arquivos e dependências, sem número de

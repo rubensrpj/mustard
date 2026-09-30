@@ -6,14 +6,13 @@
 //! Drift ratchet between the doctor's hook-event set and the shipped
 //! `plugin/hooks/hooks.json` manifest.
 //!
-//! The wiring check used to validate `mustard-rt on <event>` command strings
-//! against a hand-written list. It drifted in both directions: it carried
-//! events nothing registered and omitted `Stop`, which is registered.
-//! `doctor::known_hook_events` now
-//! derives the set from the manifest; this test reads the manifest a second,
-//! independent time off disk and fails on a disagreement either way — so a
-//! reverted derivation, or a parser that stops seeing a shape the manifest
-//! uses, is a test failure rather than a silent FAIL in the field.
+//! A conferência da fiação valida os comandos `mustard-rt on <evento>` contra
+//! o conjunto de eventos que o manifesto registra, inclusive `PreCompact` e
+//! `Stop`. `doctor::known_hook_events` deriva o conjunto do manifesto; este
+//! teste lê o manifesto uma segunda vez, de forma independente, direto do
+//! disco, e falha se os dois discordam para qualquer lado — assim uma
+//! derivação desfeita, ou um leitor que deixa de enxergar uma forma que o
+//! manifesto usa, vira falha de teste e não um FAIL calado em campo.
 //!
 //! Lives in `tests/` rather than in-file because the acceptance criterion runs
 //! `cargo test -p mustard-rt known_events_match_shipped_hooks -- --exact`, and

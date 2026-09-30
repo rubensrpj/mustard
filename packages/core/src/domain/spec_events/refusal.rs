@@ -186,6 +186,19 @@ pub enum Refusal {
     /// adiante, um comando que o shell não acha. `criterion` é o critério, e
     /// `found` o texto que veio no lugar do comando.
     ProofNotACommand { criterion: String, found: String },
+    /// A prova de um critério cujo primeiro termo não é um programa que o
+    /// shell ache: a frase escrita no lugar do comando, ou o nome solto de um
+    /// teste. `term` é o termo que falhou. Nada é gravado.
+    ProofProgramUnknown { term: String },
+    /// A prova que liga comandos por ponto e vírgula: só o último decide o
+    /// resultado, e os de antes podem falhar sem que ninguém veja. `found` é
+    /// a prova como veio. Nada é gravado.
+    ProofChainedBySemicolon { found: String },
+    /// A prova que é uma busca sozinha, sem `!` na frente e sem o modo
+    /// silencioso: ela sai com sucesso quando acha texto, e a busca que devia
+    /// sair vazia passa achando o resto. `found` é a prova como veio. Nada é
+    /// gravado.
+    ProofSearchNotNegated { found: String },
     /// Um pedido gravado pelo assistente numa spec que já fechou, com a fase
     /// `phase` (fechada ou com o pull request aberto). Ela recebe o pedido
     /// depois de reaberta, na mesma spec e na mesma branch: a mensagem aponta
@@ -334,6 +347,9 @@ impl Refusal {
             Self::DeliveryAgreedMissing { .. } => "delivery-agreed-missing",
             Self::CriterionFormMissing => "criterion-form-missing",
             Self::ProofNotACommand { .. } => "proof-not-a-command",
+            Self::ProofProgramUnknown { .. } => "proof-program-unknown",
+            Self::ProofChainedBySemicolon { .. } => "proof-chained-by-semicolon",
+            Self::ProofSearchNotNegated { .. } => "proof-search-not-negated",
             Self::RequestOnClosedSpec { .. } => "request-on-closed-spec",
             Self::WorkOnFinishedSpec { .. } => "work-on-finished-spec",
             Self::Io { .. } => "io-failed",
@@ -600,6 +616,15 @@ impl Refusal {
                 "spec_events.proof_not_a_command",
                 &[("{criterion}", criterion.clone()), ("{found}", found.clone())],
             ),
+            Self::ProofProgramUnknown { term } => {
+                fill("spec_events.proof_program_unknown", &[("{term}", term.clone())])
+            }
+            Self::ProofChainedBySemicolon { found } => {
+                fill("spec_events.proof_chained_by_semicolon", &[("{found}", found.clone())])
+            }
+            Self::ProofSearchNotNegated { found } => {
+                fill("spec_events.proof_search_not_negated", &[("{found}", found.clone())])
+            }
             Self::RequestOnClosedSpec { spec, phase } => fill(
                 "spec_events.request_on_closed_spec",
                 &[("{spec}", spec.clone()), ("{phase}", phase.clone())],

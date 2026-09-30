@@ -20,6 +20,7 @@ use std::path::Path;
 use std::time::Instant;
 
 use mustard_core::domain::spec_state::{last_user_message, PhaseWriter, SpecState, State};
+use mustard_core::domain::survey;
 use serde_json::{json, Map, Value};
 
 use super::pages::secret::without_secrets;
@@ -76,13 +77,27 @@ fn draft(fields: Value) -> Map<String, Value> {
     }
 }
 
+/// Grava a fala do usuário na spec da conversa. Com um ponto do levantamento
+/// aberto, ela leva o número dele em `during`: a fala dita no meio de um ponto
+/// tem lugar nele e não fica solta no fim do levantamento. É o ponto que o
+/// levantamento está apresentando, o primeiro dos abertos. A fala sem ponto
+/// aberto vai sem o campo.
+fn record_user_message(root: &Path, session: Option<&str>, mut fields: Value) -> Option<u64> {
+    let spec = conversation_spec(root, session)?;
+    let open = DiskSpecState::new(root).log(&spec).and_then(|log| survey::open_points(&log).first().map(|p| p.id));
+    if let Some(point) = open {
+        fields["during"] = json!(point);
+    }
+    record_in_spec(root, &spec, "message", draft(fields))
+}
+
 /// A mensagem do usuário, como ele a escreveu, sem os segredos.
 pub(crate) fn record_message(root: &Path, session: Option<&str>, text: &str) -> Option<u64> {
     if text.trim().is_empty() {
         return None;
     }
     let text = without_secrets(text);
-    record(root, session, "message", draft(json!({ "author": "user", "text": text })))
+    record_user_message(root, session, json!({ "author": "user", "text": text }))
 }
 
 /// A resposta do usuário a uma pergunta de gesto, com a testemunha: a
@@ -108,7 +123,7 @@ pub(crate) fn record_witnessed_message(
         witness["change"] = json!(code);
     }
     let fields = json!({ "author": "user", "text": without_secrets(text), "witness": witness });
-    record(root, session, "message", draft(fields))
+    record_user_message(root, session, fields)
 }
 
 /// A resposta do assistente ao fim do turno, ligada à última mensagem do

@@ -132,18 +132,18 @@ impl CheckResult {
 // Known valid events
 // ---------------------------------------------------------------------------
 
-/// The shipped hook manifest (`plugin/hooks/hooks.json`), embedded at build
-/// time. That file is the only thing that decides which `<event>` names the
-/// harness ever hands to `mustard-rt on`; embedding it makes the doctor read
-/// the same artefact the harness reads, the way the wiring check's
-/// `known_run_subcommands` reads the same clap tree the binary dispatches on.
-/// A hand-kept copy drifted in both directions (it carried `PreCompact`, which
-/// nothing registers, and omitted `Stop` and `WorktreeCreate`, which are
-/// registered).
+/// O manifesto de ganchos que o plugin entrega (`plugin/hooks/hooks.json`),
+/// embutido na compilação. Esse arquivo é o único que decide quais nomes de
+/// `<evento>` o Claude Code entrega a `mustard-rt on`; embuti-lo faz o
+/// doutor ler o mesmo artefato que o Claude Code lê, como a conferência da
+/// fiação lê, em `known_run_subcommands`, a mesma árvore do clap em que o
+/// binário despacha. O conjunto de eventos vem dele e não de uma lista à mão,
+/// que sairia de sincronia: `PreCompact`, `Stop` e `WorktreeCreate` entram
+/// porque o manifesto os registra.
 ///
-/// The build script copies it into `OUT_DIR` first: embedded from `plugin/`,
-/// outside this crate, cargo kept it by the absolute path of the copy that
-/// compiled it, and switching copies recompiled the crate.
+/// O script de build o copia antes para `OUT_DIR`: embutido de `plugin/`,
+/// fora deste crate, o cargo o guardava pelo caminho absoluto da cópia que o
+/// compilou, e trocar de cópia recompilava o crate.
 const SHIPPED_HOOKS_MANIFEST: &str = include_str!(concat!(env!("OUT_DIR"), "/hooks.json"));
 
 /// All hook event names `mustard-rt on <event>` recognizes — the keys of the

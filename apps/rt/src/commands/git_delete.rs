@@ -236,12 +236,9 @@ pub(crate) fn delete_with(start: &Path, unit: &str, remote: bool) -> Value {
 
     // Then the git side. The work-branch gate cuts every unit IN PLACE — no
     // worktree of its own — so there is no separate floor to free here.
-    // `worktreeRemoved` stays in the report, permanently `false`, so a caller
-    // reading the field keeps reading valid JSON.
     //
     // `-D`, never `-d`: an abandoned unit is unmerged BY DEFINITION, and `-d`
     // would refuse exactly the branches this command exists to remove.
-    let worktree_removed = false;
     let branch_deleted = local && git_ok(&main, &["branch", "-D", unit]);
     let remote_deleted = remote && git_ok(&main, &["push", "origin", "--delete", unit]);
 
@@ -252,7 +249,6 @@ pub(crate) fn delete_with(start: &Path, unit: &str, remote: bool) -> Value {
         "branch": branch,
         "unit": unit,
         "base": flow.base_of(unit).into_known(),
-        "worktreeRemoved": worktree_removed,
         "branchDeleted": branch_deleted,
         "remoteDeleted": remote_deleted,
         "pr": pr,

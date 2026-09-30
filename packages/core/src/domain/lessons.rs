@@ -377,6 +377,20 @@ pub fn applies_to(event: &SpecEvent, scope: &Scope) -> bool {
     applies(event, scope)
 }
 
+/// A lição diz os arquivos onde vale (`applies_to.files`, o projeto todo
+/// incluído): o pedido de toda onda que mexe neles a leva sozinho, pela
+/// mesma leitura do campo que [`in_scope`] faz. Quem monta a lista de
+/// perguntas do levantamento não pergunta por ela, porque a onda a recebe de
+/// qualquer modo.
+#[must_use]
+pub fn reaches_waves_by_files(lesson: &SpecEvent) -> bool {
+    lesson
+        .fields
+        .get("applies_to")
+        .and_then(Value::as_object)
+        .is_some_and(|at| file_patterns(at).iter().any(|pattern| !pattern.is_empty()))
+}
+
 fn applies(lesson: &SpecEvent, scope: &Scope) -> bool {
     let Some(at) = lesson.fields.get("applies_to").and_then(Value::as_object) else {
         return false;

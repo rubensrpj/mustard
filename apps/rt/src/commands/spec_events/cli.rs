@@ -212,7 +212,7 @@ mod tests {
             assert!(help.contains(&format!("\n  {}: ", spec.name)), "the help has no line for {}:\n{help}", spec.name);
         }
         assert!(help.contains("\n  decision: text, keys, why, origin (applies_to, waves, no_code, title, agent)"), "{help}");
-        assert!(help.contains("\n  message: text (witness)"), "{help}");
+        assert!(help.contains("\n  message: text (witness, during)"), "{help}");
         assert!(
             help.contains("a `task` missing one of its three mandatory declarations"),
             "the help does not name the task-declaration refusal:\n{help}"

@@ -641,9 +641,11 @@ pub fn goal(log: &SpecLog) -> Option<&SpecEvent> {
         .find_map(|e| log.current(e.id))
 }
 
-/// As mensagens do usuário, visíveis, que nenhum evento visível aponta em
-/// `origin`: as que não viraram nenhum registro. Responder a uma mensagem não
-/// é destino para ela.
+/// As mensagens do usuário, visíveis, que ficaram soltas: nenhum evento
+/// visível as aponta em `origin`, e elas não chegaram com um ponto do
+/// levantamento aberto. A mensagem que traz `during` foi dita no meio de um
+/// ponto e já tem lugar nele, mesmo que o ponto tenha fechado sem citá-la.
+/// Responder a uma mensagem não é destino para ela.
 #[must_use]
 pub fn unrouted_messages(log: &SpecLog) -> Vec<&SpecEvent> {
     let visible = log.visible();
@@ -651,7 +653,7 @@ pub fn unrouted_messages(log: &SpecLog) -> Vec<&SpecEvent> {
     visible
         .into_iter()
         .filter(|e| e.event_type == "message" && e.str_field("author").map(str::trim) == Some("user"))
-        .filter(|e| !routed.contains(&e.id))
+        .filter(|e| !routed.contains(&e.id) && e.int("during").is_none())
         .collect()
 }
 
@@ -931,12 +933,21 @@ fn map_facts(key: GapKey, sources: &Sources<'_>) -> Vec<Fact> {
 /// lugar dos defeitos, das armadilhas e das preferências entre as mais
 /// fortes. As lições são as que a leitura do banco mostra
 /// ([`lessons::kept`]): a linha que retira lições não é lição.
+///
+/// A lição que diz os arquivos onde vale também sai antes da busca
+/// ([`lessons::reaches_waves_by_files`]): o pedido de cada onda que mexe
+/// neles já a leva, e perguntar por ela ao usuário só repete o que a onda
+/// recebe de qualquer modo. Ficam as lições que só dizem o subprojeto ou a
+/// skill.
 fn lesson_points(sources: &Sources<'_>) -> Vec<Proposed> {
     let Some(bank) = sources.bank else {
         return Vec::new();
     };
-    let asked: Vec<&SpecEvent> =
-        lessons::kept(bank).into_iter().filter(|lesson| lesson.event_type != lessons::PROJECT_RULE).collect();
+    let asked: Vec<&SpecEvent> = lessons::kept(bank)
+        .into_iter()
+        .filter(|lesson| lesson.event_type != lessons::PROJECT_RULE)
+        .filter(|lesson| !lessons::reaches_waves_by_files(lesson))
+        .collect();
     lessons::matching_among(&asked, sources.goal, sources.languages)
         .into_iter()
         .filter_map(|hit| {
@@ -1097,13 +1108,19 @@ mod tests {
         format!("{}\n", render_line(&stamp(normalize(obj(draft), event_type), id, None, "2026-09-14T09:00:00-03:00")))
     }
 
-    /// Uma lição como o banco a guarda.
+    /// Uma lição como o banco a guarda, valendo para uma skill: o levantamento
+    /// pergunta por ela.
     fn lesson(id: u64, text: &str, keys: &[&str]) -> String {
+        lesson_for(id, text, keys, json!({"skill": "backend"}))
+    }
+
+    /// Uma lição como o banco a guarda, com o `applies_to` dado.
+    fn lesson_for(id: u64, text: &str, keys: &[&str], applies_to: Value) -> String {
         let draft = json!({
             "class": "defect",
             "text": text,
             "keys": keys,
-            "applies_to": {"files": ["**"]},
+            "applies_to": applies_to,
             "found_in": {"spec": "antiga"},
         });
         format!(
@@ -1267,6 +1284,24 @@ mod tests {
         assert_eq!(ids, [2]);
     }
 
+    /// A mensagem dita no meio de um ponto (`during`) já tem lugar nele e não
+    /// fica solta, tenha o ponto fechado citando-a ou não; a que chegou sem
+    /// ponto aberto e sem destino continua solta, e o ponto sem mensagem
+    /// nenhuma continua como está.
+    #[test]
+    fn a_message_said_during_a_point_is_not_unrouted() {
+        let log = log_of(&[
+            ev(1, "message", json!({"author": "user", "text": GOAL})),
+            ev(2, "point", json!({"block": "proof", "gap": "Como provar?", "from": "gap", "status": "open", "origin": 1,
+                "facts": [{"text": "f", "source": "mensagem 1"}]})),
+            ev(3, "message", json!({"author": "user", "text": "8 é fixo?", "during": 2})),
+            ev(4, "message", json!({"author": "user", "text": "e o painel?"})),
+            ev(5, "message", json!({"author": "user", "text": "não entendi", "during": 2})),
+        ]);
+        let ids: Vec<u64> = unrouted_messages(&log).iter().map(|m| m.id).collect();
+        assert_eq!(ids, [4]);
+    }
+
     /// Duas specs anteriores com cinco mensagens do usuário que casam com o
     /// pedido, duas delas já com decisão apontando, e respostas do
     /// assistente que casam: o levantamento traz três lembretes, nenhum das
@@ -1342,6 +1377,25 @@ mod tests {
         assert_eq!(points[0].facts[0].source, ".claude/spec/lessons.ndjson:1");
         let shown = points[0].to_value(Some(7)).to_string();
         assert!(!shown.contains("search") && !shown.contains("merg pendenc"), "{shown}");
+    }
+
+    /// A lição que diz os arquivos onde vale, o projeto todo incluído, chega
+    /// ao pedido de toda onda que mexe neles e não vira ponto; a que só diz o
+    /// subprojeto ou a skill continua virando, com o mesmo casamento com o
+    /// objetivo.
+    #[test]
+    fn a_lesson_that_names_files_never_becomes_a_point() {
+        let text = |name: &str| format!("**{name}.** O merge não passa com pendência aberta.");
+        let bank = log_of(&[
+            lesson_for(1, &text("Por arquivo"), &["merge", "pendência"], json!({"files": ["apps/rt/src/**"]})),
+            lesson_for(2, &text("Projeto todo"), &["merge", "pendência"], json!({"files": ["**"]})),
+            lesson_for(3, &text("Por skill"), &["merge", "pendência"], json!({"skill": "backend"})),
+            lesson_for(4, &text("Por subprojeto"), &["merge", "pendência"], json!({"subproject": "apps/rt"})),
+            lesson_for(5, &text("Arquivo e skill"), &["merge", "pendência"], json!({"files": ["src/main.rs"], "skill": "backend"})),
+        ]);
+        let list = build(&sources(&["fix"], Some(&bank), &[], &[]));
+        let asked: Vec<&str> = list.iter().filter(|p| p.from == "lesson").map(|p| p.gap.as_str()).collect();
+        assert_eq!(asked, ["Por skill.", "Por subprojeto."], "{list:?}");
     }
 
     /// O levantamento lê as lições como a leitura do banco as mostra: a

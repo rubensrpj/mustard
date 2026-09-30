@@ -570,8 +570,8 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let said = put(root, "message", json!({"author": "user", "text": "o pedido"}));
-        let c1 = put(root, "criterion", json!({"when": "a", "then": "b", "proof": "p", "form": "ubiquitous", "origin": said}));
-        let c2 = put(root, "criterion", json!({"when": "c", "then": "d", "proof": "q", "form": "ubiquitous", "origin": said}));
+        let c1 = put(root, "criterion", json!({"when": "a", "then": "b", "proof": "echo p", "form": "ubiquitous", "origin": said}));
+        let c2 = put(root, "criterion", json!({"when": "c", "then": "d", "proof": "echo q", "form": "ubiquitous", "origin": said}));
         put(root, "wave", json!({"n": 1, "text": "Um.", "criteria": [c1], "done_when": "x", "origin": said}));
         put(root, "task", json!({"wave": 1, "text": "T1.", "files": [{"path": "a.rs"}], "depends_on": [], "origin": said}));
         put(root, "wave", json!({"n": 2, "text": "Dois.", "criteria": [c2], "done_when": "y", "origin": said}));
@@ -643,8 +643,8 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let said = put(root, "message", json!({"author": "user", "text": "o pedido"}));
-        put(root, "criterion", json!({"when": "a", "then": "b", "proof": "p", "keys": ["C-1"], "form": "ubiquitous", "origin": said}));
-        put(root, "criterion", json!({"when": "c", "then": "d", "proof": "q", "keys": ["C-2"], "form": "ubiquitous", "origin": said}));
+        put(root, "criterion", json!({"when": "a", "then": "b", "proof": "echo p", "keys": ["C-1"], "form": "ubiquitous", "origin": said}));
+        put(root, "criterion", json!({"when": "c", "then": "d", "proof": "echo q", "keys": ["C-2"], "form": "ubiquitous", "origin": said}));
         let got = events(&read_at(&opts(root, "criteria", Some("MSTD-CRIT-0002"))).unwrap());
         assert_eq!(got.len(), 1, "{got:?}");
         assert_eq!(got[0]["code"], json!("MSTD-CRIT-0002"));
@@ -787,7 +787,7 @@ mod tests {
     fn plan_with_a_new_version(root: &std::path::Path) -> (u64, u64, u64, u64) {
         let said = put(root, "message", json!({"author": "user", "text": "o plano"}));
         for n in [1, 2] {
-            let c = put(root, "criterion", json!({"when": "a", "then": "b", "proof": "p", "form": "ubiquitous", "origin": said}));
+            let c = put(root, "criterion", json!({"when": "a", "then": "b", "proof": "echo p", "form": "ubiquitous", "origin": said}));
             put(root, "wave", json!({"n": n, "text": "Onda.", "criteria": [c], "done_when": "x", "origin": said}));
         }
         let old = put(root, "task", json!({"wave": 1, "text": "Somar.", "files": [{"path": "a.rs"}, {"path": "b.rs"}],
@@ -952,7 +952,7 @@ mod tests {
         let said = put(root, "message", json!({"author": "user", "text": "o plano"}));
         let mut criteria = Vec::new();
         for n in [1_u64, 2, 3] {
-            let c = put(root, "criterion", json!({"when": "a", "then": "b", "proof": "p", "form": "ubiquitous", "origin": said}));
+            let c = put(root, "criterion", json!({"when": "a", "then": "b", "proof": "echo p", "form": "ubiquitous", "origin": said}));
             let after: Vec<u64> = (1..n).collect();
             put(root, "wave", json!({"n": n, "text": "Onda.", "criteria": [c], "done_when": "x", "depends_on": after, "origin": said}));
             criteria.push(c);

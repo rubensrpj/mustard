@@ -2640,32 +2640,30 @@ fn strip_import_ext(path: &str, lang: &str) -> String {
     }
 }
 
-/// O nome qualificado na forma única de partes separadas por `/`. Com os
-/// separadores que a língua declara (`qualified_separators`), cada um vira
-/// `/`, menos no texto que já é caminho: tem `/`, ou começa por `.` como o
-/// relativo. Sem o campo, a regra de sempre: `\` e `::` sempre viram `/`, e o
-/// ponto só quando o texto não é caminho (um namespace com pontos nunca
-/// começa por ponto, e o import relativo sempre começa).
+/// O nome qualificado na forma única de partes separadas por `/`. O `\` vira
+/// `/` sempre. Os separadores que a língua declara (`qualified_separators`)
+/// também, menos no texto que já é caminho: tem `/`, ou começa por `.` como o
+/// relativo. Sem o campo, a língua não tem separador, e nada além do `\`
+/// muda.
 fn canon_segments(s: &str, lang: &str) -> String {
-    if let Some(separators) = crate::extract::qualified_separators(lang) {
-        return if s.contains('/') || s.starts_with('.') { s.to_string() } else { to_slashes(s, separators) };
+    let flat = s.replace('\\', "/");
+    if s.contains('/') || s.starts_with('.') {
+        return flat;
     }
-    let flat = s.replace('\\', "/").replace("::", "/");
-    if !flat.contains('/') && !flat.starts_with('.') && flat.contains('.') {
-        flat.replace('.', "/")
-    } else {
-        flat
-    }
+    to_slashes(&flat, crate::extract::qualified_separators(lang).unwrap_or(&[]))
 }
 
 /// O import que termina na extensão da própria língua é caminho de arquivo: os
-/// separadores da língua viram `/`, e a extensão fica como está. Sem o campo,
-/// `\` e `::` viram `/`, e os pontos são do arquivo.
+/// separadores da língua viram `/`, e a extensão fica como está. O ponto é
+/// do arquivo e do caminho relativo, nunca separador aqui. Sem o campo, só o
+/// `\` vira `/`.
 fn canon_file_path(imp: &str, lang: &str) -> String {
-    match (crate::extract::qualified_separators(lang), imp.rsplit_once('.')) {
-        (Some(separators), Some((stem, ext))) => format!("{}.{ext}", to_slashes(stem, separators)),
-        (Some(separators), None) => to_slashes(imp, separators),
-        (None, _) => imp.replace('\\', "/").replace("::", "/"),
+    let flat = imp.replace('\\', "/");
+    let separators: Vec<&str> =
+        crate::extract::qualified_separators(lang).unwrap_or(&[]).iter().copied().filter(|sep| *sep != ".").collect();
+    match flat.rsplit_once('.') {
+        Some((stem, ext)) => format!("{}.{ext}", to_slashes(stem, &separators)),
+        None => to_slashes(&flat, &separators),
     }
 }
 
