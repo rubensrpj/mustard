@@ -900,7 +900,7 @@ pub(super) fn run_entered_round(
     // guardam a marca pela mesma chave.
     let mut bad_seen: BTreeSet<&str> = BTreeSet::new();
     for setting in next.iter().filter_map(|wave| built.iter().find(|p| p.wave == *wave)).flat_map(|p| &p.bad_settings) {
-        if bad_seen.insert(setting.key) && crate::commands::map::first_warning(root, session, setting.key) {
+        if bad_seen.insert(setting.key) && crate::shared::search_door::first_warning(root, session, setting.key) {
             warnings.push(json!({ "reason": "bad-setting", "key": setting.key, "hint": setting.message }));
         }
     }
@@ -1508,7 +1508,7 @@ mod tests {
             let dir = tempdir().unwrap();
             let root = dir.path();
             work_reading_the_history_moves(root, &config);
-            assert!(crate::commands::map::first_warning(root, Some("sessao-2"), "historyMoves"));
+            assert!(crate::shared::search_door::first_warning(root, Some("sessao-2"), "historyMoves"));
             let out = round_in_session(root, Some("sessao-2"));
             assert_eq!(out["dispatch"].as_array().map(Vec::len), Some(1), "{bad}: {out}");
             assert!(bad_setting_warnings(&out).is_empty(), "{bad}: one warning per session: {out}");

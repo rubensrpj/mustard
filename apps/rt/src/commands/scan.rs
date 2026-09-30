@@ -162,7 +162,7 @@ pub(crate) fn scan_at(
 pub(crate) fn ceiling_warning(root: &Path, session: Option<&str>) -> Option<String> {
     let config = mustard_core::ProjectConfig::load(root);
     let (ceiling, invalid) = config.scan_max_same_name();
-    if !invalid || !super::map::first_warning(root, session, "scan.max_same_name") {
+    if !invalid || !crate::shared::search_door::first_warning(root, session, "scan.max_same_name") {
         return None;
     }
     let written = config.scan.max_same_name.as_ref().map_or_else(String::new, Value::to_string);

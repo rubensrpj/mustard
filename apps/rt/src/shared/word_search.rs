@@ -65,12 +65,11 @@ use mustard_core::{ClaudePaths, ProjectConfig};
 use regex::{Regex, RegexBuilder};
 use serde_json::json;
 
-use crate::commands::map::Assemble;
 use crate::shared::code_route::{admitted, holds_code, parts_in_copy, ProjectPath};
 use crate::shared::config_key::{NameFilter, Walk, CONFIG_FILE};
 use crate::shared::paths::{is_artifact, sensitive_pattern};
 use crate::shared::say::say;
-use crate::shared::search_door::{self as door, Ask, Numbers, Outcome, Piece};
+use crate::shared::search_door::{self as door, Ask, Assemble, Numbers, Outcome, Piece};
 
 /// Quantos arquivos a resposta mostra: os primeiros da triagem. É o corte da
 /// busca por assunto do mapa.
@@ -195,7 +194,7 @@ fn with_scene<T>(root: &Path, input: &HookInput, ctx: &Ctx, memory: Option<&Path
         lang: ctx.config.language().text_or_default(),
         languages: &Languages::of(&ctx.config),
         config: &ctx.config,
-        assemble: &crate::commands::map::jev,
+        assemble: &door::jev,
     };
     run(&scene)
 }
@@ -212,6 +211,29 @@ pub(crate) fn memory_path(root: &Path, session: Option<&str>, agent: Option<&str
         None => STATE_FILE.to_string(),
     };
     Some(ClaudePaths::for_project(root).ok()?.claude_dir().join(".session").join(session).join(name))
+}
+
+/// Os filtros de nome de arquivo de uma busca do `Grep`, lidos do `glob` e do
+/// `type` da ferramenta: os do `glob`, e os do tipo. O `glob` pode trazer
+/// vários filtros, separados por espaço ou, fora das chaves, por vírgula; o
+/// `!` do começo deixa arquivos de fora. O tipo vale por filtros de nome; um
+/// tipo que a leitura não conhece, ou junto do `glob`, deixa a busca própria
+/// de lado (`None`). A busca do comando `run map search` lê os dois do mesmo
+/// jeito.
+pub(crate) fn tool_filters(glob: Option<&str>, kind: Option<&str>) -> (Vec<NameFilter>, Option<Vec<NameFilter>>) {
+    let filters: Vec<NameFilter> = glob
+        .into_iter()
+        .flat_map(str::split_whitespace)
+        .flat_map(|glob| if glob.contains('{') { vec![glob] } else { glob.split(',').collect() })
+        .filter(|glob| !glob.is_empty())
+        .map(NameFilter::rg)
+        .collect();
+    let typed = match kind {
+        None => Some(Vec::new()),
+        Some(kind) if filters.is_empty() => type_filters(kind),
+        Some(_) => None,
+    };
+    (filters, typed)
 }
 
 /// Os filtros de nome de arquivo do tipo `kind` do `rg` e da ferramenta de
@@ -1172,7 +1194,7 @@ pub(crate) mod fixture {
 mod tests {
     use super::fixture::{self, git};
     use super::*;
-    use crate::commands::map::Assembled;
+    use crate::shared::search_door::Assembled;
     use crate::shared::code_route::project_path;
     use mustard_core::domain::map_filter::{
         judged, FilterError, FilterRequest, FilterUsage, Filtered, MapFilter, Scored,

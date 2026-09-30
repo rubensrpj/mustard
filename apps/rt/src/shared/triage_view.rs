@@ -1,4 +1,4 @@
-//! `map_triage` — o que a triagem do mapa põe na resposta da busca: o grau,
+//! `triage_view` — o que a triagem do mapa põe na resposta da busca: o grau,
 //! a marca (cravado, parcial ou não achou) com as palavras que faltam, a
 //! busca funda do grau 3 para baixo e, sem nenhum achado, a linha que diz
 //! que não achou e dá a próxima busca. Na marca cravado, a resposta inteira

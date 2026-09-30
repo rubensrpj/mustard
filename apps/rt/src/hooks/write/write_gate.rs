@@ -313,7 +313,7 @@ fn search_verdict(root: &str, input: &HookInput, ctx: &Ctx) -> Verdict {
         };
     }
     let Some(pattern) = text("pattern") else { return Verdict::Allow };
-    let (mut filters, typed) = tool_filters(text("glob"), text("type"));
+    let (mut filters, typed) = word_search::tool_filters(text("glob"), text("type"));
     let walk = config_key::Walk::Rg { unignored: false };
     let answered = match (typed, code_route::project_path(root, base, path.unwrap_or(".")).filter(|folder| folder.abs.is_dir())) {
         (Some(typed), Some(folder)) if !flag("multiline") => {
@@ -348,32 +348,6 @@ fn search_verdict(root: &str, input: &HookInput, ctx: &Ctx) -> Verdict {
         word_search::Reply::Note(context) => Verdict::Inject { context },
         _ => Verdict::Allow,
     }
-}
-
-/// Os filtros de nome de arquivo de uma busca do `Grep`, lidos do `glob` e do
-/// `type` da ferramenta: os do `glob`, e os do tipo. O `glob` pode trazer
-/// vários filtros, separados por espaço ou, fora das chaves, por vírgula; o
-/// `!` do começo deixa arquivos de fora. O tipo vale por filtros de nome; um
-/// tipo que a leitura não conhece, ou junto do `glob`, deixa a busca própria
-/// de lado (`None`). A busca do comando `run map search` lê os dois do mesmo
-/// jeito.
-pub(crate) fn tool_filters(
-    glob: Option<&str>,
-    kind: Option<&str>,
-) -> (Vec<config_key::NameFilter>, Option<Vec<config_key::NameFilter>>) {
-    let filters: Vec<config_key::NameFilter> = glob
-        .into_iter()
-        .flat_map(str::split_whitespace)
-        .flat_map(|glob| if glob.contains('{') { vec![glob] } else { glob.split(',').collect() })
-        .filter(|glob| !glob.is_empty())
-        .map(config_key::NameFilter::rg)
-        .collect();
-    let typed = match kind {
-        None => Some(Vec::new()),
-        Some(kind) if filters.is_empty() => word_search::type_filters(kind),
-        Some(_) => None,
-    };
-    (filters, typed)
 }
 
 /// A busca por nome de arquivo (`Glob`): as palavras do padrão de nome

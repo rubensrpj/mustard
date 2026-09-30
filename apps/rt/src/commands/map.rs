@@ -51,7 +51,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use clap::ValueEnum;
-use mustard_core::domain::map_filter::{FilterError, MapFilter, Verdict};
+use mustard_core::domain::map_filter::Verdict;
 use mustard_core::domain::normalize::Languages;
 use mustard_core::domain::project_map::{self as project_map, DeclAt, FoundItem, MapRefusal, ProjectMap, UseSite};
 use mustard_core::domain::scan::{HistoryReport, ScanReport};
@@ -66,12 +66,11 @@ use mustard_core::platform::i18n::Locale;
 use mustard_core::Setting;
 use serde_json::{json, Value};
 
-use super::map_triage as triage_view;
-use crate::hooks::write::write_gate::tool_filters;
 use crate::shared::code_route;
 use crate::shared::config_key::Walk;
-use crate::shared::search_door::{self as door, Numbers};
-use crate::shared::word_search::{self, Dialect, Reply};
+use crate::shared::search_door::{self as door, first_warning, jev, Assemble, Numbers};
+use crate::shared::triage_view;
+use crate::shared::word_search::{self, tool_filters, Dialect, Reply};
 
 /// A pergunta feita ao mapa.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -162,32 +161,6 @@ pub(crate) type Mine<'m> = dyn Fn(&Path, &Path) -> mustard_core::platform::error
 /// de mudanças de arquivo do quarto, e a grava no mapa do caminho dado.
 pub(crate) type Trace<'t> =
     dyn Fn(&Path, &Path, &str, usize) -> mustard_core::platform::error::Result<HistoryReport> + 't;
-
-/// O filtro da busca montado com a chave do projeto: o nome dele, que a
-/// resposta e o registro da chamada dizem, e o aviso da chave, quando a do
-/// ambiente vale mas o git guarda o `mustard.json` que também traz uma.
-pub(crate) struct Assembled {
-    pub(crate) name: &'static str,
-    pub(crate) filter: Box<dyn MapFilter>,
-    pub(crate) warning: Option<FilterError>,
-}
-
-/// A montagem do filtro para o projeto na raiz, com o `mustard.json` que a
-/// busca leu: com a chave, o filtro; sem ela, o motivo, que vira aviso. Só a
-/// busca por assunto a chama, e só quando a configuração não desliga o
-/// filtro.
-pub(crate) type Assemble<'a> = dyn Fn(&Path, &mustard_core::ProjectConfig) -> Result<Assembled, FilterError> + 'a;
-
-/// A montagem de verdade: o Jev, com a chave do ambiente ou do
-/// `mustard.json` do projeto.
-pub(crate) fn jev(root: &Path, config: &mustard_core::ProjectConfig) -> Result<Assembled, FilterError> {
-    let loaded = crate::shared::jev::load_key(root, config)?;
-    Ok(Assembled {
-        name: "jev",
-        filter: Box::new(crate::shared::jev::JevFilter::new(loaded.key)),
-        warning: loaded.warning,
-    })
-}
 
 /// Responde a pergunta e devolve o JSON; nunca entra em pânico. Antes, a
 /// conferência do mapa com o conteúdo de agora relê por `mine` o que mudou
@@ -1059,27 +1032,6 @@ fn history_number(
     setting.or(default)
 }
 
-/// Se o aviso do valor inválido de `key` ainda não saiu na sessão `session`;
-/// se não saiu, marca que saiu, em `.claude/.session/<sessão>/`. Sem sessão
-/// conhecida, avisa sempre: repetir o aviso é melhor que calar o valor que
-/// não vale.
-pub(crate) fn first_warning(root: &Path, session: Option<&str>, key: &str) -> bool {
-    let usable = |s: &&str| !s.is_empty() && *s != "unknown" && !s.starts_with('.') && !s.contains(['/', '\\']);
-    let Some(session) = session.map(str::trim).filter(usable) else {
-        return true;
-    };
-    let Ok(paths) = mustard_core::ClaudePaths::for_project(root) else { return true };
-    let marker = paths.claude_dir().join(".session").join(session).join(format!("warned-map-{key}"));
-    if marker.is_file() {
-        return false;
-    }
-    if let Some(dir) = marker.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    let _ = std::fs::write(&marker, "");
-    true
-}
-
 /// Imprime a resposta e sai com 1 na recusa. A resposta ao texto do `Grep`
 /// sai como texto, e as demais, como JSON.
 pub fn run(opts: &MapOpts) {
@@ -1103,7 +1055,8 @@ pub fn run(opts: &MapOpts) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mustard_core::domain::map_filter::{FilterRequest, Filtered};
+    use crate::shared::search_door::Assembled;
+    use mustard_core::domain::map_filter::{FilterError, FilterRequest, Filtered, MapFilter};
     use mustard_core::domain::search::CANDIDATES;
     use mustard_core::domain::project_map::{
         DeclChange, DeclComment, DeclLineage, FileLineage, LineageCommit, PullComment, PullText,

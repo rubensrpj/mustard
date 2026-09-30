@@ -41,7 +41,6 @@ pub mod git_settle;
 pub mod scan;
 pub mod scan_claude;
 pub mod map;
-pub mod map_triage;
 pub mod spec_events;
 pub mod flow;
 pub mod retired;

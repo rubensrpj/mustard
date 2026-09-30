@@ -18,13 +18,15 @@
 //!
 //! A porta devolve tipos ([`Outcome`], [`Piece`]); quem chamou monta o texto:
 //! o JSON da busca por assunto, em `commands::map`, ou a resposta por função
-//! da busca por palavra, em `word_search`.
+//! da busca por palavra, em `word_search`. A montagem do filtro ([`Assemble`],
+//! [`jev`]) e o aviso de uma vez por sessão ([`first_warning`]) moram aqui,
+//! para os dois caminhos os usarem sem um depender do outro.
 
 use std::collections::HashMap;
 use std::path::Path;
 use std::time::Instant;
 
-use mustard_core::domain::map_filter::{FilterCandidate, FilterError, FilterRequest, Verdict, CUT_SHARE};
+use mustard_core::domain::map_filter::{FilterCandidate, FilterError, FilterRequest, MapFilter, Verdict, CUT_SHARE};
 use mustard_core::domain::map_select::{capped, select, Source, MAX_RETURNED};
 use mustard_core::domain::normalize::Languages;
 use mustard_core::domain::project_map::{self, MapRefusal};
@@ -36,8 +38,7 @@ use mustard_core::platform::i18n::{translate, Locale};
 use mustard_core::{FilterSetting, ProjectConfig, Setting};
 use serde_json::{json, Map, Value};
 
-use crate::commands::map::{first_warning, Assemble, Assembled};
-use crate::commands::map_triage as triage_view;
+use crate::shared::triage_view;
 
 /// Os números da busca com filtro, com o padrão no lugar do ausente e do
 /// inválido.
@@ -174,6 +175,53 @@ pub(crate) fn pinned(
     }
     let limit = config.search_candidates().or(CANDIDATES);
     triage_view::pinned_piece(root, (query, intent), languages, limit, triaged)
+}
+
+/// O filtro da busca montado com a chave do projeto: o nome dele, que a
+/// resposta e o registro da chamada dizem, e o aviso da chave, quando a do
+/// ambiente vale mas o git guarda o `mustard.json` que também traz uma.
+pub(crate) struct Assembled {
+    pub(crate) name: &'static str,
+    pub(crate) filter: Box<dyn MapFilter>,
+    pub(crate) warning: Option<FilterError>,
+}
+
+/// A montagem do filtro para o projeto na raiz, com o `mustard.json` que a
+/// busca leu: com a chave, o filtro; sem ela, o motivo, que vira aviso. Só a
+/// busca por assunto e a busca por palavra a chamam, e só quando a
+/// configuração não desliga o filtro.
+pub(crate) type Assemble<'a> = dyn Fn(&Path, &ProjectConfig) -> Result<Assembled, FilterError> + 'a;
+
+/// A montagem de verdade: o Jev, com a chave do ambiente ou do
+/// `mustard.json` do projeto.
+pub(crate) fn jev(root: &Path, config: &ProjectConfig) -> Result<Assembled, FilterError> {
+    let loaded = crate::shared::jev::load_key(root, config)?;
+    Ok(Assembled {
+        name: "jev",
+        filter: Box::new(crate::shared::jev::JevFilter::new(loaded.key)),
+        warning: loaded.warning,
+    })
+}
+
+/// Se o aviso do valor inválido de `key` ainda não saiu na sessão `session`;
+/// se não saiu, marca que saiu, em `.claude/.session/<sessão>/`. Sem sessão
+/// conhecida, avisa sempre: repetir o aviso é melhor que calar o valor que
+/// não vale.
+pub(crate) fn first_warning(root: &Path, session: Option<&str>, key: &str) -> bool {
+    let usable = |s: &&str| !s.is_empty() && *s != "unknown" && !s.starts_with('.') && !s.contains(['/', '\\']);
+    let Some(session) = session.map(str::trim).filter(usable) else {
+        return true;
+    };
+    let Ok(paths) = mustard_core::ClaudePaths::for_project(root) else { return true };
+    let marker = paths.claude_dir().join(".session").join(session).join(format!("warned-map-{key}"));
+    if marker.is_file() {
+        return false;
+    }
+    if let Some(dir) = marker.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(&marker, "");
+    true
 }
 
 /// O filtro da busca, escolhido num ponto só: desligado (`none`) ou com nome
