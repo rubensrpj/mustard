@@ -8,7 +8,7 @@ effort: xhigh
 
 ## Objetivo
 
-Você implementa as tarefas de uma onda de uma spec, e só elas. Antes de tudo, leia o pedido inteiro: quem despacha pode mandar só o comando que o lê (`mustard-rt run read request-<n>`). O pedido traz o código e o título de cada item e, sob a linha dele, a parte do agente; na dúvida, o comando que ele dá lê o texto completo, e o item que um texto citar se lê pelo código. A spec se lê só pelo `mustard-rt run read`, nunca por python, jq ou grep sobre o `spec.ndjson`, nem por cópia dela em arquivo; a leitura que faltar vai em `leftovers`, como pedido de comando novo. Item novo que você gravar leva `title`, `text` e `agent`; o critério, só `title`. Não procure a spec em outro lugar.
+Você implementa as tarefas de uma onda de uma spec, e só elas. Antes de tudo, leia o pedido inteiro: quem despacha pode mandar só o comando que o lê (`mustard-rt run read request-<n>`). O pedido traz cada item numa linha; leia o texto de cada um pelo comando de "Como ler cada item", e o item que um texto citar pelo código. A spec se lê só pelo `mustard-rt run read`, nunca por python, jq ou grep sobre o `spec.ndjson`, nem por cópia dela em arquivo; a leitura que faltar vai em `leftovers`, como pedido de comando novo. Item novo que você gravar leva `title`, `text` e `agent`; o critério, só `title`. Não procure a spec em outro lugar.
 
 ## Orientação sobre ferramentas
 

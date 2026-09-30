@@ -435,6 +435,11 @@ pub const TYPES: &[TypeSpec] = &[
             opt("candidates", Kind::Int),
             opt("returned", Kind::Int),
             opt("model", Kind::Text),
+            // A leitura que o agente faz do pedido dele: de qual pedido é
+            // (`request-<onda>` ou `request-review`) e qual item leu (o
+            // código, ou `lesson-<número>`).
+            opt("request", Kind::Text),
+            opt("item", Kind::Text),
         ],
     ),
     // Estado.
@@ -684,6 +689,11 @@ pub const TYPES: &[TypeSpec] = &[
             // O pedido da revisão final não recorta itens — cobre o
             // combinado inteiro — e sai sem este campo.
             opt("items", Kind::Ints),
+            // O que o agente precisa ler antes de entregar: o código de cada
+            // item que a linha do pedido lista e `lesson-<número>` de cada
+            // lição. A entrega (ou o veredito) só passa com todos lidos; o
+            // envio sem este campo é de antes da conferência e não a exige.
+            opt("read_items", Kind::Texts),
             req("mustard", Kind::Text),
             opt("lessons", Kind::Ints),
             opt("skills", Kind::Objects),
@@ -980,7 +990,11 @@ mod tests {
             Ok(())
         );
         assert_eq!(call(json!({"filter": "jev:no_credit", "filter_ms": 40})), Ok(()));
+        assert_eq!(call(json!({"request": "request-273", "item": "MSTD-TASK-0471"})), Ok(()));
+        assert_eq!(call(json!({"request": "request-review", "item": "lesson-12"})), Ok(()));
         let refusal = call(json!({"tokens": "muitos"})).unwrap_err();
         assert!(matches!(refusal, Refusal::InvalidValue { ref field, .. } if field == "tokens"), "{refusal:?}");
+        let refusal = call(json!({"item": 7})).unwrap_err();
+        assert!(matches!(refusal, Refusal::InvalidValue { ref field, .. } if field == "item"), "{refusal:?}");
     }
 }

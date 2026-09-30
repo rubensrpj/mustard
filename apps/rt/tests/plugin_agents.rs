@@ -1011,7 +1011,7 @@ fn no_agent_text_creates_a_copy_on_its_own_and_the_request_names_the_slot_withou
         for word in ["CARGO_TARGET_DIR", "target/copias"] {
             assert!(!prompt.contains(word), "the request names no build folder ({word}): {prompt}");
         }
-        assert!(prompt.contains(translate("prompt.fixed", Locale::PtBr)), "{prompt}");
+        assert!(prompt.contains(translate("prompt.return.loose", Locale::PtBr)), "{prompt}");
         assert!(!prompt.contains("nasce vermelho"), "the red proof lives in the agent text: {prompt}");
         copies.push(copy.to_string());
     }
@@ -1054,8 +1054,8 @@ fn the_wave_request_says_the_agent_never_commits_and_the_commit_field_is_the_tit
 
 /// O pedido de onda, montado pelo binário de verdade, manda o agente gravar
 /// a entrega pela ferramenta, `run write delivered`, com todo o detalhe do
-/// trabalho no campo de texto dela: a parte fixa do pedido diz isso, e a
-/// regra da execução repete logo depois das duas frases sobre não comitar.
+/// trabalho no campo de texto dela: a parte "O que devolver" do pedido diz
+/// isso, junto do campo `commit` e da proibição de texto solto.
 /// Nenhum texto ensina mais a linha colada na última mensagem: nem o pedido
 /// da onda, nem o molde de onda — que traz a linha de exemplo, sem
 /// marca, e o campo das sobras —, nem o pedido da revisão final. A instrução
@@ -1085,20 +1085,13 @@ fn o_pedido_manda_gravar_a_entrega_pela_ferramenta() {
         assert_eq!(dispatched.len(), 1, "{round}");
         let prompt = &request_by_command(&root, &home, &dispatched[0]);
 
-        let fixed = translate("prompt.fixed", text);
-        assert!(prompt.contains(fixed), "{lang} wave request misses the fixed part: {prompt}");
-        assert!(fixed.contains("`mustard-rt run write delivered`"), "{lang} fixed part: {fixed}");
-
         let commit_field = translate("prompt.execution.commit_field", text);
         let report_lines = translate("prompt.execution.report_lines", text);
         assert!(report_lines.contains("`mustard-rt run write delivered`"), "{lang}: {report_lines}");
-        assert!(prompt.contains(report_lines), "{lang} wave request misses the recording reminder: {prompt}");
-        let commit_at = prompt.find(commit_field).unwrap_or_else(|| panic!("{lang} wave request misses `commit_field`: {prompt}"));
-        let report_at = prompt.find(report_lines).unwrap();
-        assert!(
-            report_at > commit_at,
-            "{lang} the recording reminder does not sit right after the no-commit phrases in the execution rules block: {prompt}"
-        );
+        let returns = section(prompt, &format!("## {}", translate("prompt.part.return", text)));
+        assert!(returns.contains(report_lines), "{lang} the return part misses the recording reminder: {prompt}");
+        assert!(returns.contains(commit_field), "{lang} the return part misses `commit_field`: {prompt}");
+        assert!(returns.contains(translate("prompt.return.loose", text)), "{lang} the return part misses the loose-text ban: {prompt}");
         assert!(!prompt.contains("<DELIVERED>"), "{lang} wave request still teaches the pasted line: {prompt}");
 
         let final_fixed = translate("prompt.final.fixed", text);

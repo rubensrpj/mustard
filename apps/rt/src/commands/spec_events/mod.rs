@@ -22,6 +22,7 @@ pub mod index;
 pub(crate) mod pages;
 pub(crate) mod proof_check;
 pub mod read;
+mod read_record;
 pub mod write;
 
 use std::collections::BTreeMap;

@@ -734,10 +734,11 @@ mod tests {
         for prompt in &built {
             assert!(prompt.lines > 0);
             // O texto que o banco da página recebe é o mesmo que o agente lê,
-            // instruções fixas incluídas: nenhuma linha fica de fora.
+            // seções fixas incluídas: nenhuma linha fica de fora.
             assert_eq!(computed["body"]["prompts"][prompt.wave.to_string()], json!(prompt.text), "{computed}");
         }
-        assert!(built.iter().any(|prompt| prompt.text.contains(translate("prompt.fixed", Locale::PtBr).lines().next().unwrap())));
+        let returns = format!("## {}", translate("prompt.part.return", Locale::PtBr));
+        assert!(built.iter().all(|prompt| prompt.text.contains(&returns)), "{built:?}");
     }
 
     /// Um ponto do levantamento ainda aberto trava a pergunta de aprovação, e
@@ -947,7 +948,7 @@ mod tests {
             let text = &built[0].text;
             assert!(!text.contains(mustard_core::BUILD_COMMAND_FALLBACK), "{text}");
             assert_eq!(text.contains("Compile com"), missing != "buildCommand", "{text}");
-            assert_eq!(text.contains("Teste com"), missing != "testCommand", "{text}");
+            assert_eq!(text.contains("Rode a suíte do projeto com"), missing != "testCommand", "{text}");
         }
     }
 

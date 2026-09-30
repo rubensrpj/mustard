@@ -10,7 +10,6 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use mustard_core::domain::normalize::Languages;
 use mustard_core::domain::scan::ScanReport;
 use mustard_core::domain::spec_events::{Hidden, Refusal, SpecEvent, SpecLog};
 use mustard_core::domain::spec_state::{PhaseWriter, State};
@@ -27,8 +26,9 @@ use super::commit::{
     head, join_copies, make_commit, record_commit, refresh_map, round_repos, unknown_file, write_joined, UNMADE_SHA,
 };
 use super::copy_check::check_against_copies;
-use super::agreed::{covered_codes, removed_by_analysis, settle_agreed};
+use super::agreed::{covered_codes, removed_by_analysis, request_agreed, settle_agreed};
 use super::leftovers::{leftover_tasks, leftovers_of, Leftover};
+use super::read_check::{request_name, unread_items};
 use super::queue::{backlog_wave, open_review, open_sends, waves_in_progress, ANALYSIS_LINE};
 use super::stops::{hold_waiting_changes, plan_changed_alone, tasks_returned, undone_of, undone_returns, HeldReturn};
 use super::usage::{measure_usage, Caller, Usage};
@@ -564,14 +564,15 @@ pub(crate) fn check_return(
     let wave = draft.get("wave").and_then(Value::as_u64).filter(|_| event_type == "delivered");
     let Some(wave) = wave else { return Ok(held) };
     let (project, log) = spec_log(start, spec)?;
-    if !open_sends(&log).contains_key(&wave) {
+    let Some(sent) = open_sends(&log).get(&wave).copied() else {
         return Err(RoundRefusal::Refused(Refusal::NoOpenSend { wave }));
-    }
+    };
     let mut report = wave_report_of(&log, draft)?;
     // O título sai como a rodada o monta para esta onda sozinha — com mais de
-    // uma onda no commit, ela encurta o escopo, e o título nunca cresce. A
-    // volta que não cita arquivo também tem o título conferido: a cópia pode
-    // ter mudado arquivo, e aí a rodada comita com ele.
+    // uma onda no commit, o escopo cita todas e o resumo encolhe até caber,
+    // então o título que cabe para uma onda sozinha cabe também no commit
+    // junto. A volta que não cita arquivo também tem o título conferido: a
+    // cópia pode ter mudado arquivo, e aí a rodada comita com ele.
     let cited = report.files.clone();
     if report.files.is_empty() {
         report.files.push(String::from("."));
@@ -594,6 +595,12 @@ pub(crate) fn check_return(
     if !missing.is_empty() {
         return Err(RoundRefusal::Refused(Refusal::DeliveryAgreedMissing { wave, missing }));
     }
+    // E de ter lido cada item que o pedido lista: o pedido de antes desta
+    // conferência não grava a lista, e a onda dele não é cobrada.
+    let unread = unread_items(&log, sent, &request_name(Some(wave)));
+    if !unread.is_empty() {
+        return Err(RoundRefusal::Refused(Refusal::DeliveryReadMissing { wave, missing: unread }));
+    }
     if draft.contains_key("files") {
         draft.insert("files".into(), json!(report.files));
     }
@@ -606,15 +613,22 @@ pub(crate) fn check_return(
 /// feitas antes de gravar, como as da entrega, com a trava do passo do git
 /// que [`check_return`] prendeu: há pedido de revisão aberto;
 /// cada critério e cada item do combinado citado existe; o veredito final
-/// responde por todo o combinado vigente. Passando, o veredito ganha
+/// responde por todo o combinado vigente; e o revisor leu, de dentro da cópia
+/// dele, cada item que o pedido da revisão lista. Passando, o veredito ganha
 /// `returned` e o autor da revisão, e fica como o revisor o escreveu: a
 /// rodada o resolve de novo ao assumi-lo.
 pub(crate) fn check_verdict_return(start: &Path, spec: &str, draft: &mut Map<String, Value>) -> Result<(), RoundRefusal> {
     let (_, log) = spec_log(start, spec)?;
-    if open_review(&log).is_none() {
+    let Some(asked) = open_review(&log) else {
         return Err(RoundRefusal::NoOpenReview);
-    }
+    };
     settle_verdict(&log, &mut draft.clone()).map_err(RoundRefusal::Refused)?;
+    // E de ter lido cada item que o pedido da revisão lista: o pedido de antes
+    // desta conferência não grava a lista, e o veredito dele não é cobrado.
+    let unread = unread_items(&log, asked, &request_name(None));
+    if !unread.is_empty() {
+        return Err(RoundRefusal::Refused(Refusal::VerdictReadMissing { missing: unread }));
+    }
     draft.insert("returned".into(), json!(true));
     draft.insert("author".into(), json!("review"));
     Ok(())
@@ -654,38 +668,6 @@ fn settle_verdict(log: &SpecLog, draft: &mut Map<String, Value>) -> Result<Vec<M
         draft.insert("result".into(), json!("rejected"));
     }
     Ok(tasks)
-}
-
-/// Os itens combinados que o pedido da onda `wave` levou: o que ele lê
-/// ([`agreed_prompt::dispatch_items`]), só com os tipos do bloco do
-/// combinado que o veredito final também responde — regra, limite, contrato,
-/// erro, caso de borda, fora do escopo e decisão. A entrega da onda responde
-/// por cada um deles.
-///
-/// A lista é a do envio que despachou a onda ([`dispatched_at`]), não a de
-/// agora: a leitura é feita sobre a spec como estava nele, só com os eventos
-/// de número até o dele — os números da spec só crescem. O item combinado
-/// gravado entre o envio e a volta não é cobrado, porque o pedido não o
-/// levou. O que o pedido levou e ganhou versão nova depois é cobrado pela
-/// versão de agora, pelo mesmo código; o que saiu da spec depois, não.
-pub(super) fn request_agreed<'a>(log: &'a SpecLog, wave: u64, languages: &Languages) -> Vec<&'a SpecEvent> {
-    let then = as_dispatched(log, wave);
-    let then_codes = then.codes();
-    let carried: Vec<&String> =
-        agreed_prompt::dispatch_items(&then, wave, None, languages).iter().filter_map(|item| then_codes.get(&item.id)).collect();
-    let codes = log.codes();
-    let agreed = agreed_prompt::all_agreed(log);
-    carried
-        .into_iter()
-        .filter_map(|code| agreed.iter().copied().find(|item| codes.get(&item.id) == Some(code)))
-        .collect()
-}
-
-/// A spec como estava no envio que despachou a onda `wave`: só os eventos de
-/// número até o dele. Sem envio, a spec inteira.
-pub(super) fn as_dispatched(log: &SpecLog, wave: u64) -> SpecLog {
-    let sent = dispatched_at(log, wave).unwrap_or(u64::MAX);
-    SpecLog { events: log.events.iter().filter(|e| e.id <= sent).cloned().collect(), ..SpecLog::default() }
 }
 
 /// O `replaces` do evento oficial que assume as voltas `returns`: o número
@@ -2803,6 +2785,256 @@ mod tests {
         assert_eq!(wrote["ok"], json!(true), "the item recorded after the send is not charged: {wrote}");
     }
 
+    /// Os itens que o envio da onda `wave` manda ler, como o envio os grava.
+    fn read_items_of(root: &Path, wave: u64) -> Vec<String> {
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let sent = *open_sends(&log).get(&wave).expect("an open send");
+        let listed = log.get(sent).and_then(|e| e.fields.get("read_items")).and_then(Value::as_array).cloned();
+        listed.expect("the send records the list").iter().filter_map(|v| v.as_str().map(str::to_string)).collect()
+    }
+
+    /// A entrega que responde por todo o combinado do pedido da onda 1 de
+    /// `sent_with_a_decision`, sem nada a mais.
+    fn delivery_with_the_decision() -> Value {
+        json!({"wave": 1, "text": "A onda 1 saiu.", "agreed": [{"item": "MSTD-DEC-0001", "met": true}]})
+    }
+
+    /// A entrega de uma onda cujo pedido lista itens só passa depois de o
+    /// agente ler cada um, de dentro da cópia: sem a leitura, a gravação é
+    /// recusada com `delivery-read-missing` e o código de cada item que falta,
+    /// e nada é gravado; lidos alguns, a recusa cita só o resto; lidos todos,
+    /// a mesma entrega grava. A leitura é a do comando de verdade, `run read`
+    /// de dentro da cópia, e não uma chamada escrita à mão.
+    #[test]
+    fn a_delivery_with_an_item_of_its_request_unread_is_refused_until_it_is_read() {
+        use crate::commands::spec_events::read::{read_for, ReadOpts};
+
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        sent_with_a_decision(root);
+        let listed = read_items_of(root, 1);
+        for code in ["MSTD-TASK-0001", "MSTD-DEC-0001"] {
+            assert!(listed.contains(&code.to_string()), "{code} in {listed:?}");
+        }
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let copy = log.get(open_sends(&log)[&1]).and_then(|e| e.str_field("copy").map(str::to_string)).expect("the copy");
+        let read = |code: &str| {
+            let opts = ReadOpts { root: root.to_path_buf(), spec: Some("x".into()), block: format!("item-{code}"), term: None };
+            read_for(&opts, None, Path::new(&copy)).unwrap_or_else(|refused| panic!("{code}: {refused}"));
+        };
+
+        let before = spec_lines(root);
+        let refused = returned_unread(root, delivery_with_the_decision());
+        assert_eq!(refused["reason"], json!("delivery-read-missing"), "{refused}");
+        let expected = translate("spec_events.delivery_read_missing", Locale::PtBr)
+            .replace("{wave}", "1")
+            .replace("{missing}", &listed.join(", "));
+        assert_eq!(refused["hint"], json!(expected), "{refused}");
+        assert_eq!(spec_lines(root), before, "nothing was written: {refused}");
+
+        for code in listed.iter().filter(|code| code.as_str() != "MSTD-DEC-0001") {
+            read(code);
+        }
+        let one_short = returned_unread(root, delivery_with_the_decision());
+        assert_eq!(one_short["reason"], json!("delivery-read-missing"), "{one_short}");
+        let hint = one_short["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains("MSTD-DEC-0001") && !hint.contains("MSTD-TASK-0001"), "{one_short}");
+
+        read("MSTD-DEC-0001");
+        let wrote = returned_unread(root, delivery_with_the_decision());
+        assert_eq!(wrote["ok"], json!(true), "the same delivery passes after the reading: {wrote}");
+    }
+
+    /// A conferência da leitura vem depois da do combinado: a entrega que
+    /// falha nas duas é recusada primeiro pelo `agreed`, e a leitura só é
+    /// cobrada quando o combinado está respondido.
+    #[test]
+    fn the_agreed_answer_is_charged_before_the_reading() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        sent_with_a_decision(root);
+        let refused = returned_unread(root, json!({"wave": 1, "text": "A onda 1 saiu."}));
+        assert_eq!(refused["reason"], json!("delivery-agreed-missing"), "{refused}");
+    }
+
+    /// O envio de uma onda que saiu antes de o envio guardar a lista de
+    /// leitura não é cobrado: a entrega grava sem leitura nenhuma. O mesmo
+    /// envio com a lista recusa.
+    #[test]
+    fn a_send_without_the_reading_list_charges_no_reading() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        sent_with_a_decision(root);
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let older = log.get(open_sends(&log)[&1]).cloned().expect("the send");
+        assert!(older.fields.contains_key("read_items"), "{:?}", older.fields);
+        let mut draft: Map<String, Value> = older
+            .fields
+            .iter()
+            .filter(|(key, _)| !["v", "id", "code", "at", "type", "search", "read_items"].contains(&key.as_str()))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+        draft.insert("replaces".into(), json!(older.id));
+        store::write(&store::spec_file(root, "x").unwrap(), "send", draft, &[]).unwrap();
+
+        let wrote = returned_unread(root, delivery_with_the_decision());
+        assert_eq!(wrote["ok"], json!(true), "the wave sent before the list is not refused: {wrote}");
+    }
+
+    /// Conta como lido o item lido pelo código e a lição lida pelo número
+    /// (`lesson-<número>`), para o pedido da própria onda e depois do envio
+    /// dela: a leitura de antes do envio, a do pedido de outra onda e a de
+    /// outro item não valem. Só com cada lido certo a entrega grava.
+    #[test]
+    fn only_the_reading_of_this_request_after_its_send_counts() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved_with(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[])], |said| {
+            let decision = json!({"text": "A soma arredonda para baixo.", "why": "w", "waves": [1], "keys": ["k"], "origin": said});
+            assert_eq!(write(root, "x", "decision", decision)["ok"], json!(true));
+            let lesson = json!({"class": "environment_trap", "text": "A tarefa passa por centavos.", "keys": ["tarefa"],
+                "applies_to": {"files": ["src/a.rs"]}});
+            let lesson = format!("lesson-{}", id_of(&write(root, "x", "lesson", lesson)));
+            // A leitura de antes do envio, de tudo o que o pedido vai listar.
+            for item in ["MSTD-TASK-0001", "MSTD-MSG-0001", "MSTD-DEC-0001", lesson.as_str()] {
+                crate::commands::flow::round::seed_read(root, "x", "request-1", item);
+            }
+        });
+        let choice = line("ANALYSIS", json!({"wave": 1, "removed": [], "added": []}));
+        let sent = round(root, "x", Some(&choice));
+        assert_eq!(waves_in(&sent, "dispatch"), vec![1, 2], "{sent}");
+        let listed = read_items_of(root, 1);
+        let lesson = listed.iter().find(|item| item.starts_with("lesson-")).unwrap_or_else(|| panic!("no lesson in {listed:?}")).clone();
+        let body = delivery_with_the_decision();
+        let refused_all = |missing: &[&String]| {
+            let refused = returned_unread(root, body.clone());
+            assert_eq!(refused["reason"], json!("delivery-read-missing"), "{refused}");
+            let hint = refused["hint"].as_str().unwrap_or_default();
+            for item in &listed {
+                assert_eq!(hint.contains(item.as_str()), missing.contains(&item), "{item} in the refusal: {refused}");
+            }
+        };
+        refused_all(&listed.iter().collect::<Vec<_>>());
+
+        // O pedido da outra onda, e um item que o pedido não lista, não valem.
+        for item in &listed {
+            crate::commands::flow::round::seed_read(root, "x", "request-2", item);
+        }
+        crate::commands::flow::round::seed_read(root, "x", "request-1", "MSTD-RULE-0099");
+        refused_all(&listed.iter().collect::<Vec<_>>());
+
+        // O item lido pelo código conta; a lição pelo número também.
+        for item in listed.iter().filter(|item| **item != lesson) {
+            crate::commands::flow::round::seed_read(root, "x", "request-1", item);
+        }
+        refused_all(&[&lesson]);
+        crate::commands::flow::round::seed_read(root, "x", "request-1", &lesson);
+        let wrote = returned_unread(root, body);
+        assert_eq!(wrote["ok"], json!(true), "{wrote}");
+    }
+
+    /// A lista de leitura que o envio grava é a mesma que o pedido montado
+    /// carrega (`WavePrompt::listed`), e cada item dela tem uma linha no
+    /// texto do pedido.
+    #[test]
+    fn the_send_records_the_list_the_assembled_request_carries() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        sent_with_a_decision(root);
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let built = wave_prompt::prompts(root, "x", &log, Locale::PtBr, &wave_prompt::Flight::default());
+        let request = built.iter().find(|p| p.wave == 1).expect("the request of the wave");
+        let recorded = read_items_of(root, 1);
+        assert_eq!(recorded, request.listed, "{recorded:?}");
+        let codes = log.codes();
+        for item in recorded {
+            let cited = codes.values().any(|code| code == &item) || item.starts_with("lesson-");
+            assert!(cited, "{item} is an item of the spec or a lesson");
+        }
+        let sent = log.get(open_sends(&log)[&1]).expect("the send");
+        assert!(request.listed.iter().all(|item| sent.str_field("text").is_some_and(|text| text.contains(item.trim_start_matches("lesson-")))), "{:?}", request.listed);
+    }
+
+    /// Um pedido de revisão da spec `x` gravado como o fechamento o grava,
+    /// com a cópia do revisor e a lista dos itens que ele precisa ler.
+    fn seed_review_reading(root: &Path, items: &[&str], copy: &Path) -> u64 {
+        crate::shared::spec_state::seed_event(
+            root,
+            "x",
+            "send",
+            json!({"role": "review", "text": "revise", "lines": 1, "chars": 6, "mustard": "0", "author": "binary",
+                "copy": copy.display().to_string(), "read_items": items}),
+        )
+    }
+
+    /// O veredito final que responde por toda a decisão combinada de
+    /// `sent_with_a_decision` e cita o critério.
+    fn final_verdict() -> Value {
+        json!({"result": "approved", "final": true, "text": "passou",
+            "agreed": [{"item": "MSTD-DEC-0001", "met": true}],
+            "criteria": [{"criterion": "MSTD-CRIT-0001", "tests_rule": true}]})
+    }
+
+    /// O veredito do revisor só grava depois de ele ler cada item que o
+    /// pedido da revisão lista, de dentro da cópia dele: sem a leitura, a
+    /// gravação é recusada com `verdict-read-missing` e o código de cada item
+    /// que falta, e nada é gravado; lido um, a recusa cita só o outro; lidos
+    /// todos, o mesmo veredito grava. A resposta do combinado vem antes: o
+    /// veredito sem `agreed` é recusado por ela, mesmo com item por ler. A
+    /// leitura de antes de o pedido sair não conta. A leitura é a do comando
+    /// de verdade, `run read` de dentro da cópia.
+    #[test]
+    fn a_verdict_with_an_item_of_the_review_request_unread_is_refused_until_it_is_read() {
+        use crate::commands::spec_events::read::{read_for, ReadOpts};
+
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        sent_with_a_decision(root);
+        crate::commands::flow::round::seed_read(root, "x", "request-review", "MSTD-DEC-0001");
+        let copy = root.join("review-copy");
+        std::fs::create_dir_all(&copy).unwrap();
+        seed_review_reading(root, &["MSTD-DEC-0001", "MSTD-TASK-0001"], &copy);
+        let read = |code: &str| {
+            let opts = ReadOpts { root: root.to_path_buf(), spec: Some("x".into()), block: format!("item-{code}"), term: None };
+            read_for(&opts, None, &copy).unwrap_or_else(|refused| panic!("{code}: {refused}"));
+        };
+
+        let before = spec_lines(root);
+        let unanswered = json!({"result": "approved", "final": true, "text": "passou",
+            "criteria": [{"criterion": "MSTD-CRIT-0001", "tests_rule": true}]});
+        let refused = judged(root, unanswered);
+        assert_eq!(refused["reason"], json!("agreed-items-missing"), "the agreed answer comes first: {refused}");
+
+        let refused = judged(root, final_verdict());
+        assert_eq!(refused["reason"], json!("verdict-read-missing"), "{refused}");
+        let expected = translate("spec_events.verdict_read_missing", Locale::PtBr)
+            .replace("{missing}", "MSTD-DEC-0001, MSTD-TASK-0001");
+        assert_eq!(refused["hint"], json!(expected), "the reading before the request does not count: {refused}");
+        assert_eq!(spec_lines(root), before, "nothing was written: {refused}");
+
+        read("MSTD-TASK-0001");
+        let one_short = judged(root, final_verdict());
+        assert_eq!(one_short["reason"], json!("verdict-read-missing"), "{one_short}");
+        let hint = one_short["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains("MSTD-DEC-0001") && !hint.contains("MSTD-TASK-0001"), "{one_short}");
+
+        read("MSTD-DEC-0001");
+        let wrote = judged(root, final_verdict());
+        assert_eq!(wrote["ok"], json!(true), "the same verdict passes after the reading: {wrote}");
+    }
+
+    /// O pedido de revisão que saiu antes de o envio guardar a lista de
+    /// leitura não é cobrado: o veredito grava sem leitura nenhuma.
+    #[test]
+    fn a_review_request_without_the_reading_list_charges_no_reading() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        sent_with_a_decision(root);
+        seed_review(root);
+        let wrote = judged(root, final_verdict());
+        assert_eq!(wrote["ok"], json!(true), "the review sent before the list is not refused: {wrote}");
+    }
+
     /// O item combinado que a entrega marca `met:false` sem dizer o que falta
     /// vira a tarefa do backlog com o texto do próprio item, o de reserva.
     #[test]
@@ -4232,6 +4464,7 @@ mod tests {
         assert_eq!(born_before, ["A busca ignora acento"], "a aberta antes da volta nasceu na spec");
 
         std::fs::write(root.join("src/a.rs"), "fn um() {}\n// A soma saiu.\n").unwrap();
+        crate::commands::flow::round::read_request(root, "x", 1);
         let before = spec_lines(root);
         let untitled = returned(root, json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"],
             "commit": "a soma sai", "leftovers": [{"detail": "Sem título."}]}));

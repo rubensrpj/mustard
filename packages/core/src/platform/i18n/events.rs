@@ -132,6 +132,29 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              `item` and with `met`: `true` if it was met, or `false` with what is missing in `text`. \
              Nothing was written."
         }
+        ("spec_events.delivery_read_missing", Locale::PtBr) => {
+            "A entrega da onda {wave} foi recusada: o pedido lista item que ainda não foi lido, e faltou \
+             {missing}. Leia cada um de dentro da cópia da onda. Use o comando de \"Como ler cada item\" \
+             do pedido; `lesson-<número>` é a lição desse número. Depois grave a entrega de novo. Nada foi \
+             gravado."
+        }
+        ("spec_events.delivery_read_missing", Locale::EnUs) => {
+            "The delivery of wave {wave} was refused: the request lists an item that was not read yet, and \
+             {missing} is missing. Read each one from inside the wave's copy. Use the command of \"How to \
+             read each item\" in the request; `lesson-<number>` is the lesson of that number. Then record \
+             the delivery again. Nothing was written."
+        }
+        ("spec_events.verdict_read_missing", Locale::PtBr) => {
+            "O veredito foi recusado: o pedido da revisão lista item que ainda não foi lido, e faltou \
+             {missing}. Leia cada um de dentro da cópia do revisor. Use o comando de \"Como ler cada \
+             item\" do pedido. Depois grave o veredito de novo. Nada foi gravado."
+        }
+        ("spec_events.verdict_read_missing", Locale::EnUs) => {
+            "The verdict was refused: the review request lists an item that was not read yet, and \
+             {missing} is missing. Read each one from inside the reviewer's copy. Use the command of \
+             \"How to read each item\" in the request. Then record the verdict again. Nothing was \
+             written."
+        }
         ("spec_events.criterion_form_missing", Locale::PtBr) => {
             "O critério precisa declarar a forma dele, uma das cinco do padrão. São elas: a que vale \
              sempre, a disparada por um acontecimento e a que só vale enquanto um estado durar. As \
@@ -913,8 +936,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("events.rs"),
             super::PREFIXES,
-            119,
-            0x1793_d2b7_5f76_a2da,
+            121,
+            0x57d0_6593_4b9c_600e,
         );
     }
 
@@ -944,6 +967,8 @@ mod tests {
             ("spec_events.task_dependency_cycle", &["{cycle}"][..]),
             ("spec_events.agreed_items_missing", &["{missing}"][..]),
             ("spec_events.delivery_agreed_missing", &["{wave}", "{missing}"][..]),
+            ("spec_events.delivery_read_missing", &["{wave}", "{missing}"][..]),
+            ("spec_events.verdict_read_missing", &["{missing}"][..]),
             ("spec_events.criterion_form_missing", &[][..]),
             ("spec_events.proof_not_a_command", &["{criterion}", "{found}"][..]),
             ("spec_events.proof_program_unknown", &["{term}"][..]),

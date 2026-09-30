@@ -22,7 +22,9 @@ use std::time::{Duration, Instant};
 use super::*;
 use crate::domain::project_map::RecipeOf;
 use crate::domain::spec_events::SpecEvent;
-use crate::domain::wave_prompt::{estimate_tokens, pattern_block, recipe_lines, PATTERN_CAP};
+use crate::domain::wave_prompt::{
+    estimate_tokens, pattern_block, pattern_block_in_step, recipe_lines, PATTERN_CAP, STEP_INDENT,
+};
 use crate::platform::i18n::translate;
 
 /// O que a régua achou num bloco do padrão.
@@ -149,21 +151,23 @@ fn example_line(e: &PatternExample, lang: Locale) -> String {
 
 /// O que as receitas do git e os exemplos pesam, em caracteres, no bloco
 /// `text` que `pattern_block` montou de `block`: só as peças que o teto
-/// deixou, cada uma como o bloco a escreve.
+/// deixou, cada uma como o pedido a escreve sob o passo da tarefa, com o
+/// recuo a mais de cada linha.
 fn pieces_chars(block: &TaskPattern, text: &str, lang: Locale) -> (usize, usize) {
+    let indent = STEP_INDENT.saturating_sub(2);
     let recipes = block
         .recipes
         .iter()
         .map(|recipe| recipe_lines(recipe, lang))
         .filter(|lines| text.contains(lines.as_str()))
-        .map(|lines| lines.chars().count())
+        .map(|lines| lines.chars().count() + lines.lines().count() * indent)
         .sum();
     let examples = block
         .examples
         .iter()
         .map(|e| format!("    - {}\n", example_line(e, lang)))
         .filter(|line| text.contains(line.as_str()))
-        .map(|line| line.chars().count())
+        .map(|line| line.chars().count() + indent)
         .sum();
     (recipes, examples)
 }
@@ -342,13 +346,13 @@ pub(super) fn measure(
                 let code = codes.get(&task.id).cloned().unwrap_or_else(|| task.id.to_string());
                 let Some(block) = patterns.get(&code) else { continue };
                 let text = pattern_block(block, lang);
-                let chars = text.chars().count();
+                let sent = pattern_block_in_step(block, lang);
                 let (recipes_chars, examples_chars) = pieces_chars(block, &text, lang);
                 blocks.push(TaskMeasure {
                     wave,
                     code,
-                    block_chars: chars,
-                    block_tokens: estimate_tokens(&text),
+                    block_chars: sent.chars().count(),
+                    block_tokens: estimate_tokens(&sent),
                     recipes_chars,
                     examples_chars,
                     rules: block.strong.len() + block.info.len(),
@@ -527,16 +531,16 @@ mod tests {
         assert_eq!(wave.chars_with, sent.chars().count());
         let in_request = block_chars_in(sent, "Criar o controller") + block_chars_in(sent, "Criar o service");
         assert_eq!(
-            in_request, 930,
-            "a regra e os três exemplos de cada tarefa, 483 e 447 caracteres"
+            in_request, 940,
+            "a regra e os três exemplos de cada tarefa, 488 e 452 caracteres, com o recuo do passo"
         );
         assert_eq!(wave.blocks_chars, in_request);
         assert_eq!(wave.chars_with - wave.chars_without, in_request);
-        // Em tokens: 522 com o padrão, 290 sem ele, 232 a mais; os dois
-        // blocos somam 121 e 112, e cada um arredonda para cima à parte.
-        assert_eq!((wave.tokens_with, wave.tokens_without), (522, 290));
+        // Em tokens: 587 com o padrão, 352 sem ele, 235 a mais; os dois
+        // blocos somam 122 e 113, e cada um arredonda para cima à parte.
+        assert_eq!((wave.tokens_with, wave.tokens_without), (587, 352));
         let blocks: Vec<u64> = wave.blocks.iter().map(|b| b.block_tokens).collect();
-        assert_eq!(blocks, [121, 112]);
+        assert_eq!(blocks, [122, 113]);
         assert!((wave.tokens_with - wave.tokens_without).abs_diff(blocks.iter().sum()) <= 1);
         let shape: Vec<(usize, usize, usize)> = wave
             .blocks
@@ -673,8 +677,9 @@ mod tests {
                 end: 40,
             })
             .collect();
-        let line = |e: &PatternExample| format!("    - {}\n", example_line(e, Locale::PtBr)).chars().count();
-        let recipe_size = recipe_lines(&recipe, Locale::PtBr).chars().count();
+        // O recuo do passo soma um espaço a cada linha do bloco.
+        let line = |e: &PatternExample| format!("    - {}\n", example_line(e, Locale::PtBr)).chars().count() + 1;
+        let recipe_size = recipe_lines(&recipe, Locale::PtBr).chars().count() + recipe_lines(&recipe, Locale::PtBr).lines().count();
         let strong: Vec<Direction> = (0..6)
             .map(|n| direction(&format!("controller_of_area_{n:02}"), &format!("service_of_area_{n:02}"), 40, 1))
             .collect();

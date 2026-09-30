@@ -53,6 +53,27 @@ fn write(root: &Path, event_type: &str, fields: &Value) -> u64 {
     stdout_json(&out)["id"].as_u64().expect("the write reports its number")
 }
 
+/// O agente da onda `wave` lê, de dentro da cópia e pelo comando que o pedido
+/// ensina, cada item que o envio dela manda ler: sem isso a entrega é
+/// recusada.
+fn read_request(root: &Path, wave: u64) {
+    let path = mustard_core::io::spec_events::spec_file(root, "teste").expect("spec file");
+    let log = mustard_core::io::spec_events::read(&path).expect("read").expect("the spec file");
+    let sent = log
+        .visible()
+        .into_iter()
+        .rfind(|e| e.event_type == "send" && e.wave() == Some(wave) && e.str_field("role") != Some("review"))
+        .unwrap_or_else(|| panic!("no send for wave {wave}"));
+    let copy = std::path::PathBuf::from(sent.str_field("copy").expect("the copy"));
+    let listed = sent.fields.get("read_items").and_then(Value::as_array).cloned().unwrap_or_default();
+    for item in listed.iter().filter_map(Value::as_str) {
+        match item.strip_prefix("lesson-") {
+            Some(number) => read_from(root, &copy, "lessons", Some(number)),
+            None => read_from(root, &copy, &format!("item-{item}"), None),
+        };
+    }
+}
+
 /// A spec já aberta: o arquivo de eventos existe antes de qualquer gravação,
 /// como o comando que abre a spec o deixa. Sem ele, o `write` recusa e manda
 /// abrir a spec.
@@ -229,6 +250,7 @@ fn two_processes_closing_a_wave_at_once_leave_both_items_in_the_copy() {
             let wave = 2 * round + w + 1;
             let file = format!("a{wave}.rs");
             std::fs::write(root.join(&file), format!("fn um() {{}}\n// {text}\n")).expect("the wave's change");
+            read_request(root, wave);
             write(root, "delivered", &json!({"wave": wave, "text": text, "files": [file], "commit": format!("a onda {wave} sai")}));
         }
         let writers: Vec<_> = (0..2)
@@ -435,8 +457,9 @@ fn request_of(root: &Path, wave: u64) -> (String, std::collections::BTreeSet<Str
     let text = built.into_iter().find(|p| p.wave == wave).expect("the request of the wave").text;
     let lessons = text
         .lines()
-        .filter_map(|line| line.strip_prefix("- `lessons`: "))
-        .map(|n| n.trim().parse().expect("a lesson number"))
+        .filter_map(|line| line.strip_prefix("- Lição "))
+        .filter_map(|line| line.split_whitespace().next())
+        .map(|n| n.parse().expect("a lesson number"))
         .collect();
     (text.clone(), codes_in(&text), lessons)
 }
@@ -458,13 +481,13 @@ fn dispatch_of(root: &Path, wave: u64, term: Option<&str>) -> (Value, std::colle
     (report, codes, lessons)
 }
 
-/// O agente lê numa leitura só tudo o que o pedido da onda lista: a onda, a
-/// tarefa, o critério dela, a especificação, o combinado do arquivo que ela
-/// toca, a entrega da onda de que ela depende e as lições, menos a que a
-/// escolha antes do envio tirou. Nada do envio, da entrega nem dos passos da
-/// própria onda. No conserto, a reprovação e a entrega que ela julgou, que o
-/// pedido cita, vêm junto. Um código de item acha só aquele item, mesmo que
-/// uma lição tenha o mesmo número dele no banco.
+/// O agente lê numa leitura só tudo o que o pedido da onda lista, e o
+/// contexto que o pedido não lista: a onda, a tarefa, o critério dela, o que
+/// ela atende, o combinado do arquivo que ela toca, a entrega da onda de que
+/// ela depende e as lições, menos a que a escolha antes do envio tirou. Nada
+/// do envio, da entrega nem dos passos da própria onda. No conserto, a
+/// reprovação e a entrega que ela julgou vêm junto. Um código de item acha só
+/// aquele item, mesmo que uma lição tenha o mesmo número dele no banco.
 #[test]
 fn the_dispatch_reading_returns_every_item_the_wave_request_lists() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -516,9 +539,14 @@ fn the_dispatch_reading_returns_every_item_the_wave_request_lists() {
     let (report, read, lessons) = dispatch_of(root, 2, None);
     assert_eq!(report["block"], json!("dispatch-2"), "{report}");
     let expected: std::collections::BTreeSet<String> =
-        [w2, task, c2, context, mine, before].into_iter().map(code).collect();
+        [w2, task, c2, context, mine, before, msg].into_iter().map(code).collect();
     assert_eq!(read, expected, "{report}");
-    assert_eq!(read, listed, "the reading and the request list the same items:\n{request}\n{report}");
+    assert!(listed.is_subset(&read), "the reading brings every item the request lists:\n{request}\n{report}");
+    assert_eq!(
+        listed,
+        [task, mine, msg].into_iter().map(code).collect(),
+        "the request lists the task, what it attends and the rule that reaches the file:\n{request}"
+    );
     assert_eq!(lessons, [kept].into_iter().collect(), "{report}");
     assert_eq!(lessons, listed_lessons, "the reading and the request carry the same lessons:\n{request}\n{report}");
     for (what, id) in [("send", sent), ("step", step), ("own delivery", own), ("wave 1", w1), ("criterion of wave 1", c1), ("other file", other)] {
@@ -556,7 +584,12 @@ fn the_dispatch_reading_returns_every_item_the_wave_request_lists() {
     let (request, listed, _) = request_of(root, 2);
     let (report, read, _) = dispatch_of(root, 2, None);
     assert!(read.contains(&code(rejected)) && read.contains(&code(own)), "{report}");
-    assert_eq!(read, listed, "the reading and the request of the fix list the same items:\n{request}\n{report}");
+    assert_eq!(
+        listed,
+        [task, mine, msg, rejected, own].into_iter().map(code).collect(),
+        "the request of the fix lists the rejection and the delivery it judged:\n{request}"
+    );
+    assert!(listed.is_subset(&read), "the reading brings every item the request of the fix lists:\n{request}\n{report}");
 }
 
 /// O commit da rodada nunca depende da lista de arquivos que a onda
@@ -622,6 +655,7 @@ fn a_wave_that_still_builds_commits_the_undeclared_file_and_one_that_breaks_the_
     // repositório continua compilando com o Makefile que já está lá.
     std::fs::write(copy(1).join("a1.rs"), "fn um() {}\n// muda\n").expect("a1 muda");
     std::fs::write(copy(1).join("extra.rs"), "fn extra() {}\n").expect("extra");
+    read_request(root, 1);
     write(root, "delivered", &json!({"wave": 1, "text": "Saiu.", "files": ["a1.rs"], "commit": "a1 sai"}));
     let out = rt(root, &["round", "--spec", "teste"]).output().expect("round 1");
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
@@ -650,6 +684,7 @@ fn a_wave_that_still_builds_commits_the_undeclared_file_and_one_that_breaks_the_
     // Onda 2: a cópia dela deixa o comando de compilação quebrado.
     let before = head();
     std::fs::write(copy(2).join("Makefile"), "default:\n\texit 1\n").expect("Makefile quebrado");
+    read_request(root, 2);
     write(root, "delivered", &json!({"wave": 2, "text": "Saiu.", "files": ["Makefile"], "commit": "makefile sai"}));
     let out = rt(root, &["round", "--spec", "teste"]).output().expect("round 2");
     assert_eq!(out.status.code(), Some(1), "{}", String::from_utf8_lossy(&out.stdout));
@@ -1039,4 +1074,62 @@ fn a_new_version_over_a_replaced_version_is_refused_and_names_the_current_one() 
         .filter_map(|e| e["id"].as_u64())
         .collect();
     assert_eq!(tips, vec![base + 1, base + 2], "as duas pontas seguem na leitura: {agreed}");
+}
+
+/// O comando de ler, rodado pelo binário de dentro de `from`, que é a pasta
+/// de onde o agente o roda.
+fn read_from(root: &Path, from: &Path, block: &str, term: Option<&str>) -> Value {
+    let mut args = vec!["read", block, "--spec", "teste"];
+    if let Some(term) = term {
+        args.extend(["--term", term]);
+    }
+    let out = rt(root, &args).current_dir(from).output().expect("run read");
+    assert!(out.status.success(), "read {block}: {}", String::from_utf8_lossy(&out.stdout));
+    stdout_json(&out)
+}
+
+/// As leituras que o binário registrou, na ordem: o pedido e o item.
+fn reads_recorded(root: &Path) -> Vec<(String, String)> {
+    let path = mustard_core::io::spec_events::spec_file(root, "teste").expect("spec file");
+    let log = mustard_core::io::spec_events::read(&path).expect("read").expect("the spec file");
+    log.visible()
+        .into_iter()
+        .filter(|e| e.event_type == "call" && e.str_field("command") == Some("read"))
+        .map(|e| (e.str_field("request").unwrap_or_default().to_string(), e.str_field("item").unwrap_or_default().to_string()))
+        .collect()
+}
+
+/// O agente que roda `run read` de dentro da cópia do pedido aberto lê a
+/// mensagem do usuário inteira, e cada item ou lição que ele acha fica
+/// registrado como lido para aquele pedido; o mesmo comando rodado de outra
+/// pasta lê igual e não registra nada.
+#[test]
+fn reading_from_inside_the_copy_of_an_open_request_shows_the_message_and_records_the_reading() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    seed_state(root, &json!({"author": "binary", "phase": "plan", "branch": "feature/teste", "base": "dev"}));
+    let msg = seed_binary(root, "message", &json!({"author": "user", "text": "Pode liberar mais espaço, é voce que está lotando o disco"}));
+    let crit = write(root, "criterion", &json!({"title": "Uma prova", "when": "a", "then": "b", "proof": "echo p", "form": "ubiquitous", "origin": msg}));
+    seed_binary(root, "wave", &json!({"author": "binary", "n": 1, "text": "Um.", "criteria": [crit], "done_when": "x", "origin": msg}));
+    seed_binary(root, "task", &json!({"author": "binary", "wave": 1, "text": "Guardar.", "files": [{"path": "src/a.rs"}],
+        "depends_on": [], "origin": msg, "covers": [msg]}));
+    let copy = root.join("copias").join("a");
+    std::fs::create_dir_all(copy.join("src")).expect("the copy folder");
+    seed_binary(root, "send", &json!({"author": "binary", "wave": 1, "role": "wave", "agent": "wave", "text": "o pedido",
+        "lines": 1, "chars": 8, "mustard": "0", "copy": mustard_core::io::wave_prompt::shown(&copy)}));
+    let lesson = write(root, "lesson", &json!({"class": "environment_trap", "text": "O disco enche.", "keys": ["disco"],
+        "applies_to": {"files": ["**"]}, "found_in": {"spec": "teste"}}));
+
+    let message = read_from(root, &copy.join("src"), "item-MSTD-MSG-0001", None);
+    assert_eq!(message["events"][0]["text"], json!("Pode liberar mais espaço, é voce que está lotando o disco"), "{message}");
+    assert_eq!(message["events"][0]["code"], json!("MSTD-MSG-0001"), "{message}");
+    read_from(root, &copy, "lessons", Some(&lesson.to_string()));
+    assert_eq!(
+        reads_recorded(root),
+        [("request-1".to_string(), "MSTD-MSG-0001".to_string()), ("request-1".to_string(), format!("lesson-{lesson}"))]
+    );
+
+    let outside = read_from(root, root, "item-MSTD-MSG-0001", None);
+    assert_eq!(outside["events"][0]["text"], message["events"][0]["text"], "{outside}");
+    assert_eq!(reads_recorded(root).len(), 2, "a leitura de fora da cópia não é do pedido");
 }

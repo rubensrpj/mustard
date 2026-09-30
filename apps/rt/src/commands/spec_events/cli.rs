@@ -41,9 +41,13 @@ pub enum SpecEventsCmd {
     /// `item-MSTD-TASK-NNNN` reads the item's current version and `item-<n>`
     /// that version, each with `changed` (what changed from the previous
     /// version); a removed item says
-    /// `removed`, and a message shows only its number and type. The `state`
-    /// block also gives `last_user_message`, the number of the user's latest
-    /// message, without its text.
+    /// `removed`, and a user message shows its whole text like any other item.
+    /// The `state` block also gives `last_user_message`, the number of the
+    /// user's latest message, without its text. Reading an item, a lesson
+    /// (`lessons --term <n>`) or `dispatch-<n>` from inside the copy of an
+    /// open request is recorded as read: the delivery of a wave request, and
+    /// the verdict of the final review, are refused while an item the
+    /// request lists was not read.
     #[command(display_order = 8)]
     Read {
         /// The block to read, e.g. `state`, `wave-2`, `dispatch-2`,
@@ -198,6 +202,20 @@ mod tests {
     struct Harness {
         #[command(subcommand)]
         cmd: SpecEventsCmd,
+    }
+
+    /// A ajuda do comando de ler diz que a mensagem do usuário sai com o
+    /// texto inteiro e que a leitura de dentro da cópia de um pedido aberto
+    /// fica registrada; a frase antiga, que escondia o texto, não volta.
+    #[test]
+    fn the_read_help_says_a_message_shows_its_text_and_the_reading_is_recorded() {
+        let mut tree = Harness::command();
+        let read = tree.find_subcommand_mut("read").expect("the read command is registered");
+        let help = read.render_long_help().to_string();
+        let flat = help.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(flat.contains("a user message shows its whole text like any other item"), "{help}");
+        assert!(flat.contains("is recorded as read"), "{help}");
+        assert!(!flat.contains("shows only its number and type"), "{help}");
     }
 
     /// A ajuda do comando de gravar lista os campos de cada tipo, um tipo por

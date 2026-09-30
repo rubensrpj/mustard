@@ -65,17 +65,98 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              Code is written in {code}: names of variables, functions, files, commands and database \
              tables."
         }
-        ("prompt.part.items", Locale::PtBr) => "Itens da onda",
-        ("prompt.part.items", Locale::EnUs) => "Wave items",
-        ("prompt.part.tasks", Locale::PtBr) => "Tarefas, na ordem em que se faz",
-        ("prompt.part.tasks", Locale::EnUs) => "Tasks, in the order they are done",
-        ("prompt.task.read_before", Locale::PtBr) => "leia antes",
-        ("prompt.task.read_before", Locale::EnUs) => "read before",
+        // As seções do pedido da onda, sempre nesta ordem: o que ela entrega,
+        // como ler cada item, o que fazer, o que obedecer, o que devolver e
+        // como trabalhar.
+        ("prompt.part.delivers", Locale::PtBr) => "O que esta onda entrega",
+        ("prompt.part.delivers", Locale::EnUs) => "What this wave delivers",
+        ("prompt.part.read", Locale::PtBr) => "Como ler cada item",
+        ("prompt.part.read", Locale::EnUs) => "How to read each item",
+        ("prompt.part.do", Locale::PtBr) => "O que fazer",
+        ("prompt.part.do", Locale::EnUs) => "What to do",
+        ("prompt.part.obey", Locale::PtBr) => "O que obedecer",
+        ("prompt.part.obey", Locale::EnUs) => "What to obey",
+        ("prompt.part.return", Locale::PtBr) => "O que devolver",
+        ("prompt.part.return", Locale::EnUs) => "What to return",
+        ("prompt.part.work", Locale::PtBr) => "Como trabalhar",
+        ("prompt.part.work", Locale::EnUs) => "How to work",
+        // O tipo de cada item, por extenso, no começo da linha dele. O tipo
+        // que o pedido não conhece sai como "Item".
+        ("prompt.kind.task", Locale::PtBr) => "Tarefa",
+        ("prompt.kind.task", Locale::EnUs) => "Task",
+        ("prompt.kind.rule", Locale::PtBr) => "Regra",
+        ("prompt.kind.rule", Locale::EnUs) => "Rule",
+        ("prompt.kind.limit", Locale::PtBr) => "Limite",
+        ("prompt.kind.limit", Locale::EnUs) => "Limit",
+        ("prompt.kind.contract", Locale::PtBr) => "Contrato",
+        ("prompt.kind.contract", Locale::EnUs) => "Contract",
+        ("prompt.kind.error", Locale::PtBr) => "Erro",
+        ("prompt.kind.error", Locale::EnUs) => "Error",
+        ("prompt.kind.edge_case", Locale::PtBr) => "Caso de borda",
+        ("prompt.kind.edge_case", Locale::EnUs) => "Edge case",
+        ("prompt.kind.out_of_scope", Locale::PtBr) => "Fora do escopo",
+        ("prompt.kind.out_of_scope", Locale::EnUs) => "Out of scope",
+        ("prompt.kind.decision", Locale::PtBr) => "Decisão",
+        ("prompt.kind.decision", Locale::EnUs) => "Decision",
+        ("prompt.kind.context", Locale::PtBr) => "Contexto",
+        ("prompt.kind.context", Locale::EnUs) => "Context",
+        ("prompt.kind.concern", Locale::PtBr) => "Preocupação",
+        ("prompt.kind.concern", Locale::EnUs) => "Concern",
+        ("prompt.kind.criterion", Locale::PtBr) => "Critério",
+        ("prompt.kind.criterion", Locale::EnUs) => "Criterion",
+        ("prompt.kind.message", Locale::PtBr) => "Mensagem",
+        ("prompt.kind.message", Locale::EnUs) => "Message",
+        ("prompt.kind.verdict", Locale::PtBr) => "Veredito",
+        ("prompt.kind.verdict", Locale::EnUs) => "Verdict",
+        ("prompt.kind.delivered", Locale::PtBr) => "Entrega",
+        ("prompt.kind.delivered", Locale::EnUs) => "Delivery",
+        ("prompt.kind.commit", Locale::PtBr) => "Commit",
+        ("prompt.kind.commit", Locale::EnUs) => "Commit",
+        ("prompt.kind.wave", Locale::PtBr) => "Onda",
+        ("prompt.kind.wave", Locale::EnUs) => "Wave",
+        ("prompt.kind.lesson", Locale::PtBr) => "Lição",
+        ("prompt.kind.lesson", Locale::EnUs) => "Lesson",
+        ("prompt.kind.item", Locale::PtBr) => "Item",
+        ("prompt.kind.item", Locale::EnUs) => "Item",
+        // Os passos de "O que fazer". O primeiro manda ler os itens de "O que
+        // obedecer"; cada tarefa é um passo, com o que ela atende, os
+        // arquivos e o que ler antes embaixo; a suíte e a entrega fecham a
+        // lista. `{part}` é o título da seção a que o passo aponta.
+        ("prompt.step.read", Locale::PtBr) => "Leia o texto inteiro de cada item de \"{part}\".",
+        ("prompt.step.read", Locale::EnUs) => "Read the whole text of each item under \"{part}\".",
+        ("prompt.step.task", Locale::PtBr) => "Faça a tarefa {item}",
+        ("prompt.step.task", Locale::EnUs) => "Do the task {item}",
+        ("prompt.step.attends", Locale::PtBr) => "Atende: {item}",
+        ("prompt.step.attends", Locale::EnUs) => "Addresses: {item}",
+        ("prompt.step.user_message", Locale::PtBr) => "mensagem do usuário",
+        ("prompt.step.user_message", Locale::EnUs) => "user message",
+        ("prompt.step.read_task_message", Locale::PtBr) => "Leia a tarefa e a mensagem inteiras antes de mexer.",
+        ("prompt.step.read_task_message", Locale::EnUs) => "Read the whole task and the message before you start.",
+        ("prompt.step.read_task", Locale::PtBr) => "Leia a tarefa inteira antes de mexer.",
+        ("prompt.step.read_task", Locale::EnUs) => "Read the whole task before you start.",
+        ("prompt.step.read_task_attends", Locale::PtBr) => "Leia a tarefa e o que ela atende, inteiros, antes de mexer.",
+        ("prompt.step.read_task_attends", Locale::EnUs) => "Read the whole task and what it addresses before you start.",
+        ("prompt.step.file", Locale::PtBr) => "Arquivo: {files}",
+        ("prompt.step.file", Locale::EnUs) => "File: {files}",
+        ("prompt.step.files", Locale::PtBr) => "Arquivos: {files}",
+        ("prompt.step.files", Locale::EnUs) => "Files: {files}",
+        ("prompt.step.read_before", Locale::PtBr) => "Leia antes: {hints}",
+        ("prompt.step.read_before", Locale::EnUs) => "Read before: {hints}",
+        ("prompt.step.suite", Locale::PtBr) => "Rode a suíte do projeto com `{command}`.",
+        ("prompt.step.suite", Locale::EnUs) => "Run the project's suite with `{command}`.",
+        ("prompt.step.deliver", Locale::PtBr) => "Grave a entrega, como diz \"{part}\".",
+        ("prompt.step.deliver", Locale::EnUs) => "Record the delivery, as \"{part}\" says.",
+        // Sem lição para os arquivos da onda, a seção diz isso em vez de
+        // calar.
+        ("prompt.obey.no_lessons", Locale::PtBr) => "Lições: nenhuma vale para os arquivos desta onda.",
+        ("prompt.obey.no_lessons", Locale::EnUs) => "Lessons: none applies to this wave's files.",
+        ("prompt.return.loose", Locale::PtBr) => "Fora da entrega, nenhum texto solto.",
+        ("prompt.return.loose", Locale::EnUs) => "Outside the delivery, no loose text.",
         // O mapa do projeto conhece os arquivos de teste de um arquivo que a
-        // tarefa cita: a linha do arquivo ganha, logo abaixo, quem o testa,
+        // tarefa cita: o passo da tarefa ganha, logo abaixo, quem o testa,
         // para o agente não sair procurando um por um no código.
-        ("prompt.task.tested_by", Locale::PtBr) => "quem testa `{file}`: {tests}",
-        ("prompt.task.tested_by", Locale::EnUs) => "who tests `{file}`: {tests}",
+        ("prompt.task.tested_by", Locale::PtBr) => "Quem testa `{file}`: {tests}",
+        ("prompt.task.tested_by", Locale::EnUs) => "Who tests `{file}`: {tests}",
         // O padrão do projeto sob a tarefa que toca um papel com regra: as
         // regras que o código já segue e exemplos que as seguem, sem código.
         ("prompt.pattern.head", Locale::PtBr) => {
@@ -114,22 +195,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("prompt.pattern.recipe.file", Locale::EnUs) => "changed `{path}` in {count} of {commits}",
         ("prompt.pattern.recipe.tests", Locale::PtBr) => "criou um teste em {count} de {commits}",
         ("prompt.pattern.recipe.tests", Locale::EnUs) => "created a test in {count} of {commits}",
-        ("prompt.fixed", Locale::PtBr) => {
-            "**O que é isto.** A lista dos itens desta onda, em ordem de execução, montada pelo \
-             binário a partir da spec. Cada item vem numa linha, com o código e o título, e \
-             embaixo dela a parte do agente: arquivos, comandos e o que testar.\n\n\
-             **O que devolver.** A entrega desta onda, pela ferramenta: `mustard-rt run write \
-             delivered`, com o que houver a contar do trabalho dentro do campo de texto dela. Fora \
-             dela, nada de texto solto."
-        }
-        ("prompt.fixed", Locale::EnUs) => {
-            "**What this is.** The list of this wave's items, in execution order, assembled by the \
-             binary from the spec. Each item opens with a line holding its code and title. Below \
-             it comes the agent part: files, commands and what to test.\n\n\
-             **What to return.** This wave's delivery, through the tool: `mustard-rt run write \
-             delivered`, with whatever there is to tell about the work inside its text field. \
-             Outside it, no loose text."
-        }
         // O agente de teste dedicado, que o fechamento pede a toda obra —
         // mesmo a de uma onda só —, no lugar da revisão de cada onda. A
         // parte fixa diz o que o pedido é e o que devolver; o que olhar vem
@@ -138,8 +203,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("prompt.final.title", Locale::EnUs) => "{spec} — dedicated test agent",
         ("prompt.final.fixed", Locale::PtBr) => {
             "**O que é isto.** O pedido do agente de teste dedicado desta spec, montado pelo binário a \
-             partir dela. Nenhum texto vem copiado: cada parte traz só os códigos dos itens, em \
-             sequência, numa linha por bloco da spec.\n\n\
+             partir dela. Nenhum texto vem copiado: cada parte traz só o tipo, o código e o título \
+             de cada item, numa linha por item.\n\n\
              **O que devolver.** O veredito com `\"final\":true`, gravado por `mustard-rt run write \
              verdict`. O pedido traz os requisitos acordados inteiros da spec, dono ou não de onda. \
              Responda por cada item em `agreed`, com o código em `item` e `met` dizendo se está \
@@ -149,8 +214,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("prompt.final.fixed", Locale::EnUs) => {
             "**What this is.** The dedicated test agent's request for this spec, assembled by the \
-             binary from it. No text is copied in: each part carries only the items' codes, in \
-             sequence, one line per spec block.\n\n\
+             binary from it. No text is copied in: each part carries only the type, the code and \
+             the title of each item, on one line per item.\n\n\
              **What to return.** The verdict with `\"final\":true`, recorded through `mustard-rt run \
              write verdict`. The request carries the spec's whole agreed requirements, owned by a \
              wave or not. Answer for each item in `agreed`, with the code in `item` and `met` \
@@ -195,29 +260,45 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("prompt.part.since_verdict", Locale::PtBr) => "O que mudou desde o veredito anterior",
         ("prompt.part.since_verdict", Locale::EnUs) => "What changed since the previous verdict",
-        // Como ler, logo depois da parte fixa. `{root}` é `--root <caminho> `
-        // quando o agente trabalha numa cópia, e nada quando não trabalha.
-        // O pedido de uma onda já traz o título e a parte do agente de cada
-        // item: o texto completo de tudo o que ele lista, com o número da
-        // onda em `{n}`, é para o caso de dúvida, e um item só se lê pelo
-        // código. O da revisão final lê item por item.
+        // Como ler cada item do pedido da onda. `{root}` é `--root <caminho> `
+        // quando o agente trabalha numa cópia, e nada quando não trabalha. O
+        // pedido traz só o tipo, o código e o título de cada item; o texto
+        // inteiro se lê pelo código, e a lição pelo número dela no banco. A
+        // entrega sem a leitura completa é recusada.
         ("prompt.read.wave", Locale::PtBr) => {
-            "**Como ler.** Em caso de dúvida, leia o texto completo com `mustard-rt run read dispatch-{n} \
-             {root}--spec {spec}`. Para ler um item só, use `mustard-rt run read <bloco> {root}--spec \
-             {spec} --term <código>`."
+            "Este pedido traz só o tipo, o código e o título de cada item. Leia o texto inteiro de \
+             cada um antes de usá-lo:\n\
+             - tarefa, regra, decisão, mensagem ou outro item: `mustard-rt run read item-<código> \
+             {root}--spec {spec}`\n\
+             - lição: `mustard-rt run read lessons --term <número> {root}--spec {spec}`\n\
+             A entrega é recusada se algum item deste pedido não foi lido. A recusa diz qual."
         }
         ("prompt.read.wave", Locale::EnUs) => {
-            "**How to read.** In case of doubt, read the whole text with `mustard-rt run read \
-             dispatch-{n} {root}--spec {spec}`. To read a single item, use `mustard-rt run read <block> \
-             {root}--spec {spec} --term <item-code>`."
+            "This request carries only the type, the code and the title of each item. Read the whole \
+             text of each one before using it:\n\
+             - task, rule, decision, message or any other item: `mustard-rt run read item-<item-code> \
+             {root}--spec {spec}`\n\
+             - lesson: `mustard-rt run read lessons --term <number> {root}--spec {spec}`\n\
+             The delivery is refused if any item of this request was not read. The refusal says which."
         }
-        ("prompt.read", Locale::PtBr) => {
-            "**Como ler.** Leia cada código na ordem com `mustard-rt run read <bloco> {root}--spec {spec} \
-             --term <código>`, trocando `<bloco>` pelo bloco que abre a linha do código."
+        // Como ler cada item do pedido do revisor final: os mesmos dois comandos
+        // do pedido da onda e o aviso de que o veredito sem a leitura completa
+        // é recusado, com a recusa dizendo qual item faltou.
+        ("prompt.read.final", Locale::PtBr) => {
+            "Este pedido traz só o tipo, o código e o título de cada item. Leia o texto inteiro de \
+             cada um antes de dar o veredito:\n\
+             - onda, tarefa, requisito acordado, entrega, critério, commit ou outro item: `mustard-rt \
+             run read item-<código> {root}--spec {spec}`\n\
+             - lição: `mustard-rt run read lessons --term <número> {root}--spec {spec}`\n\
+             O veredito é recusado se algum item deste pedido não foi lido. A recusa diz qual."
         }
-        ("prompt.read", Locale::EnUs) => {
-            "**How to read.** Read each code in order with `mustard-rt run read <block> {root}--spec {spec} \
-             --term <item-code>`, replacing `<block>` with the block that opens the code's line."
+        ("prompt.read.final", Locale::EnUs) => {
+            "This request carries only the type, the code and the title of each item. Read the whole \
+             text of each one before you give the verdict:\n\
+             - wave, task, agreed requirement, delivery, criterion, commit or any other item: \
+             `mustard-rt run read item-<item-code> {root}--spec {spec}`\n\
+             - lesson: `mustard-rt run read lessons --term <number> {root}--spec {spec}`\n\
+             The verdict is refused if any item of this request was not read. The refusal says which."
         }
         ("prompt.part.waves", Locale::PtBr) => "As ondas e as tarefas delas",
         ("prompt.part.waves", Locale::EnUs) => "The waves and their tasks",
@@ -229,8 +310,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("prompt.part.agreed", Locale::EnUs) => "Agreed requirements",
         ("prompt.part.criteria", Locale::PtBr) => "Critérios",
         ("prompt.part.criteria", Locale::EnUs) => "Criteria",
-        ("prompt.part.delivered", Locale::PtBr) => "O que as ondas anteriores entregaram",
-        ("prompt.part.delivered", Locale::EnUs) => "What the earlier waves delivered",
         ("prompt.skill.stale", Locale::PtBr) => "a revisar",
         ("prompt.skill.stale", Locale::EnUs) => "to review",
         ("prompt.skill.read", Locale::PtBr) => "Leia o arquivo da skill antes de começar a tarefa que a nomeia.",
@@ -239,21 +318,21 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // O conserto: a onda que volta por reprovação.
         ("prompt.fix.wave", Locale::PtBr) => {
             "Esta onda voltou por reprovação. As linhas abaixo são o veredito que reprovou, a entrega \
-             anterior desta onda e os requisitos acordados gravados depois do último envio. Conserte só o \
-             que o veredito aponta, à luz desses itens: não refaça a onda."
+             anterior desta onda e os requisitos acordados gravados depois do último envio. Leia o texto \
+             inteiro de cada uma antes de consertar. Conserte só o que o veredito aponta, à luz desses \
+             itens: não refaça a onda."
         }
         ("prompt.fix.wave", Locale::EnUs) => {
             "This wave came back rejected. The lines below are the verdict that rejected it, this \
-             wave's previous delivery and the agreed requirements recorded after the last send. Fix only what \
-             the verdict points out, in light of those items: do not redo the wave."
+             wave's previous delivery and the agreed requirements recorded after the last send. Read the \
+             whole text of each one before fixing. Fix only what the verdict points out, in light of \
+             those items: do not redo the wave."
         }
         // As regras da execução: o que o orquestrador acrescentava à mão.
         ("prompt.part.execution", Locale::PtBr) => "Regras da execução",
         ("prompt.part.execution", Locale::EnUs) => "Execution rules",
         ("prompt.execution.build", Locale::PtBr) => "Compile com `{command}`.",
         ("prompt.execution.build", Locale::EnUs) => "Build with `{command}`.",
-        ("prompt.execution.test", Locale::PtBr) => "Teste com `{command}`.",
-        ("prompt.execution.test", Locale::EnUs) => "Test with `{command}`.",
         ("prompt.execution.running", Locale::PtBr) => {
             "Ondas em andamento, cada uma na sua cópia. O arquivo que você dividir com elas é \
              juntado na volta; o trecho que conflitar para a rodada até ser resolvido."
@@ -446,8 +525,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("prompt.rs"),
             super::PREFIXES,
-            59,
-            0x562f_b690_1312_06b3,
+            91,
+            0x7c4b_6191_643f_4121,
         );
     }
 
@@ -483,6 +562,51 @@ mod tests {
                     .replace("{commits}", "10")
                     .replace("{count}", "9")
                     .replace("{kind}", "src/orders/*.ts");
+                assert!(!text.contains('{'), "{key} {lang:?}: {text}");
+                let report = crate::domain::clarity::measure(&text, &[], Some(lang));
+                assert!(report.passed, "{key} {lang:?}: {report:?}");
+            }
+        }
+    }
+
+    /// Os textos novos do pedido da onda — a seção de como ler, os passos de
+    /// "O que fazer", a frase das lições e a ordem de não deixar texto solto —
+    /// passam na conferência de escrita nos dois idiomas, com cada lacuna
+    /// trocada por uma palavra.
+    #[test]
+    fn the_request_step_texts_read_clearly() {
+        use crate::platform::i18n::{translate, Locale};
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            for key in [
+                "prompt.read.wave",
+                "prompt.read.final",
+                "prompt.fix.wave",
+                "prompt.step.read",
+                "prompt.step.task",
+                "prompt.step.attends",
+                "prompt.step.read_task",
+                "prompt.step.read_task_attends",
+                "prompt.step.read_task_message",
+                "prompt.step.user_message",
+                "prompt.step.file",
+                "prompt.step.files",
+                "prompt.step.read_before",
+                "prompt.step.suite",
+                "prompt.step.deliver",
+                "prompt.obey.no_lessons",
+                "prompt.return.loose",
+                "prompt.task.tested_by",
+            ] {
+                let text = translate(key, lang)
+                    .replace("{part}", "part")
+                    .replace("{item}", "item")
+                    .replace("{files}", "`src/order.service.ts`")
+                    .replace("{hints}", "`create`")
+                    .replace("{command}", "make check")
+                    .replace("{file}", "src/order.service.ts")
+                    .replace("{tests}", "`order_test`")
+                    .replace("{root}", "")
+                    .replace("{spec}", "orders");
                 assert!(!text.contains('{'), "{key} {lang:?}: {text}");
                 let report = crate::domain::clarity::measure(&text, &[], Some(lang));
                 assert!(report.passed, "{key} {lang:?}: {report:?}");

@@ -333,7 +333,8 @@ fn run_close(
 
     let log = read(&path)?;
     if !final_approved(&log) {
-        let prompt = mustard_core::io::wave_prompt::final_review(root, &spec, &log, lang);
+        let review = mustard_core::io::wave_prompt::final_review(root, &spec, &log, lang);
+        let prompt = review.text;
         // O pedido do agente de revisão final é gravado como evento de
         // envio antes de sair daqui, pela mesma porta que grava o pedido de
         // cada onda: o texto inteiro, o papel de revisão, o modelo, o esforço
@@ -347,6 +348,9 @@ fn run_close(
         draft.insert("lines".into(), json!(count_lines(&prompt)));
         draft.insert("chars".into(), json!(prompt.chars().count()));
         draft.insert("text".into(), json!(prompt));
+        // Os itens que o pedido lista, para o veredito conferir que o revisor
+        // leu cada um; o envio sem essa lista é de antes da conferência.
+        draft.insert("read_items".into(), json!(review.listed));
         let agents = mustard_core::ProjectConfig::load(root);
         draft.insert("model".into(), json!(agents.agent_model()));
         draft.insert("effort".into(), json!(agents.agent_effort()));
@@ -1203,12 +1207,20 @@ mod tests {
     /// a rodada assumi-la. Ela precisa sair gravada: a rodada lê a volta da
     /// spec, e não do relatório.
     fn returned(root: &Path, spec: &str, body: Value) {
-        let out = crate::commands::spec_events::write::write_at(&WriteOpts {
-            root: root.to_path_buf(),
-            spec: Some(spec.to_string()),
-            event_type: "delivered".into(),
-            json: body.to_string(),
-        });
+        let write = |body: &Value| {
+            crate::commands::spec_events::write::write_at(&WriteOpts {
+                root: root.to_path_buf(),
+                spec: Some(spec.to_string()),
+                event_type: "delivered".into(),
+                json: body.to_string(),
+            })
+        };
+        let mut out = write(&body);
+        // O pedido não lido recusa a entrega: o agente lê e grava de novo.
+        if let Some(wave) = body["wave"].as_u64().filter(|_| out["reason"] == json!("delivery-read-missing")) {
+            crate::commands::flow::round::read_request(root, spec, wave);
+            out = write(&body);
+        }
         assert_eq!(out["ok"], json!(true), "a volta não gravou: {out}");
     }
 
@@ -1329,6 +1341,7 @@ mod tests {
     /// O veredito que o revisor grava pela porta do binário. Devolve a
     /// resposta da gravação, com a recusa quando ela recusa.
     fn judged(root: &Path, spec: &str, body: Value) -> Value {
+        crate::commands::flow::round::read_review(root, spec);
         crate::commands::spec_events::write::write_at(&WriteOpts {
             root: root.to_path_buf(),
             spec: Some(spec.to_string()),
@@ -1412,6 +1425,79 @@ mod tests {
         assert_eq!(sent.str_field("model"), Some("sonnet"), "o modelo pedido vai junto, o padrão da instalação: {sent:?}");
         assert_eq!(sent.str_field("effort"), Some("xhigh"), "o esforço pedido vai junto, o padrão da instalação: {sent:?}");
         assert!(sent.wave().is_none(), "a revisão final não é dona de onda nenhuma: {sent:?}");
+    }
+
+    /// O envio do pedido da revisão grava a lista dos itens que o pedido
+    /// lista, a mesma que o texto imprime, e o veredito só grava depois de o
+    /// revisor ler cada um de dentro da cópia dele: a leitura feita do
+    /// repositório principal não conta, e a recusa nomeia o item que falta.
+    #[test]
+    fn the_review_send_records_what_it_lists_and_the_verdict_waits_for_the_reading() {
+        use crate::commands::spec_events::read::{read_for, ReadOpts};
+
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        ready_to_close(root, "x", &["git --version"]);
+        let asked =
+            close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None, ..Default::default() }, None);
+        assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+        let prompt = review_prompt(&asked);
+
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let sent = log.visible().into_iter().rfind(|e| e.event_type == "send").expect("the review send");
+        let recorded: Vec<String> = sent
+            .fields
+            .get("read_items")
+            .and_then(Value::as_array)
+            .expect("the send records the list")
+            .iter()
+            .filter_map(|item| item.as_str().map(str::to_string))
+            .collect();
+        let mut printed: Vec<String> = Vec::new();
+        for line in prompt.lines().filter(|line| line.starts_with("- ")) {
+            let Some(at) = line.find("MSTD-") else { continue };
+            let code = line[at..].split(' ').next().unwrap_or_default().to_string();
+            if !printed.contains(&code) {
+                printed.push(code);
+            }
+        }
+        assert!(printed.len() > 2, "{prompt}");
+        assert_eq!(recorded, printed, "the send records the codes the request prints: {prompt}");
+
+        let copy = sent.str_field("copy").expect("the reviewer's copy").to_string();
+        let read = |code: &str, from: &Path| {
+            let opts = ReadOpts { root: root.to_path_buf(), spec: Some("x".into()), block: format!("item-{code}"), term: None };
+            read_for(&opts, None, from).unwrap_or_else(|refused| panic!("{code}: {refused}"));
+        };
+        let approved = || {
+            crate::commands::spec_events::write::write_at(&WriteOpts {
+                root: root.to_path_buf(),
+                spec: Some("x".into()),
+                event_type: "verdict".into(),
+                json: json!({"final": true, "result": "approved", "text": "A obra está pronta."}).to_string(),
+            })
+        };
+
+        let refused = approved();
+        assert_eq!(refused["reason"], json!("verdict-read-missing"), "{refused}");
+        for code in &recorded {
+            assert!(refused["hint"].as_str().unwrap_or_default().contains(code.as_str()), "{code}: {refused}");
+        }
+        for code in &recorded {
+            read(code, root);
+        }
+        assert_eq!(approved()["reason"], json!("verdict-read-missing"), "reading from the main repository does not count");
+
+        for code in &recorded[1..] {
+            read(code, Path::new(&copy));
+        }
+        let refused = approved();
+        assert_eq!(refused["reason"], json!("verdict-read-missing"), "{refused}");
+        let hint = refused["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains(recorded[0].as_str()) && !hint.contains(recorded[1].as_str()), "{refused}");
+
+        read(&recorded[0], Path::new(&copy));
+        assert_eq!(approved()["ok"], json!(true), "the verdict passes once every item was read from the copy");
     }
 
     /// O envio do pedido da revisão final grava o modelo e o esforço que o
@@ -3190,7 +3276,7 @@ exit "${2:-0}"
         let (before, after): (Vec<u64>, Vec<u64>) = commits.into_iter().partition(|id| *id < verdict);
         assert!(!before.is_empty() && !after.is_empty(), "um commit antes do veredito e o do conserto depois: {prompt}");
         let part = listed(&prompt);
-        assert!(part.contains(&format!("- `review`: {}", codes[&verdict])), "{prompt}");
+        assert!(part.contains(&codes[&verdict]), "{prompt}");
         for id in after {
             assert!(part.contains(&codes[&id]), "o commit do conserto está no que mudou: {prompt}");
         }

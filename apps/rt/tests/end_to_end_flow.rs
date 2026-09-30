@@ -38,7 +38,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 use mustard_core::domain::normalize::Languages;
-use mustard_core::domain::spec_events::SpecLog;
+use mustard_core::domain::spec_events::{SpecEvent, SpecLog};
 use mustard_core::domain::spec_state::State;
 use mustard_core::io::project_map as map_store;
 use mustard_core::io::spec_events as store;
@@ -300,11 +300,16 @@ impl Project {
     /// O binário com `args`, no projeto, com a pasta pessoal falsa, o `gh`
     /// falso à frente do `PATH` e nenhuma sessão nem spec forçada.
     fn command(&self, args: &[&str], stdin: &str) -> Output {
+        self.command_in(&self.root, args, stdin)
+    }
+
+    /// Como [`Self::command`], rodando de dentro de `dir`.
+    fn command_in(&self, dir: &Path, args: &[&str], stdin: &str) -> Output {
         let mut binary = Command::new(self.rt.as_deref().unwrap_or_else(|| Path::new(env!("CARGO_BIN_EXE_mustard-rt"))));
         let mut child = self
             .env(&mut binary)
             .args(args)
-            .current_dir(&self.root)
+            .current_dir(dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -335,6 +340,43 @@ impl Project {
             .env_remove("MUSTARD_SESSION_ID")
             .env_remove("CLAUDE_SESSION_ID")
             .env_remove("CLAUDE_CODE_SESSION_ID")
+    }
+
+    /// O agente lê, de dentro da cópia e pelo comando que o pedido ensina,
+    /// cada item que o envio da onda `wave` manda ler (`read_items`): sem
+    /// isso a entrega é recusada.
+    fn read_request(&self, wave: u64) {
+        self.read_send(|sent| sent.wave() == Some(wave) && sent.str_field("role") != Some("review"));
+    }
+
+    /// O revisor lê, de dentro da cópia dele e pelo comando que o pedido
+    /// ensina, cada item que o envio da revisão manda ler: sem isso o
+    /// veredito é recusado.
+    fn read_review(&self) {
+        self.read_send(|sent| sent.str_field("role") == Some("review"));
+    }
+
+    /// A leitura, de dentro da cópia do último envio que `pick` escolhe, de
+    /// cada item da lista dele.
+    fn read_send(&self, pick: impl Fn(&SpecEvent) -> bool) {
+        let log = self.log();
+        let sent = log
+            .visible()
+            .into_iter()
+            .rfind(|e| e.event_type == "send" && pick(e))
+            .unwrap_or_else(|| panic!("nenhum envio gravado para a leitura"));
+        let copy = PathBuf::from(sent.str_field("copy").expect("the copy"));
+        let root = self.root.display().to_string();
+        let listed = sent.fields.get("read_items").and_then(Value::as_array).cloned().unwrap_or_default();
+        for item in listed.iter().filter_map(Value::as_str) {
+            let block = format!("item-{item}");
+            let lesson = item.strip_prefix("lesson-");
+            let mut args = vec!["run", "read", lesson.map_or(block.as_str(), |_| "lessons")];
+            args.extend(lesson.into_iter().flat_map(|n| ["--term", n]));
+            args.extend(["--root", &root, "--spec", SPEC]);
+            let out = self.command_in(&copy, &args, "");
+            assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stdout));
+        }
     }
 
     /// Um comando `run`, que precisa responder `ok`.
@@ -548,6 +590,7 @@ fn a_test_spec_runs_end_to_end_one_call_per_step_and_leaves_three_files() {
     std::fs::write(copy.join("src/main.rs"), "fn main() {\n    println!(\"olá\");\n}\n").expect("the change");
     let delivered = json!({"wave": 1, "text": "A saudação virou olá.", "files": ["src/main.rs"],
         "commit": "a saudação vira olá", "agreed": agreed_all_met(&project)});
+    project.read_request(1);
     project.run(&["write", "delivered", "--spec", SPEC, "--json", &delivered.to_string()]);
     let second = project.run(&["round", "--spec", SPEC]);
     assert!(second.get("reviews").is_none(), "{second}");
@@ -563,6 +606,7 @@ fn a_test_spec_runs_end_to_end_one_call_per_step_and_leaves_three_files() {
     // O revisor grava o veredito aprovado; o fechamento o assume e fecha.
     let verdict = json!({"final": true, "result": "approved", "text": "A saudação mudou.",
         "agreed": agreed_all_met(&project)});
+    project.read_review();
     project.run(&["write", "verdict", "--spec", SPEC, "--json", &verdict.to_string()]);
     let closed = project.run(&["close", "--spec", SPEC]);
     assert_eq!(closed["phase"], json!("closed"), "{closed}");
@@ -585,7 +629,10 @@ fn a_test_spec_runs_end_to_end_one_call_per_step_and_leaves_three_files() {
             .into_iter()
             .map(|(command, count)| (command.to_string(), count))
             .collect();
-    assert_eq!(calls(&project), expected, "each flow step is one call, the approval none and closing two");
+    // A leitura que o agente faz do pedido dele é dele, e não um passo do fluxo.
+    let mut seen = calls(&project);
+    assert!(seen.remove("read").is_some_and(|reads| reads > 0), "the agent read what its request lists: {seen:?}");
+    assert_eq!(seen, expected, "each flow step is one call, the approval none and closing two");
 
     let folder = project.root.join(".claude/spec").join(SPEC);
     let mut names: Vec<String> = std::fs::read_dir(&folder)
@@ -618,11 +665,13 @@ fn o_fluxo_inteiro_nao_grava_onda_pela_linha_de_comando() {
     std::fs::write(copy.join("src/main.rs"), "fn main() {\n    println!(\"olá\");\n}\n").expect("the change");
     let delivered = json!({"wave": 1, "text": "A saudação virou olá.", "files": ["src/main.rs"],
         "commit": "a saudação vira olá", "agreed": agreed_all_met(&project)});
+    project.read_request(1);
     project.run(&["write", "delivered", "--spec", SPEC, "--json", &delivered.to_string()]);
     project.run(&["round", "--spec", SPEC]);
     project.run(&["close", "--spec", SPEC]);
     let verdict = json!({"final": true, "result": "approved", "text": "A saudação mudou.",
         "agreed": agreed_all_met(&project)});
+    project.read_review();
     project.run(&["write", "verdict", "--spec", SPEC, "--json", &verdict.to_string()]);
     let closed = project.run(&["close", "--spec", SPEC]);
     let pr_line = closed["command"].as_str().expect("the pr-open line").to_string();
@@ -658,11 +707,13 @@ fn closed_with_one_wave(project: &Project) -> Vec<String> {
     std::fs::write(copy.join("src/main.rs"), "fn main() {\n    println!(\"olá\");\n}\n").expect("the change");
     let delivered = json!({"wave": 1, "text": "A saudação virou olá.", "files": ["src/main.rs"],
         "commit": "a saudação vira olá", "agreed": agreed_all_met(project)});
+    project.read_request(1);
     project.run(&["write", "delivered", "--spec", SPEC, "--json", &delivered.to_string()]);
     project.run(&["round", "--spec", SPEC]);
     project.run(&["close", "--spec", SPEC]);
     let verdict = json!({"final": true, "result": "approved", "text": "A saudação mudou.",
         "agreed": agreed_all_met(project)});
+    project.read_review();
     project.run(&["write", "verdict", "--spec", SPEC, "--json", &verdict.to_string()]);
     let closed = project.run(&["close", "--spec", SPEC]);
     let line = closed["command"].as_str().expect("the pr-open line").to_string();
@@ -866,6 +917,7 @@ fn open_pull_requests_with_a_submodule(project: &Project) -> Value {
     let delivered = json!({"wave": 1, "text": "A saudação e a biblioteca mudaram.",
         "files": ["src/main.rs", SUB_FILE], "commit": "a saudação e a biblioteca mudam",
         "agreed": agreed_all_met(project)});
+    project.read_request(1);
     project.run(&["write", "delivered", "--spec", SPEC, "--json", &delivered.to_string()]);
     let second = project.run(&["round", "--spec", SPEC]);
     assert!(
@@ -893,6 +945,7 @@ fn open_pull_requests_with_a_submodule(project: &Project) -> Value {
     let asked = project.run(&["close", "--spec", SPEC]);
     assert_eq!(asked["review"]["final"], json!(true), "{asked}");
     let verdict = json!({"final": true, "result": "approved", "text": "Mudaram.", "agreed": agreed_all_met(project)});
+    project.read_review();
     project.run(&["write", "verdict", "--spec", SPEC, "--json", &verdict.to_string()]);
     let closed = project.run(&["close", "--spec", SPEC]);
     assert!(!copy.exists(), "closing removes the copy of the work: {closed}");
@@ -1205,6 +1258,7 @@ fn deliver_the_first_wave(project: &Project) {
     std::fs::write(copy.join("src/main.rs"), "fn main() {\n    println!(\"olá\");\n}\n").expect("the change");
     let delivered = json!({"wave": 1, "text": "A saudação virou olá.", "files": ["src/main.rs"],
         "commit": "a saudação vira olá", "agreed": agreed_all_met(project)});
+    project.read_request(1);
     project.run(&["write", "delivered", "--spec", SPEC, "--json", &delivered.to_string()]);
 }
 

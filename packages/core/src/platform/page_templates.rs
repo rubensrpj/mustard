@@ -115,7 +115,7 @@ pub const PROJECT_CAPABILITIES: &str = r#"{"db":{"rules":[{"path":"","read":"vie
 /// desenho da página já publicada mudou; a página só é publicada de novo
 /// quando ele pede. A trava dos testes falha quando o molde muda sem ela
 /// subir.
-pub const SPEC_LAYOUT_VERSION: u32 = 11;
+pub const SPEC_LAYOUT_VERSION: u32 = 12;
 
 /// A versão do layout da página do projeto, com a mesma regra de
 /// [`SPEC_LAYOUT_VERSION`].
@@ -377,8 +377,8 @@ mod tests {
     /// sobe a versão do layout dele e grava aqui a impressão nova que a falha
     /// mostra.
     const LAYOUT_TABLE: &[(&str, Locale, u32, &str)] = &[
-        ("spec", Locale::PtBr, 11, "4e624903772da6d0"),
-        ("spec", Locale::EnUs, 11, "6db1ae48cd73e570"),
+        ("spec", Locale::PtBr, 12, "86263463d71e5efb"),
+        ("spec", Locale::EnUs, 12, "99d57959e0010c0b"),
         ("project", Locale::PtBr, 3, "e0c425df74e09675"),
         ("project", Locale::EnUs, 3, "79b45f84601d5349"),
     ];
@@ -1282,6 +1282,87 @@ mod tests {
             "- **MSTD-TASK-0001** Página mostra o título: `packages/core/templates/pages/spec.html`",
             "  - **MSTD-RULE-0001** — A linha de item",
             "    **Para o agente**",
+        ] {
+            assert!(md.lines().any(|l| l == line), "{line:?} not in the .md:\n{md}");
+        }
+    }
+
+    /// O pedido de hoje traz cada item numa linha só — o tipo por extenso, o
+    /// código e o título —, num passo numerado ou numa linha de lista, e nada
+    /// do texto dele. A página põe embaixo de cada linha o texto inteiro do
+    /// item, recuado sob ela: a tarefa com o porquê e a parte do agente, a
+    /// regra do mesmo jeito, e a mensagem do usuário com o texto todo, do qual
+    /// a linha só mostra o começo. A lição, que não mora na spec, fica como o
+    /// pedido a traz, e a linha aparece uma vez só.
+    #[test]
+    fn a_wave_request_of_one_line_per_item_shows_each_item_whole_under_its_line() {
+        let said = "Pode liberar mais espaço, é voce que está lotando o disco e mais coisas aqui agora";
+        let request = format!(
+            "# demo — onda 5\n\n## O que esta onda entrega\n\nA página mostra o título.\n\n\
+            ## Como ler cada item\n\nLeia o texto inteiro de cada item.\n\n\
+            ## O que fazer\n\n\
+            1. Leia o texto inteiro de cada item de \"O que obedecer\".\n\
+            2. Faça a tarefa MSTD-TASK-0001 — Página mostra o título\n\
+            \x20  - Atende: mensagem do usuário MSTD-MSG-0001 — \"Pode liberar mais espaço, é voce que está lotando o disco e…\"\n\
+            \x20  - Leia a tarefa e a mensagem inteiras antes de mexer.\n\
+            \x20  - Arquivo: `packages/core/templates/pages/spec.html`\n\
+            3. Grave a entrega, como diz \"O que devolver\".\n\n\
+            ## O que obedecer\n\n\
+            - Regra MSTD-RULE-0001 — A linha de item\n\
+            - Lição 7 — Nunca apague o cache\n"
+        );
+        let lines = vec![
+            json!({"v":1,"id":1,"code":"MSTD-MSG-0001","at":"2026-09-25T09:00:00-03:00","type":"message","author":"user","text":said}),
+            json!({"v":1,"id":2,"code":"MSTD-RULE-0001","at":"2026-09-25T09:01:00-03:00","type":"rule","author":"assistant",
+                "title":"A linha de item","text":"O pedido e a página leem a mesma linha.","agent":"- o formato mora em `wave_prompt.rs`",
+                "keys":["linha"],"origin":1}),
+            json!({"v":1,"id":3,"code":"MSTD-WAVE-0001","at":"2026-09-25T09:02:00-03:00","type":"wave","author":"binary","n":5,
+                "text":"A onda cinco.","criteria":[],"done_when":"A suíte passa.","origin":1}),
+            json!({"v":1,"id":4,"code":"MSTD-TASK-0001","at":"2026-09-25T09:03:00-03:00","type":"task","author":"assistant","wave":5,
+                "title":"Página mostra o título","text":"Hoje o cartão fecha. Depois ele abre.","agent":"- `item()` separa as partes",
+                "files":[{"path":"packages/core/templates/pages/spec.html"}],"depends_on":[],"origin":1}),
+            json!({"v":1,"id":5,"at":"2026-09-25T09:04:00-03:00","type":"send","author":"binary","wave":5,"role":"wave","agent":"wave",
+                "text":request,"lines":20,"chars":600,"items":[1,2,4],"mustard":"0.2.4"}),
+        ];
+        let mut db = spec_database(&lines);
+        db["computed"][0]["data"]["waves"] = json!({"5": "approved"});
+        let steps = json!([{"do": "wait"}, {"do": "hash", "value": "waves-5"}, {"do": "scrape", "as": "sent"}, {"do": "download", "as": "md"}]);
+        let got = run("spec", &spec_page_template(Locale::PtBr), Some(db), steps);
+
+        let text = prompt_of(&got["sent"])["text"].as_str().unwrap_or_default().to_string();
+        assert_in_order(
+            &text,
+            &[
+                "Faça a tarefa MSTD-TASK-0001 — Página mostra o título",
+                "Hoje o cartão fecha. Depois ele abre.",
+                "item() separa as partes",
+                "Atende: mensagem do usuário MSTD-MSG-0001 — \"Pode liberar mais espaço, é voce que está lotando o disco e…\"",
+                said,
+                "Leia a tarefa e a mensagem inteiras antes de mexer.",
+                "Regra MSTD-RULE-0001 — A linha de item",
+                "O pedido e a página leem a mesma linha.",
+                "Para o agente",
+                "o formato mora em wave_prompt.rs",
+                "Lição 7 — Nunca apague o cache",
+            ],
+        );
+        for once in ["Hoje o cartão fecha. Depois ele abre.", said, "O pedido e a página leem a mesma linha.", "Lição 7 — Nunca apague o cache"] {
+            assert_eq!(text.matches(once).count(), 1, "{once:?} should show once in:\n{text}");
+        }
+        let html = prompt_of(&got["sent"])["html"].as_str().unwrap_or_default().to_string();
+        for piece in [
+            "<strong><a href=\"#MSTD-TASK-0001\">MSTD-TASK-0001</a></strong> — Página mostra o título",
+            "<p>Hoje o cartão fecha. Depois ele abre.</p>",
+        ] {
+            assert!(html.contains(piece), "{piece:?} is not in the request:\n{html}");
+        }
+
+        let md = got["md"]["data"].as_str().unwrap_or_default();
+        for line in [
+            "2. Faça a tarefa **MSTD-TASK-0001** — Página mostra o título",
+            "   - Atende: mensagem do usuário **MSTD-MSG-0001** — \"Pode liberar mais espaço, é voce que está lotando o disco e…\"",
+            "- Regra **MSTD-RULE-0001** — A linha de item",
+            "- Lição 7 — Nunca apague o cache",
         ] {
             assert!(md.lines().any(|l| l == line), "{line:?} not in the .md:\n{md}");
         }

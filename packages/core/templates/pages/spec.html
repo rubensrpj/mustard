@@ -753,11 +753,23 @@ details.agent>.md p:last-child{margin-bottom:0}
       if (it.agent) out = out.concat(['', '**' + t('page.item.agent') + '**', ''], it.agent.split('\n'));
       return out;
     }
+    // O que a página põe embaixo da linha de um item do pedido: o item de três
+    // partes, o porquê e a parte do agente; o item antigo e a mensagem, o
+    // texto inteiro, a não ser que a linha já o traga todo.
+    function itemBody(e, shown) {
+      var it = item(e, true), lines = it.titleFirst ? itemLines(e).slice(1) : (it.text || it.title).split('\n');
+      while (lines.length && !lines[0].trim()) lines.shift();
+      if (!it.titleFirst && lines.join('\n').trim() === shown.trim()) return [];
+      return lines;
+    }
     function indented(lines, pad) { return lines.map(function (l) { return l.trim() ? pad + l : ''; }); }
-    // O pedido lê a linha de cada item em dois formatos. O de hoje traz um
-    // item por linha, com o bloco, o código e o título; a tarefa traz o
-    // código, o título e os arquivos, com a parte do agente embaixo. O
-    // antigo traz os códigos de um bloco inteiro numa linha só.
+    // O pedido lê a linha de cada item em três formatos. O de hoje traz cada
+    // item numa linha só, com o tipo por extenso, o código e o título, num
+    // passo numerado ou numa linha de lista. O anterior traz o bloco, o
+    // código e o título, com a parte do agente embaixo, e a tarefa traz o
+    // código, o título e os arquivos. O mais antigo traz os códigos de um
+    // bloco inteiro numa linha só.
+    var LISTED_LINE = /^(\s*(?:\d+\.|-)\s+(?:[^`\n]*?\s)?)(MSTD-[A-Z]+-\d{4,})(?: — (.*))?$/;
     var ITEM_LINE = /^- `([a-z_-]+)` (MSTD-[A-Z]+-\d{4,}): (.*)$/;
     var TASK_LINE = /^- `(MSTD-[A-Z]+-\d{4,})` (.+)$/;
     var CODES_LINE = /^- `([a-z_-]+)`: (.+)$/;
@@ -766,6 +778,16 @@ details.agent>.md p:last-child{margin-bottom:0}
       var out = [], rows = prompt.split('\n');
       rows.forEach(function (raw, at) {
         var line = raw.replace(/\r$/, ''), m, e;
+        // O pedido de hoje traz só a linha do item: a página põe o texto
+        // inteiro dele embaixo, recuado sob a linha, com a parte do agente
+        // por último.
+        if ((m = LISTED_LINE.exec(line)) && (e = byCode.get(m[2]))) {
+          var pad = ' '.repeat(/^\s*(?:\d+\.|-)\s+/.exec(line)[0].length);
+          out.push(m[1] + '**' + m[2] + '**' + (m[3] ? ' — ' + m[3] : ''));
+          var body = itemBody(e, m[3] || '');
+          if (body.length) out = out.concat([''], indented(body, pad), ['']);
+          return;
+        }
         // O pedido de hoje já traz, recuada sob a linha do item, a parte do
         // agente, ou o texto inteiro do item antigo: a página põe só a linha
         // e, no item com parte do agente, o porquê dele, que o pedido não

@@ -470,15 +470,15 @@ fn resend_text(previous: &str, running: &[(u64, Vec<String>)], steps: &[String],
     parts.join("\n\n")
 }
 
-/// A parte das ondas em andamento do pedido anterior (`## Execução`), trocada
+/// A parte das ondas em andamento do pedido anterior (`## Como trabalhar`), trocada
 /// pela de agora: a marca é a linha do rótulo
 /// (`prompt.execution.running`) e as linhas indentadas logo depois dela, uma
 /// por onda, no mesmo formato que o primeiro envio escreve. Sem onda em
 /// andamento nenhuma agora, a linha do rótulo e as dela somem; sem elas no
 /// texto anterior e com onda em andamento agora, elas nascem no fim da
-/// seção. Sem a seção `## Execução` no texto anterior, nada muda.
+/// seção. Sem a seção `## Como trabalhar` no texto anterior, nada muda.
 fn refresh_running(previous: &str, running: &[(u64, Vec<String>)], lang: Locale) -> String {
-    let header = format!("## {}", translate("prompt.part.execution", lang));
+    let header = format!("## {}", translate("prompt.part.work", lang));
     let label = format!("- {}", translate("prompt.execution.running", lang));
     let lines: Vec<&str> = previous.lines().collect();
     let Some(head) = lines.iter().position(|line| *line == header) else { return previous.to_string() };
@@ -809,6 +809,9 @@ pub(super) fn run_entered_round(
         // Os itens que ficaram, e à parte a escolha do orquestrador: o que
         // saiu e o que entrou, cada um com o motivo.
         draft.insert("items".into(), json!(sent_items(&log, *wave, flight.choices.get(wave), &languages)));
+        // O que o pedido manda ler, item a item: a mesma lista que imprimiu
+        // as linhas dele, e contra ela a entrega confere o que foi lido.
+        draft.insert("read_items".into(), json!(prompt.listed));
         if let Some(choice) = flight.choices.get(wave) {
             draft.insert("analysis".into(), choice.to_value());
         }
@@ -871,6 +874,11 @@ pub(super) fn run_entered_round(
             draft.insert("effort".into(), json!(effort));
         }
         draft.insert("items".into(), prior.fields.get("items").cloned().unwrap_or_else(|| json!([])));
+        // O pedido do reenvio é o do envio anterior: a lista de leitura dele
+        // também, e o envio anterior sem ela segue sem.
+        if let Some(read_items) = prior.fields.get("read_items") {
+            draft.insert("read_items".into(), read_items.clone());
+        }
         draft.insert("mustard".into(), json!(env!("CARGO_PKG_VERSION")));
         draft.insert("copy".into(), json!(copy.path));
         draft.insert("resends".into(), json!(previous));
@@ -1413,15 +1421,15 @@ mod tests {
         let main = mustard_core::io::wave_prompt::shown(root);
         assert_eq!(dispatched[0]["read"], json!(format!("mustard-rt run read request-1 --root {main} --spec x")), "{out}");
         let prompt = request_at(&out, 0);
-        // A tarefa ganha linha própria, pelo código, e a leitura aparece uma
-        // vez só, na linha de como ler — o comando do pedido inteiro e o de
-        // um item pelo código —, com o caminho do repositório principal: a
-        // onda trabalha na cópia que a rodada criou.
-        assert!(prompt.lines().any(|l| l.starts_with("- `MSTD-TASK-0001`") && l.contains("src/a.rs")), "{prompt}");
+        // A tarefa ganha um passo próprio, pelo código, com o arquivo embaixo,
+        // e a leitura aparece uma vez só, na seção de como ler — o comando de
+        // um item pelo código e o de uma lição —, com o caminho do repositório
+        // principal: a onda trabalha na cópia que a rodada criou.
+        assert!(prompt.lines().any(|l| l.starts_with("1. Faça a tarefa MSTD-TASK-0001")), "{prompt}");
+        assert!(prompt.lines().any(|l| l == "   - Arquivo: `src/a.rs`"), "{prompt}");
         let example = translate("prompt.read.wave", Locale::PtBr)
             .replace("{root}", &format!("--root {} ", mustard_core::io::wave_prompt::shown(root)))
-            .replace("{spec}", "x")
-            .replace("{n}", "1");
+            .replace("{spec}", "x");
         assert!(prompt.contains(&example), "{prompt}");
         assert_eq!(prompt.matches("mustard-rt run read").count(), 2, "{prompt}");
 
@@ -1697,7 +1705,7 @@ mod tests {
 
         let read = |block: &str| -> Value {
             let opts = ReadOpts { root: root.to_path_buf(), spec: Some("x".into()), block: block.into(), term: None };
-            serde_json::from_str(&read_for(&opts, None).expect("the block reads")).expect("the output is JSON")
+            serde_json::from_str(&read_for(&opts, None, root).expect("the block reads")).expect("the output is JSON")
         };
         let send_of = |shown: &Value| -> Value {
             shown["events"].as_array().unwrap().iter().find(|e| e["type"] == json!("send")).cloned().expect("send")
@@ -1890,12 +1898,17 @@ mod tests {
         assert_eq!(previous.str_field("effort"), Some("xhigh"), "{previous:?}");
         assert_eq!(resent_send.str_field("model"), previous.str_field("model"), "{resent_send:?}");
         assert_eq!(resent_send.str_field("effort"), Some("xhigh"), "{resent_send:?}");
+        // E a lista de leitura dele, que é a do pedido que volta palavra por palavra.
+        let listed = previous.fields.get("read_items").and_then(Value::as_array).cloned().unwrap_or_default();
+        assert!(listed.iter().any(|item| item == "MSTD-TASK-0001"), "{previous:?}");
+        assert_eq!(resent_send.fields.get("read_items"), previous.fields.get("read_items"), "{resent_send:?}");
         // O envio antigo da onda 2, com a pasta de compilação, é lido e
         // reenviado na mesma cópia; o envio novo não grava a pasta.
         let resent2 = log.visible().into_iter().rfind(|e| e.event_type == "send" && e.wave() == Some(2)).unwrap();
         assert!(resent2.int("resends").is_some(), "{out}");
         assert_eq!(resent2.fields.get("copy"), Some(&copy2), "{out}");
         assert!(resent2.fields.get("build_dir").is_none(), "{out}");
+        assert!(resent2.fields.get("read_items").is_none(), "o envio sem lista segue sem ela: {out}");
 
         // Só a onda 4 (40 minutos) sai como aviso.
         let warnings = out["warnings"].as_array().cloned().unwrap_or_default();
@@ -1948,8 +1961,8 @@ mod tests {
         assert!(resent.contains("Onda 3") && resent.contains("Onda 4"), "a 3 segue e a 4 entrou: {resent}");
         assert!(!resent.contains("Onda 2"), "a 2 já entregou: a lista velha não segue no reenvio: {resent}");
 
-        // O resto do pedido, antes da seção de execução, não mudou.
-        let header = format!("## {}", translate("prompt.part.execution", Locale::PtBr));
+        // O resto do pedido, antes de "Como trabalhar", não mudou.
+        let header = format!("## {}", translate("prompt.part.work", Locale::PtBr));
         let before = |text: &str| text.split(&header).next().unwrap_or_default().to_string();
         assert_eq!(before(&resent), before(&first_prompt), "{resent}");
     }
@@ -2109,9 +2122,10 @@ mod tests {
         // pegaria a recusa de build em vez do fluxo que ele testa.
         std::fs::write(root.join("Makefile"), "default:\n\t@true\n").unwrap();
         let first = request_of(&round(root, "x", None), 1);
-        for line in ["- Compile com `make`.", "- Teste com `make test`.", "  - Onda 2: `src/b.rs`"] {
+        for line in ["- Compile com `make`.", "  - Onda 2: `src/b.rs`"] {
             assert!(first.contains(line), "{line}: {first}");
         }
+        assert!(first.lines().any(|l| l == "2. Rode a suíte do projeto com `make test`."), "{first}");
         assert!(!first.contains(translate("prompt.fix.wave", Locale::PtBr)), "{first}");
 
         round(root, "x", Some(&delivered(root, 1, "A soma saiu.", &["src/a.rs"])));
@@ -2127,15 +2141,22 @@ mod tests {
         assert_eq!(rejected_with_agreed["ok"], json!(true), "{rejected_with_agreed}");
         let fix = request_of(&round(root, "x", None), 1);
         let heading =
-            format!("## {}\n\n{}", translate("prompt.part.items", Locale::PtBr), translate("prompt.fix.wave", Locale::PtBr));
+            format!("## {}\n\n{}", translate("prompt.part.do", Locale::PtBr), translate("prompt.fix.wave", Locale::PtBr));
         assert!(fix.contains(&heading), "{fix}");
         let fix_lines = |text: &str| -> Vec<String> {
-            let part = text.split("\n## ").nth(1).unwrap_or_default();
+            let part = text.split("\n## ").find(|part| part.starts_with(translate("prompt.part.do", Locale::PtBr))).unwrap_or_default();
             part.lines().filter(|l| l.starts_with("- ")).map(str::to_string).collect()
         };
         let lines = fix_lines(&fix);
-        assert_eq!(lines[..2], ["- `review` MSTD-VERD-0001: faltou o teste", "- `waves` MSTD-DELIV-0001: A soma saiu."], "{fix}");
-        assert_eq!(lines[2], "- `agreed` MSTD-DEC-0001: A soma aceita negativos", "{fix}");
+        assert_eq!(
+            lines,
+            [
+                "- Veredito MSTD-VERD-0001 — faltou o teste",
+                "- Entrega MSTD-DELIV-0001 — A soma saiu.",
+                "- Decisão MSTD-DEC-0001 — A soma aceita negativos",
+            ],
+            "{fix}"
+        );
 
         let back = round(root, "x", Some(&delivered(root, 1, "Teste acrescentado.", &["src/a.rs"])));
         assert!(back.get("reviews").is_none(), "a rodada não pede revisão do conserto: {back}");

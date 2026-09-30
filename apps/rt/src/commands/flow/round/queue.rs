@@ -1507,7 +1507,7 @@ mod tests {
         let again = round(root, "x", None);
         assert_eq!(waves_in(&again, "dispatch"), vec![1], "the replanned fix goes out again: {again}");
         let prompt = &request_at(&again, 0);
-        assert!(prompt.lines().any(|l| l.starts_with(&format!("- `{task_code}`"))), "{prompt}");
+        assert!(prompt.lines().any(|l| l.contains(&format!("Faça a tarefa {task_code} — "))), "{prompt}");
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let codes = log.codes();
         let newest = log.visible().into_iter().rfind(|e| e.event_type == "send").map(|e| codes[&e.id].clone()).unwrap();
@@ -2238,12 +2238,14 @@ mod tests {
     }
 
     /// As linhas dos itens combinados que a escolha da onda 1 deixa no
-    /// pedido, cada uma com o bloco, o código e o título, e embaixo dela,
-    /// recuada, a parte do agente do item.
-    const CHOSEN_ITEMS: &str = "- `agreed` MSTD-RULE-0001: Vale sempre: a tabela nova tem chave.\n  - conferir pelo teste\n\
-        - `agreed` MSTD-RULE-0003: Vale sempre: a tabela nova tem índice.\n  - conferir pelo teste\n\
-        - `agreed` MSTD-DEC-0001: Sem dono: a tabela nasce vazia.\n  - conferir pelo teste\n\
-        - `agreed` MSTD-DEC-0003: Da onda um: a coluna é texto.\n  - conferir pelo teste\n";
+    /// pedido: o que a tarefa atende sai sob ela, e o resto sai em "O que
+    /// obedecer", cada um em uma linha só, com o tipo, o código e o título.
+    const CHOSEN_ITEMS: &str = "- Regra MSTD-RULE-0001 — Vale sempre: a tabela nova tem chave.\n\
+        - Decisão MSTD-DEC-0001 — Sem dono: a tabela nasce vazia.\n\
+        - Decisão MSTD-DEC-0003 — Da onda um: a coluna é texto.\n";
+
+    /// A linha da tarefa da onda 1 que atende uma das regras do projeto todo.
+    const ATTENDED_ITEM: &str = "   - Atende: regra MSTD-RULE-0003 — Vale sempre: a tabela nova tem índice.";
 
     /// A spec aprovada da análise antes do envio: uma onda, com a tarefa que
     /// faz uma das regras do projeto todo, duas regras do projeto todo que
@@ -2360,15 +2362,16 @@ mod tests {
             "tasks": []});
         assert_eq!(sent[0].fields.get("analysis"), Some(&recorded), "the send records the choice: {out}");
         let prompt = &request_at(&out, 0);
-        // Lições vão só pelo número, sem o texto delas no pedido.
-        assert!(prompt.lines().any(|l| l == format!("- `lessons`: {kept}")), "{prompt}");
+        // A lição vai em uma linha, pelo número e pelo título, sem o texto dela.
+        assert!(prompt.lines().any(|l| l == format!("- Lição {kept} — A tabela nova precisa de migração.")), "{prompt}");
         for out_of_it in [dropped, far] {
-            assert!(!prompt.contains(&format!("- `lessons`: {out_of_it}")), "{out_of_it}: {prompt}");
+            assert!(!prompt.contains(&format!("Lição {out_of_it} ")), "{out_of_it}: {prompt}");
         }
-        for out_of_it in ["A tabela nova precisa de migração.", "O índice novo deixa a busca lenta.", "O terminal do Windows troca a barra."] {
+        for out_of_it in ["O índice novo deixa a busca lenta.", "O terminal do Windows troca a barra."] {
             assert!(!prompt.contains(out_of_it), "{out_of_it}: {prompt}");
         }
         assert!(prompt.contains(CHOSEN_ITEMS), "{prompt}");
+        assert!(prompt.lines().any(|l| l == ATTENDED_ITEM), "{prompt}");
     }
 
     /// A rodada que vai soltar uma onda com itens do projeto todo e itens sem
@@ -2420,6 +2423,7 @@ mod tests {
         assert!(out.get("analysis").is_none(), "{out}");
         let prompt = request_at(&out, 0);
         assert!(prompt.contains(CHOSEN_ITEMS), "{prompt}");
+        assert!(prompt.lines().any(|l| l == ATTENDED_ITEM), "{prompt}");
         let ignored: Vec<&str> = out["warnings"]
             .as_array()
             .map(Vec::as_slice)
@@ -2571,7 +2575,7 @@ mod tests {
         // sido posta em `added`.
         assert_eq!(analysis_field["judged_lessons"], json!([kept]), "{analysis_field}");
         let prompt = &request_at(&out, 0);
-        assert!(prompt.lines().any(|l| l == format!("- `lessons`: {kept}")), "{prompt}");
+        assert!(prompt.lines().any(|l| l == format!("- Lição {kept} — A tabela nova precisa de migração.")), "{prompt}");
     }
 
     /// Duas rodadas ao mesmo tempo, com a mesma linha da análise, leem a spec
@@ -3880,7 +3884,7 @@ mod tests {
         std::fs::write(root.join("src/a.rs"), "fn um() {}\n// A soma arredonda.\n").unwrap();
         let change = "B precisa de uma decisão sobre a lista vazia antes.";
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-        let agreed: Vec<Value> = super::super::report::request_agreed(&log, 1, &Languages::of_project(root))
+        let agreed: Vec<Value> = super::super::agreed::request_agreed(&log, 1, &Languages::of_project(root))
             .iter()
             .map(|item| {
                 let code = log.codes()[&item.id].clone();

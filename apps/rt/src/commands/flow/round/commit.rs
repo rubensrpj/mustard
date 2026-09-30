@@ -54,11 +54,18 @@ pub(crate) fn waves_checked_only(log: &SpecLog) -> BTreeSet<u64> {
         .collect()
 }
 
+/// Quantos caracteres do resumo da primeira onda o título guarda, no mínimo,
+/// quando o escopo com todas as ondas não deixa espaço para ele.
+const SUMMARY_ROOM_MIN: usize = 20;
+
 /// A mensagem do commit da rodada, montada do resumo que cada entrega traz e
 /// já conferida: o título no molde do repositório (`tipo(escopo): frase`),
-/// com o resumo da primeira onda, e o corpo com uma linha por onda. O tipo é
-/// `fix` quando a rodada traz um conserto, e `feat` nos outros casos. `None`
-/// quando nenhuma entrega traz arquivo.
+/// com o resumo da primeira onda, e o corpo com uma linha por onda. O escopo
+/// do título cita todas as ondas que o commit leva; quando o resumo da
+/// primeira não cabe ao lado delas, é o resumo que encolhe. Só quando o
+/// escopo sozinho não deixa espaço para o começo do resumo é ele que encolhe:
+/// cita as primeiras ondas que deixam espaço e conta as outras (`ondas-1-2+9`). O tipo é `fix` quando a rodada traz um conserto, e `feat` nos outros casos.
+/// `None` quando nenhuma entrega traz arquivo.
 pub(super) fn commit_message(waves: &[WaveReport], lang: Locale) -> Result<Option<(String, String)>, RoundRefusal> {
     let committed: Vec<(&WaveReport, &str)> = waves
         .iter()
@@ -69,17 +76,34 @@ pub(super) fn commit_message(waves: &[WaveReport], lang: Locale) -> Result<Optio
         return Ok(None);
     };
     let numbers: Vec<String> = committed.iter().map(|(w, _)| w.wave.to_string()).collect();
-    let scope_key = if numbers.len() == 1 { "round.commit.scope.one" } else { "round.commit.scope.many" };
-    let scope = translate(scope_key, lang).replace("{waves}", &numbers.join("-"));
     let kind = if committed.iter().any(|(w, _)| !w.fixes.is_empty()) { "fix" } else { "feat" };
-    let mut title = format!("{kind}({scope}): {first}");
-    // O escopo com todas as ondas pode passar do teto do título quando há
-    // mais de uma; nesse caso, o título fica só com o começo da primeira
-    // onda, e o corpo — com uma linha por onda — segue como está.
-    if title.chars().count() > MESSAGE_TITLE_MAX && numbers.len() > 1 {
-        let scope = translate("round.commit.scope.one", lang).replace("{waves}", &numbers[0]);
-        title = format!("{kind}({scope}): {first}");
-    }
+    let prefix = |kept: usize| {
+        let key = if numbers.len() == 1 { "round.commit.scope.one" } else { "round.commit.scope.many" };
+        let mut waves = numbers[..kept].join("-");
+        if kept < numbers.len() {
+            waves.push_str(&format!("+{}", numbers.len() - kept));
+        }
+        format!("{kind}({}): ", translate(key, lang).replace("{waves}", &waves))
+    };
+    // O escopo com todas as ondas pode passar o teto do título quando há mais
+    // de uma. Perder uma onda do escopo esconde do histórico do git o que o
+    // commit leva, então o escopo fica inteiro e o resumo da primeira onda é
+    // cortado até caber; o corpo traz o resumo de cada onda por inteiro. Só
+    // quando nem o começo do resumo cabe ao lado do escopo inteiro é o escopo
+    // que encolhe: cita as primeiras ondas que deixam espaço e conta as outras (`ondas-1-2+9`),
+    // de modo que o título nunca sai vazio nem recusado.
+    let lead = prefix(numbers.len());
+    let title = if numbers.len() > 1 && lead.chars().count() + first.chars().count() > MESSAGE_TITLE_MAX {
+        let wanted = first.chars().count().min(SUMMARY_ROOM_MIN);
+        let kept = (1..=numbers.len()).rev().find(|kept| prefix(*kept).chars().count() + wanted <= MESSAGE_TITLE_MAX);
+        let lead = prefix(kept.unwrap_or(1));
+        let room = MESSAGE_TITLE_MAX.saturating_sub(lead.chars().count());
+        let summary = shorten_to(first, room);
+        let summary = if summary.is_empty() { first.chars().take(room).collect() } else { summary };
+        format!("{lead}{summary}")
+    } else {
+        format!("{lead}{first}")
+    };
     let body: Vec<String> = committed
         .iter()
         .map(|(w, summary)| {
@@ -97,6 +121,19 @@ pub(super) fn commit_message(waves: &[WaveReport], lang: Locale) -> Result<Optio
     let body = body.join("\n");
     check_commit_text(&title, &body)?;
     Ok(Some((title, body)))
+}
+
+/// O começo de `text` que cabe em `room` caracteres, cortado numa palavra
+/// inteira quando há palavra para cortar, sem sobra de espaço nem de
+/// pontuação no fim. O texto que já cabe volta como está.
+fn shorten_to(text: &str, room: usize) -> String {
+    if text.chars().count() <= room {
+        return text.to_string();
+    }
+    let kept: String = text.chars().take(room).collect();
+    let whole_word = text.chars().nth(room).is_some_and(char::is_whitespace);
+    let cut = if whole_word { kept.as_str() } else { kept.rsplit_once(char::is_whitespace).map_or(kept.as_str(), |(head, _)| head) };
+    cut.trim_end_matches(|c: char| c.is_whitespace() || matches!(c, ',' | ';' | ':' | '-' | '.')).to_string()
 }
 
 /// A mensagem de commit cabe no modelo, pela MESMA conferência que o pull
@@ -1282,11 +1319,12 @@ mod tests {
         }
     }
 
-    /// Duas ondas no mesmo commit dão um título dentro do teto, mesmo quando
-    /// o escopo das duas juntas passaria de 60: na divisa, um resumo de 43
-    /// caracteres ainda cabe com o escopo das duas ondas, e um de 44 só cabe
-    /// porque o título cai para o começo da primeira onda só; o corpo
-    /// continua com uma linha por onda nos dois casos.
+    /// Duas ondas no mesmo commit dão um título dentro do teto e com as duas
+    /// ondas no escopo, mesmo quando o resumo da primeira passaria de 60 ao
+    /// lado delas: na divisa, um resumo de 43 caracteres cabe por inteiro, e
+    /// um de 44 é cortado até caber, sem perder a segunda onda do escopo; o
+    /// corpo continua com uma linha por onda, com o resumo inteiro, nos dois
+    /// casos.
     #[test]
     fn a_commit_of_two_waves_keeps_the_title_limit() {
         let report = |wave: u64, summary: String| WaveReport {
@@ -1314,13 +1352,111 @@ mod tests {
 
         let waves = [report(1, "a".repeat(44)), report(2, "a".repeat(44))];
         let (title, body) = commit_message(&waves, Locale::PtBr)
-            .unwrap_or_else(|_| {
-                panic!("a 44-character summary only overflows the joint scope, not the single-wave one")
-            })
+            .unwrap_or_else(|_| panic!("a 44-character summary is cut to fit beside the scope of two waves"))
+            .expect("a message");
+        assert_eq!(title, format!("feat(ondas-1-2): {}", "a".repeat(43)), "{title}");
+        assert_eq!(body.lines().count(), 2, "{body}");
+        assert!(body.lines().all(|line| line.ends_with(&"a".repeat(44))), "o corpo traz o resumo inteiro: {body}");
+    }
+
+    /// O caso que gerou o defeito: as ondas 263 e 269 voltam na mesma rodada
+    /// e o resumo da primeira, com o escopo das duas, passa de 60. O título
+    /// cita as duas ondas e corta o resumo numa palavra inteira; antes ele
+    /// caía para a 263 só e o histórico do git escondia a 269.
+    #[test]
+    fn a_long_summary_never_drops_a_wave_from_the_scope() {
+        let report = |wave: u64, summary: &str| WaveReport {
+            wave,
+            delivered: "A onda saiu.".into(),
+            files: vec![format!("src/{wave}.rs")],
+            commit: Some(summary.into()),
+            proofs: Vec::new(),
+            fixes: Vec::new(),
+            replan: None,
+            undone: Vec::new(),
+            leftovers: Vec::new(),
+            agreed: Vec::new(),
+            returns: Vec::new(),
+            usage: Default::default(),
+        };
+        let waves = [
+            report(263, "Pilha lida só nos arquivos da linguagem dela"),
+            report(269, "Autor da rodada e envio da branch"),
+        ];
+        let (title, body) = commit_message(&waves, Locale::PtBr).unwrap_or_else(|_| panic!("fits")).expect("a message");
+        assert_eq!(title, "feat(ondas-263-269): Pilha lida só nos arquivos da linguagem", "{title}");
+        assert!(title.chars().count() <= MESSAGE_TITLE_MAX, "{title}");
+        assert_eq!(
+            body,
+            "- onda 263: Pilha lida só nos arquivos da linguagem dela\n- onda 269: Autor da rodada e envio da branch"
+        );
+    }
+
+    /// Com tantas ondas no mesmo commit que o escopo sozinho passa do teto do
+    /// título, o título não sai vazio nem é recusado: o escopo cita as
+    /// primeiras ondas que deixam espaço e conta as outras, e o começo do
+    /// resumo cabe ao lado.
+    #[test]
+    fn a_scope_too_long_for_the_title_is_shortened_and_the_title_never_comes_out_empty() {
+        let report = |wave: u64| WaveReport {
+            wave,
+            delivered: "A onda saiu.".into(),
+            files: vec![format!("src/{wave}.rs")],
+            commit: Some("Leitura por código conferida na entrega".into()),
+            proofs: Vec::new(),
+            fixes: Vec::new(),
+            replan: None,
+            undone: Vec::new(),
+            leftovers: Vec::new(),
+            agreed: Vec::new(),
+            returns: Vec::new(),
+            usage: Default::default(),
+        };
+        let waves: Vec<WaveReport> = (263..275).map(report).collect();
+        let (title, body) = commit_message(&waves, Locale::PtBr)
+            .unwrap_or_else(|_| panic!("twelve waves in one commit must not refuse the round"))
             .expect("a message");
         assert!(title.chars().count() <= MESSAGE_TITLE_MAX, "{title}");
-        assert!(title.starts_with("feat(onda-1): "), "{title}");
-        assert_eq!(body.lines().count(), 2, "{body}");
+        assert_eq!(title, "feat(ondas-263-264-265-266-267-268+6): Leitura por código", "{title}");
+        assert_eq!(body.lines().count(), 12, "o corpo traz uma linha por onda: {body}");
+        assert!(body.contains("onda 274:") && body.contains("onda 263:"), "{body}");
+
+        let (title, _) = commit_message(&waves, Locale::EnUs).unwrap_or_else(|_| panic!("fits")).expect("a message");
+        assert!(title.starts_with("feat(waves-263-") && title.contains('+'), "{title}");
+        assert!(title.chars().count() <= MESSAGE_TITLE_MAX && !title.ends_with(": "), "{title}");
+    }
+
+    /// Duas entregas tomadas na mesma rodada, cada uma com o seu arquivo,
+    /// viram um commit só, e o título e o registro dele na spec citam as
+    /// duas ondas, mesmo com o resumo da primeira grande para o título.
+    #[test]
+    fn two_deliveries_taken_in_one_round_give_one_commit_that_names_both_waves() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[])]);
+        round(root, "x", None);
+        let copy = |wave: u64| mustard_core::io::wave_prompt::slot_path(root, "x", usize::try_from(wave).unwrap() - 1);
+        std::fs::write(copy(1).join("src/a.rs"), "fn um() {}\nfn a() {}\n").unwrap();
+        std::fs::write(copy(2).join("src/b.rs"), "fn um() {}\nfn b() {}\n").unwrap();
+        let first = "Pilha lida só nos arquivos da linguagem dela";
+        let one = json!({"wave": 1, "text": "Saiu.", "files": ["src/a.rs"], "commit": first});
+        let two = json!({"wave": 2, "text": "Saiu.", "files": ["src/b.rs"], "commit": "Autor da rodada e envio"});
+        assert_eq!(returned(root, one)["ok"], json!(true));
+        assert_eq!(returned(root, two)["ok"], json!(true));
+        let out = round(root, "x", None);
+        assert_eq!(out["ok"], json!(true), "{out}");
+
+        let expected = "feat(ondas-1-2): Pilha lida só nos arquivos da linguagem";
+        assert_eq!(out["commit"]["title"], json!(expected), "{out}");
+        let path = store::spec_file(root, "x").unwrap();
+        let log = store::read(&path).unwrap().unwrap();
+        let commit = log.visible().into_iter().find(|e| e.event_type == "commit").expect("commit");
+        assert_eq!(commit.str_field("title"), Some(expected));
+        assert_eq!(commit.ints("waves"), vec![1, 2]);
+        let shown = Command::new("git").args(["show", "--name-only", "--format=%s", "HEAD"]).current_dir(root).output();
+        let shown = String::from_utf8_lossy(&shown.unwrap().stdout).to_string();
+        let shown: Vec<&str> = shown.lines().filter(|line| !line.is_empty()).collect();
+        assert_eq!(shown, [expected, "src/a.rs", "src/b.rs"], "{shown:?}");
     }
 
     /// A mensagem do commit é conferida antes de qualquer gravação: a volta
@@ -1666,6 +1802,8 @@ mod tests {
             std::fs::read_to_string(spec).unwrap_or_default().lines().any(|l| l.contains("\"returned\":true"))
         };
 
+        // O agente lê o pedido antes de gravar: com o índice preso, nem a leitura entraria.
+        crate::commands::flow::round::read_request(root, "x", 1);
         let index_lock = mustard_core::io::fs::lock::LockedFile::exclusive(&index).unwrap();
         std::thread::scope(|scope| {
             let writing = scope.spawn(|| returned(root, body));

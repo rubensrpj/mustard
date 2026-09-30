@@ -39,7 +39,8 @@
 //! - `item-<código>` traz a versão vigente do item, e `item-<número>`, aquela
 //!   versão; as duas com `changed`, o que mudou da versão anterior. O item
 //!   removido vem com `removed`, e a versão já substituída, com
-//!   `replaced_by`. Uma mensagem sai só com o número e o tipo.
+//!   `replaced_by`. A mensagem do usuário sai com o texto inteiro, como
+//!   qualquer outro item.
 //! - `delivered-<n>` traz a entrega vigente da onda: a que a rodada assumiu
 //!   ou, sem ela, a volta do agente. Do `agreed`, só o que não foi cumprido.
 //! - `backlog` traz as tarefas ainda por entregar, uma por linha, e no fim o
@@ -56,9 +57,19 @@
 //!
 //! O bloco `state` traz também o número da última mensagem do usuário, sem o
 //! texto, que é o `origin` de quem grava a partir dela.
+//!
+//! **A leitura do pedido fica registrada.** Quem lê `item-<código>`,
+//! `item-<número>`, `lessons --term <número>` ou `dispatch-<n>` de dentro da
+//! cópia de um pedido aberto (a pasta atual é a vaga gravada no envio, ou
+//! uma pasta dentro dela) deixa uma chamada `read` por item achado, com o
+//! pedido e o item (`read_record`). A leitura de outra pasta, e a que não
+//! acha nada, não grava nada. É dessas chamadas que a entrega da onda e o
+//! veredito da revisão final conferem que o agente leu tudo o que o pedido
+//! lista.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use mustard_core::domain::lessons::kept;
 use mustard_core::domain::mustard_id;
@@ -74,6 +85,7 @@ use mustard_core::platform::i18n::Locale;
 use mustard_core::ClaudePaths;
 use serde_json::{json, Map, Value};
 
+use super::read_record::{self, Request};
 use crate::shared::spec_state::{session_from_env, DiskSpecState};
 
 /// Options for `mustard-rt run read`.
@@ -87,20 +99,32 @@ pub struct ReadOpts {
 }
 
 /// O núcleo testável de [`run`]: a saída pronta, ou a recusa. A sessão vem
-/// do ambiente. Nunca entra em pânico.
+/// do ambiente, e a pasta de onde se lê, da pasta atual. Nunca entra em
+/// pânico.
 pub(crate) fn read_at(opts: &ReadOpts) -> Result<String, Value> {
-    read_for(opts, session_from_env().as_deref())
+    let from = std::env::current_dir().unwrap_or_else(|_| opts.root.clone());
+    read_for(opts, session_from_env().as_deref(), &from)
 }
 
-/// [`read_at`] com a sessão recebida, que é como um teste a escolhe.
-pub(crate) fn read_for(opts: &ReadOpts, session: Option<&str>) -> Result<String, Value> {
+/// [`read_at`] com a sessão e a pasta recebidas, que é como um teste as
+/// escolhe. A pasta `from` diz de qual pedido é a leitura: dentro da cópia de
+/// um pedido aberto, o que a leitura acha fica registrado como lido.
+pub(crate) fn read_for(opts: &ReadOpts, session: Option<&str>, from: &Path) -> Result<String, Value> {
+    let started = Instant::now();
     let project = super::project(&opts.root);
     let lang = project.lang;
     let refuse = move |refusal: Refusal| super::refused(&refusal, lang);
 
     let block = opts.block.trim();
     if block == "lessons" {
-        return read_lessons(&project.root, opts.spec.as_deref(), opts.term.as_deref(), lang);
+        let (report, found) = read_lessons(&project.root, opts.spec.as_deref(), opts.term.as_deref(), lang)?;
+        if !found.is_empty()
+            && let Some((spec, log)) = quiet_spec(opts, session, &project.root)
+        {
+            let read: Vec<String> = found.iter().map(|id| format!("lesson-{id}")).collect();
+            note_reading(&project.root, &spec, &log, session, from, None, &read, started);
+        }
+        return Ok(report);
     }
     let reading = ReadQuery::parse(block).ok_or_else(|| refuse(Refusal::UnknownBlock { found: block.to_string() }))?;
     let spec = match opts.spec.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
@@ -117,11 +141,24 @@ pub(crate) fn read_for(opts: &ReadOpts, session: Option<&str>) -> Result<String,
     let term = opts.term.as_deref().unwrap_or_default();
     // O que a leitura dá além dos eventos, depois da lista.
     let mut extra: Vec<(&str, Value)> = Vec::new();
+    // O que a leitura achou do pedido, para o registro da leitura, e a onda a
+    // que ele se restringe: o `dispatch-<n>` só conta na cópia da onda `n`.
+    let mut read: Vec<String> = Vec::new();
+    let mut only_wave: Option<u64> = None;
     let events: Vec<String> = match reading {
         ReadQuery::Request(wave) => return Ok(request_text(&log, wave)),
         ReadQuery::ReviewRequest => return Ok(review_request_text(&log)),
-        ReadQuery::Dispatch(wave) => dispatch_lines(&project.root, &log, wave, term, &codes, &project.languages),
-        ReadQuery::Item(target) => item_lines(&log, &target, &codes),
+        ReadQuery::Dispatch(wave) => {
+            let (lines, listed) = dispatch_lines(&project.root, &log, wave, term, &codes, &project.languages);
+            read = listed;
+            only_wave = Some(wave);
+            lines
+        }
+        ReadQuery::Item(target) => {
+            let found = find_item(&log, &target, &codes);
+            read.extend(found.map(|event| codes.get(&event.id).cloned().unwrap_or_else(|| event.id.to_string())));
+            found.map(|event| item_line(&log, event, &codes)).into_iter().collect()
+        }
         ReadQuery::Delivered(wave) => delivered_lines(&log, wave, &codes),
         ReadQuery::Backlog => {
             let (lines, total) = backlog_lines(&log, &codes);
@@ -142,8 +179,47 @@ pub(crate) fn read_for(opts: &ReadOpts, session: Option<&str>) -> Result<String,
             found_by(log.block(query), term, &codes, &project.languages).into_iter().map(|e| shown_with_code(e, &codes, brief)).collect()
         }
     };
+    note_reading(&project.root, &spec, &log, session, from, only_wave, &read, started);
     let warnings: Vec<String> = log.skipped.iter().map(|s| s.message(lang)).collect();
     Ok(render(&spec, block, &events, &extra, &warnings))
+}
+
+/// A spec da leitura e o arquivo dela, sem recusar: a leitura das lições não
+/// exige spec, e só o registro da leitura precisa dela. Sem spec, sem arquivo
+/// ou com o arquivo ilegível, `None`.
+fn quiet_spec(opts: &ReadOpts, session: Option<&str>, root: &Path) -> Option<(String, SpecLog)> {
+    let spec = match opts.spec.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(spec) => spec.to_string(),
+        None => DiskSpecState::new(&checkout(&opts.root)).active(session)?,
+    };
+    let log = store::read(&store::spec_file(root, &spec).ok()?).ok()??;
+    Some((spec, log))
+}
+
+/// Registra o que a leitura achou como lido, quando a pasta `from` é a cópia
+/// de um pedido aberto da spec (`read_record`): uma chamada por item. Com
+/// `only_wave`, só vale na cópia dessa onda. Sem item achado, ou fora de uma
+/// cópia de pedido, nada é gravado.
+#[allow(clippy::too_many_arguments)]
+fn note_reading(
+    root: &Path,
+    spec: &str,
+    log: &SpecLog,
+    session: Option<&str>,
+    from: &Path,
+    only_wave: Option<u64>,
+    read: &[String],
+    started: Instant,
+) {
+    if read.is_empty() {
+        return;
+    }
+    let Some(request) = read_record::request_of(log, from) else { return };
+    let Request { wave, .. } = &request;
+    if only_wave.is_some_and(|wanted| *wave != Some(wanted)) {
+        return;
+    }
+    read_record::record(root, spec, session, &request, read, started);
 }
 
 /// O pedido gravado no último envio da onda `wave`, igual byte a byte, em
@@ -175,31 +251,27 @@ fn last_user_message(log: &SpecLog) -> Option<u64> {
         .max()
 }
 
-/// Um item só, como `item-<código>` ou `item-<número>` o pede. Pelo código,
-/// a versão vigente — ou, com o item todo removido, a última versão dele;
-/// pelo número, aquela versão. A versão vem com o código, com `removed`
-/// quando uma remoção a tirou, com `replaced_by` quando outra já a
-/// substitui, e com `changed` quando ela substitui uma anterior. Uma mensagem
-/// é o texto do usuário, que esta leitura nunca mostra: sai só o número e o
-/// tipo. Sem item, a lista vem vazia.
-fn item_lines(log: &SpecLog, target: &EventRef, codes: &BTreeMap<u64, String>) -> Vec<String> {
+/// O item que `item-<código>` ou `item-<número>` pede. Pelo código, a versão
+/// vigente — ou, com o item todo removido, a última versão dele; pelo
+/// número, aquela versão. Sem item, `None`.
+fn find_item<'a>(log: &'a SpecLog, target: &EventRef, codes: &BTreeMap<u64, String>) -> Option<&'a SpecEvent> {
     let hidden = log.hidden();
-    let found = match target {
+    match target {
         EventRef::Id(id) => log.get(*id),
         EventRef::Code(code) => {
             let versions: Vec<&SpecEvent> = log.events.iter().filter(|e| codes.get(&e.id) == Some(code)).collect();
             versions.iter().rev().find(|e| !hidden.contains_key(&e.id)).or(versions.last()).copied()
         }
-    };
-    let Some(event) = found else {
-        return Vec::new();
-    };
-    if event.event_type == "message" {
-        let mut bare = Map::new();
-        bare.insert("id".into(), json!(event.id));
-        bare.insert("type".into(), json!("message"));
-        return vec![shown_line(&bare)];
     }
+}
+
+/// A linha de um item, como `item-<código>` e `item-<número>` a mostram: os
+/// campos dele, com o código, com `removed` quando uma remoção o tirou, com
+/// `replaced_by` quando outra versão já o substitui, e com `changed` quando
+/// ele substitui uma anterior. A mensagem do usuário sai como os outros
+/// itens, com o texto inteiro.
+fn item_line(log: &SpecLog, event: &SpecEvent, codes: &BTreeMap<u64, String>) -> String {
+    let hidden = log.hidden();
     let mut fields = event.fields.clone();
     if let Some(code) = codes.get(&event.id) {
         fields.insert("code".into(), json!(code));
@@ -217,7 +289,7 @@ fn item_lines(log: &SpecLog, target: &EventRef, codes: &BTreeMap<u64, String>) -
     if let Some(changed) = previous.map(|old| changed_fields(&old.fields, &event.fields)).filter(|c| !c.is_empty()) {
         fields.insert("changed".into(), Value::Object(changed));
     }
-    vec![shown_line(&fields)]
+    shown_line(&fields)
 }
 
 /// Os campos de uma linha que não são do item: o envelope, a busca e o
@@ -397,7 +469,8 @@ fn spread(mut values: Vec<u64>) -> Option<Value> {
 /// pelo número delas. Com `term`, um código de item acha só aquele item, e
 /// qualquer outro termo passa pela busca por nota nos itens e nas lições,
 /// nas línguas `languages`. A onda que o plano não tem não tem pedido: a
-/// lista vem vazia.
+/// lista vem vazia. Devolve as linhas e, ao lado, o que cada uma é para o
+/// registro da leitura: o código do item e `lesson-<número>` da lição.
 fn dispatch_lines(
     root: &Path,
     log: &SpecLog,
@@ -405,36 +478,45 @@ fn dispatch_lines(
     term: &str,
     codes: &BTreeMap<u64, String>,
     languages: &Languages,
-) -> Vec<String> {
+) -> (Vec<String>, Vec<String>) {
     if !log.planned_waves().contains(&wave) {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     }
     let bank = lesson_bank(root);
     let found = request_items(log, bank.as_ref(), wave, None, languages);
-    let mut lines: Vec<String> =
-        found_by(found.items, term, codes, languages).into_iter().map(|e| shown_with_code(e, codes, false)).collect();
+    let items = found_by(found.items, term, codes, languages);
     // A lição não tem código de item, e o número dela no banco pode ser o de
     // um item da spec: ela passa só pela busca, nunca pelos códigos da spec.
-    lines.extend(found_by(found.lessons, term, &BTreeMap::new(), languages).into_iter().map(|lesson| shown_line(&lesson.fields)));
-    lines
+    let lessons = found_by(found.lessons, term, &BTreeMap::new(), languages);
+    let read: Vec<String> = items
+        .iter()
+        .map(|item| codes.get(&item.id).cloned().unwrap_or_else(|| item.id.to_string()))
+        .chain(lessons.iter().map(|lesson| format!("lesson-{}", lesson.id)))
+        .collect();
+    let mut lines: Vec<String> = items.into_iter().map(|e| shown_with_code(e, codes, false)).collect();
+    lines.extend(lessons.into_iter().map(|lesson| shown_line(&lesson.fields)));
+    (lines, read)
 }
 
 /// O bloco `lessons`: fora da spec, no banco do projeto. `--term` é o número
 /// da lição no banco — não uma busca, como no resto dos blocos —, porque é
 /// assim que o pedido de uma onda a leva, sem copiar o texto dela. Sem
 /// número, ou sem lição vigente com esse número, a lista vem vazia; sem
-/// banco no disco, o mesmo.
-fn read_lessons(root: &Path, spec: Option<&str>, term: Option<&str>, lang: Locale) -> Result<String, Value> {
+/// banco no disco, o mesmo. Devolve a saída e o número das lições achadas.
+fn read_lessons(
+    root: &Path,
+    spec: Option<&str>,
+    term: Option<&str>,
+    lang: Locale,
+) -> Result<(String, Vec<u64>), Value> {
     let refuse = move |refusal: Refusal| super::refused(&refusal, lang);
     let paths = ClaudePaths::for_project(root).map_err(|e| refuse(Refusal::Io { detail: e.to_string() }))?;
     let bank = mustard_core::io::lessons::read(&paths.lessons_path()).map_err(refuse)?.unwrap_or_default();
     let wanted = term.and_then(|t| t.trim().parse::<u64>().ok());
-    let events: Vec<String> = kept(&bank)
-        .into_iter()
-        .filter(|lesson| wanted.is_some_and(|id| lesson.id == id))
-        .map(|lesson| shown_line(&lesson.fields))
-        .collect();
-    Ok(render(spec.unwrap_or_default(), "lessons", &events, &[], &[]))
+    let found: Vec<_> = kept(&bank).into_iter().filter(|lesson| wanted.is_some_and(|id| lesson.id == id)).collect();
+    let events: Vec<String> = found.iter().map(|lesson| shown_line(&lesson.fields)).collect();
+    let numbers = found.iter().map(|lesson| lesson.id).collect();
+    Ok((render(spec.unwrap_or_default(), "lessons", &events, &[], &[]), numbers))
 }
 
 /// O checkout em que o comando roda, cuja branch diz qual é a spec atual.
@@ -722,7 +804,7 @@ mod tests {
         // Uma sessão ligada a outra spec não vence a branch.
         crate::shared::context::session::bind_session_spec(root.to_str().unwrap(), "s-leitura", "outra");
 
-        let report = read_for(&without_spec(root, "conversation"), Some("s-leitura")).unwrap();
+        let report = read_for(&without_spec(root, "conversation"), Some("s-leitura"), root).unwrap();
         let parsed: Value = serde_json::from_str(&report).unwrap();
         assert_eq!(parsed["spec"], json!("teste"), "the resolved name is shown: {report}");
         assert_eq!(parsed["count"], json!(1), "{report}");
@@ -738,7 +820,7 @@ mod tests {
         put(root, "message", json!({"author": "user", "text": "oi"}));
         crate::shared::context::session::bind_session_spec(root.to_str().unwrap(), "s-leitura", "teste");
 
-        let report = read_for(&without_spec(root, "conversation"), Some("s-leitura")).unwrap();
+        let report = read_for(&without_spec(root, "conversation"), Some("s-leitura"), root).unwrap();
         let parsed: Value = serde_json::from_str(&report).unwrap();
         assert_eq!(parsed["spec"], json!("teste"), "{report}");
     }
@@ -753,13 +835,13 @@ mod tests {
         std::fs::create_dir_all(root.join(".claude")).unwrap();
 
         std::fs::write(root.join("mustard.json"), r#"{"language":{"text":"pt-BR"}}"#).unwrap();
-        let pt = read_for(&without_spec(root, "state"), None).unwrap_err();
+        let pt = read_for(&without_spec(root, "state"), None, root).unwrap_err();
         assert_eq!(pt["ok"], json!(false));
         assert_eq!(pt["reason"], json!("no-current-spec"));
         assert!(pt["hint"].as_str().unwrap().starts_with("Nenhuma spec atual"), "{pt}");
 
         std::fs::write(root.join("mustard.json"), r#"{"language":{"text":"en-US"}}"#).unwrap();
-        let en = read_for(&without_spec(root, "state"), None).unwrap_err();
+        let en = read_for(&without_spec(root, "state"), None, root).unwrap_err();
         assert_eq!(en["reason"], json!("no-current-spec"));
         assert!(en["hint"].as_str().unwrap().starts_with("No current spec"), "{en}");
     }
@@ -898,17 +980,26 @@ mod tests {
         assert_eq!(kept.get("removed"), None, "a task still in the plan is not marked");
     }
 
-    /// Uma mensagem lida como item sai só com o número e o tipo: o texto do
-    /// usuário nunca aparece por esta leitura.
+    /// A mensagem do usuário lida como item sai com o texto inteiro, o autor
+    /// e o código, como qualquer outro item: o agente que a tarefa atende lê o
+    /// que o usuário disse, pelo código ou pelo número.
     #[test]
-    fn a_message_read_as_an_item_shows_no_text() {
+    fn a_message_read_as_an_item_shows_its_whole_text_and_code() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        let said = put(root, "message", json!({"author": "user", "text": "a senha é segredo"}));
+        let said = put(root, "message", json!({"author": "user", "text": "Pode liberar mais espaço, é voce que está lotando o disco"}));
 
-        let report = read_at(&opts(root, &format!("item-{said}"), None)).unwrap();
-        assert_eq!(events(&report), vec![json!({"id": said, "type": "message"})], "{report}");
-        assert!(!report.contains("segredo"), "{report}");
+        for block in [format!("item-{said}"), "item-MSTD-MSG-0001".to_string()] {
+            let (report, item) = only_line(root, &block);
+            assert_eq!(item["id"], json!(said), "{block}: {report}");
+            assert_eq!(item["code"], json!("MSTD-MSG-0001"), "{block}: {report}");
+            assert_eq!(item["author"], json!("user"), "{block}: {report}");
+            assert_eq!(
+                item["text"],
+                json!("Pode liberar mais espaço, é voce que está lotando o disco"),
+                "{block}: {report}"
+            );
+        }
     }
 
     /// Com a volta do agente e a versão que a rodada assumiu, a leitura da
@@ -1068,5 +1159,130 @@ mod tests {
         let parsed: Value = serde_json::from_str(&report).expect("the report is JSON");
         assert_eq!(parsed["last_user_message"], json!(last), "{report}");
         assert!(!report.contains("o último pedido"), "{report}");
+    }
+
+    /// O plano dos testes do registro: uma onda com uma tarefa e uma regra,
+    /// e o envio dela com a vaga `copy` (a pasta `copias/a` dentro do
+    /// projeto, com uma subpasta de código). Devolve a vaga, o código da regra
+    /// e o número do envio.
+    fn open_request(root: &std::path::Path) -> (PathBuf, u64) {
+        let said = put(root, "message", json!({"author": "user", "text": "o pedido"}));
+        put(root, "rule", json!({"title": "Regra", "text": "Vale sempre.", "agent": "detalhe", "keys": ["regra"], "example": "e", "origin": said}));
+        let c = put(root, "criterion", json!({"when": "a", "then": "b", "proof": "echo p", "form": "ubiquitous", "origin": said}));
+        put(root, "wave", json!({"n": 1, "text": "Onda.", "criteria": [c], "done_when": "x", "origin": said}));
+        put(root, "task", json!({"wave": 1, "text": "Fazer.", "files": [{"path": "a.rs"}], "depends_on": [], "origin": said}));
+        let copy = root.join("copias").join("a");
+        std::fs::create_dir_all(copy.join("apps").join("rt")).unwrap();
+        let sent = by_program(root, "send", json!({"author": "binary", "wave": 1, "role": "wave", "text": "pedido", "lines": 1,
+            "chars": 6, "mustard": "0", "copy": mustard_core::io::wave_prompt::shown(&copy)}));
+        (copy, sent)
+    }
+
+    /// As leituras registradas, na ordem do arquivo: o pedido e o item de
+    /// cada chamada `read`.
+    fn recorded_reads(root: &std::path::Path) -> Vec<(String, String)> {
+        let path = store::spec_file(root, "teste").expect("spec file");
+        let log = store::read(&path).unwrap().unwrap();
+        log.visible()
+            .into_iter()
+            .filter(|e| e.event_type == "call" && e.str_field("command") == Some("read"))
+            .map(|e| {
+                assert_eq!(e.str_field("author"), Some("binary"));
+                (e.str_field("request").unwrap_or_default().to_string(), e.str_field("item").unwrap_or_default().to_string())
+            })
+            .collect()
+    }
+
+    fn read_from(root: &std::path::Path, from: &std::path::Path, block: &str, term: Option<&str>) -> String {
+        read_for(&opts(root, block, term), None, from).unwrap()
+    }
+
+    /// Ler um item de dentro da vaga do envio aberto, ou de uma pasta dentro
+    /// dela, grava a leitura com o pedido e o item; ler o mesmo item de
+    /// outra pasta não grava, nem ler um código que não existe.
+    #[test]
+    fn an_item_read_from_inside_the_copy_of_an_open_request_is_recorded() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (copy, _) = open_request(root);
+
+        read_from(root, &copy, "item-MSTD-RULE-0001", None);
+        read_from(root, &copy.join("apps").join("rt"), "item-MSTD-TASK-0001", None);
+        assert_eq!(
+            recorded_reads(root),
+            [("request-1".into(), "MSTD-RULE-0001".into()), ("request-1".into(), "MSTD-TASK-0001".into())]
+        );
+
+        read_from(root, root, "item-MSTD-RULE-0001", None);
+        read_from(root, &copy.parent().unwrap().join("outra"), "item-MSTD-RULE-0001", None);
+        read_from(root, &copy, "item-MSTD-RULE-0099", None);
+        assert_eq!(recorded_reads(root).len(), 2, "outra pasta e código que não existe não gravam");
+    }
+
+    /// Pelo número, o item grava o código dele; a lição grava
+    /// `lesson-<número>` e só quando o banco a tem.
+    #[test]
+    fn a_read_by_number_records_the_code_and_a_lesson_records_its_number() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (copy, _) = open_request(root);
+        let rule = put(root, "rule", json!({"title": "Outra", "text": "Vale também.", "agent": "d", "keys": ["outra"], "example": "e", "origin": 1}));
+        let bank = mustard_core::ClaudePaths::for_project(root).unwrap().lessons_path();
+        let lesson = write_lesson(&bank, "Nunca comitar sem rodar a suíte inteira.", &["suíte"]);
+
+        read_from(root, &copy, &format!("item-{rule}"), None);
+        read_from(root, &copy, "lessons", Some(&lesson.to_string()));
+        read_from(root, &copy, "lessons", Some("999"));
+        assert_eq!(
+            recorded_reads(root),
+            [("request-1".into(), "MSTD-RULE-0002".into()), ("request-1".into(), format!("lesson-{lesson}"))]
+        );
+    }
+
+    /// Ler `dispatch-<n>` de dentro da cópia da onda `n` conta todos os
+    /// itens e lições que ele lista; de dentro da cópia de outra onda, ou de
+    /// outra pasta, não conta nada.
+    #[test]
+    fn the_dispatch_read_from_the_copy_of_its_wave_records_everything_it_lists() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (copy, _) = open_request(root);
+        let report = read_from(root, root, "dispatch-1", None);
+        let listed: Vec<String> =
+            events(&report).iter().map(|e| e["code"].as_str().expect("every listed item has a code").to_string()).collect();
+        assert!(listed.contains(&"MSTD-TASK-0001".to_string()) && listed.contains(&"MSTD-WAVE-0001".to_string()), "{listed:?}");
+        assert!(recorded_reads(root).is_empty(), "lido de fora da cópia não grava");
+
+        read_from(root, &copy, "dispatch-1", None);
+        let recorded: Vec<String> = recorded_reads(root).into_iter().map(|(request, item)| {
+            assert_eq!(request, "request-1");
+            item
+        }).collect();
+        assert_eq!(recorded, listed);
+
+        let c2 = put(root, "criterion", json!({"when": "c", "then": "d", "proof": "echo q", "form": "ubiquitous", "origin": 1}));
+        put(root, "wave", json!({"n": 2, "text": "Dois.", "criteria": [c2], "done_when": "y", "origin": 1}));
+        read_from(root, &copy, "dispatch-2", None);
+        assert_eq!(recorded_reads(root).len(), listed.len(), "o pedido da onda 2 não se lê da cópia da onda 1");
+    }
+
+    /// O envio de revisão aberto grava `request-review`, e o pedido que já
+    /// tem entrega ou veredito deixa de estar aberto e não grava mais.
+    #[test]
+    fn the_review_request_and_a_closed_request_are_told_apart() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (copy, _) = open_request(root);
+        let review = root.join("copias").join("revisao");
+        std::fs::create_dir_all(&review).unwrap();
+        by_program(root, "send", json!({"author": "binary", "role": "review", "text": "revise", "lines": 1, "chars": 6,
+            "mustard": "0", "copy": mustard_core::io::wave_prompt::shown(&review)}));
+
+        read_from(root, &review, "item-MSTD-RULE-0001", None);
+        assert_eq!(recorded_reads(root), [("request-review".into(), "MSTD-RULE-0001".into())]);
+
+        by_program(root, "delivered", json!({"author": "binary", "wave": 1, "text": "Pronta.", "files": []}));
+        read_from(root, &copy, "item-MSTD-RULE-0001", None);
+        assert_eq!(recorded_reads(root).len(), 1, "a onda entregue não tem mais pedido aberto");
     }
 }

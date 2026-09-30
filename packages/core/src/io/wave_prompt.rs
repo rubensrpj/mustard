@@ -40,6 +40,17 @@ use crate::domain::wave_prompt::{
 use crate::io::project_map::{MapReader, Need};
 use crate::platform::i18n::Locale;
 
+/// O pedido do revisor final, como o disco o entrega.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FinalReview {
+    /// O texto do pedido.
+    pub text: String,
+    /// O que o pedido lista, para o veredito conferir a leitura: o código de
+    /// cada item, uma vez só. É a lista que imprimiu as linhas do texto
+    /// ([`wave_prompt::listed_final_review`]), não um segundo cálculo.
+    pub listed: Vec<String>,
+}
+
 /// O pedido de uma onda, como o disco o entrega.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WavePrompt {
@@ -59,6 +70,10 @@ pub struct WavePrompt {
     pub text: String,
     /// Quantas linhas ele tem.
     pub lines: usize,
+    /// O que o pedido lista, para a entrega conferir a leitura: o código de
+    /// cada item e `lesson-<número>` de cada lição. É a lista que imprimiu as
+    /// linhas do texto ([`wave_prompt::listed`]), não um segundo cálculo.
+    pub listed: Vec<String>,
     /// As skills que a conferência recusou, pelo nome.
     pub bad_skills: Vec<(String, MapRefusal)>,
     /// As skills que a onda usa e que precisam de revisão, pelo nome.
@@ -445,8 +460,11 @@ pub fn final_review_commit(root: &Path, log: &SpecLog) -> Option<String> {
 /// ele nunca acontece sem ela. Uma onda reprovada antes de um veredito final
 /// mais novo não recorta o pedido. Os requisitos acordados continuam todos no
 /// pedido, porque o veredito responde por cada um.
+///
+/// Junto do texto vem a lista dos itens que ele lista ([`FinalReview::listed`]),
+/// para o fechamento gravá-la no envio e o veredito conferir a leitura.
 #[must_use]
-pub fn final_review(root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> String {
+pub fn final_review(root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> FinalReview {
     let planned = log.planned_waves();
     let fixing: BTreeSet<u64> =
         wave_prompt::last_final_rejection(log).and_then(SpecEvent::wave).filter(|n| planned.contains(n)).into_iter().collect();
@@ -490,7 +508,7 @@ pub fn final_review(root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> Str
         codes: log.codes(),
         ..Material::default()
     };
-    wave_prompt::write_final_review(&material, lang)
+    FinalReview { text: wave_prompt::write_final_review(&material, lang), listed: wave_prompt::listed_final_review(&material) }
 }
 
 /// A cópia gravada no envio mais novo da onda `wave`. `None` quando esse
@@ -517,18 +535,25 @@ pub struct RequestItems<'a> {
     pub items: Vec<&'a SpecEvent>,
     /// As lições do banco, em ordem de número.
     pub lessons: Vec<&'a SpecEvent>,
+    /// O que as tarefas da onda atendem, pelo número com que a tarefa o cita
+    /// ([`wave_prompt::attended`]). Também está em `items`.
+    pub attended: BTreeMap<u64, &'a SpecEvent>,
 }
 
 /// O que o pedido da onda `wave` lista, pela mesma conta que o monta: os
-/// itens que a montagem escolhe ([`wave_prompt::dispatch_items`]) e as lições
-/// que casam com a onda ([`wave_lessons`]), menos as que a escolha tirou. A
-/// escolha é a dada (`fresh`) ou, sem ela, a gravada no envio da onda — a
-/// mesma do pedido que a rodada mandou.
+/// itens que a montagem escolhe ([`wave_prompt::dispatch_items`]), o que as
+/// tarefas da onda atendem — o critério, o combinado e a mensagem que elas
+/// citam — e as lições que casam com a onda ([`wave_lessons`]), menos as que
+/// a escolha tirou. A escolha é a dada (`fresh`) ou, sem ela, a gravada no
+/// envio da onda — a mesma do pedido que a rodada mandou.
 ///
 /// O envio, a entrega e os passos da própria onda ficam de fora: são o
 /// registro de um pedido, não parte dele. A entrega que a reprovação julgou
 /// fica, porque o conserto a cita ([`wave_prompt::fix_lines`]); a entrega das
-/// ondas de que esta depende também.
+/// ondas de que esta depende também. O item combinado que uma versão nova
+/// substituiu não entra, mesmo que a escolha o tenha posto: a escolha só vale
+/// dentro dos candidatos de agora ([`wave_prompt::Choice::within`]), e a versão
+/// antiga já não é candidata.
 #[must_use]
 pub fn request_items<'a>(
     log: &'a SpecLog,
@@ -539,7 +564,8 @@ pub fn request_items<'a>(
 ) -> RequestItems<'a> {
     let choice = wave_prompt::choice_for(log, wave, fresh);
     let fix: BTreeSet<u64> = wave_prompt::fix_lines(log, wave).iter().map(|e| e.id).collect();
-    let items = wave_prompt::dispatch_items(log, wave, choice.as_ref(), languages)
+    let attended = wave_prompt::attended(log, wave);
+    let mut items: Vec<&SpecEvent> = wave_prompt::dispatch_items(log, wave, choice.as_ref(), languages)
         .into_iter()
         .filter(|e| match e.event_type.as_str() {
             "send" | "step" => false,
@@ -547,13 +573,19 @@ pub fn request_items<'a>(
             _ => true,
         })
         .collect();
+    for item in attended.values() {
+        if !items.iter().any(|had| had.id == item.id) {
+            items.push(item);
+        }
+    }
+    items.sort_by_key(|e| e.id);
     let lessons = bank
         .map(|bank| wave_lessons(bank, log, wave, languages))
         .unwrap_or_default()
         .into_iter()
         .filter(|lesson| !choice.as_ref().is_some_and(|choice| choice.removes_lesson(lesson.id)))
         .collect();
-    RequestItems { items, lessons }
+    RequestItems { items, lessons, attended }
 }
 
 /// O mapa do projeto como o pedido o lê: cada parte pela pergunta dela, sem
@@ -718,31 +750,22 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
     let fresh = context.flight.choices.get(&wave);
     // Os itens e as lições saem da mesma conta que a leitura do pedido usa,
     // e por isso as duas nunca discordam.
-    let RequestItems { items: read, lessons } = request_items(log, bank, wave, fresh, languages);
+    let RequestItems { items: read, lessons, attended } = request_items(log, bank, wave, fresh, languages);
     let of_type = |name: &str| -> Vec<&SpecEvent> {
         read.iter().copied().filter(|e| e.event_type == name).collect()
     };
+    // A onda e as tarefas dela, de onde saem a frase que abre o pedido, a
+    // ordem de execução e um passo por tarefa; o resto do que ela cita
+    // entra pelo que as tarefas atendem.
     let block: Vec<&SpecEvent> = read
         .iter()
         .copied()
-        // O entregou das ondas de que esta depende entra à parte, e o que a
-        // reprovação julgou, no conserto.
-        .filter(|e| e.block() == Some(Block::Waves) && e.event_type != "delivered")
-        .collect();
-    let delivered: Vec<&SpecEvent> = read
-        .iter()
-        .copied()
-        .filter(|e| e.event_type == "delivered" && e.wave() != Some(wave))
+        .filter(|e| e.block() == Some(Block::Waves) && matches!(e.event_type.as_str(), "wave" | "task"))
         .collect();
     let agreed: Vec<&SpecEvent> = read
         .iter()
         .copied()
         .filter(|e| e.block() == Some(Block::Agreed))
-        .collect();
-    let specification: Vec<&SpecEvent> = read
-        .iter()
-        .copied()
-        .filter(|e| e.block() == Some(Block::Specification))
         .collect();
 
     let files = wave_files(log, wave);
@@ -820,10 +843,9 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
         spec: spec.to_string(),
         wave,
         block,
-        criteria: of_type("criterion"),
-        specification,
+        criteria: Vec::new(),
         agreed,
-        delivered,
+        attended,
         // A linha do conserto que a análise tirou do pedido sai também daqui.
         fix: wave_prompt::fix_lines(log, wave).into_iter().filter(|line| read.iter().any(|e| e.id == line.id)).collect(),
         // O que a própria onda entregou é o que o revisor confere, e o
@@ -846,7 +868,8 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
     let agent = "wave".to_string();
     let model = context.base.requested_model().to_string();
     let effort = context.base.requested_effort().to_string();
-    WavePrompt { wave, agent, model, effort, text, lines, bad_skills, stale_skills, bad_settings: Vec::new() }
+    let listed = wave_prompt::listed(&material);
+    WavePrompt { wave, agent, model, effort, text, lines, listed, bad_skills, stale_skills, bad_settings: Vec::new() }
 }
 
 /// As regras da execução da onda `wave`: os comandos do projeto, as outras
@@ -1268,10 +1291,35 @@ mod tests {
             ),
         ]);
         let built = prompts(root, "teste", &log, Locale::PtBr, &Flight::default());
-        let items = section_lines(&built[0].text, crate::platform::i18n::translate("prompt.part.items", Locale::PtBr));
-        assert!(items.contains(&"`agreed` MSTD-LIMIT-0001: O pedido cabe em 500 linhas."), "{}", built[0].text);
+        let obey = section_lines(&built[0].text, crate::platform::i18n::translate("prompt.part.obey", Locale::PtBr));
+        assert!(obey.contains(&"Limite MSTD-LIMIT-0001 — O pedido cabe em 500 linhas."), "{}", built[0].text);
         assert_eq!(built[0].text.matches("MSTD-LIMIT-0001").count(), 1, "{}", built[0].text);
         assert!(!built[0].text.contains("400 linhas"), "a versão antiga não entra: {}", built[0].text);
+    }
+
+    /// A escolha gravada antes de um item combinado ser revisto ainda cita a
+    /// versão antiga; o pedido lista só a nova, e a antiga não entra na lista
+    /// de leitura por mais que a escolha a tenha posto.
+    #[test]
+    fn a_choice_that_added_the_old_version_of_a_revised_item_lists_only_the_new_one() {
+        let log = log_of(&[
+            ("limit", json!({"text": "O pedido cabe em 400 linhas.", "value": "400 linhas", "keys": ["pedido"]})),
+            ("wave", json!({"n": 1, "text": "A onda", "criteria": [], "done_when": "passa"})),
+            ("task", json!({"wave": 1, "text": "Cortar o pedido", "files": [{"path": "apps/rt/src/a.rs"}]})),
+            (
+                "limit",
+                json!({"text": "O pedido cabe em 500 linhas.", "value": "500 linhas", "keys": ["pedido"], "replaces": 1}),
+            ),
+        ]);
+        let choice = Choice {
+            added: vec![(1, String::from("a regra do pedido serve à onda")), (4, String::from("a regra do pedido serve à onda"))],
+            ..Choice::default()
+        };
+        let languages = Languages::new(["pt-BR", "en-US"]);
+        let got = request_items(&log, None, 1, Some(&choice), &languages);
+        let ids: Vec<u64> = got.items.iter().map(|e| e.id).collect();
+        assert!(ids.contains(&4), "a versão nova entra: {ids:?}");
+        assert!(!ids.contains(&1), "a versão antiga não entra: {ids:?}");
     }
 
     /// O arquivo que uma tarefa cita, e cujos testes o mapa do projeto
@@ -1296,11 +1344,11 @@ mod tests {
         ]);
         let built = prompts(root, "teste", &log, Locale::PtBr, &Flight::default());
         assert!(
-            built[0].text.contains("  - quem testa `apps/rt/src/a.rs`: `apps/rt/tests/a_test.rs`"),
+            built[0].text.contains("   - Quem testa `apps/rt/src/a.rs`: `apps/rt/tests/a_test.rs`"),
             "{}",
             built[0].text
         );
-        assert!(!built[0].text.contains("quem testa `apps/rt/src/b.rs`"), "{}", built[0].text);
+        assert!(!built[0].text.contains("Quem testa `apps/rt/src/b.rs`"), "{}", built[0].text);
     }
 
     /// A leitura obrigatória de uma tarefa que aponta uma função
@@ -1321,7 +1369,7 @@ mod tests {
                             "must_read": ["apps/rt/src/a.rs#soma"]})),
         ]);
         let built = prompts(root, "teste", &log, Locale::PtBr, &Flight::default());
-        assert!(built[0].text.contains("leia antes: leia só `soma` em `apps/rt/src/a.rs`"), "{}", built[0].text);
+        assert!(built[0].text.contains("   - Leia antes: leia só `soma` em `apps/rt/src/a.rs`"), "{}", built[0].text);
         assert!(!built[0].text.contains("`apps/rt/src/a.rs#soma`"), "{}", built[0].text);
         for phrase in ["Ache e leia o código pelo mapa", "só os testes do que mudou", "A suíte inteira roda uma vez no fim, em primeiro plano"] {
             assert!(!built[0].text.contains(phrase), "{phrase}: {}", built[0].text);
@@ -1435,17 +1483,17 @@ mod tests {
         assert!(!built[0].text.contains(read_before), "{}", built[0].text);
     }
 
-    /// A linha de como ler, no pedido de uma onda montado como a rodada e o
-    /// despacho o montam: em caso de dúvida, um comando só lê o texto
-    /// completo de tudo o que o pedido lista — a leitura do pedido da onda
-    /// pelo número dela, com a spec e, quando a onda tem cópia, o caminho do
-    /// repositório principal —, e a mesma linha dá o comando que lê um item
-    /// pelo código. A ordem antiga de ler tudo antes de começar saiu. Sem
-    /// cópia, o agente roda no repositório principal, e o caminho sai dos dois
-    /// comandos. O pedido da revisão final continua com a leitura item por
-    /// item, sem o comando do pedido inteiro.
+    /// A seção de como ler, no pedido de uma onda montado como a rodada e o
+    /// despacho o montam: os dois comandos — o que lê um item pelo código e o
+    /// que lê uma lição pelo número —, com a spec e, quando a onda tem cópia,
+    /// o caminho do repositório principal, e o aviso de que a entrega sem a
+    /// leitura completa é recusada. Ela vem antes de "O que fazer" e não
+    /// manda ler o pedido inteiro nem tudo antes de começar. Sem cópia, o
+    /// agente roda no repositório principal, e o caminho sai dos dois
+    /// comandos. O pedido da revisão final traz a mesma seção, com o aviso da
+    /// recusa do veredito, e também lê item por item.
     #[test]
-    fn the_wave_request_points_to_the_whole_request_in_case_of_doubt() {
+    fn the_wave_request_tells_how_to_read_each_item_and_warns_of_the_refusal() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let main = shown(root);
@@ -1457,43 +1505,57 @@ mod tests {
         let log = log_of(&events);
         let copy = WaveCopy { path: "/c/tres".into(), reused: None };
         let in_copy = Flight { running: [3].into(), copies: [(3, copy)].into(), ..Flight::default() };
-        for (lang, items, wave_line, before_starting, final_line) in [
+        for (lang, heading, do_heading, read_item, read_lesson, warning, gone, final_line) in [
             (
                 Locale::PtBr,
-                "## Itens da onda",
-                "**Como ler.** Em caso de dúvida, leia o texto completo com `mustard-rt run read dispatch-3 \
-                 {root}--spec teste`. Para ler um item só, use `mustard-rt run read <bloco> {root}--spec \
-                 teste --term <código>`.",
+                "## Como ler cada item",
+                "## O que fazer",
+                "- tarefa, regra, decisão, mensagem ou outro item: `mustard-rt run read item-<código> {root}--spec teste`",
+                "- lição: `mustard-rt run read lessons --term <número> {root}--spec teste`",
+                "A entrega é recusada se algum item deste pedido não foi lido. A recusa diz qual.",
                 "Antes de começar",
-                "**Como ler.** Leia cada código na ordem com `mustard-rt run read <bloco> {root}--spec teste \
-                 --term <código>`, trocando `<bloco>` pelo bloco que abre a linha do código.",
+                (
+                    "- onda, tarefa, requisito acordado, entrega, critério, commit ou outro item: `mustard-rt run read item-<código> {root}--spec teste`",
+                    "O veredito é recusado se algum item deste pedido não foi lido. A recusa diz qual.",
+                ),
             ),
             (
                 Locale::EnUs,
-                "## Wave items",
-                "**How to read.** In case of doubt, read the whole text with `mustard-rt run read \
-                 dispatch-3 {root}--spec teste`. To read a single item, use `mustard-rt run read <block> \
-                 {root}--spec teste --term <item-code>`.",
+                "## How to read each item",
+                "## What to do",
+                "- task, rule, decision, message or any other item: `mustard-rt run read item-<item-code> {root}--spec teste`",
+                "- lesson: `mustard-rt run read lessons --term <number> {root}--spec teste`",
+                "The delivery is refused if any item of this request was not read. The refusal says which.",
                 "Before you start",
-                "**How to read.** Read each code in order with `mustard-rt run read <block> {root}--spec \
-                 teste --term <item-code>`, replacing `<block>` with the block that opens the code's line.",
+                (
+                    "- wave, task, agreed requirement, delivery, criterion, commit or any other item: `mustard-rt run read item-<item-code> {root}--spec teste`",
+                    "The verdict is refused if any item of this request was not read. The refusal says which.",
+                ),
             ),
         ] {
             for (flight, flag) in [(&in_copy, format!("--root {main} ")), (&Flight::default(), String::new())] {
                 let built = prompts(root, "teste", &log, lang, flight);
                 let wave = &built.iter().find(|p| p.wave == 3).expect("the third wave's request").text;
-                let line = wave_line.replace("{root}", &flag);
-                let at = wave.find(&line).unwrap_or_else(|| panic!("{flag:?} {lang:?}: {line}\n{wave}"));
-                let listed = wave.find(items).unwrap_or_else(|| panic!("{lang:?}: {wave}"));
-                assert!(at < listed, "the reading line comes before the items: {wave}");
-                assert_eq!(wave.matches("dispatch-").count(), 1, "{wave}");
-                assert_eq!(wave.matches("--term <").count(), 1, "one command reads a single item: {wave}");
+                let at = wave.find(heading).unwrap_or_else(|| panic!("{lang:?}: {wave}"));
+                let to_do = wave.find(do_heading).unwrap_or_else(|| panic!("{lang:?}: {wave}"));
+                assert!(at < to_do, "the reading comes before what to do: {wave}");
+                let section = &wave[at..to_do];
+                for line in [read_item, read_lesson, warning] {
+                    let line = line.replace("{root}", &flag);
+                    assert!(section.contains(&line), "{flag:?} {lang:?}: {line}\n{wave}");
+                }
+                assert!(!wave.contains("dispatch-"), "the request is not read whole: {wave}");
+                assert_eq!(wave.matches("--term <").count(), 1, "one command reads a lesson: {wave}");
                 assert_eq!(wave.matches("--root").count(), if flag.is_empty() { 0 } else { 2 }, "{wave}");
-                assert!(!wave.contains(before_starting), "reading everything first is gone: {wave}");
+                assert!(!wave.contains(gone), "reading everything first is gone: {wave}");
             }
-            let last = final_review(root, "teste", &log, lang);
-            let line = final_line.replace("{root}", &format!("--root {main} "));
-            assert!(last.contains(&line), "{lang:?}: {line}\n{last}");
+            let last = final_review(root, "teste", &log, lang).text;
+            let (final_item, final_warning) = final_line;
+            let flag = format!("--root {main} ");
+            for line in [final_item.replace("{root}", &flag), read_lesson.replace("{root}", &flag), final_warning.to_string()] {
+                assert!(last.contains(&line), "{lang:?}: {line}\n{last}");
+            }
+            assert!(last.contains(heading) && !last.contains(warning), "the verdict, not the delivery, is refused: {last}");
             assert!(!last.contains("dispatch-"), "the final review keeps reading item by item: {last}");
         }
     }
@@ -1523,7 +1585,7 @@ mod tests {
             assert!(expected.contains(&format!("in {code}: names")), "{expected}");
             let built = prompts(root, "teste", &log, Locale::EnUs, &Flight::default());
             let wave = built.first().expect("the first wave's request").text.clone();
-            let last = final_review(root, "teste", &log, Locale::EnUs);
+            let last = final_review(root, "teste", &log, Locale::EnUs).text;
             for (name, text) in [("wave", wave), ("final review", last)] {
                 let header = text.split("\n\n").take(3).collect::<Vec<_>>();
                 if text.matches(&expected).count() != 1 || !header.contains(&expected.as_str()) {
@@ -1534,21 +1596,16 @@ mod tests {
         assert!(missing.is_empty(), "requests without the languages line in the header:\n{}", missing.join("\n\n"));
     }
 
-    /// O pedido de uma onda, montado como a rodada o monta — com a cópia que
-    /// ela criou para ela —, traz cada item numa linha, com o bloco, o código
-    /// e o título, a mesma que a página da spec lê; o item gravado antes do
-    /// título sai com a primeira frase do texto. Logo abaixo da linha, recuada
-    /// dois espaços, vem a parte do agente do item — a do contexto, a da
-    /// decisão e a da regra —, e o item gravado antes dela traz o texto
-    /// inteiro. A onda e os critérios, o novo e o antigo, seguem numa linha
-    /// só. Cada tarefa ganha linha própria, na ordem de execução que a onda
-    /// declara, com o título e os arquivos, e embaixo a parte do agente — ou
-    /// o texto, na tarefa que não a tem. O porquê, o exemplo e o texto do
-    /// item que tem a parte do agente não entram; os comandos de leitura
-    /// aparecem uma vez só, na linha de como ler, com o caminho do
-    /// repositório principal.
+    /// O pedido da onda lista cada item numa linha — o tipo por extenso, o
+    /// código e o título —, sem o texto nem a parte do agente: a tarefa é um
+    /// passo de "O que fazer", com o que ela atende logo abaixo, e a regra e a
+    /// decisão que valem para a onda vão em "O que obedecer". O contexto e o
+    /// critério que nenhuma tarefa atende, a onda e o que as ondas anteriores
+    /// entregaram não entram. A ordem das tarefas é a que a onda declara, e os
+    /// comandos de leitura aparecem uma vez só, na seção de como ler, com o
+    /// caminho do repositório principal.
     #[test]
-    fn the_wave_request_carries_the_agent_part_of_each_item_under_its_line() {
+    fn the_wave_request_lists_each_item_in_one_line_and_leaves_out_what_no_task_attends() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let everywhere = json!({"files": ["**"]});
@@ -1570,70 +1627,68 @@ mod tests {
             ("wave", json!({"n": 1, "text": "A onda. Ela abre o pedido.", "criteria": [5, 6], "done_when": "passa",
                             "order": [9, 8]})),
             ("task", json!({"wave": 1, "title": "Montar a lista", "text": "Hoje a lista só tem códigos.",
-                            "agent": "- src/a.rs: `items`\n  - teste: `cargo test -p lista`", "files": [{"path": "src/a.rs"}]})),
-            ("task", json!({"wave": 1, "text": "Trocar o texto. Ele diz como ler.", "files": [{"path": "src/b.rs"}]})),
+                            "agent": "- src/a.rs: `items`\n  - teste: `cargo test -p lista`", "covers": [5, 6],
+                            "files": [{"path": "src/a.rs"}]})),
+            ("task", json!({"wave": 1, "text": "Trocar o texto. Ele diz como ler.", "covers": [1],
+                            "files": [{"path": "src/b.rs"}]})),
             ("delivered", json!({"wave": 1, "text": "A lista saiu.", "files": ["src/a.rs"]})),
         ]);
         let copy = WaveCopy { path: "/c/um".into(), reused: None };
         let flight = Flight { running: [1].into(), copies: [(1, copy)].into(), ..Flight::default() };
         let built = prompts(root, "teste", &log, Locale::PtBr, &flight);
         let part = |key: &str| crate::platform::i18n::translate(key, Locale::PtBr);
-        let example = part("prompt.read.wave")
-            .replace("{root}", &format!("--root {} ", shown(root)))
-            .replace("{spec}", "teste")
-            .replace("{n}", "1");
-        let command = format!("`mustard-rt run read <bloco> --root {} --spec teste --term <código>`", shown(root));
-        assert!(example.contains(&command), "{example}");
+        let example = part("prompt.read.wave").replace("{root}", &format!("--root {} ", shown(root))).replace("{spec}", "teste");
+        assert!(example.contains(&format!("`mustard-rt run read lessons --term <número> --root {} --spec teste`", shown(root))), "{example}");
         let wave = &built[0].text;
 
-        // Onda, critérios, especificação e combinado saem juntos, sob um
-        // título só: "Itens da onda". A linha de cada um é a que a página lê;
-        // a parte do agente vem embaixo, sem as linhas em branco do corpo.
-        let (_, after) = wave.split_once(&format!("## {}\n\n", part("prompt.part.items"))).unwrap_or_default();
-        let items: Vec<&str> = after.split("\n\n").next().unwrap_or_default().lines().collect();
+        // A onda tem `order: [9, 8]`: a tarefa 2 (id 9) vem antes da 1 (id 8),
+        // e cada uma leva abaixo o que atende.
+        let to_do: Vec<&str> = wave
+            .split_once(&format!("## {}\n\n", part("prompt.part.do")))
+            .map(|(_, rest)| rest)
+            .unwrap_or_default()
+            .split("\n\n")
+            .next()
+            .unwrap_or_default()
+            .lines()
+            .collect();
         assert_eq!(
-            items,
+            to_do,
             [
-                "- `waves` MSTD-WAVE-0001: A onda.",
-                "- `criteria` MSTD-CRIT-0001: A lista sai curta",
-                "- `criteria` MSTD-CRIT-0002",
-                "- `specification` MSTD-CTX-0001: O objetivo",
-                "  - medir o pedido",
-                "    - contar as linhas",
-                "- `specification` MSTD-CTX-0002: Como reproduzir.",
-                "  Como reproduzir. Rode a rodada duas vezes.",
-                "  Confira o log.",
-                "- `agreed` MSTD-DEC-0001: Título no lugar do texto",
-                "  - `item_line`",
-                "- `agreed` MSTD-RULE-0001: Um exemplo só",
-                "  - contar os comandos",
+                "1. Leia o texto inteiro de cada item de \"O que obedecer\".",
+                "2. Faça a tarefa MSTD-TASK-0002 — Trocar o texto.",
+                "   - Atende: contexto MSTD-CTX-0001 — O objetivo",
+                "   - Leia a tarefa e o que ela atende, inteiros, antes de mexer.",
+                "   - Arquivo: `src/b.rs`",
+                "3. Faça a tarefa MSTD-TASK-0001 — Montar a lista",
+                "   - Atende: critério MSTD-CRIT-0001 — A lista sai curta",
+                "   - Atende: critério MSTD-CRIT-0002",
+                "   - Leia a tarefa e o que ela atende, inteiros, antes de mexer.",
+                "   - Arquivo: `src/a.rs`",
+                "4. Grave a entrega, como diz \"O que devolver\".",
             ],
             "{wave}"
         );
-        // A onda tem `order: [9, 8]`: a tarefa 2 (id 9) vem antes da 1 (id 8),
-        // a antiga com o texto embaixo e a nova com a parte do agente.
-        let tasks = wave.split_once(&format!("## {}\n\n", part("prompt.part.tasks"))).map(|(_, rest)| rest).unwrap_or_default();
-        let tasks: Vec<&str> = tasks.split("\n\n").next().unwrap_or_default().lines().collect();
         assert_eq!(
-            tasks,
+            section_lines(wave, part("prompt.part.obey")),
             [
-                "- `MSTD-TASK-0002` Trocar o texto.: `src/b.rs`",
-                "  Trocar o texto. Ele diz como ler.",
-                "- `MSTD-TASK-0001` Montar a lista: `src/a.rs`",
-                "  - src/a.rs: `items`",
-                "    - teste: `cargo test -p lista`",
+                "Decisão MSTD-DEC-0001 — Título no lugar do texto",
+                "Regra MSTD-RULE-0001 — Um exemplo só",
+                "Lições: nenhuma vale para os arquivos desta onda.",
             ],
             "{wave}"
         );
 
         assert!(wave.contains(&example), "{wave}");
-        // Os dois comandos — o que lê o pedido inteiro e o que lê um item
-        // pelo código — só na linha de como ler.
+        // Os dois comandos de leitura, só na seção de como ler.
         for twice in ["mustard-rt run read", "--root"] {
             assert_eq!(wave.matches(twice).count(), 2, "{twice}: {wave}");
         }
-        for once in ["--term", "MSTD-TASK-0001", "MSTD-TASK-0002", "MSTD-WAVE-0001", "MSTD-CRIT-0001", "MSTD-CRIT-0002"] {
+        for once in ["--term", "MSTD-TASK-0001", "MSTD-TASK-0002", "MSTD-CTX-0001", "MSTD-CRIT-0001", "MSTD-CRIT-0002"] {
             assert_eq!(wave.matches(once).count(), 1, "{once}: {wave}");
+        }
+        for out in ["MSTD-WAVE-0001", "MSTD-CTX-0002", "MSTD-DELIV-0001"] {
+            assert!(!wave.contains(out), "{out} não é item deste pedido: {wave}");
         }
         for copied in [
             "A obra encurta o pedido",
@@ -1642,26 +1697,29 @@ mod tests {
             "A linha de leitura aparece uma vez",
             "um pedido de exemplo",
             "Ela abre o pedido",
+            "Como reproduzir",
             "a rodada monta",
             "cada item tem uma linha",
             "cargo test -p criterio",
             "o critério é antigo",
             "cargo test -p velho",
             "Hoje a lista só tem códigos",
+            "medir o pedido",
+            "`items`",
             "A lista saiu.",
         ] {
             assert!(!wave.contains(copied), "{copied} foi copiado: {wave}");
         }
     }
 
-    /// O pedido cai de quinze seções para quatro: os itens da onda (a
-    /// própria onda, os critérios, a especificação e o combinado, tudo sob
-    /// um título só), as tarefas, o que as ondas anteriores entregaram e as
-    /// regras da execução — nenhum título a mais, e nenhum dos antigos
-    /// (onda, critérios, especificação e combinado, cada um com o título
-    /// próprio) sobra.
+    /// O pedido tem seis seções, sempre na mesma ordem — o que a onda entrega,
+    /// como ler cada item, o que fazer, o que obedecer, o que devolver e como
+    /// trabalhar — e nenhuma outra: a onda, os critérios, a especificação, o
+    /// combinado e o que as ondas anteriores entregaram não têm título
+    /// próprio. "Como trabalhar" só aparece quando a onda tem cópia ou o
+    /// projeto declara um comando de compilar.
     #[test]
-    fn the_wave_request_has_four_sections_not_fifteen() {
+    fn the_wave_request_has_six_sections_in_order_and_no_other() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let everywhere = json!({"files": ["**"]});
@@ -1675,20 +1733,24 @@ mod tests {
             ("wave", json!({"n": 2, "text": "A onda", "criteria": [3], "done_when": "passa", "depends_on": [1]})),
             ("task", json!({"wave": 2, "text": "Fazer", "files": [{"path": "src/b.rs"}]})),
         ]);
-        let built = prompts(root, "teste", &log, Locale::PtBr, &Flight::default());
-        let wave = &built.iter().find(|p| p.wave == 2).expect("onda 2 no plano").text;
         let part = |key: &str| crate::platform::i18n::translate(key, Locale::PtBr);
-        let headings: Vec<String> = wave.lines().filter(|line| line.starts_with("## ")).map(String::from).collect();
-        assert_eq!(
-            headings,
-            [
-                format!("## {}", part("prompt.part.items")),
-                format!("## {}", part("prompt.part.tasks")),
-                format!("## {}", part("prompt.part.delivered")),
-                format!("## {}", part("prompt.part.execution")),
-            ],
-            "{wave}"
-        );
+        let five = ["delivers", "read", "do", "obey", "return"].map(|name| format!("## {}", part(&format!("prompt.part.{name}"))));
+        let with_copy = Flight {
+            running: [2].into(),
+            copies: [(2, WaveCopy { path: "/c/dois".into(), reused: None })].into(),
+            ..Flight::default()
+        };
+        for (flight, sixth) in [(&Flight::default(), false), (&with_copy, true)] {
+            let built = prompts(root, "teste", &log, Locale::PtBr, flight);
+            let wave = &built.iter().find(|p| p.wave == 2).expect("onda 2 no plano").text;
+            let headings: Vec<String> = wave.lines().filter(|line| line.starts_with("## ")).map(String::from).collect();
+            let mut expected = five.to_vec();
+            if sixth {
+                expected.push(format!("## {}", part("prompt.part.work")));
+            }
+            assert_eq!(headings, expected, "{wave}");
+            assert!(!wave.contains("Entregue.") && !wave.contains("MSTD-DELIV"), "{wave}");
+        }
     }
 
     /// As linhas de uma seção do pedido, sem o "- " do começo; vazio quando
@@ -1739,12 +1801,12 @@ mod tests {
         // Ids 2 a 6 no banco: os cinco defeitos fortes, na ordem em que
         // entraram — `loose[0]` ocupa o 1, e o sexto e o oitavo (o fraco e o
         // outro solto) ficam fora.
-        let expected: Vec<String> = (2u64..=6).map(|id| format!("`lessons`: {id}")).collect();
-        let items = section_lines(&built[0].text, crate::platform::i18n::translate("prompt.part.items", Locale::PtBr));
-        let lessons: Vec<&str> = items.iter().copied().filter(|line| line.starts_with("`lessons`:")).collect();
+        let expected: Vec<String> = (2u64..=6).zip(&strong).map(|(id, text)| format!("Lição {id} — {text}")).collect();
+        let obey = section_lines(&built[0].text, crate::platform::i18n::translate("prompt.part.obey", Locale::PtBr));
+        let lessons: Vec<&str> = obey.iter().copied().filter(|line| line.starts_with("Lição ")).collect();
         assert_eq!(lessons, expected.iter().map(String::as_str).collect::<Vec<_>>(), "o pedido da onda: {}", built[0].text);
-        for out in strong.iter().map(String::as_str).chain([weak, loose[0], loose[1], "Resposta curta."]) {
-            assert!(!built[0].text.contains(out), "{out} não deve aparecer por texto: só o número entra");
+        for out in [weak, loose[0], loose[1], "Resposta curta."] {
+            assert!(!built[0].text.contains(out), "{out} não é lição desta onda: {}", built[0].text);
         }
     }
 
@@ -1799,11 +1861,11 @@ mod tests {
 
         let built = prompts(root, "teste", &log, Locale::PtBr, &Flight::default());
         let part = |key: &str| crate::platform::i18n::translate(key, Locale::PtBr);
-        let items = section_lines(&built[0].text, part("prompt.part.items"));
-        let lessons: Vec<&str> = items.iter().copied().filter(|line| line.starts_with("`lessons`:")).collect();
-        assert_eq!(lessons, ["`lessons`: 96"], "{lessons:?}");
-        for out in [DISPATCH_LESSON, "Subagente nunca roda", "Quem tira uma proteção", "O teste tem de falhar"] {
-            assert!(!built[0].text.contains(out), "{out} não deve aparecer por texto: só o número entra");
+        let obey = section_lines(&built[0].text, part("prompt.part.obey"));
+        let lessons: Vec<&str> = obey.iter().copied().filter(|line| line.starts_with("Lição ")).collect();
+        assert_eq!(lessons, ["Lição 96 — O teste tem de falhar quando o código está errado."], "{lessons:?}");
+        for out in [DISPATCH_LESSON, "Subagente nunca roda", "Quem tira uma proteção", "Teste na divisa"] {
+            assert!(!built[0].text.contains(out), "{out} não deve aparecer: só o título da lição entra");
         }
     }
 
@@ -1920,17 +1982,18 @@ mod tests {
         ]);
 
         let built = prompts(root, "teste", &log, Locale::PtBr, &Flight::default());
-        let items = section_lines(&built[0].text, crate::platform::i18n::translate("prompt.part.items", Locale::PtBr));
-        let shown: Vec<&str> = items.iter().copied().filter(|line| line.starts_with("`lessons`:")).collect();
+        let obey = section_lines(&built[0].text, crate::platform::i18n::translate("prompt.part.obey", Locale::PtBr));
+        let shown: Vec<&str> = obey.iter().copied().filter(|line| line.starts_with("Lição ")).collect();
         // Ids 501 a 505: as cinco regras fortes, gravadas depois das 500
         // "Regra N"; id 509: a preferência, cujo texto também divide
         // "total" e "fatura" com a tarefa. Id 508, o defeito sem palavra em
         // comum, fica fora.
-        let expected: Vec<String> =
-            (501u64..=505).chain(std::iter::once(509)).map(|id| format!("`lessons`: {id}")).collect();
+        let mut expected: Vec<String> =
+            (501u64..=505).zip(&strong).map(|(id, text)| format!("Lição {id} — {text}")).collect();
+        expected.push("Lição 509 — O total da fatura sai em reais.".to_string());
         assert_eq!(shown, expected.iter().map(String::as_str).collect::<Vec<_>>(), "{shown:?}");
-        for out in strong.iter().chain(&weak).map(String::as_str).chain(["Apagar a pasta perde trabalho.", "O total da fatura sai em reais."]) {
-            assert!(!built[0].text.contains(out), "{out} não deve aparecer por texto: só o número entra");
+        for out in weak.iter().map(String::as_str).chain(["Apagar a pasta perde trabalho."]) {
+            assert!(!built[0].text.contains(out), "{out} não é lição desta onda");
         }
         assert_eq!(shown.len(), 6, "{shown:?}");
     }
@@ -2028,7 +2091,7 @@ mod tests {
         let text = &by_question[0].text;
         assert!(text.contains("leia só as linhas 3-5, 9-12 de `soma` em `rt/src/a.rs`"), "{text}");
         assert!(text.contains("leia só `soma` em `src/a.rs`"), "the first file ending in the path wins: {text}");
-        assert!(text.contains("quem testa `apps/rt/src/a.rs`: `apps/rt/tests/a_test.rs`"), "{text}");
+        assert!(text.contains("Quem testa `apps/rt/src/a.rs`: `apps/rt/tests/a_test.rs`"), "{text}");
         assert_eq!(by_question[0].stale_skills, ["somar"]);
     }
 
@@ -2045,7 +2108,7 @@ mod tests {
         let text = &built[0].text;
         assert!(built[0].bad_skills.is_empty(), "the map finds the path the skill cites: {:?}", built[0].bad_skills);
         assert!(text.contains("leia só as linhas 3-5, 9-12 de `soma` em `rt/src/a.rs`"), "{text}");
-        assert!(text.contains("quem testa `apps/rt/src/a.rs`: `apps/rt/tests/a_test.rs`"), "{text}");
+        assert!(text.contains("Quem testa `apps/rt/src/a.rs`: `apps/rt/tests/a_test.rs`"), "{text}");
         assert_eq!(built[0].stale_skills, ["somar"]);
     }
 
@@ -2102,12 +2165,12 @@ mod tests {
         chars.next().map(|c| c.to_uppercase().chain(chars).collect()).unwrap_or_default()
     }
 
-    /// As linhas de uma tarefa no pedido: a dela e as de baixo, até a
-    /// próxima tarefa.
+    /// As linhas de uma tarefa no pedido: o passo dela e as de baixo, até o
+    /// próximo passo.
     pub(super) fn task_lines<'t>(text: &'t str, title: &str) -> Vec<&'t str> {
         let mut lines = text.lines().skip_while(|line| !line.contains(title));
         let first = lines.next().into_iter();
-        first.chain(lines.take_while(|line| !line.starts_with("- ") && !line.is_empty())).collect()
+        first.chain(lines.take_while(|line| !line.starts_with(|c: char| c.is_ascii_digit()) && !line.is_empty())).collect()
     }
 
     #[test]
@@ -2570,7 +2633,7 @@ mod tests {
             let flight = Flight { running: [1].into(), ..Flight::default() };
             for lang in [Locale::PtBr, Locale::EnUs] {
                 let built = prompts(root, "teste", &log, lang, &flight);
-                let last = final_review(root, "teste", &log, lang);
+                let last = final_review(root, "teste", &log, lang).text;
                 for (what, text) in [("wave", &built[0].text), ("final", &last)] {
                     assert!(text.contains(&format!("`{copy}`")), "{map:?} {lang:?} {what}: {text}");
                     for word in ["CARGO_TARGET_DIR", "Cargo", "target/copias", &folder] {
@@ -2605,7 +2668,7 @@ mod tests {
             review,
         ]);
         assert_eq!(shown(&final_copy_path(root, "teste", &log)), slot(1));
-        assert!(final_review(root, "teste", &log, Locale::PtBr).contains(&format!("`{}`", slot(1))));
+        assert!(final_review(root, "teste", &log, Locale::PtBr).text.contains(&format!("`{}`", slot(1))));
 
         let unsent = log_of(&[("wave", json!({"n": 1, "text": "A onda", "criteria": [], "done_when": "passa"}))]);
         assert_eq!(shown(&final_copy_path(root, "teste", &unsent)), slot(0));
@@ -2655,6 +2718,15 @@ mod tests {
         part.lines().filter(|line| line.starts_with("- ")).map(str::to_string).collect()
     }
 
+    /// Os códigos das linhas de uma parte do pedido, na ordem: a linha de um
+    /// item abre com o tipo por extenso e traz o código logo depois.
+    fn line_codes(lines: Vec<String>) -> Vec<String> {
+        lines
+            .iter()
+            .filter_map(|line| line.find("MSTD-").map(|at| line[at..].split(' ').next().unwrap_or_default().to_string()))
+            .collect()
+    }
+
     /// A revisão que volta depois de um veredito final que reprovou traz a
     /// parte do que mudou desde ele: o veredito, só os commits gravados
     /// depois dele, o requisito que ele deu como não atendido, o regravado e
@@ -2677,24 +2749,19 @@ mod tests {
         for lang in [Locale::PtBr, Locale::EnUs] {
             let t = |key: &str| crate::platform::i18n::translate(key, lang);
             let since = t("prompt.part.since_verdict");
-            let whole_suite = t("prompt.execution.test").replace("{command}", "make test");
+            let whole_suite = t("prompt.step.suite").replace("{command}", "make test");
             let build = format!("- {}", t("prompt.execution.build").replace("{command}", "make"));
 
-            let last = final_review(root, "teste", &again, lang);
+            let last = final_review(root, "teste", &again, lang).text;
             assert_eq!(
-                part_lines(&last, since),
-                [
-                    format!("- `review`: {}", code(8)),
-                    format!("- `progress`: {}", code(9)),
-                    format!("- `agreed`: {}, {}, {}", code(2), code(10), code(11)),
-                    format!("- `criteria`: {}", code(12)),
-                ],
+                line_codes(part_lines(&last, since)),
+                [code(8), code(9), code(2), code(10), code(11), code(12)],
                 "{lang:?}: {last}"
             );
             assert!(!part_lines(&last, since).concat().contains(&code(7)), "o commit de antes fica fora: {last}");
             assert_eq!(
-                part_lines(&last, t("prompt.part.agreed")),
-                [format!("- `agreed`: {}, {}, {}, {}", code(1), code(2), code(10), code(11))],
+                line_codes(part_lines(&last, t("prompt.part.agreed"))),
+                [code(1), code(2), code(10), code(11)],
                 "o pedido ainda traz todos os requisitos acordados: {last}"
             );
             assert!(last.contains(t("prompt.final.look_again")) && !last.contains(t("prompt.final.look")), "{last}");
@@ -2703,7 +2770,7 @@ mod tests {
             assert!(!last.contains(&whole_suite), "a revisão não roda a suíte inteira: {last}");
 
             for (what, log) in [("primeira", reviewed_again(root, None)), ("aprovada", reviewed_again(root, Some("approved")))] {
-                let first = final_review(root, "teste", &log, lang);
+                let first = final_review(root, "teste", &log, lang).text;
                 assert!(part_lines(&first, since).is_empty() && !first.contains(&format!("## {since}")), "{what}: {first}");
                 assert!(first.contains(t("prompt.final.look")) && !first.contains(t("prompt.final.look_again")), "{what}: {first}");
                 assert!(!first.contains(&whole_suite), "{what}: a revisão não roda a suíte inteira: {first}");
@@ -2711,6 +2778,29 @@ mod tests {
                 let suite = t("prompt.review.suite").replace("{command}", "make test").replace("{commit}", sha);
                 assert!(first.contains(&format!("- {suite}")) && first.contains(&build), "{what}: {first}");
             }
+        }
+    }
+
+    /// O que o fechamento grava no envio da revisão como leitura obrigatória
+    /// é o que o pedido imprime: o código de cada linha de item, na ordem, uma
+    /// vez só mesmo quando o requisito sai em duas partes — o novo depois do
+    /// veredito sai em "o que mudou" e em "requisitos acordados".
+    #[test]
+    fn the_review_reading_list_is_the_codes_of_the_lines_the_request_prints() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let again = reviewed_again(root, Some("rejected"));
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let review = final_review(root, "teste", &again, lang);
+            let all: Vec<String> = review.text.lines().filter(|line| line.starts_with("- ")).map(str::to_string).collect();
+            let mut printed: Vec<String> = Vec::new();
+            for code in line_codes(all) {
+                if !printed.contains(&code) {
+                    printed.push(code);
+                }
+            }
+            assert!(printed.len() > 6, "{}", review.text);
+            assert_eq!(review.listed, printed, "{lang:?}: {}", review.text);
         }
     }
 
@@ -2747,12 +2837,13 @@ mod tests {
         let code = |id: u64| codes[&id].clone();
         for lang in [Locale::PtBr, Locale::EnUs] {
             let t = |key: &str| crate::platform::i18n::translate(key, lang);
-            let last = final_review(root, "teste", &log, lang);
+            let last = final_review(root, "teste", &log, lang).text;
             let since = t("prompt.part.since_verdict");
             assert_eq!(last.matches(code(10).as_str()).count(), 1, "o veredito aparece uma vez só: {last}");
-            assert!(part_lines(&last, since).contains(&format!("- `review`: {}", code(10))), "{lang:?}: {last}");
+            assert_eq!(line_codes(part_lines(&last, since)).first(), Some(&code(10)), "{lang:?}: {last}");
             let headings: Vec<&str> = last.lines().filter_map(|line| line.strip_prefix("## ")).collect();
             let expected: Vec<&str> = [
+                "prompt.part.read",
                 "prompt.part.since_verdict",
                 "prompt.part.waves",
                 "prompt.part.agreed",
@@ -2766,8 +2857,8 @@ mod tests {
             .collect();
             assert_eq!(headings, expected, "nenhuma parte de conserto à parte: {last}");
             assert!(last.contains(t("prompt.final.look_again")), "{lang:?}: {last}");
-            assert_eq!(part_lines(&last, t("prompt.part.waves")), [format!("- `waves`: {}, {}", code(3), code(4))], "{last}");
-            assert_eq!(part_lines(&last, t("prompt.part.each_delivered")), [format!("- `waves`: {}", code(11))], "{last}");
+            assert_eq!(line_codes(part_lines(&last, t("prompt.part.waves"))), [code(3), code(4)], "{last}");
+            assert_eq!(line_codes(part_lines(&last, t("prompt.part.each_delivered"))), [code(11)], "{last}");
         }
     }
 
@@ -2849,23 +2940,23 @@ mod tests {
             };
 
             let log = two_waves_reviewed(&Reviewed::WaveRejected);
-            let again = final_review(root, "teste", &log, lang);
+            let again = final_review(root, "teste", &log, lang).text;
             assert!(again.contains(recorte), "{lang:?}: a revisão de volta diz o recorte: {again}");
             assert_eq!(again.matches(recorte).count(), 1, "o recorte é dito uma vez só: {again}");
             assert_eq!(wave_codes(&log, &again), [true, false], "só a onda reprovada: {again}");
 
             let log = two_waves_reviewed(&Reviewed::First);
-            let first = final_review(root, "teste", &log, lang);
+            let first = final_review(root, "teste", &log, lang).text;
             assert!(!first.contains(recorte), "{lang:?}: a primeira revisão não diz recorte: {first}");
             assert_eq!(wave_codes(&log, &first), [true, true], "{first}");
 
             let log = two_waves_reviewed(&Reviewed::WorkRejected);
-            let whole = final_review(root, "teste", &log, lang);
+            let whole = final_review(root, "teste", &log, lang).text;
             assert!(whole.contains(t("prompt.final.look_again")), "{lang:?}: {whole}");
             assert_eq!(wave_codes(&log, &whole), [true, true], "a obra reprovada traz todas as ondas: {whole}");
 
             let log = two_waves_reviewed(&Reviewed::ApprovedAfter);
-            let after = final_review(root, "teste", &log, lang);
+            let after = final_review(root, "teste", &log, lang).text;
             assert!(after.contains(t("prompt.final.look")) && !after.contains(recorte), "{lang:?}: {after}");
             assert_eq!(wave_codes(&log, &after), [true, true], "depois da aprovação, a obra inteira: {after}");
         }
@@ -2904,7 +2995,7 @@ mod tests {
                     .replace("{files}", "`.env`, `apps/api/.env.local`")
                     .replace("{root}", &shown(root));
                 let wave = prompts(root, "teste", &log, lang, &flight).remove(0).text;
-                let last = final_review(root, "teste", &log, lang);
+                let last = final_review(root, "teste", &log, lang).text;
                 for (what, text, prepare) in [("wave", &wave, &new_copy), ("final", &last, &review)] {
                     assert_eq!(text.contains(prepare.as_str()), cites, "{config} {lang:?} {what}: {text}");
                     assert_eq!(text.contains("npm ci"), cites, "{config} {lang:?} {what}: {text}");

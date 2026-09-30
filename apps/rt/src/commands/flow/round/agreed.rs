@@ -12,11 +12,43 @@ use mustard_core::domain::wave_prompt as agreed_prompt;
 use serde_json::{json, Map, Value};
 
 use super::queue::tasks_not_delivered;
-use super::report::{agreed_item_id, as_dispatched};
+use super::report::{agreed_item_id, dispatched_at};
 
 /// O que [`settle_agreed`] devolve: a tarefa de cada item não cumprido e o
 /// código de cada item esperado que ficou sem resposta.
 pub(super) type SettledAgreed = (Vec<Map<String, Value>>, Vec<String>);
+
+/// Os itens combinados que o pedido da onda `wave` levou: o que ele lê
+/// ([`agreed_prompt::dispatch_items`]), só com os tipos do bloco do
+/// combinado que o veredito final também responde — regra, limite, contrato,
+/// erro, caso de borda, fora do escopo e decisão. A entrega da onda responde
+/// por cada um deles.
+///
+/// A lista é a do envio que despachou a onda ([`dispatched_at`]), não a de
+/// agora: a leitura é feita sobre a spec como estava nele, só com os eventos
+/// de número até o dele — os números da spec só crescem. O item combinado
+/// gravado entre o envio e a volta não é cobrado, porque o pedido não o
+/// levou. O que o pedido levou e ganhou versão nova depois é cobrado pela
+/// versão de agora, pelo mesmo código; o que saiu da spec depois, não.
+pub(super) fn request_agreed<'a>(log: &'a SpecLog, wave: u64, languages: &Languages) -> Vec<&'a SpecEvent> {
+    let then = as_dispatched(log, wave);
+    let then_codes = then.codes();
+    let carried: Vec<&String> =
+        agreed_prompt::dispatch_items(&then, wave, None, languages).iter().filter_map(|item| then_codes.get(&item.id)).collect();
+    let codes = log.codes();
+    let agreed = agreed_prompt::all_agreed(log);
+    carried
+        .into_iter()
+        .filter_map(|code| agreed.iter().copied().find(|item| codes.get(&item.id) == Some(code)))
+        .collect()
+}
+
+/// A spec como estava no envio que despachou a onda `wave`: só os eventos de
+/// número até o dele. Sem envio, a spec inteira.
+pub(super) fn as_dispatched(log: &SpecLog, wave: u64) -> SpecLog {
+    let sent = dispatched_at(log, wave).unwrap_or(u64::MAX);
+    SpecLog { events: log.events.iter().filter(|e| e.id <= sent).cloned().collect(), ..SpecLog::default() }
+}
 
 /// Os códigos dos itens que alguma tarefa ainda por entregar cobre
 /// ([`tasks_not_delivered`]), fora as das ondas em `returning`. Pelo código,

@@ -77,9 +77,14 @@ impl Project {
     }
 
     fn command(&self, args: &[&str], stdin: &str) -> Output {
+        self.command_in(&self.root, args, stdin)
+    }
+
+    /// Como [`Self::command`], rodando de dentro de `dir`.
+    fn command_in(&self, dir: &Path, args: &[&str], stdin: &str) -> Output {
         let mut child = Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
             .args(args)
-            .current_dir(&self.root)
+            .current_dir(dir)
             .env("HOME", &self.home)
             .env("USERPROFILE", &self.home)
             .env("CLAUDE_PROJECT_DIR", &self.root)
@@ -100,6 +105,30 @@ impl Project {
             let _ = pipe.write_all(stdin.as_bytes());
         }
         child.wait_with_output().expect("the binary finishes")
+    }
+
+    /// O agente lê, de dentro da cópia e pelo comando que o pedido ensina,
+    /// cada item que o envio da onda `wave` manda ler (`read_items`): sem
+    /// isso a entrega é recusada.
+    fn read_request(&self, wave: u64) {
+        let log = self.log();
+        let sent = log
+            .visible()
+            .into_iter()
+            .rfind(|e| e.event_type == "send" && e.wave() == Some(wave))
+            .unwrap_or_else(|| panic!("nenhum envio gravado para a onda {wave}"));
+        let copy = PathBuf::from(sent.str_field("copy").expect("the copy"));
+        let root = self.root.display().to_string();
+        let listed = sent.fields.get("read_items").and_then(Value::as_array).cloned().unwrap_or_default();
+        for item in listed.iter().filter_map(Value::as_str) {
+            let block = format!("item-{item}");
+            let lesson = item.strip_prefix("lesson-");
+            let mut args = vec!["run", "read", lesson.map_or(block.as_str(), |_| "lessons")];
+            args.extend(lesson.into_iter().flat_map(|n| ["--term", n]));
+            args.extend(["--root", &root, "--spec", SPEC]);
+            let out = self.command_in(&copy, &args, "");
+            assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stdout));
+        }
     }
 
     /// Um comando `run`, que precisa responder `ok`.
@@ -452,6 +481,7 @@ fn uma_spec_antiga_tem_as_tarefas_nao_entregues_relotadas() {
         .collect();
     let delivered = json!({"wave": 1, "text": "A onda 1 saiu.", "files": ["src/main.rs"], "commit": "a onda 1 saiu",
         "agreed": agreed});
+    project.read_request(1);
     project.run(&["write", "delivered", "--spec", SPEC, "--json", &delivered.to_string()]);
     project.run(&["round", "--spec", SPEC]);
 

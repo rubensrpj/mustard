@@ -15,7 +15,7 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use mustard_core::domain::spec_events::SpecLog;
+use mustard_core::domain::spec_events::{SpecEvent, SpecLog};
 use mustard_core::io::spec_events as store;
 use serde_json::{json, Value};
 
@@ -63,9 +63,14 @@ impl Project {
     }
 
     fn command(&self, args: &[&str], stdin: &str) -> std::process::Output {
+        self.command_in(&self.root, args, stdin)
+    }
+
+    /// Como [`Self::command`], rodando de dentro de `dir`.
+    fn command_in(&self, dir: &Path, args: &[&str], stdin: &str) -> std::process::Output {
         let mut child = Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
             .args(args)
-            .current_dir(&self.root)
+            .current_dir(dir)
             .env("HOME", &self.home)
             .env("USERPROFILE", &self.home)
             .env("CLAUDE_PROJECT_DIR", &self.root)
@@ -122,6 +127,43 @@ impl Project {
     fn hook(&self, event: &str, payload: &Value) {
         let out = self.command(&["on", event], &payload.to_string());
         assert_eq!(out.status.code(), Some(0), "a hook always exits 0: {}", String::from_utf8_lossy(&out.stderr));
+    }
+
+    /// O agente lê, de dentro da cópia e pelo comando que o pedido ensina,
+    /// cada item que o envio da onda `wave` manda ler (`read_items`): sem
+    /// isso a entrega é recusada.
+    fn read_request(&self, wave: u64) {
+        self.read_send(|sent| sent.wave() == Some(wave) && sent.str_field("role") != Some("review"));
+    }
+
+    /// O revisor lê, de dentro da cópia dele e pelo comando que o pedido
+    /// ensina, cada item que o envio da revisão manda ler: sem isso o
+    /// veredito é recusado.
+    fn read_review(&self) {
+        self.read_send(|sent| sent.str_field("role") == Some("review"));
+    }
+
+    /// A leitura, de dentro da cópia do último envio que `pick` escolhe, de
+    /// cada item da lista dele.
+    fn read_send(&self, pick: impl Fn(&SpecEvent) -> bool) {
+        let log = self.log();
+        let sent = log
+            .visible()
+            .into_iter()
+            .rfind(|e| e.event_type == "send" && pick(e))
+            .unwrap_or_else(|| panic!("nenhum envio gravado para a leitura"));
+        let copy = PathBuf::from(sent.str_field("copy").expect("the copy"));
+        let root = self.root.display().to_string();
+        let listed = sent.fields.get("read_items").and_then(Value::as_array).cloned().unwrap_or_default();
+        for item in listed.iter().filter_map(Value::as_str) {
+            let block = format!("item-{item}");
+            let lesson = item.strip_prefix("lesson-");
+            let mut args = vec!["run", "read", lesson.map_or(block.as_str(), |_| "lessons")];
+            args.extend(lesson.into_iter().flat_map(|n| ["--term", n]));
+            args.extend(["--root", &root, "--spec", SPEC]);
+            let out = self.command_in(&copy, &args, "");
+            assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stdout));
+        }
     }
 
     fn log(&self) -> SpecLog {
@@ -263,6 +305,7 @@ fn deliver_wave(project: &Project, wave: u64, text: &str, changes: &[(&str, &str
         .collect();
     let delivered = json!({"wave": wave, "text": text, "files": files, "commit": format!("ajuste da onda {wave}"),
         "agreed": agreed});
+    project.read_request(wave);
     project.run(&["write", "delivered", "--spec", SPEC, "--json", &delivered.to_string()]);
     project.run(&["round", "--spec", SPEC])
 }
@@ -381,6 +424,7 @@ fn item_nao_atendido_vira_tarefa_no_backlog_e_a_revisao_final_roda_de_novo() {
     let verdict = json!({"final": true, "result": "approved", "text": "Quase tudo certo.", "agreed": agreed});
     let asked = project.run(&["close", "--spec", SPEC]);
     assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+    project.read_review();
     project.write("verdict", &verdict);
     let after_verdict = project.answer(&["close", "--spec", SPEC]);
     // A obra não fecha: o item de fora força o veredito a reprovado e vira
@@ -416,6 +460,7 @@ fn item_nao_atendido_vira_tarefa_no_backlog_e_a_revisao_final_roda_de_novo() {
 
     let all_met: Vec<Value> = decisions.iter().map(|decision| json!({"item": decision["code"], "met": true})).collect();
     let approved = json!({"final": true, "result": "approved", "text": "Tudo atendido.", "agreed": all_met});
+    project.read_review();
     project.write("verdict", &approved);
     let closed = project.run(&["close", "--spec", SPEC]);
     assert_eq!(closed["phase"], json!("closed"), "{closed}");

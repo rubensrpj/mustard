@@ -176,6 +176,16 @@ pub enum Refusal {
     /// combinado que o pedido dela levou. Nada é gravado, e a mensagem nomeia
     /// pelo código cada item que faltou.
     DeliveryAgreedMissing { wave: u64, missing: Vec<String> },
+    /// A entrega da onda `wave` sem a leitura, registrada, de algum item que o
+    /// pedido dela lista: o código do item, ou `lesson-<número>` da lição.
+    /// Nada é gravado, e a mensagem nomeia cada item não lido e manda lê-lo de
+    /// dentro da cópia.
+    DeliveryReadMissing { wave: u64, missing: Vec<String> },
+    /// O veredito da revisão final sem a leitura, registrada, de algum item
+    /// que o pedido dela lista: o código do item. Nada é gravado, e a
+    /// mensagem nomeia cada item não lido e manda lê-lo de dentro da cópia do
+    /// revisor.
+    VerdictReadMissing { missing: Vec<String> },
     /// Um critério gravado sem declarar a forma: nenhuma das cinco do padrão
     /// de critério de aceitação. Nada é gravado, e a mensagem lista as cinco
     /// pelo nome, nos dois idiomas.
@@ -345,6 +355,8 @@ impl Refusal {
             Self::TaskDependencyCycle { .. } => "task-dependency-cycle",
             Self::AgreedItemsMissing { .. } => "agreed-items-missing",
             Self::DeliveryAgreedMissing { .. } => "delivery-agreed-missing",
+            Self::DeliveryReadMissing { .. } => "delivery-read-missing",
+            Self::VerdictReadMissing { .. } => "verdict-read-missing",
             Self::CriterionFormMissing => "criterion-form-missing",
             Self::ProofNotACommand { .. } => "proof-not-a-command",
             Self::ProofProgramUnknown { .. } => "proof-program-unknown",
@@ -611,6 +623,13 @@ impl Refusal {
                 "spec_events.delivery_agreed_missing",
                 &[("{wave}", wave.to_string()), ("{missing}", missing.join(", "))],
             ),
+            Self::DeliveryReadMissing { wave, missing } => fill(
+                "spec_events.delivery_read_missing",
+                &[("{wave}", wave.to_string()), ("{missing}", missing.join(", "))],
+            ),
+            Self::VerdictReadMissing { missing } => {
+                fill("spec_events.verdict_read_missing", &[("{missing}", missing.join(", "))])
+            }
             Self::CriterionFormMissing => fill("spec_events.criterion_form_missing", &[]),
             Self::ProofNotACommand { criterion, found } => fill(
                 "spec_events.proof_not_a_command",

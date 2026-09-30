@@ -326,9 +326,9 @@ mod tests {
             Verdict::Rewrite { tool_input, .. } => {
                 assert_eq!(tool_input["prompt"], json!(assembled(root)));
                 let prompt = tool_input["prompt"].as_str().unwrap();
-                assert!(prompt.lines().any(|l| l == "- `MSTD-TASK-0001` Tarefa 0."), "{prompt}");
-                assert!(prompt.lines().any(|l| l == "- `waves` MSTD-WAVE-0001: Onda 1."), "{prompt}");
-                assert_eq!(prompt.matches("mustard-rt run read dispatch-1 ").count(), 1, "{prompt}");
+                assert!(prompt.lines().any(|l| l == "1. Faça a tarefa MSTD-TASK-0001 — Tarefa 0."), "{prompt}");
+                assert!(prompt.lines().any(|l| l == "## Como ler cada item"), "{prompt}");
+                assert_eq!(prompt.matches("mustard-rt run read item-<código> ").count(), 1, "{prompt}");
                 assert_eq!(prompt.matches("mustard-rt run read").count(), 2, "{prompt}");
                 assert_eq!(tool_input["subagent_type"], json!("general-purpose"));
                 assert_eq!(tool_input["description"], json!("onda"));
@@ -374,7 +374,7 @@ mod tests {
             Verdict::Rewrite { tool_input, .. } => {
                 let prompt = tool_input["prompt"].as_str().unwrap().to_string();
                 assert!(prompt.lines().count() > 500, "{prompt}");
-                let task_lines = prompt.lines().filter(|l| l.starts_with("- `MSTD-TASK-")).count();
+                let task_lines = prompt.lines().filter(|l| l.contains(". Faça a tarefa MSTD-TASK-")).count();
                 assert_eq!(task_lines, 500, "{prompt}");
                 assert!(prompt.contains("s499"), "{prompt}");
             }

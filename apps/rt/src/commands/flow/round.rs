@@ -121,6 +121,7 @@ mod imports_check;
 mod keep;
 mod leftovers;
 mod queue;
+mod read_check;
 mod removed_check;
 mod report;
 mod slots;
@@ -144,7 +145,7 @@ use crate::shared::spec_state::session_from_env;
 
 pub(crate) use answer::{read_command, RoundRefusal};
 pub(crate) use convert::convert_hand_waves;
-pub(crate) use queue::{backlog_left, open_review, tasks_left, wave_states, waves_in_progress, waves_pending_fix};
+pub(crate) use queue::{backlog_left, open_review, open_sends, tasks_left, wave_states, waves_in_progress, waves_pending_fix};
 #[cfg(test)]
 pub(crate) use slots::copies_leave_with_the_test;
 pub(crate) use keep::Kept;
@@ -152,6 +153,9 @@ pub(crate) use slots::{
     code_kept_hint, ensure_copy, held_slots, local_file_ignored, local_file_missing, remove_single_copy,
     remove_spec_copies, reset_slot, slot_owner, spec_copies, Removal,
 };
+pub(crate) use read_check::request_name;
+#[cfg(test)]
+pub(crate) use read_check::{read_request, read_review, seed_read};
 pub(crate) use report::{check_return, check_verdict_return, take_report};
 pub(crate) use usage::Caller;
 
@@ -429,9 +433,22 @@ mod tests {
     }
 
     /// A volta de uma onda da spec `x`, gravada como o agente a grava: pelo
-    /// `run write delivered`, com os campos de `body`. Devolve a resposta da
-    /// gravação, com a recusa quando ela recusa.
+    /// `run write delivered`, com os campos de `body`. A recusa por item do
+    /// pedido não lido leva o agente a ler o pedido e gravar de novo, e a
+    /// resposta é a da segunda gravação; qualquer outra recusa volta como
+    /// veio, sem leitura nenhuma gravada.
     pub(super) fn returned(root: &Path, body: Value) -> Value {
+        let first = returned_unread(root, body.clone());
+        let Some(wave) = body["wave"].as_u64().filter(|_| first["reason"] == json!("delivery-read-missing")) else {
+            return first;
+        };
+        read_request(root, "x", wave);
+        returned_unread(root, body)
+    }
+
+    /// Como [`returned`], sem ler o pedido antes: a gravação do agente que
+    /// entrega sem ter lido o que o pedido lista.
+    pub(super) fn returned_unread(root: &Path, body: Value) -> Value {
         crate::commands::spec_events::write::write_at(&WriteOpts {
             root: root.to_path_buf(),
             spec: Some("x".to_string()),
@@ -456,7 +473,7 @@ mod tests {
         let mut body = json!({"wave": wave, "text": text, "files": files, "commit": format!("a onda {wave} saiu")});
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let agreed: Vec<Value> =
-            report::request_agreed(&log, wave, &mustard_core::domain::normalize::Languages::of_project(root)).iter().map(|item| json!({"item": item.id, "met": true})).collect();
+            agreed::request_agreed(&log, wave, &mustard_core::domain::normalize::Languages::of_project(root)).iter().map(|item| json!({"item": item.id, "met": true})).collect();
         if !agreed.is_empty() {
             body["agreed"] = json!(agreed);
         }
