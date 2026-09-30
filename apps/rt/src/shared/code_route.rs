@@ -430,6 +430,7 @@ mod tests {
     use std::path::Path;
 
     use super::{CopyLines, linked_copy, project_path};
+    use crate::shared::config_key::{NameFilter, Walk};
 
     /// Um repositório com um commit em `dir`.
     fn repo_in(dir: &Path) {
@@ -502,5 +503,55 @@ mod tests {
         let lines = CopyLines::between(project, copy);
         assert_eq!(lines.range(1, 7), Some((2, 9)));
         assert_eq!(lines.range(3, 5), Some((4, 7)));
+    }
+
+    /// [`admitted`] a partir da raiz, sem pasta buscada.
+    fn admitted(rel: &str, filters: &[NameFilter], walk: Walk) -> Option<bool> {
+        super::admitted(rel, filters, walk, &[])
+    }
+
+    /// O filtro de saída que traz pasta (`src/__tests__`, `dir/**`,
+    /// `**/__tests__/`, um nome de pasta) deixa de fora os arquivos de dentro
+    /// dela, sem passar a busca, e os que ficam de fora dela seguem. A pasta
+    /// vale a partir da raiz ou da pasta buscada, e o `**/` do começo, em
+    /// qualquer altura. O que a leitura não entende ainda passa a busca.
+    #[test]
+    fn an_output_filter_with_a_folder_leaves_the_files_inside_that_folder_out() {
+        let rg = Walk::Rg { unignored: false };
+        let excluding = |glob: &str| vec![NameFilter { exclude: true, glob: glob.to_string() }];
+        for glob in ["src/__tests__", "src/__tests__/**", "**/__tests__/**", "**/__tests__/", "./src/__tests__/", "/src/__tests__", "__tests__"] {
+            assert_eq!(admitted("src/__tests__/a.ts", &excluding(glob), rg), Some(false), "{glob}");
+            assert_eq!(admitted("src/a.ts", &excluding(glob), rg), Some(true), "{glob}: a file outside the folder stays");
+        }
+        assert_eq!(admitted("lib/__tests__/a.ts", &excluding("src/__tests__/**"), rg), Some(true), "anchored at the root");
+        assert_eq!(admitted("lib/__tests__/a.ts", &excluding("**/__tests__/**"), rg), Some(false), "any depth");
+        assert_eq!(admitted("src/__tests__x/a.ts", &excluding("src/__tests__"), rg), Some(true), "a folder name is whole");
+        let nested = "apps/web/src/__tests__/a.ts";
+        assert_eq!(admitted(nested, &excluding("src/__tests__"), rg), Some(true), "from the root it is another path");
+        assert_eq!(super::admitted(nested, &excluding("src/__tests__"), rg, &["apps/web".to_string()]), Some(false), "from the searched folder");
+        assert_eq!(admitted("src/a/x/b.ts", &excluding("src/*/x"), rg), Some(false), "a wildcard inside the folder path");
+        assert_eq!(admitted("src/a/x/b.ts", &excluding("src/[ab]/x"), rg), None, "a class is not read");
+        assert_eq!(admitted("src/a/x/y/b.ts", &excluding("src/**/x/y"), rg), None, "a ** in the middle is not read");
+        let later_input = vec![NameFilter { exclude: true, glob: "src/__tests__".into() }, NameFilter { exclude: false, glob: "*.ts".into() }];
+        assert_eq!(admitted("src/__tests__/a.ts", &later_input, rg), Some(true), "the later filter wins");
+    }
+
+    #[test]
+    fn the_last_name_filter_that_matches_decides_the_file() {
+        let rg = Walk::Rg { unignored: false };
+        let only = |globs: &[&str]| globs.iter().map(|glob| NameFilter::rg(glob)).collect::<Vec<_>>();
+        assert_eq!(admitted("src/a.rs", &[], rg), Some(true));
+        assert_eq!(admitted("src/a.rs", &only(&["*.rs"]), rg), Some(true));
+        assert_eq!(admitted("docs/a.md", &only(&["*.rs"]), rg), Some(false), "an input filter leaves the rest out");
+        assert_eq!(admitted("docs/a.md", &only(&["!*.rs"]), rg), Some(true));
+        assert_eq!(admitted("src/a.rs", &only(&["!*.rs"]), rg), Some(false));
+        assert_eq!(admitted("src/a.rs", &only(&["!*.rs", "*.rs"]), rg), Some(true), "the later filter wins");
+        assert_eq!(admitted("src/a.rs", &only(&["*.rs", "!*.rs"]), rg), Some(false));
+        assert_eq!(admitted("src/a.rs", &only(&["src/**"]), rg), None, "a folder in the filter is not read");
+        let grep = |exclude: bool, glob: &str| NameFilter { exclude, glob: glob.to_string() };
+        assert_eq!(admitted("src/a.rs", &[grep(false, "*.md")], Walk::Grep), Some(false));
+        assert_eq!(admitted("docs/a.md", &[grep(false, "*.md")], Walk::Grep), Some(true));
+        assert_eq!(admitted("docs/a.md", &[grep(true, "*.md")], Walk::Grep), Some(false));
+        assert_eq!(admitted("src/a.rs", &[grep(true, "*.md")], Walk::Grep), Some(true));
     }
 }
