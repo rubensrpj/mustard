@@ -20,6 +20,7 @@
 //! falta só é apontado com o mapa desta vez: quando a ferramenta do scan
 //! falha, só as lições parecidas saem.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use mustard_core::Scan;
@@ -200,19 +201,39 @@ fn review_lessons(root: &Path, model_path: Option<&Path>, result: &mut Value) {
         "similar": similar,
         "missing_paths": missing.iter().map(|m| json!({ "id": m.id, "paths": m.paths })).collect::<Vec<_>>(),
     });
-    result["next"] = json!(next_step(&similar, &missing, lang));
+    // Os grupos de defeito e de regra do projeto a gravação recusa juntar: eles
+    // vão para a dica de virar teste ou sair do banco, não para a de juntar.
+    let class_of: BTreeMap<u64, &str> = lessons::kept(&bank).into_iter().map(|lesson| (lesson.id, lesson.event_type.as_str())).collect();
+    let (for_the_code, to_merge): (Vec<Vec<u64>>, Vec<Vec<u64>>) = similar.iter().cloned().partition(|group| {
+        group.iter().any(|id| class_of.get(id).is_some_and(|class| refused_for_a_merge(class)))
+    });
+    result["next"] = json!(next_step(&to_merge, &for_the_code, &missing, lang));
 }
 
-/// O passo seguinte do scan: juntar cada grupo e retirar as lições que já
-/// não valem, pelo `run write lesson`.
-fn next_step(similar: &[Vec<u64>], missing: &[MissingPaths], lang: Locale) -> String {
-    let mut parts: Vec<String> = Vec::new();
-    if !similar.is_empty() {
-        let groups: Vec<String> = similar
+/// A classe de lição que o `write lesson` recusa juntar: a mesma que ele
+/// recusa gravar ([`lessons::for_the_code`]).
+fn refused_for_a_merge(class: &str) -> bool {
+    let draft = serde_json::Map::from_iter([("class".to_string(), json!(class))]);
+    lessons::for_the_code(&draft).is_some()
+}
+
+/// O passo seguinte do scan: juntar cada grupo de `to_merge` e retirar as
+/// lições que já não valem, pelo `run write lesson`. Os grupos de `for_the_code`
+/// não se juntam: viram teste no código ou saem do banco.
+fn next_step(to_merge: &[Vec<u64>], for_the_code: &[Vec<u64>], missing: &[MissingPaths], lang: Locale) -> String {
+    let shown = |groups: &[Vec<u64>]| -> String {
+        let groups: Vec<String> = groups
             .iter()
             .map(|group| format!("[{}]", group.iter().map(u64::to_string).collect::<Vec<_>>().join(", ")))
             .collect();
-        parts.push(translate("lessons.scan_merge", lang).replace("{groups}", &groups.join(", ")));
+        groups.join(", ")
+    };
+    let mut parts: Vec<String> = Vec::new();
+    if !to_merge.is_empty() {
+        parts.push(translate("lessons.scan_merge", lang).replace("{groups}", &shown(to_merge)));
+    }
+    if !for_the_code.is_empty() {
+        parts.push(translate("lessons.scan_test_or_retire", lang).replace("{groups}", &shown(for_the_code)));
     }
     if !missing.is_empty() {
         let shown: Vec<String> = missing.iter().map(|m| format!("{} ({})", m.id, m.paths.join(", "))).collect();
@@ -334,7 +355,12 @@ mod tests {
     /// Uma regra do projeto como o importador das instruções a deixa no
     /// banco, gravada pelo mesmo gravador do comando de gravar lição.
     fn rule(bank: &Path, subproject: &str, text: &str, keys: &[&str]) -> u64 {
-        let draft = serde_json::json!({"class": "project_rule", "text": text, "keys": keys,
+        lesson_of(bank, "project_rule", subproject, text, keys)
+    }
+
+    /// Uma lição da classe `class`, gravada pelo mesmo gravador.
+    fn lesson_of(bank: &Path, class: &str, subproject: &str, text: &str, keys: &[&str]) -> u64 {
+        let draft = serde_json::json!({"class": class, "text": text, "keys": keys,
             "applies_to": {"subproject": subproject}, "found_in": {"source": format!("{subproject}/CLAUDE.md")}});
         let Value::Object(draft) = draft else { unreachable!() };
         mustard_core::io::lessons::write(bank, draft, None).expect("a lição entra no banco").id
@@ -414,8 +440,73 @@ mod tests {
         let next = result["next"].as_str().expect("o passo seguinte");
         assert!(next.contains(&format!("[{first}, {second}]")), "{next}");
         assert!(next.contains(&format!("{stale} (domain/economy/estimator.rs)")), "{next}");
-        assert!(next.contains("mustard-rt run write lesson") && next.contains("\"replaces\"") && next.contains("\"targets\""), "{next}");
+        assert!(next.contains("mustard-rt run write lesson") && next.contains("\"targets\""), "{next}");
+        assert!(!next.contains("\"replaces\""), "a regra do projeto não se junta: {next}");
         assert_eq!(std::fs::read(&bank).expect("o banco"), bytes, "o scan não muda o banco");
+    }
+
+    /// Dois pares de lições parecidas por classe: o par de defeito e o par de
+    /// regra do projeto, que a gravação recusa juntar, ganham a dica de virar
+    /// teste ou sair do banco, com o comando de retirada pronto e sem o
+    /// `"replaces"`; o par de armadilha do ambiente e o de preferência do
+    /// usuário, que ela aceita juntar, ganham a de juntar. Cada dica cita só os
+    /// grupos da sua classe.
+    #[test]
+    fn the_scan_offers_a_merge_only_for_the_lessons_the_write_accepts_to_merge() {
+        let words = |extra: &'static str| ["rt", "subcomando", "exige", "quatro", "registros", extra];
+        let text = |what: &str, more: &str| format!("{what} novo de `run` exige QUATRO registros{more}.");
+        let mut groups = std::collections::BTreeMap::new();
+        for (class, what) in
+            [("defect", "Defeito"), ("project_rule", "Regra"), ("environment_trap", "Armadilha"), ("user_preference", "Preferência")]
+        {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let root = dir.path();
+            write(&root.join("apps/rt/src/main.rs"), "fn main() {}\n");
+            let bank = ClaudePaths::for_project(root).expect("paths").lessons_path();
+            let first = lesson_of(&bank, class, "apps/rt", &text(what, ";"), &words("esquecer"));
+            let second = lesson_of(&bank, class, "apps/rt", &text(what, " (variante e braço)"), &words("variante"));
+            let result = scan_at(root, None, false, None, mine_disk);
+            assert_eq!(result["lessons"]["similar"], serde_json::json!([[first, second]]), "{class}: {result}");
+            groups.insert(class, (format!("[{first}, {second}]"), result["next"].as_str().expect("o passo seguinte").to_string()));
+        }
+        for class in ["defect", "project_rule"] {
+            let (group, next) = &groups[class];
+            assert!(next.contains(group.as_str()), "{class}: {next}");
+            assert!(next.contains("Transforme cada uma num teste no código"), "{class} vira teste ou sai: {next}");
+            assert!(next.contains("mustard-rt run write lesson --json '{\"targets\":["), "{class} traz o comando de retirada: {next}");
+            assert!(!next.contains("\"replaces\"") && !next.contains("Junte cada grupo"), "{class} não manda juntar: {next}");
+        }
+        for class in ["environment_trap", "user_preference"] {
+            let (group, next) = &groups[class];
+            assert!(next.contains(group.as_str()), "{class}: {next}");
+            assert!(next.contains("Junte cada grupo") && next.contains("\"replaces\""), "{class} manda juntar: {next}");
+            assert!(!next.contains("Transforme cada uma num teste"), "{class} não manda virar teste: {next}");
+        }
+    }
+
+    /// Com um grupo de cada tipo no mesmo banco, cada dica cita só o grupo da
+    /// sua classe: a de juntar não leva o grupo de defeito, e a de virar teste
+    /// ou sair não leva o de armadilha do ambiente.
+    #[test]
+    fn each_scan_hint_names_only_the_groups_of_its_own_class() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        write(&root.join("apps/rt/src/main.rs"), "fn main() {}\n");
+        write(&root.join("apps/scan/src/main.rs"), "fn main() {}\n");
+        let bank = ClaudePaths::for_project(root).expect("paths").lessons_path();
+        let place = |class: &str, sub: &str, what: &str| {
+            let keys = |extra: &'static str| [sub, "subcomando", "exige", "quatro", "registros", extra];
+            let a = lesson_of(&bank, class, sub, &format!("{what} novo de `run` exige QUATRO registros;"), &keys("esquecer"));
+            let b = lesson_of(&bank, class, sub, &format!("{what} novo de `run` exige QUATRO registros (variante)."), &keys("variante"));
+            format!("[{a}, {b}]")
+        };
+        let defect = place("defect", "apps/rt", "Defeito");
+        let trap = place("environment_trap", "apps/scan", "Armadilha");
+        let result = scan_at(root, None, false, None, mine_disk);
+        let next = result["next"].as_str().expect("o passo seguinte");
+        let (merge, retire) = next.split_once("Estes grupos").expect("as duas dicas");
+        assert!(merge.contains(&trap) && !merge.contains(&defect), "a dica de juntar cita só a armadilha: {next}");
+        assert!(retire.contains(&defect) && !retire.contains(&trap), "a dica de teste cita só o defeito: {next}");
     }
 
     /// Quando a ferramenta do scan falha, não há mapa desta vez, e o disco
@@ -445,7 +536,8 @@ mod tests {
         assert_eq!(failed["lessons"]["missing_paths"], serde_json::json!([]), "o arquivo existe: {failed}");
         assert_eq!(failed["lessons"]["similar"], serde_json::json!([[first, second]]), "{failed}");
         let next = failed["next"].as_str().expect("o passo seguinte");
-        assert!(!next.contains("\"targets\""), "nada a retirar: {next}");
+        assert!(!next.contains("citam um caminho"), "nenhuma lição cita caminho que falta: {next}");
+        assert!(next.contains("Junte cada grupo") || next.contains("Estes grupos"), "os grupos parecidos seguem apontados: {next}");
 
         std::fs::remove_file(&cited).expect("apaga o arquivo citado");
         let failed = scan_at(root, None, false, None, mine_fails);

@@ -824,8 +824,9 @@ impl SpecLog {
     }
 
     /// Os critérios que as ondas de `waves` apontam, juntos, sem repetição e
-    /// na ordem do código: o que a rodada prova, uma vez cada, antes de
-    /// comitar o que essas ondas entregaram.
+    /// na ordem do código: de onde a rodada parte para provar, uma vez cada,
+    /// antes de comitar o que essas ondas entregaram. Ela deixa de fora o
+    /// critério que outra tarefa ainda por entregar também cobre.
     #[must_use]
     pub fn criteria_for_waves(&self, waves: &[u64]) -> Vec<&SpecEvent> {
         let mut picked: BTreeMap<u64, &SpecEvent> = BTreeMap::new();

@@ -110,7 +110,9 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "[Mustard] A spec {spec} fechou neste turno, e a mensagem final não cita {count} das \
              pendências abertas que nasceram nela: {items}. As pendências sobrevivem à spec que \
              fechou: reescreva a mensagem de fechamento citando cada uma pelo título, sem o \
-             número. Uma pendência que não vale mais só sai da lista com um motivo: \
+             número. Uma pendência que o usuário deixou para depois passa ao projeto com \
+             `mustard-rt run close --spec {spec} --pending-later \"<id>=<motivo>\"`. Uma \
+             pendência que não vale mais só sai da lista com um motivo: \
              `mustard-rt run pending --close <id> --reason \"…\"` quando foi entregue, ou \
              `mustard-rt run pending --drop <id> --reason \"…\"` quando o usuário desistiu."
         }
@@ -118,7 +120,9 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "[Mustard] The spec {spec} closed in this turn, and the final message does not name \
              {count} of the open pending items born in it: {items}. Pending items outlive the spec \
              that closed: rewrite the closing message naming each one by title, without the \
-             number. An item that no longer stands leaves the list only with a reason: \
+             number. An item the user left for later goes to the project with \
+             `mustard-rt run close --spec {spec} --pending-later \"<id>=<reason>\"`. An item \
+             that no longer stands leaves the list only with a reason: \
              `mustard-rt run pending --close <id> --reason \"…\"` when it was delivered, or \
              `mustard-rt run pending --drop <id> --reason \"…\"` when the user gave it up."
         }
@@ -152,8 +156,23 @@ mod tests {
             include_str!("pending.rs"),
             super::PREFIXES,
             14,
-            0x567e_81ef_8270_4202,
+            0xf567_337e_bc54_74b0,
         );
+    }
+
+    /// O aviso do fim da resposta, com a saída "fica para depois", passa na
+    /// conferência de escrita das respostas, nos dois idiomas, com cada vaga
+    /// trocada por uma palavra.
+    #[test]
+    fn the_pending_gate_block_reads_clearly() {
+        for (lang, item) in [(Locale::PtBr, "pendência"), (Locale::EnUs, "pending")] {
+            let text = translate("pending.gate.block", lang)
+                .replace("{spec}", "obra")
+                .replace("{count}", "2")
+                .replace("{items}", item);
+            let report = crate::domain::clarity::measure(&text, &[], Some(lang));
+            assert!(report.passed, "{lang:?}: {report:?}");
+        }
     }
 
     /// The pending advisories come from the catalog in both languages, and

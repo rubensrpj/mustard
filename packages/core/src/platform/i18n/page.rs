@@ -102,18 +102,22 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // Quem copia é o orquestrador, na própria conversa, também na
         // primeira cópia, que leva a spec inteira. As escritas de cada lote
         // já vêm prontas na resposta, em `copy.<página>.writes`: nenhum
-        // arquivo é lido para mandá-las.
+        // arquivo é lido para mandá-las. A saída da versão recusada entra
+        // sempre: a escrita que já leva a versão guardada também pode ser
+        // recusada, se o documento mudou no banco depois da última cópia.
         ("page.copy.batches", Locale::PtBr) => {
             "Copie você mesmo, nesta conversa e sem agente, para o banco de dados da {page}, no endereço \
              {url}. Mande cada lista de `copy.{key}.writes` desta resposta numa chamada da ferramenta \
              `ArtifactData` com `action` `batch`, uma chamada por lote, na ordem. Cada documento vai pelo \
-             `file_path` dele, sem você ler arquivo nenhum."
+             `file_path` dele, sem você ler arquivo nenhum. Se o banco recusar uma versão, leia aquele \
+             documento com `get`, ponha a versão dele na escrita e mande o lote de novo."
         }
         ("page.copy.batches", Locale::EnUs) => {
             "Copy it yourself, in this conversation and without an agent, into the {page}'s database at \
              {url}. Send each list in `copy.{key}.writes` of this response in one `ArtifactData` call with \
              `action` `batch`, one call per batch, in order. Each document goes by its `file_path`, without \
-             reading any file."
+             reading any file. If the database refuses a version, read that document with `get`, put its \
+             version on the write and send the batch again."
         }
         // Só entra depois de `page.copy.batches`, quando algum documento do
         // lote já existe no banco sem versão guardada, de uma cópia gravada
@@ -124,15 +128,13 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Os documentos {docs} já existem no banco sem versão guardada. Leia a versão de cada um com a \
              ação `get` da ferramenta `ArtifactData` e ponha essa versão em `if_version` na escrita dele, \
              antes de mandar o lote. As escritas que já trazem `if_version` vão como estão, e as outras vão \
-             sem versão. Se o banco recusar uma versão, leia aquele documento com `get`, ponha a versão \
-             dele na escrita e mande o lote de novo."
+             sem versão."
         }
         ("page.copy.existing", Locale::EnUs) => {
             "The documents {docs} already exist in the database without a stored version. Read each one's \
              version with the `get` action of the `ArtifactData` tool and put it in `if_version` on that \
              write, before sending the batch. The writes that already carry `if_version` go as they are, and \
-             the others go without a version. If the database refuses a version, read that document with \
-             `get`, put its version on the write and send the batch again."
+             the others go without a version."
         }
         // Só entra depois de `page.copy.batches`, e só fora do descarte: a
         // spec descartada é terminal, sem cópia seguinte para continuar dela.
@@ -1031,7 +1033,7 @@ mod tests {
             include_str!("page.rs"),
             super::PREFIXES,
             389,
-            0x78c3_a76a_686a_1bbc,
+            0x7121_f718_c756_dda8,
         );
     }
 

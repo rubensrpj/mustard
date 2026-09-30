@@ -870,25 +870,50 @@ fn after_wave_answer(waves: &[WaveReport], found: &[Finding], lang: Locale) -> R
 /// que a grava depois do commit) roda a entregue no lugar da gravada: a onda
 /// que muda o nome de um teste entrega a prova com o nome novo, e a gravada,
 /// que cita o nome antigo, recusaria a entrega por um teste que ela mesma
-/// tirou. Os outros critérios rodam a gravada. Devolve os comandos que
-/// rodaram, todos verdes: a prova nova que já passou aqui não roda de novo
-/// depois do commit.
+/// tirou. Os outros critérios rodam a gravada.
+///
+/// O critério que outra tarefa ainda por entregar também cobre — no backlog,
+/// numa onda que não está entre as de `waves` ou entre as tarefas que a
+/// volta diz não ter feito (`undone`, pelo número de cada uma) — não roda
+/// agora: a prova dele depende do que essa tarefa ainda vai entregar, e
+/// recusaria a entrega de uma onda por um trabalho que não é dela. Ele volta
+/// a rodar na rodada em que entra a última tarefa que o cobre; o fechamento
+/// roda todos os critérios da spec de qualquer jeito. A prova nova entregue
+/// para um critério que ficou de fora roda uma vez depois do commit, como a
+/// de um critério que nenhuma onda da rodada cobre.
+///
+/// Devolve os comandos que rodaram, todos verdes: a prova nova que já passou
+/// aqui não roda de novo depois do commit.
 pub(super) fn ensure_criteria_proofs(
     root: &Path,
     log: &SpecLog,
     waves: &[u64],
+    undone: &[u64],
     delivered: &[(u64, String)],
 ) -> Result<Vec<String>, RoundRefusal> {
     let codes = log.codes();
+    let returning: BTreeSet<u64> = waves.iter().copied().collect();
+    let mut waiting = super::agreed::covered_codes(log, &returning);
+    waiting.extend(
+        undone
+            .iter()
+            .filter_map(|id| log.get(*id))
+            .flat_map(|task| task.ints("covers"))
+            .filter_map(|id| codes.get(&id).cloned()),
+    );
     let criteria: Vec<(u64, String, String)> = log
         .criteria_for_waves(waves)
         .into_iter()
         .filter_map(|e| {
+            let code = codes.get(&e.id).cloned().unwrap_or_else(|| e.id.to_string());
+            if waiting.contains(&code) {
+                return None;
+            }
             let proof = match delivered.iter().find(|(id, _)| *id == e.id) {
                 Some((_, proof)) => proof.clone(),
                 None => e.str_field("proof")?.trim().to_string(),
             };
-            Some((e.id, codes.get(&e.id).cloned().unwrap_or_else(|| e.id.to_string()), proof))
+            Some((e.id, code, proof))
         })
         .collect();
     let (_, failed) = crate::commands::review::qa_run::run_criteria_proofs(root, &criteria);

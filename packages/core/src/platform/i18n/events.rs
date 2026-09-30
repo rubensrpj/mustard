@@ -868,6 +868,18 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              Write it with `mustard-rt run write lesson`, with `\"replaces\"` naming the group's \
              lessons: {groups}."
         }
+        ("lessons.scan_test_or_retire", Locale::PtBr) => {
+            "Estes grupos são de lições de defeito ou de regras do projeto, e o banco recusa juntá-las: \
+             {groups}. Transforme cada uma num teste no código, que falha se a regra for quebrada. \
+             Ou retire do banco a que já não vale, com `mustard-rt run write lesson --json \
+             '{\"targets\":[…],\"reason\":\"…\"}'`."
+        }
+        ("lessons.scan_test_or_retire", Locale::EnUs) => {
+            "These groups hold defect lessons or project rules, and the bank refuses to merge \
+             them: {groups}. Turn each one into a test in the code, one that fails if the rule is \
+             broken. Or retire the one that no longer holds from the bank, with `mustard-rt run \
+             write lesson --json '{\"targets\":[…],\"reason\":\"…\"}'`."
+        }
         ("lessons.scan_retire", Locale::PtBr) => {
             "Retire as lições que já não valem, porque citam um caminho que o projeto já não tem, \
              com `mustard-rt run write lesson --json '{\"targets\":[…],\"reason\":\"…\"}'`: \
@@ -901,8 +913,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("events.rs"),
             super::PREFIXES,
-            118,
-            0x7cd1_e6c0_f012_8e59,
+            119,
+            0x1793_d2b7_5f76_a2da,
         );
     }
 
@@ -1046,6 +1058,7 @@ mod tests {
             ("lessons.rules_left.detail", &["{rules}"][..]),
             ("lessons.rules_left.rule", &["{n}", "{text}", "{sources}"][..]),
             ("lessons.scan_merge", &["{groups}"][..]),
+            ("lessons.scan_test_or_retire", &["{groups}"][..]),
             ("lessons.scan_retire", &["{lessons}"][..]),
             ("lessons.scan_untouched", &[][..]),
         ] {
@@ -1092,6 +1105,20 @@ mod tests {
             let text = translate("lessons.rules_left.title", lang).replace("{count}", "2").replace("{mark}", "3f9a1c07");
             let report = crate::domain::clarity::measure(&text, &[], Some(lang));
             assert!(report.passed, "{lang:?}: {text}: {report:?}");
+        }
+    }
+
+    /// A dica do scan para o grupo de defeitos ou de regras do projeto passa na
+    /// conferência de escrita das respostas, nos dois idiomas, com cada vaga
+    /// trocada por uma palavra, e traz o comando de retirada pronto.
+    #[test]
+    fn the_scan_hint_for_lessons_that_cannot_merge_reads_clearly() {
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let hint = translate("lessons.scan_test_or_retire", lang);
+            assert!(hint.contains("mustard-rt run write lesson --json '{\"targets\":["), "{lang:?}: {hint}");
+            let text = hint.replace("{groups}", "grupos");
+            let report = crate::domain::clarity::measure(&text, &[], Some(lang));
+            assert!(report.passed, "{lang:?}: {report:?}");
         }
     }
 

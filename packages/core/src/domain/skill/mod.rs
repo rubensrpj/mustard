@@ -1,14 +1,11 @@
-//! `skill` — canonical schema for skill frontmatter.
+//! `skill` — a leitura do cabeçalho de uma skill.
 //!
-//! Owns the [`frontmatter::SkillFrontmatter`] type + parse/validate helpers.
-//! The parser is what the binary reads a skill through: the skill search that
-//! pairs a task with a skill, the wave prompt and the agent's skill list (both
-//! show the skill's description), and the work-branch census (which tells a
-//! scan-written skill apart by its `source`).
+//! Dono do tipo [`frontmatter::SkillFrontmatter`] e da leitura dele. O
+//! binário lê uma skill por aqui: a busca de skill que casa uma tarefa com uma
+//! skill, o pedido da onda e a lista do agente (os dois mostram a descrição da
+//! skill) e o censo da branch (que reconhece a skill escrita pelo scan pelo
+//! `source`).
 
 pub mod frontmatter;
 
-pub use frontmatter::{
-    extract_frontmatter, parse, validate, ClusterMeta, SkillFrontmatter, SkillFrontmatterError,
-    SkillMetadata, SkillScope, SkillSource, SkillTag,
-};
+pub use frontmatter::{extract_frontmatter, parse, SkillFrontmatter, SkillFrontmatterError};

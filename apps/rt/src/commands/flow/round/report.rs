@@ -315,8 +315,10 @@ fn take_returns(
     // código do critério, o comando inteiro e a saída de erro, e nada é
     // comitado, com o disco de volta ao que era. Para o critério com prova
     // nova na entrega, roda a entregue, pela mesma referência já resolvida
-    // que a gravação usa depois do commit.
-    let proven = message.is_some().then(|| ensure_criteria_proofs(root, log, &waves, &checked.proofs));
+    // que a gravação usa depois do commit. O critério que outra tarefa ainda
+    // por entregar também cobre espera a rodada em que ela entra.
+    let undone: Vec<u64> = report.waves.iter().flat_map(|wave| wave.undone.iter().map(|(id, _)| *id)).collect();
+    let proven = message.is_some().then(|| ensure_criteria_proofs(root, log, &waves, &undone, &checked.proofs));
     let proven = proven.transpose().inspect_err(|_| drop(write_joined(root, &joined, false)))?.unwrap_or_default();
     // A recusa do git volta o índice e o disco antes de sair, com a trava ainda
     // presa.
@@ -3526,6 +3528,29 @@ mod tests {
         assert_eq!(delivered_count(root), 0, "nada da entrega foi gravado: {out}");
     }
 
+    /// A recusa da rodada por uma prova que falha mostra o fim da saída dela,
+    /// onde o motivo aparece: uma prova que escreve 200 linhas e falha na
+    /// última recusa a entrega com a última linha, e não com o começo.
+    #[test]
+    fn the_round_refusal_of_a_failing_proof_shows_the_end_of_its_output() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        round(root, "x", None);
+        reprove_wave_criterion(
+            root,
+            1,
+            "sh -c 'i=1; while [ $i -le 200 ]; do echo \"linha $i\"; i=$((i+1)); done; exit 3'",
+        );
+
+        let out = round(root, "x", Some(&delivered(root, 1, "A soma saiu.", &["src/a.rs"])));
+        assert_eq!(out["reason"], json!("round-criterion-proof-failed"), "{out}");
+        let hint = out["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains("linha 200"), "a recusa traz o fim da saída: {hint}");
+        assert!(hint.contains("linha 161"), "e as últimas 40 linhas: {hint}");
+        assert!(!hint.contains("linha 1\n"), "o começo da saída fica de fora: {hint}");
+    }
+
     /// A versão vigente do critério `code` da spec `x`.
     fn current_criterion(root: &Path, code: &str) -> SpecEvent {
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
@@ -3618,6 +3643,149 @@ mod tests {
         assert_eq!(out["ok"], json!(true), "{out}");
         let runs = std::fs::read_to_string(root.join("prova_rodou.txt")).unwrap_or_default();
         assert_eq!(runs.lines().count(), 1, "a prova nova rodou uma vez só: {out}");
+    }
+
+    /// [`approved_with`] em que a tarefa de cada onda do plano cobre o
+    /// critério da spec, como o backlog forma as ondas de verdade: tarefas de
+    /// ondas diferentes cobrindo o mesmo critério. Com `backlog`, uma tarefa
+    /// a mais, sem onda nenhuma, cobre o critério também.
+    fn approved_covering_the_criterion(root: &Path, plan: &[(u64, &[&str], &[u64])], backlog: bool) {
+        approved_with(root, "x", plan, |said| {
+            let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+            let crit = log.visible().into_iter().find(|e| e.event_type == "criterion").map(|e| e.id).unwrap();
+            for task in log.visible().into_iter().filter(|e| e.event_type == "task") {
+                let mut fields = task.fields.clone();
+                for key in ["v", "id", "code", "at", "type", "search", "author", "replaces"] {
+                    fields.remove(key);
+                }
+                let mut body = Value::Object(fields);
+                body["covers"] = json!([crit]);
+                body["replaces"] = json!(task.id);
+                body["origin"] = json!(said);
+                assert_eq!(write(root, "x", "task", body)["ok"], json!(true));
+            }
+            if backlog {
+                let body = json!({"text": "A tarefa do backlog que também cobre o critério.",
+                    "files": [{"path": "src/z.rs"}], "depends_on": [], "covers": [crit], "origin": said});
+                assert_eq!(write(root, "x", "task", body)["ok"], json!(true));
+            }
+        });
+    }
+
+    /// Quantas vezes a prova que deixa uma linha em `prova_rodou.txt` rodou.
+    fn proof_runs(root: &Path) -> usize {
+        std::fs::read_to_string(root.join("prova_rodou.txt")).unwrap_or_default().lines().count()
+    }
+
+    /// O critério que tarefas de duas ondas cobrem só é provado quando a
+    /// última delas volta: na volta da primeira a rodada entrega sem rodar a
+    /// prova dele, e na da segunda a prova roda, uma vez só.
+    #[test]
+    fn a_criterion_two_waves_cover_is_proved_only_when_the_last_of_them_returns() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved_covering_the_criterion(root, &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[1])], false);
+        round(root, "x", None);
+        reprove_wave_criterion(root, 1, "echo rodou >> prova_rodou.txt");
+
+        let out = round(root, "x", Some(&delivered(root, 1, "A soma saiu.", &["src/a.rs"])));
+        assert_eq!(out["ok"], json!(true), "a primeira onda é entregue: {out}");
+        assert_eq!(delivered_count(root), 1, "{out}");
+        assert_eq!(proof_runs(root), 0, "a prova espera a onda 2: {out}");
+
+        let out = round(root, "x", Some(&delivered(root, 2, "A dobra saiu.", &["src/b.rs"])));
+        assert_eq!(out["ok"], json!(true), "{out}");
+        assert_eq!(delivered_count(root), 2, "{out}");
+        assert_eq!(proof_runs(root), 1, "a prova roda quando a última onda volta: {out}");
+    }
+
+    /// A prova que o critério das duas ondas guarda não some: quebrada, ela
+    /// deixa passar a volta da primeira onda e recusa a da segunda, nomeando
+    /// o critério, sem comitar nem gravar a entrega dela.
+    #[test]
+    fn a_broken_proof_of_a_shared_criterion_refuses_the_last_wave_and_not_the_first() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved_covering_the_criterion(root, &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[1])], false);
+        round(root, "x", None);
+        let code = reprove_wave_criterion(root, 1, "git --nao-existe-esta-opcao");
+
+        let out = round(root, "x", Some(&delivered(root, 1, "A soma saiu.", &["src/a.rs"])));
+        assert_eq!(out["ok"], json!(true), "a prova quebrada não recusa a primeira onda: {out}");
+        assert_eq!(delivered_count(root), 1, "{out}");
+
+        let head_before = git_text(root, &["rev-parse", "HEAD"]);
+        let out = round(root, "x", Some(&delivered(root, 2, "A dobra saiu.", &["src/b.rs"])));
+        assert_eq!(out["ok"], json!(false), "{out}");
+        assert_eq!(out["reason"], json!("round-criterion-proof-failed"), "{out}");
+        assert!(out["hint"].as_str().unwrap_or_default().contains(&code), "a recusa nomeia o critério: {out}");
+        assert_eq!(git_text(root, &["rev-parse", "HEAD"]), head_before, "nada foi comitado: {out}");
+        assert_eq!(delivered_count(root), 1, "a entrega da segunda onda não foi gravada: {out}");
+    }
+
+    /// A tarefa do backlog que ainda não entregou segura a prova do critério
+    /// que ela cobre: a onda que volta é entregue sem rodá-la.
+    #[test]
+    fn a_criterion_a_backlog_task_still_covers_is_not_proved_by_the_wave_that_returns() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved_covering_the_criterion(root, &[(1, &["src/a.rs"], &[])], true);
+        round(root, "x", None);
+        reprove_wave_criterion(root, 1, "echo rodou >> prova_rodou.txt && git --nao-existe-esta-opcao");
+
+        let out = round(root, "x", Some(&delivered(root, 1, "A soma saiu.", &["src/a.rs"])));
+        assert_eq!(out["ok"], json!(true), "a onda é entregue com a tarefa do backlog por fazer: {out}");
+        assert_eq!(delivered_count(root), 1, "{out}");
+        assert_eq!(proof_runs(root), 0, "a prova espera a tarefa do backlog: {out}");
+    }
+
+    /// As ondas que voltam na mesma rodada são as últimas entre si: o
+    /// critério que elas dividem é provado nessa rodada, uma vez só.
+    #[test]
+    fn waves_returning_together_prove_the_criterion_they_share_once() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved_covering_the_criterion(root, &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[])], false);
+        round(root, "x", None);
+        reprove_wave_criterion(root, 1, "echo rodou >> prova_rodou.txt");
+
+        std::fs::write(root.join("src/a.rs"), "fn um() {}\n// A soma saiu.\n").unwrap();
+        std::fs::write(root.join("src/b.rs"), "fn um() {}\n// A dobra saiu.\n").unwrap();
+        let one = json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"], "commit": "a soma sai"});
+        let two = json!({"wave": 2, "text": "A dobra saiu.", "files": ["src/b.rs"], "commit": "a dobra sai"});
+        assert_eq!(returned(root, one)["ok"], json!(true));
+        assert_eq!(returned(root, two)["ok"], json!(true));
+
+        let out = round(root, "x", None);
+        assert_eq!(out["ok"], json!(true), "{out}");
+        assert_eq!(delivered_count(root), 2, "{out}");
+        assert_eq!(proof_runs(root), 1, "a prova roda uma vez, na rodada que entrega as duas: {out}");
+    }
+
+    /// A tarefa que a volta diz não ter feito volta ao backlog e ainda está
+    /// por entregar: o critério que ela cobre não é provado nessa rodada, e a
+    /// onda é entregue com o que fez, em vez de recusada por um trabalho que
+    /// ficou para depois.
+    #[test]
+    fn a_criterion_a_task_the_return_left_undone_covers_is_not_proved_by_that_return() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved_covering_the_criterion(root, &[(1, &["src/a.rs"], &[])], false);
+        round(root, "x", None);
+        reprove_wave_criterion(root, 1, "echo rodou >> prova_rodou.txt && git --nao-existe-esta-opcao");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let task = log.visible().into_iter().find(|e| e.event_type == "task").map(|e| e.id).unwrap();
+        let code = log.codes()[&task].clone();
+
+        std::fs::write(root.join("src/a.rs"), "fn um() {}\n// A soma saiu pela metade.\n").unwrap();
+        let body = json!({"wave": 1, "text": "A soma saiu pela metade.", "files": ["src/a.rs"],
+            "commit": "a soma sai pela metade", "undone": [code]});
+        assert_eq!(returned(root, body)["ok"], json!(true));
+
+        let out = round(root, "x", None);
+        assert_eq!(out["ok"], json!(true), "a volta é entregue com a tarefa que ficou para depois: {out}");
+        assert_eq!(delivered_count(root), 1, "{out}");
+        assert_eq!(proof_runs(root), 0, "a prova espera a tarefa que voltou ao backlog: {out}");
     }
 
     /// A prova verde que não prova nada recusa a volta da onda pelo motivo

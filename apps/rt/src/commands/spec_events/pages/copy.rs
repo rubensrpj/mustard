@@ -1905,6 +1905,54 @@ mod tests {
         assert!(next3.contains(&expected3) && !next3.contains(&read), "the purge reads nothing: {next3}");
     }
 
+    /// A ordem da cópia ensina, em toda cópia, o que fazer com a versão que o
+    /// banco recusar: reler o documento com `get`, pôr a versão na escrita e
+    /// mandar o lote de novo. A frase não depende de haver documento sem
+    /// versão guardada: ela sai na primeira cópia, em que nada existe no
+    /// banco, e na seguinte, em que toda escrita já leva `if_version` e a
+    /// ordem não nomeia documento nenhum para ler.
+    #[test]
+    fn the_copy_order_always_teaches_what_to_do_with_a_refused_version() {
+        let dir = approved_project();
+        let root = dir.path();
+        let phrases = [
+            (
+                Locale::PtBr,
+                "Se o banco recusar uma versão, leia aquele documento com `get`, ponha a versão dele na escrita e mande o lote de novo.",
+            ),
+            (
+                Locale::EnUs,
+                "If the database refuses a version, read that document with `get`, put its version on the write and send the batch again.",
+            ),
+        ];
+        // Uma vez por página copiada: na primeira cópia a da spec e a do
+        // projeto; na seguinte, só a da spec, porque a do projeto já foi copiada.
+        let told = |root: &Path, when: &str, pages: usize| {
+            for (lang, phrase) in phrases {
+                let prepared = prepare(root, "x", lang).expect("the copy is prepared");
+                assert!(prepared.spec.existing.is_empty(), "{when}: no document is named to be read");
+                let order = prepared.order("x", Some("round"), lang).join(" ");
+                assert_eq!(order.matches(phrase).count(), pages, "{when} ({lang:?}): {order}");
+                assert!(!order.contains(&read_order(lang)), "{when} ({lang:?}): nothing is named to read: {order}");
+            }
+        };
+
+        told(root, "first copy", 2);
+        let first = round(root);
+        follow_versioned(root, &first, 1);
+
+        let said = log(root).visible().into_iter().find(|e| e.event_type == "message").map(|e| e.id);
+        write(root, "note", json!({"text": "Nota nova.", "keys": ["k"], "origin": said}));
+        let second = round(root);
+        assert!(
+            sent(root, &second, "spec").iter().filter(|w| w["op"] == json!("set")).all(|w| w.get("if_version").is_some()),
+            "every write of the second copy carries its stored version: {second}"
+        );
+        let next = full_next(root, &second);
+        assert_eq!(next.matches(phrases[0].1).count(), 1, "the round carries it too: {next}");
+        told(root, "second copy", 1);
+    }
+
     /// A cópia gravada antes de o registro guardar as versões não tem
     /// `versions`: a cópia seguinte nomeia os documentos que já existem para
     /// ler a versão, e nenhuma escrita leva `if_version`. A cópia para um

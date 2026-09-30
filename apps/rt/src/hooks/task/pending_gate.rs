@@ -342,6 +342,32 @@ mod tests {
         assert_eq!(verdict(root, &stop("s-close", summary)), Verdict::Allow, "once per closure");
     }
 
+    /// A recusa da pendência omitida oferece a terceira saída, a de deixar para
+    /// depois, com o comando pronto, em português e em inglês. O comando nomeia
+    /// a spec que fechou e nunca escreve o número da pendência.
+    #[test]
+    fn the_block_offers_the_later_answer_in_both_languages() {
+        for (config, command) in [
+            (PT, "mustard-rt run close --spec trava --pending-later \"<id>=<motivo>\""),
+            (r#"{"language":{"text":"en-US"}}"#, "mustard-rt run close --spec trava --pending-later \"<id>=<reason>\""),
+        ] {
+            let dir = tempdir().expect("tempdir");
+            let root = dir.path();
+            std::fs::write(root.join("mustard.json"), config).expect("cfg");
+            add_items(root, &["Humanize", "HTML padrao da spec"]);
+            closed_spec(root, &[1, 2], "s-later");
+
+            match verdict(root, &stop("s-later", "Fechei a obra.")) {
+                Verdict::Deny { reason } => {
+                    assert!(reason.contains(command), "{config}: a recusa traz o comando pronto: {reason}");
+                    assert_eq!(reason.matches("--pending-later").count(), 1, "{reason}");
+                    assert!(!reason.contains("P-1=") && !reason.contains("P-2="), "sem número no comando: {reason}");
+                }
+                other => panic!("a closing turn that omits open items must block, got {other:?}"),
+            }
+        }
+    }
+
     /// Sem fechamento armado, a resposta passa mesmo omitindo todas as
     /// pendências abertas.
     #[test]

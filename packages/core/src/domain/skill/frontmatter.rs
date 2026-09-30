@@ -1,280 +1,36 @@
-//! Canonical YAML frontmatter schema for SKILL.md.
+//! O cabeçalho YAML de um `SKILL.md`, lido no que o Mustard usa dele.
 //!
-//! ## What
+//! Toda skill — as de base que o instalador leva e as que o scan escreve em
+//! `{subprojeto}/.claude/skills/` — abre com um bloco de cabeçalho entre duas
+//! linhas `---`. O Mustard lê dele a descrição, que a busca de skill, o pedido
+//! da onda e a lista do agente mostram, e o campo `source`, que o censo da
+//! branch usa para distinguir a skill que o scan escreveu. Qualquer outra chave
+//! cai em [`SkillFrontmatter::extra`] e não é conferida: uma skill escrita para
+//! um Mustard futuro não quebra o leitor de hoje.
 //!
-//! Every Mustard skill — both the foundation skills shipped under
-//! `apps/cli/templates/skills/` and the scan-generated ones under
-//! `{subproject}/.claude/skills/` — exposes a YAML frontmatter block. Before
-//! this contract the shape was implicit
-//! (`name`, `description`, `source`). The new contract adds four fields that
-//! say where the skill applies, plus its provenance:
-//!
-//! - `tags` — verbs the skill applies to (`add`, `fix`, `refactor`, ...).
-//! - `appliesTo` — cluster labels the skill targets (empty = any).
-//! - `scope` — pipeline scopes the skill is callable in.
-//! - `entities` — optional list of registry entities the skill talks about.
-//! - `metadata.generated_by` — `scan` or `foundation`.
-//!
-//! One further key is typed here for a different reason: `paths` — glob
-//! patterns that scope when the skill auto-loads. The four above are Mustard's
-//! own, and Claude Code ignores them; `paths` is read by Claude Code itself, and
-//! is the only one of the five the platform acts on. It is typed (not left to
-//! `extra`) so the scan-generated molds can carry it deliberately instead of it
-//! surviving only by round-trip accident.
-//!
-//! ## Design (lenient, fail-open)
-//!
-//! - Parsing is **lenient**: unknown frontmatter keys land in `extra`
-//!   ([`serde(flatten)`]); unknown tag / scope tokens are dropped with a
-//!   `Vec<String>` of soft warnings. A SKILL written for a future Mustard does
-//!   not break older consumers.
-//! - The YAML parser is a small, hand-rolled subset — enough for the
-//!   key/value + flow-list / block-list shapes Mustard produces. Pulling in
-//!   `serde_yaml` would bloat the workspace; we do not need full YAML.
-//! - [`validate`] takes a `strict: bool`. The default (`false`) checks only
-//!   the legacy invariants (`name` kebab-case, `description` non-empty); the
-//!   strict pass also requires `tags` / `scope` / `metadata.generated_by`.
+//! A leitura é tolerante e o analisador de YAML é um subconjunto pequeno, o
+//! bastante para `chave: valor`, texto entre aspas e a descrição em várias
+//! linhas. Trazer um leitor de YAML completo pesaria no projeto para nada.
 
 use serde::{Deserialize, Serialize};
-use std::fmt;
 
-// ---------------------------------------------------------------------------
-// Enums
-// ---------------------------------------------------------------------------
-
-/// Verbs a skill applies to. The list is the union of every tag the
-/// foundation + scan-generated skills carry today; new tags can be added
-/// without breaking older deserialisers (unknown values are dropped).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum SkillTag {
-    /// Adding a new entity / endpoint / component.
-    Add,
-    /// Fixing a bug.
-    Fix,
-    /// Refactoring existing code without behaviour change.
-    Refactor,
-    /// Reviewing diffs or code under another agent.
-    Review,
-    /// Planning (Spec drafting / wave decomposition).
-    Plan,
-    /// Diagnosing an error / regression.
-    Diagnose,
-    /// Designing UI / craft work.
-    Design,
-    /// Documentation writing.
-    Docs,
-    /// Architectural deepening.
-    Architecture,
-    /// Testing / QA.
-    Test,
-    /// Performance work.
-    Performance,
-    /// Generic "any code work" (catch-all for foundation skills like karpathy).
-    Any,
-}
-
-impl SkillTag {
-    /// Lower-kebab spelling — round-trips through `serde`.
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Add => "add",
-            Self::Fix => "fix",
-            Self::Refactor => "refactor",
-            Self::Review => "review",
-            Self::Plan => "plan",
-            Self::Diagnose => "diagnose",
-            Self::Design => "design",
-            Self::Docs => "docs",
-            Self::Architecture => "architecture",
-            Self::Test => "test",
-            Self::Performance => "performance",
-            Self::Any => "any",
-        }
-    }
-
-    /// Parse a free-form tag token, accepting common synonyms. Returns `None`
-    /// for unknown values so the caller can drop them as soft warnings.
-    #[must_use]
-    pub fn parse(raw: &str) -> Option<Self> {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "add" | "create" | "new" | "feature" => Some(Self::Add),
-            "fix" | "bugfix" | "patch" => Some(Self::Fix),
-            "refactor" | "refactoring" => Some(Self::Refactor),
-            "review" | "audit" => Some(Self::Review),
-            "plan" | "planning" | "spec" => Some(Self::Plan),
-            "diagnose" | "debug" | "diagnose-bug" => Some(Self::Diagnose),
-            "design" | "ui" | "craft" => Some(Self::Design),
-            "docs" | "documentation" | "doc" => Some(Self::Docs),
-            "architecture" | "deepening" => Some(Self::Architecture),
-            "test" | "testing" | "qa" => Some(Self::Test),
-            "performance" | "perf" => Some(Self::Performance),
-            "any" | "*" => Some(Self::Any),
-            _ => None,
-        }
-    }
-}
-
-impl fmt::Display for SkillTag {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-/// Pipeline scope a skill applies to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum SkillScope {
-    /// Any code-editing phase (EXECUTE).
-    CodeEditing,
-    /// REVIEW phase.
-    Review,
-    /// PLAN phase.
-    Plan,
-    /// ANALYZE phase.
-    Analyze,
-    /// QA phase.
-    Qa,
-}
-
-impl SkillScope {
-    /// Lower-kebab spelling — round-trips through `serde`.
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::CodeEditing => "code-editing",
-            Self::Review => "review",
-            Self::Plan => "plan",
-            Self::Analyze => "analyze",
-            Self::Qa => "qa",
-        }
-    }
-
-    /// Parse a free-form scope token.
-    #[must_use]
-    pub fn parse(raw: &str) -> Option<Self> {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "code-editing" | "code_editing" | "execute" | "edit" => Some(Self::CodeEditing),
-            "review" => Some(Self::Review),
-            "plan" | "planning" => Some(Self::Plan),
-            "analyze" | "explore" => Some(Self::Analyze),
-            "qa" => Some(Self::Qa),
-            _ => None,
-        }
-    }
-}
-
-/// Where a skill came from — informational, drives the validator's strict
-/// pass (foundation skills must self-declare).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum SkillSource {
-    /// Scan-generated skill (lives under `{subproject}/.claude/skills/`).
-    Scan,
-    /// Hand-authored foundation skill shipped with the CLI templates.
-    Foundation,
-    /// Legacy fallback — frontmatter omitted `metadata.generated_by` and
-    /// `source` field. Strict validation rejects this.
-    Manual,
-}
-
-impl SkillSource {
-    /// Lowercase spelling.
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Scan => "scan",
-            Self::Foundation => "foundation",
-            Self::Manual => "manual",
-        }
-    }
-
-    /// Parse a free-form source token.
-    #[must_use]
-    pub fn parse(raw: &str) -> Option<Self> {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "scan" => Some(Self::Scan),
-            "foundation" => Some(Self::Foundation),
-            "manual" => Some(Self::Manual),
-            _ => None,
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Metadata + main schema
-// ---------------------------------------------------------------------------
-
-/// Cluster label attached by the scan generator (`{subproject}/.claude/skills/`).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ClusterMeta {
-    /// Cluster label (kebab-case).
-    #[serde(default)]
-    pub label: String,
-}
-
-/// `metadata:` block of a SKILL frontmatter.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SkillMetadata {
-    /// `scan` | `foundation`. `None` ⇒ legacy SKILL (the strict pass of
-    /// [`validate`] refuses it).
-    #[serde(default, rename = "generated_by")]
-    pub generated_by: Option<SkillSource>,
-    /// Optional cluster metadata for scan-generated skills.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cluster: Option<ClusterMeta>,
-}
-
-/// Canonical SKILL.md frontmatter shape.
+/// O cabeçalho de um `SKILL.md`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillFrontmatter {
-    /// Skill name — kebab-case, must match the directory name.
-    #[serde(default)]
-    pub name: String,
-    /// Human-readable description (used by Claude Code for auto-loading).
+    /// A descrição da skill, que a busca de skill e os pedidos mostram.
     #[serde(default)]
     pub description: String,
-    /// Verbs the skill applies to.
-    #[serde(default)]
-    pub tags: Vec<SkillTag>,
-    /// Cluster labels the skill targets. Empty = any cluster.
-    #[serde(default, rename = "appliesTo")]
-    pub applies_to: Vec<String>,
-    /// Pipeline scopes the skill is callable in.
-    #[serde(default)]
-    pub scope: Vec<SkillScope>,
-    /// Optional entity names from the registry the skill talks about.
-    #[serde(default)]
-    pub entities: Vec<String>,
-    /// Glob patterns that scope when the platform auto-loads this skill. Unlike
-    /// [`Self::tags`] / [`Self::applies_to`] / [`Self::scope`] — Mustard's own
-    /// fields, which Claude Code ignores — this key is read by Claude
-    /// Code itself, which loads the skill automatically only while working on
-    /// files matching the patterns. Empty = unscoped (loads for the whole
-    /// subproject), which is the pre-`paths` behaviour.
-    ///
-    /// Accepts either a YAML list or a comma-separated string, matching what
-    /// the platform documents; both parse into this vector.
-    #[serde(default)]
-    pub paths: Vec<String>,
-    /// Metadata block — declares scan vs foundation provenance.
-    #[serde(default)]
-    pub metadata: SkillMetadata,
-    /// Lenient catch-all for any other frontmatter key (`source`, `license`,
-    /// `disable-model-invocation`, `version`, ...). Preserved on round-trip.
+    /// Toda outra chave de nível raiz que traz valor na mesma linha (`name`,
+    /// `source`, `license`, `version`, ...), como texto.
     #[serde(flatten)]
     pub extra: serde_json::Value,
 }
 
 impl SkillFrontmatter {
-    /// The legacy top-level `source:` field (`scan` | `manual` | ...) when the
-    /// frontmatter carries one. It is not a typed key, so it lands in
-    /// [`Self::extra`] via `serde(flatten)`; this accessor is the canonical
-    /// reader so consumers (notably `apps/rt`'s `scan_patterns::origin`
-    /// provenance marker) read it without re-parsing the block. Distinct from
-    /// [`SkillMetadata::generated_by`] (`metadata.generated_by`), the newer
-    /// provenance field.
+    /// O campo `source:` do cabeçalho (`scan`, `manual`, ...), quando ele traz
+    /// um. Não é um campo tipado, então mora em [`Self::extra`]; este leitor é
+    /// o caminho único para quem precisa dele, como o censo da branch que
+    /// separa a skill escrita pelo scan, sem reler o bloco.
     #[must_use]
     pub fn source(&self) -> Option<String> {
         self.extra
@@ -284,106 +40,24 @@ impl SkillFrontmatter {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Errors
-// ---------------------------------------------------------------------------
-
-/// Parse / validation error.
+/// O erro de ler um cabeçalho.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SkillFrontmatterError {
-    /// Frontmatter block not found (no leading `---` fences).
+    /// O bloco de cabeçalho não existe (falta o par de linhas `---`).
     #[error("missing YAML frontmatter")]
     MissingFrontmatter,
-    /// Required field missing.
-    #[error("missing field: {0}")]
-    MissingField(String),
-    /// `name` is not kebab-case.
-    #[error("name not kebab-case: {0}")]
-    NameNotKebab(String),
-    /// `description` shorter than the minimum (Claude Code rejects <50 chars).
-    #[error("description too short ({0} chars, min 50)")]
-    DescriptionTooShort(usize),
-    /// `description` longer than the recommended maximum. Mustard tolerates
-    /// up to 1500 chars to accommodate richer skills whose description runs
-    /// past 1024. Claude Code recommends ≤1024 but does not enforce it.
-    #[error("description too long ({0} chars, max 1500)")]
-    DescriptionTooLong(usize),
 }
 
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
-
-/// Parse a SKILL.md raw text (or a raw frontmatter YAML body) into a
-/// [`SkillFrontmatter`]. Lenient: unknown keys land in `extra`; unknown
-/// tag / scope tokens are dropped silently.
+/// Lê o texto de um `SKILL.md` (ou só o corpo do cabeçalho) num
+/// [`SkillFrontmatter`]. Tolerante: a chave desconhecida cai em `extra`.
 ///
 /// # Errors
 ///
-/// Returns [`SkillFrontmatterError::MissingFrontmatter`] when no `---` /
-/// `---` fence pair can be located.
+/// Devolve [`SkillFrontmatterError::MissingFrontmatter`] quando não acha o par
+/// de linhas `---`.
 pub fn parse(raw: &str) -> Result<SkillFrontmatter, SkillFrontmatterError> {
     let yaml = extract_frontmatter(raw).ok_or(SkillFrontmatterError::MissingFrontmatter)?;
     Ok(parse_yaml(&yaml))
-}
-
-/// Validate a frontmatter shape.
-///
-/// In `strict=false` mode, the only invariants are the legacy ones:
-/// `name` kebab-case + present, `description` length within `50..=1024`.
-///
-/// In `strict=true` mode, [`SkillFrontmatter::tags`],
-/// [`SkillFrontmatter::scope`] and [`SkillMetadata::generated_by`] must all be
-/// non-empty / non-`None`. Only this module's tests run the strict pass: the
-/// skill check the binary does run (`run map skill`) looks at the paths a
-/// skill cites and at its length, not at these fields.
-///
-/// # Errors
-///
-/// Returns the collected [`SkillFrontmatterError`] variants. The returned
-/// vector is non-empty.
-pub fn validate(
-    fm: &SkillFrontmatter,
-    strict: bool,
-) -> Result<(), Vec<SkillFrontmatterError>> {
-    let mut errors: Vec<SkillFrontmatterError> = Vec::new();
-    if fm.name.trim().is_empty() {
-        errors.push(SkillFrontmatterError::MissingField("name".into()));
-    } else if !is_kebab(&fm.name) {
-        errors.push(SkillFrontmatterError::NameNotKebab(fm.name.clone()));
-    }
-    let desc_chars = fm.description.chars().count();
-    if desc_chars == 0 {
-        errors.push(SkillFrontmatterError::MissingField("description".into()));
-    } else if desc_chars < 50 {
-        errors.push(SkillFrontmatterError::DescriptionTooShort(desc_chars));
-    } else if desc_chars > 1500 {
-        // 1500 is Mustard's tolerance — Claude Code recommends ≤1024 but does
-        // not enforce.
-        errors.push(SkillFrontmatterError::DescriptionTooLong(desc_chars));
-    }
-    if strict {
-        if fm.tags.is_empty() {
-            errors.push(SkillFrontmatterError::MissingField("tags".into()));
-        }
-        // `applies_to` may be empty (= any cluster). The lenient parser sets
-        // it to `[]` whether the key is present or absent, so the parsed value
-        // cannot tell a missing key from an empty list, and this pass does not
-        // check it.
-        if fm.scope.is_empty() {
-            errors.push(SkillFrontmatterError::MissingField("scope".into()));
-        }
-        if fm.metadata.generated_by.is_none() {
-            errors.push(SkillFrontmatterError::MissingField(
-                "metadata.generated_by".into(),
-            ));
-        }
-    }
-    if errors.is_empty() {
-        Ok(())
-    } else {
-        Err(errors)
-    }
 }
 
 /// Extract the YAML body between leading `---\n` and the next `\n---` fence.
@@ -403,23 +77,10 @@ pub fn extract_frontmatter(raw: &str) -> Option<String> {
 // Internals
 // ---------------------------------------------------------------------------
 
-/// kebab-case check (`[a-z][a-z0-9-]+`). Canonical home — `apps/rt`'s
-/// `skills::validate_skill` calls this directly instead of keeping a local copy.
-///
-/// Uses `chars().count()` for the length guard so a single multi-byte unicode
-/// character (e.g. `"é"`, 2 bytes but 1 char) does not falsely pass as a
-/// two-character name.
-pub(crate) fn is_kebab(s: &str) -> bool {
-    let mut chars = s.chars();
-    matches!(chars.next(), Some(c) if c.is_ascii_lowercase())
-        && s.chars().count() >= 2
-        && s.chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
-}
-
-/// Minimal YAML subset parser: top-level scalars, flow lists (`[a, b]`),
-/// block lists (`- item` lines), quoted strings, and a single nested block
-/// (`metadata:`). Anything more exotic lands in `extra` as untyped JSON.
+/// Subconjunto mínimo de YAML: escalares de nível raiz, texto entre aspas e a
+/// descrição em várias linhas (as linhas indentadas que a seguem). A chave que
+/// o Mustard não lê, com valor na mesma linha, vai para `extra` como texto; a
+/// linha indentada de um bloco que ele não lê é pulada.
 fn parse_yaml(yaml: &str) -> SkillFrontmatter {
     let lines: Vec<&str> = yaml.lines().collect();
     let mut fm = SkillFrontmatter::default();
@@ -427,15 +88,14 @@ fn parse_yaml(yaml: &str) -> SkillFrontmatter {
     let mut i = 0;
     while i < lines.len() {
         let line = lines[i];
-        // Skip blanks + comments.
+        // Linhas em branco e comentários não contam.
         let trimmed = line.trim();
         if trimmed.is_empty() || trimmed.starts_with('#') {
             i += 1;
             continue;
         }
-        // Top-level only (column 0). A nested line (indented) without a
-        // recognised parent has already been consumed below or is part of
-        // an unknown block we skip.
+        // Só a coluna zero é chave. A linha indentada sem dono reconhecido é
+        // parte de um bloco que o Mustard não lê, e é pulada.
         if line.starts_with([' ', '\t']) {
             i += 1;
             continue;
@@ -448,9 +108,8 @@ fn parse_yaml(yaml: &str) -> SkillFrontmatter {
             }
         };
         match key.as_str() {
-            "name" => fm.name = unquote(value.trim()).to_string(),
             "description" => {
-                // Support multi-line continuations (indented lines beneath).
+                // As linhas indentadas logo abaixo continuam a descrição.
                 let mut acc = unquote(value.trim()).to_string();
                 let mut j = i + 1;
                 while j < lines.len() && lines[j].starts_with([' ', '\t']) {
@@ -465,57 +124,6 @@ fn parse_yaml(yaml: &str) -> SkillFrontmatter {
                 i = j;
                 continue;
             }
-            "tags" => {
-                let (items, consumed) = read_list(&lines, i, &value);
-                fm.tags = items.iter().filter_map(|t| SkillTag::parse(t)).collect();
-                i += consumed;
-                continue;
-            }
-            "appliesTo" | "applies_to" => {
-                let (items, consumed) = read_list(&lines, i, &value);
-                fm.applies_to = items;
-                i += consumed;
-                continue;
-            }
-            "scope" => {
-                let (items, consumed) = read_list(&lines, i, &value);
-                fm.scope = items.iter().filter_map(|s| SkillScope::parse(s)).collect();
-                i += consumed;
-                continue;
-            }
-            "entities" => {
-                let (items, consumed) = read_list(&lines, i, &value);
-                fm.entities = items;
-                i += consumed;
-                continue;
-            }
-            "paths" => {
-                let (mut items, consumed) = read_list(&lines, i, &value);
-                // The platform documents TWO shapes for this key: a YAML list
-                // and a bare comma-separated string. `read_list` knows only the
-                // YAML ones, so recover the bare string here rather than
-                // widening a helper that four other keys share.
-                if items.is_empty() {
-                    let bare = value.trim();
-                    if !bare.is_empty() && !bare.starts_with('[') {
-                        items = bare
-                            .split(',')
-                            .map(|s| unquote(s.trim()).to_string())
-                            .filter(|s| !s.is_empty())
-                            .collect();
-                    }
-                }
-                fm.paths = items;
-                i += consumed;
-                continue;
-            }
-            "metadata" => {
-                // Read the indented block beneath `metadata:`.
-                let (meta, consumed) = read_metadata_block(&lines, i, &value);
-                fm.metadata = meta;
-                i += consumed;
-                continue;
-            }
             other => {
                 if !value.is_empty() {
                     extra.insert(other.to_string(), serde_json::Value::String(unquote(&value).to_string()));
@@ -526,105 +134,6 @@ fn parse_yaml(yaml: &str) -> SkillFrontmatter {
     }
     fm.extra = serde_json::Value::Object(extra);
     fm
-}
-
-/// Parse a list value — either flow form `[a, b, c]` on the same line, or
-/// a block list opening on the next indented lines (`- item`).
-/// Returns `(items, lines_consumed)` where `lines_consumed` includes the
-/// header line itself (≥1).
-fn read_list(lines: &[&str], start: usize, header_value: &str) -> (Vec<String>, usize) {
-    let header = header_value.trim();
-    if header.starts_with('[') && header.ends_with(']') {
-        // Flow list — single line.
-        let inner = &header[1..header.len() - 1];
-        let items = inner
-            .split(',')
-            .map(|s| unquote(s.trim()).to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
-        return (items, 1);
-    }
-    // Block list — header line plus indented `- item` siblings.
-    let mut items: Vec<String> = Vec::new();
-    let mut consumed = 1; // the header line
-    let mut j = start + 1;
-    while j < lines.len() {
-        let line = lines[j];
-        if !line.starts_with([' ', '\t']) {
-            break;
-        }
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            j += 1;
-            consumed += 1;
-            continue;
-        }
-        if let Some(rest) = trimmed.strip_prefix("- ") {
-            items.push(unquote(rest.trim()).to_string());
-        }
-        j += 1;
-        consumed += 1;
-    }
-    (items, consumed)
-}
-
-/// Read the `metadata:` nested block. Recognises `generated_by` and a
-/// `cluster:` sub-block carrying `label`.
-fn read_metadata_block(
-    lines: &[&str],
-    start: usize,
-    _header_value: &str,
-) -> (SkillMetadata, usize) {
-    let mut meta = SkillMetadata::default();
-    let mut consumed = 1;
-    let mut j = start + 1;
-    while j < lines.len() {
-        let line = lines[j];
-        if !line.starts_with([' ', '\t']) {
-            break;
-        }
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            j += 1;
-            consumed += 1;
-            continue;
-        }
-        if let Some((k, v)) = trimmed.split_once(':') {
-            match k.trim() {
-                "generated_by" => {
-                    meta.generated_by = SkillSource::parse(unquote(v.trim()));
-                }
-                "cluster" => {
-                    // Nested `cluster:` block — read `label:` line beneath.
-                    let mut k2 = j + 1;
-                    let mut cluster = ClusterMeta::default();
-                    while k2 < lines.len() {
-                        let l = lines[k2];
-                        let l_trim = l.trim();
-                        // Stop once indentation drops back to the metadata level
-                        // (two spaces) — heuristically: a line that does not
-                        // start with at least 4 spaces.
-                        if !l.starts_with("    ") && !l.starts_with("\t\t") {
-                            break;
-                        }
-                        if let Some((kk, vv)) = l_trim.split_once(':')
-                            && kk.trim() == "label" {
-                                cluster.label = unquote(vv.trim()).to_string();
-                            }
-                        k2 += 1;
-                    }
-                    meta.cluster = Some(cluster);
-                    consumed += k2 - (j + 1);
-                    j = k2;
-                    continue;
-                }
-                _ => {}
-            }
-        }
-        j += 1;
-        consumed += 1;
-    }
-    (meta, consumed)
 }
 
 /// Strip a single layer of `"..."` or `'...'` quotes.
@@ -647,41 +156,8 @@ mod tests {
     fn parses_minimal_legacy_frontmatter() {
         let raw = "---\nname: foo\ndescription: A long enough description to clear the fifty character min.\nsource: manual\n---\nbody";
         let fm = parse(raw).expect("parses");
-        assert_eq!(fm.name, "foo");
+        assert_eq!(fm.extra.get("name").and_then(|v| v.as_str()), Some("foo"), "a chave que o Mustard não lê cai em extra");
         assert!(fm.description.contains("clear the fifty"));
-    }
-
-    #[test]
-    fn parses_the_canonical_skill_schema() {
-        let raw = r"---
-name: my-skill
-description: Use when the user wants to do something that needs at least fifty characters.
-tags: [add, fix]
-appliesTo: [user-entity]
-scope: [code-editing, review]
-entities: [User]
-metadata:
-  generated_by: foundation
----
-body
-";
-        let fm = parse(raw).expect("parses");
-        assert_eq!(fm.tags, vec![SkillTag::Add, SkillTag::Fix]);
-        assert_eq!(fm.applies_to, vec!["user-entity"]);
-        assert_eq!(
-            fm.scope,
-            vec![SkillScope::CodeEditing, SkillScope::Review]
-        );
-        assert_eq!(fm.entities, vec!["User"]);
-        assert_eq!(fm.metadata.generated_by, Some(SkillSource::Foundation));
-    }
-
-    #[test]
-    fn parses_block_list_form() {
-        let raw = "---\nname: x\ndescription: Use when the user wants to do something that needs at least fifty characters.\ntags:\n  - add\n  - refactor\nscope:\n  - code-editing\nmetadata:\n  generated_by: foundation\n---\n";
-        let fm = parse(raw).expect("parses");
-        assert_eq!(fm.tags, vec![SkillTag::Add, SkillTag::Refactor]);
-        assert_eq!(fm.scope, vec![SkillScope::CodeEditing]);
     }
 
     #[test]
@@ -690,60 +166,6 @@ body
             parse("just a body").unwrap_err(),
             SkillFrontmatterError::MissingFrontmatter
         ));
-    }
-
-    #[test]
-    fn lenient_validate_passes_on_legacy_shape() {
-        let raw = "---\nname: foo\ndescription: Use when the user wants to do something useful that fills at least fifty characters here.\nsource: manual\n---\n";
-        let fm = parse(raw).unwrap();
-        assert!(validate(&fm, false).is_ok());
-    }
-
-    #[test]
-    fn strict_validate_rejects_legacy() {
-        let raw = "---\nname: foo\ndescription: Use when the user wants to do something useful that fills at least fifty characters here.\nsource: manual\n---\n";
-        let fm = parse(raw).unwrap();
-        let err = validate(&fm, true).unwrap_err();
-        // Strict requires tags + scope + metadata.generated_by — none are
-        // present in the legacy shape.
-        assert!(err
-            .iter()
-            .any(|e| matches!(e, SkillFrontmatterError::MissingField(k) if k == "tags")));
-        assert!(err
-            .iter()
-            .any(|e| matches!(e, SkillFrontmatterError::MissingField(k) if k == "scope")));
-        assert!(err.iter().any(|e| matches!(e,
-            SkillFrontmatterError::MissingField(k) if k == "metadata.generated_by")));
-    }
-
-    #[test]
-    fn strict_validate_accepts_canonical_schema() {
-        let raw = r"---
-name: good-skill
-description: Use when the user wants to do something useful that fills at least fifty characters here.
-tags: [add]
-appliesTo: []
-scope: [code-editing]
-metadata:
-  generated_by: foundation
----
-";
-        let fm = parse(raw).unwrap();
-        assert!(validate(&fm, true).is_ok());
-    }
-
-    #[test]
-    fn skill_tag_parses_synonyms() {
-        assert_eq!(SkillTag::parse("bugfix"), Some(SkillTag::Fix));
-        assert_eq!(SkillTag::parse("CREATE"), Some(SkillTag::Add));
-        assert_eq!(SkillTag::parse("unknown-token"), None);
-    }
-
-    #[test]
-    fn skill_scope_parses_synonyms() {
-        assert_eq!(SkillScope::parse("execute"), Some(SkillScope::CodeEditing));
-        assert_eq!(SkillScope::parse("planning"), Some(SkillScope::Plan));
-        assert_eq!(SkillScope::parse("zzz"), None);
     }
 
     #[test]
@@ -756,28 +178,13 @@ metadata:
     }
 
     #[test]
-    fn is_kebab_check() {
-        assert!(is_kebab("my-skill"));
-        assert!(!is_kebab("MySkill"));
-        assert!(!is_kebab("my_skill"));
-    }
-
-    #[test]
-    fn is_kebab_unicode_char_count() {
-        // "é" is 2 bytes but 1 char — must NOT pass the length guard.
-        assert!(!is_kebab("é"), "single multi-byte char must fail");
-        // "ab" is 2 chars (ASCII) — must pass.
-        assert!(is_kebab("ab"), "two ASCII chars must pass");
-    }
-
-    #[test]
     fn tolerates_leading_bom() {
-        // A BOM before the opening fence must not defeat extraction — this is
-        // the tolerance the scan-pattern origin reader always had and the core
-        // now shares too.
+        // Um BOM antes da cerca de abertura não impede a extração — a
+        // tolerância que o leitor de origem do scan sempre teve e que o núcleo
+        // agora compartilha.
         let raw = "\u{feff}---\nname: x\ndescription: Use when the user wants something with enough characters here.\nsource: scan\n---\nbody";
         let fm = parse(raw).expect("BOM-prefixed frontmatter parses");
-        assert_eq!(fm.name, "x");
+        assert_eq!(fm.extra.get("name").and_then(|v| v.as_str()), Some("x"));
         assert_eq!(fm.source().as_deref(), Some("scan"));
     }
 
@@ -786,47 +193,17 @@ metadata:
         let raw = "---\nname: x\ndescription: Use when the user wants something with enough characters here.\nsource: manual\n---\n";
         let fm = parse(raw).unwrap();
         assert_eq!(fm.source().as_deref(), Some("manual"));
-        // Absent `source:` → None (not an empty string).
+        // Sem `source:` → None (e não uma string vazia).
         let raw_no_source = "---\nname: x\ndescription: Use when the user wants something with enough characters here.\n---\n";
         assert_eq!(parse(raw_no_source).unwrap().source(), None);
     }
 
     #[test]
     fn crlf_and_bom_converge_on_source() {
-        // CRLF line endings + a BOM together still yield the same `source`
-        // value — the two normalisations (BOM strip + CRLF replace) compose.
+        // Fim de linha CRLF e BOM juntos ainda dão o mesmo `source` — as duas
+        // normalizações (tirar o BOM e trocar o CRLF) se compõem.
         let raw = "\u{feff}---\r\nname: x\r\ndescription: Use when the user wants something with enough characters here.\r\nsource: scan\r\n---\r\nbody";
         let fm = parse(raw).expect("CRLF+BOM parses");
         assert_eq!(fm.source().as_deref(), Some("scan"));
-    }
-
-    /// `paths` is the only key in this struct the PLATFORM acts on, so it must
-    /// survive as a typed field rather than as an accident of the `extra`
-    /// round-trip. Both shapes the platform documents parse into the same
-    /// vector, and an absent key means unscoped — never an error, since the
-    /// parser's contract is lenient.
-    #[test]
-    fn paths_parses_as_a_typed_field_in_both_documented_shapes() {
-        const DESC: &str = "description: Use when adding or refactoring a module of this kind here.";
-        let block = parse(&format!(
-            "---\nname: x\n{DESC}\npaths:\n  - apps/rt/src/hooks/**\n  - packages/core/src/io/**\n---\nbody"
-        ))
-        .expect("block list parses");
-        assert_eq!(block.paths, vec!["apps/rt/src/hooks/**", "packages/core/src/io/**"]);
-
-        let flow = parse(&format!(
-            "---\nname: x\n{DESC}\npaths: [apps/rt/src/hooks/**]\n---\nbody"
-        ))
-        .expect("flow list parses");
-        assert_eq!(flow.paths, vec!["apps/rt/src/hooks/**"]);
-
-        let bare = parse(&format!(
-            "---\nname: x\n{DESC}\npaths: apps/rt/src/hooks/**, packages/core/src/io/**\n---\nbody"
-        ))
-        .expect("comma-separated string parses");
-        assert_eq!(bare.paths, vec!["apps/rt/src/hooks/**", "packages/core/src/io/**"]);
-
-        let absent = parse(&format!("---\nname: x\n{DESC}\n---\nbody")).expect("absent key parses");
-        assert!(absent.paths.is_empty(), "no key means unscoped, not an error");
     }
 }

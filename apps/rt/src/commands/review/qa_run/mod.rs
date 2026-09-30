@@ -42,8 +42,9 @@ pub(crate) struct ProofRun {
     pub exit: i64,
     /// Quanto demorou, em milissegundos.
     pub ms: u64,
-    /// O começo do que a prova escreveu, quando ela não passou — a saída do
-    /// executor, e não uma frase montada sobre ela.
+    /// O que a prova escreveu, quando ela não passou — a saída do executor, e
+    /// não uma frase montada sobre ela: o fim dela, onde a falha aparece, ou o
+    /// começo, quando o verde disse ter rodado zero teste.
     pub output: String,
     /// A prova de critério saiu verde sem rodar teste nenhum, e por isso não
     /// passou, com o número que a saída do executor disse — é ele que a
@@ -345,27 +346,6 @@ pub(crate) fn extract_ac_section(markdown: &str) -> Option<String> {
         crate::commands::spec::spec_sections::section_block(markdown, "acceptanceCriteria")?;
     // Body only — drop the heading line itself.
     Some(block.split_once('\n').map_or("", |(_, body)| body).to_string())
-}
-
-/// Options for one run of the executor, carried on the thread-local it reads.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct QaRunOptions {
-    /// `true` when invoked from a process that **could be** the binary some AC
-    /// commands rebuild — this very `mustard-rt`.
-    ///
-    /// Setting this flag lets the executor ask the PATH question before
-    /// spawning: when the file a `cargo build|test` would write IS the file
-    /// this process is executing from, a `--workspace` command gets
-    /// `--exclude <package>` appended and a direct `-p` command is refused
-    /// outright with a reason naming that file, instead of failing with
-    /// `failed to remove file mustard-rt.exe` (Windows os error 5). When the
-    /// two paths differ — the shipped shape, an installed binary against the
-    /// workspace `target/` — nothing is rewritten and nothing is refused. See
-    /// [`targets_running_binary`].
-    ///
-    /// No production path sets this: the close and the round run their proofs
-    /// with the default `false`, and only the executor's own tests turn it on.
-    pub self_invoked: bool,
 }
 
 #[cfg(test)]

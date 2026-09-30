@@ -1,30 +1,22 @@
-//! The acceptance-criteria execution engine: locate the spec file, run each
-//! AC command (with per-AC timeouts and self-invocation guards). Split out of
-//! `qa_run`.
+//! O executor das provas: roda o comando de um critério, ou o lint e a suíte
+//! do servidor, com o teto de tempo de cada um, e devolve o veredito, a
+//! contagem de testes que a saída diz e o trecho da saída que explica uma
+//! falha.
 
 use crate::shared::proc::{run_shell_with_deadline, ShellOutcome};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{Duration, Instant};
-use super::{AcResult, QaRunOptions};
+use super::AcResult;
 
-/// Default per-AC timeout (2 min) for non-cargo commands, matching
-/// the default the criteria runner has always had.
+/// O prazo comum de uma prova (2 minutos) para o comando que não compila.
 const AC_TIMEOUT_SECS: u64 = 120;
 
-/// The POSIX shell's "command not found" exit code.
+/// O código de saída de "comando não encontrado" do shell POSIX.
 ///
-/// `pub(crate)` because the judgement it enables belongs to a CALLER, not to
-/// this module: nenhum leitor pode tomar por reprovado um critério que não
-/// unrunnable command as its red proof, while the QA run must still fail on one.
-/// Both read the same record and reach opposite, correct verdicts — which only
-/// works while the code is a shared constant instead of a literal each side
-/// spells for itself.
+/// Mora numa constante compartilhada, e não num número escrito por quem lê o
+/// registro: o executor o nomeia na razão da falha e tenta uma vez de novo
+/// quando o programa existe no `PATH`, mas o veredito continua `fail`.
 pub(crate) const EXIT_COMMAND_NOT_FOUND: i64 = 127;
-
-/// How a refusal names the running executable when no machine-independent name
-/// can be produced for it. The reason still has to read as a sentence, and it
-/// must never degrade into an absolute path — see [`running_binary_label`].
-pub(super) const UNNAMEABLE_BINARY: &str = "the binary running this pass";
 
 /// Per-AC timeout ceiling (10 min) for commands invoking `cargo `: a
 /// `cargo build`/`cargo test` AC that runs right after an edit must recompile,
@@ -51,47 +43,6 @@ pub(crate) enum Ceiling {
     /// O lint ou a suíte que o servidor roda: [`SERVER_COMMAND_TIMEOUT_SECS`],
     /// sempre.
     ServerCommand,
-}
-
-/// The cargo target directory a build launched from `cwd` would write into:
-/// `CARGO_TARGET_DIR` when it is set, otherwise `<workspace root>/target`,
-/// where the workspace root is the TOPMOST ancestor of `cwd` carrying a
-/// `Cargo.toml`.
-///
-/// `None` when `cwd` is not inside a cargo project at all — a build launched
-/// there writes nothing this process could be executing from.
-fn cargo_target_root(cwd: &Path) -> Option<PathBuf> {
-    let root = cwd.ancestors().filter(|dir| dir.join("Cargo.toml").is_file()).last()?;
-    let configured = std::env::var_os("CARGO_TARGET_DIR")
-        .map(PathBuf::from)
-        .filter(|dir| !dir.as_os_str().is_empty());
-    Some(match configured {
-        Some(dir) if dir.is_absolute() => dir,
-        Some(dir) => root.join(dir),
-        None => root.join("target"),
-    })
-}
-
-/// `path` rendered for comparison: resolved through the filesystem when it
-/// exists, with the Windows verbatim prefix, separators and case flattened.
-///
-/// Two spellings of the same file must compare equal; a path cargo has not
-/// written yet simply compares as itself (canonicalization fails there, which
-/// is the right answer — a file that does not exist is not the file this
-/// process is executing from).
-fn comparable(path: &Path) -> String {
-    let resolved = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    let text = resolved.to_string_lossy().to_string();
-    if cfg!(windows) {
-        text.replace('\\', "/").trim_start_matches("//?/").to_ascii_lowercase()
-    } else {
-        text
-    }
-}
-
-/// `true` when both paths name the same file on this machine.
-fn same_file(a: &Path, b: &Path) -> bool {
-    comparable(a) == comparable(b)
 }
 
 /// Onde cada executor de teste diz quantos testes rodaram. A linha, em
@@ -208,112 +159,6 @@ fn tests_run(output: &str) -> Option<u64> {
         return Some(total);
     }
     (!counts.is_empty() || said_none || (go_said_none && !go_ran)).then_some(0)
-}
-
-/// `true` for the two cargo subcommands that relink a crate's binary.
-fn is_cargo_build_or_test(lower_command: &str) -> bool {
-    lower_command.contains("cargo build") || lower_command.contains("cargo test")
-}
-
-/// The profile directory cargo writes into for this command: `release` under
-/// `--release`, the `--profile` value otherwise (`dev`/`test` both land in
-/// `debug`, `bench` in `release`), and `debug` when nothing is said.
-fn profile_dir(tokens: &[&str]) -> String {
-    let mut profile = "debug".to_string();
-    for (i, token) in tokens.iter().enumerate() {
-        if *token == "--release" {
-            profile = "release".to_string();
-        } else if let Some(name) = token
-            .strip_prefix("--profile=")
-            .or_else(|| (*token == "--profile").then(|| tokens.get(i + 1).copied()).flatten())
-        {
-            profile = match name {
-                "dev" | "test" => "debug".to_string(),
-                "bench" => "release".to_string(),
-                other => other.to_string(),
-            };
-        }
-    }
-    profile
-}
-
-/// The packages `command` names DIRECTLY via `-p`/`--package`, in both the
-/// split (`-p mustard-rt`) and glued (`-p=mustard-rt`) spellings, matched on
-/// token boundaries so `-p mustard-rt-extras` is a different package.
-fn named_packages<'a>(tokens: &[&'a str]) -> Vec<&'a str> {
-    tokens
-        .iter()
-        .enumerate()
-        .filter_map(|(i, token)| {
-            if *token == "-p" || *token == "--package" {
-                return tokens.get(i + 1).copied();
-            }
-            token.strip_prefix("-p=").or_else(|| token.strip_prefix("--package="))
-        })
-        .collect()
-}
-
-/// The package whose freshly-built binary WOULD BE the file `running`, for a
-/// build described by `command` under `target_root` — the path question, asked
-/// once and shared by both callers below.
-///
-/// `None` whenever the directory this command writes into is not the directory
-/// the running binary lives in, which is the ordinary case: the process runs
-/// from an installed path (`~/.cargo/bin/mustard-rt`) while cargo writes
-/// `target/debug/mustard-rt.exe`. Two different files, no conflict to protect
-/// against.
-fn package_shadowing_running(command: &str, target_root: &Path, running: &Path) -> Option<String> {
-    let lower = command.to_ascii_lowercase();
-    if !is_cargo_build_or_test(&lower) {
-        return None;
-    }
-    let tokens: Vec<&str> = lower.split_whitespace().collect();
-    let out_dir = target_root.join(profile_dir(&tokens));
-    if !same_file(running.parent()?, &out_dir) {
-        return None;
-    }
-    Some(running.file_stem()?.to_string_lossy().to_string())
-}
-
-/// THE question the self-invocation guard asks: would running `command`
-/// overwrite the very file this process is executing from?
-///
-/// It compares PATHS — the build target the command would write against the
-/// running executable — instead of matching crate names in the command text.
-/// The text match refused `cargo test -p mustard-rt` by spelling alone, even
-/// when the two files were plainly different, and one refusal is enough to
-/// deny a whole QA run.
-///
-/// Only the DIRECT `-p`/`--package` form is answered here; the `--workspace`
-/// form is salvaged instead of refused — see [`rewrite_workspace_exclusion`].
-fn overwrites_running_binary(command: &str, target_root: &Path, running: &Path) -> bool {
-    let Some(package) = package_shadowing_running(command, target_root, running) else {
-        return false;
-    };
-    let lower = command.to_ascii_lowercase();
-    let tokens: Vec<&str> = lower.split_whitespace().collect();
-    named_packages(&tokens).iter().any(|named| named.eq_ignore_ascii_case(&package))
-}
-
-/// The running binary named the way a refusal must name it: relative to the
-/// project when it lives inside it, so the committed QA report carries
-/// `target/debug/mustard-rt.exe` and never an absolute path that only exists on
-/// one machine.
-///
-/// The binary can also sit OUTSIDE the project and still be refused: with
-/// `CARGO_TARGET_DIR` pointing somewhere absolute, the build target and the
-/// running file coincide out there. Falling back to the raw path would
-/// interpolate a machine path into `stderr_excerpt` → `qa/report.md` and into
-/// `reason` → `ac-proof.json`, both versioned files, breaking this crate's
-/// "deterministic output, no volatile paths" guard. So the fallback keeps the
-/// file NAME only — which is all the refusal needs to name what it protects.
-pub(super) fn running_binary_label(cwd: &Path, running: &Path) -> String {
-    match running.strip_prefix(cwd) {
-        Ok(relative) => relative.to_string_lossy().replace('\\', "/"),
-        Err(_) => running
-            .file_name()
-            .map_or_else(|| UNNAMEABLE_BINARY.to_string(), |name| name.to_string_lossy().to_string()),
-    }
 }
 
 /// Timeout for `command` under `ceiling`, env-aware: the environment is read
@@ -435,44 +280,6 @@ fn is_compile_bound(command: &str, compiling: &[String]) -> bool {
     ["type-check", "typecheck", "tsc "].iter().any(|t| lower.contains(t))
 }
 
-/// Rewrite a `cargo build/test --workspace` command so the workspace build
-/// leaves out the one crate whose output IS the running binary.
-///
-/// **The catch-22 this solves:** the acceptance-criteria runner
-/// forks shell commands for each AC. When
-/// this process is itself running from `target/debug`, an AC like
-/// `cargo build --workspace` tries to relink the very executable in the
-/// foreground — `Acesso negado. (os error 5)` on Windows.
-///
-/// The exclusion is appended ONLY when the paths say it is needed: a process
-/// running from an installed path is not the file a workspace build writes, so
-/// the command goes to the shell verbatim and the criterion is really
-/// verified. Idempotent — it won't double-add an exclusion the AC already has.
-///
-/// This rewrite only covers the `--workspace` form. The DIRECT form
-/// (`-p mustard-rt`) has no salvaging rewrite — the command's entire point is
-/// rebuilding that crate — so [`run_ac_command`] refuses it outright via
-/// [`overwrites_running_binary`], and only when the paths coincide.
-fn rewrite_workspace_exclusion(command: &str, target_root: &Path, running: &Path) -> String {
-    let lower = command.to_ascii_lowercase();
-    if !is_cargo_build_or_test(&lower) || !lower.contains("--workspace") {
-        return command.to_string();
-    }
-    let Some(package) = package_shadowing_running(command, target_root, running) else {
-        return command.to_string();
-    };
-    let needle = package.to_ascii_lowercase();
-    if lower.contains(&format!("--exclude {needle}")) || lower.contains(&format!("--exclude={needle}"))
-    {
-        return command.to_string();
-    }
-    // Append at the end — `cargo` accepts flags positionally after
-    // `--workspace`. Adding to the tail keeps any post-`--` script args
-    // (passed to the test binary) untouched.
-    format!("{command} --exclude {package}")
-}
-
-
 /// The verdict of evaluating an AC's optional `Expect:` evidence regex against
 /// a passing command's captured output. Pure and panic-free (SRP: no process,
 /// no I/O) so the matcher is unit-testable in isolation.
@@ -490,8 +297,8 @@ enum ExpectVerdict {
 /// Evaluate an optional `Expect:` regex against a command's combined output.
 /// Total + pure: an absent expectation is [`ExpectVerdict::NoExpectation`], an
 /// uncompilable pattern is [`ExpectVerdict::InvalidPattern`] (never a panic),
-/// otherwise match/miss. The regex is compiled here (per-AC, once) — a QA run
-/// runs a handful of ACs, so there is no hot loop to cache for.
+/// otherwise match/miss. A regex é compilada aqui, uma vez por critério: uma
+/// prova roda poucos critérios, e não há laço quente que peça cache.
 fn evaluate_expect(expect: Option<&str>, output: &str) -> ExpectVerdict {
     let Some(pattern) = expect else {
         return ExpectVerdict::NoExpectation;
@@ -503,23 +310,43 @@ fn evaluate_expect(expect: Option<&str>, output: &str) -> ExpectVerdict {
     }
 }
 
-/// First 100 chars of `s` — the bounded excerpt carried in `stderr_excerpt`.
+/// Os primeiros 100 caracteres de `s`: o trecho que o verde de zero teste leva
+/// em `stderr_excerpt`, porque ali o começo do que o executor escreveu é a
+/// única evidência.
 fn excerpt(s: &str) -> String {
     s.chars().take(100).collect()
 }
 
-/// Run one AC command under its resolved per-AC timeout ([`ac_timeout_secs`],
-/// computed from the ORIGINAL command so a self-invoked rewrite cannot shift
-/// the ceiling).
+/// Quantas linhas do fim da saída uma falha guarda.
+const FAILURE_TAIL_LINES: usize = 40;
+
+/// Quantos caracteres do fim da saída uma falha guarda.
+const FAILURE_TAIL_CHARS: usize = 2000;
+
+/// O fim de `s`: as últimas [`FAILURE_TAIL_LINES`] linhas, cortadas ainda aos
+/// últimos [`FAILURE_TAIL_CHARS`] caracteres, o que restringir mais.
 ///
-/// Classification: `pass` (exit 0), `fail` (non-zero exit), `timeout` (killed
-/// by the deadline), `skip` (the criterion could not be attempted at all).
+/// É o trecho que uma falha leva em `stderr_excerpt`: quem roda a prova de um
+/// critério, o lint ou a suíte escreve o motivo da falha no fim — o teste que
+/// quebrou, o erro que interrompeu a compilação —, e o começo da saída é só o
+/// andamento do que ainda passava.
+fn tail_excerpt(s: &str) -> String {
+    let lines: Vec<&str> = s.lines().collect();
+    let kept = lines[lines.len().saturating_sub(FAILURE_TAIL_LINES)..].join("\n");
+    let skipped = kept.chars().count().saturating_sub(FAILURE_TAIL_CHARS);
+    kept.chars().skip(skipped).collect()
+}
+
+/// Roda o comando de um critério, como o fechamento e a rodada pedem a prova,
+/// sob o prazo que [`ac_timeout_secs`] escolhe para ele.
 ///
-/// `expect` is the AC's optional `Expect:` evidence regex. When present and the
-/// command exits 0, the regex must match the command's combined stdout+stderr
-/// or the "green" command is downgraded to `fail` (it printed no expected
-/// evidence); an uncompilable pattern degrades to `skip` (fail-open). When
-/// absent, the exit-code-only verdict is byte-for-byte the historical one.
+/// Classificação: `pass` (saída zero), `fail` (saída diferente de zero),
+/// `timeout` (morto pelo prazo) e `skip` (o critério nem pôde ser tentado).
+///
+/// `expect` é a evidência opcional, uma regex. Com ela e saída zero, a regex
+/// tem de casar com a saída junta de stdout e stderr, senão o comando verde
+/// cai para `fail` (não escreveu a evidência esperada); uma regex que não
+/// compila vira `skip` (falha aberta). Sem ela, o veredito é só a saída.
 pub(super) fn run_ac_command(command: &str, expect: Option<&str>, cwd: &Path) -> AcResult {
     run_with_ceiling(command, expect, cwd, Ceiling::Criterion)
 }
@@ -534,24 +361,21 @@ pub(super) fn run_server_command(command: &str, cwd: &Path) -> AcResult {
 /// O executor com o teto que `ceiling` escolhe.
 fn run_with_ceiling(command: &str, expect: Option<&str>, cwd: &Path, ceiling: Ceiling) -> AcResult {
     let timeout = Duration::from_secs(ac_timeout_secs(command, ceiling));
-    let running = std::env::current_exe().ok();
-    run_ac_command_with_timeout(command, expect, cwd, timeout, running.as_deref())
+    run_ac_command_with_timeout(command, expect, cwd, timeout)
 }
 
-/// Deterministic core of [`run_ac_command`]: the deadline AND the running
-/// executable are injected as parameters instead of being read from the
-/// environment inside, so both the timeout branch and the self-invocation
-/// branch are unit-testable without owning the process (env mutation would
-/// need `unsafe` under Rust 2024 — forbidden in this crate). Mirrors the same
-/// injected-override seam [`ac_timeout_secs_with_override`] already uses.
+/// O núcleo determinístico de [`run_ac_command`]: o prazo chega por
+/// parâmetro, e não lido do ambiente aqui dentro, para que o ramo do prazo
+/// estourado seja testável sem mexer no ambiente do processo (mexer nele pede
+/// `unsafe` no Rust 2024, proibido neste crate). É a mesma costura de prazo
+/// injetado que [`ac_timeout_secs_with_override`] já usa.
 fn run_ac_command_with_timeout(
     command: &str,
     expect: Option<&str>,
     cwd: &Path,
     timeout: Duration,
-    running: Option<&Path>,
 ) -> AcResult {
-    run_ac_command_inner(command, expect, cwd, timeout, running, false)
+    run_ac_command_inner(command, expect, cwd, timeout, false)
 }
 
 /// Is the first word of `command` a program the shell can find?
@@ -624,58 +448,19 @@ fn run_ac_command_inner(
     expect: Option<&str>,
     cwd: &Path,
     timeout: Duration,
-    running: Option<&Path>,
     is_retry: bool,
 ) -> AcResult {
     let t0 = Instant::now();
-    // Both halves of the path question, resolved once: where cargo would write
-    // and what this process is executing from. `None` on either side means the
-    // question cannot be answered here, and the command simply runs.
-    let paths = cargo_target_root(cwd).zip(running.map(Path::to_path_buf));
-    let opts = QA_OPTIONS.with(std::cell::Cell::get);
-    // Self-invocation guard for the DIRECT `-p`/`--package` form: no rewrite
-    // can save a command whose output file IS this executable (unlike
-    // `--workspace`, which gets `--exclude`d below) — refuse immediately
-    // instead of burning the timeout on a compile that dies relinking the
-    // running exe (os error 5). Only when the two paths really coincide.
-    if opts.self_invoked
-        && paths
-            .as_ref()
-            .is_some_and(|(root, exe)| overwrites_running_binary(command, root, exe))
-    {
-        let label = paths
-            .as_ref()
-            .map(|(_, exe)| running_binary_label(cwd, exe))
-            .unwrap_or_default();
-        return AcResult {
-            status: "skip".to_string(),
-            exit: None,
-            duration_ms: t0.elapsed().as_millis(),
-            stderr_excerpt: format!(
-                "self-invocation: this command overwrites `{label}`, the file this process is \
-                 executing from; run this AC externally"
-            ),
-            tests_run: None,
-        };
-    }
-    // POSIX-style AC commands assume a POSIX shell, and now GET one: the shared
-    // runner resolves the shell that ships beside `git` on Windows
-    // (`crate::util::platform::build_shell_command`). This used to be a
-    // documented constraint on the AC author — "Windows AC are cross-shell-safe
-    // (`node -e`, `bash -c`)" — which is not a guarantee, and under `cmd.exe`
-    // the single quotes in `rg 'token' path` reached the program as literal
-    // characters, so the criterion could never match and never go green.
-    // Self-invoked rewrite first — see `rewrite_workspace_exclusion` for why.
-    let rewritten = match (opts.self_invoked, paths.as_ref()) {
-        (true, Some((root, exe))) => rewrite_workspace_exclusion(command, root, exe),
-        _ => command.to_string(),
-    };
-    // The spawn + concurrent pipe drain + deadline poll live in ONE place
-    // ([`crate::shared::proc::run_shell_with_deadline`]), shared with
-    // the pipeline verifier. The drain is load-bearing here too: an AC whose
-    // command prints more than the ~64 KB OS pipe buffer used to block writing
-    // and burn its whole timeout despite having already finished its work.
-    let (status, stdout, stderr) = match run_shell_with_deadline(&rewritten, cwd, timeout) {
+    // O comando roda como veio, num shell POSIX: no Windows o executor
+    // compartilhado acha o que vem ao lado do `git`, e as aspas simples de
+    // `rg 'token' caminho` chegam ao programa como aspas, e não como
+    // caracteres soltos de um `cmd.exe`. A criação do processo, o esvaziamento
+    // dos canais e a espera pelo prazo moram num lugar só
+    // ([`crate::shared::proc::run_shell_with_deadline`]). O esvaziamento é
+    // necessário: um comando que escreve mais que o buffer de ~64 KB do canal
+    // travava na escrita e gastava o prazo inteiro, já tendo terminado o
+    // trabalho.
+    let (status, stdout, stderr) = match run_shell_with_deadline(command, cwd, timeout) {
         ShellOutcome::Exited { status, stdout, stderr } => (status, stdout, stderr),
         // Killed by its deadline: a class of its own, NEVER `skip`. The
         // criterion WAS attempted and simply never finished, so it verified
@@ -747,7 +532,7 @@ fn run_ac_command_inner(
                 duration_ms,
                 stderr_excerpt: format!(
                     "Expect `{pattern}` not found in command output: {}",
-                    excerpt(&combined_full)
+                    tail_excerpt(&combined_full)
                 ),
                 tests_run: counted,
             },
@@ -762,43 +547,35 @@ fn run_ac_command_inner(
             },
         };
     }
-    // 127 is the POSIX shell's own "command not found". It is NAMED here and
-    // still graded `fail`, and both halves of that are deliberate.
+    // 127 é o "comando não encontrado" do próprio shell POSIX. Ele é NOMEADO
+    // aqui e continua `fail`, e as duas metades são de propósito.
     //
-    // NAMED, because the bare combined output is not always legible as a cause.
+    // Nomeado, porque a saída crua nem sempre se lê como causa.
     //
-    // Still `fail`, because this function answers for the QA run too, and a
-    // criterion nobody could run must never let a QA run read green:
-    // [`super::overall_verdict`] tolerates a `skip` beside a `pass` on the
-    // EXTERNAL path, so grading it `skip` here turned an unrunnable criterion
-    // into a passing CLOSE. That regression shipped once; this shape keeps it
-    // out.
+    // Continua `fail`, porque um critério que ninguém conseguiu rodar nunca
+    // pode deixar o fechamento verde: graduá-lo `skip` já deixou uma spec
+    // fechar sobre um critério que ninguém rodou. Quem precisa separar o 127
+    // (a regra do vermelho é saída diferente de zero, e um comando que não
+    // roda não é prova vermelha) lê o `exit` deste registro e decide por
+    // conta própria — a distinção mora no único chamador que a quer, e nunca
+    // no veredito compartilhado, que cada chamador lê de um jeito.
     //
-    // The consumer that DOES need 127 apart is
-    // a regra do vermelho é exit≠0
-    // and which would otherwise stamp an unrunnable command `proven: red`. It
-    // reads `exit` off this record and decides for itself — the discrimination
-    // lives in the ONE caller that needs it, never in the shared status that
-    // every caller reads differently.
-    // **A 127 whose program DOES exist means "could not run it now", not "does
-    // not exist" — and that is worth one retry, never a softer verdict.**
+    // **Um 127 cujo programa EXISTE quer dizer "não deu para rodar agora", e
+    // não "não existe" — e isso vale uma nova tentativa, nunca um veredito
+    // mais brando.** Medido quatro vezes numa sessão: um segundo `cargo`
+    // compilando em paralelo fazia o primeiro perder a trava da compilação, o
+    // shell respondia 127 e os catorze critérios falhavam de uma vez, todos
+    // passando de novo menos de um minuto depois. O fechamento da spec então
+    // apontava um critério sadio e pedia conserto do que não estava quebrado.
     //
-    // Measured four times in one session: a second `cargo` compiling in
-    // parallel makes the first lose the build lock, the shell answers 127, and
-    // all fourteen criteria fail at once — every one of them passing again less
-    // than a minute later. The spec's close then names a healthy criterion
-    // and asks for a fix to something that is not broken.
-    //
-    // The verdict stays `fail` if the retry also fails. Grading 127 `skip` is
-    // the tempting fix and it is the wrong one: it shipped once and let a spec
-    // CLOSE on a criterion nobody had ever run (see the note above). One retry
-    // separates a flaky environment from a real defect without weakening what
-    // the record claims.
+    // Se a nova tentativa também falha, o veredito segue `fail`. Uma tentativa
+    // separa um ambiente instável de um defeito real sem enfraquecer o que o
+    // registro afirma.
     if status.code().map(i64::from) == Some(EXIT_COMMAND_NOT_FOUND)
         && !is_retry
         && first_program_is_on_path(command)
     {
-        return run_ac_command_inner(command, expect, cwd, timeout, running, true);
+        return run_ac_command_inner(command, expect, cwd, timeout, true);
     }
     if status.code().map(i64::from) == Some(EXIT_COMMAND_NOT_FOUND) {
         return AcResult {
@@ -807,7 +584,7 @@ fn run_ac_command_inner(
             duration_ms,
             stderr_excerpt: format!(
                 "the shell could not find the command (exit {EXIT_COMMAND_NOT_FOUND}): {}",
-                excerpt(&combined_full)
+                tail_excerpt(&combined_full)
             ),
             tests_run: counted,
         };
@@ -816,22 +593,9 @@ fn run_ac_command_inner(
         status: "fail".to_string(),
         exit: Some(status.code().map_or(1, i64::from)),
         duration_ms,
-        stderr_excerpt: excerpt(&combined_full),
+        stderr_excerpt: tail_excerpt(&combined_full),
         tests_run: counted,
     }
-}
-
-thread_local! {
-    /// Active [`QaRunOptions`] for the current thread's QA run.
-    ///
-    /// Set by the QA run entry point and read by
-    /// [`run_ac_command_with_timeout`]. A `thread_local!` Cell — not an env
-    /// var — because `unsafe_code` is forbidden in this crate and Rust 2024
-    /// requires `unsafe` for env mutation, but a Cell-backed `thread_local`
-    /// is plain safe Rust.
-    pub(super) static QA_OPTIONS: std::cell::Cell<QaRunOptions> = const {
-        std::cell::Cell::new(QaRunOptions { self_invoked: false })
-    };
 }
 
 
@@ -858,7 +622,6 @@ mod tests {
             None,
             dir.path(),
             Duration::from_secs(10),
-            None,
         );
         assert_eq!(res.status, "fail", "a missing program must stay a failure");
         assert_eq!(res.exit, Some(EXIT_COMMAND_NOT_FOUND));
@@ -1021,14 +784,13 @@ mod tests {
         );
     }
 
-    /// A command the shell cannot find is graded `fail`, and NAMED.
+    /// Um comando que o shell não acha é graduado `fail`, e NOMEADO.
     ///
-    /// Chegou a sair como `skip`, para que ninguém o lesse
-    /// as red proof. That fixed one consumer and broke the other: the QA run
-    /// tolerates a `skip` beside a `pass` on the external path, so a criterion
-    /// whose program did not exist stopped blocking CLOSE and rode along as a
-    /// pass. The discrimination moved to the caller that needs it — the exit
-    /// code is what carries it — and the verdict here went back to `fail`.
+    /// Chegou a sair como `skip`, para que ninguém o tomasse por prova
+    /// vermelha. Isso consertou um leitor e quebrou o outro: um critério cujo
+    /// programa não existia deixou de travar o fechamento e passou como verde.
+    /// A distinção foi para o chamador que a quer — o código de saída a leva —,
+    /// e o veredito aqui voltou a `fail`.
     #[test]
     fn a_command_the_shell_cannot_find_fails_and_names_the_cause() {
         let dir = tempdir().unwrap();
@@ -1098,239 +860,6 @@ mod tests {
             AC_TIMEOUT_CARGO_SECS
         );
         assert_eq!(ac_timeout_secs_with_override("echo ok", Some(""), &[]), AC_TIMEOUT_SECS);
-    }
-
-    /// The file name cargo writes for `package` in `profile` — spelled once so
-    /// the tests below read the same on Windows (`.exe`) and Unix.
-    fn built(target_root: &Path, profile: &str, package: &str) -> PathBuf {
-        target_root
-            .join(profile)
-            .join(format!("{package}{}", std::env::consts::EXE_SUFFIX))
-    }
-
-    /// The guard's question is about PATHS, not spelling. A command that
-    /// rebuilds this crate while writing to a file OTHER than the one this
-    /// process executes from is RUN, not refused: that is the shipped shape
-    /// (installed binary, workspace `target/`), and refusing it by crate name
-    /// denied a whole QA run over criteria that would have passed.
-    #[test]
-    fn guard_allows_when_build_target_is_not_the_running_binary() {
-        let target_root = PathBuf::from("no-such-workspace").join("target");
-        let installed = PathBuf::from("no-such-home")
-            .join(".cargo")
-            .join("bin")
-            .join(format!("mustard-rt{}", std::env::consts::EXE_SUFFIX));
-        // The shipped shape: two different files, so there is no conflict to
-        // protect against — both spellings of the direct form simply run.
-        assert!(!overwrites_running_binary("cargo test -p mustard-rt", &target_root, &installed));
-        assert!(!overwrites_running_binary(
-            "cargo build --package=mustard-rt",
-            &target_root,
-            &installed
-        ));
-
-        let debug_exe = built(&target_root, "debug", "mustard-rt");
-        // Same directory tree, different profile: `--release` writes elsewhere.
-        assert!(!overwrites_running_binary(
-            "cargo build -p mustard-rt --release",
-            &target_root,
-            &debug_exe
-        ));
-        // Another package's output is another file.
-        assert!(!overwrites_running_binary("cargo test -p mustard-core", &target_root, &debug_exe));
-        // Token boundary: a prefix-sharing name is a different package.
-        assert!(!overwrites_running_binary(
-            "cargo test -p mustard-rt-extras",
-            &target_root,
-            &debug_exe
-        ));
-        // Only `build`/`test` relink a crate's binary.
-        assert!(!overwrites_running_binary("cargo fmt -p mustard-rt", &target_root, &debug_exe));
-        assert!(!overwrites_running_binary("echo -p mustard-rt", &target_root, &debug_exe));
-        // The `--workspace` form is salvaged by an exclusion, never refused.
-        assert!(!overwrites_running_binary("cargo test --workspace", &target_root, &debug_exe));
-    }
-
-    /// The refusal STANDS when the two paths coincide: a harness
-    /// started from its own build directory really would be overwritten. The
-    /// reason names that file, relative to the project, so the committed QA
-    /// report says `target/debug/mustard-rt` and not a path off one machine.
-    #[test]
-    fn guard_refuses_when_build_target_is_the_running_binary() {
-        let project = PathBuf::from("no-such-workspace");
-        let target_root = project.join("target");
-        let running = built(&target_root, "debug", "mustard-rt");
-        for command in [
-            "cargo test -p mustard-rt qa_run",
-            "cargo test -p=mustard-rt -- --nocapture",
-            "cargo build --package mustard-rt",
-            "cargo build --package=mustard-rt",
-        ] {
-            assert!(
-                overwrites_running_binary(command, &target_root, &running),
-                "must refuse: {command}"
-            );
-        }
-        // A release build refuses too, when THAT is where the process runs from.
-        let released = built(&target_root, "release", "mustard-rt");
-        assert!(overwrites_running_binary(
-            "cargo build -p mustard-rt --release",
-            &target_root,
-            &released
-        ));
-        assert_eq!(
-            running_binary_label(&project, &running),
-            format!("target/debug/mustard-rt{}", std::env::consts::EXE_SUFFIX)
-        );
-    }
-
-    /// The refusal is really wired into the executor: with `self_invoked` set
-    /// and the running binary sitting in the directory the command builds into,
-    /// the AC is skipped without spawning and the reason names the file.
-    #[test]
-    fn qa_self_invoked_refusal_names_the_file_it_protects() {
-        let dir = tempdir().unwrap();
-        std::fs::write(dir.path().join("Cargo.toml"), "[workspace]\n").unwrap();
-        let target_root = cargo_target_root(dir.path()).expect("a Cargo.toml makes a target root");
-        let running = built(&target_root, "debug", "mustard-rt");
-        QA_OPTIONS.with(|cell| cell.set(QaRunOptions { self_invoked: true }));
-        let res = run_ac_command_with_timeout(
-            "cargo test -p mustard-rt qa_run",
-            None,
-            dir.path(),
-            Duration::from_secs(60),
-            Some(&running),
-        );
-        QA_OPTIONS.with(|cell| cell.set(QaRunOptions::default()));
-        assert_eq!(res.status, "skip");
-        assert_eq!(res.exit, None);
-        assert!(res.stderr_excerpt.contains("mustard-rt"), "{}", res.stderr_excerpt);
-        assert!(
-            res.stderr_excerpt.contains("the file this process is executing from"),
-            "the reason names the file, not the crate: {}",
-            res.stderr_excerpt
-        );
-    }
-
-    /// The other side of the same wiring, taking the branch it names: the path
-    /// question is ANSWERABLE here (the tempdir carries a `Cargo.toml`, so a
-    /// target root resolves) and the answer is "different files" — the process
-    /// runs from an installed-style path beside the target dir, not inside it.
-    /// So nothing is refused and cargo really spawns.
-    ///
-    /// The earlier version of this test used a tempdir with no `Cargo.toml`,
-    /// which made `cargo_target_root` return `None`: the guard short-circuited
-    /// on the UNANSWERABLE branch and the path comparison was never exercised.
-    #[test]
-    fn qa_self_invoked_runs_the_command_when_the_paths_differ() {
-        let dir = tempdir().unwrap();
-        std::fs::write(dir.path().join("Cargo.toml"), "[workspace]\n").unwrap();
-        let target_root = cargo_target_root(dir.path()).expect("a Cargo.toml makes a target root");
-        let elsewhere = dir
-            .path()
-            .join("installed")
-            .join(format!("mustard-rt{}", std::env::consts::EXE_SUFFIX));
-        // The branch under test, named directly: the target root resolved, and
-        // the file the build writes is NOT the file this process runs from.
-        assert!(!overwrites_running_binary(
-            "cargo test -p mustard-rt --offline",
-            &target_root,
-            &elsewhere
-        ));
-        QA_OPTIONS.with(|cell| cell.set(QaRunOptions { self_invoked: true }));
-        let res = run_ac_command_with_timeout(
-            "cargo test -p mustard-rt --offline",
-            None,
-            dir.path(),
-            Duration::from_secs(120),
-            Some(&elsewhere),
-        );
-        QA_OPTIONS.with(|cell| cell.set(QaRunOptions::default()));
-        assert_eq!(res.status, "fail", "stderr: {}", res.stderr_excerpt);
-        assert!(res.exit.is_some(), "the command really spawned: {}", res.stderr_excerpt);
-        assert!(
-            !res.stderr_excerpt.contains("self-invocation"),
-            "nothing may be refused when the paths differ: {}",
-            res.stderr_excerpt
-        );
-    }
-
-    /// The label never leaks a machine path. When the running binary lives
-    /// OUTSIDE the project — reachable with an absolute `CARGO_TARGET_DIR`,
-    /// where a refusal is still possible — the reason falls back to the bare
-    /// file name instead of interpolating an absolute path into `qa/report.md`
-    /// and `ac-proof.json`, which are versioned.
-    #[test]
-    fn running_binary_label_never_leaks_an_absolute_path() {
-        let project = PathBuf::from("no-such-workspace");
-        let outside = if cfg!(windows) {
-            PathBuf::from(r"D:\somewhere\else\target\debug")
-        } else {
-            PathBuf::from("/somewhere/else/target/debug")
-        }
-        .join(format!("mustard-rt{}", std::env::consts::EXE_SUFFIX));
-        let label = running_binary_label(&project, &outside);
-        assert_eq!(label, format!("mustard-rt{}", std::env::consts::EXE_SUFFIX));
-        assert!(!label.contains("somewhere"), "no machine path may survive: {label}");
-        // And a path with no file name at all still reads as a sentence.
-        assert_eq!(running_binary_label(&project, Path::new("/")), UNNAMEABLE_BINARY);
-    }
-
-    /// With `self_invoked=false` (external invocation) the command runs
-    /// untouched: cargo actually spawns and fails fast in the empty tempdir
-    /// ("could not find Cargo.toml") → `fail`, proving no skip short-circuit
-    /// and no rewrite fired.
-    #[test]
-    fn qa_self_invoked_false_runs_command_untouched() {
-        let dir = tempdir().unwrap();
-        // Thread-local default: self_invoked = false.
-        let res = run_ac_command("cargo test -p mustard-rt --offline", None, dir.path());
-        assert_eq!(res.status, "fail", "stderr: {}", res.stderr_excerpt);
-        assert!(
-            res.stderr_excerpt.contains("Cargo.toml"),
-            "cargo must have actually run: {}",
-            res.stderr_excerpt
-        );
-    }
-
-    /// The `--workspace` salvage asks the SAME path question: the exclusion is
-    /// appended only when the workspace build would overwrite the running
-    /// binary. A process running from an installed path gets the command
-    /// verbatim — which is how a `cargo build --workspace` criterion gets
-    /// genuinely verified instead of quietly not building this crate.
-    #[test]
-    fn qa_workspace_rewrite_excludes_only_the_running_binary() {
-        let target_root = PathBuf::from("no-such-workspace").join("target");
-        let running = built(&target_root, "debug", "mustard-rt");
-        assert_eq!(
-            rewrite_workspace_exclusion("cargo test --workspace", &target_root, &running),
-            "cargo test --workspace --exclude mustard-rt"
-        );
-        // Idempotent: an AC that already excludes it is left alone.
-        assert_eq!(
-            rewrite_workspace_exclusion(
-                "cargo test --workspace --exclude mustard-rt",
-                &target_root,
-                &running
-            ),
-            "cargo test --workspace --exclude mustard-rt"
-        );
-        // The rewrite never touches non-workspace forms (the direct form is
-        // handled upstream by the refusal, not by rewriting).
-        assert_eq!(
-            rewrite_workspace_exclusion("cargo test -p mustard-core", &target_root, &running),
-            "cargo test -p mustard-core"
-        );
-        // Running from an installed path: nothing to exclude, the workspace
-        // build really builds every crate.
-        let installed = PathBuf::from("no-such-home")
-            .join(".cargo")
-            .join("bin")
-            .join(format!("mustard-rt{}", std::env::consts::EXE_SUFFIX));
-        assert_eq!(
-            rewrite_workspace_exclusion("cargo test --workspace", &target_root, &installed),
-            "cargo test --workspace"
-        );
     }
 
     /// The pure `Expect:` matcher: absent ⇒ NoExpectation, a compiling pattern
@@ -1432,19 +961,65 @@ mod tests {
         assert_eq!(res.exit, Some(3), "the command's own code, not a timeout");
     }
 
+    /// Um comando que escreve 200 linhas numeradas, `linha 1` a `linha 200`, e
+    /// sai com o código 3: a falha aparece na última.
+    const PRINTS_LINES_THEN_FAILS: &str =
+        "i=1; while [ $i -le 200 ]; do echo \"linha $i\"; i=$((i+1)); done; exit 3";
+
+    /// A falha mostra o FIM da saída, onde o motivo aparece: numa saída de 200
+    /// linhas que falha na última, o trecho tem a última linha, guarda só as
+    /// 40 últimas e deixa a primeira de fora. O verde que diz rodar zero teste
+    /// segue com o começo.
+    #[test]
+    fn a_failure_keeps_the_end_of_the_output_and_a_zero_test_green_keeps_the_start() {
+        let dir = tempdir().unwrap();
+        let res = run_ac_command(PRINTS_LINES_THEN_FAILS, None, dir.path());
+        assert_eq!((res.status.as_str(), res.exit), ("fail", Some(3)), "{}", res.stderr_excerpt);
+        assert!(res.stderr_excerpt.ends_with("linha 200"), "o fim da saída: {}", res.stderr_excerpt);
+        assert_eq!(res.stderr_excerpt.lines().count(), 40, "as últimas 40 linhas: {}", res.stderr_excerpt);
+        assert!(res.stderr_excerpt.starts_with("linha 161\n"), "{}", res.stderr_excerpt);
+        assert!(!res.stderr_excerpt.contains("linha 1\n"), "o começo fica de fora: {}", res.stderr_excerpt);
+
+        // A evidência que falhou por não achar o que esperava também mostra o fim.
+        let missed = run_ac_command(
+            "i=1; while [ $i -le 200 ]; do echo \"linha $i\"; i=$((i+1)); done",
+            Some("nunca-escrito"),
+            dir.path(),
+        );
+        assert_eq!(missed.status, "fail", "{}", missed.stderr_excerpt);
+        assert!(missed.stderr_excerpt.ends_with("linha 200"), "{}", missed.stderr_excerpt);
+
+        // O verde de zero teste continua com o começo da saída, em 100 caracteres.
+        let zero = run_ac_command("echo running 0 tests; i=1; while [ $i -le 30 ]; do echo \"linha $i\"; i=$((i+1)); done", None, dir.path());
+        assert_eq!((zero.status.as_str(), zero.tests_run), ("pass", Some(0)), "{}", zero.stderr_excerpt);
+        assert!(zero.stderr_excerpt.starts_with("running 0 tests"), "{}", zero.stderr_excerpt);
+        assert_eq!(zero.stderr_excerpt.chars().count(), 100, "{}", zero.stderr_excerpt);
+    }
+
+    /// O teto de caracteres vale junto do de linhas: 100 linhas de 100
+    /// caracteres cabem nas 40 linhas mas passam de 2.000 caracteres, e sobram
+    /// os 2.000 do fim; uma saída curta sai inteira.
+    #[test]
+    fn the_end_of_the_output_is_cut_at_forty_lines_or_two_thousand_characters() {
+        let long: String = (1..=100).map(|n| format!("{n:03}{}\n", "x".repeat(97))).collect();
+        let tail = tail_excerpt(long.trim_end());
+        assert_eq!(tail.chars().count(), 2000, "{tail}");
+        assert!(tail.ends_with(&format!("100{}", "x".repeat(97))), "{tail}");
+        assert!(tail.contains("082"), "a primeira linha inteira que cabe nos 2.000 caracteres: {tail}");
+        assert!(!tail.contains("081"), "o número de uma linha cortada fica de fora: {tail}");
+
+        let short: String = (1..=12).map(|n| format!("linha {n}\n")).collect();
+        assert_eq!(tail_excerpt(short.trim_end()), short.trim_end());
+        assert_eq!(tail_excerpt(""), "");
+    }
+
     /// An AC killed by its deadline reports `timeout` — its OWN class, never
     /// `skip`. `skip` keeps meaning "could not be attempted at all"; a timed-out
     /// AC WAS attempted and simply verified nothing.
     #[test]
     fn ac_command_killed_by_deadline_reports_timeout_not_skip() {
         let dir = tempdir().unwrap();
-        let res = run_ac_command_with_timeout(
-            SLEEPS_SECONDS,
-            None,
-            dir.path(),
-            Duration::from_secs(1),
-            None,
-        );
+        let res = run_ac_command_with_timeout(SLEEPS_SECONDS, None, dir.path(), Duration::from_secs(1));
         assert_eq!(res.status, "timeout", "stderr: {}", res.stderr_excerpt);
         assert_eq!(res.exit, None, "a killed command has no exit code");
         assert_eq!(res.stderr_excerpt, "timeout after 1000ms");

@@ -3883,4 +3883,31 @@ exit "${2:-0}"
         assert_eq!(runs[1].str_field("result"), Some("pass"));
         assert_eq!(State::from_log(&log).phase, Some("running"), "a spec não fechou");
     }
+
+    /// A recusa de um critério cuja prova falha mostra o fim da saída dela,
+    /// onde o motivo aparece: uma prova que escreve 200 linhas e falha na
+    /// última recusa o fechamento com a última linha, e não com o começo. O
+    /// que fica gravado na execução é o mesmo trecho.
+    #[test]
+    fn the_refusal_of_a_failing_proof_shows_the_end_of_its_output() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        ready_to_close(
+            root,
+            "x",
+            &["sh -c 'i=1; while [ $i -le 200 ]; do echo \"linha $i\"; i=$((i+1)); done; exit 3'"],
+        );
+
+        let refused = close(root, "x");
+        assert_eq!(refused["reason"], json!("criterion-failed"), "{refused}");
+        let hint = refused["hint"].as_str().unwrap_or_default();
+        assert!(hint.ends_with("linha 200"), "a recusa termina no fim da saída: {hint}");
+        assert!(hint.contains("linha 161"), "e traz as últimas 40 linhas: {hint}");
+        assert!(!hint.contains("linha 1\n"), "o começo da saída fica de fora: {hint}");
+
+        let path = store::spec_file(root, "x").unwrap();
+        let log = store::read(&path).unwrap().unwrap();
+        let run = log.visible().into_iter().find(|e| e.event_type == "criterion_run").unwrap();
+        assert!(run.str_field("output").is_some_and(|out| out.ends_with("linha 200")), "{run:?}");
+    }
 }
