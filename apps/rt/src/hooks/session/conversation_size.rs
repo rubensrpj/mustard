@@ -350,7 +350,7 @@ mod tests {
     }
 
     /// Depois da compactação, o início da sessão coloca sozinho o bloco de
-    /// retomada, pelo evento do gancho: a onda entregue, a onda em andamento
+    /// retomada, pelo evento do gancho: quantas ondas foram entregues, a onda em andamento
     /// com a pasta da cópia dela, a onda cuja volta espera a rodada pedindo
     /// mudança de plano ainda sem o clique, a onda parada no limite de
     /// consertos, e o código da decisão gravada depois da última rodada — e
@@ -382,6 +382,8 @@ mod tests {
             // das duas rodadas de conserto: parada no limite.
             plan_wave(root, 3, crit, said);
             seed(root, "delivered", json!({"wave": 3, "text": "Pronta.", "files": ["src/tres.rs"], "author": "wave"}));
+            plan_wave(root, 6, crit, said);
+            seed(root, "delivered", json!({"wave": 6, "text": "Pronta.", "files": ["src/seis.rs"], "author": "wave"}));
             plan_wave(root, 4, crit, said);
             for _ in 0..3 {
                 crate::shared::spec_state::seed_verdict(root, "x", 4, "rejected", crit);
@@ -398,7 +400,7 @@ mod tests {
                 .replace("{copy}", &copy_of(root, 1));
             let replan = translate("conversation_size.replan", lang).replace("{wave}", "2");
             for (moment, context) in [("session start", &started), ("precompact", &precompact)] {
-                assert_eq!(slot_value(context, lang, "{delivered}"), "3", "{lang:?} {moment}: the delivered wave");
+                assert_eq!(slot_value(context, lang, "{delivered}"), "2", "{lang:?} {moment}: how many waves were delivered");
                 assert_eq!(slot_value(context, lang, "{running}"), running, "{lang:?} {moment}: the wave in flight");
                 assert_eq!(
                     slot_value(context, lang, "{returned}"),
@@ -416,6 +418,36 @@ mod tests {
             for paste in ["cole", "colar", "paste"] {
                 assert!(!precompact.contains(paste), "{lang:?}: the notice still asks to paste: {precompact}");
             }
+        }
+    }
+
+    /// Numa obra com muitas ondas entregues, o bloco de retomada diz só
+    /// quantas foram, e não o número de cada uma: o passo seguinte vem das que
+    /// faltam e do próximo comando, e a lista das entregues crescia com a obra
+    /// e ocupava mais da metade do bloco. O início da sessão depois da
+    /// compactação e o aviso de compactar trazem o mesmo bloco curto. Nos dois
+    /// idiomas.
+    #[test]
+    fn o_bloco_da_obra_conta_as_ondas_entregues_em_vez_de_listar_cada_uma() {
+        use serde_json::json;
+
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let dir = open_project_in("x", lang);
+            let root = dir.path();
+            let crit = seed_running_wave(root, "x");
+            let said = seed(root, "message", json!({"author": "user", "text": "obra longa"}));
+            for n in 2..=150 {
+                plan_wave(root, n, crit, said);
+                seed(root, "delivered", json!({"wave": n, "text": "Pronta.", "files": ["src/a.rs"], "author": "wave"}));
+            }
+
+            let (started, precompact) = hook_contexts(root, lang);
+            for (moment, context) in [("session start", &started), ("precompact", &precompact)] {
+                assert_eq!(slot_value(context, lang, "{delivered}"), "149", "{lang:?} {moment}: the count: {context}");
+                assert!(!context.contains("2, 3, 4"), "{lang:?} {moment}: the delivered waves are listed: {context}");
+            }
+            let block = crate::commands::flow::resume::current_block(root, Some("s1")).expect("the block");
+            assert!(block.len() < 900, "{lang:?}: the block grew with the delivered waves: {} bytes: {block}", block.len());
         }
     }
 

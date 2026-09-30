@@ -176,12 +176,31 @@ pub(crate) fn read_for(opts: &ReadOpts, session: Option<&str>, from: &Path) -> R
             // ondas e o painel mostram o envio sem ele, e só a leitura de uma
             // onda o traz inteiro.
             let brief = matches!(query, BlockQuery::Block(Block::Waves | Block::Metrics));
-            found_by(log.block(query), term, &codes, &project.languages).into_iter().map(|e| shown_with_code(e, &codes, brief)).collect()
+            let found = found_by(log.block(query), term, &codes, &project.languages);
+            let found = if query == BlockQuery::Block(Block::State) { latest_copies(found) } else { found };
+            found.into_iter().map(|e| shown_with_code(e, &codes, brief)).collect()
         }
     };
     note_reading(&project.root, &spec, &log, session, from, only_wave, &read, started);
     let warnings: Vec<String> = log.skipped.iter().map(|s| s.message(lang)).collect();
     Ok(render(&spec, block, &events, &extra, &warnings))
+}
+
+/// Do estado, só a cópia mais nova de cada página: cada rodada grava uma
+/// cópia nova, e a anterior fica sem leitor, porque a seguinte parte da
+/// última. Sem esse corte, o estado de uma spec longa trazia centenas de
+/// cópias, mais de cem mil letras, para quem só queria a fase e a branch. Os
+/// outros eventos do estado seguem todos, na ordem do arquivo.
+fn latest_copies(events: Vec<&SpecEvent>) -> Vec<&SpecEvent> {
+    let mut newest: BTreeMap<Option<&str>, u64> = BTreeMap::new();
+    for event in events.iter().filter(|event| event.event_type == "copy") {
+        let id = newest.entry(event.str_field("page")).or_insert(event.id);
+        *id = (*id).max(event.id);
+    }
+    events
+        .into_iter()
+        .filter(|event| event.event_type != "copy" || newest.get(&event.str_field("page")) == Some(&event.id))
+        .collect()
 }
 
 /// A spec da leitura e o arquivo dela, sem recusar: a leitura das lições não
@@ -1153,6 +1172,40 @@ mod tests {
         let parsed: Value = serde_json::from_str(&report).expect("the report is JSON");
         assert_eq!(parsed["last_user_message"], json!(last), "{report}");
         assert!(!report.contains("o último pedido"), "{report}");
+    }
+
+    /// O estado traz só a cópia mais nova de cada página, em vez de uma cópia
+    /// por rodada: com sete cópias da página da spec e três da página do
+    /// projeto, a leitura mostra duas, cada uma a última da sua página, e os
+    /// outros eventos do estado seguem todos.
+    #[test]
+    fn the_state_block_carries_only_the_newest_copy_of_each_page() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let opened = by_program(root, "state", json!({"author": "binary", "phase": "plan", "branch": "feature/teste", "base": "dev"}));
+        let mut spec_copies = Vec::new();
+        for last in 1..=7 {
+            spec_copies.push(by_program(root, "copy", json!({"author": "binary", "page": "spec", "last": last * 10})));
+            if last % 3 == 0 {
+                by_program(root, "copy", json!({"author": "binary", "page": "project", "phase": "plan"}));
+            }
+        }
+        let running = by_program(root, "state", json!({"author": "binary", "phase": "running"}));
+
+        let report = read_at(&opts(root, "state", None)).unwrap();
+        let got = events(&report);
+        let kinds: Vec<(&str, u64)> =
+            got.iter().map(|e| (e["type"].as_str().unwrap(), e["id"].as_u64().unwrap())).collect();
+        let copies: Vec<&Value> = got.iter().filter(|e| e["type"] == json!("copy")).collect();
+        assert_eq!(copies.len(), 2, "one copy per page: {report}");
+        assert_eq!(
+            copies.iter().find(|e| e["page"] == json!("spec")).map(|e| e["id"].as_u64().unwrap()),
+            spec_copies.last().copied(),
+            "the spec page keeps its newest copy: {report}"
+        );
+        assert!(copies.iter().any(|e| e["page"] == json!("project")), "the project page keeps a copy: {report}");
+        assert!(kinds.contains(&("state", opened)) && kinds.contains(&("state", running)), "{report}");
+        assert_eq!(got.len(), 4, "{report}");
     }
 
     /// O plano dos testes do registro: uma onda com uma tarefa e uma regra,

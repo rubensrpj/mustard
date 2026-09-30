@@ -512,6 +512,34 @@ fn the_installed_agents_use_the_effort_of_the_project_config() {
     }
 }
 
+/// O molde de onda, nos dois idiomas, não manda o agente refazer o que o
+/// pedido já traz: o código parecido e o padrão do projeto vêm no pedido,
+/// então `run map examples` e `run map importers` custariam duas chamadas, e
+/// cada uma relê a conversa inteira, para devolver o que ele já leu; e os
+/// idiomas do texto e do código vêm no cabeçalho do pedido, sem o molde
+/// repeti-los. O molde manda seguir o código parecido que o pedido mostra.
+#[test]
+fn o_molde_de_onda_nao_manda_refazer_o_que_o_pedido_ja_traz() {
+    for (lang, said, repeated) in [
+        (
+            "pt-BR",
+            "siga o código parecido que o pedido mostra, ou o arquivo vizinho",
+            ["map examples", "map importers", "idiomas do cabeçalho"],
+        ),
+        (
+            "en-US",
+            "follow the similar code the request shows, or the neighboring file",
+            ["map examples", "map importers", "languages in the request's header"],
+        ),
+    ] {
+        let wave = template(lang, "wave");
+        assert!(wave.contains(said), "the {lang} wave agent lost `{said}`");
+        for phrase in repeated {
+            assert!(!wave.contains(phrase), "the {lang} wave agent repeats what the request already carries: `{phrase}`");
+        }
+    }
+}
+
 /// O molde da onda, nos dois idiomas, tem exatamente quatro itens de
 /// segundo nível — objetivo, orientação sobre ferramentas, fronteira da
 /// tarefa e formato de saída, nas palavras da documentação da Anthropic —, e

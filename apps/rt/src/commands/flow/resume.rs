@@ -135,8 +135,9 @@ fn current_log(root: &Path, session: Option<&str>) -> Option<(String, SpecLog, L
 /// não levou às ondas.
 const RECORDED_KINDS: &[&str] = &["decision", "rule", "limit", "request", "criterion", "task"];
 
-/// O bloco de retomada da spec `spec`: a spec e a fase; as ondas entregues;
-/// cada onda em andamento com a pasta da cópia dela; as ondas cuja volta está
+/// O bloco de retomada da spec `spec`: a spec e a fase; quantas ondas foram
+/// entregues, só a conta, porque o número de cada uma não muda o passo
+/// seguinte e cresce com a obra; cada onda em andamento com a pasta da cópia dela; as ondas cuja volta está
 /// gravada e espera a rodada, dizendo qual troca uma decisão do usuário ainda
 /// sem o clique dele; as paradas no limite de consertos; as que faltam; o
 /// código de cada item gravado depois da última rodada; e o próximo comando.
@@ -195,10 +196,10 @@ pub(crate) fn resume_block(spec: &str, log: &SpecLog, lang: Locale) -> String {
         .replace("{spec}", spec)
         .replace("{phase}", phase)
         .replace("{command}", &command)
+        .replace("{delivered}", &delivered.len().to_string())
         .replace("{next}", &next);
     let lists = [
         ("{recorded}", recorded_since_round(log)),
-        ("{delivered}", delivered.iter().map(u64::to_string).collect()),
         ("{missing}", missing),
         ("{stuck}", stuck),
         ("{returned}", waiting),

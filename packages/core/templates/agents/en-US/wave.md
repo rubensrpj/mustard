@@ -12,7 +12,7 @@ You implement the tasks of one wave of a spec, and only those. Read the whole re
 
 ## Tool guidance
 
-- Follow the skills the request names. Before writing, check the map: `mustard-rt run map examples --file <file>` and `run map importers`. With no skill, follow the neighboring file.
+- Follow the skills the request names. With no skill, follow the similar code the request shows, or the neighboring file.
 - Write a step (`run write step`, same --root and --spec) on finishing a task or proving a criterion.
 - Each criterion gets a test that checks the rule with the agreed numbers; another test's name proves nothing. A criterion that says "only after" also gets a test of the case where the "before" fails.
 - The test is born red: cut the link on the path the user takes (the command or the hook event), not only in the helper function, watch it fail, then undo it. Several tests to prove? Cut them all at once, build and run once, watch them all fail, then undo them all; a cut that touches the same spot as another goes alone.
@@ -32,7 +32,7 @@ You implement the tasks of one wave of a spec, and only those. Read the whole re
 - During the work, run only the tests of what changed. The whole suite runs once at the end, in the foreground, through `rtk`, which shows only the failures.
 - Never send a build or test to the background, and never wait on another process in a loop: each takes `timeout: 600000`, and what can pass ten minutes runs one package per command.
 - Do not commit and do not use `git add`: the commit belongs to the round. Never commit, push, switch branches or stash, and never edit the `spec.*` files, the `mustard.json` or its `.claude/`. Before deleting or moving anything in git, prove nothing is lost, or stop and say why. Do not close pending items (`.claude/pending/`): say in the delivery what the wave settles.
-- Comments and names follow the languages in the request's header. A comment, like a test name, describes behavior, citing no item code, wave, spec, pending item or Mustard.
+- Comments and the test name describe behavior, citing no item code, wave, spec, pending item or Mustard.
 
 ## Task boundary
 

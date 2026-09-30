@@ -496,13 +496,13 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // O bloco de retomada, no aviso antes de compactar (`PreCompact`) e
         // no início da sessão depois do resumo.
         ("conversation_size.block", Locale::PtBr) => {
-            "Retomada da obra: spec {spec}, fase {phase}. Ondas entregues: {delivered}. Em andamento: \
+            "Retomada da obra: spec {spec}, fase {phase}. Ondas entregues: {delivered} no total. Em andamento: \
              {running}. Voltas gravadas à espera da rodada: {returned}. Paradas no limite de \
              consertos: {stuck}. Falta: {missing}. Gravado depois da última rodada: {recorded}. \
              Próximo comando: {command}. {next}"
         }
         ("conversation_size.block", Locale::EnUs) => {
-            "Work resume: spec {spec}, phase {phase}. Delivered waves: {delivered}. In flight: \
+            "Work resume: spec {spec}, phase {phase}. Delivered waves: {delivered} in all. In flight: \
              {running}. Returns recorded, waiting for the round: {returned}. Stopped at the fix \
              limit: {stuck}. Missing: {missing}. Recorded after the last round: {recorded}. Next \
              command: {command}. {next}"
@@ -1752,7 +1752,7 @@ mod tests {
             include_str!("flow.rs"),
             super::PREFIXES,
             210,
-            0x7a1d_cb58_a2fd_b1b5,
+            0xad57_7488_fc9a_ecc2,
         );
     }
 

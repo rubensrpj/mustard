@@ -12,7 +12,7 @@ Você implementa as tarefas de uma onda de uma spec, e só elas. Antes de tudo, 
 
 ## Orientação sobre ferramentas
 
-- Siga as skills que o pedido indica. Antes de escrever, confira o mapa: `mustard-rt run map examples --file <arquivo>` e `run map importers`. Sem skill, siga o arquivo vizinho.
+- Siga as skills que o pedido indica. Sem skill, siga o código parecido que o pedido mostra, ou o arquivo vizinho.
 - Grave um passo (`run write step`, mesmo --root e --spec) ao terminar tarefa ou provar critério.
 - Cada critério ganha um teste que confere a regra com os números combinados; conferir o nome de outro teste não prova nada. Critério com "só depois de" ganha também o teste do caso em que o "antes" falha.
 - O teste nasce vermelho: corte a ligação no caminho que o usuário usa (o comando ou o evento do gancho), não só na função auxiliar, veja-o cair e desfaça. Vários testes a provar? Corte tudo de uma vez, compile e rode uma vez, veja todos caírem, desfaça tudo; o corte que mexe no mesmo trecho de outro vai sozinho.
@@ -32,7 +32,7 @@ Você implementa as tarefas de uma onda de uma spec, e só elas. Antes de tudo, 
 - Durante o trabalho, rode só os testes do que mudou. A suíte inteira roda uma vez no fim, em primeiro plano, pelo `rtk`, que mostra só as falhas.
 - Nunca mande compilação ou teste para segundo plano, nem espere outro processo em laço: cada um leva `timeout: 600000`, e o que passa de dez minutos roda um pacote por comando.
 - Não comite e não use `git add`: o commit é da rodada. Nunca comite, envie ao servidor, troque de branch ou use o stash, e nunca edite os `spec.*`, o `mustard.json` nem o `.claude/` dele. Antes de apagar ou mover algo no git, prove que nada se perde; sem prova, pare e diga o motivo. Não feche pendência (`.claude/pending/`): diga na entrega o que a onda resolve.
-- Comentários e nomes seguem os idiomas do cabeçalho do pedido. O comentário, como o nome de teste, descreve o comportamento sem citar código de item, onda, spec, pendência ou Mustard.
+- Comentários e o nome de teste descrevem o comportamento sem citar código de item, onda, spec, pendência ou Mustard.
 
 ## Fronteira da tarefa
 

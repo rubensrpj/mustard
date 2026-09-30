@@ -639,13 +639,13 @@ mod tests {
             let list = rest.split(to).next().unwrap();
             list.split(", ").map(str::to_string).collect()
         };
-        let delivered = between(&block, "Ondas entregues: ", ". Em andamento");
+        let delivered = between(&block, "Ondas entregues: ", " no total. Em andamento");
         let missing = between(&block, "Falta: ", ". Gravado depois");
-        assert_eq!(delivered, ["1", "7"], "{block}");
+        assert_eq!(delivered, ["2"], "the block counts the delivered waves: {block}");
         assert_eq!(missing, ["2", "8"], "the emptied waves are not missing: {block}");
         let progress = mustard_core::translate("statusline.wave", mustard_core::SupportedLocale::PtBr)
-            .replace("{delivered}", &delivered.len().to_string())
-            .replace("{total}", &(delivered.len() + missing.len()).to_string());
+            .replace("{delivered}", &delivered[0])
+            .replace("{total}", &(delivered[0].parse::<usize>().unwrap() + missing.len()).to_string());
         assert_eq!(progress, "2 de 4 ondas");
         assert!(bar.text.ends_with(&progress), "the bar counts what the block counts: {}", bar.text);
     }
