@@ -4,18 +4,9 @@
 //! recusam quando algum item da lista ficou sem chamada.
 
 use std::collections::BTreeSet;
-#[cfg(test)]
-use std::path::Path;
 
 use mustard_core::domain::spec_events::SpecLog;
-#[cfg(test)]
-use mustard_core::io::spec_events as store;
-#[cfg(test)]
-use serde_json::json;
 use serde_json::Value;
-
-#[cfg(test)]
-use super::queue::{open_review, open_sends};
 
 /// O nome com que a leitura registra o pedido de uma onda (`request-<onda>`)
 /// ou o da revisão final (`request-review`, sem onda): o mesmo que a
@@ -61,45 +52,15 @@ pub(crate) fn unread_items(log: &SpecLog, sent: u64, request: &str) -> Vec<Strin
     listed.iter().filter_map(Value::as_str).filter(|item| !read.contains(item)).map(str::to_string).collect()
 }
 
-/// A chamada `read` que o `run read` de dentro da cópia grava para `item` do
-/// pedido `request`, na spec `spec`. Só os testes usam.
-#[cfg(test)]
-pub(crate) fn seed_read(root: &Path, spec: &str, request: &str, item: &str) {
-    let call = json!({"author": "binary", "command": "read", "ms": 0, "result": "ok", "request": request, "item": item});
-    crate::shared::spec_state::seed_event(root, spec, "call", call);
-}
-
-/// As leituras que o agente da onda `wave` da spec `spec` faz do pedido dela:
-/// uma chamada `read` por item da lista do envio aberto que ainda não foi
-/// lido. Sem envio aberto, ou de antes de o envio guardar a lista, não grava
-/// nada. Só os testes usam.
-#[cfg(test)]
-pub(crate) fn read_request(root: &Path, spec: &str, wave: u64) {
-    let log = store::read(&store::spec_file(root, spec).unwrap()).unwrap().unwrap();
-    let Some(sent) = open_sends(&log).get(&wave).copied() else { return };
-    let request = request_name(Some(wave));
-    for item in unread_items(&log, sent, &request) {
-        seed_read(root, spec, &request, &item);
-    }
-}
-
-/// As leituras que o revisor da spec `spec` faz do pedido da revisão: uma
-/// chamada `read` por item da lista do envio de revisão aberto que ainda não
-/// foi lido. Sem pedido aberto, ou de antes de o envio guardar a lista, não
-/// grava nada. Só os testes usam.
-#[cfg(test)]
-pub(crate) fn read_review(root: &Path, spec: &str) {
-    let log = store::read(&store::spec_file(root, spec).unwrap()).unwrap().unwrap();
-    let Some(sent) = open_review(&log) else { return };
-    let request = request_name(None);
-    for item in unread_items(&log, sent, &request) {
-        seed_read(root, spec, &request, &item);
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
+    use mustard_core::io::spec_events as store;
+    use serde_json::json;
+
     use super::*;
+    use crate::commands::flow::round::seed_read;
     use crate::shared::spec_state::seed_event;
 
     /// Um envio da onda 1 com a lista de leitura de `items`, e o número dele.

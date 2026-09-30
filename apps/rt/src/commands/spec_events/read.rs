@@ -86,7 +86,7 @@ use mustard_core::ClaudePaths;
 use serde_json::{json, Map, Value};
 
 use super::read_record::{self, Request};
-use crate::shared::spec_state::{session_from_env, DiskSpecState};
+use crate::shared::spec_state::{checkout, session_from_env, DiskSpecState};
 
 /// Options for `mustard-rt run read`.
 pub struct ReadOpts {
@@ -517,12 +517,6 @@ fn read_lessons(
     let events: Vec<String> = found.iter().map(|lesson| shown_line(&lesson.fields)).collect();
     let numbers = found.iter().map(|lesson| lesson.id).collect();
     Ok((render(spec.unwrap_or_default(), "lessons", &events, &[], &[]), numbers))
-}
-
-/// O checkout em que o comando roda, cuja branch diz qual é a spec atual.
-pub(crate) fn checkout(start: &Path) -> PathBuf {
-    let start = std::path::absolute(start).unwrap_or_else(|_| start.to_path_buf());
-    mustard_core::io::workspace::workspace_root_or_self(&start)
 }
 
 /// A linha como a leitura mostra, com o código do item (`MSTD-<sigla>-<NNNN>`),

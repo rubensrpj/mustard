@@ -29,8 +29,8 @@ use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::translate;
 use serde_json::{json, Map, Value};
 
-use crate::commands::spec_events::{self, read::checkout, write::record};
-use crate::shared::spec_state::{session_from_env, DiskSpecState};
+use crate::commands::spec_events::{self, write::record};
+use crate::shared::spec_state::{checkout, session_from_env, DiskSpecState};
 
 /// A pasta em que as specs descartadas ficam guardadas, dentro da pasta das
 /// specs: a mesma de onde o índice as lê.

@@ -155,7 +155,7 @@ pub(crate) use slots::{
 };
 pub(crate) use read_check::request_name;
 #[cfg(test)]
-pub(crate) use read_check::{read_request, read_review, seed_read};
+pub(crate) use tests::{read_request, read_review, seed_read};
 pub(crate) use report::{check_return, check_verdict_return, take_report};
 pub(crate) use usage::Caller;
 
@@ -216,6 +216,7 @@ mod tests {
     use mustard_core::io::spec_events as store;
     use serde_json::{json, Value};
 
+    use super::read_check::unread_items;
     use super::*;
     use crate::commands::spec_events::write::{record_open, seed_at, WriteOpts};
 
@@ -424,6 +425,40 @@ mod tests {
         match answer::run_round_with_mine(&opts, &project.root, project.lang, Caller::default(), mine) {
             Ok(report) => report,
             Err(refusal) => refusal.to_value(project.lang),
+        }
+    }
+
+    /// A chamada `read` que o `run read` de dentro da cópia grava para `item` do
+    /// pedido `request`, na spec `spec`.
+    pub(crate) fn seed_read(root: &Path, spec: &str, request: &str, item: &str) {
+        let call =
+            json!({"author": "binary", "command": "read", "ms": 0, "result": "ok", "request": request, "item": item});
+        crate::shared::spec_state::seed_event(root, spec, "call", call);
+    }
+
+    /// As leituras que o agente da onda `wave` da spec `spec` faz do pedido
+    /// dela: uma chamada `read` por item da lista do envio aberto que ainda
+    /// não foi lido. Sem envio aberto, ou de antes de o envio guardar a lista,
+    /// não grava nada.
+    pub(crate) fn read_request(root: &Path, spec: &str, wave: u64) {
+        let log = store::read(&store::spec_file(root, spec).unwrap()).unwrap().unwrap();
+        let Some(sent) = open_sends(&log).get(&wave).copied() else { return };
+        let request = request_name(Some(wave));
+        for item in unread_items(&log, sent, &request) {
+            seed_read(root, spec, &request, &item);
+        }
+    }
+
+    /// As leituras que o revisor da spec `spec` faz do pedido da revisão: uma
+    /// chamada `read` por item da lista do envio de revisão aberto que ainda
+    /// não foi lido. Sem pedido aberto, ou de antes de o envio guardar a lista,
+    /// não grava nada.
+    pub(crate) fn read_review(root: &Path, spec: &str) {
+        let log = store::read(&store::spec_file(root, spec).unwrap()).unwrap().unwrap();
+        let Some(sent) = open_review(&log) else { return };
+        let request = request_name(None);
+        for item in unread_items(&log, sent, &request) {
+            seed_read(root, spec, &request, &item);
         }
     }
 

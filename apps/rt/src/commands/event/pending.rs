@@ -66,7 +66,7 @@ use mustard_core::io::fs::lock::{read_shared, LockedFile};
 
 use crate::commands::agent::render::prompt_ref::fnv1a64;
 use crate::commands::git_settle::main_checkout_root;
-use crate::shared::spec_state::{session_from_env, DiskSpecState};
+use crate::shared::spec_state::{checkout, session_from_env, DiskSpecState};
 
 mod carried;
 pub(crate) use carried::carried_by;
@@ -1088,7 +1088,7 @@ pub(crate) fn open_pending_born_in(root: &Path, spec: &str) -> Vec<OpenPending> 
 /// unidade dona de uma pendência gravada agora. `None` fora de toda unidade —
 /// e aí a pendência já nasce do projeto.
 fn active_spec(start: &Path) -> Option<(PathBuf, String)> {
-    let checkout_root = crate::commands::spec_events::read::checkout(start);
+    let checkout_root = checkout(start);
     let spec = DiskSpecState::new(&checkout_root).active(session_from_env().as_deref())?;
     Some((checkout_root, spec))
 }

@@ -214,7 +214,7 @@ use mustard_core::platform::i18n::{translate, Locale};
 use mustard_core::ClaudePaths;
 use serde_json::{json, Map, Value};
 
-use crate::shared::spec_state::{session_from_env, DiskSpecState};
+use crate::shared::spec_state::{checkout, session_from_env, DiskSpecState};
 
 /// Os tipos que só o binário grava: a execução de um critério, que o
 /// fechamento grava ao rodar a prova; o veredito oficial, o envio do pedido
@@ -1569,7 +1569,7 @@ fn fixed_in_code(project: &super::Project, spec: Option<&str>, class: &str) -> V
 /// fechado. `None` quando não há nenhuma: a spec em que a lição nasceu pode já
 /// ter fechado, e aí não recebe tarefa.
 fn open_spec_for_the_fix(root: &Path, spec: Option<&str>) -> Option<String> {
-    let disk = DiskSpecState::new(&super::read::checkout(root));
+    let disk = DiskSpecState::new(&checkout(root));
     let spec = match spec.map(str::trim).filter(|named| !named.is_empty()) {
         Some(named) => named.to_string(),
         None => disk.active(session_from_env().as_deref())?,

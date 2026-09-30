@@ -104,9 +104,9 @@ use serde_json::{json, Map, Value};
 use crate::commands::git_settle::settle_unit_at;
 use crate::commands::review::pr_door::{merged_elsewhere_with, project_root, provider_checks, red_reported, MergedElsewhere};
 use crate::commands::review::pr_publish::{spec_pr, SpecPr};
-use crate::commands::spec_events::{self, read::checkout, write::record};
+use crate::commands::spec_events::{self, write::record};
 use crate::shared::pr_provider::{provider_for, PrChecks, PrProvider, PrRef};
-use crate::shared::spec_state::{session_from_env, DiskSpecState};
+use crate::shared::spec_state::{checkout, session_from_env, DiskSpecState};
 
 /// Como a porta pergunta ao provedor as verificações de um pull request.
 /// Injetada para o teste exercitar o vermelho e o verde sem provedor, sem

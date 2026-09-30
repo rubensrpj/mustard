@@ -69,8 +69,8 @@ use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Map, Value};
 
 use crate::commands::flow::skill_search::{best_skill, skills_on_disk, MAP_SUGGESTIONS};
-use crate::commands::spec_events::{self, read::checkout, write::record};
-use crate::shared::spec_state::{session_from_env, DiskSpecState};
+use crate::commands::spec_events::{self, write::record};
+use crate::shared::spec_state::{checkout, session_from_env, DiskSpecState};
 
 /// As opções de `mustard-rt run plan`.
 pub struct PlanOpts {

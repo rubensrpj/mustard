@@ -58,6 +58,15 @@ pub(crate) fn active_spec(root: &str, session: Option<&str>) -> Option<String> {
     resolve(env.as_deref(), branch, bound)
 }
 
+/// O checkout em que o comando roda, cuja branch diz qual é a spec atual: a
+/// raiz do projeto que vale a partir de `start`, com o caminho absoluto. É a
+/// pasta com que os comandos abrem o [`DiskSpecState`].
+#[must_use]
+pub(crate) fn checkout(start: &Path) -> PathBuf {
+    let start = std::path::absolute(start).unwrap_or_else(|_| start.to_path_buf());
+    mustard_core::io::workspace::workspace_root_or_self(&start)
+}
+
 /// The disk side of the core's [`SpecState`] port: the ladder of
 /// [`active_spec`] over the checkout at `root`, and each spec's state folded
 /// from its `spec.ndjson` (the main checkout's, when `root` is a linked
@@ -384,5 +393,30 @@ mod tests {
         assert!(state.approved);
         assert_eq!(state.branch.as_deref(), Some("feature/com-arquivo"), "the branch is inherited");
         assert_eq!(state.base.as_deref(), Some("dev"));
+    }
+
+    /// O checkout de uma pasta dentro do projeto é a raiz do projeto: a que
+    /// tem o `mustard.json`, a `.claude/` e o `.git`.
+    #[test]
+    fn the_checkout_of_a_folder_inside_the_project_is_the_project_root() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), b"{}").unwrap();
+        std::fs::create_dir_all(root.join(".claude")).unwrap();
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        let inside = root.join("apps").join("um");
+        std::fs::create_dir_all(&inside).unwrap();
+        assert_eq!(checkout(&inside), root);
+        assert_eq!(checkout(root), root);
+    }
+
+    /// Um caminho relativo vira absoluto antes de a raiz ser procurada: sem
+    /// isso a subida pelas pastas pais pararia na primeira e o comando nunca
+    /// acharia o projeto.
+    #[test]
+    fn a_relative_start_names_an_absolute_checkout() {
+        let here = checkout(Path::new("."));
+        assert!(here.is_absolute(), "{}", here.display());
+        assert_eq!(here, checkout(&std::env::current_dir().unwrap()));
     }
 }

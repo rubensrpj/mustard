@@ -28,8 +28,8 @@ use super::slots::{open_copies, sharing_copy};
 use super::stops::{stopped_waves, waves_stuck};
 use super::usage::Caller;
 use super::{can_run, RoundOpts, DONE_STEP};
-use crate::commands::spec_events::{read::checkout, write::record};
-use crate::shared::spec_state::DiskSpecState;
+use crate::commands::spec_events::write::record;
+use crate::shared::spec_state::{checkout, DiskSpecState};
 
 /// Por que a rodada não correu.
 pub(crate) enum RoundRefusal {

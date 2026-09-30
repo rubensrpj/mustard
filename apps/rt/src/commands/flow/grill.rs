@@ -50,8 +50,8 @@ use mustard_core::platform::i18n::{translate, Locale};
 use mustard_core::ClaudePaths;
 use serde_json::{json, Map, Value};
 
-use crate::commands::spec_events::{self, read::checkout, shown, write::record};
-use crate::shared::spec_state::{session_from_env, DiskSpecState};
+use crate::commands::spec_events::{self, shown, write::record};
+use crate::shared::spec_state::{checkout, session_from_env, DiskSpecState};
 
 /// Options for `mustard-rt run grill`.
 pub struct GrillOpts {

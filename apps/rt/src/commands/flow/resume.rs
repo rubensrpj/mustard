@@ -25,8 +25,8 @@ use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Value};
 
-use crate::commands::spec_events::{self, read::checkout};
-use crate::shared::spec_state::{session_from_env, DiskSpecState};
+use crate::commands::spec_events;
+use crate::shared::spec_state::{checkout, session_from_env, DiskSpecState};
 
 /// As opções de `mustard-rt run resume`.
 pub struct ResumeOpts {
