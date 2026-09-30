@@ -35,9 +35,11 @@
 //! A busca por nome de arquivo (`Glob`, `find -name`) tem a mesma marca, sem
 //! resposta: as palavras do padrão de nome vão à triagem ([`name_words`]), e a
 //! busca roda como veio, com a linha da marca. O pedido a um agente de
-//! exploração vai à triagem como frase e palavras ([`ask_reply`]): cravado ou
-//! parcial, a resposta curta do mapa (arquivo, função e linhas) sobe ao topo
-//! do pedido.
+//! exploração vai à triagem como frase e palavras ([`ask_reply`]): só o
+//! cravado sobe ao topo do pedido, como a resposta curta do mapa (arquivo,
+//! função e linhas). O parcial e o que o mapa não achou deixam o pedido como
+//! veio: a lista parcial só gasta leitura do agente e o desvia, e o filtro
+//! não é chamado.
 //!
 //! Nunca falha: sem mapa, sem sessão, com regex que esta leitura não entende
 //! ou passando do tempo, a resposta é passar, e a busca comum segue.
@@ -384,7 +386,7 @@ fn code_words(token: &str, ticked: bool) -> Vec<String> {
 /// A resposta do gancho ao pedido `request` a um agente de exploração, no
 /// projeto `root`: o texto que sobe ao topo do pedido, ou `None` quando o
 /// pedido passa como veio — a chave `search.answer` desligada, sem mapa, sem
-/// nome de código no pedido ou o mapa sem achar.
+/// nome de código no pedido ou o mapa sem cravar a resposta.
 pub(crate) fn hook_ask(root: &str, input: &HookInput, ctx: &Ctx, request: &str) -> Option<String> {
     if !ctx.config.search_answer() {
         return None;
@@ -393,10 +395,10 @@ pub(crate) fn hook_ask(root: &str, input: &HookInput, ctx: &Ctx, request: &str) 
 }
 
 /// A resposta curta do mapa ao pedido `request`: a marca, os arquivos que a
-/// triagem achou (ou as peças que o filtro entrega, no parcial) e, de cada
-/// arquivo, as primeiras declarações com o começo e o fim. O pedido vai à
-/// triagem como frase e como as palavras de [`ask_words`]. `None` no não
-/// achou, que deixa o pedido como veio.
+/// triagem achou e, de cada arquivo, as primeiras declarações com o começo e o
+/// fim. O pedido vai à triagem como frase e como as palavras de
+/// [`ask_words`]. Só o cravado responde: o parcial e o não achou devolvem
+/// `None`, que deixa o pedido como veio, sem chamar o filtro.
 fn ask_reply(scene: &Scene<'_>, request: &str) -> Option<String> {
     let words = ask_words(request);
     if words.is_empty() {
@@ -407,17 +409,10 @@ fn ask_reply(scene: &Scene<'_>, request: &str) -> Option<String> {
     let intent: String = request.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(ASKED_PHRASE).collect();
     let triaged = map_triage::triage_at(scene.model, (&question, &intent), scene.languages, RANKED_FILES).ok()?;
     let mark = triaged.mark();
-    if mark == Mark::NotFound {
+    if mark != Mark::Pinned {
         return None;
     }
-    let mut warnings: Vec<String> = Vec::new();
-    let judged =
-        if mark == Mark::Partial { judge(scene, (&question, &intent), &triaged, &mut warnings) } else { Judged::Triage };
-    let places: Vec<(String, Vec<String>)> = match judged {
-        Judged::NotFound => return None,
-        Judged::Pieces(pieces) => places_of_pieces(&pieces),
-        Judged::Triage => places_of_triage(scene, (&question, &intent), &triaged)?,
-    };
+    let places = places_of_triage(scene, (&question, &intent), &triaged)?;
     if places.is_empty() {
         return None;
     }
@@ -434,25 +429,7 @@ fn ask_reply(scene: &Scene<'_>, request: &str) -> Option<String> {
     }
     out.push('\n');
     out.push_str(&say("map.search.use_tools", scene.lang, &[]));
-    for warning in warnings {
-        out.push('\n');
-        out.push_str(&warning);
-    }
     Some(out)
-}
-
-/// As peças que o filtro entregou, agrupadas por arquivo na ordem da chance:
-/// `começo-fim nome` de cada uma.
-fn places_of_pieces(pieces: &[Piece]) -> Vec<(String, Vec<String>)> {
-    let mut places: Vec<(String, Vec<String>)> = Vec::new();
-    for piece in pieces {
-        let line = format!("{}-{} {}", piece.line, piece.end_line, piece.name);
-        match places.iter_mut().find(|(path, _)| *path == piece.path) {
-            Some((_, lines)) => lines.push(line),
-            None => places.push((piece.path.clone(), vec![line])),
-        }
-    }
-    places
 }
 
 /// Os primeiros arquivos da triagem, cada um com as declarações dele que a
@@ -1384,38 +1361,67 @@ mod tests {
         assert_eq!(ask_words(&many).len(), MAX_WORDS);
     }
 
-    /// A resposta ao pedido do agente de exploração traz a marca, o arquivo do
-    /// primeiro achado com a função e as linhas de começo e fim, e a linha de
-    /// usar as ferramentas de sempre; o pedido sem nome de código, o que o
-    /// mapa não acha, o sem mapa e o com a chave `search.answer` desligada não
-    /// ganham resposta.
+    /// O pedido ao agente de exploração no projeto `root`, com o mapa dele e o
+    /// filtro que `assemble` monta.
+    fn ask_through(root: &Path, request: &str, assemble: &Assemble<'_>) -> Option<String> {
+        let config = ProjectConfig::load(root);
+        let scene = Scene {
+            root,
+            model: &store::model_path(root),
+            memory: None,
+            session: Some("teste"),
+            lang: Locale::PtBr,
+            languages: &Languages::new(["pt-BR", "en-US"]),
+            config: &config,
+            assemble,
+        };
+        ask_reply(&scene, request)
+    }
+
+    /// A resposta ao pedido do agente de exploração cravado traz a marca, o
+    /// arquivo do primeiro achado com a função e as linhas de começo e fim, e a
+    /// linha de usar as ferramentas de sempre; o pedido sem nome de código, o
+    /// que o mapa não acha e o sem mapa não ganham resposta.
     #[test]
     fn the_request_to_an_explorer_gets_the_short_answer_of_the_map() {
         let (_dir, root) = fixture::repo("{}");
-        let ask = |root: &Path, request: &str| {
-            let config = ProjectConfig::load(root);
-            let scene = Scene {
-                root,
-                model: &store::model_path(root),
-                memory: None,
-                session: Some("teste"),
-                lang: Locale::PtBr,
-                languages: &Languages::new(["pt-BR", "en-US"]),
-                config: &config,
-                assemble: &without_key,
-            };
-            ask_reply(&scene, request)
-        };
+        let ask = |root: &Path, request: &str| ask_through(root, request, &without_key);
         let text = ask(&root, "Mapeie o cálculo do frete. Onde `calcular_frete` é usado? Leia src/frete.rs.").expect("the map answers");
         assert!(text.starts_with("Antes de explorar, o Mustard consultou o mapa com este pedido.\n"), "{text}");
         assert!(text.contains("src/frete.rs\n  2-6 calcular_frete"), "the file, the function and its lines: {text}");
-        assert!(text.contains("Cravado.") || text.contains("Parcial."), "the mark: {text}");
+        assert!(text.contains("Cravado.") && !text.contains("Parcial."), "the mark: {text}");
         assert!(text.ends_with("`Grep`, `Glob` e `Read`."), "the line of the usual tools closes it: {text}");
         assert_eq!(ask(&root, "Explore o repositório inteiro e resuma."), None, "no code name in the request");
         assert_eq!(ask(&root, "Onde fica `zzyzx_quebrada`?"), None, "the map found nothing");
         let (_bare, bare) = fixture::repo("{}");
         std::fs::remove_file(store::model_path(&bare)).expect("no map");
         assert_eq!(ask(&bare, "Onde `calcular_frete` é usado?"), None, "no map");
+    }
+
+    /// A busca parcial não sobe ao pedido do agente de exploração: o mapa acha
+    /// só parte (a palavra está no comentário da função, não no nome), então o
+    /// pedido fica como veio, sem a lista parcial nem a das palavras que
+    /// faltam, e o filtro não é chamado nem montado. No cravado, o filtro
+    /// também não é chamado, e a resposta continua saindo.
+    #[test]
+    fn a_partial_request_to_an_explorer_gets_no_answer_and_never_reaches_the_filter() {
+        let (_dir, root) = fixture::repo("{}");
+        let languages = Languages::new(["pt-BR", "en-US"]);
+        let marked = |question: &str, request: &str| {
+            let intent = request.split_whitespace().collect::<Vec<_>>().join(" ");
+            map_triage::triage_at(&store::model_path(&root), (question, &intent), &languages, RANKED_FILES).expect("triage").mark()
+        };
+        let partial = "Onde fica o `imposto` do frete?";
+        let pinned = "Onde `calcular_frete` é usado?";
+        assert_eq!(ask_words(partial), ["imposto"]);
+        assert_eq!(marked("imposto", partial), Mark::Partial, "the premise: the map finds only part");
+        assert_eq!(marked("calcular_frete", pinned), Mark::Pinned, "the premise: the map pins it");
+        let judge = Judge::sure_of(&[("calcular_frete", 0.9)]);
+        assert_eq!(ask_through(&root, partial, &judge.assemble()), None, "the partial answer does not reach the agent");
+        assert_eq!(judge.calls(), 0, "the filter is not asked for a request to an explorer");
+        let text = ask_through(&root, pinned, &judge.assemble()).expect("the pinned answer goes on");
+        assert!(text.contains("Cravado.") && text.contains("src/frete.rs\n  2-6 calcular_frete"), "{text}");
+        assert_eq!(judge.calls(), 0);
     }
 
     #[test]

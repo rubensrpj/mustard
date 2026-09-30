@@ -19,7 +19,9 @@
 //! dos nomes. O texto que já traz a linha, como o pedido da rodada,
 //! passa como veio. Qualquer outro despacho sem bilhete é uma tarefa
 //! qualquer e também passa como veio: o gancho não escolhe skill, não injeta
-//! memória e não avalia a volta do agente.
+//! memória e não avalia a volta do agente. O pedido ao agente de exploração
+//! do Claude Code sobe com a resposta curta do mapa no topo só quando a busca
+//! cravou; a resposta parcial não vai.
 
 use std::path::Path;
 
@@ -133,7 +135,7 @@ fn to_explore_agent(input: &HookInput) -> bool {
 }
 
 /// O pedido ao agente de exploração com a resposta curta do mapa no topo,
-/// quando o mapa a tem; senão, como veio.
+/// quando o mapa cravou a resposta; senão, como veio.
 fn explore(input: &HookInput, ctx: &Ctx) -> Verdict {
     let root = ctx.project_dir_or_cwd(input);
     let prompt = dispatch_prompt(input);
@@ -439,6 +441,23 @@ mod tests {
             assembled(dir.path()),
             "the wave ticket stays what it was"
         );
+    }
+
+    /// O pedido ao agente de exploração cuja busca o mapa acha só em parte
+    /// (a palavra está no comentário da função, não no nome) passa como veio,
+    /// sem o bloco do mapa; o pedido cuja busca o mapa crava ganha o bloco, e
+    /// o mesmo pedido parcial a outro agente também passa como veio.
+    #[test]
+    fn a_partial_request_to_an_explorer_goes_without_the_block_of_the_map() {
+        let (_dir, root) = crate::shared::word_search::fixture::repo("{}");
+        let partial = "Onde fica o `imposto` do frete? Responda em português.";
+        let pinned = "Onde `calcular_frete` é usado? Leia src/frete.rs e responda em português.";
+        assert_eq!(dispatch_to(&root, "Explore", partial), Verdict::Allow, "the partial answer stays out of the request");
+        assert_eq!(dispatch_to(&root, "general-purpose", partial), Verdict::Allow);
+        let sent = rewritten(dispatch_to(&root, "Explore", pinned));
+        assert!(sent.starts_with("Antes de explorar, o Mustard consultou o mapa com este pedido.\n"), "{sent}");
+        assert!(sent.contains("Cravado.") && sent.contains("src/frete.rs\n  2-6 calcular_frete"), "{sent}");
+        assert!(sent.ends_with(&format!("\n\n{pinned}")), "the request follows as it came: {sent}");
     }
 
     /// Uma tarefa sem bilhete passa como veio, e o gancho não age fora do
