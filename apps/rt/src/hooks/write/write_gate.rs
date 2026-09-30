@@ -271,8 +271,10 @@ pub(crate) fn run_rules(rules: &[&dyn WriteRule], input: &HookInput, ctx: &Ctx) 
         return Verdict::Allow;
     }
     let root = ctx.project_dir_or_cwd(input);
-    if input.tool_name.as_deref() == Some("Grep") {
-        return search_verdict(&root, input, ctx);
+    match input.tool_name.as_deref() {
+        Some("Grep") => return search_verdict(&root, input, ctx),
+        Some("Glob") => return glob_verdict(&root, input, ctx),
+        _ => {}
     }
     let Some(target) = WriteTarget::classify(&root, input) else {
         return Verdict::Allow;
@@ -358,6 +360,39 @@ fn search_verdict(root: &str, input: &HookInput, ctx: &Ctx) -> Verdict {
         }
     }
     match answered {
+        word_search::Reply::Note(context) => Verdict::Inject { context },
+        _ => Verdict::Allow,
+    }
+}
+
+/// A busca por nome de arquivo (`Glob`): as palavras do padrão de nome
+/// (`**/*payment*.ts` dá `payment`) vão à mesma triagem do mapa da busca por
+/// palavra, e a busca roda como veio, com a linha da marca ou do que o mapa
+/// não achou ([`word_search::names_search`]). O padrão sem palavra
+/// (`**/*.ts`), a pasta fora do projeto ou sem código do mapa, e a chave
+/// `search.answer` desligada passam calados.
+fn glob_verdict(root: &str, input: &HookInput, ctx: &Ctx) -> Verdict {
+    let ti = &input.tool_input;
+    let text = |field: &str| ti.get(field).and_then(serde_json::Value::as_str).filter(|value| !value.trim().is_empty());
+    let Some(pattern) = text("pattern") else { return Verdict::Allow };
+    let words = word_search::name_words(pattern, false);
+    if words.is_empty() {
+        return Verdict::Allow;
+    }
+    // A pasta do padrão: a `path` da ferramenta e as partes do padrão antes da
+    // primeira que traz curinga (`packages/core/src/**/*.rs`).
+    let parts: Vec<&str> = pattern.split('/').collect();
+    let named = parts[..parts.len() - 1].iter().take_while(|part| !part.contains(['*', '?', '[', '{']));
+    let base = input.cwd.as_deref().filter(|cwd| !cwd.is_empty()).unwrap_or(root);
+    let mut folder = std::path::PathBuf::from(if pattern.starts_with('/') { "/" } else { text("path").unwrap_or(".") });
+    folder.extend(named.filter(|part| !part.is_empty()));
+    let Some(folder) = code_route::project_path(root, base, &folder.to_string_lossy()).filter(|folder| folder.abs.is_dir())
+    else {
+        return Verdict::Allow;
+    };
+    let filters = word_search::extension_filters(pattern);
+    let search = word_search::names_search(&words, std::slice::from_ref(&folder), &filters);
+    match word_search::hook_reply(root, input, ctx, &search) {
         word_search::Reply::Note(context) => Verdict::Inject { context },
         _ => Verdict::Allow,
     }
@@ -1420,6 +1455,51 @@ mod tests {
 
         let (_plain, plain) = fixture::project(r#"{"language": {"text": "pt-BR"}}"#, true);
         assert_eq!(hook_on(&plain, "Read", json!({ "file_path": abs(&plain, "mustard.json") })), Verdict::Allow);
+    }
+
+    /// A busca por nome de arquivo (`Glob`) com uma palavra do nome que o mapa
+    /// conhece roda como veio, com uma linha só da marca; a pasta do padrão e
+    /// a `path` da ferramenta valem; o nome que o mapa não acha traz a linha
+    /// do que ele não achou. O padrão sem palavra, o de documento, o de pasta
+    /// fora do código, o sem sessão e o com a chave `search.answer` desligada
+    /// passam calados.
+    #[test]
+    fn a_glob_with_a_word_of_the_name_runs_with_one_line_of_the_mark() {
+        let (_dir, root) = word_search::fixture::repo("{}");
+        for (n, tool_input) in [
+            json!({ "pattern": "**/*frete*.rs" }),
+            json!({ "pattern": "src/**/*frete*.rs" }),
+            json!({ "pattern": "**/*frete*.rs", "path": "src" }),
+            json!({ "pattern": "*frete*", "path": abs(&root, "src") }),
+            json!({ "pattern": format!("{}/**/*frete*.rs", abs(&root, "src")) }),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            match hook_in(&root, "Glob", tool_input.clone(), Some(&format!("glob{n}"))) {
+                Verdict::Inject { context } => {
+                    assert_eq!(context.lines().count(), 1, "{tool_input}: {context}");
+                    assert!(context.starts_with("Cravado."), "{tool_input}: {context}");
+                }
+                other => panic!("{tool_input}: the glob runs with a line, got {other:?}"),
+            }
+        }
+        match hook_in(&root, "Glob", json!({ "pattern": "**/*zzyzx*.rs" }), Some("glob-nada")) {
+            Verdict::Inject { context } => assert!(context.starts_with("Não achei"), "{context}"),
+            other => panic!("the glob runs with the line of what the map lacks, got {other:?}"),
+        }
+        for tool_input in [
+            json!({ "pattern": "**/*.rs" }),
+            json!({ "pattern": "src/**/*.{rs,toml}" }),
+            json!({ "pattern": "**/*frete*.md" }),
+            json!({ "pattern": "docs/**/*frete*" }),
+            json!({ "pattern": "**/*frete*.rs", "path": "fora-do-projeto" }),
+        ] {
+            assert_eq!(hook_in(&root, "Glob", tool_input.clone(), Some("glob-calado")), Verdict::Allow, "{tool_input}");
+        }
+        assert_eq!(hook_on(&root, "Glob", json!({ "pattern": "**/*frete*.rs" })), Verdict::Allow, "no session");
+        let (_off, off) = word_search::fixture::repo(r#"{"search":{"answer":false}}"#);
+        assert_eq!(hook_in(&off, "Glob", json!({ "pattern": "**/*frete*.rs" }), Some("glob-off")), Verdict::Allow);
     }
 
     /// A busca que mostra as linhas de um nome do mapa numa pasta de código —

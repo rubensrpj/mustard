@@ -460,7 +460,7 @@ mod tests {
         assert_eq!(names("cargo test --lib -- tests::soma_de_dois --exact"), ["soma_de_dois"]);
         assert!(names("cargo test --lib -- tests::soma --exact").is_empty(), "sem sublinhado não é nome");
         assert_eq!(names("cargo test -- um_teste um_teste outro_teste"), ["um_teste", "outro_teste"]);
-        for left_out in [
+        for refused_line in [
             "cargo test -- \"dois_nomes com_espaco\"",
             "cargo test -- $NOME_VAR",
             "cargo test -- ~/pasta_x",
@@ -472,7 +472,7 @@ mod tests {
             "cargo test > saida_log",
             "FOO_BAR=1 run_tests",
         ] {
-            assert!(names(left_out).is_empty(), "{left_out}: {:?}", names(left_out));
+            assert!(names(refused_line).is_empty(), "{refused_line}: {:?}", names(refused_line));
         }
         assert_eq!(names("cd pasta-x && run_all -- um_teste | tail_it"), ["um_teste"], "cada comando tem seu programa");
     }

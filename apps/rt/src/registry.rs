@@ -72,8 +72,9 @@ impl Module {
 }
 
 /// As ferramentas que escrevem, leem ou buscam arquivo, que o portão de
-/// escrita confere.
-const FILE_TOOLS: &[&str] = &["Read", "Write", "Edit", "MultiEdit", "NotebookEdit", "Grep"];
+/// escrita confere: a busca por palavra (`Grep`) e a busca por nome
+/// (`Glob`).
+const FILE_TOOLS: &[&str] = &["Read", "Write", "Edit", "MultiEdit", "NotebookEdit", "Grep", "Glob"];
 
 /// As ferramentas que editam arquivo de texto, cuja edição ensina o
 /// glossário do mapa.
@@ -101,8 +102,8 @@ impl Registry {
                 check: Some(Box::new(CommandGuard)),
                 observer: None,
             },
-            // O portão de escrita, nas cinco ferramentas de arquivo e na
-            // busca. As regras, em ordem: segredo, a chave do Jev, arquivos
+            // O portão de escrita, nas cinco ferramentas de arquivo e nas
+            // duas buscas (por palavra e por nome). As regras, em ordem: segredo, a chave do Jev, arquivos
             // que só o binário escreve, aprovação, a branch da spec (só
             // aviso), a base do `git.flow`, a leitura inteira grande e a
             // leitura cortada. A primeira que responde decide.
@@ -310,14 +311,14 @@ mod tests {
         assert!(!applicable_ids(&registry, Trigger::PreToolUse, Some("Write")).contains(&"command_guard"));
     }
 
-    /// O portão de escrita roda antes das cinco ferramentas de arquivo e da
-    /// busca, e só delas; o sinal de vida da onda segue rodando depois de
-    /// cada uma, e a testemunha do glossário, só depois das três que editam
-    /// texto: a leitura nunca ensina.
+    /// O portão de escrita roda antes das cinco ferramentas de arquivo e das
+    /// duas buscas (por palavra e por nome), e só delas; o sinal de vida da
+    /// onda segue rodando depois de cada uma, e a testemunha do glossário, só
+    /// depois das três que editam texto: a leitura nunca ensina.
     #[test]
-    fn the_write_gate_runs_on_the_file_tools_and_the_search() {
+    fn the_write_gate_runs_on_the_file_tools_and_the_searches() {
         let registry = Registry::new();
-        for tool in ["Read", "Write", "Edit", "MultiEdit", "NotebookEdit", "Grep"] {
+        for tool in ["Read", "Write", "Edit", "MultiEdit", "NotebookEdit", "Grep", "Glob"] {
             assert_eq!(applicable_ids(&registry, Trigger::PreToolUse, Some(tool)), ["write_gate"], "{tool}");
             let after: &[&str] = if ["Write", "Edit", "MultiEdit"].contains(&tool) {
                 &["wave_alive_observer", "glossary_witness"]
@@ -328,7 +329,7 @@ mod tests {
         }
         let module = registry.by_id("glossary_witness").expect("registered");
         assert!(module.check.is_none() && module.observer.is_some());
-        for tool in ["Bash", "Task", "Agent", "Skill", "Glob"] {
+        for tool in ["Bash", "Task", "Agent", "Skill", "WebFetch"] {
             assert!(!applicable_ids(&registry, Trigger::PreToolUse, Some(tool)).contains(&"write_gate"), "{tool}");
         }
         let module = registry.by_id("write_gate").expect("registered");

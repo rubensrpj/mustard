@@ -65,7 +65,7 @@ impl Check for CommandGuard {
         if let Some(verdict) = waiting::bash_waiting(&segments, &cmd, input, lang) {
             return Ok(verdict);
         }
-        if let Some(verdict) = reading::bash_reading(&segments, input, ctx) {
+        if let Some(verdict) = reading::bash_reading(&segments, &cmd, input, ctx) {
             return Ok(verdict);
         }
         Ok(Verdict::Allow)

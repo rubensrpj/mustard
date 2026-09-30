@@ -35,6 +35,7 @@ use mustard_core::{ProjectConfig, AGENT_NAMES};
 use serde_json::Value;
 
 use crate::hooks::write::write_gate::say;
+use crate::shared::word_search;
 
 /// O começo da linha do bilhete: depois dele vêm a spec e o número da onda.
 pub const TICKET: &str = "MUSTARD-WAVE:";
@@ -122,6 +123,26 @@ fn with_prompt(input: &HookInput, text: String) -> Verdict {
     }
 }
 
+/// Se o despacho vai ao agente de exploração do Claude Code.
+fn to_explore_agent(input: &HookInput) -> bool {
+    input
+        .tool_input
+        .get("subagent_type")
+        .and_then(Value::as_str)
+        .is_some_and(|kind| kind.trim().eq_ignore_ascii_case("explore"))
+}
+
+/// O pedido ao agente de exploração com a resposta curta do mapa no topo,
+/// quando o mapa a tem; senão, como veio.
+fn explore(input: &HookInput, ctx: &Ctx) -> Verdict {
+    let root = ctx.project_dir_or_cwd(input);
+    let prompt = dispatch_prompt(input);
+    match word_search::hook_ask(&root, input, ctx, prompt) {
+        Some(answer) => with_prompt(input, format!("{answer}\n\n{prompt}")),
+        None => Verdict::Allow,
+    }
+}
+
 /// O despacho sem bilhete: a um agente do Mustard, num projeto com
 /// `mustard.json`, o texto ganha no topo a linha dos idiomas, salvo quando já
 /// a traz; o resto passa como veio.
@@ -144,6 +165,7 @@ impl Check for SubagentInject {
             return Ok(Verdict::Allow);
         }
         let (spec, wave) = match ticket_of(dispatch_prompt(input)) {
+            Ticket::Absent if to_explore_agent(input) => return Ok(explore(input, ctx)),
             Ticket::Absent => return Ok(without_ticket(input, ctx)),
             Ticket::Wave { spec, wave } => (spec, wave),
             Ticket::Unreadable(found) => {
@@ -386,6 +408,37 @@ mod tests {
 
         let ticket = rewritten(dispatch_to(root, "mustard-wave", "MUSTARD-WAVE: x 1"));
         assert_eq!(ticket, round);
+    }
+
+    /// O pedido ao agente de exploração ganha no topo a resposta curta do
+    /// mapa, com o arquivo, a função e as linhas, e o resto do texto segue
+    /// como veio; o mesmo pedido a outro agente, o pedido sem nome de código,
+    /// o que o mapa não acha, o sem mapa e o com a chave `search.answer`
+    /// desligada passam como vieram, e o bilhete da onda segue igual.
+    #[test]
+    fn the_request_to_an_explorer_opens_with_the_short_answer_of_the_map() {
+        let (_dir, root) = crate::shared::word_search::fixture::repo("{}");
+        let prompt = "Mapeie o cálculo do frete. Onde `calcular_frete` é usado? Leia src/frete.rs e responda em português.";
+        let sent = rewritten(dispatch_to(&root, "Explore", prompt));
+        assert!(sent.starts_with("Antes de explorar, o Mustard consultou o mapa com este pedido.\n"), "{sent}");
+        assert!(sent.contains("src/frete.rs\n  2-6 calcular_frete"), "{sent}");
+        assert!(sent.ends_with(&format!("\n\n{prompt}")), "the request follows as it came: {sent}");
+        assert_eq!(dispatch_to(&root, "general-purpose", prompt), Verdict::Allow);
+        assert_eq!(dispatch_to(&root, "Explore", "Explore o repositório inteiro e resuma."), Verdict::Allow);
+        assert_eq!(dispatch_to(&root, "Explore", "Onde fica `zzyzx_quebrada`?"), Verdict::Allow);
+        let (_off, off) = crate::shared::word_search::fixture::repo(r#"{"search":{"answer":false}}"#);
+        assert_eq!(dispatch_to(&off, "Explore", prompt), Verdict::Allow);
+        let (_bare, bare) = crate::shared::word_search::fixture::repo("{}");
+        std::fs::remove_file(mustard_core::io::project_map::model_path(&bare)).unwrap();
+        assert_eq!(dispatch_to(&bare, "Explore", prompt), Verdict::Allow, "no map");
+        let dir = tempdir().unwrap();
+        planned(dir.path(), 1);
+        approve(dir.path());
+        assert_eq!(
+            rewritten(dispatch_to(dir.path(), "Explore", "MUSTARD-WAVE: x 1")),
+            assembled(dir.path()),
+            "the wave ticket stays what it was"
+        );
     }
 
     /// Uma tarefa sem bilhete passa como veio, e o gancho não age fora do

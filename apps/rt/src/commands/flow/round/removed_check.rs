@@ -4,12 +4,19 @@
 //!
 //! - Resto pelo nome: o nome tirado, como palavra inteira, nos arquivos que
 //!   o git rastreia e nos que a onda criou (código, comentário, teste,
-//!   documento, molde), com o arquivo e a linha. O nome que continua declarado noutro lugar não conta pelo texto:
-//!   ali o texto pode citar a outra declaração, e o mapa de depois já liga
-//!   cada chamada a ela. A spec (`.claude/spec/`), o registro de mudanças do
-//!   projeto e o histórico do git ficam de fora: são registro do que
-//!   aconteceu. Só se procura o nome que não se confunde com uma palavra da
-//!   prosa ([`distinctive`]).
+//!   documento, molde), com o arquivo e a linha. O nome que continua
+//!   declarado noutro lugar não conta pelo texto: ali o texto pode citar a
+//!   outra declaração, e o mapa de depois já liga cada chamada a ela. A
+//!   linha de código de um arquivo que está no mapa da base, e que nesse
+//!   mapa não usava a declaração tirada (nenhum uso dela aponta para o
+//!   arquivo), também não conta: o mesmo nome ali é outra coisa, como uma
+//!   variável local, que o mapa não guarda, e um uso de verdade o mapa da
+//!   base teria ligado. A linha de comentário conta sempre, e o arquivo fora
+//!   do mapa da base (documento, molde, arquivo que a onda criou) conta pelo
+//!   texto, sem esse desconto. A spec (`.claude/spec/`), o registro de
+//!   mudanças do projeto e o histórico do git ficam de fora: são registro do
+//!   que aconteceu. Só se procura o nome que não se confunde com uma palavra
+//!   da prosa ([`distinctive`]).
 //! - Órfão: a declaração que tinha uso fora de teste no mapa da base, e cujo
 //!   último uso a onda tirou, e ficou sem nenhum. A de antes é a de mesmo
 //!   nome, tipo e dono ([`same_piece`]): o campo de mesmo nome de outro tipo
@@ -72,7 +79,11 @@ pub(super) fn findings(root: &Path, maps: &AfterWave, lang: Locale) -> Vec<Findi
                 gone.push(file_name(file));
             }
             for name in gone.into_iter().filter(|name| searched.insert((*name).to_string())) {
-                for (site, line) in cited(root, name, &created) {
+                let removed: Vec<&MapDecl> = before.declarations.iter().filter(|d| d.name == name).collect();
+                for (site, line, text) in cited(root, name, &created) {
+                    if unrelated_code_line(maps, &removed, &site, &text) {
+                        continue;
+                    }
                     let text = translate("round.after_wave.leftover", lang)
                         .replace("{file}", &site)
                         .replace("{line}", &line.to_string())
@@ -193,13 +204,27 @@ fn in_test_lines(module: &MapModule, line: u64) -> bool {
     module.test_lines.iter().any(|&(first, last)| (first..=last).contains(&line))
 }
 
+/// A linha `text` de `file` cita o nome de uma declaração tirada e não é um
+/// uso dela: é linha de código (não de comentário) de um arquivo que está no
+/// mapa da base e que, nesse mapa, não usava nenhuma das declarações
+/// `removed` de antes. O mesmo nome ali é outra coisa, como uma variável
+/// local, que o mapa não guarda; um uso de verdade o mapa da base teria
+/// ligado. Sem declaração de antes (o nome de um arquivo tirado), o arquivo
+/// fora do mapa da base e a linha de comentário, a citação conta.
+fn unrelated_code_line(maps: &AfterWave, removed: &[&MapDecl], file: &str, text: &str) -> bool {
+    !removed.is_empty()
+        && maps.base.module(file).is_some()
+        && !is_comment_line(text)
+        && !removed.iter().any(|decl| decl.used_by.iter().any(|site| site.file == file))
+}
+
 /// O nome de `decl`, declarada em `module`, aparece como palavra inteira
 /// num arquivo que o git rastreia ou que a onda criou ([`cited`]), fora de
 /// arquivo de teste, fora dos trechos de teste de cada arquivo no mapa de
 /// depois e fora das linhas da própria declaração.
 fn cited_outside_tests(root: &Path, maps: &AfterWave, created: &[String], module: &MapModule, decl: &MapDecl) -> bool {
     let own = decl.line..=decl.end_line.max(decl.line);
-    cited(root, &decl.name, created).iter().any(|(file, line)| {
+    cited(root, &decl.name, created).iter().any(|(file, line, _)| {
         let line = u64::try_from(*line).unwrap_or(u64::MAX);
         let own_lines = *file == module.path && own.contains(&line);
         let test_block = maps.after.module(file).is_some_and(|site| in_test_lines(site, line));
@@ -234,10 +259,10 @@ fn created(root: &Path, maps: &AfterWave) -> Vec<String> {
     out.stdout.split('\0').filter(|file| !file.is_empty()).map(str::to_string).collect()
 }
 
-/// Cada lugar que cita `name` como palavra inteira, com o arquivo e a linha:
-/// nos arquivos que o git rastreia em `root` e nos criados (`created`). A
-/// spec e o registro de mudanças ficam de fora.
-fn cited(root: &Path, name: &str, created: &[String]) -> Vec<(String, usize)> {
+/// Cada lugar que cita `name` como palavra inteira, com o arquivo, a linha e
+/// o texto dela: nos arquivos que o git rastreia em `root` e nos criados
+/// (`created`). A spec e o registro de mudanças ficam de fora.
+fn cited(root: &Path, name: &str, created: &[String]) -> Vec<(String, usize, String)> {
     fn grep<'a>(name: &'a str, untracked: &[&'a str], paths: &[&'a str]) -> Vec<&'a str> {
         let head = ["-c", "core.quotePath=false", "grep"];
         [&head[..], untracked, &["-I", "-n", "-z", "-w", "-F", "-e", name, "--"], paths].concat()
@@ -253,7 +278,7 @@ fn cited(root: &Path, name: &str, created: &[String]) -> Vec<(String, usize)> {
             let mut parts = line.splitn(3, '\0');
             let (Some(file), Some(Ok(at))) = (parts.next(), parts.next().map(str::parse)) else { continue };
             if !is_change_log(file) {
-                found.insert((file.to_string(), at));
+                found.insert((file.to_string(), at, parts.next().unwrap_or_default().to_string()));
             }
         }
     }
@@ -356,6 +381,85 @@ mod tests {
         let hint = out["hint"].as_str().unwrap_or_default();
         assert!(hint.contains("`src/b.rs` linha 2 ainda cita `old_total`, que a onda tirou de `src/a.rs`"), "{hint}");
         assert_eq!(git_text(root, &["rev-parse", "HEAD"]), head, "nothing committed: {out}");
+    }
+
+    /// A base com `old_total` em `src/a.rs`, sem uso, e com `src/b.rs` e
+    /// `src/c.rs` no mapa; `src/c.rs` guarda a chamada `calls` de quem usava
+    /// `old_total` (nenhuma quando vazio).
+    fn base_with_old_total(c_uses: &[&str]) -> Value {
+        json!({"modules": [
+            module("src/a.rs", &[("old_total", 1, c_uses), ("keep_sum", 5, &[])]),
+            module("src/b.rs", &[("outra", 1, &[])]),
+            module("src/c.rs", &[("caller", 1, &[])]),
+        ]})
+    }
+
+    /// A volta da onda que tira `old_total` de `src/a.rs`.
+    fn back_without_old_total(root: &Path) -> Value {
+        let after = json!({"modules": [
+            module("src/a.rs", &[("keep_sum", 1, &[])]),
+            module("src/b.rs", &[("outra", 1, &[])]),
+            module("src/c.rs", &[("caller", 1, &[])]),
+        ]});
+        back(root, after)
+    }
+
+    #[test]
+    fn a_code_line_of_a_file_whose_base_map_never_used_the_removed_function_is_another_name() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        // `src/b.rs` está no mapa da base e nenhuma chamada dele ligava
+        // `old_total`: a variável local de mesmo nome não é resto.
+        let files = [("src/b.rs", "fn outra() {\n    for old_total in [1, 2] {}\n}\n"), ("src/c.rs", "fn caller() {}\n")];
+        project(root, &files, &base_with_old_total(&[]));
+        silent(&back_without_old_total(root));
+    }
+
+    #[test]
+    fn a_code_line_of_a_file_that_used_the_removed_function_in_the_base_map_is_still_a_leftover() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let files = [("src/b.rs", "fn outra() {}\n"), ("src/c.rs", "fn caller() {\n    old_total();\n}\n")];
+        project(root, &files, &base_with_old_total(&["src/c.rs:2:caller"]));
+        let head = git_text(root, &["rev-parse", "HEAD"]);
+        let out = back_without_old_total(root);
+        assert_eq!(out["reason"], json!("round-after-wave"), "{out}");
+        let hint = out["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains("`src/c.rs` linha 2 ainda cita `old_total`, que a onda tirou de `src/a.rs`"), "{hint}");
+        assert!(!hint.contains("`src/b.rs`"), "{hint}");
+        assert_eq!(git_text(root, &["rev-parse", "HEAD"]), head, "nothing committed: {out}");
+    }
+
+    #[test]
+    fn a_comment_line_of_a_file_that_never_used_the_removed_function_is_still_a_leftover() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let files = [("src/b.rs", "fn outra() {}\n// soma pelo old_total antes de gravar\n"), ("src/c.rs", "fn caller() {}\n")];
+        project(root, &files, &base_with_old_total(&[]));
+        let out = back_without_old_total(root);
+        assert_eq!(out["reason"], json!("round-after-wave"), "{out}");
+        let hint = out["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains("`src/b.rs` linha 2 ainda cita `old_total`, que a onda tirou de `src/a.rs`"), "{hint}");
+    }
+
+    #[test]
+    fn a_code_line_of_a_file_outside_the_base_map_still_counts_by_its_text() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        // O documento e o arquivo `src/d.rs`, que o mapa da base não tem,
+        // seguem valendo pelo texto.
+        let files = [
+            ("src/b.rs", "fn outra() {}\n"),
+            ("src/c.rs", "fn caller() {}\n"),
+            ("src/d.rs", "fn late() {\n    for old_total in [1, 2] {}\n}\n"),
+            ("docs/guide.md", "Chame old_total(x) para somar.\n"),
+        ];
+        project(root, &files, &base_with_old_total(&[]));
+        let out = back_without_old_total(root);
+        assert_eq!(out["reason"], json!("round-after-wave"), "{out}");
+        let hint = out["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains("`src/d.rs` linha 2 ainda cita `old_total`, que a onda tirou de `src/a.rs`"), "{hint}");
+        assert!(hint.contains("`docs/guide.md` linha 1 ainda cita `old_total`, que a onda tirou de `src/a.rs`"), "{hint}");
     }
 
     #[test]

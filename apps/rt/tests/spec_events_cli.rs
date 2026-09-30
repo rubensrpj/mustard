@@ -145,6 +145,50 @@ fn two_processes_writing_at_once_get_consecutive_numbers() {
     assert_eq!(ids, (1..=2 * rounds).collect::<Vec<u64>>(), "consecutive, in file order, none repeated");
 }
 
+/// Uma gravação que esbarra no limite de tamanho de arquivo do processo (o
+/// `ulimit -f`), com 40 bytes de folga, grava esses 40 e falha: o arquivo da
+/// spec termina com os mesmos bytes de antes, o comando recusa, e a gravação
+/// seguinte, sem o limite, leva o número que a falhada teria levado e deixa
+/// todas as linhas inteiras.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_write_cut_by_the_size_limit_leaves_the_spec_file_as_it_was() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    open_spec(root);
+    write(root, "message", &json!({"text": "primeira"}));
+    let path = root.join(".claude").join("spec").join("teste").join("spec.ndjson");
+    // O limite é de 64 KiB; a linha de enchimento deixa o arquivo 40 bytes abaixo dele.
+    let limit = 64 * 1024;
+    let used = std::fs::metadata(&path).expect("the spec file exists").len() as usize;
+    let padding = format!("{}\n", "x".repeat(limit - 40 - used - 1));
+    let mut file = std::fs::OpenOptions::new().append(true).open(&path).expect("open the spec file");
+    std::io::Write::write_all(&mut file, padding.as_bytes()).expect("pad the spec file");
+    drop(file);
+    let before = std::fs::read(&path).expect("read the spec file");
+    assert_eq!(before.len(), limit - 40);
+
+    let fields = json!({"text": "segunda ".repeat(20)});
+    let out = Command::new("bash")
+        .args(["-c", "trap '' XFSZ; ulimit -f 64 && exec \"$0\" \"$@\""])
+        .arg(env!("CARGO_BIN_EXE_mustard-rt"))
+        .args(["run", "write", "message", "--spec", "teste", "--json", &fields.to_string()])
+        .arg("--root")
+        .arg(root)
+        .current_dir(root)
+        .output()
+        .expect("run write under the size limit");
+    assert!(!out.status.success(), "the write was refused: {}", String::from_utf8_lossy(&out.stdout));
+    assert_eq!(std::fs::read(&path).expect("read the spec file"), before, "same size, same bytes");
+
+    let id = write(root, "message", &fields);
+    assert_eq!(id, 2, "the next write takes the number the cut one would have taken");
+    let raw = std::fs::read_to_string(&path).expect("read the spec file");
+    let parsed = raw.lines().filter(|line| serde_json::from_str::<Value>(line).is_ok()).count();
+    assert_eq!(parsed, 2, "both events are whole lines; the padding is the only other line");
+    assert_eq!(raw.lines().count(), 3);
+}
+
 /// A cópia para o banco da página é preparada inteira dentro da trava do
 /// arquivo de eventos: com duas voltas gravadas e duas rodadas rodando ao
 /// mesmo tempo, em dois processos, a cópia que ficou tem os dois itens, e

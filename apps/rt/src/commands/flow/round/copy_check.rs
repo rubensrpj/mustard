@@ -54,7 +54,7 @@ pub(super) fn check_against_copies(
         let declared: BTreeSet<&str> = wave.files.iter().map(String::as_str).collect();
         let actual_set: BTreeSet<&str> = actual.iter().map(String::as_str).collect();
         if declared != actual_set {
-            let left_out: Vec<String> = actual_set.difference(&declared).map(|s| (*s).to_string()).collect();
+            let undeclared: Vec<String> = actual_set.difference(&declared).map(|s| (*s).to_string()).collect();
             warnings.push(json!({
                 "reason": "files-diverged",
                 "wave": wave.wave,
@@ -62,7 +62,7 @@ pub(super) fn check_against_copies(
                     .replace("{wave}", &wave.wave.to_string())
                     .replace("{changed}", &actual.len().to_string())
                     .replace("{declared}", &declared.len().to_string())
-                    .replace("{missing}", &left_out.join(", ")),
+                    .replace("{missing}", &undeclared.join(", ")),
             }));
         }
         wave.files = actual;

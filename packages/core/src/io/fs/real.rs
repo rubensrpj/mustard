@@ -8,6 +8,7 @@
 //! append primitives were lifted verbatim from the former `store::fs` module,
 //! which now re-exports them from here.
 
+use super::lock::append_or_rollback;
 use super::{DirEntry, Fs};
 use crate::platform::error::{Error, Result};
 use std::fs::{self, File, OpenOptions};
@@ -100,10 +101,9 @@ impl Fs for RealFs {
     fn append_line(&self, path: &Path, line: &str) -> Result<()> {
         ensure_parent_dir(path)?;
         let mut file = OpenOptions::new().create(true).append(true).open(path)?;
-        file.write_all(line.as_bytes())?;
-        file.write_all(b"\n")?;
-        file.flush()?;
-        Ok(())
+        // A linha e o `\n` saem num bloco só; se o disco enche no meio, o
+        // arquivo volta ao tamanho de antes em vez de ficar com meia linha.
+        Ok(append_or_rollback(&mut file, line, false)?)
     }
 
     fn exists(&self, path: &Path) -> bool {
@@ -213,6 +213,38 @@ mod tests {
         fs().append_line(&path, "{\"a\":1}").unwrap();
         fs().append_line(&path, "{\"a\":2}").unwrap();
         assert_eq!(fs().read_to_string(&path).unwrap(), "{\"a\":1}\n{\"a\":2}\n");
+    }
+
+    /// Um `append_line` que esbarra no limite de tamanho de arquivo do
+    /// processo (o `ulimit -f`) grava os 40 bytes que cabem e falha: o arquivo
+    /// tem que terminar com o tamanho e o conteúdo de antes. O limite vale para
+    /// o processo inteiro, então o teste roda a si mesmo num filho com ele.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_real_append_cut_by_the_size_limit_leaves_the_file_as_it_was() {
+        const FILE: &str = "MUSTARD_APPEND_LIMIT_FILE";
+        if let Ok(path) = std::env::var(FILE) {
+            let err = fs().append_line(Path::new(&path), &"x".repeat(100)).unwrap_err();
+            assert!(matches!(err, Error::Io(_)), "{err:?}");
+            return;
+        }
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("events.jsonl");
+        // 64 KiB de limite; o arquivo já tem 40 bytes a menos que isso.
+        let before = format!("{}\n", "a".repeat(64 * 1024 - 41));
+        std::fs::write(&path, &before).unwrap();
+        let test = "a_real_append_cut_by_the_size_limit_leaves_the_file_as_it_was";
+        let out = std::process::Command::new("bash")
+            .args(["-c", "trap '' XFSZ; ulimit -f 64 && exec \"$0\" \"$@\""])
+            .arg(std::env::current_exe().unwrap())
+            .args([test, "--test-threads=1"])
+            .env(FILE, &path)
+            .output()
+            .expect("bash runs the test binary under the size limit");
+        assert!(out.status.success(), "the child failed: {}", String::from_utf8_lossy(&out.stdout));
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(after.len(), 64 * 1024 - 40, "same size as before");
+        assert_eq!(after, before, "same content as before");
     }
 
     #[test]

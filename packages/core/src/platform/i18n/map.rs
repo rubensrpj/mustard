@@ -329,6 +329,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("map.answer.partial_unsure", Locale::EnUs) => {
             "Partial. The map found it, but it is not sure this is the place."
         }
+        ("map.answer.ask", Locale::PtBr) => "Antes de explorar, o Mustard consultou o mapa com este pedido.",
+        ("map.answer.ask", Locale::EnUs) => "Before exploring, Mustard asked the map about this request.",
         ("map.answer.instead", Locale::PtBr) => "Esta resposta vale no lugar da busca comum.",
         ("map.answer.instead", Locale::EnUs) => "This answer stands in for the plain search.",
         ("map.answer.names_only", Locale::PtBr) => {
@@ -444,8 +446,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("map.rs"),
             super::PREFIXES,
-            79,
-            0x250b_c94b_ebae_a177,
+            80,
+            0xa8a7_e6e9_ab69_8ed3,
         );
     }
 
@@ -483,6 +485,7 @@ mod tests {
                 "map.answer.pinned",
                 "map.answer.partial",
                 "map.answer.partial_unsure",
+                "map.answer.ask",
                 "map.answer.instead",
                 "map.answer.names_only",
                 "map.answer.lines",
@@ -768,6 +771,7 @@ mod tests {
             ("map.answer.pinned", &["{words}"][..]),
             ("map.answer.partial", &["{missing}"][..]),
             ("map.answer.partial_unsure", &[][..]),
+            ("map.answer.ask", &[][..]),
             ("map.answer.instead", &[][..]),
             ("map.answer.names_only", &[][..]),
             ("map.answer.lines", &[][..]),

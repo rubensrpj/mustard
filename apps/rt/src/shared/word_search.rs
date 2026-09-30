@@ -32,6 +32,13 @@
 //! resposta, e as linhas do mapa se levam para as dele; o arquivo vem
 //! marcado como mudado. Numa cópia de trabalho, a árvore lida é a da cópia.
 //!
+//! A busca por nome de arquivo (`Glob`, `find -name`) tem a mesma marca, sem
+//! resposta: as palavras do padrão de nome vão à triagem ([`name_words`]), e a
+//! busca roda como veio, com a linha da marca. O pedido a um agente de
+//! exploração vai à triagem como frase e palavras ([`ask_reply`]): cravado ou
+//! parcial, a resposta curta do mapa (arquivo, função e linhas) sobe ao topo
+//! do pedido.
+//!
 //! Nunca falha: sem mapa, sem sessão, com regex que esta leitura não entende
 //! ou passando do tempo, a resposta é passar, e a busca comum segue.
 
@@ -43,8 +50,10 @@ use mustard_core::domain::map_filter::Verdict;
 use mustard_core::domain::model::contract::{Ctx, HookInput};
 use mustard_core::domain::normalize::Languages;
 use mustard_core::domain::project_map::{self, FilePart, FileParts};
+use mustard_core::domain::search::CANDIDATES;
 use mustard_core::domain::triage::{not_found, Mark};
 use mustard_core::io::fs;
+use mustard_core::io::map_search;
 use mustard_core::io::map_triage::{self, Triaged};
 use mustard_core::io::project_map::{self as store, Need};
 use mustard_core::platform::git;
@@ -54,8 +63,8 @@ use regex::{Regex, RegexBuilder};
 use serde_json::json;
 
 use crate::commands::map::Assemble;
-use crate::shared::code_route::{holds_code, parts_in_copy, ProjectPath};
-use crate::shared::config_key::{takes, NameFilter, Walk, CONFIG_FILE};
+use crate::shared::code_route::{admitted, holds_code, parts_in_copy, ProjectPath};
+use crate::shared::config_key::{NameFilter, Walk, CONFIG_FILE};
 use crate::shared::paths::{is_artifact, sensitive_pattern};
 use crate::shared::say::say;
 use crate::shared::search_door::{self as door, Ask, Numbers, Outcome, Piece};
@@ -169,17 +178,23 @@ pub(crate) fn hook_reply(root: &str, input: &HookInput, ctx: &Ctx, search: &Sear
     let Some(memory) = memory_path(root, input.session_id.as_deref(), input.agent_id.as_deref()) else {
         return Reply::Pass;
     };
+    with_scene(root, input, ctx, Some(&memory), |scene| reply(scene, search))
+}
+
+/// Roda `run` na cena do gancho: a raiz `root`, o mapa dela, o estado da
+/// sessão `memory` e a configuração de `ctx`.
+fn with_scene<T>(root: &Path, input: &HookInput, ctx: &Ctx, memory: Option<&Path>, run: impl FnOnce(&Scene<'_>) -> T) -> T {
     let scene = Scene {
         root,
         model: &store::model_path(root),
-        memory: Some(&memory),
+        memory,
         session: input.session_id.as_deref(),
         lang: ctx.config.language().text_or_default(),
         languages: &Languages::of(&ctx.config),
         config: &ctx.config,
         assemble: &crate::commands::map::jev,
     };
-    reply(&scene, search)
+    run(&scene)
 }
 
 /// O arquivo do estado da sessão `session` do projeto `root`, e o do
@@ -226,6 +241,244 @@ pub(crate) fn type_filters(kind: &str) -> Option<Vec<NameFilter>> {
     Some(extensions.iter().map(|ext| NameFilter { exclude: false, glob: format!("*.{ext}") }).collect())
 }
 
+// ---------------------------------------------------------------------------
+// O nome de arquivo e o pedido a um agente de exploração
+// ---------------------------------------------------------------------------
+
+/// Quantos caracteres do pedido a um agente vão à triagem como a frase.
+const ASKED_PHRASE: usize = 600;
+
+/// Quantas declarações de cada arquivo a resposta ao pedido mostra.
+const PIECES_PER_FILE: usize = 2;
+
+/// As palavras de um padrão de nome de arquivo, para a triagem: as do nome
+/// sem a extensão (`**/*payment*.ts` dá `payment`, `*.{ts,tsx}` não dá
+/// nenhuma). Com `whole_path` (`find -path`), as de todas as partes do
+/// caminho. Vazio no padrão sem palavra, que passa calado.
+pub(crate) fn name_words(glob: &str, whole_path: bool) -> Vec<String> {
+    let parts: Vec<&str> = glob.split('/').collect();
+    let last = parts.len().saturating_sub(1);
+    let texts: Vec<String> = parts
+        .iter()
+        .enumerate()
+        .filter(|(at, _)| whole_path || *at == last)
+        .map(|(at, part)| if at == last { without_extension(part) } else { (*part).to_string() })
+        .collect();
+    words_of(&texts, false)
+}
+
+/// O nome sem a extensão: `*.ts`, `pay.service.ts` e `*.{ts,tsx}` perdem o
+/// fim; o nome sem ponto fica inteiro.
+fn without_extension(name: &str) -> String {
+    if name.ends_with('}')
+        && let Some(open) = name.rfind(".{")
+    {
+        return name[..open].to_string();
+    }
+    match name.rsplit_once('.') {
+        Some((stem, ext)) if !ext.is_empty() && ext.chars().all(|c| c.is_ascii_alphanumeric()) => stem.to_string(),
+        _ => name.to_string(),
+    }
+}
+
+/// A busca por nome de arquivo (`Glob`, `find -name`) como o gancho a lê: as
+/// palavras do nome são o padrão, e ela só lista nomes, sem resposta no lugar.
+pub(crate) fn names_search<'a>(
+    words: &'a [String],
+    folders: &'a [ProjectPath],
+    filters: &'a [NameFilter],
+) -> Search<'a> {
+    Search {
+        patterns: words,
+        dialect: Dialect::Fixed,
+        ignore_case: false,
+        whole_word: false,
+        folders,
+        filters,
+        walk: Walk::Rg { unignored: false },
+        shows_lines: false,
+    }
+}
+
+/// O filtro de nome que a busca por nome de arquivo deixa à triagem: só a
+/// extensão do padrão (`*.rs`, `*.{ts,tsx}`), que diz de que código é a busca.
+/// O resto do padrão é o que se procura, não onde; um padrão sem extensão não
+/// estreita nada.
+pub(crate) fn extension_filters(glob: &str) -> Vec<NameFilter> {
+    let last = glob.rsplit('/').next().unwrap_or(glob);
+    let extensions: Option<Vec<&str>> = match last.strip_suffix('}') {
+        Some(inner) => inner.rsplit_once(".{").map(|(_, list)| list.split(',').collect()),
+        None => last.rsplit_once('.').map(|(_, extension)| vec![extension]),
+    };
+    let plain = |extension: &&str| !extension.is_empty() && extension.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+    match extensions {
+        Some(list) if list.iter().all(plain) => {
+            let glob = if let [only] = list.as_slice() { format!("*.{only}") } else { format!("*.{{{}}}", list.join(",")) };
+            vec![NameFilter { exclude: false, glob }]
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// As palavras do pedido `request` a um agente de exploração que a triagem
+/// lê: o que ele traz entre crases, os caminhos e nomes de arquivo, e os
+/// nomes de código (`snake_case`, `camelCase`, `PascalCase`), na ordem em que
+/// aparecem e sem repetir. O texto corrido do pedido vai à triagem como a
+/// frase, não como palavra.
+pub(crate) fn ask_words(request: &str) -> Vec<String> {
+    let mut words: Vec<String> = Vec::new();
+    for (at, chunk) in request.split('`').enumerate() {
+        // Só o nome sozinho entre crases vale como nome de código; entre
+        // crases também vão comandos inteiros.
+        let ticked = at % 2 == 1 && chunk.split_whitespace().count() == 1;
+        for token in chunk.split_whitespace() {
+            let token = token.trim_matches(|c: char| !c.is_alphanumeric() && !matches!(c, '_' | '/' | '.' | '-'));
+            let token = token.trim_end_matches('.').trim_start_matches("./");
+            for word in code_words(token, ticked) {
+                if words.len() < MAX_WORDS && !words.contains(&word) {
+                    words.push(word);
+                }
+            }
+        }
+    }
+    words
+}
+
+/// As palavras que o trecho `token` do pedido traz, quando ele é nome de
+/// código: o caminho de arquivo dá o nome sem extensão, e o de pasta, a última
+/// parte (a pasta de um caminho absoluto é da máquina, não do código); o nome
+/// com `_` ou com maiúscula no meio fica inteiro. O nome sozinho entre crases
+/// (`ticked`) vale como nome de código mesmo sem essas marcas.
+fn code_words(token: &str, ticked: bool) -> Vec<String> {
+    if token.chars().filter(|c| c.is_alphanumeric()).count() < 3 || token.starts_with("http") {
+        return Vec::new();
+    }
+    let slashes = token.matches('/').count();
+    let pathlike = slashes >= 2
+        || (slashes == 1 && token.contains(['.', '_', '-']))
+        || (slashes == 1 && ticked)
+        || token.split_once('.').is_some_and(|(stem, ext)| {
+            stem.chars().count() >= 2
+                && stem.chars().any(char::is_alphabetic)
+                && ext.chars().next().is_some_and(char::is_alphabetic)
+                && ext.split('.').all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_alphanumeric()))
+        });
+    if pathlike {
+        let last = token.rsplit('/').find(|part| !part.is_empty()).unwrap_or_default();
+        let is_file = last.contains('.') && !last.starts_with('.');
+        // A pasta de um caminho absoluto é a da máquina, não a do código.
+        if token.starts_with('/') && !is_file {
+            return Vec::new();
+        }
+        let text = if is_file { without_extension(last) } else { last.to_string() };
+        return words_of(&[text], false);
+    }
+    let coded = token.chars().all(|c| c.is_alphanumeric() || c == '_')
+        && (token.contains('_')
+            || token.chars().zip(token.chars().skip(1)).any(|(a, b)| a.is_lowercase() && b.is_uppercase())
+            || (ticked && token.chars().any(char::is_alphabetic)));
+    if coded { vec![token.to_string()] } else { Vec::new() }
+}
+
+/// A resposta do gancho ao pedido `request` a um agente de exploração, no
+/// projeto `root`: o texto que sobe ao topo do pedido, ou `None` quando o
+/// pedido passa como veio — a chave `search.answer` desligada, sem mapa, sem
+/// nome de código no pedido ou o mapa sem achar.
+pub(crate) fn hook_ask(root: &str, input: &HookInput, ctx: &Ctx, request: &str) -> Option<String> {
+    if !ctx.config.search_answer() {
+        return None;
+    }
+    with_scene(Path::new(root), input, ctx, None, |scene| ask_reply(scene, request))
+}
+
+/// A resposta curta do mapa ao pedido `request`: a marca, os arquivos que a
+/// triagem achou (ou as peças que o filtro entrega, no parcial) e, de cada
+/// arquivo, as primeiras declarações com o começo e o fim. O pedido vai à
+/// triagem como frase e como as palavras de [`ask_words`]. `None` no não
+/// achou, que deixa o pedido como veio.
+fn ask_reply(scene: &Scene<'_>, request: &str) -> Option<String> {
+    let words = ask_words(request);
+    if words.is_empty() {
+        return None;
+    }
+    store::read_for_at(scene.model, Need::Paths).ok()?;
+    let question = words.join(" ");
+    let intent: String = request.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(ASKED_PHRASE).collect();
+    let triaged = map_triage::triage_at(scene.model, (&question, &intent), scene.languages, RANKED_FILES).ok()?;
+    let mark = triaged.mark();
+    if mark == Mark::NotFound {
+        return None;
+    }
+    let mut warnings: Vec<String> = Vec::new();
+    let judged =
+        if mark == Mark::Partial { judge(scene, (&question, &intent), &triaged, &mut warnings) } else { Judged::Triage };
+    let places: Vec<(String, Vec<String>)> = match judged {
+        Judged::NotFound => return None,
+        Judged::Pieces(pieces) => places_of_pieces(&pieces),
+        Judged::Triage => places_of_triage(scene, (&question, &intent), &triaged)?,
+    };
+    if places.is_empty() {
+        return None;
+    }
+    let mut out = say("map.answer.ask", scene.lang, &[]);
+    out.push('\n');
+    out.push_str(&header(mark, &triaged, scene.lang));
+    for (path, pieces) in places {
+        out.push('\n');
+        out.push_str(&path);
+        for piece in pieces {
+            out.push_str("\n  ");
+            out.push_str(&piece);
+        }
+    }
+    out.push('\n');
+    out.push_str(&say("map.search.use_tools", scene.lang, &[]));
+    for warning in warnings {
+        out.push('\n');
+        out.push_str(&warning);
+    }
+    Some(out)
+}
+
+/// As peças que o filtro entregou, agrupadas por arquivo na ordem da chance:
+/// `começo-fim nome` de cada uma.
+fn places_of_pieces(pieces: &[Piece]) -> Vec<(String, Vec<String>)> {
+    let mut places: Vec<(String, Vec<String>)> = Vec::new();
+    for piece in pieces {
+        let line = format!("{}-{} {}", piece.line, piece.end_line, piece.name);
+        match places.iter_mut().find(|(path, _)| *path == piece.path) {
+            Some((_, lines)) => lines.push(line),
+            None => places.push((piece.path.clone(), vec![line])),
+        }
+    }
+    places
+}
+
+/// Os primeiros arquivos da triagem, cada um com as declarações dele que a
+/// ordem única põe na frente, até [`PIECES_PER_FILE`]. `None` quando o mapa
+/// não se lê.
+fn places_of_triage(scene: &Scene<'_>, (question, intent): (&str, &str), triaged: &Triaged) -> Option<Vec<(String, Vec<String>)>> {
+    let limit = scene.config.search_candidates().or(CANDIDATES);
+    let found = map_search::candidates_at(scene.model, question, intent, scene.languages, limit).ok()?;
+    Some(
+        triaged
+            .files
+            .iter()
+            .take(SHOWN_FILES)
+            .map(|file| {
+                let pieces: Vec<String> = found
+                    .candidates
+                    .iter()
+                    .filter(|candidate| candidate.path == file.path)
+                    .take(PIECES_PER_FILE)
+                    .map(|candidate| format!("{}-{} {}", candidate.line, candidate.end_line, candidate.name))
+                    .collect();
+                (file.path.clone(), pieces)
+            })
+            .collect(),
+    )
+}
+
 fn try_reply(scene: &Scene<'_>, search: &Search<'_>) -> Option<Reply> {
     let words = words_of(search.patterns, search.dialect == Dialect::Fixed);
     if words.is_empty() || matches!(search.walk, Walk::Rg { unignored: true }) {
@@ -258,7 +511,15 @@ fn try_reply(scene: &Scene<'_>, search: &Search<'_>) -> Option<Reply> {
     let hits = scan(tree, &rels, search, &regex)?;
     // Só o parcial vai ao filtro: o cravado responde da triagem.
     let mut warnings: Vec<String> = Vec::new();
-    let judged = if mark == Mark::Partial { judge(scene, &question, &triaged, &mut warnings) } else { Judged::Triage };
+    let judged = if mark == Mark::Partial {
+        // Num projeto com texto e código em línguas diferentes, as palavras
+        // vão também como a frase, na língua do texto, para o filtro ler a
+        // palavra como ela é e não como pedaço de nome.
+        let intent = if scene.languages.codes().len() > 1 { question.as_str() } else { "" };
+        judge(scene, (&question, intent), &triaged, &mut warnings)
+    } else {
+        Judged::Triage
+    };
     if judged == Judged::NotFound {
         remember(scene.memory, &key)?;
         return Some(Reply::Note(not_found(&question, &triaged.words, scene.lang)));
@@ -287,19 +548,21 @@ enum Judged {
     Pieces(Vec<Piece>),
 }
 
-/// A busca parcial pela porta única: as palavras são o pedido, e num projeto
-/// com texto e código em línguas diferentes vão também como a frase, na
-/// língua do texto, para o filtro ler a palavra como ela é e não como pedaço
-/// de nome. O motivo de não haver filtro, ou de ele falhar, entra em
-/// `warnings`, uma vez por sessão.
-fn judge(scene: &Scene<'_>, question: &str, triaged: &Triaged, warnings: &mut Vec<String>) -> Judged {
+/// A busca parcial pela porta única: as palavras de `question` são o pedido, e
+/// `intent` é a frase de quem procura, quando há. O motivo de não haver
+/// filtro, ou de ele falhar, entra em `warnings`, uma vez por sessão.
+fn judge(
+    scene: &Scene<'_>,
+    (question, intent): (&str, &str),
+    triaged: &Triaged,
+    warnings: &mut Vec<String>,
+) -> Judged {
     let (root, session, lang) = (scene.root, scene.session, scene.lang);
     let started = Instant::now();
     let Some(assembled) = door::chosen_filter(root, session, lang, scene.config, scene.assemble, warnings) else {
         return Judged::Triage;
     };
     let numbers = Numbers::read(root, session, lang, scene.config, warnings);
-    let intent = if scene.languages.codes().len() > 1 { question } else { "" };
     let ask = Ask { root, query: question, intent, lang, languages: scene.languages, numbers: &numbers, triaged };
     let Ok(classified) = door::classify(&ask, &assembled) else { return Judged::Triage };
     let judged = match classified.outcome {
@@ -544,24 +807,6 @@ fn skipped(rel: &str) -> bool {
     name == CONFIG_FILE || name.starts_with(".env") || sensitive_pattern(rel).is_some() || is_artifact(rel)
 }
 
-/// Se os filtros de nome `filters` deixam o arquivo `rel` na busca: o último
-/// que casa com o nome decide, e sem nenhum que case, o arquivo entra, salvo
-/// quando há filtro de entrada (no `grep`, quando o primeiro é de entrada).
-/// `None` quando algum filtro usa o que esta leitura não entende.
-fn admitted(rel: &str, filters: &[NameFilter], walk: Walk) -> Option<bool> {
-    let name = rel.rsplit('/').next().unwrap_or(rel);
-    let braces = walk != Walk::Grep;
-    for filter in filters.iter().rev() {
-        if takes(&filter.glob, name, braces)? {
-            return Some(!filter.exclude);
-        }
-    }
-    Some(match walk {
-        Walk::Grep => filters.first().is_none_or(|filter| filter.exclude),
-        Walk::Rg { .. } => filters.iter().all(|filter| filter.exclude),
-    })
-}
-
 /// Onde o padrão casa nos arquivos que o git conhece (os do índice e os novos
 /// que ele não ignora) sob as pastas `rels` da árvore `tree`. `None` quando o
 /// git falha, um filtro não se entende ou o tempo acaba.
@@ -583,7 +828,7 @@ fn scan(tree: &Path, rels: &[String], search: &Search<'_>, regex: &Regex) -> Opt
             return None;
         }
         let hidden = matches!(search.walk, Walk::Rg { .. }) && rel.split('/').any(|part| part.starts_with('.'));
-        if hidden || skipped(rel) || !admitted(rel, search.filters, search.walk)? {
+        if hidden || skipped(rel) || !admitted(rel, search.filters, search.walk, rels)? {
             continue;
         }
         let path = tree.join(rel);
@@ -1059,6 +1304,117 @@ mod tests {
         assert_eq!(basic_to_extended("[|(]"), "[|(]");
         assert_eq!(basic_to_extended("[^]|]x"), "[^]|]x");
         assert_eq!(basic_to_extended("[[:alpha:]|]"), "[[:alpha:]|]");
+    }
+
+    /// [`admitted`] a partir da raiz, sem pasta buscada.
+    fn admitted(rel: &str, filters: &[NameFilter], walk: Walk) -> Option<bool> {
+        super::admitted(rel, filters, walk, &[])
+    }
+
+    /// O filtro de saída que traz pasta (`src/__tests__`, `dir/**`,
+    /// `**/__tests__/`, um nome de pasta) deixa de fora os arquivos de dentro
+    /// dela, sem passar a busca, e os que ficam de fora dela seguem. A pasta
+    /// vale a partir da raiz ou da pasta buscada, e o `**/` do começo, em
+    /// qualquer altura. O que a leitura não entende ainda passa a busca.
+    #[test]
+    fn an_output_filter_with_a_folder_leaves_the_files_inside_that_folder_out() {
+        let rg = Walk::Rg { unignored: false };
+        let excluding = |glob: &str| vec![NameFilter { exclude: true, glob: glob.to_string() }];
+        for glob in ["src/__tests__", "src/__tests__/**", "**/__tests__/**", "**/__tests__/", "./src/__tests__/", "/src/__tests__", "__tests__"] {
+            assert_eq!(admitted("src/__tests__/a.ts", &excluding(glob), rg), Some(false), "{glob}");
+            assert_eq!(admitted("src/a.ts", &excluding(glob), rg), Some(true), "{glob}: a file outside the folder stays");
+        }
+        assert_eq!(admitted("lib/__tests__/a.ts", &excluding("src/__tests__/**"), rg), Some(true), "anchored at the root");
+        assert_eq!(admitted("lib/__tests__/a.ts", &excluding("**/__tests__/**"), rg), Some(false), "any depth");
+        assert_eq!(admitted("src/__tests__x/a.ts", &excluding("src/__tests__"), rg), Some(true), "a folder name is whole");
+        let nested = "apps/web/src/__tests__/a.ts";
+        assert_eq!(admitted(nested, &excluding("src/__tests__"), rg), Some(true), "from the root it is another path");
+        assert_eq!(super::admitted(nested, &excluding("src/__tests__"), rg, &["apps/web".to_string()]), Some(false), "from the searched folder");
+        assert_eq!(admitted("src/a/x/b.ts", &excluding("src/*/x"), rg), Some(false), "a wildcard inside the folder path");
+        assert_eq!(admitted("src/a/x/b.ts", &excluding("src/[ab]/x"), rg), None, "a class is not read");
+        assert_eq!(admitted("src/a/x/y/b.ts", &excluding("src/**/x/y"), rg), None, "a ** in the middle is not read");
+        let later_input = vec![NameFilter { exclude: true, glob: "src/__tests__".into() }, NameFilter { exclude: false, glob: "*.ts".into() }];
+        assert_eq!(admitted("src/__tests__/a.ts", &later_input, rg), Some(true), "the later filter wins");
+    }
+
+    /// Do padrão de nome só a extensão fica como filtro da triagem: uma, uma
+    /// lista entre chaves ou nenhuma, e o que não é extensão comum não estreita.
+    #[test]
+    fn a_name_pattern_leaves_only_its_extension_as_the_filter() {
+        let shown = |glob: &str| extension_filters(glob).into_iter().map(|filter| (filter.exclude, filter.glob)).collect::<Vec<_>>();
+        assert_eq!(shown("**/*frete*.rs"), [(false, "*.rs".to_string())]);
+        assert_eq!(shown("src/**/*.{ts,tsx}"), [(false, "*.{ts,tsx}".to_string())]);
+        assert_eq!(shown("*.test.ts"), [(false, "*.ts".to_string())]);
+        for glob in ["*frete*", "src/*frete", "*.", "*.[jt]s", "*.{ts,}", "src/*.r?"] {
+            assert!(shown(glob).is_empty(), "{glob}");
+        }
+    }
+
+    /// Do padrão de nome de arquivo saem as palavras do nome, sem a extensão:
+    /// o padrão que só tem curinga e extensão não tem palavra, e o de caminho
+    /// (`find -path`) traz as das pastas também.
+    #[test]
+    fn a_file_name_pattern_gives_the_words_of_the_name_without_the_extension() {
+        let words = |glob: &str, whole: bool| name_words(glob, whole);
+        assert_eq!(words("**/*payment*.ts", false), ["payment"]);
+        assert_eq!(words("src/**/PaymentService.ts", false), ["PaymentService"]);
+        assert_eq!(words("pay.service.ts", false), ["pay", "service"]);
+        assert_eq!(words("*frete*", false), ["frete"], "a name with no dot stays whole");
+        assert_eq!(words("Dockerfile", false), ["Dockerfile"]);
+        for silent in ["**/*.ts", "*.{ts,tsx}", "**/*", "src/payments/**/*.rs"] {
+            assert!(words(silent, false).is_empty(), "{silent}");
+        }
+        assert_eq!(words("*/payments/*", true), ["payments"]);
+        assert!(words("*/payments/*", false).is_empty(), "the folder is no part of a name test");
+    }
+
+    /// Do pedido a um agente saem os nomes de código na ordem em que aparecem,
+    /// sem repetir: o nome sozinho entre crases, o arquivo (sem a extensão), a
+    /// última parte de uma pasta e os nomes em `snake_case` e `camelCase`. O
+    /// texto corrido, o comando entre crases, a pasta da máquina e o número de
+    /// versão ficam de fora.
+    #[test]
+    fn a_request_gives_its_code_names_and_paths_as_words() {
+        let request = "Repositório em /home/x/mustard. Leia `calcular_frete` e o arquivo src/pedido.rs; veja também FreteService, o campo fechar_pedido e a pasta apps/rt/src/hooks. Rode `mustard-rt run pending` na versão 1.2.3 (calcular_frete de novo).";
+        assert_eq!(ask_words(request), ["calcular_frete", "pedido", "FreteService", "fechar_pedido", "hooks"]);
+        assert!(ask_words("Explore o repositório inteiro e resuma o que cada pasta faz.").is_empty());
+        assert_eq!(ask_words("Abra /home/x/proj/src/app/main.rs e `parse`."), ["main", "parse"]);
+        let many = (0..30).map(|n| format!("nome_{n}")).collect::<Vec<_>>().join(" ");
+        assert_eq!(ask_words(&many).len(), MAX_WORDS);
+    }
+
+    /// A resposta ao pedido do agente de exploração traz a marca, o arquivo do
+    /// primeiro achado com a função e as linhas de começo e fim, e a linha de
+    /// usar as ferramentas de sempre; o pedido sem nome de código, o que o
+    /// mapa não acha, o sem mapa e o com a chave `search.answer` desligada não
+    /// ganham resposta.
+    #[test]
+    fn the_request_to_an_explorer_gets_the_short_answer_of_the_map() {
+        let (_dir, root) = fixture::repo("{}");
+        let ask = |root: &Path, request: &str| {
+            let config = ProjectConfig::load(root);
+            let scene = Scene {
+                root,
+                model: &store::model_path(root),
+                memory: None,
+                session: Some("teste"),
+                lang: Locale::PtBr,
+                languages: &Languages::new(["pt-BR", "en-US"]),
+                config: &config,
+                assemble: &without_key,
+            };
+            ask_reply(&scene, request)
+        };
+        let text = ask(&root, "Mapeie o cálculo do frete. Onde `calcular_frete` é usado? Leia src/frete.rs.").expect("the map answers");
+        assert!(text.starts_with("Antes de explorar, o Mustard consultou o mapa com este pedido.\n"), "{text}");
+        assert!(text.contains("src/frete.rs\n  2-6 calcular_frete"), "the file, the function and its lines: {text}");
+        assert!(text.contains("Cravado.") || text.contains("Parcial."), "the mark: {text}");
+        assert!(text.ends_with("`Grep`, `Glob` e `Read`."), "the line of the usual tools closes it: {text}");
+        assert_eq!(ask(&root, "Explore o repositório inteiro e resuma."), None, "no code name in the request");
+        assert_eq!(ask(&root, "Onde fica `zzyzx_quebrada`?"), None, "the map found nothing");
+        let (_bare, bare) = fixture::repo("{}");
+        std::fs::remove_file(store::model_path(&bare)).expect("no map");
+        assert_eq!(ask(&bare, "Onde `calcular_frete` é usado?"), None, "no map");
     }
 
     #[test]

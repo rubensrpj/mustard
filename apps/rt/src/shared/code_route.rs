@@ -18,7 +18,7 @@ use mustard_core::io::project_map::{self as store, Need};
 use mustard_core::io::workspace::{is_git_repo_root, linked_worktree_main};
 use mustard_core::platform::i18n::Locale;
 
-use crate::shared::config_key::{surely_takes, NameFilter, Walk};
+use crate::shared::config_key::{takes, NameFilter, Walk};
 use crate::shared::paths::relative_to_cwd;
 use crate::shared::say::say;
 
@@ -264,68 +264,98 @@ fn in_order(pairs: &[(usize, usize)]) -> Vec<(usize, usize)> {
     chain
 }
 
-/// As extensões que `glob` aceita, quando ele termina nelas (`*.md`,
-/// `docs/**/*.{md,toml}`). `None` quando o fim tem curinga ou não tem
-/// extensão: a busca então vale para qualquer arquivo.
-pub(crate) fn glob_extensions(glob: &str) -> Option<Vec<String>> {
-    let last = glob.rsplit('/').next().unwrap_or(glob);
-    let tail = if let Some(inner) = last.strip_suffix('}') {
-        inner.rsplit_once(".{")?.1.split(',').map(str::to_string).collect()
-    } else {
-        vec![last.rsplit_once('.')?.1.to_string()]
-    };
-    let plain = |ext: &String| !ext.is_empty() && ext.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-');
-    tail.iter().all(plain).then_some(tail)
+/// Se os filtros de nome `filters` deixam o arquivo `rel` na busca: o último
+/// que casa com o nome decide, e sem nenhum que case, o arquivo entra, salvo
+/// quando há filtro de entrada (no `grep`, quando o primeiro é de entrada).
+/// O filtro de saída do `rg` e do `git grep` que traz pasta (`!src/__tests__`,
+/// `!dir/**`) vale pelo caminho, a partir da raiz ou de uma das pastas
+/// buscadas `folders`. `None` quando algum filtro usa o que esta leitura não
+/// entende.
+pub(crate) fn admitted(rel: &str, filters: &[NameFilter], walk: Walk, folders: &[String]) -> Option<bool> {
+    let name = rel.rsplit('/').next().unwrap_or(rel);
+    let braces = walk != Walk::Grep;
+    for filter in filters.iter().rev() {
+        let hit = match takes(&filter.glob, name, braces) {
+            // O filtro de saída do `rg` e do `git grep` também deixa de fora
+            // o arquivo de dentro da pasta que ele nomeia (`!__tests__`).
+            Some(false) if braces && filter.exclude => rel
+                .rsplit_once('/')
+                .is_some_and(|(parents, _)| parents.split('/').any(|dir| takes(&filter.glob, dir, braces) == Some(true))),
+            Some(hit) => hit,
+            None if braces && filter.exclude => inside_folder(&filter.glob, rel, folders)?,
+            None => return None,
+        };
+        if hit {
+            return Some(!filter.exclude);
+        }
+    }
+    Some(match walk {
+        Walk::Grep => filters.first().is_none_or(|filter| filter.exclude),
+        Walk::Rg { .. } => filters.iter().all(|filter| filter.exclude),
+    })
 }
 
-/// `true` quando os filtros `filters` (na ordem da linha) deixam de fora o
-/// arquivo `path` com certeza: o último filtro de saída que casa com o nome
-/// dele, e nenhum de entrada depois dele que possa casar, pois o último que
-/// casa decide. Filtro de saída com pasta, `[` ou `\` não conta como certo;
-/// filtro de entrada que a leitura não entende pode casar com tudo.
-fn left_out(path: &str, filters: &[NameFilter], braces: bool) -> bool {
-    let file = Path::new(path);
-    let name = file.file_name().and_then(|name| name.to_str()).unwrap_or(path);
-    let extension = file.extension().and_then(|ext| ext.to_str());
-    let Some(last) = filters.iter().rposition(|filter| filter.exclude && surely_takes(&filter.glob, name, braces)) else {
-        return false;
-    };
-    !filters[last + 1..].iter().any(|filter| {
-        !filter.exclude
-            && glob_extensions(&filter.glob).is_none_or(|only| extension.is_some_and(|ext| only.iter().any(|o| o == ext)))
-    })
+/// Se o filtro de saída com pasta `glob` (`src/__tests__`, `src/__tests__/**`,
+/// `**/__tests__/`, `apps/*/dist`) alcança o arquivo `rel`: a pasta ou o
+/// arquivo que ele nomeia, a partir da raiz ou de uma das pastas buscadas
+/// `folders`, ou em qualquer altura quando começa por `**/`. `None` no que
+/// esta leitura não entende (`[`, `\`, `**` no meio).
+fn inside_folder(glob: &str, rel: &str, folders: &[String]) -> Option<bool> {
+    let mut pattern = glob.trim_start_matches("./").trim_start_matches('/');
+    let mut any_depth = false;
+    while let Some(rest) = pattern.strip_prefix("**/") {
+        pattern = rest;
+        any_depth = true;
+    }
+    let pattern = pattern.trim_end_matches("/**").trim_end_matches('/');
+    let wanted: Vec<&str> = pattern.split('/').collect();
+    if pattern.is_empty() || wanted.contains(&"**") {
+        return None;
+    }
+    let have: Vec<&str> = rel.split('/').collect();
+    let mut starts: Vec<usize> = if any_depth { (0..have.len()).collect() } else { vec![0] };
+    if !any_depth {
+        for folder in folders.iter().filter(|folder| !folder.is_empty() && folder.as_str() != ".") {
+            let base = folder.trim_matches('/');
+            if rel.strip_prefix(base).is_some_and(|rest| rest.starts_with('/')) {
+                starts.push(base.split('/').count());
+            }
+        }
+    }
+    for start in starts {
+        if have.len() < start + wanted.len() {
+            continue;
+        }
+        let mut all = true;
+        for (want, got) in wanted.iter().zip(&have[start..]) {
+            if !takes(want, got, true)? {
+                all = false;
+                break;
+            }
+        }
+        if all {
+            return Some(true);
+        }
+    }
+    Some(false)
 }
 
 /// `true` quando alguma das pastas `folders` (relativas à raiz; vazia é a
 /// raiz) guarda código do mapa `paths` que os filtros de nome de arquivo
 /// `filters`, de entrada e de saída, na ordem da linha, deixam passar: os de
 /// entrada estreitam a busca aos arquivos que nomeiam, e os de saída tiram os
-/// que casam com certeza. `walk` diz como a busca lê as chaves dos filtros.
-/// Só a busca que passa por código do mapa é assunto do mapa: a de um arquivo
-/// só, de documentos ou de pastas sem código passa.
+/// que casam com certeza, pelo nome ou pela pasta. `walk` diz como a busca lê
+/// as chaves dos filtros. Só a busca que passa por código do mapa é assunto do
+/// mapa: a de um arquivo só, de documentos ou de pastas sem código passa.
 pub(crate) fn holds_code(paths: &ProjectMap, folders: &[String], filters: &[NameFilter], walk: Walk) -> bool {
     if folders.is_empty() {
         return false;
     }
-    // Os filtros de entrada juntam o que aceitam; um sem extensão aceita tudo.
-    let mut only: Vec<String> = Vec::new();
-    for filter in filters.iter().filter(|filter| !filter.exclude) {
-        match glob_extensions(&filter.glob) {
-            Some(extensions) => only.extend(extensions),
-            None => {
-                only.clear();
-                break;
-            }
-        }
-    }
-    let braces = walk != Walk::Grep;
     let inside = |path: &str, folder: &str| folder.is_empty() || path.starts_with(&format!("{}/", folder.trim_end_matches('/')));
-    let wanted = |path: &str| {
-        (only.is_empty()
-            || Path::new(path).extension().and_then(|ext| ext.to_str()).is_some_and(|ext| only.iter().any(|o| o == ext)))
-            && !left_out(path, filters, braces)
-    };
-    paths.modules.iter().any(|module| wanted(&module.path) && folders.iter().any(|folder| inside(&module.path, folder)))
+    paths
+        .modules
+        .iter()
+        .any(|module| folders.iter().any(|folder| inside(&module.path, folder)) && admitted(&module.path, filters, walk, folders) != Some(false))
 }
 
 /// O projeto que as travas da leitura e da busca usam nos testes.

@@ -88,19 +88,15 @@ impl LockedFile {
     }
 
     /// Acrescenta `line` e um `\n` no fim, de uma vez, e só volta depois que o
-    /// disco confirmou. Quem chama passa a linha sem o `\n`.
+    /// disco confirmou. Quem chama passa a linha sem o `\n`. Se a escrita ou a
+    /// confirmação falha, o arquivo volta ao tamanho de antes, sem sobra de
+    /// linha pela metade.
     ///
     /// # Errors
     ///
     /// [`Error::Io`] quando a escrita falha.
     pub fn append_line(&mut self, line: &str) -> Result<()> {
-        self.file.seek(SeekFrom::End(0))?;
-        let mut bytes = Vec::with_capacity(line.len() + 1);
-        bytes.extend_from_slice(line.as_bytes());
-        bytes.push(b'\n');
-        self.file.write_all(&bytes)?;
-        self.file.sync_data()?;
-        Ok(())
+        Ok(append_or_rollback(&mut self.file, line, true)?)
     }
 
     /// Troca o conteúdo inteiro por `contents`, pelo mesmo manipulador. Não é
@@ -124,6 +120,44 @@ impl Drop for LockedFile {
         // Fechar o arquivo já solta a trava; soltar antes deixa claro quando.
         let _ = self.file.unlock();
     }
+}
+
+/// O que a gravação de uma linha pede do destino: escrever, medir o fim,
+/// cortar até um tamanho e confirmar no disco. O arquivo de verdade cumpre
+/// tudo; o teste põe no lugar um destino que enche de propósito.
+pub(super) trait Appendable: Write + Seek {
+    /// Corta o destino em `len` bytes.
+    fn shrink_to(&mut self, len: u64) -> std::io::Result<()>;
+
+    /// Espera o disco confirmar o que foi escrito.
+    fn sync(&mut self) -> std::io::Result<()>;
+}
+
+impl Appendable for File {
+    fn shrink_to(&mut self, len: u64) -> std::io::Result<()> {
+        self.set_len(len)
+    }
+
+    fn sync(&mut self) -> std::io::Result<()> {
+        self.sync_data()
+    }
+}
+
+/// Acrescenta `line` e um `\n` ao fim de `target`, num só bloco, e deixa o
+/// arquivo como estava se a escrita (ou a confirmação, com `durable`) falha:
+/// o disco cheio no meio da linha não deixa meia linha para trás. O erro que
+/// volta é o da escrita; se o corte também falha, ele não o esconde.
+pub(super) fn append_or_rollback<T: Appendable>(target: &mut T, line: &str, durable: bool) -> std::io::Result<()> {
+    let start = target.seek(SeekFrom::End(0))?;
+    let mut bytes = Vec::with_capacity(line.len() + 1);
+    bytes.extend_from_slice(line.as_bytes());
+    bytes.push(b'\n');
+    let written = target.write_all(&bytes).and_then(|()| if durable { target.sync() } else { Ok(()) });
+    if let Err(err) = written {
+        let _ = target.shrink_to(start);
+        return Err(err);
+    }
+    Ok(())
 }
 
 /// Abre `path` para ler e escrever, criando o arquivo e a pasta quando
@@ -205,5 +239,133 @@ mod tests {
         let free = LockedFile::exclusive_if_free(&path).unwrap();
         assert!(free.is_some(), "free: the lock is taken");
         assert!(LockedFile::exclusive_if_free(&path).unwrap().is_none(), "and now it is held by the first");
+    }
+
+    /// Um destino que aceita `room` bytes e então diz que o disco encheu, como
+    /// o disco cheio de verdade no meio de uma linha. Guarda o tamanho de cada
+    /// escrita para provar que a linha sai num bloco só.
+    struct Full {
+        data: Vec<u8>,
+        pos: usize,
+        room: usize,
+        writes: Vec<usize>,
+        sync_fails: bool,
+        shrink_fails: bool,
+    }
+
+    impl Full {
+        fn new(data: &str, room: usize) -> Self {
+            Self { data: data.as_bytes().to_vec(), pos: 0, room, writes: Vec::new(), sync_fails: false, shrink_fails: false }
+        }
+
+        fn text(&self) -> String {
+            String::from_utf8(self.data.clone()).unwrap()
+        }
+    }
+
+    impl Write for Full {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            if self.room == 0 {
+                return Err(std::io::Error::from(ErrorKind::StorageFull));
+            }
+            let taken = buf.len().min(self.room);
+            self.room -= taken;
+            self.writes.push(taken);
+            self.data.truncate(self.pos);
+            self.data.extend_from_slice(&buf[..taken]);
+            self.pos += taken;
+            Ok(taken)
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Seek for Full {
+        fn seek(&mut self, to: SeekFrom) -> std::io::Result<u64> {
+            self.pos = match to {
+                SeekFrom::Start(n) => n as usize,
+                SeekFrom::End(n) => self.data.len().saturating_add_signed(n as isize),
+                SeekFrom::Current(n) => self.pos.saturating_add_signed(n as isize),
+            };
+            Ok(self.pos as u64)
+        }
+    }
+
+    impl Appendable for Full {
+        fn shrink_to(&mut self, len: u64) -> std::io::Result<()> {
+            if self.shrink_fails {
+                return Err(std::io::Error::from(ErrorKind::PermissionDenied));
+            }
+            self.data.truncate(len as usize);
+            Ok(())
+        }
+
+        fn sync(&mut self) -> std::io::Result<()> {
+            if self.sync_fails {
+                return Err(std::io::Error::from(ErrorKind::StorageFull));
+            }
+            Ok(())
+        }
+    }
+
+    /// O disco enche 5 bytes depois de a linha começar: o que já tinha 8 bytes
+    /// termina com 8 bytes, o mesmo conteúdo, e o erro é o do disco cheio.
+    #[test]
+    fn a_line_cut_by_a_full_disk_leaves_the_file_as_it_was() {
+        let mut target = Full::new("um\ndois\n", 5);
+        let err = append_or_rollback(&mut target, "tres-quatro", true).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::StorageFull);
+        assert_eq!(target.writes, [5], "five bytes went in before the disk filled");
+        assert_eq!(target.data.len(), 8);
+        assert_eq!(target.text(), "um\ndois\n");
+    }
+
+    /// A confirmação do disco que falha, com a linha inteira já escrita, também
+    /// desfaz a linha: quem recebe o erro não fica com a gravação pela metade.
+    #[test]
+    fn a_failed_confirmation_takes_the_written_line_back() {
+        let mut target = Full::new("um\n", 100);
+        target.sync_fails = true;
+        let err = append_or_rollback(&mut target, "dois", true).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::StorageFull);
+        assert_eq!(target.text(), "um\n");
+        // Sem pedir a confirmação, o mesmo destino grava a linha e não volta atrás.
+        let mut loose = Full::new("um\n", 100);
+        loose.sync_fails = true;
+        append_or_rollback(&mut loose, "dois", false).unwrap();
+        assert_eq!(loose.text(), "um\ndois\n");
+    }
+
+    /// Se o corte também falha, o erro que volta continua sendo o da escrita.
+    #[test]
+    fn a_failed_cut_does_not_hide_the_write_error() {
+        let mut target = Full::new("um\n", 2);
+        target.shrink_fails = true;
+        let err = append_or_rollback(&mut target, "dois", true).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::StorageFull, "not the cut's PermissionDenied");
+    }
+
+    /// A linha e o `\n` saem numa escrita só, com o tamanho da linha mais um.
+    #[test]
+    fn the_line_and_its_newline_go_out_in_one_write() {
+        let mut target = Full::new("", 100);
+        append_or_rollback(&mut target, "abcdef", false).unwrap();
+        assert_eq!(target.writes, [7]);
+        assert_eq!(target.text(), "abcdef\n");
+    }
+
+    /// No arquivo de verdade que só devolve `StorageFull` (o `/dev/full`), a
+    /// gravação pela trava responde o erro do disco, mesmo com o corte
+    /// impossível nele.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_locked_append_to_a_full_device_answers_the_disk_error() {
+        let mut file = LockedFile::exclusive(Path::new("/dev/full")).unwrap();
+        match file.append_line("um") {
+            Err(Error::Io(e)) => assert_eq!(e.kind(), ErrorKind::StorageFull),
+            other => panic!("expected the disk error, got {other:?}"),
+        }
     }
 }
