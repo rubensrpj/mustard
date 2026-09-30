@@ -118,26 +118,6 @@ pub(crate) fn language_of_path(path: &str) -> Option<&'static str> {
         .map(|(_, lang)| *lang)
 }
 
-/// Whether `paths` holds a source file written in `language` (a name of the
-/// [`EXT_LANG`] table, any case). Languages of the JS/TS family count as one,
-/// so a `.ts` file is a file of `javascript`. `None` when the table does not
-/// know `language` at all: nothing can be said about it, and the caller keeps
-/// what it had.
-#[must_use]
-pub(crate) fn paths_hold_language(paths: &[String], language: &str) -> Option<bool> {
-    let want = language.to_ascii_lowercase();
-    if !EXT_LANG.iter().any(|(_, lang)| *lang == want) {
-        return None;
-    }
-    let family = |lang: &str| JS_TS_FAMILY.contains(&lang);
-    Some(
-        paths
-            .iter()
-            .filter_map(|p| language_of_path(p))
-            .any(|got| got == want || (family(got) && family(&want))),
-    )
-}
-
 /// The distinct source languages a path set involves, by extension. Non-source
 /// / unknown extensions contribute nothing.
 #[must_use]

@@ -111,14 +111,16 @@ exit 1
 
 /// O projeto de teste: um repositório com `main` e `dev`, parado em `dev`, com
 /// as bases declaradas, o provedor do GitHub, o lint do projeto e o Mustard
-/// fora do git; uma pasta pessoal falsa; e o `gh` falso, que anota cada
-/// chamada e responde que a branch não tem pull request e que o criado é o 7.
+/// fora do git; um servidor local vazio como `origin`; uma pasta pessoal
+/// falsa; e o `gh` falso, que anota cada chamada e responde que a branch não
+/// tem pull request e que o criado é o 7.
 struct Project {
     _dir: tempfile::TempDir,
     root: PathBuf,
     home: PathBuf,
     bin: PathBuf,
-    /// Os servidores locais do projeto com submódulo.
+    /// Os servidores locais do projeto: o do principal (`projeto.git`) e, com
+    /// submódulo, o dele.
     remotes: PathBuf,
 }
 
@@ -171,8 +173,11 @@ impl Project {
             git(&root, &["-c", "protocol.file.allow=always", "submodule", "add", "-q", &sub_url, SUB]);
             identify(&root.join(SUB));
             git(&root, &["commit", "-q", "-m", "submodulo"]);
-            git(&remotes, &["init", "-q", "--bare", "projeto.git"]);
-            git(&root, &["remote", "add", "origin", &remotes.join("projeto.git").to_string_lossy()]);
+        }
+        // O servidor do principal, sem a branch da spec: o `pr-open` a envia.
+        git(&remotes, &["init", "-q", "--bare", "projeto.git"]);
+        git(&root, &["remote", "add", "origin", &remotes.join("projeto.git").to_string_lossy()]);
+        if submodule {
             git(&root, &["push", "-q", "origin", "main"]);
         }
         git(&root, &["checkout", "-q", "-b", "dev"]);
@@ -541,6 +546,80 @@ fn o_fluxo_inteiro_nao_grava_onda_pela_linha_de_comando() {
     }
 }
 
+/// A spec de uma onda, da abertura ao fechamento, com a mudança entregue: devolve
+/// os argumentos do `pr-open` que o fechamento apontou.
+fn closed_with_one_wave(project: &Project) -> Vec<String> {
+    project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    survey(project);
+    plan(project);
+    approve(project);
+    let first = first_round(project);
+    assert_eq!(first["dispatch"].as_array().map(Vec::len), Some(1), "{first}");
+    let log = project.log();
+    let sent = log.visible().into_iter().rfind(|e| e.event_type == "send").expect("the send");
+    let copy = PathBuf::from(sent.str_field("copy").expect("the copy"));
+    std::fs::write(copy.join("src/main.rs"), "fn main() {\n    println!(\"olá\");\n}\n").expect("the change");
+    let delivered = json!({"wave": 1, "text": "A saudação virou olá.", "files": ["src/main.rs"],
+        "commit": "a saudação vira olá", "agreed": agreed_all_met(project)});
+    project.run(&["write", "delivered", "--spec", SPEC, "--json", &delivered.to_string()]);
+    project.run(&["round", "--spec", SPEC]);
+    project.run(&["close", "--spec", SPEC]);
+    let verdict = json!({"final": true, "result": "approved", "text": "A saudação mudou.",
+        "agreed": agreed_all_met(project)});
+    project.run(&["write", "verdict", "--spec", SPEC, "--json", &verdict.to_string()]);
+    let closed = project.run(&["close", "--spec", SPEC]);
+    let line = closed["command"].as_str().expect("the pr-open line").to_string();
+    line.split_whitespace().skip(2).map(str::to_string).collect()
+}
+
+/// O `pr-open` envia a branch da spec ao servidor antes de abrir o pull
+/// request: com o servidor recusando o recebimento, o pedido não nasce (o
+/// provedor nem é chamado), a resposta traz o `push:` com a mensagem do git e a
+/// spec segue fechada; com o servidor aceitando, o mesmo comando, de novo,
+/// leva a branch, abre o pedido e a spec passa a pull request aberto. Um
+/// commit novo na branch chega ao servidor no `pr-open` seguinte.
+#[test]
+fn a_pr_open_sends_the_branch_first_and_a_refused_send_opens_nothing() {
+    let project = Project::new();
+    let server = project.remotes.join("projeto.git");
+    let refuse = server.join("hooks/pre-receive");
+    executable::write_executable(&refuse, "#!/bin/sh\necho 'o servidor recusou o envio' >&2\nexit 1\n");
+    let line = closed_with_one_wave(&project);
+    let argv: Vec<&str> = line.iter().map(String::as_str).collect();
+
+    let asked_before = project.gh_calls();
+    let refused = project.answer(&argv);
+    assert_eq!(refused["ok"], json!(false), "{refused}");
+    let error = refused["error"].as_str().unwrap_or_default().to_string();
+    assert!(error.starts_with("push: ") && error.contains("o servidor recusou o envio"), "{refused}");
+    assert_eq!(project.gh_calls(), asked_before, "the provider was not asked anything by the refused open");
+    assert!(git_out(&server, &["for-each-ref", &format!("refs/heads/{BRANCH}")]).is_empty(), "nothing reached the server");
+    assert_eq!(State::from_log(&project.log()).phase, Some("closed"), "{refused}");
+
+    std::fs::remove_file(&refuse).expect("the server hook leaves");
+    let opened = project.answer(&argv);
+    assert_eq!(opened["ok"], json!(true), "{opened}");
+    assert_eq!(opened["number"], json!(7), "{opened}");
+    assert_eq!(
+        git_out(&server, &["rev-parse", &format!("refs/heads/{BRANCH}")]),
+        git_out(&project.root, &["rev-parse", "HEAD"]),
+        "the branch of the spec is on the server"
+    );
+    assert!(project.gh_calls().iter().any(|call| call.starts_with("pr create")), "{:?}", project.gh_calls());
+    assert!(!asked_before.iter().any(|call| call.starts_with("pr create")), "{asked_before:?}");
+    assert_eq!(State::from_log(&project.log()).phase, Some("pr_open"), "{opened}");
+
+    // O commit que vem depois chega ao servidor no `pr-open` seguinte.
+    git(&project.root, &["commit", "-q", "--allow-empty", "-m", "o ajuste depois do pedido"]);
+    let again = project.answer(&argv);
+    assert_eq!(again["ok"], json!(true), "{again}");
+    assert_eq!(
+        git_out(&server, &["rev-parse", &format!("refs/heads/{BRANCH}")]),
+        git_out(&project.root, &["rev-parse", "HEAD"]),
+        "the new commit is on the server"
+    );
+}
+
 /// Um critério gravado sem declarar a forma dele é recusado, e a recusa lista
 /// as cinco formas do padrão pelo nome, em vez de um nome de campo cru.
 #[test]
@@ -794,6 +873,10 @@ fn a_spec_on_the_main_repository_and_a_submodule_readies_the_main_pull_request_o
     assert!(
         !git_out(&sub_server, &["for-each-ref", &format!("refs/heads/{BRANCH}")]).is_empty(),
         "the submodule branch, with the same name, is on its server"
+    );
+    assert!(
+        !git_out(&project.remotes.join("projeto.git"), &["for-each-ref", &format!("refs/heads/{BRANCH}")]).is_empty(),
+        "the main branch is on its server once the pull request is open"
     );
     assert_eq!(pr["number"], json!(7), "{pr}");
     assert_eq!(pr["submodules"][0]["path"], json!(SUB), "{pr}");

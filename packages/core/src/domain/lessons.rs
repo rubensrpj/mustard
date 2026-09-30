@@ -111,9 +111,6 @@ pub const RETIRE: &str = "remove";
 /// que a saída não diz; por isso a retirada os recusa pelo nome.
 const RETIRE_FIELDS: &[&str] = &["targets", "reason", "author"];
 
-/// O padrão de arquivos da lição que vale no projeto todo.
-pub const WHOLE_PROJECT: &str = "**";
-
 /// Os campos de `applies_to`: onde a lição vale.
 const SCOPE_FIELDS: &[(&str, Kind)] = &[("subproject", Kind::Text), ("files", Kind::Texts), ("skill", Kind::Text)];
 
@@ -844,7 +841,7 @@ mod tests {
                 lesson(1, base(json!({"files": ["apps/rt/src/hooks/**"]}))),
                 lesson(2, base(json!({"subproject": "packages/core"}))),
                 lesson(3, base(json!({"skill": "add-run-command"}))),
-                lesson(4, json!({"class": "user_preference", "text": "Resposta curta.", "keys": ["resposta"], "applies_to": {"files": [WHOLE_PROJECT]}, "found_in": {"spec": "s"}})),
+                lesson(4, json!({"class": "user_preference", "text": "Resposta curta.", "keys": ["resposta"], "applies_to": {"files": ["**"]}, "found_in": {"spec": "s"}})),
                 lesson(5, base(json!({"files": ["apps/cli/src/main.rs"]}))),
             ]
             .concat(),
@@ -923,7 +920,7 @@ mod tests {
     fn of_each_class_only_the_five_lessons_closest_to_the_tasks_are_kept() {
         let of = |id: u64, class: &str, text: &str| {
             let keys: Vec<&str> = text.trim_end_matches('.').split(' ').collect();
-            lesson(id, json!({"class": class, "text": text, "keys": keys, "applies_to": {"files": [WHOLE_PROJECT]}, "found_in": {"source": "CLAUDE.md"}}))
+            lesson(id, json!({"class": class, "text": text, "keys": keys, "applies_to": {"files": ["**"]}, "found_in": {"source": "CLAUDE.md"}}))
         };
         let mut content = vec![of(1, "environment_trap", "O cargo não está no PATH.")];
         for id in 2..=7 {
@@ -957,7 +954,7 @@ mod tests {
     /// e aparece numa que diz "ao mesmo tempo".
     #[test]
     fn a_lesson_is_tied_to_the_tasks_by_its_whole_keywords_and_never_by_its_text() {
-        let of = |id: u64, text: &str, keys: &[&str]| lesson(id, json!({"class": "defect", "text": text, "keys": keys, "applies_to": {"files": [WHOLE_PROJECT]}, "found_in": {"spec": "s"}}));
+        let of = |id: u64, text: &str, keys: &[&str]| lesson(id, json!({"class": "defect", "text": text, "keys": keys, "applies_to": {"files": ["**"]}, "found_in": {"spec": "s"}}));
         let bank = parse_log(
             &[
                 of(1, "A primeira linha da lista mostra o uso e o tempo da conversa inteira.", &["pedido", "subagente"]),
@@ -1054,7 +1051,7 @@ mod tests {
     fn onda_so_de_texto_nao_recebe_licao_do_projeto_nem_do_subprojeto() {
         let bank = parse_log(
             &[
-                placed(1, "defect", "O teste tem de falhar quando o código está errado.", json!({"files": [WHOLE_PROJECT]})),
+                placed(1, "defect", "O teste tem de falhar quando o código está errado.", json!({"files": ["**"]})),
                 placed(2, "project_rule", "Escreva arquivos sempre pela escrita atômica.", json!({"subproject": "packages/core"})),
                 placed(3, "project_rule", "O molde diz o passo inteiro.", json!({"files": ["packages/core/templates/**"]})),
                 placed(4, "project_rule", "O molde tem as quatro seções.", json!({"skill": "moldes"})),
@@ -1263,7 +1260,7 @@ mod tests {
 
         let whole_project = parse_log(&lesson(
             2,
-            json!({"class": "user_preference", "text": "t", "keys": ["k"], "applies_to": {"files": [WHOLE_PROJECT]}, "found_in": {"spec": "s"}}),
+            json!({"class": "user_preference", "text": "t", "keys": ["k"], "applies_to": {"files": ["**"]}, "found_in": {"spec": "s"}}),
         ));
         assert_eq!(citing_missing_paths(&whole_project, nothing_exists), vec![], "sem prefixo, nada para conferir");
     }
@@ -1296,9 +1293,9 @@ mod tests {
     fn a_lesson_repeating_the_text_of_one_already_kept_is_refused_naming_it() {
         let bank = parse_log(
             &[
-                lesson(1, json!({"class": "defect", "text": "Não apague a pasta.", "keys": ["apagar"], "applies_to": {"files": [WHOLE_PROJECT]}, "found_in": {"spec": "s"}})),
-                lesson(2, json!({"class": "defect", "text": "Rode em primeiro plano.", "keys": ["rodar"], "applies_to": {"files": [WHOLE_PROJECT]}, "found_in": {"spec": "s"}})),
-                lesson(3, json!({"class": "defect", "text": "Rode tudo em primeiro plano.", "keys": ["rodar"], "applies_to": {"files": [WHOLE_PROJECT]}, "found_in": {"spec": "s"}, "replaces": 2})),
+                lesson(1, json!({"class": "defect", "text": "Não apague a pasta.", "keys": ["apagar"], "applies_to": {"files": ["**"]}, "found_in": {"spec": "s"}})),
+                lesson(2, json!({"class": "defect", "text": "Rode em primeiro plano.", "keys": ["rodar"], "applies_to": {"files": ["**"]}, "found_in": {"spec": "s"}})),
+                lesson(3, json!({"class": "defect", "text": "Rode tudo em primeiro plano.", "keys": ["rodar"], "applies_to": {"files": ["**"]}, "found_in": {"spec": "s"}, "replaces": 2})),
             ]
             .concat(),
         );

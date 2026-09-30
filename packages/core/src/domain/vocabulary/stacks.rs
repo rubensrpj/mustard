@@ -37,7 +37,6 @@
 
 use super::aho::KeyedAutomaton;
 use super::VocabError;
-use crate::domain::source_lang::paths_hold_language;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -222,6 +221,20 @@ impl StackRegistry {
             .and_then(|s| s.language.as_deref())
     }
 
+    /// The host language ([`StackDef::language`]) of the stack that owns the
+    /// code signature `signal`: the first stack of the registry that declares
+    /// it, the one the inference credits when two declare the same literal.
+    /// `None` when that stack names no language or no stack declares the
+    /// signature. A caller that reads the files one by one uses it to keep a
+    /// stack's signatures to the files written in that stack's language.
+    #[must_use]
+    pub fn signature_language(&self, signal: &str) -> Option<&str> {
+        self.stacks
+            .iter()
+            .find(|s| s.code_signatures.iter().any(|sig| sig.trim() == signal))
+            .and_then(|s| s.language.as_deref())
+    }
+
     /// Run the inference engine against caller-supplied evidence.
     ///
     /// For every `[[stack]]` in this registry, three signal **classes** are
@@ -240,11 +253,11 @@ impl StackRegistry {
     ///   [`super::aho::KeyedAutomaton`] engine, keyed by registry index. When
     ///   two stacks declare the same signature, the engine's first-key-wins
     ///   dedup applies: the stack listed first in the registry owns the
-    ///   signature (deterministic, document order = priority order). A stack
-    ///   with a `language` the extension table knows counts its signatures
-    ///   only when `paths` holds a file of that language (the JS/TS family
-    ///   counts as one): a PHP framework's words inside a Rust string are not
-    ///   PHP code.
+    ///   signature (deterministic, document order = priority order). The
+    ///   engine reads `contents` as given: which files feed it is the
+    ///   caller's call, and a caller that knows the language of each file
+    ///   keeps a stack's signatures out of the files of another language
+    ///   ([`StackRegistry::signature_language`] names the language to match).
     ///
     /// The engine never reads stack names: `name` is copied verbatim from the
     /// registry into the detection. Confidence is a pure function of how many
@@ -315,15 +328,8 @@ impl StackRegistry {
 
             // Class 3: code signatures (Aho-Corasick hits collected above).
             // Iterate the declaration list so signal order stays the
-            // registry's, not the haystack's. A stack that names its
-            // language only counts them in a project that has a file of that
-            // language: the same words in a Rust string are text, not PHP.
-            let code_fires = def
-                .language
-                .as_deref()
-                .and_then(|language| paths_hold_language(&norm_paths, language))
-                .unwrap_or(true);
-            if let Some(fired) = fired_signatures.get(&idx).filter(|_| code_fires) {
+            // registry's, not the haystack's.
+            if let Some(fired) = fired_signatures.get(&idx) {
                 let code_signals: Vec<String> = def
                     .code_signatures
                     .iter()
@@ -426,6 +432,16 @@ pub fn code_signals(content: &str) -> Vec<String> {
     };
     let found: std::collections::BTreeSet<String> = ac.scan(content).into_iter().map(|hit| hit.term).collect();
     found.into_iter().collect()
+}
+
+/// The host language of the built-in stack that owns the code signature
+/// `signal` (one of [`code_signals`]'s), or `None` when that stack names no
+/// language or the signature is not one of the registry's. See
+/// [`StackRegistry::signature_language`].
+#[must_use]
+pub fn code_signal_language(signal: &str) -> Option<&'static str> {
+    static REGISTRY: std::sync::OnceLock<Option<StackRegistry>> = std::sync::OnceLock::new();
+    REGISTRY.get_or_init(|| StackRegistry::builtin().ok()).as_ref()?.signature_language(signal)
 }
 
 /// Infer the stacks a project uses from parsed dependency names, project file
@@ -777,30 +793,46 @@ code_signatures = ["@SharedSig"]
         assert_eq!(out[0].name, "first");
     }
 
-    /// As palavras de um framework PHP ou Dart dentro de um texto de Rust não
-    /// são código dele: a assinatura só vale no projeto que tem arquivo da
-    /// linguagem da pilha.
+    /// A assinatura pertence à linguagem da pilha que a tem: a primeira do
+    /// registro que a declara, a mesma a que a inferência credita a
+    /// assinatura repetida. Quem lê os arquivos um a um usa isso para deixar
+    /// as palavras de um framework PHP ou Dart fora de um arquivo de Rust.
     #[test]
-    fn a_code_signature_needs_a_file_of_the_stack_language() {
-        let code = strings(&["extends Controller\npackage:flutter/"]);
-        let rust_only = strings(&["Cargo.toml", "src/lib.rs", "src/io/map.rs"]);
-        assert!(infer_stacks(&[], &rust_only, &code).is_empty(), "text in Rust files names no PHP or Dart stack");
-        assert!(infer_stacks(&[], &[], &code).is_empty(), "no file at all, no language to confirm the signature");
+    fn a_code_signature_names_the_language_of_the_stack_that_owns_it() {
+        assert_eq!(code_signal_language("extends Controller"), Some("php"));
+        assert_eq!(code_signal_language("package:flutter/"), Some("dart"));
+        assert_eq!(code_signal_language("next/link"), Some("javascript"));
+        assert_eq!(code_signal_language("not a signature of any stack"), None);
 
-        let with_php = strings(&["src/lib.rs", "app/Http/Controllers/PostController.php"]);
-        let names: Vec<String> = infer_stacks(&[], &with_php, &code).into_iter().map(|d| d.name).collect();
-        assert_eq!(names, ["laravel"], "a PHP file confirms the PHP stack and only it");
+        let doc = StackRegistryDoc::parse_str(
+            r#"
+[[stack]]
+name = "first"
+language = "solidity"
+code_signatures = ["@Shared", "@Own"]
 
-        let with_dart = strings(&["lib/widgets/card.dart"]);
-        let flutter = infer_stacks(&[], &with_dart, &code);
-        assert_eq!(flutter.len(), 1);
-        assert_eq!((flutter[0].name.as_str(), flutter[0].confidence), ("flutter", CONFIDENCE_ONE_CLASS));
-        assert_eq!(flutter[0].signals, ["code:package:flutter/"]);
+[[stack]]
+name = "second"
+language = "php"
+code_signatures = ["@Shared"]
+
+[[stack]]
+name = "plain"
+code_signatures = ["@Plain"]
+"#,
+        )
+        .unwrap();
+        let reg = StackRegistry::from_doc(doc).unwrap();
+        assert_eq!(reg.signature_language("@Shared"), Some("solidity"), "the first stack that declares it owns it");
+        assert_eq!(reg.signature_language("@Own"), Some("solidity"));
+        assert_eq!(reg.signature_language("@Plain"), None, "a stack with no language names none");
+        assert_eq!(reg.signature_language("@Missing"), None);
     }
 
-    /// TypeScript e JavaScript contam como uma linguagem só para a pilha, e a
-    /// pilha sem linguagem, ou de uma linguagem que a tabela de extensões não
-    /// conhece, mantém a assinatura como antes.
+    /// A inferência lê o conteúdo que recebe: a pilha de um arquivo `.tsx`, a
+    /// de uma linguagem que a tabela de extensões não conhece e a sem
+    /// linguagem mantêm a assinatura, sem que o caminho dos arquivos mude o
+    /// resultado.
     #[test]
     fn a_code_signature_keeps_its_meaning_for_the_js_family_and_for_stacks_without_a_known_language() {
         let next = infer_stacks(&[], &strings(&["src/app/page.tsx"]), &strings(&["import Link from 'next/link'"]));

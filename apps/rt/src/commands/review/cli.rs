@@ -69,8 +69,10 @@ pub enum ReviewCmd {
     /// The `open` step of the `/mustard:pr` door: open the unit's pull request
     /// through the provider in use (`git.provider` declared, else the `origin`
     /// remote, else the fallback). The prose names this command, never the
-    /// command line of a provider. The title is the body file's first heading. Answers one
-    /// JSON report (`ok`/`provider`/`number`/`url`); failure degrades into the
+    /// command line of a provider. The work branch is pushed to `origin`
+    /// first; a refused push stops the command with `push:` and git's message
+    /// in `error`, and no pull request is opened or rewritten. The title is
+    /// the body file's first heading. Answers one JSON report (`ok`/`provider`/`number`/`url`); failure degrades into the
     /// `error` field with exit 0, never a panic.
     #[command(name = "pr-open")]
     #[command(display_order = 5)]

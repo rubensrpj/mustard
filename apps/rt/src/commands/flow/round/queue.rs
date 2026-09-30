@@ -806,9 +806,10 @@ fn backlog_task_ref(log: &SpecLog, codes: &BTreeMap<u64, String>, value: &Value)
 }
 
 /// A versão nova da tarefa `id`: os campos dela, tirando `v`, `id`, `code`,
-/// `at`, `type` e `search`, com `replaces` apontando para ela e os campos de
-/// `extra` somados por cima — a mesma forma de [`send_revision`], para a
-/// tarefa em vez do envio.
+/// `at`, `type` e `search`, com `replaces` apontando para ela, o autor
+/// `binary` (a versão é da rodada, seja quem for que escreveu a anterior) e os
+/// campos de `extra` somados por cima — a mesma forma de [`send_revision`],
+/// para a tarefa em vez do envio. Quem passa `author` em `extra` vence.
 ///
 /// Na tarefa, `replaces` aponta a versão mais nova do mesmo código, ainda que
 /// a leitura mostre outra: numa spec antiga, a remoção de só a versão com a
@@ -835,6 +836,7 @@ fn task_revision(log: &SpecLog, id: u64, extra: Map<String, Value>) -> Option<Ma
         })
         .unwrap_or(id);
     draft.insert("replaces".into(), json!(newest));
+    draft.insert("author".into(), json!("binary"));
     for (key, value) in extra {
         draft.insert(key, value);
     }
@@ -2801,7 +2803,7 @@ mod tests {
             prompt.contains("leia só as linhas 13-15 de `soma` em `src/a.rs`"),
             "o pedido segue o commit atual: {prompt}"
         );
-        assert!(!prompt.contains("3-5"), "{prompt}");
+        assert!(!prompt.contains("linhas 3-5"), "{prompt}");
     }
 
     /// A resposta da rodada mostra o estado de cada onda em andamento, para o
@@ -3665,6 +3667,52 @@ mod tests {
             assert_eq!(version.int("replaces"), newest(code), "a versão da rodada aponta a mais nova de {code}");
         }
         assert_eq!(written.len(), 1, "só a outra tarefa ganha versão nova");
+    }
+
+    /// A versão de tarefa que a rodada monta leva o autor `binary`, ainda que
+    /// a versão anterior seja de outro autor; os demais campos seguem os da
+    /// anterior, e quem passa `author` em `extra` vence.
+    #[test]
+    fn the_round_task_version_carries_the_binary_author() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, crit) = backlog_project(root);
+        let task = backlog_task(root, said, crit, "Mexer no código de um.", "src/a.rs");
+        let log = spec_now(root);
+        let before = log.get(task).expect("a tarefa gravada");
+        assert_ne!(before.str_field("author"), Some("binary"), "a versão de partida não é da rodada");
+
+        let draft = task_revision(&log, task, Map::from_iter([("wave".to_string(), json!(1))])).expect("o rascunho");
+        assert_eq!(draft["author"], json!("binary"));
+        let mut kept = before.fields.clone();
+        for key in ["v", "id", "code", "at", "type", "search", "author"] {
+            kept.remove(key);
+        }
+        let mut written = draft.clone();
+        for key in ["replaces", "wave", "author"] {
+            written.remove(key);
+        }
+        assert_eq!(written, kept, "os demais campos são os da versão anterior");
+
+        let asked = task_revision(&log, task, Map::from_iter([("author".to_string(), json!("review"))])).expect("o rascunho");
+        assert_eq!(asked["author"], json!("review"), "o `extra` vence");
+    }
+
+    /// A versão que a rodada grava ao soltar o lote do backlog sai com o autor
+    /// `binary`, e a tarefa segue com os mesmos arquivos e o mesmo texto.
+    #[test]
+    fn the_version_written_by_the_batch_release_is_by_the_binary() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, crit) = backlog_project(root);
+        let task = backlog_task(root, said, crit, "Mexer no código de um.", "src/a.rs");
+        assert_ne!(spec_now(root).get(task).and_then(|e| e.str_field("author")), Some("binary"));
+
+        let with_wave = batched(root, task);
+        let log = spec_now(root);
+        let version = log.get(with_wave).expect("a versão da rodada");
+        assert_eq!(version.str_field("author"), Some("binary"), "{version:?}");
+        assert_eq!(version.str_field("text"), Some("Mexer no código de um."));
     }
 
     /// Numa spec antiga, a remoção de só a versão com onda devolveu a versão

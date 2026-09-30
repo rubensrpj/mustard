@@ -290,14 +290,37 @@ fn census_pass(root: &Path, out: &Path, all: bool, max_same_name: usize) -> Opti
 /// The code-signature evidence of some modules, as the stack inference takes
 /// it: one text with every signature they carry, one per line. The inference
 /// only asks which signatures fired, so this gives the same stacks the file
-/// contents gave, without opening the files again.
+/// contents gave, without opening the files again. A signature counts only in
+/// the files of its stack's language ([`signal_fits_file`]).
 fn code_evidence<'a>(modules: impl Iterator<Item = &'a Module>) -> Vec<String> {
-    let signals: BTreeSet<&str> = modules.flat_map(|m| m.signals.iter().map(String::as_str)).collect();
+    let signals: BTreeSet<&str> = modules
+        .flat_map(|m| m.signals.iter().filter(|signal| signal_fits_file(signal, &m.path)).map(String::as_str))
+        .collect();
     if signals.is_empty() {
         Vec::new()
     } else {
         vec![signals.into_iter().collect::<Vec<_>>().join("\n")]
     }
+}
+
+/// Whether the code signature `signal`, found in the file at `path`, is code
+/// of the stack that owns it. A stack that names a language the registry
+/// knows reads its signatures only in the files of that language: the words
+/// of a framework inside a string of a file written in another language are
+/// text, not the framework. The file's language comes from its extension in
+/// the language registry, since a pass that did not read the file keeps only
+/// its path and its signals; languages that read the same queries
+/// (`extract::family`) are one. A stack with no language, or one the registry
+/// does not know, is read in every file.
+fn signal_fits_file(signal: &str, path: &str) -> bool {
+    use mustard_core::domain::vocabulary::stacks::code_signal_language;
+
+    let Some(stack_language) = code_signal_language(signal) else {
+        return true;
+    };
+    let wanted = extract::family(&stack_language.to_ascii_lowercase());
+    wanted.is_empty()
+        || extract::detect_language(Path::new(path)).is_some_and(|language| extract::family(&language) == wanted)
 }
 
 /// What one read of the project gives before the declarations are linked:
@@ -842,6 +865,39 @@ mod tests {
 
     fn module(path: &str) -> Module {
         Module { path: path.into(), ..Default::default() }
+    }
+
+    /// Um módulo como o da passada que só refaz o censo o traz: o caminho e os
+    /// sinais de código, sem a língua.
+    fn module_with_signals(path: &str, signals: &[&str]) -> Module {
+        Module { path: path.into(), signals: signals.iter().map(|s| (*s).to_string()).collect(), ..Default::default() }
+    }
+
+    /// A assinatura de código só vale no arquivo da língua da pilha dela: a
+    /// língua vem do registro de pilhas e das extensões do registro de
+    /// línguas, TypeScript e JavaScript contam como uma, e o arquivo de outra
+    /// língua não leva a pilha, mesmo com as mesmas palavras.
+    #[test]
+    fn a_code_signature_counts_only_in_a_file_of_its_stack_language() {
+        let evidence = |modules: &[Module]| code_evidence(modules.iter());
+
+        assert!(evidence(&[module_with_signals("src/lib.rs", &["next/link", "extends Controller"])]).is_empty());
+        assert!(evidence(&[module_with_signals("app/Post.php", &["next/link", "package:flutter/"])]).is_empty());
+        assert!(evidence(&[module_with_signals("lib/card.dart", &["extends Controller"])]).is_empty());
+
+        assert_eq!(evidence(&[module_with_signals("scripts/app.js", &["next/link"])]), ["next/link"]);
+        assert_eq!(evidence(&[module_with_signals("src/app/page.tsx", &["next/link"])]), ["next/link"]);
+        assert_eq!(evidence(&[module_with_signals("src/app/page.ts", &["next/router"])]), ["next/router"]);
+        assert_eq!(evidence(&[module_with_signals("app/Post.php", &["extends Controller"])]), ["extends Controller"]);
+
+        // O que os outros arquivos escrevem não empresta a língua a este.
+        assert_eq!(
+            evidence(&[
+                module_with_signals("src/lib.rs", &["next/link"]),
+                module_with_signals("scripts/app.js", &["next/router"]),
+            ]),
+            ["next/router"],
+        );
     }
 
     /// As palavras em maiúsculas fora de crase em `texts`, cada uma uma vez,

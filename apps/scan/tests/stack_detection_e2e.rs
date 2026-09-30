@@ -164,3 +164,47 @@ fn stack_detection_e2e_words_of_another_language_inside_rust_strings_detect_no_s
         v["detected_stacks"].as_array().unwrap().iter().map(|d| d["name"].as_str().unwrap()).collect();
     assert_eq!(names, ["laravel"], "the PHP file confirms the PHP stack; the Dart words stay text");
 }
+
+/// The words of a JavaScript framework written in a Rust source and in a TOML
+/// text are not JavaScript code, even in a project that has a real `.js` file:
+/// the scan reads a stack's signature only in the files of the stack's own
+/// language, so no Next.js is detected in the repo or in its unit. The same
+/// words in a `.tsx` file do count (TypeScript and JavaScript are one family).
+#[test]
+fn stack_detection_e2e_next_words_outside_the_js_files_detect_no_nextjs() {
+    let project = tempfile::Builder::new().prefix("scan-stacks-next-").tempdir().unwrap();
+    let write = |rel: &str, text: &str| {
+        let path = project.path().join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    };
+    write("Cargo.toml", "[package]\nname = \"tooling\"\nversion = \"0.1.0\"\nedition = \"2021\"\n");
+    write("scripts/build.js", "console.log('build');\n");
+    write("src/lib.rs", "pub const PAGE: &str = \"import Link from 'next/link'\";\n");
+    write("docs/stacks.toml", "code_signatures = [\"next/router\", \"next/navigation\", \"next/link\"]\n");
+
+    let scan = |label: &str| {
+        let out = tempfile::Builder::new().prefix(&format!("scan-stacks-next-{label}-")).tempdir().unwrap();
+        model::scan(project.path(), out.path(), &[]).0
+    };
+    let names = |stacks: &serde_json::Value| -> Vec<String> {
+        stacks.as_array().expect("carries detected_stacks").iter().map(|d| d["name"].as_str().unwrap().to_string()).collect()
+    };
+
+    let v = scan("rust");
+    assert!(names(&v["detected_stacks"]).is_empty(), "no stack from Rust and TOML text: {:?}", v["detected_stacks"]);
+    for unit in v["projects"].as_array().expect("model carries projects") {
+        assert!(names(&unit["detected_stacks"]).is_empty(), "no stack in unit {}: {:?}", unit["dir"], unit["detected_stacks"]);
+    }
+
+    // The same words in a file of the stack's language (a `.tsx` is a file of
+    // the JavaScript family) are the stack's code.
+    write("src/app/page.tsx", "import Link from 'next/link';\nexport default function Page() { return <Link href=\"/\" />; }\n");
+    let v = scan("tsx");
+    assert_eq!(names(&v["detected_stacks"]), ["nextjs"], "a .tsx file holds the Next.js words");
+    assert!(
+        v["projects"].as_array().unwrap().iter().any(|unit| names(&unit["detected_stacks"]) == ["nextjs"]),
+        "the unit that holds the .tsx file has the stack: {:?}",
+        v["projects"]
+    );
+}
