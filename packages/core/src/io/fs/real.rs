@@ -20,6 +20,16 @@ use std::time::{SystemTime, UNIX_EPOCH};
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RealFs;
 
+/// Abre `path` para acrescentar linhas, criando o arquivo quando falta, com o
+/// direito de escrever dados em qualquer posição. Abrir só com `append` tira
+/// esse direito no Windows, e o corte de volta (`set_len`) de uma linha que
+/// falhou no meio deixaria de funcionar. O fim do arquivo vem do `seek` de
+/// quem grava; a posição atômica de fim entre processos não existe aqui, e
+/// quem precisa de exclusão entre processos usa o `LockedFile`.
+fn open_for_append(path: &Path) -> std::io::Result<File> {
+    OpenOptions::new().create(true).write(true).truncate(false).open(path)
+}
+
 /// Map a raw [`std::io::Error`] to the crate error, keeping `NotFound` distinct
 /// so callers can fail open on absence without swallowing real failures.
 fn map_io(path: &Path, err: std::io::Error) -> Error {
@@ -100,7 +110,7 @@ impl Fs for RealFs {
 
     fn append_line(&self, path: &Path, line: &str) -> Result<()> {
         ensure_parent_dir(path)?;
-        let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+        let mut file = open_for_append(path)?;
         // A linha e o `\n` saem num bloco só; se o disco enche no meio, o
         // arquivo volta ao tamanho de antes em vez de ficar com meia linha.
         Ok(append_or_rollback(&mut file, line, false)?)
@@ -213,6 +223,51 @@ mod tests {
         fs().append_line(&path, "{\"a\":1}").unwrap();
         fs().append_line(&path, "{\"a\":2}").unwrap();
         assert_eq!(fs().read_to_string(&path).unwrap(), "{\"a\":1}\n{\"a\":2}\n");
+    }
+
+    /// O manipulador de `append_line` grava em qualquer posição, não só no fim:
+    /// é o direito de escrever dados que o corte de volta (`set_len`) exige, e
+    /// no Windows um arquivo aberto só para acrescentar não o tem.
+    #[test]
+    fn the_append_handle_can_write_over_existing_bytes() {
+        use std::io::{Seek, SeekFrom};
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("events.jsonl");
+        std::fs::write(&path, "abc\n").unwrap();
+        let mut file = open_for_append(&path).unwrap();
+        file.seek(SeekFrom::Start(0)).unwrap();
+        file.write_all(b"Z").unwrap();
+        drop(file);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "Zbc\n");
+    }
+
+    /// Sem a posição atômica de fim, quem grava de vários lados no mesmo arquivo
+    /// se exclui pela trava do `LockedFile`: com ela, nenhuma linha se perde
+    /// nem se mistura com a do vizinho.
+    #[test]
+    fn appends_from_many_threads_through_the_lock_lose_no_line() {
+        use super::super::lock::LockedFile;
+        const THREADS: usize = 8;
+        const LINES: usize = 40;
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("events.jsonl");
+        std::thread::scope(|scope| {
+            for thread in 0..THREADS {
+                let path = &path;
+                scope.spawn(move || {
+                    for n in 0..LINES {
+                        let mut file = LockedFile::exclusive(path).unwrap();
+                        file.append_line(&format!("{{\"t\":{thread},\"n\":{n}}}")).unwrap();
+                    }
+                });
+            }
+        });
+        let text = std::fs::read_to_string(&path).unwrap();
+        let mut lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), THREADS * LINES, "every appended line is in the file");
+        lines.sort_unstable();
+        lines.dedup();
+        assert_eq!(lines.len(), THREADS * LINES, "no line was overwritten by another");
     }
 
     /// Um `append_line` que esbarra no limite de tamanho de arquivo do
