@@ -750,3 +750,147 @@ fn the_map_help_describes_the_summary_of_the_map_and_not_the_session_start() {
         "the help does not send the reader to the session start: {help}"
     );
 }
+
+/// O código das parcelas, com a palavra `parcela` só num comentário.
+const INSTALLMENTS: &str = "export function splitInstallments(total: number, count: number) {\n  // divide o total em parcela iguais\n  return Array.from({ length: count }, () => total / count);\n}\n\nexport function payInstallment(value: number) {\n  return value;\n}\n";
+
+/// Um projeto no git com o código das parcelas e o mapa dele em dia: o
+/// comando do mapa e o gancho da busca leem o mesmo projeto, sem passada do
+/// scan e sem filtro.
+fn installments_project() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .args(["-c", "user.email=t@example.com", "-c", "user.name=t", "-c", "commit.gpgsign=false"])
+            .args(args)
+            .current_dir(root)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    git(&["init", "-q", "-b", "dev"]);
+    fs::write(root.join(".git/info/exclude"), mustard_core::footprint_rules().join("\n") + "\n").unwrap();
+    fs::write(root.join("mustard.json"), r#"{"search":{"filter":"none"}}"#).unwrap();
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(root.join("src/parcelas.ts"), INSTALLMENTS).unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "semente"]);
+    let now = mustard_core::io::project_map::listing(root).expect("dentro do git");
+    let map = serde_json::json!({
+        "state": {"head": now.head, "listing": now.digest(), "base": now.base.name, "base_tip": now.base.tip},
+        "modules": [{
+            "path": "src/parcelas.ts", "language": "typescript", "loc": 8,
+            "blob": git(&["hash-object", "--", "src/parcelas.ts"]),
+            "declarations": [
+                {"kind": "function", "name": "splitInstallments", "line": 1, "end_line": 4,
+                 "signature": "export function splitInstallments(total: number, count: number)",
+                 "body_comment": "divide o total em parcela iguais"},
+                {"kind": "function", "name": "payInstallment", "line": 6, "end_line": 8}
+            ]
+        }]
+    });
+    mustard_core::io::project_map::write_text(root, &map.to_string()).unwrap();
+    dir
+}
+
+/// A resposta do gancho da busca ao `Grep` com o padrão `pattern`, como o
+/// Claude Code a pede ao programa: o motivo da recusa, quando ele responde.
+fn hook_answer_to_grep(root: &Path, pattern: &str) -> Option<String> {
+    use std::io::Write as _;
+    let input = serde_json::json!({
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Grep",
+        "cwd": root.to_str().unwrap(),
+        "session_id": "grep-parity-test",
+        "tool_input": { "pattern": pattern, "output_mode": "content" }
+    });
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+        .args(["on", "PreToolUse"])
+        .current_dir(root)
+        .env_remove("CLAUDE_PROJECT_DIR")
+        .env_remove("MUSTARD_WORKSPACE_ROOT")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn mustard-rt");
+    child.stdin.take().unwrap().write_all(input.to_string().as_bytes()).unwrap();
+    let out = child.wait_with_output().expect("wait mustard-rt");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let parsed: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
+    let denied = parsed.pointer("/hookSpecificOutput/permissionDecision")? == "deny";
+    let reason = parsed.pointer("/hookSpecificOutput/permissionDecisionReason")?.as_str()?;
+    denied.then(|| reason.to_string())
+}
+
+/// `run map search "splitInstallments|parcela"`, com o texto que se dá ao
+/// `Grep`, imprime a mesma resposta que o gancho dá ao `Grep` com esse
+/// padrão, em texto, e não em JSON; a pasta e as opções do `grep` entram
+/// como o gancho as lê. O padrão em branco é recusado pelo nome do que falta.
+#[test]
+fn the_map_search_prints_the_answer_the_hook_gives_grep_with_the_same_text() {
+    let project = installments_project();
+    let root = project.path();
+    let pattern = "splitInstallments|parcela";
+    let from_hook = hook_answer_to_grep(root, pattern).expect("the hook answers this search");
+    assert!(from_hook.contains("src/parcelas.ts") && from_hook.contains("splitInstallments"), "{from_hook}");
+
+    let run = |args: &[&str]| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+            .args(["run", "map"])
+            .args(args)
+            .arg("--root")
+            .arg(root)
+            .current_dir(root)
+            .env_remove("CLAUDE_PROJECT_DIR")
+            .output()
+            .expect("run map search")
+    };
+    let out = run(&["search", pattern]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim_end(), from_hook.trim_end());
+
+    for options in [&["src", "--glob", "*.ts", "-i"][..], &["src", "--type", "ts"][..]] {
+        let out = run(&[&["search", pattern][..], options].concat());
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(stdout.contains("splitInstallments"), "the folder and {options:?} reach the search: {stdout}");
+    }
+    let outside = run(&["search", pattern, "--glob", "*.rs"]);
+    assert!(String::from_utf8_lossy(&outside.stdout).starts_with("O mapa não tem resposta"), "a glob with no mapped code");
+
+    let blank = run(&["search", "  "]);
+    assert!(!blank.status.success());
+    let report: serde_json::Value = serde_json::from_slice(&blank.stdout).unwrap();
+    assert_eq!(report["reason"], "missing-argument", "{report}");
+}
+
+/// A ajuda do `run map` ensina a busca com o texto do `Grep` e as opções que
+/// o gancho entende, e não fala das opções de medida `--query` e `--intent`,
+/// que seguem aceitas, escondidas.
+#[test]
+fn the_map_help_teaches_the_search_with_the_text_of_grep_and_hides_the_measuring_options() {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+        .args(["run", "map", "--help"])
+        .output()
+        .expect("mustard-rt run map --help");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let help = String::from_utf8_lossy(&out.stdout).into_owned();
+    for shown in ["[PATTERN]", "--glob", "--type", "--ignore-case", "--word-regexp", "--fixed-strings"] {
+        assert!(help.contains(shown), "the help shows {shown}: {help}");
+    }
+    assert!(!help.contains("--query") && !help.contains("--intent"), "the measuring options stay hidden: {help}");
+
+    let project = installments_project();
+    let root = project.path();
+    let old = std::process::Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+        .args(["run", "map", "search", "--query", "splitInstallments", "--root"])
+        .arg(root)
+        .current_dir(root)
+        .output()
+        .expect("run map search --query");
+    let report: serde_json::Value = serde_json::from_slice(&old.stdout).unwrap();
+    assert_eq!(report["ok"], true, "the hidden option is still accepted: {report}");
+}

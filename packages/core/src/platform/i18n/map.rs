@@ -21,33 +21,18 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // censo, do índice e da busca internos, que ficam em inglês por
         // política. As vagas `{kind}` e `{count}` são preenchidas por quem
         // chama.
-        // A dica do mapa leva `{code_language}`, a língua dos nomes do código
-        // (`language.code`): a busca por conceito junta as palavras do pedido,
-        // as mesmas palavras nessa língua, soltas, e os nomes prováveis nela.
-        // O `{example}` segue essa mesma língua, para o exemplo nunca fixar uma.
+        // A dica do mapa diz que o `Grep`, o `grep` e o `rg` passam pelo
+        // Mustard, que responde no lugar da busca, e o que cada marca da
+        // resposta quer dizer. Não pede palavra nem frase à parte: o texto é o
+        // da busca de sempre.
         ("scan.map.type_line", Locale::PtBr) => "Tipo: {kind} · {count} arquivos",
         ("scan.map.type_line", Locale::EnUs) => "Type: {kind} · {count} files",
         ("scan.map.pointer", Locale::PtBr) => {
-            "Para localizar código, peça ao Mustard: `mustard-rt run map search --query \"<palavras>\" --intent \"<frase>\"`. Na mesma busca, junte as palavras do pedido do usuário, as mesmas palavras em {code_language}, soltas, e os nomes prováveis no código. Os nomes vão em {code_language}, camelCase ou snake_case: `--query \"{example}\"`. Em `--intent` vai a frase do que você procura e para quê. O pedaço de um nome vai só em `--query`. A resposta traz `grade`, de 0 a 5, e `mark`. Cravado, `pinned`: o mapa achou tudo o que você pediu, e a resposta já traz o trecho. Parcial, `partial`: achou parte, e `missing` lista as palavras que faltam. A resposta vem classificada e curta, cada peça com o arquivo e as linhas de começo e fim. Não achou, `not_found`: siga com `Grep`, `Glob` e `Read`. Na busca que mostra linhas, o cravado e o parcial recebem a resposta do Mustard no lugar da busca comum. A resposta vem agrupada por função, com o arquivo e as linhas de começo e fim. A busca que só lista nomes de arquivo ou conta roda como veio, com uma linha da marca. A mesma busca, repetida, passa. Depois leia os arquivos apontados: o mapa acha onde olhar, não substitui ler."
+            "Procure código como sempre, com o mesmo texto: `Grep`, `grep` e `rg` passam pelo Mustard, que responde no lugar da busca. A resposta vem agrupada por função, com o arquivo e as linhas de começo e fim. Cravado: o mapa achou pelo nome, e a resposta já traz o trecho. Parcial: o mapa achou parte, e a resposta diz o que falta. Não achei: a busca comum roda, com uma linha do que o mapa não achou. A busca que só lista nomes de arquivo ou conta roda como veio, com uma linha da marca. A mesma busca, repetida, passa. Para pedir a resposta sem buscar, rode `mustard-rt run map search \"<padrão>\"`. Depois leia os arquivos apontados: o mapa acha onde olhar, não substitui ler."
         }
         ("scan.map.pointer", Locale::EnUs) => {
-            "To locate code, ask Mustard: `mustard-rt run map search --query \"<words>\" --intent \"<sentence>\"`. In one search, join the words of the user's request, the same words in {code_language} as plain words, and the likely names in the code. The names go in {code_language}, camelCase or snake_case: `--query \"{example}\"`. In `--intent` goes the sentence of what you are looking for and why. Part of a name goes only in `--query`. The answer carries `grade`, from 0 to 5, and `mark`. Pinned, `pinned`: the map found everything you asked for, and the answer already carries the excerpt. Partial, `partial`: it found part, and `missing` lists the words it lacks. The answer comes ranked and short, each piece with the file and the first and last lines. Not found, `not_found`: go on with `Grep`, `Glob` and `Read`. In a search that shows lines, pinned and partial get Mustard's answer in place of the plain search. The answer is grouped by function, with the file and the first and last lines. A search that only lists file names or counts runs as it came, with one line of the mark. The same search, repeated, passes. Then read the files it points to: the map finds where to look, it does not replace reading."
+            "Search for code as always, with the same text: `Grep`, `grep` and `rg` go through Mustard, which answers in place of the search. The answer is grouped by function, with the file and the first and last lines. Pinned: the map found it by name, and the answer already carries the excerpt. Partial: the map found part, and the answer says what is missing. Found nothing: the plain search runs, with one line of what the map did not find. A search that only lists file names or counts runs as it came, with one line of the mark. The same search, repeated, passes. To get the answer without searching, run `mustard-rt run map search \"<pattern>\"`. Then read the files it points to: the map finds where to look, it does not replace reading."
         }
-        // O exemplo da busca na dica do mapa, pela língua dos nomes do código:
-        // preenche o `{example}`. Junta as palavras do pedido no idioma do
-        // texto, as mesmas palavras soltas na língua dos nomes, quando ela é
-        // outra, e dois nomes prováveis nela, um em camelCase e um em
-        // snake_case.
-        ("scan.map.example.pt-BR", Locale::PtBr) => "prazo de entrega prazoEntrega data_limite",
-        ("scan.map.example.pt-BR", Locale::EnUs) => "delivery deadline prazo entrega prazoEntrega data_limite",
-        ("scan.map.example.en-US", Locale::PtBr) => "prazo de entrega delivery deadline deliveryDeadline due_date",
-        ("scan.map.example.en-US", Locale::EnUs) => "delivery deadline deliveryDeadline due_date",
-        // O nome da língua dos nomes do código, no idioma do texto: preenche o
-        // `{code_language}` da dica do mapa.
-        ("scan.map.language.pt-BR", Locale::PtBr) => "português",
-        ("scan.map.language.pt-BR", Locale::EnUs) => "Portuguese",
-        ("scan.map.language.en-US", Locale::PtBr) => "inglês",
-        ("scan.map.language.en-US", Locale::EnUs) => "English",
         // O teto do nome comum escrito errado no `mustard.json`: sai na
         // resposta do scan e na de quem usa, uma vez por sessão.
         ("scan.bad_max_same_name", Locale::PtBr) => {
@@ -177,12 +162,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("map.summary.ask", Locale::PtBr) => {
             "Pergunte ao mapa: `mustard-rt run map examples --file <caminho>`, `importers`, `tests`, \
              `summary --file <caminho>`, `slice --file <caminho> --name <declaração>`, `users --name <declaração>`, \
-             `history --name <declaração>` ou `search --query \"<palavras>\"`."
+             `history --name <declaração>` ou `search \"<padrão>\"`."
         }
         ("map.summary.ask", Locale::EnUs) => {
             "Ask the map: `mustard-rt run map examples --file <path>`, `importers`, `tests`, \
              `summary --file <path>`, `slice --file <path> --name <declaration>`, `users --name <declaration>`, \
-             `history --name <declaration>` or `search --query \"<words>\"`."
+             `history --name <declaration>` or `search \"<pattern>\"`."
         }
         ("map.users.head", Locale::PtBr) => {
             "Quem usa `{name}`, como arquivo:linha:quem chama. As ligações provadas vêm primeiro. \
@@ -307,6 +292,15 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("map.search.not_found", Locale::EnUs) => {
             "Found nothing for {words} in the map. Go on with your tools: `Grep`, `Glob` and `Read`. To start, search the exact text: {next}"
+        }
+        // A busca que o mapa não responde, perguntada pelo comando: a pasta
+        // fora do código do mapa, o padrão que a leitura não entende e o tipo
+        // que ela não conhece.
+        ("map.search.pass", Locale::PtBr) => {
+            "O mapa não tem resposta para esta busca. Ela fica fora das pastas de código do mapa, ou o mapa não lê este padrão. Siga com a busca comum."
+        }
+        ("map.search.pass", Locale::EnUs) => {
+            "The map has no answer for this search. It falls outside the code folders of the map, or the map cannot read this pattern. Go on with the plain search."
         }
         // A resposta no lugar da busca por palavra: a marca com o que o mapa
         // achou, o que faltou, o aviso do arquivo mudado e a contagem do que
@@ -446,8 +440,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("map.rs"),
             super::PREFIXES,
-            80,
-            0xa8a7_e6e9_ab69_8ed3,
+            77,
+            0xfc67_fcfe_bee3_9541,
         );
     }
 
@@ -460,7 +454,9 @@ mod tests {
     fn the_users_texts_read_clearly() {
         for lang in [Locale::PtBr, Locale::EnUs] {
             for key in [
+                "scan.map.pointer",
                 "map.summary.ask",
+                "map.search.pass",
                 "map.users.head",
                 "map.users.none",
                 "map.users.suspect",
@@ -530,152 +526,78 @@ mod tests {
         }
     }
 
-    /// A dica do mapa como o scan a escreve: o nome da língua dos nomes do
-    /// código e o exemplo da busca preenchidos pela língua `code`, com o texto
-    /// no idioma `lang`.
-    fn filled_hint(lang: Locale, code: Locale) -> String {
-        translate("scan.map.pointer", lang)
-            .replace("{code_language}", translate(&format!("scan.map.language.{}", code.as_str()), lang))
-            .replace("{example}", translate(&format!("scan.map.example.{}", code.as_str()), lang))
-    }
-
-    /// As palavras do exemplo da busca, o que vai entre as aspas do primeiro
-    /// `--query` preenchido.
-    fn example_words(hint: &str) -> Vec<&str> {
-        let example = hint.split("`--query \"").nth(1).expect("an example of the search");
-        example.split('"').next().unwrap_or_default().split(' ').collect()
-    }
-
-    /// A dica do mapa pede, na mesma busca por conceito, as palavras do pedido
-    /// do usuário e os nomes prováveis no código, com um exemplo que junta as
-    /// duas coisas: uma palavra solta, um nome em camelCase e um em
-    /// snake_case. Com as duas línguas dos nomes, passa na conferência de
-    /// escrita nos dois idiomas.
+    /// A dica do mapa diz que o `Grep`, o `grep` e o `rg` passam pelo Mustard,
+    /// que responde no lugar da busca, e o texto da busca é o de sempre: não
+    /// pede palavras nem frase à parte, nem a tradução delas, e não traz vaga
+    /// a preencher. Passa na conferência de escrita nos dois idiomas.
     #[test]
-    fn the_map_hint_asks_for_the_request_words_and_the_code_names() {
-        for (lang, words, names) in [
-            (Locale::PtBr, "palavras do pedido do usuário", "nomes prováveis no código"),
-            (Locale::EnUs, "words of the user's request", "likely names in the code"),
+    fn the_map_hint_says_the_usual_search_goes_through_mustard() {
+        for (lang, opening, tools) in [
+            (Locale::PtBr, "Procure código como sempre, com o mesmo texto", "`Grep`, `grep` e `rg` passam pelo Mustard"),
+            (Locale::EnUs, "Search for code as always, with the same text", "`Grep`, `grep` and `rg` go through Mustard"),
         ] {
-            for code in [Locale::PtBr, Locale::EnUs] {
-                let text = filled_hint(lang, code);
-                assert!(text.contains(words), "{lang:?} {code:?}: {text}");
-                assert!(text.contains(names), "{lang:?} {code:?}: {text}");
-                let example = example_words(&text);
-                assert!(example.iter().any(|w| w.chars().all(char::is_lowercase)), "{lang:?}: {example:?}");
-                assert!(example.iter().any(|w| w.chars().any(char::is_uppercase)), "{lang:?}: {example:?}");
-                assert!(example.iter().any(|w| w.contains('_')), "{lang:?}: {example:?}");
-                let report = crate::domain::clarity::measure(&text, &[], Some(lang));
-                assert!(report.passed, "{lang:?} {code:?}: {report:?}");
+            let text = translate("scan.map.pointer", lang);
+            assert!(text.starts_with(opening), "{lang:?}: {text}");
+            assert!(text.contains(tools), "{lang:?}: {text}");
+            for gone in ["--query", "--intent", "{code_language}", "{example}", "camelCase", "snake_case"] {
+                assert!(!text.contains(gone), "{lang:?}: `{gone}` in {text}");
             }
+            assert!(!text.contains('{'), "{lang:?}: the hint has no slot to fill: {text}");
+            let report = crate::domain::clarity::measure(text, &[], Some(lang));
+            assert!(report.passed, "{lang:?}: {report:?}");
         }
     }
 
-    /// A dica do mapa pede as palavras do pedido também na língua dos nomes
-    /// do código, soltas, e os nomes prováveis nessa mesma língua, que vem do
-    /// encaixe e nunca fica fixa: nem na frase, nem no exemplo, que também é
-    /// um encaixe.
+    /// A dica do mapa diz o que cada marca da resposta quer dizer — cravado,
+    /// parcial e não achou — com o nome que a resposta dá a ela, nos dois
+    /// idiomas.
     #[test]
-    fn the_map_hint_asks_for_the_request_words_in_the_language_of_the_names() {
-        for (lang, loose, names, fixed) in [
+    fn the_map_hint_teaches_what_each_mark_of_the_answer_means() {
+        for (lang, marks) in [
             (
                 Locale::PtBr,
-                "as mesmas palavras em {code_language}, soltas",
-                "Os nomes vão em {code_language}",
-                "em inglês",
+                [
+                    "Cravado: o mapa achou pelo nome, e a resposta já traz o trecho.",
+                    "Parcial: o mapa achou parte, e a resposta diz o que falta.",
+                    "Não achei: a busca comum roda, com uma linha do que o mapa não achou.",
+                ],
             ),
             (
                 Locale::EnUs,
-                "the same words in {code_language} as plain words",
-                "The names go in {code_language}",
-                "in English",
+                [
+                    "Pinned: the map found it by name, and the answer already carries the excerpt.",
+                    "Partial: the map found part, and the answer says what is missing.",
+                    "Found nothing: the plain search runs, with one line of what the map did not find.",
+                ],
             ),
         ] {
-            let hint = translate("scan.map.pointer", lang);
-            assert!(hint.contains(loose), "{lang:?}: {hint}");
-            assert!(hint.contains(names), "{lang:?}: {hint}");
-            assert!(!hint.contains(fixed), "{lang:?}: {hint}");
-            assert!(hint.contains("`--query \"{example}\"`"), "{lang:?}: {hint}");
-            for name in ["deliveryDeadline", "due_date", "prazoEntrega", "data_limite"] {
-                assert!(!hint.contains(name), "{lang:?}: {name} in {hint}");
-            }
-        }
-    }
-
-    /// O exemplo da busca segue a língua dos nomes do código. Ele junta as
-    /// palavras do pedido no idioma do texto, as mesmas palavras soltas na
-    /// língua dos nomes, quando ela é outra, e dois nomes nela; nenhum nome da
-    /// outra língua aparece, e nenhuma palavra se repete. Com os nomes em
-    /// português, o exemplo mostra `prazoEntrega` e `data_limite`; em inglês,
-    /// `deliveryDeadline` e `due_date`.
-    #[test]
-    fn the_map_hint_example_shows_the_names_in_the_language_of_the_names() {
-        let portuguese = ["prazoEntrega", "data_limite"];
-        let english = ["deliveryDeadline", "due_date"];
-        for (lang, code, words, names, other_names) in [
-            (Locale::PtBr, Locale::EnUs, &["prazo", "de", "entrega", "delivery", "deadline"][..], english, portuguese),
-            (Locale::PtBr, Locale::PtBr, &["prazo", "de", "entrega"][..], portuguese, english),
-            (Locale::EnUs, Locale::EnUs, &["delivery", "deadline"][..], english, portuguese),
-            (Locale::EnUs, Locale::PtBr, &["delivery", "deadline", "prazo", "entrega"][..], portuguese, english),
-        ] {
-            let hint = filled_hint(lang, code);
-            let example = example_words(&hint);
-            let expected: Vec<&str> = words.iter().copied().chain(names).collect();
-            assert_eq!(example, expected, "{lang:?} {code:?}");
-            for name in other_names {
-                assert!(!hint.contains(name), "{lang:?} {code:?}: {name} in {hint}");
-            }
-            let mut seen = example.clone();
-            seen.sort_unstable();
-            seen.dedup();
-            assert_eq!(seen.len(), example.len(), "{lang:?} {code:?}: a word repeats in {example:?}");
-        }
-    }
-
-    /// A dica do mapa manda a frase do que se procura em `--intent`, e o
-    /// pedaço de nome só em `--query`, nos dois idiomas.
-    #[test]
-    fn the_map_hint_sends_the_sentence_in_the_intent() {
-        for lang in [Locale::PtBr, Locale::EnUs] {
             let text = translate("scan.map.pointer", lang);
-            assert!(text.contains("--query \"<") && text.contains("--intent \"<"), "{lang:?}: {text}");
-            assert!(text.contains("`--intent`"), "{lang:?}: {text}");
-        }
-    }
-
-    /// A dica do mapa ensina o grau e as três marcas da resposta, com o nome
-    /// de cada marca como a resposta a escreve, nos dois idiomas.
-    #[test]
-    fn the_map_hint_teaches_the_grade_and_the_mark() {
-        for lang in [Locale::PtBr, Locale::EnUs] {
-            let text = filled_hint(lang, lang);
-            for word in ["`grade`", "`mark`", "`pinned`", "`partial`", "`missing`", "`not_found`"] {
-                assert!(text.contains(word), "{lang:?}: {word} in {text}");
+            for mark in marks {
+                assert!(text.contains(mark), "{lang:?}: {mark} in {text}");
+            }
+            let answers = [translate("map.answer.pinned", lang), translate("map.answer.partial", lang)];
+            let heads: Vec<&str> = answers.iter().filter_map(|answer| answer.split(['.', ':']).next()).collect();
+            for head in heads {
+                assert!(text.contains(&format!("{head}:")), "{lang:?}: the answer opens with `{head}`: {text}");
             }
         }
     }
 
-    /// A dica do mapa manda pedir a localização do código ao Mustard, diz o
-    /// que cada marca devolve — o cravado já traz o trecho, o parcial vem
-    /// classificado e curto com o arquivo e as linhas de cada peça — e só
-    /// manda seguir com `Grep`, `Glob` e `Read` depois do "não achou". Não
-    /// deixa o leitor escolher entre o `grep` e a busca do mapa.
+    /// A dica do mapa cita o comando com o texto da busca de sempre, sem a
+    /// opção das palavras nem a da frase, e manda ler os arquivos apontados
+    /// depois. As três ferramentas de busca aparecem juntas, uma vez só: o
+    /// `Grep` é a busca de sempre, não uma saída para depois do "não achei".
     #[test]
-    fn the_map_hint_asks_the_map_first_and_names_the_standard_tools_only_after_not_found() {
-        for (lang, first, not_found_at, gone) in [
-            (Locale::PtBr, "Para localizar código, peça ao Mustard: `mustard-rt run map search", "Não achou, `not_found`: siga com `Grep`, `Glob` e `Read`", ["termo exato conhecido", "mesma marca", "use `grep`"]),
-            (Locale::EnUs, "To locate code, ask Mustard: `mustard-rt run map search", "Not found, `not_found`: go on with `Grep`, `Glob` and `Read`", ["known exact term", "same mark", "use `grep`"]),
+    fn the_map_hint_cites_the_command_with_the_usual_text() {
+        for (lang, command, reading) in [
+            (Locale::PtBr, "rode `mustard-rt run map search \"<padrão>\"`", "Depois leia os arquivos apontados"),
+            (Locale::EnUs, "run `mustard-rt run map search \"<pattern>\"`", "Then read the files it points to"),
         ] {
             let text = translate("scan.map.pointer", lang);
-            assert!(text.starts_with(first), "{lang:?}: {text}");
-            assert!(text.contains(not_found_at), "{lang:?}: {text}");
-            for old in gone {
-                assert!(!text.contains(old), "{lang:?}: `{old}` in {text}");
-            }
-            for tool in ["`Grep`", "`Glob`", "`Read`"] {
-                assert_eq!(text.matches(tool).count(), 1, "{lang:?}: {tool} only in the not-found sentence: {text}");
-            }
-            assert!(text.contains("classificada e curta") || text.contains("ranked and short"), "{lang:?}: {text}");
+            assert!(text.contains(command), "{lang:?}: {text}");
+            assert!(text.contains(reading), "{lang:?}: {text}");
+            assert_eq!(text.matches("`Grep`").count(), 1, "{lang:?}: {text}");
+            assert!(!text.contains("`Glob`"), "{lang:?}: {text}");
         }
     }
 
@@ -768,6 +690,8 @@ mod tests {
             ("map.history.spec", &["{spec}", "{code}", "{sentence}"][..]),
             ("map.history_unreadable", &["{file}", "{detail}"][..]),
             ("map.search.not_found", &["{words}", "{next}"][..]),
+            ("map.search.pass", &[][..]),
+            ("scan.map.pointer", &[][..]),
             ("map.answer.pinned", &["{words}"][..]),
             ("map.answer.partial", &["{missing}"][..]),
             ("map.answer.partial_unsure", &[][..]),

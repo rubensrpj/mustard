@@ -44,7 +44,18 @@ use mustard_rt::commands::RunCmd;
 /// honest fixes are to document it or to remove it. A row here says the flag is
 /// reachable some OTHER way — it mirrors a documented sibling, it is the escape
 /// hatch a refusal message prints, or it exists for a caller that is not prose.
-const FLAG_WHITELIST: &[(&str, &str, &str)] = &[];
+const FLAG_WHITELIST: &[(&str, &str, &str)] = &[
+    (
+        "map",
+        "intent",
+        "hidden alias of the search measurement (the ruler and the install lab script); the search teaches the text of Grep",
+    ),
+    (
+        "map",
+        "query",
+        "hidden alias of the search measurement (the ruler and the install lab script); the search teaches the text of Grep",
+    ),
+];
 
 /// Caller spellings that precede a `run <name>` instruction in product files.
 /// `$RtExe` is `install.ps1`'s handle for the freshly built `mustard-rt.exe`.

@@ -52,16 +52,11 @@ pub struct OversizedEntry {
 /// with no declared language gets `pt-BR`
 /// ([`mustard_core::Language::text_or_default`]).
 ///
-/// `code_lang` é a língua dos nomes do código (`language.code`, inglês sem
-/// ela): a dica pede as palavras do pedido também nessa língua, soltas, e os
-/// nomes prováveis nela, com o nome da língua escrito no idioma do texto. O
-/// exemplo da busca mostra os nomes nessa mesma língua.
 pub(crate) fn render_map(
     kind: &str,
     code_files: usize,
     commands: &mustard_core::domain::config::Commands,
     lang: SupportedLocale,
-    code_lang: SupportedLocale,
 ) -> String {
     let commands_block = render_commands(commands);
 
@@ -70,12 +65,7 @@ pub(crate) fn render_map(
         .replace("{kind}", kind)
         .replace("{count}", &code_files.to_string());
     let _ = writeln!(out, "{type_line}");
-    let code_language = translate(&format!("scan.map.language.{}", code_lang.as_str()), lang);
-    let example = translate(&format!("scan.map.example.{}", code_lang.as_str()), lang);
-    let pointer = translate("scan.map.pointer", lang)
-        .replace("{code_language}", code_language)
-        .replace("{example}", example);
-    let _ = writeln!(out, "{pointer}");
+    let _ = writeln!(out, "{}", translate("scan.map.pointer", lang));
     if !commands_block.is_empty() {
         out.push('\n');
         // `render_commands` already ends in a newline.
@@ -133,10 +123,8 @@ fn run_full(
 
     // The scan-map language follows the project's text language — resolved
     // once at the scan root, applied to every unit. Fail-open: no or
-    // unreadable config gives the `pt-BR` default. A língua dos nomes do
-    // código sai da mesma configuração, com o inglês como padrão.
-    let language = crate::shared::context::config::project_config_cached(root).language();
-    let (lang, code_lang) = (language.text_or_default(), language.code_or_default());
+    // unreadable config gives the `pt-BR` default.
+    let lang = crate::shared::context::config::project_config_cached(root).language().text_or_default();
 
     for project in projects {
         let dir = root.join(&project.dir);
@@ -175,7 +163,7 @@ fn run_full(
         // Hard cap guards MUSTARD's own output only: a map this large means the
         // generator ran away, so refuse the write and surface it. Deterministic
         // — the outcome is a pure function of the rendered byte length.
-        let map = render_map(&project.kind, project.code_files, &commands, lang, code_lang);
+        let map = render_map(&project.kind, project.code_files, &commands, lang);
         if map.len() > SCAN_MAP_HARD_CAP_BYTES {
             eprintln!(
                 "scan --full: refusing to write {:?}: {} bytes exceeds hard cap of {} — runaway machine map",
@@ -229,7 +217,7 @@ mod tests {
             prepare: None,
             build_output: Vec::new(),
         };
-        let out = render_map("rust", 12, &commands, SupportedLocale::PtBr, SupportedLocale::EnUs);
+        let out = render_map("rust", 12, &commands, SupportedLocale::PtBr);
         assert!(out.contains("Tipo: rust · 12 arquivos"), "map header missing: {out}");
         // Commands table has only the Some rows, in fixed order, no Lint row.
         assert!(out.contains("## Commands"), "commands heading missing: {out}");
@@ -241,7 +229,7 @@ mod tests {
 
     #[test]
     fn map_omits_commands_table_when_all_none() {
-        let out = render_map("rust", 1, &no_commands(), SupportedLocale::PtBr, SupportedLocale::EnUs);
+        let out = render_map("rust", 1, &no_commands(), SupportedLocale::PtBr);
         assert!(!out.contains("## Commands"), "commands section must be absent: {out}");
         // After the Stack cut there is no `## Stack` section at all.
         assert!(!out.contains("## Stack"), "stack section must be dropped: {out}");
@@ -259,8 +247,8 @@ mod tests {
             build_output: Vec::new(),
         };
         assert_eq!(
-            render_map("typescript", 30, &commands, SupportedLocale::PtBr, SupportedLocale::EnUs),
-            render_map("typescript", 30, &commands, SupportedLocale::PtBr, SupportedLocale::EnUs),
+            render_map("typescript", 30, &commands, SupportedLocale::PtBr),
+            render_map("typescript", 30, &commands, SupportedLocale::PtBr),
             "two renders must produce identical bytes"
         );
     }
@@ -270,42 +258,22 @@ mod tests {
         // An `en-US` project gets an English map;
         // a project with no declared locale keeps the pt-BR default (asserted
         // by the sibling tests). The header + pointer both route through i18n.
-        let out = render_map("rust", 12, &no_commands(), SupportedLocale::EnUs, SupportedLocale::EnUs);
+        let out = render_map("rust", 12, &no_commands(), SupportedLocale::EnUs);
         assert!(out.contains("Type: rust · 12 files"), "EN header missing: {out}");
         assert!(!out.contains("arquivos"), "no pt-BR bytes in an EN map: {out}");
-        assert!(out.contains("To locate code, ask Mustard:"), "EN pointer missing: {out}");
+        assert!(out.contains("Search for code as always"), "EN pointer missing: {out}");
     }
 
-    /// O mapa escrito pela passada pede as palavras do pedido também na
-    /// língua dos nomes do código, soltas. Sem essa língua declarada, ela é o
-    /// inglês; declarada em português, a frase diz português. O nome da língua
-    /// sai no idioma do texto do projeto, e o exemplo da busca mostra os nomes
-    /// na língua dos nomes: `prazoEntrega` no português, `deliveryDeadline` no
-    /// inglês, nunca o outro.
+    /// O mapa escrito pela passada diz que a busca é a de sempre, com o mesmo
+    /// texto, seja qual for a língua dos nomes do código declarada: não pede
+    /// palavras nem frase à parte, nem a tradução delas, e não deixa vaga sem
+    /// preencher.
     #[test]
-    fn the_map_asks_for_the_request_words_in_the_language_of_the_names() {
-        for (language, said, not_said, example, other_name) in [
-            (
-                serde_json::json!({"text": "pt-BR"}),
-                "as mesmas palavras em inglês, soltas",
-                "em português",
-                "--query \"prazo de entrega delivery deadline deliveryDeadline due_date\"",
-                "prazoEntrega",
-            ),
-            (
-                serde_json::json!({"text": "pt-BR", "code": "pt-BR"}),
-                "as mesmas palavras em português, soltas",
-                "em inglês",
-                "--query \"prazo de entrega prazoEntrega data_limite\"",
-                "deliveryDeadline",
-            ),
-            (
-                serde_json::json!({"text": "en-US", "code": "pt-BR"}),
-                "the same words in Portuguese as plain words",
-                "in English",
-                "--query \"delivery deadline prazo entrega prazoEntrega data_limite\"",
-                "deliveryDeadline",
-            ),
+    fn the_map_asks_for_no_other_text_than_the_usual_search_in_any_code_language() {
+        for (language, opening) in [
+            (serde_json::json!({"text": "pt-BR"}), "Procure código como sempre, com o mesmo texto"),
+            (serde_json::json!({"text": "pt-BR", "code": "pt-BR"}), "Procure código como sempre, com o mesmo texto"),
+            (serde_json::json!({"text": "en-US", "code": "pt-BR"}), "Search for code as always, with the same text"),
         ] {
             let dir = tempfile::tempdir().expect("tempdir");
             let root = dir.path();
@@ -316,33 +284,28 @@ mod tests {
 
             assert!(result.over_cap.is_empty(), "{:?}", result.over_cap);
             let map = std::fs::read_to_string(root.join(".claude").join("scan-map.md")).expect("read map");
-            assert!(map.contains(said), "{language}: {map}");
-            assert!(!map.contains(not_said), "{language}: {map}");
-            assert!(!map.contains("{code_language}"), "{language}: {map}");
-            assert!(map.contains(example), "{language}: {map}");
-            assert!(!map.contains(other_name), "{language}: {map}");
-            assert!(!map.contains("{example}"), "{language}: {map}");
+            assert!(map.contains(opening), "{language}: {map}");
+            for gone in ["--query", "--intent", "{code_language}", "{example}", "prazoEntrega", "deliveryDeadline"] {
+                assert!(!map.contains(gone), "{language}: `{gone}` in {map}");
+            }
         }
     }
 
-    /// O mapa que o `/scan` grava manda pedir a localização do código ao
-    /// Mustard, nos dois idiomas, e só manda seguir com `Grep`, `Glob` e
-    /// `Read` quando a marca for `not_found`; a escolha entre o `grep` e a
-    /// busca do mapa não está mais lá.
+    /// O mapa que o `/scan` grava diz, nos dois idiomas, que o `Grep`, o `grep`
+    /// e o `rg` passam pelo Mustard, que responde no lugar da busca, e o que
+    /// querem dizer o cravado, o parcial e o não achou.
     #[test]
-    fn the_map_written_by_the_scan_asks_mustard_and_names_the_standard_tools_after_not_found() {
-        for (text, first, not_found, gone) in [
+    fn the_map_written_by_the_scan_says_the_searches_go_through_mustard_and_the_marks() {
+        for (text, through, marks) in [
             (
                 "pt-BR",
-                "Para localizar código, peça ao Mustard: `mustard-rt run map search --query",
-                "Não achou, `not_found`: siga com `Grep`, `Glob` e `Read`.",
-                ["termo exato conhecido", "mesma marca"],
+                "`Grep`, `grep` e `rg` passam pelo Mustard, que responde no lugar da busca.",
+                ["Cravado: o mapa achou pelo nome", "Parcial: o mapa achou parte", "Não achei: a busca comum roda"],
             ),
             (
                 "en-US",
-                "To locate code, ask Mustard: `mustard-rt run map search --query",
-                "Not found, `not_found`: go on with `Grep`, `Glob` and `Read`.",
-                ["known exact term", "same mark"],
+                "`Grep`, `grep` and `rg` go through Mustard, which answers in place of the search.",
+                ["Pinned: the map found it by name", "Partial: the map found part", "Found nothing: the plain search runs"],
             ),
         ] {
             let dir = tempfile::tempdir().expect("tempdir");
@@ -353,10 +316,9 @@ mod tests {
             run_full(root, &[project("(root)", "")]);
 
             let map = std::fs::read_to_string(root.join(".claude").join("scan-map.md")).expect("read map");
-            assert!(map.contains(first), "{text}: {map}");
-            assert!(map.contains(not_found), "{text}: {map}");
-            for old in gone {
-                assert!(!map.contains(old), "{text}: {old} in {map}");
+            assert!(map.contains(through), "{text}: {map}");
+            for mark in marks {
+                assert!(map.contains(mark), "{text}: {mark} in {map}");
             }
         }
     }

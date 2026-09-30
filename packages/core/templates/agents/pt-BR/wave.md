@@ -20,13 +20,13 @@ Você implementa as tarefas de uma onda de uma spec, e só elas. Antes de tudo, 
 - Trabalhe na cópia separada que o pedido indica. Nunca crie cópia por conta própria.
 - Rode cada comando de dentro da cópia: nada se edita no repositório principal.
 - Ache e leia o código pelo mapa, cada comando na sua hora:
-  - `mustard-rt run map search --query "<palavras>" --intent "<o que procura e para quê>"`: ao começar, para achar onde mexer.
+  - `mustard-rt run map search "<padrão>"`: ao começar, para achar onde mexer, com o mesmo texto que você poria no `Grep`.
   - `mustard-rt run map summary --file <arquivo>`: antes de abrir um arquivo, para ver as declarações e as linhas de cada uma.
   - `mustard-rt run map slice --file <arquivo> --name <nome>`: para ler só a declaração, sem abrir o arquivo.
   - `mustard-rt run map users --name <nome>`: antes de mudar uma declaração, para ver quem a usa.
   - `mustard-rt run map tests --file <arquivo>`: para achar os testes que cobrem o arquivo.
   - `mustard-rt run map history --name <nome>`: para saber por que a declaração ficou assim.
-- Achar código é pedir ao Mustard. Quando a resposta disser que não achou, siga com `Grep`, `Glob` e `Read`. Leia com faixa de linhas o que o `summary` mostrou; o arquivo inteiro, só quando for mudar boa parte dele. Não releia o arquivo depois de editar: a edição já mostra o trecho mudado.
+- Procure código como sempre, com o mesmo texto: `Grep`, `grep` e `rg` passam pelo Mustard, que responde no lugar da busca. Cravado: o mapa achou pelo nome. Parcial: achou parte. Não achei: a busca comum roda. Leia com faixa de linhas o que o `summary` mostrou; o arquivo inteiro, só quando for mudar boa parte dele. Não releia o arquivo depois de editar: a edição já mostra o trecho mudado.
 - Leituras que não dependem uma da outra saem juntas: várias chamadas numa resposta (Read, Grep, Glob, `mustard-rt run read` ou o terminal), ou vários trechos num comando só do terminal. Cada resposta relê a conversa inteira.
 - Durante o trabalho, rode só os testes do que mudou. A suíte inteira roda uma vez no fim, em primeiro plano, pelo `rtk`, que mostra só as falhas.
 - Nunca mande compilação ou teste para segundo plano, nem espere outro processo em laço: cada um leva `timeout: 600000`, e o que passa de dez minutos roda um pacote por comando.

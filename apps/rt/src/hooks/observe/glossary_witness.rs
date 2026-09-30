@@ -156,6 +156,7 @@ mod tests {
             question: Question::Search,
             file: None,
             task: None,
+            grep: None,
             query: Some(query.to_string()),
             intent: None,
             path: None,

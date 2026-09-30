@@ -636,11 +636,11 @@ mod tests {
     }
 
     /// Nenhum texto do catálogo, nos dois idiomas, manda achar código com
-    /// `Grep`, `Glob` ou `grep`: achar código é pedir ao Mustard, e essas
-    /// ferramentas só aparecem depois do "não achou". Só quatro chaves as
-    /// citam: a linha do não achou, o aviso de que o achado pode não ser o
-    /// lugar, a dica do mapa (depois da marca `not_found`) e o portão da chave,
-    /// em que `glob` é o parâmetro da busca e não uma ferramenta a usar.
+    /// `Grep`, `Glob` ou `grep` antes de o mapa não achar nada. Só quatro
+    /// chaves as citam: a linha do não achou, o aviso de que o achado pode não
+    /// ser o lugar, a dica do mapa, que diz que essas buscas passam pelo
+    /// Mustard, e o portão da chave, em que `glob` é o parâmetro da busca e
+    /// não uma ferramenta a usar.
     #[test]
     fn no_catalog_text_sends_the_reader_to_grep_or_glob_before_the_map_finds_nothing() {
         let mut cited = BTreeSet::new();
@@ -654,8 +654,8 @@ mod tests {
                     match key {
                         "map.search.not_found" | "map.search.use_tools" | "config_key.swept_tool" => {}
                         "scan.map.pointer" => {
-                            let not_found = text.find("`not_found`").expect("the hint names the not-found mark");
-                            assert!(not_found < first, "{key} ({lang}): a search tool comes before the not-found mark: {text}");
+                            let through = text.find("passam pelo Mustard").or_else(|| text.find("go through Mustard"));
+                            assert!(through.is_some_and(|at| first < at), "{key} ({lang}): the hint says the search goes through Mustard: {text}");
                         }
                         _ => panic!("{key} ({lang}) sends the reader to a search tool to find code: {text}"),
                     }

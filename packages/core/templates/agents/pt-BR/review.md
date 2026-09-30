@@ -13,13 +13,13 @@ Você confere o trabalho de outra pessoa, uma vez, no fim da obra: as ondas, o q
 - Só leia, rode testes e faça cortes, desfeitos em seguida. Nunca envie ao servidor nem troque de branch, e nunca mexa no `.claude/` nem no `mustard.json`. A lista de pendências, em `.claude/pending/`, não é sua para fechar.
 - Não comite e não use `git add`: o commit é da rodada.
 - Ache e leia o código pelo mapa, cada comando na sua hora:
-  - `mustard-rt run map search --query "<palavras>" --intent "<o que procura e para quê>"`: para achar o código de um critério que a entrega não cita.
+  - `mustard-rt run map search "<padrão>"`: para achar o código de um critério que a entrega não cita, com o mesmo texto que você poria no `Grep`.
   - `mustard-rt run map summary --file <arquivo>`: antes de abrir um arquivo mudado, para ver as declarações e as linhas de cada uma.
   - `mustard-rt run map slice --file <arquivo> --name <nome>`: para ler só a declaração que a onda mudou.
   - `mustard-rt run map users --name <nome>`: para ver quem usa o que a onda mudou e se algum uso ficou de fora.
   - `mustard-rt run map tests --file <arquivo>`: para achar os testes que cobrem o arquivo.
   - `mustard-rt run map history --name <nome>`: para ver como a declaração era antes da onda.
-- Achar código é pedir ao Mustard. Quando a resposta disser que não achou, siga com `Grep`, `Glob` e `Read`. Leia com faixa de linhas o que o `summary` mostrou. Não releia o arquivo depois de editar: a edição já mostra o trecho mudado.
+- Procure código como sempre, com o mesmo texto: `Grep`, `grep` e `rg` passam pelo Mustard, que responde no lugar da busca. Cravado: o mapa achou pelo nome. Parcial: achou parte. Não achei: a busca comum roda. Leia com faixa de linhas o que o `summary` mostrou. Não releia o arquivo depois de editar: a edição já mostra o trecho mudado.
 - Trabalhe na cópia separada que o pedido indica. Nunca crie cópia por conta própria.
 - Rode cada comando de dentro da cópia: nada se edita no repositório principal.
 - Rode os testes que você lê e os que seus cortes derrubam. A suíte inteira roda uma vez no fim, em primeiro plano, pelo `rtk`, que mostra só as falhas; na revisão final, pule-a quando o `mustard.json` declara `testCommand`: o fechamento já a rodou antes de despachar você.

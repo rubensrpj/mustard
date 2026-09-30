@@ -30,9 +30,20 @@ const CATALOG_KEYS: [&str; 5] = [
 ];
 
 /// Os comandos que todo texto citado traz, cada um com uma opção que ele
-/// exige: achar por assunto, ler só a declaração e ver quem a usa.
-const CITED: [(&str, &str); 4] =
-    [("search", "--query"), ("slice", "--file"), ("slice", "--name"), ("users", "--name")];
+/// exige: ler só a declaração e ver quem a usa. A busca vem com o texto do
+/// `Grep`, sem opção (ver [`cites_the_search_with_the_text_of_grep`]).
+const CITED: [(&str, &str); 3] = [("slice", "--file"), ("slice", "--name"), ("users", "--name")];
+
+/// `true` quando `text` cita a busca do mapa com o texto entre aspas, como o
+/// `Grep` o recebe, e nenhuma das duas opções que ela aceita só para a medida.
+fn cites_the_search_with_the_text_of_grep(text: &str) -> bool {
+    let mut cited = citations(text).into_iter().filter(|c| c.question == "search").peekable();
+    cited.peek().is_some()
+        && cited.all(|c| c.options.is_empty())
+        && text.contains("run map search \"<")
+        && !text.contains("--query")
+        && !text.contains("--intent")
+}
 
 fn template(lang: &str, name: &str) -> String {
     let root = manifest_dir::manifest_dir().join("../..");
@@ -126,9 +137,9 @@ fn cited_texts() -> Vec<(String, String)> {
     texts
 }
 
-/// Os quatro moldes e os textos do catálogo citam a busca por assunto, o
-/// trecho de uma declaração e quem a usa, cada um com a opção que exige, e
-/// nada do que citam sobra fora do que o `run map` aceita.
+/// Os quatro moldes e os textos do catálogo citam a busca com o texto do
+/// `Grep`, o trecho de uma declaração e quem a usa, cada um com a opção que
+/// exige, e nada do que citam sobra fora do que o `run map` aceita.
 #[test]
 fn the_molds_and_the_catalog_texts_cite_search_slice_and_users() {
     let accepted = accepted_by_the_command();
@@ -140,6 +151,7 @@ fn the_molds_and_the_catalog_texts_cite_search_slice_and_users() {
                 "{name} does not cite `run map {question} {option}`: {text}"
             );
         }
+        assert!(cites_the_search_with_the_text_of_grep(&text), "{name} does not cite `run map search \"<pattern>\"`: {text}");
         let wrong = not_accepted(&text, &accepted);
         assert!(wrong.is_empty(), "{name} cites what `run map` does not accept: {wrong:?}");
     }

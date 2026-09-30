@@ -2603,7 +2603,8 @@ mod tests {
             let ask = text.lines().last().unwrap_or_default();
             assert!(ask.contains("`history --name <"), "{lang:?}: {ask}");
             assert!(ask.contains("`summary --file <"), "{lang:?}: {ask}");
-            assert!(ask.contains("`users --name <") && ask.contains("`search --query"), "{lang:?}: {ask}");
+            assert!(ask.contains("`users --name <") && ask.contains("`search \""), "{lang:?}: {ask}");
+            assert!(!ask.contains("--query"), "{lang:?}: {ask}");
         }
     }
 

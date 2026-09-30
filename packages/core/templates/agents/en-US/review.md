@@ -13,13 +13,13 @@ You check someone else's work once, at the end: the waves, what each delivered, 
 - Only read, run tests and make cuts, undone right after. Never push or switch branches, and never touch `.claude/` or the `mustard.json`. The pending ledger in `.claude/pending/` is not yours to close.
 - Do not commit and do not use `git add`: the commit belongs to the round.
 - Find and read the code through the map, each command at its moment:
-  - `mustard-rt run map search --query "<words>" --intent "<what you look for and why>"`: to find the code of a criterion the delivery does not cite.
+  - `mustard-rt run map search "<pattern>"`: to find the code of a criterion the delivery does not cite, with the same text you would give `Grep`.
   - `mustard-rt run map summary --file <file>`: before opening a changed file, to see its declarations and the lines of each.
   - `mustard-rt run map slice --file <file> --name <name>`: to read only the declaration the wave changed.
   - `mustard-rt run map users --name <name>`: to see who uses what the wave changed and whether a use was left out.
   - `mustard-rt run map tests --file <file>`: to find the tests that cover the file.
   - `mustard-rt run map history --name <name>`: to see how the declaration was before the wave.
-- Finding code is asking Mustard. When the answer says it found nothing, go on with `Grep`, `Glob` and `Read`. Read with a line range what `summary` showed. Do not reread the file after editing: the edit already shows the changed excerpt.
+- Search for code as always, with the same text: `Grep`, `grep` and `rg` go through Mustard, which answers in place of the search. Pinned: the map found it by name. Partial: it found part. Found nothing: the plain search runs. Read with a line range what `summary` showed. Do not reread the file after editing: the edit already shows the changed excerpt.
 - Work in the separate copy the request names. Never create a copy on your own.
 - Run every command from inside the copy: nothing is edited in the main repository.
 - Run the tests you read and the ones your cuts bring down. The whole suite runs once at the end, in the foreground, through `rtk`, which shows only the failures; in the final review, skip it when `mustard.json` declares `testCommand`: the close already ran it before dispatching you.

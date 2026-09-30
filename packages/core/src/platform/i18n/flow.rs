@@ -20,7 +20,7 @@ pub(super) const PREFIXES: &[&str] = &[
 /// lugar único, e cada texto só põe a frase que os introduz.
 macro_rules! map_commands_pt {
     () => {
-        "`mustard-rt run map search --query \"<assunto>\"` acha onde mexer, \
+        "`mustard-rt run map search \"<padrão>\"` acha onde mexer, \
          `mustard-rt run map slice --file <arquivo> --name <nome>` lê só a declaração e \
          `mustard-rt run map users --name <nome>` mostra quem a usa"
     };
@@ -29,7 +29,7 @@ macro_rules! map_commands_pt {
 /// A mesma frase de `map_commands_pt`, em inglês.
 macro_rules! map_commands_en {
     () => {
-        "`mustard-rt run map search --query \"<subject>\"` finds where to change, \
+        "`mustard-rt run map search \"<pattern>\"` finds where to change, \
          `mustard-rt run map slice --file <file> --name <name>` reads one declaration and \
          `mustard-rt run map users --name <name>` lists its users"
     };
@@ -1752,7 +1752,7 @@ mod tests {
             include_str!("flow.rs"),
             super::PREFIXES,
             210,
-            0xeabf_9aed_4d46_1baa,
+            0x7a1d_cb58_a2fd_b1b5,
         );
     }
 

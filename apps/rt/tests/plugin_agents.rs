@@ -815,55 +815,34 @@ fn o_revisor_propoe_o_conserto_com_teste_no_lugar_da_licao() {
     }
 }
 
-/// As posições em que a linha cita `grep`, `Grep` ou `Glob` como palavra
-/// inteira (`pgrep` não conta).
-fn search_tool_mentions(line: &str) -> Vec<usize> {
-    let lower = line.to_ascii_lowercase();
-    let mut found = Vec::new();
-    for word in ["grep", "glob"] {
-        for (at, _) in lower.match_indices(word) {
-            let before = lower[..at].chars().next_back();
-            let after = lower[at + word.len()..].chars().next();
-            if !before.is_some_and(char::is_alphanumeric) && !after.is_some_and(char::is_alphanumeric) {
-                found.push(at);
-            }
-        }
-    }
-    found.sort_unstable();
-    found
-}
-
-/// O molde da onda e o do revisor, nos dois idiomas, mandam achar código
-/// pedindo ao Mustard e só citam `Grep`, `Glob` ou `grep` para depois do "não
-/// achou" — a saída de quem não recebeu resposta. As duas citações que não
-/// mandam achar nada ficam: a lista das ferramentas do agente, no
-/// cabeçalho, e a lista das leituras que saem juntas; o `grep` proibido sobre
-/// a spec é a terceira.
+/// O molde da onda e o do revisor, nos dois idiomas, mandam procurar código
+/// como sempre, com o mesmo texto: o `Grep`, o `grep` e o `rg` passam pelo
+/// Mustard, que responde no lugar da busca, e o cravado, o parcial e o não
+/// achei têm o sentido dito. A linha do comando da busca traz o texto entre
+/// aspas, como o `Grep` o recebe, e nenhuma das opções de palavras e de frase.
 #[test]
-fn the_wave_and_review_agents_use_grep_and_glob_only_after_the_map_found_nothing() {
-    for (lang, not_found, sentence, ban) in [
+fn the_wave_and_review_agents_search_as_always_and_say_mustard_answers_in_place() {
+    for (lang, sentence, marks, command) in [
         (
             "pt-BR",
-            "não achou",
-            "Achar código é pedir ao Mustard. Quando a resposta disser que não achou, siga com `Grep`, `Glob` e `Read`.",
-            "grep sobre o `spec.ndjson`",
+            "Procure código como sempre, com o mesmo texto: `Grep`, `grep` e `rg` passam pelo Mustard, que responde no lugar da busca.",
+            "Cravado: o mapa achou pelo nome. Parcial: achou parte. Não achei: a busca comum roda.",
+            "`mustard-rt run map search \"<padrão>\"`: ",
         ),
         (
             "en-US",
-            "found nothing",
-            "Finding code is asking Mustard. When the answer says it found nothing, go on with `Grep`, `Glob` and `Read`.",
-            "grep over `spec.ndjson`",
+            "Search for code as always, with the same text: `Grep`, `grep` and `rg` go through Mustard, which answers in place of the search.",
+            "Pinned: the map found it by name. Partial: it found part. Found nothing: the plain search runs.",
+            "`mustard-rt run map search \"<pattern>\"`: ",
         ),
     ] {
         for name in ["wave", "review"] {
             let agent = template(lang, name);
-            assert!(agent.contains(sentence), "the {lang} `{name}` agent does not say to ask Mustard and follow with the tools: {agent}");
-            let body = agent.splitn(3, "---").nth(2).unwrap_or_else(|| panic!("the {lang} `{name}` agent has no front matter"));
-            for line in body.lines() {
-                let checked = line.replace(ban, "").replace("(Read, Grep, Glob, `mustard-rt run read`", "");
-                let Some(first) = search_tool_mentions(&checked).first().copied() else { continue };
-                let after_not_found = checked.find(not_found).is_some_and(|at| at < first);
-                assert!(after_not_found, "the {lang} `{name}` agent cites a search tool before the not-found answer: {line}");
+            assert!(agent.contains(sentence), "the {lang} `{name}` agent does not say the usual search goes through Mustard: {agent}");
+            assert!(agent.contains(marks), "the {lang} `{name}` agent does not say what each mark means: {agent}");
+            assert!(agent.contains(command), "the {lang} `{name}` agent does not cite the search with the text of Grep: {agent}");
+            for gone in ["--query", "--intent"] {
+                assert!(!agent.contains(gone), "the {lang} `{name}` agent still cites `{gone}`: {agent}");
             }
         }
     }

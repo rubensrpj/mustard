@@ -1054,11 +1054,12 @@ mod tests {
     /// achados e a busca funda inteira, com a nota de cada entrada e se ela
     /// acerta. Imprime, por grau, em quantas buscas o primeiro achado é o
     /// certo e em quantas o certo está entre os cinco; por corte da chance
-    /// para o cravado, com e sem a exigência de nenhuma palavra faltando,
-    /// quantas buscas ficam cravadas, em quantas o primeiro achado é o certo
-    /// e quantas a régua reprova (o arquivo certo fora dos cinco da
-    /// resposta); e, por corte da busca funda, quantas sobras a resposta leva
-    /// e quantas buscas o corte resgata.
+    /// para o cravado, quantas buscas ficam cravadas, em quantas o primeiro
+    /// achado é o certo e quantas a régua reprova (o arquivo certo fora dos
+    /// cinco da resposta), e a mesma conta só entre as buscas sem palavra
+    /// fora dos campos fortes do primeiro achado, que a marca de hoje não
+    /// exige; e, por corte da busca funda, quantas sobras a resposta leva e
+    /// quantas buscas o corte resgata.
     #[test]
     #[ignore = "mede com os mapas dos projetos de prova"]
     fn measure_the_ruler() {
