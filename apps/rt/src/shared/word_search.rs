@@ -954,7 +954,7 @@ mod tests {
     use mustard_core::domain::map_filter::{
         judged, FilterError, FilterRequest, FilterUsage, Filtered, MapFilter, Scored,
     };
-    use mustard_core::domain::triage::Signals;
+    use mustard_core::domain::triage::{Lead, Signals};
 
     fn owned(items: &[&str]) -> Vec<String> {
         items.iter().map(|item| (*item).to_string()).collect()
@@ -1123,8 +1123,8 @@ mod tests {
         let triaged =
             map_triage::triage_at(&store::model_path(&root), ("calcular_frete desconto_frete imposto", ""), &Languages::new(["pt-BR", "en-US"]), RANKED_FILES)
                 .expect("triage");
-        let chance = mustard_core::domain::triage::chance(&triaged.signals);
-        assert!(chance >= mustard_core::domain::triage::PINNED_FROM + 0.01, "the fixture sits clear of the pinned cut, not on it: {chance}");
+        assert!(triaged.lead.leads(), "the first file alone covers the rare words: {:?}", triaged.lead);
+        assert_eq!((triaged.grade, triaged.mark()), (5, Mark::Pinned), "{triaged:?}");
         let text = answer(search_in(&root, &root, &["calcular_frete|desconto_frete|imposto"], &["."]));
         assert!(text.starts_with("Cravado."), "{text}");
         assert!(text.contains(r#""calcular", "frete""#), "the words the map found: {text}");
@@ -1145,6 +1145,7 @@ mod tests {
             missing: owned(missing),
             files: Vec::new(),
             deeper: Vec::new(),
+            lead: Lead::default(),
         };
         let with_missing = header(Mark::Partial, &answer(&["imposto"]), Locale::PtBr);
         assert!(with_missing.starts_with("Parcial.") && with_missing.contains(r#"Falta "imposto"."#), "{with_missing}");

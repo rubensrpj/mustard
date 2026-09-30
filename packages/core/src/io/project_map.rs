@@ -29,7 +29,7 @@ use crate::domain::project_map::{
 };
 use crate::domain::normalize::Languages;
 use crate::io::map_db::{self, Block, Kind, MapDb};
-use crate::io::{map_fill, map_format, map_glossary, map_search};
+use crate::io::{map_fill, map_format, map_glossary, map_revision, map_search};
 use crate::platform::error::{Error, Result};
 
 /// A pasta do projeto onde o mapa mora.
@@ -306,7 +306,7 @@ pub const FILES: MapBlock = block!("files", version 2, {
 /// busca sem filtro lê vêm primeiro; os do texto de dentro das peças vêm
 /// depois, e só a busca com filtro os lê. A declaração de teste fica fora do
 /// nível das declarações, e só a tabela trigram a guarda.
-pub const DECLS: MapBlock = block!("decls", version 12, {
+pub const DECLS: MapBlock = block!("decls", version 13, {
     "decls" at Place::Decls => [
         "file" Owner ["path"], "kind" Text, "name" Text, "line" Int, "end_line" Int,
         "signature" Text, "doc" Text, "whole_doc" Text, "body_comment" Text, "body_names" Text,
@@ -322,7 +322,7 @@ pub const DECLS: MapBlock = block!("decls", version 12, {
      contentless_delete=1, tokenize='unicode61 remove_diacritics 2');\
    CREATE VIRTUAL TABLE decl_fts USING fts5(name, path, signature, doc, log, error, text, whole_doc, body_comment, \
      body_names, body_calls, owner, members, commits, callers, content='', contentless_delete=1, \
-     tokenize='unicode61 remove_diacritics 2');\
+     tokenize='unicode61 remove_diacritics 2', prefix='3 4');\
    CREATE VIRTUAL TABLE file_vocab USING fts5vocab(file_fts, instance);\
    CREATE VIRTUAL TABLE decl_vocab USING fts5vocab(decl_fts, instance);\
    CREATE VIRTUAL TABLE decl_trigram USING fts5(name, folded, file UNINDEXED, tokenize='trigram');\
@@ -1050,6 +1050,7 @@ fn replace_rows_indexed(model: &Path, changes: Vec<(&str, &str, Sql, Vec<Row>)>,
         if reindex {
             map_search::forget(tx)?;
         }
+        map_revision::bump(tx)?;
         Ok(())
     })
 }
@@ -2123,6 +2124,7 @@ fn save_rows<'b>(
         if changed.iter().any(|(block, _)| block.name() == DECLS.name()) {
             map_glossary::drop_stale(tx)?;
         }
+        map_revision::bump(tx)?;
         Ok(())
     })?;
     Ok(true)

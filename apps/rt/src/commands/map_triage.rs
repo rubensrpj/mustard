@@ -156,7 +156,7 @@ fn via(via: &Via) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mustard_core::domain::triage::Signals;
+    use mustard_core::domain::triage::{Lead, Signals};
     use mustard_core::io::map_triage::Located;
 
     fn deeper(path: &str, decl: Option<(&str, u64)>, via: Vec<Via>, link: Link) -> Deeper {
@@ -198,17 +198,18 @@ mod tests {
 
     fn triaged(grade: u8, signals: Signals, words: &[&str], missing: &[&str]) -> Triaged {
         let owned = |items: &[&str]| items.iter().map(|word| (*word).to_string()).collect::<Vec<_>>();
-        Triaged { grade, signals, words: owned(words), missing: owned(missing), files: Vec::new(), deeper: Vec::new() }
+        Triaged { grade, signals, words: owned(words), missing: owned(missing), files: Vec::new(), deeper: Vec::new(), lead: Lead::default() }
     }
 
     /// A resposta do banco traz a marca em palavras: cravado quando a nota é
-    /// a mais alta, a chance passa do corte e nenhuma palavra falta; parcial,
+    /// a mais alta e só o primeiro candidato cobre as palavras raras; parcial,
     /// com as palavras que faltam, no resto; não achou, com a linha da
     /// próxima busca, sem achado nenhum.
     #[test]
     fn the_report_carries_the_mark_and_the_words_the_map_lacks() {
         let lone = Signals { words: 1, strong: 1, first: Some(9.0), second: None };
-        let pinned = bank_report("boleto", &triaged(5, lone, &["boleto"], &[]), Locale::PtBr);
+        let ahead = Lead { first: 1.0, second: 0.0 };
+        let pinned = bank_report("boleto", &Triaged { lead: ahead, ..triaged(5, lone, &["boleto"], &[]) }, Locale::PtBr);
         assert_eq!((pinned["grade"].clone(), pinned["mark"].clone()), (json!(5), json!("pinned")));
         assert!(pinned.get("missing").is_none() && pinned.get("not_found").is_none(), "{pinned}");
 

@@ -15,8 +15,8 @@
 //! arquivos mudaram a escala da nota e levaram os pesos daqui a serem
 //! refeitos sobre ela. A ordem das faixas vale no ajuste inteiro; deixado um
 //! projeto de fora e medido com os pesos dos outros dois, a ordem se mantém
-//! só em parte, e o corte do cravado, escolhido no ajuste inteiro, não é
-//! seguro para um projeto que o ajuste nunca viu.
+//! só em parte, e o corte da cobertura do cravado, escolhido no ajuste
+//! inteiro, não é seguro para um projeto que o ajuste nunca viu.
 
 use crate::platform::i18n::{translate, Locale};
 
@@ -31,6 +31,35 @@ pub struct Signals {
     pub first: Option<f64>,
     /// A nota do segundo achado.
     pub second: Option<f64>,
+}
+
+/// O que a conferência dos primeiros candidatos diz da frente da lista: que
+/// parte das palavras raras da pergunta o primeiro traz e que parte o segundo
+/// traz, cada parte pela raridade das palavras (de 0 a 1).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Lead {
+    /// A parte das palavras raras que o primeiro candidato traz.
+    pub first: f64,
+    /// A parte que o segundo candidato traz.
+    pub second: f64,
+}
+
+/// O candidato cobre as palavras raras da pergunta quando traz esta parte
+/// delas, pela raridade. Sai da régua das 360 buscas (nomes e frase, três
+/// projetos): com a nota 5 e o primeiro a 0,7 ou mais e o segundo abaixo
+/// disso, ficam 19 buscas cravadas e o primeiro achado é o certo nas 19; a
+/// 0,8 ficam 8, a 0,6 ficam 16, a 0,5 ficam 13 e 12 acertam.
+pub const COVERS_FROM: f64 = 0.7;
+
+impl Lead {
+    /// `true` quando o primeiro cobre as palavras raras e o segundo não: só o
+    /// primeiro serve à pergunta. Sozinha, a frente não crava: dos dez casos
+    /// que ela pega na régua só quatro têm o primeiro achado certo, e a nota
+    /// 5 é o que filtra os outros.
+    #[must_use]
+    pub fn leads(self) -> bool {
+        self.first >= COVERS_FROM && self.second < COVERS_FROM
+    }
 }
 
 /// Do grau 3 para baixo a busca funda roda.
@@ -93,9 +122,10 @@ pub fn grade(signals: &Signals) -> u8 {
 /// 0 a 5 dita em palavras que quem busca entende na hora.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mark {
-    /// A nota é a mais alta e a chance de o primeiro achado ser o certo passa
-    /// do corte: a resposta do mapa vale no lugar da busca comum, mesmo com
-    /// palavras da pergunta fora dos campos fortes dele.
+    /// A nota é a mais alta e a conferência dos primeiros candidatos diz que
+    /// só o primeiro cobre as palavras raras da pergunta: a resposta do mapa
+    /// vale no lugar da busca comum, mesmo com palavras da pergunta fora dos
+    /// campos fortes dele.
     Pinned,
     /// O mapa achou parte: a resposta vale, e as palavras que faltam pedem
     /// outra busca.
@@ -116,30 +146,22 @@ impl Mark {
     }
 }
 
-/// O corte da chance para a marca de cravado, acima do da nota 5 (0,8). Sai
-/// da régua das 360 buscas, com os três projetos, nos nomes e só na frase,
-/// depois de a resposta passar a seguir a ordem da lista de candidatos: das
-/// 28 buscas de nota 5, 4 têm o primeiro achado errado, todas com chance
-/// abaixo de 0,89 (duas em cada um dos projetos que não são o Mustard); a
-/// 0,8 ficam 28 cravadas e 4 erram, a 0,85 ficam 15 e 1 erra, de 0,9 para
-/// cima nenhuma erra. De 0,93 para cima ficam 6 buscas cravadas e o primeiro
-/// achado é o certo nas 6. As 6 são do Mustard: nos outros dois projetos
-/// nenhuma busca chega a 0,9, então o corte não cravou nada onde não se
-/// sabe. Ajustar os pesos de novo, com todos os grupos medidos, não ganhou
-/// nada: a área sob a curva ficou em 0,684, a mesma dos pesos de agora, e
-/// deixando um projeto de fora o ajuste empatou no Mustard e ficou pior nos
-/// outros dois. O corte e os pesos ficam.
-pub const PINNED_FROM: f64 = 0.93;
-
-/// A marca de uma resposta de grau `grade`, de chance `chance` de o primeiro
-/// achado ser o certo: nota 0 é não achou; cravado exige a nota mais alta e o
-/// corte [`PINNED_FROM`] da chance, com ou sem palavras da pergunta fora dos
-/// campos fortes dele; o resto é parcial.
+/// A marca de uma resposta de nota `grade`: nota 0 é não achou; cravado
+/// exige a nota mais alta e a frente da conferência ([`Lead::leads`]), o
+/// primeiro cobrindo as palavras raras da pergunta e o segundo não; o resto
+/// é parcial.
+///
+/// A frente no lugar do corte da chance (0,93) porque o corte só cravava a
+/// resposta em que a nota era alta, e a nota mede o primeiro achado sozinho;
+/// a frente mede o primeiro contra o segundo. Na régua das 360 buscas o corte
+/// cravava 6 buscas (todas do Mustard, 6 certas) e nenhuma na frase; a frente
+/// com a nota 5 crava 19 (18 nos nomes, 1 na frase) e as 19 têm o primeiro
+/// achado certo, nos três projetos.
 #[must_use]
-pub fn mark(grade: u8, chance: f64) -> Mark {
+pub fn mark(grade: u8, lead: Lead) -> Mark {
     if grade == 0 {
         Mark::NotFound
-    } else if grade >= 5 && chance >= PINNED_FROM {
+    } else if grade >= 5 && lead.leads() {
         Mark::Pinned
     } else {
         Mark::Partial
@@ -231,41 +253,49 @@ mod tests {
         assert!((alone - chance(&signals(1, 1, 9.0, Some(0.0)))).abs() < 1e-12);
     }
 
+    fn ahead() -> Lead {
+        Lead { first: 0.9, second: 0.2 }
+    }
+
     #[test]
-    fn no_finding_is_not_found_and_any_other_grade_below_the_pinned_cut_is_partial() {
-        assert_eq!(mark(0, 0.0), Mark::NotFound);
-        assert_eq!(mark(0, 1.0), Mark::NotFound);
+    fn no_finding_is_not_found_and_any_grade_below_five_is_partial_even_ahead() {
+        assert_eq!(mark(0, Lead::default()), Mark::NotFound);
+        assert_eq!(mark(0, ahead()), Mark::NotFound);
         for grade in 1..=4 {
-            assert_eq!(mark(grade, 0.99), Mark::Partial, "grade {grade}");
+            assert_eq!(mark(grade, ahead()), Mark::Partial, "grade {grade}");
         }
     }
 
     #[test]
-    fn the_pinned_cut_is_the_measured_chance_of_ninety_three_hundredths() {
-        assert_eq!(mark(5, 0.93), Mark::Pinned);
-        assert_eq!(mark(5, 0.929_999), Mark::Partial);
-        assert_eq!(mark(4, 0.99), Mark::Partial, "only the highest grade is pinned");
-        assert!((PINNED_FROM - 0.93).abs() < f64::EPSILON);
-    }
-
-    /// Cravado exige a nota mais alta e a chance do corte, e mais nada: a
-    /// pergunta com palavras fora dos campos fortes do primeiro achado é
-    /// cravada do mesmo jeito, porque a marca não lê quantas faltam.
-    #[test]
-    fn the_pinned_mark_needs_the_measured_chance_and_not_every_word_found() {
-        assert_eq!(mark(5, PINNED_FROM), Mark::Pinned);
-        assert_eq!(mark(5, 1.0), Mark::Pinned);
-        assert_eq!(mark(5, PINNED_FROM - 1e-9), Mark::Partial, "grade five below the cut is not pinned");
-        assert_eq!(mark(5, 0.8), Mark::Partial, "the edge of grade five is below the pinned cut");
+    fn grade_five_is_pinned_only_when_the_first_covers_and_the_second_does_not() {
+        assert_eq!(mark(5, ahead()), Mark::Pinned);
+        assert_eq!(mark(5, Lead { first: COVERS_FROM, second: COVERS_FROM - 1e-9 }), Mark::Pinned);
+        assert_eq!(mark(5, Lead { first: 1.0, second: 0.0 }), Mark::Pinned);
     }
 
     #[test]
-    fn the_pinned_cut_sits_above_the_grade_five_edge_and_below_certainty() {
-        const { assert!(EDGES[3] < PINNED_FROM && PINNED_FROM < 1.0) };
+    fn grade_five_stays_partial_when_the_second_also_covers_or_the_first_does_not() {
+        assert_eq!(mark(5, Lead { first: 1.0, second: COVERS_FROM }), Mark::Partial, "the second covers too");
+        assert_eq!(mark(5, Lead { first: 1.0, second: 1.0 }), Mark::Partial);
+        assert_eq!(mark(5, Lead { first: COVERS_FROM - 1e-9, second: 0.0 }), Mark::Partial, "the first does not cover");
+        assert_eq!(mark(5, Lead::default()), Mark::Partial, "no check, no lead");
+    }
+
+    #[test]
+    fn the_lead_is_the_first_covering_and_the_second_not() {
+        assert!(Lead { first: 0.7, second: 0.69 }.leads());
+        assert!(!Lead { first: 0.7, second: 0.7 }.leads());
+        assert!(!Lead { first: 0.69, second: 0.0 }.leads());
+        assert!(!Lead::default().leads());
+        assert!((COVERS_FROM - 0.7).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn a_high_chance_alone_no_longer_pins_the_answer() {
         let lone = signals(1, 1, 9.0, None);
-        assert_eq!(mark(grade(&lone), chance(&lone)), Mark::Pinned);
-        let tied = signals(1, 1, 2.0, Some(2.0));
-        assert_eq!(mark(grade(&tied), chance(&tied)), Mark::Partial);
+        assert!(grade(&lone) >= 5 && chance(&lone) > 0.93);
+        assert_eq!(mark(grade(&lone), Lead::default()), Mark::Partial);
+        assert_eq!(mark(grade(&lone), ahead()), Mark::Pinned);
     }
 
     #[test]

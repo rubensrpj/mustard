@@ -27,6 +27,10 @@ fn old_words() -> [String; 4] {
 /// dependência baixada e fixtures dos testes.
 const SKIPPED_DIRS: &[&str] = &["target", "dist", "node_modules", "fixtures"];
 
+/// Os arquivos de terceiros embutidos no binário: o vocabulário do modelo de
+/// vetores traz palavras do idioma que não são texto do Mustard.
+const SKIPPED_PREFIXES: &[&str] = &["packages/core/assets/meaning"];
+
 /// A raiz do repositório, a partir deste crate (`apps/rt`).
 fn repo_root() -> PathBuf {
     manifest_dir::manifest_dir().join("../..")
@@ -60,6 +64,7 @@ fn repo_files(root: &Path) -> Vec<PathBuf> {
                 .components()
                 .any(|c| SKIPPED_DIRS.contains(&c.as_os_str().to_string_lossy().as_ref()))
         })
+        .filter(|path| !SKIPPED_PREFIXES.iter().any(|prefix| path.starts_with(prefix)))
         .filter(|path| !path.ends_with("apps/rt/tests/vocabulario.rs"))
         .collect();
     files.sort();
@@ -132,6 +137,19 @@ fn nenhum_arquivo_do_mustard_diz_cesta() {
         "a palavra antiga voltou em {} linha(s):\n{}",
         found.len(),
         found.join("\n")
+    );
+}
+
+/// O vocabulário do modelo de vetores, arquivo de terceiros, não entra na
+/// lista dos arquivos lidos.
+#[test]
+fn o_vocabulario_do_modelo_de_vetores_fica_fora_da_lista() {
+    let files = repo_files(&repo_root());
+    assert!(
+        !files
+            .iter()
+            .any(|path| path.starts_with("packages/core/assets/meaning")),
+        "o modelo embutido entrou na lista: {files:?}"
     );
 }
 

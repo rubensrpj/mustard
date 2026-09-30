@@ -117,16 +117,19 @@ mod tests {
         assert_eq!(whole(dir.path(), "users"), vec![id_of(dir.path(), "UserRepository")]);
     }
 
-    /// A palavra que a primeira língua já acha continua só com a forma dela:
-    /// `commands` acha a declaração que escreve `commands` e não a que escreve
-    /// `command`, que a raiz inglesa traria junto.
+    /// A palavra que a primeira língua já acha continua só com a forma dela
+    /// nas listas de palavras: `commands` põe a declaração que escreve
+    /// `commands` à frente da que escreve `command`, que a raiz inglesa
+    /// traria junto. A consulta agrupada lê o começo da palavra e por isso
+    /// traz a do singular também, mas atrás.
     #[test]
     fn a_word_the_text_language_already_finds_keeps_only_its_own_form() {
         let dir = saved(&map_of(&[
             ("src/plural.rs", "Varios", "Runs the commands of the queue"),
             ("src/singular.rs", "Unico", "Runs one command of the queue"),
         ]));
-        assert_eq!(whole(dir.path(), "commands"), vec![id_of(dir.path(), "Varios")]);
+        let found = whole(dir.path(), "commands");
+        assert_eq!(found.first(), Some(&id_of(dir.path(), "Varios")), "{found:?}");
     }
 
     /// A decisão é palavra por palavra: na mesma pergunta, `users` ganha a raiz
@@ -141,6 +144,7 @@ mod tests {
         let found = whole(dir.path(), "users commands");
         let (repo, plural, singular) = (id_of(dir.path(), "UserRepository"), id_of(dir.path(), "Varios"), id_of(dir.path(), "Unico"));
         assert!(found.contains(&repo) && found.contains(&plural), "{found:?}");
-        assert!(!found.contains(&singular), "the singular only writes the english root of `commands`: {found:?}");
+        let at = |id: i64| found.iter().position(|seen| *seen == id);
+        assert!(at(singular).is_none() || at(singular) > at(plural), "the singular only writes the english root of `commands`: {found:?}");
     }
 }

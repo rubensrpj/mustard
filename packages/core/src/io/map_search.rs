@@ -95,6 +95,8 @@ use crate::domain::search::{
 use crate::io::map_db::MapDb;
 use crate::io::map_fill;
 use crate::io::map_glossary::{self, Learned};
+use crate::io::map_check;
+use crate::io::map_grouped;
 use crate::io::map_order;
 use crate::io::map_question;
 use crate::io::project_map::{model_path, open_existing, unreadable, MapBlock, SEARCHED};
@@ -1304,7 +1306,8 @@ pub fn candidates_at(
     limit: usize,
 ) -> std::result::Result<FilterCandidates, MapRefusal> {
     let db = indexed(model, languages, &map_fill::READ_BY_CANDIDATES)?;
-    let whole = map_order::ordered(db.conn(), query, intent, languages).map_err(unreadable)?.list;
+    let root = map_check::root_of(model);
+    let whole = map_order::ordered(db.conn(), map_order::Check::On(root), query, intent, languages).map_err(unreadable)?.list;
     let first: Vec<i64> = whole.iter().take(limit).copied().collect();
     let candidates = declarations_in(db.conn(), &first).map_err(unreadable)?;
     Ok(FilterCandidates { whole, candidates })
@@ -1351,6 +1354,11 @@ pub(super) struct Sources {
     pub everything: Vec<i64>,
     /// As declarações dos arquivos, na ordem da nota do arquivo.
     pub files: Vec<i64>,
+    /// A consulta agrupada: as primeiras declarações de uma consulta só ao
+    /// índice, com as palavras em OR e o começo delas, pela nota `bm25()`.
+    /// Não entra no rodízio: a ordem única a soma à parte
+    /// ([`crate::io::map_order`]).
+    pub grouped: Vec<i64>,
 }
 
 impl Sources {
@@ -1376,7 +1384,8 @@ pub(super) fn sources(conn: &Connection, query: &str, intent: &str, languages: &
     let names = name_list(&name_hits(conn, query)?, fields_of(conn, &DECL_LEVEL, &[], &[])?.docs);
     let files = file_list(&decl_files(conn)?, &file_scores, &base_scores);
     let ids = |list: Vec<(i64, f64)>| list.into_iter().map(|(id, _)| id).collect::<Vec<_>>();
-    Ok(Sources { base: ids(base), names: ids(names), everything: ids(everything), files })
+    let grouped = map_grouped::list(conn, format!("{query} {intent}").trim(), languages)?;
+    Ok(Sources { base: ids(base), names: ids(names), everything: ids(everything), files, grouped })
 }
 
 /// A lista de base: o BM25F no nível das declarações, sobre o nome, o
@@ -2333,12 +2342,13 @@ pub(crate) mod tests {
     }
 
     /// A pergunta da busca com filtro leva só a raiz da língua do texto quando
-    /// ela acha algo no índice: o plural `commands` acha a declaração que
-    /// escreve `commands` e não a que escreve `command`, que a raiz inglesa da
-    /// pergunta traria junto. O singular `command` acha as duas, porque o
+    /// ela acha algo no índice: o plural `commands` põe a declaração que
+    /// escreve `commands` à frente da que escreve `command`. A consulta
+    /// agrupada lê o começo da palavra (`command*`) e por isso traz a do
+    /// singular também, mas atrás. O singular `command` acha as duas, porque o
     /// índice guarda as duas raízes de `commands`.
     #[test]
-    fn a_plural_word_of_the_filter_question_does_not_reach_the_declaration_that_writes_the_singular() {
+    fn a_plural_word_of_the_filter_question_puts_the_declaration_that_writes_the_plural_ahead_of_the_singular() {
         let dir = saved(&[
             ("src/plural.rs", "", &[("varios", "Runs the commands of the queue")]),
             ("src/singular.rs", "", &[("unico", "Runs one command of the queue")]),
@@ -2346,7 +2356,10 @@ pub(crate) mod tests {
         ]);
         let (plural, singular) = (id_of(dir.path(), "varios"), id_of(dir.path(), "unico"));
         let found = candidates(dir.path(), "commands", "", &languages(), CANDIDATES).unwrap();
-        assert_eq!(found.whole, vec![plural], "{found:?}");
+        let at = |id: i64| found.whole.iter().position(|seen| *seen == id);
+        assert_eq!(at(plural), Some(0), "{found:?}");
+        assert!(at(singular) > at(plural), "the singular comes behind the plural: {found:?}");
+        assert!(!found.whole.contains(&id_of(dir.path(), "outro")), "the unrelated declaration stays out: {found:?}");
         let mut both = candidates(dir.path(), "command", "", &languages(), CANDIDATES).unwrap().whole;
         both.sort_unstable();
         assert_eq!(both, vec![plural.min(singular), plural.max(singular)]);
@@ -2407,7 +2420,7 @@ pub(crate) mod tests {
             let (key, intent) = (text("key"), text("intent"));
             let query = if phrase { intent.clone() } else { text("query") };
             let db = indexed(Path::new(&text("model")), &languages, &map_fill::READ_BY_CANDIDATES).unwrap();
-            let ordered = map_order::ordered(db.conn(), &query, &intent, &languages).unwrap();
+            let ordered = map_order::ordered(db.conn(), map_order::Check::Off, &query, &intent, &languages).unwrap();
             let whole = ordered.list.clone();
             let shown: Vec<FilterCandidate> =
                 stored(db.conn(), &whole).unwrap().into_iter().map(|decl| decl.candidate).collect();

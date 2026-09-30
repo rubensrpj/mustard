@@ -17,6 +17,8 @@
 //! - a lista inteira do rodízio, com peso 0,5;
 //! - a lista de todos os campos das declarações, com peso 0,5;
 //! - a lista dos arquivos, com peso 1;
+//! - a consulta agrupada ([`map_grouped`]), com peso 0,5: as cem primeiras
+//!   declarações de uma consulta só ao índice viram arquivos distintos;
 //! - o banco dos arquivos, com peso 1.
 //!
 //! A lista de base e a dos nomes não somam por conta própria: elas escolhem a
@@ -24,6 +26,10 @@
 //! pergunta, e numa frase longa esse é o primeiro do rodízio (no Suzano, o
 //! arquivo certo é o primeiro da lista de base em 2 das 120 buscas só com a
 //! frase). Elas entram só pelo rodízio, com o peso pequeno dele.
+//!
+//! Os [`map_check::CHECKED`] primeiros dessa ordem passam pela conferência, que
+//! os reordena pela cobertura das palavras raras da pergunta; o que segue
+//! vale para a ordem já conferida.
 //!
 //! A resposta ao Claude e a cabeça da lista de candidatos saem dessa ordem: a
 //! primeira declaração de cada um dos [`TOP`] primeiros arquivos vai para o
@@ -33,13 +39,17 @@
 //! que a cabeça empurra para baixo.
 
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 
 use rusqlite::{Connection, OptionalExtension};
 
-use crate::domain::normalize::Languages;
+use crate::domain::normalize::{Languages, Normalizer};
 use crate::domain::project_map::Found;
 use crate::domain::search::TOP;
+use crate::domain::triage::Lead;
+use crate::io::map_check;
 use crate::io::map_search::{decl_files, ranked_files, sources};
+use crate::io::map_words::question;
 use crate::platform::error::Result;
 
 /// A constante da posição recíproca: `1/(60+posição)`, a de sempre.
@@ -66,12 +76,15 @@ pub(super) struct Ordered {
     /// Os primeiros arquivos do banco, na ordem da nota dele: de onde saem os
     /// sinais da triagem.
     pub bank: Vec<Found>,
+    /// O que a conferência dos primeiros candidatos diz da frente da lista
+    /// ([`crate::io::map_check`]).
+    pub lead: Lead,
 }
 
 /// Quantas ordens de declarações entram na soma, além do banco dos arquivos:
-/// a lista inteira do rodízio, a de todos os campos das declarações e a dos
-/// arquivos, nesta ordem.
-const LISTS: usize = 3;
+/// a lista inteira do rodízio, a de todos os campos das declarações, a dos
+/// arquivos e a consulta agrupada, nesta ordem.
+const LISTS: usize = 4;
 
 /// O peso de cada ordem na soma das posições.
 ///
@@ -83,8 +96,11 @@ const LISTS: usize = 3;
 /// arquivos e o banco — juntam as palavras da pergunta no mesmo arquivo, e
 /// por isso pesam o dobro das que só leem a declaração. Os pesos saem da
 /// medida nos assuntos pares da régua e da conferência nos ímpares, com os
-/// três projetos de prova, só com a frase e com os nomes.
-const WEIGHTS: Weights = Weights { lists: [0.5, 0.5, 1.0], bank: 1.0 };
+/// três projetos de prova, só com a frase e com os nomes. A consulta agrupada
+/// pesa 0,5, como no laboratório que a mediu: sozinha ela põe o certo em
+/// primeiro mais vezes e perde nos cinco primeiros; somada com esse peso, ganha
+/// nos dois.
+const WEIGHTS: Weights = Weights { lists: [0.5, 0.5, 1.0, 0.5], bank: 1.0 };
 
 #[derive(Clone, Copy)]
 struct Weights {
@@ -93,7 +109,7 @@ struct Weights {
 }
 
 /// Os pesos da tabela; nos testes, `MAP_ORDER_WEIGHTS` (`ordem=peso`, com as
-/// ordens `whole`, `everything`, `files` e `bank`, separadas por espaço) põe
+/// ordens `whole`, `everything`, `files`, `grouped` e `bank`, separadas por espaço) põe
 /// outros no lugar, para uma medida comparar com eles.
 fn weights() -> Weights {
     #[cfg(test)]
@@ -106,6 +122,7 @@ fn weights() -> Weights {
                 "whole" => out.lists[0] = weight,
                 "everything" => out.lists[1] = weight,
                 "files" => out.lists[2] = weight,
+                "grouped" => out.lists[3] = weight,
                 "bank" => out.bank = weight,
                 other => panic!("{other}"),
             }
@@ -135,8 +152,28 @@ impl Standing {
     }
 }
 
-/// A ordem única da busca de `query` e `intent` no banco aberto.
-pub(super) fn ordered(conn: &Connection, query: &str, intent: &str, languages: &Languages) -> Result<Ordered> {
+/// Se os primeiros candidatos da ordem passam pela conferência.
+#[derive(Clone, Copy)]
+pub(super) enum Check<'a> {
+    /// A ordem é a soma das listas, como saiu; os testes das listas leem assim.
+    #[cfg(test)]
+    Off,
+    /// Os primeiros candidatos passam pela conferência ([`map_check`]), que
+    /// os reordena pela cobertura das palavras raras da pergunta, com o corpo
+    /// das declarações lido do disco a partir da raiz quando ela vem.
+    On(Option<&'a Path>),
+}
+
+/// A ordem única da busca de `query` e `intent` no banco aberto. Com a
+/// conferência ligada, a lista das declarações candidatas e os arquivos
+/// seguem a ordem conferida.
+pub(super) fn ordered(
+    conn: &Connection,
+    check: Check<'_>,
+    query: &str,
+    intent: &str,
+    languages: &Languages,
+) -> Result<Ordered> {
     let sources = sources(conn, query, intent, languages)?;
     let whole = sources.whole();
     let file_of: HashMap<i64, i64> = decl_files(conn)?.into_iter().collect();
@@ -146,12 +183,17 @@ pub(super) fn ordered(conn: &Connection, query: &str, intent: &str, languages: &
             first_decl.entry(file).or_insert(*id);
         }
     }
+    for id in &sources.grouped {
+        if let Some(&file) = file_of.get(id) {
+            first_decl.entry(file).or_insert(*id);
+        }
+    }
     let bank = ranked_files(conn, query, languages, BANK_DEPTH)?;
     let weight = weights();
     let mut path_of = conn.prepare("SELECT path FROM files WHERE rowid = ?1")?;
     let mut entries: Vec<Standing> = Vec::new();
     let mut at: HashMap<String, usize> = HashMap::new();
-    let lists: [&[i64]; LISTS] = [&whole, &sources.everything, &sources.files];
+    let lists: [&[i64]; LISTS] = [&whole, &sources.everything, &sources.files, &sources.grouped];
     for (slot, list) in lists.iter().enumerate() {
         let mut seen: HashSet<i64> = HashSet::new();
         for id in list.iter() {
@@ -180,6 +222,20 @@ pub(super) fn ordered(conn: &Connection, query: &str, intent: &str, languages: &
     }
     // `sort_by` é estável: no empate, a ordem da lista inteira e depois a do banco.
     entries.sort_by(|a, b| b.sum(&weight).total_cmp(&a.sum(&weight)));
+    let found: Vec<Found> =
+        entries.iter().map(|e| Found { path: e.path.clone(), score: e.bank_score, text: None }).collect();
+    let checked = match check {
+        #[cfg(test)]
+        Check::Off => map_check::Verdict { files: found, lead: Lead::default() },
+        Check::On(root) => {
+            let mut normalizer = Normalizer::new(languages);
+            let words = question(conn, &mut normalizer, query)?;
+            map_check::check(conn, root, &mut normalizer, &words, found)?
+        }
+    };
+    let position: HashMap<&str, usize> =
+        checked.files.iter().enumerate().map(|(at, found)| (found.path.as_str(), at)).collect();
+    entries.sort_by_key(|e| position.get(e.path.as_str()).copied().unwrap_or(usize::MAX));
     let mut head: Vec<i64> = Vec::new();
     let mut by_path = conn.prepare("SELECT rowid FROM files WHERE path = ?1")?;
     for entry in entries.iter().take(TOP) {
@@ -193,8 +249,8 @@ pub(super) fn ordered(conn: &Connection, query: &str, intent: &str, languages: &
     }
     let mut list = head.clone();
     list.extend(whole.into_iter().filter(|id| !head.contains(id)));
-    let files = entries.into_iter().map(|e| Found { path: e.path, score: e.bank_score, text: None }).collect();
-    Ok(Ordered { list, files, bank: bank.into_iter().take(BANK_TOP).collect() })
+    let (files, lead) = (checked.files, checked.lead);
+    Ok(Ordered { list, files, bank: bank.into_iter().take(BANK_TOP).collect(), lead })
 }
 
 #[cfg(test)]
@@ -348,7 +404,7 @@ mod tests {
         let phrase = "importa a planilha de densidade por unidade e material genetico";
         let rotation = files_of(&dir, &whole_list(db.conn(), phrase, phrase, &languages()).unwrap());
         assert_eq!(rotation[0], "src/dto/unidade.dto.ts", "the rotation opens with the short declaration: {rotation:?}");
-        let answer = ordered(db.conn(), phrase, phrase, &languages()).unwrap();
+        let answer = ordered(db.conn(), Check::Off, phrase, phrase, &languages()).unwrap();
         assert_eq!(paths(&answer.files)[0], "src/service/importacao.service.ts", "{:?}", paths(&answer.files));
         let sent = candidates_at(&model_path(dir.path()), phrase, phrase, &languages(), 100).unwrap();
         assert_eq!(sent.candidates[0].path, "src/service/importacao.service.ts");
@@ -393,7 +449,7 @@ mod tests {
         modules.extend((1..=6).map(|n| layer(&format!("src/outro/arquivo{n}.ts"))));
         let dir = saved(&json!({ "modules": modules }));
         let db = open_existing(&model_path(dir.path())).unwrap();
-        let answer = ordered(db.conn(), "reject repository", "reject repository", &languages()).unwrap();
+        let answer = ordered(db.conn(), Check::Off, "reject repository", "reject repository", &languages()).unwrap();
         assert_eq!(paths(&answer.files)[0], "src/contract/contract.repository.ts", "{:?}", paths(&answer.files));
         let sent = candidates_at(&model_path(dir.path()), "reject repository", "reject repository", &languages(), 100).unwrap();
         assert_eq!(sent.candidates[0].path, "src/contract/contract.repository.ts");
@@ -407,7 +463,7 @@ mod tests {
         let by_list = files_of(&dir, &whole_list(db.conn(), "timestamp", "", &languages()).unwrap());
         assert!(!paths(&by_bank).contains(&"src/relogio.rs"), "the bank does not read signatures: {by_bank:?}");
         assert!(!by_list.contains(&"src/timestamp.rs".to_string()), "a file with no declaration is not in the list: {by_list:?}");
-        let answer = ordered(db.conn(), "timestamp", "", &languages()).unwrap().files;
+        let answer = ordered(db.conn(), Check::Off, "timestamp", "", &languages()).unwrap().files;
         let top = paths(&answer);
         assert!(top[..TOP.min(top.len())].contains(&"src/relogio.rs"), "list-only file missing: {top:?}");
         assert!(top[..TOP.min(top.len())].contains(&"src/timestamp.rs"), "bank-only file missing: {top:?}");
@@ -419,7 +475,7 @@ mod tests {
         let dir = saved(&clock_map());
         let db = open_existing(&model_path(dir.path())).unwrap();
         let old = files_of(&dir, &whole_list(db.conn(), "timestamp", "", &languages()).unwrap());
-        let one = ordered(db.conn(), "timestamp", "", &languages()).unwrap();
+        let one = ordered(db.conn(), Check::Off, "timestamp", "", &languages()).unwrap();
         assert_eq!(old[0], "src/relogio.rs", "the round robin alone opens with the signature file: {old:?}");
         let listed = files_of(&dir, &one.list);
         let with_declarations: Vec<&str> = paths(&one.files).into_iter().filter(|p| *p != "src/timestamp.rs").collect();
@@ -427,7 +483,9 @@ mod tests {
         assert_eq!(listed[0], "src/notas.rs");
         // A lista que o filtro recebe é essa: a mesma cabeça, sem perder declaração.
         let sent = candidates_at(&model_path(dir.path()), "timestamp", "", &languages(), 100).unwrap();
-        assert_eq!(sent.whole, one.list);
+        let conferred = ordered(db.conn(), Check::On(Some(dir.path())), "timestamp", "", &languages()).unwrap();
+        assert_eq!(sent.whole, conferred.list, "the filter gets the list the check ordered");
+        assert_eq!(files_of(&dir, &sent.whole).len(), listed.len());
         let mut sorted_new = one.list.clone();
         let mut sorted_old = whole_list(db.conn(), "timestamp", "", &languages()).unwrap();
         sorted_new.sort_unstable();
@@ -456,10 +514,27 @@ mod tests {
         let db = open_existing(&model_path(dir.path())).unwrap();
         let old = files_of(&dir, &whole_list(db.conn(), "timestamp", "", &languages()).unwrap());
         assert!(old[0].starts_with("src/relogio"), "the round robin alone opens with a signature file: {old:?}");
-        let one = ordered(db.conn(), "timestamp", "", &languages()).unwrap();
+        let one = ordered(db.conn(), Check::Off, "timestamp", "", &languages()).unwrap();
         let listed = files_of(&dir, &one.list);
         let answered: Vec<&str> = paths(&one.files).into_iter().take(TOP).collect();
         assert_eq!(listed.iter().take(TOP).map(String::as_str).collect::<Vec<_>>(), answered);
         assert!(answered.iter().take(4).all(|path| path.starts_with("src/notas")), "{answered:?}");
+    }
+
+    /// A consulta agrupada soma à ordem o arquivo que só o começo da palavra
+    /// acha: `cobrar` não acha o cobrador pela raiz, e o arquivo dele entra na
+    /// ordem única pela lista agrupada.
+    #[test]
+    fn the_grouped_list_brings_into_the_order_a_file_only_the_start_of_the_word_finds() {
+        let modules: Vec<Value> = (0..10)
+            .map(|n| json!({"path": format!("src/outro{n}.rs"), "declarations": [
+                {"kind": "function", "name": format!("fazer{n}"), "line": 1, "end_line": 5, "doc": "algo bem diferente aqui"}]}))
+            .chain([json!({"path": "src/mes.rs", "declarations": [
+                {"kind": "function", "name": "fechar", "line": 1, "end_line": 5, "doc": "fecha o cobrador do mes"}]})])
+            .collect();
+        let dir = saved(&json!({ "modules": modules }));
+        let db = open_existing(&model_path(dir.path())).unwrap();
+        let got = ordered(db.conn(), Check::Off, "cobrar", "", &languages()).unwrap();
+        assert_eq!(got.files.first().map(|file| file.path.as_str()), Some("src/mes.rs"), "{:?}", got.files);
     }
 }

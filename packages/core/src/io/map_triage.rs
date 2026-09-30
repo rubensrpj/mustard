@@ -30,14 +30,16 @@ use std::path::Path;
 use rusqlite::Connection;
 
 use crate::domain::ast::{is_test_path, tested_name};
-use crate::domain::normalize::{plain_words, Languages, Normalizer};
+use crate::domain::normalize::{Languages, Normalizer};
 use crate::domain::project_map::{Found, MapRefusal};
 use crate::domain::ranking::{idf_x1024, SCALE};
 use crate::domain::search::{folded_name, TOP};
-use crate::domain::triage::{self, Signals};
+use crate::domain::triage::{self, Lead, Signals};
+use crate::io::map_check;
 use crate::io::map_glossary::{self, Learned};
 use crate::io::map_order;
-use crate::io::map_search::{add_texts, as_indexed, by_fields, indexed, text};
+use crate::io::map_words::{question, Word};
+use crate::io::map_search::{add_texts, by_fields, indexed, text};
 use crate::io::project_map::{model_path, unreadable, SEARCHED};
 use crate::platform::error::Result;
 
@@ -127,6 +129,8 @@ pub struct Triaged {
     pub missing: Vec<String>,
     pub files: Vec<Found>,
     pub deeper: Vec<Deeper>,
+    /// O que a conferência dos primeiros candidatos diz da frente da lista.
+    pub lead: Lead,
 }
 
 impl Triaged {
@@ -134,7 +138,7 @@ impl Triaged {
     /// ([`triage::mark`]).
     #[must_use]
     pub fn mark(&self) -> triage::Mark {
-        triage::mark(self.grade, triage::chance(&self.signals))
+        triage::mark(self.grade, self.lead)
     }
 }
 
@@ -148,7 +152,7 @@ pub fn triage(
     languages: &Languages,
     limit: usize,
 ) -> std::result::Result<Triaged, MapRefusal> {
-    triage_at(&model_path(root), (query, intent), languages, limit)
+    triage_in(&model_path(root), Some(root), (query, intent), languages, limit)
 }
 
 /// A triagem de [`triage`] no mapa gravado em `model`.
@@ -158,34 +162,20 @@ pub fn triage_at(
     languages: &Languages,
     limit: usize,
 ) -> std::result::Result<Triaged, MapRefusal> {
+    triage_in(model, map_check::root_of(model), (query, intent), languages, limit)
+}
+
+/// A triagem no mapa gravado em `model`, com o corpo das declarações lido do
+/// disco a partir de `root`; sem ele, a conferência lê só o mapa.
+fn triage_in(
+    model: &Path,
+    root: Option<&Path>,
+    (query, intent): (&str, &str),
+    languages: &Languages,
+    limit: usize,
+) -> std::result::Result<Triaged, MapRefusal> {
     let db = indexed(model, languages, &SEARCHED)?;
-    triaged(db.conn(), (query, intent), languages, limit, false).map_err(unreadable)
-}
-
-/// Uma palavra da pergunta: como está quebrada, as formas da normalização e
-/// as formas como o índice as grava.
-struct Word {
-    plain: String,
-    forms: Vec<String>,
-    indexed: Vec<String>,
-}
-
-/// As palavras da pergunta, as mesmas que a busca dos arquivos usa.
-fn question(conn: &Connection, normalizer: &mut Normalizer, query: &str) -> Result<Vec<Word>> {
-    let mut seen: HashSet<Vec<String>> = HashSet::new();
-    let mut words: Vec<(String, Vec<String>)> = Vec::new();
-    for word in plain_words(query) {
-        if normalizer.is_function_word(&word) {
-            continue;
-        }
-        let forms = normalizer.word_forms(&word);
-        if seen.insert(forms.clone()) {
-            words.push((word, forms));
-        }
-    }
-    let forms: Vec<Vec<String>> = words.iter().map(|(_, forms)| forms.clone()).collect();
-    let indexed = as_indexed(conn, &forms)?;
-    Ok(words.into_iter().zip(indexed).map(|((plain, forms), indexed)| Word { plain, forms, indexed }).collect())
+    triaged(db.conn(), root, (query, intent), languages, limit, false).map_err(unreadable)
 }
 
 /// A triagem sobre o banco aberto. Com `whole`, a busca funda roda em
@@ -199,6 +189,7 @@ fn question(conn: &Connection, normalizer: &mut Normalizer, query: &str) -> Resu
 /// lista, sem nenhum do banco, tem o grau mais fraco.
 fn triaged(
     conn: &Connection,
+    root: Option<&Path>,
     (query, intent): (&str, &str),
     languages: &Languages,
     limit: usize,
@@ -206,7 +197,8 @@ fn triaged(
 ) -> Result<Triaged> {
     let mut normalizer = Normalizer::new(languages);
     let words = question(conn, &mut normalizer, query)?;
-    let ordered = map_order::ordered(conn, query, intent, languages)?;
+    let ordered = map_order::ordered(conn, map_order::Check::On(root), query, intent, languages)?;
+    let lead = ordered.lead;
     let mut files: Vec<Found> = ordered.files.into_iter().take(limit).collect();
     add_texts(conn, query, languages, &mut files)?;
     let strong = strong_words(conn, query, &words, files.first())?;
@@ -231,7 +223,7 @@ fn triaged(
         grade = 1;
     }
     let missing: Vec<String> = missing.into_iter().map(|word| word.plain.clone()).collect();
-    Ok(Triaged { grade, signals, words: words.into_iter().map(|word| word.plain).collect(), missing, files, deeper })
+    Ok(Triaged { grade, signals, words: words.into_iter().map(|word| word.plain).collect(), missing, files, deeper, lead })
 }
 
 /// De cada palavra da pergunta, se o primeiro achado a traz em campo forte:
@@ -684,7 +676,7 @@ mod tests {
     /// corte do muito mais fraco.
     fn whole(dir: &TempDir, query: &str) -> Triaged {
         let db = indexed(&model_path(dir.path()), &languages(), &SEARCHED).unwrap();
-        triaged(db.conn(), (query, ""), &languages(), TOP, true).unwrap()
+        triaged(db.conn(), None, (query, ""), &languages(), TOP, true).unwrap()
     }
 
     /// A busca funda da pergunta como a resposta a leva, com o corte do muito
@@ -723,24 +715,28 @@ mod tests {
         assert!(entry(&deep, "src/pay/gateway.rs", Some("reissue")).is_some(), "the comment was there to find: {deep:?}");
     }
 
-    /// A marca da resposta triada não lê as palavras que faltam: nota 5 com a
-    /// chance do corte é cravada com três palavras fora dos campos fortes, e
-    /// a mesma resposta com nota 4 é parcial.
+    /// A marca da resposta triada não lê as palavras que faltam: nota 5 com o
+    /// primeiro cobrindo as palavras raras e o segundo não é cravada com três
+    /// palavras fora dos campos fortes; a mesma resposta com nota 4, ou com o
+    /// segundo cobrindo também, é parcial.
     #[test]
     fn a_grade_five_answer_is_pinned_with_three_words_missing() {
         let lone = Signals { words: 1, strong: 1, first: Some(9.0), second: None };
         let words: Vec<String> = ["um", "dois", "tres", "quatro"].map(String::from).to_vec();
-        let answer = |grade: u8| Triaged {
+        let answer = |grade: u8, lead: Lead| Triaged {
             grade,
             signals: lone,
             words: words.clone(),
             missing: words[1..].to_vec(),
             files: Vec::new(),
             deeper: Vec::new(),
+            lead,
         };
-        assert_eq!(answer(5).mark(), triage::Mark::Pinned);
-        assert_eq!(answer(4).mark(), triage::Mark::Partial);
-        assert_eq!(Triaged { grade: 0, ..answer(5) }.mark(), triage::Mark::NotFound);
+        let ahead = Lead { first: 1.0, second: 0.0 };
+        assert_eq!(answer(5, ahead).mark(), triage::Mark::Pinned);
+        assert_eq!(answer(4, ahead).mark(), triage::Mark::Partial);
+        assert_eq!(answer(5, Lead { first: 1.0, second: 1.0 }).mark(), triage::Mark::Partial);
+        assert_eq!(answer(0, ahead).mark(), triage::Mark::NotFound);
     }
 
     /// Um arquivo que só a lista das declarações acha, por uma palavra da
@@ -760,7 +756,7 @@ mod tests {
     }
 
     /// A chance do grau fala do primeiro arquivo do banco: o banco só põe
-    /// `timestamp.rs` na frente, com a chance do cravado, mas a ordem única
+    /// `timestamp.rs` na frente, com a nota mais alta, mas a ordem única
     /// empata com o arquivo da lista e fica com ele; outro primeiro arquivo
     /// nunca é cravado.
     #[test]
@@ -772,11 +768,7 @@ mod tests {
         ]}));
         let got = ask(&dir, "timestamp");
         assert_eq!(got.files.first().map(|file| file.path.as_str()), Some("src/relogio.rs"), "{got:?}");
-        assert!(
-            triage::chance(&got.signals) >= triage::PINNED_FROM,
-            "the bank alone would pin its first file: {:?}",
-            got.signals
-        );
+        assert_eq!(triage::grade(&got.signals), 5, "the bank alone would give its first file the top grade: {:?}", got.signals);
         assert_eq!((got.grade, got.mark()), (triage::UNSURE_GRADE, triage::Mark::Partial), "{got:?}");
     }
 
@@ -790,6 +782,63 @@ mod tests {
         let got = ask(&dir, "charge");
         assert_eq!(got.files.first().map(|file| file.path.as_str()), Some("src/pay/gateway.rs"), "{got:?}");
         assert_eq!((got.grade, got.mark()), (5, triage::Mark::Pinned), "{got:?}");
+    }
+
+    /// Módulos que não dizem nada da pergunta: fazem as palavras dela serem
+    /// raras no índice.
+    fn fillers() -> Vec<Value> {
+        (0..12)
+            .map(|n| {
+                json!({"path": format!("src/outro{n}.rs"), "declarations": [
+                    {"kind": "function", "name": format!("fazer{n}"), "line": 1, "end_line": 5,
+                     "signature": format!("fn fazer{n}()"), "doc": "algo bem diferente aqui"}]})
+            })
+            .collect()
+    }
+
+    fn documented(path: &str, name: &str, doc: &str) -> Value {
+        json!({"path": path, "declarations": [
+            {"kind": "function", "name": name, "line": 1, "end_line": 5, "signature": format!("fn {name}()"), "doc": doc}]})
+    }
+
+    /// A conferência dos primeiros candidatos vale na resposta: dos dois
+    /// arquivos que o índice põe lado a lado pela `fatura`, fica na frente o
+    /// que traz no corpo, lido do disco, a palavra `vencida` que o índice
+    /// não tem nele, seja qual for a ordem de antes.
+    #[test]
+    fn the_answer_puts_first_the_file_whose_body_on_disk_carries_the_word_the_index_lacks() {
+        for winner in ["src/a.rs", "src/b.rs"] {
+            let mut modules = fillers();
+            modules.push(documented("src/a.rs", "emitir", "emite a fatura"));
+            modules.push(documented("src/b.rs", "cobrar", "cobra a fatura"));
+            modules.push(documented("src/x.rs", "listar", "lista a cobranca vencida"));
+            let dir = saved(&json!({ "modules": modules }));
+            std::fs::create_dir_all(dir.path().join("src")).unwrap();
+            std::fs::write(dir.path().join(winner), "fn corpo() {\n    let motivo = \"vencida\";\n}\n").unwrap();
+            let got = ask(&dir, "fatura vencida");
+            assert_eq!(got.files.first().map(|file| file.path.as_str()), Some(winner), "{got:?}");
+        }
+    }
+
+    /// Nota 5 crava só com a frente: o segundo candidato que também cobre a
+    /// palavra da pergunta deixa a resposta parcial, e o que só o primeiro
+    /// cobre a deixa cravada.
+    #[test]
+    fn a_grade_five_answer_is_pinned_only_when_the_second_candidate_does_not_cover() {
+        let mut alone = fillers();
+        alone.push(json!({"path": "src/pay/gateway.rs", "declarations": [function("charge", 1, "")]}));
+        let dir = saved(&json!({ "modules": alone }));
+        let got = ask(&dir, "charge");
+        assert_eq!((got.grade, got.mark()), (5, triage::Mark::Pinned), "{got:?}");
+        assert!(got.lead.leads(), "{:?}", got.lead);
+
+        let mut shared = fillers();
+        shared.push(json!({"path": "src/pay/gateway.rs", "declarations": [function("charge", 1, "")]}));
+        shared.push(documented("src/pay/card.rs", "cobrar", "cobra no cartao, no charge do banco"));
+        let dir = saved(&json!({ "modules": shared }));
+        let got = ask(&dir, "charge");
+        assert!(!got.lead.leads(), "the second file covers the word too: {:?}", got.lead);
+        assert_eq!(got.mark(), triage::Mark::Partial, "{got:?}");
     }
 
     #[test]
@@ -1028,12 +1077,18 @@ mod tests {
         // Por busca de grau 5: a chance, quantas palavras faltam nos campos
         // fortes e a posição do primeiro arquivo certo (0: fora da lista).
         let mut top: Vec<(f64, usize, usize)> = Vec::new();
+        // Por projeto: as buscas, as de primeiro achado certo e as com o certo
+        // entre os cinco; e as cravadas pela marca da resposta, as de primeiro
+        // certo e as que a régua reprova.
+        let mut projects: BTreeMap<String, [usize; 3]> = BTreeMap::new();
+        let mut pinned_by_mark: BTreeMap<String, [usize; 3]> = BTreeMap::new();
         for search in ruler["searches"].as_array().unwrap() {
             let text = |key: &str| search[key].as_str().unwrap().to_string();
             let db = indexed(Path::new(&text("model")), &languages, &SEARCHED).unwrap();
             let started = std::time::Instant::now();
             let asked = if phrase { text("intent") } else { text("query") };
-            let got = triaged(db.conn(), (&asked, &text("intent")), &languages, TOP, true).unwrap();
+            let root: Option<String> = db.conn().query_row("SELECT root FROM census", [], |row| row.get(0)).ok();
+            let got = triaged(db.conn(), root.as_deref().map(Path::new), (&asked, &text("intent")), &languages, TOP, true).unwrap();
             let millis = started.elapsed().as_secs_f64() * 1000.0;
             let targets: Vec<(String, String)> = search["targets"]
                 .as_array()
@@ -1045,6 +1100,13 @@ mod tests {
             let rank = got.files.iter().position(|file| right(&file.path)).map_or(0, |at| at + 1);
             let seen = grades.entry(got.grade).or_default();
             *seen = [seen[0] + 1, seen[1] + usize::from(rank == 1), seen[2] + usize::from(rank >= 1)];
+            let project = text("key").split('|').next().unwrap_or_default().to_string();
+            let seen = projects.entry(project.clone()).or_default();
+            *seen = [seen[0] + 1, seen[1] + usize::from(rank == 1), seen[2] + usize::from((1..=TOP).contains(&rank))];
+            if got.mark() == triage::Mark::Pinned {
+                let seen = pinned_by_mark.entry(project).or_default();
+                *seen = [seen[0] + 1, seen[1] + usize::from(rank == 1), seen[2] + usize::from(rank == 0)];
+            }
             if got.grade >= 5 {
                 top.push((triage::chance(&got.signals), got.missing.len(), rank));
             }
@@ -1073,12 +1135,19 @@ mod tests {
                     "key": text("key"), "words": got.signals.words, "strong": got.signals.strong,
                     "first": got.signals.first, "second": got.signals.second, "found": got.files.len(),
                     "chance": triage::chance(&got.signals), "missing": got.missing.len(),
+                    "grade": got.grade, "lead": [got.lead.first, got.lead.second],
                     "rank": rank, "millis": millis, "deeper": deeper,
                 })
                 .to_string(),
             );
         }
         std::fs::write(out, lines.join("\n")).unwrap();
+        for (project, [all, first, five]) in &projects {
+            eprintln!("project {project}: {all} searches, first right {first}, right among five {five}");
+        }
+        for (project, [all, first, wrong]) in &pinned_by_mark {
+            eprintln!("pinned {project}: {all} searches, first right {first}, ruler rejects {wrong}");
+        }
         for (grade, [all, first, five]) in grades.iter().rev() {
             eprintln!("grade {grade}: {all} searches, first right {first}, right among five {five}");
         }

@@ -31,6 +31,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::domain::normalize::{plain_words, split_identifier, Languages, Normalizer};
 use crate::io::map_db::{Block, Kind, MapDb};
+use crate::io::map_revision;
 use crate::platform::error::Result;
 
 /// O nome do bloco na tabela de blocos do mapa.
@@ -203,11 +204,28 @@ struct Declaration {
 /// `mustard.json` de `root` mudaram, porque delas vêm as formas de cada
 /// palavra. O modelo só é carregado quando há vetor a calcular.
 ///
+/// Passada em que nada foi gravado no mapa desde o último preenchimento, com
+/// as mesmas línguas, não relê nem compara declaração nenhuma: o carimbo das
+/// gravações ([`map_revision::stamp`]) que o último preenchimento guardou
+/// ainda é o do mapa.
+///
 /// Mapa sem declarações, ou sem o modelo carregado, fica como está.
 pub fn fill_at(map: &Path, root: &Path) -> Result<Report> {
     let mut db = MapDb::open(map, root, &[BLOCK])?;
     if !table_exists(db.conn(), "decls")? {
         return Ok(Report::default());
+    }
+    let languages = Languages::of_project(root);
+    let language_mark = languages.codes().join(",");
+    let stamp = map_revision::stamp(db.conn())?;
+    if stored_stamp(db.conn())?.as_deref() == Some(stamp.as_str())
+        && stored_language_mark(db.conn())?.as_deref() == Some(language_mark.as_str())
+    {
+        return Ok(Report {
+            declarations: count_rows(db.conn(), "decl_vectors")?,
+            computed: 0,
+            words: count_rows(db.conn(), "word_vectors")?,
+        });
     }
     let declarations = read_declarations(db.conn())?;
     let known = stored_hashes(db.conn())?;
@@ -221,8 +239,6 @@ pub fn fill_at(map: &Path, root: &Path) -> Result<Report> {
         declarations.iter().map(|d| (d.file.as_str(), d.name.as_str(), d.nth)).collect();
     let gone: Vec<&(String, String, i64)> =
         known.keys().filter(|(file, name, nth)| !present.contains(&(file.as_str(), name.as_str(), *nth))).collect();
-    let languages = Languages::of_project(root);
-    let language_mark = languages.codes().join(",");
     let words_stale = !changed.is_empty()
         || !gone.is_empty()
         || stored_language_mark(db.conn())?.as_deref() != Some(language_mark.as_str());
@@ -266,6 +282,7 @@ pub fn fill_at(map: &Path, root: &Path) -> Result<Report> {
                 params![language_mark],
             )?;
         }
+        tx.execute("INSERT OR REPLACE INTO meaning_meta(key, value) VALUES ('stamp', ?1)", params![stamp])?;
         Ok(())
     })?;
     let words = count_rows(db.conn(), "word_vectors")?;
@@ -316,6 +333,12 @@ fn plan_words(conn: &Connection, declarations: &[Declaration], languages: &Langu
 fn count_rows(conn: &Connection, table: &str) -> Result<usize> {
     let rows: i64 = conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |row| row.get(0))?;
     Ok(usize::try_from(rows).unwrap_or_default())
+}
+
+/// O carimbo das gravações do mapa de quando o último preenchimento leu as
+/// declarações.
+fn stored_stamp(conn: &Connection) -> Result<Option<String>> {
+    Ok(conn.query_row("SELECT value FROM meaning_meta WHERE key = 'stamp'", [], |row| row.get(0)).optional()?)
 }
 
 /// As línguas com que as formas das palavras foram gravadas.
@@ -565,7 +588,8 @@ mod tests {
     /// Um projeto com este mapa, gravado como o scan grava.
     fn saved(modules: &Value) -> TempDir {
         let dir = tempfile::tempdir().unwrap();
-        project_map::write_text(dir.path(), &json!({ "modules": modules }).to_string()).unwrap();
+        let map = project_map::model_path(dir.path());
+        project_map::save_at(&map, &json!({ "modules": modules }), "scan 1", &Languages::of_project(dir.path())).unwrap();
         dir
     }
 
@@ -584,6 +608,22 @@ mod tests {
                 function("delete_file", 1, "Delete the file from the disk."),
                 function("charge_invoice", 8, "Charge the customer invoice with the tax.")]}
         ]))
+    }
+
+    /// Grava de novo, pela porta do scan, o mapa de `two_files` com esta
+    /// documentação em `delete_file` e, ou não, a função `charge_invoice`.
+    fn rewrite(dir: &TempDir, doc: &str, with_charge: bool) {
+        let mut declarations = vec![function("delete_file", 1, doc)];
+        if with_charge {
+            declarations.push(function("charge_invoice", 8, "Charge the customer invoice with the tax."));
+        }
+        let modules = json!([
+            {"path": "src/folders.rs", "declarations": [
+                function("remove_folder", 1, "Remove the folder and everything inside it.")]},
+            {"path": "src/files.rs", "declarations": declarations}
+        ]);
+        let languages = Languages::of_project(dir.path());
+        project_map::save_at(&map_of(dir), &json!({ "modules": modules }), "scan 1", &languages).unwrap();
     }
 
     fn map_of(dir: &TempDir) -> std::path::PathBuf {
@@ -694,16 +734,12 @@ mod tests {
         assert_eq!(fill_at(&map, dir.path()).unwrap().computed, 3);
         assert_eq!(fill_at(&map, dir.path()).unwrap().computed, 0, "nothing changed");
 
-        let edit = Connection::open(&map).unwrap();
-        edit.execute("UPDATE decls SET doc = 'Delete the file and its backup.' WHERE name = 'delete_file'", []).unwrap();
-        drop(edit);
+        rewrite(&dir, "Delete the file and its backup.", true);
         assert_eq!(fill_at(&map, dir.path()).unwrap().computed, 1, "one declaration changed");
         assert_eq!(fill_at(&map, dir.path()).unwrap().computed, 0);
 
         let words_before = count(&dir, "word_vectors");
-        let edit = Connection::open(&map).unwrap();
-        edit.execute("DELETE FROM decls WHERE name = 'charge_invoice'", []).unwrap();
-        drop(edit);
+        rewrite(&dir, "Delete the file and its backup.", false);
         let report = fill_at(&map, dir.path()).unwrap();
         assert_eq!((report.declarations, report.computed), (2, 0), "{report:?}");
         assert_eq!(count(&dir, "decl_vectors"), 2);
@@ -717,6 +753,45 @@ mod tests {
     /// Trocar a língua do texto no `mustard.json` refaz as formas de cada
     /// palavra na passada seguinte, sem calcular vetor de declaração de novo;
     /// sem troca, a passada não mexe nas palavras.
+    /// A passada que não gravou nada no mapa não relê nem compara declaração
+    /// nenhuma: o preenchimento guarda o carimbo das gravações e, com o mesmo
+    /// carimbo e as mesmas línguas, devolve os números de antes sem tocar nas
+    /// tabelas. A passada que gravou algo, mesmo uma só declaração, faz a
+    /// conta inteira; e quem apagou o carimbo (o preenchimento que não
+    /// terminou) faz também.
+    #[test]
+    fn a_pass_that_wrote_nothing_does_not_reread_the_declarations() {
+        let dir = two_files();
+        let map = map_of(&dir);
+        let first = fill_at(&map, dir.path()).unwrap();
+        assert_eq!((first.declarations, first.computed), (3, 3));
+
+        // Uma linha de vetor trocada por fora não é gravação de conteúdo: o
+        // carimbo é o mesmo, e a passada nem lê as declarações para ver.
+        let edit = Connection::open(&map).unwrap();
+        edit.execute("UPDATE decl_vectors SET hash = 1 WHERE name = 'delete_file'", []).unwrap();
+        drop(edit);
+        let quiet = fill_at(&map, dir.path()).unwrap();
+        assert_eq!((quiet.declarations, quiet.computed, quiet.words), (3, 0, first.words), "{quiet:?}");
+        let hash: i64 = opened(&dir)
+            .conn()
+            .query_row("SELECT hash FROM decl_vectors WHERE name = 'delete_file'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(hash, 1, "the quiet pass did not compare the fingerprints");
+
+        // A gravação pela porta do scan muda o carimbo, e a conta se refaz.
+        rewrite(&dir, "Delete the file and keep a copy of it.", true);
+        let after_write = fill_at(&map, dir.path()).unwrap();
+        assert_eq!(after_write.computed, 1, "the tampered fingerprint is found again: {after_write:?}");
+
+        // Sem o carimbo guardado, a passada faz a conta.
+        let edit = Connection::open(&map).unwrap();
+        edit.execute("DELETE FROM meaning_meta WHERE key = 'stamp'", []).unwrap();
+        edit.execute("UPDATE decl_vectors SET hash = 1 WHERE name = 'delete_file'", []).unwrap();
+        drop(edit);
+        assert_eq!(fill_at(&map, dir.path()).unwrap().computed, 1, "no stamp, no shortcut");
+    }
+
     #[test]
     fn a_changed_project_language_rewrites_the_word_forms_and_nothing_else() {
         let dir = saved(&json!([{"path": "src/a.rs", "declarations": [

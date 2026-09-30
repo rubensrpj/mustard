@@ -2962,9 +2962,10 @@ mod tests {
     }
 
     /// Os arquivos da resposta ao Claude, sem o filtro, vêm na ordem dos
-    /// arquivos da lista de candidatos que o filtro recebe: a lista sozinha
-    /// abriria com `relogio.rs`, o banco sozinho não o veria, e as duas
-    /// juntas põem na frente `notas.rs`, que as duas nomeiam.
+    /// arquivos da lista de candidatos que o filtro recebe: a soma das listas
+    /// põe `notas.rs` na frente, que as duas nomeiam, e a conferência dos
+    /// primeiros candidatos passa à frente `relogio.rs`, cuja função traz a
+    /// palavra na assinatura; a resposta e a lista seguem essa ordem.
     #[test]
     fn the_answer_lists_the_files_in_the_order_of_the_candidate_list_sent_to_the_filter() {
         let dir = search_project(CLOCK_MAP, &json!({}));
@@ -2982,7 +2983,7 @@ mod tests {
         let answered: Vec<String> =
             answer["files"].as_array().unwrap().iter().map(|file| file["path"].as_str().unwrap().to_string()).collect();
         assert_eq!(sent, answered, "{answer}");
-        assert_eq!(sent, ["src/notas.rs", "src/relogio.rs"]);
+        assert_eq!(sent, ["src/relogio.rs", "src/notas.rs"]);
     }
 
     /// A frase ao filtro: a de `--intent`; sem ela, as palavras; e a palavra
@@ -3349,8 +3350,7 @@ mod tests {
         let phrase = "cancelar pedido motivo usuario trava";
         let triaged = map_triage::triage(&project.root, (phrase, ""), &project.languages, TOP).unwrap();
         assert_eq!(triaged.missing, ["trava"], "the phrase has a word the first finding lacks in a strong field");
-        let chance = mustard_core::domain::triage::chance(&triaged.signals);
-        assert!(chance >= mustard_core::domain::triage::PINNED_FROM + 0.005, "the fixture sits clear of the pinned cut, not on it: {chance}");
+        assert!(triaged.lead.leads(), "the first file alone covers the rare words: {:?}", triaged.lead);
         let fake = FakeFilter::scoring(&[0.9]);
         let opts = search_opts(dir.path(), phrase, None, None);
         let report = searched(&opts, &fake.assemble());
