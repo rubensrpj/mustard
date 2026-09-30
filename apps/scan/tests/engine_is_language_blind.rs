@@ -9,14 +9,17 @@
 //! per-language special case is normal here.
 //!
 //! The forbidden vocabulary is DERIVED, never curated: it is every `name` and
-//! every `dir` the registry itself declares, and the name of every framework
-//! route rule under `routes/`. Adding a language to `languages.toml`, or a
-//! framework to `routes/`, therefore widens this check automatically — the one
-//! place a language or a framework is declared stays the one place, and this
-//! test cannot fall behind it.
+//! every `dir` the registry itself declares, the name of every framework
+//! route rule under `routes/`, and the `kind` of every build-system row of
+//! `manifests.toml`. Adding a language to `languages.toml`, a framework to
+//! `routes/` or a build system to `manifests.toml`, therefore widens this
+//! check automatically — the one place each is declared stays the one place,
+//! and this test cannot fall behind it.
 //!
 //! ## What is deliberately NOT checked, and why
 //!
+//! * **Build systems shorter than four characters** (`go`, `pub`): they are
+//!   plain words of the engine's own language, and matching them reports prose.
 //! * **Terms shorter than three characters.** A two-letter registry id is not
 //!   distinctive enough to match on: it collides with ordinary English in prose
 //!   and with identifier fragments in code, and a check that cries wolf gets
@@ -44,6 +47,10 @@ use std::path::{Path, PathBuf};
 /// this, a term is not distinctive enough to separate a language name from
 /// ordinary prose, and the check would produce noise instead of signal.
 const MIN_TERM_LEN: usize = 3;
+
+/// Shortest build-system id the ratchet matches on; see
+/// `declared_build_system_terms`.
+const MIN_BUILD_SYSTEM_LEN: usize = 4;
 
 fn crate_dir() -> PathBuf {
     manifest_dir::manifest_dir()
@@ -89,6 +96,27 @@ fn declared_framework_terms() -> BTreeSet<String> {
     terms
 }
 
+/// Every build system the manifest rows declare — the `kind` of each
+/// `[[manifest]]`, lowercased. A build system is data too, so the engine never
+/// spells one. Ids under four letters (`go`, `pub`) are also plain words of the
+/// engine's own language, and would only report prose.
+fn declared_build_system_terms() -> BTreeSet<String> {
+    let raw = std::fs::read_to_string(crate_dir().join("manifests.toml")).expect("read manifests.toml");
+    let registry: toml::Value = toml::from_str(&raw).expect("manifests.toml is valid TOML");
+    let rows = registry
+        .get("manifest")
+        .and_then(|v| v.as_array())
+        .expect("manifests.toml declares [[manifest]] rows");
+    let terms: BTreeSet<String> = rows
+        .iter()
+        .filter_map(|row| row.get("kind").and_then(|v| v.as_str()))
+        .map(str::to_ascii_lowercase)
+        .filter(|kind| kind.len() >= MIN_BUILD_SYSTEM_LEN)
+        .collect();
+    assert!(!terms.is_empty(), "manifests.toml must declare at least one build system");
+    terms
+}
+
 /// Every `.rs` file under `src/`, recursively.
 fn engine_sources(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
@@ -130,6 +158,7 @@ fn is_word_byte(b: u8) -> bool {
 fn no_engine_source_names_a_language_the_registry_declares() {
     let mut terms = declared_language_terms();
     terms.extend(declared_framework_terms());
+    terms.extend(declared_build_system_terms());
     let mut files = Vec::new();
     engine_sources(&crate_dir().join("src"), &mut files);
     files.sort();
@@ -172,6 +201,9 @@ fn the_vocabulary_comes_from_the_registry_and_nowhere_else() {
     let frameworks = declared_framework_terms();
     assert!(frameworks.len() >= 2, "expected several frameworks, got {frameworks:?}");
     terms.extend(frameworks);
+    let build_systems = declared_build_system_terms();
+    assert!(build_systems.len() >= 2, "expected several build systems, got {build_systems:?}");
+    terms.extend(build_systems);
     assert!(
         terms.iter().all(|t| t.len() >= MIN_TERM_LEN),
         "every checked term clears the length floor: {terms:?}"

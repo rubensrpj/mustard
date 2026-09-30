@@ -4,21 +4,21 @@ Todo trabalho que muda arquivo segue um fluxo só: levantamento, plano, aprovaç
 
 ## Quando o pedido chega
 
-- Pedido que muda arquivo abre uma spec: rode `mustard-rt run open`. Gravado o objetivo (o primeiro `context`), sugira limpar a conversa com `/clear`: a linha de retomada diz onde a spec está.
+- Pedido que muda arquivo abre uma spec: rode `mustard-rt run open`. Gravado o objetivo (o primeiro `context`), sugira `/clear`: a linha de retomada diz onde a spec está.
 - Pergunta, leitura ou status não abre spec. Responda direto.
 - Em branch que o Mustard não abriu, nada trava.
 
 ## No levantamento
 
 - Apresente um ponto por vez, na ordem de explicar do estilo de resposta.
-- Confira no código antes de afirmar.
+- Confira no código e no histórico do git antes de afirmar ou propor: o que parece morto pode ter quem o use, e o que saiu pode ter saído de propósito.
 - Grave cada resposta na hora com `mustard-rt run write <tipo>`.
-- Cada item combinado tem três partes: `title`, curto; `text`, o porquê pelo efeito que o usuário vê, sem arquivo nem comando; `agent`, arquivos, linhas, comandos e o que testar.
 
 ## Durante a spec
 
 - Pedido novo entra na mesma spec pelo `write request`; em spec fechada ou com o pull request aberto, `mustard-rt run reopen --reason "<motivo>"` vem antes. Pull request reprovado pelo servidor vai ao `mustard-rt run reopen --fix --reason "<motivo>"`. Assunto diferente vira pendência, com `mustard-rt run pending --add`; se o usuário quiser fazer já, sugira outra conversa.
 - Mudança sua ou de um agente só segue com o "sim" do usuário.
+- Toda correção do jeito de o Mustard trabalhar vira ajuste do próprio Mustard, nunca só memória sua.
 - Nunca edite os `spec.*` à mão: grave pelo `write` e leia um bloco com `mustard-rt run read <bloco>`.
 - Delegue a um agente a investigação que abre muitos arquivos; a conferência pontual é sua. Peça a todo agente que grave na spec pelo `mustard-rt run write` e volte com duas linhas.
 
@@ -34,5 +34,3 @@ O binário monta a mensagem de commit e o corpo do pull request. Nunca escreva n
 ## Retomar
 
 "Onde eu parei" e "vamos continuar" pedem `mustard-rt run resume`.
-
-O jeito de responder mora no estilo de resposta.

@@ -866,6 +866,42 @@ fn no_printed_text_names_a_command_or_hook_that_left() {
     );
 }
 
+/// Todo comando `mustard-rt run <nome>` que um texto impresso manda rodar
+/// existe, e a opção que a linha já traz é uma que o comando declara. Este é o
+/// outro lado da varredura dos nomes que saíram: aquela precisa que alguém
+/// anote cada nome cortado, e um corte esquecido escapa; esta parte do que o
+/// binário registra e não depende de anotação nenhuma. Cortar ou renomear um
+/// comando sem varrer o catálogo de textos, as dicas, a ajuda e o próximo
+/// passo faz alguma dessas frases mandar rodar algo que não existe.
+#[test]
+fn every_run_command_a_printed_text_gives_exists_with_the_flags_it_types() {
+    let root = repo_root();
+    let tree = run_command_tree();
+    let mut offenders = Vec::new();
+    let mut seen = 0;
+    for (origin, text) in printed_texts(&root) {
+        for inv in extract_run_invocations(&text) {
+            seen += 1;
+            let Some(cmd) = tree.get_subcommands().find(|c| c.get_name() == inv.name) else {
+                offenders.push(format!("{origin}: `run {}` is not a registered command", inv.name));
+                continue;
+            };
+            let declared: BTreeSet<&str> =
+                cmd.get_arguments().filter_map(clap::Arg::get_long).chain(["help"]).collect();
+            for flag in inv.flags.iter().filter(|flag| !declared.contains(flag.as_str())) {
+                offenders.push(format!("{origin}: `run {} --{flag}` is not declared by the command", inv.name));
+            }
+        }
+    }
+    assert!(seen > 200, "the sweep read only {seen} `run` instructions");
+    assert!(
+        offenders.is_empty(),
+        "texts the binary prints or writes send the reader to a `mustard-rt run` call that \
+         fails - a command that is not registered, or a flag it does not declare:\n{}",
+        offenders.join("\n")
+    );
+}
+
 /// A varredura acha o nome que saiu em cada forma que o leitor toma por
 /// comando, e deixa passar o que não é chamada: o comando que fica, a palavra
 /// comum citada como código, o comentário e o código de teste.

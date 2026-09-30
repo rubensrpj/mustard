@@ -316,6 +316,44 @@ mod tests {
         assert_eq!(events.len(), 4, "{events:?}");
     }
 
+    /// Um gancho de teste que falha por dentro.
+    struct Breaks;
+
+    impl Check for Breaks {
+        fn evaluate(&self, _: &HookInput, _: &Ctx) -> Result<Verdict, Error> {
+            Err(Error::Parse("o gancho falhou por dentro".to_string()))
+        }
+    }
+
+    /// O gancho que falha por dentro deixa a chamada passar: o erro dele não
+    /// vira veredito, não barra nada, não avisa e não grava evento algum. Os
+    /// que rodam depois dele seguem valendo, e um que barra de verdade ainda
+    /// barra.
+    #[test]
+    fn a_check_that_fails_inside_lets_the_call_pass_and_the_next_one_still_blocks() {
+        use crate::registry::ToolMatch;
+        let dir = project_on("falha");
+        let root = dir.path();
+        let ctx = Ctx::for_test(root.to_string_lossy().to_string(), Some(Trigger::PreToolUse));
+        let input = HookInput { tool_name: Some("Bash".to_string()), session_id: Some("s1".to_string()), ..HookInput::default() };
+        let breaks = Module {
+            id: "quebra",
+            applies_to: &[(Trigger::PreToolUse, ToolMatch::Any)],
+            check: Some(Box::new(Breaks)),
+            observer: None,
+        };
+
+        let mut outcome = Outcome::allow();
+        run_module(&breaks, &input, &ctx, root, &mut outcome);
+        assert_eq!(outcome.verdict, Verdict::Allow);
+        assert!(!outcome.is_blocking());
+        assert!(outcome.warnings.is_empty(), "{:?}", outcome.warnings);
+        assert!(recorded(root, "falha").is_empty(), "a falha não é ação do gancho: {:?}", recorded(root, "falha"));
+
+        run_module(&module("barra", Some(Verdict::Deny { reason: "apaga trabalho".to_string() })), &input, &ctx, root, &mut outcome);
+        assert!(outcome.is_blocking(), "o gancho seguinte ainda barra");
+    }
+
     /// No fim de uma resposta que passa, a resposta vai para a conversa,
     /// ligada à última mensagem.
     #[test]

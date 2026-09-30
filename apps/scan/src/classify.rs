@@ -318,6 +318,17 @@ mod tests {
     }
 
     #[test]
+    fn a_marker_whose_regex_does_not_compile_drops_alone_and_the_others_stay() {
+        let catalog = parse_catalog(
+            "[[marker]]\nclass = \"one\"\nregex = \"(never closed\"\n\n\
+             [[marker]]\nclass = \"two\"\nliteral = \"Plain\"\n\n\
+             [[marker]]\nclass = \"three\"\nregex = \"b+\"\n",
+        );
+        let kept: Vec<&str> = catalog.markers.iter().map(|m| m.class.as_str()).collect();
+        assert_eq!(kept, ["two", "three"], "only the row with the broken regex is dropped");
+    }
+
+    #[test]
     fn override_pins_both_directions() {
         let ov = overrides_from(None, Some("src/made.xyz linguist-generated\nsrc/hand.xyz -linguist-generated\n"));
         let made = classify("src/made.xyz", "plain content\n", &ov).expect("positive override classifies");

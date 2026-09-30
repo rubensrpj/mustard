@@ -4,21 +4,21 @@ All work that changes a file follows one flow: survey, plan, approval, waves, re
 
 ## When a request arrives
 
-- A request that changes a file opens a spec: run `mustard-rt run open`. Once the goal is recorded (the first `context`), suggest clearing the conversation with `/clear`: the resume line says where the spec stands.
+- A request that changes a file opens a spec: run `mustard-rt run open`. Once the goal is recorded (the first `context`), suggest `/clear`: the resume line says where the spec stands.
 - A question, a read or a status check opens no spec; answer directly.
 - On a branch Mustard did not open, nothing blocks.
 
 ## During the survey
 
 - Present one point at a time, in the order of explaining from the response style.
-- Check the code before stating a fact.
+- Check the code and the git history before stating or proposing: what looks dead may still have a user, and what left may have left on purpose.
 - Record each answer at once with `mustard-rt run write <type>`.
-- Each agreed item has three parts: `title`, short; `text`, the why, by the effect the user sees, no file or command; `agent`, files, lines, commands and what to test.
 
 ## While the spec is open
 
 - A new request joins the same spec through `write request`; on a closed spec or one with its pull request open, `mustard-rt run reopen --reason "<why>"` comes first. A pull request the server failed goes to `mustard-rt run reopen --fix --reason "<why>"`. A different subject becomes a pending item, with `mustard-rt run pending --add`; if the user wants it done now, suggest another conversation.
 - A change from you or an agent only goes ahead with the user's "yes".
+- Every correction to how Mustard works becomes an adjustment to Mustard itself, never only your memory.
 - Never edit `spec.*` by hand: record through `write` and read one block with `mustard-rt run read <block>`.
 - Hand to an agent any investigation that opens many files; a single check is yours. Ask every agent to record in the spec through `mustard-rt run write` and come back in two lines.
 
@@ -34,5 +34,3 @@ The binary builds the commit message and the pull request body. Never write "Cla
 ## Resuming
 
 "Where did I stop" and "let's continue" call for `mustard-rt run resume`.
-
-How to answer lives in the response style.

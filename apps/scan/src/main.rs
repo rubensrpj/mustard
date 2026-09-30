@@ -773,8 +773,8 @@ fn infer_unit_stacks(
 
 /// Collapse units that resolve to the same directory into one, keeping the entry
 /// with the most `code_files` (ties: first occurrence, which is the model's
-/// manifest order). Several manifests can map to one dir — most visibly a Cargo
-/// workspace whose root `Cargo.toml` yields an empty-dir root unit alongside
+/// manifest order). Several manifests can map to one dir — most visibly a
+/// workspace whose root manifest yields an empty-dir root unit alongside
 /// another root manifest — and the duplicate steals part of the file attribution,
 /// surfacing as a "0 arquivos" root. Merging by dir gives one honest count.
 fn dedup_by_dir(projects: Vec<model::ProjectUnit>) -> Vec<model::ProjectUnit> {

@@ -1773,7 +1773,7 @@ pub(crate) fn literal_value(written: &str) -> &str {
 }
 
 /// O valor tem cara de texto: ao menos uma palavra — o trecho entre espaços
-/// com duas letras ou mais. Uma palavra só (`Fornecedor`, `tsc`, `cargo`)
+/// com duas letras ou mais. Uma palavra só (`Fornecedor`, `tsc`, `make`)
 /// conta, porque é ela que a pessoa procura quando não sabe o nome do código;
 /// o que não tem palavra nenhuma (`%d`, `{}`, `x`) fica de fora.
 fn reads_as_text(value: &str) -> bool {
