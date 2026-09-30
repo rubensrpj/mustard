@@ -10,7 +10,7 @@ use std::collections::HashSet;
 use rusqlite::Connection;
 
 use crate::domain::normalize::{plain_words, Normalizer};
-use crate::io::map_search::as_indexed;
+use crate::io::map_index::as_indexed;
 use crate::platform::error::Result;
 
 /// Uma palavra da pergunta: como está quebrada, as formas da normalização e

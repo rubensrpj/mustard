@@ -10,7 +10,7 @@
 use rusqlite::{Connection, Statement};
 
 use crate::domain::normalize::{Languages, Normalizer};
-use crate::io::map_search::as_indexed;
+use crate::io::map_index::as_indexed;
 use crate::platform::error::Result;
 
 /// A tabela de palavras de um nível do índice e a dos tamanhos dos

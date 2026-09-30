@@ -30,8 +30,8 @@ use model2vec_rs::model::StaticModel;
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::domain::normalize::{plain_words, split_identifier, Languages, Normalizer};
-use crate::io::map_db::{Block, Kind, MapDb};
-use crate::io::map_notes;
+use crate::io::map_db::{table_exists, Block, Kind, MapDb};
+use crate::io::map_notes_fresh;
 use crate::io::map_revision;
 use crate::platform::error::Result;
 
@@ -506,13 +506,6 @@ fn stored_words(conn: &Connection) -> Result<HashSet<String>> {
     Ok(rows.collect::<std::result::Result<_, _>>()?)
 }
 
-fn table_exists(conn: &Connection, name: &str) -> Result<bool> {
-    let found: Option<i64> = conn
-        .query_row("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1", params![name], |row| row.get(0))
-        .optional()?;
-    Ok(found.is_some())
-}
-
 /// As palavras de um texto de código: o nome colado separado, em minúsculas,
 /// e tudo o que não é letra nem número vira espaço.
 fn words_of(text: &str) -> String {
@@ -574,7 +567,7 @@ fn read_declarations(conn: &Connection) -> Result<Vec<Declaration>> {
     let texts = owned_texts(conn)?;
     let file_titles = newest_titles_by_file(conn)?;
     let lineage = lineage_titles(conn)?;
-    let notes = map_notes::Texts::read(conn)?;
+    let notes = map_notes_fresh::Texts::read(conn)?;
     let mut statement = conn.prepare(
         "SELECT file, kind, name, signature, doc, whole_doc, body_comment, supertypes, owner, members FROM decls ORDER BY rowid",
     )?;

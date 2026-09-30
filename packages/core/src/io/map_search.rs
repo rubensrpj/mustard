@@ -94,8 +94,9 @@ use crate::domain::search::{
 };
 use crate::io::map_db::MapDb;
 use crate::io::map_fill;
-use crate::io::map_glossary::{self, Learned};
-use crate::io::map_notes;
+use crate::io::map_glossary;
+use crate::io::map_index::{as_indexed, Level, DECL_LEVEL, FILE_LEVEL, SPEC_LEVEL};
+use crate::io::map_notes_fresh;
 use crate::io::map_check;
 use crate::io::map_grouped;
 use crate::io::map_order;
@@ -108,163 +109,10 @@ mod refresh;
 
 pub(crate) use refresh::refresh_files;
 
-/// Um nível do índice: a tabela FTS5, a lista de cada forma por ela, a tabela
-/// dos tamanhos, os campos que a lista de base lê e, depois deles, os que o
-/// índice guarda sem que ela os leia, na ordem das colunas.
-struct Level {
-    fts: &'static str,
-    vocab: &'static str,
-    lengths: &'static str,
-    /// A tabela das línguas, do número de documentos e das médias.
-    meta: &'static str,
-    fields: &'static [&'static str],
-    unread: &'static [&'static str],
-    /// O peso de cada coluna na nota, na ordem de [`Level::columns`].
-    weights: &'static [f64],
-    /// Como o nível lê as marcas do glossário; `None` no que não as lê.
-    learned: Option<Learned>,
-}
-
-impl Level {
-    /// Todas as colunas do nível: os campos lidos e, depois, os outros.
-    fn columns(&self) -> impl Iterator<Item = &'static str> {
-        self.fields.iter().chain(self.unread).copied()
-    }
-
-    /// O peso da coluna `column` na nota do nível.
-    fn weight(&self, column: &str) -> f64 {
-        #[cfg(test)]
-        if let Some(tuned) = tuning::weight(self.fts, column) {
-            return tuned;
-        }
-        self.columns().position(|name| name == column).map_or(1.0, |at| self.weights[at])
-    }
-}
-
-/// O nível dos arquivos: o que a busca devolve.
-///
-/// Os pesos saem de uma subida coordenada, coluna a coluna, sobre os assuntos
-/// 0 a 19 da régua de 120 buscas de cada um dos três projetos de prova,
-/// medida só com a frase e com os nomes, e conferida nos assuntos 20 a 39. O
-/// ganho é o do arquivo certo entre os cinco primeiros (vale mais o mais
-/// perto do primeiro) e entre os cem, nos candidatos do filtro, mais o dos
-/// cinco da resposta sem o filtro. Nos assuntos de conferência o ganho foi de
-/// 575 para 611; só com a frase, o certo entre os cinco da resposta foi de 85
-/// para 101 das 180 buscas, e entre os cinco candidatos, de 77 para 84. Na
-/// régua inteira de 120 buscas por projeto, os cinco da resposta só com a
-/// frase foram de 65 para 75 (Mustard), de 49 para 66 (Sialia) e de 33 para
-/// 63 (Suzano); com os nomes, de 112 para 113, de 62 para 68 e de 83 para 95.
-/// Nome, log, erro e texto fixo pesam mais que o caminho e a documentação: o
-/// nome e a mensagem escrita são o que a pergunta quase copia. Os títulos dos
-/// commits ficam com peso 0: entram no índice, mas nenhum peso acima de zero
-/// subiu a régua.
-///
-/// Três técnicas foram medidas na mesma régua e ficaram de fora, porque
-/// nenhuma subiu o arquivo certo entre os cinco primeiros nas 360 buscas só
-/// com a frase (184 nos candidatos e 204 na resposta do banco, sem elas):
-/// reescrever a pergunta com até cinco palavras da documentação e dos
-/// comentários dos cinco primeiros achados, com peso 0,3, deixou o primeiro
-/// do banco certo em 91 buscas contra 110 e os cinco candidatos em 172
-/// contra 184, e com peso 0,1 ou 0,2 ficou igual ou abaixo; o passeio
-/// aleatório pelas chamadas, semeado pelos dez primeiros e somando de 0,15 a
-/// 1 da nota da última semente, ficou igual ou abaixo em todos os pontos e
-/// derrubou os cem candidatos do Suzano de 95 para 91 a 87; e o corte de
-/// "não achei" pela chance, pela nota do primeiro e pela distância ao
-/// segundo, que sem errar nenhuma busca com o arquivo certo entre os
-/// candidatos pegou 1 dos 20 pedidos inventados só com a frase e 5 com os
-/// nomes.
-const FILE_LEVEL: Level = Level {
-    fts: "file_fts",
-    vocab: "file_vocab",
-    lengths: "file_lengths",
-    meta: "search_meta",
-    fields: &["name", "path", "doc", "log", "error", "text"],
-    unread: &["file_doc", "file_comment", "commits"],
-    weights: &[5.0, 1.0, 0.25, 5.0, 5.0, 5.0, 0.1, 1.0, 0.0],
-    learned: Some(Learned::Files),
-};
-
-/// O nível das declarações, com os pesos medidos como os do nível dos
-/// arquivos. O nome da declaração pesa pouco e o caminho nada: o arquivo
-/// dono já os traz, e a assinatura, que traz o nome com o tipo, pesa mais. O
-/// caminho entra no índice quebrado em palavras, como o nome, nos dois níveis;
-/// no das declarações, o peso 0,5 ou 1 baixou o ganho da régua de 360 buscas
-/// nos assuntos pares (de 42 para 38 e 36) e não o subiu nos ímpares, e no dos
-/// arquivos o peso 0,5 o baixou e o 2 o deixou igual, por isso o do arquivo
-/// fica em 1. Os
-/// membros e os nomes de quem usa a declaração ficam com peso 0: entram no
-/// índice, mas nenhum peso acima de zero subiu a régua (o dos nomes de quem
-/// usa a baixou em todos os pesos medidos). Os títulos dos commits e os
-/// comentários de revisão pesam 0,25, como a documentação do arquivo: a
-/// régua, feita de perguntas sobre o código, não tem pergunta sobre o que o
-/// histórico diz, e por isso qualquer peso acima de zero lhe custa quase o
-/// mesmo — uma busca a menos entre os cinco primeiros e até quatro entre os
-/// cem, em 119 —, e 0,25 é o que menos custa; com peso 0 o histórico não
-/// acharia declaração nenhuma.
-///
-/// Com as palavras vizinhas e a ordem dos vetores somadas à busca, os pesos
-/// e o peso do tamanho do campo foram medidos de novo, na régua de 354
-/// buscas (só a frase e com os nomes), e ficaram. O `B` do nível das
-/// declarações em 0,5 tirou 4 buscas do primeiro lugar da resposta no
-/// Mustard (de 60 para 56) e 6 dos cinco primeiros na Sialia (de 81 para
-/// 75), e em 0,3 tirou 8 e 7; o `B` do nível dos arquivos em 0,5 subiu o
-/// primeiro do banco (de 29 para 35 no Mustard) mas baixou a resposta no
-/// Suzano (de 39 para 36 em primeiro, de 69 para 67 nos cinco). O peso do
-/// nome em 0,3 e o da assinatura em 1 não subiram nenhum projeto sem
-/// baixar outro. A declaração de nome ou assinatura curtos que sobe numa
-/// frase longa fica onde a ordem única a põe: a lista de base e a dos nomes
-/// entram só pelo rodízio, com o peso pequeno dele.
-const DECL_LEVEL: Level = Level {
-    fts: "decl_fts",
-    vocab: "decl_vocab",
-    lengths: "decl_lengths",
-    meta: "search_meta",
-    fields: &["name", "path", "signature", "doc", "log", "error", "text"],
-    unread: &["whole_doc", "body_comment", "body_names", "body_calls", "owner", "members", "commits", "callers"],
-    weights: &[0.1, 0.0, 2.0, 1.0, 1.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 0.5, 0.0, 0.25, 0.0],
-    learned: Some(Learned::Decls),
-};
-
-/// O nível dos itens das specs (`io::map_specs`): o título, a parte do
-/// usuário e as palavras de busca que a gravação calculou, cada um no seu
-/// campo. As médias e as línguas moram numa tabela do bloco das specs, que a
-/// montagem do mapa não esvazia.
-const SPEC_LEVEL: Level = Level {
-    fts: "spec_fts",
-    vocab: "spec_vocab",
-    lengths: "spec_lengths",
-    meta: "spec_meta",
-    fields: &["title", "text", "words"],
-    unread: &[],
-    weights: &[1.0; 3],
-    learned: None,
-};
-
 /// Os campos dos textos fixos, os últimos dos dois níveis, nesta ordem: cada
 /// texto entra no campo da marca que o scan deu a ele, e a marca que não é
 /// nenhuma destas entra no último.
 const TEXT_FIELDS: [&str; 3] = ["log", "error", "text"];
-
-/// Os pesos que uma medida põe no lugar dos da tabela, só nos testes.
-#[cfg(test)]
-mod tuning {
-    use std::collections::HashMap;
-    use std::sync::RwLock;
-
-    static WEIGHTS: RwLock<Option<HashMap<(String, String), f64>>> = RwLock::new(None);
-
-    pub(super) fn weight(table: &str, column: &str) -> Option<f64> {
-        WEIGHTS.read().unwrap().as_ref()?.get(&(table.to_string(), column.to_string())).copied()
-    }
-
-    pub(super) fn set(table: &str, column: &str, weight: f64) {
-        WEIGHTS
-            .write()
-            .unwrap()
-            .get_or_insert_with(HashMap::new)
-            .insert((table.to_string(), column.to_string()), weight);
-    }
-}
 
 /// Um texto fixo como o scan o grava, na tabela dos textos de cada arquivo.
 #[derive(Deserialize)]
@@ -303,10 +151,6 @@ const LEARNED_WEIGHT: f64 = 1.0;
 /// A pergunta de uma palavra que procura o pedaço do nome tem pelo menos
 /// estas letras: com menos, o pedaço casa com nome demais.
 const PIECE_MIN_CHARS: usize = 4;
-
-/// O tokenizador das tabelas de palavras do índice, o mesmo do esquema do
-/// bloco das declarações; a pergunta passa por ele antes da consulta.
-const TOKENIZER: &str = "unicode61 remove_diacritics 2";
 
 /// A chave, em `search_meta`, das línguas em que as palavras foram
 /// preparadas.
@@ -727,7 +571,7 @@ struct FileText {
 }
 
 /// O texto de cada arquivo. O arquivo cuja coluna dos textos fixos não se lê
-/// fica sem eles. As notas de sentido em dia ([`map_notes::fresh`]) entram como
+/// fica sem eles. As notas de sentido em dia ([`map_notes_fresh::fresh`]) entram como
 /// mais um texto fixo, do campo do texto solto, do arquivo e da declaração que
 /// cada uma nomeia.
 fn written_texts(conn: &Connection, scope: Option<&[&str]>) -> Result<Vec<FileText>> {
@@ -745,7 +589,7 @@ fn written_texts(conn: &Connection, scope: Option<&[&str]>) -> Result<Vec<FileTe
         });
     }
     let mut at: HashMap<String, usize> = out.iter().enumerate().map(|(at, file)| (file.path.clone(), at)).collect();
-    for note in map_notes::fresh(conn, scope)? {
+    for note in map_notes_fresh::fresh(conn, scope)? {
         let written = Written {
             line: note.line,
             kind: TEXT_FIELDS[TEXT_FIELDS.len() - 1].to_string(),
@@ -883,14 +727,8 @@ fn found_in(
 
 /// Os arquivos da busca de todas as colunas do nível, na ordem da nota,
 /// sem os textos fixos: o que a ordem única dos arquivos soma à lista das
-/// declarações ([`crate::io::map_order`]).
-#[cfg(test)]
-pub(super) fn ranked_files(conn: &Connection, query: &str, languages: &Languages, limit: usize) -> Result<Vec<Found>> {
-    ranked_files_near(conn, query, languages, limit, &Near::none())
-}
-
-/// [`ranked_files`] com as formas vizinhas das palavras da pergunta
-/// ([`Near`]), que valem metade das que ela escreveu.
+/// declarações ([`crate::io::map_order`]). As formas vizinhas das palavras
+/// da pergunta ([`Near`]) valem metade das que ela escreveu.
 pub(super) fn ranked_files_near(
     conn: &Connection,
     query: &str,
@@ -1150,69 +988,6 @@ fn behind_the_names(
     };
     let below = floor.next_down();
     ranked(scores.into_iter().map(|(doc, score)| if plain.contains(&doc) { (doc, score) } else { (doc, score.min(below)) }))
-}
-
-/// As formas de cada palavra da pergunta como o tokenizador do índice as
-/// grava: sem os acentos que ele tira, e cortadas onde ele corta. A forma
-/// feita só de letras minúsculas e algarismos do ASCII ele grava como vem;
-/// quando alguma não é assim, a pergunta passa por ele ([`through_tokenizer`]).
-pub(super) fn as_indexed(conn: &Connection, words: &[Vec<String>]) -> Result<Vec<Vec<String>>> {
-    let as_is = |form: &String| !form.is_empty() && form.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit());
-    if words.iter().flatten().all(as_is) {
-        return Ok(words.to_vec());
-    }
-    through_tokenizer(conn, words)
-}
-
-/// Se o índice lê alguma das `forms` da palavra em algum campo que conta na
-/// nota, no nível dos arquivos ou no das declarações: a palavra que o mapa
-/// escreve.
-pub(super) fn is_read(conn: &Connection, forms: &[String]) -> Result<bool> {
-    let indexed = as_indexed(conn, &[forms.to_vec()])?;
-    for level in [&FILE_LEVEL, &DECL_LEVEL] {
-        let columns: Vec<String> =
-            level.columns().filter(|column| level.weight(column) > 0.0).map(|column| format!("'{column}'")).collect();
-        let mut statement = conn.prepare(&format!(
-            "SELECT 1 FROM {} WHERE term = ?1 AND col IN ({}) LIMIT 1",
-            level.vocab,
-            columns.join(", ")
-        ))?;
-        for form in indexed.iter().flatten() {
-            if statement.exists([form])? {
-                return Ok(true);
-            }
-        }
-    }
-    Ok(false)
-}
-
-/// Cada forma passa por uma tabela temporária com o tokenizador do índice, e
-/// os termos que ele fez dela ficam como formas da mesma palavra.
-fn through_tokenizer(conn: &Connection, words: &[Vec<String>]) -> Result<Vec<Vec<String>>> {
-    conn.execute_batch(&format!(
-        "CREATE VIRTUAL TABLE IF NOT EXISTS temp.question USING fts5(text, tokenize='{TOKENIZER}');
-         CREATE VIRTUAL TABLE IF NOT EXISTS temp.question_terms USING fts5vocab('temp', 'question', 'instance');
-         DELETE FROM temp.question;"
-    ))?;
-    let mut owner: Vec<usize> = Vec::new();
-    let mut insert = conn.prepare("INSERT INTO temp.question(rowid, text) VALUES (?1, ?2)")?;
-    for (word, forms) in words.iter().enumerate() {
-        for form in forms {
-            insert.execute(params![owner.len() as i64, form])?;
-            owner.push(word);
-        }
-    }
-    let mut out: Vec<Vec<String>> = vec![Vec::new(); words.len()];
-    let mut terms = conn.prepare("SELECT doc, term FROM temp.question_terms ORDER BY doc, offset")?;
-    let mut rows = terms.query([])?;
-    while let Some(row) = rows.next()? {
-        let Some(&word) = usize::try_from(row.get::<_, i64>(0)?).ok().and_then(|at| owner.get(at)) else { continue };
-        let term = text(row, 1)?;
-        if !out[word].contains(&term) {
-            out[word].push(term);
-        }
-    }
-    Ok(out)
 }
 
 /// As ocorrências da forma `form` nas colunas `fields`, cada uma no campo da
@@ -1515,14 +1290,8 @@ impl Sources {
     }
 }
 
-/// As quatro listas da lista inteira, antes do rodízio.
-#[cfg(test)]
-pub(super) fn sources(conn: &Connection, query: &str, intent: &str, languages: &Languages) -> Result<Sources> {
-    sources_near(conn, query, intent, languages, &Near::none())
-}
-
-/// [`sources`] com as formas vizinhas das palavras da pergunta ([`Near`]) nas
-/// três listas de palavras.
+/// As quatro listas da lista inteira, antes do rodízio, com as formas
+/// vizinhas das palavras da pergunta ([`Near`]) nas três listas de palavras.
 pub(super) fn sources_near(
     conn: &Connection,
     query: &str,
@@ -1803,6 +1572,7 @@ pub(crate) mod tests {
     use super::*;
     use crate::domain::project_map::{DeclLineage, FileLineage, LineageCommit};
     use crate::domain::search::{CANDIDATES, TOP};
+    use crate::io::map_index::{tuning, TOKENIZER};
     use crate::io::project_map as store;
     use serde_json::{json, Value};
     use tempfile::{tempdir, TempDir};
@@ -1874,7 +1644,7 @@ pub(crate) mod tests {
         assert_eq!(paths(dir.path(), "estorno"), ["src/b.rs"]);
         let db = open_existing(&model_path(dir.path())).unwrap();
         let mut triage: Vec<String> =
-            ranked_files(db.conn(), "estorno", &languages(), TOP).unwrap().into_iter().map(|found| found.path).collect();
+            ranked_files_near(db.conn(), "estorno", &languages(), TOP, &Near::none()).unwrap().into_iter().map(|found| found.path).collect();
         triage.sort();
         assert_eq!(triage, ["src/a.rs", "src/b.rs"]);
     }
@@ -2002,20 +1772,6 @@ pub(crate) mod tests {
         assert_eq!(paths(dir.path(), "sablona"), ["src/modelo.rs"]);
     }
 
-    /// A forma de letras minúsculas e algarismos do ASCII, que a pergunta não
-    /// passa pelo tokenizador, é a que ele grava; a com outra letra, não.
-    #[test]
-    fn the_tokenizer_keeps_a_lowercase_ascii_form_and_folds_the_other_accents() {
-        let dir = saved(LARGER);
-        let db = open_existing(&model_path(dir.path())).unwrap();
-        let words = |list: &[&[&str]]| -> Vec<Vec<String>> {
-            list.iter().map(|forms| forms.iter().map(|form| form.to_string()).collect()).collect()
-        };
-        let plain = words(&[&["parse", "pars"], &["git2"], &["log"]]);
-        assert_eq!(through_tokenizer(db.conn(), &plain).unwrap(), plain);
-        assert_eq!(through_tokenizer(db.conn(), &words(&[&["šablona"], &["log"]])).unwrap(), words(&[&["sablona"], &["log"]]));
-    }
-
     /// A pergunta passa pelo mesmo tokenizador das duas tabelas de palavras.
     #[test]
     fn the_question_goes_through_the_tokenizer_of_both_word_tables() {
@@ -2141,7 +1897,7 @@ pub(crate) mod tests {
         };
         let found = |word: &str| -> Vec<i64> {
             let db = indexed(&model, &languages(), &SEARCHED).unwrap();
-            sources(db.conn(), word, "", &languages()).unwrap().whole()
+            sources_near(db.conn(), word, "", &languages(), &Near::none()).unwrap().whole()
         };
         let total = id_of_line(dir.path(), 10);
 
@@ -2652,7 +2408,7 @@ pub(crate) mod tests {
         let db = open_existing(&model_path(dir.path())).unwrap();
         // Só a lista de tudo e a dos arquivos acham a palavra; a de tudo põe
         // primeiro a declaração do erro curto.
-        let every = sources(db.conn(), "estoque", "", &languages()).unwrap().everything;
+        let every = sources_near(db.conn(), "estoque", "", &languages(), &Near::none()).unwrap().everything;
         assert_eq!(every, vec![id_of(dir.path(), "baixar"), id_of(dir.path(), "avisar")]);
     }
 
@@ -2684,7 +2440,7 @@ pub(crate) mod tests {
         }
         let dir = saved_json(&json!({ "modules": modules }));
         let db = open_existing(&model_path(dir.path())).unwrap();
-        let whole = sources(db.conn(), "fornecedor", "", &languages()).unwrap().whole();
+        let whole = sources_near(db.conn(), "fornecedor", "", &languages(), &Near::none()).unwrap().whole();
         let id = |name: &str| id_of(dir.path(), name);
         assert_eq!(
             whole,
@@ -2803,7 +2559,7 @@ pub(crate) mod tests {
             }
             let file_rank = files.iter().position(|path| is_file(path)).map_or(0, |at| at + 1);
             let first_decl = shown.iter().position(|c| is_file(&c.path)).map_or(0, |at| at + 1);
-            let bank = ranked_files(db.conn(), &query, &languages, 100).unwrap();
+            let bank = ranked_files_near(db.conn(), &query, &languages, 100, &Near::none()).unwrap();
             let bank_rank = bank.iter().position(|f| is_file(&f.path)).map_or(0, |at| at + 1);
             let triaged = crate::io::map_triage::triage_at(Path::new(&text("model")), (&query, &intent), &languages, 100).unwrap();
             let answer_rank = triaged.files.iter().position(|f| is_file(&f.path)).map_or(0, |at| at + 1);
@@ -2910,7 +2666,7 @@ pub(crate) mod tests {
                                 .filter_map(|path| path_of.query_row([path], |row| row.get::<_, i64>(0)).ok())
                                 .collect();
                             for (mode, query) in [(0, &one.intent), (1, &one.names)] {
-                                let whole = sources(conn, query, &one.intent, &languages).unwrap().whole();
+                                let whole = sources_near(conn, query, &one.intent, &languages, &Near::none()).unwrap().whole();
                                 let mut files: Vec<i64> = Vec::new();
                                 for id in whole.iter().take(CANDIDATES) {
                                     if let Some(file) = file_of.get(id)
@@ -2921,7 +2677,7 @@ pub(crate) mod tests {
                                 }
                                 let rank = files.iter().position(|file| right.contains(file)).map(|at| at + 1);
                                 let in_hundred = whole.iter().take(CANDIDATES).any(|id| file_of.get(id).is_some_and(|f| right.contains(f)));
-                                let bank = ranked_files(conn, query, &languages, 100).unwrap();
+                                let bank = ranked_files_near(conn, query, &languages, 100, &Near::none()).unwrap();
                                 let bank_rank = bank
                                     .iter()
                                     .position(|f| one.right.contains(&f.path))

@@ -1,10 +1,10 @@
 //! `map_order` — a ordem única dos arquivos da busca do mapa.
 //!
 //! A busca tinha ordens que discordavam. A lista das declarações que vai ao
-//! filtro ([`map_search::sources`]) junta quatro listas por rodízio e vê o
+//! filtro ([`map_search::sources_near`]) junta quatro listas por rodízio e vê o
 //! pedido inteiro, a frase e as palavras, nos campos das declarações. A
 //! resposta do banco, a que sai sem filtro, ordenava os arquivos só pela nota
-//! deles ([`map_search::ranked_files`]). Na régua de 360 buscas cada uma
+//! deles ([`map_search::ranked_files_near`]). Na régua de 360 buscas cada uma
 //! acerta arquivos que a outra perde: com os nomes, 50 dos erros da resposta
 //! tinham o certo entre os 5 primeiros da lista; só com a frase, a lista
 //! perde para o banco em 47 buscas e ganha em 27.
@@ -296,7 +296,8 @@ pub(super) fn ordered_with(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::io::map_search::{candidates_at, ranked_files, sources};
+    use crate::io::map_search::candidates_at;
+    use crate::io::map_sense::Near;
     use crate::io::project_map::{self as store, model_path, open_existing};
     use serde_json::{json, Value};
     use tempfile::{tempdir, TempDir};
@@ -372,7 +373,7 @@ mod tests {
                 search["targets"].as_array().unwrap().iter().map(|t| t[0].as_str().unwrap().to_string()).collect();
             let file_of: HashMap<i64, i64> = decl_files(conn).unwrap().into_iter().collect();
             let mut path_of = conn.prepare("SELECT path FROM files WHERE rowid = ?1").unwrap();
-            let sources = crate::io::map_search::sources(conn, &query, &intent, &languages).unwrap();
+            let sources = sources_near(conn, &query, &intent, &languages, &Near::none()).unwrap();
             let mut where_is = |list: &[i64]| -> usize {
                 let mut seen: Vec<i64> = Vec::new();
                 for id in list {
@@ -389,7 +390,7 @@ mod tests {
                 0
             };
             let whole = sources.whole();
-            let bank = ranked_files(conn, &query, &languages, 100).unwrap();
+            let bank = ranked_files_near(conn, &query, &languages, 100, &Near::none()).unwrap();
             let bank_rank = bank.iter().position(|f| right.contains(&f.path)).map_or(0, |at| at + 1);
             lines.push(
                 json!({
@@ -442,7 +443,7 @@ mod tests {
         let dir = saved(&phrase_map());
         let db = open_existing(&model_path(dir.path())).unwrap();
         let phrase = "importa a planilha de densidade por unidade e material genetico";
-        let rotation = files_of(&dir, &sources(db.conn(), phrase, phrase, &languages()).unwrap().whole());
+        let rotation = files_of(&dir, &sources_near(db.conn(), phrase, phrase, &languages(), &Near::none()).unwrap().whole());
         assert_eq!(rotation[0], "src/dto/unidade.dto.ts", "the rotation opens with the short declaration: {rotation:?}");
         let answer = ordered(db.conn(), Check::Off, phrase, phrase, &languages()).unwrap();
         assert_eq!(paths(&answer.files)[0], "src/service/importacao.service.ts", "{:?}", paths(&answer.files));
@@ -467,7 +468,7 @@ mod tests {
         modules.extend((1..=6).map(|n| one(&format!("src/outro/arquivo{n}.ts"), &format!("faz{n}"))));
         let dir = saved(&json!({ "modules": modules }));
         let db = open_existing(&model_path(dir.path())).unwrap();
-        let first = |question: &str| ranked_files(db.conn(), question, &languages(), 10).unwrap().remove(0).path;
+        let first = |question: &str| ranked_files_near(db.conn(), question, &languages(), 10, &Near::none()).unwrap().remove(0).path;
         assert_eq!(first("contract end points"), "src/api/ContractEndPoints.cs");
         assert_eq!(first("plantio plan repository"), "src/plantio/plantio-plan.repository.ts");
     }
@@ -499,8 +500,8 @@ mod tests {
     fn the_answer_keeps_the_file_only_the_list_finds_and_the_one_only_the_bank_finds() {
         let dir = saved(&clock_map());
         let db = open_existing(&model_path(dir.path())).unwrap();
-        let by_bank = ranked_files(db.conn(), "timestamp", &languages(), 100).unwrap();
-        let by_list = files_of(&dir, &sources(db.conn(), "timestamp", "", &languages()).unwrap().whole());
+        let by_bank = ranked_files_near(db.conn(), "timestamp", &languages(), 100, &Near::none()).unwrap();
+        let by_list = files_of(&dir, &sources_near(db.conn(), "timestamp", "", &languages(), &Near::none()).unwrap().whole());
         assert!(!paths(&by_bank).contains(&"src/relogio.rs"), "the bank does not read signatures: {by_bank:?}");
         assert!(!by_list.contains(&"src/timestamp.rs".to_string()), "a file with no declaration is not in the list: {by_list:?}");
         let answer = ordered(db.conn(), Check::Off, "timestamp", "", &languages()).unwrap().files;
@@ -514,7 +515,7 @@ mod tests {
     fn the_candidate_list_opens_with_the_files_of_the_answer_in_the_same_order() {
         let dir = saved(&clock_map());
         let db = open_existing(&model_path(dir.path())).unwrap();
-        let old = files_of(&dir, &sources(db.conn(), "timestamp", "", &languages()).unwrap().whole());
+        let old = files_of(&dir, &sources_near(db.conn(), "timestamp", "", &languages(), &Near::none()).unwrap().whole());
         let one = ordered(db.conn(), Check::Off, "timestamp", "", &languages()).unwrap();
         assert_eq!(old[0], "src/relogio.rs", "the round robin alone opens with the signature file: {old:?}");
         let listed = files_of(&dir, &one.list);
@@ -527,7 +528,7 @@ mod tests {
         assert_eq!(sent.whole, conferred.list, "the filter gets the list the check ordered");
         assert_eq!(files_of(&dir, &sent.whole).len(), listed.len());
         let mut sorted_new = one.list.clone();
-        let mut sorted_old = sources(db.conn(), "timestamp", "", &languages()).unwrap().whole();
+        let mut sorted_old = sources_near(db.conn(), "timestamp", "", &languages(), &Near::none()).unwrap().whole();
         sorted_new.sort_unstable();
         sorted_old.sort_unstable();
         assert_eq!(sorted_new, sorted_old, "the head reorders the list and drops nothing");
@@ -552,7 +553,7 @@ mod tests {
         }));
         let dir = saved(&json!({ "modules": modules }));
         let db = open_existing(&model_path(dir.path())).unwrap();
-        let old = files_of(&dir, &sources(db.conn(), "timestamp", "", &languages()).unwrap().whole());
+        let old = files_of(&dir, &sources_near(db.conn(), "timestamp", "", &languages(), &Near::none()).unwrap().whole());
         assert!(old[0].starts_with("src/relogio"), "the round robin alone opens with a signature file: {old:?}");
         let one = ordered(db.conn(), Check::Off, "timestamp", "", &languages()).unwrap();
         let listed = files_of(&dir, &one.list);

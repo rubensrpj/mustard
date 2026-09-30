@@ -29,6 +29,7 @@ use serde::{Deserialize, Serialize};
 use crate::domain::normalize::{Languages, Normalizer};
 use crate::domain::project_map::MapRefusal;
 use crate::io::map_db::MapDb;
+use crate::io::map_index::Learned;
 use crate::io::project_map::{open_existing, open_existing_waiting};
 use crate::platform::error::{Error, Result};
 
@@ -82,14 +83,6 @@ pub struct Mark {
 /// primeira à última, as duas incluídas. A linha acrescentada entre duas
 /// outras é o trecho dessas duas.
 pub type Touched = (u64, u64);
-
-/// O nível da busca que lê as marcas: a declaração marcada, ou o arquivo
-/// dela.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Learned {
-    Decls,
-    Files,
-}
 
 /// Grava no mapa em `model` a busca que a sessão `session` acabou de fazer,
 /// no lugar da anterior dela: as palavras de `query`, cortadas nas línguas

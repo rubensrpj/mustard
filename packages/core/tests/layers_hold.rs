@@ -10,6 +10,9 @@
 //!   escrita por conta própria.
 //! - O autômato de vários padrões nasce num lugar só, no vocabulário; quem
 //!   precisa de um usa o dele.
+//! - Na busca do mapa, o índice e a leitura das notas em dia moram em módulos
+//!   de baixo, o sentido não volta à busca nem à ordem, e quem grava a nota
+//!   fica em cima de todos: nenhuma importação fecha ciclo entre eles.
 
 #[path = "support/manifest_dir.rs"]
 mod manifest_dir;
@@ -37,16 +40,27 @@ fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// Se a linha abre o módulo `tests`, com ou sem `pub` e restrição de alcance.
+fn opens_tests_module(line: &str) -> bool {
+    let rest = match line.strip_prefix("pub(") {
+        Some(after) => after.split_once(") ").map_or("", |(_, rest)| rest),
+        None => line.strip_prefix("pub ").unwrap_or(line),
+    };
+    rest.strip_prefix("mod tests").is_some_and(|after| after.starts_with([' ', '{', ';']))
+}
+
 /// O código de produção de um arquivo: tudo antes do primeiro módulo de
 /// testes (o `#[cfg(test)]` na primeira coluna, seguido de comentários e
-/// atributos até o `mod`), sem as linhas de comentário.
+/// atributos até o `mod tests`, com ou sem `pub` e restrição de alcance),
+/// sem as linhas de comentário. Um módulo de apoio dos testes que venha antes
+/// dele não encerra a leitura: o código de produção depois dele continua lido.
 fn production_lines(text: &str) -> Vec<(usize, &str)> {
     let all: Vec<&str> = text.lines().collect();
     let mut kept = Vec::new();
     for (n, line) in all.iter().enumerate() {
         if *line == "#[cfg(test)]" {
             let next = all[n + 1..].iter().find(|l| !l.trim_start().starts_with("//") && !l.trim_start().starts_with("#["));
-            if next.is_some_and(|l| l.starts_with("mod ") || l.starts_with("pub mod ")) {
+            if next.is_some_and(|l| opens_tests_module(l)) {
                 break;
             }
         }
@@ -134,4 +148,70 @@ fn the_multi_pattern_automaton_is_built_in_one_place() {
         .collect();
     let found = hits(&files, &["AhoCorasick::new(", "AhoCorasick::builder(", "AhoCorasickBuilder"]);
     assert!(found.is_empty(), "a second automaton is built here; reuse the vocabulary one:\n{}", found.join("\n"));
+}
+
+/// Se a linha cita algum dos módulos `names` como palavra inteira (`map_notes`
+/// não casa com `map_notes_fresh`).
+fn names_a_module(line: &str, names: &[&str]) -> bool {
+    line.split(|c: char| !(c.is_alphanumeric() || c == '_')).any(|word| names.contains(&word))
+}
+
+/// Cada linha de produção de `path` que cita algum dos módulos `names`,
+/// escrita como `arquivo:linha: texto`.
+fn lines_naming(path: &Path, names: &[&str]) -> Vec<String> {
+    let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{} unreadable: {e}", path.display()));
+    let shown = path.strip_prefix(repo_root()).unwrap_or(path).display().to_string();
+    production_lines(&text)
+        .into_iter()
+        .filter(|(_, line)| names_a_module(line, names))
+        .map(|(n, line)| format!("{shown}:{n}: {}", line.trim()))
+        .collect()
+}
+
+fn io_lines_naming(file: &str, names: &[&str]) -> Vec<String> {
+    lines_naming(&repo_root().join("packages/core/src/io").join(file), names)
+}
+
+/// O índice e a leitura das notas em dia ficam embaixo: só conhecem o banco;
+/// o sentido não importa a busca nem a ordem nem a escrita da nota; a busca
+/// não importa a escrita da nota; e ninguém na biblioteca importa a escrita
+/// da nota, que refaz o índice e os vetores e por isso fica em cima de todos.
+#[test]
+fn the_index_the_fresh_notes_and_the_sense_sit_below_the_search_and_the_note_writer() {
+    const ABOVE_THE_INDEX: &[&str] = &[
+        "map_search",
+        "map_order",
+        "map_sense",
+        "map_meaning",
+        "map_triage",
+        "map_glossary",
+        "map_notes",
+        "project_map",
+    ];
+    let mut found: Vec<String> = Vec::new();
+    found.extend(io_lines_naming("map_index.rs", ABOVE_THE_INDEX));
+    found.extend(io_lines_naming("map_notes_fresh.rs", ABOVE_THE_INDEX));
+    found.extend(io_lines_naming("map_notes_fresh.rs", &["map_index"]));
+    found.extend(io_lines_naming("map_meaning.rs", &["map_search", "map_order", "map_sense", "map_notes"]));
+    found.extend(io_lines_naming("map_sense.rs", &["map_search", "map_order", "map_triage", "map_notes"]));
+    found.extend(io_lines_naming("map_search.rs", &["map_notes"]));
+    for path in sources_under(&["packages/core/src"]) {
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+        if name == "map_notes.rs" || path.ends_with("packages/core/src/io/mod.rs") {
+            continue;
+        }
+        found.extend(lines_naming(&path, &["map_notes"]));
+    }
+    assert!(found.is_empty(), "an import closes a loop among the search layers:\n{}", found.join("\n"));
+}
+
+/// As duas funções da busca que só os testes chamavam não voltam: os testes
+/// chamam as que a busca usa, com o que ela recebe de fato.
+#[test]
+fn the_search_has_no_function_only_its_tests_call() {
+    let path = repo_root().join("packages/core/src/io/map_search.rs");
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{} unreadable: {e}", path.display()));
+    for gone in ["fn ranked_files(", "fn sources("] {
+        assert!(!text.contains(gone), "{gone} came back in map_search.rs; call the `_near` one with `Near::none()`");
+    }
 }

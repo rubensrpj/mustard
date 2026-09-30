@@ -2,7 +2,7 @@
 //! funda.
 //!
 //! Os arquivos da resposta saem da ordem única ([`crate::io::map_order`]):
-//! a busca dos arquivos ([`map_search::ranked_files`]) somada à lista das
+//! a busca dos arquivos ([`map_search::ranked_files_near`]) somada à lista das
 //! declarações que vai ao filtro. Os sinais do grau saem da busca dos
 //! arquivos, que responde pelos campos fortes do índice: o nome (o do
 //! arquivo, o das declarações), a assinatura, as mensagens de erro e de log,
@@ -44,7 +44,8 @@ use crate::domain::ranking::{idf_x1024, SCALE};
 use crate::domain::search::{folded_name, TOP};
 use crate::domain::triage::{self, Lead, Signals};
 use crate::io::map_check;
-use crate::io::map_glossary::{self, Learned};
+use crate::io::map_glossary;
+use crate::io::map_index::Learned;
 use crate::io::map_order;
 use crate::io::map_sense::Sense;
 use crate::io::map_words::{question, Word};

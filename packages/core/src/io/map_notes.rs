@@ -21,26 +21,23 @@
 //! o código acharia o arquivo pelo motivo errado. Fora do git o mapa não tem
 //! blob, e a nota não envelhece.
 //!
-//! Onde a nota entra na busca:
-//!
-//! - no índice de palavras ([`fresh`]), como mais um texto fixo do arquivo e
-//!   da declaração que ela nomeia, com o peso de qualquer texto fixo;
-//! - no texto compilado de cada declaração ([`Texts`]), de onde saem os
-//!   vetores de sentido: a nota da declaração, e a do arquivo em todas as
-//!   dele.
+//! Onde a nota entra na busca — no índice de palavras e no texto compilado de
+//! cada declaração, de onde saem os vetores de sentido — quem lê é
+//! [`crate::io::map_notes_fresh`], que só conhece o banco. Este módulo grava a
+//! nota e, por isso, refaz o índice e os vetores: fica em cima da busca e do
+//! sentido, e nenhum dos dois o usa.
 //!
 //! Mapa sem nenhuma nota, ou sem a tabela, responde como sempre.
 
-use std::collections::HashMap;
 use std::path::Path;
 
-use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
+use rusqlite::{params, OptionalExtension};
 
 use crate::domain::project_map::{clean_path, MapRefusal};
+use crate::io::map_db::table_exists;
 use crate::io::map_search::refresh_files;
 use crate::io::project_map::{open_existing, unreadable};
 use crate::io::{map_meaning, map_revision};
-use crate::platform::error::Result;
 
 /// A nota que se grava: o arquivo, a declaração (vazia na nota do arquivo
 /// inteiro), o texto e a spec que a escreve.
@@ -144,88 +141,6 @@ pub fn of_at(model: &Path, file: &str, name: &str) -> std::result::Result<Option
     Ok(found.map(|(text, spec, stale)| Note { file, name: name.trim().to_string(), text, spec, stale }))
 }
 
-/// Uma nota em dia como o índice a lê: o arquivo, a declaração, o texto e a
-/// linha da declaração no arquivo (`u64::MAX` na nota do arquivo inteiro, que
-/// não cai nas linhas de declaração nenhuma).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Fresh {
-    pub file: String,
-    pub name: String,
-    pub text: String,
-    pub line: u64,
-}
-
-/// As notas em dia do mapa aberto em `conn`, na ordem em que foram escritas:
-/// a cujo arquivo ainda tem o blob que ela guardou e, quando nomeia uma
-/// declaração, cuja declaração o arquivo ainda tem — uma linha por declaração
-/// de mesmo nome. Com `scope`, só as dos arquivos dados. A nota velha, a de
-/// arquivo que saiu do mapa e a da declaração que sumiu ficam de fora. Sem a
-/// tabela das notas, a lista é vazia.
-pub(crate) fn fresh(conn: &Connection, scope: Option<&[&str]>) -> Result<Vec<Fresh>> {
-    if !["notes", "files", "decls"].iter().all(|table| table_exists(conn, table).unwrap_or(false)) {
-        return Ok(Vec::new());
-    }
-    let only = scope.map_or_else(String::new, |paths| {
-        let slots: Vec<String> = (1..=paths.len()).map(|at| format!("?{at}")).collect();
-        format!(" AND n.file IN ({})", slots.join(", "))
-    });
-    let mut statement = conn.prepare(&format!(
-        "SELECT n.file, n.name, n.text, d.line, d.rowid FROM notes n \
-         JOIN files f ON f.path = n.file AND f.blob IS n.blob \
-         LEFT JOIN decls d ON d.file = n.file AND d.name = n.name AND n.name <> '' \
-         WHERE (n.name = '' OR d.rowid IS NOT NULL){only} ORDER BY n.rowid, d.rowid"
-    ))?;
-    let mut rows = statement.query(params_from_iter(scope.unwrap_or_default()))?;
-    let mut out = Vec::new();
-    while let Some(row) = rows.next()? {
-        let name: String = row.get(1)?;
-        let line = if name.is_empty() {
-            u64::MAX
-        } else {
-            u64::try_from(row.get::<_, Option<i64>>(3)?.unwrap_or(0)).unwrap_or(0)
-        };
-        out.push(Fresh { file: row.get(0)?, name, text: row.get(2)?, line });
-    }
-    Ok(out)
-}
-
-/// O texto das notas em dia por dono, para o texto compilado das declarações.
-#[derive(Debug, Default)]
-pub(crate) struct Texts {
-    of_declaration: HashMap<(String, String), String>,
-    of_file: HashMap<String, String>,
-}
-
-impl Texts {
-    /// As notas em dia do mapa aberto em `conn`; vazio sem nenhuma.
-    pub(crate) fn read(conn: &Connection) -> Result<Self> {
-        let mut out = Self::default();
-        for note in fresh(conn, None)? {
-            if note.name.is_empty() {
-                out.of_file.insert(note.file, note.text);
-            } else {
-                out.of_declaration.insert((note.file, note.name), note.text);
-            }
-        }
-        Ok(out)
-    }
-
-    /// O que as notas dizem da declaração `name` do arquivo `file`: a dela e,
-    /// depois, a do arquivo. Vazio quando nenhuma existe.
-    pub(crate) fn of(&self, file: &str, name: &str) -> String {
-        let own = self.of_declaration.get(&(file.to_string(), name.to_string())).map_or("", String::as_str);
-        let whole = self.of_file.get(file).map_or("", String::as_str);
-        format!("{own} {whole}").trim().to_string()
-    }
-}
-
-fn table_exists(conn: &Connection, name: &str) -> Result<bool> {
-    let found: Option<i64> = conn
-        .query_row("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1", params![name], |row| row.get(0))
-        .optional()?;
-    Ok(found.is_some())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -233,6 +148,7 @@ mod tests {
     use crate::domain::search::TOP;
     use crate::io::map_db::MapDb;
     use crate::io::map_meaning::{fill_at, ranked_declarations};
+    use crate::io::map_notes_fresh::fresh;
     use crate::io::map_search::{candidates_at, forget, search_at};
     use crate::io::map_triage::triage_at;
     use crate::io::project_map::{model_path, save_at};

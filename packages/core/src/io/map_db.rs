@@ -239,7 +239,8 @@ fn stored_version(conn: &Connection, name: &str) -> Result<Option<u32>> {
     Ok(version)
 }
 
-fn table_exists(conn: &Connection, name: &str) -> Result<bool> {
+/// Se o banco aberto em `conn` tem a tabela `name`.
+pub(crate) fn table_exists(conn: &Connection, name: &str) -> Result<bool> {
     let found = conn
         .query_row("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1", params![name], |_| Ok(()))
         .optional()?;

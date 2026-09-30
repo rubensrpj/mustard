@@ -54,7 +54,7 @@ use rusqlite::{Connection, Statement};
 
 use crate::domain::normalize::{plain_words, Languages, Normalizer};
 use crate::io::map_meaning::{quantized_vector, ranked_declarations, Neighbor, ProjectWords};
-use crate::io::map_search::{as_indexed, is_read};
+use crate::io::map_index::{as_indexed, is_read};
 use crate::platform::error::Result;
 
 /// Quantas palavras do projeto perto de uma palavra da pergunta viram formas
