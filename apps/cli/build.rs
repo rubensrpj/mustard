@@ -1,6 +1,15 @@
 use std::path::Path;
 use std::process::Command;
 
+// The digest of what a dirty tree holds on top of its commit. These two files
+// use nothing but `std`, and live in `mustard-core` so the measurement proof
+// reads the working tree by the same account: one implementation, included by
+// path because a build script cannot depend on the crates it builds.
+#[path = "../../packages/core/src/io/sha256.rs"]
+mod sha256;
+#[path = "../../packages/core/src/io/tree_state.rs"]
+mod tree_state;
+
 fn main() {
     emit_version_full();
 }
@@ -21,52 +30,64 @@ fn emit_version_full() {
     let semver = env_var("CARGO_PKG_VERSION").unwrap_or_else(|| "0.0.0".to_string());
     let build = env_var("MUSTARD_BUILD_NUMBER").unwrap_or_else(|| "dev".to_string());
 
-    let full = match git_describe() {
-        Some((hash, dirty, date)) => {
+    let (full, diff) = match git_describe() {
+        Some((hash, dirty, date, diff)) => {
             let dirty = if dirty { "-dirty" } else { "" };
-            format!("{semver} (build {build}, g{hash}{dirty} {date})")
+            (format!("{semver} (build {build}, g{hash}{dirty} {date})"), diff)
         }
         // Fail-open: no git / not a repo → just the semver, no git block.
-        None => semver,
+        None => (semver, String::new()),
     };
 
     println!("cargo:rustc-env=MUSTARD_VERSION_FULL={full}");
+    // What the dirty tree holds on top of its commit, as a short digest; empty
+    // for a clean tree. The version line only says THAT the tree was dirty; this
+    // says WHICH code it was, so two builds of one commit with different
+    // uncommitted code never pass for the same. A plain build keeps the stamp
+    // until the commit moves; the measurement command hands the digest over in
+    // `MUSTARD_GIT_DIFF` (and the commit and flag in the other two), and a
+    // change in any of them re-stamps.
+    println!("cargo:rustc-env=MUSTARD_GIT_DIFF={diff}");
 
     // Re-stamp when the build number changes or the checked-out commit moves.
     println!("cargo:rerun-if-env-changed=MUSTARD_BUILD_NUMBER");
     println!("cargo:rerun-if-env-changed=MUSTARD_GIT_HASH");
     println!("cargo:rerun-if-env-changed=MUSTARD_GIT_DIRTY");
     println!("cargo:rerun-if-env-changed=MUSTARD_GIT_DATE");
+    println!("cargo:rerun-if-env-changed=MUSTARD_GIT_DIFF");
     rerun_if_git_head_changed();
 }
 
-/// `(short_hash, dirty, commit_date)` from git, or `None` if git is
+/// `(short_hash, dirty, commit_date, diff)` from git, or `None` if git is
 /// unavailable / this is not a repo. `commit_date` falls back to the build date
-/// when the commit date can't be read but the hash can.
+/// when the commit date can't be read but the hash can. `dirty` is true for a
+/// changed tracked file AND for a new file git does not ignore; `diff` is the
+/// short digest of that code (see `tree_state`), empty when the tree is clean.
 ///
 /// The Linux package (`packaging/linux/build-deb.sh`) copies the source tree
 /// into a build area WITHOUT `.git` before compiling, so the `git` calls below
 /// would find nothing there. That script reads the commit, the dirty flag and
 /// the date from the ORIGINAL repo, before the copy, and hands them over as
-/// `MUSTARD_GIT_HASH` / `MUSTARD_GIT_DIRTY` / `MUSTARD_GIT_DATE` — read first,
-/// here; without them, this falls back to `git` like before.
-fn git_describe() -> Option<(String, bool, String)> {
+/// `MUSTARD_GIT_HASH` / `MUSTARD_GIT_DIRTY` / `MUSTARD_GIT_DATE` (and, for the
+/// code that was dirty, `MUSTARD_GIT_DIFF`) — read first, here; without them,
+/// this falls back to `git` like before.
+fn git_describe() -> Option<(String, bool, String, String)> {
     if let Some(hash) = env_var("MUSTARD_GIT_HASH") {
         let dirty = env_var("MUSTARD_GIT_DIRTY").is_some();
         let date = env_var("MUSTARD_GIT_DATE").unwrap_or_else(build_date);
-        return Some((hash, dirty, date));
+        let diff = env_var("MUSTARD_GIT_DIFF").unwrap_or_default();
+        return Some((hash, dirty, date, diff));
     }
 
     let hash = git(&["rev-parse", "--short=12", "HEAD"])?;
-    // `--quiet` makes a clean tree exit 0 and a dirty tree exit 1; any other
-    // failure (no git) also leaves us treating the tree as not-dirty.
-    let dirty = match Command::new("git").args(["diff", "--quiet", "HEAD"]).status() {
-        Ok(status) => !status.success(),
-        Err(_) => false,
+    // Any failure to read the tree (no git) leaves us treating it as not dirty.
+    let (dirty, diff) = match tree_state::tree_state(&git_text) {
+        Some(state) => (state.dirty, state.diff),
+        None => (false, String::new()),
     };
     // Committer date, short ISO (YYYY-MM-DD). Fall back to the build date.
     let date = git(&["log", "-1", "--format=%cs"]).unwrap_or_else(build_date);
-    Some((hash, dirty, date))
+    Some((hash, dirty, date, diff))
 }
 
 /// Tell cargo to re-run this script when the checked-out commit changes, so the
@@ -128,17 +149,21 @@ fn relative_inside(from: &Path, top: &Path, target: &Path) -> Option<String> {
 /// Run a git command, returning trimmed stdout on a clean exit. `None` on any
 /// failure (git absent, non-zero exit, non-UTF-8) — the caller degrades.
 fn git(args: &[&str]) -> Option<String> {
+    git_text(args).filter(|text| !text.is_empty())
+}
+
+/// What `git <args>` printed, trimmed, when it ran and exited zero. Unlike
+/// [`git`], an empty answer comes back as `Some("")`: the tree-state reading
+/// tells "git said nothing" (a clean tree) from "git could not be asked".
+/// The same trimmed reading the core's single git door gives, so the digest
+/// of a dirty tree is the same here and in the measurement proof.
+fn git_text(args: &[&str]) -> Option<String> {
     let output = Command::new("git").args(args).output().ok()?;
     if !output.status.success() {
         return None;
     }
     let text = String::from_utf8(output.stdout).ok()?;
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
-    }
+    Some(text.trim().to_string())
 }
 
 /// Today's date as `YYYY-MM-DD` (UTC), the fallback when the commit date can't

@@ -1,10 +1,13 @@
 //! A dependency-free SHA-256 implementation.
 //!
-//! The `mustard-rt` crate carries no crypto dependency, so the algorithm
-//! (FIPS 180-4) is implemented here directly. It is used only for change
-//! detection — a content fingerprint, not a security primitive — but the digest
-//! is the genuine SHA-256, identical to any standard implementation over the
-//! same bytes.
+//! Mustard carries no crypto dependency, so the algorithm (FIPS 180-4) is
+//! implemented here directly. It is used only for change detection — a content
+//! fingerprint, not a security primitive — but the digest is the genuine
+//! SHA-256, identical to any standard implementation over the same bytes.
+//!
+//! The file uses nothing but `std`, so the build scripts of `mustard-rt` and
+//! `mustard` include it by path: the digest that stamps a build and the one the
+//! measurements record come from this one implementation.
 
 /// SHA-256 round constants — the first 32 bits of the fractional parts of the
 /// cube roots of the first 64 primes.

@@ -790,15 +790,19 @@ mod tests {
 
     /// A medida do padrão sobre as tarefas já entregues da spec real e o
     /// mapa do projeto, que ficam fora do git: imprime o relatório e falha se
-    /// a régua achar algo. Roda à mão (`--ignored --nocapture`) com
+    /// a régua achar algo. Roda pelo comando de medida, com
     /// `MUSTARD_SPEC_FILE` (o arquivo de eventos da spec) e
-    /// `MUSTARD_MEASURE_MAP` (uma cópia do mapa do projeto); o projeto é a
-    /// pasta do repositório, ou `MUSTARD_MEASURE_ROOT`.
+    /// `MUSTARD_MEASURE_MAP` (uma cópia do mapa do projeto, gravada pelo scan
+    /// compilado com o código medido: de outra marca, a régua recusa antes de
+    /// medir); o projeto é a pasta do repositório, ou `MUSTARD_MEASURE_ROOT`.
+    /// Ao fim imprime a prova de versão, em uma linha e em JSON.
     #[test]
     #[ignore = "lê a spec real e o mapa do projeto, que ficam fora do git"]
     fn the_pattern_measured_over_the_delivered_tasks_of_the_real_spec() {
         let file = PathBuf::from(std::env::var_os("MUSTARD_SPEC_FILE").expect("MUSTARD_SPEC_FILE"));
         let model = PathBuf::from(std::env::var_os("MUSTARD_MEASURE_MAP").expect("MUSTARD_MEASURE_MAP"));
+        let mut gate = crate::io::measure_proof::MeasureGate::open(None).unwrap_or_else(|refusal| panic!("a régua não mede: {refusal}"));
+        gate.check(&model).unwrap_or_else(|refusal| panic!("a régua não mede: {refusal}"));
         let root = std::env::var_os("MUSTARD_MEASURE_ROOT")
             .map_or_else(|| crate::manifest_dir::manifest_dir().join("../.."), PathBuf::from);
         let log = crate::io::spec_events::read(&file)
@@ -812,6 +816,8 @@ mod tests {
         let read = |need: Need<'_>| crate::io::project_map::read_for_at(&model, need);
         let done = measure(&root, &spec, &log, &delivered_waves(&log), Locale::PtBr, &read);
         println!("{}", report(&done));
+        eprintln!("{}", gate.proof().line());
+        println!("PROVA-JSON {}", gate.proof().to_json());
         for wave in &done.waves {
             assert_eq!(
                 wave.chars_with - wave.chars_without,

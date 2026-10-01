@@ -17,6 +17,12 @@
 //! pacote Linux. A prova é a linha `cargo:rustc-env=MUSTARD_VERSION_FULL=…`
 //! que ele imprime — a mesma linha que o cargo lê para gravar a variável de
 //! compilação que os binários embutem com `env!(...)`.
+//!
+//! O carimbo diz também QUAL código sujo havia: `MUSTARD_GIT_DIFF`, o resumo
+//! de `git diff HEAD` mais os arquivos novos que o git não ignora (vazio com a
+//! pasta limpa). O `-dirty` vale para os dois, o arquivo rastreado mudado e o
+//! arquivo novo, e dois códigos sujos de jeitos diferentes têm resumos
+//! diferentes.
 
 #[path = "support/manifest_dir.rs"]
 mod manifest_dir;
@@ -113,6 +119,10 @@ fn git_in(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
+/// Os arquivos do núcleo que os dois scripts de build incluem por caminho,
+/// relativos à raiz do repositório.
+const SHARED_BY_PATH: [&str; 2] = ["packages/core/src/io/sha256.rs", "packages/core/src/io/tree_state.rs"];
+
 /// Um projeto git em `root` com dois pacotes, cada um com um dos dois
 /// scripts de build de verdade — o do `mustard-rt` e o do `mustard` — e um
 /// binário que só imprime a versão que o script carimbou.
@@ -122,6 +132,9 @@ fn stamped_project(root: &Path) {
         std::fs::create_dir_all(path.parent().expect("a parent folder")).expect("mkdir");
         std::fs::write(path, body).expect("write");
     };
+    for shared in SHARED_BY_PATH {
+        write(shared, &std::fs::read_to_string(repo_root().join(shared)).expect("a file the scripts include"));
+    }
     write("Cargo.toml", "[workspace]\nmembers = [\"apps/rt\", \"apps/cli\"]\nresolver = \"2\"\n");
     for (crate_dir, name) in [("apps/rt", "carimbo-rt"), ("apps/cli", "carimbo-cli")] {
         let manifest = format!("[package]\nname = \"{name}\"\nversion = \"9.9.9\"\nedition = \"2021\"\n");
@@ -145,7 +158,7 @@ fn build_and_read_versions(copy: &Path) -> Vec<String> {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let mut build = Command::new(cargo);
     build.args(["build", "--offline", "--quiet"]).current_dir(copy).env("CARGO_TARGET_DIR", copy.join("target"));
-    for var in ["MUSTARD_BUILD_NUMBER", "MUSTARD_GIT_HASH", "MUSTARD_GIT_DIRTY", "MUSTARD_GIT_DATE", "GIT_DIR", "GIT_WORK_TREE"] {
+    for var in ["MUSTARD_BUILD_NUMBER", "MUSTARD_GIT_HASH", "MUSTARD_GIT_DIRTY", "MUSTARD_GIT_DATE", "MUSTARD_GIT_DIFF", "GIT_DIR", "GIT_WORK_TREE"] {
         build.env_remove(var);
     }
     let out = build.output().expect("cargo runs");
@@ -187,4 +200,92 @@ fn a_linked_copy_moved_to_another_commit_stamps_the_new_commit() {
     for version in build_and_read_versions(&copy) {
         assert!(version.contains(&format!("g{second} ")), "a cópia levada a outro commit carimba o novo: {version}");
     }
+}
+
+/// Roda o `build.rs` já compilado com o diretório de trabalho em `cwd` — um
+/// repositório de verdade, onde o `git` acha o commit — e devolve a versão e o
+/// resumo do que estava por comitar que ele imprime. As variáveis do pacote
+/// Linux não valem aqui: é o `git` quem responde.
+fn run_build_rs_in_repository(bin: &Path, cwd: &Path) -> (String, String) {
+    let mut cmd = Command::new(bin);
+    cmd.current_dir(cwd).env("CARGO_PKG_VERSION", "9.9.9");
+    for var in ["MUSTARD_BUILD_NUMBER", "MUSTARD_GIT_HASH", "MUSTARD_GIT_DIRTY", "MUSTARD_GIT_DATE", "MUSTARD_GIT_DIFF", "GIT_DIR", "GIT_WORK_TREE"] {
+        cmd.env_remove(var);
+    }
+    let out = cmd.output().expect("the compiled build.rs runs");
+    assert!(out.status.success(), "build.rs saiu com erro: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let line = |key: &str| {
+        let prefix = format!("cargo:rustc-env={key}=");
+        stdout
+            .lines()
+            .find_map(|l| l.strip_prefix(&prefix))
+            .unwrap_or_else(|| panic!("sem a linha {key}: {stdout}"))
+            .to_string()
+    };
+    (line("MUSTARD_VERSION_FULL"), line("MUSTARD_GIT_DIFF"))
+}
+
+/// Um projeto git de um commit só, e o `build.rs` do `mustard-rt` compilado
+/// para rodar nele: a pasta do projeto, a do script e o programa.
+fn committed_project_with_build_script() -> (tempfile::TempDir, PathBuf, PathBuf) {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().join("projeto");
+    std::fs::create_dir_all(&root).expect("mkdir");
+    stamped_project(&root);
+    let bin = tmp.path().join("build_rs_bin");
+    compile_build_rs(&bin);
+    (tmp, root, bin)
+}
+
+/// Com a árvore limpa a versão não leva `-dirty` e o resumo vem vazio.
+#[test]
+fn a_clean_tree_has_no_dirty_mark_and_an_empty_diff() {
+    let (_tmp, root, bin) = committed_project_with_build_script();
+    let (full, diff) = run_build_rs_in_repository(&bin, &root);
+    assert!(full.contains("(build dev, g") && !full.contains("-dirty"), "árvore limpa, sem -dirty: {full}");
+    assert_eq!(diff, "", "árvore limpa, sem resumo");
+}
+
+/// Um arquivo rastreado alterado e um arquivo novo que o git não ignora sujam
+/// a árvore, e cada um dá o seu resumo: dois códigos diferentes nunca passam
+/// pelo mesmo.
+#[test]
+fn a_changed_tracked_file_and_a_new_file_are_dirty_with_different_diffs() {
+    let (_tmp, root, bin) = committed_project_with_build_script();
+
+    std::fs::write(root.join("LEIAME.md"), "dois\n").expect("write");
+    let (tracked_full, tracked_diff) = run_build_rs_in_repository(&bin, &root);
+    git_in(&root, &["checkout", "-q", "--", "LEIAME.md"]);
+    let (clean_full, clean_diff) = run_build_rs_in_repository(&bin, &root);
+
+    std::fs::write(root.join("novo.md"), "dois\n").expect("write");
+    let (new_full, new_diff) = run_build_rs_in_repository(&bin, &root);
+
+    assert!(tracked_full.contains("-dirty"), "arquivo rastreado alterado suja: {tracked_full}");
+    assert!(new_full.contains("-dirty"), "arquivo novo não rastreado suja também: {new_full}");
+    assert!(!tracked_diff.is_empty() && !new_diff.is_empty(), "os dois têm resumo");
+    assert_ne!(tracked_diff, new_diff, "um arquivo alterado e um arquivo novo são códigos diferentes");
+    assert!(!clean_full.contains("-dirty") && clean_diff.is_empty(), "desfeita a mudança, a árvore volta a limpa: {clean_full}");
+}
+
+/// O pacote Linux copia o código sem `.git`: o resumo, como o commit, vem da
+/// variável de ambiente que o script do pacote lê antes da cópia.
+#[test]
+fn the_diff_comes_from_the_environment_when_git_is_absent() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let bin = tmp.path().join("build_rs_bin");
+    compile_build_rs(&bin);
+    let empty_cwd = tmp.path().join("no-git-here");
+    std::fs::create_dir_all(&empty_cwd).expect("mkdir");
+
+    let mut cmd = Command::new(&bin);
+    cmd.current_dir(&empty_cwd).env_clear().env("CARGO_PKG_VERSION", "9.9.9");
+    for (k, v) in [("MUSTARD_GIT_HASH", "deadbeef1234"), ("MUSTARD_GIT_DIRTY", "1"), ("MUSTARD_GIT_DATE", "2026-01-02"), ("MUSTARD_GIT_DIFF", "0123456789ab")] {
+        cmd.env(k, v);
+    }
+    let out = cmd.output().expect("the compiled build.rs runs");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("cargo:rustc-env=MUSTARD_GIT_DIFF=0123456789ab"), "{stdout}");
+    assert!(stdout.contains("cargo:rerun-if-env-changed=MUSTARD_GIT_DIFF"), "{stdout}");
 }

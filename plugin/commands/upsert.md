@@ -22,5 +22,6 @@ argument-hint: [--doctor]
 
 - `mustard-rt run scan` updates the project map from what changed, never writing to git; `--full` also rewrites each subproject's map.
 - `mustard-rt run clean` lists the throwaway copies agents left in the temp folder; deletes only when told.
+- `mustard-rt run measure <test>` runs a measurement ruler on the right compiled code.
 
 Never hand-edit `.claude/settings.local.json`, `.claude/mustard/` or `.claude/agents/mustard/`: the binary writes them. An unreadable settings file is reported and left untouched.

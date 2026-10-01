@@ -38,7 +38,9 @@ use std::time::{Duration, Instant};
 
 use mustard_core::domain::model::contract::{HookInput, Trigger, Verdict};
 use mustard_core::io::map_triage::Triaged;
+use mustard_core::io::measure_proof::{BuiltStamp, MeasureGate};
 use mustard_core::io::project_map::{self as store, Need};
+use mustard_core::platform::error::Result as CoreResult;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -357,20 +359,58 @@ fn fate_name(fate: Fate) -> String {
     }
 }
 
+/// O carimbo que a compilação deste programa deixou nele: a versão e o resumo
+/// do que estava por comitar.
+fn built_stamp() -> BuiltStamp<'static> {
+    BuiltStamp { version: env!("MUSTARD_VERSION_FULL"), diff: env!("MUSTARD_GIT_DIFF") }
+}
+
+/// Confere cada mapa de `maps` na porta `gate`, na ordem; o primeiro de
+/// marca diferente da que o scan compilado diz recusa, e nenhum número sai.
+fn check_maps(mut gate: MeasureGate, maps: &[PathBuf]) -> CoreResult<MeasureGate> {
+    for map in maps {
+        gate.check(map)?;
+    }
+    Ok(gate)
+}
+
+/// A porta comum das réguas do rt: a prova de versão deste programa e a
+/// conferência dos mapas que a régua vai abrir, antes de ela medir. Sem o
+/// comando de medida (`mustard-rt run measure`), com o programa compilado de
+/// outro código que o da medida ou com um mapa de outra compilação do scan, a
+/// régua para aqui, dizendo por quê.
+pub(super) fn measure_gate(maps: &[PathBuf]) -> MeasureGate {
+    MeasureGate::open(Some(&built_stamp()))
+        .and_then(|gate| check_maps(gate, maps))
+        .unwrap_or_else(|refusal| panic!("a régua não mede: {refusal}"))
+}
+
 /// A régua do gasto. A entrada é `SPEND_INPUT` (o arquivo de buscas do
 /// preparo) e as cópias dos projetos, cada uma com o mapa dela, estão em
-/// `SPEND_TREES/<nome>`; `SPEND_OUT` recebe uma linha por busca. Só as
+/// `SPEND_TREES/<nome>`; `SPEND_OUT` (ou o `--out` do comando de medida)
+/// recebe uma linha por busca, cada uma com a prova de versão em `proof`. Só as
 /// buscas do `Bash` e do `Grep` entram nas contas; as vencidas (o texto já não
-/// casa com o arquivo certo na cópia) ficam de fora. Rode com
-/// `env -u TYPESAFE_API_KEY HOME=<pasta vazia>` e em `--release`, para o
-/// tempo ser o do gancho de verdade.
+/// casa com o arquivo certo na cópia) ficam de fora. Roda pelo comando de
+/// medida, que compila o código certo em `--release`, para o tempo ser o do
+/// gancho de verdade; rode com `env -u TYPESAFE_API_KEY HOME=<pasta vazia>`.
 #[test]
 #[ignore = "mede com as cópias dos projetos de prova e as conversas reais"]
 fn measure_the_spend_of_the_search() {
     let input = std::env::var("SPEND_INPUT").expect("SPEND_INPUT points to the searches file");
     let trees = PathBuf::from(std::env::var("SPEND_TREES").expect("SPEND_TREES points to the folder of the project copies"));
-    let out = std::env::var("SPEND_OUT").expect("SPEND_OUT points to the file to write");
+    let out = mustard_core::io::measure_proof::result_path("SPEND_OUT").expect("SPEND_OUT points to the file to write");
     let rows: Vec<Row> = serde_json::from_str(&std::fs::read_to_string(input).expect("the searches file reads")).expect("the searches file parses");
+    // Os mapas das cópias que entram nas contas, conferidos antes da primeira busca.
+    let mut names: Vec<&str> = rows
+        .iter()
+        .filter(|row| !row.expired && matches!(row.kind.as_str(), "bash" | "grep"))
+        .map(|row| row.name.as_str())
+        .collect();
+    names.sort_unstable();
+    names.dedup();
+    let maps: Vec<PathBuf> = names.iter().map(|name| store::model_path(&trees.join(name))).collect();
+    let gate = measure_gate(&maps);
+    let proof = gate.proof().to_json();
     let (mut skipped, mut other): (usize, usize) = (0, 0);
     let mut warmed: Vec<String> = Vec::new();
     let mut groups: BTreeMap<(String, String), Sum> = BTreeMap::new();
@@ -430,6 +470,7 @@ fn measure_the_spend_of_the_search() {
                 "target_hits": LAST_HITS.with(|last| last.borrow().iter().filter(|(path, _)| row.targets.contains(path)).cloned().collect::<Vec<_>>()),
                 "target_order": LAST_ORDER.with(|last| last.borrow().as_ref().and_then(|order| order.iter().position(|path| row.targets.contains(path)))),
                 "order_len": LAST_ORDER.with(|last| last.borrow().as_ref().map(Vec::len)),
+                "proof": proof,
             })
             .to_string(),
         );
@@ -439,6 +480,7 @@ fn measure_the_spend_of_the_search() {
     for ((project, half), sum) in &groups {
         eprintln!("GASTO {}", sum.show(&format!("{project} {half}")));
     }
+    eprintln!("{}", gate.proof().line());
 }
 
 #[cfg(test)]
@@ -630,5 +672,66 @@ mod tests {
         let (_dir, root) = fixture::repo_with("{}", &refs, json!({ "modules": modules }));
         let row = bash_row("grep -rn calcular_frete src", &["src/outro.rs"]);
         assert_eq!(fate_after_hearing(&root, &row, &["src/frete1.rs"]), Fate::BelowFifth);
+    }
+
+    /// Um mapa gravado como o scan grava, com `mark` em cada bloco.
+    fn map_marked(mark: &str) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let model = store::model_path(dir.path());
+        let map = json!({ "modules": [{ "path": "src/a.rs", "language": "rust", "loc": 1, "declarations": [
+            { "kind": "function", "name": "a", "line": 1, "end_line": 1 }] }] });
+        store::save_at(&model, &map, mark, &mustard_core::domain::normalize::Languages::of_project(dir.path())).expect("map saved");
+        (dir, model)
+    }
+
+    /// A prova de um programa de mentira, com o commit e o resumo que a medida diz.
+    fn proof_of_the_measure() -> mustard_core::io::measure_proof::MeasureProof {
+        mustard_core::io::measure_proof::MeasureProof {
+            commit: "0123456789ab".to_string(),
+            dirty: false,
+            diff: String::new(),
+            binary_sha256: "0".repeat(64),
+            binary_path: "programa".to_string(),
+            maps: Vec::new(),
+        }
+    }
+
+    /// A porta comum recusa o mapa de marca diferente da que o scan compilado
+    /// diz, antes de qualquer medida, e o mapa de marca igual passa e entra na
+    /// prova, um por mapa aberto.
+    #[test]
+    fn measure_gate_refuses_a_map_of_another_mark_and_records_the_ones_that_pass() {
+        let (_one, same) = map_marked("scan 1");
+        let (_two, other) = map_marked("scan 2");
+
+        let gate = MeasureGate::with(proof_of_the_measure(), "scan 1".to_string(), None).expect("the gate opens");
+        let refused = check_maps(gate, &[same.clone(), other]).expect_err("the map of another mark stops the ruler").to_string();
+        assert!(refused.contains("marca do mapa scan 2, o código compilado produz scan 1"), "{refused}");
+
+        let gate = MeasureGate::with(proof_of_the_measure(), "scan 1".to_string(), None).expect("the gate opens");
+        let gate = check_maps(gate, std::slice::from_ref(&same)).expect("the map of the same mark passes");
+        let maps = &gate.proof().maps;
+        assert_eq!(maps.len(), 1, "one entry per opened map");
+        assert_eq!((maps[0].path.as_str(), maps[0].mark.as_str()), (same.to_str().expect("a path"), "scan 1"));
+    }
+
+    /// Rodar a régua direto, sem o comando de medida, recusa com a frase que
+    /// diz o caminho: a prova não pode ficar em branco.
+    #[test]
+    #[should_panic(expected = "rode pelo comando de medida")]
+    fn measure_gate_refuses_to_run_without_the_measure_command() {
+        let _ = measure_gate(&[]);
+    }
+
+    /// O programa compilado de um commit que não é o da medida não passa na
+    /// porta: o número seria de outro código.
+    #[test]
+    fn measure_gate_refuses_a_program_built_from_another_commit_than_the_measurement_says() {
+        let mut claims_another = proof_of_the_measure();
+        claims_another.commit = "ffffffffffff".to_string();
+        let refused = MeasureGate::with(claims_another, "scan 1".to_string(), Some(&built_stamp()))
+            .expect_err("the program was not built from that commit")
+            .to_string();
+        assert!(refused.contains("compilado"), "{refused}");
     }
 }

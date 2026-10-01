@@ -54,6 +54,46 @@ pub enum MaintCmd {
         #[arg(long, conflicts_with = "apply")]
         path: Option<PathBuf>,
     },
+    /// Roda uma régua de medida (um teste ignorado) compilando o código
+    /// certo, e grava com o número a versão que o gerou.
+    ///
+    /// `<teste>` é o nome da régua, como `measure_the_spend_of_the_search`; o
+    /// comando acha o pacote dela no código (`--package` diz qual, quando o
+    /// nome está em mais de um). Sem `--commit` mede a pasta atual: o commit é
+    /// o `HEAD`, e o que falta comitar entra como um resumo no nome da pasta e
+    /// na prova. Com `--commit <sha>` separa o código daquele commit numa cópia
+    /// própria, sem mexer na pasta atual.
+    ///
+    /// Cada código compila na sua pasta, `~/.cache/mustard/medida/<commit>`
+    /// (`MUSTARD_MEASURE_DIR` troca a base): o mesmo código reaproveita a
+    /// compilação, e código diferente nunca divide pasta. O programa de teste
+    /// vem do JSON do cargo, nunca do mais novo da pasta, e a régua mora no
+    /// `src/` da biblioteca do pacote. Roda com o `scan` compilado do mesmo
+    /// código ao lado e com o commit, o sujo e o resumo em variáveis
+    /// `MUSTARD_MEASURE_*`; a régua que não imprime a linha `PROVA` falha.
+    ///
+    /// Imprime ao fim as linhas `PROVA` e o caminho do resultado (`--out`, ou
+    /// `<pasta>/<teste>.json`, que a régua lê em `MUSTARD_MEASURE_OUT`). Ao
+    /// terminar, só as três pastas de medida usadas por último ficam. Só mede
+    /// o código-fonte do Mustard: em outro projeto recusa (exit 1).
+    #[command(display_order = 22)]
+    Measure {
+        /// O nome da régua: o teste ignorado a rodar.
+        test: String,
+        /// Mede o código deste commit, numa cópia própria, em vez da pasta atual.
+        #[arg(long, value_name = "sha")]
+        commit: Option<String>,
+        /// O pacote que tem a régua; sem ele o comando a procura no código.
+        #[arg(long, value_name = "pacote")]
+        package: Option<String>,
+        /// Uma variável de ambiente para a régua, `CHAVE=VALOR`; repete-se. As
+        /// `MUSTARD_MEASURE_*` são do comando e se recusam.
+        #[arg(long = "env", value_name = "K=V")]
+        env: Vec<String>,
+        /// O arquivo onde a régua grava o resultado.
+        #[arg(long, value_name = "arquivo")]
+        out: Option<PathBuf>,
+    },
     /// Install or update Mustard in the current project (the plugin's
     /// bootstrap door).
     ///
@@ -109,6 +149,9 @@ pub fn dispatch(cmd: MaintCmd) {
             // Por isso descartá-lo é seguro — quem decide é `--apply`/`--path`.
             let _ = dry_run;
             maint::scratch_gc::run(maint::scratch_gc::ScratchGcOpts { apply, path });
+        }
+        MaintCmd::Measure { test, commit, package, env, out } => {
+            maint::measure::run(&maint::measure::MeasureOpts { test, commit, package, env, out });
         }
         MaintCmd::Upsert { local_files, prepare } => {
             maint::upsert::run(&maint::upsert::UpsertOpts { local_files, prepare });
@@ -184,5 +227,35 @@ mod tests {
             panic!("empty answers must parse");
         };
         assert_eq!((local_files.as_deref(), prepare.as_deref()), (Some(""), Some("")));
+    }
+
+    /// O `measure` pede o nome da régua e aceita o commit, o pacote, o
+    /// resultado e as variáveis, estas quantas vezes se repetirem.
+    #[test]
+    fn measure_takes_the_test_and_its_options() {
+        let Ok(Probe { cmd: MaintCmd::Measure { test, commit, package, env, out } }) = Probe::try_parse_from([
+            "probe",
+            "measure",
+            "measure_the_spend_of_the_search",
+            "--commit",
+            "abc1234",
+            "--package",
+            "mustard-rt",
+            "--env",
+            "A=1",
+            "--env",
+            "B=2",
+            "--out",
+            "/tmp/saida.json",
+        ]) else {
+            panic!("the full form must parse");
+        };
+        assert_eq!(test, "measure_the_spend_of_the_search");
+        assert_eq!((commit.as_deref(), package.as_deref()), (Some("abc1234"), Some("mustard-rt")));
+        assert_eq!(env, ["A=1", "B=2"]);
+        assert_eq!(out.as_deref(), Some(std::path::Path::new("/tmp/saida.json")));
+
+        assert!(Probe::try_parse_from(["probe", "measure", "so_o_nome"]).is_ok());
+        assert!(Probe::try_parse_from(["probe", "measure"]).is_err(), "sem o nome da régua não há o que medir");
     }
 }

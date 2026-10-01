@@ -2126,18 +2126,23 @@ mod tests {
     /// de verdade (`WORD_SEARCH_SEARCHES`: uma por linha, com o padrão, as
     /// pastas e o programa), numa árvore com mapa (`WORD_SEARCH_TREE`, um
     /// repositório git com `.claude/grain.db`). Grava em `WORD_SEARCH_OUT`
-    /// uma linha por busca. Só roda por pedido.
+    /// (ou no `--out` do comando de medida) uma linha por busca, cada uma com
+    /// a prova de versão em `proof`. Só roda pelo comando de medida: sem ele,
+    /// ou com o mapa de outra compilação do scan, recusa antes de medir.
     #[test]
     #[ignore = "measurement: reads WORD_SEARCH_SEARCHES, WORD_SEARCH_TREE and WORD_SEARCH_OUT"]
     fn measure_the_answer_size() {
         use std::io::Write;
         let read = |name: &str| std::env::var(name).unwrap_or_else(|_| panic!("{name} is set"));
         let tree = PathBuf::from(read("WORD_SEARCH_TREE"));
+        let model = store::model_path(&tree);
+        let gate = ruler::measure_gate(std::slice::from_ref(&model));
+        let proof = gate.proof().to_json();
         let searches = std::fs::read_to_string(read("WORD_SEARCH_SEARCHES")).expect("searches");
-        let mut out = std::fs::File::create(read("WORD_SEARCH_OUT")).expect("out");
+        let out_path = mustard_core::io::measure_proof::result_path("WORD_SEARCH_OUT").expect("WORD_SEARCH_OUT is set");
+        let mut out = std::fs::File::create(out_path).expect("out");
         let root = tree.to_string_lossy().into_owned();
         let languages = Languages::new(["pt-BR", "en-US"]);
-        let model = store::model_path(&tree);
         for (at, line) in searches.lines().enumerate() {
             let entry: serde_json::Value = serde_json::from_str(line).expect("a search line");
             let patterns: Vec<String> = entry["patterns"].as_array().expect("patterns").iter().filter_map(|p| p.as_str().map(str::to_string)).collect();
@@ -2181,7 +2186,7 @@ mod tests {
                 assemble: &without_key,
                 record: &unrecorded,
             };
-            let mut row = serde_json::json!({ "at": at, "program": program, "outcome": "pass", "folders_ok": !folders.is_empty() && folders.len() == wanted });
+            let mut row = serde_json::json!({ "at": at, "program": program, "outcome": "pass", "folders_ok": !folders.is_empty() && folders.len() == wanted, "proof": proof });
             if folders.is_empty() || folders.len() != wanted {
                 writeln!(out, "{row}").expect("write");
                 continue;
@@ -2223,5 +2228,6 @@ mod tests {
             }
             writeln!(out, "{row}").expect("write");
         }
+        eprintln!("{}", gate.proof().line());
     }
 }

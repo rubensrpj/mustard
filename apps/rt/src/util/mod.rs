@@ -10,7 +10,9 @@
 //! touch `mustard-core`.
 
 pub mod platform;
-pub mod sha256;
+// The SHA-256 lives in `mustard-core`, where the build scripts and the
+// measurement proof share it; the doctor reaches it by this name.
+pub use mustard_core::io::sha256;
 
 use std::fmt::Write as _;
 
