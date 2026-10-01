@@ -364,7 +364,7 @@ fn hyperlink(url: &str, label: &str) -> String {
     format!("\u{1b}]8;;{url}\u{1b}\\{label}\u{1b}]8;;\u{1b}\\")
 }
 
-/// Is the Mustard plugin listed in `settings` and switched OFF?
+/// Is the Mustard plugin listed in `settings` and switched off?
 ///
 /// `Some(true)` disabled, `Some(false)` enabled, `None` when the question
 /// cannot be answered — no file, unparseable, or the plugin unlisted (a source
@@ -385,7 +385,7 @@ pub fn plugin_switched_off(settings: &Path) -> Option<bool> {
         .map(|(_, value)| value.as_bool() == Some(false))
 }
 
-/// `⨯ harness inerte` — the plugin is installed and switched OFF.
+/// `⨯ harness inerte` — the plugin is installed and switched off.
 ///
 /// With the plugin disabled no hook runs at all: no router, no gates. Measured
 /// in the field 2026-08-25, that state is indistinguishable from a working

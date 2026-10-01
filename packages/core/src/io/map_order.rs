@@ -375,61 +375,6 @@ mod tests {
         files.iter().map(|file| file.path.as_str()).collect()
     }
 
-    /// Onde está o arquivo certo na ordem de cada uma das listas que a ordem
-    /// única junta (`MAP_RANKS_RULER`, o arquivo JSON da régua; com
-    /// `MAP_RANKS_PHRASE`, a pergunta é só a frase): por busca, a posição do
-    /// primeiro arquivo certo entre os arquivos distintos de cada lista (0:
-    /// fora), uma linha em `MAP_RANKS_OUT`.
-    #[test]
-    #[ignore = "mede com os mapas dos projetos de prova"]
-    fn measure_where_each_list_puts_the_right_file() {
-        let ruler = std::env::var("MAP_RANKS_RULER").unwrap();
-        let out = std::env::var("MAP_RANKS_OUT").unwrap();
-        let phrase = std::env::var("MAP_RANKS_PHRASE").is_ok();
-        let ruler: Value = serde_json::from_str(&std::fs::read_to_string(ruler).unwrap()).unwrap();
-        let languages = languages();
-        let mut lines: Vec<String> = Vec::new();
-        for search in ruler["searches"].as_array().unwrap() {
-            let text = |key: &str| search[key].as_str().unwrap().to_string();
-            let (key, intent) = (text("key"), text("intent"));
-            let query = if phrase { intent.clone() } else { text("query") };
-            let db = crate::io::map_search::indexed(std::path::Path::new(&text("model")), &languages, &crate::io::map_fill::READ_BY_CANDIDATES).unwrap();
-            let conn = db.conn();
-            let right: Vec<String> =
-                search["targets"].as_array().unwrap().iter().map(|t| t[0].as_str().unwrap().to_string()).collect();
-            let file_of: HashMap<i64, i64> = decl_files(conn).unwrap().into_iter().collect();
-            let mut path_of = conn.prepare("SELECT path FROM files WHERE rowid = ?1").unwrap();
-            let sources = sources_near(conn, &query, &intent, &languages, &Near::none()).unwrap();
-            let mut where_is = |list: &[i64]| -> usize {
-                let mut seen: Vec<i64> = Vec::new();
-                for id in list {
-                    let Some(&file) = file_of.get(id) else { continue };
-                    if seen.contains(&file) {
-                        continue;
-                    }
-                    seen.push(file);
-                    let path: String = path_of.query_row([file], |row| row.get(0)).unwrap();
-                    if right.contains(&path) {
-                        return seen.len();
-                    }
-                }
-                0
-            };
-            let whole = sources.whole();
-            let bank = ranked_files_near(conn, &query, &languages, 100, &Near::none()).unwrap();
-            let bank_rank = bank.iter().position(|f| right.contains(&f.path)).map_or(0, |at| at + 1);
-            lines.push(
-                json!({
-                    "key": key, "base": where_is(&sources.base), "names": where_is(&sources.names),
-                    "everything": where_is(&sources.everything), "files": where_is(&sources.files),
-                    "whole": where_is(&whole), "bank": bank_rank,
-                })
-                .to_string(),
-            );
-        }
-        std::fs::write(out, lines.join("\n")).unwrap();
-    }
-
     /// Uma pergunta em frase longa, num projeto onde a declaração de nome
     /// curto de outros arquivos casa com uma palavra só: `unidade`,
     /// `material` e `densidade` são a assinatura de uma propriedade cada, e o

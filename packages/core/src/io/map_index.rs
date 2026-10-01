@@ -96,10 +96,6 @@ impl Level {
 
     /// O peso da coluna `column` na nota do nível.
     pub(super) fn weight(&self, column: &str) -> f64 {
-        #[cfg(test)]
-        if let Some(tuned) = tuning::weight(self.fts, column) {
-            return tuned;
-        }
         self.columns().position(|name| name == column).map_or(1.0, |at| self.weights[at])
     }
 }
@@ -202,27 +198,6 @@ pub(super) const SPEC_LEVEL: Level = Level {
     weights: &[1.0; 3],
     learned: None,
 };
-
-/// Os pesos que uma medida põe no lugar dos da tabela, só nos testes.
-#[cfg(test)]
-pub(super) mod tuning {
-    use std::collections::HashMap;
-    use std::sync::RwLock;
-
-    static WEIGHTS: RwLock<Option<HashMap<(String, String), f64>>> = RwLock::new(None);
-
-    pub(super) fn weight(table: &str, column: &str) -> Option<f64> {
-        WEIGHTS.read().unwrap().as_ref()?.get(&(table.to_string(), column.to_string())).copied()
-    }
-
-    pub(crate) fn set(table: &str, column: &str, weight: f64) {
-        WEIGHTS
-            .write()
-            .unwrap()
-            .get_or_insert_with(HashMap::new)
-            .insert((table.to_string(), column.to_string()), weight);
-    }
-}
 
 /// O tokenizador das tabelas de palavras do índice, o mesmo do esquema do
 /// bloco das declarações; a pergunta passa por ele antes da consulta.

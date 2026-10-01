@@ -116,10 +116,6 @@ impl Near {
     /// Mapa sem vetores, ou texto sem palavra que o modelo conheça, dá
     /// [`Near::none`].
     pub(super) fn of(conn: &Connection, languages: &Languages, text: &str) -> Result<Self> {
-        #[cfg(test)]
-        if tuning::near_is_off() {
-            return Ok(Self::none());
-        }
         let crossing = languages.codes().len() > 1;
         let floor = if crossing { SYNONYM_COSINE.min(OTHER_LANGUAGE_COSINE) } else { SYNONYM_COSINE };
         let mut normalizer = Normalizer::new(languages);
@@ -187,13 +183,9 @@ impl Near {
     }
 }
 
-/// O que uma medida muda no sentido da busca, só nos testes: o desligamento
-/// das formas vizinhas ou da ordem dos vetores, para medir cada um contra a
-/// busca por palavras de sempre.
+/// A contagem das palavras que a busca dá ao modelo, só nos testes.
 #[cfg(test)]
 pub(super) mod tuning {
-    use std::sync::RwLock;
-
     thread_local! {
         static ENCODED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     }
@@ -207,21 +199,6 @@ pub(super) mod tuning {
     /// aqui.
     pub(super) fn encoded() -> usize {
         ENCODED.with(std::cell::Cell::get)
-    }
-
-    static OFF: RwLock<(bool, bool)> = RwLock::new((false, false));
-
-    /// Desliga as formas vizinhas e a ordem dos vetores, cada uma à parte.
-    pub(crate) fn switch_off(near: bool, meaning: bool) {
-        *OFF.write().unwrap() = (near, meaning);
-    }
-
-    pub(super) fn near_is_off() -> bool {
-        OFF.read().unwrap().0
-    }
-
-    pub(super) fn meaning_is_off() -> bool {
-        OFF.read().unwrap().1
     }
 }
 
@@ -391,10 +368,6 @@ impl Meaning {
     /// `depth` arquivos. Vazia no mapa sem vetores.
     pub(super) fn of(conn: &Connection, text: &str, file_of: &HashMap<i64, i64>, depth: usize) -> Result<Self> {
         let mut out = Self::default();
-        #[cfg(test)]
-        if tuning::meaning_is_off() {
-            return Ok(out);
-        }
         for similar in ranked_declarations(conn, text)? {
             let Some(&file) = file_of.get(&similar.id) else { continue };
             if out.decls.len() < depth {
