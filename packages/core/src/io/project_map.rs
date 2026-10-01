@@ -2310,7 +2310,11 @@ pub fn write_text_at(model: &Path, text: &str) -> Result<()> {
 
 /// Apaga o mapa em `model` e os arquivos ao lado dele, quando existem: o
 /// diário ou o registro de gravações que sobrasse seria aplicado ao mapa novo.
-fn remove(model: &Path) -> Result<()> {
+///
+/// # Errors
+///
+/// O arquivo que existe e o disco não deixa apagar.
+pub fn remove(model: &Path) -> Result<()> {
     let beside = |suffix: &str| {
         let mut name = model.as_os_str().to_owned();
         name.push(suffix);

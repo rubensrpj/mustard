@@ -13,8 +13,10 @@
 //!   variáveis `MUSTARD_MEASURE_*`, e com o `scan` compilado do mesmo código ao
 //!   lado do programa (a régua recusa sem eles);
 //! - o mapa de cada projeto da pasta de árvores (`--trees`, ou `SPEND_TREES`
-//!   em `--env`) é refeito a cada medida, com esse `scan`: o banco velho sai
-//!   antes, e o scan que falha recusa a medida;
+//!   em `--env`) é refeito a cada medida, com esse `scan`, no mesmo passo do
+//!   mapa das sessões: o banco velho sai antes, o scan que falha recusa a
+//!   medida, e a leitura da história de cada declaração começa em segundo
+//!   plano depois dele; a linha `PECAS` diz se a história já chegou;
 //! - a prova diz também qual versão do gancho as sessões do usuário rodam: o
 //!   commit que o `mustard-rt` do plugin instalado carimbou em si;
 //! - ao terminar, só as três pastas de medida usadas por último ficam.
@@ -32,7 +34,7 @@ use mustard_core::domain::scan::Scan;
 use mustard_core::io::measure_proof::{HOOK_NOT_INSTALLED, HOOK_WITHOUT_COMMIT, OUT_VAR, built_commit, measure_vars, rebuild_map};
 use mustard_core::io::tree_state::tree_state;
 use mustard_core::platform::git;
-use mustard_core::platform::harness::{home_dir, installed_plugin, installed_plugin_in};
+use mustard_core::platform::harness::{home_dir, installed_plugin_rt, installed_plugin_rt_in};
 use serde_json::Value;
 
 /// Quantas pastas de medida ficam depois de cada rodada.
@@ -492,11 +494,11 @@ fn rebuild_trees(trees: &Path, scan: &Scan) -> Result<Vec<PathBuf>, String> {
 /// `não instalado` sem plugin registrado ou sem o programa dele no disco; e
 /// `sem commit na versão` quando há plugin, mas ele não diz o commit.
 fn hook_version(host: &Host) -> String {
-    let plugin = match &host.config {
-        Some(config) => installed_plugin_in(config),
-        None => installed_plugin(),
+    let installed = match &host.config {
+        Some(config) => installed_plugin_rt_in(config),
+        None => installed_plugin_rt(),
     };
-    let Some(binary) = plugin.map(|plugin| plugin.rt_binary()).filter(|binary| binary.is_file()) else {
+    let Some(binary) = installed else {
         return HOOK_NOT_INSTALLED.to_string();
     };
     Command::new(binary)
@@ -1076,6 +1078,30 @@ mod tests {
         assert_eq!(hook_version(&host_with_config(config.path())), "sem commit na versão");
     }
 
+    /// O gancho vem do programa que o leitor do instalador aponta
+    /// ([`installed_plugin_rt_in`]): o que roda em `--version` é o mesmo
+    /// caminho que ele devolve, e onde ele não devolve nada o gancho não está
+    /// instalado.
+    #[cfg(unix)]
+    #[test]
+    fn the_hook_runs_the_program_the_installer_reader_points_to() {
+        let config = tempdir().unwrap();
+        let ran = config.path().join("quem-rodou");
+        assert_eq!((installed_plugin_rt_in(config.path()), hook_version(&host_with_config(config.path()))), (None, "não instalado".to_string()));
+
+        register_plugin(config.path(), "mustard-local", "0.2.4");
+        assert_eq!((installed_plugin_rt_in(config.path()), hook_version(&host_with_config(config.path()))), (None, "não instalado".to_string()), "the registry without the program");
+
+        let newest = register_plugin(config.path(), "outro-mercado", "0.2.10");
+        crate::executable::write_executable(
+            &newest.join("bin").join("mustard-rt"),
+            &format!("#!/bin/sh\necho \"$0\" > '{}'\necho 'mustard-rt 0.2.10 (build dev, geeeeeeeeeeee 2026-09-30)'\n", ran.display()),
+        );
+        let pointed = installed_plugin_rt_in(config.path()).expect("the reader finds the program");
+        assert_eq!(hook_version(&host_with_config(config.path())), "eeeeeeeeeeee");
+        assert_eq!(std::fs::read_to_string(&ran).unwrap().trim(), pointed.display().to_string(), "the hook ran the program the reader points to");
+    }
+
     /// Um programa na pasta de cache que o registro não aponta não é o gancho
     /// das sessões: só vale o que o registro diz.
     #[cfg(unix)]
@@ -1137,18 +1163,35 @@ mod tests {
         assert!(refusal.contains("não existe"), "{refusal}");
     }
 
-    /// Um scan de mentira: grava `novo` no banco que recebe em `--out` e anota
-    /// a árvore em `log`; falha quando o arquivo `fail` existe.
+    /// Um scan de mentira: anota em `log` cada chamada, com o comando e a
+    /// árvore; no comando `scan` grava `novo` no banco que recebe em `--out` e
+    /// falha quando o arquivo `fail` existe; a leitura da história
+    /// (`history-all`) só é anotada.
     #[cfg(unix)]
     fn fake_scan(path: &Path, log: &Path, fail: &Path) {
         crate::executable::write_executable(
             path,
             &format!(
-                "#!/bin/sh\necho \"scan $2\" >> '{log}'\n[ -e '{fail}' ] && {{ echo 'o scan quebrou' >&2; exit 3; }}\nmkdir -p \"$(dirname \"$4\")\" && printf novo > \"$4\"\necho '{{\"full\":true,\"read\":[],\"files\":1}}'\n",
+                "#!/bin/sh\necho \"$1 $2\" >> '{log}'\n[ \"$1\" = history-all ] && exit 0\n[ -e '{fail}' ] && {{ echo 'o scan quebrou' >&2; exit 3; }}\nmkdir -p \"$(dirname \"$4\")\" && printf novo > \"$4\"\necho '{{\"full\":true,\"read\":[],\"files\":1}}'\n",
                 log = log.display(),
                 fail = fail.display()
             ),
         );
+    }
+
+    /// As linhas que `fake_scan` anotou em `log`, esperando até `count` delas:
+    /// a leitura da história roda em outro processo, que segue depois do
+    /// scan.
+    #[cfg(unix)]
+    fn scan_calls(log: &Path, count: usize) -> Vec<String> {
+        let read = || std::fs::read_to_string(log).unwrap_or_default().lines().map(str::to_string).collect::<Vec<_>>();
+        for _ in 0..200 {
+            if read().len() >= count {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        read()
     }
 
     /// Uma pasta de árvores com os projetos `names`, cada um com o mapa velho.
@@ -1178,8 +1221,15 @@ mod tests {
         let rebuilt = rebuild_trees(&trees, &Scan::new(dir.path().join("scan").to_string_lossy())).unwrap();
 
         assert_eq!(rebuilt, vec![trees.join("a"), trees.join("b")]);
-        let logged = std::fs::read_to_string(&log).unwrap();
-        assert_eq!(logged.lines().collect::<Vec<_>>(), [format!("scan {}", trees.join("a").display()), format!("scan {}", trees.join("b").display())]);
+        let calls = scan_calls(&log, 4);
+        let (a, b) = (trees.join("a").display().to_string(), trees.join("b").display().to_string());
+        let of = |command: &str| {
+            let mut found: Vec<String> = calls.iter().filter(|call| call.starts_with(command)).cloned().collect();
+            found.sort();
+            found
+        };
+        assert_eq!(of("scan "), [format!("scan {a}"), format!("scan {b}")]);
+        assert_eq!(of("history-all "), [format!("history-all {a}"), format!("history-all {b}")], "the history of each map is read after its scan, as in the sessions: {calls:?}");
         for name in ["a", "b"] {
             let claude = trees.join(name).join(".claude");
             assert_eq!(std::fs::read_to_string(claude.join("grain.db")).unwrap(), "novo");
@@ -1245,7 +1295,7 @@ mod tests {
         crate::executable::write_executable(
             &ruler,
             &format!(
-                "#!/bin/sh\ncase \"$1\" in\n--list) echo 'mod::measure_it: test' ;;\n*) echo ruler >> '{log}'\n   echo \"PROVA commit=$MUSTARD_MEASURE_COMMIT gancho=$MUSTARD_MEASURE_HOOK mapa=$(cat \"$SPEND_TREES/p/.claude/grain.db\")\" ;;\nesac\n",
+                "#!/bin/sh\ncase \"$1\" in\n--list) echo 'mod::measure_it: test' ;;\n*) echo ruler >> '{log}'\n   echo \"PROVA commit=$MUSTARD_MEASURE_COMMIT gancho=$MUSTARD_MEASURE_HOOK home=$HOME mapa=$(cat \"$SPEND_TREES/p/.claude/grain.db\")\" ;;\nesac\n",
                 log = log.display()
             ),
         );
@@ -1268,9 +1318,13 @@ mod tests {
         World { host: Host { cargo: Some(cargo), config: Some(config) }, _dir: dir, repo, base, trees, log, fail }
     }
 
+    /// Os passos que a medida deu, na ordem, sem a leitura da história: ela
+    /// roda em outro processo, depois do scan, e chega ao registro quando
+    /// puder.
     #[cfg(unix)]
     fn logged(world: &World) -> Vec<String> {
-        std::fs::read_to_string(&world.log).unwrap_or_default().lines().map(str::to_string).collect()
+        let all = std::fs::read_to_string(&world.log).unwrap_or_default();
+        all.lines().filter(|line| !line.starts_with("history-all ")).map(str::to_string).collect()
     }
 
     /// A medida inteira: antes da régua o cargo compila, o scan compilado
@@ -1283,12 +1337,17 @@ mod tests {
         let world = world();
         let mut asked = opts("measure_it");
         asked.trees = Some(world.trees.clone());
+        // O `HOME` que a medida recebe em `--env` vai só à régua: o gancho
+        // sai do registro de plugins, que não anda com ele.
+        asked.env = vec!["HOME=/pasta/vazia".to_string()];
 
         let report = measure_in(&world.repo, &world.base, &asked, &world.host).unwrap();
 
-        assert!(report.contains("gancho=10d66039a5b1"), "{report}");
+        assert!(report.contains("gancho=10d66039a5b1") && report.contains("home=/pasta/vazia"), "{report}");
         assert!(report.contains("mapa=novo") && !report.contains("velho"), "the ruler read the map the scan wrote: {report}");
         assert_eq!(logged(&world), ["cargo build", &format!("scan {}", world.trees.join("p").display()), "cargo test", "ruler"]);
+        let reading = format!("history-all {}", world.trees.join("p").display());
+        assert!(scan_calls(&world.log, 5).contains(&reading), "the history of the rebuilt map is read, as in the sessions");
 
         // Sem plugin instalado a mesma medida diz que o gancho não está.
         let bare = tempdir().unwrap();

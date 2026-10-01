@@ -249,12 +249,9 @@ pub(crate) fn ensure_copy(root: &Path, path: &Path, head: &str, owner: &Keeping)
 /// nasce de novo ([`new_copy`]), guardando antes o que ela tinha de `owner`.
 /// Depois, os arquivos locais do projeto.
 pub(crate) fn reset_slot(root: &Path, path: &Path, head: &str, owner: &Keeping) -> Result<Prepared, String> {
-    if !live_copy(path) {
-        return new_copy(root, path, head, owner);
-    }
-    let before = git::run(path, &["rev-parse", "HEAD"]).out().unwrap_or_default();
-    let kept = super::keep::reset_with_submodules(root, path, head, owner)?;
-    Ok(Prepared { missing: copy_local_files(root, path), reused: changed_since(root, &before, head), kept })
+    let zeroed = zero_live_copy(root, path, || super::keep::reset_with_submodules(root, path, head, owner))?;
+    let Some(zeroed) = zeroed else { return new_copy(root, path, head, owner) };
+    Ok(Prepared { missing: zeroed.missing, reused: changed_since(root, &zeroed.before, head), kept: zeroed.value })
 }
 
 /// A vaga em `path`, cópia viva, de uma onda cujo código a rodada acabou de
@@ -262,12 +259,37 @@ pub(crate) fn reset_slot(root: &Path, path: &Path, head: &str, owner: &Keeping) 
 /// arquivos locais do projeto de volta como em [`reset_slot`]. A pasta que
 /// não é cópia viva fica como está, e o motivo é o erro.
 pub(super) fn reset_committed_slot(root: &Path, path: &Path) -> Result<(), String> {
+    zero_live_copy(root, path, || super::keep::reset_in_place(root, path))?
+        .map(|_| ())
+        .ok_or_else(|| format!("not a live copy: {}", shown(path)))
+}
+
+/// O que zerar uma cópia viva deixou: o commit em que ela estava antes, o que
+/// o zerar devolveu e os itens da lista de arquivos locais que não voltaram a
+/// ela.
+struct Zeroed<T> {
+    before: String,
+    value: T,
+    missing: Vec<String>,
+}
+
+/// A cópia viva em `path` zerada por `reset`, com os arquivos locais do
+/// projeto `root` de volta ([`copy_local_files`]): é o que toda volta de vaga
+/// ao commit faz, guardando antes ou não. O commit em que ela estava é lido
+/// antes de `reset` rodar. `None` na pasta que não é cópia viva
+/// ([`live_copy`]), sem rodar `reset`; o `reset` que falha devolve o erro, e
+/// nenhum arquivo local é levado.
+fn zero_live_copy<T>(
+    root: &Path,
+    path: &Path,
+    reset: impl FnOnce() -> Result<T, String>,
+) -> Result<Option<Zeroed<T>>, String> {
     if !live_copy(path) {
-        return Err(format!("not a live copy: {}", shown(path)));
+        return Ok(None);
     }
-    super::keep::reset_in_place(root, path)?;
-    copy_local_files(root, path);
-    Ok(())
+    let before = git::run(path, &["rev-parse", "HEAD"]).out().unwrap_or_default();
+    let value = reset()?;
+    Ok(Some(Zeroed { before, value, missing: copy_local_files(root, path) }))
 }
 
 /// De quem é o que a vaga `path` da obra `spec` tem, para o que a limpeza
@@ -690,6 +712,65 @@ mod tests {
         assert_eq!(sent_copy(root, 2), shown(&slot_path(root, "x", 1)), "a vaga da revisão aberta está presa: {out}");
         let kept = std::fs::read_to_string(review.join("src/a.rs")).unwrap();
         assert_eq!(kept, "fn revisto() {}\n", "a mudança do revisor fica na vaga dele");
+    }
+
+    /// A volta da onda 1 com `files` entregues e a rodada que a comita.
+    fn deliver_and_commit(root: &Path, files: &[&str]) -> Value {
+        let done = json!({"wave": 1, "text": "A onda 1 saiu.", "files": files, "commit": "a onda 1 saiu"});
+        assert_eq!(returned(root, done)["ok"], json!(true));
+        let taken = round(root, "x", None);
+        assert_eq!(taken["ok"], json!(true), "{taken}");
+        taken
+    }
+
+    /// Depois do commit da onda, a vaga volta limpa por inteiro: a cópia do
+    /// submódulo de dentro dela também volta ao commit em que nasceu, e o que
+    /// a onda mudou nele, que já está no commit do submódulo do projeto, não
+    /// fica solto na vaga.
+    #[test]
+    fn the_submodule_copy_inside_a_slot_goes_back_clean_after_the_commit() {
+        let dir = tempdir().unwrap();
+        let root = &dir.path().join("principal");
+        with_submodule(root, dir.path());
+        approved(root, "x", &[(1, &["libs/sub/lib.txt"], &[])]);
+        let out = round(root, "x", None);
+        assert_eq!(waves_in(&out, "dispatch"), vec![1], "{out}");
+        let inside = PathBuf::from(sent_copy(root, 1)).join("libs/sub");
+        assert!(inside.join(".git").is_file(), "the slot carries the copy of the submodule: {out}");
+        std::fs::write(inside.join("lib.txt"), "fn um() {}\n// onda 1\n").unwrap();
+
+        let taken = deliver_and_commit(root, &["libs/sub/lib.txt"]);
+
+        let kept = std::fs::read_to_string(root.join("libs/sub/lib.txt")).unwrap();
+        assert_eq!(kept, "fn um() {}\n// onda 1\n", "the code is in the submodule of the project: {taken}");
+        assert_eq!(git_text(&inside, &["status", "--porcelain", "--untracked-files=all"]), "", "{taken}");
+        assert_eq!(std::fs::read_to_string(inside.join("lib.txt")).unwrap(), "fn um() {}\n", "{taken}");
+    }
+
+    /// Depois do commit da onda, os arquivos locais do projeto voltam à cópia
+    /// com o conteúdo de agora, como na volta de uma vaga ao commit: o que a
+    /// onda apagou ou deixou velho na vaga chega de novo.
+    #[test]
+    fn the_local_files_come_back_to_a_slot_wiped_after_the_commit() {
+        let dir = tempdir().unwrap();
+        let root = &dir.path().join("projeto");
+        std::fs::create_dir_all(root).unwrap();
+        std::fs::write(root.join(".gitignore"), ".env\n").unwrap();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        std::fs::write(root.join(".env"), "SEGREDO=1\n").unwrap();
+        std::fs::write(root.join("mustard.json"), json!({ "localFiles": [".env"] }).to_string()).unwrap();
+        let out = round(root, "x", None);
+        assert_eq!(waves_in(&out, "dispatch"), vec![1], "{out}");
+        let copy = PathBuf::from(sent_copy(root, 1));
+        assert_eq!(std::fs::read_to_string(copy.join(".env")).unwrap(), "SEGREDO=1\n", "{out}");
+        std::fs::write(copy.join("src/a.rs"), "fn um() {}\n// onda 1\n").unwrap();
+        std::fs::remove_file(copy.join(".env")).unwrap();
+        std::fs::write(root.join(".env"), "SEGREDO=2\n").unwrap();
+
+        let taken = deliver_and_commit(root, &["src/a.rs"]);
+
+        assert_eq!(git_text(&copy, &["status", "--porcelain", "--untracked-files=all"]), "", "{taken}");
+        assert_eq!(std::fs::read_to_string(copy.join(".env")).unwrap(), "SEGREDO=2\n", "the local file came back: {taken}");
     }
 
     /// Um projeto git vazio, com as cópias dele saindo no fim do teste.

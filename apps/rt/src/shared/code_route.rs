@@ -436,7 +436,9 @@ pub(crate) mod fixture {
 mod tests {
     use std::path::Path;
 
-    use super::{CopyLines, in_search, linked_copy, project_path};
+    use mustard_core::domain::project_map::ProjectMap;
+
+    use super::{CopyLines, fixture, holds_code, in_search, linked_copy, project_path};
     use crate::shared::config_key::{NameFilter, Walk};
 
     /// Um repositório com um commit em `dir`.
@@ -583,5 +585,24 @@ mod tests {
         assert!(in_search("src/frete/a.ts", &folders(&["src/frete"]), &[NameFilter::rg("src/**")], rg), "a filter that is not read keeps the file");
         let grep = [NameFilter { exclude: false, glob: "*.rs".to_string() }];
         assert!(!in_search("src/frete/a.ts", &folders(&["src/frete"]), &grep, Walk::Grep));
+    }
+
+    /// Uma busca sem pasta nenhuma não é assunto do mapa: com a lista de pastas
+    /// vazia, `holds_code` diz que não, mesmo com o mapa cheio de código, sem
+    /// filtro e com a busca que, sem pasta, entraria em qualquer arquivo
+    /// ([`in_search`]). Com pasta, o mesmo mapa guarda código na que o tem e
+    /// não na que não o tem.
+    #[test]
+    fn a_search_without_any_folder_holds_no_code_even_with_a_map_full_of_it() {
+        let map: ProjectMap = serde_json::from_str(fixture::MAP).expect("the map of the fixture");
+        assert!(map.modules.len() >= 4, "the map has code: {}", map.modules.len());
+        let folders = |list: &[&str]| list.iter().map(|folder| folder.to_string()).collect::<Vec<_>>();
+        for walk in [Walk::Rg { unignored: false }, Walk::Grep] {
+            assert!(in_search("src/big.rs", &[], &[], walk), "without a folder every file of the map is in the search");
+            assert!(!holds_code(&map, &[], &[], walk), "a search of no folder is not the map's business");
+            assert!(!holds_code(&map, &[], &[NameFilter::rg("*.rs")], walk), "nor with a name filter");
+            assert!(holds_code(&map, &folders(&["src"]), &[], walk), "a folder with code is");
+            assert!(!holds_code(&map, &folders(&["docs"]), &[], walk), "a folder without code is not");
+        }
     }
 }

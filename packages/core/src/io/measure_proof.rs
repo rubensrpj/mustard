@@ -24,7 +24,8 @@
 //! relato mostra se o que foi medido é o que as sessões rodam.
 //!
 //! Cada mapa é refeito a cada medida ([`rebuild_map`]): o banco velho sai e o
-//! `scan` compilado com o mesmo código grava um novo, de modo que nenhuma
+//! `scan` compilado com o mesmo código grava um novo, com a história de cada
+//! declaração lida em segundo plano como nas sessões, de modo que nenhuma
 //! medida lê o mapa de uma compilação que ficou na máquina.
 
 use std::io::Read;
@@ -33,7 +34,7 @@ use std::path::Path;
 use serde_json::{Value, json};
 
 use crate::domain::scan::{Scan, ScanReport};
-use crate::io::project_map::{self, BLOCKS, MAP_FILE_NAME, MAP_JOURNAL_FILE_NAME, MAP_SHARED_FILE_NAME, MAP_WAL_FILE_NAME};
+use crate::io::project_map::{self, BLOCKS};
 use crate::io::search_pieces::{self, Piece};
 use crate::io::sha256::Sha256;
 use crate::platform::error::{Error, Result};
@@ -242,25 +243,23 @@ fn sha256_of_file(path: &Path) -> std::io::Result<String> {
 }
 
 /// Refaz o mapa da árvore `tree` do zero: apaga o banco velho e o que o
-/// SQLite deixa ao lado dele (o diário, o `-wal` e o `-shm`) e roda `scan`
-/// sobre a árvore. Assim o mapa que a régua abre é sempre o que o `scan`
-/// compilado com o código medido grava, nunca o de uma compilação que ficou
-/// na pasta.
+/// SQLite deixa ao lado dele ([`project_map::remove`]) e roda, sobre a árvore,
+/// o mesmo passo que o mapa das sessões roda: o scan e, depois dele, a leitura
+/// da história de cada declaração em segundo plano
+/// ([`Scan::scan_then_read_history`]). Assim o mapa que a régua abre é sempre
+/// o que o `scan` compilado com o código medido grava, nunca o de uma
+/// compilação que ficou na pasta, e traz a história que a busca das sessões
+/// também lê quando ela termina de chegar: a linha `PECAS` diz se chegou.
 ///
 /// # Errors
 /// O arquivo velho que não se apaga; o scan que não roda ou falha: sem mapa
 /// novo, a medida não segue.
 pub fn rebuild_map(tree: &Path, scan: &Scan) -> Result<ScanReport> {
     let model = project_map::model_path(tree);
-    for name in [MAP_FILE_NAME, MAP_JOURNAL_FILE_NAME, MAP_WAL_FILE_NAME, MAP_SHARED_FILE_NAME] {
-        let old = model.with_file_name(name);
-        match std::fs::remove_file(&old) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(Error::check_failed(format!("não consegui apagar o mapa velho {}: {e}", old.display()))),
-        }
-    }
-    scan.scan(tree, &model).map_err(|e| Error::check_failed(format!("o scan não refez o mapa de {}: {e}", tree.display())))
+    project_map::remove(&model)
+        .map_err(|e| Error::check_failed(format!("não consegui apagar o mapa velho de {}: {e}", tree.display())))?;
+    scan.scan_then_read_history(tree, &model)
+        .map_err(|e| Error::check_failed(format!("o scan não refez o mapa de {}: {e}", tree.display())))
 }
 
 /// Confere que todo bloco do mapa em `db` traz a marca `expected`, a que o
@@ -401,7 +400,9 @@ impl MeasureGate {
 mod tests {
     use super::*;
     use crate::domain::normalize::Languages;
-    use crate::io::project_map::{FILES, model_path, save_at, save_block_at};
+    use crate::io::project_map::{
+        FILES, MAP_FILE_NAME, MAP_JOURNAL_FILE_NAME, MAP_SHARED_FILE_NAME, MAP_WAL_FILE_NAME, model_path, save_at, save_block_at,
+    };
     use tempfile::{TempDir, tempdir};
 
     /// Um mapa pequeno gravado como o scan grava, com `mark` em cada bloco.

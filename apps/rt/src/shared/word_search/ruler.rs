@@ -515,7 +515,10 @@ pub(super) fn measure_gate(maps: &[PathBuf]) -> MeasureGate {
 /// casa com o arquivo certo na cópia) ficam de fora. Roda pelo comando de
 /// medida, que compila o código certo em `--release`, para o tempo ser o do
 /// gancho de verdade, e refaz o mapa de cada cópia com o `scan` desse código;
-/// rode com `env -u TYPESAFE_API_KEY HOME=<pasta vazia>`.
+/// rode com `env -u TYPESAFE_API_KEY mustard-rt run measure ... --env
+/// HOME=<pasta vazia>`: o `HOME` falso vai só à régua, por `--env`. Posto no
+/// comando de medida, ele esconderia o plugin instalado, e a prova sairia
+/// `gancho=não instalado`.
 #[test]
 #[ignore = "mede com as cópias dos projetos de prova e as conversas reais"]
 fn measure_the_spend_of_the_search() {

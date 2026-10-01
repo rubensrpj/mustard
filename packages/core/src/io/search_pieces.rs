@@ -16,10 +16,13 @@
 //!   vai ao filtro, que a medida sem filtro não tem;
 //! - **as duas línguas**: o índice foi feito em duas línguas, a do código e a
 //!   do texto;
-//! - **o histórico do git**: os títulos dos commits que mudaram cada arquivo
-//!   (`commits`) e, com a história de cada declaração lida (`lineage_decls`),
-//!   os de cada declaração, que entram nas palavras que a busca lê. A ordem
-//!   por arquivo mexido há pouco não é peça: ela não entra na busca;
+//! - **o histórico do git**: a história de cada declaração que o scan lê do
+//!   git depois do mapa (`lineage_*`), com os títulos dos commits que mudaram
+//!   cada arquivo (`commits`) e cada declaração, que entram nas palavras que a
+//!   busca lê. Só está ligada quando `lineage_*` tem linhas: o mapa que só tem
+//!   os commits dos arquivos mede a busca sem a história por declaração, como
+//!   a das sessões não a tem enquanto a leitura não chega. A ordem por arquivo
+//!   mexido há pouco não é peça: ela não entra na busca;
 //! - **a conferência dos primeiros candidatos**: reordena os primeiros pela
 //!   cobertura das palavras raras da pergunta; a busca da resposta sempre a faz.
 //!
@@ -96,7 +99,7 @@ fn of_connection(conn: &Connection) -> Result<Vec<Piece>> {
     let compiled = filled("decl_vectors")?;
     let words = filled("word_vectors")?;
     let commits = filled("commits")?;
-    let declarations = filled("lineage_decls")?;
+    let lineage = filled("lineage_files")? || filled("lineage_commits")? || filled("lineage_decls")?;
     let languages: Option<String> = if table_exists(conn, "search_meta")? {
         conn.query_row("SELECT value FROM search_meta WHERE key = 'languages'", [], |row| row.get(0)).ok()
     } else {
@@ -126,11 +129,12 @@ fn of_connection(conn: &Connection) -> Result<Vec<Piece>> {
         ),
         Piece::new(
             "historico",
-            commits,
-            match (commits, declarations) {
+            lineage,
+            match (lineage, commits) {
                 (true, true) => "os títulos dos commits entram nas palavras de cada arquivo e de cada declaração",
-                (true, false) => "os títulos dos commits entram nas palavras de cada arquivo; a história de cada declaração não foi lida",
-                (false, _) => "o mapa não tem a história do git",
+                (true, false) => "a história de cada declaração foi lida, e o mapa não tem os commits dos arquivos",
+                (false, true) => "a história de cada declaração não foi lida (lineage vazio): só os títulos dos commits de cada arquivo entram nas palavras",
+                (false, false) => "o mapa não tem a história do git",
             },
         ),
         Piece::new("conferencia", true, "os primeiros candidatos passam pela conferência das palavras raras"),
@@ -180,7 +184,8 @@ mod tests {
 
     /// Cada peça liga com o que o mapa tem: os vetores das funções ligam o
     /// compilado, os das palavras ligam os sinônimos, as duas línguas do
-    /// índice ligam a peça das línguas e os commits ligam o histórico.
+    /// índice ligam a peça das línguas e a história de cada declaração liga o
+    /// histórico; os commits dos arquivos sozinhos não o ligam.
     #[test]
     fn each_piece_turns_on_with_what_the_map_holds() {
         let (_dir, model) = saved(&["pt-BR", "en-US"]);
@@ -207,9 +212,10 @@ mod tests {
                 ("raiz-e-sinonimos", true),
                 ("sentido-pelo-vetor", false),
                 ("duas-linguas", true),
-                ("historico", true),
+                ("historico", false),
                 ("conferencia", true),
-            ]
+            ],
+            "the commits of the files alone do not turn the history on"
         );
         assert!(got[4].why.contains("a história de cada declaração não foi lida"), "{}", got[4].why);
         conn.execute_batch(
@@ -219,6 +225,51 @@ mod tests {
         .unwrap();
         let read = of_connection(conn).unwrap();
         assert!(read[4].on && read[4].why.contains("de cada declaração") && !read[4].why.contains("não foi lida"), "{}", read[4].why);
+    }
+
+    /// O histórico só liga quando alguma tabela da história por declaração
+    /// (`lineage_*`) tem linhas: o mapa com os commits dos arquivos e as
+    /// tabelas vazias, como o do scan antes de a leitura da história chegar,
+    /// diz na linha da prova que o histórico ainda não está ligado, e o motivo
+    /// diz que a história de cada declaração não foi lida; cada uma das três
+    /// tabelas, com uma linha, liga a peça.
+    #[test]
+    fn the_history_is_on_only_when_the_lineage_tables_have_rows() {
+        let (_dir, model) = saved(&["en-US"]);
+        let db = open_existing(&model).unwrap();
+        let conn = db.conn();
+        let history = |conn: &Connection| {
+            let pieces = of_connection(conn).unwrap();
+            (line("m", &pieces), pieces[4].on, pieces[4].why.clone())
+        };
+
+        let (line_without, on, why) = history(conn);
+        assert!(!on && line_without.contains("historico=ainda-nao-ligada"), "{line_without}");
+        assert!(why.contains("o mapa não tem a história do git"), "{why}");
+
+        conn.execute("INSERT INTO history_paths(path) VALUES ('src/a.rs')", []).unwrap();
+        conn.execute("INSERT INTO commits(id, at, title, pr, added, changed) VALUES ('c1', 1, 't', 0, '[0]', '[]')", params![]).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS lineage_files(path TEXT, base TEXT, last_commit TEXT, tip TEXT, mark TEXT, moves INTEGER, comments INTEGER);
+             CREATE TABLE IF NOT EXISTS lineage_commits(path TEXT, id TEXT, at INTEGER, title TEXT, pr INTEGER, files TEXT);
+             CREATE TABLE IF NOT EXISTS lineage_decls(path TEXT, name TEXT, nth INTEGER, commits TEXT, comments TEXT);",
+        )
+        .unwrap();
+        let (line_commits_only, on, why) = history(conn);
+        assert!(!on && line_commits_only.contains("historico=ainda-nao-ligada"), "{line_commits_only}");
+        assert!(why.contains("lineage vazio") && why.contains("não foi lida"), "{why}");
+
+        let inserts = [
+            "INSERT INTO lineage_files(path, base, last_commit, tip, mark, moves, comments) VALUES ('src/a.rs', 'main', 'c1', 'c1', 'm', 0, 0)",
+            "INSERT INTO lineage_commits(path, id, at, title, pr, files) VALUES ('src/a.rs', 'c1', 1, 't', 0, '{}')",
+            "INSERT INTO lineage_decls(path, name, nth, commits, comments) VALUES ('src/a.rs', 'a', 0, '[]', NULL)",
+        ];
+        for (table, insert) in ["lineage_files", "lineage_commits", "lineage_decls"].iter().zip(inserts) {
+            conn.execute(insert, []).unwrap();
+            let (with_rows, on, _) = history(conn);
+            assert!(on && with_rows.contains("historico=ligada"), "{table}: {with_rows}");
+            conn.execute(&format!("DELETE FROM {table}"), []).unwrap();
+        }
     }
 
     /// A linha da prova diz o estado de cada peça com as palavras do usuário,

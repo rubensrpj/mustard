@@ -58,16 +58,30 @@ pub(super) fn clean_orphan_copy(root: &Path, log: &SpecLog, spec: &str, wave: u6
     reset_with_submodules(root, &copy, &head, &Keeping { label: format!("{spec}/{wave}-{sent}"), wave: Some(wave) })
 }
 
-/// Cada cópia que uma limpeza mexe, com o commit a que ela volta e de quem é
-/// o que ela guarda: a própria `copy`, no commit `head`, e cada cópia de
-/// submódulo dentro dela, no commit do submódulo no checkout `root`.
+/// Cada cópia que uma limpeza mexe, na ordem: a própria `copy` (sem
+/// submódulo) e cada cópia de submódulo dentro dela, com o caminho do
+/// submódulo no checkout `root`. É a única lista de cópias de toda limpeza,
+/// a que volta ao commit de nascimento e a que guarda antes de voltar.
+fn copies_inside(root: &Path, copy: &Path) -> Vec<(PathBuf, Option<String>)> {
+    let subs = submodules_of(root).into_iter().filter(|sub| copy.join(sub).join(".git").is_file());
+    std::iter::once((copy.to_path_buf(), None)).chain(subs.map(|sub| (copy.join(&sub), Some(sub)))).collect()
+}
+
+/// Cada cópia que uma limpeza mexe ([`copies_inside`]), com o commit a que ela
+/// volta e de quem é o que ela guarda: a própria `copy`, no commit `head`, e
+/// cada cópia de submódulo dentro dela, no commit do submódulo no checkout
+/// `root`.
 fn copy_targets(root: &Path, copy: &Path, head: &str, keeping: &Keeping) -> Vec<(PathBuf, String, Keeping)> {
-    let mut targets: Vec<(PathBuf, String, Keeping)> = vec![(copy.to_path_buf(), head.to_string(), keeping.clone())];
-    for sub in submodules_of(root).iter().filter(|sub| copy.join(sub).join(".git").is_file()) {
-        let inside = Keeping { label: format!("{}-{}", keeping.label, sub.replace('/', "_")), wave: keeping.wave };
-        targets.push((copy.join(sub), self::head(&root.join(sub)), inside));
-    }
-    targets
+    copies_inside(root, copy)
+        .into_iter()
+        .map(|(dir, sub)| match sub {
+            None => (dir, head.to_string(), keeping.clone()),
+            Some(sub) => {
+                let inside = Keeping { label: format!("{}-{}", keeping.label, sub.replace('/', "_")), wave: keeping.wave };
+                (dir, self::head(&root.join(&sub)), inside)
+            }
+        })
+        .collect()
 }
 
 /// Guarda o que cada cópia de `targets` tem e o commit dela não tem
@@ -129,9 +143,7 @@ pub(super) fn reset_with_submodules(
 /// que o pedido da onda seguinte lista para decidir se prepara de novo, e
 /// mudança que entrou no commit por outra onda não está no preparo dela.
 pub(super) fn reset_in_place(root: &Path, copy: &Path) -> Result<(), String> {
-    let subs = submodules_of(root);
-    let inside = subs.iter().map(|sub| copy.join(sub)).filter(|dir| dir.join(".git").is_file());
-    let dirs: Vec<PathBuf> = std::iter::once(copy.to_path_buf()).chain(inside).collect();
+    let dirs: Vec<PathBuf> = copies_inside(root, copy).into_iter().map(|(dir, _)| dir).collect();
     let heads: Vec<String> = dirs.iter().map(|dir| head(dir)).collect();
     for dir in &dirs {
         refresh_index(dir);
