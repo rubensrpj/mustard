@@ -127,8 +127,8 @@ pub enum Mark {
     /// vale no lugar da busca comum, mesmo com palavras da pergunta fora dos
     /// campos fortes dele.
     Pinned,
-    /// O mapa achou parte: a resposta vale, e as palavras que faltam pedem
-    /// outra busca.
+    /// O mapa achou parte: a busca comum roda, e o que o mapa achou vai junto
+    /// dela, com as palavras que faltam.
     Partial,
     /// O mapa não achou nada: a busca comum é a saída.
     NotFound,

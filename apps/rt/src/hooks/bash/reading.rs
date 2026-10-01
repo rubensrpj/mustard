@@ -21,14 +21,15 @@
 //!   terminal abre (`src/*.ts`, `src/**/*.rs`; no `git grep`, também o entre
 //!   aspas, que o próprio git abre) vale pela pasta antes do primeiro curinga
 //!   e por um filtro de nome, como o `-g` do `rg`; o curinga no nome de uma
-//!   pasta (`src/*/x.rs`) deixa a busca passar. Com o mapa cravado ou
-//!   parcial, a busca que mostra
-//!   linhas é recusada com a resposta agrupada por função no lugar dela (o
-//!   parcial passa antes pelo filtro do mapa, que entrega só as peças certas,
-//!   e sem chave ou com o filtro falhando vale a triagem, com o aviso uma vez
-//!   por sessão); a que só lista nomes ou conta (`-l`, `-c`) segue, sem
-//!   filtro e com uma linha da marca; sem achado, ou com o filtro dizendo que
-//!   nada serve, a busca segue com uma linha do que o mapa não achou. A busca num arquivo só, fora do projeto, em
+//!   pasta (`src/*/x.rs`) deixa a busca passar. Com o mapa cravado, a busca que mostra
+//!   linhas é recusada com a resposta agrupada por função no lugar dela; com
+//!   o parcial, a busca roda inteira, com a nota do mapa junto, só como
+//!   contexto (o parcial passa antes pelo filtro do mapa, que entrega só as
+//!   peças certas, e sem chave ou com o filtro falhando vale a triagem, com o
+//!   aviso uma vez por sessão); a que só lista nomes ou conta (`-l`, `-c`)
+//!   segue, sem filtro e com uma linha da marca; sem achado, ou com o filtro
+//!   dizendo que nada serve, a busca segue com uma linha do que o mapa não
+//!   achou. A busca num arquivo só, fora do projeto, em
 //!   pasta sem código do mapa, com filtros de nome que deixam só documentos ou
 //!   que tiram todo o código do mapa (`-g '!*.rs'`, `--exclude=*.rs`), com
 //!   opção que esta leitura não entende (`-v`, `-x`) ou com a chave
@@ -754,6 +755,24 @@ mod tests {
         }
     }
 
+    /// A nota que vai junto do comando, que roda como veio; qualquer outra
+    /// resposta derruba o teste.
+    fn noted(verdict: Verdict, command: &str) -> String {
+        match verdict {
+            Verdict::Inject { context } => context,
+            other => panic!("`{command}` runs with a note, got {other:?}"),
+        }
+    }
+
+    /// O texto do mapa, na recusa que toma o lugar da busca ou na nota que vai
+    /// junto dela, para o teste em que a marca não é o assunto.
+    fn said(verdict: Verdict, command: &str) -> String {
+        match verdict {
+            Verdict::Deny { reason: text } | Verdict::Inject { context: text } => text,
+            other => panic!("`{command}` is answered, got {other:?}"),
+        }
+    }
+
     /// A busca recursiva de um nome do mapa numa pasta de código, pelo `grep`
     /// ou pelo `rg`, é respondida no lugar dela, agrupada por função com a
     /// linha de começo e a de fim, também depois de um `cd`, atrás de um
@@ -950,7 +969,7 @@ mod tests {
     #[test]
     fn an_output_filter_with_a_folder_answers_with_the_files_outside_it() {
         let (_dir, root) = repo_with_a_legacy_folder();
-        let both = refused(run_in(&root, "git grep -n calcular_frete", Some("sem-filtro")), "no filter");
+        let both = said(run_in(&root, "git grep -n calcular_frete", Some("sem-filtro")), "no filter");
         assert!(both.contains("src/frete.rs\n  2-6 calcular_frete (2)"), "{both}");
         assert!(both.contains("legacy/frete.rs\n  2-6 calcular_frete (2)"), "{both}");
         for (n, command) in [
@@ -966,7 +985,7 @@ mod tests {
         .into_iter()
         .enumerate()
         {
-            let reason = refused(run_in(&root, command, Some(&format!("pasta{n}"))), command);
+            let reason = said(run_in(&root, command, Some(&format!("pasta{n}"))), command);
             assert!(reason.contains("src/frete.rs\n  2-6 calcular_frete (2)"), "{command}: {reason}");
             assert!(!reason.contains("legacy/frete.rs"), "{command}: the folder is left out: {reason}");
         }
@@ -980,7 +999,7 @@ mod tests {
             assert_eq!(run_in(&root, command, Some(&format!("tudo{n}"))), Verdict::Allow, "{command}: no mapped code is left");
         }
         let (_dir, plain) = word_search::fixture::repo("{}");
-        let reason = refused(run_in(&plain, "git grep -n calcular_frete -- . ':!src/pedido.rs'", Some("arquivo")), "one file left out");
+        let reason = said(run_in(&plain, "git grep -n calcular_frete -- . ':!src/pedido.rs'", Some("arquivo")), "one file left out");
         assert!(reason.contains("src/frete.rs\n  2-6 calcular_frete (2)") && !reason.contains("src/pedido.rs"), "{reason}");
     }
 
@@ -1474,15 +1493,16 @@ mod tests {
 
     /// A busca parcial do terminal, pelo gancho de verdade, vai ao filtro que
     /// a sessão tem, e a chamada medida dela fica gravada na spec da conversa,
-    /// como a da ferramenta de busca; a cravada não chega ao filtro e não
-    /// grava nada.
+    /// como a da ferramenta de busca; a resposta dela vai como nota e não
+    /// bloqueia o comando, e a cravada, que toma o lugar da busca, não chega
+    /// ao filtro e não grava nada.
     #[test]
     fn a_partial_terminal_search_records_its_measured_call_in_the_conversation_spec() {
         let (_dir, root) = word_search::fixture::repo("{}");
         converse(&root, "conversa", "s-terminal");
         let judge = word_search::fixture::Judge::sure_of(&[("calcular_frete", 0.9)]);
 
-        let reason = refused(judge.installed(|| run_in(&root, "grep -rn imposto .", Some("s-terminal"))), "grep -rn imposto .");
+        let reason = noted(judge.installed(|| run_in(&root, "grep -rn imposto .", Some("s-terminal"))), "grep -rn imposto .");
 
         assert!(reason.contains("src/frete.rs\n  2-6 calcular_frete (3)"), "{reason}");
         assert!(!reason.contains("desconto_frete"), "only what the filter delivered: {reason}");
@@ -1499,5 +1519,30 @@ mod tests {
         refused(judge.installed(|| run_in(&root, "grep -rn fechar_pedido .", Some("s-terminal"))), "the pinned search");
         assert_eq!(judge.calls(), 1, "the pinned search never reaches the filter");
         assert_eq!(word_searches(&root, "conversa").len(), 1, "and records no call");
+    }
+
+    /// A busca parcial não bloqueia o comando: a leitura e a busca na mesma
+    /// linha rodam inteiras, com a nota do mapa junto, e a nota não
+    /// traz o pedido de buscar de novo. A cravada na mesma linha segue
+    /// recusando a linha toda.
+    #[test]
+    fn a_read_and_a_partial_search_on_one_line_run_whole_with_the_note() {
+        let (_dir, root) = word_search::fixture::repo("{}");
+        let judge = word_search::fixture::Judge::sure_of(&[("calcular_frete", 0.9)]);
+        for (n, command) in [
+            "cat src/pedido.rs && grep -rn imposto .",
+            "grep -rn imposto . ; sed -n 1,4p src/pedido.rs",
+            "cd src && head -5 frete.rs | wc -l && rg imposto ..",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let note = noted(judge.installed(|| run_in(&root, command, Some(&format!("junto{n}")))), command);
+            assert!(note.starts_with("Parcial."), "{command}: {note}");
+            assert!(note.contains("src/frete.rs\n  2-6 calcular_frete"), "{command}: {note}");
+            assert!(!note.contains("Busque de novo"), "{command}: the note does not send the reader back: {note}");
+        }
+        let reason = refused(judge.installed(|| run_in(&root, "cat src/pedido.rs && grep -rn fechar_pedido .", Some("cravada"))), "a pinned search");
+        assert!(reason.starts_with("Cravado."), "{reason}");
     }
 }

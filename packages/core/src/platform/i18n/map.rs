@@ -28,10 +28,10 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("scan.map.type_line", Locale::PtBr) => "Tipo: {kind} · {count} arquivos",
         ("scan.map.type_line", Locale::EnUs) => "Type: {kind} · {count} files",
         ("scan.map.pointer", Locale::PtBr) => {
-            "Procure código como sempre, com o mesmo texto: `Grep`, `grep` e `rg` passam pelo Mustard, que responde no lugar da busca. A resposta vem agrupada por função, com o arquivo e as linhas de começo e fim. Cravado: o mapa achou pelo nome, e a resposta já traz o trecho. Parcial: o mapa achou parte, e a resposta diz o que falta. Não achei: a busca comum roda, com uma linha do que o mapa não achou. A busca que só lista nomes de arquivo ou conta roda como veio, com uma linha da marca. A mesma busca, repetida, passa. Para pedir a resposta sem buscar, rode `mustard-rt run map search \"<padrão>\"`. Depois leia os arquivos apontados: o mapa acha onde olhar, não substitui ler."
+            "Procure código como sempre, com o mesmo texto: `Grep`, `grep` e `rg` passam pelo Mustard, que responde no lugar da busca. A resposta vem agrupada por função, com o arquivo, as linhas de começo e fim e o código. Cravado: o mapa achou pelo nome, e a resposta já traz o trecho. Parcial: o mapa achou parte, a busca roda, e a nota diz o que falta. Não achei: a busca comum roda, com uma linha do que o mapa não achou. A busca que só lista nomes de arquivo ou conta roda como veio, com uma linha da marca. A mesma busca, repetida, passa. Para pedir a resposta sem buscar, rode `mustard-rt run map search \"<padrão>\"`. Depois leia os arquivos apontados: o mapa acha onde olhar, não substitui ler."
         }
         ("scan.map.pointer", Locale::EnUs) => {
-            "Search for code as always, with the same text: `Grep`, `grep` and `rg` go through Mustard, which answers in place of the search. The answer is grouped by function, with the file and the first and last lines. Pinned: the map found it by name, and the answer already carries the excerpt. Partial: the map found part, and the answer says what is missing. Found nothing: the plain search runs, with one line of what the map did not find. A search that only lists file names or counts runs as it came, with one line of the mark. The same search, repeated, passes. To get the answer without searching, run `mustard-rt run map search \"<pattern>\"`. Then read the files it points to: the map finds where to look, it does not replace reading."
+            "Search for code as always, with the same text: `Grep`, `grep` and `rg` go through Mustard, which answers in place of the search. The answer is grouped by function, with the file, the first and last lines and the code. Pinned: the map found it by name, and the answer already carries the excerpt. Partial: the map found part, the search runs, and the note says what is missing. Found nothing: the plain search runs, with one line of what the map did not find. A search that only lists file names or counts runs as it came, with one line of the mark. The same search, repeated, passes. To get the answer without searching, run `mustard-rt run map search \"<pattern>\"`. Then read the files it points to: the map finds where to look, it does not replace reading."
         }
         // O teto do nome comum escrito errado no `mustard.json`: sai na
         // resposta do scan e na de quem usa, uma vez por sessão.
@@ -312,16 +312,16 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Pinned. The map found {words} by name."
         }
         ("map.answer.partial", Locale::PtBr) => {
-            "Parcial. O mapa achou parte. Falta {missing}. Busque de novo com o que falta."
+            "Parcial. O mapa achou parte. Falta {missing}. É o que o mapa achou, ao lado do resultado da busca."
         }
         ("map.answer.partial", Locale::EnUs) => {
-            "Partial. The map found part. It lacks {missing}. Search again for what is missing."
+            "Partial. The map found part. It lacks {missing}. This is what the map found, next to the search result."
         }
         ("map.answer.partial_unsure", Locale::PtBr) => {
-            "Parcial. O mapa achou, mas não tem certeza de que este é o lugar."
+            "Parcial. O mapa achou, mas não tem certeza de que este é o lugar. É o que o mapa achou, ao lado do resultado da busca."
         }
         ("map.answer.partial_unsure", Locale::EnUs) => {
-            "Partial. The map found it, but it is not sure this is the place."
+            "Partial. The map found it, but it is not sure this is the place. This is what the map found, next to the search result."
         }
         ("map.answer.ask", Locale::PtBr) => "Antes de explorar, o Mustard consultou o mapa com este pedido.",
         ("map.answer.ask", Locale::EnUs) => "Before exploring, Mustard asked the map about this request.",
@@ -339,6 +339,13 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("map.answer.lines", Locale::EnUs) => {
             "Each function comes with its first and last line, and the lines found in parentheses:"
         }
+        // A mesma frase, para a resposta que traz também o código de cada função.
+        ("map.answer.lines_code", Locale::PtBr) => {
+            "Cada função vem com o começo e o fim, as linhas achadas entre parênteses e o código numerado, quando cabe:"
+        }
+        ("map.answer.lines_code", Locale::EnUs) => {
+            "Each function comes with its first and last line, the lines found in parentheses and its numbered code, when it fits:"
+        }
         ("map.answer.map_only", Locale::PtBr) => {
             "A busca comum não acharia nenhuma linha com esse texto. O mapa aponta estes arquivos: {files}."
         }
@@ -353,6 +360,16 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("map.answer.rest", Locale::EnUs) => {
             "Left out by the cut, places: {places}, files: {files}. Repeat the search to see the whole list."
         }
+        // A parcial vai ao lado do resultado da busca, que traz a lista
+        // inteira; e a função cortada diz quantas linhas ficaram de fora.
+        ("map.answer.rest_beside", Locale::PtBr) => {
+            "Fora do corte, lugares: {places}, arquivos: {files}. O resultado da busca mostra a lista inteira."
+        }
+        ("map.answer.rest_beside", Locale::EnUs) => {
+            "Left out by the cut, places: {places}, files: {files}. The search result shows the whole list."
+        }
+        ("map.answer.more_lines", Locale::PtBr) => "… (+{count} linhas)",
+        ("map.answer.more_lines", Locale::EnUs) => "… (+{count} lines)",
         // A linha que a resposta cravada leva no fim: se o primeiro achado
         // não serve, as ferramentas de sempre seguem valendo.
         ("map.search.use_tools", Locale::PtBr) => {
@@ -440,8 +457,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("map.rs"),
             super::PREFIXES,
-            77,
-            0xfc67_fcfe_bee3_9541,
+            80,
+            0x28d1_10b2_1e48_1467,
         );
     }
 
@@ -485,9 +502,12 @@ mod tests {
                 "map.answer.instead",
                 "map.answer.names_only",
                 "map.answer.lines",
+                "map.answer.lines_code",
                 "map.answer.map_only",
                 "map.answer.changed",
                 "map.answer.rest",
+                "map.answer.rest_beside",
+                "map.answer.more_lines",
                 "map.search.use_tools",
                 "map.search.filter_none",
                 "map.search.filter_failed",
@@ -558,7 +578,7 @@ mod tests {
                 Locale::PtBr,
                 [
                     "Cravado: o mapa achou pelo nome, e a resposta já traz o trecho.",
-                    "Parcial: o mapa achou parte, e a resposta diz o que falta.",
+                    "Parcial: o mapa achou parte, a busca roda, e a nota diz o que falta.",
                     "Não achei: a busca comum roda, com uma linha do que o mapa não achou.",
                 ],
             ),
@@ -566,7 +586,7 @@ mod tests {
                 Locale::EnUs,
                 [
                     "Pinned: the map found it by name, and the answer already carries the excerpt.",
-                    "Partial: the map found part, and the answer says what is missing.",
+                    "Partial: the map found part, the search runs, and the note says what is missing.",
                     "Found nothing: the plain search runs, with one line of what the map did not find.",
                 ],
             ),
@@ -580,6 +600,28 @@ mod tests {
             for head in heads {
                 assert!(text.contains(&format!("{head}:")), "{lang:?}: the answer opens with `{head}`: {text}");
             }
+        }
+    }
+
+    /// A resposta parcial vai ao lado do resultado da busca: nos dois idiomas,
+    /// as duas frases da marca dizem que é o que o mapa achou, e nenhuma manda
+    /// buscar de novo; a linha do que ficou de fora manda ver a lista no
+    /// resultado da busca, não repetir a busca. A função cortada diz quantas
+    /// linhas ficaram de fora.
+    #[test]
+    fn the_partial_answer_sits_beside_the_search_and_never_asks_to_search_again() {
+        for (lang, beside, again) in [
+            (Locale::PtBr, "É o que o mapa achou, ao lado do resultado da busca.", ["Busque de novo", "Repita a busca"]),
+            (Locale::EnUs, "This is what the map found, next to the search result.", ["Search again", "Repeat the search"]),
+        ] {
+            for key in ["map.answer.partial", "map.answer.partial_unsure"] {
+                let text = translate(key, lang);
+                assert!(text.ends_with(beside), "{key} {lang:?}: {text}");
+                assert!(again.iter().all(|phrase| !text.contains(phrase)), "{key} {lang:?}: {text}");
+            }
+            let rest = translate("map.answer.rest_beside", lang);
+            assert!(again.iter().all(|phrase| !rest.contains(phrase)), "{lang:?}: {rest}");
+            assert!(translate("map.answer.more_lines", lang).contains("{count}"), "{lang:?}");
         }
     }
 
@@ -699,9 +741,12 @@ mod tests {
             ("map.answer.instead", &[][..]),
             ("map.answer.names_only", &[][..]),
             ("map.answer.lines", &[][..]),
+            ("map.answer.lines_code", &[][..]),
             ("map.answer.map_only", &["{files}"][..]),
             ("map.answer.changed", &[][..]),
             ("map.answer.rest", &["{places}", "{files}"][..]),
+            ("map.answer.rest_beside", &["{places}", "{files}"][..]),
+            ("map.answer.more_lines", &["{count}"][..]),
             ("map.search.use_tools", &[][..]),
             ("map.search.filter_none", &[][..]),
             ("map.search.name_piece", &["{word}"][..]),

@@ -7,24 +7,27 @@
 //!   corte medido na régua, mesmo com palavras da busca fora dos campos
 //!   fortes dele: a resposta cita só as que ele traz;
 //! - **parcial** — o mapa achou parte: os candidatos vão ao filtro (o Jev)
-//!   pela porta única da busca ([`crate::shared::search_door`]), e a resposta
+//!   pela porta única da busca ([`crate::shared::search_door`]), e a nota
 //!   traz só as peças que ele entrega; sem chave, com o filtro desligado ou
-//!   falhando, vale a resposta da triagem, que diz quais palavras faltam, e
-//!   o aviso do motivo sai uma vez por sessão;
+//!   falhando, vale a nota da triagem, que diz quais palavras faltam, e o
+//!   aviso do motivo sai uma vez por sessão;
 //! - **não achou** — o mapa não achou nada, ou o filtro disse que nenhum
 //!   candidato serve: a busca comum roda, e uma linha diz as palavras já
 //!   quebradas e a próxima busca, exata.
 //!
-//! No cravado e no parcial, a busca que mostra linhas recebe a resposta no
-//! lugar da busca comum. O cravado responde da triagem, sem chamar o filtro. A que só lista nomes de arquivo ou conta (`-l`, `-c`)
-//! roda como veio, com uma linha só da marca, e não fica guardada como
-//! respondida: a que mostra linhas depois ainda recebe a resposta. A resposta roda a
-//! mesma busca (mesmo padrão, mesmas pastas) nos arquivos que o git conhece e
-//! agrupa o que achou pelas funções do mapa: o arquivo, a linha de começo e a
-//! de fim de cada função, com as linhas achadas dentro dela. A linha fora de
-//! função conhecida (json, markdown) vem solta. Os arquivos saem na ordem da
-//! triagem e ficam só os primeiros; o resto vira uma linha com a contagem de
-//! lugares e de arquivos.
+//! O cravado toma o lugar da busca comum, sem chamar o filtro. O parcial nunca
+//! bloqueia: a busca comum roda, e a nota do mapa vai junto do resultado dela,
+//! só como contexto, sem liberar nenhuma permissão. A busca que só lista nomes
+//! de arquivo ou conta (`-l`, `-c`) roda como veio, com uma linha só da marca,
+//! e não fica guardada como respondida: a que mostra linhas depois ainda
+//! recebe a resposta. A resposta roda a mesma busca (mesmo padrão, mesmas
+//! pastas) nos arquivos que o git conhece e agrupa o que achou pelas funções
+//! do mapa: o arquivo, a linha de começo e a de fim de cada função, com as
+//! linhas achadas dentro dela e o código dela, numerado, até um teto
+//! ([`SNIPPET_LINES_PER_FN`], [`SNIPPET_BUDGET`]). A linha fora de função
+//! conhecida (json, markdown) vem solta. Os arquivos saem na ordem da triagem
+//! e ficam só os primeiros; o resto vira uma linha com a contagem de lugares e
+//! de arquivos.
 //!
 //! A mesma busca repetida na sessão passa: o padrão e a pasta respondidos
 //! ficam num estado curto da sessão. O arquivo que mudou depois da passada
@@ -87,6 +90,18 @@ const ENTRIES_PER_FILE: usize = 8;
 /// Quantos caracteres a linha solta mostra.
 const LOOSE_WIDTH: usize = 100;
 
+/// Quantas linhas de cada função a resposta traz, numeradas, sob a entrada
+/// dela; a função mais longa é cortada, com a contagem do que ficou de fora.
+const SNIPPET_LINES_PER_FN: usize = 40;
+
+/// O teto de caracteres de código em toda a resposta: passado ele, a função
+/// seguinte vem só com a linha dela.
+const SNIPPET_BUDGET: usize = 5000;
+
+/// O teto de caracteres da resposta inteira, com o código e os avisos: abaixo
+/// dos 10 mil que o gancho aceita de uma vez.
+const ANSWER_LIMIT: usize = 9000;
+
 /// O tempo que a busca própria tem: passando dele, a busca comum roda.
 const BUDGET: Duration = Duration::from_millis(800);
 
@@ -104,7 +119,7 @@ const STATE_FILE: &str = "word-searches";
 pub(crate) enum Reply {
     /// Nada a dizer: a busca comum roda como veio.
     Pass,
-    /// A busca comum roda, com esta linha junto.
+    /// A busca comum roda, com esta nota junto.
     Note(String),
     /// Esta resposta vale no lugar da busca comum.
     Answer(String),
@@ -572,13 +587,11 @@ fn try_reply(scene: &Scene<'_>, search: &Search<'_>) -> Option<Reply> {
         Judged::Pieces(pieces) => pieces.as_slice(),
         _ => &[],
     };
-    let mut text = compose(scene, tree, &triaged, mark, &hits, delivered)?;
-    for warning in warnings {
-        text.push('\n');
-        text.push_str(&warning);
-    }
+    let text = compose(scene, tree, (&triaged, mark), &hits, delivered, &warnings)?;
     remember(scene.memory, &key)?;
-    Some(Reply::Answer(text))
+    // Só o cravado toma o lugar da busca; o parcial vai junto dela, sem
+    // bloquear.
+    Some(if mark == Mark::Pinned { Reply::Answer(text) } else { Reply::Note(text) })
 }
 
 /// O que o filtro disse da busca parcial.
@@ -869,11 +882,15 @@ struct Entry {
     line: u64,
     text: String,
     places: usize,
+    /// As linhas numeradas da função, cada uma numa linha da resposta, sob a
+    /// entrada dela; vazio nas linhas soltas.
+    body: String,
 }
 
-/// As entradas do arquivo `file`: cada função com as linhas achadas nela e
-/// cada linha solta, em ordem de linha, até [`ENTRIES_PER_FILE`]; e quantos
-/// lugares ficaram de fora. `None` no arquivo que não se lê mais.
+/// As entradas do arquivo `file`: cada função com as linhas achadas nela e o
+/// código dela (até [`SNIPPET_LINES_PER_FN`] linhas) e cada linha solta, em
+/// ordem de linha, até [`ENTRIES_PER_FILE`]; e quantos lugares ficaram de
+/// fora. `None` no arquivo que não se lê mais.
 fn entries_of(scene: &Scene<'_>, tree: &Path, file: &FileHits) -> Option<(Vec<Entry>, usize, bool)> {
     let view = view_of(scene, tree, &file.path)?;
     let mut inside: BTreeMap<usize, Vec<u64>> = BTreeMap::new();
@@ -891,19 +908,40 @@ fn entries_of(scene: &Scene<'_>, tree: &Path, file: &FileHits) -> Option<(Vec<En
             let shown: Vec<String> = lines.iter().take(HITS_SHOWN).map(u64::to_string).collect();
             let more = if lines.len() > HITS_SHOWN { ", …" } else { "" };
             let text = format!("{}-{} {} ({}{more})", part.line, part.end_line, part.name, shown.join(", "));
-            entries.push(Entry { line: part.line, text, places: lines.len() });
+            let body = numbered_body(scene.lang, &view.text, (part.line, part.end_line));
+            entries.push(Entry { line: part.line, text, places: lines.len(), body });
         }
     }
     let rows: Vec<&str> = if loose.is_empty() { Vec::new() } else { view.text.lines().collect() };
     for line in loose {
         let row = rows.get(usize::try_from(line).unwrap_or(usize::MAX).saturating_sub(1)).copied().unwrap_or_default();
         let snippet: String = row.trim().chars().take(LOOSE_WIDTH).collect();
-        entries.push(Entry { line, text: format!("{line}: {snippet}"), places: 1 });
+        entries.push(Entry { line, text: format!("{line}: {snippet}"), places: 1, body: String::new() });
     }
     entries.sort_by_key(|entry| entry.line);
     let dropped: usize = entries.iter().skip(ENTRIES_PER_FILE).map(|entry| entry.places).sum();
     entries.truncate(ENTRIES_PER_FILE);
     Some((entries, dropped, view.changed))
+}
+
+/// O código da função que vai da linha `first` à `last` de `text`: cada linha
+/// numerada, numa linha da resposta recuada sob a entrada, até
+/// [`SNIPPET_LINES_PER_FN`]; a mais longa é cortada, com a contagem do que
+/// ficou de fora. Vazio quando o arquivo não tem essas linhas.
+fn numbered_body(lang: Locale, text: &str, (first, last): (u64, u64)) -> String {
+    let first = first.max(1);
+    let cut = project_map::lines_of(text, first, last);
+    let rows: Vec<&str> = cut.lines().collect();
+    let mut body = String::new();
+    for (at, row) in rows.iter().take(SNIPPET_LINES_PER_FN).enumerate() {
+        let _ = write!(body, "\n    {} | {row}", first + at as u64);
+    }
+    if rows.len() > SNIPPET_LINES_PER_FN {
+        let left = (rows.len() - SNIPPET_LINES_PER_FN).to_string();
+        body.push_str("\n    ");
+        body.push_str(&say("map.answer.more_lines", lang, &[("{count}", &left)]));
+    }
+    body
 }
 
 /// A frase da marca, com as palavras que a triagem achou ou as que faltam.
@@ -937,16 +975,17 @@ fn names_line(mark: Mark, triaged: &Triaged, lang: Locale) -> String {
 /// e agrupadas por arquivo (o do primeiro colocado vem primeiro), cada uma com
 /// o começo, o fim, o nome e, entre parênteses, as linhas achadas dentro dela.
 /// A peça sem linha achada vem sem parênteses, e o que a busca achou fora das
-/// peças vira a contagem do que ficou de fora. Fecha com a linha de usar as
-/// ferramentas de sempre, se o lugar não for este.
-fn compose_delivered(scene: &Scene<'_>, tree: &Path, hits: &[FileHits], delivered: &[Piece]) -> String {
+/// peças vira a contagem do que ficou de fora. Abre com a frase da marca,
+/// `head`, e fecha com a linha de usar as ferramentas de sempre, se o lugar
+/// não for este.
+fn compose_delivered(scene: &Scene<'_>, tree: &Path, (mark, head): (Mark, &str), hits: &[FileHits], delivered: &[Piece]) -> String {
     let mut paths: Vec<&str> = Vec::new();
     for piece in delivered {
         if !paths.contains(&piece.path.as_str()) {
             paths.push(&piece.path);
         }
     }
-    let mut out = say("map.answer.instead", scene.lang, &[]);
+    let mut out = head.to_string();
     out.push('\n');
     out.push_str(&say("map.answer.lines", scene.lang, &[]));
     let mut places: usize = hits.iter().filter(|file| !paths.contains(&file.path.as_str())).map(|file| file.lines.len()).sum();
@@ -986,15 +1025,19 @@ fn compose_delivered(scene: &Scene<'_>, tree: &Path, hits: &[FileHits], delivere
     }
     if places > 0 {
         out.push('\n');
-        out.push_str(&say(
-            "map.answer.rest",
-            scene.lang,
-            &[("{places}", &places.to_string()), ("{files}", &cut_files.to_string())],
-        ));
+        out.push_str(&rest_line(mark, (places, cut_files), scene.lang));
     }
     out.push('\n');
     out.push_str(&say("map.search.use_tools", scene.lang, &[]));
     out
+}
+
+/// A linha do que o corte deixou de fora: a resposta cravada ocupa o lugar da
+/// busca, e quem a quer inteira a repete; a parcial vem ao lado do resultado
+/// da busca, que já traz a lista inteira.
+fn rest_line(mark: Mark, (places, files): (usize, usize), lang: Locale) -> String {
+    let key = if mark == Mark::Pinned { "map.answer.rest" } else { "map.answer.rest_beside" };
+    say(key, lang, &[("{places}", &places.to_string()), ("{files}", &files.to_string())])
 }
 
 /// As linhas de começo e de fim da peça `piece` no arquivo como está agora: a
@@ -1010,21 +1053,51 @@ fn moved(view: &View, piece: &Piece) -> Option<(u64, u64)> {
         .map(|part| (part.line, part.end_line))
 }
 
-/// A resposta inteira: a marca, os arquivos da triagem com as funções e as
-/// linhas soltas, e a contagem do que o corte deixou de fora; com peças
-/// entregues pelo filtro, só elas ([`compose_delivered`]). `None` quando a
-/// busca não achou linha e o mapa não aponta arquivo.
+/// A resposta inteira: a marca, os arquivos da triagem com as funções, o código
+/// delas e as linhas soltas, a contagem do que o corte deixou de fora e os
+/// avisos `warnings`; com peças entregues pelo filtro, só elas
+/// ([`compose_delivered`]), sem o código. O código de cada função entra até
+/// [`SNIPPET_BUDGET`] caracteres na resposta toda, e a resposta inteira fica
+/// abaixo de [`ANSWER_LIMIT`]. `None` quando a busca não achou linha e o mapa
+/// não aponta arquivo.
 fn compose(
     scene: &Scene<'_>,
     tree: &Path,
-    triaged: &Triaged,
-    mark: Mark,
+    (triaged, mark): (&Triaged, Mark),
     hits: &[FileHits],
     delivered: &[Piece],
+    warnings: &[String],
 ) -> Option<String> {
-    if !delivered.is_empty() {
-        return Some(compose_delivered(scene, tree, hits, delivered));
+    let mut head = header(mark, triaged, scene.lang);
+    if mark == Mark::Pinned {
+        head.push(' ');
+        head.push_str(&say("map.answer.instead", scene.lang, &[]));
     }
+    let mut tail = String::new();
+    for warning in warnings {
+        tail.push('\n');
+        tail.push_str(warning);
+    }
+    let mut text = if delivered.is_empty() {
+        compose_found(scene, tree, (triaged, mark, &head), hits, tail.chars().count())?
+    } else {
+        compose_delivered(scene, tree, (mark, &head), hits, delivered)
+    };
+    text.push_str(&tail);
+    Some(text)
+}
+
+/// A resposta da triagem sem peças do filtro: abre com `head` e traz, de cada
+/// arquivo mostrado, as entradas dele. O código das funções ocupa o que sobra
+/// do teto da resposta depois do resto do texto e dos `tail_chars` caracteres
+/// dos avisos que vão no fim.
+fn compose_found(
+    scene: &Scene<'_>,
+    tree: &Path,
+    (triaged, mark, head): (&Triaged, Mark, &str),
+    hits: &[FileHits],
+    tail_chars: usize,
+) -> Option<String> {
     let rank: HashMap<&str, usize> = triaged.files.iter().enumerate().map(|(at, file)| (file.path.as_str(), at)).collect();
     let mut ordered: Vec<&FileHits> = hits.iter().collect();
     ordered.sort_by(|a, b| {
@@ -1032,11 +1105,7 @@ fn compose(
         of(a).cmp(&of(b)).then(b.lines.len().cmp(&a.lines.len())).then_with(|| a.path.cmp(&b.path))
     });
     let (shown, left) = ordered.split_at(ordered.len().min(SHOWN_FILES));
-    let mut out = header(mark, triaged, scene.lang);
-    if mark == Mark::Pinned {
-        out.push(' ');
-        out.push_str(&say("map.answer.instead", scene.lang, &[]));
-    }
+    let mut out = head.to_string();
     if shown.is_empty() {
         let files: Vec<String> = triaged.files.iter().take(SHOWN_FILES).map(|file| format!("`{}`", file.path)).collect();
         if files.is_empty() {
@@ -1046,41 +1115,54 @@ fn compose(
         out.push_str(&say("map.answer.map_only", scene.lang, &[("{files}", &files.join(", "))]));
         return Some(out);
     }
-    out.push('\n');
-    out.push_str(&say("map.answer.lines", scene.lang, &[]));
     let mut places: usize = left.iter().map(|file| file.lines.len()).sum();
     let mut cut_files = left.len();
+    let mut blocks: Vec<(&str, bool, Vec<Entry>)> = Vec::new();
     for file in shown {
         let Some((entries, dropped, changed)) = entries_of(scene, tree, file) else {
             places += file.lines.len();
             cut_files += 1;
             continue;
         };
-        out.push('\n');
-        out.push_str(&file.path);
-        if changed {
-            out.push_str(" (");
-            out.push_str(&say("map.answer.changed", scene.lang, &[]));
-            out.push(')');
-        }
-        for entry in &entries {
-            out.push_str("\n  ");
-            out.push_str(&entry.text);
-        }
         if dropped > 0 {
             places += dropped;
             cut_files += 1;
         }
+        blocks.push((file.path.as_str(), changed, entries));
     }
-    if places > 0 {
-        out.push('\n');
-        out.push_str(&say(
-            "map.answer.rest",
-            scene.lang,
-            &[("{places}", &places.to_string()), ("{files}", &cut_files.to_string())],
-        ));
-    }
-    Some(out)
+    // O texto com `room` caracteres de código: cada função traz o dela
+    // enquanto couber, na ordem da resposta.
+    let render = |room: usize| -> String {
+        let mut text = out.clone();
+        text.push('\n');
+        text.push_str(&say("map.answer.lines_code", scene.lang, &[]));
+        let mut used = 0usize;
+        for (path, changed, entries) in &blocks {
+            text.push('\n');
+            text.push_str(path);
+            if *changed {
+                text.push_str(" (");
+                text.push_str(&say("map.answer.changed", scene.lang, &[]));
+                text.push(')');
+            }
+            for entry in entries {
+                text.push_str("\n  ");
+                text.push_str(&entry.text);
+                let size = entry.body.chars().count();
+                if size > 0 && used + size <= room {
+                    used += size;
+                    text.push_str(&entry.body);
+                }
+            }
+        }
+        if places > 0 {
+            text.push('\n');
+            text.push_str(&rest_line(mark, (places, cut_files), scene.lang));
+        }
+        text
+    };
+    let bare = render(0).chars().count() + tail_chars;
+    Some(render(SNIPPET_BUDGET.min(ANSWER_LIMIT.saturating_sub(bare))))
 }
 
 /// As palavras que a triagem lê no padrão da busca.
@@ -1354,6 +1436,23 @@ mod tests {
         }
     }
 
+    /// O texto do mapa, seja a resposta no lugar da busca ou a nota junto dela,
+    /// para o teste em que a marca não é o assunto.
+    fn text_of(reply: Reply) -> String {
+        match reply {
+            Reply::Answer(text) | Reply::Note(text) => text,
+            Reply::Pass => panic!("a text was expected, got a pass"),
+        }
+    }
+
+    /// A nota do mapa que vai junto da busca comum, sem tomar o lugar dela.
+    fn note(reply: Reply) -> String {
+        match reply {
+            Reply::Note(text) => text,
+            other => panic!("a note was expected, got {other:?}"),
+        }
+    }
+
     #[test]
     fn the_words_come_from_the_pattern_without_the_expression_operators() {
         assert_eq!(words_of(&owned(&["calcular_frete"]), false), ["calcular_frete"]);
@@ -1549,7 +1648,7 @@ mod tests {
         let borrowed: Vec<(&str, &str)> = files.iter().map(|(path, text)| (path.as_str(), text.as_str())).collect();
         let (_dir, root) = fixture::repo_with("{}", &borrowed, serde_json::json!({ "modules": modules }));
         let place = |text: &str, file: &str| text.find(&format!("{file}\n")).unwrap_or_else(|| panic!("{file} is not in {text}"));
-        let inside = answer(search_in(&root, &root, &["frete"], &["src/pedidos"]));
+        let inside = note(search_in(&root, &root, &["frete"], &["src/pedidos"]));
         assert!(place(&inside, "src/pedidos/notas.rs") < place(&inside, "src/pedidos/fechar.rs"), "the better name comes first: {inside}");
         assert!(!inside.contains("src/outros"), "{inside}");
     }
@@ -1566,7 +1665,7 @@ mod tests {
         let (_dir, root) = fixture::repo_with("{}", &[("src/zeta.rs", "pub fn zeta() {\n    // zeta\n}\n")], map);
         let long: Vec<String> = (0..MAX_WORDS + 2).map(|n| format!("first{n}")).collect();
         let pattern = format!("{}|zeta", long.join(" "));
-        let text = answer(search_in(&root, &root, &[pattern.as_str()], &["src"]));
+        let text = note(search_in(&root, &root, &[pattern.as_str()], &["src"]));
         assert!(text.contains("src/zeta.rs\n  1-3 zeta (1, 2)"), "{text}");
     }
 
@@ -1590,8 +1689,9 @@ mod tests {
         assert!(text.contains("src/frete.rs\n  2-6 calcular_frete (2, 3)"), "the comment with the word is a hit too: {text}");
     }
 
-    /// A marca parcial com palavra fora dos campos fortes cita a que falta e
-    /// pede nova busca; sem palavra faltando, diz só que não tem certeza.
+    /// A marca parcial com palavra fora dos campos fortes cita a que falta,
+    /// sem mandar buscar de novo; sem palavra faltando, diz só que não tem
+    /// certeza. As duas dizem que é o que o mapa achou, ao lado da busca.
     #[test]
     fn a_partial_mark_names_the_missing_words_and_without_them_says_it_is_unsure() {
         let answer = |missing: &[&str]| Triaged {
@@ -1607,6 +1707,10 @@ mod tests {
         assert!(with_missing.starts_with("Parcial.") && with_missing.contains(r#"Falta "imposto"."#), "{with_missing}");
         let without = header(Mark::Partial, &answer(&[]), Locale::PtBr);
         assert!(without.starts_with("Parcial.") && !without.contains("Falta"), "{without}");
+        for text in [&with_missing, &without] {
+            assert!(text.contains("É o que o mapa achou, ao lado do resultado da busca."), "{text}");
+            assert!(!text.contains("Busque de novo"), "a partial note never sends the reader back: {text}");
+        }
     }
 
     #[test]
@@ -1670,6 +1774,31 @@ mod tests {
         assert!(matches!(search_in(&root, &root, &["fechar_pedido"], &["src"]), Reply::Answer(_)), "another pattern is another search");
     }
 
+    /// O parcial nunca toma o lugar da busca: sem chave, com o filtro
+    /// entregando peças ou falhando, a resposta é a nota que vai junto dela, e
+    /// a mesma busca repetida passa. A cravada segue no lugar da busca.
+    #[test]
+    fn a_partial_search_is_always_a_note_beside_the_search_and_the_pinned_one_keeps_its_place() {
+        let sure = Judge::sure_of(&[("calcular_frete", 0.9)]);
+        let failing = Judge::failing(FilterError::Timeout);
+        for variant in 0..3 {
+            let (_dir, root) = fixture::repo("{}");
+            let found = match variant {
+                0 => search_through(&root, &root, &["imposto"], &["."], true, &without_key),
+                1 => search_through(&root, &root, &["imposto"], &["."], true, &sure.assemble()),
+                _ => search_through(&root, &root, &["imposto"], &["."], true, &failing.assemble()),
+            };
+            let text = note(found);
+            assert!(text.starts_with("Parcial."), "{variant}: {text}");
+            assert!(text.contains("ao lado do resultado da busca"), "{variant}: {text}");
+            assert!(!text.contains("Busque de novo") && !text.contains("no lugar da busca"), "{variant}: {text}");
+            assert_eq!(search_in(&root, &root, &["imposto"], &["."]), Reply::Pass, "{variant}: the repeat runs plain");
+        }
+        let (_dir, root) = fixture::repo("{}");
+        let text = answer(search_in(&root, &root, &["calcular_frete"], &["."]));
+        assert!(text.contains("Esta resposta vale no lugar da busca comum."), "{text}");
+    }
+
     #[test]
     fn without_a_session_state_the_search_is_not_remembered() {
         let (_dir, root) = fixture::repo("{}");
@@ -1726,10 +1855,10 @@ mod tests {
         git(&root, &["worktree", "add", "-q", &copy.to_string_lossy(), "-b", "onda"]);
         let copy = std::fs::canonicalize(&copy).expect("copy");
         std::fs::write(copy.join("src/frete.rs"), format!("// a\n// b\n{}", fixture::FRETE)).expect("edit");
-        let text = answer(search_in(&root, &copy, &["calcular_frete"], &["src"]));
+        let text = text_of(search_in(&root, &copy, &["calcular_frete"], &["src"]));
         assert!(text.contains("src/frete.rs (mudado nesta onda)\n  4-8 calcular_frete (4)"), "{text}");
         assert!(text.contains("src/pedido.rs\n  1-4 fechar_pedido (2)"), "{text}");
-        let main = answer(search_in(&root, &root, &["fechar_pedido|calcular_frete"], &["src"]));
+        let main = text_of(search_in(&root, &root, &["fechar_pedido|calcular_frete"], &["src"]));
         assert!(!main.contains("mudado"), "the main tree was not touched: {main}");
         git(&root, &["worktree", "remove", "--force", &copy.to_string_lossy()]);
     }
@@ -1747,6 +1876,133 @@ mod tests {
         let many = text.split("src/many.rs\n").nth(1).expect("many.rs is shown");
         assert_eq!(many.lines().take_while(|line| line.starts_with("  ")).count(), ENTRIES_PER_FILE, "{text}");
         assert!(text.trim_end().ends_with("Fora do corte, lugares: 5, arquivos: 4. Repita a busca para ver a lista inteira."), "{text}");
+    }
+
+    /// Um projeto de um arquivo só, `src/<arquivo>.rs`, com as funções `names`:
+    /// cada uma com `rows` linhas, a primeira com a assinatura e as outras
+    /// com o texto `calcular_passo(n)`; o mapa traz o começo e o fim de cada
+    /// uma. Devolve também, na ordem, onde cada função começa.
+    fn repo_with_functions(file: &str, names: &[String], rows: usize) -> (tempfile::TempDir, PathBuf) {
+        let mut text = String::new();
+        let mut declarations = Vec::new();
+        for name in names {
+            let first = text.lines().count() as u64 + 1;
+            text.push_str(&format!("pub fn {name}() {{\n"));
+            for n in 1..rows - 1 {
+                text.push_str(&format!("    let a = calcular_passo({n});\n"));
+            }
+            text.push_str("}\n");
+            declarations.push(serde_json::json!({ "kind": "function", "name": name, "line": first, "end_line": first + rows as u64 - 1 }));
+        }
+        let path = format!("src/{file}.rs");
+        let map = serde_json::json!({ "modules": [{ "path": path, "language": "rust", "loc": names.len() * rows, "declarations": declarations }] });
+        fixture::repo_with("{}", &[(path.as_str(), text.as_str())], map)
+    }
+
+    /// A resposta, cravada ou parcial, traz o código de cada função achada
+    /// sob a entrada dela, com as linhas numeradas como estão no arquivo; a
+    /// linha solta fora de função segue sem código, e a nota parcial traz o
+    /// mesmo código.
+    #[test]
+    fn the_answer_and_the_partial_note_carry_the_numbered_code_of_each_function() {
+        let (_dir, root) = fixture::repo("{}");
+        let text = answer(search_in(&root, &root, &["calcular_frete"], &["."]));
+        let frete = "src/frete.rs\n  2-6 calcular_frete (2)\n    2 | pub fn calcular_frete(peso: u32) -> u32 {\n    3 |     // imposto embutido\n    4 |     let base = peso * 2;\n    5 |     base + 10\n    6 | }\n";
+        assert!(text.contains(frete), "{text}");
+        let pedido = "src/pedido.rs\n  1-4 fechar_pedido (2)\n    1 | pub fn fechar_pedido(peso: u32) -> u32 {\n    2 |     let frete = calcular_frete(peso);\n    3 |     frete + 1\n    4 | }";
+        assert!(text.contains(pedido), "{text}");
+        assert!(text.contains("docs/notas.md\n  1: O calcular_frete soma o imposto."), "{text}");
+        assert!(!text.contains("1 | O calcular_frete"), "a loose line carries no code: {text}");
+
+        let (_partial_dir, partial) = fixture::repo("{}");
+        let partial = note(search_in(&partial, &partial, &["imposto"], &["."]));
+        assert!(partial.starts_with("Parcial."), "{partial}");
+        assert!(partial.contains("src/frete.rs\n  2-6 calcular_frete (3)\n    2 | pub fn calcular_frete(peso: u32) -> u32 {\n    3 |     // imposto embutido\n"), "{partial}");
+    }
+
+    /// A função de mais de 40 linhas vem cortada nas 40 primeiras, e a
+    /// contagem das que ficaram de fora fecha o corte; a de 40 linhas vem
+    /// inteira, sem contagem.
+    #[test]
+    fn a_function_longer_than_forty_lines_is_cut_with_the_count_of_the_rest() {
+        let (_dir, root) = repo_with_functions("longa", &["calcular_longa".to_string()], 61);
+        let text = text_of(search_in(&root, &root, &["calcular_longa"], &["src"]));
+        assert!(text.contains("\n    1 | pub fn calcular_longa() {\n    2 |     let a = calcular_passo(1);\n"), "{text}");
+        assert!(text.contains("\n    40 |     let a = calcular_passo(39);\n    … (+21 linhas)"), "the first forty lines, then the count: {text}");
+        assert!(!text.contains("    41 |"), "the forty-first line is left out: {text}");
+
+        let (_exact_dir, exact) = repo_with_functions("exata", &["calcular_exata".to_string()], 40);
+        let whole = text_of(search_in(&exact, &exact, &["calcular_exata"], &["src"]));
+        assert!(whole.contains("\n    40 | }"), "a function of forty lines comes whole: {whole}");
+        assert!(!whole.contains("linhas)"), "and with no count: {whole}");
+    }
+
+    /// Os caracteres de código de toda a resposta passam de 5 mil: a função
+    /// seguinte à que estoura o teto vem só com a linha dela. Com seis funções
+    /// de 36 linhas, as três primeiras trazem o código e as outras três, não.
+    #[test]
+    fn past_the_code_budget_the_next_function_comes_with_its_line_only() {
+        let names: Vec<String> = ["um", "dois", "tres", "quatro", "cinco", "seis"].iter().map(|n| format!("calcular_etapa_{n}")).collect();
+        let (_dir, root) = repo_with_functions("etapas", &names, 36);
+        let text = text_of(search_in(&root, &root, &["calcular_etapa"], &["src"]));
+        let lines: Vec<&str> = text.lines().collect();
+        let entries: Vec<usize> = (0..lines.len()).filter(|&at| lines[at].starts_with("  ") && !lines[at].starts_with("   ") && lines[at].contains("calcular_etapa_")).collect();
+        assert_eq!(entries.len(), 6, "{text}");
+        let with_code: Vec<bool> = entries.iter().map(|&at| lines.get(at + 1).is_some_and(|next| next.starts_with("    "))).collect();
+        assert_eq!(with_code, [true, true, true, false, false, false], "{text}");
+        let code: usize = lines.iter().filter(|line| line.starts_with("    ")).map(|line| line.chars().count() + 1).sum();
+        assert!(code <= SNIPPET_BUDGET, "the code of the whole answer stays under the budget: {code}");
+        assert!(code + 1600 > SNIPPET_BUDGET, "and the fourth function was left out for the budget, not for being short: {code}");
+    }
+
+    /// A resposta inteira, com o código e o aviso de falta de chave, fica
+    /// abaixo de 9 mil caracteres mesmo quando as entradas já ocupam boa parte
+    /// do espaço: o código cabe só no que sobra do teto da resposta, e o teto
+    /// dos 5 mil caracteres de código não é o que segura aqui.
+    #[test]
+    fn the_whole_answer_stays_under_nine_thousand_characters() {
+        let mut modules = Vec::new();
+        let mut files: Vec<(String, String)> = Vec::new();
+        for f in 0..SHOWN_FILES {
+            let path = format!("src/modulo_de_cobranca_com_nome_bem_comprido_para_ocupar_espaco_{f}/calculo_do_frete_do_pedido_{f}.rs");
+            let mut text = String::new();
+            let mut declarations = Vec::new();
+            for k in 0..ENTRIES_PER_FILE {
+                let name = format!("calcular_o_frete_do_pedido_da_filial_numero_{f}_etapa_{k}_para_ocupar_espaco_na_resposta");
+                let first = text.lines().count() as u64 + 1;
+                text.push_str(&format!("pub fn {name}() {{\n"));
+                for n in 1..9 {
+                    text.push_str(&format!("    let frete = calcular_o_frete_do_pedido({n});\n"));
+                }
+                text.push_str("}\n");
+                declarations.push(serde_json::json!({ "kind": "function", "name": name, "line": first, "end_line": first + 9 }));
+            }
+            modules.push(serde_json::json!({ "path": path, "language": "rust", "loc": 80, "declarations": declarations }));
+            files.push((path, text));
+        }
+        let borrowed: Vec<(&str, &str)> = files.iter().map(|(path, text)| (path.as_str(), text.as_str())).collect();
+        let (_dir, root) = fixture::repo_with("{}", &borrowed, serde_json::json!({ "modules": modules }));
+        let text = text_of(search_in(&root, &root, &["calcular_o_frete_do_pedido"], &["src"]));
+        let code: usize = text.lines().filter(|line| line.starts_with("    ")).map(|line| line.chars().count() + 1).sum();
+        assert!(code > 0, "the answer carries some code: {text}");
+        let bare = text.chars().count() - code;
+        assert!(bare + SNIPPET_BUDGET > ANSWER_LIMIT, "the code budget alone would pass the limit, so the limit is what holds: {bare}");
+        assert!(text.chars().count() < ANSWER_LIMIT, "{} characters: {text}", text.chars().count());
+        assert!(text.contains("chave"), "the warning of the missing key is inside the count: {text}");
+    }
+
+    /// O corte da nota parcial manda ver o resto no resultado da busca, que
+    /// roda junto, e não repetir a busca como a resposta cravada.
+    #[test]
+    fn the_cut_of_a_partial_note_points_to_the_search_result() {
+        let (_dir, root) = fixture::repo("{}");
+        for n in 0..6 {
+            std::fs::write(root.join(format!("src/extra_{n}.rs")), "fn usa() {\n    // imposto\n}\n").expect("extra");
+        }
+        let text = note(search_in(&root, &root, &["imposto"], &["."]));
+        assert!(text.starts_with("Parcial."), "{text}");
+        assert!(text.contains("Fora do corte, lugares: 3, arquivos: 3. O resultado da busca mostra a lista inteira."), "{text}");
+        assert!(!text.contains("Repita a busca"), "{text}");
     }
 
     #[test]
@@ -1813,7 +2069,7 @@ mod tests {
         let mut ctx = Ctx::for_test(root.to_string_lossy().into_owned(), None);
         ctx.config = ProjectConfig::load(&root);
 
-        let text = answer(judge.installed(|| hook_reply(&root.to_string_lossy(), &input, &ctx, &search, &*calls.recorder())));
+        let text = note(judge.installed(|| hook_reply(&root.to_string_lossy(), &input, &ctx, &search, &*calls.recorder())));
 
         assert!(text.contains("src/frete.rs\n  2-6 calcular_frete (3)"), "{text}");
         assert_eq!(judge.calls(), 1);
@@ -1843,7 +2099,7 @@ mod tests {
     fn a_partial_word_goes_to_the_filter_once_and_the_answer_shows_only_the_delivered_pieces() {
         let (_dir, root) = fixture::repo("{}");
         let judge = Judge::sure_of(&[("calcular_frete", 0.9)]);
-        let text = answer(search_through(&root, &root, &["imposto"], &["."], true, &judge.assemble()));
+        let text = note(search_through(&root, &root, &["imposto"], &["."], true, &judge.assemble()));
         assert_eq!(judge.calls(), 1);
         let asked = judge.last();
         let bank = mustard_core::io::map_search::candidates(&root, "imposto", "imposto", &Languages::new(["pt-BR", "en-US"]), 100)
@@ -1855,6 +2111,8 @@ mod tests {
         assert!(!text.contains("desconto_frete") && !text.contains("fechar_pedido"), "only what the filter delivered: {text}");
         assert!(text.contains("Fora do corte, lugares: 1, arquivos: 1."), "the line in the note is left out: {text}");
         assert!(!text.contains("docs/notas.md"), "{text}");
+        assert!(!text.contains(" | "), "the pieces of the filter carry no code: {text}");
+        assert!(!text.contains("no lugar da busca"), "a partial note never takes the place of the search: {text}");
         assert!(text.trim_end().ends_with(&mustard_core::translate("map.search.use_tools", Locale::PtBr)), "{text}");
     }
 
@@ -1978,7 +2236,7 @@ mod tests {
     fn the_delivered_pieces_come_in_the_order_of_the_chance_even_without_a_line_found() {
         let (_dir, root) = fixture::repo("{}");
         let judge = Judge::sure_of(&[("desconto_frete", 0.6), ("calcular_frete", 0.35)]);
-        let text = answer(search_through(&root, &root, &["imposto"], &["."], true, &judge.assemble()));
+        let text = note(search_through(&root, &root, &["imposto"], &["."], true, &judge.assemble()));
         let discount = text.find("\n  8-10 desconto_frete\n").unwrap_or_else(|| panic!("{text}"));
         let freight = text.find("\n  2-6 calcular_frete (3)\n").unwrap_or_else(|| panic!("{text}"));
         assert!(discount < freight, "the better piece comes first: {text}");
@@ -2015,10 +2273,10 @@ mod tests {
     fn without_a_key_a_partial_word_gets_the_triage_answer_and_one_warning_per_session() {
         let (_dir, root) = fixture::repo("{}");
         let warned = mustard_core::translate("map.search.missing_key", Locale::PtBr);
-        let first = answer(search_in(&root, &root, &["imposto"], &["."]));
+        let first = note(search_in(&root, &root, &["imposto"], &["."]));
         assert!(first.starts_with("Parcial."), "the triage answer: {first}");
         assert!(first.trim_end().ends_with(warned), "{first}");
-        let second = answer(search_in(&root, &root, &["frete pedido"], &["."]));
+        let second = note(search_in(&root, &root, &["frete pedido"], &["."]));
         assert!(second.starts_with("Parcial.") && !second.contains(warned), "the same session is not warned again: {second}");
     }
 
@@ -2028,10 +2286,10 @@ mod tests {
     fn a_failing_filter_leaves_the_triage_answer_with_the_reason_once() {
         let (_dir, root) = fixture::repo("{}");
         let judge = Judge::failing(FilterError::Timeout);
-        let first = answer(search_through(&root, &root, &["imposto"], &["."], true, &judge.assemble()));
+        let first = note(search_through(&root, &root, &["imposto"], &["."], true, &judge.assemble()));
         assert!(first.starts_with("Parcial."), "{first}");
         assert!(first.contains("tempo esgotado"), "{first}");
-        let second = answer(search_through(&root, &root, &["frete pedido"], &["."], true, &judge.assemble()));
+        let second = note(search_through(&root, &root, &["frete pedido"], &["."], true, &judge.assemble()));
         assert!(second.starts_with("Parcial.") && !second.contains("tempo esgotado"), "{second}");
         assert_eq!(judge.calls(), 2);
     }
@@ -2046,7 +2304,7 @@ mod tests {
         let (_shell_dir, shell) = fixture::repo("{}");
         let by_tool = search_as(&tool, &tool, (&["imposto"], &["."], true), (&both, (Dialect::Rust, Walk::Rg { unignored: false })), &judge.assemble());
         let by_shell = search_as(&shell, &shell, (&["imposto"], &["."], true), (&both, (Dialect::Basic, Walk::Grep)), &judge.assemble());
-        assert!(matches!(by_tool, Reply::Answer(_)), "{by_tool:?}");
+        assert!(matches!(by_tool, Reply::Note(_)), "{by_tool:?}");
         assert_eq!(by_tool, by_shell);
         assert_eq!(judge.calls(), 2);
     }
@@ -2074,7 +2332,7 @@ mod tests {
         let judge = Judge::sure_of(&[("UserRepository", 0.9)]);
         let mixed = Languages::new(["pt-BR", "en-US"]);
         let rg = (Dialect::Rust, Walk::Rg { unignored: false });
-        let text = answer(search_as(&root, &root, (&["usuários"], &["."], true), (&mixed, rg), &judge.assemble()));
+        let text = note(search_as(&root, &root, (&["usuários"], &["."], true), (&mixed, rg), &judge.assemble()));
         assert_eq!(judge.last().phrase, "usuários", "the word is the request, in the text language");
         assert!(judge.last().candidates.iter().any(|candidate| candidate.name == "UserRepository"));
         assert!(text.contains("src/users.rs\n  2-4 UserRepository"), "the English name comes back: {text}");
@@ -2117,7 +2375,7 @@ mod tests {
 
         let (_dir, root) = fixture::repo_with(config, &files, map);
         mustard_core::io::map_meaning::fill_at(&store::model_path(&root), &root).expect("the vectors are filled");
-        let text = answer(search_as(&root, &root, (&["usuarios"], &["."], true), (&english, rg), &judge.assemble()));
+        let text = note(search_as(&root, &root, (&["usuarios"], &["."], true), (&english, rg), &judge.assemble()));
         assert!(judge.last().candidates.iter().any(|candidate| candidate.name == "UserRepository"));
         assert!(text.contains("src/users.rs\n  2-4 UserRepository"), "the English name comes back: {text}");
     }

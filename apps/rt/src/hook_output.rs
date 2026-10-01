@@ -162,10 +162,10 @@ pub(crate) fn hook_specific_output(event_name: &str, outcome: &Outcome) -> Optio
             );
         }
         Verdict::Rewrite { tool_input, note } => {
-            hook_output.insert(
-                "permissionDecision".to_string(),
-                serde_json::Value::String("allow".to_string()),
-            );
+            // Sem `permissionDecision`: o `updatedInput` vale sozinho
+            // (conferido na documentação dos ganchos e numa sessão de
+            // verdade), e a troca do comando segue pelas permissões que o
+            // usuário configurou, avaliadas sobre o comando já trocado.
             hook_output.insert("updatedInput".to_string(), tool_input.clone());
             // The rewrite's own explanation — e.g. why a read was cut short
             // — reaches the agent the same way a warning does. The shared
@@ -176,10 +176,7 @@ pub(crate) fn hook_specific_output(event_name: &str, outcome: &Outcome) -> Optio
             }
         }
         Verdict::Inject { context } => {
-            hook_output.insert(
-                "permissionDecision".to_string(),
-                serde_json::Value::String("allow".to_string()),
-            );
+            // Só o contexto: a nota que vai junto da ferramenta nunca a libera.
             hook_output.insert(
                 "additionalContext".to_string(),
                 serde_json::Value::String(context.clone()),
@@ -188,11 +185,8 @@ pub(crate) fn hook_specific_output(event_name: &str, outcome: &Outcome) -> Optio
         Verdict::Allow | Verdict::Warn { .. } => {
             // `Allow` only reaches here with warnings present; `Warn` verdicts
             // never sit in `outcome.verdict` (the fold routes them to
-            // `warnings`). Either way it is an advisory: allow + a message.
-            hook_output.insert(
-                "permissionDecision".to_string(),
-                serde_json::Value::String("allow".to_string()),
-            );
+            // `warnings`). Either way it is an advisory: the message below
+            // goes alone, with no permission decision.
         }
         _ => {
             // `Verdict` is `#[non_exhaustive]`; an unknown future variant
@@ -282,6 +276,43 @@ mod tests {
         let json = hook_specific_output("PreToolUse", &outcome).expect("PreToolUse must emit output");
         assert!(json.contains(r#""updatedInput":{"file_path":"/p/a.rs","limit":40}"#), "{json}");
         assert!(json.contains("os testes começam na linha 41"), "{json}");
+        assert!(!json.contains("permissionDecision"), "a rewrite approves nothing: {json}");
+    }
+
+    #[test]
+    fn a_pre_tool_use_note_goes_only_as_context_and_approves_nothing() {
+        // A nota que vai junto da ferramenta sai só em `additionalContext`: o
+        // `permissionDecision: "allow"` pularia as permissões do usuário.
+        let json = hook_specific_output("PreToolUse", &inject_outcome()).expect("a note must emit output");
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+        assert_eq!(
+            parsed,
+            serde_json::json!({ "hookSpecificOutput": { "hookEventName": "PreToolUse", "additionalContext": "remember this" } }),
+            "{json}"
+        );
+    }
+
+    #[test]
+    fn a_pre_tool_use_warning_goes_only_as_context_and_approves_nothing() {
+        // O aviso sozinho (`Allow` com avisos) e a nota com avisos saem juntos
+        // em `additionalContext`, sem decisão de permissão.
+        let warned = Outcome { verdict: Verdict::Allow, warnings: vec!["first".to_string(), "second".to_string()] };
+        let json = hook_specific_output("PreToolUse", &warned).expect("a warning must emit output");
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+        assert_eq!(
+            parsed,
+            serde_json::json!({ "hookSpecificOutput": { "hookEventName": "PreToolUse", "additionalContext": "first\nsecond" } }),
+            "{json}"
+        );
+
+        let both = Outcome { verdict: inject_outcome().verdict, warnings: vec!["first".to_string()] };
+        let json = hook_specific_output("PreToolUse", &both).expect("emits");
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+        assert_eq!(
+            parsed,
+            serde_json::json!({ "hookSpecificOutput": { "hookEventName": "PreToolUse", "additionalContext": "remember this\n\nfirst" } }),
+            "{json}"
+        );
     }
 
     #[test]

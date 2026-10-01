@@ -14,9 +14,10 @@
 //! - [`reading`] — recusa a leitura do `mustard.json` que guarda a chave do
 //!   Jev, com o arquivo sem a chave no motivo, e responde a busca por palavra
 //!   em pastas de código com a marca do mapa: a resposta agrupada por função
-//!   no lugar da busca que mostra linhas (a parcial passa antes pelo filtro
-//!   do mapa, pela mesma porta da busca por assunto), a busca comum com uma
-//!   linha da marca quando ela só lista nomes ou conta, ou, sem achado, a
+//!   no lugar da busca que mostra linhas, quando o mapa crava; a busca comum
+//!   com a nota do mapa junto, quando a marca é parcial (ela passa antes pelo
+//!   filtro do mapa, pela mesma porta da busca por assunto); a busca comum com
+//!   uma linha da marca quando ela só lista nomes ou conta, ou, sem achado, a
 //!   busca comum com uma linha do que o mapa não achou.
 //!
 //! A primeira que decide vence. Trocar o `cargo` da linha de comando por

@@ -287,14 +287,14 @@ pub(crate) fn run_rules(rules: &[&dyn WriteRule], input: &HookInput, ctx: &Ctx) 
 /// A busca (`Grep`): no `mustard.json` que guarda a chave do Jev, a recusa
 /// com o arquivo sem a chave; numa pasta de código do projeto — a raiz, sem
 /// `path`, ou uma cópia de trabalho dele —, a resposta do mapa
-/// ([`word_search`]): com o mapa cravado ou parcial, a busca que traz as
-/// linhas (`output_mode` `content`) é recusada com a resposta agrupada por
-/// função no lugar dela (o parcial passa antes pelo filtro do mapa, que
-/// entrega só as peças certas, e sem chave ou com o filtro falhando vale a
-/// triagem, com o aviso uma vez por sessão); a que só lista arquivos ou conta
-/// segue, sem filtro e com uma linha da marca; sem achado, ou com o filtro
-/// dizendo que nada serve, a busca segue com uma linha do que o mapa não
-/// achou. A busca num arquivo só, fora do projeto,
+/// ([`word_search`]): com o mapa cravado, a busca que traz as linhas
+/// (`output_mode` `content`) é recusada com a resposta agrupada por função no
+/// lugar dela; com o parcial, a busca roda, com a nota do mapa junto, só como
+/// contexto (o parcial passa antes pelo filtro do mapa, que entrega só as
+/// peças certas, e sem chave ou com o filtro falhando vale a triagem, com o
+/// aviso uma vez por sessão); a que só lista arquivos ou conta segue, sem
+/// filtro e com uma linha da marca; sem achado, ou com o filtro dizendo que
+/// nada serve, a busca segue com uma linha do que o mapa não achou. A busca num arquivo só, fora do projeto,
 /// com um `glob` que deixa só arquivos fora do mapa — pelos filtros de entrada
 /// ou pelos de saída (`!*.rs`) — ou com a chave `search.answer` desligada
 /// passa. A busca que traz as linhas numa pasta que guarda o arquivo com a
@@ -1341,6 +1341,15 @@ mod tests {
         }
     }
 
+    /// A nota que vai junto da busca, que roda como veio; qualquer outra
+    /// resposta derruba o teste.
+    fn noted(verdict: Verdict, what: &str) -> String {
+        match verdict {
+            Verdict::Inject { context } => context,
+            other => panic!("{what} runs with a note, got {other:?}"),
+        }
+    }
+
     /// A leitura inteira de um arquivo de código do mapa com mais de 300
     /// linhas é recusada, nos dois idiomas: o motivo traz o tamanho, o
     /// comando do trecho pronto para o arquivo e as partes com as linhas,
@@ -1781,7 +1790,8 @@ mod tests {
     /// A busca parcial do `Grep`, pelo gancho de verdade, vai ao filtro que a
     /// sessão tem, e a chamada medida dela fica gravada na spec da conversa:
     /// o comando, o filtro, quantos candidatos foram e quantas peças
-    /// voltaram. A resposta traz só a peça que o filtro entregou.
+    /// voltaram. A nota que vai junto da busca traz só a peça que o filtro
+    /// entregou.
     #[test]
     fn a_partial_grep_through_the_hook_records_its_measured_call_in_the_conversation_spec() {
         let (_dir, root) = word_search::fixture::repo("{}");
@@ -1791,7 +1801,7 @@ mod tests {
 
         let verdict = judge.installed(|| hook_in(&root, "Grep", tool_input, Some("s-grava")));
 
-        let reason = refused(verdict, "the partial search that shows lines");
+        let reason = noted(verdict, "the partial search that shows lines");
         assert!(reason.contains("src/frete.rs\n  2-6 calcular_frete (3)"), "{reason}");
         assert!(!reason.contains("desconto_frete"), "only what the filter delivered: {reason}");
         assert_eq!(judge.calls(), 1, "the filter of the session is the one asked");
@@ -1818,7 +1828,7 @@ mod tests {
 
         let verdict = judge.installed(|| hook_in(&root, "Grep", tool_input, Some("s-falha")));
 
-        let reason = refused(verdict, "the partial search with a failing filter");
+        let reason = noted(verdict, "the partial search with a failing filter");
         assert!(reason.contains("src/frete.rs"), "the triage answers: {reason}");
         let calls = word_searches(&root, "conversa");
         assert_eq!(calls.len(), 1, "{calls:?}");
@@ -1847,9 +1857,46 @@ mod tests {
         assert!(word_searches(&root, "conversa").is_empty());
 
         let lines = json!({ "pattern": "imposto", "output_mode": "content" });
-        let reason = refused(judge.installed(|| hook_in(&root, "Grep", lines, Some("s-sem-spec"))), "the search with no spec");
+        let reason = noted(judge.installed(|| hook_in(&root, "Grep", lines, Some("s-sem-spec"))), "the search with no spec");
         assert!(reason.contains("src/frete.rs\n  2-6 calcular_frete (3)"), "the answer does not need the spec: {reason}");
         assert_eq!(judge.calls(), 1);
         assert!(word_searches(&root, "conversa").is_empty(), "a session bound to no spec writes to no spec");
+    }
+
+    /// A resposta do despachante ao `Grep`, como o gancho a escreve para o
+    /// Claude Code, no evento de antes da ferramenta.
+    fn written(cwd: &Path, tool_input: Value, session: &str) -> Value {
+        let input = HookInput {
+            tool_name: Some("Grep".to_string()),
+            tool_input,
+            hook_event_name: Some("PreToolUse".to_string()),
+            cwd: Some(cwd.to_string_lossy().into_owned()),
+            session_id: Some(session.to_string()),
+            ..HookInput::default()
+        };
+        let outcome = crate::dispatch::run_event(Some(Trigger::PreToolUse), &input);
+        let json = crate::hook_output::hook_specific_output("PreToolUse", &outcome).expect("the search is answered");
+        serde_json::from_str(&json).expect("valid JSON")
+    }
+
+    /// A busca parcial pelo `Grep` roda com a nota do mapa junto, escrita só
+    /// como contexto, sem decisão de permissão; a nota diz que é o que o mapa
+    /// achou e não manda buscar de novo. A cravada segue no lugar da busca,
+    /// com a recusa escrita como `deny`.
+    #[test]
+    fn a_partial_grep_runs_with_a_note_and_no_permission_while_the_pinned_one_is_denied() {
+        let (_dir, root) = word_search::fixture::repo("{}");
+        let partial = written(&root, json!({ "pattern": "imposto", "output_mode": "content" }), "s-parcial");
+        let output = &partial["hookSpecificOutput"];
+        assert!(output.get("permissionDecision").is_none(), "a note approves nothing: {partial}");
+        let note = output["additionalContext"].as_str().expect("the note");
+        assert!(note.starts_with("Parcial."), "{note}");
+        assert!(note.contains("ao lado do resultado da busca"), "{note}");
+        assert!(!note.contains("Busque de novo"), "{note}");
+        assert!(note.contains("src/frete.rs\n  2-6 calcular_frete (3)"), "{note}");
+
+        let pinned = written(&root, json!({ "pattern": "calcular_frete", "output_mode": "content" }), "s-cravada");
+        assert_eq!(pinned["hookSpecificOutput"]["permissionDecision"], json!("deny"), "{pinned}");
+        assert!(pinned["hookSpecificOutput"]["permissionDecisionReason"].as_str().is_some_and(|reason| reason.starts_with("Cravado.")), "{pinned}");
     }
 }
