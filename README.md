@@ -16,12 +16,12 @@ A tese do projeto é **mínimo de IA, máximo de determinismo**: tudo que pode s
 
 ```mermaid
 flowchart LR
-    repo[("Repositório")] -->|"varredura no porteiro de base (Rust, sem IA)"| model[("grain.db")]
+    repo[("Repositório")] -->|"varredura ao abrir a spec e depois de cada commit de rodada (Rust, sem IA)"| model[("grain.db")]
     model -->|mapa| anchors["arquivos apontados"]
     anchors -->|"IA lê só estes"| work["pipeline de feature/bugfix"]
 ```
 
-1. A **varredura** minera o repositório para um modelo durável (`grain.db`, um banco SQLite em blocos que só regrava o bloco que mudou) — de forma **determinística, sem IA e agnóstica de linguagem/arquitetura**: módulos, declarações, grafo de dependências, *roles*, *slices* e contratos. Não é comando: o **porteiro de base** a dispara sozinho quando o censo está velho e a árvore limpa.
+1. A **varredura** minera o repositório para um modelo durável (`grain.db`, um banco SQLite em blocos que só regrava o bloco que mudou) — de forma **determinística, sem IA e agnóstica de linguagem/arquitetura**: módulos, declarações, grafo de dependências, *roles*, *slices* e contratos. Não é comando: ela roda sozinha ao abrir a spec e depois de cada commit de rodada.
 2. Os comandos do fluxo consultam esse modelo pelo **mapa** (`mustard-rt run map`) e leem apenas os arquivos que ele aponta.
 3. Resultado: **economia de contexto** — o mapa acha *onde olhar*, não substitui ler.
 
@@ -74,7 +74,7 @@ cd /caminho/do/seu/projeto
 mustard init
 ```
 
-Isso cria o `mustard.json` (configuração única) e a pasta `.claude/` (hooks, skills, templates). A partir daí, **abra o Claude Code normalmente dentro do projeto** e **descreva o trabalho em palavras suas** — não há comando para "começar", nem passo de mapeamento para rodar. O roteador é injetado em todo prompt e classifica o pedido sozinho; o porteiro de base minera o repositório no caminho de entrada.
+Isso cria o `mustard.json` (configuração única) e a pasta `.claude/` (hooks, skills, templates). A partir daí, **abra o Claude Code normalmente dentro do projeto** e **descreva o trabalho em palavras suas** — não há comando para "começar", nem passo de mapeamento para rodar. O roteador é injetado em todo prompt e classifica o pedido sozinho; a varredura minera o repositório ao abrir a spec e depois de cada commit de rodada.
 
 ### Para desenvolvedores deste repositório
 

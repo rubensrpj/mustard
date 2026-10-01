@@ -844,32 +844,6 @@ mod tests {
         assert_ne!(porcelain(root), "", "a passagem de enriquecimento sujou a árvore");
     }
 
-    /// O que uma porta deixou observável: escreveu algum commit, e o censo
-    /// continua sujo na árvore?
-    #[derive(Debug, PartialEq, Eq)]
-    struct DoorAnswerSeen {
-        wrote_a_commit: bool,
-        census_still_in_the_tree: bool,
-    }
-
-    /// Quantos commits o repositório inteiro tem — todas as refs, para que um
-    /// commit escrito numa branch que não é a do checkout também apareça.
-    fn commit_count(root: &Path) -> String {
-        git_out(root, &["rev-list", "--count", "--all"]).expect("rev-list --count")
-    }
-
-    fn what_the_door_left(root: &Path, commits_before: &str) -> DoorAnswerSeen {
-        DoorAnswerSeen {
-            wrote_a_commit: commit_count(root) != commits_before,
-            // Lido pela classificação do PRÓPRIO produto, e não por um
-            // `git status --porcelain` cru: aquele COLAPSA um diretório
-            // inteiramente não rastreado numa linha só.
-            census_still_in_the_tree: matches!(checkout_work(root), CheckoutWork::CensusOnly(_)),
-        }
-    }
-
-
-
     /// Um molde ADOTADO (`source: manual`) é escrita do OPERADOR, e o caminho
     /// dele é igualzinho ao de um molde gerado — o frontmatter é o que separa.
     ///

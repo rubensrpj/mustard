@@ -130,8 +130,7 @@ pub use domain::source_lang::{resolve_target_languages, target_understood};
 // The project's own language is not read here: `ProjectConfig::language` is
 // its one reader.
 pub use platform::i18n::{
-    slugify, translate, wave_label, I18n, LocaleError, SupportedLocale, UserLocale,
-    UserLocaleError,
+    translate, wave_label, I18n, LocaleError, SupportedLocale, UserLocale, UserLocaleError,
 };
 
 // Canonical `.claude/` path catalog — every consumer in `apps/rt` builds a

@@ -16,12 +16,12 @@ The project's thesis is **minimum AI, maximum determinism**: everything statisti
 
 ```mermaid
 flowchart LR
-    repo[("Repository")] -->|"census at the base gate (Rust, no AI)"| model[("grain.db")]
+    repo[("Repository")] -->|"census when a spec opens and after each round commit (Rust, no AI)"| model[("grain.db")]
     model -->|map| anchors["files it points at"]
     anchors -->|"AI reads only these"| work["feature/bugfix pipeline"]
 ```
 
-1. The **census** mines the repository into a durable model (`grain.db`, a SQLite database in blocks that rewrites only the block that changed) — **deterministic, AI-free, language- and architecture-agnostic**: modules, declarations, dependency graph, roles, slices, and contracts. It is not a command: the **base gate** triggers it on its own whenever the census is stale and the tree is clean.
+1. The **census** mines the repository into a durable model (`grain.db`, a SQLite database in blocks that rewrites only the block that changed) — **deterministic, AI-free, language- and architecture-agnostic**: modules, declarations, dependency graph, roles, slices, and contracts. It is not a command: it runs on its own when a spec opens and after each round commit.
 2. The flow's commands query that model through the **map** (`mustard-rt run map`) and read only the files it points at.
 3. Result: **context economy** — the map finds *where to look*; it does not replace reading.
 
@@ -74,7 +74,7 @@ cd /path/to/your/project
 mustard init
 ```
 
-This creates `mustard.json` (the single configuration) and the `.claude/` folder (hooks, skills, templates). From there, **open Claude Code normally inside the project** and **describe the work in your own words** — there is no command to "get started", and no mapping step to run. The router is injected on every prompt and classifies the request on its own; the base gate mines the repository on the way in.
+This creates `mustard.json` (the single configuration) and the `.claude/` folder (hooks, skills, templates). From there, **open Claude Code normally inside the project** and **describe the work in your own words** — there is no command to "get started", and no mapping step to run. The router is injected on every prompt and classifies the request on its own; the census mines the repository when a spec opens and after each round commit.
 
 ### For developers of this repository
 

@@ -161,10 +161,8 @@ fn tail_matches(mut rest: &str, words: &[&str], bounds: Boundaries) -> bool {
 // Palavras comuns
 // ---------------------------------------------------------------------------
 //
-// São três listas porque as três perguntas são diferentes. O slug descarta só
-// o que encurta um nome sem perder o sentido; essa lista mora no arquivo de
-// cada língua, na linha `slug:` (`domain::normalize`). O voto de idioma da
-// busca conta palavras funcionais dos dois lados, mesmo as que os dois
+// São listas diferentes porque as perguntas são diferentes. O voto de idioma
+// da busca conta palavras funcionais dos dois lados, mesmo as que os dois
 // idiomas têm ("a", "no"), porque só compara as contagens. A medição de clareza decide o idioma
 // da resposta pelas palavras, então deixa de fora as que existem nos dois
 // idiomas e aceita a grafia sem acento de quem digita sem ("nao", "voce").
@@ -400,12 +398,6 @@ mod tests {
             }
             false
         }
-
-        pub const SLUG_PT: &[&str] = &[
-            "a", "o", "as", "os", "de", "da", "do", "das", "dos", "e", "em", "no", "na", "nos",
-            "nas", "ao", "aos",
-        ];
-        pub const SLUG_EN: &[&str] = &["a", "an", "the", "of", "and", "or", "in"];
     }
 
     /// Textos variados: comandos com e sem `rtk`, critérios de aceite, prosa
@@ -546,14 +538,6 @@ mod tests {
                 "triple in {text:?}"
             );
         }
-    }
-
-    /// As palavras que o slug descarta, lidas do arquivo de cada língua, são
-    /// as das listas de antes, na mesma ordem.
-    #[test]
-    fn the_slug_words_of_the_language_files_are_the_old_lists() {
-        assert_eq!(crate::domain::normalize::slug_words("pt"), before::SLUG_PT);
-        assert_eq!(crate::domain::normalize::slug_words("en"), before::SLUG_EN);
     }
 
     #[test]

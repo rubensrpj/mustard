@@ -8,8 +8,7 @@
 //! across three or more files. There was no single place to:
 //!
 //! - declare the canonical locale codes (BCP-47, never short forms);
-//! - translate a banner key into the user's language;
-//! - slugify free-form text in a way that respects PT-vs-EN accent rules.
+//! - translate a banner key into the user's language.
 //!
 //! This module is now that single place, a boundary-typed module exported
 //! from `mustard_core`.
@@ -224,65 +223,6 @@ pub fn translate(key: &str, lang: Locale) -> &'static str {
 #[must_use]
 fn key_as_static(_key: &str) -> &'static str {
     "<missing-key>"
-}
-
-/// Slugify `text` to a kebab-case identifier, in the language it is written in.
-///
-/// `language` is a BCP-47 code (`pt-BR`, `es-ES`) or just the language (`es`),
-/// any of them, not only the locales Mustard ships messages for. The words
-/// dropped are the `slug:` line of that language's file
-/// (`domain::normalize::slug_words`): basic articles and prepositions only; a
-/// language without the line keeps every word.
-///
-/// Latin diacritics are stripped (`ç → c`, `ñ → n`, …) in every language,
-/// before kebab-casing: the slug is ASCII, and an accented letter left in
-/// would split its word in two (`configuraci-n`).
-///
-/// The output never contains leading/trailing dashes and never collapses to an
-/// empty string — fully non-alphanumeric input degrades to `"x"`, mirroring
-/// the existing `apps/rt/src/run/scan/interpret.rs::slugify` contract.
-#[must_use]
-pub fn slugify(text: &str, language: &str) -> String {
-    let normalised = crate::domain::text::fold_accents(text);
-    let languages = crate::domain::normalize::Languages::new([language]);
-    let stopwords: Vec<&str> =
-        languages.codes().iter().map(String::as_str).flat_map(crate::domain::normalize::slug_words).collect();
-    // 1. lowercase + split on non-alphanumeric.
-    let mut tokens: Vec<String> = Vec::new();
-    let mut cur = String::new();
-    for ch in normalised.chars() {
-        let lc = ch.to_ascii_lowercase();
-        if lc.is_ascii_alphanumeric() {
-            cur.push(lc);
-        } else if !cur.is_empty() {
-            tokens.push(std::mem::take(&mut cur));
-        }
-    }
-    if !cur.is_empty() {
-        tokens.push(cur);
-    }
-    // 2. drop stopwords — but only when at least one token in the input is
-    //    longer than a single character. Pure single-char inputs (e.g.
-    //    `"ç ã õ"`) and pure-stopword inputs keep every token so callers
-    //    always get *something* slug-shaped back. After filtering, if nothing
-    //    is left, fall back to the original tokens.
-    let has_long = tokens.iter().any(|tok| tok.chars().count() > 1);
-    let kept: Vec<String> = if has_long {
-        let filtered: Vec<String> = tokens
-            .iter()
-            .filter(|tok| !stopwords.contains(&tok.as_str()))
-            .cloned()
-            .collect();
-        if filtered.is_empty() { tokens } else { filtered }
-    } else {
-        tokens
-    };
-    let joined = kept.join("-");
-    if joined.is_empty() {
-        "x".to_string()
-    } else {
-        joined
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -805,78 +745,6 @@ mod tests {
         // Missing keys return a stable sentinel rather than panicking.
         assert_eq!(translate("banner.missing.xyz", Locale::PtBr), "<missing-key>");
         assert_eq!(translate("banner.missing.xyz", Locale::EnUs), "<missing-key>");
-    }
-
-    #[test]
-    fn slugify_pt_strips_accents() {
-        assert_eq!(slugify("Configuração do Idioma", "pt-BR"), "configuracao-idioma");
-        assert_eq!(slugify("São Paulo é grande", "pt-BR"), "sao-paulo-grande");
-        assert_eq!(slugify("ç ã õ", "pt-BR"), "c-a-o");
-    }
-
-    #[test]
-    fn slugify_pt_drops_em_a_contractions() {
-        // `no` ("em o") is a stopword now: it must not eat a token slot and leave
-        // a `...-erro-no` tail — the meaningful word (`nome`) survives instead.
-        assert_eq!(slugify("erro no nome", "pt-BR"), "erro-nome");
-        assert_eq!(slugify("tratamento na base", "pt-BR"), "tratamento-base");
-        assert_eq!(slugify("volta ao topo", "pt-BR"), "volta-topo");
-    }
-
-    #[test]
-    fn slugify_en_drops_only_the_english_words() {
-        assert_eq!(slugify("The Quick Brown Fox", "en-US"), "quick-brown-fox");
-        // PT stopwords are NOT applied in EN mode.
-        assert_eq!(slugify("de para", "en-US"), "de-para");
-    }
-
-    /// O acento sai em toda língua, e não só no português: a letra acentuada
-    /// que ficasse partiria a palavra em duas no nome, que só leva ASCII.
-    #[test]
-    fn slugify_strips_accents_in_every_language() {
-        assert_eq!(slugify("Configuración del idioma", "es-ES"), "configuracion-del-idioma");
-        assert_eq!(slugify("Fix the naïve café parser", "en-US"), "fix-naive-cafe-parser");
-    }
-
-    /// A língua que o Mustard não fala nas mensagens vale do mesmo jeito: o
-    /// nome em espanhol deixa de fora só as palavras do arquivo do espanhol,
-    /// e nunca as do português — o "no" do espanhol é negação, e sair do nome
-    /// inverteria o sentido.
-    #[test]
-    fn slugify_reads_any_declared_language_and_never_falls_back_to_portuguese() {
-        let spanish = crate::domain::normalize::slug_words("es");
-        assert!(!spanish.contains(&"no"), "{spanish:?}");
-        assert_eq!(slugify("El botón no guarda", "es-ES"), "el-boton-no-guarda");
-        assert_eq!(slugify("El botón no guarda", "pt-BR"), "el-boton-guarda");
-        // Sem arquivo da língua, nenhuma palavra sai.
-        assert_eq!(slugify("a de no", "xx-YY"), "a-de-no");
-    }
-
-    /// O nome da spec deixa de fora cada palavra da linha `slug:` do arquivo
-    /// da língua, e só elas: a palavra de ligação fora da linha, como "sem"
-    /// e "not", fica no nome, porque mudaria o sentido.
-    #[test]
-    fn slugify_drops_the_slug_words_of_the_language_file_and_only_them() {
-        for (tag, language) in [("pt-BR", "pt"), ("en-US", "en")] {
-            let words = crate::domain::normalize::slug_words(language);
-            assert!(!words.is_empty(), "{language}");
-            for word in words {
-                assert_eq!(slugify(&format!("erro {word} nome"), tag), "erro-nome", "{language}: {word}");
-            }
-        }
-        assert_eq!(slugify("spec sem dono", "pt-BR"), "spec-sem-dono");
-        assert_eq!(slugify("commit nao fecha", "pt-BR"), "commit-nao-fecha");
-        assert_eq!(slugify("gate not closed", "en-US"), "gate-not-closed");
-    }
-
-    #[test]
-    fn slugify_handles_empty_and_punctuation() {
-        // Mirror the existing `interpret::slugify` floor — degrade to "x".
-        assert_eq!(slugify("///", "pt-BR"), "x");
-        assert_eq!(slugify("", "en-US"), "x");
-        // A single-token input is preserved even if it would be a stopword,
-        // so callers always get *something* slug-shaped back.
-        assert_eq!(slugify("the", "en-US"), "the");
     }
 
     #[test]

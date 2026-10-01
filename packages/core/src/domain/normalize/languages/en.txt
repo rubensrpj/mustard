@@ -1,8 +1,5 @@
 # A raiz das palavras desta língua: o algoritmo do Snowball, pelo nome.
 stem: english
-# As palavras que o nome de uma spec deixa de fora: só as que encurtam o nome
-# sem mudar o sentido, e não todas as de ligação ("not" e "no" ficam).
-slug: a an the of and or in
 # Snowball English stop-word list, vendored as DATA.
 # Source: https://snowballstem.org/algorithms/english/stop.txt (BSD-3-Clause).
 # Comments were stripped; one word per line. Lines starting with # are ignored.
