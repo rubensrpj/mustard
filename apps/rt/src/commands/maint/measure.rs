@@ -12,6 +12,11 @@
 //! - a régua roda com o commit, o sujo e o resumo do que falta comitar em
 //!   variáveis `MUSTARD_MEASURE_*`, e com o `scan` compilado do mesmo código ao
 //!   lado do programa (a régua recusa sem eles);
+//! - o mapa de cada projeto da pasta de árvores (`--trees`, ou `SPEND_TREES`
+//!   em `--env`) é refeito a cada medida, com esse `scan`: o banco velho sai
+//!   antes, e o scan que falha recusa a medida;
+//! - a prova diz também qual versão do gancho as sessões do usuário rodam: o
+//!   commit que o `mustard-rt` do plugin instalado carimbou em si;
 //! - ao terminar, só as três pastas de medida usadas por último ficam.
 //!
 //! O comando só mede o código-fonte do Mustard: em outro projeto não há o que
@@ -23,10 +28,11 @@ use std::process::{Command, Stdio};
 use std::sync::{Mutex, PoisonError};
 use std::time::SystemTime;
 
-use mustard_core::io::measure_proof::{OUT_VAR, measure_vars};
+use mustard_core::domain::scan::Scan;
+use mustard_core::io::measure_proof::{HOOK_NOT_INSTALLED, HOOK_WITHOUT_COMMIT, OUT_VAR, built_commit, measure_vars, rebuild_map};
 use mustard_core::io::tree_state::tree_state;
 use mustard_core::platform::git;
-use mustard_core::platform::harness::home_dir;
+use mustard_core::platform::harness::{home_dir, installed_plugin, installed_plugin_in};
 use serde_json::Value;
 
 /// Quantas pastas de medida ficam depois de cada rodada.
@@ -44,6 +50,8 @@ const RESERVED_PREFIX: &str = "MUSTARD_MEASURE_";
 const PROOF_PREFIX: &str = "PROVA ";
 /// O começo da linha com o estado de cada peça da busca num mapa.
 const PIECES_PREFIX: &str = "PECAS ";
+/// A variável da régua do gasto que diz a pasta com a árvore de cada projeto.
+const TREES_VAR: &str = "SPEND_TREES";
 
 /// O que o usuário pediu em `mustard-rt run measure`.
 #[derive(Debug)]
@@ -58,6 +66,19 @@ pub struct MeasureOpts {
     pub env: Vec<String>,
     /// Onde a régua grava o resultado.
     pub out: Option<PathBuf>,
+    /// A pasta com a árvore de cada projeto da régua: o mapa de cada uma é
+    /// refeito antes da medida. Sem ela, vale `SPEND_TREES` de `--env`.
+    pub trees: Option<PathBuf>,
+}
+
+/// O que o comando pede à máquina e o teste troca por um falso.
+#[derive(Debug, Default)]
+struct Host {
+    /// O cargo que compila; sem ele, o do ambiente.
+    cargo: Option<PathBuf>,
+    /// A pasta de configuração do Claude Code, onde o plugin do gancho mora;
+    /// sem ela, a do usuário.
+    config: Option<PathBuf>,
 }
 
 /// O código que a medida compila: o commit, o que falta comitar nele e a pasta
@@ -272,11 +293,12 @@ fn build_env(code: &Code, target: &Path) -> Vec<(&'static str, Option<String>)> 
     ]
 }
 
-/// As variáveis da execução da régua: a prova (commit, sujo, resumo), o
-/// arquivo de resultado, as do usuário e a pasta do pacote.
-fn run_env(code: &Code, out: &Path, user: &[(String, String)], manifest_dir: &Path) -> Vec<(String, String)> {
+/// As variáveis da execução da régua: a prova (commit, sujo, resumo e a
+/// versão do gancho), o arquivo de resultado, as do usuário e a pasta do
+/// pacote.
+fn run_env(code: &Code, hook: &str, out: &Path, user: &[(String, String)], manifest_dir: &Path) -> Vec<(String, String)> {
     let mut vars: Vec<(String, String)> =
-        measure_vars(&code.short(), code.dirty, &code.diff).into_iter().map(|(name, value)| (name.to_string(), value)).collect();
+        measure_vars(&code.short(), code.dirty, &code.diff, hook).into_iter().map(|(name, value)| (name.to_string(), value)).collect();
     vars.push((OUT_VAR.to_string(), out.display().to_string()));
     vars.extend(user.iter().cloned());
     vars.push(("CARGO_MANIFEST_DIR".to_string(), manifest_dir.display().to_string()));
@@ -417,12 +439,87 @@ fn materialize(root: &Path, sha: &str, folder: &Path) -> Result<PathBuf, String>
 }
 
 // ---------------------------------------------------------------------------
+// Mapas e gancho
+// ---------------------------------------------------------------------------
+
+/// A pasta com a árvore de cada projeto da régua: a de `--trees` ou, sem ela,
+/// `SPEND_TREES` de `--env`. A régua roda de dentro do pacote: a pasta vai a
+/// ela por caminho absoluto, em `SPEND_TREES`, para o mapa que se refaz ser o
+/// mesmo que ela abre. `None` quando a medida não traz pasta de árvores.
+fn trees_folder(cwd: &Path, opts: &MeasureOpts, user: &mut Vec<(String, String)>) -> Result<Option<PathBuf>, String> {
+    let absolute = |path: &Path| if path.is_absolute() { path.to_path_buf() } else { cwd.join(path) };
+    let from_env = user.iter().find(|(key, _)| key == TREES_VAR).map(|(_, value)| absolute(Path::new(value)));
+    let folder = match (opts.trees.as_deref().map(absolute), from_env) {
+        (Some(flag), Some(env)) if flag != env => {
+            return Err(format!("`--trees {}` e `--env {TREES_VAR}={}` apontam para pastas diferentes", flag.display(), env.display()));
+        }
+        (Some(folder), _) | (None, Some(folder)) => folder,
+        (None, None) => return Ok(None),
+    };
+    if !folder.is_dir() {
+        return Err(format!("a pasta de árvores {} não existe", folder.display()));
+    }
+    user.retain(|(key, _)| key != TREES_VAR);
+    user.push((TREES_VAR.to_string(), folder.display().to_string()));
+    Ok(Some(folder))
+}
+
+/// Refaz, com `scan`, o mapa de cada projeto da pasta de árvores: um projeto é
+/// cada pasta dentro dela, fora as escondidas. Recusa na primeira que o scan
+/// não refaz, e quando a pasta não tem projeto nenhum: a régua mediria sem
+/// mapa novo.
+fn rebuild_trees(trees: &Path, scan: &Scan) -> Result<Vec<PathBuf>, String> {
+    let entries = std::fs::read_dir(trees).map_err(|err| format!("não consegui ler a pasta de árvores {}: {err}", trees.display()))?;
+    let mut projects: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir() && path.file_name().is_some_and(|name| !name.to_string_lossy().starts_with('.')))
+        .collect();
+    projects.sort();
+    if projects.is_empty() {
+        return Err(format!("a pasta de árvores {} não tem projeto nenhum para refazer o mapa", trees.display()));
+    }
+    for project in &projects {
+        rebuild_map(project, scan).map_err(|err| err.to_string())?;
+        eprintln!("mapa refeito: {}", project.display());
+    }
+    Ok(projects)
+}
+
+/// O que a prova diz do gancho das sessões do usuário: o commit que o
+/// `mustard-rt` do plugin instalado (o que o registro do Claude Code aponta)
+/// diz em `--version`, com `-dirty` se foi compilado com código por comitar;
+/// `não instalado` sem plugin registrado ou sem o programa dele no disco; e
+/// `sem commit na versão` quando há plugin, mas ele não diz o commit.
+fn hook_version(host: &Host) -> String {
+    let plugin = match &host.config {
+        Some(config) => installed_plugin_in(config),
+        None => installed_plugin(),
+    };
+    let Some(binary) = plugin.map(|plugin| plugin.rt_binary()).filter(|binary| binary.is_file()) else {
+        return HOOK_NOT_INSTALLED.to_string();
+    };
+    Command::new(binary)
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| built_commit(&String::from_utf8_lossy(&output.stdout)))
+        .unwrap_or_else(|| HOOK_WITHOUT_COMMIT.to_string())
+}
+
+// ---------------------------------------------------------------------------
 // Cargo e a régua
 // ---------------------------------------------------------------------------
 
-/// O programa do cargo: o que o ambiente diz em `CARGO`, o do `PATH` ou o de
-/// `~/.cargo/bin`.
-fn cargo_program() -> Result<PathBuf, String> {
+/// O programa do cargo: o do `host`, ou o que o ambiente diz em `CARGO`, o do
+/// `PATH` ou o de `~/.cargo/bin`.
+fn cargo_program(host: &Host) -> Result<PathBuf, String> {
+    if let Some(cargo) = &host.cargo {
+        return Ok(cargo.clone());
+    }
     let file = if cfg!(windows) { "cargo.exe" } else { "cargo" };
     let from_env = std::env::var_os("CARGO").map(PathBuf::from).filter(|path| path.is_file());
     let from_path = std::env::var_os("PATH").and_then(|paths| std::env::split_paths(&paths).map(|dir| dir.join(file)).find(|path| path.is_file()));
@@ -431,8 +528,8 @@ fn cargo_program() -> Result<PathBuf, String> {
 }
 
 /// Um comando do cargo na pasta do código, com a compilação nesta pasta de medida.
-fn cargo_in(source: &Path, code: &Code, target: &Path) -> Result<Command, String> {
-    let mut command = Command::new(cargo_program()?);
+fn cargo_in(host: &Host, source: &Path, code: &Code, target: &Path) -> Result<Command, String> {
+    let mut command = Command::new(cargo_program(host)?);
     command.current_dir(source).stdin(Stdio::null());
     for (name, value) in build_env(code, target) {
         match value {
@@ -485,17 +582,52 @@ fn run_ruler(mut command: Command) -> Result<(bool, Vec<String>), String> {
     Ok((status.success(), proof.into_inner().unwrap_or_else(PoisonError::into_inner)))
 }
 
-/// Compila o código e roda a régua; devolve as linhas de prova.
-fn compile_and_run(opts: &MeasureOpts, source: &Path, code: &Code, folder: &Path, package: &str, out: &Path, user: &[(String, String)]) -> Result<Vec<String>, String> {
+/// O que uma medida compila e roda: o pedido, o código, as pastas e as
+/// variáveis do usuário.
+struct Job<'a> {
+    opts: &'a MeasureOpts,
+    host: &'a Host,
+    source: &'a Path,
+    code: &'a Code,
+    folder: &'a Path,
+    package: &'a str,
+    out: &'a Path,
+    user: &'a [(String, String)],
+    trees: Option<&'a Path>,
+}
+
+/// O `scan` que o cargo compilou em `target`, ao lado do `mustard-rt` do
+/// mesmo código: achado como o programa acha o dele ([`Scan::located_from`]),
+/// e nunca o do `PATH`, que seria de outra compilação.
+fn compiled_scan(target: &Path) -> Result<Scan, String> {
+    let rt = target.join("release").join(if cfg!(windows) { "mustard-rt.exe" } else { "mustard-rt" });
+    let scan = Scan::located_from(Some(&rt));
+    if scan.is_compiled_alongside() {
+        Ok(scan)
+    } else {
+        Err(format!("o cargo não deixou o scan ao lado de {}", rt.display()))
+    }
+}
+
+/// Compila o código, refaz o mapa de cada árvore e roda a régua; devolve as
+/// linhas de prova.
+fn compile_and_run(job: &Job<'_>) -> Result<Vec<String>, String> {
+    let Job { opts, host, source, code, folder, package, out, user, trees } = job;
     let target = folder.join("target");
 
     // O `scan` e o `mustard-rt` ficam ao lado do programa de teste: a régua
     // confere o mapa pela marca do scan compilado com este mesmo código.
-    let mut build = cargo_in(source, code, &target)?;
+    let mut build = cargo_in(host, source, code, &target)?;
     build.args(["build", "--release", "--locked", "-p", "scan", "-p", "mustard-rt"]);
     run_cargo(build, false)?;
 
-    let mut compile = cargo_in(source, code, &target)?;
+    // Cada mapa se refaz com esse mesmo scan antes da régua: nenhuma medida
+    // abre o mapa que uma compilação velha deixou na árvore.
+    if let Some(trees) = trees {
+        rebuild_trees(trees, &compiled_scan(&target)?)?;
+    }
+
+    let mut compile = cargo_in(host, source, code, &target)?;
     compile.args(["test", "--release", "--locked", "--no-run", "--lib", "--message-format=json", "-p", package]);
     let binary = find_test_binary(&run_cargo(compile, true)?, package)?;
 
@@ -509,7 +641,7 @@ fn compile_and_run(opts: &MeasureOpts, source: &Path, code: &Code, folder: &Path
 
     let mut ruler = Command::new(&binary.executable);
     ruler.args([name.as_str(), "--exact", "--ignored", "--nocapture"]).current_dir(&binary.manifest_dir);
-    ruler.envs(run_env(code, out, user, &binary.manifest_dir));
+    ruler.envs(run_env(code, &hook_version(host), out, user, &binary.manifest_dir));
     eprintln!("medindo `{name}` com {}", binary.executable.display());
     let (passed, proof) = run_ruler(ruler)?;
     if !passed {
@@ -523,8 +655,8 @@ fn compile_and_run(opts: &MeasureOpts, source: &Path, code: &Code, folder: &Path
 
 /// O pedido inteiro, a partir de uma pasta: confere, compila, mede e apaga as
 /// pastas de medida velhas. Devolve o que imprimir ao fim.
-fn measure_in(cwd: &Path, base: &Path, opts: &MeasureOpts) -> Result<String, String> {
-    let user = parse_env(&opts.env)?;
+fn measure_in(cwd: &Path, base: &Path, opts: &MeasureOpts, host: &Host) -> Result<String, String> {
+    let mut user = parse_env(&opts.env)?;
     let root = repo_root(cwd);
     if !is_mustard_source(&root) {
         return Err("este comando mede o código-fonte do Mustard; esta pasta não é o repositório dele, e não há o que compilar".to_string());
@@ -533,6 +665,7 @@ fn measure_in(cwd: &Path, base: &Path, opts: &MeasureOpts) -> Result<String, Str
         Some(package) => package.clone(),
         None => package_of_test(&root, &opts.test)?,
     };
+    let trees = trees_folder(cwd, opts, &mut user)?;
     let code = match &opts.commit {
         Some(rev) => commit_code(&root, rev)?,
         None => current_code(&root)?,
@@ -547,7 +680,7 @@ fn measure_in(cwd: &Path, base: &Path, opts: &MeasureOpts) -> Result<String, Str
 
     let measured = (|| {
         let source = if opts.commit.is_some() { materialize(&root, &code.sha, &folder)? } else { root.clone() };
-        compile_and_run(opts, &source, &code, &folder, &package, &out, &user)
+        compile_and_run(&Job { opts, host, source: &source, code: &code, folder: &folder, package: &package, out: &out, user: &user, trees: trees.as_deref() })
     })();
     // A faxina vai mesmo quando a medida falha: o disco é o mesmo.
     let removed = prune(base, &folder, &root);
@@ -558,7 +691,7 @@ fn measure_in(cwd: &Path, base: &Path, opts: &MeasureOpts) -> Result<String, Str
 /// `mustard-rt run measure <teste>`: o ponto de entrada.
 pub fn run(opts: &MeasureOpts) {
     let cwd = std::env::current_dir().unwrap_or_default();
-    let outcome = measure_base().and_then(|base| measure_in(&cwd, &base, opts));
+    let outcome = measure_base().and_then(|base| measure_in(&cwd, &base, opts, &Host::default()));
     match outcome {
         Ok(report) => println!("{report}"),
         Err(refusal) => {
@@ -750,12 +883,13 @@ mod tests {
         let exe = std::env::current_exe().unwrap();
         for (diff, dirty) in [("abcdef012345", true), ("", false)] {
             let code = code("0123456789abcdef0123456789abcdef01234567", diff);
-            let vars = run_env(&code, Path::new("/o/saida.json"), &[("K".into(), "v".into())], Path::new("/w/apps/rt"));
+            let vars = run_env(&code, "10d66039a5b1", Path::new("/o/saida.json"), &[("K".into(), "v".into())], Path::new("/w/apps/rt"));
             let read = |name: &str| vars.iter().find(|(key, _)| key == name).map(|(_, value)| value.clone());
             let proof = MeasureProof::from_vars(&read, &exe).unwrap();
             assert_eq!(proof.commit, "0123456789ab");
             assert_eq!(proof.dirty, dirty);
             assert_eq!(proof.diff, diff);
+            assert_eq!(proof.hook, "10d66039a5b1");
             assert_eq!(read("MUSTARD_MEASURE_OUT").as_deref(), Some("/o/saida.json"));
             assert_eq!(read("K").as_deref(), Some("v"));
             assert_eq!(read("CARGO_MANIFEST_DIR").as_deref(), Some("/w/apps/rt"));
@@ -819,7 +953,7 @@ mod tests {
     }
 
     fn opts(test: &str) -> MeasureOpts {
-        MeasureOpts { test: test.to_string(), commit: None, package: None, env: Vec::new(), out: None }
+        MeasureOpts { test: test.to_string(), commit: None, package: None, env: Vec::new(), out: None, trees: None }
     }
 
     #[test]
@@ -831,7 +965,7 @@ mod tests {
         assert!(git::run(other.path(), &["init", "-q"]).ok);
         std::fs::write(other.path().join("Cargo.toml"), "[package]\nname = \"outro\"\n").unwrap();
         for dir in [plain.path(), other.path()] {
-            let refusal = measure_in(dir, base.path(), &opts("measure_it")).unwrap_err();
+            let refusal = measure_in(dir, base.path(), &opts("measure_it"), &Host::default()).unwrap_err();
             assert!(refusal.contains("código-fonte do Mustard"), "{refusal}");
         }
         assert!(std::fs::read_dir(base.path()).unwrap().next().is_none(), "recusar não cria pasta de medida");
@@ -842,7 +976,7 @@ mod tests {
         let base = tempdir().unwrap();
         let mut asked = opts("measure_it");
         asked.env = vec!["MUSTARD_MEASURE_COMMIT=abc".to_string()];
-        let refusal = measure_in(base.path(), base.path(), &asked).unwrap_err();
+        let refusal = measure_in(base.path(), base.path(), &asked, &Host::default()).unwrap_err();
         assert!(refusal.contains("posta pelo comando"), "{refusal}");
     }
 
@@ -881,5 +1015,302 @@ mod tests {
         let mut lines = lines;
         lines.sort();
         assert_eq!(lines, ["PECAS /m/a: compilado=ligada", "PROVA commit=0123456789ab"]);
+    }
+    // -----------------------------------------------------------------------
+    // Mapas refeitos e a versão do gancho
+    // -----------------------------------------------------------------------
+
+    /// Registra, no registro de plugins da pasta de configuração `config`, uma
+    /// instalação do plugin do mercado `market` na versão `version`, na pasta
+    /// que a função devolve (sem programa dentro).
+    #[cfg(unix)]
+    fn register_plugin(config: &Path, market: &str, version: &str) -> PathBuf {
+        let install = config.join("plugins").join("cache").join(market).join("mustard").join(version);
+        std::fs::create_dir_all(install.join("bin")).unwrap();
+        let registry = config.join("plugins").join("installed_plugins.json");
+        let mut doc: Value = std::fs::read_to_string(&registry).ok().and_then(|raw| serde_json::from_str(&raw).ok()).unwrap_or_else(|| serde_json::json!({ "version": 2, "plugins": {} }));
+        let record = serde_json::json!({ "scope": "user", "installPath": install, "version": version });
+        let records = doc["plugins"].as_object_mut().unwrap().entry(format!("mustard@{market}")).or_insert_with(|| serde_json::json!([]));
+        records.as_array_mut().unwrap().push(record);
+        std::fs::write(&registry, doc.to_string()).unwrap();
+        install
+    }
+
+    /// Instala um plugin do mercado `market` na versão `version`, cujo
+    /// `mustard-rt` diz `says` em `--version`.
+    #[cfg(unix)]
+    fn plugin_with(config: &Path, market: &str, version: &str, says: &str) {
+        let install = register_plugin(config, market, version);
+        crate::executable::write_executable(&install.join("bin").join("mustard-rt"), &format!("#!/bin/sh\necho '{says}'\n"));
+    }
+
+    fn host_with_config(config: &Path) -> Host {
+        Host { cargo: None, config: Some(config.to_path_buf()) }
+    }
+
+    /// O gancho é o commit que o `mustard-rt` da instalação mais nova do
+    /// registro diz: `0.2.10` vence `0.2.4`, que a ordem do texto daria ao
+    /// contrário, e o `-dirty` do carimbo fica.
+    #[cfg(unix)]
+    #[test]
+    fn the_hook_is_the_commit_stamped_in_the_newest_registered_plugin_version() {
+        let config = tempdir().unwrap();
+        plugin_with(config.path(), "mustard-local", "0.2.4", "mustard-rt 0.2.4 (build dev, gaaaaaaaaaaaa 2026-09-25)");
+        plugin_with(config.path(), "outro-mercado", "0.2.10", "mustard-rt 0.2.10 (build dev, gbbbbbbbbbbbb-dirty 2026-09-30)");
+        assert_eq!(hook_version(&host_with_config(config.path())), "bbbbbbbbbbbb-dirty");
+    }
+
+    /// Sem plugin registrado, ou com o registro apontando para uma pasta sem o
+    /// programa, o gancho é `não instalado`; com plugin que não carimba o
+    /// commit, a prova diz isso e não inventa um.
+    #[cfg(unix)]
+    #[test]
+    fn without_a_plugin_the_hook_is_not_installed_and_a_version_without_commit_says_so() {
+        let config = tempdir().unwrap();
+        assert_eq!(hook_version(&host_with_config(config.path())), "não instalado");
+        // O registro aponta para uma instalação sem o programa dentro.
+        register_plugin(config.path(), "mustard-local", "0.2.4");
+        assert_eq!(hook_version(&host_with_config(config.path())), "não instalado");
+
+        plugin_with(config.path(), "mustard-local", "0.2.4", "mustard-rt 0.2.4");
+        assert_eq!(hook_version(&host_with_config(config.path())), "sem commit na versão");
+    }
+
+    /// Um programa na pasta de cache que o registro não aponta não é o gancho
+    /// das sessões: só vale o que o registro diz.
+    #[cfg(unix)]
+    #[test]
+    fn a_program_in_the_cache_that_the_registry_does_not_point_to_is_not_the_hook() {
+        let config = tempdir().unwrap();
+        let loose = config.path().join("plugins/cache/mustard-local/mustard/0.9.0/bin");
+        std::fs::create_dir_all(&loose).unwrap();
+        crate::executable::write_executable(&loose.join("mustard-rt"), "#!/bin/sh\necho 'mustard-rt 0.9.0 (build dev, gcccccccccccc 2026-09-30)'\n");
+        assert_eq!(hook_version(&host_with_config(config.path())), "não instalado");
+    }
+
+    /// O scan que refaz o mapa é o que o cargo deixou ao lado do `mustard-rt`
+    /// da compilação; sem ele a medida recusa, e nunca roda o do `PATH`, que
+    /// seria de outra compilação.
+    #[cfg(unix)]
+    #[test]
+    fn the_scan_that_rebuilds_the_map_is_the_one_built_beside_the_program_and_never_the_one_on_the_path() {
+        let target = tempdir().unwrap();
+        let refusal = compiled_scan(target.path()).unwrap_err();
+        assert!(refusal.contains("o cargo não deixou o scan"), "{refusal}");
+
+        let release = target.path().join("release");
+        std::fs::create_dir_all(&release).unwrap();
+        std::fs::write(release.join("scan"), "").unwrap();
+        let scan = compiled_scan(target.path()).expect("the scan beside the program is found");
+        assert!(scan.is_compiled_alongside());
+        assert_eq!(format!("{scan:?}"), format!("{:?}", Scan::new(release.join("scan").to_string_lossy())));
+    }
+
+    /// A pasta de árvores vem de `--trees` ou de `SPEND_TREES` em `--env`, e
+    /// vai à régua por caminho absoluto, no lugar do que veio: a régua roda de
+    /// outra pasta, e o mapa refeito tem de ser o que ela abre.
+    #[test]
+    fn the_trees_folder_comes_from_the_flag_or_the_variable_and_reaches_the_ruler_as_an_absolute_path() {
+        let cwd = tempdir().unwrap();
+        std::fs::create_dir_all(cwd.path().join("arvores")).unwrap();
+
+        let mut asked = opts("measure_it");
+        asked.trees = Some(PathBuf::from("arvores"));
+        let mut user = Vec::new();
+        assert_eq!(trees_folder(cwd.path(), &asked, &mut user).unwrap(), Some(cwd.path().join("arvores")));
+        assert_eq!(user, vec![("SPEND_TREES".to_string(), cwd.path().join("arvores").display().to_string())]);
+
+        let mut user = vec![("SPEND_TREES".to_string(), "arvores".to_string()), ("K".to_string(), "v".to_string())];
+        assert_eq!(trees_folder(cwd.path(), &opts("measure_it"), &mut user).unwrap(), Some(cwd.path().join("arvores")));
+        assert_eq!(user.iter().filter(|(key, _)| key == "SPEND_TREES").count(), 1);
+        assert!(user.contains(&("SPEND_TREES".to_string(), cwd.path().join("arvores").display().to_string())));
+        assert!(user.contains(&("K".to_string(), "v".to_string())));
+
+        assert_eq!(trees_folder(cwd.path(), &opts("measure_it"), &mut Vec::new()).unwrap(), None);
+
+        let mut user = vec![("SPEND_TREES".to_string(), "outras".to_string())];
+        let refusal = trees_folder(cwd.path(), &asked, &mut user).unwrap_err();
+        assert!(refusal.contains("pastas diferentes"), "{refusal}");
+
+        asked.trees = Some(PathBuf::from("nao-existe"));
+        let refusal = trees_folder(cwd.path(), &asked, &mut Vec::new()).unwrap_err();
+        assert!(refusal.contains("não existe"), "{refusal}");
+    }
+
+    /// Um scan de mentira: grava `novo` no banco que recebe em `--out` e anota
+    /// a árvore em `log`; falha quando o arquivo `fail` existe.
+    #[cfg(unix)]
+    fn fake_scan(path: &Path, log: &Path, fail: &Path) {
+        crate::executable::write_executable(
+            path,
+            &format!(
+                "#!/bin/sh\necho \"scan $2\" >> '{log}'\n[ -e '{fail}' ] && {{ echo 'o scan quebrou' >&2; exit 3; }}\nmkdir -p \"$(dirname \"$4\")\" && printf novo > \"$4\"\necho '{{\"full\":true,\"read\":[],\"files\":1}}'\n",
+                log = log.display(),
+                fail = fail.display()
+            ),
+        );
+    }
+
+    /// Uma pasta de árvores com os projetos `names`, cada um com o mapa velho.
+    #[cfg(unix)]
+    fn trees_with(dir: &Path, names: &[&str]) -> PathBuf {
+        let trees = dir.join("arvores");
+        for name in names {
+            let claude = trees.join(name).join(".claude");
+            std::fs::create_dir_all(&claude).unwrap();
+            std::fs::write(claude.join("grain.db"), "velho").unwrap();
+            std::fs::write(claude.join("grain.db-wal"), "velho").unwrap();
+        }
+        trees
+    }
+
+    /// Cada projeto da pasta de árvores, em ordem, perde o banco velho e ganha
+    /// o do scan; as pastas escondidas e os arquivos soltos não são projeto.
+    #[cfg(unix)]
+    #[test]
+    fn every_project_of_the_trees_gets_a_new_map_and_the_hidden_folders_are_left_alone() {
+        let dir = tempdir().unwrap();
+        let (log, fail) = (dir.path().join("log"), dir.path().join("fail"));
+        fake_scan(&dir.path().join("scan"), &log, &fail);
+        let trees = trees_with(dir.path(), &["b", "a", ".escondida"]);
+        std::fs::write(trees.join("solto.txt"), "x").unwrap();
+
+        let rebuilt = rebuild_trees(&trees, &Scan::new(dir.path().join("scan").to_string_lossy())).unwrap();
+
+        assert_eq!(rebuilt, vec![trees.join("a"), trees.join("b")]);
+        let logged = std::fs::read_to_string(&log).unwrap();
+        assert_eq!(logged.lines().collect::<Vec<_>>(), [format!("scan {}", trees.join("a").display()), format!("scan {}", trees.join("b").display())]);
+        for name in ["a", "b"] {
+            let claude = trees.join(name).join(".claude");
+            assert_eq!(std::fs::read_to_string(claude.join("grain.db")).unwrap(), "novo");
+            assert!(!claude.join("grain.db-wal").exists(), "the side file of the old database goes too");
+        }
+        assert_eq!(std::fs::read_to_string(trees.join(".escondida/.claude/grain.db")).unwrap(), "velho");
+    }
+
+    /// O scan que falha num projeto recusa, dizendo qual; uma pasta sem
+    /// projeto também recusa, porque a régua mediria sem mapa novo.
+    #[cfg(unix)]
+    #[test]
+    fn a_scan_that_fails_or_a_folder_without_projects_refuses() {
+        let dir = tempdir().unwrap();
+        let (log, fail) = (dir.path().join("log"), dir.path().join("fail"));
+        fake_scan(&dir.path().join("scan"), &log, &fail);
+        let scan = Scan::new(dir.path().join("scan").to_string_lossy());
+        let trees = trees_with(dir.path(), &["a"]);
+        std::fs::write(&fail, "").unwrap();
+
+        let refusal = rebuild_trees(&trees, &scan).unwrap_err();
+        assert!(refusal.contains("o scan não refez o mapa") && refusal.contains(&trees.join("a").display().to_string()), "{refusal}");
+        assert!(refusal.contains("o scan quebrou"), "{refusal}");
+
+        let empty = tempdir().unwrap();
+        let refusal = rebuild_trees(empty.path(), &scan).unwrap_err();
+        assert!(refusal.contains("nenhum"), "{refusal}");
+    }
+
+    /// Um mundo de mentira para a medida inteira: o repositório do Mustard com
+    /// um commit, uma pasta de árvores com o mapa velho, um cargo que não
+    /// compila nada e deixa um scan e um programa de teste falsos, e a pasta de
+    /// configuração do Claude Code.
+    #[cfg(unix)]
+    struct World {
+        _dir: tempfile::TempDir,
+        repo: PathBuf,
+        base: PathBuf,
+        trees: PathBuf,
+        log: PathBuf,
+        fail: PathBuf,
+        host: Host,
+    }
+
+    #[cfg(unix)]
+    fn world() -> World {
+        let dir = tempdir().unwrap();
+        let (repo, base, config, bin) = (dir.path().join("repo"), dir.path().join("base"), dir.path().join("config"), dir.path().join("bin"));
+        for folder in [&repo, &base, &config, &bin] {
+            std::fs::create_dir_all(folder).unwrap();
+        }
+        fake_source(&repo, &[("packages/core", "measure_it")]);
+        let git = |args: &[&str]| assert!(git::run(&repo, args).ok, "git {args:?}");
+        git(&["init", "-q"]);
+        git(&["add", "-A"]);
+        git(&["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "semente"]);
+
+        let (log, fail) = (dir.path().join("log"), dir.path().join("fail"));
+        fake_scan(&bin.join("scan"), &log, &fail);
+        // O programa de teste: lista a régua e, ao rodar, imprime a prova com o
+        // gancho e o conteúdo do banco da árvore que a variável aponta.
+        let ruler = bin.join("ruler");
+        crate::executable::write_executable(
+            &ruler,
+            &format!(
+                "#!/bin/sh\ncase \"$1\" in\n--list) echo 'mod::measure_it: test' ;;\n*) echo ruler >> '{log}'\n   echo \"PROVA commit=$MUSTARD_MEASURE_COMMIT gancho=$MUSTARD_MEASURE_HOOK mapa=$(cat \"$SPEND_TREES/p/.claude/grain.db\")\" ;;\nesac\n",
+                log = log.display()
+            ),
+        );
+        let artifact = format!(
+            r#"{{"reason":"compiler-artifact","package_id":"mustard-core 0.1.0 (path+file:///w/packages/core)","manifest_path":"{manifest}","target":{{"kind":["lib"],"name":"x"}},"profile":{{"test":true}},"executable":"{ruler}"}}"#,
+            manifest = repo.join("packages/core/Cargo.toml").display(),
+            ruler = ruler.display()
+        );
+        let cargo = bin.join("cargo");
+        crate::executable::write_executable(
+            &cargo,
+            &format!(
+                "#!/bin/sh\necho \"cargo $1\" >> '{log}'\ncase \"$1\" in\nbuild) mkdir -p \"$CARGO_TARGET_DIR/release\" && cp '{scan}' \"$CARGO_TARGET_DIR/release/scan\" ;;\ntest) printf '%s\\n' '{artifact}' ;;\nesac\n",
+                log = log.display(),
+                scan = bin.join("scan").display()
+            ),
+        );
+        plugin_with(&config, "mustard-local", "0.2.4", "mustard-rt 0.2.4 (build dev, g10d66039a5b1 2026-09-25)");
+        let trees = trees_with(dir.path(), &["p"]);
+        World { host: Host { cargo: Some(cargo), config: Some(config) }, _dir: dir, repo, base, trees, log, fail }
+    }
+
+    #[cfg(unix)]
+    fn logged(world: &World) -> Vec<String> {
+        std::fs::read_to_string(&world.log).unwrap_or_default().lines().map(str::to_string).collect()
+    }
+
+    /// A medida inteira: antes da régua o cargo compila, o scan compilado
+    /// refaz o mapa de cada árvore (o banco velho não chega à régua), a árvore
+    /// vai à régua por `SPEND_TREES`, e a prova que ela imprime traz o gancho
+    /// do plugin instalado.
+    #[cfg(unix)]
+    #[test]
+    fn the_measure_rebuilds_the_maps_before_the_ruler_and_the_proof_carries_the_hook() {
+        let world = world();
+        let mut asked = opts("measure_it");
+        asked.trees = Some(world.trees.clone());
+
+        let report = measure_in(&world.repo, &world.base, &asked, &world.host).unwrap();
+
+        assert!(report.contains("gancho=10d66039a5b1"), "{report}");
+        assert!(report.contains("mapa=novo") && !report.contains("velho"), "the ruler read the map the scan wrote: {report}");
+        assert_eq!(logged(&world), ["cargo build", &format!("scan {}", world.trees.join("p").display()), "cargo test", "ruler"]);
+
+        // Sem plugin instalado a mesma medida diz que o gancho não está.
+        let bare = tempdir().unwrap();
+        let host = Host { cargo: world.host.cargo.clone(), config: Some(bare.path().to_path_buf()) };
+        let report = measure_in(&world.repo, &world.base, &asked, &host).unwrap();
+        assert!(report.contains("gancho=não instalado"), "{report}");
+    }
+
+    /// O scan que falha recusa a medida: nenhuma régua roda sobre o banco que
+    /// não foi refeito, e a recusa diz qual árvore.
+    #[cfg(unix)]
+    #[test]
+    fn a_scan_that_fails_refuses_the_measure_before_the_ruler_runs() {
+        let world = world();
+        std::fs::write(&world.fail, "").unwrap();
+        let mut asked = opts("measure_it");
+        asked.trees = Some(world.trees.clone());
+
+        let refusal = measure_in(&world.repo, &world.base, &asked, &world.host).unwrap_err();
+
+        assert!(refusal.contains("o scan não refez o mapa") && refusal.contains(&world.trees.join("p").display().to_string()), "{refusal}");
+        let steps = logged(&world);
+        assert!(!steps.contains(&"ruler".to_string()) && !steps.contains(&"cargo test".to_string()), "{steps:?}");
     }
 }

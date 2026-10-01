@@ -10,6 +10,14 @@
 //! `PreToolUse` ([`crate::dispatch::run_event`]), contra o mapa da cópia: o que
 //! ela mede é o texto que o Claude receberia, nunca uma lista interna.
 //!
+//! A busca real leva ao filtro a última fala do agente antes da chamada. Por
+//! isso a linha da entrada traz também `session`, o arquivo da conversa, e
+//! `at`, o instante da chamada: a régua grava numa pasta temporária a conversa
+//! só com as linhas escritas até esse instante, e o gancho a lê como o de uma
+//! sessão. Uma fala escrita depois da chamada nunca chega ao filtro. Sem o
+//! arquivo da sessão a busca segue sem fala, e o resultado conta quantas
+//! ficaram sem.
+//!
 //! O gasto de uma busca é medido em caracteres:
 //!
 //! - **hoje**: a saída do `grep` que o Claude recebeu mais o que leu até a
@@ -37,6 +45,8 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+
+use chrono::{DateTime, FixedOffset};
 
 use mustard_core::domain::model::contract::{HookInput, Trigger, Verdict};
 use mustard_core::io::map_triage::Triaged;
@@ -88,6 +98,14 @@ struct Row {
     targets: Vec<String>,
     expired: bool,
     chain: Option<Chain>,
+    /// O arquivo da conversa em que a busca aconteceu; sem ele, a busca segue
+    /// sem fala.
+    #[serde(default)]
+    session: Option<String>,
+    /// O instante da chamada, em RFC 3339: a conversa que o filtro vê vai até
+    /// ele.
+    #[serde(default)]
+    at: Option<String>,
 }
 
 /// O que uma resposta do gancho mostra: os arquivos, na ordem, e os trechos
@@ -313,15 +331,64 @@ fn fate_of(root: &Path, row: &Row, (outcome, shown): (&Outcome, &Shown)) -> Fate
     }
 }
 
+/// O instante em que uma linha da conversa foi escrita (`timestamp`, em RFC
+/// 3339); `None` na linha que não é mensagem ou não diz quando foi escrita.
+fn instant_of(line: &[u8]) -> Option<DateTime<FixedOffset>> {
+    let entry: Value = serde_json::from_slice(line).ok()?;
+    DateTime::parse_from_rfc3339(entry.get("timestamp")?.as_str()?).ok()
+}
+
+/// A conversa da busca de `row` como estava no instante da chamada: só as
+/// linhas do arquivo da sessão escritas até esse instante, copiadas como
+/// estão e na ordem em que estavam — nenhuma é reescrita nem criada. A linha
+/// escrita depois nunca entra, porque a busca real não a conhecia; a que não
+/// diz quando foi escrita também não. `None` sem arquivo da sessão que se
+/// leia e sem um instante que se entenda: a busca segue sem fala.
+fn conversation_before(row: &Row) -> Option<Vec<u8>> {
+    let at = DateTime::parse_from_rfc3339(row.at.as_deref()?).ok()?;
+    let raw = std::fs::read(row.session.as_deref()?).ok()?;
+    let kept = raw
+        .split_inclusive(|byte| *byte == b'\n')
+        .filter(|line| instant_of(line).is_some_and(|when| when <= at))
+        .flatten()
+        .copied()
+        .collect();
+    Some(kept)
+}
+
+/// A conversa de `row` até a chamada ([`conversation_before`]) gravada em
+/// `<scratch>/<session>.jsonl`, o arquivo que o gancho lê em `transcript_path`
+/// como lê o de uma sessão de verdade; `None` quando a busca segue sem
+/// conversa.
+fn write_conversation(row: &Row, session: &str, scratch: &Path) -> Option<PathBuf> {
+    let text = conversation_before(row)?;
+    let file = scratch.join(format!("{session}.jsonl"));
+    std::fs::write(&file, text).ok().map(|()| file)
+}
+
+/// O que o despachante do gancho respondeu a uma busca, quanto levou e se ela
+/// foi com a conversa da sessão ou sem fala.
+struct Heard {
+    outcome: Outcome,
+    took: Duration,
+    /// A conversa da sessão chegou ao gancho em `transcript_path`.
+    with_conversation: bool,
+}
+
 /// O que o despachante do gancho responde à chamada de `row`, rodada de
-/// `root` numa sessão só dela, e quanto ele levou.
-fn hear(root: &Path, row: &Row, session: &str) -> (Outcome, Duration) {
+/// `root` numa sessão só dela, e quanto ele levou. A conversa de `row` até a
+/// chamada vai para a pasta temporária `scratch` ([`write_conversation`]) e o
+/// gancho a lê em `transcript_path`, sem nome de subagente; o arquivo sai ao
+/// fim da busca.
+fn hear(root: &Path, row: &Row, session: &str, scratch: &Path) -> Heard {
+    let conversation = write_conversation(row, session, scratch);
     let input = HookInput {
         tool_name: Some(row.tool_name.clone()),
         tool_input: row.tool_input.clone(),
         hook_event_name: Some("PreToolUse".to_string()),
         cwd: Some(root.to_string_lossy().into_owned()),
         session_id: Some(session.to_string()),
+        raw: conversation.as_ref().map_or(Value::Null, |file| json!({ "transcript_path": file })),
         ..HookInput::default()
     };
     LAST_ORDER.with(|last| *last.borrow_mut() = None);
@@ -329,12 +396,15 @@ fn hear(root: &Path, row: &Row, session: &str) -> (Outcome, Duration) {
     let started = Instant::now();
     let verdict = crate::dispatch::run_event(Some(Trigger::PreToolUse), &input).verdict;
     let took = started.elapsed();
+    if let Some(file) = &conversation {
+        let _ = std::fs::remove_file(file);
+    }
     let outcome = match verdict {
         Verdict::Deny { reason } => Outcome::Answer(reason),
         Verdict::Inject { context } => Outcome::Note(context),
         _ => Outcome::Pass,
     };
-    (outcome, took)
+    Heard { outcome, took, with_conversation: conversation.is_some() }
 }
 
 /// A soma de um grupo de buscas.
@@ -345,11 +415,30 @@ struct Sum {
     today: usize,
     with: usize,
     saved_reads: usize,
+    /// As buscas que foram sem a conversa da sessão, portanto sem fala.
+    without_speech: usize,
     fates: BTreeMap<String, usize>,
     millis: Vec<u128>,
 }
 
 impl Sum {
+    /// Soma uma busca: o tempo, o destino, o gasto, quando a conversa tinha
+    /// cadeia, e se ela foi com a conversa da sessão.
+    fn record(&mut self, heard: &Heard, fate: Fate, spend: Option<Spend>) {
+        self.searches += 1;
+        self.millis.push(heard.took.as_millis());
+        *self.fates.entry(fate_name(fate)).or_default() += 1;
+        if !heard.with_conversation {
+            self.without_speech += 1;
+        }
+        if let Some(spend) = spend {
+            self.with_chain += 1;
+            self.today += spend.today;
+            self.with += spend.with;
+            self.saved_reads += spend.saved_reads;
+        }
+    }
+
     fn show(&self, label: &str) -> String {
         let percent = |part: usize, whole: usize| if whole == 0 { 0.0 } else { 100.0 * part as f64 / whole as f64 };
         let gain = self.today as i64 - self.with as i64;
@@ -361,7 +450,7 @@ impl Sum {
         let five: usize = (1..=SHOWN_FILES).map(|n| self.fates.get(&n.to_string()).copied().unwrap_or(0)).sum();
         let fates: Vec<String> = self.fates.iter().map(|(fate, n)| format!("{fate} {n}")).collect();
         format!(
-            "{label}: {} buscas | gasto em {} com cadeia: hoje {} | com o Mustard {} | diferença {gain} ({:.1}%), leitura dispensada {} | responde {} ({:.1}%), certo em 1º {first}, entre 5 {five} ({:.1}% das que respondem) | destinos: {} | tempo ms: mediana {}, p95 {}, máx {}",
+            "{label}: {} buscas | gasto em {} com cadeia: hoje {} | com o Mustard {} | diferença {gain} ({:.1}%), leitura dispensada {} | responde {} ({:.1}%), certo em 1º {first}, entre 5 {five} ({:.1}% das que respondem) | destinos: {} | sem fala (sem a conversa da sessão) {} | tempo ms: mediana {}, p95 {}, máx {}",
             self.searches,
             self.with_chain,
             self.today,
@@ -372,6 +461,7 @@ impl Sum {
             percent(answered, self.searches),
             percent(five, answered),
             fates.join(", "),
+            self.without_speech,
             at(50),
             at(95),
             millis.last().copied().unwrap_or(0),
@@ -424,7 +514,8 @@ pub(super) fn measure_gate(maps: &[PathBuf]) -> MeasureGate {
 /// buscas do `Bash` e do `Grep` entram nas contas; as vencidas (o texto já não
 /// casa com o arquivo certo na cópia) ficam de fora. Roda pelo comando de
 /// medida, que compila o código certo em `--release`, para o tempo ser o do
-/// gancho de verdade; rode com `env -u TYPESAFE_API_KEY HOME=<pasta vazia>`.
+/// gancho de verdade, e refaz o mapa de cada cópia com o `scan` desse código;
+/// rode com `env -u TYPESAFE_API_KEY HOME=<pasta vazia>`.
 #[test]
 #[ignore = "mede com as cópias dos projetos de prova e as conversas reais"]
 fn measure_the_spend_of_the_search() {
@@ -443,7 +534,9 @@ fn measure_the_spend_of_the_search() {
     let maps: Vec<PathBuf> = names.iter().map(|name| store::model_path(&trees.join(name))).collect();
     let gate = measure_gate(&maps);
     let proof = gate.proof().to_json();
-    let (mut skipped, mut other): (usize, usize) = (0, 0);
+    let (mut skipped, mut other, mut without_speech): (usize, usize, usize) = (0, 0, 0);
+    // A conversa de cada busca, só até a chamada, mora aqui enquanto ela roda.
+    let scratch = tempfile::tempdir().expect("the folder for the conversations of the searches");
     let mut warmed: Vec<String> = Vec::new();
     let mut groups: BTreeMap<(String, String), Sum> = BTreeMap::new();
     let mut lines: Vec<String> = Vec::new();
@@ -462,30 +555,23 @@ fn measure_the_spend_of_the_search() {
         if !warmed.contains(&row.name) {
             warmed.push(row.name.clone());
             // A primeira busca de cada mapa refaz o índice nas línguas dele: fica fora do tempo.
-            let _ = hear(&root, row, &format!("warm-{run}-{at}"));
+            let _ = hear(&root, row, &format!("warm-{run}-{at}"), scratch.path());
         }
-        let (outcome, took) = hear(&root, row, &format!("spend-{run}-{at}"));
-        let shown = shown_by(&outcome);
-        let fate = fate_of(&root, row, (&outcome, &shown));
-        let spend = spend_of(row, &outcome, &shown);
+        let heard = hear(&root, row, &format!("spend-{run}-{at}"), scratch.path());
+        let (outcome, took) = (&heard.outcome, heard.took);
+        let shown = shown_by(outcome);
+        let fate = fate_of(&root, row, (outcome, &shown));
+        let spend = spend_of(row, outcome, &shown);
+        without_speech += usize::from(!heard.with_conversation);
         for half in [row.half.as_str(), "total"] {
-            let sum = groups.entry((row.project.clone(), half.to_string())).or_default();
-            sum.searches += 1;
-            sum.millis.push(took.as_millis());
-            *sum.fates.entry(fate_name(fate)).or_default() += 1;
-            if let Some(spend) = spend {
-                sum.with_chain += 1;
-                sum.today += spend.today;
-                sum.with += spend.with;
-                sum.saved_reads += spend.saved_reads;
-            }
+            groups.entry((row.project.clone(), half.to_string())).or_default().record(&heard, fate, spend);
         }
-        let kind = match &outcome {
+        let kind = match outcome {
             Outcome::Answer(_) => "answer",
             Outcome::Note(_) => "note",
             Outcome::Pass => "pass",
         };
-        let text = match &outcome {
+        let text = match outcome {
             Outcome::Answer(text) | Outcome::Note(text) => text.as_str(),
             Outcome::Pass => "",
         };
@@ -493,6 +579,7 @@ fn measure_the_spend_of_the_search() {
             json!({
                 "key": row.key, "project": row.project, "half": row.half, "outcome": kind, "millis": took.as_millis(),
                 "fate": fate_name(fate), "shown": shown.files, "ranges": shown.ranges, "chars": text.chars().count(),
+                "with_conversation": heard.with_conversation,
                 "today": spend.map(|s| s.today), "with": spend.map(|s| s.with), "saved_reads": spend.map(|s| s.saved_reads),
                 "chain": row.chain.as_ref().map(|c| c.ended.as_str()), "text": text,
                 "hit_files": LAST_HITS.with(|last| last.borrow().len()),
@@ -505,7 +592,7 @@ fn measure_the_spend_of_the_search() {
         );
     }
     std::fs::write(out, lines.join("\n")).expect("the rows file writes");
-    eprintln!("GASTO {skipped} buscas vencidas fora, {other} sem busca de texto (glob, explore, mustard) fora");
+    eprintln!("GASTO {skipped} buscas vencidas fora, {other} sem busca de texto (glob, explore, mustard) fora, {without_speech} buscas sem a conversa da sessão (seguiram sem fala)");
     for ((project, half), sum) in &groups {
         eprintln!("GASTO {}", sum.show(&format!("{project} {half}")));
     }
@@ -517,7 +604,8 @@ fn measure_the_spend_of_the_search() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shared::word_search::fixture;
+    use crate::shared::agent_said;
+    use crate::shared::word_search::fixture::{self, Judge};
 
     /// A resposta de hoje: os arquivos saem da linha sem recuo, e uma entrada
     /// sem texto embaixo não é trecho.
@@ -560,6 +648,8 @@ mod tests {
             targets: targets.iter().map(|t| (*t).to_string()).collect(),
             expired: false,
             chain: Some(chain),
+            session: None,
+            at: None,
         }
     }
 
@@ -677,11 +767,59 @@ mod tests {
         Row { tool_input: json!({ "command": command }), ..row(chain_edited(), targets) }
     }
 
+    /// O que o gancho responde a `row` numa pasta de trabalho só dela, sem
+    /// conversa de sessão que o teste queira olhar depois.
+    fn hear_alone(root: &Path, row: &Row, session: &str) -> Heard {
+        let scratch = tempfile::tempdir().expect("the folder for the conversation");
+        hear(root, row, session, scratch.path())
+    }
+
+    /// Uma linha da conversa que o Claude Code guarda: o papel, o instante e os
+    /// blocos da mensagem.
+    fn line(role: &str, at: &str, blocks: Value) -> Value {
+        json!({"type": role, "timestamp": at, "message": {"role": role, "content": blocks}})
+    }
+
+    fn said(at: &str, text: &str) -> Value {
+        line("assistant", at, json!([{"type": "text", "text": text}]))
+    }
+
+    fn called(at: &str) -> Value {
+        line("assistant", at, json!([{"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "grep -rn imposto src"}}]))
+    }
+
+    fn result_of_the_call(at: &str) -> Value {
+        line("user", at, json!([{"type": "tool_result", "tool_use_id": "t1", "content": "src/frete.rs:3"}]))
+    }
+
+    fn person_said(at: &str, text: &str) -> Value {
+        line("user", at, json!([{"type": "text", "text": text}]))
+    }
+
+    /// O arquivo da conversa com as linhas dadas, uma por linha do arquivo.
+    fn session_file(dir: &Path, lines: &[Value]) -> String {
+        let file = dir.join("sessao.jsonl");
+        let text: Vec<String> = lines.iter().map(Value::to_string).collect();
+        std::fs::write(&file, text.join("\n") + "\n").expect("the session file");
+        file.to_string_lossy().into_owned()
+    }
+
+    /// A fala que o filtro recebe da busca parcial de `imposto` que `row`
+    /// faz na sessão `session`, com o filtro de teste no lugar do Jev, e se a
+    /// conversa chegou. O gancho lembra a busca repetida numa sessão: cada
+    /// busca do teste leva a sua.
+    fn said_to_the_filter(root: &Path, row: &Row, session: &str) -> (String, bool) {
+        let judge = Judge::sure_of(&[("calcular_frete", 0.9)]);
+        let heard = judge.installed(|| hear_alone(root, row, session));
+        assert_eq!(judge.calls(), 1, "the partial search reaches the filter");
+        (judge.last().said, heard.with_conversation)
+    }
+
     /// O destino da busca de `row` depois que o gancho a ouviu de verdade: a
     /// ordem que a triagem deu vem da própria busca, e a resposta mostra os
     /// arquivos `shown`.
     fn fate_after_hearing(root: &Path, row: &Row, shown: &[&str]) -> Fate {
-        let (_, _) = hear(root, row, "s-termometro");
+        let _ = hear_alone(root, row, "s-termometro");
         let shown = Shown { files: shown.iter().map(|f| (*f).to_string()).collect(), ranges: vec![] };
         fate_of(root, row, (&Outcome::Answer("resposta".to_string()), &shown))
     }
@@ -692,12 +830,12 @@ mod tests {
     #[test]
     fn the_ruler_hears_what_the_hook_answers_to_the_same_text_in_the_same_folder() {
         let (_dir, root) = fixture::repo("{}");
-        let (inside, _) = hear(&root, &bash_row("grep -rn calcular_frete src", &["src/frete.rs"]), "s-dentro");
+        let inside = hear_alone(&root, &bash_row("grep -rn calcular_frete src", &["src/frete.rs"]), "s-dentro").outcome;
         let Outcome::Answer(text) = inside else { panic!("an answer was expected, got {inside:?}") };
         assert!(text.contains("src/frete.rs\n  2-6 calcular_frete"), "{text}");
         assert_eq!(shown_of(&text).files.first().map(String::as_str), Some("src/frete.rs"));
 
-        let (outside, _) = hear(&root, &bash_row("grep -rn calcular_frete docs", &[]), "s-fora");
+        let outside = hear_alone(&root, &bash_row("grep -rn calcular_frete docs", &[]), "s-fora").outcome;
         assert!(matches!(outside, Outcome::Pass | Outcome::Note(_)), "{outside:?}");
     }
 
@@ -713,7 +851,7 @@ mod tests {
         chain.reads[0] = Read { file: "src/frete.rs".to_string(), first: 1, last: 40, chars: 4000 };
         let search = Row { tool_input: json!({ "command": "grep -rn imposto src" }), ..row(chain, &["src/frete.rs"]) };
 
-        let (outcome, _) = hear(&root, &search, "s-nota-parcial");
+        let outcome = hear_alone(&root, &search, "s-nota-parcial").outcome;
         let Outcome::Note(note) = &outcome else { panic!("a note was expected, got {outcome:?}") };
         let shown = shown_by(&outcome);
         assert_eq!(shown.files.first().map(String::as_str), Some("src/frete.rs"), "{note}");
@@ -723,6 +861,141 @@ mod tests {
         let spend = spend_of(&search, &outcome, &shown).unwrap();
         assert_eq!((spend.today, spend.saved_reads), (7000, 4000));
         assert_eq!(spend.with, 7000 + note.chars().count() - 4000, "the grep output stays in the spend");
+    }
+
+    /// A busca com a sessão gravada leva ao filtro a última fala do agente
+    /// anterior à chamada: a que veio depois dela, e o texto de gente que veio
+    /// depois, nunca chegam.
+    #[test]
+    fn a_search_with_a_recorded_session_gives_the_filter_the_speech_before_the_call_and_never_a_later_one() {
+        let (_dir, root) = fixture::repo("{}");
+        let notes = tempfile::tempdir().expect("a folder");
+        let session = session_file(
+            notes.path(),
+            &[
+                person_said("2026-10-01T10:00:00.000Z", "ache o cálculo do imposto"),
+                said("2026-10-01T10:00:02.000Z", "Fala antiga."),
+                said("2026-10-01T10:00:04.000Z", "Vou ver onde o imposto é calculado."),
+                called("2026-10-01T10:00:05.000Z"),
+                result_of_the_call("2026-10-01T10:00:06.000Z"),
+                said("2026-10-01T10:00:07.000Z", "Fala de depois da chamada."),
+                person_said("2026-10-01T10:00:08.000Z", "outra pergunta"),
+            ],
+        );
+        let search = Row { session: Some(session), at: Some("2026-10-01T10:00:05.000Z".to_string()), ..bash_row("grep -rn imposto src", &["src/frete.rs"]) };
+
+        let (said, with_conversation) = said_to_the_filter(&root, &search, "s-fala");
+
+        assert!(with_conversation);
+        assert_eq!(said, "Vou ver onde o imposto é calculado.");
+    }
+
+    /// O arquivo que a régua grava para o gancho é o da sessão até a chamada,
+    /// linha por linha como estava (espaços, ordem das chaves e fim de linha
+    /// intactos), e o leitor da fala do gancho acha nele a última fala
+    /// anterior à chamada.
+    #[test]
+    fn the_file_written_for_the_hook_keeps_the_lines_as_they_were_and_the_reader_finds_the_last_speech_before_the_call() {
+        let notes = tempfile::tempdir().expect("a folder");
+        let scratch = tempfile::tempdir().expect("a folder");
+        let before = [
+            r#"{"type":"user","timestamp":"2026-10-01T10:00:00.000Z","message":{"role":"user","content":"ache o cálculo do imposto"}}"#,
+            r#"{ "timestamp" : "2026-10-01T10:00:03.000Z",  "message": {"content": [ {"text": "Fala antiga.", "type": "text"} ], "role": "assistant"} }"#,
+            r#"{"timestamp":"2026-10-01T10:00:04.000Z","message":{"role":"assistant","content":[{"type":"text","text":"Vou ver onde o imposto é calculado."}]}}"#,
+            r#"{"timestamp":"2026-10-01T10:00:05.000Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"grep -rn imposto src"}}]}}"#,
+        ];
+        let after = [
+            r#"{"timestamp":"2026-10-01T10:00:07.000Z","message":{"role":"assistant","content":[{"type":"text","text":"Fala de depois da chamada."}]}}"#,
+            r#"{"summary":"linha sem instante","message":{"role":"assistant","content":[{"type":"text","text":"Fala sem instante."}]}}"#,
+        ];
+        let whole: Vec<&str> = before.iter().chain(&after).copied().collect();
+        let file = notes.path().join("sessao.jsonl");
+        std::fs::write(&file, whole.join("\n") + "\n").expect("the session file");
+        let search = Row {
+            session: Some(file.to_string_lossy().into_owned()),
+            at: Some("2026-10-01T10:00:05.000Z".to_string()),
+            ..bash_row("grep -rn imposto src", &["src/frete.rs"])
+        };
+
+        let written = write_conversation(&search, "s-arquivo", scratch.path()).expect("the conversation is written");
+
+        assert_eq!(written.parent(), Some(scratch.path()));
+        assert_eq!(std::fs::read_to_string(&written).expect("the file reads"), before.join("\n") + "\n");
+        assert_eq!(agent_said::last_said(&written), "Vou ver onde o imposto é calculado.");
+    }
+
+    /// O corte compara instantes, não texto: o instante da chamada em outro
+    /// fuso corta no mesmo ponto, e a fala escrita no mesmo instante da
+    /// chamada (o bloco de texto e o de uso da ferramenta de uma mensagem só)
+    /// é a que ela fez.
+    #[test]
+    fn the_cut_compares_instants_across_time_zones_and_keeps_the_speech_written_with_the_call() {
+        let (_dir, root) = fixture::repo("{}");
+        let notes = tempfile::tempdir().expect("a folder");
+        let session = session_file(
+            notes.path(),
+            &[
+                said("2026-10-01T10:00:04.000Z", "Fala antes."),
+                said("2026-10-01T10:00:05.000Z", "Fala junto da chamada."),
+                called("2026-10-01T10:00:05.000Z"),
+                said("2026-10-01T10:00:05.001Z", "Um milésimo depois."),
+            ],
+        );
+        // 07:00:05 em -03:00 é 10:00:05 em UTC.
+        let search = Row { session: Some(session), at: Some("2026-10-01T07:00:05.000-03:00".to_string()), ..bash_row("grep -rn imposto src", &["src/frete.rs"]) };
+
+        let (said, _) = said_to_the_filter(&root, &search, "s-fala-fuso");
+
+        assert_eq!(said, "Fala junto da chamada.");
+    }
+
+    /// Sem o arquivo da sessão, ou sem o instante que diz até onde ler, a
+    /// busca segue sem fala, e a falta é contada: nunca uma fala qualquer da
+    /// conversa no lugar.
+    #[test]
+    fn a_search_without_the_session_file_goes_on_without_speech() {
+        let (_dir, root) = fixture::repo("{}");
+        let notes = tempfile::tempdir().expect("a folder");
+        let session = session_file(notes.path(), &[said("2026-10-01T10:00:04.000Z", "Fala que não vale."), called("2026-10-01T10:00:05.000Z")]);
+        let plain = bash_row("grep -rn imposto src", &["src/frete.rs"]);
+        let at = Some("2026-10-01T10:00:05.000Z".to_string());
+
+        let without_a_session = Row { at: at.clone(), ..bash_row("grep -rn imposto src", &["src/frete.rs"]) };
+        let missing_file = Row { session: Some("/nao/existe/sessao.jsonl".to_string()), at: at.clone(), ..bash_row("grep -rn imposto src", &["src/frete.rs"]) };
+        let without_the_instant = Row { session: Some(session.clone()), ..bash_row("grep -rn imposto src", &["src/frete.rs"]) };
+        let broken_instant = Row { session: Some(session), at: Some("ontem".to_string()), ..plain };
+        for (at, search) in [&without_a_session, &missing_file, &without_the_instant, &broken_instant].into_iter().enumerate() {
+            assert_eq!(said_to_the_filter(&root, search, &format!("s-sem-fala-{at}")), (String::new(), false));
+        }
+    }
+
+    /// A conversa que a régua grava para a busca mora só enquanto ela roda: a
+    /// pasta de trabalho fica vazia depois.
+    #[test]
+    fn the_conversation_written_for_a_search_does_not_outlive_it() {
+        let (_dir, root) = fixture::repo("{}");
+        let notes = tempfile::tempdir().expect("a folder");
+        let session = session_file(notes.path(), &[said("2026-10-01T10:00:04.000Z", "Fala."), called("2026-10-01T10:00:05.000Z")]);
+        let search = Row { session: Some(session), at: Some("2026-10-01T10:00:05.000Z".to_string()), ..bash_row("grep -rn imposto src", &["src/frete.rs"]) };
+        let scratch = tempfile::tempdir().expect("a folder");
+
+        let heard = hear(&root, &search, "s-pasta", scratch.path());
+
+        assert!(heard.with_conversation);
+        assert_eq!(std::fs::read_dir(scratch.path()).expect("the folder reads").count(), 0);
+    }
+
+    /// O resultado de cada grupo conta as buscas que seguiram sem a conversa
+    /// da sessão.
+    #[test]
+    fn the_result_counts_the_searches_that_went_without_the_session() {
+        let heard = |with_conversation| Heard { outcome: Outcome::Pass, took: Duration::from_millis(3), with_conversation };
+        let mut sum = Sum::default();
+        sum.record(&heard(false), Fate::Passed, None);
+        sum.record(&heard(true), Fate::Passed, None);
+        sum.record(&heard(false), Fate::Passed, None);
+        assert_eq!((sum.searches, sum.without_speech), (3, 2));
+        assert!(sum.show("p").contains("sem fala (sem a conversa da sessão) 2"), "{}", sum.show("p"));
     }
 
     /// O termômetro diz a posição do arquivo certo entre os mostrados e, quando
@@ -790,6 +1063,7 @@ mod tests {
             diff: String::new(),
             binary_sha256: "0".repeat(64),
             binary_path: "programa".to_string(),
+            hook: "10d66039a5b1".to_string(),
             maps: Vec::new(),
         }
     }

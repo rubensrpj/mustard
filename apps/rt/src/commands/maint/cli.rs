@@ -72,6 +72,12 @@ pub enum MaintCmd {
     /// código ao lado e com o commit, o sujo e o resumo em variáveis
     /// `MUSTARD_MEASURE_*`; a régua que não imprime a linha `PROVA` falha.
     ///
+    /// Com `--trees <pasta>` (ou `SPEND_TREES` em `--env`), o mapa de cada
+    /// projeto da pasta é refeito antes da régua: o banco velho sai e o `scan`
+    /// compilado do mesmo código grava um novo; o scan que falha recusa a
+    /// medida. A linha `PROVA` traz também `gancho=<commit>`: o commit que o
+    /// `mustard-rt` do plugin instalado carimbou em si, ou `não instalado`.
+    ///
     /// Imprime ao fim as linhas `PROVA`, uma linha `PECAS` por mapa que a
     /// régua abriu (o estado de cada peça da busca nele, ligada ou ainda não
     /// ligada) e o caminho do resultado (`--out`, ou `<pasta>/<teste>.json`,
@@ -95,6 +101,11 @@ pub enum MaintCmd {
         /// O arquivo onde a régua grava o resultado.
         #[arg(long, value_name = "arquivo")]
         out: Option<PathBuf>,
+        /// A pasta com a árvore de cada projeto da régua (`SPEND_TREES`): o
+        /// mapa de cada uma é refeito antes da medida, com o `scan` compilado
+        /// do mesmo código.
+        #[arg(long, value_name = "pasta")]
+        trees: Option<PathBuf>,
     },
     /// Install or update Mustard in the current project (the plugin's
     /// bootstrap door).
@@ -152,8 +163,8 @@ pub fn dispatch(cmd: MaintCmd) {
             let _ = dry_run;
             maint::scratch_gc::run(maint::scratch_gc::ScratchGcOpts { apply, path });
         }
-        MaintCmd::Measure { test, commit, package, env, out } => {
-            maint::measure::run(&maint::measure::MeasureOpts { test, commit, package, env, out });
+        MaintCmd::Measure { test, commit, package, env, out, trees } => {
+            maint::measure::run(&maint::measure::MeasureOpts { test, commit, package, env, out, trees });
         }
         MaintCmd::Upsert { local_files, prepare } => {
             maint::upsert::run(&maint::upsert::UpsertOpts { local_files, prepare });
@@ -235,7 +246,7 @@ mod tests {
     /// resultado e as variáveis, estas quantas vezes se repetirem.
     #[test]
     fn measure_takes_the_test_and_its_options() {
-        let Ok(Probe { cmd: MaintCmd::Measure { test, commit, package, env, out } }) = Probe::try_parse_from([
+        let Ok(Probe { cmd: MaintCmd::Measure { test, commit, package, env, out, trees } }) = Probe::try_parse_from([
             "probe",
             "measure",
             "measure_the_spend_of_the_search",
@@ -249,6 +260,8 @@ mod tests {
             "B=2",
             "--out",
             "/tmp/saida.json",
+            "--trees",
+            "/tmp/arvores",
         ]) else {
             panic!("the full form must parse");
         };
@@ -256,6 +269,7 @@ mod tests {
         assert_eq!((commit.as_deref(), package.as_deref()), (Some("abc1234"), Some("mustard-rt")));
         assert_eq!(env, ["A=1", "B=2"]);
         assert_eq!(out.as_deref(), Some(std::path::Path::new("/tmp/saida.json")));
+        assert_eq!(trees.as_deref(), Some(std::path::Path::new("/tmp/arvores")));
 
         assert!(Probe::try_parse_from(["probe", "measure", "so_o_nome"]).is_ok());
         assert!(Probe::try_parse_from(["probe", "measure"]).is_err(), "sem o nome da régua não há o que medir");

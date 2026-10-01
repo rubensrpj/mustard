@@ -17,14 +17,23 @@
 //! variáveis que o comando de medida (`mustard-rt run measure`) põe ao rodar o
 //! programa que ele mesmo compilou. Sem elas a régua recusa, porque rodá-la
 //! direto no cargo deixaria a prova em branco.
+//!
+//! A prova diz também a versão do gancho que as sessões do usuário rodam: o
+//! commit que o `mustard-rt` do plugin instalado carimbou em si, ou que não há
+//! plugin. O comando de medida o lê do plugin e o põe numa variável; assim o
+//! relato mostra se o que foi medido é o que as sessões rodam.
+//!
+//! Cada mapa é refeito a cada medida ([`rebuild_map`]): o banco velho sai e o
+//! `scan` compilado com o mesmo código grava um novo, de modo que nenhuma
+//! medida lê o mapa de uma compilação que ficou na máquina.
 
 use std::io::Read;
 use std::path::Path;
 
 use serde_json::{Value, json};
 
-use crate::domain::scan::Scan;
-use crate::io::project_map::{self, BLOCKS};
+use crate::domain::scan::{Scan, ScanReport};
+use crate::io::project_map::{self, BLOCKS, MAP_FILE_NAME, MAP_JOURNAL_FILE_NAME, MAP_SHARED_FILE_NAME, MAP_WAL_FILE_NAME};
 use crate::io::search_pieces::{self, Piece};
 use crate::io::sha256::Sha256;
 use crate::platform::error::{Error, Result};
@@ -38,20 +47,43 @@ pub const DIFF_VAR: &str = "MUSTARD_MEASURE_DIFF";
 /// O arquivo de resultado que o comando de medida pediu (`--out`); vence a
 /// variável própria de cada régua.
 pub const OUT_VAR: &str = "MUSTARD_MEASURE_OUT";
+/// A versão do gancho que as sessões do usuário rodam, como a prova a mostra:
+/// o commit do `mustard-rt` do plugin instalado, ou uma das duas frases
+/// ([`HOOK_NOT_INSTALLED`], [`HOOK_WITHOUT_COMMIT`]).
+pub const HOOK_VAR: &str = "MUSTARD_MEASURE_HOOK";
+/// O que a prova diz do gancho quando não há `mustard-rt` de plugin instalado.
+pub const HOOK_NOT_INSTALLED: &str = "não instalado";
+/// O que a prova diz do gancho quando há plugin, mas a versão dele não traz o
+/// commit em que foi compilado.
+pub const HOOK_WITHOUT_COMMIT: &str = "sem commit na versão";
 
 /// A frase de quem roda a régua sem o comando de medida.
-const REFUSAL: &str = "rode pelo comando de medida: `mustard-rt run measure <teste>` compila o código certo e põe o commit, o sujo e o resumo do que falta comitar; sem eles a prova ficaria em branco";
+const REFUSAL: &str = "rode pelo comando de medida: `mustard-rt run measure <teste>` compila o código certo e põe o commit, o sujo, o resumo do que falta comitar e a versão do gancho; sem eles a prova ficaria em branco";
 
-/// As três variáveis de ambiente que o comando de medida põe para a régua
-/// ler, na ordem commit, sujo, resumo. O resumo vai vazio quando a pasta está
-/// limpa.
+/// As quatro variáveis de ambiente que o comando de medida põe para a régua
+/// ler, na ordem commit, sujo, resumo, gancho. O resumo vai vazio quando a
+/// pasta está limpa.
 #[must_use]
-pub fn measure_vars(commit: &str, dirty: bool, diff: &str) -> [(&'static str, String); 3] {
+pub fn measure_vars(commit: &str, dirty: bool, diff: &str, hook: &str) -> [(&'static str, String); 4] {
     [
         (COMMIT_VAR, commit.to_string()),
         (DIRTY_VAR, if dirty { "1" } else { "0" }.to_string()),
         (DIFF_VAR, diff.to_string()),
+        (HOOK_VAR, hook.to_string()),
     ]
+}
+
+/// O commit que a versão completa de um `mustard-rt` carimba nele mesmo
+/// (`<número> (build N, g<commit>[-dirty] <data>)`), com o `-dirty` quando o
+/// programa foi compilado com código por comitar. `None` sem o carimbo.
+#[must_use]
+pub fn built_commit(version: &str) -> Option<String> {
+    stamped_commit(version).map(str::to_string)
+}
+
+/// A palavra do commit na versão carimbada, com o `-dirty` se ele vier.
+fn stamped_commit(version: &str) -> Option<&str> {
+    version.split_once(", g")?.1.split_whitespace().next()
 }
 
 /// O caminho do resultado da régua: o que o comando de medida pediu em
@@ -102,6 +134,9 @@ pub struct MeasureProof {
     pub binary_sha256: String,
     /// O caminho do programa que rodou.
     pub binary_path: String,
+    /// A versão do gancho que as sessões do usuário rodam: o commit do
+    /// `mustard-rt` do plugin instalado, ou o motivo de não haver.
+    pub hook: String,
     /// Cada mapa que a régua abriu, na ordem em que o abriu.
     pub maps: Vec<MapProof>,
 }
@@ -121,8 +156,8 @@ impl MeasureProof {
     /// A prova do programa `exe`, com as variáveis lidas por `vars`.
     ///
     /// # Errors
-    /// [`REFUSAL`] se faltar o commit ou o sujo, ou se um sujo vier sem
-    /// resumo; erro se o executável não se lê.
+    /// [`REFUSAL`] se faltar o commit, o sujo ou o gancho, ou se um sujo vier
+    /// sem resumo; erro se o executável não se lê.
     pub fn from_vars(vars: &dyn Fn(&str) -> Option<String>, exe: &Path) -> Result<Self> {
         let given = |name: &str| vars(name).map(|value| value.trim().to_string()).filter(|value| !value.is_empty());
         let commit = given(COMMIT_VAR).ok_or_else(|| Error::check_failed(REFUSAL))?;
@@ -136,6 +171,7 @@ impl MeasureProof {
         if dirty && diff.is_empty() {
             return Err(Error::check_failed(format!("{DIRTY_VAR} diz que havia código por comitar e {DIFF_VAR} não traz o resumo dele")));
         }
+        let hook = given(HOOK_VAR).ok_or_else(|| Error::check_failed(REFUSAL))?;
         let binary_sha256 = sha256_of_file(exe)
             .map_err(|e| Error::check_failed(format!("o programa {} não se lê para o SHA-256: {e}", exe.display())))?;
         Ok(Self {
@@ -144,6 +180,7 @@ impl MeasureProof {
             diff,
             binary_sha256,
             binary_path: exe.display().to_string(),
+            hook,
             maps: Vec::new(),
         })
     }
@@ -157,21 +194,23 @@ impl MeasureProof {
             "diff": self.diff,
             "binary_sha256": self.binary_sha256,
             "binary_path": self.binary_path,
+            "hook": self.hook,
             "maps": self.maps.iter().map(MapProof::to_json).collect::<Vec<_>>(),
         })
     }
 
     /// A linha que a régua imprime ao fim: `PROVA commit=.. sujo=.. diff=..
-    /// sha=.. mapas=..`.
+    /// sha=.. mapas=.. gancho=..`.
     #[must_use]
     pub fn line(&self) -> String {
         format!(
-            "PROVA commit={} sujo={} diff={} sha={} mapas={}",
+            "PROVA commit={} sujo={} diff={} sha={} mapas={} gancho={}",
             self.commit,
             if self.dirty { "sim" } else { "nao" },
             if self.diff.is_empty() { "-" } else { &self.diff },
             &self.binary_sha256[..self.binary_sha256.len().min(12)],
             self.maps.len(),
+            self.hook,
         )
     }
 }
@@ -200,6 +239,28 @@ fn sha256_of_file(path: &Path) -> std::io::Result<String> {
         hasher.update(&chunk[..read]);
     }
     Ok(hasher.hex_digest())
+}
+
+/// Refaz o mapa da árvore `tree` do zero: apaga o banco velho e o que o
+/// SQLite deixa ao lado dele (o diário, o `-wal` e o `-shm`) e roda `scan`
+/// sobre a árvore. Assim o mapa que a régua abre é sempre o que o `scan`
+/// compilado com o código medido grava, nunca o de uma compilação que ficou
+/// na pasta.
+///
+/// # Errors
+/// O arquivo velho que não se apaga; o scan que não roda ou falha: sem mapa
+/// novo, a medida não segue.
+pub fn rebuild_map(tree: &Path, scan: &Scan) -> Result<ScanReport> {
+    let model = project_map::model_path(tree);
+    for name in [MAP_FILE_NAME, MAP_JOURNAL_FILE_NAME, MAP_WAL_FILE_NAME, MAP_SHARED_FILE_NAME] {
+        let old = model.with_file_name(name);
+        match std::fs::remove_file(&old) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(Error::check_failed(format!("não consegui apagar o mapa velho {}: {e}", old.display()))),
+        }
+    }
+    scan.scan(tree, &model).map_err(|e| Error::check_failed(format!("o scan não refez o mapa de {}: {e}", tree.display())))
 }
 
 /// Confere que todo bloco do mapa em `db` traz a marca `expected`, a que o
@@ -249,8 +310,7 @@ pub struct BuiltStamp<'a> {
 impl BuiltStamp<'_> {
     /// O commit e o sujo que a versão carimbada diz; `None` sem o bloco do git.
     fn commit_and_dirty(&self) -> Option<(&str, bool)> {
-        let after = self.version.split_once(", g")?.1;
-        let word = after.split_whitespace().next()?;
+        let word = stamped_commit(self.version)?;
         Some(word.strip_suffix("-dirty").map_or((word, false), |commit| (commit, true)))
     }
 }
@@ -364,7 +424,16 @@ mod tests {
     const ABC: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
 
     fn vars(commit: &str, dirty: &str, diff: &str) -> impl Fn(&str) -> Option<String> {
-        let all = [(COMMIT_VAR, commit.to_string()), (DIRTY_VAR, dirty.to_string()), (DIFF_VAR, diff.to_string())];
+        vars_with_hook(commit, dirty, diff, "10d66039a5b1")
+    }
+
+    fn vars_with_hook(commit: &str, dirty: &str, diff: &str, hook: &str) -> impl Fn(&str) -> Option<String> {
+        let all = [
+            (COMMIT_VAR, commit.to_string()),
+            (DIRTY_VAR, dirty.to_string()),
+            (DIFF_VAR, diff.to_string()),
+            (HOOK_VAR, hook.to_string()),
+        ];
         move |name| all.iter().find(|(key, _)| *key == name).map(|(_, value)| value.clone())
     }
 
@@ -460,7 +529,7 @@ mod tests {
         assert_eq!(json["dirty"], true);
         assert_eq!(json["binary_sha256"], ABC);
         let line = gate.proof().line();
-        assert_eq!(line, format!("PROVA commit=0123456789ab sujo=sim diff=feedc0ffee12 sha={} mapas=2", &ABC[..12]));
+        assert_eq!(line, format!("PROVA commit=0123456789ab sujo=sim diff=feedc0ffee12 sha={} mapas=2 gancho=10d66039a5b1", &ABC[..12]));
     }
 
     #[test]
@@ -469,7 +538,7 @@ mod tests {
         let proof = MeasureProof::from_vars(&vars("0123456789ab", "0", ""), &exe_abc(dir.path())).unwrap();
         assert!(!proof.dirty);
         assert_eq!(proof.diff, "");
-        assert_eq!(proof.line(), format!("PROVA commit=0123456789ab sujo=nao diff=- sha={} mapas=0", &ABC[..12]));
+        assert_eq!(proof.line(), format!("PROVA commit=0123456789ab sujo=nao diff=- sha={} mapas=0 gancho=10d66039a5b1", &ABC[..12]));
     }
 
     #[test]
@@ -477,11 +546,102 @@ mod tests {
         let dir = tempdir().unwrap();
         let exe = exe_abc(dir.path());
         for (dirty, diff) in [(true, "aaaabbbbcccc"), (false, "")] {
-            let set = measure_vars("deadbeef1234", dirty, diff);
+            let set = measure_vars("deadbeef1234", dirty, diff, "10d66039a5b1");
             let read = |name: &str| set.iter().find(|(key, _)| *key == name).map(|(_, value)| value.clone());
             let proof = MeasureProof::from_vars(&read, &exe).unwrap();
             assert_eq!((proof.commit.as_str(), proof.dirty, proof.diff.as_str()), ("deadbeef1234", dirty, diff));
+            assert_eq!(proof.hook, "10d66039a5b1");
         }
+    }
+
+    /// A linha de prova diz o gancho que as sessões do usuário rodam, e o
+    /// resultado da régua o leva em `hook`: o commit do plugin ou o motivo de
+    /// não haver plugin.
+    #[test]
+    fn the_proof_line_and_the_result_say_which_hook_the_sessions_run() {
+        let dir = tempdir().unwrap();
+        let exe = exe_abc(dir.path());
+        for hook in ["10d66039a5b1", "10d66039a5b1-dirty", HOOK_NOT_INSTALLED, HOOK_WITHOUT_COMMIT] {
+            let proof = MeasureProof::from_vars(&vars_with_hook("0123456789ab", "0", "", hook), &exe).unwrap();
+            assert!(proof.line().ends_with(&format!(" gancho={hook}")), "{}", proof.line());
+            assert_eq!(proof.to_json()["hook"], hook);
+        }
+    }
+
+    /// Sem a variável do gancho a prova fica em branco: a régua recusa e
+    /// manda rodar pelo comando de medida, como quando falta o commit.
+    #[test]
+    fn a_proof_without_the_hook_variable_is_refused() {
+        let dir = tempdir().unwrap();
+        let exe = exe_abc(dir.path());
+        let no_hook = |name: &str| match name {
+            COMMIT_VAR => Some("0123456789ab".to_string()),
+            DIRTY_VAR => Some("0".to_string()),
+            _ => None,
+        };
+        let error = MeasureProof::from_vars(&no_hook, &exe).unwrap_err().to_string();
+        assert!(error.contains("rode pelo comando de medida") && error.contains("gancho"), "{error}");
+        let blank = vars_with_hook("0123456789ab", "0", "", "  ");
+        assert!(MeasureProof::from_vars(&blank, &exe).is_err(), "a blank hook says nothing");
+    }
+
+    /// O commit sai da versão completa que o programa carimba, com o `-dirty`
+    /// quando o código tinha o que comitar; sem o carimbo, nada.
+    #[test]
+    fn the_commit_of_a_program_is_read_from_its_stamped_version() {
+        assert_eq!(built_commit("mustard-rt 0.2.4 (build dev, g10d66039a5b1 2026-09-25)").as_deref(), Some("10d66039a5b1"));
+        assert_eq!(built_commit("0.2.4 (build 7, gabc123456789-dirty 2026-09-30)").as_deref(), Some("abc123456789-dirty"));
+        assert_eq!(built_commit("mustard-rt 0.2.4"), None);
+        assert_eq!(built_commit(""), None);
+    }
+
+    /// Escreve na pasta `.claude` da árvore o banco velho e o que o SQLite
+    /// deixa ao lado dele.
+    fn stale_map(tree: &Path) -> Vec<std::path::PathBuf> {
+        let model = model_path(tree);
+        std::fs::create_dir_all(model.parent().unwrap()).unwrap();
+        [MAP_FILE_NAME, MAP_JOURNAL_FILE_NAME, MAP_WAL_FILE_NAME, MAP_SHARED_FILE_NAME]
+            .iter()
+            .map(|name| {
+                let file = model.with_file_name(name);
+                std::fs::write(&file, "de outra compilação").unwrap();
+                file
+            })
+            .collect()
+    }
+
+    /// O banco velho e os arquivos que o SQLite deixa ao lado dele saem antes
+    /// do scan, e o scan roda sobre a árvore: nenhum mapa velho sobrevive.
+    #[cfg(unix)]
+    #[test]
+    fn rebuilding_a_map_deletes_the_old_database_and_its_side_files_before_the_scan_runs() {
+        let tree = tempdir().unwrap();
+        let old = stale_map(tree.path());
+        let beside = tree.path().join(".claude").join("outro-arquivo");
+        std::fs::write(&beside, "não é do mapa").unwrap();
+
+        rebuild_map(tree.path(), &Scan::new("true")).expect("a scan that exits clean rebuilds");
+
+        for file in &old {
+            assert!(!file.exists(), "{} sobreviveu", file.display());
+        }
+        assert!(beside.exists(), "only the map files go");
+    }
+
+    /// O scan que falha recusa: o erro diz a árvore, e o banco velho já saiu,
+    /// para a régua nunca abri-lo no lugar do que não veio.
+    #[cfg(unix)]
+    #[test]
+    fn a_scan_that_fails_refuses_and_the_old_map_is_gone() {
+        let tree = tempdir().unwrap();
+        let old = stale_map(tree.path());
+
+        let error = rebuild_map(tree.path(), &Scan::new("false")).unwrap_err().to_string();
+
+        assert!(error.contains("o scan não refez o mapa") && error.contains(&tree.path().display().to_string()), "{error}");
+        assert!(old.iter().all(|file| !file.exists()));
+        let missing = rebuild_map(tree.path(), &Scan::new("/nao/existe/scan")).unwrap_err().to_string();
+        assert!(missing.contains("o scan não refez o mapa"), "{missing}");
     }
 
     #[test]

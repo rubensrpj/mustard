@@ -2,7 +2,8 @@
 //! que o `scan` compilado diz em `scan format`. Este teste liga as duas pontas
 //! de verdade: o mapa que o próprio scan grava passa na conferência, em todos
 //! os blocos, e o mapa gravado com a marca de outra compilação é recusado
-//! dizendo as duas marcas.
+//! dizendo as duas marcas. A árvore cujo mapa é de outra compilação é refeita
+//! pelo mesmo scan e passa a ser aceita.
 
 #[path = "support/model.rs"]
 mod model;
@@ -11,7 +12,8 @@ use std::path::Path;
 
 use mustard_core::domain::config::ProjectConfig;
 use mustard_core::domain::normalize::Languages;
-use mustard_core::io::measure_proof::check_map;
+use mustard_core::domain::scan::Scan;
+use mustard_core::io::measure_proof::{check_map, rebuild_map};
 use mustard_core::io::project_map as store;
 
 fn write(dir: &Path, rel: &str, body: &str) {
@@ -60,4 +62,29 @@ fn a_map_written_with_the_mark_of_another_scan_is_refused_with_both_marks() {
 
     let refusal = check_map(&map, &expected).unwrap_err().to_string();
     assert!(refusal.contains(&other) && refusal.contains(&expected), "{refusal}");
+}
+
+/// O mapa que ficou na árvore de uma compilação velha do scan é recusado pela
+/// conferência; refeito pelo scan compilado com o teste, a mesma árvore passa,
+/// com a marca dele em todos os blocos e nada do mapa velho.
+#[test]
+fn a_tree_with_the_map_of_another_scan_is_rebuilt_and_then_passes_the_check() {
+    let temp = tempfile::Builder::new().prefix("scan-measure-proof-").tempdir().unwrap();
+    let map = mapped_project(temp.path());
+    let expected = model::scan_format();
+    let old = "scan de outra compilacao";
+    model::mark_as(&temp.path().join(".claude"), old);
+    // Um arquivo que o SQLite deixa ao lado do banco velho também sai.
+    let beside = map.with_file_name(store::MAP_WAL_FILE_NAME);
+    std::fs::write(&beside, "de outra compilação").unwrap();
+    let refusal = check_map(&map, &expected).unwrap_err().to_string();
+    assert!(refusal.contains(old), "o mapa velho é recusado: {refusal}");
+
+    let report = rebuild_map(temp.path(), &Scan::new(env!("CARGO_BIN_EXE_scan"))).unwrap_or_else(|e| panic!("o scan não refez a árvore: {e}"));
+
+    assert!(report.full, "o mapa foi lido do zero: {report:?}");
+    let proof = check_map(&map, &expected).unwrap_or_else(|refusal| panic!("a árvore refeita é recusada: {refusal}"));
+    assert_eq!(proof.mark, expected);
+    let marks = store::read_marks_at(&map).unwrap();
+    assert!(marks.values().all(|mark| *mark == expected), "nada da marca velha ficou: {marks:?}");
 }

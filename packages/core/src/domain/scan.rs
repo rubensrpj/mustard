@@ -125,8 +125,11 @@ impl Scan {
     /// [`Self::locate`] for the executable at `exe`. A test binary runs from
     /// `deps/`, one folder below the programs of the same build: there the
     /// folder above is searched too, before `PATH`, so a test never runs the
-    /// installed scan in place of the one compiled with it.
-    fn located_from(exe: Option<&Path>) -> Self {
+    /// installed scan in place of the one compiled with it. Also how a caller
+    /// finds the scan of ANOTHER build than its own: the one beside the
+    /// program that build left at `exe` (which need not exist).
+    #[must_use]
+    pub fn located_from(exe: Option<&Path>) -> Self {
         let name = if cfg!(windows) { "scan.exe" } else { "scan" };
         let dir = exe.and_then(Path::parent);
         let up = dir.filter(|dir| dir.file_name().is_some_and(|n| n == "deps")).and_then(Path::parent);
