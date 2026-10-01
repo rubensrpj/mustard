@@ -11,12 +11,16 @@
 //!   mapa não usava a declaração tirada (nenhum uso dela aponta para o
 //!   arquivo), também não conta: o mesmo nome ali é outra coisa, como uma
 //!   variável local, que o mapa não guarda, e um uso de verdade o mapa da
-//!   base teria ligado. A linha de comentário conta sempre, e o arquivo fora
-//!   do mapa da base (documento, molde, arquivo que a onda criou) conta pelo
-//!   texto, sem esse desconto. A spec (`.claude/spec/`), o registro de
-//!   mudanças do projeto e o histórico do git ficam de fora: são registro do
-//!   que aconteceu. Só se procura o nome que não se confunde com uma palavra
-//!   da prosa ([`distinctive`]).
+//!   base teria ligado. A linha de comentário conta quando o nome nela não é
+//!   palavra da prosa ([`prose_comment`]): entre crases, ligado a caminho
+//!   (`Modo::nome`, `modo.nome`) ou com grafia de identificador (`snake_case`,
+//!   `camelCase`, com dígito); o nome todo em maiúsculas de até quatro letras
+//!   (`OFF`, `ALL`), que a prosa usa como palavra, só conta entre crases. O
+//!   arquivo fora do mapa da base (documento, molde, arquivo que a onda
+//!   criou) conta pelo texto, sem o desconto da linha de código. A spec
+//!   (`.claude/spec/`), o registro de mudanças do projeto e o histórico do
+//!   git ficam de fora: são registro do que aconteceu. Só se procura o nome
+//!   que não se confunde com uma palavra da prosa ([`distinctive`]).
 //! - Órfão: a declaração que tinha uso fora de teste no mapa da base, e cujo
 //!   último uso a onda tirou, e ficou sem nenhum. A de antes é a de mesmo
 //!   nome, tipo e dono ([`same_piece`]): o campo de mesmo nome de outro tipo
@@ -81,7 +85,7 @@ pub(super) fn findings(root: &Path, maps: &AfterWave, lang: Locale) -> Vec<Findi
             for name in gone.into_iter().filter(|name| searched.insert((*name).to_string())) {
                 let removed: Vec<&MapDecl> = before.declarations.iter().filter(|d| d.name == name).collect();
                 for (site, line, text) in cited(root, name, &created) {
-                    if unrelated_code_line(maps, &removed, &site, &text) {
+                    if prose_comment(name, &text) || unrelated_code_line(maps, &removed, &site, &text) {
                         continue;
                     }
                     let text = translate("round.after_wave.leftover", lang)
@@ -173,12 +177,24 @@ fn is_comment_line(line: &str) -> bool {
 /// inteira. O `..name` de uma faixa e o `...name` de um espalhamento não são
 /// leitura de membro.
 fn reads_member(line: &str, name: &str) -> bool {
-    let is_word = |c: char| c.is_alphanumeric() || c == '_';
-    line.match_indices(name).any(|(at, _)| {
+    word_starts(line, name).any(|at| {
         let before = &line[..at];
-        let after = &line[at + name.len()..];
-        let member_access = (before.ends_with('.') && !before.ends_with("..")) || before.ends_with("->");
-        member_access && !after.starts_with(is_word)
+        (before.ends_with('.') && !before.ends_with("..")) || before.ends_with("->")
+    })
+}
+
+/// O caractere que forma palavra: letra, dígito ou `_`.
+fn is_word_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+/// Onde `name` aparece em `line` como palavra inteira: o byte em que cada
+/// ocorrência começa. É a mesma palavra inteira que o `git grep -w` acha.
+fn word_starts<'a>(line: &'a str, name: &'a str) -> impl Iterator<Item = usize> + 'a {
+    line.match_indices(name).filter_map(move |(at, _)| {
+        let word_before = line[..at].chars().next_back().is_some_and(is_word_char);
+        let word_after = line[at + name.len()..].starts_with(is_word_char);
+        (!word_before && !word_after).then_some(at)
     })
 }
 
@@ -242,12 +258,53 @@ fn file_name(path: &str) -> &str {
 /// comum da prosa — com `_`, `.`, `-` ou dígito, ou com maiúscula depois da
 /// primeira letra (`camelCase`, `PascalCase` de duas partes, `CONSTANTE`). A
 /// palavra solta (`total`, `Report`) aparece em todo comentário, e o uso
-/// dela no código a compilação já recusa.
+/// dela no código a compilação já recusa. A `CONSTANTE` curta (`OFF`) ainda
+/// é palavra da prosa em inglês: no comentário, [`prose_comment`] a separa.
 fn distinctive(name: &str) -> bool {
-    name.chars().count() >= 3
-        && (name.contains(['_', '.', '-'])
-            || name.chars().any(|c| c.is_ascii_digit())
-            || name.chars().skip(1).any(char::is_uppercase))
+    name.chars().count() >= 3 && unusual_spelling(name)
+}
+
+/// O nome tem grafia que a palavra comum não tem: `_`, `.`, `-`, dígito ou
+/// maiúscula depois da primeira letra.
+fn unusual_spelling(name: &str) -> bool {
+    name.contains(['_', '.', '-'])
+        || name.chars().any(|c| c.is_ascii_digit())
+        || name.chars().skip(1).any(char::is_uppercase)
+}
+
+/// O nome todo em maiúsculas, de até quatro letras (`OFF`, `ALL`, `NONE`): a
+/// prosa em inglês escreve assim a palavra, e o nome de uma constante não se
+/// distingue dela.
+fn shout_word(name: &str) -> bool {
+    name.chars().count() <= 4 && name.chars().all(char::is_uppercase)
+}
+
+/// A linha de comentário `text` só tem `name` como palavra da prosa: nenhuma
+/// ocorrência dele está entre crases, e nenhuma tem grafia de identificador
+/// ([`unusual_spelling`]) ou liga a um caminho (`Modo::nome`, `modo.nome`,
+/// mas não o ponto final da frase). O nome em maiúsculas curto ([`shout_word`])
+/// só conta entre crases. A linha de código não é prosa: o uso dela segue
+/// contando.
+fn prose_comment(name: &str, text: &str) -> bool {
+    is_comment_line(text)
+        && !word_starts(text, name).any(|at| {
+            let (before, after) = (&text[..at], &text[at + name.len()..]);
+            let in_ticks = before.matches('`').count() % 2 == 1;
+            in_ticks || (!shout_word(name) && (unusual_spelling(name) || path_linked(before, after)))
+        })
+}
+
+/// O nome, com `before` antes dele na linha e `after` depois, está ligado a
+/// um caminho: `Modo::nome`, `modo.nome`, `nome::novo`, `nome.campo`. O ponto
+/// que fecha a frase não liga.
+fn path_linked(before: &str, after: &str) -> bool {
+    let reached = before.ends_with("::")
+        || before
+            .strip_suffix('.')
+            .and_then(|head| head.chars().next_back())
+            .is_some_and(|c| is_word_char(c) || c == ')' || c == ']');
+    let leads = after.starts_with("::") || after.strip_prefix('.').is_some_and(|rest| rest.starts_with(is_word_char));
+    reached || leads
 }
 
 /// Os arquivos que as ondas de `maps` criaram e o git ainda não rastreia,
@@ -383,18 +440,26 @@ mod tests {
         assert_eq!(git_text(root, &["rev-parse", "HEAD"]), head, "nothing committed: {out}");
     }
 
-    /// A base com `old_total` em `src/a.rs`, sem uso, e com `src/b.rs` e
-    /// `src/c.rs` no mapa; `src/c.rs` guarda a chamada `calls` de quem usava
-    /// `old_total` (nenhuma quando vazio).
-    fn base_with_old_total(c_uses: &[&str]) -> Value {
+    /// A base com `name` em `src/a.rs` e com `src/b.rs` e `src/c.rs` no mapa;
+    /// `c_uses` são as chamadas de `name` que o mapa guarda (nenhuma quando
+    /// vazio).
+    fn base_with(name: &str, c_uses: &[&str]) -> Value {
         json!({"modules": [
-            module("src/a.rs", &[("old_total", 1, c_uses), ("keep_sum", 5, &[])]),
+            module("src/a.rs", &[(name, 1, c_uses), ("keep_sum", 5, &[])]),
             module("src/b.rs", &[("outra", 1, &[])]),
             module("src/c.rs", &[("caller", 1, &[])]),
         ]})
     }
 
-    /// A volta da onda que tira `old_total` de `src/a.rs`.
+    /// A base com `old_total` em `src/a.rs`, sem uso, e com `src/b.rs` e
+    /// `src/c.rs` no mapa; `src/c.rs` guarda a chamada `calls` de quem usava
+    /// `old_total` (nenhuma quando vazio).
+    fn base_with_old_total(c_uses: &[&str]) -> Value {
+        base_with("old_total", c_uses)
+    }
+
+    /// A volta da onda que tira de `src/a.rs` a declaração de [`base_with`],
+    /// qualquer que seja o nome dela: o mapa de depois não a tem.
     fn back_without_old_total(root: &Path) -> Value {
         let after = json!({"modules": [
             module("src/a.rs", &[("keep_sum", 1, &[])]),
@@ -460,6 +525,82 @@ mod tests {
         let hint = out["hint"].as_str().unwrap_or_default();
         assert!(hint.contains("`src/d.rs` linha 2 ainda cita `old_total`, que a onda tirou de `src/a.rs`"), "{hint}");
         assert!(hint.contains("`docs/guide.md` linha 1 ainda cita `old_total`, que a onda tirou de `src/a.rs`"), "{hint}");
+    }
+
+    #[test]
+    fn a_common_word_in_the_prose_of_a_comment_is_not_a_leftover_of_the_removed_constant() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        // `OFF` saiu de `src/a.rs`, e dois comentários o usam como a palavra
+        // inglesa, um deles no fim da frase.
+        let prose = "fn outra() {}\n// the plugin is switched OFF when idle\n/// the flag stays OFF.\n";
+        let files = [("src/b.rs", prose), ("src/c.rs", "fn caller() {}\n")];
+        project(root, &files, &base_with("OFF", &[]));
+        silent(&back_without_old_total(root));
+    }
+
+    #[test]
+    fn a_removed_constant_between_backticks_in_a_comment_is_still_a_leftover() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let files = [("src/b.rs", "fn outra() {}\n// the plugin is switched `OFF` when idle\n"), ("src/c.rs", "fn caller() {}\n")];
+        project(root, &files, &base_with("OFF", &[]));
+        let head = git_text(root, &["rev-parse", "HEAD"]);
+        let out = back_without_old_total(root);
+        assert_eq!(out["reason"], json!("round-after-wave"), "{out}");
+        let hint = out["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains("`src/b.rs` linha 2 ainda cita `OFF`, que a onda tirou de `src/a.rs`"), "{hint}");
+        assert_eq!(git_text(root, &["rev-parse", "HEAD"]), head, "nothing committed: {out}");
+    }
+
+    #[test]
+    fn a_code_line_using_the_removed_constant_is_still_a_leftover_beside_a_prose_comment() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        // O código de `src/c.rs` usava `OFF` na base; o comentário de
+        // `src/b.rs` é só a palavra inglesa.
+        let files = [
+            ("src/b.rs", "fn outra() {}\n// the plugin is switched OFF when idle\n"),
+            ("src/c.rs", "fn caller() {\n    let mode = OFF;\n}\n"),
+        ];
+        project(root, &files, &base_with("OFF", &["src/c.rs:2:caller"]));
+        let out = back_without_old_total(root);
+        assert_eq!(out["reason"], json!("round-after-wave"), "{out}");
+        let hint = out["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains("`src/c.rs` linha 2 ainda cita `OFF`, que a onda tirou de `src/a.rs`"), "{hint}");
+        assert!(!hint.contains("`src/b.rs`"), "{hint}");
+    }
+
+    #[test]
+    fn a_comment_line_counts_only_when_the_name_is_not_a_word_of_the_prose() {
+        // (nome, linha, a linha só tem a palavra da prosa)
+        let cases = [
+            ("OFF", "// switched OFF", true),
+            ("OFF", "// switched OFF.", true),
+            ("OFF", "// switched `OFF`", false),
+            ("OFF", "// the `Mode::OFF` state", false),
+            ("OFF", "// the Mode::OFF state", true),
+            ("OFF", "// `ON` and OFF", true),
+            ("OFF", "// OFF and `ON`", true),
+            ("OFF", "    let mode = OFF;", false),
+            ("OFF", "    let mode = OFF; // OFF again", false),
+            ("ALL", "# ALL of them", true),
+            ("NONE", "/// NONE of them", true),
+            ("LIMIT", "// the LIMIT here", false),
+            ("old_total", "// soma pelo old_total", false),
+            ("oldTotal", "// soma pelo oldTotal", false),
+            ("Api2", "// uses Api2 here", false),
+            ("Dockerfile", "// see Dockerfile", true),
+            ("Dockerfile", "// see Dockerfile.", true),
+            ("Dockerfile", "// see ...Dockerfile", true),
+            ("Dockerfile", "// see `Dockerfile`", false),
+            ("Dockerfile", "// see Dockerfile.dev", false),
+            ("Dockerfile", "// see build.Dockerfile", false),
+            ("Dockerfile", "// see Dockerfile::run", false),
+        ];
+        for (name, text, prose) in cases {
+            assert_eq!(prose_comment(name, text), prose, "{name} em {text:?}");
+        }
     }
 
     #[test]
