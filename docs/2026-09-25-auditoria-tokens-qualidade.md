@@ -87,7 +87,7 @@ Foram três passadas.
   - Hoje a spec é um arquivo de eventos, `.claude/spec/<nome>/spec.ndjson`, com 36 tipos de evento (`packages/core/src/domain/spec_events/types.rs:301`).
   - Esse arquivo só é gravado por `mustard-rt run write`.
 - **O README cita "≥2 camadas/subprojetos ou entidade nova"** como critério do fluxo completo. Esse critério só existe no enum `Scope` (`Light`, `Medium`, `Full`, em `packages/core/src/domain/model/pipeline.rs:51-57`), que é código morto no fluxo atual.
-- **O `CLAUDE.md` da raiz cita `base_gate.rs:149` como mecanismo ativo.** O arquivo está desligado: "Sem nenhum chamador… segue no repositório por decisão do usuário… Decidido em 17/09" (`apps/rt/src/commands/event/base_gate.rs:46-49`).
+- **O `CLAUDE.md` da raiz cita o portão da base como mecanismo ativo.** O portão estava desligado, sem nenhum chamador, e seguia no repositório por decisão do usuário de 17/09. Resolvido em 01/10: o portão saiu do código, e a regra passou a citar o avanço da base depois do merge (`apps/rt/src/commands/git_settle.rs`).
 - **O README diz que o porteiro de base minera o repositório.** Hoje o scan roda ao abrir uma spec (`apps/rt/src/commands/flow/open.rs:432`) e depois de cada commit de rodada.
 - **As fases reais não são as 6 do checklist.** São `survey, plan, approved, running, closed, pr_open, delivered, discarded` (`types.rs:277-278`). O mapeamento usado neste documento:
 
@@ -100,7 +100,7 @@ Foram três passadas.
 | QA | lint e testes do `close`; não existe fase QA separada |
 | CLOSE | `closed` |
 
-**Correção:** reescrever as seções afetadas do README e do `README.en.md`. Para a regra do `base_gate` no `CLAUDE.md`, há duas saídas: corrigir a regra ou religar o portão. Essa decisão é sua.
+**Correção:** reescrever as seções afetadas do README e do `README.en.md`. Para a regra do portão da base no `CLAUDE.md`, há duas saídas: corrigir a regra ou religar o portão. Essa decisão é sua.
 - **Custo:** baixo.
 - **Risco de não corrigir:** quem lê a documentação, inclusive o modelo quando ela entra no contexto, raciocina sobre um sistema que não existe.
 
@@ -733,7 +733,7 @@ Foram três passadas.
 2. **Código morto e sobras** [ALTA]:
    - `Scope`;
    - `TelemetrySummaryEntry`;
-   - `base_gate`, desligado por decisão sua;
+   - o portão da base, desligado por decisão sua (saiu do código em 01/10);
    - o modo solo (`round.next.solo`);
    - as fixtures `dependency_precheck`;
    - as referências em `lib.rs:110` e `source_lang.rs:10`;

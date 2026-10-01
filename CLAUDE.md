@@ -2,7 +2,7 @@
 
 ## Guards
 
-- `pull.ff = only` é escolha por-máquina em `.git/config`; NÃO nativize no instalador. O `base_gate` (`apps/rt/src/commands/event/base_gate.rs`) já prescreve `git pull --ff-only origin {base}` na recusa, e `--ff-only` só passa quando a base de integração não tem commit próprio — a invariante que o despacho exige. `pull.rebase true` absorveria em silêncio um commit nascido direto no `dev` e esconderia justamente o defeito que o portão existe para pegar. Reaplicação deliberada continua possível: `git pull --rebase` na linha de comando vence a config.
+- `pull.ff = only` é escolha por-máquina em `.git/config`; NÃO nativize no instalador. O `update_bases` (`apps/rt/src/commands/git_settle.rs`) avança a base depois do merge com `merge --ff-only`, que só passa quando a base de integração não tem commit próprio — a invariante que o despacho exige —, e recusa dizendo que as histórias se separaram quando ela tem. `pull.rebase true` absorveria em silêncio um commit nascido direto no `dev` e esconderia justamente o defeito que essa recusa existe para pegar. Reaplicação deliberada continua possível: `git pull --rebase` na linha de comando vence a config.
 - O instalador NUNCA escreve em `.git/config` — só lê. Toda escrita de config no código vive sob `#[cfg(test)]`; mantenha assim.
 
 ## Revisão

@@ -767,29 +767,6 @@ mod tests {
         opened(dir).conn().query_row(&format!("SELECT count(*) FROM {table}"), [], |row| row.get(0)).unwrap()
     }
 
-    /// Enche o bloco `meaning` dos mapas de `MAP_MEANING_MAPS` (caminhos
-    /// separados por espaço), como o scan faz depois do mapa, para uma medida
-    /// da busca com vetores usar mapas gravados antes deles. Só roda pelo
-    /// comando de medida, e só enche o mapa que o scan compilado com o código
-    /// medido gravou: um de outra marca para a régua antes de tocar em algum.
-    #[test]
-    #[ignore = "mede com os mapas dos projetos de prova"]
-    fn fill_the_meaning_of_the_maps_of_a_ruler() {
-        let maps = std::env::var("MAP_MEANING_MAPS").expect("MAP_MEANING_MAPS lists the maps to fill");
-        let mut gate = crate::io::measure_proof::MeasureGate::open(None).unwrap_or_else(|refusal| panic!("a régua não mede: {refusal}"));
-        for map in maps.split_whitespace() {
-            gate.check(Path::new(map)).unwrap_or_else(|refusal| panic!("a régua não mede: {refusal}"));
-        }
-        for map in maps.split_whitespace() {
-            let started = std::time::Instant::now();
-            let path = Path::new(map);
-            let report = fill_at(path, path.parent().unwrap()).unwrap();
-            eprintln!("FILLED {map}: {report:?} in {:?}", started.elapsed());
-        }
-        eprintln!("{}", gate.proof().line());
-        eprintln!("PROVA-JSON {}", gate.proof().to_json());
-    }
-
     /// O modelo embutido carrega sem rede e lê um texto: o vetor tem 256
     /// números e comprimento 1, e o texto sem relação fica mais longe do que o
     /// de mesmo sentido em outra língua.
