@@ -47,7 +47,11 @@ pub enum SpecEventsCmd {
     /// (`lessons --term <n>`) or `dispatch-<n>` from inside the copy of an
     /// open request is recorded as read: the delivery of a wave request, and
     /// the verdict of the final review, are refused while an item the
-    /// request lists was not read.
+    /// request lists was not read. From inside that copy an item line comes
+    /// without `v`, `at`, `author` and `keys` (a user message keeps `at` and
+    /// `author`). `metrics` read without `--term` lists the send, the
+    /// injection and the delivery without their `text`: `item-MSTD-INJ-NNNN`
+    /// reads the whole line, and `delivered-<n>` the delivery.
     #[command(display_order = 8)]
     Read {
         /// The block to read, e.g. `state`, `wave-2`, `dispatch-2`,

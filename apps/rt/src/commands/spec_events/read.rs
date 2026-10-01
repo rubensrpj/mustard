@@ -58,6 +58,29 @@
 //! O bloco `state` traz também o número da última mensagem do usuário, sem o
 //! texto, que é o `origin` de quem grava a partir dela.
 //!
+//! **O painel sem termo vem sem o texto longo.** `metrics`, lido sem `--term`,
+//! traz o envio, a injeção e a entrega sem o `text`: o texto que o gancho
+//! colocou na conversa e o relato da entrega eram mais da metade da saída, e
+//! quem lê o painel olha o comando, o tempo, as fichas e o motivo do bloqueio,
+//! nunca esses textos. O campo `chars` diz o tamanho da injeção, e o texto
+//! inteiro de cada uma sai por `item-<código>`; o da entrega, também por
+//! `delivered-<n>`. Com `--term`, o leitor pede o conteúdo, e o texto vem.
+//! `waves` segue com tudo: os scripts de quem conduz leem o `text`, os
+//! `files`, o `done_when` e o `agreed` dele.
+//!
+//! **Quem trabalha na cópia de um pedido lê a linha do item sem as marcas do
+//! binário e sem as palavras de busca.** De dentro da cópia de um pedido
+//! aberto, `item-<código>`, `item-<número>` e `dispatch-<n>` deixam de fora
+//! `v`, `at`, `author` e `keys` — e o `author` e o `keys` de dentro de
+//! `changed` —, que ninguém lê ali: nenhuma instrução manda o agente usá-los,
+//! o item novo que ele grava leva só `title`, `text` e `agent`, e nas
+//! conversas guardadas as palavras de busca de um item lido por agente não
+//! voltam em nada que ele escreve. Quem conduz a spec, de fora da cópia, lê a
+//! linha inteira, porque a versão nova de um item repete o `keys` dele. A
+//! mensagem do usuário guarda o `at` e o `author`: dizem quem falou e quando.
+//! O `id`, o `origin`, o `replaces` e o `covers` ficam: são números que se
+//! seguem com `item-<número>`.
+//!
 //! **A leitura do pedido fica registrada.** Quem lê `item-<código>`,
 //! `item-<número>`, `lessons --term <número>` ou `dispatch-<n>` de dentro da
 //! cópia de um pedido aberto (a pasta atual é a vaga gravada no envio, ou
@@ -122,7 +145,8 @@ pub(crate) fn read_for(opts: &ReadOpts, session: Option<&str>, from: &Path) -> R
             && let Some((spec, log)) = quiet_spec(opts, session, &project.root)
         {
             let read: Vec<String> = found.iter().map(|id| format!("lesson-{id}")).collect();
-            note_reading(&project.root, &spec, &log, session, from, None, &read, started);
+            let request = read_record::request_of(&log, from);
+            note_reading(&project.root, &spec, session, request.as_ref(), None, &read, started);
         }
         return Ok(report);
     }
@@ -139,6 +163,9 @@ pub(crate) fn read_for(opts: &ReadOpts, session: Option<&str>, from: &Path) -> R
     };
     let codes = log.codes();
     let term = opts.term.as_deref().unwrap_or_default();
+    // Quem lê de dentro da cópia de um pedido aberto lê para implementar.
+    let request = read_record::request_of(&log, from);
+    let item_view = if request.is_some() { Shown::Agent } else { Shown::Whole };
     // O que a leitura dá além dos eventos, depois da lista.
     let mut extra: Vec<(&str, Value)> = Vec::new();
     // O que a leitura achou do pedido, para o registro da leitura, e a onda a
@@ -149,7 +176,8 @@ pub(crate) fn read_for(opts: &ReadOpts, session: Option<&str>, from: &Path) -> R
         ReadQuery::Request(wave) => return Ok(request_text(&log, wave)),
         ReadQuery::ReviewRequest => return Ok(review_request_text(&log)),
         ReadQuery::Dispatch(wave) => {
-            let (lines, listed) = dispatch_lines(&project.root, &log, wave, term, &codes, &project.languages);
+            let (lines, listed) =
+                dispatch_lines(&project.root, &log, wave, term, &codes, &project.languages, item_view);
             read = listed;
             only_wave = Some(wave);
             lines
@@ -157,7 +185,7 @@ pub(crate) fn read_for(opts: &ReadOpts, session: Option<&str>, from: &Path) -> R
         ReadQuery::Item(target) => {
             let found = find_item(&log, &target, &codes);
             read.extend(found.map(|event| codes.get(&event.id).cloned().unwrap_or_else(|| event.id.to_string())));
-            found.map(|event| item_line(&log, event, &codes)).into_iter().collect()
+            found.map(|event| item_line(&log, event, &codes, item_view)).into_iter().collect()
         }
         ReadQuery::Delivered(wave) => delivered_lines(&log, wave, &codes),
         ReadQuery::Backlog => {
@@ -174,14 +202,19 @@ pub(crate) fn read_for(opts: &ReadOpts, session: Option<&str>, from: &Path) -> R
             }
             // O pedido de cada envio é o texto maior da spec: a lista das
             // ondas e o painel mostram o envio sem ele, e só a leitura de uma
-            // onda o traz inteiro.
-            let brief = matches!(query, BlockQuery::Block(Block::Waves | Block::Metrics));
+            // onda o traz inteiro. O painel sem termo tira também o texto da
+            // injeção e da entrega.
+            let shown = match query {
+                BlockQuery::Block(Block::Metrics) if term.trim().is_empty() => Shown::Panel,
+                BlockQuery::Block(Block::Waves | Block::Metrics) => Shown::Plan,
+                _ => Shown::Whole,
+            };
             let found = found_by(log.block(query), term, &codes, &project.languages);
             let found = if query == BlockQuery::Block(Block::State) { latest_copies(found) } else { found };
-            found.into_iter().map(|e| shown_with_code(e, &codes, brief)).collect()
+            found.into_iter().map(|e| shown_with_code(e, &codes, shown)).collect()
         }
     };
-    note_reading(&project.root, &spec, &log, session, from, only_wave, &read, started);
+    note_reading(&project.root, &spec, session, request.as_ref(), only_wave, &read, started);
     let warnings: Vec<String> = log.skipped.iter().map(|s| s.message(lang)).collect();
     Ok(render(&spec, block, &events, &extra, &warnings))
 }
@@ -215,17 +248,15 @@ fn quiet_spec(opts: &ReadOpts, session: Option<&str>, root: &Path) -> Option<(St
     Some((spec, log))
 }
 
-/// Registra o que a leitura achou como lido, quando a pasta `from` é a cópia
-/// de um pedido aberto da spec (`read_record`): uma chamada por item. Com
-/// `only_wave`, só vale na cópia dessa onda. Sem item achado, ou fora de uma
-/// cópia de pedido, nada é gravado.
-#[allow(clippy::too_many_arguments)]
+/// Registra o que a leitura achou como lido, quando ela veio da cópia de um
+/// pedido aberto da spec (`request`, de `read_record::request_of`): uma
+/// chamada por item. Com `only_wave`, só vale na cópia dessa onda. Sem item
+/// achado, ou fora de uma cópia de pedido, nada é gravado.
 fn note_reading(
     root: &Path,
     spec: &str,
-    log: &SpecLog,
     session: Option<&str>,
-    from: &Path,
+    request: Option<&Request>,
     only_wave: Option<u64>,
     read: &[String],
     started: Instant,
@@ -233,12 +264,11 @@ fn note_reading(
     if read.is_empty() {
         return;
     }
-    let Some(request) = read_record::request_of(log, from) else { return };
-    let Request { wave, .. } = &request;
-    if only_wave.is_some_and(|wanted| *wave != Some(wanted)) {
+    let Some(request) = request else { return };
+    if only_wave.is_some_and(|wanted| request.wave != Some(wanted)) {
         return;
     }
-    read_record::record(root, spec, session, &request, read, started);
+    read_record::record(root, spec, session, request, read, started);
 }
 
 /// O pedido gravado no último envio da onda `wave`, igual byte a byte, em
@@ -288,8 +318,9 @@ fn find_item<'a>(log: &'a SpecLog, target: &EventRef, codes: &BTreeMap<u64, Stri
 /// campos dele, com o código, com `removed` quando uma remoção o tirou, com
 /// `replaced_by` quando outra versão já o substitui, e com `changed` quando
 /// ele substitui uma anterior. A mensagem do usuário sai como os outros
-/// itens, com o texto inteiro.
-fn item_line(log: &SpecLog, event: &SpecEvent, codes: &BTreeMap<u64, String>) -> String {
+/// itens, com o texto inteiro. `shown` diz se é a linha de quem lê da cópia
+/// de um pedido ([`Shown::Agent`]).
+fn item_line(log: &SpecLog, event: &SpecEvent, codes: &BTreeMap<u64, String>, shown: Shown) -> String {
     let hidden = log.hidden();
     let mut fields = event.fields.clone();
     if let Some(code) = codes.get(&event.id) {
@@ -307,6 +338,9 @@ fn item_line(log: &SpecLog, event: &SpecEvent, codes: &BTreeMap<u64, String>) ->
     let previous = event.replaced().first().and_then(|old| log.get(*old));
     if let Some(changed) = previous.map(|old| changed_fields(&old.fields, &event.fields)).filter(|c| !c.is_empty()) {
         fields.insert("changed".into(), Value::Object(changed));
+    }
+    if shown == Shown::Agent {
+        without_agent_omissions(&mut fields, &event.event_type);
     }
     shown_line(&fields)
 }
@@ -497,6 +531,7 @@ fn dispatch_lines(
     term: &str,
     codes: &BTreeMap<u64, String>,
     languages: &Languages,
+    shown: Shown,
 ) -> (Vec<String>, Vec<String>) {
     if !log.planned_waves().contains(&wave) {
         return (Vec::new(), Vec::new());
@@ -512,7 +547,7 @@ fn dispatch_lines(
         .map(|item| codes.get(&item.id).cloned().unwrap_or_else(|| item.id.to_string()))
         .chain(lessons.iter().map(|lesson| format!("lesson-{}", lesson.id)))
         .collect();
-    let mut lines: Vec<String> = items.into_iter().map(|e| shown_with_code(e, codes, false)).collect();
+    let mut lines: Vec<String> = items.into_iter().map(|e| shown_with_code(e, codes, shown)).collect();
     lines.extend(lessons.into_iter().map(|lesson| shown_line(&lesson.fields)));
     (lines, read)
 }
@@ -540,17 +575,64 @@ fn read_lessons(
 
 /// A linha como a leitura mostra, com o código do item (`MSTD-<sigla>-<NNNN>`),
 /// que é o jeito de citá-lo e o endereço dele na página: o gravado na linha
-/// ou, numa linha sem código, o que a leitura dá a ela. Com `brief`, o envio
-/// sai sem o pedido (`text`).
-fn shown_with_code(event: &SpecEvent, codes: &BTreeMap<u64, String>, brief: bool) -> String {
+/// ou, numa linha sem código, o que a leitura dá a ela. `shown` diz o que sai
+/// dela: o envio sem o pedido (`text`) na lista das ondas e no painel, e no
+/// painel sem termo também a injeção e a entrega sem o `text`.
+fn shown_with_code(event: &SpecEvent, codes: &BTreeMap<u64, String>, shown: Shown) -> String {
     let mut fields = event.fields.clone();
     if let Some(code) = codes.get(&event.id) {
         fields.insert("code".into(), Value::String(code.clone()));
     }
-    if brief && event.event_type == "send" {
+    let kind = event.event_type.as_str();
+    let long_text = match shown {
+        Shown::Whole | Shown::Agent => false,
+        Shown::Plan => kind == "send",
+        Shown::Panel => PANEL_WITHOUT_TEXT.contains(&kind),
+    };
+    if long_text {
         fields.remove("text");
     }
+    if shown == Shown::Agent {
+        without_agent_omissions(&mut fields, kind);
+    }
     shown_line(&fields)
+}
+
+/// O que a leitura mostra de cada evento.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Shown {
+    /// A linha inteira.
+    Whole,
+    /// A lista das ondas: o envio sai sem o pedido.
+    Plan,
+    /// O painel sem termo: o envio, a injeção e a entrega saem sem o texto.
+    Panel,
+    /// A linha de quem lê da cópia de um pedido aberto: sem as marcas do
+    /// binário e sem as palavras de busca.
+    Agent,
+}
+
+/// Os tipos que o painel sem termo mostra sem o `text`.
+const PANEL_WITHOUT_TEXT: &[&str] = &["send", "injection", "delivered"];
+
+/// Os campos que quem lê da cópia de um pedido não lê: as marcas que o binário
+/// carimba (`v`, `at`, `author`) e as palavras de busca (`keys`).
+const AGENT_OMITTED: &[&str] = &["v", "at", "author", "keys"];
+
+/// Tira da linha, e do `changed` dela, o que quem lê da cópia de um pedido não
+/// lê ([`AGENT_OMITTED`]). A mensagem do usuário guarda o `at` e o `author`:
+/// dizem quem falou e quando.
+fn without_agent_omissions(fields: &mut Map<String, Value>, event_type: &str) {
+    let kept: &[&str] = if event_type == "message" { &["at", "author"] } else { &[] };
+    for key in AGENT_OMITTED.iter().filter(|key| !kept.contains(key)) {
+        fields.remove(*key);
+        if let Some(Value::Object(changed)) = fields.get_mut("changed") {
+            changed.remove(*key);
+        }
+    }
+    if fields.get("changed").and_then(Value::as_object).is_some_and(Map::is_empty) {
+        fields.remove("changed");
+    }
 }
 
 /// A saída de uma leitura: o envelope, um evento por linha, depois os campos
@@ -1331,5 +1413,131 @@ mod tests {
         by_program(root, "delivered", json!({"author": "binary", "wave": 1, "text": "Pronta.", "files": []}));
         read_from(root, &copy, "item-MSTD-RULE-0001", None);
         assert_eq!(recorded_reads(root).len(), 1, "a onda entregue não tem mais pedido aberto");
+    }
+
+    /// Os campos que a leitura de quem trabalha na cópia deixa de fora.
+    const STAMPS: [&str; 4] = ["v", "at", "author", "keys"];
+
+    /// A regra do plano de `open_request` ganha uma versão nova, com outro
+    /// autor e outras palavras de busca, para o `changed` ter o que dizer.
+    fn revise_the_rule(root: &std::path::Path) {
+        let old = events(&read_from(root, root, "item-MSTD-RULE-0001", None))[0]["id"].as_u64().unwrap();
+        by_program(root, "rule", json!({"author": "binary", "title": "Regra", "text": "Vale sempre, agora.", "agent": "detalhe",
+            "keys": ["regra", "nova"], "example": "e", "origin": 1, "replaces": old}));
+    }
+
+    /// De dentro da cópia de um pedido aberto, o item vem sem as marcas do
+    /// binário e sem as palavras de busca, e o `changed` sem o autor e sem as
+    /// palavras; o texto, o título, o que é para o agente, o exemplo e os
+    /// números que se seguem ficam. De fora da cópia, a linha vem inteira.
+    #[test]
+    fn an_item_read_from_inside_the_copy_comes_without_the_stamps_and_the_search_words() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (copy, _) = open_request(root);
+        revise_the_rule(root);
+
+        let whole = events(&read_from(root, root, "item-MSTD-RULE-0001", None))[0].clone();
+        for key in STAMPS {
+            assert!(whole.get(key).is_some(), "outside the copy the line keeps {key}: {whole}");
+        }
+        assert_eq!(whole["changed"]["author"], json!(true), "{whole}");
+        assert!(whole["changed"]["keys"].is_object(), "{whole}");
+
+        for from in [copy.clone(), copy.join("apps").join("rt")] {
+            let seen = events(&read_from(root, &from, "item-MSTD-RULE-0001", None))[0].clone();
+            for key in STAMPS {
+                assert!(seen.get(key).is_none(), "inside the copy the line leaves out {key}: {seen}");
+            }
+            assert_eq!(seen["changed"], json!({"text": true}), "{seen}");
+            for key in ["id", "code", "type", "title", "text", "agent", "example", "origin", "replaces"] {
+                assert_eq!(seen[key], whole[key], "{key} stays: {seen}");
+            }
+        }
+    }
+
+    /// A mensagem do usuário guarda o `at` e o `author`, que dizem quem falou
+    /// e quando, mesmo lida de dentro da cópia; as marcas do binário que não
+    /// dizem nada dela saem.
+    #[test]
+    fn a_user_message_read_from_inside_the_copy_keeps_who_said_it_and_when() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (copy, _) = open_request(root);
+
+        let message = events(&read_from(root, &copy, "item-1", None))[0].clone();
+        assert_eq!(message["type"], json!("message"), "{message}");
+        assert_eq!(message["author"], json!("user"), "{message}");
+        assert!(message["at"].is_string(), "{message}");
+        assert_eq!(message["text"], json!("o pedido"), "{message}");
+        assert!(message.get("v").is_none(), "{message}");
+    }
+
+    /// A leitura do pedido inteiro, `dispatch-<n>`, vem sem as marcas nem as
+    /// palavras de busca de dentro da cópia, em cada item que lista, e inteira
+    /// de fora dela.
+    #[test]
+    fn the_dispatch_read_from_inside_the_copy_comes_without_the_stamps_and_the_search_words() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (copy, _) = open_request(root);
+        put(root, "rule", json!({"title": "Global", "text": "Vale para tudo.", "agent": "d", "keys": ["global"], "example": "e", "origin": 1,
+            "applies_to": {"files": ["**"]}}));
+
+        let outside = events(&read_from(root, root, "dispatch-1", None));
+        assert!(outside.iter().any(|e| e["type"] == json!("rule")), "the dispatch lists the global rule: {outside:?}");
+        assert!(outside.iter().all(|e| e.get("v").is_some() && e.get("at").is_some()), "{outside:?}");
+        assert!(outside.iter().any(|e| e.get("keys").is_some()), "{outside:?}");
+
+        let inside = events(&read_from(root, &copy, "dispatch-1", None));
+        assert_eq!(inside.len(), outside.len(), "{inside:?}");
+        for event in &inside {
+            // A mensagem do usuário guarda o `at` e o `author`.
+            let kept: &[&str] = if event["type"] == json!("message") { &["at", "author"] } else { &[] };
+            for key in STAMPS.iter().filter(|key| !kept.contains(key)) {
+                assert!(event.get(*key).is_none(), "{key} left out of {event}");
+            }
+            assert!(event["code"].is_string() && event["type"].is_string(), "{event}");
+        }
+        assert!(inside.iter().any(|e| e["type"] == json!("message") && e["author"] == json!("user")), "{inside:?}");
+    }
+
+    /// O painel sem termo vem sem o texto do envio, da injeção e da entrega,
+    /// que eram mais da metade da saída; o tamanho, o gancho, o bloqueio e o
+    /// tempo seguem. Com um termo, o texto vem; o código do item traz o texto
+    /// inteiro; e a lista das ondas segue com o texto da entrega.
+    #[test]
+    fn the_panel_without_a_term_leaves_out_the_long_text_of_injections_and_deliveries() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let injection = by_program(root, "injection", json!({"author": "hook", "hook": "prompt_entry", "chars": 23, "text": "Texto longo da injecao."}));
+        by_program(root, "hook", json!({"author": "hook", "hook": "write_gate", "tool": "Write", "action": "block", "reason": "o motivo do bloqueio"}));
+        call(root, "round", json!({"ms": 3}));
+        by_program(root, "send", json!({"author": "binary", "wave": 1, "role": "wave", "text": "o pedido", "lines": 1, "chars": 8, "mustard": "0", "copy": "x"}));
+        by_program(root, "delivered", json!({"author": "binary", "wave": 1, "text": "O relato da entrega.", "files": ["a.rs"]}));
+
+        let panel = events(&read_at(&opts(root, "metrics", None)).unwrap());
+        let of = |kind: &str| panel.iter().find(|e| e["type"] == json!(kind)).unwrap_or_else(|| panic!("no {kind}: {panel:?}")).clone();
+        for kind in ["injection", "delivered", "send"] {
+            assert!(of(kind).get("text").is_none(), "the panel leaves out the text of {kind}: {}", of(kind));
+        }
+        assert_eq!((of("injection")["chars"].clone(), of("injection")["hook"].clone()), (json!(23), json!("prompt_entry")));
+        assert_eq!(of("delivered")["files"], json!(["a.rs"]));
+        assert_eq!(of("hook")["reason"], json!("o motivo do bloqueio"));
+        assert_eq!(of("call")["ms"], json!(3));
+
+        let found = events(&read_at(&opts(root, "metrics", Some("longo"))).unwrap());
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0]["text"], json!("Texto longo da injecao."), "a term asks for the content");
+
+        let by_code = events(&read_at(&opts(root, &format!("item-{}", of("injection")["code"].as_str().unwrap()), None)).unwrap());
+        assert_eq!(by_code[0]["id"], json!(injection));
+        assert_eq!(by_code[0]["text"], json!("Texto longo da injecao."));
+
+        let waves = events(&read_at(&opts(root, "waves", None)).unwrap());
+        let delivered = waves.iter().find(|e| e["type"] == json!("delivered")).expect("the waves list the delivery");
+        assert_eq!(delivered["text"], json!("O relato da entrega."), "the plan keeps the delivery text");
+        let send = waves.iter().find(|e| e["type"] == json!("send")).expect("the waves list the send");
+        assert!(send.get("text").is_none(), "{send}");
     }
 }
