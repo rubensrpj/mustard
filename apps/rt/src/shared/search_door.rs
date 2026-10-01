@@ -333,6 +333,8 @@ pub(crate) fn classify(ask: &Ask<'_>, assembled: &Assembled) -> Result<Classifie
         cut,
         candidates: found.candidates,
     };
+    #[cfg(test)]
+    crate::shared::word_search::ruler::jev::remember_candidates(&request.candidates);
     let calling = Instant::now();
     let mut measured = Map::new();
     measured.insert("candidates".to_string(), json!(request.candidates.len()));

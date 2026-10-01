@@ -259,7 +259,7 @@ fn the_limit_is_filled_from_the_folder_even_when_the_best_ones_are_outside_it() 
 }
 
 /// O contrato e a implementação dele em outra pasta.
-fn contract_project() -> (tempfile::TempDir, PathBuf) {
+pub(crate) fn contract_project() -> (tempfile::TempDir, PathBuf) {
     let map = json!({ "modules": [
         { "path": "src/pay/port.rs", "language": "rust", "loc": 4, "declarations": [
             { "kind": "trait", "name": "PaymentPort", "line": 1, "end_line": 4, "signature": "pub trait PaymentPort",

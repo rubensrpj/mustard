@@ -682,6 +682,8 @@ fn judge(
         walk: search.walk,
     };
     let Ok(classified) = door::classify(&ask, &assembled) else { return Judged::Triage };
+    #[cfg(test)]
+    ruler::jev::remember_call(&classified);
     let judged = match classified.outcome {
         Outcome::NoCandidates => Judged::Triage,
         Outcome::Failed(error) => {
@@ -1241,7 +1243,7 @@ mod words;
 
 /// A régua do gasto: o que o Claude recebe e quanto gasta, com as buscas reais.
 #[cfg(test)]
-mod ruler;
+pub(crate) mod ruler;
 
 /// A busca numa pasta ou num tipo de arquivo só manda ao filtro, e só devolve,
 /// o que está nela.
@@ -1361,6 +1363,7 @@ pub(crate) mod fixture {
         chances: Vec<(&'static str, f64)>,
         exists: f64,
         error: Option<FilterError>,
+        usage: FilterUsage,
     }
 
     impl MapFilter for Judge {
@@ -1378,7 +1381,7 @@ pub(crate) mod fixture {
                 })
                 .collect();
             let (verdict, kept) = judged(&scores, self.exists, request.cut);
-            Ok(Filtered { verdict, kept, usage: FilterUsage::default() })
+            Ok(Filtered { verdict, kept, usage: self.usage.clone() })
         }
     }
 
@@ -1386,7 +1389,13 @@ pub(crate) mod fixture {
         /// O filtro seguro: dá `chances` e quase certeza de que algum candidato
         /// serve.
         pub(crate) fn sure_of(chances: &[(&'static str, f64)]) -> Self {
-            Self { asked: std::rc::Rc::default(), chances: chances.to_vec(), exists: 0.99, error: None }
+            Self { asked: std::rc::Rc::default(), chances: chances.to_vec(), exists: 0.99, error: None, usage: FilterUsage::default() }
+        }
+
+        /// O mesmo filtro, cobrando `input_tokens` e `cost_micro_usd` por
+        /// chamada que responde.
+        pub(crate) fn charging(self, input_tokens: u64, cost_micro_usd: u64) -> Self {
+            Self { usage: FilterUsage { input_tokens, cost_micro_usd, ..FilterUsage::default() }, ..self }
         }
 
         /// O filtro que acha que nenhum candidato serve.

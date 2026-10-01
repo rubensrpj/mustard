@@ -12,11 +12,19 @@
 //!
 //! A busca real leva ao filtro a última fala do agente antes da chamada. Por
 //! isso a linha da entrada traz também `session`, o arquivo da conversa, e
-//! `at`, o instante da chamada: a régua grava numa pasta temporária a conversa
-//! só com as linhas escritas até esse instante, e o gancho a lê como o de uma
-//! sessão. Uma fala escrita depois da chamada nunca chega ao filtro. Sem o
-//! arquivo da sessão a busca segue sem fala, e o resultado conta quantas
+//! `at`, o instante da chamada, em segundos desde 1970 em UTC, como o arquivo
+//! de buscas o grava: a régua grava numa pasta temporária a conversa só com as
+//! linhas escritas até o fim desse segundo, e o gancho a lê como o de uma
+//! sessão. Uma fala escrita depois nunca chega ao filtro. Sem o arquivo da
+//! sessão, ou com ele sem fala do agente antes da chamada (a fala que o leitor
+//! do gancho acha nele), a busca segue sem fala, e o resultado conta quantas
 //! ficaram sem.
+//!
+//! O filtro (o Jev) roda como no produto: com a chave no ambiente, a busca
+//! parcial o chama. A régua grava, por busca, se ele foi chamado, se falhou e
+//! por quê, os tokens, o custo, as peças que ele guardou e as que as ligações
+//! puxaram, e cada grupo soma. A primeira busca de cada mapa também o chama: a
+//! soma dela sai numa linha à parte.
 //!
 //! O gasto de uma busca é medido em caracteres:
 //!
@@ -38,6 +46,11 @@
 //! não achou palavra que o leve a ele, ou o gancho o tem entre os cinco e a
 //! busca não achou linha nele.
 //!
+//! A busca que não tem como acertar fica de fora do acerto: o arquivo certo nem
+//! está no mapa, ou, quando o filtro foi chamado, não está entre os candidatos
+//! que foram a ele. A linha de cada grupo traz o acerto sobre as buscas que
+//! tinham como acertar.
+//!
 //! As duas metades da entrada (`A` e `B`) vêm separadas por conversa: uma
 //! escolhe, a outra confere. Cada projeto sai em tabelas de cada metade e do
 //! total.
@@ -46,7 +59,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use chrono::{DateTime, FixedOffset};
+use chrono::DateTime;
 
 use mustard_core::domain::model::contract::{HookInput, Trigger, Verdict};
 use mustard_core::io::map_triage::Triaged;
@@ -56,7 +69,12 @@ use mustard_core::platform::error::Result as CoreResult;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use self::jev::{JevSum, JevUse};
 use super::{FileHits, SHOWN_FILES};
+use crate::shared::agent_said;
+
+/// O que o filtro fez em cada busca, e a soma dele.
+pub(crate) mod jev;
 
 /// Uma leitura que o Claude fez entre a busca e a edição.
 #[derive(Debug, Deserialize)]
@@ -102,10 +120,10 @@ struct Row {
     /// sem fala.
     #[serde(default)]
     session: Option<String>,
-    /// O instante da chamada, em RFC 3339: a conversa que o filtro vê vai até
-    /// ele.
+    /// O instante da chamada, em segundos desde 1970 em UTC, como o arquivo de
+    /// buscas o grava: a conversa que o filtro vê vai até o fim desse segundo.
     #[serde(default)]
-    at: Option<String>,
+    at: Option<i64>,
 }
 
 /// O que uma resposta do gancho mostra: os arquivos, na ordem, e os trechos
@@ -302,12 +320,17 @@ pub(super) fn remember_hits(hits: &[FileHits]) {
     LAST_HITS.with(|last| *last.borrow_mut() = found);
 }
 
+/// O arquivo certo da busca de `row` está no mapa de `root`: algum dos
+/// `targets` é módulo dele.
+fn target_in_map(root: &Path, row: &Row) -> bool {
+    let model = store::model_path(root);
+    store::read_for_at(&model, Need::Paths).is_ok_and(|paths| paths.modules.iter().any(|module| row.targets.contains(&module.path)))
+}
+
 /// Por que a resposta não traz nenhum dos arquivos `targets`: o que o gancho
 /// ordenou na última busca (com a pasta pedida, como ele a leu) e o mapa.
 fn cause_of(root: &Path, row: &Row) -> Fate {
-    let model = store::model_path(root);
-    let Ok(paths) = store::read_for_at(&model, Need::Paths) else { return Fate::OutsideMap };
-    if !paths.modules.iter().any(|module| row.targets.contains(&module.path)) {
+    if !target_in_map(root, row) {
         return Fate::OutsideMap;
     }
     let order = LAST_ORDER.with(|last| last.borrow().clone()).unwrap_or_default();
@@ -331,21 +354,24 @@ fn fate_of(root: &Path, row: &Row, (outcome, shown): (&Outcome, &Shown)) -> Fate
     }
 }
 
-/// O instante em que uma linha da conversa foi escrita (`timestamp`, em RFC
-/// 3339); `None` na linha que não é mensagem ou não diz quando foi escrita.
-fn instant_of(line: &[u8]) -> Option<DateTime<FixedOffset>> {
+/// O segundo em que uma linha da conversa foi escrita (`timestamp`, em RFC
+/// 3339, lido como segundos desde 1970 em UTC); `None` na linha que não é
+/// mensagem ou não diz quando foi escrita.
+fn instant_of(line: &[u8]) -> Option<i64> {
     let entry: Value = serde_json::from_slice(line).ok()?;
-    DateTime::parse_from_rfc3339(entry.get("timestamp")?.as_str()?).ok()
+    DateTime::parse_from_rfc3339(entry.get("timestamp")?.as_str()?).ok().map(|when| when.timestamp())
 }
 
 /// A conversa da busca de `row` como estava no instante da chamada: só as
-/// linhas do arquivo da sessão escritas até esse instante, copiadas como
-/// estão e na ordem em que estavam — nenhuma é reescrita nem criada. A linha
-/// escrita depois nunca entra, porque a busca real não a conhecia; a que não
-/// diz quando foi escrita também não. `None` sem arquivo da sessão que se
-/// leia e sem um instante que se entenda: a busca segue sem fala.
+/// linhas do arquivo da sessão escritas até o fim do segundo em que a chamada
+/// aconteceu (o instante chega em segundos inteiros, e a fala dita junto da
+/// chamada cai no mesmo segundo), copiadas como estão e na ordem em que
+/// estavam — nenhuma é reescrita nem criada. A linha escrita depois nunca
+/// entra, porque a busca real não a conhecia; a que não diz quando foi escrita
+/// também não. `None` sem arquivo da sessão que se leia e sem instante: a
+/// busca segue sem fala.
 fn conversation_before(row: &Row) -> Option<Vec<u8>> {
-    let at = DateTime::parse_from_rfc3339(row.at.as_deref()?).ok()?;
+    let at = row.at?;
     let raw = std::fs::read(row.session.as_deref()?).ok()?;
     let kept = raw
         .split_inclusive(|byte| *byte == b'\n')
@@ -366,22 +392,28 @@ fn write_conversation(row: &Row, session: &str, scratch: &Path) -> Option<PathBu
     std::fs::write(&file, text).ok().map(|()| file)
 }
 
-/// O que o despachante do gancho respondeu a uma busca, quanto levou e se ela
-/// foi com a conversa da sessão ou sem fala.
+/// O que o despachante do gancho respondeu a uma busca, quanto levou, se a
+/// fala do agente chegou a ele e o que o filtro fez.
 struct Heard {
     outcome: Outcome,
     took: Duration,
     /// A conversa da sessão chegou ao gancho em `transcript_path`.
     with_conversation: bool,
+    /// A conversa trouxe fala do agente antes da chamada: a que o leitor do
+    /// gancho acha nela, não vazia. Sem ela a busca foi sem fala.
+    with_speech: bool,
+    /// O que o filtro fez na busca.
+    jev: JevUse,
 }
 
 /// O que o despachante do gancho responde à chamada de `row`, rodada de
 /// `root` numa sessão só dela, e quanto ele levou. A conversa de `row` até a
 /// chamada vai para a pasta temporária `scratch` ([`write_conversation`]) e o
-/// gancho a lê em `transcript_path`, sem nome de subagente; o arquivo sai ao
-/// fim da busca.
+/// gancho a lê em `transcript_path`, sem nome de subagente; a régua lê dela a
+/// fala pelo mesmo leitor do gancho, e o arquivo sai ao fim da busca.
 fn hear(root: &Path, row: &Row, session: &str, scratch: &Path) -> Heard {
     let conversation = write_conversation(row, session, scratch);
+    let with_speech = conversation.as_deref().is_some_and(|file| !agent_said::last_said(file).is_empty());
     let input = HookInput {
         tool_name: Some(row.tool_name.clone()),
         tool_input: row.tool_input.clone(),
@@ -393,6 +425,7 @@ fn hear(root: &Path, row: &Row, session: &str, scratch: &Path) -> Heard {
     };
     LAST_ORDER.with(|last| *last.borrow_mut() = None);
     LAST_HITS.with(|last| last.borrow_mut().clear());
+    jev::forget();
     let started = Instant::now();
     let verdict = crate::dispatch::run_event(Some(Trigger::PreToolUse), &input).verdict;
     let took = started.elapsed();
@@ -404,7 +437,33 @@ fn hear(root: &Path, row: &Row, session: &str, scratch: &Path) -> Heard {
         Verdict::Inject { context } => Outcome::Note(context),
         _ => Outcome::Pass,
     };
-    Heard { outcome, took, with_conversation: conversation.is_some() }
+    Heard { outcome, took, with_conversation: conversation.is_some(), with_speech, jev: jev::take() }
+}
+
+/// Se o arquivo certo da busca tinha como aparecer: está no mapa e, quando o
+/// filtro foi chamado, está entre os candidatos que foram a ele.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Reach {
+    in_map: bool,
+    /// O arquivo certo está entre os candidatos do filtro; `None` quando o
+    /// filtro não foi chamado.
+    in_candidates: Option<bool>,
+}
+
+impl Reach {
+    /// A busca tinha como acertar.
+    fn possible(self) -> bool {
+        self.in_map && self.in_candidates != Some(false)
+    }
+}
+
+/// O alcance da busca de `row` na raiz `root`: o mapa dela e os candidatos que
+/// o filtro recebeu em `jev`.
+fn reach_of(root: &Path, row: &Row, jev: &JevUse) -> Reach {
+    Reach {
+        in_map: target_in_map(root, row),
+        in_candidates: jev.called.then(|| jev.sent.iter().any(|path| row.targets.contains(path))),
+    }
 }
 
 /// A soma de um grupo de buscas.
@@ -415,22 +474,41 @@ struct Sum {
     today: usize,
     with: usize,
     saved_reads: usize,
-    /// As buscas que foram sem a conversa da sessão, portanto sem fala.
+    /// As buscas que foram sem fala do agente.
     without_speech: usize,
+    /// As buscas em que o arquivo certo tinha como aparecer, e, entre elas, as
+    /// que o mostraram.
+    possible: usize,
+    right: usize,
+    /// As buscas que não tinham como acertar: o arquivo certo fora do mapa, e o
+    /// que está no mapa mas ficou fora dos candidatos do filtro.
+    outside_map: usize,
+    outside_candidates: usize,
+    jev: JevSum,
     fates: BTreeMap<String, usize>,
     millis: Vec<u128>,
 }
 
 impl Sum {
     /// Soma uma busca: o tempo, o destino, o gasto, quando a conversa tinha
-    /// cadeia, e se ela foi com a conversa da sessão.
-    fn record(&mut self, heard: &Heard, fate: Fate, spend: Option<Spend>) {
+    /// cadeia, se ela foi com fala do agente, se o arquivo certo tinha como
+    /// aparecer e o que o filtro fez.
+    fn record(&mut self, heard: &Heard, fate: Fate, spend: Option<Spend>, reach: Reach) {
         self.searches += 1;
         self.millis.push(heard.took.as_millis());
         *self.fates.entry(fate_name(fate)).or_default() += 1;
-        if !heard.with_conversation {
+        if !heard.with_speech {
             self.without_speech += 1;
         }
+        if reach.possible() {
+            self.possible += 1;
+            self.right += usize::from(matches!(fate, Fate::At(_)));
+        } else if reach.in_map {
+            self.outside_candidates += 1;
+        } else {
+            self.outside_map += 1;
+        }
+        self.jev.record(&heard.jev);
         if let Some(spend) = spend {
             self.with_chain += 1;
             self.today += spend.today;
@@ -450,7 +528,7 @@ impl Sum {
         let five: usize = (1..=SHOWN_FILES).map(|n| self.fates.get(&n.to_string()).copied().unwrap_or(0)).sum();
         let fates: Vec<String> = self.fates.iter().map(|(fate, n)| format!("{fate} {n}")).collect();
         format!(
-            "{label}: {} buscas | gasto em {} com cadeia: hoje {} | com o Mustard {} | diferença {gain} ({:.1}%), leitura dispensada {} | responde {} ({:.1}%), certo em 1º {first}, entre 5 {five} ({:.1}% das que respondem) | destinos: {} | sem fala (sem a conversa da sessão) {} | tempo ms: mediana {}, p95 {}, máx {}",
+            "{label}: {} buscas | gasto em {} com cadeia: hoje {} | com o Mustard {} | diferença {gain} ({:.1}%), leitura dispensada {} | responde {} ({:.1}%), certo em 1º {first}, entre 5 {five} ({:.1}% das que respondem) | destinos: {} | acerto sobre as possíveis {} de {} ({:.1}%), impossíveis {} (fora do mapa {}, fora dos candidatos do Jev {}) | {} | sem fala {} | tempo ms: mediana {}, p95 {}, máx {}",
             self.searches,
             self.with_chain,
             self.today,
@@ -461,6 +539,13 @@ impl Sum {
             percent(answered, self.searches),
             percent(five, answered),
             fates.join(", "),
+            self.right,
+            self.possible,
+            percent(self.right, self.possible),
+            self.outside_map + self.outside_candidates,
+            self.outside_map,
+            self.outside_candidates,
+            self.jev.show(self.searches),
             self.without_speech,
             at(50),
             at(95),
@@ -507,18 +592,150 @@ pub(super) fn measure_gate(maps: &[PathBuf]) -> MeasureGate {
         .unwrap_or_else(|refusal| panic!("a régua não mede: {refusal}"))
 }
 
+/// O que a régua tira de uma busca: o que o gancho respondeu, o que ele
+/// mostra, o destino no termômetro, o gasto e se o arquivo certo tinha como
+/// aparecer.
+struct Measured {
+    heard: Heard,
+    shown: Shown,
+    fate: Fate,
+    spend: Option<Spend>,
+    reach: Reach,
+}
+
+impl Measured {
+    /// Roda a busca de `row` na raiz `root`, na sessão `session`, e a mede.
+    fn of(root: &Path, row: &Row, session: &str, scratch: &Path) -> Self {
+        let heard = hear(root, row, session, scratch);
+        let shown = shown_by(&heard.outcome);
+        let fate = fate_of(root, row, (&heard.outcome, &shown));
+        let spend = spend_of(row, &heard.outcome, &shown);
+        let reach = reach_of(root, row, &heard.jev);
+        Self { heard, shown, fate, spend, reach }
+    }
+
+    /// A linha do resultado da busca, com a prova de versão `proof`. Lê a
+    /// ordem e as linhas achadas que o gancho lembrou da busca que acabou de
+    /// rodar.
+    fn line(&self, row: &Row, proof: &Value) -> String {
+        let (heard, shown, spend) = (&self.heard, &self.shown, self.spend);
+        let (kind, text) = match &heard.outcome {
+            Outcome::Answer(text) => ("answer", text.as_str()),
+            Outcome::Note(text) => ("note", text.as_str()),
+            Outcome::Pass => ("pass", ""),
+        };
+        let mut line = json!({
+            "key": row.key, "project": row.project, "half": row.half, "at": row.at, "outcome": kind, "millis": heard.took.as_millis(),
+            "fate": fate_name(self.fate), "shown": shown.files, "ranges": shown.ranges, "chars": text.chars().count(),
+            "with_conversation": heard.with_conversation, "with_speech": heard.with_speech,
+            "today": spend.map(|s| s.today), "with": spend.map(|s| s.with), "saved_reads": spend.map(|s| s.saved_reads),
+            "chain": row.chain.as_ref().map(|c| c.ended.as_str()), "text": text,
+            "target_in_map": self.reach.in_map, "target_in_candidates": self.reach.in_candidates,
+            "hit_files": LAST_HITS.with(|last| last.borrow().len()),
+            "target_hits": LAST_HITS.with(|last| last.borrow().iter().filter(|(path, _)| row.targets.contains(path)).cloned().collect::<Vec<_>>()),
+            "target_order": LAST_ORDER.with(|last| last.borrow().as_ref().and_then(|order| order.iter().position(|path| row.targets.contains(path)))),
+            "order_len": LAST_ORDER.with(|last| last.borrow().as_ref().map(Vec::len)),
+            "proof": proof,
+        });
+        if let Value::Object(fields) = &mut line {
+            fields.extend(heard.jev.fields());
+        }
+        line.to_string()
+    }
+}
+
+/// A rodada da régua: uma linha de resultado por busca, a soma de cada grupo,
+/// o filtro nas buscas de aquecimento, que não entram em nenhuma conta, e o
+/// que ficou de fora.
+#[derive(Default)]
+struct Round {
+    lines: Vec<String>,
+    groups: BTreeMap<(String, String), Sum>,
+    /// O filtro nas buscas de aquecimento, somado à parte.
+    warmup: JevSum,
+    /// Os mapas já aquecidos.
+    warmed: Vec<String>,
+    /// As buscas vencidas e as que não são busca de texto, fora das contas.
+    skipped: usize,
+    other: usize,
+    /// As buscas que foram sem fala do agente.
+    without_speech: usize,
+}
+
+impl Round {
+    /// Mede as buscas de `rows`, cada uma na raiz que `root_of` diz, com a
+    /// prova de versão `proof` em cada linha. As vencidas (o texto já não casa
+    /// com o arquivo certo) e as que não são do `Bash` nem do `Grep` ficam de
+    /// fora.
+    fn measure(rows: &[Row], root_of: impl Fn(&Row) -> PathBuf, proof: &Value) -> Self {
+        let mut round = Self::default();
+        // A conversa de cada busca, só até a chamada, mora aqui enquanto ela roda.
+        let scratch = tempfile::tempdir().expect("the folder for the conversations of the searches");
+        // A sessão de cada busca é só dela e só desta medida: o gancho lembra a busca repetida numa sessão e a deixaria passar.
+        let run = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |since| since.as_millis());
+        for (at, row) in rows.iter().enumerate() {
+            if row.expired {
+                round.skipped += 1;
+                continue;
+            }
+            if !matches!(row.kind.as_str(), "bash" | "grep") {
+                round.other += 1;
+                continue;
+            }
+            let root = root_of(row);
+            if !round.warmed.contains(&row.name) {
+                round.warmed.push(row.name.clone());
+                // A primeira busca de cada mapa refaz o índice nas línguas dele: fica fora do tempo e das contas, e o que o filtro gasta nela se soma à parte.
+                let warm = hear(&root, row, &format!("warm-{run}-{at}"), scratch.path());
+                round.warmup.record(&warm.jev);
+            }
+            let measured = Measured::of(&root, row, &format!("spend-{run}-{at}"), scratch.path());
+            round.without_speech += usize::from(!measured.heard.with_speech);
+            for half in [row.half.as_str(), "total"] {
+                round.groups.entry((row.project.clone(), half.to_string())).or_default().record(
+                    &measured.heard,
+                    measured.fate,
+                    measured.spend,
+                    measured.reach,
+                );
+            }
+            round.lines.push(measured.line(row, proof));
+        }
+        round
+    }
+
+    /// As linhas `GASTO` da rodada: o que ficou fora, cada grupo e o
+    /// aquecimento.
+    fn report(&self) -> Vec<String> {
+        let mut report = vec![format!(
+            "GASTO {} buscas vencidas fora, {} sem busca de texto (glob, explore, mustard) fora, {} buscas sem fala do agente (a conversa da sessão não chegou, ou chegou sem fala)",
+            self.skipped, self.other, self.without_speech
+        )];
+        for ((project, half), sum) in &self.groups {
+            report.push(format!("GASTO {}", sum.show(&format!("{project} {half}"))));
+        }
+        report.push(format!("GASTO aquecimento (a primeira busca de cada mapa, fora das contas): {}", self.warmup.show(self.warmed.len())));
+        report
+    }
+}
+
 /// A régua do gasto. A entrada é `SPEND_INPUT` (o arquivo de buscas do
-/// preparo) e as cópias dos projetos, cada uma com o mapa dela, estão em
-/// `SPEND_TREES/<nome>`; `SPEND_OUT` (ou o `--out` do comando de medida)
-/// recebe uma linha por busca, cada uma com a prova de versão em `proof`. Só as
-/// buscas do `Bash` e do `Grep` entram nas contas; as vencidas (o texto já não
-/// casa com o arquivo certo na cópia) ficam de fora. Roda pelo comando de
-/// medida, que compila o código certo em `--release`, para o tempo ser o do
-/// gancho de verdade, e refaz o mapa de cada cópia com o `scan` desse código;
-/// rode com `env -u TYPESAFE_API_KEY mustard-rt run measure ... --env
-/// HOME=<pasta vazia>`: o `HOME` falso vai só à régua, por `--env`. Posto no
-/// comando de medida, ele esconderia o plugin instalado, e a prova sairia
-/// `gancho=não instalado`.
+/// preparo) e as cópias dos projetos, cada uma com o mapa e o `mustard.json` do
+/// projeto real, estão em `SPEND_TREES/<nome>`; `SPEND_OUT` (ou o `--out` do
+/// comando de medida) recebe uma linha por busca, cada uma com a prova de
+/// versão em `proof`. Só as buscas do `Bash` e do `Grep` entram nas contas; as
+/// vencidas (o texto já não casa com o arquivo certo na cópia) ficam de fora.
+/// Roda pelo comando de medida, que compila o código certo em `--release`,
+/// para o tempo ser o do gancho de verdade, e refaz o mapa de cada cópia com o
+/// `scan` desse código. A busca roda como a do produto, com o Jev: a chave vai
+/// em `TYPESAFE_API_KEY` no ambiente, nunca tirada dele. Rode
+/// `mustard-rt run measure measure_the_spend_of_the_search --trees
+/// $HOME/.cache/mustard-medida/regua-gasto/src --env
+/// SPEND_INPUT=$HOME/.cache/mustard-medida/regua-gasto/entrada.json --env
+/// HOME=$HOME/.cache/mustard-medida/regua-gasto/home`: o `HOME` falso vai só à
+/// régua, por `--env`, e `$HOME` (nunca `~`, que depois do `=` o terminal não
+/// troca) abre os caminhos. Posto no comando de medida, o `HOME` falso
+/// esconderia o plugin instalado, e a prova sairia `gancho=não instalado`.
 #[test]
 #[ignore = "mede com as cópias dos projetos de prova e as conversas reais"]
 fn measure_the_spend_of_the_search() {
@@ -536,68 +753,10 @@ fn measure_the_spend_of_the_search() {
     names.dedup();
     let maps: Vec<PathBuf> = names.iter().map(|name| store::model_path(&trees.join(name))).collect();
     let gate = measure_gate(&maps);
-    let proof = gate.proof().to_json();
-    let (mut skipped, mut other, mut without_speech): (usize, usize, usize) = (0, 0, 0);
-    // A conversa de cada busca, só até a chamada, mora aqui enquanto ela roda.
-    let scratch = tempfile::tempdir().expect("the folder for the conversations of the searches");
-    let mut warmed: Vec<String> = Vec::new();
-    let mut groups: BTreeMap<(String, String), Sum> = BTreeMap::new();
-    let mut lines: Vec<String> = Vec::new();
-    // A sessão de cada busca é só dela e só desta medida: o gancho lembra a busca repetida numa sessão e a deixaria passar.
-    let run = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |since| since.as_millis());
-    for (at, row) in rows.iter().enumerate() {
-        if row.expired {
-            skipped += 1;
-            continue;
-        }
-        if !matches!(row.kind.as_str(), "bash" | "grep") {
-            other += 1;
-            continue;
-        }
-        let root = trees.join(&row.name);
-        if !warmed.contains(&row.name) {
-            warmed.push(row.name.clone());
-            // A primeira busca de cada mapa refaz o índice nas línguas dele: fica fora do tempo.
-            let _ = hear(&root, row, &format!("warm-{run}-{at}"), scratch.path());
-        }
-        let heard = hear(&root, row, &format!("spend-{run}-{at}"), scratch.path());
-        let (outcome, took) = (&heard.outcome, heard.took);
-        let shown = shown_by(outcome);
-        let fate = fate_of(&root, row, (outcome, &shown));
-        let spend = spend_of(row, outcome, &shown);
-        without_speech += usize::from(!heard.with_conversation);
-        for half in [row.half.as_str(), "total"] {
-            groups.entry((row.project.clone(), half.to_string())).or_default().record(&heard, fate, spend);
-        }
-        let kind = match outcome {
-            Outcome::Answer(_) => "answer",
-            Outcome::Note(_) => "note",
-            Outcome::Pass => "pass",
-        };
-        let text = match outcome {
-            Outcome::Answer(text) | Outcome::Note(text) => text.as_str(),
-            Outcome::Pass => "",
-        };
-        lines.push(
-            json!({
-                "key": row.key, "project": row.project, "half": row.half, "outcome": kind, "millis": took.as_millis(),
-                "fate": fate_name(fate), "shown": shown.files, "ranges": shown.ranges, "chars": text.chars().count(),
-                "with_conversation": heard.with_conversation,
-                "today": spend.map(|s| s.today), "with": spend.map(|s| s.with), "saved_reads": spend.map(|s| s.saved_reads),
-                "chain": row.chain.as_ref().map(|c| c.ended.as_str()), "text": text,
-                "hit_files": LAST_HITS.with(|last| last.borrow().len()),
-                "target_hits": LAST_HITS.with(|last| last.borrow().iter().filter(|(path, _)| row.targets.contains(path)).cloned().collect::<Vec<_>>()),
-                "target_order": LAST_ORDER.with(|last| last.borrow().as_ref().and_then(|order| order.iter().position(|path| row.targets.contains(path)))),
-                "order_len": LAST_ORDER.with(|last| last.borrow().as_ref().map(Vec::len)),
-                "proof": proof,
-            })
-            .to_string(),
-        );
-    }
-    std::fs::write(out, lines.join("\n")).expect("the rows file writes");
-    eprintln!("GASTO {skipped} buscas vencidas fora, {other} sem busca de texto (glob, explore, mustard) fora, {without_speech} buscas sem a conversa da sessão (seguiram sem fala)");
-    for ((project, half), sum) in &groups {
-        eprintln!("GASTO {}", sum.show(&format!("{project} {half}")));
+    let round = Round::measure(&rows, |row| trees.join(&row.name), &gate.proof().to_json());
+    std::fs::write(out, round.lines.join("\n")).expect("the rows file writes");
+    for line in round.report() {
+        eprintln!("{line}");
     }
     for line in gate.proof().lines() {
         eprintln!("{line}");
@@ -607,8 +766,9 @@ fn measure_the_spend_of_the_search() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shared::agent_said;
     use crate::shared::word_search::fixture::{self, Judge};
+    use crate::shared::word_search::scoped;
+    use mustard_core::domain::map_filter::FilterError;
 
     /// A resposta de hoje: os arquivos saem da linha sem recuo, e uma entrada
     /// sem texto embaixo não é trecho.
@@ -638,6 +798,10 @@ mod tests {
         let answer = "Parcial.\nA busca comum não acharia nenhuma linha com esse texto. O mapa aponta estes arquivos: `src/a.rs`, `docs/b.md`.";
         assert_eq!(shown_of(answer).files, vec!["src/a.rs", "docs/b.md"]);
     }
+
+    /// O instante da chamada nos testes, como o arquivo de buscas o grava:
+    /// 2026-10-01T10:00:05Z, em segundos desde 1970.
+    const CALL: i64 = 1_790_848_805;
 
     fn row(chain: Chain, targets: &[&str]) -> Row {
         Row {
@@ -808,14 +972,14 @@ mod tests {
     }
 
     /// A fala que o filtro recebe da busca parcial de `imposto` que `row`
-    /// faz na sessão `session`, com o filtro de teste no lugar do Jev, e se a
-    /// conversa chegou. O gancho lembra a busca repetida numa sessão: cada
-    /// busca do teste leva a sua.
-    fn said_to_the_filter(root: &Path, row: &Row, session: &str) -> (String, bool) {
+    /// faz na sessão `session`, com o filtro de teste no lugar do Jev, e o que
+    /// a régua ouviu da busca. O gancho lembra a busca repetida numa sessão:
+    /// cada busca do teste leva a sua.
+    fn said_to_the_filter(root: &Path, row: &Row, session: &str) -> (String, Heard) {
         let judge = Judge::sure_of(&[("calcular_frete", 0.9)]);
         let heard = judge.installed(|| hear_alone(root, row, session));
         assert_eq!(judge.calls(), 1, "the partial search reaches the filter");
-        (judge.last().said, heard.with_conversation)
+        (judge.last().said, heard)
     }
 
     /// O destino da busca de `row` depois que o gancho a ouviu de verdade: a
@@ -885,11 +1049,11 @@ mod tests {
                 person_said("2026-10-01T10:00:08.000Z", "outra pergunta"),
             ],
         );
-        let search = Row { session: Some(session), at: Some("2026-10-01T10:00:05.000Z".to_string()), ..bash_row("grep -rn imposto src", &["src/frete.rs"]) };
+        let search = Row { session: Some(session), at: Some(CALL), ..bash_row("grep -rn imposto src", &["src/frete.rs"]) };
 
-        let (said, with_conversation) = said_to_the_filter(&root, &search, "s-fala");
+        let (said, heard) = said_to_the_filter(&root, &search, "s-fala");
 
-        assert!(with_conversation);
+        assert!(heard.with_conversation && heard.with_speech);
         assert_eq!(said, "Vou ver onde o imposto é calculado.");
     }
 
@@ -916,7 +1080,7 @@ mod tests {
         std::fs::write(&file, whole.join("\n") + "\n").expect("the session file");
         let search = Row {
             session: Some(file.to_string_lossy().into_owned()),
-            at: Some("2026-10-01T10:00:05.000Z".to_string()),
+            at: Some(CALL),
             ..bash_row("grep -rn imposto src", &["src/frete.rs"])
         };
 
@@ -927,29 +1091,53 @@ mod tests {
         assert_eq!(agent_said::last_said(&written), "Vou ver onde o imposto é calculado.");
     }
 
-    /// O corte compara instantes, não texto: o instante da chamada em outro
-    /// fuso corta no mesmo ponto, e a fala escrita no mesmo instante da
-    /// chamada (o bloco de texto e o de uso da ferramenta de uma mensagem só)
-    /// é a que ela fez.
+    /// O corte compara segundos, não texto: a linha escrita no mesmo segundo
+    /// da chamada (a fala dita junto dela, um instante antes ou depois dentro
+    /// do segundo) entra, em qualquer fuso, e a do segundo seguinte nunca.
     #[test]
-    fn the_cut_compares_instants_across_time_zones_and_keeps_the_speech_written_with_the_call() {
+    fn the_cut_keeps_what_was_written_up_to_the_second_of_the_call_in_any_time_zone() {
         let (_dir, root) = fixture::repo("{}");
         let notes = tempfile::tempdir().expect("a folder");
         let session = session_file(
             notes.path(),
             &[
                 said("2026-10-01T10:00:04.000Z", "Fala antes."),
-                said("2026-10-01T10:00:05.000Z", "Fala junto da chamada."),
-                called("2026-10-01T10:00:05.000Z"),
-                said("2026-10-01T10:00:05.001Z", "Um milésimo depois."),
+                said("2026-10-01T07:00:05.412-03:00", "Fala junto da chamada, em outro fuso."),
+                called("2026-10-01T10:00:05.900Z"),
+                said("2026-10-01T10:00:06.000Z", "Um segundo depois."),
             ],
         );
-        // 07:00:05 em -03:00 é 10:00:05 em UTC.
-        let search = Row { session: Some(session), at: Some("2026-10-01T07:00:05.000-03:00".to_string()), ..bash_row("grep -rn imposto src", &["src/frete.rs"]) };
+        let search = Row { session: Some(session), at: Some(CALL), ..bash_row("grep -rn imposto src", &["src/frete.rs"]) };
 
         let (said, _) = said_to_the_filter(&root, &search, "s-fala-fuso");
 
-        assert_eq!(said, "Fala junto da chamada.");
+        assert_eq!(said, "Fala junto da chamada, em outro fuso.");
+    }
+
+    /// O instante lido como o arquivo de buscas o grava, um número em segundos
+    /// desde 1970, corta a conversa no segundo certo; a data escrita não se
+    /// lê: o formato é um só.
+    #[test]
+    fn an_instant_written_as_a_number_is_read_and_cuts_the_conversation_at_that_second() {
+        let notes = tempfile::tempdir().expect("a folder");
+        let session = session_file(
+            notes.path(),
+            &[said("2026-10-01T10:00:04.000Z", "Antes."), said("2026-10-01T10:00:05.999Z", "No segundo da chamada."), said("2026-10-01T10:00:06.000Z", "Depois.")],
+        );
+        let search = |at: Value| {
+            json!({ "key": "p|bash|1", "project": "p", "name": "p", "kind": "bash", "tool_name": "Bash", "tool_input": {}, "half": "A",
+                    "targets": ["src/frete.rs"], "expired": false, "chain": null, "session": session, "at": at })
+        };
+
+        let row: Row = serde_json::from_value(search(json!(CALL))).expect("a row with a numeric instant reads");
+        assert_eq!(row.at, Some(CALL));
+        let kept = String::from_utf8(conversation_before(&row).expect("the conversation is cut")).expect("text");
+        assert_eq!(kept.matches("\"type\":\"assistant\"").count(), 2, "{kept}");
+        assert!(kept.contains("No segundo da chamada.") && !kept.contains("Depois."), "{kept}");
+
+        assert!(serde_json::from_value::<Row>(search(json!("2026-10-01T10:00:05Z"))).is_err(), "the date written as text is not a format of the searches file");
+        let without: Row = serde_json::from_value(search(Value::Null)).expect("a row without the instant reads");
+        assert!(conversation_before(&without).is_none());
     }
 
     /// Sem o arquivo da sessão, ou sem o instante que diz até onde ler, a
@@ -960,16 +1148,35 @@ mod tests {
         let (_dir, root) = fixture::repo("{}");
         let notes = tempfile::tempdir().expect("a folder");
         let session = session_file(notes.path(), &[said("2026-10-01T10:00:04.000Z", "Fala que não vale."), called("2026-10-01T10:00:05.000Z")]);
-        let plain = bash_row("grep -rn imposto src", &["src/frete.rs"]);
-        let at = Some("2026-10-01T10:00:05.000Z".to_string());
 
-        let without_a_session = Row { at: at.clone(), ..bash_row("grep -rn imposto src", &["src/frete.rs"]) };
-        let missing_file = Row { session: Some("/nao/existe/sessao.jsonl".to_string()), at: at.clone(), ..bash_row("grep -rn imposto src", &["src/frete.rs"]) };
-        let without_the_instant = Row { session: Some(session.clone()), ..bash_row("grep -rn imposto src", &["src/frete.rs"]) };
-        let broken_instant = Row { session: Some(session), at: Some("ontem".to_string()), ..plain };
-        for (at, search) in [&without_a_session, &missing_file, &without_the_instant, &broken_instant].into_iter().enumerate() {
-            assert_eq!(said_to_the_filter(&root, search, &format!("s-sem-fala-{at}")), (String::new(), false));
+        let without_a_session = Row { at: Some(CALL), ..bash_row("grep -rn imposto src", &["src/frete.rs"]) };
+        let missing_file = Row { session: Some("/nao/existe/sessao.jsonl".to_string()), at: Some(CALL), ..bash_row("grep -rn imposto src", &["src/frete.rs"]) };
+        let without_the_instant = Row { session: Some(session), ..bash_row("grep -rn imposto src", &["src/frete.rs"]) };
+        for (at, search) in [&without_a_session, &missing_file, &without_the_instant].into_iter().enumerate() {
+            let (said, heard) = said_to_the_filter(&root, search, &format!("s-sem-fala-{at}"));
+            assert_eq!((said.as_str(), heard.with_conversation, heard.with_speech), ("", false, false));
         }
+    }
+
+    /// A conversa que chega ao gancho sem fala do agente antes da chamada (só
+    /// gente falou antes, ou a fala veio depois dela) sai com a conversa
+    /// escrita e sem fala; com a fala antes da chamada, sai com fala.
+    #[test]
+    fn a_conversation_without_the_agent_speech_before_the_call_is_a_search_without_speech() {
+        let (_dir, root) = fixture::repo("{}");
+        let notes = tempfile::tempdir().expect("a folder");
+        let after = session_file(
+            notes.path(),
+            &[person_said("2026-10-01T10:00:00.000Z", "ache o imposto"), called("2026-10-01T10:00:05.000Z"), said("2026-10-01T10:00:09.000Z", "Fala depois.")],
+        );
+        let only_the_person = Row { session: Some(after), at: Some(CALL), ..bash_row("grep -rn imposto src", &["src/frete.rs"]) };
+        let (speech, heard) = said_to_the_filter(&root, &only_the_person, "s-sem-fala-antes");
+        assert_eq!((speech.as_str(), heard.with_conversation, heard.with_speech), ("", true, false));
+
+        let before = session_file(notes.path(), &[said("2026-10-01T10:00:04.000Z", "Vou procurar o imposto."), called("2026-10-01T10:00:05.000Z")]);
+        let with_speech = Row { session: Some(before), at: Some(CALL), ..bash_row("grep -rn imposto src", &["src/frete.rs"]) };
+        let (speech, heard) = said_to_the_filter(&root, &with_speech, "s-com-fala-antes");
+        assert_eq!((speech.as_str(), heard.with_conversation, heard.with_speech), ("Vou procurar o imposto.", true, true));
     }
 
     /// A conversa que a régua grava para a busca mora só enquanto ela roda: a
@@ -979,7 +1186,7 @@ mod tests {
         let (_dir, root) = fixture::repo("{}");
         let notes = tempfile::tempdir().expect("a folder");
         let session = session_file(notes.path(), &[said("2026-10-01T10:00:04.000Z", "Fala."), called("2026-10-01T10:00:05.000Z")]);
-        let search = Row { session: Some(session), at: Some("2026-10-01T10:00:05.000Z".to_string()), ..bash_row("grep -rn imposto src", &["src/frete.rs"]) };
+        let search = Row { session: Some(session), at: Some(CALL), ..bash_row("grep -rn imposto src", &["src/frete.rs"]) };
         let scratch = tempfile::tempdir().expect("a folder");
 
         let heard = hear(&root, &search, "s-pasta", scratch.path());
@@ -988,17 +1195,164 @@ mod tests {
         assert_eq!(std::fs::read_dir(scratch.path()).expect("the folder reads").count(), 0);
     }
 
-    /// O resultado de cada grupo conta as buscas que seguiram sem a conversa
-    /// da sessão.
+    /// A busca ouvida de mentira, sem filtro: o tempo, a conversa e a fala.
+    fn heard_with(with_conversation: bool, with_speech: bool) -> Heard {
+        Heard { outcome: Outcome::Pass, took: Duration::from_millis(3), with_conversation, with_speech, jev: JevUse::default() }
+    }
+
+    /// O alcance de uma busca que tinha como acertar.
+    const WITHIN_REACH: Reach = Reach { in_map: true, in_candidates: None };
+
+    /// O resultado de cada grupo conta as buscas que foram sem fala do agente:
+    /// a que não teve conversa e a que teve conversa sem fala.
     #[test]
-    fn the_result_counts_the_searches_that_went_without_the_session() {
-        let heard = |with_conversation| Heard { outcome: Outcome::Pass, took: Duration::from_millis(3), with_conversation };
+    fn the_result_counts_the_searches_that_went_without_speech() {
         let mut sum = Sum::default();
-        sum.record(&heard(false), Fate::Passed, None);
-        sum.record(&heard(true), Fate::Passed, None);
-        sum.record(&heard(false), Fate::Passed, None);
+        sum.record(&heard_with(false, false), Fate::Passed, None, WITHIN_REACH);
+        sum.record(&heard_with(true, true), Fate::Passed, None, WITHIN_REACH);
+        sum.record(&heard_with(true, false), Fate::Passed, None, WITHIN_REACH);
         assert_eq!((sum.searches, sum.without_speech), (3, 2));
-        assert!(sum.show("p").contains("sem fala (sem a conversa da sessão) 2"), "{}", sum.show("p"));
+        assert!(sum.show("p").contains("sem fala 2"), "{}", sum.show("p"));
+    }
+
+    /// A busca de `row` medida de ponta a ponta com o filtro `judge` no lugar
+    /// do Jev: o que o gancho respondeu, o destino, o gasto e o alcance.
+    fn measured_with(judge: &Judge, root: &Path, row: &Row, session: &str) -> Measured {
+        let scratch = tempfile::tempdir().expect("the folder for the conversation");
+        judge.installed(|| Measured::of(root, row, session, scratch.path()))
+    }
+
+    /// A linha de resultado de `measured`, lida como JSON.
+    fn result_of(measured: &Measured, row: &Row) -> Value {
+        serde_json::from_str(&measured.line(row, &json!({}))).expect("the result line is JSON")
+    }
+
+    /// A busca que o filtro responde grava no resultado que ele foi chamado,
+    /// o que cobrou e as peças: as que ele guardou e as que as ligações
+    /// puxaram; o grupo soma tokens e dólares.
+    #[test]
+    fn a_search_the_filter_answers_records_its_charge_and_the_group_sums_it() {
+        let (_dir, root) = scoped::contract_project();
+        let judge = Judge::sure_of(&[("PaymentPort", 0.9)]).charging(1200, 3400);
+        let search = bash_row("grep -rn charge src", &["src/pay/port.rs"]);
+
+        let first = measured_with(&judge, &root, &search, "s-jev-1");
+        let second = measured_with(&judge, &root, &search, "s-jev-2");
+
+        assert_eq!(judge.calls(), 2, "each partial search reaches the filter");
+        let jev = &first.heard.jev;
+        assert_eq!((jev.called, jev.failure, jev.tokens, jev.cost_micro_usd), (true, None, 1200, 3400));
+        assert_eq!((jev.kept, jev.pulled), (1, 1), "the contract passed the cut and its method was pulled by the links");
+        let line = result_of(&first, &search);
+        assert_eq!(line["jev_called"], json!(true));
+        assert_eq!(line["jev_failure"], Value::Null);
+        assert_eq!((line["jev_tokens"].as_u64(), line["jev_cost_micro_usd"].as_u64()), (Some(1200), Some(3400)));
+        assert_eq!((line["jev_kept"].as_u64(), line["jev_pulled"].as_u64()), (Some(1), Some(1)));
+
+        let mut sum = Sum::default();
+        for each in [&first, &second] {
+            sum.record(&each.heard, each.fate, each.spend, each.reach);
+        }
+        let shown = sum.show("p");
+        assert!(shown.contains("Jev: chamaram 2, falharam 0, tokens 2400, US$ 0.0068, US$ 0.003400 por busca"), "{shown}");
+    }
+
+    /// A chamada que falha sai como falha, com o motivo, e não soma token nem
+    /// custo; a busca que o filtro nem chegou a receber não conta como
+    /// chamada.
+    #[test]
+    fn a_filter_that_fails_is_a_failure_and_a_search_it_never_got_is_not_a_call() {
+        let (_dir, root) = fixture::repo("{}");
+        let failing = Judge::failing(FilterError::Timeout);
+        let partial = bash_row("grep -rn imposto src", &["src/frete.rs"]);
+        let failed = measured_with(&failing, &root, &partial, "s-jev-falha");
+
+        let jev = &failed.heard.jev;
+        assert_eq!((jev.called, jev.failure, jev.tokens, jev.cost_micro_usd), (true, Some("timeout"), 0, 0));
+        assert_eq!(result_of(&failed, &partial)["jev_failure"], json!("timeout"));
+
+        let pinned = bash_row("grep -rn calcular_frete src", &["src/frete.rs"]);
+        let never = measured_with(&failing, &root, &pinned, "s-jev-cravado");
+        assert!(!never.heard.jev.called, "a pinned search answers from the map and never asks the filter");
+        assert_eq!(result_of(&never, &pinned)["jev_called"], json!(false));
+
+        let mut sum = Sum::default();
+        for each in [&failed, &never] {
+            sum.record(&each.heard, each.fate, each.spend, each.reach);
+        }
+        let shown = sum.show("p");
+        assert!(shown.contains("Jev: chamaram 1, falharam 1, tokens 0, US$ 0.0000, US$ 0.000000 por busca"), "{shown}");
+    }
+
+    /// O filtro da busca de aquecimento (a primeira de cada mapa) soma à parte,
+    /// numa linha própria, e fica fora da soma do grupo.
+    #[test]
+    fn the_filter_of_the_warm_up_search_is_summed_apart_from_the_groups() {
+        let (_dir, root) = fixture::repo("{}");
+        let judge = Judge::sure_of(&[("calcular_frete", 0.9)]).charging(500, 700);
+        let rows = [bash_row("grep -rn imposto src", &["src/frete.rs"]), bash_row("grep -rn imposto src", &["src/frete.rs"])];
+
+        let round = judge.installed(|| Round::measure(&rows, |_| root.clone(), &json!({})));
+
+        assert_eq!(judge.calls(), 3, "one warm-up for the map, and one call for each of the two searches");
+        let report = round.report();
+        let group = report.iter().find(|line| line.starts_with("GASTO p A")).expect("the group line");
+        assert!(group.contains("Jev: chamaram 2, falharam 0, tokens 1000, US$ 0.0014"), "{group}");
+        let warm = report.iter().find(|line| line.starts_with("GASTO aquecimento")).expect("the warm-up line");
+        assert!(warm.contains("Jev: chamaram 1, falharam 0, tokens 500, US$ 0.0007"), "{warm}");
+    }
+
+    /// A busca cujo arquivo certo nem está no mapa não tinha como acertar: sai
+    /// do acerto, e a linha do grupo conta o acerto só sobre as possíveis e
+    /// diz quantas ficaram de fora.
+    #[test]
+    fn a_search_whose_right_file_is_outside_the_map_is_impossible_and_stays_out_of_the_hit_rate() {
+        let (_dir, root) = fixture::repo("{}");
+        let judge = Judge::sure_of(&[]);
+        let hit = bash_row("grep -rn calcular_frete src", &["src/frete.rs"]);
+        let miss = bash_row("grep -rn fechar_pedido src", &["src/frete.rs"]);
+        let impossible = bash_row("grep -rn imposto docs", &["docs/notas.md"]);
+
+        let mut sum = Sum::default();
+        let mut lines = Vec::new();
+        for (at, search) in [&hit, &miss, &impossible].into_iter().enumerate() {
+            let each = measured_with(&judge, &root, search, &format!("s-alcance-{at}"));
+            sum.record(&each.heard, each.fate, each.spend, each.reach);
+            lines.push(result_of(&each, search));
+        }
+
+        assert_eq!(lines.iter().map(|line| line["target_in_map"].as_bool()).collect::<Vec<_>>(), [Some(true), Some(true), Some(false)]);
+        assert!(lines.iter().all(|line| line["target_in_candidates"].is_null()), "the filter was never called, so there are no candidates to look in");
+        assert_eq!(lines[0]["fate"], json!("1"));
+        let shown = sum.show("p");
+        assert!(shown.contains("acerto sobre as possíveis 1 de 2 (50.0%), impossíveis 1 (fora do mapa 1, fora dos candidatos do Jev 0)"), "{shown}");
+    }
+
+    /// A busca em que o filtro foi chamado e o arquivo certo, que o mapa tem,
+    /// não estava entre os candidatos que foram a ele também não tinha como
+    /// acertar; com o arquivo entre os candidatos, tinha.
+    #[test]
+    fn a_search_whose_right_file_never_went_to_the_filter_is_impossible() {
+        let (_dir, root) = fixture::repo("{}");
+        let judge = Judge::sure_of(&[("calcular_frete", 0.9)]);
+        let sent = bash_row("grep -rn imposto src", &["src/frete.rs"]);
+        let left_out = bash_row("grep -rn imposto src", &["src/pedido.rs"]);
+
+        let inside = measured_with(&judge, &root, &sent, "s-candidato-dentro");
+        let outside = measured_with(&judge, &root, &left_out, "s-candidato-fora");
+
+        assert_eq!((inside.reach.in_map, inside.reach.in_candidates), (true, Some(true)));
+        assert_eq!((outside.reach.in_map, outside.reach.in_candidates), (true, Some(false)));
+        assert!(inside.reach.possible() && !outside.reach.possible());
+        assert_eq!(result_of(&outside, &left_out)["target_in_candidates"], json!(false));
+        assert_eq!(result_of(&inside, &sent)["target_in_candidates"], json!(true));
+
+        let mut sum = Sum::default();
+        for each in [&inside, &outside] {
+            sum.record(&each.heard, each.fate, each.spend, each.reach);
+        }
+        let shown = sum.show("p");
+        assert!(shown.contains("acerto sobre as possíveis 1 de 1 (100.0%), impossíveis 1 (fora do mapa 0, fora dos candidatos do Jev 1)"), "{shown}");
     }
 
     /// O termômetro diz a posição do arquivo certo entre os mostrados e, quando
