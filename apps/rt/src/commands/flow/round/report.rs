@@ -23,7 +23,8 @@ use serde_json::{json, Map, Value};
 use super::answer::RoundRefusal;
 use super::commit::{
     commit_draft, commit_message, ensure_after_wave, ensure_builds, ensure_criteria_proofs, format_round_files, git_lock,
-    head, join_copies, make_commit, record_commit, refresh_map, round_repos, unknown_file, write_joined, UNMADE_SHA,
+    head, join_copies, make_commit, record_commit, refresh_map, reset_committed_copies, round_repos, unknown_file,
+    write_joined, UNMADE_SHA,
 };
 use super::copy_check::check_against_copies;
 use super::agreed::{covered_codes, removed_by_analysis, request_agreed, settle_agreed};
@@ -358,6 +359,13 @@ fn take_returns(
     // A onda de lote cortada não entra no commit: as tarefas dela voltam ao
     // backlog soltas, sem a onda que as levou, ainda sob a trava.
     recorded.extend(return_cut_batches(start, spec, log, cut).map_err(RoundRefusal::Refused)?);
+    // O código das ondas que entraram no commit está nele: a cópia de cada uma
+    // volta limpa agora, ainda sob a trava, e não só quando a vaga abrir de
+    // novo, com a base já adiante.
+    if commit.is_some() {
+        let committed: Vec<u64> = report.waves.iter().map(|wave| wave.wave).collect();
+        reset_committed_copies(root, log, &committed, &files);
+    }
     drop(held_lock);
     // O mapa acompanha o commit, antes de a onda seguinte pedir a sugestão de
     // skill e de arquivos parecidos: sem isso, ela apontaria o que este
@@ -5267,6 +5275,179 @@ mod tests {
             "fn extra() {}\n",
             "a cópia segue como estava: {out}"
         );
+    }
+
+    /// Uma onda numa vaga só (o projeto deixa uma compilar): ela muda um
+    /// arquivo e cria outro na cópia, entrega, e a rodada junta e comita. A
+    /// rodada não tem mais onda a despachar.
+    fn wave_one_committed_from_its_slot(root: &Path) {
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":1}"#).unwrap();
+        assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1]);
+        std::fs::write(slot_of(root, 1).join("src/a.rs"), "fn um() {}\n// a onda 1 mudou\n").unwrap();
+        std::fs::write(slot_of(root, 1).join("src/novo.rs"), "fn novo() {}\n").unwrap();
+        let done = json!({"wave": 1, "text": "Saiu.", "files": ["src/a.rs", "src/novo.rs"], "commit": "a onda 1 saiu"});
+        assert_eq!(returned(root, done)["ok"], json!(true));
+        let taken = round(root, "x", None);
+        assert_eq!(taken["ok"], json!(true), "{taken}");
+        assert_eq!(git_text(root, &["show", "--name-only", "--format=", "HEAD"]), "src/a.rs\nsrc/novo.rs", "{taken}");
+    }
+
+    /// A onda entregue e comitada deixa a cópia limpa logo depois do commit,
+    /// sem esperar a vaga abrir de novo: sem mudança, sem arquivo novo solto,
+    /// no commit em que ela nasceu — é o que o pedido da onda seguinte
+    /// compara para listar o que mudou desde o preparo da vaga —, e nada
+    /// guardado nem avisado. O código da onda segue no commit do repositório
+    /// principal.
+    #[test]
+    fn a_copy_goes_back_clean_as_soon_as_its_wave_is_committed() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        wave_one_committed_from_its_slot(root);
+
+        let slot = slot_of(root, 1);
+        assert_eq!(git_text(&slot, &["status", "--porcelain", "--untracked-files=all"]), "", "a cópia está limpa");
+        assert_eq!(git_text(&slot, &["rev-parse", "HEAD"]), git_text(root, &["rev-parse", "HEAD~1"]), "onde nasceu");
+        assert_eq!(std::fs::read_to_string(slot.join("src/a.rs")).unwrap(), "fn um() {}\n");
+        assert!(!slot.join("src/novo.rs").exists(), "o arquivo novo, que o commit já tem, não fica solto");
+        assert_eq!(std::fs::read_to_string(root.join("src/novo.rs")).unwrap(), "fn novo() {}\n");
+        assert!(kept_refs(root).is_empty(), "o código está no commit: nada a guardar");
+    }
+
+    /// A base anda depois do commit da onda e reedita o mesmo arquivo; a onda
+    /// seguinte, na mesma vaga, não gera ref nem aviso de código guardado: o
+    /// que a cópia tinha já estava na história, e a vaga sai limpa no commit
+    /// atual da base.
+    #[test]
+    fn the_next_wave_in_the_slot_keeps_nothing_when_the_base_moved_and_edited_the_same_files() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        wave_one_committed_from_its_slot(root);
+        std::fs::write(root.join("src/a.rs"), "fn um() {}\n// a base reeditou\n").unwrap();
+        git_at(root, &["add", "src/a.rs"]);
+        git_at(root, &["commit", "-q", "-m", "a base andou"]);
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let first = |kind: &str| log.visible().into_iter().find(|e| e.event_type == kind).map(|e| e.id).unwrap();
+        let (said, crit) = (first("message"), first("criterion"));
+        write(root, "x", "wave", json!({"n": 2, "text": "Onda 2.", "criteria": [crit],
+            "done_when": "A suíte passa.", "origin": said}));
+        write(root, "x", "task", json!({"wave": 2, "text": "Tarefa da onda 2.",
+            "files": [{"path": "src/b.rs"}], "depends_on": [], "origin": said}));
+
+        let out = round(root, "x", None);
+        assert_eq!(out["ok"], json!(true), "{out}");
+        assert_eq!(waves_in(&out, "dispatch"), vec![2], "a onda 2 sai na vaga: {out}");
+        assert!(kept_refs(root).is_empty(), "nenhum código foi guardado: {out}");
+        let warned = out["warnings"].as_array().cloned().unwrap_or_default();
+        assert!(warned.iter().all(|w| w["reason"] != json!("code-kept")), "nenhum aviso de código guardado: {out}");
+        let slot = slot_of(root, 1);
+        assert_eq!(git_text(&slot, &["rev-parse", "HEAD"]), git_text(root, &["rev-parse", "HEAD"]), "{out}");
+        assert_eq!(std::fs::read_to_string(slot.join("src/a.rs")).unwrap(), "fn um() {}\n// a base reeditou\n");
+        assert_eq!(git_text(&slot, &["status", "--porcelain", "--untracked-files=all"]), "", "{out}");
+    }
+
+    /// Duas ondas voltam na mesma rodada no mesmo arquivo: a primeira entra no
+    /// commit e a segunda conflita e fica segurada. A cópia da primeira volta
+    /// limpa; a da segurada segue com o código dela, sem
+    /// commit, e nada é guardado.
+    #[test]
+    fn the_copy_of_a_wave_held_by_a_conflict_keeps_its_code_while_the_committed_one_goes_clean() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/a.rs"], &[])]);
+        std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":1}"#).unwrap();
+        assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1]);
+        let head = || git_text(root, &["rev-parse", "HEAD"]);
+        git_at(root, &["worktree", "add", "--detach", &slot_of(root, 2).to_string_lossy(), &head()]);
+        seed_send_with_copy(root, 2, &slot_of(root, 2).to_string_lossy());
+        std::fs::write(slot_of(root, 1).join("src/a.rs"), "fn um() {}\n// onda 1\n").unwrap();
+        std::fs::write(slot_of(root, 2).join("src/a.rs"), "fn um() {}\n// onda 2\n").unwrap();
+        let first = json!({"wave": 1, "text": "A onda 1 saiu.", "files": ["src/a.rs"], "commit": "a onda 1 sai"});
+        let second = json!({"wave": 2, "text": "A onda 2 saiu.", "files": ["src/a.rs"], "commit": "a onda 2 sai"});
+        assert_eq!(returned(root, first)["ok"], json!(true));
+        assert_eq!(returned(root, second)["ok"], json!(true));
+
+        let out = round(root, "x", None);
+        assert_eq!(out["ok"], json!(true), "{out}");
+        assert_eq!(warning_of(&out, "round-merge-conflict")["wave"], json!(2), "{out}");
+        assert_eq!(git_text(root, &["show", "--name-only", "--format=", "HEAD"]), "src/a.rs", "{out}");
+        assert_eq!(std::fs::read_to_string(root.join("src/a.rs")).unwrap(), "fn um() {}\n// onda 1\n");
+
+        let (done, held) = (slot_of(root, 1), slot_of(root, 2));
+        assert_eq!(git_text(&done, &["status", "--porcelain", "--untracked-files=all"]), "", "a cópia comitada está limpa: {out}");
+        assert_eq!(std::fs::read_to_string(done.join("src/a.rs")).unwrap(), "fn um() {}\n", "{out}");
+        assert_eq!(
+            std::fs::read_to_string(held.join("src/a.rs")).unwrap(),
+            "fn um() {}\n// onda 2\n",
+            "a cópia segurada segue com o código: {out}"
+        );
+        assert_eq!(git_text(&held, &["status", "--porcelain"]), "M src/a.rs", "{out}");
+        assert!(kept_refs(root).is_empty(), "{out}");
+    }
+
+    /// A cópia que a rodada zera depois de comitar é só a que o commit explica
+    /// por inteiro: a que tem mudança que o commit não levou e a que outra
+    /// onda também segura ficam como estão.
+    #[test]
+    fn only_a_copy_the_commit_explains_entirely_is_wiped_after_the_commit() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[])]);
+        std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":1}"#).unwrap();
+        assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1]);
+        let slot = slot_of(root, 1);
+        let state = |dir: &Path| git_text(dir, &["status", "--porcelain", "--untracked-files=all"]);
+        let wipe = |files: &[&str]| {
+            let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+            let files: Vec<String> = files.iter().map(|file| file.to_string()).collect();
+            super::super::commit::reset_committed_copies(root, &log, &[1], &files);
+        };
+        let dirty = || {
+            std::fs::write(slot.join("src/a.rs"), "fn um() {}\n// onda 1\n").unwrap();
+            std::fs::write(slot.join("src/extra.rs"), "fn extra() {}\n").unwrap();
+        };
+        dirty();
+
+        // O commit levou só um dos dois arquivos que a cópia mudou: o outro
+        // não está em commit nenhum, e a cópia fica como está.
+        wipe(&["src/a.rs"]);
+        assert_eq!(state(&slot), "M src/a.rs\n?? src/extra.rs");
+
+        // O commit levou os dois: a cópia volta limpa.
+        wipe(&["src/a.rs", "src/extra.rs"]);
+        assert_eq!(state(&slot), "");
+
+        // Outra onda também segura a cópia: nenhuma das duas a zera, mesmo com
+        // o commit explicando tudo.
+        dirty();
+        seed_send_with_copy(root, 2, &slot.to_string_lossy());
+        wipe(&["src/a.rs", "src/extra.rs"]);
+        assert_eq!(state(&slot), "M src/a.rs\n?? src/extra.rs", "a cópia dividida não foi zerada");
+    }
+
+    /// A pasta gravada como cópia que não é cópia viva do git — dentro do
+    /// próprio projeto, aqui — nunca é zerada depois do commit: o git dela
+    /// seria o do projeto, e o trabalho solto do projeto se perderia.
+    #[test]
+    fn a_recorded_folder_that_is_not_a_live_copy_is_left_alone_after_the_commit() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        let folder = root.join("pasta-solta");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("x.txt"), "solto\n").unwrap();
+        seed_send_with_copy(root, 1, &folder.to_string_lossy());
+        std::fs::write(root.join("src/a.rs"), "fn um() {}\n// trabalho do projeto\n").unwrap();
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        // O commit explica tudo o que o git do projeto vê mudado.
+        let status = git_text(&folder, &["status", "--porcelain", "--untracked-files=all"]);
+        let files: Vec<String> =
+            status.lines().filter_map(|line| line.trim_start().split_once(' ')).map(|(_, file)| file.to_string()).collect();
+        assert!(files.contains(&"src/a.rs".to_string()) && files.contains(&"pasta-solta/x.txt".to_string()), "{files:?}");
+
+        super::super::commit::reset_committed_copies(root, &log, &[1], &files);
+        assert_eq!(std::fs::read_to_string(root.join("src/a.rs")).unwrap(), "fn um() {}\n// trabalho do projeto\n");
+        assert_eq!(std::fs::read_to_string(folder.join("x.txt")).unwrap(), "solto\n");
     }
 
     /// A cópia de uma onda órfã guarda o que tem, e o commit atual não tem,

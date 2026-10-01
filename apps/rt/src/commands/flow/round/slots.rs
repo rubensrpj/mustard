@@ -257,6 +257,19 @@ pub(crate) fn reset_slot(root: &Path, path: &Path, head: &str, owner: &Keeping) 
     Ok(Prepared { missing: copy_local_files(root, path), reused: changed_since(root, &before, head), kept })
 }
 
+/// A vaga em `path`, cópia viva, de uma onda cujo código a rodada acabou de
+/// comitar, zerada sem guardar nada ([`super::keep::reset_in_place`]), com os
+/// arquivos locais do projeto de volta como em [`reset_slot`]. A pasta que
+/// não é cópia viva fica como está, e o motivo é o erro.
+pub(super) fn reset_committed_slot(root: &Path, path: &Path) -> Result<(), String> {
+    if !live_copy(path) {
+        return Err(format!("not a live copy: {}", shown(path)));
+    }
+    super::keep::reset_in_place(root, path)?;
+    copy_local_files(root, path);
+    Ok(())
+}
+
 /// De quem é o que a vaga `path` da obra `spec` tem, para o que a limpeza
 /// guarda ([`Keeping`]): a onda do envio mais novo que gravou essa vaga, e
 /// esse envio no nome da ref; a vaga que nenhum envio gravou fica com o nome

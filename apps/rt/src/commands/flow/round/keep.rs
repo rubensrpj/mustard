@@ -1,7 +1,9 @@
 //! O código que uma cópia tem além do commit e a limpeza guarda antes de
 //! zerá-la ou apagá-la: a ref do repositório principal em que ele fica, de
 //! quem é, e a cópia que volta ao commit só depois de guardado. A pasta que já
-//! não é cópia viva do git também é guardada, pelo repositório principal.
+//! não é cópia viva do git também é guardada, pelo repositório principal. A
+//! cópia da onda que a rodada acabou de comitar não guarda nada: o código dela
+//! já está no commit.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -82,9 +84,7 @@ fn keep_targets(targets: &[(PathBuf, String, Keeping)], strict: bool) -> Result<
             }
             continue;
         }
-        // O refresh sai com erro quando algum arquivo mudou de fato; é o
-        // checkout que o desfaz logo abaixo.
-        let _ = git(dir, &["update-index", "-q", "--refresh"]);
+        refresh_index(dir);
         kept.extend(keep_unsaved(dir, head, keeping)?);
     }
     Ok(kept)
@@ -118,13 +118,44 @@ pub(super) fn reset_with_submodules(
 ) -> Result<Vec<Kept>, String> {
     let targets = copy_targets(root, copy, head, keeping);
     let kept = keep_targets(&targets, true)?;
-    let mut failed = Vec::new();
-    for (dir, head, _) in &targets {
-        if let Err(detail) = reset_copy(dir, head) {
-            failed.push(format!("{}: {detail}", shown(dir)));
-        }
+    reset_each(targets.iter().map(|(dir, head, _)| (dir.as_path(), head.as_str()))).map(|()| kept)
+}
+
+/// Volta a cópia `copy` da onda que a rodada acabou de comitar, e cada cópia
+/// de submódulo dentro dela, ao commit em que cada uma já estava, sem guardar
+/// nada: o código delas está no commit da rodada, e guardá-lo, depois que a
+/// base andou, o contaria como perdido ([`keep_unsaved`]). O commit é o de
+/// nascimento, e não o novo: o que a vaga mudou desde que foi preparada é o
+/// que o pedido da onda seguinte lista para decidir se prepara de novo, e
+/// mudança que entrou no commit por outra onda não está no preparo dela.
+pub(super) fn reset_in_place(root: &Path, copy: &Path) -> Result<(), String> {
+    let subs = submodules_of(root);
+    let inside = subs.iter().map(|sub| copy.join(sub)).filter(|dir| dir.join(".git").is_file());
+    let dirs: Vec<PathBuf> = std::iter::once(copy.to_path_buf()).chain(inside).collect();
+    let heads: Vec<String> = dirs.iter().map(|dir| head(dir)).collect();
+    for dir in &dirs {
+        refresh_index(dir);
     }
-    if failed.is_empty() { Ok(kept) } else { Err(failed.join("; ")) }
+    reset_each(dirs.iter().map(PathBuf::as_path).zip(heads.iter().map(String::as_str)))
+}
+
+/// Volta cada cópia de `targets`, com o commit dela, e junta o motivo de cada
+/// uma que o git não deixou voltar.
+fn reset_each<'a>(targets: impl Iterator<Item = (&'a Path, &'a str)>) -> Result<(), String> {
+    let failed: Vec<String> = targets
+        .filter_map(|(dir, head)| reset_copy(dir, head).err().map(|detail| format!("{}: {detail}", shown(dir))))
+        .collect();
+    if failed.is_empty() { Ok(()) } else { Err(failed.join("; ")) }
+}
+
+/// Atualiza no índice de `dir` a data que o disco tem de cada arquivo cujo
+/// conteúdo não mudou. Sem isso, o `checkout --force` que volta a cópia ao
+/// commit reescreve todo arquivo cuja data difere da do índice, mesmo com o
+/// mesmo conteúdo, e a compilação refaz o que não mudou. O refresh sai com
+/// erro quando algum arquivo mudou de fato; é o checkout que o desfaz logo
+/// depois.
+fn refresh_index(dir: &Path) {
+    let _ = git(dir, &["update-index", "-q", "--refresh"]);
 }
 
 /// Volta o checkout ligado `dir` ao commit `head`, descartando qualquer
@@ -139,10 +170,13 @@ fn reset_copy(dir: &Path, head: &str) -> Result<(), String> {
 
 /// Guarda o que a cópia `dir` tem e o commit `head` não tem, antes de ela ser
 /// zerada: o que mudou em arquivo versionado, o arquivo novo que o git não
-/// ignora e o commit que só a cópia fez. O que o commit já traz — a entrega
-/// que a rodada juntou e comitou, e que a cópia guarda de uma onda que já
-/// terminou — não conta: só o arquivo que o agente mudou na cópia e que o
-/// commit atual tem diferente. Tudo vai num commit solto, sob uma ref do
+/// ignora e o commit que só a cópia fez. Conta como perdido o arquivo que a
+/// cópia mudou e que o commit atual tem diferente, e que também difere do
+/// ponto onde a cópia nasceu. Só o commit atual é conferido: a entrega que a
+/// rodada juntou e comitou, depois reeditada na base, parece perdida aqui
+/// mesmo estando na história. Por isso a rodada zera a cópia da onda comitada
+/// logo depois do commit ([`reset_in_place`]), e a conferência só vê o código
+/// que nenhum commit tem. Tudo vai num commit solto, sob uma ref do
 /// repositório principal que as cópias dividem, e o código volta com
 /// `git cherry-pick --no-commit <ref>`. `None` quando não há nada a guardar; o
 /// erro é o motivo de o git não ter guardado, e quem chama não zera a cópia.

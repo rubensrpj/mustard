@@ -22,6 +22,7 @@ use serde_json::{json, Map, Value};
 
 use super::answer::RoundRefusal;
 use super::report::WaveReport;
+use super::slots::{reset_committed_slot, sharing_copy};
 use crate::commands::git_settle::{enter_unit_branch, submodule_holding, submodules_of};
 use crate::commands::review::qa_run::ProofFault;
 use crate::commands::spec_events::write::record;
@@ -767,6 +768,31 @@ fn copy_changed(copy: &Path, subs: &[String]) -> Vec<String> {
         changed.extend(theirs.into_iter().map(|path| format!("{sub}/{path}")));
     }
     changed
+}
+
+/// Depois do commit da rodada, zera a cópia de cada onda de `waves`, as que
+/// entraram nele ([`reset_committed_slot`]), sem guardar nada: o código dela
+/// está no commit, e deixá-la suja faria a próxima onda na vaga ver, com a
+/// base já adiante, um código que a história já tem como se tivesse ficado
+/// sem commit. `files` são os arquivos que o commit levou.
+///
+/// Fica como está a pasta que não é cópia viva do git, a cópia que outra onda
+/// também segura ([`sharing_copy`]) e a que tem mudança que o commit não
+/// levou: essa não é zerada aqui, e a próxima abertura da vaga a guarda como
+/// guarda qualquer outra. A onda segurada por conflito não vem em `waves`, e
+/// a cópia dela segue com o código. A cópia que o git não deixou zerar também
+/// fica, e o código dela já está no commit.
+pub(super) fn reset_committed_copies(root: &Path, log: &SpecLog, waves: &[u64], files: &[String]) {
+    let shared = sharing_copy(log, waves.iter().copied());
+    let subs = submodules_of(root);
+    let committed: BTreeSet<&str> = files.iter().map(String::as_str).collect();
+    for wave in waves.iter().filter(|wave| !shared.contains(wave)) {
+        let Some(copy) = copy_of(log, *wave) else { continue };
+        if copy_changed(&copy, &subs).iter().any(|file| !committed.contains(file.as_str())) {
+            continue;
+        }
+        let _ = reset_committed_slot(root, &copy);
+    }
 }
 
 /// Os arquivos que a onda `wave` mudou de fato, pela cópia gravada no envio
