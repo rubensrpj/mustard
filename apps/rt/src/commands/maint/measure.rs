@@ -42,6 +42,8 @@ const COMMIT_CHARS: usize = 12;
 const RESERVED_PREFIX: &str = "MUSTARD_MEASURE_";
 /// A linha que a régua imprime para provar a versão que usou.
 const PROOF_PREFIX: &str = "PROVA ";
+/// O começo da linha com o estado de cada peça da busca num mapa.
+const PIECES_PREFIX: &str = "PECAS ";
 
 /// O que o usuário pediu em `mustard-rt run measure`.
 #[derive(Debug)]
@@ -286,6 +288,17 @@ fn is_proof_line(line: &str) -> bool {
     line.trim_start().starts_with(PROOF_PREFIX)
 }
 
+/// `true` quando entre as linhas que a régua imprimiu não há a de prova: as
+/// linhas das peças da busca sozinhas não dizem de que código saiu o número.
+fn lacks_proof_line(lines: &[String]) -> bool {
+    !lines.iter().any(|line| is_proof_line(line))
+}
+
+/// A linha com o estado das peças da busca que a régua imprimiu para um mapa.
+fn is_pieces_line(line: &str) -> bool {
+    line.trim_start().starts_with(PIECES_PREFIX)
+}
+
 /// O que o comando imprime ao fim: as linhas de prova, o caminho do resultado
 /// e as pastas que apagou.
 fn summary(proof: &[String], out: &Path, written: bool, removed: &[PathBuf]) -> String {
@@ -443,19 +456,20 @@ fn run_cargo(mut command: Command, capture: bool) -> Result<String, String> {
 }
 
 /// Lê um fluxo do programa de teste linha a linha: repete cada uma na saída de
-/// erro, para o usuário acompanhar, e guarda as de prova.
+/// erro, para o usuário acompanhar, e guarda as de prova e as das peças da
+/// busca.
 fn echo_and_collect(stream: impl Read, proof: &Mutex<Vec<String>>) {
     for raw in BufReader::new(stream).split(b'\n').map_while(Result::ok) {
         let line = String::from_utf8_lossy(&raw).trim_end_matches('\r').to_string();
         eprintln!("{line}");
-        if is_proof_line(&line) {
+        if is_proof_line(&line) || is_pieces_line(&line) {
             proof.lock().unwrap_or_else(PoisonError::into_inner).push(line);
         }
     }
 }
 
-/// Roda o programa de teste e devolve se terminou bem e as linhas de prova que
-/// imprimiu, em qualquer das duas saídas.
+/// Roda o programa de teste e devolve se terminou bem e as linhas de prova e de
+/// peças que imprimiu, em qualquer das duas saídas.
 fn run_ruler(mut command: Command) -> Result<(bool, Vec<String>), String> {
     command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = command.spawn().map_err(|err| format!("não consegui rodar a régua: {err}"))?;
@@ -501,7 +515,7 @@ fn compile_and_run(opts: &MeasureOpts, source: &Path, code: &Code, folder: &Path
     if !passed {
         return Err(format!("a régua `{name}` falhou; a conversa dela está acima"));
     }
-    if proof.is_empty() {
+    if lacks_proof_line(&proof) {
         return Err(format!("a régua `{name}` terminou sem imprimir a linha `{}…`: ela não grava a versão que usou, e o número não vale", PROOF_PREFIX.trim()));
     }
     Ok(proof)
@@ -834,15 +848,38 @@ mod tests {
 
     #[test]
     fn the_summary_lists_the_proof_lines_the_result_and_what_was_removed() {
-        let proof = vec!["PROVA commit=0123456789ab sujo=nao diff=- sha=aaaaaaaaaaaa mapas=1".to_string()];
+        let proof = vec![
+            "PROVA commit=0123456789ab sujo=nao diff=- sha=aaaaaaaaaaaa mapas=1".to_string(),
+            "PECAS /m/a: compilado=ligada historico=ainda-nao-ligada".to_string(),
+        ];
         let text = summary(&proof, Path::new("/o/saida.json"), true, &[PathBuf::from("/m/velha")]);
         assert_eq!(
             text,
-            "PROVA commit=0123456789ab sujo=nao diff=- sha=aaaaaaaaaaaa mapas=1\nresultado: /o/saida.json (gravado)\napagada: /m/velha"
+            "PROVA commit=0123456789ab sujo=nao diff=- sha=aaaaaaaaaaaa mapas=1\nPECAS /m/a: compilado=ligada historico=ainda-nao-ligada\nresultado: /o/saida.json (gravado)\napagada: /m/velha"
         );
+        assert!(!lacks_proof_line(&proof));
+        assert!(lacks_proof_line(&proof[1..]), "the pieces line alone does not prove the version");
+        assert!(lacks_proof_line(&[]));
+        assert!(is_pieces_line("PECAS /m/a: compilado=ligada"));
+        assert!(!is_pieces_line("PECAS-JSON {}"));
+        assert!(!is_proof_line("PECAS /m/a: compilado=ligada"), "the pieces line is not the proof line");
         assert!(summary(&proof, Path::new("/o/x.json"), false, &[]).contains("a régua não gravou o arquivo"));
         assert!(is_proof_line("PROVA commit=1"));
         assert!(!is_proof_line("PROVA-JSON {}"));
         assert!(!is_proof_line("outra coisa"));
+    }
+
+    /// A régua que imprime a linha de prova numa saída e a das peças na outra
+    /// tem as duas colhidas, e as outras linhas ficam de fora.
+    #[cfg(unix)]
+    #[test]
+    fn the_ruler_run_collects_the_proof_and_the_pieces_lines_from_both_outputs() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "echo 'conversa qualquer'; echo 'PROVA commit=0123456789ab'; echo 'PECAS /m/a: compilado=ligada' >&2"]);
+        let (passed, lines) = run_ruler(command).expect("the ruler runs");
+        assert!(passed);
+        let mut lines = lines;
+        lines.sort();
+        assert_eq!(lines, ["PECAS /m/a: compilado=ligada", "PROVA commit=0123456789ab"]);
     }
 }

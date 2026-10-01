@@ -2486,6 +2486,6 @@ mod tests {
             }
             writeln!(out, "{row}").expect("write");
         }
-        eprintln!("{}", gate.proof().line());
+        gate.proof().lines().iter().for_each(|line| eprintln!("{line}"));
     }
 }

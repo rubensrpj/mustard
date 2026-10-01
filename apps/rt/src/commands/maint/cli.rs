@@ -72,9 +72,11 @@ pub enum MaintCmd {
     /// código ao lado e com o commit, o sujo e o resumo em variáveis
     /// `MUSTARD_MEASURE_*`; a régua que não imprime a linha `PROVA` falha.
     ///
-    /// Imprime ao fim as linhas `PROVA` e o caminho do resultado (`--out`, ou
-    /// `<pasta>/<teste>.json`, que a régua lê em `MUSTARD_MEASURE_OUT`). Ao
-    /// terminar, só as três pastas de medida usadas por último ficam. Só mede
+    /// Imprime ao fim as linhas `PROVA`, uma linha `PECAS` por mapa que a
+    /// régua abriu (o estado de cada peça da busca nele, ligada ou ainda não
+    /// ligada) e o caminho do resultado (`--out`, ou `<pasta>/<teste>.json`,
+    /// que a régua lê em `MUSTARD_MEASURE_OUT`). Ao terminar, só as três
+    /// pastas de medida usadas por último ficam. Só mede
     /// o código-fonte do Mustard: em outro projeto recusa (exit 1).
     #[command(display_order = 22)]
     Measure {

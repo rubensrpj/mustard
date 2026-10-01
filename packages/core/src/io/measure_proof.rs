@@ -9,6 +9,10 @@
 //! marca esperada é a que o `scan` compilado com o código medido diz em
 //! `scan format`.
 //!
+//! Junto de cada mapa vai a lista das peças da busca, cada uma ligada ou ainda
+//! não ligada ([`crate::io::search_pieces`]): um número só se entende sabendo o
+//! que a busca tinha ligado quando ele saiu.
+//!
 //! O commit, o sujo e o resumo não se adivinham de dentro da régua: vêm das
 //! variáveis que o comando de medida (`mustard-rt run measure`) põe ao rodar o
 //! programa que ele mesmo compilou. Sem elas a régua recusa, porque rodá-la
@@ -21,6 +25,7 @@ use serde_json::{Value, json};
 
 use crate::domain::scan::Scan;
 use crate::io::project_map::{self, BLOCKS};
+use crate::io::search_pieces::{self, Piece};
 use crate::io::sha256::Sha256;
 use crate::platform::error::{Error, Result};
 
@@ -56,11 +61,32 @@ pub fn result_path(own: &str) -> Option<String> {
     [OUT_VAR, own].iter().filter_map(|name| std::env::var(name).ok()).find(|path| !path.trim().is_empty())
 }
 
-/// Um mapa aberto pela régua e a marca que todos os blocos dele traziam.
+/// Um mapa aberto pela régua, a marca que todos os blocos dele traziam e o
+/// estado de cada peça da busca nele.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MapProof {
     pub path: String,
     pub mark: String,
+    pub pieces: Vec<Piece>,
+}
+
+impl MapProof {
+    /// O mapa como o resultado da régua o guarda: o caminho, a marca e o
+    /// estado de cada peça da busca.
+    #[must_use]
+    pub fn to_json(&self) -> Value {
+        json!({
+            "path": self.path,
+            "mark": self.mark,
+            "pieces": self.pieces.iter().map(Piece::to_json).collect::<Vec<_>>(),
+        })
+    }
+
+    /// A linha `PECAS` com o estado de cada peça deste mapa.
+    #[must_use]
+    pub fn pieces_line(&self) -> String {
+        search_pieces::line(&self.path, &self.pieces)
+    }
 }
 
 /// A prova de versão de uma medida.
@@ -131,7 +157,7 @@ impl MeasureProof {
             "diff": self.diff,
             "binary_sha256": self.binary_sha256,
             "binary_path": self.binary_path,
-            "maps": self.maps.iter().map(|map| json!({"path": map.path, "mark": map.mark})).collect::<Vec<_>>(),
+            "maps": self.maps.iter().map(MapProof::to_json).collect::<Vec<_>>(),
         })
     }
 
@@ -147,6 +173,17 @@ impl MeasureProof {
             &self.binary_sha256[..self.binary_sha256.len().min(12)],
             self.maps.len(),
         )
+    }
+}
+
+impl MeasureProof {
+    /// O que a régua imprime ao fim: a linha `PROVA` e, depois dela, uma linha
+    /// `PECAS` por mapa aberto, com o estado de cada peça da busca nele.
+    #[must_use]
+    pub fn lines(&self) -> Vec<String> {
+        let mut lines = vec![self.line()];
+        lines.extend(self.maps.iter().map(MapProof::pieces_line));
+        lines
     }
 }
 
@@ -196,7 +233,8 @@ pub fn check_map(db: &Path, expected: &str) -> Result<MapProof> {
             }
         }
     }
-    Ok(MapProof { path: db.display().to_string(), mark: expected.to_string() })
+    let pieces = search_pieces::of_map(db)?;
+    Ok(MapProof { path: db.display().to_string(), mark: expected.to_string(), pieces })
 }
 
 /// O que a compilação do programa de medida carimbou nele mesmo: a versão
@@ -334,7 +372,33 @@ mod tests {
     fn a_map_with_the_expected_mark_passes_and_is_recorded_by_path() {
         let (_dir, model) = saved_with("scan 1");
         let proof = check_map(&model, "scan 1").unwrap();
-        assert_eq!(proof, MapProof { path: model.display().to_string(), mark: "scan 1".to_string() });
+        assert_eq!((proof.path.as_str(), proof.mark.as_str()), (model.display().to_string().as_str(), "scan 1"));
+        let names: Vec<&str> = proof.pieces.iter().map(|piece| piece.name).collect();
+        assert_eq!(
+            names,
+            ["compilado", "raiz-e-sinonimos", "sentido-pelo-vetor", "duas-linguas", "historico", "conferencia"],
+            "the map is recorded with the state of every piece of the search"
+        );
+    }
+
+    /// O fim da régua imprime a linha da prova e uma linha de peças por mapa
+    /// aberto, cada uma com o caminho do mapa e o estado de cada peça.
+    #[test]
+    fn the_ruler_prints_the_proof_line_and_one_pieces_line_per_map() {
+        let dir = tempdir().unwrap();
+        let proof = MeasureProof::from_vars(&vars("0123456789ab", "0", ""), &exe_abc(dir.path())).unwrap();
+        let (_one, first) = saved_with("scan 1");
+        let (_two, second) = saved_with("scan 1");
+        let mut gate = MeasureGate::with(proof, "scan 1".to_string(), None).unwrap();
+        gate.check(&first).unwrap();
+        gate.check(&second).unwrap();
+        let lines = gate.proof().lines();
+        assert_eq!(lines.len(), 3, "{lines:?}");
+        assert!(lines[0].starts_with("PROVA commit=0123456789ab"), "{lines:?}");
+        for (line, model) in lines[1..].iter().zip([&first, &second]) {
+            assert!(line.starts_with(&format!("PECAS {}: compilado=ainda-nao-ligada", model.display())), "{line}");
+            assert!(line.ends_with("conferencia=ligada"), "{line}");
+        }
     }
 
     #[test]
@@ -390,6 +454,9 @@ mod tests {
         assert_eq!(json["maps"].as_array().unwrap().len(), 2, "one entry per opened map: {json}");
         assert_eq!(json["maps"][0]["path"], first.display().to_string());
         assert_eq!(json["maps"][1]["mark"], "scan 1");
+        assert_eq!(json["maps"][0]["pieces"].as_array().unwrap().len(), 6, "the pieces go in the result: {json}");
+        assert_eq!(json["maps"][0]["pieces"][5]["name"], "conferencia");
+        assert_eq!(json["maps"][0]["pieces"][0]["state"], "ainda não ligada", "a map without vectors has no compiled text: {json}");
         assert_eq!(json["dirty"], true);
         assert_eq!(json["binary_sha256"], ABC);
         let line = gate.proof().line();

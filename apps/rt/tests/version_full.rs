@@ -289,3 +289,118 @@ fn the_diff_comes_from_the_environment_when_git_is_absent() {
     assert!(stdout.contains("cargo:rustc-env=MUSTARD_GIT_DIFF=0123456789ab"), "{stdout}");
     assert!(stdout.contains("cargo:rerun-if-env-changed=MUSTARD_GIT_DIFF"), "{stdout}");
 }
+
+/// O script do pacote Linux, carregado por `source` (só as funções ficam
+/// definidas), com o corpo `body` rodado em `bash` em cima delas; devolve a
+/// saída comum. O `PATH` de `path_first`, quando vem, passa à frente.
+#[cfg(unix)]
+fn run_package_script(body: &str, args: &[&Path], path_first: Option<&Path>) -> String {
+    let script = repo_root().join("packaging/linux/build-deb.sh");
+    let mut cmd = Command::new("bash");
+    cmd.arg("-c").arg(format!("source \"$1\"; shift; {body}")).arg("_").arg(&script).args(args);
+    for var in ["MUSTARD_BUILD_NUMBER", "MUSTARD_GIT_HASH", "MUSTARD_GIT_DIRTY", "MUSTARD_GIT_DATE", "MUSTARD_GIT_DIFF", "GIT_DIR", "GIT_WORK_TREE"] {
+        cmd.env_remove(var);
+    }
+    if let Some(first) = path_first {
+        let rest = std::env::var_os("PATH").unwrap_or_default();
+        let mut paths = vec![first.to_path_buf()];
+        paths.extend(std::env::split_paths(&rest));
+        cmd.env("PATH", std::env::join_paths(paths).expect("a PATH"));
+    }
+    let out = cmd.output().expect("bash runs");
+    assert!(out.status.success(), "o script do pacote saiu com erro: {}", String::from_utf8_lossy(&out.stderr));
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// O que o script do pacote lê da pasta `repo`: o commit, se está suja (`1` ou
+/// vazio), a data e o resumo, nesta ordem.
+#[cfg(unix)]
+fn package_script_stamp(repo: &Path) -> Vec<String> {
+    let body = "read_git_stamp \"$1\"; printf '%s\\n%s\\n%s\\n%s\\n' \"$MUSTARD_GIT_HASH\" \"$MUSTARD_GIT_DIRTY\" \"$MUSTARD_GIT_DATE\" \"$MUSTARD_GIT_DIFF\"";
+    run_package_script(body, &[repo], None).lines().map(str::to_string).collect()
+}
+
+/// O script do pacote e o `build.rs` leem o mesmo estado da mesma pasta: o
+/// mesmo commit, o mesmo sujo e o mesmo resumo, com a pasta limpa, com um
+/// arquivo rastreado mudado, com SÓ um arquivo novo (que o `git diff --quiet`
+/// de antes não via) e com os dois.
+#[cfg(unix)]
+#[test]
+fn the_package_script_reads_the_same_state_as_the_build_script() {
+    let (_tmp, root, bin) = committed_project_with_build_script();
+    let commit = git_in(&root, &["rev-parse", "--short=12", "HEAD"]);
+    let date = git_in(&root, &["log", "-1", "--format=%cs"]);
+    let mut seen: Vec<String> = Vec::new();
+    for (name, setup) in [
+        ("limpa", Box::new(|_: &Path| {}) as Box<dyn Fn(&Path)>),
+        ("rastreado mudado", Box::new(|root: &Path| std::fs::write(root.join("LEIAME.md"), "dois\n").expect("write"))),
+        ("só arquivo novo", Box::new(|root: &Path| std::fs::write(root.join("novo.md"), "texto novo\n").expect("write"))),
+        ("os dois", Box::new(|root: &Path| {
+            std::fs::write(root.join("LEIAME.md"), "tres  \n\n").expect("write");
+            std::fs::create_dir_all(root.join("pasta")).expect("mkdir");
+            std::fs::write(root.join("pasta/b.md"), "b\n").expect("write");
+            std::fs::write(root.join("a.md"), "a\n").expect("write");
+        })),
+    ] {
+        git_in(&root, &["checkout", "-q", "--", "."]);
+        git_in(&root, &["clean", "-q", "-f", "-d"]);
+        setup(&root);
+        let (full, diff) = run_build_rs_in_repository(&bin, &root);
+        let stamp = package_script_stamp(&root);
+        let dirty = if full.contains("-dirty") { "1" } else { "" };
+        assert_eq!(stamp, [commit.as_str(), dirty, date.as_str(), diff.as_str()], "pasta {name}");
+        seen.push(diff);
+    }
+    assert!(seen[0].is_empty() && seen[1..].iter().all(|diff| !diff.is_empty()), "só a pasta limpa tem resumo vazio: {seen:?}");
+    assert_eq!(seen.len(), seen.iter().collect::<std::collections::BTreeSet<_>>().len(), "cada estado tem o seu resumo: {seen:?}");
+}
+
+/// Uma pasta que não é repositório, ou um repositório sem commit, deixa as
+/// quatro variáveis vazias: o script não afirma nada sobre o que não leu.
+#[cfg(unix)]
+#[test]
+fn the_package_script_leaves_the_stamp_empty_without_a_repository_or_a_commit() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let plain = tmp.path().join("sem-git");
+    std::fs::create_dir_all(&plain).expect("mkdir");
+    std::fs::write(plain.join("a.md"), "a\n").expect("write");
+    assert_eq!(package_script_stamp(&plain), ["", "", "", ""], "uma pasta fora de repositório");
+    let empty = tmp.path().join("sem-commit");
+    std::fs::create_dir_all(&empty).expect("mkdir");
+    git_in(&empty, &["init", "-q"]);
+    std::fs::write(empty.join("a.md"), "a\n").expect("write");
+    assert_eq!(package_script_stamp(&empty), ["", "", "", ""], "um repositório sem commit");
+}
+
+/// O `cargo build` do pacote recebe as quatro variáveis, lidas do repositório
+/// original: o commit, o sujo, a data e o resumo de um código que só tinha um
+/// arquivo novo. O `cargo` de mentira só escreve o que viu.
+#[cfg(unix)]
+#[test]
+fn the_package_build_hands_the_four_variables_to_cargo() {
+    use std::os::unix::fs::PermissionsExt;
+    let (tmp, root, bin) = committed_project_with_build_script();
+    std::fs::write(root.join("novo.md"), "texto novo\n").expect("write");
+    let (_full, diff) = run_build_rs_in_repository(&bin, &root);
+    let fake = tmp.path().join("fake-bin");
+    std::fs::create_dir_all(&fake).expect("mkdir");
+    let cargo = fake.join("cargo");
+    std::fs::write(&cargo, "#!/bin/sh\nenv | grep '^MUSTARD_' | sort\necho \"args: $*\"\n").expect("write");
+    std::fs::set_permissions(&cargo, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let build_area = tmp.path().join("area");
+    std::fs::create_dir_all(&build_area).expect("mkdir");
+    let body = "BUILD=\"$2\"; CARGO_TARGET=\"$2/t\"; VERSION=1.2.3; read_git_stamp \"$1\"; build_cli";
+    let seen = run_package_script(body, &[&root, &build_area], Some(&fake));
+    let commit = git_in(&root, &["rev-parse", "--short=12", "HEAD"]);
+    let date = git_in(&root, &["log", "-1", "--format=%cs"]);
+    for expected in [
+        format!("MUSTARD_GIT_HASH={commit}"),
+        "MUSTARD_GIT_DIRTY=1".to_string(),
+        format!("MUSTARD_GIT_DATE={date}"),
+        format!("MUSTARD_GIT_DIFF={diff}"),
+        "MUSTARD_RELEASE_VERSION=1.2.3".to_string(),
+        "args: build --release --locked --bin scan --bin mustard-rt --bin mustard".to_string(),
+    ] {
+        assert!(seen.lines().any(|line| line == expected), "falta `{expected}` no que o cargo recebeu:\n{seen}");
+    }
+}

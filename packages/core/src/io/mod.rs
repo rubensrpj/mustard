@@ -1,5 +1,6 @@
 pub mod fs;
 pub mod measure_proof;
+pub mod search_pieces;
 pub mod sha256;
 pub mod tree_state;
 pub mod claude_paths;

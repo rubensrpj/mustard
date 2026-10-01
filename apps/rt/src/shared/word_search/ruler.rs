@@ -480,7 +480,9 @@ fn measure_the_spend_of_the_search() {
     for ((project, half), sum) in &groups {
         eprintln!("GASTO {}", sum.show(&format!("{project} {half}")));
     }
-    eprintln!("{}", gate.proof().line());
+    for line in gate.proof().lines() {
+        eprintln!("{line}");
+    }
 }
 
 #[cfg(test)]
@@ -712,6 +714,7 @@ mod tests {
         let gate = check_maps(gate, std::slice::from_ref(&same)).expect("the map of the same mark passes");
         let maps = &gate.proof().maps;
         assert_eq!(maps.len(), 1, "one entry per opened map");
+        assert_eq!(maps[0].pieces.len(), 6, "the map carries the state of every piece of the search");
         assert_eq!((maps[0].path.as_str(), maps[0].mark.as_str()), (same.to_str().expect("a path"), "scan 1"));
     }
 
