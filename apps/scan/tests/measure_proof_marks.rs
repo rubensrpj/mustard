@@ -3,8 +3,8 @@
 //! de verdade: o mapa que o próprio scan grava passa na conferência, em todos
 //! os blocos, e o mapa gravado com a marca de outra compilação é recusado
 //! dizendo as duas marcas. A árvore cujo mapa é de outra compilação é refeita
-//! pelo mesmo scan e passa a ser aceita, e o mapa refeito ganha, como o das
-//! sessões, a história de cada declaração lida do git.
+//! pelo mesmo scan e passa a ser aceita, e o mapa refeito volta com a história
+//! de cada declaração já lida do git.
 
 #[path = "support/model.rs"]
 mod model;
@@ -107,13 +107,14 @@ fn lineage_of(map: &Path, file: &str) -> Option<FileLineage> {
     store::read_at(map).ok()?.lineage.into_iter().find(|lineage| lineage.path == file)
 }
 
-/// O mapa refeito para a medida é o das sessões: o scan e, depois dele, a
-/// leitura da história de cada declaração. Num repositório com dois commits
-/// sobre uma função, o banco refeito acaba com linhas em `lineage_decls`,
-/// com os títulos dos dois commits, e a linha de peças da prova passa a dizer
-/// que o histórico está ligado; o scan sozinho deixaria `lineage_*` vazio.
+/// O mapa refeito para a medida tem o scan e, depois dele, a leitura da
+/// história de cada declaração, esperada até o fim: num repositório com dois
+/// commits sobre uma função, a conta de `lineage_decls` feita logo na volta de
+/// `rebuild_map`, sem esperar, já traz as linhas, com os títulos dos dois
+/// commits, e a linha de peças da prova diz que o histórico está ligado. O
+/// scan sozinho deixaria `lineage_*` vazio.
 #[test]
-fn a_map_rebuilt_for_a_measure_gets_the_history_of_each_declaration_like_the_sessions() {
+fn a_map_rebuilt_for_a_measure_has_the_history_of_each_declaration_the_moment_the_call_returns() {
     let temp = tempfile::Builder::new().prefix("scan-measure-history-").tempdir().unwrap();
     let dir = temp.path();
     git(dir, &["init", "-q", "-b", "main"]);
@@ -129,33 +130,16 @@ fn a_map_rebuilt_for_a_measure_gets_the_history_of_each_declaration_like_the_ses
 
     rebuild_map(dir, &Scan::new(env!("CARGO_BIN_EXE_scan"))).unwrap_or_else(|e| panic!("o scan não refez a árvore: {e}"));
 
-    let titles = || {
-        let lineage = lineage_of(&map, "src/a.rs")?;
-        let alpha = lineage.declarations.iter().find(|decl| decl.name == "alpha")?;
-        let titles: Vec<String> =
-            alpha.commits.iter().filter_map(|change| lineage.commits.iter().find(|commit| commit.id == change.id)).map(|commit| commit.title.clone()).collect();
-        Some(titles).filter(|titles| !titles.is_empty())
-    };
-    let mut found = None;
-    for _ in 0..300 {
-        found = titles();
-        if found.is_some() {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
-    assert_eq!(found, Some(vec!["muda o alpha".to_string(), "cria o alpha".to_string()]), "a leitura da história começou depois do scan e chegou ao mapa refeito");
+    let conn = rusqlite::Connection::open(&map).unwrap();
+    let rows: i64 = conn.query_row("SELECT COUNT(*) FROM lineage_decls", [], |row| row.get(0)).unwrap();
+    assert!(rows > 0, "o banco refeito volta com a história de cada declaração, sem esperar por ela");
+    let lineage = lineage_of(&map, "src/a.rs").expect("a história do arquivo chegou antes da volta");
+    let alpha = lineage.declarations.iter().find(|decl| decl.name == "alpha").expect("a história do alpha chegou");
+    let titles: Vec<String> =
+        alpha.commits.iter().filter_map(|change| lineage.commits.iter().find(|commit| commit.id == change.id)).map(|commit| commit.title.clone()).collect();
+    assert_eq!(titles, ["muda o alpha", "cria o alpha"]);
 
     let proof = check_map(&map, &model::scan_format()).unwrap_or_else(|refusal| panic!("o mapa refeito é recusado: {refusal}"));
     let line = proof.pieces_line();
     assert!(line.contains("historico=ligada"), "a linha de peças diz que o histórico chegou: {line}");
-
-    // A leitura termina antes de a pasta temporária sair.
-    let lock = mustard_core::io::map_lineage::reading_lock_path(&map);
-    for _ in 0..100 {
-        if mustard_core::io::fs::lock::LockedFile::exclusive_if_free(&lock).ok().flatten().is_some() {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
 }

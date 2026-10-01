@@ -165,8 +165,7 @@ impl Scan {
     /// non-zero exit or a report that does not parse.
     pub fn history(&self, root: &Path, out: &Path, file: &str, moves: usize) -> Result<HistoryReport> {
         let stdout = self.run(&history_args(root, out, file, moves))?;
-        let line = stdout.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("{}");
-        serde_json::from_str(line).map_err(|e| Error::check_failed(format!("scan history report: {e}")))
+        serde_json::from_str(last_line(&stdout)).map_err(|e| Error::check_failed(format!("scan history report: {e}")))
     }
 
     /// Como [`Self::scan`], e, com o mapa gravado, começa em segundo plano a
@@ -179,6 +178,26 @@ impl Scan {
         let report = self.scan(root, out)?;
         let _ = self.read_history_in_background(root, out);
         Ok(report)
+    }
+
+    /// Lê a história de todo arquivo do mapa em `out` que ainda não a tem
+    /// (`grain history-all`) e só volta quando a leitura acaba: quem pergunta
+    /// ao mapa depois lê a história inteira, não a que já chegou. É o pedido
+    /// de [`Self::read_history_in_background`], esperado em vez de solto.
+    ///
+    /// # Errors
+    /// [`Error::Io`] if the tool cannot be spawned, [`Error::CheckFailed`] on a
+    /// non-zero exit, ou quando outra leitura do mesmo mapa está em andamento:
+    /// o scan sai sem ler nada, e a história fica pela metade.
+    pub fn read_history(&self, root: &Path, out: &Path) -> Result<()> {
+        let stdout = self.run(&history_all_args(root, out))?;
+        if serde_json::from_str::<ReadingReport>(last_line(&stdout)).is_ok_and(|report| report.busy) {
+            return Err(Error::check_failed(format!(
+                "scan history-all: outra leitura da história de {} está em andamento e esta não leu nada",
+                out.display()
+            )));
+        }
+        Ok(())
     }
 
     /// Começa, em outro processo que segue depois deste, a leitura da história
@@ -305,14 +324,28 @@ pub struct ScanReport {
     pub dictionary: bool,
 }
 
+/// What `scan history-all --json` reports on its last stdout line that this
+/// side reads: whether another reading of the same map was running, so this
+/// one read nothing.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct ReadingReport {
+    busy: bool,
+}
+
+/// The last non-empty line of what a `--json` run printed, where the report
+/// is; `{}` when it printed nothing.
+fn last_line(stdout: &str) -> &str {
+    stdout.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("{}")
+}
+
 /// The report a `scan --json` run printed: its last non-empty line.
 fn parse_scan_report(stdout: &str) -> Result<ScanReport> {
-    let line = stdout.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("{}");
-    serde_json::from_str(line).map_err(|e| Error::check_failed(format!("scan report: {e}")))
+    serde_json::from_str(last_line(stdout)).map_err(|e| Error::check_failed(format!("scan report: {e}")))
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::path::PathBuf;
 
@@ -339,7 +372,7 @@ mod tests {
     /// processo, e o arquivo que este processo mantém aberto para escrita o
     /// Linux recusa rodar ("Text file busy").
     #[cfg(unix)]
-    fn script_scan(dir: &Path, name: &str, body: &str) -> Scan {
+    pub(crate) fn script_scan(dir: &Path, name: &str, body: &str) -> Scan {
         let path = dir.join(name);
         let written = Command::new("/bin/sh")
             .args(["-c", "printf '%s' \"$2\" > \"$1\" && chmod 755 \"$1\"", "sh"])
@@ -428,6 +461,54 @@ mod tests {
         assert_eq!(report.files, 2);
         assert!(wait_until(|| logged(&log).len() == 4), "{:?}", logged(&log));
         assert_eq!(logged(&log)[2..], ["scan", "history-all"], "the scan that passed starts the reading after itself");
+    }
+
+    /// A leitura esperada só volta com o processo acabado: o scan de mentira
+    /// demora para terminar e anota o fim, e a chamada, ao voltar, já o
+    /// encontra no registro, sem esperar por ele.
+    #[cfg(unix)]
+    #[test]
+    fn reading_the_history_returns_only_when_the_process_has_finished() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("log");
+        let scan = script_scan(
+            dir.path(),
+            "slow",
+            &format!("echo \"$1\" >> '{log}'\nsleep 1\necho finished >> '{log}'\necho '{{\"ok\":true,\"busy\":false}}'", log = log.display()),
+        );
+
+        scan.read_history(dir.path(), &dir.path().join("m.db")).expect("the reading finishes");
+
+        assert_eq!(logged(&log), ["history-all", "finished"], "the call came back before the process finished");
+    }
+
+    /// O scan que falha na leitura devolve o erro, com o que ele disse; o que
+    /// não existe também.
+    #[cfg(unix)]
+    #[test]
+    fn reading_the_history_with_a_scan_that_fails_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let scan = script_scan(dir.path(), "fails", "echo 'git quebrou' >&2\nexit 3");
+        let error = scan.read_history(dir.path(), &dir.path().join("m.db")).unwrap_err().to_string();
+        assert!(error.contains("history-all") && error.contains("git quebrou"), "{error}");
+        assert!(Scan::new(dir.path().join("no-such-scan").to_string_lossy()).read_history(dir.path(), &dir.path().join("m.db")).is_err());
+    }
+
+    /// Outra leitura do mesmo mapa em andamento faz o scan sair com sucesso sem
+    /// ler nada, e a história segue pela metade: isso é erro. A leitura que
+    /// leu, ou que não disse nada, passa.
+    #[cfg(unix)]
+    #[test]
+    fn reading_the_history_while_another_reading_holds_the_map_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("m.db");
+        let busy = script_scan(dir.path(), "busy", "echo '{\"ok\":true,\"busy\":true,\"files\":0}'");
+        let error = busy.read_history(dir.path(), &out).unwrap_err().to_string();
+        assert!(error.contains("outra leitura") && error.contains("não leu nada"), "{error}");
+        let read = script_scan(dir.path(), "read", "echo '{\"ok\":true,\"busy\":false,\"files\":4}'");
+        read.read_history(dir.path(), &out).expect("a reading that read is not an error");
+        let silent = script_scan(dir.path(), "silent", "true");
+        silent.read_history(dir.path(), &out).expect("a scan that says nothing and exits clean is not an error");
     }
 
     #[test]

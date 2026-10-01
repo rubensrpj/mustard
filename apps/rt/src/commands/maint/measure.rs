@@ -15,8 +15,10 @@
 //! - o mapa de cada projeto da pasta de árvores (`--trees`, ou `SPEND_TREES`
 //!   em `--env`) é refeito a cada medida, com esse `scan`, no mesmo passo do
 //!   mapa das sessões: o banco velho sai antes, o scan que falha recusa a
-//!   medida, e a leitura da história de cada declaração começa em segundo
-//!   plano depois dele; a linha `PECAS` diz se a história já chegou;
+//!   medida, e a leitura da história de cada declaração roda depois dele e
+//!   acaba antes de a régua começar (a que falha, ou que outra leitura do
+//!   mesmo mapa impede, recusa a medida); a linha `PECAS` diz se a história
+//!   chegou;
 //! - a prova diz também qual versão do gancho as sessões do usuário rodam: o
 //!   commit que o `mustard-rt` do plugin instalado carimbou em si;
 //! - ao terminar, só as três pastas de medida usadas por último ficam.
@@ -1179,9 +1181,7 @@ mod tests {
         );
     }
 
-    /// As linhas que `fake_scan` anotou em `log`, esperando até `count` delas:
-    /// a leitura da história roda em outro processo, que segue depois do
-    /// scan.
+    /// As linhas que `fake_scan` anotou em `log`, esperando até `count` delas.
     #[cfg(unix)]
     fn scan_calls(log: &Path, count: usize) -> Vec<String> {
         let read = || std::fs::read_to_string(log).unwrap_or_default().lines().map(str::to_string).collect::<Vec<_>>();
@@ -1318,9 +1318,8 @@ mod tests {
         World { host: Host { cargo: Some(cargo), config: Some(config) }, _dir: dir, repo, base, trees, log, fail }
     }
 
-    /// Os passos que a medida deu, na ordem, sem a leitura da história: ela
-    /// roda em outro processo, depois do scan, e chega ao registro quando
-    /// puder.
+    /// Os passos que a medida deu, na ordem, sem a leitura da história, que
+    /// o scan de mentira anota junto dos outros passos.
     #[cfg(unix)]
     fn logged(world: &World) -> Vec<String> {
         let all = std::fs::read_to_string(&world.log).unwrap_or_default();
@@ -1354,6 +1353,55 @@ mod tests {
         let host = Host { cargo: world.host.cargo.clone(), config: Some(bare.path().to_path_buf()) };
         let report = measure_in(&world.repo, &world.base, &asked, &host).unwrap();
         assert!(report.contains("gancho=não instalado"), "{report}");
+    }
+
+    /// Troca o scan do mundo por um cuja leitura da história faz `history`,
+    /// depois de anotar o pedido; o scan grava o banco novo como o de sempre.
+    #[cfg(unix)]
+    fn replace_history_reading(world: &World, history: &str) {
+        let scan = world.host.cargo.as_ref().expect("the world has a cargo").with_file_name("scan");
+        crate::executable::write_executable(
+            &scan,
+            &format!(
+                "#!/bin/sh\necho \"$1 $2\" >> '{log}'\nif [ \"$1\" = history-all ]; then {history}; exit 0; fi\nmkdir -p \"$(dirname \"$4\")\" && printf novo > \"$4\"\necho '{{\"full\":true,\"read\":[],\"files\":1}}'\n",
+                log = world.log.display()
+            ),
+        );
+    }
+
+    /// A régua só começa depois de a leitura da história de cada mapa
+    /// acabar: o scan de mentira demora para terminar a leitura e anota o fim,
+    /// e o fim vem antes do teste e da régua.
+    #[cfg(unix)]
+    #[test]
+    fn the_ruler_starts_only_after_the_history_of_each_map_was_read_to_the_end() {
+        let world = world();
+        replace_history_reading(&world, &format!("sleep 1; echo history-finished >> '{}'", world.log.display()));
+        let mut asked = opts("measure_it");
+        asked.trees = Some(world.trees.clone());
+
+        measure_in(&world.repo, &world.base, &asked, &world.host).unwrap();
+
+        let tree = world.trees.join("p").display().to_string();
+        let steps: Vec<String> = std::fs::read_to_string(&world.log).unwrap().lines().map(str::to_string).collect();
+        assert_eq!(steps, ["cargo build".to_string(), format!("scan {tree}"), format!("history-all {tree}"), "history-finished".into(), "cargo test".into(), "ruler".into()]);
+    }
+
+    /// A leitura da história que falha recusa a medida, dizendo a árvore e o
+    /// que o scan disse: nem teste nem régua rodam sobre o mapa pela metade.
+    #[cfg(unix)]
+    #[test]
+    fn a_history_that_fails_to_be_read_refuses_the_measure_before_the_ruler_runs() {
+        let world = world();
+        replace_history_reading(&world, "echo 'git quebrou' >&2; exit 3");
+        let mut asked = opts("measure_it");
+        asked.trees = Some(world.trees.clone());
+
+        let refusal = measure_in(&world.repo, &world.base, &asked, &world.host).unwrap_err();
+
+        assert!(refusal.contains("o scan não leu a história do mapa") && refusal.contains(&world.trees.join("p").display().to_string()) && refusal.contains("git quebrou"), "{refusal}");
+        let steps = logged(&world);
+        assert!(!steps.contains(&"ruler".to_string()) && !steps.contains(&"cargo test".to_string()), "{steps:?}");
     }
 
     /// O scan que falha recusa a medida: nenhuma régua roda sobre o banco que
