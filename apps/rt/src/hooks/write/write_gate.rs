@@ -1566,6 +1566,8 @@ mod tests {
             assert!(reason.starts_with("Cravado."), "{tool_input}: {reason}");
             assert!(reason.contains("src/frete.rs\n  2-6 calcular_frete (2)"), "{tool_input}: {reason}");
             assert!(reason.contains("src/pedido.rs\n  1-4 fechar_pedido (2)"), "{tool_input}: {reason}");
+            assert!(reason.contains("\n    2 | pub fn calcular_frete(peso: u32) -> u32 {\n"), "the first function carries its code: {tool_input}: {reason}");
+            assert!(!reason.contains("| pub fn fechar_pedido"), "the second comes with its line only: {tool_input}: {reason}");
         }
     }
 
@@ -1722,7 +1724,7 @@ mod tests {
         std::fs::write(copy.join("src/frete.rs"), format!("// a\n// b\n// c\n{}", word_search::fixture::FRETE)).expect("edit");
         let tool_input = json!({ "pattern": "calcular_frete", "path": abs(&copy, "src"), "output_mode": "content" });
         let reason = refused(hook_in(&copy, "Grep", tool_input, Some("copia")), "a search in the working copy");
-        assert!(reason.contains("src/frete.rs (mudado nesta onda)\n  5-9 calcular_frete (5)"), "{reason}");
+        assert!(reason.contains("src/frete.rs (mudado depois do mapa)\n  5-9 calcular_frete (5)"), "{reason}");
         assert!(reason.contains("src/pedido.rs\n  1-4 fechar_pedido (2)"), "{reason}");
         word_search::fixture::git(&root, &["worktree", "remove", "--force", &copy.to_string_lossy()]);
     }

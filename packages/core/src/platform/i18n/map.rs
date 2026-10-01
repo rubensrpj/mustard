@@ -339,12 +339,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("map.answer.lines", Locale::EnUs) => {
             "Each function comes with its first and last line, and the lines found in parentheses:"
         }
-        // A mesma frase, para a resposta que traz também o código de cada função.
+        // A mesma frase, para a resposta que traz também o código da primeira função.
         ("map.answer.lines_code", Locale::PtBr) => {
-            "Cada função vem com o começo e o fim, as linhas achadas entre parênteses e o código numerado, quando cabe:"
+            "Cada função vem com o começo e o fim, e as linhas achadas entre parênteses. Só a primeira traz o código numerado, quando cabe:"
         }
         ("map.answer.lines_code", Locale::EnUs) => {
-            "Each function comes with its first and last line, the lines found in parentheses and its numbered code, when it fits:"
+            "Each function comes with its first and last line, and the lines found in parentheses. Only the first one carries its numbered code, when it fits:"
         }
         ("map.answer.map_only", Locale::PtBr) => {
             "A busca comum não acharia nenhuma linha com esse texto. O mapa aponta estes arquivos: {files}."
@@ -352,8 +352,10 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("map.answer.map_only", Locale::EnUs) => {
             "The plain search would find no line with this text. The map points to these files: {files}."
         }
-        ("map.answer.changed", Locale::PtBr) => "mudado nesta onda",
-        ("map.answer.changed", Locale::EnUs) => "changed in this wave",
+        // O arquivo que mudou depois da passada do mapa, com ou sem obra em
+        // andamento no projeto.
+        ("map.answer.changed", Locale::PtBr) => "mudado depois do mapa",
+        ("map.answer.changed", Locale::EnUs) => "changed since the map",
         ("map.answer.rest", Locale::PtBr) => {
             "Fora do corte, lugares: {places}, arquivos: {files}. Repita a busca para ver a lista inteira."
         }
@@ -458,7 +460,7 @@ mod tests {
             include_str!("map.rs"),
             super::PREFIXES,
             80,
-            0x28d1_10b2_1e48_1467,
+            0xa6a8_7e20_fdc1_8247,
         );
     }
 
@@ -623,6 +625,21 @@ mod tests {
             assert!(again.iter().all(|phrase| !rest.contains(phrase)), "{lang:?}: {rest}");
             assert!(translate("map.answer.more_lines", lang).contains("{count}"), "{lang:?}");
         }
+    }
+
+    /// O rótulo do arquivo que mudou depois da passada do mapa vale com ou sem
+    /// obra em andamento: nos dois idiomas diz "depois do mapa" e não cita
+    /// onda. A frase do código diz que só a primeira função o traz.
+    #[test]
+    fn the_changed_label_is_about_the_map_and_the_code_line_says_only_the_first_carries_it() {
+        assert_eq!(translate("map.answer.changed", Locale::PtBr), "mudado depois do mapa");
+        assert_eq!(translate("map.answer.changed", Locale::EnUs), "changed since the map");
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let label = translate("map.answer.changed", lang);
+            assert!(!label.contains("onda") && !label.contains("wave"), "{lang:?}: {label}");
+        }
+        assert!(translate("map.answer.lines_code", Locale::PtBr).contains("Só a primeira traz o código numerado"));
+        assert!(translate("map.answer.lines_code", Locale::EnUs).contains("Only the first one carries its numbered code"));
     }
 
     /// A dica do mapa cita o comando com o texto da busca de sempre, sem a

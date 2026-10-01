@@ -798,6 +798,8 @@ mod tests {
             assert!(reason.starts_with("Cravado."), "{command}: {reason}");
             assert!(reason.contains("src/frete.rs\n  2-6 calcular_frete (2)"), "{command}: {reason}");
             assert!(reason.contains("src/pedido.rs\n  1-4 fechar_pedido (2)"), "{command}: {reason}");
+            assert!(reason.contains("\n    2 | pub fn calcular_frete(peso: u32) -> u32 {\n"), "the first function carries its code: {command}: {reason}");
+            assert!(!reason.contains("| pub fn fechar_pedido"), "the second comes with its line only: {command}: {reason}");
         }
     }
 
@@ -1360,7 +1362,7 @@ mod tests {
         let copy = std::fs::canonicalize(&copy).expect("copy");
         std::fs::write(copy.join("src/frete.rs"), format!("// a\n// b\n{}", word_search::fixture::FRETE)).expect("edit");
         let reason = refused(run_in(&copy, "grep -rn calcular_frete src", Some("copia")), "a search in the working copy");
-        assert!(reason.contains("src/frete.rs (mudado nesta onda)\n  4-8 calcular_frete (4)"), "{reason}");
+        assert!(reason.contains("src/frete.rs (mudado depois do mapa)\n  4-8 calcular_frete (4)"), "{reason}");
         assert!(reason.contains("src/pedido.rs\n  1-4 fechar_pedido (2)"), "{reason}");
         word_search::fixture::git(&root, &["worktree", "remove", "--force", &copy.to_string_lossy()]);
     }

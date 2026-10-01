@@ -90,12 +90,12 @@ const ENTRIES_PER_FILE: usize = 8;
 /// Quantos caracteres a linha solta mostra.
 const LOOSE_WIDTH: usize = 100;
 
-/// Quantas linhas de cada função a resposta traz, numeradas, sob a entrada
+/// Quantas linhas da primeira função a resposta traz, numeradas, sob a entrada
 /// dela; a função mais longa é cortada, com a contagem do que ficou de fora.
 const SNIPPET_LINES_PER_FN: usize = 40;
 
-/// O teto de caracteres de código em toda a resposta: passado ele, a função
-/// seguinte vem só com a linha dela.
+/// O teto de caracteres do código da resposta, que só a primeira função
+/// traz: passado ele, essa função também vem só com a linha dela.
 const SNIPPET_BUDGET: usize = 5000;
 
 /// O teto de caracteres da resposta inteira, com o código e os avisos: abaixo
@@ -882,16 +882,21 @@ struct Entry {
     line: u64,
     text: String,
     places: usize,
+    /// O começo e o fim da função; `None` nas linhas soltas.
+    span: Option<(u64, u64)>,
     /// As linhas numeradas da função, cada uma numa linha da resposta, sob a
-    /// entrada dela; vazio nas linhas soltas.
+    /// entrada dela; vazio em toda entrada que não é a primeira função da
+    /// resposta.
     body: String,
 }
 
-/// As entradas do arquivo `file`: cada função com as linhas achadas nela e o
-/// código dela (até [`SNIPPET_LINES_PER_FN`] linhas) e cada linha solta, em
-/// ordem de linha, até [`ENTRIES_PER_FILE`]; e quantos lugares ficaram de
-/// fora. `None` no arquivo que não se lê mais.
-fn entries_of(scene: &Scene<'_>, tree: &Path, file: &FileHits) -> Option<(Vec<Entry>, usize, bool)> {
+/// As entradas do arquivo `file`: cada função com as linhas achadas nela e
+/// cada linha solta, em ordem de linha, até [`ENTRIES_PER_FILE`]; e quantos
+/// lugares ficaram de fora. A primeira função de toda a resposta traz o código
+/// dela (até [`SNIPPET_LINES_PER_FN`] linhas): `code_given` diz se alguma
+/// função de um arquivo anterior já o trouxe, e passa a dizer que sim quando
+/// este arquivo o traz. `None` no arquivo que não se lê mais.
+fn entries_of(scene: &Scene<'_>, tree: &Path, file: &FileHits, code_given: &mut bool) -> Option<(Vec<Entry>, usize, bool)> {
     let view = view_of(scene, tree, &file.path)?;
     let mut inside: BTreeMap<usize, Vec<u64>> = BTreeMap::new();
     let mut loose: Vec<u64> = Vec::new();
@@ -908,19 +913,26 @@ fn entries_of(scene: &Scene<'_>, tree: &Path, file: &FileHits) -> Option<(Vec<En
             let shown: Vec<String> = lines.iter().take(HITS_SHOWN).map(u64::to_string).collect();
             let more = if lines.len() > HITS_SHOWN { ", …" } else { "" };
             let text = format!("{}-{} {} ({}{more})", part.line, part.end_line, part.name, shown.join(", "));
-            let body = numbered_body(scene.lang, &view.text, (part.line, part.end_line));
-            entries.push(Entry { line: part.line, text, places: lines.len(), body });
+            let span = Some((part.line, part.end_line));
+            entries.push(Entry { line: part.line, text, places: lines.len(), span, body: String::new() });
         }
     }
     let rows: Vec<&str> = if loose.is_empty() { Vec::new() } else { view.text.lines().collect() };
     for line in loose {
         let row = rows.get(usize::try_from(line).unwrap_or(usize::MAX).saturating_sub(1)).copied().unwrap_or_default();
         let snippet: String = row.trim().chars().take(LOOSE_WIDTH).collect();
-        entries.push(Entry { line, text: format!("{line}: {snippet}"), places: 1, body: String::new() });
+        entries.push(Entry { line, text: format!("{line}: {snippet}"), places: 1, span: None, body: String::new() });
     }
     entries.sort_by_key(|entry| entry.line);
     let dropped: usize = entries.iter().skip(ENTRIES_PER_FILE).map(|entry| entry.places).sum();
     entries.truncate(ENTRIES_PER_FILE);
+    if !*code_given
+        && let Some(first) = entries.iter_mut().find(|entry| entry.span.is_some())
+        && let Some(span) = first.span
+    {
+        first.body = numbered_body(scene.lang, &view.text, span);
+        *code_given = true;
+    }
     Some((entries, dropped, view.changed))
 }
 
@@ -1053,13 +1065,14 @@ fn moved(view: &View, piece: &Piece) -> Option<(u64, u64)> {
         .map(|part| (part.line, part.end_line))
 }
 
-/// A resposta inteira: a marca, os arquivos da triagem com as funções, o código
-/// delas e as linhas soltas, a contagem do que o corte deixou de fora e os
-/// avisos `warnings`; com peças entregues pelo filtro, só elas
-/// ([`compose_delivered`]), sem o código. O código de cada função entra até
-/// [`SNIPPET_BUDGET`] caracteres na resposta toda, e a resposta inteira fica
-/// abaixo de [`ANSWER_LIMIT`]. `None` quando a busca não achou linha e o mapa
-/// não aponta arquivo.
+/// A resposta inteira: a marca, os arquivos da triagem com as funções, as
+/// linhas soltas, o código da primeira função, a contagem do que o corte
+/// deixou de fora e os avisos `warnings`; com peças entregues pelo filtro, só
+/// elas ([`compose_delivered`]), sem o código. As demais funções, do mesmo
+/// arquivo ou de outros, vêm só com o começo, o fim, o nome e as linhas
+/// achadas. O código da primeira entra até [`SNIPPET_BUDGET`] caracteres, e a
+/// resposta inteira fica abaixo de [`ANSWER_LIMIT`]. `None` quando a busca não
+/// achou linha e o mapa não aponta arquivo.
 fn compose(
     scene: &Scene<'_>,
     tree: &Path,
@@ -1088,9 +1101,9 @@ fn compose(
 }
 
 /// A resposta da triagem sem peças do filtro: abre com `head` e traz, de cada
-/// arquivo mostrado, as entradas dele. O código das funções ocupa o que sobra
-/// do teto da resposta depois do resto do texto e dos `tail_chars` caracteres
-/// dos avisos que vão no fim.
+/// arquivo mostrado, as entradas dele; só a primeira função traz o código. O
+/// código ocupa o que sobra do teto da resposta depois do resto do texto e dos
+/// `tail_chars` caracteres dos avisos que vão no fim.
 fn compose_found(
     scene: &Scene<'_>,
     tree: &Path,
@@ -1118,8 +1131,9 @@ fn compose_found(
     let mut places: usize = left.iter().map(|file| file.lines.len()).sum();
     let mut cut_files = left.len();
     let mut blocks: Vec<(&str, bool, Vec<Entry>)> = Vec::new();
+    let mut code_given = false;
     for file in shown {
-        let Some((entries, dropped, changed)) = entries_of(scene, tree, file) else {
+        let Some((entries, dropped, changed)) = entries_of(scene, tree, file, &mut code_given) else {
             places += file.lines.len();
             cut_files += 1;
             continue;
@@ -1130,13 +1144,12 @@ fn compose_found(
         }
         blocks.push((file.path.as_str(), changed, entries));
     }
-    // O texto com `room` caracteres de código: cada função traz o dela
-    // enquanto couber, na ordem da resposta.
+    // O texto com `room` caracteres para o código da primeira função: ele
+    // entra se couber, e senão essa função vem só com a linha dela.
     let render = |room: usize| -> String {
         let mut text = out.clone();
         text.push('\n');
         text.push_str(&say("map.answer.lines_code", scene.lang, &[]));
-        let mut used = 0usize;
         for (path, changed, entries) in &blocks {
             text.push('\n');
             text.push_str(path);
@@ -1148,9 +1161,7 @@ fn compose_found(
             for entry in entries {
                 text.push_str("\n  ");
                 text.push_str(&entry.text);
-                let size = entry.body.chars().count();
-                if size > 0 && used + size <= room {
-                    used += size;
+                if entry.body.chars().count() <= room {
                     text.push_str(&entry.body);
                 }
             }
@@ -1835,7 +1846,8 @@ mod tests {
         let (_dir, root) = fixture::repo("{}");
         std::fs::write(root.join("src/frete.rs"), format!("// a\n// b\n// c\n{}", fixture::FRETE)).expect("edit");
         let text = answer(search_in(&root, &root, &["calcular_frete"], &["src"]));
-        assert!(text.contains("src/frete.rs (mudado nesta onda)\n  5-9 calcular_frete (5)"), "the lines moved by three: {text}");
+        assert!(text.contains("src/frete.rs (mudado depois do mapa)\n  5-9 calcular_frete (5)"), "the lines moved by three: {text}");
+        assert!(!text.contains("nesta onda"), "a project with no wave in progress never reads a wave: {text}");
         assert!(text.contains("src/pedido.rs\n  1-4 fechar_pedido (2)"), "the file the wave did not touch is not flagged: {text}");
     }
 
@@ -1856,7 +1868,7 @@ mod tests {
         let copy = std::fs::canonicalize(&copy).expect("copy");
         std::fs::write(copy.join("src/frete.rs"), format!("// a\n// b\n{}", fixture::FRETE)).expect("edit");
         let text = text_of(search_in(&root, &copy, &["calcular_frete"], &["src"]));
-        assert!(text.contains("src/frete.rs (mudado nesta onda)\n  4-8 calcular_frete (4)"), "{text}");
+        assert!(text.contains("src/frete.rs (mudado depois do mapa)\n  4-8 calcular_frete (4)"), "{text}");
         assert!(text.contains("src/pedido.rs\n  1-4 fechar_pedido (2)"), "{text}");
         let main = text_of(search_in(&root, &root, &["fechar_pedido|calcular_frete"], &["src"]));
         assert!(!main.contains("mudado"), "the main tree was not touched: {main}");
@@ -1899,25 +1911,50 @@ mod tests {
         fixture::repo_with("{}", &[(path.as_str(), text.as_str())], map)
     }
 
-    /// A resposta, cravada ou parcial, traz o código de cada função achada
-    /// sob a entrada dela, com as linhas numeradas como estão no arquivo; a
-    /// linha solta fora de função segue sem código, e a nota parcial traz o
-    /// mesmo código.
+    /// A resposta, cravada ou parcial, traz o código só da primeira função
+    /// achada, sob a entrada dela e com as linhas numeradas como estão no
+    /// arquivo; a função do arquivo seguinte vem só com a entrada, e a linha
+    /// solta fora de função segue sem código.
     #[test]
-    fn the_answer_and_the_partial_note_carry_the_numbered_code_of_each_function() {
+    fn only_the_first_function_of_the_answer_and_of_the_partial_note_carries_the_numbered_code() {
         let (_dir, root) = fixture::repo("{}");
         let text = answer(search_in(&root, &root, &["calcular_frete"], &["."]));
         let frete = "src/frete.rs\n  2-6 calcular_frete (2)\n    2 | pub fn calcular_frete(peso: u32) -> u32 {\n    3 |     // imposto embutido\n    4 |     let base = peso * 2;\n    5 |     base + 10\n    6 | }\n";
         assert!(text.contains(frete), "{text}");
-        let pedido = "src/pedido.rs\n  1-4 fechar_pedido (2)\n    1 | pub fn fechar_pedido(peso: u32) -> u32 {\n    2 |     let frete = calcular_frete(peso);\n    3 |     frete + 1\n    4 | }";
-        assert!(text.contains(pedido), "{text}");
-        assert!(text.contains("docs/notas.md\n  1: O calcular_frete soma o imposto."), "{text}");
+        let rest = "docs/notas.md\n  1: O calcular_frete soma o imposto.\nsrc/pedido.rs\n  1-4 fechar_pedido (2)";
+        assert!(text.contains(rest), "the function of the next file comes with its line only: {text}");
+        assert!(!text.contains("| pub fn fechar_pedido"), "{text}");
         assert!(!text.contains("1 | O calcular_frete"), "a loose line carries no code: {text}");
+        assert_eq!(text.lines().filter(|line| line.starts_with("    ")).count(), 5, "one function carries code: {text}");
 
         let (_partial_dir, partial) = fixture::repo("{}");
         let partial = note(search_in(&partial, &partial, &["imposto"], &["."]));
         assert!(partial.starts_with("Parcial."), "{partial}");
         assert!(partial.contains("src/frete.rs\n  2-6 calcular_frete (3)\n    2 | pub fn calcular_frete(peso: u32) -> u32 {\n    3 |     // imposto embutido\n"), "{partial}");
+        assert_eq!(partial.lines().filter(|line| line.starts_with("    ")).count(), 5, "{partial}");
+    }
+
+    /// Com três funções no mesmo arquivo, só a primeira traz o código, na
+    /// resposta cravada e na nota parcial; a segunda e a terceira vêm só com o
+    /// começo, o fim, o nome e as linhas achadas.
+    #[test]
+    fn the_next_functions_of_the_same_file_come_without_code_in_the_answer_and_in_the_note() {
+        let names: Vec<String> = ["um", "dois", "tres"].iter().map(|n| format!("calcular_etapa_{n}")).collect();
+        let (_dir, root) = repo_with_functions("etapas", &names, 5);
+        let pinned = answer(search_in(&root, &root, &["calcular_etapa"], &["src"]));
+        assert!(pinned.starts_with("Cravado."), "{pinned}");
+        let partial = note(search_in(&root, &root, &["calcular_etapa_um|calcular_etapa_dois|calcular_etapa_tres"], &["src"]));
+        assert!(partial.starts_with("Parcial."), "{partial}");
+        for (kind, text) in [("pinned", pinned), ("partial", partial)] {
+            let first = "\n  1-5 calcular_etapa_um (";
+            let at = text.find(first).unwrap_or_else(|| panic!("{kind}: {text}"));
+            let after = &text[at..];
+            assert!(after.contains("\n    1 | pub fn calcular_etapa_um() {\n    2 |     let a = calcular_passo(1);\n"), "{kind}: the first function carries its code: {text}");
+            assert!(after.contains("\n    5 | }\n  6-10 calcular_etapa_dois ("), "{kind}: the second comes with its line only: {text}");
+            assert!(after.contains("\n  11-15 calcular_etapa_tres ("), "{kind}: {text}");
+            assert!(!text.contains("    6 |") && !text.contains("    11 |"), "{kind}: no code after the first function: {text}");
+            assert_eq!(text.lines().filter(|line| line.starts_with("    ")).count(), 5, "{kind}: {text}");
+        }
     }
 
     /// A função de mais de 40 linhas vem cortada nas 40 primeiras, e a
@@ -1937,28 +1974,49 @@ mod tests {
         assert!(!whole.contains("linhas)"), "and with no count: {whole}");
     }
 
-    /// Os caracteres de código de toda a resposta passam de 5 mil: a função
-    /// seguinte à que estoura o teto vem só com a linha dela. Com seis funções
-    /// de 36 linhas, as três primeiras trazem o código e as outras três, não.
+    /// O código da primeira função passa de 5 mil caracteres (40 linhas
+    /// largas): essa função vem só com a linha dela, e a função seguinte, que
+    /// caberia, também; a primeira, com 40 linhas de largura comum, traz o
+    /// código, e a seguinte não.
     #[test]
-    fn past_the_code_budget_the_next_function_comes_with_its_line_only() {
-        let names: Vec<String> = ["um", "dois", "tres", "quatro", "cinco", "seis"].iter().map(|n| format!("calcular_etapa_{n}")).collect();
-        let (_dir, root) = repo_with_functions("etapas", &names, 36);
-        let text = text_of(search_in(&root, &root, &["calcular_etapa"], &["src"]));
-        let lines: Vec<&str> = text.lines().collect();
-        let entries: Vec<usize> = (0..lines.len()).filter(|&at| lines[at].starts_with("  ") && !lines[at].starts_with("   ") && lines[at].contains("calcular_etapa_")).collect();
-        assert_eq!(entries.len(), 6, "{text}");
-        let with_code: Vec<bool> = entries.iter().map(|&at| lines.get(at + 1).is_some_and(|next| next.starts_with("    "))).collect();
-        assert_eq!(with_code, [true, true, true, false, false, false], "{text}");
-        let code: usize = lines.iter().filter(|line| line.starts_with("    ")).map(|line| line.chars().count() + 1).sum();
-        assert!(code <= SNIPPET_BUDGET, "the code of the whole answer stays under the budget: {code}");
-        assert!(code + 1600 > SNIPPET_BUDGET, "and the fourth function was left out for the budget, not for being short: {code}");
+    fn a_first_function_past_the_code_budget_comes_with_its_line_only_and_so_do_the_others() {
+        let wide = |pad: usize| {
+            let mut text = String::from("pub fn calcular_larga() {\n");
+            for n in 1..39 {
+                text.push_str(&format!("    let a = calcular_passo({n}); // {}\n", "x".repeat(pad)));
+            }
+            text.push_str("}\n");
+            text
+        };
+        let searched = |first: &str| {
+            let text = format!("{first}pub fn calcular_curta() {{\n    calcular_passo(0);\n}}\n");
+            let declarations = serde_json::json!([
+                { "kind": "function", "name": "calcular_larga", "line": 1, "end_line": 40 },
+                { "kind": "function", "name": "calcular_curta", "line": 41, "end_line": 43 },
+            ]);
+            let map = serde_json::json!({ "modules": [{ "path": "src/larga.rs", "language": "rust", "loc": 43, "declarations": declarations }] });
+            let (dir, root) = fixture::repo_with("{}", &[("src/larga.rs", text.as_str())], map);
+            (dir, text_of(search_in(&root, &root, &["calcular_larga|calcular_curta"], &["src"])))
+        };
+        let past = wide(130);
+        assert!(numbered_body(Locale::PtBr, &past, (1, 40)).chars().count() > SNIPPET_BUDGET);
+        let (_past_dir, text) = searched(&past);
+        assert!(text.contains("\n  1-40 calcular_larga (1)\n  41-43 calcular_curta (41)"), "both come with their line only: {text}");
+        assert!(text.lines().all(|line| !line.starts_with("    ")), "{text}");
+
+        let common = wide(10);
+        assert!(numbered_body(Locale::PtBr, &common, (1, 40)).chars().count() <= SNIPPET_BUDGET);
+        let (_common_dir, text) = searched(&common);
+        assert!(text.contains("\n  1-40 calcular_larga (1)\n    1 | pub fn calcular_larga() {\n"), "{text}");
+        assert!(text.contains("\n    40 | }\n  41-43 calcular_curta (41)"), "only the first function carries the code: {text}");
+        assert!(!text.contains("    41 |"), "{text}");
     }
 
     /// A resposta inteira, com o código e o aviso de falta de chave, fica
     /// abaixo de 9 mil caracteres mesmo quando as entradas já ocupam boa parte
-    /// do espaço: o código cabe só no que sobra do teto da resposta, e o teto
-    /// dos 5 mil caracteres de código não é o que segura aqui.
+    /// do espaço: o código da primeira função cabe só no que sobra do teto da
+    /// resposta. Aqui ele passaria do teto sem passar dos 5 mil do código, e
+    /// sai; as outras funções seguem sem código.
     #[test]
     fn the_whole_answer_stays_under_nine_thousand_characters() {
         let mut modules = Vec::new();
@@ -1970,12 +2028,13 @@ mod tests {
             for k in 0..ENTRIES_PER_FILE {
                 let name = format!("calcular_o_frete_do_pedido_da_filial_numero_{f}_etapa_{k}_para_ocupar_espaco_na_resposta");
                 let first = text.lines().count() as u64 + 1;
+                let (rows, pad): (u64, usize) = if (f, k) == (0, 0) { (40, 55) } else { (10, 0) };
                 text.push_str(&format!("pub fn {name}() {{\n"));
-                for n in 1..9 {
-                    text.push_str(&format!("    let frete = calcular_o_frete_do_pedido({n});\n"));
+                for n in 1..rows - 1 {
+                    text.push_str(&format!("    let frete = calcular_o_frete_do_pedido({n}); // {}\n", "x".repeat(pad)));
                 }
                 text.push_str("}\n");
-                declarations.push(serde_json::json!({ "kind": "function", "name": name, "line": first, "end_line": first + 9 }));
+                declarations.push(serde_json::json!({ "kind": "function", "name": name, "line": first, "end_line": first + rows - 1 }));
             }
             modules.push(serde_json::json!({ "path": path, "language": "rust", "loc": 80, "declarations": declarations }));
             files.push((path, text));
@@ -1983,11 +2042,11 @@ mod tests {
         let borrowed: Vec<(&str, &str)> = files.iter().map(|(path, text)| (path.as_str(), text.as_str())).collect();
         let (_dir, root) = fixture::repo_with("{}", &borrowed, serde_json::json!({ "modules": modules }));
         let text = text_of(search_in(&root, &root, &["calcular_o_frete_do_pedido"], &["src"]));
-        let code: usize = text.lines().filter(|line| line.starts_with("    ")).map(|line| line.chars().count() + 1).sum();
-        assert!(code > 0, "the answer carries some code: {text}");
-        let bare = text.chars().count() - code;
-        assert!(bare + SNIPPET_BUDGET > ANSWER_LIMIT, "the code budget alone would pass the limit, so the limit is what holds: {bare}");
+        let first = numbered_body(Locale::PtBr, &files[0].1, (1, 40)).chars().count();
+        assert!(first < SNIPPET_BUDGET, "the code budget alone would let the first function in: {first}");
+        assert!(text.chars().count() + first > ANSWER_LIMIT, "with its code the answer would pass the limit, so the limit is what holds: {}", text.chars().count());
         assert!(text.chars().count() < ANSWER_LIMIT, "{} characters: {text}", text.chars().count());
+        assert!(text.lines().all(|line| !line.starts_with("    ")), "no function carries code: {text}");
         assert!(text.contains("chave"), "the warning of the missing key is inside the count: {text}");
     }
 

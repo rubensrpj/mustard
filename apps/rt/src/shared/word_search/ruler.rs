@@ -523,7 +523,7 @@ mod tests {
     /// sem texto embaixo não é trecho.
     #[test]
     fn a_function_list_shows_its_files_and_no_snippet() {
-        let answer = "Cravado. O mapa achou \"a\" pelo nome. Esta resposta vale no lugar da busca comum.\nCada função vem com o começo e o fim, e as linhas achadas entre parênteses:\nsrc/frete.rs\n  2-6 calcular_frete (2)\nsrc/pedido.rs (mudado nesta onda)\n  1-4 fechar_pedido (2)\nFora do corte, lugares: 3, arquivos: 1. Repita a busca para ver a lista inteira.\nSe este não for o lugar, use suas ferramentas padrões: `Grep`, `Glob` e `Read`.";
+        let answer = "Cravado. O mapa achou \"a\" pelo nome. Esta resposta vale no lugar da busca comum.\nCada função vem com o começo e o fim, e as linhas achadas entre parênteses:\nsrc/frete.rs\n  2-6 calcular_frete (2)\nsrc/pedido.rs (mudado depois do mapa)\n  1-4 fechar_pedido (2)\nFora do corte, lugares: 3, arquivos: 1. Repita a busca para ver a lista inteira.\nSe este não for o lugar, use suas ferramentas padrões: `Grep`, `Glob` e `Read`.";
         let shown = shown_of(answer);
         assert_eq!(shown.files, vec!["src/frete.rs", "src/pedido.rs"]);
         assert!(shown.ranges.is_empty(), "{shown:?}");
