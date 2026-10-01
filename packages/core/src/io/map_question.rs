@@ -67,7 +67,7 @@ mod tests {
 
     use crate::domain::normalize::Languages;
     use crate::domain::search::CANDIDATES;
-    use crate::io::map_search::candidates;
+    use crate::io::map_search::{any_path, candidates};
     use crate::io::project_map::{model_path, open_existing, save_at};
 
     /// As línguas de um projeto com o texto em português e o código em inglês.
@@ -102,7 +102,7 @@ mod tests {
 
     /// Os candidatos da busca com filtro para a pergunta `query`.
     fn whole(dir: &Path, query: &str) -> Vec<i64> {
-        candidates(dir, query, "", &languages(), CANDIDATES).unwrap().whole
+        candidates(dir, query, "", &languages(), CANDIDATES, any_path).unwrap().whole
     }
 
     /// Num projeto de texto em português, a palavra inglesa que não existe no

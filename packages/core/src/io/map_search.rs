@@ -920,9 +920,17 @@ pub struct FilterCandidates {
     pub candidates: Vec<FilterCandidate>,
 }
 
+/// A admissão da busca sem pasta nem filtro: todo caminho entra.
+pub fn any_path(_: &str) -> bool {
+    true
+}
+
 /// Os candidatos do filtro no mapa do projeto em `root`: as palavras de
 /// `query` e a frase de `intent`, com as palavras cortadas nas línguas
-/// `languages`, até `limit` candidatos. As recusas são as de [`search`] e,
+/// `languages`, até `limit` candidatos, só de arquivos que `admit` deixa
+/// entrar. `admit` recebe o caminho do arquivo, relativo à raiz, e quem
+/// chama o monta com a pasta e os tipos de arquivo que a busca pediu
+/// ([`any_path`] quando não pediu nenhum). As recusas são as de [`search`] e,
 /// como o índice usa os títulos dos commits do arquivo, também a da história
 /// da base ainda vazia depois de uma troca de formato
 /// ([`map_fill::READ_BY_CANDIDATES`]).
@@ -932,24 +940,48 @@ pub fn candidates(
     intent: &str,
     languages: &Languages,
     limit: usize,
+    admit: impl Fn(&str) -> bool,
 ) -> std::result::Result<FilterCandidates, MapRefusal> {
-    candidates_at(&model_path(root), query, intent, languages, limit)
+    candidates_at(&model_path(root), query, intent, languages, limit, admit)
 }
 
-/// Os candidatos de [`candidates`] no mapa gravado em `model`.
+/// Os candidatos de [`candidates`] no mapa gravado em `model`. A lista inteira
+/// só traz as declarações que `admit` deixa entrar, e é dela que saem os
+/// primeiros até `limit`: a pasta com poucos arquivos ainda enche o teto
+/// quando há mais declarações fora dela.
 pub fn candidates_at(
     model: &Path,
     query: &str,
     intent: &str,
     languages: &Languages,
     limit: usize,
+    admit: impl Fn(&str) -> bool,
 ) -> std::result::Result<FilterCandidates, MapRefusal> {
     let db = indexed(model, languages, &map_fill::READ_BY_CANDIDATES)?;
     let root = map_check::root_of(model);
-    let whole = map_order::ordered(db.conn(), map_order::Check::On(root), query, intent, languages).map_err(unreadable)?.list;
+    let ordered = map_order::ordered(db.conn(), map_order::Check::On(root), query, intent, languages).map_err(unreadable)?.list;
+    let whole = admitted(db.conn(), ordered, admit).map_err(unreadable)?;
     let first: Vec<i64> = whole.iter().take(limit).copied().collect();
     let candidates = declarations_in(db.conn(), &first).map_err(unreadable)?;
     Ok(FilterCandidates { whole, candidates })
+}
+
+/// Das declarações `ids`, na mesma ordem, as que `admit` deixa entrar pelo
+/// caminho do arquivo delas. A que o mapa não tem fica de fora: sem o arquivo,
+/// não há como dizer que ela está na pasta pedida.
+fn admitted(conn: &Connection, ids: Vec<i64>, admit: impl Fn(&str) -> bool) -> Result<Vec<i64>> {
+    let mut file_of = conn.prepare("SELECT file FROM decls WHERE rowid = ?1")?;
+    let mut verdicts: HashMap<String, bool> = HashMap::new();
+    let mut kept = Vec::with_capacity(ids.len());
+    for id in ids {
+        let Some(file) = file_of.query_row([id], |row| row.get::<_, Option<String>>(0)).optional()?.flatten() else {
+            continue;
+        };
+        if *verdicts.entry(file).or_insert_with_key(|file| admit(file)) {
+            kept.push(id);
+        }
+    }
+    Ok(kept)
 }
 
 /// As declarações `ids` do mapa do projeto em `root`, na ordem pedida, com
@@ -1608,7 +1640,7 @@ pub(crate) mod tests {
         assert_eq!(listed, 3, "no declaration left the index");
         drop(db);
 
-        let found = candidates_at(&model, "desconto", "", &languages(), 10).unwrap();
+        let found = candidates_at(&model, "desconto", "", &languages(), 10, any_path).unwrap();
         assert!(found.whole.contains(&total), "the word only the commit title has finds the declaration: {:?}", found.whole);
         assert!(index_is_marked(dir.path()), "the search did not redo the index either");
     }
@@ -1642,7 +1674,7 @@ pub(crate) mod tests {
         .unwrap();
         assert!(index_is_marked(dir.path()));
         for word in ["desconto", "estorna"] {
-            let found = candidates_at(&model, word, "", &languages(), 10).unwrap();
+            let found = candidates_at(&model, word, "", &languages(), 10, any_path).unwrap();
             assert_eq!(found.whole.len(), 1, "{word}: {:?}", found.whole);
         }
         let incremental = index_dump(dir.path());
@@ -1664,7 +1696,7 @@ pub(crate) mod tests {
         let indexed_docs: i64 = db.conn().query_row("SELECT count(*) FROM decl_lengths", [], |row| row.get(0)).unwrap();
         assert_eq!(indexed_docs, 0);
         drop(db);
-        let found = candidates_at(&model, "desconto", "", &languages(), 10).unwrap();
+        let found = candidates_at(&model, "desconto", "", &languages(), 10, any_path).unwrap();
         assert_eq!(found.whole, [id_of_line(dir.path(), 1)], "the search that redoes the index finds the commit word");
     }
 
@@ -1677,7 +1709,7 @@ pub(crate) mod tests {
         let model = model_path(dir.path());
         store::save_lineage_at(&model, &history_of("src/a.rs", "total", "c1", "cobra o desconto do caixa")).unwrap();
         let total = id_of_line(dir.path(), 1);
-        let found = candidates_at(&model, "desconto", "", &languages(), 10).unwrap();
+        let found = candidates_at(&model, "desconto", "", &languages(), 10, any_path).unwrap();
         assert_eq!(found.whole, [total], "the index is made and holds the stored history");
 
         let (inside_tx, inside_rx) = mpsc::channel::<()>();
@@ -1696,7 +1728,7 @@ pub(crate) mod tests {
         };
         inside_rx.recv_timeout(Duration::from_secs(60)).expect("the batch is being written");
 
-        let during = candidates_at(&model, "desconto", "", &languages(), 10);
+        let during = candidates_at(&model, "desconto", "", &languages(), 10, any_path);
         release_tx.send(()).unwrap();
         assert!(writer.join().unwrap(), "the search ended before the batch was released");
         assert_eq!(during.expect("the search answers while the batch is being written").whole, [total]);
@@ -1774,7 +1806,7 @@ pub(crate) mod tests {
     #[test]
     fn each_candidate_carries_the_kind_the_name_the_path_the_lines_the_signature_and_the_documentation() {
         let dir = saved_json(&contract_map());
-        let found = candidates(dir.path(), "charge PaymentPort", "cobrar o pedido no cartão", &languages(), 100).unwrap();
+        let found = candidates(dir.path(), "charge PaymentPort", "cobrar o pedido no cartão", &languages(), 100, any_path).unwrap();
         assert_eq!(found.whole.len(), 5, "{found:?}");
         let ids: Vec<i64> = found.candidates.iter().map(|c| c.id).collect();
         assert_eq!(ids, found.whole, "under the cap every declaration of the whole list is a candidate");
@@ -1809,11 +1841,50 @@ pub(crate) mod tests {
                 {"kind": "function", "name": "gravar_pedido_de_teste", "line": 1, "end_line": 4,
                  "signature": "fn gravar_pedido_de_teste()", "doc": "Grava o pedido."}]}
         ]}));
-        let found = candidates(dir.path(), "gravar pedido", "gravar o pedido", &languages(), 100).unwrap();
+        let found = candidates(dir.path(), "gravar pedido", "gravar o pedido", &languages(), 100, any_path).unwrap();
         let names: Vec<&str> = found.candidates.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(names, ["gravar_pedido"], "{found:?}");
         assert_eq!(found.whole, vec![id_of(dir.path(), "gravar_pedido")], "{found:?}");
         assert!(paths(dir.path(), "gravar_pedido_de_teste").contains(&"tests/pedido_test.rs".to_string()));
+    }
+
+    /// Os candidatos da busca com admissão são só dos arquivos que ela deixa
+    /// entrar, e o corte vem antes do teto: a pasta pedida, mesmo com as
+    /// declarações mais bem postas de fora dela, enche o teto com as suas; e a
+    /// que tem menos que o teto traz só as que tem. A lista inteira também só
+    /// guarda o que a admissão deixou.
+    #[test]
+    fn the_candidates_are_only_from_the_admitted_files_and_the_cut_comes_before_the_limit() {
+        let outside = |name: &'static str| (name, "pagar o pedido do cliente");
+        let inside = |name: &'static str| (name, "pedido");
+        let decls_out: Vec<(&str, &str)> = vec![outside("pagar_pedido_a"), outside("pagar_pedido_b"), outside("pagar_pedido_c")];
+        let decls_in: Vec<(&str, &str)> = vec![inside("pedido_um"), inside("pedido_dois"), inside("pedido_tres")];
+        let dir = saved(&[
+            ("src/fora/a.rs", "", &decls_out),
+            ("src/dentro/x.rs", "", &decls_in),
+            ("src/dentro/vazio.rs", "", &[("nada_a_ver", "outro assunto")]),
+        ]);
+        let model = model_path(dir.path());
+        let in_folder = |path: &str| path.starts_with("src/dentro/");
+        let paths_of = |found: &FilterCandidates| found.candidates.iter().map(|c| c.path.clone()).collect::<Vec<_>>();
+
+        let open = candidates_at(&model, "pagar pedido", "", &languages(), 3, any_path).unwrap();
+        assert!(paths_of(&open).iter().any(|path| path.starts_with("src/fora/")), "the premise: the best ones are outside: {open:?}");
+
+        let scoped = candidates_at(&model, "pagar pedido", "", &languages(), 3, in_folder).unwrap();
+        assert_eq!(scoped.candidates.len(), 3, "the folder fills the limit with its own: {scoped:?}");
+        assert!(paths_of(&scoped).iter().all(|path| in_folder(path)), "{scoped:?}");
+        let whole = declarations(dir.path(), &scoped.whole).unwrap();
+        assert!(whole.iter().all(|c| in_folder(&c.path)), "the whole list keeps only the admitted: {whole:?}");
+
+        let few = candidates_at(&model, "pagar pedido", "", &languages(), 10, |path: &str| path == "src/dentro/x.rs").unwrap();
+        assert_eq!(few.candidates.len(), 3, "{few:?}");
+        assert!(paths_of(&few).iter().all(|path| path == "src/dentro/x.rs"), "{few:?}");
+
+        let none = candidates_at(&model, "pagar pedido", "", &languages(), 10, |_: &str| false).unwrap();
+        assert!(none.whole.is_empty() && none.candidates.is_empty(), "{none:?}");
+        let all = candidates_at(&model, "pagar pedido", "", &languages(), 10, any_path).unwrap();
+        assert_eq!(all.candidates.len(), 6, "admitting everything is the search of before: {all:?}");
     }
 
     /// O parâmetro escrito no cabeçalho do tipo, que o scan grava com o tipo
@@ -1835,7 +1906,7 @@ pub(crate) mod tests {
                  "signature": "private readonly string slugCache", "owner": ["BlockingValidator"]}
             ]}
         ]}));
-        let found = candidates(dir.path(), "slug", "", &languages(), 100).unwrap();
+        let found = candidates(dir.path(), "slug", "", &languages(), 100, any_path).unwrap();
         let names: Vec<&str> = found.candidates.iter().map(|c| c.name.as_str()).collect();
         assert!(names.contains(&"slugCache") && names.contains(&"BlockingValidator"), "{names:?}");
         assert!(!names.contains(&"slugOwner") && !names.contains(&"blockedSlug"), "{names:?}");
@@ -2029,12 +2100,12 @@ pub(crate) mod tests {
             ("src/outro.rs", "", &[("outro", "Draws the page")]),
         ]);
         let (plural, singular) = (id_of(dir.path(), "varios"), id_of(dir.path(), "unico"));
-        let found = candidates(dir.path(), "commands", "", &languages(), CANDIDATES).unwrap();
+        let found = candidates(dir.path(), "commands", "", &languages(), CANDIDATES, any_path).unwrap();
         let at = |id: i64| found.whole.iter().position(|seen| *seen == id);
         assert_eq!(at(plural), Some(0), "{found:?}");
         assert!(at(singular) > at(plural), "the singular comes behind the plural: {found:?}");
         assert!(!found.whole.contains(&id_of(dir.path(), "outro")), "the unrelated declaration stays out: {found:?}");
-        let mut both = candidates(dir.path(), "command", "", &languages(), CANDIDATES).unwrap().whole;
+        let mut both = candidates(dir.path(), "command", "", &languages(), CANDIDATES, any_path).unwrap().whole;
         both.sort_unstable();
         assert_eq!(both, vec![plural.min(singular), plural.max(singular)]);
     }
@@ -2049,7 +2120,7 @@ pub(crate) mod tests {
             ("src/pasta.rs", "", &[("primeira", "pasta")]),
             ("src/simular.rs", "", &[("segunda", "simulação")]),
         ]);
-        let found = candidates(dir.path(), "simula simulação pasta", "", &languages(), CANDIDATES).unwrap();
+        let found = candidates(dir.path(), "simula simulação pasta", "", &languages(), CANDIDATES, any_path).unwrap();
         let (first, second) = (id_of(dir.path(), "primeira"), id_of(dir.path(), "segunda"));
         assert_eq!(found.whole, vec![first, second], "{found:?}");
     }

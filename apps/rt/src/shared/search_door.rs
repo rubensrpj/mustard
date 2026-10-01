@@ -40,6 +40,8 @@ use mustard_core::platform::i18n::{translate, Locale};
 use mustard_core::{FilterSetting, ProjectConfig, Setting};
 use serde_json::{json, Map, Value};
 
+use crate::shared::code_route::in_search;
+use crate::shared::config_key::{NameFilter, Walk};
 use crate::shared::triage_view;
 
 /// Os números da busca com filtro, com o padrão no lugar do ausente e do
@@ -91,7 +93,8 @@ impl Numbers {
 
 /// O que a porta leva de uma busca: o projeto, as palavras, a frase, o que o
 /// agente disse da busca, o idioma do texto, as línguas das palavras, os
-/// números e a triagem.
+/// números, a triagem e onde a busca procura: as pastas, os filtros de nome de
+/// arquivo e o jeito de ler as chaves deles.
 pub(crate) struct Ask<'a> {
     pub(crate) root: &'a Path,
     pub(crate) query: &'a str,
@@ -105,6 +108,13 @@ pub(crate) struct Ask<'a> {
     pub(crate) numbers: &'a Numbers,
     /// A triagem da pergunta: o grau, os arquivos do banco e a busca funda.
     pub(crate) triaged: &'a Triaged,
+    /// As pastas buscadas, relativas à raiz; vazia é o projeto inteiro. Só os
+    /// arquivos de dentro delas vão ao filtro e voltam na resposta.
+    pub(crate) rels: &'a [String],
+    /// Os filtros de nome de arquivo da busca (`--include`, o glob e o tipo da
+    /// ferramenta); vazio não tira nenhum.
+    pub(crate) filters: &'a [NameFilter],
+    pub(crate) walk: Walk,
 }
 
 /// A frase que o filtro lê: a de `--intent`; sem ela, as palavras da
@@ -300,11 +310,13 @@ pub(crate) fn failure_warning(
     }
 }
 
-/// A busca com o filtro montado: os candidatos do banco vão ao filtro num
-/// pedido só, e o que passa do corte volta como peças. Na falha do filtro, o
-/// resultado é a falha, e quem chamou responde da triagem.
+/// A busca com o filtro montado: os candidatos do banco, só da pasta e dos
+/// tipos de arquivo da busca, vão ao filtro num pedido só, e o que passa do
+/// corte volta como peças. Na falha do filtro, o resultado é a falha, e quem
+/// chamou responde da triagem.
 pub(crate) fn classify(ask: &Ask<'_>, assembled: &Assembled) -> Result<Classified, MapRefusal> {
-    let found = map_search::candidates(ask.root, ask.query, ask.intent, ask.languages, ask.numbers.candidates)?;
+    let admit = |rel: &str| in_search(rel, ask.rels, ask.filters, ask.walk);
+    let found = map_search::candidates(ask.root, ask.query, ask.intent, ask.languages, ask.numbers.candidates, admit)?;
     let words: Vec<String> = ask.query.split_whitespace().map(str::to_string).collect();
     let phrase = phrase_of(&words, ask.query, ask.intent, ask.lang);
     let cut = CutRule {
@@ -333,7 +345,12 @@ pub(crate) fn classify(ask: &Ask<'_>, assembled: &Assembled) -> Result<Classifie
     }
     match assembled.filter.filter(&request) {
         Ok(filtered) => {
-            let pieces = pieces(ask.root, &request.candidates, &found.whole, &filtered, ask.numbers.max_returned)?;
+            let pieces = pieces(
+                ask.root,
+                (&request.candidates, &found.whole),
+                &filtered,
+                (ask.numbers.max_returned, admit),
+            )?;
             measured.insert("filter".to_string(), json!(assembled.name));
             measured.insert("filter_ms".to_string(), json!(filtered.usage.millis));
             measured.insert("tokens".to_string(), json!(filtered.usage.input_tokens));
@@ -355,20 +372,25 @@ pub(crate) fn classify(ask: &Ask<'_>, assembled: &Assembled) -> Result<Classifie
 
 /// As peças da resposta com filtro, na ordem da combinação e até o teto
 /// `max`: o que passou do corte, na ordem da chance, e o que cada item dele
-/// puxou. Nada do banco entra de fora do corte. Cada peça traz o caminho, a
-/// linha, o fim, o tipo, o nome, a assinatura e a primeira frase da
-/// documentação; só as do corte trazem a chance. Nunca o corpo.
+/// puxou. Nada do banco entra de fora do corte, e nada que `admit` não deixe
+/// entrar: a implementação que um contrato puxaria de outra pasta fica de fora. Cada
+/// peça traz o caminho, a linha, o fim, o tipo, o nome, a assinatura e a
+/// primeira frase da documentação; só as do corte trazem a chance. Nunca o
+/// corpo.
 fn pieces(
     root: &Path,
-    candidates: &[FilterCandidate],
-    whole: &[i64],
+    (candidates, whole): (&[FilterCandidate], &[i64]),
     filtered: &mustard_core::domain::map_filter::Filtered,
-    max: usize,
+    (max, admit): (usize, impl Fn(&str) -> bool),
 ) -> Result<Vec<Piece>, MapRefusal> {
     let cut: Vec<i64> = filtered.kept.iter().map(|scored| scored.id).collect();
     let scores: HashMap<i64, f64> = filtered.kept.iter().map(|scored| (scored.id, scored.score)).collect();
     let bank: Vec<i64> = candidates.iter().map(|candidate| candidate.id).collect();
-    let picks = capped(&select(&cut, &bank, whole, &map_search::links(root, &cut)?), max);
+    let mut links = map_search::links(root, &cut)?;
+    for linked in links.values_mut() {
+        linked.implementations.retain(|(_, path)| admit(path));
+    }
+    let picks = capped(&select(&cut, &bank, whole, &links), max);
     let outside: Vec<i64> = picks.iter().map(|pick| pick.id).filter(|id| !bank.contains(id)).collect();
     let pulled = map_search::declarations(root, &outside)?;
     let known: HashMap<i64, &FilterCandidate> =

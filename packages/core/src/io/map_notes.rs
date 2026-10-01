@@ -149,7 +149,7 @@ mod tests {
     use crate::io::map_db::MapDb;
     use crate::io::map_meaning::{fill_at, ranked_declarations};
     use crate::io::map_notes_fresh::fresh;
-    use crate::io::map_search::{candidates_at, forget, search_at};
+    use crate::io::map_search::{any_path, candidates_at, forget, search_at};
     use crate::io::map_triage::triage_at;
     use crate::io::project_map::{model_path, save_at};
     use serde_json::{json, Value};
@@ -247,7 +247,7 @@ mod tests {
         let dir = saved("ids-1");
         fill_at(&model_path(dir.path()), dir.path()).unwrap();
         let names = |dir: &TempDir| -> Vec<String> {
-            let found = candidates_at(&model_path(dir.path()), ASK, "", &languages(), TOP).unwrap();
+            let found = candidates_at(&model_path(dir.path()), ASK, "", &languages(), TOP, any_path).unwrap();
             found.candidates.into_iter().map(|candidate| candidate.name).collect()
         };
         let before = names(&dir);
@@ -384,14 +384,14 @@ mod tests {
         write_note(&dir, "src/ids.rs", "", NOTE);
         write_note(&dir, "src/ids.rs", "check_digits", "Confere os dígitos do documento.");
         let refreshed = search_at(&model_path(dir.path()), ASK, &languages(), TOP).unwrap();
-        let candidates = candidates_at(&model_path(dir.path()), ASK, "", &languages(), TOP).unwrap();
+        let candidates = candidates_at(&model_path(dir.path()), ASK, "", &languages(), TOP, any_path).unwrap();
         assert!(!refreshed.is_empty());
 
         let mut db = opened(&dir);
         db.write(|tx| forget(tx)).unwrap();
         drop(db);
         assert_eq!(search_at(&model_path(dir.path()), ASK, &languages(), TOP).unwrap(), refreshed);
-        assert_eq!(candidates_at(&model_path(dir.path()), ASK, "", &languages(), TOP).unwrap(), candidates);
+        assert_eq!(candidates_at(&model_path(dir.path()), ASK, "", &languages(), TOP, any_path).unwrap(), candidates);
     }
 
     /// Com o índice esvaziado, a nota grava sem refazê-lo, e a primeira busca o

@@ -55,7 +55,7 @@ pub(crate) fn pinned_piece(
         let named = owner.and_then(|owner| list.iter().find(|c| c.path == file.path && c.name == owner));
         Some(named.unwrap_or(first).clone())
     };
-    let found = map_search::candidates(root, query, intent, languages, limit)?;
+    let found = map_search::candidates(root, query, intent, languages, limit, map_search::any_path)?;
     if let Some(piece) = pick(&found.candidates) {
         return Ok(Some(piece));
     }

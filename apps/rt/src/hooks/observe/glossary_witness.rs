@@ -181,7 +181,7 @@ mod tests {
     /// Os nomes dos candidatos da busca com filtro para `query`.
     fn candidates(root: &Path, query: &str) -> Vec<String> {
         let languages = crate::commands::spec_events::project(root).languages;
-        let found = map_search::candidates(root, query, "", &languages, 100).unwrap();
+        let found = map_search::candidates(root, query, "", &languages, 100, map_search::any_path).unwrap();
         found.candidates.into_iter().map(|candidate| candidate.name).collect()
     }
 

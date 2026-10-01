@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use mustard_core::domain::project_map::{self, FilePart, FileParts, ProjectMap};
+use mustard_core::domain::search::within;
 use mustard_core::io::project_map::{self as store, Need};
 use mustard_core::io::workspace::{is_git_repo_root, linked_worktree_main};
 use mustard_core::platform::i18n::Locale;
@@ -340,6 +341,16 @@ fn inside_folder(glob: &str, rel: &str, folders: &[String]) -> Option<bool> {
     Some(false)
 }
 
+/// `true` quando o arquivo `rel` (relativo à raiz) está na busca: dentro de
+/// alguma das pastas `folders`, ou em qualquer lugar quando não há pasta, e
+/// sem que os filtros de nome `filters`, de entrada e de saída, na ordem da
+/// linha, o tirem com certeza, pelo nome ou pela pasta. `walk` diz como a busca
+/// lê as chaves dos filtros. É a regra única de quem entra na busca: a trava
+/// ([`holds_code`]) e os candidatos do filtro a usam.
+pub(crate) fn in_search(rel: &str, folders: &[String], filters: &[NameFilter], walk: Walk) -> bool {
+    within(rel, folders) && admitted(rel, filters, walk, folders) != Some(false)
+}
+
 /// `true` quando alguma das pastas `folders` (relativas à raiz; vazia é a
 /// raiz) guarda código do mapa `paths` que os filtros de nome de arquivo
 /// `filters`, de entrada e de saída, na ordem da linha, deixam passar: os de
@@ -351,11 +362,7 @@ pub(crate) fn holds_code(paths: &ProjectMap, folders: &[String], filters: &[Name
     if folders.is_empty() {
         return false;
     }
-    let inside = |path: &str, folder: &str| folder.is_empty() || path.starts_with(&format!("{}/", folder.trim_end_matches('/')));
-    paths
-        .modules
-        .iter()
-        .any(|module| folders.iter().any(|folder| inside(&module.path, folder)) && admitted(&module.path, filters, walk, folders) != Some(false))
+    paths.modules.iter().any(|module| in_search(&module.path, folders, filters, walk))
 }
 
 /// O projeto que as travas da leitura e da busca usam nos testes.
@@ -429,7 +436,7 @@ pub(crate) mod fixture {
 mod tests {
     use std::path::Path;
 
-    use super::{CopyLines, linked_copy, project_path};
+    use super::{CopyLines, in_search, linked_copy, project_path};
     use crate::shared::config_key::{NameFilter, Walk};
 
     /// Um repositório com um commit em `dir`.
@@ -553,5 +560,28 @@ mod tests {
         assert_eq!(admitted("docs/a.md", &[grep(false, "*.md")], Walk::Grep), Some(true));
         assert_eq!(admitted("docs/a.md", &[grep(true, "*.md")], Walk::Grep), Some(false));
         assert_eq!(admitted("src/a.rs", &[grep(true, "*.md")], Walk::Grep), Some(true));
+    }
+
+    /// O arquivo está na busca quando está numa das pastas (ou a busca é do
+    /// projeto inteiro) e os filtros de nome não o tiram com certeza: a pasta
+    /// sozinha não basta, nem o filtro sozinho, e o filtro que a leitura não
+    /// entende deixa o arquivo entrar.
+    #[test]
+    fn a_file_is_in_the_search_only_inside_a_folder_the_name_filters_keep() {
+        let rg = Walk::Rg { unignored: false };
+        let folders = |list: &[&str]| list.iter().map(|folder| folder.to_string()).collect::<Vec<_>>();
+        let rust = [NameFilter::rg("*.rs")];
+        assert!(in_search("src/frete/a.rs", &folders(&["src/frete"]), &[], rg));
+        assert!(!in_search("src/pedido/a.rs", &folders(&["src/frete"]), &[], rg), "outside the folder");
+        assert!(!in_search("src/fretes/a.rs", &folders(&["src/frete"]), &[], rg), "a folder name is whole");
+        assert!(in_search("src/pedido/a.rs", &folders(&["src/frete", "src/pedido"]), &[], rg), "any of the folders");
+        assert!(in_search("src/pedido/a.rs", &[], &[], rg), "no folder is the whole project");
+        assert!(in_search("src/pedido/a.rs", &folders(&["."]), &[], rg), "the dot is the whole project");
+        assert!(!in_search("src/frete/a.ts", &folders(&["src/frete"]), &rust, rg), "inside the folder, out by the filter");
+        assert!(!in_search("src/pedido/a.rs", &folders(&["src/frete"]), &rust, rg), "kept by the filter, outside the folder");
+        assert!(in_search("src/frete/a.rs", &folders(&["src/frete"]), &rust, rg));
+        assert!(in_search("src/frete/a.ts", &folders(&["src/frete"]), &[NameFilter::rg("src/**")], rg), "a filter that is not read keeps the file");
+        let grep = [NameFilter { exclude: false, glob: "*.rs".to_string() }];
+        assert!(!in_search("src/frete/a.ts", &folders(&["src/frete"]), &grep, Walk::Grep));
     }
 }

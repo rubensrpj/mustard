@@ -397,7 +397,7 @@ mod tests {
     use crate::io::map_meaning::fill_at;
     use crate::io::map_order::{ordered, ordered_with, Check};
     use crate::io::map_lists::{decl_files, ranked_files_near, sources_near};
-    use crate::io::map_search::candidates_at;
+    use crate::io::map_search::{any_path, candidates_at};
     use crate::io::map_triage::triage_at;
     use crate::io::project_map::{self as store, model_path, open_existing};
     use serde_json::{json, Value};
@@ -631,7 +631,7 @@ mod tests {
         let db = open_existing(&model_path(dir.path())).unwrap();
         let today = ordered_with(db.conn(), Check::Off, &Sense::off(), request, "", &both()).unwrap();
         assert!(today.list.is_empty(), "{:?}", today.list);
-        let found = candidates_at(&model_path(dir.path()), request, "", &both(), 100).unwrap();
+        let found = candidates_at(&model_path(dir.path()), request, "", &both(), 100, any_path).unwrap();
         assert_eq!(found.candidates.first().map(|c| c.name.as_str()), Some("remove_dir"), "{:?}", found.whole);
         assert_eq!(found.candidates.len(), 4, "every declaration is a candidate, the nearest first");
     }

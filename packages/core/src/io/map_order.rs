@@ -322,7 +322,7 @@ pub(super) fn ordered_in(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::io::map_search::candidates_at;
+    use crate::io::map_search::{any_path, candidates_at};
     use crate::io::map_sense::Near;
     use crate::io::project_map::{self as store, model_path, open_existing};
     use serde_json::{json, Value};
@@ -418,7 +418,7 @@ mod tests {
         assert_eq!(rotation[0], "src/dto/unidade.dto.ts", "the rotation opens with the short declaration: {rotation:?}");
         let answer = ordered(db.conn(), Check::Off, phrase, phrase, &languages()).unwrap();
         assert_eq!(paths(&answer.files)[0], "src/service/importacao.service.ts", "{:?}", paths(&answer.files));
-        let sent = candidates_at(&model_path(dir.path()), phrase, phrase, &languages(), 100).unwrap();
+        let sent = candidates_at(&model_path(dir.path()), phrase, phrase, &languages(), 100, any_path).unwrap();
         assert_eq!(sent.candidates[0].path, "src/service/importacao.service.ts");
     }
 
@@ -463,7 +463,7 @@ mod tests {
         let db = open_existing(&model_path(dir.path())).unwrap();
         let answer = ordered(db.conn(), Check::Off, "reject repository", "reject repository", &languages()).unwrap();
         assert_eq!(paths(&answer.files)[0], "src/contract/contract.repository.ts", "{:?}", paths(&answer.files));
-        let sent = candidates_at(&model_path(dir.path()), "reject repository", "reject repository", &languages(), 100).unwrap();
+        let sent = candidates_at(&model_path(dir.path()), "reject repository", "reject repository", &languages(), 100, any_path).unwrap();
         assert_eq!(sent.candidates[0].path, "src/contract/contract.repository.ts");
     }
 
@@ -494,7 +494,7 @@ mod tests {
         assert_eq!(listed.iter().map(String::as_str).collect::<Vec<_>>(), with_declarations);
         assert_eq!(listed[0], "src/notas.rs");
         // A lista que o filtro recebe é essa: a mesma cabeça, sem perder declaração.
-        let sent = candidates_at(&model_path(dir.path()), "timestamp", "", &languages(), 100).unwrap();
+        let sent = candidates_at(&model_path(dir.path()), "timestamp", "", &languages(), 100, any_path).unwrap();
         let conferred = ordered(db.conn(), Check::On(Some(dir.path())), "timestamp", "", &languages()).unwrap();
         assert_eq!(sent.whole, conferred.list, "the filter gets the list the check ordered");
         assert_eq!(files_of(&dir, &sent.whole).len(), listed.len());

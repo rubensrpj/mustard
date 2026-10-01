@@ -101,7 +101,7 @@ fn declaration<'a>(map: &'a Value, path: &str, name: &str) -> &'a Value {
 fn candidate_names(dir: &Path, query: &str) -> Vec<String> {
     let languages = Languages::of(&ProjectConfig::default());
     let map = model::path_in(&dir.join(".claude"));
-    let found = map_search::candidates_at(&map, query, "", &languages, 100).expect("a lista de candidatos lê o mapa");
+    let found = map_search::candidates_at(&map, query, "", &languages, 100, map_search::any_path).expect("a lista de candidatos lê o mapa");
     found.candidates.into_iter().map(|candidate| candidate.name).collect()
 }
 

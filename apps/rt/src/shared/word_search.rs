@@ -558,7 +558,7 @@ fn ask_reply(scene: &Scene<'_>, request: &str) -> Option<String> {
 /// não se lê.
 fn places_of_triage(scene: &Scene<'_>, (question, intent): (&str, &str), triaged: &Triaged) -> Option<Vec<(String, Vec<String>)>> {
     let limit = scene.config.search_candidates().or(CANDIDATES);
-    let found = map_search::candidates_at(scene.model, question, intent, scene.languages, limit).ok()?;
+    let found = map_search::candidates_at(scene.model, question, intent, scene.languages, limit, map_search::any_path).ok()?;
     Some(
         triaged
             .files
@@ -619,7 +619,7 @@ fn try_reply(scene: &Scene<'_>, search: &Search<'_>) -> Option<Reply> {
         // vão também como a frase, na língua do texto, para o filtro ler a
         // palavra como ela é e não como pedaço de nome.
         let intent = if scene.languages.codes().len() > 1 { question.as_str() } else { "" };
-        judge(scene, (&question, intent), &triaged, &mut warnings)
+        judge(scene, (&question, intent), &triaged, (&rels, search), &mut warnings)
     } else {
         Judged::Triage
     };
@@ -650,12 +650,14 @@ enum Judged {
 }
 
 /// A busca parcial pela porta única: as palavras de `question` são o pedido, e
-/// `intent` é a frase de quem procura, quando há. O motivo de não haver
-/// filtro, ou de ele falhar, entra em `warnings`, uma vez por sessão.
+/// `intent` é a frase de quem procura, quando há. Os candidatos e as peças são
+/// só das pastas `rels` e dos tipos de arquivo de `search`. O motivo de não
+/// haver filtro, ou de ele falhar, entra em `warnings`, uma vez por sessão.
 fn judge(
     scene: &Scene<'_>,
     (question, intent): (&str, &str),
     triaged: &Triaged,
+    (rels, search): (&[String], &Search<'_>),
     warnings: &mut Vec<String>,
 ) -> Judged {
     let (root, session, lang) = (scene.root, scene.session, scene.lang);
@@ -675,6 +677,9 @@ fn judge(
         languages: scene.languages,
         numbers: &numbers,
         triaged,
+        rels,
+        filters: search.filters,
+        walk: search.walk,
     };
     let Ok(classified) = door::classify(&ask, &assembled) else { return Judged::Triage };
     let judged = match classified.outcome {
@@ -1237,6 +1242,11 @@ mod words;
 /// A régua do gasto: o que o Claude recebe e quanto gasta, com as buscas reais.
 #[cfg(test)]
 mod ruler;
+
+/// A busca numa pasta ou num tipo de arquivo só manda ao filtro, e só devolve,
+/// o que está nela.
+#[cfg(test)]
+pub(crate) mod scoped;
 
 /// O projeto de teste da busca por palavra: um repositório git com fontes
 /// que têm funções conhecidas do mapa, e o mapa com o blob do que cada
@@ -2441,7 +2451,7 @@ mod tests {
         let text = note(search_through(&root, &root, &["imposto"], &["."], true, &judge.assemble()));
         assert_eq!(judge.calls(), 1);
         let asked = judge.last();
-        let bank = mustard_core::io::map_search::candidates(&root, "imposto", "imposto", &Languages::new(["pt-BR", "en-US"]), 100)
+        let bank = mustard_core::io::map_search::candidates(&root, "imposto", "imposto", &Languages::new(["pt-BR", "en-US"]), 100, mustard_core::io::map_search::any_path)
             .expect("the bank candidates");
         assert_eq!(bank.candidates.len(), 2, "the bank lists the two functions of the file");
         assert_eq!(asked.candidates, bank.candidates, "every candidate of the bank goes in one request");

@@ -431,6 +431,9 @@ fn search(
                 languages,
                 numbers: &numbers,
                 triaged: &triaged,
+                rels: &[],
+                filters: &[],
+                walk: Walk::Grep,
             };
             let classified = door::classify(&ask, &assembled)?;
             if let door::Outcome::Failed(error) = &classified.outcome {
@@ -3134,7 +3137,7 @@ mod tests {
         let dir = search_project(FILTER_MAP, &json!({"max_kept": 3}));
         let intent = "onde o pedido é gravado";
         let project = crate::commands::spec_events::project(dir.path());
-        let bank = map_search::candidates(&project.root, "pedido", intent, &project.languages, CANDIDATES).unwrap();
+        let bank = map_search::candidates(&project.root, "pedido", intent, &project.languages, CANDIDATES, map_search::any_path).unwrap();
         assert_eq!(bank.candidates.len(), 4, "{bank:?}");
         // As notas vão aos três primeiros do banco, que também são o topo
         // dele; o quarto fica sem nota e não passa do corte.
@@ -3495,7 +3498,7 @@ mod tests {
         let dir = search_project(FILTER_MAP, &json!({}));
         let intent = "onde o pedido é gravado";
         let project = crate::commands::spec_events::project(dir.path());
-        let bank = map_search::candidates(&project.root, "pedido", intent, &project.languages, CANDIDATES).unwrap();
+        let bank = map_search::candidates(&project.root, "pedido", intent, &project.languages, CANDIDATES, map_search::any_path).unwrap();
         assert_eq!(bank.candidates.len(), 4, "{bank:?}");
         let names_for = |notes: &[f64]| -> Vec<String> {
             let fake = FakeFilter::scoring(notes);
@@ -4209,6 +4212,34 @@ mod tests {
             let asked = fake.last();
             assert_eq!(asked.described, "Procura o imposto");
             assert_eq!(asked.said, "Vou olhar o imposto.");
+        }
+
+        /// A pasta e o glob do `run map search` com o texto do `Grep` valem
+        /// também para o filtro: ele recebe só os candidatos da pasta e dos
+        /// arquivos do tipo pedido, e a busca sem pasta nem glob manda os do
+        /// projeto inteiro.
+        #[test]
+        fn the_folder_and_the_glob_of_the_command_limit_the_candidates_the_filter_is_asked() {
+            let (_dir, root) = crate::shared::word_search::scoped::project();
+            let fake = FakeFilter::scoring(&[0.9, 0.05]);
+            let by_command = |grep: GrepSearch| {
+                let opts = MapOpts { grep: Some(grep), session: Some("s-pasta".to_string()), ..ask(&root, Question::Search) };
+                crate::commands::map::map_at(
+                    &opts,
+                    &|_, _| Ok(ScanReport::default()),
+                    &|_, _, _, _| panic!("a search with the text of Grep never reads a history"),
+                    &fake.assemble(),
+                );
+                let mut paths: Vec<String> = fake.last().candidates.into_iter().map(|candidate| candidate.path).collect();
+                paths.sort();
+                paths
+            };
+
+            let narrowed = GrepSearch { folder: Some(PathBuf::from("src/frete")), glob: Some("*.rs".to_string()), ..pattern("imposto") };
+            assert_eq!(by_command(narrowed), ["src/frete/calculo.rs", "src/frete/tabela.rs"]);
+            let in_folder = GrepSearch { folder: Some(PathBuf::from("src/pedido")), ..pattern("imposto") };
+            assert_eq!(by_command(in_folder), ["src/pedido/recibo.rs", "src/pedido/total.rs"]);
+            assert_eq!(by_command(pattern("imposto")).len(), 5, "without a folder or a glob the whole project is asked");
         }
 
         /// O `run map search` com o texto do `Grep`, numa spec aberta, grava a
