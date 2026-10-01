@@ -214,6 +214,13 @@ pub struct SearchConfig {
     /// ter para passar do corte do filtro.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cut_share: Option<Value>,
+    /// A chance, em pontos percentuais, de algum candidato ser o que se
+    /// procura a partir da qual o filtro dá resposta; abaixo dela é não achei.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exists_from: Option<Value>,
+    /// Quantos candidatos passam do corte do filtro, no máximo.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_kept: Option<Value>,
     /// Quantas peças a busca com filtro devolve, no máximo.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_returned: Option<Value>,
@@ -229,6 +236,8 @@ impl SearchConfig {
         self.candidates.is_none()
             && self.filter.is_none()
             && self.cut_share.is_none()
+            && self.exists_from.is_none()
+            && self.max_kept.is_none()
             && self.max_returned.is_none()
             && self.answer.is_none()
     }
@@ -672,6 +681,8 @@ pub struct ProjectConfig {
     /// A busca por assunto do mapa — veja [`SearchConfig`]. Lida só por
     /// [`ProjectConfig::search_candidates`], [`ProjectConfig::search_filter`],
     /// [`ProjectConfig::search_cut_share`],
+    /// [`ProjectConfig::search_exists_from`],
+    /// [`ProjectConfig::search_max_kept`],
     /// [`ProjectConfig::search_max_returned`] e
     /// [`ProjectConfig::search_answer`].
     #[serde(skip_serializing_if = "SearchConfig::is_empty")]
@@ -886,6 +897,21 @@ impl ProjectConfig {
     #[must_use]
     pub fn search_cut_share(&self) -> Setting {
         Setting::of(self.search.cut_share.as_ref())
+    }
+
+    /// `search.exists_from`: a chance de algum candidato ser o que se procura,
+    /// em pontos percentuais (50 é 0,50), a partir da qual o filtro dá
+    /// resposta; abaixo dela é não achei.
+    #[must_use]
+    pub fn search_exists_from(&self) -> Setting {
+        Setting::of(self.search.exists_from.as_ref())
+    }
+
+    /// `search.max_kept`: quantos candidatos passam do corte do filtro, no
+    /// máximo.
+    #[must_use]
+    pub fn search_max_kept(&self) -> Setting {
+        Setting::of(self.search.max_kept.as_ref())
     }
 
     /// `search.max_returned`: quantas peças a busca com filtro devolve, no
@@ -1331,19 +1357,27 @@ mod tests {
         assert_eq!(cfg.search_candidates(), Setting::Absent);
         assert_eq!(cfg.search_candidates().or(CANDIDATES), 100);
         assert_eq!((cfg.search_cut_share(), cfg.search_max_returned()), (Setting::Absent, Setting::Absent));
+        assert_eq!((cfg.search_exists_from(), cfg.search_max_kept()), (Setting::Absent, Setting::Absent));
         assert_eq!(cfg.search_filter(), FilterSetting::Absent);
 
-        let cfg = load(r#"{"search": {"candidates": 40, "filter": "none", "cut_share": 25, "max_returned": 12}}"#);
+        let cfg = load(
+            r#"{"search": {"candidates": 40, "filter": "none", "cut_share": 25, "max_returned": 12, "exists_from": 70, "max_kept": 3}}"#,
+        );
         assert_eq!(cfg.search_candidates().or(CANDIDATES), 40);
         assert_eq!((cfg.search_cut_share().or(10), cfg.search_max_returned().or(15)), (25, 12));
+        assert_eq!((cfg.search_exists_from().or(50), cfg.search_max_kept().or(2)), (70, 3));
         assert_eq!(cfg.search_filter(), FilterSetting::Off);
         assert_eq!(load(r#"{"search": {"filter": "jev"}}"#).search_filter(), FilterSetting::Jev);
 
         for bad in ["0", "-3", "\"cem\""] {
-            let cfg = load(&format!(r#"{{"search": {{"candidates": {bad}, "cut_share": {bad}, "max_returned": {bad}}}}}"#));
+            let cfg = load(&format!(
+                r#"{{"search": {{"candidates": {bad}, "cut_share": {bad}, "max_returned": {bad}, "exists_from": {bad}, "max_kept": {bad}}}}}"#
+            ));
             assert_eq!(cfg.search_candidates(), Setting::Invalid, "{bad}");
             assert_eq!(cfg.search_candidates().or(CANDIDATES), 100, "{bad}");
             assert_eq!((cfg.search_cut_share().or(10), cfg.search_max_returned().or(15)), (10, 15), "{bad}");
+            assert_eq!((cfg.search_exists_from(), cfg.search_max_kept()), (Setting::Invalid, Setting::Invalid), "{bad}");
+            assert_eq!((cfg.search_exists_from().or(50), cfg.search_max_kept().or(2)), (50, 2), "{bad}");
             assert!(!cfg.unreadable, "{bad}: o valor inválido não torna o arquivo ilegível");
         }
         for bad in ["\"outro\"", "3", "true"] {

@@ -68,6 +68,7 @@ use mustard_core::{ClaudePaths, ProjectConfig};
 use regex::{Regex, RegexBuilder};
 use serde_json::{json, Map, Value};
 
+use crate::shared::agent_said;
 use crate::shared::code_route::{admitted, holds_code, parts_in_copy, ProjectPath};
 use crate::shared::config_key::{NameFilter, Walk, CONFIG_FILE};
 use crate::shared::paths::{is_artifact, sensitive_pattern};
@@ -177,6 +178,39 @@ pub(crate) struct Scene<'a> {
     /// entrega, porque a gravação numa spec é de quem grava conversa, nunca
     /// desta parte compartilhada.
     pub(crate) record: &'a Record<'a>,
+    /// A descrição que o agente deu à busca; vazia quando ele não deu.
+    pub(crate) described: &'a str,
+    /// A última fala do agente antes da busca, que só o filtro lê.
+    pub(crate) said: Said<'a>,
+}
+
+/// De onde vem a última fala do agente antes da busca. A leitura do arquivo da
+/// conversa só acontece quando o filtro é chamado: a busca que a triagem crava
+/// não a paga.
+#[derive(Clone, Copy)]
+pub(crate) enum Said<'a> {
+    /// A fala já dada, como a de `--said`; vazia quando não há.
+    Given(&'a str),
+    /// A que está no fim do arquivo da conversa; sem arquivo, não há.
+    Transcript(Option<&'a Path>),
+    /// A do subagente, no arquivo que leva o nome dele, procurado ao lado da
+    /// conversa principal. A conversa principal nunca é lida no lugar dele:
+    /// sem o arquivo, não há fala.
+    Subagent(Option<&'a Path>, &'a str),
+}
+
+impl Said<'_> {
+    /// O texto da fala; vazio quando não há.
+    fn text(&self) -> String {
+        match self {
+            Said::Given(text) => (*text).to_string(),
+            Said::Transcript(path) => path.map(agent_said::last_said).unwrap_or_default(),
+            Said::Subagent(main, name) => main
+                .and_then(|main| agent_said::subagent_transcript(main, name))
+                .map(|file| agent_said::last_said(&file))
+                .unwrap_or_default(),
+        }
+    }
 }
 
 /// A gravação de uma chamada medida: a raiz do projeto, o comando, a spec
@@ -229,6 +263,14 @@ fn with_scene<T>(
     (memory, record): (Option<&Path>, &Record<'_>),
     run: impl FnOnce(&Scene<'_>) -> T,
 ) -> T {
+    let transcript = input.transcript_path().map(Path::new);
+    // Dentro de um subagente o `transcript_path` é a conversa principal: a fala
+    // dele está no arquivo do próprio subagente.
+    let subagent = input.subagent_transcript_name();
+    let said = match subagent.as_deref() {
+        Some(name) => Said::Subagent(transcript, name),
+        None => Said::Transcript(transcript),
+    };
     let scene = Scene {
         root,
         model: &store::model_path(root),
@@ -239,6 +281,8 @@ fn with_scene<T>(
         config: &ctx.config,
         assemble: &hook_assemble,
         record,
+        described: input.tool_description().unwrap_or_default(),
+        said,
     };
     run(&scene)
 }
@@ -620,7 +664,18 @@ fn judge(
         return Judged::Triage;
     };
     let numbers = Numbers::read(root, session, lang, scene.config, warnings);
-    let ask = Ask { root, query: question, intent, lang, languages: scene.languages, numbers: &numbers, triaged };
+    let said = scene.said.text();
+    let ask = Ask {
+        root,
+        query: question,
+        intent,
+        described: scene.described,
+        said: &said,
+        lang,
+        languages: scene.languages,
+        numbers: &numbers,
+        triaged,
+    };
     let Ok(classified) = door::classify(&ask, &assembled) else { return Judged::Triage };
     let judged = match classified.outcome {
         Outcome::NoCandidates => Judged::Triage,
@@ -1289,13 +1344,12 @@ pub(crate) mod fixture {
 
     /// Um filtro de mentira: guarda cada pedido e dá a chance de cada
     /// candidato pelo nome (`chances`, e 0,01 para os outros), com a chance
-    /// de "nenhum destes" e a confiança dadas; ou falha com `error`.
+    /// de algum candidato servir (`exists`); ou falha com `error`.
     #[derive(Clone)]
     pub(crate) struct Judge {
         asked: std::rc::Rc<std::cell::RefCell<Vec<FilterRequest>>>,
         chances: Vec<(&'static str, f64)>,
-        none: f64,
-        confidence: f64,
+        exists: f64,
         error: Option<FilterError>,
     }
 
@@ -1313,20 +1367,21 @@ pub(crate) mod fixture {
                     Scored { id: candidate.id, score: chance }
                 })
                 .collect();
-            let (verdict, kept) = judged(&scores, self.none, self.confidence, request.share);
+            let (verdict, kept) = judged(&scores, self.exists, request.cut);
             Ok(Filtered { verdict, kept, usage: FilterUsage::default() })
         }
     }
 
     impl Judge {
-        /// O filtro seguro: dá `chances` e quase nenhuma a "nenhum destes".
+        /// O filtro seguro: dá `chances` e quase certeza de que algum candidato
+        /// serve.
         pub(crate) fn sure_of(chances: &[(&'static str, f64)]) -> Self {
-            Self { asked: std::rc::Rc::default(), chances: chances.to_vec(), none: 0.01, confidence: 0.9, error: None }
+            Self { asked: std::rc::Rc::default(), chances: chances.to_vec(), exists: 0.99, error: None }
         }
 
         /// O filtro que acha que nenhum candidato serve.
         pub(crate) fn finding_none() -> Self {
-            Self { none: 0.9, ..Self::sure_of(&[]) }
+            Self { exists: 0.1, ..Self::sure_of(&[]) }
         }
 
         pub(crate) fn failing(error: FilterError) -> Self {
@@ -1436,6 +1491,8 @@ mod tests {
             config: &config,
             assemble,
             record: &unrecorded,
+            described: "",
+            said: Said::Given(""),
         };
         reply(&scene, &search)
     }
@@ -1550,6 +1607,8 @@ mod tests {
             config: &config,
             assemble,
             record: &unrecorded,
+            described: "",
+            said: Said::Given(""),
         };
         ask_reply(&scene, request)
     }
@@ -1836,6 +1895,8 @@ mod tests {
             config: &config,
             assemble: &without_key,
             record: &unrecorded,
+            described: "",
+            said: Said::Given(""),
         };
         assert!(matches!(reply(&scene, &search), Reply::Answer(_)));
         assert!(matches!(reply(&scene, &search), Reply::Answer(_)));
@@ -2137,6 +2198,225 @@ mod tests {
         assert_eq!((taken[0].0.as_str(), taken[0].2.as_deref()), ("word search", Some("s-gancho")));
     }
 
+    /// O pedido que o filtro recebe da busca parcial de `imposto` pelo
+    /// gancho, quando o gancho traz `input`: o gancho inteiro, sem rede.
+    fn request_from_the_hook(root: &Path, input: &Value) -> mustard_core::domain::map_filter::FilterRequest {
+        let judge = Judge::sure_of(&[("calcular_frete", 0.9)]);
+        let patterns = owned(&["imposto"]);
+        let folders = [project_path(&root.to_string_lossy(), &root.to_string_lossy(), ".").expect("the root")];
+        let search = Search {
+            patterns: &patterns,
+            dialect: Dialect::Rust,
+            ignore_case: false,
+            whole_word: false,
+            folders: &folders,
+            filters: &[],
+            walk: Walk::Rg { unignored: false },
+            shows_lines: true,
+        };
+        let input: HookInput = serde_json::from_value(input.clone()).expect("a hook input");
+        let mut ctx = Ctx::for_test(root.to_string_lossy().into_owned(), None);
+        ctx.config = ProjectConfig::load(root);
+        let calls = Calls::default();
+        let _ = judge.installed(|| hook_reply(&root.to_string_lossy(), &input, &ctx, &search, &*calls.recorder()));
+        assert_eq!(judge.calls(), 1, "the partial search reaches the filter");
+        judge.last()
+    }
+
+    /// Uma conversa guardada pelo Claude Code com as linhas `lines`, uma
+    /// mensagem em JSON por linha.
+    fn transcript_with(dir: &Path, lines: &[Value]) -> PathBuf {
+        let file = dir.join("conversa.jsonl");
+        let text: Vec<String> = lines.iter().map(Value::to_string).collect();
+        std::fs::write(&file, text.join("\n") + "\n").expect("the transcript");
+        file
+    }
+
+    fn assistant_said(text: &str) -> Value {
+        json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": text}]}})
+    }
+
+    fn assistant_called() -> Value {
+        json!({"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "grep -rn imposto ."}}
+        ]}})
+    }
+
+    fn person_said(text: &str) -> Value {
+        json!({"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": text}]}})
+    }
+
+    /// A descrição que o agente deu à chamada chega ao filtro.
+    #[test]
+    fn the_hook_gives_the_filter_the_description_the_agent_gave_the_call() {
+        let (_dir, root) = fixture::repo("{}");
+        let asked = request_from_the_hook(
+            &root,
+            &json!({
+                "session_id": "s-gancho",
+                "tool_name": "Bash",
+                "tool_input": {"command": "grep -rn imposto .", "description": " Procura o cálculo do imposto "},
+            }),
+        );
+        assert_eq!(asked.described, "Procura o cálculo do imposto");
+        assert_eq!(asked.root, root);
+    }
+
+    /// A última fala do agente, lida do fim da conversa que o gancho aponta,
+    /// chega ao filtro: a mensagem mais nova com texto, sem o uso de
+    /// ferramenta e sem o texto do usuário.
+    #[test]
+    fn the_hook_gives_the_filter_the_last_speech_of_the_agent_from_the_end_of_the_transcript() {
+        let (_dir, root) = fixture::repo("{}");
+        let notes = tempfile::tempdir().expect("a folder");
+        let transcript = transcript_with(
+            notes.path(),
+            &[
+                person_said("calcule o imposto"),
+                assistant_said("Fala antiga."),
+                assistant_said("Vou ver onde o imposto é calculado."),
+                assistant_called(),
+            ],
+        );
+        let asked = request_from_the_hook(
+            &root,
+            &json!({
+                "session_id": "s-gancho",
+                "transcript_path": transcript,
+                "tool_name": "Bash",
+                "tool_input": {"command": "grep -rn imposto ."},
+            }),
+        );
+        assert_eq!(asked.said, "Vou ver onde o imposto é calculado.");
+        assert_eq!(asked.described, "");
+    }
+
+    /// A conversa do subagente `id`, no arquivo que o Claude Code guarda numa
+    /// pasta `subagents/` de `folder`, ao lado da conversa principal.
+    fn subagent_transcript_with(dir: &Path, folder: &str, id: &str, lines: &[Value]) -> PathBuf {
+        let subagents = dir.join(folder).join("subagents");
+        std::fs::create_dir_all(&subagents).expect("the folder");
+        let file = subagents.join(format!("agent-{id}.jsonl"));
+        let text: Vec<String> = lines.iter().map(Value::to_string).collect();
+        std::fs::write(&file, text.join("\n") + "\n").expect("the subagent transcript");
+        file
+    }
+
+    /// Dentro de um subagente o `transcript_path` é a conversa principal: a
+    /// fala que chega ao filtro é a do arquivo do subagente, achado em
+    /// qualquer pasta `subagents/` ao lado dela, nunca a da conversa principal.
+    #[test]
+    fn inside_a_subagent_the_speech_comes_from_the_file_of_the_subagent_and_never_from_the_main_conversation() {
+        let (_dir, root) = fixture::repo("{}");
+        let notes = tempfile::tempdir().expect("a folder");
+        let main = transcript_with(notes.path(), &[assistant_said("Fala do condutor."), assistant_called()]);
+        subagent_transcript_with(
+            notes.path(),
+            "outra-sessao",
+            "a3d2d3dc4c50296bf",
+            &[person_said("faça a onda"), assistant_said("Fala do subagente."), assistant_called()],
+        );
+        for (agent_id, session) in [("a3d2d3dc4c50296bf", "s-sub-1"), ("agent-a3d2d3dc4c50296bf", "s-sub-2")] {
+            let asked = request_from_the_hook(
+                &root,
+                &json!({
+                    "session_id": session,
+                    "transcript_path": main,
+                    "agent_id": agent_id,
+                    "agent_type": "general-purpose",
+                    "tool_name": "Bash",
+                    "tool_input": {"command": "grep -rn imposto ."},
+                }),
+            );
+            assert_eq!(asked.said, "Fala do subagente.", "{agent_id}");
+        }
+    }
+
+    /// Com `agent_id` e sem o arquivo do subagente, a busca segue sem fala: a
+    /// conversa principal nunca é lida no lugar dele.
+    #[test]
+    fn inside_a_subagent_without_its_file_the_search_goes_on_without_speech() {
+        let (_dir, root) = fixture::repo("{}");
+        let notes = tempfile::tempdir().expect("a folder");
+        let main = transcript_with(notes.path(), &[assistant_said("Fala do condutor."), assistant_called()]);
+        subagent_transcript_with(notes.path(), "outra-sessao", "de-outro-agente", &[assistant_said("Fala alheia.")]);
+        let asked = request_from_the_hook(
+            &root,
+            &json!({
+                "session_id": "s-sem-arquivo",
+                "transcript_path": main,
+                "agent_id": "a3d2d3dc4c50296bf",
+                "tool_name": "Bash",
+                "tool_input": {"command": "grep -rn imposto .", "description": "Procura o imposto"},
+            }),
+        );
+        assert_eq!(asked.said, "");
+        assert_eq!(asked.described, "Procura o imposto", "only the speech is lost");
+        assert!(!format!("{asked:?}").contains("condutor"), "{asked:?}");
+    }
+
+    /// Sem `agent_id` nada muda: a fala é a da conversa principal, mesmo com
+    /// arquivos de subagente ao lado dela.
+    #[test]
+    fn outside_a_subagent_the_speech_stays_the_one_of_the_main_conversation() {
+        let (_dir, root) = fixture::repo("{}");
+        let notes = tempfile::tempdir().expect("a folder");
+        let main = transcript_with(notes.path(), &[assistant_said("Fala do condutor."), assistant_called()]);
+        subagent_transcript_with(notes.path(), "outra-sessao", "a3d2", &[assistant_said("Fala do subagente.")]);
+        let asked = request_from_the_hook(
+            &root,
+            &json!({
+                "session_id": "s-principal",
+                "transcript_path": main,
+                "agent_id": "  ",
+                "tool_name": "Bash",
+                "tool_input": {"command": "grep -rn imposto ."},
+            }),
+        );
+        assert_eq!(asked.said, "Fala do condutor.");
+    }
+
+    /// Texto de gente depois da última fala do agente corta a leitura: a fala
+    /// do pedido é vazia, e o texto do usuário nunca vai ao filtro.
+    #[test]
+    fn a_message_of_the_user_after_the_last_speech_of_the_agent_leaves_the_speech_empty() {
+        let (_dir, root) = fixture::repo("{}");
+        let notes = tempfile::tempdir().expect("a folder");
+        let transcript = transcript_with(
+            notes.path(),
+            &[assistant_said("Fala de antes."), person_said("agora procure o imposto"), assistant_called()],
+        );
+        let asked = request_from_the_hook(
+            &root,
+            &json!({
+                "session_id": "s-gancho",
+                "transcript_path": transcript,
+                "tool_name": "Bash",
+                "tool_input": {"command": "grep -rn imposto ."},
+            }),
+        );
+        assert_eq!(asked.said, "");
+        assert_eq!(asked.described, "");
+        assert!(!format!("{asked:?}").contains("agora procure"), "{asked:?}");
+    }
+
+    /// Sem descrição na chamada e sem conversa que o gancho aponte, o pedido
+    /// leva os dois vazios.
+    #[test]
+    fn without_a_description_or_a_transcript_the_request_carries_both_empty() {
+        let (_dir, root) = fixture::repo("{}");
+        let asked = request_from_the_hook(
+            &root,
+            &json!({"session_id": "s-gancho", "tool_name": "Grep", "tool_input": {"pattern": "imposto"}}),
+        );
+        assert_eq!((asked.described.as_str(), asked.said.as_str()), ("", ""));
+        let missing = request_from_the_hook(
+            &root,
+            &json!({"session_id": "s-outra", "transcript_path": "/nonexistent/conversa.jsonl", "tool_name": "Grep", "tool_input": {"pattern": "imposto"}}),
+        );
+        assert_eq!(missing.said, "");
+    }
+
     /// A palavra cravada responde da triagem: o filtro não é chamado, nem a
     /// montagem dele, e nenhum aviso de chave sai.
     #[test]
@@ -2224,6 +2504,8 @@ mod tests {
             config: &config,
             assemble,
             record,
+            described: "",
+            said: Said::Given(""),
         };
         reply(&scene, &search)
     }
@@ -2502,6 +2784,8 @@ mod tests {
                 config: &config,
                 assemble: &without_key,
                 record: &unrecorded,
+                described: "",
+                said: Said::Given(""),
             };
             let mut row = serde_json::json!({ "at": at, "program": program, "outcome": "pass", "folders_ok": !folders.is_empty() && folders.len() == wanted, "proof": proof });
             if folders.is_empty() || folders.len() != wanted {

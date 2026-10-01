@@ -304,7 +304,7 @@ mod tests {
         assert!(is_test_path("integrationtests.go"));
         // `spec_` is NOT a prefix convention. The spec conventions in use are
         // suffixes (`widget-spec.rb`, `bar.spec.js`), both asserted above,
-        // while `spec_*` names modules ABOUT specifications.
+        // while `spec_*` names modules about specifications.
         assert!(!is_test_path("src/spec_views.rs"), "a module about specs is not a test");
         assert!(!is_test_path("src/commands/spec_draft.rs"));
         // `test_` stays: it is the established convention.

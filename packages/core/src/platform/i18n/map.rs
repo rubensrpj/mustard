@@ -380,8 +380,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("map.search.use_tools", Locale::EnUs) => {
             "If this is not the place, use your standard tools: `Grep`, `Glob` and `Read`."
         }
-        // A resposta do filtro que escolheu "nenhum destes": nada da lista é o
-        // que se procura.
+        // A resposta do filtro que achou que nenhum candidato serve: nada da
+        // lista é o que se procura.
         ("map.search.filter_none", Locale::PtBr) => "não encontrei nada, use suas ferramentas padrões",
         ("map.search.filter_none", Locale::EnUs) => "found nothing, use your standard tools",
         ("map.search.name_piece", Locale::PtBr) => "pedaço de nome: {word}",

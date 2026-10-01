@@ -8,10 +8,10 @@
 //! 1. a triagem crava: a resposta sai dela, com a primeira peça inteira, sem
 //!    filtro, sem aviso de chave e sem chamada gravada ([`pinned`]);
 //! 2. não cravou: os candidatos do banco vão ao filtro num pedido só, com a
-//!    frase de quem procura ([`classify`]);
-//! 3. o filtro diz não achei, e nada volta; ou diz o certo, e voltam as peças
-//!    que passam do corte; ou fica dividido e olha de novo os três primeiros
-//!    (a segunda olhada mora no filtro, em `jev`, e decide sozinha);
+//!    frase de quem procura, a descrição que o agente deu à busca e a última
+//!    fala dele ([`classify`]);
+//! 3. o filtro diz não achei, e nada volta; ou diz que algum candidato serve, e
+//!    voltam as peças que passam do corte, no máximo duas por padrão;
 //! 4. sem filtro (desligado, sem chave), sem candidato ou com o filtro
 //!    falhando, quem chamou responde só com a triagem, e o aviso do motivo
 //!    sai uma vez por sessão ([`chosen_filter`], [`failure_warning`]).
@@ -26,7 +26,9 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::time::Instant;
 
-use mustard_core::domain::map_filter::{FilterCandidate, FilterError, FilterRequest, MapFilter, Verdict, CUT_SHARE};
+use mustard_core::domain::map_filter::{
+    CutRule, FilterCandidate, FilterError, FilterRequest, MapFilter, Verdict, CUT_SHARE, EXISTS_FROM, MAX_KEPT,
+};
 use mustard_core::domain::map_select::{capped, select, Source, MAX_RETURNED};
 use mustard_core::domain::normalize::Languages;
 use mustard_core::domain::project_map::{self, MapRefusal};
@@ -47,6 +49,11 @@ pub(crate) struct Numbers {
     pub(crate) candidates: usize,
     /// A parte da maior chance que passa do corte, em pontos percentuais.
     pub(crate) cut_share: usize,
+    /// A chance de algum candidato servir, em pontos percentuais, a partir da
+    /// qual há resposta; abaixo dela é não achei.
+    pub(crate) exists_from: usize,
+    /// Quantos candidatos passam do corte, no máximo.
+    pub(crate) max_kept: usize,
     /// O teto de peças na resposta.
     pub(crate) max_returned: usize,
 }
@@ -75,17 +82,24 @@ impl Numbers {
         Self {
             candidates: number("candidates", config.search_candidates(), CANDIDATES),
             cut_share: number("cut_share", config.search_cut_share(), (CUT_SHARE * 100.0).round() as usize),
+            exists_from: number("exists_from", config.search_exists_from(), (EXISTS_FROM * 100.0).round() as usize),
+            max_kept: number("max_kept", config.search_max_kept(), MAX_KEPT),
             max_returned: number("max_returned", config.search_max_returned(), MAX_RETURNED),
         }
     }
 }
 
-/// O que a porta leva de uma busca: o projeto, as palavras, a frase, o idioma
-/// do texto, as línguas das palavras, os números e a triagem.
+/// O que a porta leva de uma busca: o projeto, as palavras, a frase, o que o
+/// agente disse da busca, o idioma do texto, as línguas das palavras, os
+/// números e a triagem.
 pub(crate) struct Ask<'a> {
     pub(crate) root: &'a Path,
     pub(crate) query: &'a str,
     pub(crate) intent: &'a str,
+    /// A descrição que o agente deu à busca; vazia quando ele não deu.
+    pub(crate) described: &'a str,
+    /// A última fala do agente antes da busca; vazia quando não há.
+    pub(crate) said: &'a str,
     pub(crate) lang: Locale,
     pub(crate) languages: &'a Languages,
     pub(crate) numbers: &'a Numbers,
@@ -293,8 +307,20 @@ pub(crate) fn classify(ask: &Ask<'_>, assembled: &Assembled) -> Result<Classifie
     let found = map_search::candidates(ask.root, ask.query, ask.intent, ask.languages, ask.numbers.candidates)?;
     let words: Vec<String> = ask.query.split_whitespace().map(str::to_string).collect();
     let phrase = phrase_of(&words, ask.query, ask.intent, ask.lang);
-    let share = (ask.numbers.cut_share as f64 / 100.0).min(1.0);
-    let request = FilterRequest { words, phrase, share, candidates: found.candidates };
+    let cut = CutRule {
+        share: (ask.numbers.cut_share as f64 / 100.0).min(1.0),
+        exists_from: (ask.numbers.exists_from as f64 / 100.0).min(1.0),
+        max_kept: ask.numbers.max_kept,
+    };
+    let request = FilterRequest {
+        words,
+        phrase,
+        described: ask.described.to_string(),
+        said: ask.said.to_string(),
+        root: ask.root.to_path_buf(),
+        cut,
+        candidates: found.candidates,
+    };
     let calling = Instant::now();
     let mut measured = Map::new();
     measured.insert("candidates".to_string(), json!(request.candidates.len()));

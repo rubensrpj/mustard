@@ -1523,6 +1523,134 @@ mod tests {
         assert_eq!(word_searches(&root, "conversa").len(), 1, "and records no call");
     }
 
+    /// A busca parcial do terminal, pelo gancho de verdade, entrega ao filtro
+    /// a descrição que o agente deu ao comando e a última fala dele, lida do
+    /// fim da conversa que o gancho aponta: a mensagem mais nova do agente com
+    /// texto, sem o uso de ferramenta que veio depois dela.
+    #[test]
+    fn a_partial_terminal_search_gives_the_filter_the_description_and_the_last_speech_of_the_agent() {
+        let (_dir, root) = word_search::fixture::repo("{}");
+        let judge = word_search::fixture::Judge::sure_of(&[("calcular_frete", 0.9)]);
+        let notes = tempfile::tempdir().unwrap();
+        let transcript = write_transcript(
+            notes.path(),
+            &[
+                ("user", "text", "calcule o imposto"),
+                ("assistant", "text", "Vou ver onde o imposto é calculado."),
+                ("assistant", "tool_use", ""),
+            ],
+        );
+
+        let verdict = judge.installed(|| {
+            run_described(&root, "grep -rn imposto .", Some("Procura o cálculo do imposto"), (&transcript, None), "s-descrito")
+        });
+
+        noted(verdict, "grep -rn imposto .");
+        assert_eq!(judge.calls(), 1);
+        let asked = judge.last();
+        assert_eq!(asked.described, "Procura o cálculo do imposto");
+        assert_eq!(asked.said, "Vou ver onde o imposto é calculado.");
+    }
+
+    /// Texto de gente depois da última fala do agente corta a leitura: a fala
+    /// do pedido fica vazia, e o texto do usuário nunca vai ao filtro.
+    #[test]
+    fn a_message_of_the_user_after_the_last_speech_leaves_the_speech_of_the_terminal_search_empty() {
+        let (_dir, root) = word_search::fixture::repo("{}");
+        let judge = word_search::fixture::Judge::sure_of(&[("calcular_frete", 0.9)]);
+        let notes = tempfile::tempdir().unwrap();
+        let transcript = write_transcript(
+            notes.path(),
+            &[
+                ("assistant", "text", "Fala de antes."),
+                ("user", "text", "agora procure o imposto"),
+                ("assistant", "tool_use", ""),
+            ],
+        );
+
+        let verdict = judge.installed(|| run_described(&root, "grep -rn imposto .", None, (&transcript, None), "s-sem-fala"));
+
+        noted(verdict, "grep -rn imposto .");
+        let asked = judge.last();
+        assert_eq!((asked.described.as_str(), asked.said.as_str()), ("", ""));
+        assert!(!format!("{asked:?}").contains("agora procure"), "{asked:?}");
+    }
+
+    /// A busca parcial que um subagente faz, pelo gancho de verdade: o
+    /// `transcript_path` é a conversa principal, e a fala que o filtro recebe
+    /// é a do arquivo do subagente, numa pasta `subagents/` ao lado, nunca a
+    /// da conversa principal. Sem o arquivo do subagente, a fala é vazia.
+    #[test]
+    fn a_partial_terminal_search_of_a_subagent_gives_the_filter_the_speech_of_the_subagent_and_never_the_main_one() {
+        let (_dir, root) = word_search::fixture::repo("{}");
+        let judge = word_search::fixture::Judge::sure_of(&[("calcular_frete", 0.9)]);
+        let notes = tempfile::tempdir().unwrap();
+        let main = write_transcript(notes.path(), &[("assistant", "text", "Fala do condutor."), ("assistant", "tool_use", "")]);
+        let folder = notes.path().join("outra-sessao").join("subagents");
+        std::fs::create_dir_all(&folder).unwrap();
+        let own = write_transcript(&folder, &[("assistant", "text", "Fala do subagente."), ("assistant", "tool_use", "")]);
+        std::fs::rename(own, folder.join("agent-ab12cd.jsonl")).unwrap();
+
+        let found = judge.installed(|| {
+            run_described(&root, "grep -rn imposto .", None, (&main, Some("ab12cd")), "s-subagente")
+        });
+        noted(found, "grep -rn imposto .");
+        assert_eq!(judge.last().said, "Fala do subagente.");
+
+        let missing = judge.installed(|| {
+            run_described(&root, "grep -rn imposto .", None, (&main, Some("ffffff")), "s-sem-arquivo")
+        });
+        noted(missing, "grep -rn imposto .");
+        assert_eq!(judge.last().said, "", "no subagent file, no speech: the main conversation is never read");
+    }
+
+    /// Uma conversa guardada pelo Claude Code, uma mensagem em JSON por linha:
+    /// o papel, o tipo do bloco e o texto dele.
+    fn write_transcript(dir: &Path, lines: &[(&str, &str, &str)]) -> PathBuf {
+        let file = dir.join("conversa.jsonl");
+        let text: Vec<String> = lines
+            .iter()
+            .map(|(role, kind, text)| {
+                let block = match *kind {
+                    "text" => serde_json::json!({"type": "text", "text": text}),
+                    _ => serde_json::json!({"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "grep"}}),
+                };
+                serde_json::json!({"type": role, "message": {"role": role, "content": [block]}}).to_string()
+            })
+            .collect();
+        std::fs::write(&file, text.join("\n") + "\n").unwrap();
+        file
+    }
+
+    /// O mesmo gancho do terminal, com a descrição da chamada e o caminho da
+    /// conversa que o Claude Code manda.
+    fn run_described(
+        cwd: &Path,
+        command: &str,
+        description: Option<&str>,
+        (transcript, agent_id): (&Path, Option<&str>),
+        session: &str,
+    ) -> Verdict {
+        let mut tool_input = serde_json::json!({ "command": command });
+        if let Some(description) = description {
+            tool_input["description"] = serde_json::json!(description);
+        }
+        let mut raw = serde_json::json!({
+            "tool_name": "Bash",
+            "tool_input": tool_input,
+            "hook_event_name": "PreToolUse",
+            "cwd": cwd,
+            "session_id": session,
+            "transcript_path": transcript,
+        });
+        if let Some(agent_id) = agent_id {
+            raw["agent_id"] = serde_json::json!(agent_id);
+            raw["agent_type"] = serde_json::json!("general-purpose");
+        }
+        let input: HookInput = serde_json::from_value(raw).expect("a hook input");
+        crate::dispatch::run_event(Some(Trigger::PreToolUse), &input).verdict
+    }
+
     /// A busca parcial não bloqueia o comando: a leitura e a busca na mesma
     /// linha rodam inteiras, com a nota do mapa junto, e a nota não
     /// traz o pedido de buscar de novo. A cravada na mesma linha segue

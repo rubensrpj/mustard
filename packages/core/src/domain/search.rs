@@ -308,7 +308,7 @@ pub fn fuse<T: Clone + Eq + std::hash::Hash>(main: &[T], vector: &[T], weight: f
 /// número. Com 100, a cadeia inteira acertou quase o mesmo que com 200 nas
 /// quatro réguas do laboratório (95,6% contra 96,3% das buscas), com metade
 /// dos tokens por busca; as buscas perdidas tinham o certo entre os
-/// candidatos 101 e 200. Com os grupos de 50 do filtro, são 2 pedidos.
+/// candidatos 101 e 200. Os 100 vão ao filtro num pedido só.
 pub const CANDIDATES: usize = 100;
 
 /// A palavra da pergunta que procura um pedaço de nome tem pelo menos estas

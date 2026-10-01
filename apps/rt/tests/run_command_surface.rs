@@ -870,8 +870,8 @@ fn the_map_search_prints_the_answer_the_hook_gives_grep_with_the_same_text() {
 }
 
 /// A ajuda do `run map` ensina a busca com o texto do `Grep` e as opções que
-/// o gancho entende, e não fala das opções de medida `--query` e `--intent`,
-/// que seguem aceitas, escondidas.
+/// o gancho entende, e não fala das opções de medida `--query`, `--intent`,
+/// `--described` e `--said`, que seguem aceitas, escondidas.
 #[test]
 fn the_map_help_teaches_the_search_with_the_text_of_grep_and_hides_the_measuring_options() {
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
@@ -883,7 +883,9 @@ fn the_map_help_teaches_the_search_with_the_text_of_grep_and_hides_the_measuring
     for shown in ["[PATTERN]", "--glob", "--type", "--ignore-case", "--word-regexp", "--fixed-strings"] {
         assert!(help.contains(shown), "the help shows {shown}: {help}");
     }
-    assert!(!help.contains("--query") && !help.contains("--intent"), "the measuring options stay hidden: {help}");
+    for hidden in ["--query", "--intent", "--described", "--said"] {
+        assert!(!help.contains(hidden), "the measuring option {hidden} stays hidden: {help}");
+    }
 
     let project = installments_project();
     let root = project.path();
@@ -895,4 +897,15 @@ fn the_map_help_teaches_the_search_with_the_text_of_grep_and_hides_the_measuring
         .expect("run map search --query");
     let report: serde_json::Value = serde_json::from_slice(&old.stdout).unwrap();
     assert_eq!(report["ok"], true, "the hidden option is still accepted: {report}");
+
+    let described = std::process::Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+        .args(["run", "map", "search", "--query", "splitInstallments", "--described", "Procura o parcelamento"])
+        .args(["--said", "Vou olhar o parcelamento.", "--root"])
+        .arg(root)
+        .current_dir(root)
+        .output()
+        .expect("run map search --described --said");
+    assert!(described.status.success(), "{}", String::from_utf8_lossy(&described.stderr));
+    let report: serde_json::Value = serde_json::from_slice(&described.stdout).unwrap();
+    assert_eq!(report["ok"], true, "the hidden options of the description and the speech are accepted: {report}");
 }

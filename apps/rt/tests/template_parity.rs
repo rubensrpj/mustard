@@ -47,6 +47,11 @@ use mustard_rt::commands::RunCmd;
 const FLAG_WHITELIST: &[(&str, &str, &str)] = &[
     (
         "map",
+        "described",
+        "hidden option of the search measurement: the terminal hook fills the description of the call by itself",
+    ),
+    (
+        "map",
         "intent",
         "hidden alias of the search measurement (the ruler and the install lab script); the search teaches the text of Grep",
     ),
@@ -54,6 +59,11 @@ const FLAG_WHITELIST: &[(&str, &str, &str)] = &[
         "map",
         "query",
         "hidden alias of the search measurement (the ruler and the install lab script); the search teaches the text of Grep",
+    ),
+    (
+        "map",
+        "said",
+        "hidden option of the search measurement: the terminal hook fills the last speech of the agent by itself",
     ),
 ];
 

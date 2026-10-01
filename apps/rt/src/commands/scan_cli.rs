@@ -106,6 +106,16 @@ pub enum ScanCmd {
         /// kept for the measurements of the search, hidden from the help.
         #[arg(long, hide = true)]
         intent: Option<String>,
+        /// The description the agent gave the search (`search`); the terminal
+        /// hook fills it by itself, so it is only an option for the
+        /// measurements of the search, hidden from the help.
+        #[arg(long, hide = true)]
+        described: Option<String>,
+        /// The last thing the agent said before the search (`search`); the
+        /// terminal hook fills it by itself, so it is only an option for the
+        /// measurements of the search, hidden from the help.
+        #[arg(long, hide = true)]
+        said: Option<String>,
         /// The skill to check (`skill`).
         #[arg(long)]
         path: Option<PathBuf>,
@@ -128,46 +138,94 @@ pub enum ScanCmd {
 pub fn dispatch(cmd: ScanCmd) {
     match cmd {
         ScanCmd::Scan { root, out, full } => scan::run(&root, out.as_deref(), full),
-        ScanCmd::Map {
-            question,
-            pattern,
-            folder,
-            ignore_case,
-            whole_word,
-            fixed,
-            glob,
-            kind,
-            file,
-            task,
-            query,
-            intent,
-            path,
-            name,
-            pr,
-            root,
-        } => {
-            let grep = pattern.map(|pattern| crate::commands::map::GrepSearch {
-                pattern,
-                folder,
-                ignore_case,
-                whole_word,
-                fixed,
-                glob,
-                kind,
-            });
-            crate::commands::map::run(&crate::commands::map::MapOpts {
-                root,
-                question,
-                grep,
-                file,
-                task,
-                query,
-                intent,
-                path,
-                name,
-                pr,
-                session: crate::shared::spec_state::session_from_env(),
-            });
-        }
+        map @ ScanCmd::Map { .. } => crate::commands::map::run(&map_opts(map)),
+    }
+}
+
+/// The options of `run map` that the command line carries, every flag in its
+/// field. Only called with the `Map` command.
+fn map_opts(cmd: ScanCmd) -> crate::commands::map::MapOpts {
+    let ScanCmd::Map {
+        question,
+        pattern,
+        folder,
+        ignore_case,
+        whole_word,
+        fixed,
+        glob,
+        kind,
+        file,
+        task,
+        query,
+        intent,
+        described,
+        said,
+        path,
+        name,
+        pr,
+        root,
+    } = cmd
+    else {
+        unreachable!("the options of `run map` are read from the `Map` command only")
+    };
+    let grep = pattern.map(|pattern| crate::commands::map::GrepSearch {
+        pattern,
+        folder,
+        ignore_case,
+        whole_word,
+        fixed,
+        glob,
+        kind,
+    });
+    crate::commands::map::MapOpts {
+        root,
+        question,
+        grep,
+        file,
+        task,
+        query,
+        intent,
+        described,
+        said,
+        path,
+        name,
+        pr,
+        session: crate::shared::spec_state::session_from_env(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct Probe {
+        #[command(subcommand)]
+        cmd: ScanCmd,
+    }
+
+    fn opts_of(args: &[&str]) -> crate::commands::map::MapOpts {
+        let mut line = vec!["probe", "map"];
+        line.extend_from_slice(args);
+        map_opts(Probe::try_parse_from(line).expect("the command line parses").cmd)
+    }
+
+    /// `--described` e `--said` da linha de comando chegam às opções da busca,
+    /// com `--query` e com o texto do `Grep`, e sem eles ficam vazios.
+    #[test]
+    fn the_description_and_the_speech_of_the_command_line_reach_the_search_options() {
+        let with_query = opts_of(&["search", "--query", "frete", "--described", "Procura o frete", "--said", "Vou olhar"]);
+        assert_eq!(with_query.query.as_deref(), Some("frete"));
+        assert_eq!(with_query.described.as_deref(), Some("Procura o frete"));
+        assert_eq!(with_query.said.as_deref(), Some("Vou olhar"));
+
+        let with_pattern = opts_of(&["search", "frete", ".", "--described", "Procura o frete", "--said", "Vou olhar"]);
+        assert_eq!(with_pattern.grep.as_ref().map(|grep| grep.pattern.as_str()), Some("frete"));
+        assert_eq!(with_pattern.described.as_deref(), Some("Procura o frete"));
+        assert_eq!(with_pattern.said.as_deref(), Some("Vou olhar"));
+
+        let bare = opts_of(&["search", "--query", "frete"]);
+        assert_eq!((bare.described, bare.said), (None, None));
     }
 }

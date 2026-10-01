@@ -159,6 +159,8 @@ mod tests {
             grep: None,
             query: Some(query.to_string()),
             intent: None,
+            described: None,
+            said: None,
             path: None,
             name: None,
             pr: None,

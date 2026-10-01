@@ -903,8 +903,8 @@ fn best_line(body: &str, words: &[Vec<String>], normalizer: &mut Normalizer) -> 
 // ---------------------------------------------------------------------------
 
 
-/// Quantos títulos de commit do arquivo vão com cada candidato, os mais
-/// novos.
+/// Quantos títulos de commit de cada arquivo entram no índice da busca, os
+/// mais novos.
 const FILE_COMMITS: usize = 3;
 
 /// Os tipos de declaração que, entre os membros de um tipo, são métodos.
@@ -923,8 +923,8 @@ pub struct FilterCandidates {
 /// Os candidatos do filtro no mapa do projeto em `root`: as palavras de
 /// `query` e a frase de `intent`, com as palavras cortadas nas línguas
 /// `languages`, até `limit` candidatos. As recusas são as de [`search`] e,
-/// como os candidatos levam os títulos dos commits do arquivo, também a da
-/// história da base ainda vazia depois de uma troca de formato
+/// como o índice usa os títulos dos commits do arquivo, também a da história
+/// da base ainda vazia depois de uma troca de formato
 /// ([`map_fill::READ_BY_CANDIDATES`]).
 pub fn candidates(
     root: &Path,
@@ -976,7 +976,6 @@ pub fn links(root: &Path, ids: &[i64]) -> std::result::Result<Links, MapRefusal>
 /// Uma declaração como a tabela a guarda, com as ligações ainda em texto.
 struct Stored {
     candidate: FilterCandidate,
-    owner: Vec<String>,
     members: Vec<DeclAt>,
     implemented_by: Vec<DeclAt>,
 }
@@ -984,12 +983,9 @@ struct Stored {
 /// As declarações `ids`, na ordem pedida, como a tabela as guarda.
 fn stored(conn: &Connection, ids: &[i64]) -> Result<Vec<Stored>> {
     let mut stmt = conn.prepare(
-        "SELECT file, kind, name, line, end_line, signature, doc, body_comment, owner, contract, members, implemented_by \
+        "SELECT file, kind, name, line, end_line, signature, doc, members, implemented_by \
          FROM decls WHERE rowid = ?1",
     )?;
-    let list = |row: &Row<'_>, at: usize| -> Result<Vec<String>> {
-        Ok(serde_json::from_str(&text(row, at)?).unwrap_or_default())
-    };
     let places = |row: &Row<'_>, at: usize| -> Result<Vec<DeclAt>> {
         Ok(serde_json::from_str(&text(row, at)?).unwrap_or_default())
     };
@@ -998,8 +994,6 @@ fn stored(conn: &Connection, ids: &[i64]) -> Result<Vec<Stored>> {
         let mut rows = stmt.query([id])?;
         let Some(row) = rows.next()? else { continue };
         let line = |at: usize| -> Result<u32> { Ok(u32::try_from(row.get::<_, Option<i64>>(at)?.unwrap_or(0)).unwrap_or(0)) };
-        let mut owner = list(row, 8)?;
-        owner.extend(list(row, 9)?);
         out.push(Stored {
             candidate: FilterCandidate {
                 id,
@@ -1010,44 +1004,18 @@ fn stored(conn: &Connection, ids: &[i64]) -> Result<Vec<Stored>> {
                 end_line: line(4)?,
                 signature: text(row, 5)?,
                 documentation: text(row, 6)?,
-                owner: String::new(),
-                members: Vec::new(),
-                body_comments: text(row, 7)?,
-                file_commits: Vec::new(),
             },
-            owner,
-            members: places(row, 10)?,
-            implemented_by: places(row, 11)?,
+            members: places(row, 7)?,
+            implemented_by: places(row, 8)?,
         });
     }
     Ok(out)
 }
 
-/// As declarações `ids`, na ordem pedida, com o dono e o contrato em texto,
-/// os membros (os métodos com `()` no fim) e os títulos dos commits mais
-/// novos do arquivo.
+/// As declarações `ids`, na ordem pedida, com o que o mapa guarda de cada
+/// uma: o tipo, o nome, o caminho, as linhas, a assinatura e a documentação.
 fn declarations_in(conn: &Connection, ids: &[i64]) -> Result<Vec<FilterCandidate>> {
-    let stored = stored(conn, ids)?;
-    let kinds = kinds_of(conn, stored.iter().flat_map(|decl| &decl.members))?;
-    let paths: HashSet<&str> = stored.iter().map(|decl| decl.candidate.path.as_str()).collect();
-    let titles = newest_titles(conn, &paths)?;
-    Ok(stored
-        .iter()
-        .map(|decl| {
-            let mut candidate = decl.candidate.clone();
-            candidate.owner = decl.owner.join(" ");
-            candidate.members = decl
-                .members
-                .iter()
-                .map(|member| match kinds.get(member) {
-                    Some((_, kind)) if METHOD_KINDS.contains(&kind.as_str()) => format!("{}()", member.name),
-                    _ => member.name.clone(),
-                })
-                .collect();
-            candidate.file_commits = titles.get(candidate.path.as_str()).cloned().unwrap_or_default();
-            candidate
-        })
-        .collect())
+    Ok(stored(conn, ids)?.into_iter().map(|decl| decl.candidate).collect())
 }
 
 /// As ligações de cada declaração de `ids` que o mapa tem. A implementação
@@ -1801,11 +1769,10 @@ pub(crate) mod tests {
         })
     }
 
-    /// Cada candidato leva o que o mapa guarda: o dono e o contrato, os
-    /// membros com os métodos marcados, os comentários do corpo e os três
-    /// títulos de commit mais novos do arquivo.
+    /// Cada candidato leva o que o mapa guarda: o tipo, o nome, o caminho, as
+    /// linhas, a assinatura e a documentação.
     #[test]
-    fn each_candidate_carries_the_owner_the_members_the_body_comments_and_the_three_newest_commits() {
+    fn each_candidate_carries_the_kind_the_name_the_path_the_lines_the_signature_and_the_documentation() {
         let dir = saved_json(&contract_map());
         let found = candidates(dir.path(), "charge PaymentPort", "cobrar o pedido no cartão", &languages(), 100).unwrap();
         assert_eq!(found.whole.len(), 5, "{found:?}");
@@ -1813,18 +1780,14 @@ pub(crate) mod tests {
         assert_eq!(ids, found.whole, "under the cap every declaration of the whole list is a candidate");
 
         let port = found.candidates.iter().find(|c| c.name == "PaymentPort").unwrap();
-        assert_eq!(port.members, vec!["charge()".to_string(), "LIMIT".to_string()]);
-        assert_eq!(port.file_commits, vec!["Primeiro cartão".to_string()]);
+        assert_eq!((port.kind.as_str(), port.path.as_str()), ("trait", "src/pay/port.rs"));
+        assert_eq!((port.line, port.end_line), (1, 4));
+        assert_eq!(port.signature, "pub trait PaymentPort");
         assert_eq!(port.documentation, "Cobra o pedido.");
 
         let card = found.candidates.iter().find(|c| c.name == "charge" && c.path == "src/pay/card.rs").unwrap();
-        assert_eq!(card.owner, "CardGateway PaymentPort");
-        assert_eq!(card.body_comments, "manda ao banco do cartão");
-        assert_eq!((card.line, card.end_line), (3, 9));
-        assert_eq!(
-            card.file_commits,
-            vec!["Cartão sem juros".to_string(), "Cartão com parcela".to_string(), "Limite do cartão".to_string()]
-        );
+        assert_eq!((card.kind.as_str(), card.line, card.end_line), ("method", 3, 9));
+        assert_eq!(card.signature, "fn charge(&self, total: u32)");
 
         let shown = declarations(dir.path(), &[card.id, 999]).unwrap();
         assert_eq!(shown, vec![card.clone()], "an id the map does not have is left out");

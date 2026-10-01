@@ -1,29 +1,26 @@
 //! `jev` — o filtro da busca por assunto do mapa pelo Jev, um serviço pago
-//! de fora que não escreve texto: lê um estado e uma pergunta de escolha e
-//! devolve a chance de cada opção.
+//! de fora que não escreve texto: lê um estado e perguntas e devolve a chance
+//! de cada opção.
 //!
-//! Implementa a tomada [`MapFilter`] do núcleo. Todos os candidatos vão num
-//! pedido só, na ordem do banco, como uma pergunta de escolha: o estado traz
-//! a frase, as palavras e um candidato por linha, e as opções são os ids dos
-//! candidatos mais `none`, "nenhum destes". Só um pedido acima de
-//! [`MAX_REQUEST_TOKENS`] se divide, no menor número de pedidos que mantém a
-//! ordem do banco. A chance de cada id, a de `none` e a confiança da escolha
-//! voltam para o veredito e o corte do núcleo ([`judged`]), os mesmos de toda
+//! Implementa a tomada [`MapFilter`] do núcleo. Um pedido só leva tudo, na
+//! ordem do banco. O estado é um texto, um bloco por candidato: o id, o
+//! caminho com as linhas da declaração, a documentação e as primeiras linhas
+//! do código dela, lidas do arquivo do projeto; se o estado passa do
+//! orçamento ([`STATE_TOKENS`]), as linhas de código caem de 24 para 8, 5 e 3.
+//!
+//! O pedido faz duas perguntas ao mesmo estado: `where`, uma escolha entre os
+//! ids dos candidatos (qual é o código que o agente pediu), e `exists`, um
+//! sim ou não (algum candidato é). Cada pergunta leva a frase de quem procura
+//! e, quando existem, a descrição que o agente deu à busca e a última fala
+//! dele antes dela. A chance de cada id e a de `exists` voltam para o
+//! veredito e o corte do núcleo ([`judged`]), os mesmos de toda
 //! implementação.
 //!
-//! Quando o veredito é dividido, uma segunda olhada relê só os três de maior
-//! chance, agora com os mesmos campos numa lista de três: uma escolha entre
-//! eles e `none`, e um sim ou não para cada um ("este é o código que se
-//! procura?"). A decisão é a do núcleo ([`second_look`]): volta o trecho certo,
-//! ou não achei. O segundo pedido usa o mesmo prazo do primeiro; falhando ou
-//! passando do prazo, vale o corte relativo da primeira etapa, sem erro.
-//!
-//! De cada candidato vão só nomes, caminho, assinatura, documentação,
-//! comentários, o dono, os membros e títulos de commit, com os cortes medidos
-//! no laboratório. Nunca uma linha do corpo nem um texto entre aspas: o
-//! candidato do núcleo nem tem onde guardá-los. Todo texto que sai, o pedido
-//! e as palavras inclusive, passa antes pela procura de segredo, e o trecho
-//! com cara de chave, senha ou token vai como "…".
+//! O código do projeto vai ao Jev, e por isso todo texto que sai passa antes
+//! pela procura de segredo, o estado e o contexto inclusive: o trecho com cara
+//! de chave, senha ou token vai como "…". O arquivo lido nunca sai do projeto
+//! (caminho absoluto ou com `..` não se lê), não é um arquivo sensível
+//! (credenciais, chaves) e não passa de [`MAX_FILE_BYTES`].
 //!
 //! O modelo pedido é uma versão fixa, e o uso guarda o nome do modelo que a
 //! resposta diz ter respondido.
@@ -34,22 +31,19 @@
 //! comando a grava, e nenhum erro, aviso ou log a leva — nem o corpo da
 //! resposta do serviço.
 
+use std::collections::HashMap;
 use std::fmt;
-use std::io::{self, ErrorKind};
-use std::ops::Range;
-use std::path::Path;
+use std::io::ErrorKind;
+use std::path::{Component, Path};
 use std::time::{Duration, Instant};
 
 use mustard_core::domain::map_filter::{
-    Finalist, FilterCandidate, FilterError, FilterRequest, FilterUsage, Filtered, MapFilter, Scored, Verdict,
-    finalists_of, judged, second_look, verdict,
+    FilterCandidate, FilterError, FilterRequest, FilterUsage, Filtered, MapFilter, Scored, Verdict, judged,
 };
-use mustard_core::domain::normalize::split_identifier;
 use mustard_core::ProjectConfig;
-use serde::Serialize;
-use serde_json::ser::Formatter;
 use serde_json::{Map, Value, json};
 
+use crate::shared::paths::sensitive_pattern;
 use crate::shared::secret::without_secrets;
 
 // ---------------------------------------------------------------------------
@@ -59,9 +53,8 @@ use crate::shared::secret::without_secrets;
 /// O endereço do serviço.
 pub const JEV_URL: &str = "https://api.typesafe.ai/v1/systemone";
 
-/// O modelo pedido: uma versão fixa, a que o laboratório mediu. A versão
-/// mais nova do serviço mudaria as notas sem aviso; a troca vem com medida
-/// nova.
+/// O modelo pedido: uma versão fixa, a que a medida usou. A versão mais nova
+/// do serviço mudaria as notas sem aviso; a troca vem com medida nova.
 pub const JEV_MODEL: &str = "jev-1.13.0";
 
 /// US$ por milhão de tokens de entrada; a saída não é cobrada.
@@ -70,27 +63,50 @@ pub const PRICE_PER_MILLION_INPUT_TOKENS: f64 = 0.042;
 /// A variável de ambiente da chave; vence o `mustard.json`.
 pub const KEY_ENV: &str = "TYPESAFE_API_KEY";
 
-/// O maior pedido que o serviço aceita, em tokens. Os 100 candidatos do banco
-/// cabem num pedido só, de uns 20 mil.
+/// O maior pedido que o serviço aceita, em tokens. Passando dele, com o
+/// código já reduzido ao mínimo, o pedido não sai.
 const MAX_REQUEST_TOKENS: u64 = 64_000;
 
-/// Caracteres por token, para estimar o pedido antes de mandar, como o
-/// laboratório estimava.
+/// O orçamento do estado, em tokens: acima dele, o código de cada candidato
+/// perde linhas até caber. A frase de quem procura, que vai nas duas
+/// perguntas, conta duas vezes.
+const STATE_TOKENS: u64 = 28_000;
+
+/// Caracteres por token, para estimar o pedido antes de mandar, como a
+/// medida estimava.
 const CHARS_PER_TOKEN: f64 = 3.2;
 
+/// Quantas linhas do código de cada candidato vão no estado, da primeira
+/// tentativa para a última: as que sobram quando o estado passa do orçamento.
+const CODE_LINES: [usize; 4] = [24, 8, 5, 3];
+
+/// Quantos caracteres da documentação vão por candidato.
+const DOCUMENTATION_CHARS: usize = 300;
+
+/// Quantos caracteres de cada linha de código vão.
+const LINE_CHARS: usize = 160;
+
+/// Quantos caracteres da descrição que o agente deu à busca vão.
+const DESCRIBED_CHARS: usize = 300;
+
+/// Quantos caracteres da última fala do agente vão: os últimos.
+const SAID_CHARS: usize = 500;
+
+/// O maior arquivo lido atrás de código, em bytes; o maior que isso é dado,
+/// não código.
+const MAX_FILE_BYTES: u64 = 1_000_000;
+
 // A rede de uma busca interativa: quem espera é o agente, no meio do
-// trabalho. O laboratório esperava a resposta até 120 s e tentava até 8
-// vezes, o que serve a uma medição em lote, não a uma busca.
+// trabalho. A medida esperava a resposta até 120 s e tentava até 8 vezes, o
+// que serve a uma medição em lote, não a uma busca.
 
 /// Quanto se espera para abrir a conexão.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Quanto a busca espera o filtro inteiro, repetições e esperas inclusive;
-/// passado o prazo, a resposta vem do banco. O serviço saudável responde a
-/// escolha entre 100 candidatos num pedido só em 0,5 s em média e em no
-/// máximo 1,0 s (as 120 buscas do laboratório). Num período lento do
-/// serviço, 100 buscas esperaram de 0,4 a 30 s, sem degrau no meio: com 10 s,
-/// 9 delas iriam ao banco, e nenhuma esperaria mais que isso.
+/// passado o prazo, a resposta vem do banco. Num período lento do serviço,
+/// 100 buscas esperaram de 0,4 a 30 s, sem degrau no meio: com 10 s, 9 delas
+/// iriam ao banco, e nenhuma esperaria mais que isso.
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Quantas vezes se repete um pedido recusado por excesso (429, 529) ou por
@@ -105,71 +121,20 @@ const DEFAULT_RETRY_WAIT: Duration = Duration::from_millis(500);
 const MAX_RETRY_WAIT: Duration = Duration::from_secs(5);
 
 // ---------------------------------------------------------------------------
-// Os textos do pedido, como o filtro medido os mandava
+// Os textos do pedido, como a medida os mandava
 // ---------------------------------------------------------------------------
 
-// Cada campo que `candidate_fields` põe no candidato, pela chave, entre
-// crases, na ordem dele: o teste confere os dois lados.
-const ABOUT: &str = "A coding agent is searching a codebase. `request` is what it asked for, in Portuguese or English: either a \
-description of what some code does, or the name, or part of the name, of an identifier. The state lists \
-candidate declarations, one per line with what the code index knows about it: `kind`, `name` (its name split into words), \
-`path` (its file path), `signature`, `documentation`, `last commits of the file` (the titles of the last commits \
-that changed its file), `owner` (the names of the type or block that holds it), `comments in the body` (the \
-comments inside its code) and `members` (the members it declares, when it is a type). The body of the code is \
-not shown.";
+/// A chave da pergunta de escolha: qual candidato é o código.
+const WHERE_KEY: &str = "where";
 
-/// O texto do estado da segunda olhada: o de `ABOUT`, para a lista curta dos
-/// finalistas. Cita os mesmos campos, na mesma ordem; `@COUNT@` vira quantos
-/// são.
-const ABOUT_FINALISTS: &str = "A coding agent is searching a codebase. `request` is what it asked for, in Portuguese or English: either a \
-description of what some code does, or the name, or part of the name, of an identifier. The state lists @COUNT@ \
-candidate declarations, one per line, with everything the code index knows about each one: `kind`, `name` (its name split into words), \
-`path` (its file path), `signature`, `documentation`, `last commits of the file` (the titles of the last commits \
-that changed its file), `owner` (the names of the type or block that holds it), `comments in the body` (the \
-comments inside its code) and `members` (the members it declares, when it is a type). The body of the code is \
-not shown.";
+/// A chave da pergunta de sim ou não: algum candidato é o código.
+const EXISTS_KEY: &str = "exists";
 
-const ANSWER_YES_WHEN: &str = "The candidate is the code the request asks for: it does, defines or decides what the request describes, \
-or its name is the identifier the request names.";
+/// O texto do sim da pergunta `exists`.
+const EXISTS_YES: &str = "At least one candidate is the code the request asks for, or contains it.";
 
-const ANSWER_NO_WHEN: &str = "The candidate is only on a related topic, only uses or calls the thing the request describes, or only \
-shares some words with the request.";
-
-/// A pergunta da escolha. A última frase é a saída da opção `none`.
-const QUESTION: &str = "Which one of the candidates is the code that the `request` is looking for? Answer with the id of the single \
-candidate that best is that code. If none of them is that code, answer `none`.";
-
-/// A pergunta de sim ou não sobre um finalista; `@ID@` vira o id dele.
-const FINALIST_QUESTION: &str = "Is candidate `@ID@` the code that the `request` is looking for?";
-
-/// O começo da chave da pergunta de sim ou não de cada finalista; o resto é o
-/// id dele.
-const FITS_PREFIX: &str = "fits_";
-
-/// O texto da opção "nenhum destes".
-const NONE_CRITERION: &str = "None of the candidates is the code the request asks for: each one is only on a related topic, only uses or \
-calls it, is only used by it, or only shares some words with the request.";
-
-/// A chave da opção "nenhum destes" nos critérios e nas chances.
-const NONE_KEY: &str = "none";
-
-/// A chave da pergunta única do pedido.
-const CHOICE_KEY: &str = "q";
-
-/// A chave do estado que traz os candidatos.
-const CANDIDATES_KEY: &str = "candidates (one per line: id| fields as JSON)";
-
-const GUESSED_WORDS: &str = "guessed words (the agent's guesses, they may not exist in the code)";
-
-// Os cortes de cada campo do candidato.
-const SIGNATURE_CHARS: usize = 300;
-const DOCUMENTATION_CHARS: usize = 400;
-const BODY_COMMENTS_CHARS: usize = 600;
-const FILE_COMMITS: usize = 3;
-const MEMBERS: usize = 16;
-
-/// As palavras da linha do dono que não são nomes.
-const OWNER_KEYWORDS: [&str; 8] = ["for", "impl", "pub", "mod", "trait", "where", "dyn", "mut"];
+/// O texto do não da pergunta `exists`.
+const EXISTS_NO: &str = "No candidate is the code the request asks for: they are only on related topics or only share some words with it.";
 
 // ---------------------------------------------------------------------------
 // A chave
@@ -313,7 +278,7 @@ impl JevFilter {
 impl MapFilter for JevFilter {
     fn filter(&self, request: &FilterRequest) -> Result<Filtered, FilterError> {
         let started = Instant::now();
-        // Um prazo só para todos os pedidos: o agente espera a busca inteira.
+        // Um prazo só para a busca inteira: o agente espera.
         let deadline = started + self.timeouts.response;
         if request.candidates.is_empty() {
             return Ok(Filtered {
@@ -322,86 +287,27 @@ impl MapFilter for JevFilter {
                 usage: FilterUsage { model: String::new(), ..FilterUsage::default() },
             });
         }
-        let head = Head::of(request);
-        let lines: Vec<String> = request.candidates.iter().enumerate().map(|(at, c)| candidate_line(at, c)).collect();
-        let mut reads = Vec::new();
-        let mut input_tokens = 0;
-        let mut models: Vec<String> = Vec::new();
-        for (range, payload) in batches(&head, &lines)? {
-            let doc = self.send(&payload, deadline)?;
-            let read = read_choice(&doc, range.start, &request.candidates[range])?;
-            input_tokens += read.input_tokens;
-            reads.push(read);
-            note_model(&mut models, &doc);
-        }
-        let Merged { scores, none, confidence } = merge(reads);
-        let (mut verdict, mut kept) = judged(&scores, none, confidence, request.share);
-        if verdict == Verdict::Split {
-            // A escolha ficou dividida: relê só os finalistas. A falha dessa
-            // etapa não é falha da busca, e vale o corte da primeira.
-            let second = self.second_look(&head, request, &scores, deadline);
-            input_tokens += second.input_tokens;
-            if let Some(model) = second.model {
-                note_model(&mut models, &model);
-            }
-            if let Some((decided, chosen)) = second.decided {
-                (verdict, kept) = (decided, chosen);
-            }
-        }
+        let sent = payload(request)?;
+        let doc = self.send(&sent, deadline)?;
+        let answer = read_answer(&doc, &request.candidates)?;
+        let (verdict, kept) = judged(&answer.scores, answer.exists, request.cut);
         Ok(Filtered {
             verdict,
             kept,
             usage: FilterUsage {
-                input_tokens,
+                input_tokens: answer.input_tokens,
                 millis: started.elapsed().as_millis() as u64,
-                cost_micro_usd: cost_micro_usd(input_tokens),
-                model: models.join(","),
+                cost_micro_usd: cost_micro_usd(answer.input_tokens),
+                model: model_of(&doc),
             },
         })
     }
 }
 
-/// O que a segunda olhada devolve: os tokens que o pedido custou, o documento
-/// da resposta (para o nome do modelo) e, quando a resposta se leu, a decisão.
-struct Second {
-    input_tokens: u64,
-    model: Option<Value>,
-    decided: Option<(Verdict, Vec<Scored>)>,
-}
-
-impl JevFilter {
-    /// A segunda olhada sobre os finalistas de `scores`: um pedido com uma
-    /// escolha entre eles e `none` e um sim ou não para cada um, sob o mesmo
-    /// `deadline` da primeira etapa. Qualquer falha (rede, recusa, prazo,
-    /// resposta ilegível) deixa `decided` vazio, e os tokens da resposta que
-    /// chegou contam do mesmo jeito.
-    fn second_look(&self, head: &Head, request: &FilterRequest, scores: &[Scored], deadline: Instant) -> Second {
-        let nothing = Second { input_tokens: 0, model: None, decided: None };
-        let group: Vec<FilterCandidate> = finalists_of(scores)
-            .iter()
-            .filter_map(|finalist| request.candidates.iter().find(|c| c.id == finalist.id).cloned())
-            .collect();
-        if group.is_empty() {
-            return nothing;
-        }
-        let lines: Vec<String> = group.iter().enumerate().map(|(at, c)| candidate_line(at, c)).collect();
-        let Ok(payload) = serde_json::to_string(&second_body(head, &lines)) else { return nothing };
-        if estimated_tokens(&payload) > MAX_REQUEST_TOKENS {
-            return nothing;
-        }
-        let Ok(doc) = self.send(&payload, deadline) else { return nothing };
-        let input_tokens = doc.pointer("/usage/input_tokens").and_then(Value::as_u64).unwrap_or(0);
-        let decided = read_second(&doc, &group).ok();
-        Second { input_tokens, model: Some(doc), decided }
-    }
-}
-
-/// O nome do modelo que a resposta `doc` diz ter respondido, guardado uma vez.
-fn note_model(models: &mut Vec<String>, doc: &Value) {
-    let model = doc.get("model").and_then(Value::as_str).map(str::trim).unwrap_or_default();
-    if !model.is_empty() && !models.iter().any(|seen| seen == model) {
-        models.push(model.to_string());
-    }
+/// O nome do modelo que a resposta `doc` diz ter respondido; vazio quando ela
+/// não diz.
+fn model_of(doc: &Value) -> String {
+    doc.get("model").and_then(Value::as_str).map(str::trim).unwrap_or_default().to_string()
 }
 
 /// O custo de `input_tokens` tokens de entrada em milionésimos de dólar,
@@ -411,102 +317,49 @@ fn cost_micro_usd(input_tokens: u64) -> u64 {
     (input_tokens as f64 * PRICE_PER_MILLION_INPUT_TOKENS).round() as u64
 }
 
-/// O que a pergunta de escolha de um pedido respondeu.
+/// O que a resposta do serviço disse.
 #[derive(Debug, Clone, PartialEq)]
-struct Choice {
-    /// A chance de cada candidato do pedido, na ordem do banco.
+struct Answer {
+    /// A chance de cada candidato ser o código, na ordem do banco.
     scores: Vec<Scored>,
-    /// A chance de "nenhum destes".
-    none: f64,
-    /// A confiança do serviço na escolha.
-    confidence: f64,
+    /// A chance de algum candidato ser o código.
+    exists: f64,
     /// Os tokens de entrada que o pedido custou.
     input_tokens: u64,
 }
 
-/// A escolha lida da resposta de um pedido: a chance de cada id, a de `none`
-/// e a confiança. `first` é a posição do primeiro candidato do pedido na
-/// lista inteira, de onde vem o id de cada um. Falta de `answers`, de uma
-/// chance ou da confiança é resposta ilegível.
-fn read_choice(doc: &Value, first: usize, group: &[FilterCandidate]) -> Result<Choice, FilterError> {
-    let answer = doc
+/// A resposta lida do documento `doc`: a chance de cada candidato de
+/// `candidates` na escolha `where` e a de `exists`. Falta de `answers`, de uma
+/// chance ou do `exists` é resposta ilegível.
+fn read_answer(doc: &Value, candidates: &[FilterCandidate]) -> Result<Answer, FilterError> {
+    let answers = doc
         .get("answers")
         .and_then(Value::as_object)
-        .ok_or_else(|| FilterError::Unreadable("no answers".to_string()))?
-        .get(CHOICE_KEY)
-        .ok_or_else(|| FilterError::Unreadable("no answer to the choice".to_string()))?;
-    let chances = answer
-        .get("probabilities")
+        .ok_or_else(|| FilterError::Unreadable("no answers".to_string()))?;
+    let chances = answers
+        .get(WHERE_KEY)
+        .and_then(|answer| answer.get("probabilities"))
         .and_then(Value::as_object)
         .ok_or_else(|| FilterError::Unreadable("no chances".to_string()))?;
-    let chance = |key: &str| {
-        chances
-            .get(key)
+    let mut scores = Vec::with_capacity(candidates.len());
+    for (at, candidate) in candidates.iter().enumerate() {
+        let id = candidate_id(at);
+        let score = chances
+            .get(&id)
             .and_then(Value::as_f64)
-            .ok_or_else(|| FilterError::Unreadable(format!("no chance for {key}")))
-    };
-    let mut scores = Vec::with_capacity(group.len());
-    for (at, candidate) in group.iter().enumerate() {
-        scores.push(Scored { id: candidate.id, score: chance(&candidate_id(first + at))? });
+            .ok_or_else(|| FilterError::Unreadable(format!("no chance for {id}")))?;
+        scores.push(Scored { id: candidate.id, score });
     }
-    let confidence = answer
-        .get("confidence")
+    let exists = answers
+        .get(EXISTS_KEY)
+        .and_then(|answer| answer.get("noul"))
         .and_then(Value::as_f64)
-        .ok_or_else(|| FilterError::Unreadable("no confidence".to_string()))?;
-    Ok(Choice {
+        .ok_or_else(|| FilterError::Unreadable("no answer to the existence".to_string()))?;
+    Ok(Answer {
         scores,
-        none: chance(NONE_KEY)?,
-        confidence,
+        exists,
         input_tokens: doc.pointer("/usage/input_tokens").and_then(Value::as_u64).unwrap_or(0),
     })
-}
-
-/// A decisão lida da resposta da segunda olhada: a chance de cada finalista
-/// na escolha e o sim de cada um, postos na decisão do núcleo
-/// ([`second_look`]). `group` são os finalistas do pedido, na ordem dele;
-/// faltar a escolha ou um sim é resposta ilegível.
-fn read_second(doc: &Value, group: &[FilterCandidate]) -> Result<(Verdict, Vec<Scored>), FilterError> {
-    let choice = read_choice(doc, 0, group)?;
-    let answers = doc.get("answers").and_then(Value::as_object);
-    let mut finalists = Vec::with_capacity(group.len());
-    for (at, (candidate, scored)) in group.iter().zip(&choice.scores).enumerate() {
-        let key = format!("{FITS_PREFIX}{}", candidate_id(at));
-        let yes = answers
-            .and_then(|all| all.get(&key))
-            .and_then(|answer| answer.get("noul"))
-            .and_then(Value::as_f64)
-            .ok_or_else(|| FilterError::Unreadable(format!("no yes for {key}")))?;
-        finalists.push(Finalist { id: candidate.id, chance: scored.score, yes });
-    }
-    Ok(second_look(&finalists, choice.none))
-}
-
-/// O que sobra de todos os pedidos juntos.
-#[derive(Debug, Clone, PartialEq)]
-struct Merged {
-    scores: Vec<Scored>,
-    none: f64,
-    confidence: f64,
-}
-
-/// As escolhas de todos os pedidos numa só. Com um pedido, é a escolha dele.
-/// Com mais, o pedido que diz "nenhum destes" não tem o certo: as chances dele
-/// saem, e vale o que os outros disseram, com a menor chance de "nenhum
-/// destes" e a menor confiança entre eles. Se todos dizem "nenhum destes", a
-/// menor chance de "nenhum destes" fica.
-fn merge(reads: Vec<Choice>) -> Merged {
-    let found = |read: &Choice| verdict(read.none, read.confidence) != Verdict::NotFound;
-    if !reads.iter().any(found) {
-        let none = reads.iter().map(|read| read.none).fold(1.0, f64::min);
-        return Merged { scores: Vec::new(), none, confidence: 0.0 };
-    }
-    let mut merged = Merged { scores: Vec::new(), none: 1.0, confidence: 1.0 };
-    for read in reads.into_iter().filter(found) {
-        merged.none = merged.none.min(read.none);
-        merged.confidence = merged.confidence.min(read.confidence);
-        merged.scores.extend(read.scores);
-    }
-    merged
 }
 
 /// O erro de transporte, sem nada do pedido: o tempo esgotado à parte, o
@@ -534,218 +387,197 @@ fn retry_wait(retry_after: Option<&str>) -> Duration {
         .map_or(DEFAULT_RETRY_WAIT, |seconds| Duration::from_secs_f64(seconds.min(MAX_RETRY_WAIT.as_secs_f64())))
 }
 
+/// Os tokens estimados de `chars` caracteres.
+fn tokens_of(chars: usize) -> u64 {
+    (chars as f64 / CHARS_PER_TOKEN).ceil() as u64
+}
+
 /// Os tokens estimados de um pedido, pelos caracteres.
 fn estimated_tokens(payload: &str) -> u64 {
-    (payload.chars().count() as f64 / CHARS_PER_TOKEN).ceil() as u64
+    tokens_of(payload.chars().count())
 }
 
 // ---------------------------------------------------------------------------
 // O pedido
 // ---------------------------------------------------------------------------
 
-/// O que é igual em todos os pedidos de uma busca: a frase (ou, sem ela, as
-/// palavras), as palavras como palpites e a instrução da escolha. Nada aqui
-/// leva segredo.
-struct Head {
+/// O que o agente queria, já sem segredo: a frase (ou, sem ela, as palavras),
+/// a descrição que ele deu à busca e a última fala dele. É o que acompanha as
+/// duas perguntas do pedido.
+struct Context {
     request: String,
-    words: Vec<String>,
-    instructions: String,
+    described: String,
+    said: String,
 }
 
-impl Head {
+impl Context {
     fn of(request: &FilterRequest) -> Self {
         let asked = if request.phrase.trim().is_empty() { request.words.join(" ") } else { request.phrase.clone() };
+        let said = squash(&without_secrets(&request.said));
+        let kept = said.chars().count().saturating_sub(SAID_CHARS);
         Self {
             request: without_secrets(&asked),
-            words: request.words.iter().map(|word| without_secrets(word)).collect(),
-            instructions: choice_instructions(ABOUT),
+            described: without_secrets(request.described.trim()).chars().take(DESCRIBED_CHARS).collect(),
+            said: said.chars().skip(kept).collect(),
         }
     }
+
+    /// O fim das duas instruções: a descrição e a fala, cada uma só quando
+    /// existe.
+    fn suffix(&self) -> String {
+        let mut text = String::new();
+        if !self.described.is_empty() {
+            text.push_str(&format!(" The agent described this search as: \"{}\".", self.described));
+        }
+        if !self.said.is_empty() {
+            text.push_str(&format!(" Just before it, the agent wrote: \"{}\".", self.said));
+        }
+        text
+    }
 }
 
-/// A instrução da escolha: o texto do estado, o que é certo e o que é errado,
-/// e a pergunta.
-fn choice_instructions(about: &str) -> String {
-    format!("{about}\n\nThe right candidate: {ANSWER_YES_WHEN}\nA wrong candidate: {ANSWER_NO_WHEN}\n\n{QUESTION}")
+/// O texto do pedido para `request`: o estado com as primeiras linhas de
+/// código de cada candidato — 24, e menos (8, 5, 3) enquanto o estado passa do
+/// orçamento — e as duas perguntas. Um pedido que ainda passa do limite do
+/// serviço não sai ([`FilterError::TooLarge`]).
+fn payload(request: &FilterRequest) -> Result<String, FilterError> {
+    let context = Context::of(request);
+    let mut sources = Sources { root: &request.root, files: HashMap::new() };
+    let phrase = context.request.chars().count();
+    let mut state = String::new();
+    for lines in CODE_LINES {
+        state = state_text(&request.candidates, &mut sources, lines);
+        if tokens_of(state.chars().count() + 2 * phrase) <= STATE_TOKENS {
+            break;
+        }
+    }
+    let text = serde_json::to_string(&body(&state, &context, request.candidates.len()))
+        .map_err(|_| FilterError::Unreadable("the request did not serialize".to_string()))?;
+    let estimated = estimated_tokens(&text);
+    if estimated > MAX_REQUEST_TOKENS {
+        return Err(FilterError::TooLarge { estimated_tokens: estimated });
+    }
+    Ok(text)
 }
 
-/// O texto do estado da segunda olhada para `count` finalistas.
-fn finalists_about(count: usize) -> String {
-    let count = match count {
-        1 => "one",
-        2 => "two",
-        _ => "three",
-    };
-    ABOUT_FINALISTS.replace("@COUNT@", count)
-}
-
-/// O corpo de um pedido com uma pergunta de escolha: o estado (a frase, as
-/// palavras e os candidatos, um por linha), o modelo e a pergunta, cujas
-/// opções são os ids dos candidatos de `lines`, a partir da posição `first`, e
-/// `none`.
-fn body(head: &Head, first: usize, lines: &[String]) -> Value {
-    let question = choice_question(&head.instructions, first, lines.len());
-    request_body(head, lines, json!({ CHOICE_KEY: question }))
-}
-
-/// O corpo de um pedido: o estado (a frase, as palavras e os candidatos de
-/// `lines`, um por linha), o modelo e as perguntas.
-fn request_body(head: &Head, lines: &[String], questions: Value) -> Value {
-    let mut state = Map::new();
-    state.insert("request".to_string(), Value::String(head.request.clone()));
-    state.insert(GUESSED_WORDS.to_string(), json!(head.words));
-    state.insert(CANDIDATES_KEY.to_string(), Value::String(lines.join("\n")));
-    let mut body = Map::new();
-    body.insert("state".to_string(), Value::Object(state));
-    body.insert("model".to_string(), Value::String(JEV_MODEL.to_string()));
-    body.insert("questions".to_string(), questions);
-    Value::Object(body)
-}
-
-/// A pergunta de escolha entre `count` candidatos, a partir da posição
-/// `first`, e `none`.
-fn choice_question(instructions: &str, first: usize, count: usize) -> Value {
+/// O corpo de um pedido: o modelo, o estado e as duas perguntas, cada uma com
+/// a frase e o contexto. As opções da escolha são os ids dos `count`
+/// candidatos, sem descrição.
+fn body(state: &str, context: &Context, count: usize) -> Value {
+    let suffix = context.suffix();
+    let request = &context.request;
     let mut criteria = Map::new();
     for at in 0..count {
-        criteria.insert(candidate_id(first + at), Value::Null);
+        criteria.insert(candidate_id(at), Value::Null);
     }
-    criteria.insert(NONE_KEY.to_string(), Value::String(NONE_CRITERION.to_string()));
-    let mut question = Map::new();
-    question.insert("type".to_string(), json!("choice"));
-    question.insert("instructions".to_string(), Value::String(instructions.to_string()));
-    question.insert("criteria".to_string(), Value::Object(criteria));
-    Value::Object(question)
-}
-
-/// O corpo do pedido da segunda olhada: os finalistas de `lines`, de `c000`
-/// em diante, com a escolha entre eles e `none` e, para cada um, a pergunta
-/// de sim ou não se ele é o código que se procura.
-fn second_body(head: &Head, lines: &[String]) -> Value {
-    let about = finalists_about(lines.len());
     let mut questions = Map::new();
-    questions.insert(CHOICE_KEY.to_string(), choice_question(&choice_instructions(&about), 0, lines.len()));
-    for at in 0..lines.len() {
-        let id = candidate_id(at);
-        questions.insert(
-            format!("{FITS_PREFIX}{id}"),
-            json!({
-                "type": "noul",
-                "instructions": format!("{about}\n\n{}", FINALIST_QUESTION.replace("@ID@", &id)),
-                "criteria": { "true": ANSWER_YES_WHEN, "false": ANSWER_NO_WHEN },
-            }),
-        );
-    }
-    request_body(head, lines, Value::Object(questions))
+    questions.insert(
+        WHERE_KEY.to_string(),
+        json!({
+            "type": "choice",
+            "instructions": format!(
+                "Which candidate is the code that answers this request from a coding agent: \"{request}\"?{suffix}"
+            ),
+            "criteria": Value::Object(criteria),
+        }),
+    );
+    questions.insert(
+        EXISTS_KEY.to_string(),
+        json!({
+            "type": "noul",
+            "instructions": format!(
+                "Does any candidate contain the code that answers this request from a coding agent: \"{request}\"?{suffix}"
+            ),
+            "criteria": { "true": EXISTS_YES, "false": EXISTS_NO },
+        }),
+    );
+    json!({ "model": JEV_MODEL, "state": state, "questions": Value::Object(questions) })
 }
 
 /// O id de um candidato no pedido: `c000` em diante, pela posição dele na
-/// lista inteira.
+/// lista.
 fn candidate_id(at: usize) -> String {
     format!("c{at:03}")
 }
 
-/// A linha de um candidato no estado: `id| {campos em JSON}`.
-fn candidate_line(at: usize, candidate: &FilterCandidate) -> String {
-    format!("{}| {}", candidate_id(at), spaced_json(&candidate_fields(candidate)))
-}
-
-/// O JSON com um espaço depois de cada vírgula e de cada dois-pontos, como o
-/// laboratório mandava os candidatos. O texto acentuado sai como está.
-fn spaced_json(value: &Value) -> String {
-    let mut out = Vec::new();
-    let mut serializer = serde_json::Serializer::with_formatter(&mut out, Spaced);
-    if value.serialize(&mut serializer).is_err() {
-        return String::new();
-    }
-    String::from_utf8(out).unwrap_or_default()
-}
-
-/// O formato de [`spaced_json`].
-struct Spaced;
-
-impl Formatter for Spaced {
-    fn begin_array_value<W: ?Sized + io::Write>(&mut self, writer: &mut W, first: bool) -> io::Result<()> {
-        if first { Ok(()) } else { writer.write_all(b", ") }
-    }
-
-    fn begin_object_key<W: ?Sized + io::Write>(&mut self, writer: &mut W, first: bool) -> io::Result<()> {
-        if first { Ok(()) } else { writer.write_all(b", ") }
-    }
-
-    fn begin_object_value<W: ?Sized + io::Write>(&mut self, writer: &mut W) -> io::Result<()> {
-        writer.write_all(b": ")
-    }
-}
-
-/// O texto de um pedido com os candidatos de `lines` a partir de `first`.
-fn payload(head: &Head, first: usize, lines: &[String]) -> Result<String, FilterError> {
-    serde_json::to_string(&body(head, first, lines))
-        .map_err(|_| FilterError::Unreadable("the request did not serialize".to_string()))
-}
-
-/// Os pedidos da busca, cada um com os candidatos que leva (a faixa da lista
-/// inteira) e o texto. Um pedido só, quando cabe em [`MAX_REQUEST_TOKENS`];
-/// senão, o menor número de pedidos que mantém a ordem do banco, cada um
-/// levando quantos candidatos couberem. Um candidato que sozinho passa do
-/// limite é [`FilterError::TooLarge`], e nada sai.
-fn batches(head: &Head, lines: &[String]) -> Result<Vec<(Range<usize>, String)>, FilterError> {
-    let whole = payload(head, 0, lines)?;
-    if estimated_tokens(&whole) <= MAX_REQUEST_TOKENS {
-        return Ok(vec![(0..lines.len(), whole)]);
-    }
-    let mut out = Vec::new();
-    let mut start = 0;
-    while start < lines.len() {
-        let mut end = start + 1;
-        let mut text = payload(head, start, &lines[start..end])?;
-        let estimated = estimated_tokens(&text);
-        if estimated > MAX_REQUEST_TOKENS {
-            return Err(FilterError::TooLarge { estimated_tokens: estimated });
-        }
-        while end < lines.len() {
-            let more = payload(head, start, &lines[start..=end])?;
-            if estimated_tokens(&more) > MAX_REQUEST_TOKENS {
-                break;
+/// O estado: um bloco por candidato, separados por uma linha em branco. O
+/// bloco tem o id com o caminho e as linhas, a documentação num comentário e
+/// até `lines` linhas do código da declaração, cada uma com quatro espaços de
+/// recuo. Cada texto sai sem os segredos, antes dos cortes: o corte não parte
+/// um segredo num trecho que a procura já não reconhece.
+fn state_text(candidates: &[FilterCandidate], sources: &mut Sources<'_>, lines: usize) -> String {
+    let blocks: Vec<String> = candidates
+        .iter()
+        .enumerate()
+        .map(|(at, candidate)| {
+            let mut block =
+                format!("{}| {}:{}-{}", candidate_id(at), without_secrets(&candidate.path), candidate.line, candidate.end_line);
+            let documentation: String = squash(&without_secrets(&candidate.documentation))
+                .chars()
+                .take(DOCUMENTATION_CHARS)
+                .collect();
+            if !documentation.is_empty() {
+                block.push_str("\n    // ");
+                block.push_str(&documentation);
             }
-            text = more;
-            end += 1;
+            for line in sources.excerpt(candidate, lines) {
+                block.push('\n');
+                block.push_str(&line);
+            }
+            block
+        })
+        .collect();
+    blocks.join("\n\n")
+}
+
+/// Os arquivos do projeto de onde vem o código dos candidatos, cada um lido
+/// uma vez.
+struct Sources<'a> {
+    root: &'a Path,
+    /// O texto de cada arquivo já pedido; `None` no que não se lê.
+    files: HashMap<String, Option<String>>,
+}
+
+impl Sources<'_> {
+    /// As primeiras `lines` linhas da declaração de `candidate`, da primeira à
+    /// última dela: cada uma sem o espaço do fim, com até [`LINE_CHARS`]
+    /// caracteres e quatro espaços de recuo. Vazio quando o arquivo não se
+    /// lê.
+    fn excerpt(&mut self, candidate: &FilterCandidate, lines: usize) -> Vec<String> {
+        let root = self.root;
+        let Some(text) = self.files.entry(candidate.path.clone()).or_insert_with(|| read_source(root, &candidate.path)) else {
+            return Vec::new();
+        };
+        let start = candidate.line.saturating_sub(1) as usize;
+        let count = (candidate.end_line.max(candidate.line) as usize - start).min(lines);
+        let taken: Vec<&str> = text.lines().skip(start).take(count).collect();
+        if taken.is_empty() {
+            return Vec::new();
         }
-        out.push((start..end, text));
-        start = end;
-    }
-    Ok(out)
-}
-
-/// O que vai de um candidato, na ordem medida, sem os campos vazios. Cada
-/// texto sai sem os segredos, antes dos cortes: o corte não parte um segredo
-/// num trecho que a procura já não reconhece.
-fn candidate_fields(candidate: &FilterCandidate) -> Value {
-    let clean = |text: &str| without_secrets(text);
-    let commits: Vec<String> = candidate.file_commits.iter().take(FILE_COMMITS).map(|title| clean(title)).collect();
-    let members: Vec<String> = candidate.members.iter().map(|member| clean(member)).collect();
-    let mut out = Map::new();
-    put_text(&mut out, "kind", clean(&candidate.kind));
-    put_text(&mut out, "name", split_identifier(&clean(&candidate.name)));
-    put_text(&mut out, "path", clean(&candidate.path));
-    put_text(&mut out, "signature", squash(&clean(&candidate.signature)).chars().take(SIGNATURE_CHARS).collect());
-    put_text(&mut out, "documentation", clip(&clean(&candidate.documentation), DOCUMENTATION_CHARS, "…"));
-    put_list(&mut out, "last commits of the file", commits);
-    put_text(&mut out, "owner", owner_names(&clean(&candidate.owner)));
-    put_text(&mut out, "comments in the body", clip(&clean(&candidate.body_comments), BODY_COMMENTS_CHARS, " …"));
-    put_list(&mut out, "members", capped(&members, MEMBERS));
-    Value::Object(out)
-}
-
-fn put_text(out: &mut Map<String, Value>, key: &str, value: String) {
-    if !value.is_empty() {
-        out.insert(key.to_string(), Value::String(value));
+        without_secrets(&taken.join("\n"))
+            .split('\n')
+            .map(|line| format!("    {}", line.trim_end().chars().take(LINE_CHARS).collect::<String>()))
+            .collect()
     }
 }
 
-fn put_list(out: &mut Map<String, Value>, key: &str, values: Vec<String>) {
-    if !values.is_empty() {
-        out.insert(key.to_string(), json!(values));
+/// O texto do arquivo `path` do projeto em `root`. `None` no caminho que sai
+/// do projeto (absoluto ou com `..`), no de arquivo sensível (credenciais,
+/// chaves), no que falta, não abre ou passa de [`MAX_FILE_BYTES`]; um byte que
+/// não é texto vira o caractere de troca.
+fn read_source(root: &Path, path: &str) -> Option<String> {
+    let relative = Path::new(path);
+    if relative.is_absolute()
+        || relative.components().any(|part| matches!(part, Component::ParentDir))
+        || sensitive_pattern(path).is_some()
+    {
+        return None;
     }
+    let file = root.join(relative);
+    if std::fs::metadata(&file).ok()?.len() > MAX_FILE_BYTES {
+        return None;
+    }
+    std::fs::read(&file).ok().map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
 }
 
 /// Os espaços juntados: toda sequência de brancos vira um espaço, e as
@@ -754,51 +586,13 @@ fn squash(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// O texto com os espaços juntados; acima de `max` caracteres, cortado na
-/// última palavra inteira, com " …". Sem espaço no trecho, o corte cai no
-/// meio da palavra, seguido de `unbroken_mark`.
-fn clip(text: &str, max: usize, unbroken_mark: &str) -> String {
-    let text = squash(text);
-    if text.chars().count() <= max {
-        return text;
-    }
-    let head: String = text.chars().take(max).collect();
-    match head.rfind(' ') {
-        Some(at) => format!("{} …", &head[..at]),
-        None => format!("{head}{unbroken_mark}"),
-    }
-}
-
-/// Até `max` itens, e depois quantos ficaram de fora: `"... 4 more"`.
-fn capped(items: &[String], max: usize) -> Vec<String> {
-    let mut out: Vec<String> = items.iter().take(max).cloned().collect();
-    if items.len() > max {
-        out.push(format!("... {} more", items.len() - max));
-    }
-    out
-}
-
-/// Os nomes da linha do dono, cada um uma vez, sem as palavras da linguagem:
-/// `impl<T> Display for Wrapper<T>` vira `Display Wrapper`. Nome é uma letra
-/// ASCII ou `_` seguida de ao menos um caractere de nome; o nome de uma letra
-/// só fica de fora.
-fn owner_names(owner: &str) -> String {
-    let mut names: Vec<&str> = Vec::new();
-    for run in owner.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')) {
-        let name = run.trim_start_matches(|c: char| c.is_ascii_digit());
-        if name.len() >= 2 && !OWNER_KEYWORDS.contains(&name) && !names.contains(&name) {
-            names.push(name);
-        }
-    }
-    names.join(" ")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mustard_core::domain::map_filter::CUT_SHARE;
+    use mustard_core::domain::map_filter::{CutRule, EXISTS_FROM, MAX_KEPT};
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::{TcpListener, TcpStream};
+    use std::path::PathBuf;
     use std::sync::{Arc, Mutex, OnceLock};
 
     const SECRET: &str = "sk-test-0123456789abcdef";
@@ -930,37 +724,34 @@ mod tests {
         Some(Received { authorization, body: serde_json::from_slice(&body).ok()? })
     }
 
-    /// Os candidatos do estado de um pedido, na ordem: o id e os campos.
-    fn listed(body: &Value) -> Vec<(String, Value)> {
-        body["state"][CANDIDATES_KEY]
-            .as_str()
-            .unwrap()
-            .lines()
-            .map(|line| {
-                let (id, fields) = line.split_once("| ").unwrap();
-                (id.to_string(), serde_json::from_str(fields).unwrap())
-            })
-            .collect()
+
+    // -- os ajudantes do pedido e da resposta -------------------------------------
+
+    /// Os ids dos candidatos de um pedido, na ordem: as opções da escolha.
+    fn ids_of(body: &Value) -> Vec<String> {
+        body["questions"][WHERE_KEY]["criteria"].as_object().unwrap().keys().cloned().collect()
     }
 
-    /// A resposta do serviço à escolha de um pedido: a chance de cada
-    /// candidato pelo nome dele, a de `none` e a confiança, e 1000 tokens de
-    /// entrada.
-    fn choice_by_name(body: &Value, chance_of: impl Fn(&str) -> f64, none: f64, confidence: f64) -> Value {
+    /// A resposta do serviço ao pedido `body`: a chance de cada candidato
+    /// pela posição dele na lista, a de `exists` e 1000 tokens de entrada.
+    fn answer_by_position(body: &Value, chance_of: impl Fn(usize) -> f64, exists: f64) -> Value {
         let mut chances = Map::new();
-        for (id, fields) in listed(body) {
-            chances.insert(id, json!(chance_of(fields["name"].as_str().unwrap_or_default())));
+        for (at, id) in ids_of(body).into_iter().enumerate() {
+            chances.insert(id, json!(chance_of(at)));
         }
-        chances.insert("none".to_string(), json!(none));
         json!({
-            "answers": {"q": {"type": "choice", "choice": "c000", "confidence": confidence, "probabilities": chances}},
+            "answers": {
+                "where": {"type": "choice", "choice": "c000", "probabilities": chances},
+                "exists": {"type": "noul", "noul": exists},
+            },
             "usage": {"input_tokens": 1000, "output_tokens": 0},
         })
     }
 
-    /// A escolha sem chance para ninguém e o serviço seguro: só `none` baixo.
+    /// A resposta em que todos os candidatos têm a mesma chance e algum deles
+    /// existe quase com certeza.
     fn sure_answer(body: &Value) -> Value {
-        choice_by_name(body, |_| 0.5, 0.01, 0.9)
+        answer_by_position(body, |_| 0.5, 0.9)
     }
 
     fn candidate(id: i64) -> FilterCandidate {
@@ -975,125 +766,372 @@ mod tests {
         }
     }
 
+    /// Um candidato do arquivo `path`, da linha `line` à `end_line`.
+    fn candidate_at(id: i64, path: &str, line: u32, end_line: u32) -> FilterCandidate {
+        FilterCandidate { path: path.to_string(), line, end_line, ..candidate(id) }
+    }
+
+    /// O pedido com uma raiz em que nenhum arquivo existe: o estado leva só
+    /// os cabeçalhos.
     fn request(candidates: Vec<FilterCandidate>) -> FilterRequest {
         FilterRequest {
             words: vec!["cand".to_string()],
             phrase: "the candidate that answers".to_string(),
-            share: CUT_SHARE,
+            root: PathBuf::from("/nonexistent/project"),
             candidates,
+            ..FilterRequest::default()
         }
     }
 
-    // -- o corpo do pedido ---------------------------------------------------
+    /// Uma pasta de projeto com os arquivos `files` (caminho e texto).
+    fn project_with(files: &[(&str, String)]) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        for (path, text) in files {
+            let file = dir.path().join(path);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, text).unwrap();
+        }
+        dir
+    }
 
-    #[test]
-    fn the_request_body_matches_the_one_the_lab_measured() {
-        let example: Value =
-            serde_json::from_str(include_str!("../../tests/fixtures/jev/request_two_candidates.json")).unwrap();
-        let input = &example["input"];
-        let text = |v: &Value| v.as_str().unwrap().to_string();
-        let texts = |v: &Value| v.as_array().unwrap().iter().map(text).collect::<Vec<_>>();
-        let candidates = input["candidates"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|c| FilterCandidate {
-                id: c["id"].as_i64().unwrap(),
-                kind: text(&c["kind"]),
-                name: text(&c["name"]),
-                path: text(&c["path"]),
-                line: c["line"].as_u64().unwrap() as u32,
-                end_line: c["end_line"].as_u64().unwrap() as u32,
-                signature: text(&c["signature"]),
-                documentation: text(&c["documentation"]),
-                owner: text(&c["owner"]),
-                members: texts(&c["members"]),
-                body_comments: text(&c["body_comments"]),
-                file_commits: texts(&c["file_commits"]),
-            })
-            .collect();
-        let asked = FilterRequest {
-            words: texts(&input["words"]),
-            phrase: text(&input["phrase"]),
-            share: CUT_SHARE,
-            candidates,
-        };
+    /// O pedido que chegou ao serviço de mentira ao filtrar `asked` com a
+    /// resposta segura.
+    fn sent_for(asked: &FilterRequest) -> Value {
         let service = FakeService::start(|_, body| Reply::json(200, &sure_answer(body)));
-        service.filter().filter(&asked).unwrap();
-
-        let sent = service.received();
-        assert_eq!(sent.len(), 1);
-        // O arquivo guarda o pedido como o laboratório o mandou. As diferenças
-        // planejadas são só duas: o texto do `about`, que cita cada campo que
-        // vai no candidato, e a versão fixa do modelo.
-        let mut expected = example["body"].clone();
-        let instructions = expected["questions"]["q"]["instructions"].as_str().unwrap().replace("@ABOUT@", ABOUT);
-        expected["questions"]["q"]["instructions"] = json!(instructions);
-        expected["model"] = json!(JEV_MODEL);
-        // Com a ordem dos campos: o texto inteiro é igual ao do laboratório.
-        assert_eq!(sent[0].body.to_string(), expected.to_string());
+        service.filter().filter(asked).unwrap();
+        let received = service.received();
+        assert_eq!(received.len(), 1, "the filter asks once");
+        received[0].body.clone()
     }
 
-    /// Um candidato com todos os campos cheios.
-    fn full_candidate() -> FilterCandidate {
-        FilterCandidate {
-            id: 1,
-            kind: "method".to_string(),
-            name: "chargeCard".to_string(),
-            path: "src/pay/card.rs".to_string(),
-            line: 3,
-            end_line: 9,
-            signature: "fn charge_card(&self, total: u32)".to_string(),
-            documentation: "Cobra o cartão.".to_string(),
-            owner: "CardGateway PaymentPort".to_string(),
-            members: vec!["charge()".to_string()],
-            body_comments: "manda ao banco".to_string(),
-            file_commits: vec!["Cartão sem juros".to_string()],
+    /// O texto do estado de um pedido.
+    fn state_of(body: &Value) -> String {
+        body["state"].as_str().expect("the state is text").to_string()
+    }
+
+    /// As duas instruções do pedido: a da escolha e a de `exists`.
+    fn instructions_of(body: &Value) -> (String, String) {
+        let text = |key: &str| body["questions"][key]["instructions"].as_str().unwrap().to_string();
+        (text(WHERE_KEY), text(EXISTS_KEY))
+    }
+
+    // -- o estado -------------------------------------------------------------------
+
+    #[test]
+    fn the_state_is_text_with_a_header_the_documentation_and_the_first_lines_of_each_candidate() {
+        let code: Vec<String> = (1..=30).map(|n| format!("line {n}")).collect();
+        let project = project_with(&[("src/pay.rs", code.join("\n"))]);
+        let mut first = candidate_at(1, "src/pay.rs", 3, 30);
+        first.documentation = "  Cobra   o cartão.\n  Sem juros.  ".to_string();
+        let second = candidate_at(2, "src/pay.rs", 1, 2);
+        let mut asked = request(vec![first, second]);
+        asked.root = project.path().to_path_buf();
+
+        let state = state_of(&sent_for(&asked));
+
+        let first_block: Vec<String> = (3..=26).map(|n| format!("    line {n}")).collect();
+        let expected = format!(
+            "c000| src/pay.rs:3-30\n    // Cobra o cartão. Sem juros.\n{}\n\nc001| src/pay.rs:1-2\n    line 1\n    line 2",
+            first_block.join("\n")
+        );
+        assert_eq!(state, expected, "24 lines of the declaration, the second block after a blank line");
+    }
+
+    #[test]
+    fn long_documentation_and_long_lines_are_cut_and_the_end_of_a_line_loses_its_blanks() {
+        let long_line = format!("{}   \t", "a".repeat(200));
+        let project = project_with(&[("src/a.rs", format!("{long_line}\nshort   \n"))]);
+        let mut only = candidate_at(1, "src/a.rs", 1, 2);
+        only.documentation = "d".repeat(400);
+        let mut asked = request(vec![only]);
+        asked.root = project.path().to_path_buf();
+
+        let state = state_of(&sent_for(&asked));
+
+        let expected = format!("c000| src/a.rs:1-2\n    // {}\n    {}\n    short", "d".repeat(300), "a".repeat(160));
+        assert_eq!(state, expected);
+    }
+
+    #[test]
+    fn only_the_lines_of_the_declaration_go_and_a_file_that_cannot_be_read_gives_the_header_alone() {
+        let code: Vec<String> = (1..=10).map(|n| format!("line {n}")).collect();
+        let project = project_with(&[("src/a.rs", code.join("\n"))]);
+        let mut asked = request(vec![candidate_at(1, "src/a.rs", 4, 6), candidate_at(2, "src/gone.rs", 1, 2)]);
+        asked.root = project.path().to_path_buf();
+
+        let state = state_of(&sent_for(&asked));
+
+        assert_eq!(state, "c000| src/a.rs:4-6\n    line 4\n    line 5\n    line 6\n\nc001| src/gone.rs:1-2");
+    }
+
+    #[test]
+    fn a_file_outside_the_project_a_sensitive_one_or_too_big_is_not_read() {
+        let outer = project_with(&[
+            ("outside.rs", "OUTSIDE_CONTENT\n".to_string()),
+            ("sub/src/big.rs", "x".repeat(1_000_001)),
+            ("sub/config/credentials/prod.rs", "SENSITIVE_CONTENT\n".to_string()),
+            ("sub/keys/server.key", "KEY_CONTENT\n".to_string()),
+        ]);
+        let root = outer.path().join("sub");
+        let absolute = outer.path().join("outside.rs").to_string_lossy().into_owned();
+        let mut asked = request(vec![
+            candidate_at(1, "../outside.rs", 1, 1),
+            candidate_at(2, &absolute, 1, 1),
+            candidate_at(3, "src/big.rs", 1, 1),
+            candidate_at(4, "config/credentials/prod.rs", 1, 1),
+            candidate_at(5, "keys/server.key", 1, 1),
+        ]);
+        asked.root = root;
+
+        let state = state_of(&sent_for(&asked));
+
+        assert!(!state.contains("OUTSIDE_CONTENT") && !state.contains("SENSITIVE_CONTENT") && !state.contains("KEY_CONTENT"), "{state}");
+        assert!(!state.contains("xxxx"), "{state}");
+        assert_eq!(state.matches("\n    ").count(), 0, "no code line at all: {state}");
+        assert_eq!(state.split("\n\n").count(), 5);
+    }
+
+    #[test]
+    fn the_code_shrinks_to_eight_five_and_three_lines_when_the_state_passes_the_budget() {
+        let project = project_with(&[("src/big.rs", format!("{}\n", "a".repeat(160)).repeat(40))]);
+        for (count, lines) in [(10, 24), (60, 8), (100, 5), (150, 3)] {
+            let candidates = (1..=count).map(|id| candidate_at(id, "src/big.rs", 1, 40)).collect();
+            let mut asked = request(candidates);
+            asked.root = project.path().to_path_buf();
+
+            let state = state_of(&sent_for(&asked));
+
+            let blocks: Vec<&str> = state.split("\n\n").collect();
+            assert_eq!(blocks.len(), count as usize);
+            for block in blocks {
+                assert_eq!(block.lines().count() - 1, lines, "{count} candidates keep {lines} code lines");
+            }
+            assert!(estimated_tokens(&state) <= STATE_TOKENS, "{count} candidates: {}", estimated_tokens(&state));
         }
     }
 
-    /// Os nomes entre crases do texto, na ordem.
-    fn quoted(text: &str) -> Vec<String> {
-        text.split('`').skip(1).step_by(2).map(str::to_string).collect()
+    /// A borda exata do orçamento: o estado com 24 linhas de código mais a
+    /// frase duas vezes soma 89.600 caracteres, que dão 28.000 tokens e cabem;
+    /// com um caractere a mais, são 28.001 e o código cai para 8 linhas. Sem a
+    /// frase contada duas vezes, o caractere a mais ainda caberia.
+    #[test]
+    fn the_code_keeps_24_lines_up_to_the_exact_budget_counting_the_phrase_twice() {
+        let budget = 89_600;
+        assert_eq!((tokens_of(budget), tokens_of(budget + 1)), (STATE_TOKENS, STATE_TOKENS + 1));
+        let project = project_with(&[("src/big.rs", format!("{}\n", "a".repeat(160)).repeat(40))]);
+        // O pedido com `real` candidatos com código, um de cabeçalho só com
+        // `pad` caracteres no caminho e uma frase de `phrase` caracteres.
+        let build = |real: i64, pad: usize, phrase: usize| {
+            let mut candidates: Vec<FilterCandidate> = (1..=real).map(|id| candidate_at(id, "src/big.rs", 1, 40)).collect();
+            candidates.push(candidate_at(real + 1, &format!("p/{}", "q".repeat(pad)), 1, 1));
+            let mut asked = request(candidates);
+            asked.root = project.path().to_path_buf();
+            asked.phrase = "x".repeat(phrase);
+            asked
+        };
+        // Os caracteres que contam contra o orçamento com 24 linhas de código.
+        let counted = |asked: &FilterRequest| {
+            let mut sources = Sources { root: &asked.root, files: HashMap::new() };
+            let state = state_text(&asked.candidates, &mut sources, CODE_LINES[0]);
+            state.chars().count() + 2 * Context::of(asked).request.chars().count()
+        };
+        let mut real = 1;
+        while counted(&build(real + 1, 1, 10)) <= budget {
+            real += 1;
+        }
+        let spare = budget - counted(&build(real, 1, 10));
+        let (pad, phrase) = (1 + spare % 2, 10 + spare / 2);
+        let at_the_edge = build(real, pad, phrase);
+        let over = build(real, pad + 1, phrase);
+        assert_eq!((counted(&at_the_edge), counted(&over)), (budget, budget + 1));
+
+        for (asked, lines) in [(at_the_edge, 24), (over, 8)] {
+            let state = state_of(&sent_for(&asked));
+            let blocks: Vec<&str> = state.split("\n\n").collect();
+            assert_eq!(blocks.len(), real as usize + 1);
+            for block in &blocks[..real as usize] {
+                assert_eq!(block.lines().count() - 1, lines, "{lines} code lines for {} chars", counted(&asked));
+            }
+        }
     }
 
     #[test]
-    fn the_about_names_each_field_of_the_candidate_in_its_order() {
-        let fields = candidate_fields(&full_candidate());
-        let keys: Vec<String> = fields.as_object().unwrap().keys().cloned().collect();
-        assert_eq!(keys.len(), 9, "every field is filled: {keys:?}");
-        let named: Vec<String> = quoted(ABOUT).into_iter().skip_while(|name| name == "request").collect();
-        assert_eq!(named, keys);
-    }
-
-    #[test]
-    fn a_secret_in_any_text_does_not_leave_the_machine() {
+    fn a_secret_in_the_code_the_documentation_the_phrase_or_the_context_does_not_leave_the_machine() {
         let key = format!("ghp_{}", "a1B2c3D4".repeat(5));
         let secret = format!("DB_PASSWORD=S3nh4F0rte2024 {key}");
-        let mut leaky = full_candidate();
-        for text in [
-            &mut leaky.name,
-            &mut leaky.path,
-            &mut leaky.signature,
-            &mut leaky.documentation,
-            &mut leaky.owner,
-            &mut leaky.body_comments,
-        ] {
-            text.push_str(&format!(" {secret}"));
-        }
-        leaky.members.push(key.clone());
-        leaky.file_commits = vec![format!("Troca a chave {key}")];
+        let project =
+            project_with(&[("src/pay.rs", format!("fn pay() {{\n    let token = \"{key}\";\n}}\n"))]);
+        let mut leaky = candidate_at(1, "src/pay.rs", 1, 3);
+        leaky.documentation = format!("Cobra o cartão. {secret}");
         let mut asked = request(vec![leaky]);
+        asked.root = project.path().to_path_buf();
         asked.words.push(key.clone());
         asked.phrase = format!("a senha do banco: {secret}");
-        let service = FakeService::start(|_, body| Reply::json(200, &sure_answer(body)));
-        service.filter().filter(&asked).unwrap();
+        asked.described = format!("busca a chave {key}");
+        asked.said = format!("vou olhar {secret} agora");
 
-        let sent = service.received()[0].body.to_string();
+        let sent = sent_for(&asked).to_string();
+
         assert!(!sent.contains("S3nh4F0rte2024"), "{sent}");
         assert!(!sent.contains(&key[..12]), "{sent}");
-        assert!(sent.contains("Troca a chave …"), "the rest of the text still goes: {sent}");
-        assert!(sent.contains("Cobra o cartão."), "{sent}");
+        assert!(sent.contains("Cobra o cartão."), "the rest of the text still goes: {sent}");
+        assert!(sent.contains("fn pay() {"), "{sent}");
+        assert!(sent.contains("vou olhar"), "{sent}");
+    }
+
+    #[test]
+    fn without_candidates_nothing_is_asked() {
+        let service = FakeService::start(|_, body| Reply::json(200, &sure_answer(body)));
+        let got = service.filter().filter(&request(Vec::new())).unwrap();
+        assert_eq!(got.verdict, Verdict::NotFound);
+        assert!(got.kept.is_empty());
+        assert!(service.received().is_empty());
+    }
+
+    // -- as duas perguntas ------------------------------------------------------------
+
+    #[test]
+    fn the_request_has_the_two_questions_and_the_ids_of_the_candidates_without_descriptions() {
+        let body = sent_for(&request(vec![candidate(1), candidate(2), candidate(3)]));
+
+        let keys: Vec<&String> = body.as_object().unwrap().keys().collect();
+        assert_eq!(keys, ["model", "state", "questions"]);
+        assert_eq!(body["model"], json!("jev-1.13.0"));
+        let questions = body["questions"].as_object().unwrap();
+        let names: Vec<&String> = questions.keys().collect();
+        assert_eq!(names, ["where", "exists"], "the choice goes first");
+        assert_eq!(
+            questions["where"],
+            json!({
+                "type": "choice",
+                "instructions": "Which candidate is the code that answers this request from a coding agent: \"the candidate that answers\"?",
+                "criteria": {"c000": null, "c001": null, "c002": null},
+            })
+        );
+        assert_eq!(
+            questions["exists"],
+            json!({
+                "type": "noul",
+                "instructions": "Does any candidate contain the code that answers this request from a coding agent: \"the candidate that answers\"?",
+                "criteria": {
+                    "true": "At least one candidate is the code the request asks for, or contains it.",
+                    "false": "No candidate is the code the request asks for: they are only on related topics or only share some words with it.",
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn without_a_phrase_the_words_are_the_request() {
+        let mut asked = request(vec![candidate(1)]);
+        asked.phrase = "  ".to_string();
+        asked.words = vec!["split".to_string(), "identifier".to_string()];
+        let (choice, exists) = instructions_of(&sent_for(&asked));
+        assert!(choice.contains("agent: \"split identifier\"?"), "{choice}");
+        assert!(exists.contains("agent: \"split identifier\"?"), "{exists}");
+    }
+
+    #[test]
+    fn the_description_and_the_speech_of_the_agent_end_both_instructions_when_they_exist() {
+        let mut asked = request(vec![candidate(1)]);
+        asked.described = "  Procura o cálculo do frete ".to_string();
+        asked.said = "Vou ver\n onde o frete é   calculado.".to_string();
+        let (choice, exists) = instructions_of(&sent_for(&asked));
+        let suffix = " The agent described this search as: \"Procura o cálculo do frete\". \
+                      Just before it, the agent wrote: \"Vou ver onde o frete é calculado.\".";
+        assert_eq!(
+            choice,
+            format!("Which candidate is the code that answers this request from a coding agent: \"the candidate that answers\"?{suffix}")
+        );
+        assert_eq!(
+            exists,
+            format!("Does any candidate contain the code that answers this request from a coding agent: \"the candidate that answers\"?{suffix}")
+        );
+    }
+
+    #[test]
+    fn each_part_of_the_context_appears_only_when_it_exists() {
+        let mut only_described = request(vec![candidate(1)]);
+        only_described.described = "Procura o frete".to_string();
+        let (choice, exists) = instructions_of(&sent_for(&only_described));
+        assert!(choice.ends_with("? The agent described this search as: \"Procura o frete\"."), "{choice}");
+        assert!(exists.ends_with("? The agent described this search as: \"Procura o frete\"."), "{exists}");
+        assert!(!choice.contains("Just before it"), "{choice}");
+
+        let mut only_said = request(vec![candidate(1)]);
+        only_said.said = "Vou procurar".to_string();
+        let (choice, exists) = instructions_of(&sent_for(&only_said));
+        assert!(choice.ends_with("? Just before it, the agent wrote: \"Vou procurar\"."), "{choice}");
+        assert!(exists.ends_with("? Just before it, the agent wrote: \"Vou procurar\"."), "{exists}");
+        assert!(!choice.contains("described"), "{choice}");
+
+        let mut neither = request(vec![candidate(1)]);
+        neither.described = "   ".to_string();
+        neither.said = " \n ".to_string();
+        let (choice, exists) = instructions_of(&sent_for(&neither));
+        assert!(choice.ends_with("\"the candidate that answers\"?"), "{choice}");
+        assert!(exists.ends_with("\"the candidate that answers\"?"), "{exists}");
+    }
+
+    #[test]
+    fn the_description_goes_up_to_three_hundred_characters_and_the_speech_the_last_five_hundred() {
+        let mut asked = request(vec![candidate(1)]);
+        asked.described = "d".repeat(400);
+        asked.said = "palavra ".repeat(100);
+        let (choice, _) = instructions_of(&sent_for(&asked));
+
+        assert!(choice.contains(&format!("\"{}\".", "d".repeat(300))), "{choice}");
+        assert!(!choice.contains(&"d".repeat(301)));
+        let said = choice.split("the agent wrote: \"").nth(1).unwrap().trim_end_matches("\".");
+        assert_eq!(said.chars().count(), 500);
+        assert!(said.starts_with("avra palavra"), "the last 500 of the 799 characters: {said}");
+        assert!(said.ends_with("palavra"));
+    }
+
+    // -- o veredito e o corte --------------------------------------------------------
+
+    /// O que o filtro devolve para `count` candidatos quando a chance de cada
+    /// um é `chance_of` (pela posição), a de existir é `exists` e o corte é
+    /// `rule`.
+    fn filtered(count: i64, exists: f64, rule: CutRule, chance_of: impl Fn(usize) -> f64 + Send + Sync + 'static) -> Filtered {
+        let service = FakeService::start(move |_, body| Reply::json(200, &answer_by_position(body, &chance_of, exists)));
+        let mut asked = request((1..=count).map(candidate).collect());
+        asked.cut = rule;
+        service.filter().filter(&asked).unwrap()
+    }
+
+    #[test]
+    fn an_existence_chance_below_the_line_is_not_found_and_on_the_line_the_cut_counts() {
+        let top = |at: usize| if at == 0 { 0.8 } else { 0.1 };
+        let below = filtered(3, 0.49, CutRule::default(), top);
+        assert_eq!(below.verdict, Verdict::NotFound);
+        assert!(below.kept.is_empty(), "nothing passes when it is not found");
+
+        let on_the_line = filtered(3, 0.50, CutRule::default(), top);
+        assert_eq!(on_the_line.verdict, Verdict::Found);
+        assert_eq!(on_the_line.kept.first().map(|scored| scored.id), Some(1));
+
+        assert_eq!(EXISTS_FROM, 0.50);
+        let moved = filtered(3, 0.4, CutRule { exists_from: 0.3, ..CutRule::default() }, top);
+        assert_eq!(moved.verdict, Verdict::Found, "the line is the setting");
+    }
+
+    #[test]
+    fn the_cut_keeps_at_most_two_pieces_and_the_limit_is_the_setting() {
+        let equal = |_: usize| 0.2;
+        let kept = filtered(5, 0.9, CutRule::default(), equal);
+        assert_eq!(MAX_KEPT, 2);
+        assert_eq!(kept.kept.len(), 2, "five equal chances keep two");
+
+        let three = filtered(5, 0.9, CutRule { max_kept: 3, ..CutRule::default() }, equal);
+        assert_eq!(three.kept.len(), 3);
+
+        let uneven = filtered(5, 0.9, CutRule::default(), |at| [0.6, 0.3, 0.05, 0.03, 0.02][at]);
+        let ids: Vec<i64> = uneven.kept.iter().map(|scored| scored.id).collect();
+        assert_eq!(ids, [1, 2], "in the order of the chance");
+
+        let lonely = filtered(5, 0.9, CutRule::default(), |at| if at == 3 { 0.9 } else { 0.01 });
+        assert_eq!(lonely.kept.iter().map(|scored| scored.id).collect::<Vec<_>>(), [4], "a single concentrated chance keeps one");
     }
 
     #[test]
@@ -1105,7 +1143,7 @@ mod tests {
             Reply::json(200, &answer)
         });
         let got = service.filter().filter(&request((1..=100).map(candidate).collect())).unwrap();
-        assert_eq!(service.received().len(), 1);
+        assert_eq!(service.received().len(), 1, "a hundred candidates go in one request");
         assert!(service.received().iter().all(|sent| sent.body["model"] == json!("jev-1.13.0")));
         assert_eq!(got.usage.input_tokens, 10_500);
         assert_eq!(got.usage.model, "jev-1.13.0");
@@ -1115,442 +1153,6 @@ mod tests {
         let silent = FakeService::start(|_, body| Reply::json(200, &sure_answer(body)));
         let got = silent.filter().filter(&request(vec![candidate(1)])).unwrap();
         assert_eq!(got.usage.model, "", "an answer that does not say the model leaves it empty");
-    }
-
-    #[test]
-    fn long_comments_are_cut_at_a_word_and_many_members_are_counted() {
-        let mut long = candidate(1);
-        long.body_comments = "abcdefghi ".repeat(70);
-        assert_eq!(long.body_comments.chars().count(), 700);
-        long.members = (1..=20).map(|n| format!("member{n}()")).collect();
-        let service = FakeService::start(|_, body| Reply::json(200, &sure_answer(body)));
-        service.filter().filter(&request(vec![long])).unwrap();
-
-        let sent = &listed(&service.received()[0].body)[0].1;
-        let comments = sent["comments in the body"].as_str().unwrap();
-        assert_eq!(comments, format!("{} …", vec!["abcdefghi"; 60].join(" ")));
-        assert!(comments.chars().count() <= BODY_COMMENTS_CHARS + 2);
-        let members: Vec<&str> = sent["members"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
-        assert_eq!(members.len(), 17);
-        assert_eq!(members[15], "member16()");
-        assert_eq!(members[16], "... 4 more");
-    }
-
-    #[test]
-    fn short_fields_go_whole_and_empty_fields_do_not_go() {
-        let mut short = candidate(1);
-        short.body_comments = "a b  c".to_string();
-        short.members = (1..=16).map(|n| format!("m{n}")).collect();
-        short.owner = "impl<T> fmt::Display for Wrapper<T> where T: Clone".to_string();
-        short.file_commits = vec!["one".into(), "two".into(), "three".into(), "four".into()];
-        let fields = candidate_fields(&short);
-        assert_eq!(fields["comments in the body"], "a b c");
-        assert_eq!(fields["members"].as_array().unwrap().len(), 16);
-        assert_eq!(fields["owner"], "fmt Display Wrapper Clone");
-        assert_eq!(fields["last commits of the file"], json!(["one", "two", "three"]));
-        assert!(fields.get("documentation").is_none());
-        assert!(fields.get("signature").is_none());
-    }
-
-    #[test]
-    fn documentation_and_signature_have_their_own_cuts() {
-        let mut long = candidate(1);
-        long.documentation = format!("{} tail", "word ".repeat(100));
-        long.signature = format!("fn  {}", "x".repeat(400));
-        let fields = candidate_fields(&long);
-        let doc = fields["documentation"].as_str().unwrap();
-        assert!(doc.ends_with("word …"));
-        assert!(doc.chars().count() <= DOCUMENTATION_CHARS + 2);
-        // Uma palavra só, longa demais: cortada no meio, com a marca colada.
-        long.documentation = "y".repeat(500);
-        assert_eq!(candidate_fields(&long)["documentation"], format!("{}…", "y".repeat(400)));
-        let signature = fields["signature"].as_str().unwrap();
-        assert!(signature.starts_with("fn xxx"));
-        assert_eq!(signature.chars().count(), SIGNATURE_CHARS);
-    }
-
-    #[test]
-    fn without_a_phrase_the_words_are_the_request() {
-        let mut asked = request(vec![candidate(1)]);
-        asked.phrase = "  ".to_string();
-        asked.words = vec!["split".to_string(), "identifier".to_string()];
-        assert_eq!(Head::of(&asked).request, "split identifier");
-    }
-
-    // -- a escolha e a nota ------------------------------------------------------
-
-    #[test]
-    fn a_hundred_candidates_go_in_one_choice_with_none_and_no_yes_or_no_question() {
-        let service = FakeService::start(|_, body| {
-            Reply::json(200, &choice_by_name(body, |name| if name == "cand7" { 0.9 } else { 0.001 }, 0.05, 0.9))
-        });
-        let got = service.filter().filter(&request((1..=100).map(candidate).collect())).unwrap();
-
-        let sent = service.received();
-        assert_eq!(sent.len(), 1, "the hundred candidates must go in one request");
-        let body = &sent[0].body;
-        assert!(!body.to_string().contains("noul"), "no yes-or-no question is asked");
-        let questions = body["questions"].as_object().unwrap();
-        assert_eq!(questions.len(), 1);
-        let question = &questions["q"];
-        assert_eq!(question["type"], "choice");
-        let criteria = question["criteria"].as_object().unwrap();
-        let keys: Vec<&str> = criteria.keys().map(String::as_str).collect();
-        let expected: Vec<String> = (0..100).map(|at| format!("c{at:03}")).chain(["none".to_string()]).collect();
-        assert_eq!(keys, expected.iter().map(String::as_str).collect::<Vec<_>>());
-        assert!(criteria.iter().all(|(key, value)| (key == "none") != value.is_null()));
-        let instructions = question["instructions"].as_str().unwrap();
-        assert!(instructions.starts_with(ABOUT));
-        assert!(instructions.ends_with("If none of them is that code, answer `none`."));
-        let lines = listed(body);
-        assert_eq!(lines.len(), 100);
-        assert_eq!(lines.first().map(|(id, _)| id.as_str()), Some("c000"));
-        assert_eq!(lines.last().map(|(id, _)| id.as_str()), Some("c099"));
-        assert_eq!(body["model"], json!("jev-1.13.0"));
-
-        assert_eq!(got.verdict, Verdict::Sure);
-        let kept: Vec<(i64, f64)> = got.kept.iter().map(|s| (s.id, s.score)).collect();
-        assert_eq!(kept, vec![(7, 0.9)]);
-        assert_eq!(got.usage.input_tokens, 1000);
-    }
-
-    #[test]
-    fn a_chance_of_none_of_six_tenths_is_not_found_and_keeps_nothing() {
-        let service = FakeService::start(|_, body| {
-            Reply::json(200, &choice_by_name(body, |name| if name == "cand2" { 0.3 } else { 0.05 }, 0.6, 0.8))
-        });
-        let got = service.filter().filter(&request((1..=3).map(candidate).collect())).unwrap();
-        assert_eq!(got.verdict, Verdict::NotFound);
-        assert!(got.kept.is_empty(), "{:?}", got.kept);
-
-        // Abaixo de meio, e a confiança alta: certo, e o corte vale.
-        let sure = FakeService::start(|_, body| {
-            Reply::json(200, &choice_by_name(body, |name| if name == "cand2" { 0.9 } else { 0.03 }, 0.04, 0.9))
-        });
-        let got = sure.filter().filter(&request((1..=3).map(candidate).collect())).unwrap();
-        assert_eq!(got.verdict, Verdict::Sure);
-        assert_eq!(got.kept.iter().map(|s| s.id).collect::<Vec<_>>(), vec![2]);
-    }
-
-    /// A resposta do serviço à segunda olhada: a escolha entre os finalistas
-    /// (a chance de cada um pelo nome, a de `none`) e o sim de cada finalista
-    /// pelo nome.
-    fn second_by_name(
-        body: &Value,
-        chance_of: impl Fn(&str) -> f64,
-        none: f64,
-        yes_of: impl Fn(&str) -> f64,
-    ) -> Value {
-        let mut answer = choice_by_name(body, chance_of, none, 0.9);
-        for (id, fields) in listed(body) {
-            let yes = yes_of(fields["name"].as_str().unwrap_or_default());
-            answer["answers"][format!("{FITS_PREFIX}{id}")] = json!({"type": "noul", "noul": yes});
-        }
-        answer
-    }
-
-    /// A primeira resposta dividida: as chances de cand1 a cand3 são 0,4, 0,3
-    /// e 0,2, as dos outros 0,03 (abaixo de 0,10 vezes a maior), a de `none`
-    /// é 0 e a confiança 0,5.
-    fn split_first(body: &Value) -> Value {
-        choice_by_name(
-            body,
-            |name| match name {
-                "cand1" => 0.4,
-                "cand2" => 0.3,
-                "cand3" => 0.2,
-                _ => 0.03,
-            },
-            0.0,
-            0.5,
-        )
-    }
-
-    /// Um serviço que responde dividido ao primeiro pedido e ao segundo com
-    /// `second`, que recebe o corpo dele.
-    fn splitting(second: impl Fn(&Value) -> Reply + Send + Sync + 'static) -> FakeService {
-        FakeService::start(move |number, body| {
-            if number == 0 { Reply::json(200, &split_first(body)) } else { second(body) }
-        })
-    }
-
-    fn kept_ids(got: &Filtered) -> Vec<i64> {
-        got.kept.iter().map(|s| s.id).collect()
-    }
-
-    #[test]
-    fn a_confidence_of_seven_tenths_asks_no_second_time() {
-        let service = FakeService::start(|_, body| Reply::json(200, &choice_by_name(body, |_| 0.3, 0.0, 0.7)));
-        let got = service.filter().filter(&request((1..=5).map(candidate).collect())).unwrap();
-        assert_eq!(service.received().len(), 1, "a sure choice is delivered by the cut alone");
-        assert_eq!(got.verdict, Verdict::Sure);
-    }
-
-    #[test]
-    fn a_split_choice_asks_again_about_the_three_biggest_chances_with_one_choice_and_three_yes_questions() {
-        let service = splitting(|body| Reply::json(200, &second_by_name(body, |_| 0.3, 0.05, |_| 0.9)));
-        let got = service.filter().filter(&request((1..=5).map(candidate).collect())).unwrap();
-
-        let sent = service.received();
-        assert_eq!(sent.len(), 2, "one request for the choice and one for the second look");
-        assert_eq!(listed(&sent[0].body).len(), 5);
-        let second = &sent[1].body;
-        assert_eq!(second["model"], json!(JEV_MODEL));
-        assert_eq!(second["state"]["request"], json!("the candidate that answers"));
-        let lines = listed(second);
-        let names: Vec<(&str, &str)> =
-            lines.iter().map(|(id, fields)| (id.as_str(), fields["name"].as_str().unwrap())).collect();
-        assert_eq!(names, [("c000", "cand1"), ("c001", "cand2"), ("c002", "cand3")], "the three biggest chances, in that order");
-
-        let questions = second["questions"].as_object().unwrap();
-        let keys: Vec<&str> = questions.keys().map(String::as_str).collect();
-        assert_eq!(keys, ["q", "fits_c000", "fits_c001", "fits_c002"]);
-        let about = finalists_about(3);
-        let choice = &questions["q"];
-        assert_eq!(choice["type"], "choice");
-        let criteria: Vec<&str> = choice["criteria"].as_object().unwrap().keys().map(String::as_str).collect();
-        assert_eq!(criteria, ["c000", "c001", "c002", "none"]);
-        let instructions = choice["instructions"].as_str().unwrap();
-        assert!(instructions.starts_with(&about), "{instructions}");
-        assert!(instructions.ends_with("If none of them is that code, answer `none`."), "{instructions}");
-        for id in ["c000", "c001", "c002"] {
-            let fits = &questions[&format!("fits_{id}")];
-            assert_eq!(fits["type"], "noul");
-            assert_eq!(
-                fits["instructions"],
-                json!(format!("{about}\n\nIs candidate `{id}` the code that the `request` is looking for?"))
-            );
-            assert_eq!(fits["criteria"], json!({"true": ANSWER_YES_WHEN, "false": ANSWER_NO_WHEN}));
-        }
-        assert_eq!(got.verdict, Verdict::Sure);
-        assert_eq!(kept_ids(&got), vec![1], "all three say yes at 0,9 and cand1 wins the choice by name of the tie");
-    }
-
-    #[test]
-    fn the_text_of_the_second_look_names_each_field_of_the_candidate_in_its_order() {
-        let fields = candidate_fields(&full_candidate());
-        let keys: Vec<String> = fields.as_object().unwrap().keys().cloned().collect();
-        for count in 1..=3 {
-            let named: Vec<String> = quoted(&finalists_about(count)).into_iter().skip_while(|name| name == "request").collect();
-            assert_eq!(named, keys, "{count} finalists");
-        }
-        assert!(finalists_about(3).contains("lists three candidate declarations"));
-        assert!(finalists_about(2).contains("lists two candidate declarations"));
-        assert!(!finalists_about(1).contains('@'));
-    }
-
-    #[test]
-    fn the_winner_of_the_second_choice_with_a_yes_of_four_tenths_is_the_only_piece_delivered() {
-        // O vencedor da escolha (cand2) tem sim 0,4; cand1 tem 0,95 e não vence.
-        let service = splitting(|body| {
-            Reply::json(
-                200,
-                &second_by_name(
-                    body,
-                    |name| if name == "cand2" { 0.7 } else { 0.1 },
-                    0.05,
-                    |name| match name {
-                        "cand1" => 0.95,
-                        "cand2" => 0.4,
-                        _ => 0.1,
-                    },
-                ),
-            )
-        });
-        let got = service.filter().filter(&request((1..=5).map(candidate).collect())).unwrap();
-        assert_eq!(got.verdict, Verdict::Sure);
-        assert_eq!(kept_ids(&got), vec![2]);
-        assert!((got.kept[0].score - 0.4).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn a_winner_with_a_yes_below_four_tenths_gives_way_to_the_finalist_with_the_highest_yes() {
-        let service = splitting(|body| {
-            Reply::json(
-                200,
-                &second_by_name(
-                    body,
-                    |name| if name == "cand1" { 0.7 } else { 0.1 },
-                    0.05,
-                    |name| match name {
-                        "cand1" => 0.399,
-                        "cand2" => 0.5,
-                        "cand3" => 0.8,
-                        _ => 0.0,
-                    },
-                ),
-            )
-        });
-        let got = service.filter().filter(&request((1..=5).map(candidate).collect())).unwrap();
-        assert_eq!(kept_ids(&got), vec![3]);
-    }
-
-    #[test]
-    fn every_yes_below_four_tenths_is_not_found_with_nothing_kept() {
-        let service = splitting(|body| Reply::json(200, &second_by_name(body, |_| 0.3, 0.05, |_| 0.399)));
-        let got = service.filter().filter(&request((1..=5).map(candidate).collect())).unwrap();
-        assert_eq!(service.received().len(), 2);
-        assert_eq!(got.verdict, Verdict::NotFound);
-        assert!(got.kept.is_empty(), "{:?}", got.kept);
-    }
-
-    #[test]
-    fn the_second_look_adds_its_tokens_cost_and_model_to_the_usage() {
-        let service = splitting(|body| {
-            let mut answer = second_by_name(body, |_| 0.3, 0.05, |_| 0.9);
-            answer["model"] = json!("jev-1.13.0");
-            answer["usage"]["input_tokens"] = json!(2500);
-            Reply::json(200, &answer)
-        });
-        let got = service.filter().filter(&request((1..=5).map(candidate).collect())).unwrap();
-        assert_eq!(got.usage.input_tokens, 3500, "1000 of the choice and 2500 of the second look");
-        // 3.500 tokens a US$ 0,042 o milhão: 147 milionésimos de dólar.
-        assert_eq!(got.usage.cost_micro_usd, 147);
-        assert_eq!(got.usage.model, "jev-1.13.0");
-    }
-
-    #[test]
-    fn a_second_look_that_fails_falls_back_to_the_relative_cut_without_an_error() {
-        // Recusa do serviço no segundo pedido: nada de erro, e o corte da
-        // primeira etapa (só as chances acima de 0,04 ficam).
-        let refused = FakeService::start(|number, body| {
-            if number == 0 { Reply::json(200, &split_first(body)) } else { Reply::json(402, &json!({})) }
-        });
-        let got = refused.filter().filter(&request((1..=5).map(candidate).collect())).unwrap();
-        assert_eq!(refused.received().len(), 2, "a refused key is not repeated");
-        assert_eq!(got.verdict, Verdict::Split);
-        assert_eq!(kept_ids(&got), vec![1, 2, 3]);
-        assert_eq!(got.usage.input_tokens, 1000);
-
-        // Resposta legível só pela metade: falta o sim de um finalista. Os
-        // tokens da resposta que chegou contam.
-        let unreadable = splitting(|body| {
-            let mut answer = second_by_name(body, |_| 0.3, 0.05, |_| 0.9);
-            answer["answers"].as_object_mut().unwrap().remove("fits_c001");
-            Reply::json(200, &answer)
-        });
-        let got = unreadable.filter().filter(&request((1..=5).map(candidate).collect())).unwrap();
-        assert_eq!((got.verdict, kept_ids(&got)), (Verdict::Split, vec![1, 2, 3]));
-        assert_eq!(got.usage.input_tokens, 2000);
-    }
-
-    #[test]
-    fn a_second_look_past_the_deadline_falls_back_to_the_relative_cut() {
-        let service = FakeService::start(|number, body| {
-            if number == 0 {
-                return Reply::json(200, &split_first(body));
-            }
-            std::thread::sleep(Duration::from_millis(1500));
-            Reply::json(200, &second_by_name(body, |_| 0.3, 0.05, |_| 0.9))
-        });
-        let mut filter = service.filter();
-        filter.timeouts.response = Duration::from_millis(500);
-        let started = Instant::now();
-        let got = filter.filter(&request((1..=5).map(candidate).collect())).unwrap();
-        assert!(started.elapsed() < Duration::from_millis(1200), "waited {:?}", started.elapsed());
-        assert_eq!((got.verdict, kept_ids(&got)), (Verdict::Split, vec![1, 2, 3]));
-    }
-
-    #[test]
-    fn the_share_of_the_request_travels_to_the_cut() {
-        let service = FakeService::start(|_, body| {
-            Reply::json(
-                200,
-                &choice_by_name(body, |name| if name == "cand2" { 0.5 } else { 0.4 }, 0.0, 0.9),
-            )
-        });
-        let mut asked = request((1..=3).map(candidate).collect());
-        asked.share = 0.5;
-        let got = service.filter().filter(&asked).unwrap();
-        let ids: Vec<i64> = got.kept.iter().map(|s| s.id).collect();
-        assert_eq!(ids, vec![2, 1, 3], "0,4 is above half of 0,5 and the bank order breaks the tie");
-        asked.share = 0.9;
-        let got = service.filter().filter(&asked).unwrap();
-        assert_eq!(got.kept.iter().map(|s| s.id).collect::<Vec<_>>(), vec![2]);
-    }
-
-    /// Um candidato com 16 membros de mil caracteres: uns 16 mil caracteres
-    /// no pedido. Doze deles enchem um pedido do limite.
-    fn heavy_candidate(id: i64) -> FilterCandidate {
-        FilterCandidate { members: vec!["x".repeat(1000); 16], ..candidate(id) }
-    }
-
-    #[test]
-    fn a_batch_above_the_ceiling_splits_in_the_smallest_number_of_requests_in_the_bank_order() {
-        for (count, requests) in [(12, 1), (13, 2), (24, 2), (25, 3), (36, 3), (37, 4)] {
-            let service = FakeService::start(|_, body| Reply::json(200, &sure_answer(body)));
-            let candidates: Vec<FilterCandidate> = (1..=count).map(heavy_candidate).collect();
-            service.filter().filter(&request(candidates)).unwrap();
-
-            let sent = service.received();
-            assert_eq!(sent.len(), requests, "{count} heavy candidates");
-            let mut next = 0;
-            for received in &sent {
-                let payload = received.body.to_string();
-                assert!(estimated_tokens(&payload) <= MAX_REQUEST_TOKENS, "{count}: a request passed the limit");
-                for (id, _) in listed(&received.body) {
-                    assert_eq!(id, format!("c{next:03}"), "{count}: the bank order broke");
-                    next += 1;
-                }
-            }
-            assert_eq!(next, count as usize, "{count}: every candidate goes once");
-        }
-    }
-
-    #[test]
-    fn split_requests_sum_the_usage_and_the_group_that_found_something_wins() {
-        // O primeiro pedido não tem o certo e diz "nenhum destes"; o segundo
-        // acha o cand20.
-        let service = FakeService::start(|number, body| {
-            let mut answer = if number == 0 {
-                choice_by_name(body, |_| 0.01, 0.9, 0.9)
-            } else {
-                choice_by_name(body, |name| if name == "cand20" { 0.8 } else { 0.01 }, 0.05, 0.9)
-            };
-            answer["model"] = json!("jev-1.13.0");
-            Reply::json(200, &answer)
-        });
-        let candidates: Vec<FilterCandidate> = (1..=24).map(heavy_candidate).collect();
-        let got = service.filter().filter(&request(candidates)).unwrap();
-        assert_eq!(service.received().len(), 2);
-        assert_eq!(got.verdict, Verdict::Sure);
-        assert_eq!(got.kept.iter().map(|s| s.id).collect::<Vec<_>>(), vec![20]);
-        assert_eq!(got.usage.input_tokens, 2000);
-        assert_eq!(got.usage.cost_micro_usd, 84);
-        assert_eq!(got.usage.model, "jev-1.13.0");
-
-        // Nenhum pedido acha: não achei.
-        let none = FakeService::start(|_, body| Reply::json(200, &choice_by_name(body, |_| 0.01, 0.8, 0.9)));
-        let candidates: Vec<FilterCandidate> = (1..=24).map(heavy_candidate).collect();
-        let got = none.filter().filter(&request(candidates)).unwrap();
-        assert_eq!(got.verdict, Verdict::NotFound);
-        assert!(got.kept.is_empty());
-    }
-
-    #[test]
-    fn merging_takes_the_lowest_none_and_confidence_of_the_groups_that_found_something() {
-        let read = |id: i64, chance: f64, none: f64, confidence: f64| Choice {
-            scores: vec![Scored { id, score: chance }],
-            none,
-            confidence,
-            input_tokens: 0,
-        };
-        let merged = merge(vec![read(1, 0.7, 0.2, 0.8), read(2, 0.1, 0.9, 0.9), read(3, 0.6, 0.3, 0.75)]);
-        assert_eq!(merged.scores.iter().map(|s| s.id).collect::<Vec<_>>(), vec![1, 3]);
-        assert!((merged.none - 0.2).abs() < f64::EPSILON);
-        assert!((merged.confidence - 0.75).abs() < f64::EPSILON);
-        let merged = merge(vec![read(1, 0.1, 0.9, 0.5), read(2, 0.1, 0.7, 0.6)]);
-        assert!(merged.scores.is_empty());
-        assert!((merged.none - 0.7).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn no_candidates_send_no_request() {
-        // Porta que ninguém ouve: um pedido que saísse viraria erro de rede.
-        let got = JevFilter::at(test_key(), &closed_url()).filter(&request(Vec::new())).unwrap();
-        assert_eq!(got.verdict, Verdict::NotFound);
-        assert!(got.kept.is_empty());
-        assert_eq!(got.usage.input_tokens, 0);
     }
 
     // -- as recusas e as repetições -------------------------------------------
@@ -1585,7 +1187,7 @@ mod tests {
             if number == 0 {
                 Reply { status: 503, headers: vec![("Retry-After", "0".to_string())], body: String::new() }
             } else {
-                Reply::json(200, &choice_by_name(body, |_| 0.7, 0.01, 0.9))
+                Reply::json(200, &answer_by_position(body, |_| 0.7, 0.9))
             }
         });
         let got = service.filter().filter(&request(vec![candidate(1)])).unwrap();
@@ -1610,14 +1212,15 @@ mod tests {
     }
 
     #[test]
-    fn an_answer_missing_a_score_is_unreadable() {
-        // Falta a chance de um candidato, a de `none` ou a confiança: cada
-        // ausência é uma resposta ilegível.
+    fn an_answer_missing_a_chance_or_the_existence_is_unreadable() {
+        // Falta a chance de um candidato, a escolha, a existência ou o número
+        // dela: cada ausência é uma resposta ilegível.
         let answers = [
-            json!({"q": {"confidence": 0.9, "probabilities": {"c000": 0.5, "none": 0.1}}}),
-            json!({"q": {"confidence": 0.9, "probabilities": {"c000": 0.5, "c001": 0.4}}}),
-            json!({"q": {"probabilities": {"c000": 0.5, "c001": 0.4, "none": 0.1}}}),
-            json!({"q": {"confidence": 0.9}}),
+            json!({"where": {"probabilities": {"c000": 0.5}}, "exists": {"noul": 0.9}}),
+            json!({"where": {"probabilities": {"c000": 0.5, "c001": "alta"}}, "exists": {"noul": 0.9}}),
+            json!({"where": {"choice": "c000"}, "exists": {"noul": 0.9}}),
+            json!({"where": {"probabilities": {"c000": 0.5, "c001": 0.4}}}),
+            json!({"where": {"probabilities": {"c000": 0.5, "c001": 0.4}}, "exists": {"noul": "sim"}}),
             json!({"c00": {"noul": 0.5}}),
         ];
         for answer in answers {
@@ -1625,20 +1228,6 @@ mod tests {
             let error = service.filter().filter(&request(vec![candidate(1), candidate(2)])).unwrap_err();
             assert!(matches!(error, FilterError::Unreadable(_)), "{error:?}");
         }
-    }
-
-    #[test]
-    fn one_failing_request_of_a_split_batch_fails_the_whole_filter() {
-        let service = FakeService::start(|number, body| {
-            if number == 1 {
-                Reply::json(402, &json!({}))
-            } else {
-                Reply::json(200, &sure_answer(body))
-            }
-        });
-        let candidates: Vec<FilterCandidate> = (1..=24).map(heavy_candidate).collect();
-        let error = service.filter().filter(&request(candidates)).unwrap_err();
-        assert_eq!(error, FilterError::Refused { status: 402 });
     }
 
     #[test]
@@ -1741,7 +1330,6 @@ mod tests {
         // caracteres (5 tokens), mas 32 bytes.
         assert_eq!(estimated_tokens(&"ã".repeat(16)), 5);
     }
-
     // -- a chave ---------------------------------------------------------------
 
     #[test]
@@ -1838,7 +1426,7 @@ mod tests {
         let loaded = project_key(project.path(), None).unwrap();
         assert!(loaded.warning.is_none());
         let service = FakeService::start(|_, body| {
-            Reply::json(200, &choice_by_name(body, |name| if name == "cand1" { 0.9 } else { 0.05 }, 0.05, 0.9))
+            Reply::json(200, &answer_by_position(body, |at| if at == 0 { 0.9 } else { 0.05 }, 0.9))
         });
         let got = JevFilter::at(loaded.key, &service.url).filter(&request(vec![candidate(1), candidate(2)])).unwrap();
         assert_eq!(service.received()[0].authorization, format!("Bearer {SECRET}"));
@@ -1867,29 +1455,38 @@ mod tests {
 
     // -- o serviço de verdade ----------------------------------------------------
 
-    /// Manda um pedido real de 2 candidatos com a chave do ambiente e confere
-    /// a nota e os tokens. Custa uma fração de centavo; roda só à mão, com
-    /// `--ignored` e a chave no ambiente.
+    /// Manda um pedido real de 2 candidatos, com o código lido de um arquivo
+    /// do projeto, e a chave do ambiente, e confere a nota e os tokens. Custa
+    /// uma fração de centavo; roda só à mão, com `--ignored` e a chave no
+    /// ambiente.
     #[test]
     #[ignore = "calls the paid service with the key from the environment"]
     fn the_real_service_scores_two_candidates() {
         let key = std::env::var(KEY_ENV).expect("the key in the environment");
-        let mut target = candidate(1);
-        target.name = "split_identifier".to_string();
-        target.path = "packages/core/src/domain/project_map.rs".to_string();
-        target.signature = "pub fn split_identifier(name: &str) -> String".to_string();
+        let project = project_with(&[
+            (
+                "src/words.rs",
+                "/// Splits an identifier into its words at case changes and separators.\npub fn split_identifier(name: &str) -> String {\n    name.to_string()\n}\n"
+                    .to_string(),
+            ),
+            (
+                "src/git.rs",
+                "pub fn open_pull_request(title: &str) -> Result<u64, String> {\n    Err(title.to_string())\n}\n".to_string(),
+            ),
+        ]);
+        let mut target = candidate_at(1, "src/words.rs", 2, 4);
         target.documentation = "Splits an identifier into its words at case changes and separators.".to_string();
-        let mut other = candidate(2);
-        other.name = "open_pull_request".to_string();
-        other.signature = "pub fn open_pull_request(title: &str) -> Result<u64, String>".to_string();
+        let other = candidate_at(2, "src/git.rs", 1, 3);
         let asked = FilterRequest {
             words: vec!["split_identifier".to_string()],
             phrase: "The function that splits an identifier into words.".to_string(),
-            share: CUT_SHARE,
+            root: project.path().to_path_buf(),
             candidates: vec![target, other],
+            ..FilterRequest::default()
         };
         let got = JevFilter::new(JevKey(key)).filter(&asked).unwrap();
         assert!(got.usage.input_tokens > 0);
+        assert_eq!(got.verdict, Verdict::Found);
         assert_eq!(got.kept.first().map(|s| s.id), Some(1));
         assert!(got.kept.iter().all(|s| (0.0..=1.0).contains(&s.score)));
     }

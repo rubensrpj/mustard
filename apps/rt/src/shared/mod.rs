@@ -30,8 +30,11 @@
 //!   the git credential vault, every URL derived from the `origin` remote —
 //!   and deliberately no merge operation.
 //! - [`jev`] — the map-search filter over the Jev paid service, behind the
-//!   core's `MapFilter` port: candidates in parallel groups, the core's cut,
-//!   and the machine-wide key that never leaves the `Authorization` header.
+//!   core's `MapFilter` port: one request with the candidates' code and the
+//!   two questions, the core's cut, and the machine-wide key that never leaves
+//!   the `Authorization` header.
+//! - [`agent_said`] — the agent's last words before a call, read backwards
+//!   from the end of the session transcript and never a person's text.
 //! - [`secret`] — the ONE search for text that looks like a secret, shared by
 //!   the spec page, the purge of the spec file and everything that leaves the
 //!   machine for an outside service ([`jev`] among them).
@@ -47,6 +50,9 @@
 //!   only the unit's own record can remember once the pending marker is
 //!   consumed.
 
+/// A última fala do agente antes de uma chamada, lida do fim do arquivo da
+/// conversa; nunca texto do usuário.
+pub mod agent_said;
 pub mod branch_state;
 /// O caminho do código pelo mapa, para as travas da leitura e da busca.
 pub mod code_route;
