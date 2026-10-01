@@ -32,7 +32,7 @@
 //! resposta do serviço.
 
 use std::collections::HashMap;
-use std::fmt;
+use std::fmt::{self, Write as _};
 use std::io::ErrorKind;
 use std::path::{Component, Path};
 use std::time::{Duration, Instant};
@@ -427,10 +427,10 @@ impl Context {
     fn suffix(&self) -> String {
         let mut text = String::new();
         if !self.described.is_empty() {
-            text.push_str(&format!(" The agent described this search as: \"{}\".", self.described));
+            let _ = write!(text, " The agent described this search as: \"{}\".", self.described);
         }
         if !self.said.is_empty() {
-            text.push_str(&format!(" Just before it, the agent wrote: \"{}\".", self.said));
+            let _ = write!(text, " Just before it, the agent wrote: \"{}\".", self.said);
         }
         text
     }

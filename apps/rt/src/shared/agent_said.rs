@@ -72,21 +72,39 @@ fn scan_back(transcript: &Path) -> Option<String> {
         let first = lines.next()?;
         let whole: Vec<&[u8]> = lines.collect();
         for line in whole.into_iter().rev() {
-            if let Some(found) = read_line(line) {
-                return found;
+            if let Some(ending) = read_line(line) {
+                return ending.said();
             }
         }
         if position == 0 {
-            return read_line(first).flatten();
+            return read_line(first).and_then(Ending::said);
         }
         carry = first.to_vec();
     }
     None
 }
 
-/// O que uma linha da conversa diz da busca da fala: `None` segue para a
-/// linha de trás; `Some(None)` é o fim sem fala; `Some(Some(texto))` é a fala.
-fn read_line(line: &[u8]) -> Option<Option<String>> {
+/// Como a leitura termina numa linha da conversa.
+enum Ending {
+    /// Mensagem de gente: o fim, sem fala.
+    Person,
+    /// Texto do assistente: a fala.
+    Said(String),
+}
+
+impl Ending {
+    /// A fala, quando o fim a traz.
+    fn said(self) -> Option<String> {
+        match self {
+            Self::Person => None,
+            Self::Said(text) => Some(text),
+        }
+    }
+}
+
+/// Se a linha da conversa termina a leitura, e como; `None` segue para a
+/// linha de trás.
+fn read_line(line: &[u8]) -> Option<Ending> {
     let Ok(entry) = serde_json::from_slice::<Value>(line) else { return None };
     let message = entry.get("message")?;
     let content = message.get("content");
@@ -96,10 +114,10 @@ fn read_line(line: &[u8]) -> Option<Option<String>> {
             .iter()
             .rev()
             .find_map(text_of)
-            .map(|text| Some(text.to_string())),
+            .map(|text| Ending::Said(text.to_string())),
         "user" => match content {
-            Some(Value::String(text)) => (!text.trim().is_empty()).then_some(None),
-            Some(Value::Array(blocks)) => blocks.iter().any(|block| text_of(block).is_some()).then_some(None),
+            Some(Value::String(text)) => (!text.trim().is_empty()).then_some(Ending::Person),
+            Some(Value::Array(blocks)) => blocks.iter().any(|block| text_of(block).is_some()).then_some(Ending::Person),
             _ => None,
         },
         _ => None,
@@ -219,6 +237,21 @@ mod tests {
             tool_use(),
         ];
         assert_eq!(said_in(&lines), "a fala");
+    }
+
+    #[test]
+    fn a_line_ends_the_reading_with_the_said_of_the_assistant_or_with_a_person_and_otherwise_goes_on() {
+        let ends = |line: String| read_line(line.as_bytes());
+        assert!(matches!(ends(say("a fala")), Some(Ending::Said(text)) if text == "a fala"));
+        assert!(matches!(ends(user_text("outra coisa")), Some(Ending::Person)));
+        assert!(matches!(ends(user_plain("outra coisa")), Some(Ending::Person)));
+        assert!(ends(user_plain("   ")).is_none(), "a blank message of the user does not stop the reading");
+        assert!(ends(tool_result("saída")).is_none());
+        assert!(ends(tool_use()).is_none());
+        assert!(ends(thinking()).is_none());
+        assert!(ends("isto não é json".to_string()).is_none());
+        assert_eq!(Ending::Said("fala".to_string()).said().as_deref(), Some("fala"));
+        assert_eq!(Ending::Person.said(), None);
     }
 
     #[test]
