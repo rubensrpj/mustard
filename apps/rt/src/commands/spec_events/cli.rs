@@ -24,7 +24,8 @@ pub enum SpecEventsCmd {
     /// `agreed`, `specification`, `criteria`, `waves`, `wave-<n>`, `review`,
     /// `progress`, `notes` or `conversation`. Removed and replaced items are
     /// left out; a line that does not parse is skipped with a warning.
-    /// `dispatch-<n>` reads, in one go, every item the request of wave `n`
+    /// `wave-list` lists one short line per wave, by number: its code, the
+    /// first line of its text and the waves it depends on. `dispatch-<n>` reads, in one go, every item the request of wave `n`
     /// lists, each with its code, and its lessons, by the same selection
     /// that builds the request. `request-<n>` prints, as plain text, the
     /// exact request recorded when wave `n` went out: the agent reads its own
@@ -54,7 +55,7 @@ pub enum SpecEventsCmd {
     /// reads the whole line, and `delivered-<n>` the delivery.
     #[command(display_order = 8)]
     Read {
-        /// The block to read, e.g. `state`, `wave-2`, `dispatch-2`,
+        /// The block to read, e.g. `state`, `wave-list`, `wave-2`, `dispatch-2`,
         /// `request-2`, `request-review`, `delivered-2`, `backlog`, `calls` or
         /// `item-MSTD-TASK-0003`.
         block: String,

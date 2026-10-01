@@ -33,9 +33,13 @@
 //! pela mesma conta que monta o pedido, numa leitura só. O `--term` filtra
 //! dentro disso.
 //!
-//! Quatro leituras respondem o que antes saía de script escrito na hora, e
+//! Cinco leituras respondem o que antes saía de script escrito na hora, e
 //! nelas o `--term` não vale:
 //!
+//! - `wave-list` traz uma linha curta por onda, na ordem do número: o código,
+//!   o número, a primeira linha do texto e as ondas de que ela depende. É o
+//!   que quem conduz tirava do bloco `waves` inteiro, que traz também as
+//!   tarefas, os pedidos e as entregas de todas as ondas.
 //! - `item-<código>` traz a versão vigente do item, e `item-<número>`, aquela
 //!   versão; as duas com `changed`, o que mudou da versão anterior. O item
 //!   removido vem com `removed`, e a versão já substituída, com
@@ -65,8 +69,9 @@
 //! nunca esses textos. O campo `chars` diz o tamanho da injeção, e o texto
 //! inteiro de cada uma sai por `item-<código>`; o da entrega, também por
 //! `delivered-<n>`. Com `--term`, o leitor pede o conteúdo, e o texto vem.
-//! `waves` segue com tudo: os scripts de quem conduz leem o `text`, os
-//! `files`, o `done_when` e o `agreed` dele.
+//! `waves` segue com tudo: quem conduz lê ali o `text`, os `files`, o
+//! `done_when` e o `agreed`; para só escolher a ordem das ondas, basta a
+//! `wave-list`.
 //!
 //! **Quem trabalha na cópia de um pedido lê a linha do item sem as marcas do
 //! binário e sem as palavras de busca.** De dentro da cópia de um pedido
@@ -187,6 +192,7 @@ pub(crate) fn read_for(opts: &ReadOpts, session: Option<&str>, from: &Path) -> R
             read.extend(found.map(|event| codes.get(&event.id).cloned().unwrap_or_else(|| event.id.to_string())));
             found.map(|event| item_line(&log, event, &codes, item_view)).into_iter().collect()
         }
+        ReadQuery::WaveList => wave_list_lines(&log, &codes),
         ReadQuery::Delivered(wave) => delivered_lines(&log, wave, &codes),
         ReadQuery::Backlog => {
             let (lines, total) = backlog_lines(&log, &codes);
@@ -426,6 +432,32 @@ fn delivered_lines(log: &SpecLog, wave: u64, codes: &BTreeMap<u64, String>) -> V
         agreed.retain(|answer| answer.get("met") != Some(&Value::Bool(true)));
     }
     vec![shown_line(&fields)]
+}
+
+/// As ondas que a leitura mostra, uma linha curta por onda, na ordem do
+/// número: a versão vigente, o código, o número, a primeira linha não vazia
+/// do texto e as ondas de que ela depende, vazia quando não depende de
+/// nenhuma. A onda removida ou substituída fica de fora, como no bloco.
+fn wave_list_lines(log: &SpecLog, codes: &BTreeMap<u64, String>) -> Vec<String> {
+    let mut waves: Vec<&SpecEvent> =
+        log.block(BlockQuery::Block(Block::Waves)).into_iter().filter(|e| e.event_type == "wave").collect();
+    waves.sort_by_key(|wave| (wave.wave(), wave.id));
+    waves
+        .into_iter()
+        .map(|wave| {
+            let text = wave.str_field("text").unwrap_or_default();
+            let first_line = text.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or_default();
+            let mut line = Map::new();
+            line.insert("id".into(), json!(wave.id));
+            if let Some(code) = codes.get(&wave.id) {
+                line.insert("code".into(), json!(code));
+            }
+            line.insert("n".into(), json!(wave.wave()));
+            line.insert("first_line".into(), json!(first_line));
+            line.insert("depends_on".into(), json!(wave.ints("depends_on")));
+            shown_line(&line)
+        })
+        .collect()
 }
 
 /// As tarefas ainda por entregar, uma linha por tarefa na ordem do código:
@@ -1167,6 +1199,45 @@ mod tests {
              {{\"id\":{third},\"code\":\"MSTD-TASK-0004\",\"depends_on\":[\"MSTD-TASK-0002\"],\"files\":1,\"wave\":3}},\n\
              {{\"id\":{loose},\"code\":\"MSTD-TASK-0005\",\"depends_on\":[],\"files\":1,\"wave\":null}}\n\
              ],\"total\":{{\"tasks\":3,\"files\":3}}}}"
+        );
+        assert_eq!(report, expected);
+    }
+
+    /// A lista das ondas traz uma linha curta por onda, na ordem do número
+    /// e não na do arquivo: o código, o número, a primeira linha não vazia do
+    /// texto e as ondas de que ela depende. A versão substituída e a onda
+    /// removida ficam de fora, e a tarefa, o pedido e a entrega não entram.
+    #[test]
+    fn the_wave_list_brings_one_short_line_per_wave_in_number_order() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = put(root, "message", json!({"author": "user", "text": "o plano"}));
+        let c = put(root, "criterion", json!({"when": "a", "then": "b", "proof": "echo p", "form": "ubiquitous", "origin": said}));
+        let wave = |n: u64, text: &str, depends_on: &[u64], replaces: Option<u64>| -> u64 {
+            let mut body = json!({"n": n, "text": text, "criteria": [c], "done_when": "x", "depends_on": depends_on, "origin": said});
+            if let Some(old) = replaces {
+                body["replaces"] = json!(old);
+            }
+            put(root, "wave", body)
+        };
+        let old_first = wave(1, "Somar.", &[], None);
+        let third = wave(3, "Mostrar o total.\nCom o detalhe de cada parcela.", &[1, 2], None);
+        let second = wave(2, "\n  Guardar a soma.  \n\nE o resto.", &[1], None);
+        let gone = wave(4, "Sair.", &[], None);
+        let first = wave(1, "Somar as parcelas.", &[], Some(old_first));
+        put(root, "task", json!({"wave": 1, "text": "T1.", "files": [{"path": "a.rs"}], "depends_on": [], "origin": said}));
+        put(root, "remove", json!({"targets": [gone], "reason": "Saiu do plano."}));
+        by_program(root, "send", json!({"author": "binary", "wave": 1, "role": "wave", "text": "O pedido inteiro da onda.",
+            "lines": 1, "chars": 25, "mustard": "0.2.0"}));
+        by_program(root, "delivered", json!({"author": "binary", "wave": 1, "text": "Pronta.", "files": ["a.rs"]}));
+
+        let report = read_at(&opts(root, "wave-list", None)).unwrap();
+        let expected = format!(
+            "{{\"ok\":true,\"spec\":\"teste\",\"block\":\"wave-list\",\"count\":3,\"events\":[\n\
+             {{\"id\":{first},\"code\":\"MSTD-WAVE-0001\",\"depends_on\":[],\"first_line\":\"Somar as parcelas.\",\"n\":1}},\n\
+             {{\"id\":{second},\"code\":\"MSTD-WAVE-0003\",\"depends_on\":[1],\"first_line\":\"Guardar a soma.\",\"n\":2}},\n\
+             {{\"id\":{third},\"code\":\"MSTD-WAVE-0002\",\"depends_on\":[1,2],\"first_line\":\"Mostrar o total.\",\"n\":3}}\n\
+             ]}}"
         );
         assert_eq!(report, expected);
     }

@@ -97,14 +97,15 @@ impl BlockQuery {
 
     /// Os nomes aceitos, na ordem da página, para a mensagem de recusa. Com
     /// eles, as leituras que a leitura monta fora dos blocos
-    /// ([`ReadQuery`]): o que o pedido da onda lista, o pedido gravado, a
-    /// entrega vigente, as tarefas por entregar, a soma das chamadas de cada
-    /// comando e um item só.
+    /// ([`ReadQuery`]): a lista das ondas, o que o pedido da onda lista, o
+    /// pedido gravado, a entrega vigente, as tarefas por entregar, a soma das
+    /// chamadas de cada comando e um item só.
     #[must_use]
     pub fn accepted_names() -> String {
         let mut names: Vec<&str> = Block::ALL.iter().map(|b| b.name()).collect();
         if let Some(i) = names.iter().position(|n| *n == "waves") {
             let beside = [
+                "wave-list",
                 "wave-<n>",
                 "dispatch-<n>",
                 "request-<n>",
@@ -123,7 +124,9 @@ impl BlockQuery {
 }
 
 /// O que o `read` pede: um bloco da spec ou uma das leituras que ele monta
-/// fora dos blocos. `dispatch-2` é tudo o que o pedido da onda `2` lista;
+/// fora dos blocos. `wave-list` é uma linha curta por onda — o número, a
+/// primeira linha do texto e as ondas de que ela depende —; `dispatch-2` é
+/// tudo o que o pedido da onda `2` lista;
 /// `request-2`, o pedido exato gravado no envio dela; `request-review`, o
 /// pedido exato gravado no último envio do revisor final, que não tem onda;
 /// `delivered-2`, a entrega vigente dela; `backlog`, as tarefas ainda por
@@ -132,6 +135,7 @@ impl BlockQuery {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReadQuery {
     Block(BlockQuery),
+    WaveList,
     Dispatch(u64),
     Request(u64),
     ReviewRequest,
@@ -148,6 +152,10 @@ impl ReadQuery {
     pub fn parse(name: &str) -> Option<Self> {
         let name = name.trim();
         let number = |rest: &str| rest.parse::<u64>().ok();
+        // Antes de `wave-<n>`, que leria `list` como o número de uma onda.
+        if name == "wave-list" {
+            return Some(Self::WaveList);
+        }
         if let Some(rest) = name.strip_prefix("dispatch-") {
             return number(rest).map(Self::Dispatch);
         }
@@ -911,18 +919,19 @@ mod tests {
         assert_eq!(BlockQuery::parse("wave-x"), None);
         assert_eq!(BlockQuery::parse("everything"), None);
         assert!(BlockQuery::accepted_names().contains(
-            "waves, wave-<n>, dispatch-<n>, request-<n>, request-review, delivered-<n>, backlog, calls, item-<code|n>, review"
+            "waves, wave-list, wave-<n>, dispatch-<n>, request-<n>, request-review, delivered-<n>, backlog, calls, item-<code|n>, review"
         ));
     }
 
-    /// Além dos blocos, a leitura aceita o pedido de uma onda, o pedido
-    /// gravado, o pedido do revisor final, a entrega, o backlog, a soma das chamadas e um item pelo
-    /// código ou pelo número; sem o número ou com um código fora do formato,
-    /// o nome não é aceito.
+    /// Além dos blocos, a leitura aceita a lista das ondas, o pedido de uma
+    /// onda, o pedido gravado, o pedido do revisor final, a entrega, o
+    /// backlog, a soma das chamadas e um item pelo código ou pelo número; sem
+    /// o número ou com um código fora do formato, o nome não é aceito.
     #[test]
     fn the_readings_beside_the_blocks_take_their_number_or_code() {
         assert_eq!(ReadQuery::parse("state"), Some(ReadQuery::Block(BlockQuery::Block(Block::State))));
         assert_eq!(ReadQuery::parse("wave-3"), Some(ReadQuery::Block(BlockQuery::Wave(3))));
+        assert_eq!(ReadQuery::parse(" wave-list "), Some(ReadQuery::WaveList));
         assert_eq!(ReadQuery::parse("dispatch-3"), Some(ReadQuery::Dispatch(3)));
         assert_eq!(ReadQuery::parse("request-3"), Some(ReadQuery::Request(3)));
         assert_eq!(ReadQuery::parse(" request-review "), Some(ReadQuery::ReviewRequest));
@@ -934,7 +943,7 @@ mod tests {
             ReadQuery::parse("item-MSTD-TASK-0003"),
             Some(ReadQuery::Item(EventRef::Code("MSTD-TASK-0003".into())))
         );
-        for refused in ["request-", "request-x", "delivered-", "item-", "item-0", "item-tarefa", "backlogs", "call"] {
+        for refused in ["request-", "request-x", "delivered-", "item-", "item-0", "item-tarefa", "backlogs", "call", "wave-lists"] {
             assert_eq!(ReadQuery::parse(refused), None, "{refused}");
         }
     }
