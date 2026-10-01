@@ -20,7 +20,9 @@
 //!   quando a resposta traz o trecho que ela daria: a do arquivo editado, se a
 //!   resposta mostra o trecho editado; na cadeia sem edição, a leitura cujo
 //!   trecho a resposta mostra por inteiro. A busca que o gancho deixa passar
-//!   custa o mesmo de hoje, e a nota que ele põe junto soma o tamanho dela.
+//!   custa o mesmo de hoje. A nota que ele põe junto da busca soma o tamanho
+//!   dela e a saída inteira do `grep` fica, porque a busca roda; a leitura sai
+//!   pela mesma regra da resposta, se o código da nota traz o trecho.
 //!
 //! O termômetro, sem número fixo, diz em que posição do que o gancho mostra
 //! está o arquivo certo e, quando ele não está, a causa: o gancho deixou
@@ -164,48 +166,76 @@ struct Spend {
 enum Outcome {
     /// A resposta no lugar da busca, e o que ela mostra.
     Answer(String),
-    /// A busca roda, com esta nota junto.
+    /// A busca roda, com esta nota junto, que traz o código como a resposta.
     Note(String),
     /// A busca roda como veio.
     Pass,
 }
 
+/// O que o gancho mostra na sua resposta ou na nota: o texto de uma e da outra
+/// tem o mesmo formato. A busca que passa sem nota não mostra nada.
+fn shown_by(outcome: &Outcome) -> Shown {
+    match outcome {
+        Outcome::Answer(text) | Outcome::Note(text) => shown_of(text),
+        Outcome::Pass => Shown::default(),
+    }
+}
+
+/// Os arquivos que a busca de `row` tem de mostrar: o editado, quando a cadeia
+/// terminou numa edição; senão, os que a busca real levou o Claude a abrir.
+fn right_files<'a>(row: &'a Row, chain: &'a Chain) -> Vec<&'a str> {
+    match (&chain.edit_file, chain.ended == "edicao") {
+        (Some(file), true) => vec![file.as_str()],
+        _ => row.targets.iter().map(String::as_str).collect(),
+    }
+}
+
+/// Quantos caracteres de leitura o código que `shown` traz dispensa ao Claude:
+/// na cadeia com edição, a leitura do arquivo editado cujo trecho cobre as
+/// linhas editadas; na cadeia sem edição, a do arquivo certo cujo trecho cobre
+/// as linhas lidas. A leitura de outro arquivo fica.
+fn saved_reads_of(row: &Row, chain: &Chain, shown: &Shown) -> usize {
+    let edited = chain.ended == "edicao";
+    let right = right_files(row, chain);
+    chain
+        .reads
+        .iter()
+        .filter(|read| {
+            if edited {
+                chain.edit_file.as_deref() == Some(read.file.as_str())
+                    && !chain.edit_all
+                    && chain.edit_range.is_some_and(|(from, to)| covers(shown, &read.file, from, to))
+            } else {
+                right.contains(&read.file.as_str())
+                    && read.first > 0
+                    && covers(shown, &read.file, read.first as u64, read.last.max(read.first) as u64)
+            }
+        })
+        .map(|read| read.chars)
+        .sum()
+}
+
 /// O gasto de `row` quando o gancho responde `outcome`. `None` sem a cadeia da
-/// conversa.
+/// conversa. A resposta no lugar da busca troca a saída do `grep` pelo texto
+/// dela; a nota vai junto da busca, que roda inteira, e o Claude recebe as duas
+/// saídas. Nas duas, a leitura que o código mostrado cobre sai.
 fn spend_of(row: &Row, outcome: &Outcome, shown: &Shown) -> Option<Spend> {
     let chain = row.chain.as_ref()?;
     let today = chain.grep_chars + chain.reads_chars;
     let text = |text: &str| text.chars().count();
     let spend = match outcome {
         Outcome::Pass => Spend { today, with: today, saved_reads: 0 },
-        Outcome::Note(note) => Spend { today, with: today + text(note), saved_reads: 0 },
+        Outcome::Note(note) => {
+            let saved = saved_reads_of(row, chain, shown);
+            Spend { today, with: today + text(note) - saved, saved_reads: saved }
+        }
         Outcome::Answer(answer) => {
-            let edited = chain.ended == "edicao";
-            let right: Vec<&str> = match (&chain.edit_file, edited) {
-                (Some(file), true) => vec![file.as_str()],
-                _ => row.targets.iter().map(String::as_str).collect(),
-            };
-            let hit = shown.files.iter().any(|file| right.contains(&file.as_str()));
-            if !hit {
-                Spend { today, with: text(answer) + today, saved_reads: 0 }
-            } else {
-                let saved: usize = chain
-                    .reads
-                    .iter()
-                    .filter(|read| {
-                        if edited {
-                            chain.edit_file.as_deref() == Some(read.file.as_str())
-                                && !chain.edit_all
-                                && chain.edit_range.is_some_and(|(from, to)| covers(shown, &read.file, from, to))
-                        } else {
-                            right.contains(&read.file.as_str())
-                                && read.first > 0
-                                && covers(shown, &read.file, read.first as u64, read.last.max(read.first) as u64)
-                        }
-                    })
-                    .map(|read| read.chars)
-                    .sum();
+            let right = right_files(row, chain);
+            if shown.files.iter().any(|file| right.contains(&file.as_str())) {
+                let saved = saved_reads_of(row, chain, shown);
                 Spend { today, with: text(answer) + today - chain.grep_chars - saved, saved_reads: saved }
+            } else {
+                Spend { today, with: text(answer) + today, saved_reads: 0 }
             }
         }
     };
@@ -215,7 +245,8 @@ fn spend_of(row: &Row, outcome: &Outcome, shown: &Shown) -> Option<Spend> {
 /// O destino de uma busca no termômetro.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Fate {
-    /// O gancho deixou a busca passar, com nota ou sem.
+    /// O gancho deixou a busca passar, sem nota ou com uma nota que não traz o
+    /// arquivo certo.
     Passed,
     /// O arquivo certo é o de posição `n` entre os mostrados.
     At(usize),
@@ -270,14 +301,15 @@ fn cause_of(root: &Path, row: &Row) -> Fate {
 }
 
 /// O destino da busca no termômetro: o gancho que a deixa passar; a posição do
-/// arquivo certo entre os mostrados; ou, quando a resposta não o traz, a causa.
+/// arquivo certo entre os mostrados, na resposta ou na nota; ou, quando a
+/// resposta não o traz, a causa. A nota sem o arquivo certo segue como busca
+/// que passou.
 fn fate_of(root: &Path, row: &Row, (outcome, shown): (&Outcome, &Shown)) -> Fate {
-    match outcome {
-        Outcome::Pass | Outcome::Note(_) => Fate::Passed,
-        Outcome::Answer(_) => match shown.files.iter().position(|file| row.targets.contains(file)) {
-            Some(place) => Fate::At(place + 1),
-            None => cause_of(root, row),
-        },
+    let place = shown.files.iter().position(|file| row.targets.contains(file));
+    match (outcome, place) {
+        (Outcome::Pass, _) | (Outcome::Note(_), None) => Fate::Passed,
+        (Outcome::Answer(_) | Outcome::Note(_), Some(place)) => Fate::At(place + 1),
+        (Outcome::Answer(_), None) => cause_of(root, row),
     }
 }
 
@@ -433,10 +465,7 @@ fn measure_the_spend_of_the_search() {
             let _ = hear(&root, row, &format!("warm-{run}-{at}"));
         }
         let (outcome, took) = hear(&root, row, &format!("spend-{run}-{at}"));
-        let shown = match &outcome {
-            Outcome::Answer(text) => shown_of(text),
-            _ => Shown::default(),
-        };
+        let shown = shown_by(&outcome);
         let fate = fate_of(&root, row, (&outcome, &shown));
         let spend = spend_of(row, &outcome, &shown);
         for half in [row.half.as_str(), "total"] {
@@ -560,6 +589,45 @@ mod tests {
         assert_eq!((noted.today, noted.with), (7000, 7003));
     }
 
+    /// A nota que traz o código do trecho editado dispensa a leitura desse
+    /// trecho, e a saída inteira do `grep` fica no gasto, porque a busca roda;
+    /// a leitura de outro arquivo fica, e a nota de outro arquivo só soma.
+    #[test]
+    fn a_note_that_shows_the_edited_lines_saves_the_read_and_keeps_the_grep_output() {
+        let row = row(chain_edited(), &["src/a.rs"]);
+        let note = "n".repeat(500);
+        let covering = Shown { files: vec!["src/a.rs".to_string()], ranges: vec![("src/a.rs".to_string(), 5, 30)] };
+        let spend = spend_of(&row, &Outcome::Note(note.clone()), &covering).unwrap();
+        assert_eq!((spend.today, spend.with, spend.saved_reads), (7000, 7000 + 500 - 4000, 4000));
+
+        let short = Shown { files: vec!["src/a.rs".to_string()], ranges: vec![("src/a.rs".to_string(), 5, 15)] };
+        let spend = spend_of(&row, &Outcome::Note(note.clone()), &short).unwrap();
+        assert_eq!((spend.with, spend.saved_reads), (7000 + 500, 0));
+
+        let other = Shown { files: vec!["src/b.rs".to_string()], ranges: vec![("src/b.rs".to_string(), 1, 50)] };
+        let spend = spend_of(&row, &Outcome::Note(note.clone()), &other).unwrap();
+        assert_eq!((spend.with, spend.saved_reads), (7000 + 500, 0));
+
+        let spend = spend_of(&row, &Outcome::Note(note), &Shown::default()).unwrap();
+        assert_eq!((spend.with, spend.saved_reads), (7000 + 500, 0));
+    }
+
+    /// Na cadeia sem edição, a nota que traz por inteiro o trecho lido dispensa
+    /// essa leitura, pela mesma regra da resposta.
+    #[test]
+    fn without_an_edit_the_read_that_a_note_shows_whole_goes() {
+        let mut chain = chain_edited();
+        chain.ended = "usuario".to_string();
+        chain.edit_file = None;
+        chain.edit_range = None;
+        chain.reads[0] = Read { file: "src/a.rs".to_string(), first: 10, last: 40, chars: 1500 };
+        chain.reads_chars = 3500;
+        let row = row(chain, &["src/a.rs"]);
+        let shown = Shown { files: vec!["src/a.rs".to_string()], ranges: vec![("src/a.rs".to_string(), 8, 60)] };
+        let spend = spend_of(&row, &Outcome::Note("z".repeat(200)), &shown).unwrap();
+        assert_eq!((spend.today, spend.with, spend.saved_reads), (4500, 4500 + 200 - 1500, 1500));
+    }
+
     /// A resposta que traz o arquivo editado troca a saída do `grep` pelo texto
     /// dela e deixa as leituras; a que não o traz soma a saída inteira do
     /// `grep` de novo.
@@ -633,6 +701,30 @@ mod tests {
         assert!(matches!(outside, Outcome::Pass | Outcome::Note(_)), "{outside:?}");
     }
 
+    /// A nota parcial que o gancho dá de verdade, lida pela régua: o arquivo
+    /// certo que ela traz vira a posição dele no termômetro, e o código que ela
+    /// mostra dispensa a leitura do trecho editado, sem tirar a saída do `grep`.
+    #[test]
+    fn the_partial_note_the_hook_gives_is_read_for_its_file_and_its_code() {
+        let (_dir, root) = fixture::repo("{}");
+        let mut chain = chain_edited();
+        chain.edit_file = Some("src/frete.rs".to_string());
+        chain.edit_range = Some((3, 4));
+        chain.reads[0] = Read { file: "src/frete.rs".to_string(), first: 1, last: 40, chars: 4000 };
+        let search = Row { tool_input: json!({ "command": "grep -rn imposto src" }), ..row(chain, &["src/frete.rs"]) };
+
+        let (outcome, _) = hear(&root, &search, "s-nota-parcial");
+        let Outcome::Note(note) = &outcome else { panic!("a note was expected, got {outcome:?}") };
+        let shown = shown_by(&outcome);
+        assert_eq!(shown.files.first().map(String::as_str), Some("src/frete.rs"), "{note}");
+        assert!(covers(&shown, "src/frete.rs", 3, 4), "{shown:?}\n{note}");
+        assert_eq!(fate_of(&root, &search, (&outcome, &shown)), Fate::At(1));
+
+        let spend = spend_of(&search, &outcome, &shown).unwrap();
+        assert_eq!((spend.today, spend.saved_reads), (7000, 4000));
+        assert_eq!(spend.with, 7000 + note.chars().count() - 4000, "the grep output stays in the spend");
+    }
+
     /// O termômetro diz a posição do arquivo certo entre os mostrados e, quando
     /// a resposta não o traz, a causa: fora do mapa, sem palavra, ou entre os
     /// cinco do mapa sem linha achada.
@@ -644,6 +736,10 @@ mod tests {
         assert_eq!(fate_after_hearing(&root, &pedido, &["src/frete.rs", "src/pedido.rs"]), Fate::At(2));
         assert_eq!(fate_of(&root, &pedido, (&Outcome::Pass, &Shown::default())), Fate::Passed);
         assert_eq!(fate_of(&root, &pedido, (&Outcome::Note("n".to_string()), &Shown::default())), Fate::Passed);
+        let other = Shown { files: vec!["src/frete.rs".to_string()], ranges: vec![] };
+        assert_eq!(fate_of(&root, &pedido, (&Outcome::Note("n".to_string()), &other)), Fate::Passed);
+        let with_file = Shown { files: vec!["src/frete.rs".to_string(), "src/pedido.rs".to_string()], ranges: vec![] };
+        assert_eq!(fate_of(&root, &pedido, (&Outcome::Note("n".to_string()), &with_file)), Fate::At(2));
 
         let note = bash_row("grep -rn imposto docs", &["docs/notas.md"]);
         assert_eq!(fate_after_hearing(&root, &note, &["src/frete.rs"]), Fate::OutsideMap);
