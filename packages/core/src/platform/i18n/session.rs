@@ -151,6 +151,19 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "[Mustard] The Claude Code plugin is on Mustard {plugin}, and the running binary is \
              {running}. Suggest `/mustard:upsert` and reopening Claude Code."
         }
+        // O gancho velho, só no código-fonte do Mustard: `{hook}` e `{tip}` são
+        // commits, `{base}` o nome da base e `{count}` quantos arquivos de código
+        // mudaram entre os dois.
+        ("session.old_hook", Locale::PtBr) => {
+            "[Mustard] O programa dos ganchos é do commit {hook}. A base {base} já está no commit \
+             {tip}, com {count} arquivo(s) de código mudado(s) depois dele. Rode \
+             `scripts/dev-install.sh` e reabra a sessão."
+        }
+        ("session.old_hook", Locale::EnUs) => {
+            "[Mustard] The hooks program is from commit {hook}. The base {base} is already at commit \
+             {tip}, with {count} code file(s) changed after it. Run `scripts/dev-install.sh` and \
+             reopen the session."
+        }
 
         // Aviso de disco do início da sessão: `{total}` e `{count}` são
         // preenchidos pelo chamador (`session_start_inject::disk_notice`).
@@ -195,8 +208,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("session.rs"),
             super::PREFIXES,
-            21,
-            0xcca5_2d1f_b442_8d4e,
+            22,
+            0xe50a_812c_01de_855f,
         );
     }
 

@@ -110,10 +110,18 @@ pub(crate) fn current_line(root: &Path, session: Option<&str>) -> Option<String>
 }
 
 /// O bloco de retomada da spec atual da sessão `session`, vista de `root`,
-/// com os mesmos `None` de [`current_line`].
+/// com os mesmos `None` de [`current_line`]: cabe no teto do início da sessão
+/// sozinho.
 pub(crate) fn current_block(root: &Path, session: Option<&str>) -> Option<String> {
+    current_block_within(root, session, crate::hooks::session::session_start_inject::MAX_BYTES)
+}
+
+/// [`current_block`] encolhido para caber em `cap` bytes, quando algo mais
+/// precisa do mesmo teto: as listas cedem na ordem de [`fit`]. Se nem o bloco
+/// com todas as listas vazias cabe, ele volta nesse tamanho mínimo.
+pub(crate) fn current_block_within(root: &Path, session: Option<&str>, cap: usize) -> Option<String> {
     let (spec, log, lang) = current_log(root, session)?;
-    Some(resume_block(&spec, &log, lang))
+    Some(resume_block(&spec, &log, lang, cap))
 }
 
 /// A spec atual da sessão `session`, o arquivo de eventos dela e o idioma do
@@ -141,9 +149,9 @@ const RECORDED_KINDS: &[&str] = &["decision", "rule", "limit", "request", "crite
 /// gravada e espera a rodada, dizendo qual troca uma decisão do usuário ainda
 /// sem o clique dele; as paradas no limite de consertos; as que faltam; o
 /// código de cada item gravado depois da última rodada; e o próximo comando.
-/// Cabe no teto do início da sessão: quando passa, as listas encolhem na
-/// ordem de [`fit`] e cada uma diz quantos ficaram de fora.
-pub(crate) fn resume_block(spec: &str, log: &SpecLog, lang: Locale) -> String {
+/// Cabe em `cap` bytes: quando passa, as listas encolhem na ordem de [`fit`] e
+/// cada uma diz quantos ficaram de fora.
+pub(crate) fn resume_block(spec: &str, log: &SpecLog, lang: Locale, cap: usize) -> String {
     use crate::commands::flow::round::{
         change_accepted, replan_code, swaps_decision, waves_in_progress, waves_stuck,
     };
@@ -205,7 +213,7 @@ pub(crate) fn resume_block(spec: &str, log: &SpecLog, lang: Locale) -> String {
         ("{returned}", waiting),
         ("{running}", in_flight),
     ];
-    fit(&text, &lists, lang)
+    fit(&text, &lists, lang, cap)
 }
 
 /// O código de cada decisão, regra, limite, pedido, critério e tarefa
@@ -229,13 +237,12 @@ fn recorded_since_round(log: &SpecLog) -> Vec<String> {
 }
 
 /// O bloco `text` com cada lista de `lists` no lugar da vaga dela: inteiras,
-/// quando cabem no teto do início da sessão. Senão, as listas cedem na ordem
+/// quando cabem em `cap` bytes. Senão, as listas cedem na ordem
 /// em que vêm — os códigos gravados primeiro, as ondas em andamento por
 /// último —, cada uma mostrando só os primeiros itens e quantos ficaram de
 /// fora, até o bloco caber; a lista seguinte só encolhe quando a anterior já
 /// não mostra item nenhum.
-fn fit(text: &str, lists: &[(&str, Vec<String>)], lang: Locale) -> String {
-    let cap = crate::hooks::session::session_start_inject::MAX_BYTES;
+fn fit(text: &str, lists: &[(&str, Vec<String>)], lang: Locale, cap: usize) -> String {
     let render = |kept: &[usize]| {
         lists.iter().zip(kept).fold(text.to_string(), |block, ((slot, items), &kept)| {
             let mut shown: Vec<String> = items[..kept].to_vec();
