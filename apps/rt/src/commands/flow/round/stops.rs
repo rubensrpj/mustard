@@ -753,8 +753,14 @@ mod tests {
         assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1]);
 
         // O Claude Code que mandou a onda 1 fechou: a versão nova do envio
-        // leva um processo que já acabou.
-        let mut gone = std::process::Command::new("true").spawn().expect("o processo de mentira");
+        // leva um processo que já acabou. O programa que nasce e acaba é o
+        // próprio executável do teste listando os testes, que toda máquina
+        // tem, no lugar de um `true` que o Windows não traz.
+        let mut gone = std::process::Command::new(std::env::current_exe().expect("o executável do teste"))
+            .arg("--list")
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .expect("o processo de mentira");
         let pid = gone.id();
         gone.wait().expect("o processo acabou");
         let path = store::spec_file(root, "x").unwrap();

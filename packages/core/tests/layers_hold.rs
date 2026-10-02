@@ -24,6 +24,13 @@ fn repo_root() -> PathBuf {
     manifest_dir::manifest_dir().join("../..")
 }
 
+/// Se `path` está na pasta do ajudante atômico de escrita. O sistema que usa a
+/// barra invertida entrega `packages/core/src\io\fs\lock.rs`, e a pasta, escrita
+/// com `/`, só casa depois de todo separador virar a barra normal.
+fn in_the_atomic_helper_folder(path: &Path) -> bool {
+    path.to_string_lossy().replace('\\', "/").contains("packages/core/src/io/fs")
+}
+
 /// Todo `.rs` debaixo de `dir`, em ordem.
 fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -129,7 +136,7 @@ fn the_model_layer_touches_no_disk_process_environment_or_terminal() {
 fn files_are_written_only_through_the_atomic_helper() {
     let files: Vec<PathBuf> = sources_under(&["packages/core/src"])
         .into_iter()
-        .filter(|p| !p.to_string_lossy().contains("packages/core/src/io/fs"))
+        .filter(|p| !in_the_atomic_helper_folder(p))
         .collect();
     let found = hits(&files, &["fs::write(", "File::create(", "File::create_new(", "OpenOptions::new("]);
     assert!(
@@ -213,5 +220,18 @@ fn the_search_has_no_function_only_its_tests_call() {
     let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{} unreadable: {e}", path.display()));
     for gone in ["fn ranked_files(", "fn sources("] {
         assert!(!text.contains(gone), "{gone} came back in map_search.rs; call the `_near` one with `Near::none()`");
+    }
+}
+
+/// A pasta do ajudante atômico é reconhecida com qualquer separador: o mesmo
+/// arquivo, escrito com a barra invertida do Windows ou com a barra normal,
+/// cai dentro dela, e o arquivo de outra pasta fica de fora.
+#[test]
+fn the_atomic_helper_folder_is_recognized_with_either_separator() {
+    for inside in ["packages/core/src\\io\\fs\\lock.rs", "packages/core/src/io/fs/lock.rs"] {
+        assert!(in_the_atomic_helper_folder(Path::new(inside)), "{inside} is inside the helper folder");
+    }
+    for outside in ["packages/core/src\\io\\map_db.rs", "packages/core/src/io/map_db.rs"] {
+        assert!(!in_the_atomic_helper_folder(Path::new(outside)), "{outside} is outside the helper folder");
     }
 }

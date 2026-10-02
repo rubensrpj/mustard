@@ -136,22 +136,27 @@ struct Project {
 
 impl Project {
     fn new() -> Self {
-        Self::build(false)
+        Self::build(tempfile::tempdir().expect("tempdir"), false)
     }
 
     /// O projeto com o submódulo `libs/sub`, que vem de um servidor local com
     /// a base `main`; o principal tem o servidor dele, com `main` e `dev`; e o
     /// `gh` falso responde por repositório ([`SUBMODULE_GH`]).
     fn with_submodule() -> Self {
-        Self::build(true)
+        Self::build(tempfile::tempdir().expect("tempdir"), true)
     }
 
-    fn build(submodule: bool) -> Self {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let root = dir.path().join("projeto");
-        let home = dir.path().join("casa");
-        let bin = dir.path().join("bin");
-        let remotes = dir.path().join("servidores");
+    /// O projeto em `dir`, pela forma canônica dela: o que o programa grava
+    /// e o que o teste espera citam o mesmo caminho. Onde a pasta temporária
+    /// tem dois nomes — `/var` e `/private/var` no Mac —, o programa lê o
+    /// projeto pelo nome resolvido, e o caminho montado com o outro nome
+    /// nunca casaria com o que ele anota.
+    fn build(dir: tempfile::TempDir, submodule: bool) -> Self {
+        let base = dir.path().canonicalize().expect("the canonical temp folder");
+        let root = base.join("projeto");
+        let home = base.join("casa");
+        let bin = base.join("bin");
+        let remotes = base.join("servidores");
         for folder in [&root, &home, &bin, &remotes] {
             std::fs::create_dir_all(folder).expect("folder");
         }
@@ -216,7 +221,12 @@ impl Project {
     /// `history.log`. A cópia é feita por outro processo (ver
     /// `support/executable.rs`), e o scan é o que está ao lado de quem roda.
     fn with_scan() -> Self {
-        let mut project = Self::build(false);
+        Self::with_scan_in(tempfile::tempdir().expect("tempdir"))
+    }
+
+    /// [`Project::with_scan`] na pasta temporária `dir`.
+    fn with_scan_in(dir: tempfile::TempDir) -> Self {
+        let mut project = Self::build(dir, false);
         let rt = project.bin.join("mustard-rt");
         let copied = Command::new("cp").arg(env!("CARGO_BIN_EXE_mustard-rt")).arg(&rt).status().expect("cp runs");
         assert!(copied.success(), "the copy of the program is made");
@@ -1241,6 +1251,33 @@ fn opening_a_spec_starts_the_reading_of_the_history_of_the_map_it_refreshes() {
         project.history_reads_after_waiting(1),
         [project.model_read_line()],
         "the open that refreshed the map starts the reading of the history of every file, in the background"
+    );
+}
+
+/// A pasta temporária que tem dois nomes — o atalho e o caminho de verdade,
+/// como `/var` e `/private/var` no Mac — não muda o que a abertura pede ao
+/// scan: o projeto e o mapa dele saem pelo caminho de verdade nas duas
+/// pontas, a que o programa anota e a que o teste espera.
+#[test]
+fn a_project_in_a_temp_folder_with_two_names_is_asked_about_by_its_real_path() {
+    let real = tempfile::tempdir().expect("the real folder");
+    let aside = tempfile::tempdir().expect("the folder of the shortcut");
+    let shortcut = aside.path().join("atalho");
+    std::os::unix::fs::symlink(real.path(), &shortcut).expect("the shortcut");
+
+    let project = Project::with_scan_in(tempfile::tempdir_in(&shortcut).expect("a folder through the shortcut"));
+    assert!(
+        project.root.starts_with(real.path().canonicalize().expect("the real path")),
+        "the project is named by the real path, not through the shortcut: {}",
+        project.root.display()
+    );
+    let opened = project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    assert_eq!(opened["step"], json!("ask_goal"), "{opened}");
+    let model = map_store::model_path(&project.root);
+    assert_eq!(
+        project.scan_passes(),
+        [format!("scan {} --out {} --json", project.root.display(), model.display())],
+        "the open asks the pass over the project by its real path"
     );
 }
 

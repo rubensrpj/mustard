@@ -2356,6 +2356,7 @@ mod tests {
             .stderr(Stdio::null())
             .spawn()
             .expect("spawn the other round's git in the slot");
+        crate::commands::flow::stuck::wait_until_spawned(preparing.id(), "sleep");
 
         let out = std::thread::scope(|scope| {
             let closing = scope.spawn(|| {
@@ -3904,9 +3905,19 @@ exit "${2:-0}"
         assert_eq!(sent.str_field("copy"), Some(shown(&review).as_str()), "o envio grava a vaga que o fechamento preparou");
 
         std::fs::write(review.join(wave_file(1)), "fn revisto() {}\n").unwrap();
+        // Um processo que fica vivo por dois minutos: o `sleep` do sistema, e,
+        // onde ele não vem de fábrica, o `ping` que o Windows sempre tem.
+        let mut waiting = if cfg!(windows) {
+            let mut ping = Command::new("ping");
+            ping.args(["-n", "121", "127.0.0.1"]);
+            ping
+        } else {
+            let mut sleep = Command::new("sleep");
+            sleep.arg("120");
+            sleep
+        };
         let mut reviewer = Reviewer(
-            Command::new("sleep")
-                .arg("120")
+            waiting
                 .current_dir(&review)
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
@@ -3914,6 +3925,8 @@ exit "${2:-0}"
                 .spawn()
                 .expect("o processo do revisor"),
         );
+        #[cfg(target_os = "linux")]
+        crate::commands::flow::stuck::wait_until_spawned(reviewer.0.id(), "sleep");
         let alive = |reviewer: &mut Reviewer| reviewer.0.try_wait().ok().flatten().is_none();
 
         let said = log.visible().into_iter().find(|e| e.event_type == "message").map(|e| e.id).unwrap();

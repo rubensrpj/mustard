@@ -1248,6 +1248,7 @@ mod tests {
             .stderr(Stdio::null())
             .spawn()
             .expect("spawn a command left in a slot with no wave");
+        crate::commands::flow::stuck::wait_until_spawned(idle.id(), "sleep");
         let probe = Probe {
             root,
             session: None,

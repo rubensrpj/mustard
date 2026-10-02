@@ -11,6 +11,8 @@
 //!   and the release (`release.yml`) restore it and save nothing, and every
 //!   Rust cache step names the same shared key;
 //! - no job of any workflow runs past half an hour;
+//! - the verification's `cargo test` runs every test file even when one fails
+//!   (`--no-fail-fast`), so one run lists every failure of every system;
 //! - the release builds neither the dashboard nor the memory server;
 //! - the three installers bring rtk in the fixed version of `checksums.txt`,
 //!   checked against its sum, the release stops without it, and no step
@@ -342,6 +344,28 @@ fn timeout_problems(workflow: &Workflow) -> Vec<String> {
     problems
 }
 
+/// What makes the verification stop at the first test file that fails: every
+/// `cargo test` step of it must carry `--no-fail-fast`, or the files after the
+/// failing one never run and the next push shows the next batch of failures.
+fn test_step_problems(ci: &Workflow) -> Vec<String> {
+    let rel = &ci.rel;
+    let runs: Vec<(String, String)> = ci
+        .steps()
+        .into_iter()
+        .filter_map(|step| step.text("run").map(|run| (step.job.clone(), run)))
+        .filter(|(_, run)| run.lines().any(|line| line.trim_start().starts_with("cargo test")))
+        .collect();
+    if runs.is_empty() {
+        return vec![format!("{rel}: no `cargo test` step, so nothing is tested")];
+    }
+    runs.into_iter()
+        .filter(|(_, run)| !run.contains("--no-fail-fast"))
+        .map(|(job, _)| {
+            format!("{rel}: job `{job}` runs `cargo test` without `--no-fail-fast`, so it stops at the first failing file")
+        })
+        .collect()
+}
+
 /// Every step of the release that builds the dashboard or the memory server.
 fn dashboard_problems(release: &Workflow) -> Vec<String> {
     let mut problems = Vec::new();
@@ -489,20 +513,23 @@ fn installer_problems(set: &Installers) -> Vec<String> {
 // ---------------------------------------------------------------------------
 
 /// The verification runs on every pull request and on pushes to `dev` and
-/// `main`; only the push runs save the compiled build; no job of any workflow
-/// runs past half an hour; and the release builds neither the dashboard nor the
-/// memory server.
+/// `main`; only the push runs save the compiled build; its test step runs
+/// every file even when one fails; no job of any workflow runs past half an
+/// hour; and the release builds neither the dashboard nor the memory server.
 #[test]
 fn the_verification_runs_on_pull_requests_and_on_pushes_to_dev_and_main() {
     let ci = Workflow::read(VERIFICATION);
     let release = Workflow::read(RELEASE);
     let workflows = every_workflow();
     assert!(workflows.len() >= 3, "the workflows were not found: {workflows:?}");
-    let problems: Vec<String> = [trigger_problems(&ci), cache_problems(&ci, &release), dashboard_problems(&release)]
-        .into_iter()
-        .flatten()
-        .chain(workflows.iter().flat_map(|rel| timeout_problems(&Workflow::read(rel))))
-        .collect();
+    let mut problems = [
+        trigger_problems(&ci),
+        cache_problems(&ci, &release),
+        test_step_problems(&ci),
+        dashboard_problems(&release),
+    ]
+    .concat();
+    problems.extend(workflows.iter().flat_map(|rel| timeout_problems(&Workflow::read(rel))));
     assert!(problems.is_empty(), "{}", problems.join("\n"));
 }
 
@@ -550,7 +577,7 @@ jobs:
       - name: Test
         run: |
           - name: not a step
-          cargo test
+          cargo test --no-fail-fast
 ";
 
 /// A release in the shape the checks accept.
@@ -578,6 +605,7 @@ fn fixture_problems(ci: &str, release: &str) -> Vec<String> {
     [
         trigger_problems(&ci),
         cache_problems(&ci, &release),
+        test_step_problems(&ci),
         timeout_problems(&ci),
         timeout_problems(&release),
         dashboard_problems(&release),
@@ -610,6 +638,7 @@ fn the_checks_refuse_each_broken_piece() {
         ("a plain cache saves on every run", false, "uses: actions/checkout@v4", "uses: actions/cache@v4"),
         ("the release saves", true, "save-if: false", "save-if: true"),
         ("the release names another key", true, "shared-key: one", "shared-key: two"),
+        ("the test step stops at the first failing file", false, "cargo test --no-fail-fast", "cargo test"),
         ("a job has no cap", false, "    timeout-minutes: 30\n", ""),
         ("a job runs past half an hour", true, "timeout-minutes: 30", "timeout-minutes: 45"),
         ("the release builds the dashboard", true, "cargo build --release --bin mustard", "pnpm --filter mustard-dashboard build"),

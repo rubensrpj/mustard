@@ -1075,6 +1075,7 @@ mod tests {
         crate::executable::write_executable(&install.join("bin").join("mustard-rt"), &format!("#!/bin/sh\necho '{says}'\n"));
     }
 
+    #[cfg(unix)]
     fn host_with_config(config: &Path) -> Host {
         Host { cargo: None, config: Some(config.to_path_buf()) }
     }

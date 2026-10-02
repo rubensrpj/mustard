@@ -39,8 +39,9 @@ pub(crate) struct Ended {
 }
 
 /// A leitura de um processo do sistema, restrita ao que a função de baixo
-/// nível precisa: o comando (para reconhecer o laço) e o diretório de
-/// trabalho (para reconhecer a cópia apagada e a vaga sem onda).
+/// nível precisa: o comando (para reconhecer o laço; vazio enquanto o sistema
+/// ainda não o montou) e o diretório de trabalho (para reconhecer a cópia
+/// apagada e a vaga sem onda).
 pub(crate) struct Snapshot {
     pid: u32,
     argv: Vec<String>,
@@ -60,10 +61,13 @@ pub(crate) fn end_stuck_processes(root: &Path, _held: &LockedFile) -> Vec<Ended>
     let copies = mustard_core::io::wave_prompt::copies_dir(root);
     let copies = std::fs::canonicalize(&copies).unwrap_or(copies);
     let busy = busy_slots(root, &copies);
+    // A pasta de trabalho que o sistema mostra vem resolvida; o projeto,
+    // alcançado por um link, precisa ser comparado pelo caminho real.
+    let real_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     system_processes()
         .into_iter()
         .filter(|proc| proc.pid != std::process::id())
-        .filter_map(|proc| reason_of(&proc, root, &copies, &busy).map(|reason| (proc.pid, reason)))
+        .filter_map(|proc| reason_of(&proc, &real_root, &copies, &busy).map(|reason| (proc.pid, reason)))
         .filter(|(pid, _)| terminate(*pid))
         .map(|(pid, reason)| Ended { pid, reason })
         .collect()
@@ -184,10 +188,21 @@ fn terminate(_pid: u32) -> bool {
 /// já sumiu ao ler viram "sem processo": nunca um erro.
 #[cfg(target_os = "linux")]
 pub(crate) fn system_processes() -> Vec<Snapshot> {
+    let Some(uid) = current_uid() else { return Vec::new() };
+    processes_in(Path::new("/proc"), uid)
+}
+
+/// Os processos de `uid` listados em `proc_dir`, com a pasta de trabalho de
+/// cada um. A linha de comando pode vir vazia: o processo que acabou de
+/// nascer, ou que ainda está trocando de programa, não a tem montada por
+/// alguns instantes, e a pasta de trabalho dele já vale — um processo preso
+/// numa cópia apagada o está qualquer que seja o comando. Só o laço de espera
+/// precisa do comando, e ele não casa sem.
+#[cfg(target_os = "linux")]
+fn processes_in(proc_dir: &Path, uid: u32) -> Vec<Snapshot> {
     use std::os::unix::fs::MetadataExt;
 
-    let Some(uid) = current_uid() else { return Vec::new() };
-    let Ok(entries) = std::fs::read_dir("/proc") else { return Vec::new() };
+    let Ok(entries) = std::fs::read_dir(proc_dir) else { return Vec::new() };
     entries
         .flatten()
         .filter_map(|entry| {
@@ -202,9 +217,6 @@ pub(crate) fn system_processes() -> Vec<Snapshot> {
                 .filter(|part| !part.is_empty())
                 .map(|part| String::from_utf8_lossy(part).into_owned())
                 .collect();
-            if argv.is_empty() {
-                return None;
-            }
             let cwd = std::fs::read_link(dir.join("cwd")).ok();
             Some(Snapshot { pid, argv, cwd })
         })
@@ -299,6 +311,28 @@ pub(crate) fn process_alive(_pid: u32, _started: u64) -> bool {
     true
 }
 
+/// Espera até 2s `/proc/<pid>/cmdline` mostrar `needle`. O processo que um
+/// teste acabou de criar volta do `spawn` antes de o kernel terminar de
+/// montar a linha de comando dele: por alguns instantes ela vem vazia — ou
+/// ainda é a do pai —, e a leitura dos processos do sistema ([`system_processes`])
+/// ignora o processo sem linha de comando. É nessa janela, que o relógio de
+/// uma máquina ocupada alarga, que um teste que procura o processo logo em
+/// seguida não o acha. Todo teste que cria um processo para a busca de
+/// processo preso espera por aqui antes de procurar.
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) fn wait_until_spawned(pid: u32, needle: &str) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        if let Ok(raw) = std::fs::read(format!("/proc/{pid}/cmdline"))
+            && String::from_utf8_lossy(&raw).contains(needle)
+        {
+            return;
+        }
+        assert!(std::time::Instant::now() < deadline, "pid {pid} never showed its own command line");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
@@ -320,22 +354,6 @@ mod tests {
             std::thread::sleep(Duration::from_millis(50));
         }
         false
-    }
-
-    /// Espera até 2s `/proc/<pid>/cmdline` mostrar `needle`: logo após
-    /// nascer, o filho ainda carrega a linha de comando do pai (o binário de
-    /// teste), e ler antes disso é o que deixava o teste instável.
-    fn wait_until_spawned(pid: u32, needle: &str) {
-        let deadline = Instant::now() + Duration::from_secs(2);
-        loop {
-            if let Ok(raw) = std::fs::read(format!("/proc/{pid}/cmdline"))
-                && String::from_utf8_lossy(&raw).contains(needle)
-            {
-                return;
-            }
-            assert!(Instant::now() < deadline, "pid {pid} never showed its own command line");
-            std::thread::sleep(Duration::from_millis(10));
-        }
     }
 
     /// Os dois casos que ficam presos — o laço de espera com a pasta de
@@ -402,6 +420,47 @@ mod tests {
         let _ = elsewhere_looping.wait();
         let _ = ordinary.kill();
         let _ = ordinary.wait();
+    }
+
+    /// O projeto alcançado por um link (a pasta do usuário que é um link, o
+    /// temporário do Mac) é o mesmo projeto: o laço de espera que roda dentro
+    /// dele aparece com a pasta de trabalho já resolvida pelo sistema, e é
+    /// encerrado do mesmo jeito; o laço de outra pasta continua de fora.
+    #[test]
+    fn a_waiting_loop_in_a_project_reached_through_a_link_is_stuck() {
+        let dir = tempdir().expect("tempdir");
+        let real = std::fs::canonicalize(dir.path()).expect("the real project folder");
+        let linked_in = tempdir().expect("tempdir for the link");
+        let linked = linked_in.path().join("project-link");
+        std::os::unix::fs::symlink(&real, &linked).expect("link to the project");
+        crate::commands::flow::round::copies_leave_with_the_test(&linked);
+        let outside = tempdir().expect("tempdir for the other project");
+
+        let mut inside = spawn(
+            Command::new("sh")
+                .arg("-c")
+                .arg("while pgrep -f mustard-stuck-linked-marker >/dev/null 2>&1; do sleep 1; done")
+                .current_dir(&real),
+        );
+        let mut elsewhere = spawn(
+            Command::new("sh")
+                .arg("-c")
+                .arg("while pgrep -f mustard-stuck-linked-elsewhere-marker >/dev/null 2>&1; do sleep 1; done")
+                .current_dir(outside.path()),
+        );
+        wait_until_spawned(inside.id(), "mustard-stuck-linked-marker");
+        wait_until_spawned(elsewhere.id(), "mustard-stuck-linked-elsewhere-marker");
+
+        let held = crate::commands::git_settle::git_step_lock(&linked).expect("git step lock");
+        let ended = end_stuck_processes(&linked, &held);
+        assert!(gone(&mut inside), "the waiting loop inside the linked project must be ended");
+        assert!(elsewhere.try_wait().ok().flatten().is_none(), "a waiting loop outside the project is left alone");
+        let reasons: Vec<(u32, &str)> = ended.iter().map(|e| (e.pid, e.reason)).collect();
+        assert!(reasons.contains(&(inside.id(), "waiting_loop")), "{reasons:?}");
+        assert!(!reasons.iter().any(|(pid, _)| *pid == elsewhere.id()), "{reasons:?}");
+
+        let _ = elsewhere.kill();
+        let _ = elsewhere.wait();
     }
 
     /// A cópia da onda mora fora da pasta do projeto, na pasta das cópias
@@ -585,6 +644,36 @@ mod tests {
 
         let _ = reviewing.kill();
         let _ = reviewing.wait();
+    }
+
+    /// O processo que acabou de nascer ainda não tem a linha de comando
+    /// montada — ela vem vazia por alguns instantes —, e nem por isso some da
+    /// lista: com a pasta de trabalho numa cópia já apagada ele está preso, e
+    /// a busca o acha. A pasta `/proc` aqui é de mentira, com o mesmo formato
+    /// da de verdade: uma pasta por processo, `cmdline` e o link `cwd`; o link
+    /// aponta para o caminho apagado com o ` (deleted)` que o kernel põe.
+    #[test]
+    fn a_process_with_no_command_line_yet_is_listed_and_stuck_in_a_deleted_copy() {
+        use mustard_core::io::wave_prompt::{copies_dir, slot_path};
+        use std::os::unix::fs::symlink;
+
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path();
+        crate::commands::flow::round::copies_leave_with_the_test(root);
+        let copies = copies_dir(root);
+        let gone = slot_path(root, "x", 0);
+        let proc_dir = tempdir().expect("tempdir for the fake process list");
+        let born = proc_dir.path().join("4242");
+        std::fs::create_dir_all(&born).expect("process folder");
+        std::fs::write(born.join("cmdline"), b"").expect("empty command line");
+        symlink(format!("{} (deleted)", gone.display()), born.join("cwd")).expect("cwd link");
+
+        let uid = current_uid().expect("who runs");
+        let listed = processes_in(proc_dir.path(), uid);
+        let found: Vec<(u32, usize)> = listed.iter().map(|p| (p.pid, p.argv.len())).collect();
+        assert_eq!(found, vec![(4242, 0)], "the process with no command line is still listed: {found:?}");
+        assert_eq!(listed[0].cwd.as_deref(), Some(Path::new(&format!("{} (deleted)", gone.display()))));
+        assert_eq!(reason_of(&listed[0], root, &copies, &BTreeMap::new()), Some("deleted_copy"));
     }
 
     /// Sem processo nenhum encerrado, a linha da resposta não existe: o

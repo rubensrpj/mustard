@@ -2578,6 +2578,7 @@ mod tests {
             .stderr(Stdio::null())
             .spawn()
             .expect("spawn a process in the wave's copy");
+        crate::commands::flow::stuck::wait_until_spawned(orphaned.id(), "sleep");
         std::fs::remove_dir_all(&copy).unwrap();
 
         let out = round(root, "x", None);
@@ -2624,6 +2625,7 @@ mod tests {
             .stderr(Stdio::null())
             .spawn()
             .expect("spawn the other round's git in the slot");
+        crate::commands::flow::stuck::wait_until_spawned(preparing.id(), "sleep");
 
         let out = std::thread::scope(|scope| {
             let arriving = scope.spawn(|| round_from(root, None, entry));
