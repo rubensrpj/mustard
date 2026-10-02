@@ -16,7 +16,7 @@ use serde_json::Value;
 
 /// Escreve os arquivos num projeto novo e devolve o mapa que o scan grava.
 fn scanned(label: &str, files: &[(&str, &str)]) -> Value {
-    let temp = tempfile::Builder::new().prefix(&format!("scan-valor-{label}-")).tempdir().unwrap();
+    let temp = tempfile::Builder::new().prefix(&format!("scan-value-{label}-")).tempdir().unwrap();
     let root = temp.path().join("repo");
     for (path, body) in files {
         let file = root.join(path);

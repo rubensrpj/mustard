@@ -115,7 +115,7 @@ fn write(dir: &Path, files: &[(&str, &str)]) {
 
 /// Um projeto no git com os arquivos, já no primeiro commit.
 fn project_with(files: &[(&str, &str)]) -> tempfile::TempDir {
-    let temp = tempfile::Builder::new().prefix("scan-corpo-").tempdir().unwrap();
+    let temp = tempfile::Builder::new().prefix("scan-body-").tempdir().unwrap();
     let dir = temp.path();
     git(dir, &["init", "-q", "-b", "main"]);
     std::fs::create_dir_all(dir.join(".git").join("info")).unwrap();

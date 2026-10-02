@@ -172,12 +172,12 @@ cargo clippy --workspace           # lint
   "typeCheckCommand": "cargo check",
   "language": {             // the two languages, each on its own key
     "text": "en-US",        // conversation, specs, pages, comments and commits
-    "code": "en-US"         // names in the code: variables, functions, files, commands and tables; without the key, English
+    "code": "en-US"         // names in the code: variables, functions, tests, files, commands and tables; without the key, English
   }
 }
 ```
 
-Mustard is language- and architecture-**agnostic**: generated text follows `language.text`; names in the code (variables, functions, files, commands and database tables) follow `language.code`. The install asks for both languages and writes only what you choose; with no choice, names in the code stay in English. Build/test/lint commands are read from here. Monorepo rule: all state lives at the git repository **root**; a subproject is its own Mustard project only when it is an independent git repository (submodule).
+Mustard is language- and architecture-**agnostic**: generated text follows `language.text`; names in the code (variables, functions, tests, files, commands and database tables) follow `language.code`. The install asks for both languages and writes only what you choose; with no choice, names in the code stay in English. Build/test/lint commands are read from here. Monorepo rule: all state lives at the git repository **root**; a subproject is its own Mustard project only when it is an independent git repository (submodule).
 
 ---
 

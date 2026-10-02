@@ -412,7 +412,7 @@ pub struct LanguageConfig {
     /// dialect (`pt-BR`, `en-US`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
-    /// The language of the names in the code: variables, functions, files,
+    /// The language of the names in the code: variables, functions, tests, files,
     /// commands and database tables. Spelled like `text` (`pt-BR`, `en-US`);
     /// without it, names are written in English.
     #[serde(default, skip_serializing_if = "Option::is_none")]

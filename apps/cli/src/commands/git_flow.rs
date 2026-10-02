@@ -186,7 +186,7 @@ pub fn collect_choices(
         .interact()
         .context("reading the text language")?;
     let code_idx = Select::with_theme(&theme)
-        .with_prompt("Code language (names of variables, functions, files, commands and database tables)")
+        .with_prompt("Code language (names of variables, functions, tests, files, commands and database tables)")
         .items(LANGUAGES)
         .default(code_row)
         .interact()
