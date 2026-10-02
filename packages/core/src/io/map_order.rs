@@ -4,10 +4,10 @@
 //! filtro ([`map_search::sources_near`]) junta quatro listas por rodízio e vê o
 //! pedido inteiro, a frase e as palavras, nos campos das declarações. A
 //! resposta do banco, a que sai sem filtro, ordenava os arquivos só pela nota
-//! deles ([`map_search::ranked_files_near`]). Na régua de 360 buscas cada uma
-//! acerta arquivos que a outra perde: com os nomes, 50 dos erros da resposta
-//! tinham o certo entre os 5 primeiros da lista; só com a frase, a lista
-//! perde para o banco em 47 buscas e ganha em 27.
+//! deles ([`map_search::ranked_files_near`]). Cada uma acerta arquivos que a
+//! outra perde: com os nomes, a lista traz entre os primeiros o certo que a
+//! resposta do banco erra; só com a frase, a lista perde para o banco em
+//! parte das buscas e ganha em outra.
 //!
 //! Aqui as ordens se somam numa só, por posição recíproca: cada arquivo vale
 //! `peso/(60+posição)` em cada uma destas ordens, contando os arquivos
@@ -23,9 +23,9 @@
 //!
 //! A lista de base e a dos nomes não somam por conta própria: elas escolhem a
 //! declaração de nome ou assinatura curtos que casa com uma palavra da
-//! pergunta, e numa frase longa esse é o primeiro do rodízio (no Suzano, o
-//! arquivo certo é o primeiro da lista de base em 2 das 120 buscas só com a
-//! frase). Elas entram só pelo rodízio, com o peso pequeno dele.
+//! pergunta, e numa frase longa esse é o primeiro do rodízio (o arquivo certo
+//! raramente é o primeiro da lista de base só com a frase). Elas entram só
+//! pelo rodízio, com o peso pequeno dele.
 //!
 //! Os [`map_check::CHECKED`] primeiros dessa ordem passam pela conferência, que
 //! os reordena pela cobertura das palavras raras da pergunta; o que segue
@@ -105,14 +105,11 @@ const LISTS: usize = 4;
 ///
 /// A lista inteira do rodízio abre com o melhor de cada uma das quatro listas,
 /// e a de base e a dos nomes escolhem pela declaração de nome curto que casa
-/// com uma palavra da pergunta: na régua de 360 buscas só com a frase, o
-/// arquivo certo é o primeiro da lista de base em 2 das 120 do Suzano, e o
-/// rodízio herda esse primeiro. As duas listas que leem o arquivo — a dos
-/// arquivos e o banco — juntam as palavras da pergunta no mesmo arquivo, e
-/// por isso pesam o dobro das que só leem a declaração. Os pesos saem da
-/// medida nos assuntos pares da régua e da conferência nos ímpares, com os
-/// três projetos de prova, só com a frase e com os nomes. A consulta agrupada
-/// pesa 0,5, como no laboratório que a mediu: sozinha ela põe o certo em
+/// com uma palavra da pergunta: só com a frase, o arquivo certo raramente é o
+/// primeiro da lista de base, e o rodízio herda esse primeiro. As duas listas
+/// que leem o arquivo — a dos arquivos e o banco — juntam as palavras da
+/// pergunta no mesmo arquivo, e por isso pesam o dobro das que só leem a
+/// declaração. A consulta agrupada pesa 0,5: sozinha ela põe o certo em
 /// primeiro mais vezes e perde nos cinco primeiros; somada com esse peso, ganha
 /// nos dois.
 const WEIGHTS: Weights = Weights { lists: [0.5, 0.5, 1.0, 0.5], bank: 1.0 };

@@ -102,36 +102,12 @@ impl Level {
 
 /// O nível dos arquivos: o que a busca devolve.
 ///
-/// Os pesos saem de uma subida coordenada, coluna a coluna, sobre os assuntos
-/// 0 a 19 da régua de 120 buscas de cada um dos três projetos de prova,
-/// medida só com a frase e com os nomes, e conferida nos assuntos 20 a 39. O
-/// ganho é o do arquivo certo entre os cinco primeiros (vale mais o mais
-/// perto do primeiro) e entre os cem, nos candidatos do filtro, mais o dos
-/// cinco da resposta sem o filtro. Nos assuntos de conferência o ganho foi de
-/// 575 para 611; só com a frase, o certo entre os cinco da resposta foi de 85
-/// para 101 das 180 buscas, e entre os cinco candidatos, de 77 para 84. Na
-/// régua inteira de 120 buscas por projeto, os cinco da resposta só com a
-/// frase foram de 65 para 75 (Mustard), de 49 para 66 (Sialia) e de 33 para
-/// 63 (Suzano); com os nomes, de 112 para 113, de 62 para 68 e de 83 para 95.
-/// Nome, log, erro e texto fixo pesam mais que o caminho e a documentação: o
-/// nome e a mensagem escrita são o que a pergunta quase copia. Os títulos dos
-/// commits ficam com peso 0: entram no índice, mas nenhum peso acima de zero
-/// subiu a régua.
-///
-/// Três técnicas foram medidas na mesma régua e ficaram de fora, porque
-/// nenhuma subiu o arquivo certo entre os cinco primeiros nas 360 buscas só
-/// com a frase (184 nos candidatos e 204 na resposta do banco, sem elas):
-/// reescrever a pergunta com até cinco palavras da documentação e dos
-/// comentários dos cinco primeiros achados, com peso 0,3, deixou o primeiro
-/// do banco certo em 91 buscas contra 110 e os cinco candidatos em 172
-/// contra 184, e com peso 0,1 ou 0,2 ficou igual ou abaixo; o passeio
-/// aleatório pelas chamadas, semeado pelos dez primeiros e somando de 0,15 a
-/// 1 da nota da última semente, ficou igual ou abaixo em todos os pontos e
-/// derrubou os cem candidatos do Suzano de 95 para 91 a 87; e o corte de
-/// "não achei" pela chance, pela nota do primeiro e pela distância ao
-/// segundo, que sem errar nenhuma busca com o arquivo certo entre os
-/// candidatos pegou 1 dos 20 pedidos inventados só com a frase e 5 com os
-/// nomes.
+/// Nome, log, erro e texto fixo pesam 5: o nome e a mensagem escrita são o que
+/// a pergunta quase copia. O caminho pesa 1, a documentação das declarações
+/// 0,25 e a do cabeçalho do arquivo 0,1, porque dizem onde o código mora e do
+/// que trata, não o que ele faz; o comentário que diz o que o arquivo faz pesa
+/// 1. Os títulos dos commits ficam com peso 0: entram no índice, mas não
+/// ordenam o arquivo.
 pub(super) const FILE_LEVEL: Level = Level {
     fts: "file_fts",
     vocab: "file_vocab",
@@ -143,36 +119,16 @@ pub(super) const FILE_LEVEL: Level = Level {
     learned: Some(Learned::Files),
 };
 
-/// O nível das declarações, com os pesos medidos como os do nível dos
-/// arquivos. O nome da declaração pesa pouco e o caminho nada: o arquivo
-/// dono já os traz, e a assinatura, que traz o nome com o tipo, pesa mais. O
-/// caminho entra no índice quebrado em palavras, como o nome, nos dois níveis;
-/// no das declarações, o peso 0,5 ou 1 baixou o ganho da régua de 360 buscas
-/// nos assuntos pares (de 42 para 38 e 36) e não o subiu nos ímpares, e no dos
-/// arquivos o peso 0,5 o baixou e o 2 o deixou igual, por isso o do arquivo
-/// fica em 1. Os
-/// membros e os nomes de quem usa a declaração ficam com peso 0: entram no
-/// índice, mas nenhum peso acima de zero subiu a régua (o dos nomes de quem
-/// usa a baixou em todos os pesos medidos). Os títulos dos commits e os
-/// comentários de revisão pesam 0,25, como a documentação do arquivo: a
-/// régua, feita de perguntas sobre o código, não tem pergunta sobre o que o
-/// histórico diz, e por isso qualquer peso acima de zero lhe custa quase o
-/// mesmo — uma busca a menos entre os cinco primeiros e até quatro entre os
-/// cem, em 119 —, e 0,25 é o que menos custa; com peso 0 o histórico não
-/// acharia declaração nenhuma.
-///
-/// Com as palavras vizinhas e a ordem dos vetores somadas à busca, os pesos
-/// e o peso do tamanho do campo foram medidos de novo, na régua de 354
-/// buscas (só a frase e com os nomes), e ficaram. O `B` do nível das
-/// declarações em 0,5 tirou 4 buscas do primeiro lugar da resposta no
-/// Mustard (de 60 para 56) e 6 dos cinco primeiros na Sialia (de 81 para
-/// 75), e em 0,3 tirou 8 e 7; o `B` do nível dos arquivos em 0,5 subiu o
-/// primeiro do banco (de 29 para 35 no Mustard) mas baixou a resposta no
-/// Suzano (de 39 para 36 em primeiro, de 69 para 67 nos cinco). O peso do
-/// nome em 0,3 e o da assinatura em 1 não subiram nenhum projeto sem
-/// baixar outro. A declaração de nome ou assinatura curtos que sobe numa
-/// frase longa fica onde a ordem única a põe: a lista de base e a dos nomes
-/// entram só pelo rodízio, com o peso pequeno dele.
+/// O nível das declarações. O nome da declaração pesa pouco e o caminho nada:
+/// o arquivo dono já os traz, e a assinatura, que traz o nome com o tipo, pesa
+/// mais (2). O caminho entra no índice quebrado em palavras, como o nome, nos
+/// dois níveis. Os membros e os nomes de quem usa a declaração ficam com peso
+/// 0: entram no índice, mas não ordenam a declaração. Os títulos dos commits e
+/// os comentários de revisão pesam 0,25: o histórico só ajuda quando a
+/// pergunta fala dele, e com peso 0 não acharia declaração nenhuma. A
+/// declaração de nome ou assinatura curtos que sobe numa frase longa fica onde
+/// a ordem única a põe: a lista de base e a dos nomes entram só pelo rodízio,
+/// com o peso pequeno dele.
 pub(super) const DECL_LEVEL: Level = Level {
     fts: "decl_fts",
     vocab: "decl_vocab",

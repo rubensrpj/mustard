@@ -4,19 +4,13 @@
 //! O grau sai de três sinais da busca por palavra com campos: a nota do
 //! primeiro achado, a parte das palavras da pergunta que ele traz em campo
 //! forte (nome, assinatura, erro, rótulo, rota, log) e a distância dele para
-//! o segundo. Os pesos e os pontos de corte saem de uma régua de 360 buscas
-//! sobre três projetos, com o arquivo certo conhecido de cada uma: um ajuste
-//! logístico dá a chance de o primeiro achado ser o arquivo certo, e o grau é
-//! a faixa dessa chance. Nenhum número aqui é chute.
-//!
-//! Na régua, o primeiro achado é o certo em 88% das buscas de grau 5, 64% do
-//! grau 4, 54% do grau 3, 28% do grau 2 e 18% do grau 1; o arquivo certo está
-//! entre os cinco em 94%, 88%, 83%, 65% e 36%. Os pesos por campo da busca dos
-//! arquivos mudaram a escala da nota e levaram os pesos daqui a serem
-//! refeitos sobre ela. A ordem das faixas vale no ajuste inteiro; deixado um
-//! projeto de fora e medido com os pesos dos outros dois, a ordem se mantém
-//! só em parte, e o corte da cobertura do cravado, escolhido no ajuste
-//! inteiro, não é seguro para um projeto que o ajuste nunca viu.
+//! o segundo. Um ajuste logístico sobre buscas com o arquivo certo conhecido
+//! dá a chance de o primeiro achado ser o arquivo certo, e o grau é a faixa
+//! dessa chance: 1 abaixo de 0,2, e um grau a mais a cada ponto de corte
+//! (0,2, 0,4, 0,6 e 0,8) alcançado. Os pesos por campo da busca dos arquivos
+//! mudam a escala da nota, e por isso os pesos daqui se refazem sobre ela. O
+//! corte da cobertura do cravado vale para os projetos em que foi escolhido;
+//! para um projeto que o ajuste nunca viu ele não é garantido.
 
 use crate::platform::i18n::{translate, Locale};
 
@@ -45,17 +39,16 @@ pub struct Lead {
 }
 
 /// O candidato cobre as palavras raras da pergunta quando traz esta parte
-/// delas, pela raridade. Sai da régua das 360 buscas (nomes e frase, três
-/// projetos): com a nota 5 e o primeiro a 0,7 ou mais e o segundo abaixo
-/// disso, ficam 19 buscas cravadas e o primeiro achado é o certo nas 19; a
-/// 0,8 ficam 8, a 0,6 ficam 16, a 0,5 ficam 13 e 12 acertam.
+/// delas, pela raridade. Com a nota 5, o primeiro a 0,7 ou mais e o segundo
+/// abaixo disso, a busca é cravada; um corte mais alto crava menos buscas, e
+/// um mais baixo crava buscas cujo primeiro achado erra.
 pub const COVERS_FROM: f64 = 0.7;
 
 impl Lead {
     /// `true` quando o primeiro cobre as palavras raras e o segundo não: só o
-    /// primeiro serve à pergunta. Sozinha, a frente não crava: dos dez casos
-    /// que ela pega na régua só quatro têm o primeiro achado certo, e a nota
-    /// 5 é o que filtra os outros.
+    /// primeiro serve à pergunta. Sozinha, a frente não crava: boa parte dos
+    /// casos que ela pega tem o primeiro achado errado, e a nota 5 é o que
+    /// filtra os outros.
     #[must_use]
     pub fn leads(self) -> bool {
         self.first >= COVERS_FROM && self.second < COVERS_FROM
@@ -151,12 +144,10 @@ impl Mark {
 /// primeiro cobrindo as palavras raras da pergunta e o segundo não; o resto
 /// é parcial.
 ///
-/// A frente no lugar do corte da chance (0,93) porque o corte só cravava a
+/// A frente no lugar de um corte da chance porque o corte só cravava a
 /// resposta em que a nota era alta, e a nota mede o primeiro achado sozinho;
-/// a frente mede o primeiro contra o segundo. Na régua das 360 buscas o corte
-/// cravava 6 buscas (todas do Mustard, 6 certas) e nenhuma na frase; a frente
-/// com a nota 5 crava 19 (18 nos nomes, 1 na frase) e as 19 têm o primeiro
-/// achado certo, nos três projetos.
+/// a frente mede o primeiro contra o segundo, e com a nota 5 crava mais
+/// buscas que o corte.
 #[must_use]
 pub fn mark(grade: u8, lead: Lead) -> Mark {
     if grade == 0 {
@@ -180,11 +171,10 @@ pub fn not_found(query: &str, words: &[String], lang: Locale) -> String {
 }
 
 /// A parte da nota do primeiro abaixo da qual um achado da busca funda é
-/// muito mais fraco e fica fora: corta as sobras — os arquivos sem relação —
-/// de 4,7 para 3,3 por resposta de grau baixo com busca funda, na régua das
-/// 360 buscas. Com a busca dos arquivos lendo os comentários, nenhuma busca
-/// da régua é resgatada pela busca funda, então nenhum corte perde arquivo
-/// certo; o 0,7 fica pelo corte que já valia.
+/// muito mais fraco e fica fora: corta as sobras, os arquivos sem relação, da
+/// resposta de grau baixo com busca funda. Com a busca dos arquivos lendo os
+/// comentários, a busca funda não resgata arquivo certo, então o corte não o
+/// perde.
 const KEEP_RATIO: f64 = 0.7;
 
 /// Se um achado da busca funda, com a nota `score`, fica na resposta: o
