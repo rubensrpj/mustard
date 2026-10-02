@@ -1,3 +1,3 @@
 pub fn f() -> usize {
-    super::soma()
+    super::sum()
 }

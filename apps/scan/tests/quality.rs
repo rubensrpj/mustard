@@ -56,7 +56,7 @@ fn shared(lines: usize) -> String {
 /// inteiro, `c.rs` tem só nove linhas dele, `conta.rs` traz um trecho de
 /// teste, e o dado de teste em `__mocks__` repete o trecho inteiro.
 fn project() -> tempfile::TempDir {
-    let dir = tempfile::Builder::new().prefix("scan-qualidade-").tempdir().unwrap();
+    let dir = tempfile::Builder::new().prefix("scan-quality-").tempdir().unwrap();
     let root = dir.path();
     write(root, "src/main.rs", "mod a;\nmod b;\nmod c;\nmod conta;\n\nfn main() {\n    println!(\"{}\", a::calcular(1));\n}\n");
     write(
@@ -75,7 +75,7 @@ fn project() -> tempfile::TempDir {
         "src/conta.rs",
         "pub fn total() -> u32 {\n    let um = 1;\n\n    um + 1\n}\n\n\
          #[cfg(test)]\n\
-         mod tests {\n    use super::*;\n\n    #[test]\n    fn soma() {\n        assert_eq!(total(), 2);\n    }\n}\n",
+         mod tests {\n    use super::*;\n\n    #[test]\n    fn sum() {\n        assert_eq!(total(), 2);\n    }\n}\n",
     );
     write(root, "src/__mocks__/dados.rs", &format!("pub fn falso(valor: u32) -> u32 {{\n{}    fim\n}}\n", shared(10)));
     git(root, &["init", "-q"]);
@@ -103,14 +103,14 @@ fn two_files_with_the_same_ten_line_snippet_are_marked_repeated_and_nine_lines_a
 fn a_test_block_inside_the_file_does_not_count_in_the_size() {
     let dir = project();
     let (map, _) = model::scan(dir.path(), &dir.path().join(".claude"), &[]);
-    let conta = module(&map, "src/conta.rs");
-    assert_eq!(conta["loc"], json!(12), "{conta}");
+    let account = module(&map, "src/conta.rs");
+    assert_eq!(account["loc"], json!(12), "{account}");
     // As quatro linhas escritas do corpo e a do atributo logo acima do
     // trecho de teste, que o scan deixa fora dele; nenhuma das sete de dentro.
-    assert_eq!(conta["test_lines"], json!([[8, 15]]), "{conta}");
-    assert_eq!(conta["quality"]["size"], json!(5), "{conta}");
+    assert_eq!(account["test_lines"], json!([[8, 15]]), "{account}");
+    assert_eq!(account["quality"]["size"], json!(5), "{account}");
     // A função do trecho de teste não é medida; a do corpo tem quatro linhas.
-    assert_eq!(conta["quality"]["functions"], json!([[1, 4]]), "{conta}");
+    assert_eq!(account["quality"]["functions"], json!([[1, 4]]), "{account}");
 }
 
 #[test]

@@ -1,14 +1,14 @@
-pub fn valor() -> usize {
+pub fn value() -> usize {
     1
 }
 
-pub mod interno {
-    pub fn perto() -> usize {
-        super::valor()
+pub mod inner {
+    pub fn near() -> usize {
+        super::value()
     }
 
-    pub fn longe() -> usize {
-        super::super::x::dobro()
+    pub fn far() -> usize {
+        super::super::x::double()
     }
 }
 
@@ -17,7 +17,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn soma() {
-        assert_eq!(valor() + interno::perto(), 2);
+    fn sum() {
+        assert_eq!(value() + inner::near(), 2);
     }
 }

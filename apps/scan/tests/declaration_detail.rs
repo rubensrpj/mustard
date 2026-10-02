@@ -38,7 +38,7 @@ fn project(name: &str) -> (tempfile::TempDir, PathBuf) {
          pub fn total(preco: u32, frete: u32) -> u32 {\n    \
              preco + frete\n\
          }\n\n\
-         pub fn sem_documento() -> u32 {\n    \
+         pub fn without_doc() -> u32 {\n    \
              0\n\
          }\n",
     );
@@ -72,8 +72,8 @@ fn declaration<'a>(map: &'a Value, file: &str, name: &str) -> &'a Value {
 }
 
 #[test]
-fn o_mapa_guarda_o_comentario_e_a_assinatura_de_cada_declaracao() {
-    let (_temp, dir) = project("doc-e-assinatura");
+fn the_map_keeps_the_comment_and_the_signature_of_each_declaration() {
+    let (_temp, dir) = project("doc-and-signature");
     let map = scan(&dir);
 
     let total = declaration(&map, "src/preco.rs", "total");
@@ -92,15 +92,15 @@ fn o_mapa_guarda_o_comentario_e_a_assinatura_de_cada_declaracao() {
 
     // Uma declaração sem comentário em cima traz o campo vazio, e ainda assim
     // a assinatura.
-    let sem = declaration(&map, "src/preco.rs", "sem_documento");
-    assert_eq!(sem.get("doc").map_or("", |d| d.as_str().unwrap_or("")), "", "{sem}");
-    assert_eq!(sem["signature"], "pub fn sem_documento() -> u32", "{sem}");
+    let without_doc = declaration(&map, "src/preco.rs", "without_doc");
+    assert_eq!(without_doc.get("doc").map_or("", |d| d.as_str().unwrap_or("")), "", "{without_doc}");
+    assert_eq!(without_doc["signature"], "pub fn without_doc() -> u32", "{without_doc}");
 
 }
 
 #[test]
-fn o_mapa_guarda_cada_uso_de_cada_declaracao() {
-    let (_temp, dir) = project("usos");
+fn the_map_keeps_each_use_of_each_declaration() {
+    let (_temp, dir) = project("uses");
     let map = scan(&dir);
 
     // Quem é usado: as duas chamadas, cada uma com o arquivo, a linha e a
@@ -110,13 +110,13 @@ fn o_mapa_guarda_cada_uso_de_cada_declaracao() {
     assert_eq!(used_by, vec!["src/pedido.rs:5:fechar", "src/pedido.rs:6:fechar"], "cada uso, não a contagem: {total}");
 
     // Quem chama: o outro lado da mesma ligação.
-    let fechar = declaration(&map, "src/pedido.rs", "fechar");
-    assert_eq!(fechar["calls"], serde_json::json!(["total"]), "{fechar}");
+    let close = declaration(&map, "src/pedido.rs", "fechar");
+    assert_eq!(close["calls"], serde_json::json!(["total"]), "{close}");
 
     // Uma declaração que ninguém usa não ganha ligação nenhuma.
-    let sem = declaration(&map, "src/preco.rs", "sem_documento");
-    assert!(sem.get("used_by").is_none(), "{sem}");
-    assert!(sem.get("calls").is_none(), "{sem}");
+    let without_doc = declaration(&map, "src/preco.rs", "without_doc");
+    assert!(without_doc.get("used_by").is_none(), "{without_doc}");
+    assert!(without_doc.get("calls").is_none(), "{without_doc}");
 
     // As contagens do grafo continuam onde estavam — a ligação nomeada é nova,
     // e não substitui o que o grafo já dizia dos arquivos.
@@ -258,8 +258,8 @@ fn every_declaration(map: &Value) -> Vec<(&str, &Value)> {
 }
 
 #[test]
-fn o_atributo_e_o_decorador_nao_escondem_o_comentario_nem_viram_chamada() {
-    let (_temp, dir) = decorated_project("enfeite");
+fn an_attribute_and_a_decorator_hide_no_comment_and_are_not_calls() {
+    let (_temp, dir) = decorated_project("decoration");
     let map = scan(&dir);
 
     // Cada declaração tem o seu comentário, com o enfeite no meio ou com a
@@ -288,19 +288,19 @@ fn o_atributo_e_o_decorador_nao_escondem_o_comentario_nem_viram_chamada() {
     assert_eq!(declaration(&map, "py/app.py", "inicio")["kind"], "function");
     // O construtor e o método de interface entram como método.
     assert_eq!(declaration(&map, "go/pedido.go", "Carregar")["kind"], "method");
-    let construtores: Vec<&str> = every_declaration(&map)
+    let constructors: Vec<&str> = every_declaration(&map)
         .into_iter()
         .filter(|(f, d)| d["name"] == "Pedidos" && *f == "cs/Pedidos.cs" || d["name"] == "Pedido" && *f == "dart/lib/pedido.dart")
         .map(|(_, d)| d["kind"].as_str().unwrap())
         .collect();
-    assert_eq!(construtores, vec!["class", "method", "class", "method"], "a classe e o construtor dela");
+    assert_eq!(constructors, vec!["class", "method", "class", "method"], "a classe e o construtor dela");
 
     // O cabeçalho começa depois do enfeite.
-    let enfeites = ["#[", "[HttpGet", "@Get", "@Component", "@app", "#[Route", "@override"];
+    let decorations = ["#[", "[HttpGet", "@Get", "@Component", "@app", "#[Route", "@override"];
     for (file, d) in every_declaration(&map) {
         let signature = d["signature"].as_str().unwrap_or("");
         assert!(
-            !enfeites.iter().any(|e| signature.contains(e)),
+            !decorations.iter().any(|e| signature.contains(e)),
             "{file}:{} tem o enfeite no cabeçalho: {signature:?}",
             d["name"]
         );
@@ -324,12 +324,12 @@ fn o_atributo_e_o_decorador_nao_escondem_o_comentario_nem_viram_chamada() {
 
     // Nenhuma chamada vem de dentro de um enfeite, nem do cabeçalho de uma
     // declaração.
-    let falsas = ["derive", "HttpGet", "Get", "Component", "Route", "override", "get", "inicio", "Carregar", "Pedidos", "Pedido"];
+    let false_calls = ["derive", "HttpGet", "Get", "Component", "Route", "override", "get", "inicio", "Carregar", "Pedidos", "Pedido"];
     for m in map["modules"].as_array().unwrap() {
         for call in m["calls"].as_array().into_iter().flatten() {
             // `q.nome:linha` quando a chamada tem qualificador: vale o nome.
             let name = call.as_str().unwrap().rsplit_once(':').unwrap().0.rsplit('.').next().unwrap();
-            assert!(!falsas.contains(&name), "{} chama {name}, que não é chamada", m["path"]);
+            assert!(!false_calls.contains(&name), "{} chama {name}, que não é chamada", m["path"]);
         }
     }
 
@@ -338,9 +338,9 @@ fn o_atributo_e_o_decorador_nao_escondem_o_comentario_nem_viram_chamada() {
     // método como quem usa.
     let total = declaration(&map, "dart/lib/pedido.dart", "total");
     assert_eq!((total["line"].as_u64(), total["end_line"].as_u64()), (Some(12), Some(16)), "{total}");
-    let soma = declaration(&map, "dart/lib/pedido.dart", "soma");
-    assert_eq!((soma["line"].as_u64(), soma["end_line"].as_u64()), (Some(1), Some(3)), "{soma}");
-    assert_eq!(soma["used_by"], serde_json::json!(["dart/lib/pedido.dart:14:total"]), "{soma}");
+    let sum = declaration(&map, "dart/lib/pedido.dart", "soma");
+    assert_eq!((sum["line"].as_u64(), sum["end_line"].as_u64()), (Some(1), Some(3)), "{sum}");
+    assert_eq!(sum["used_by"], serde_json::json!(["dart/lib/pedido.dart:14:total"]), "{sum}");
 
 }
 
@@ -371,7 +371,7 @@ fn header_project(name: &str) -> (tempfile::TempDir, PathBuf) {
              {{\n    \
                  /// <summary>Soma <paramref name=\"a\"/> com <see cref=\"Base\"/>.</summary>\n    \
                  [HttpGet]\n    \
-                 public int Somar({PARAMETROS})\n    \
+                 public int Somar({PARAMETERS})\n    \
                  {{\n        \
                      x.from(1);\n        \
                      var (a, b) = Par();\n        \
@@ -391,38 +391,38 @@ fn header_project(name: &str) -> (tempfile::TempDir, PathBuf) {
 }
 
 /// A lista de parâmetros do método do C#, com mais de 200 caracteres.
-const PARAMETROS: &str = "int primeiroValorDaSoma, int segundoValorDaSoma, int terceiroValorDaSoma, \
+const PARAMETERS: &str = "int primeiroValorDaSoma, int segundoValorDaSoma, int terceiroValorDaSoma, \
      int quartoValorDaSoma, int quintoValorDaSoma, int sextoValorDaSoma, int setimoValorDaSoma, \
      int oitavoValorDaSoma, int nonoValorDaSoma";
 
 #[test]
-fn o_cabecalho_o_comentario_e_a_linha_saem_do_mesmo_jeito_em_toda_linguagem() {
-    assert!(PARAMETROS.len() > 200, "a lista precisa passar do corte antigo");
-    let (_temp, dir) = header_project("cabecalho");
+fn the_header_the_comment_and_the_line_come_out_the_same_in_every_language() {
+    assert!(PARAMETERS.len() > 200, "a lista precisa passar do corte antigo");
+    let (_temp, dir) = header_project("header");
     let map = scan(&dir);
 
     // O comentário do C# sai sem as marcas, e a marca fechada deixa o valor.
-    let somar = declaration(&map, "cs/Contas.cs", "Somar");
-    assert_eq!(somar["doc"], "Soma a com Base.", "{somar}");
+    let add = declaration(&map, "cs/Contas.cs", "Somar");
+    assert_eq!(add["doc"], "Soma a com Base.", "{add}");
     // O cabeçalho traz a lista de parâmetros inteira.
-    assert_eq!(somar["signature"], format!("public int Somar({PARAMETROS})"), "{somar}");
+    assert_eq!(add["signature"], format!("public int Somar({PARAMETERS})"), "{add}");
 
     // A linha é a do primeiro enfeite: no C# ele fica dentro do nó, no Rust
     // fica ao lado, e as duas saem iguais.
-    assert_eq!(somar["line"], 6, "a linha do [HttpGet]: {somar}");
-    let caixa = declaration(&map, "src/caixa.rs", "Caixa");
-    assert_eq!(caixa["line"], 2, "a linha do #[derive(Debug)]: {caixa}");
-    assert_eq!(caixa["doc"], "Caixa do pedido.", "{caixa}");
+    assert_eq!(add["line"], 6, "a linha do [HttpGet]: {add}");
+    let boxed = declaration(&map, "src/caixa.rs", "Caixa");
+    assert_eq!(boxed["line"], 2, "a linha do #[derive(Debug)]: {boxed}");
+    assert_eq!(boxed["doc"], "Caixa do pedido.", "{boxed}");
 
     // O cabeçalho para onde começa o valor, sem o `=` que sobra.
-    let precos = declaration(&map, "ts/precos.ts", "PRECOS");
-    assert_eq!(precos["signature"], "export const PRECOS", "{precos}");
-    let limite = declaration(&map, "src/caixa.rs", "LIMITE");
-    assert_eq!(limite["signature"], "pub const LIMITE: u32", "{limite}");
+    let prices = declaration(&map, "ts/precos.ts", "PRECOS");
+    assert_eq!(prices["signature"], "export const PRECOS", "{prices}");
+    let limit = declaration(&map, "src/caixa.rs", "LIMITE");
+    assert_eq!(limit["signature"], "pub const LIMITE: u32", "{limit}");
     // A função em seta fica com os parâmetros, e termina no `=>`.
-    let soma = declaration(&map, "ts/precos.ts", "soma");
-    let soma_signature = soma["signature"].as_str().unwrap();
-    assert!(soma_signature.ends_with("(a: number, b: number) =>"), "{soma}");
+    let sum = declaration(&map, "ts/precos.ts", "soma");
+    let sum_signature = sum["signature"].as_str().unwrap();
+    assert!(sum_signature.ends_with("(a: number, b: number) =>"), "{sum}");
 
     // Sem comentário em cima, a docstring do Python é o comentário.
     let total = declaration(&map, "py/total.py", "total");
@@ -430,8 +430,8 @@ fn o_cabecalho_o_comentario_e_a_linha_saem_do_mesmo_jeito_em_toda_linguagem() {
 
     // A palavra que a gramática embrulha num nó de nome é chamada; a palavra
     // da linguagem antes de um parêntese não é.
-    let contas = map["modules"].as_array().unwrap().iter().find(|m| m["path"] == "cs/Contas.cs").unwrap();
-    let calls: Vec<&str> = contas["calls"]
+    let accounts = map["modules"].as_array().unwrap().iter().find(|m| m["path"] == "cs/Contas.cs").unwrap();
+    let calls: Vec<&str> = accounts["calls"]
         .as_array()
         .into_iter()
         .flatten()

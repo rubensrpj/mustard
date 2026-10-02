@@ -407,11 +407,11 @@ fn a_function_moved_to_another_file_keeps_the_commit_from_before_the_move() {
     let dir = temp.path();
     declare_base(dir, "main");
     let rest = "pub fn outra() -> u32 {\n    let a = 1;\n    let b = 2;\n    let c = 3;\n    a + b + c\n}\n";
-    let ler = |n: u32| format!("pub fn ler(x: u32) -> u32 {{\n    let lido = x + {n};\n    lido * 2\n}}\n");
-    commit(dir, "src/origem.rs", &format!("{}\n{rest}", ler(1)), "cria o ler");
-    commit(dir, "src/origem.rs", &format!("{}\n{rest}", ler(2)), "muda o ler");
+    let read_source = |n: u32| format!("pub fn ler(x: u32) -> u32 {{\n    let lido = x + {n};\n    lido * 2\n}}\n");
+    commit(dir, "src/origem.rs", &format!("{}\n{rest}", read_source(1)), "cria o ler");
+    commit(dir, "src/origem.rs", &format!("{}\n{rest}", read_source(2)), "muda o ler");
     write(dir, "src/origem.rs", rest);
-    commit(dir, "src/destino.rs", &ler(2), "move o ler");
+    commit(dir, "src/destino.rs", &read_source(2), "move o ler");
     scan(dir);
 
     let found = lineage(dir, "src/destino.rs");
@@ -432,14 +432,14 @@ fn the_moves_number_limits_how_many_file_moves_the_history_follows() {
     declare_base(dir, "main");
     let rest = "pub fn outra() -> u32 {\n    let a = 1;\n    let b = 2;\n    let c = 3;\n    a + b + c\n}\n";
     let rest2 = "pub fn mais() -> u32 {\n    let d = 4;\n    let e = 5;\n    let f = 6;\n    d * e * f\n}\n";
-    let ler = |n: u32| format!("pub fn ler(x: u32) -> u32 {{\n    let lido = x + {n};\n    lido * 2\n}}\n");
-    commit(dir, "src/origem.rs", &format!("{}\n{rest}", ler(1)), "cria o ler");
-    commit(dir, "src/origem.rs", &format!("{}\n{rest}", ler(2)), "muda o ler");
+    let read_source = |n: u32| format!("pub fn ler(x: u32) -> u32 {{\n    let lido = x + {n};\n    lido * 2\n}}\n");
+    commit(dir, "src/origem.rs", &format!("{}\n{rest}", read_source(1)), "cria o ler");
+    commit(dir, "src/origem.rs", &format!("{}\n{rest}", read_source(2)), "muda o ler");
     write(dir, "src/origem.rs", rest);
-    commit(dir, "src/meio.rs", &format!("{}\n{rest2}", ler(2)), "move o ler para o meio");
-    commit(dir, "src/meio.rs", &format!("{}\n{rest2}", ler(3)), "muda o ler no meio");
+    commit(dir, "src/meio.rs", &format!("{}\n{rest2}", read_source(2)), "move o ler para o meio");
+    commit(dir, "src/meio.rs", &format!("{}\n{rest2}", read_source(3)), "muda o ler no meio");
     write(dir, "src/meio.rs", rest2);
-    commit(dir, "src/destino.rs", &ler(3), "move o ler para o destino");
+    commit(dir, "src/destino.rs", &read_source(3), "move o ler para o destino");
     scan(dir);
 
     let every = lineage(dir, "src/destino.rs");
@@ -479,9 +479,9 @@ fn a_renamed_file_takes_its_functions_along() {
     let temp = project("scan-linhagem-arquivo-");
     let dir = temp.path();
     declare_base(dir, "main");
-    let junta = |n: u32| format!("pub fn junta(a: u32, b: u32) -> u32 {{\n    let soma = a + b;\n    soma + {n}\n}}\n");
-    commit(dir, "src/velho.rs", &junta(1), "cria o junta");
-    commit(dir, "src/velho.rs", &junta(2), "muda o junta");
+    let join_source = |n: u32| format!("pub fn junta(a: u32, b: u32) -> u32 {{\n    let soma = a + b;\n    soma + {n}\n}}\n");
+    commit(dir, "src/velho.rs", &join_source(1), "cria o junta");
+    commit(dir, "src/velho.rs", &join_source(2), "muda o junta");
     git(dir, &["mv", "src/velho.rs", "src/novo.rs"]);
     git(dir, &["commit", "-q", "-m", "renomeia o arquivo"]);
     scan(dir);
@@ -600,13 +600,13 @@ fn a_change_in_the_comment_right_above_a_function_belongs_to_it() {
     let temp = project("scan-linhagem-comentario-");
     let dir = temp.path();
     declare_base(dir, "main");
-    let body = |doc: &str| format!("pub fn antes() {{}}\n\n/// {doc}\npub fn soma() -> u32 {{\n    2\n}}\n");
+    let body = |doc: &str| format!("pub fn antes() {{}}\n\n/// {doc}\npub fn sum() -> u32 {{\n    2\n}}\n");
     commit(dir, "src/doc.rs", &body("Soma."), "cria a soma");
     commit(dir, "src/doc.rs", &body("Soma dois."), "explica a soma");
     scan(dir);
 
     let found = lineage(dir, "src/doc.rs");
-    assert_eq!(changes(&found, "soma"), listed(&["explica a soma", "cria a soma"]));
+    assert_eq!(changes(&found, "sum"), listed(&["explica a soma", "cria a soma"]));
     assert_eq!(changes(&found, "antes"), listed(&["cria a soma"]));
 }
 
@@ -776,32 +776,32 @@ fn the_whole_reading_redoes_the_vector_of_the_declarations_whose_history_it_brou
     let dir = temp.path();
     declare_base(dir, "main");
     let rest = "pub fn outra() -> u32 {\n    let a = 1;\n    let b = 2;\n    let c = 3;\n    a + b + c\n}\n";
-    let ler = |n: u32| format!("pub fn ler(x: u32) -> u32 {{\n    let lido = x + {n};\n    lido * 2\n}}\n");
-    commit(dir, "src/origem.rs", &format!("{}\n{rest}", ler(1)), "cria o ler");
-    commit(dir, "src/origem.rs", &format!("{}\n{rest}", ler(2)), "muda o ler");
+    let read_source = |n: u32| format!("pub fn ler(x: u32) -> u32 {{\n    let lido = x + {n};\n    lido * 2\n}}\n");
+    commit(dir, "src/origem.rs", &format!("{}\n{rest}", read_source(1)), "cria o ler");
+    commit(dir, "src/origem.rs", &format!("{}\n{rest}", read_source(2)), "muda o ler");
     write(dir, "src/origem.rs", rest);
-    commit(dir, "src/destino.rs", &ler(2), "move o ler");
+    commit(dir, "src/destino.rs", &read_source(2), "move o ler");
     scan(dir);
-    let (ler_before, alpha_before) = (stored_vector(dir, "ler"), stored_vector(dir, "alpha"));
+    let (read_before, alpha_before) = (stored_vector(dir, "ler"), stored_vector(dir, "alpha"));
     let earlier = quantized_vector("cria o ler muda o ler").expect("the meaning model loads");
 
     let report = history_all(dir, &[]);
 
     assert_eq!(report["failed"], json!(0), "{report}");
     assert_eq!(report["vectors"], json!(2), "only the function that moved and the one it left behind changed their history: {report}");
-    let ler_after = stored_vector(dir, "ler");
-    assert_ne!(ler_after, ler_before, "the vector of the moved function was redone");
+    let read_after = stored_vector(dir, "ler");
+    assert_ne!(read_after, read_before, "the vector of the moved function was redone");
     assert!(
-        cosine(&earlier, &ler_after) > cosine(&earlier, &ler_before),
+        cosine(&earlier, &read_after) > cosine(&earlier, &read_before),
         "the titles of the commits before the move entered the summary: {} against {}",
-        cosine(&earlier, &ler_after),
-        cosine(&earlier, &ler_before)
+        cosine(&earlier, &read_after),
+        cosine(&earlier, &read_before)
     );
     assert_eq!(stored_vector(dir, "alpha"), alpha_before, "the function whose history was the file's own keeps its vector");
 
     let again = history_all(dir, &[]);
     assert_eq!(again["vectors"], json!(0), "nothing new, nothing redone: {again}");
-    assert_eq!(stored_vector(dir, "ler"), ler_after);
+    assert_eq!(stored_vector(dir, "ler"), read_after);
 }
 
 #[test]
@@ -856,14 +856,14 @@ fn the_second_reading_reads_only_the_commits_that_came_after_the_first() {
     assert_eq!(second["read"], json!(1), "only the commit that came after the first reading is read: {second}");
     assert_eq!(second["files"], json!(2), "the file it changed and the file it created: {second}");
 
-    let gama = stored_lineage(dir, "src/c.rs").expect("read");
-    assert_eq!(changes(&gama, "gama"), listed(&["muda o gama e cria o delta", "cria o gama"]), "{gama:?}");
+    let gamma = stored_lineage(dir, "src/c.rs").expect("read");
+    assert_eq!(changes(&gamma, "gama"), listed(&["muda o gama e cria o delta", "cria o gama"]), "{gamma:?}");
     let delta = stored_lineage(dir, "src/d.rs").expect("read");
     assert_eq!(changes(&delta, "delta"), listed(&["muda o gama e cria o delta"]), "{delta:?}");
 
     // A leitura do começo da história dá a mesma lista que a soma das duas.
     let whole = from_the_start(dir, "src/c.rs");
-    assert_eq!(gama, whole, "the list built on top of the first reading is the list the whole history gives");
+    assert_eq!(gamma, whole, "the list built on top of the first reading is the list the whole history gives");
 }
 
 /// Os arquivos lidos em momentos diferentes têm pontas diferentes: cada grupo
@@ -983,12 +983,12 @@ fn a_file_renamed_and_edited_in_one_commit_keeps_the_birth_of_its_declarations_i
     let temp = project("scan-historia-toda-renomeia-");
     let dir = temp.path();
     declare_base(dir, "main");
-    let junta = |n: u32| {
+    let join_source = |n: u32| {
         format!("pub fn junta(a: u32, b: u32) -> u32 {{\n    let soma = a + b;\n    let dobro = soma * 2;\n    soma + dobro + {n}\n}}\n")
     };
-    commit(dir, "src/velho.rs", &junta(1), "cria o junta");
+    commit(dir, "src/velho.rs", &join_source(1), "cria o junta");
     git(dir, &["mv", "src/velho.rs", "src/novo.rs"]);
-    write(dir, "src/novo.rs", &junta(2));
+    write(dir, "src/novo.rs", &join_source(2));
     git(dir, &["add", "-A"]);
     git(dir, &["commit", "-q", "-m", "renomeia e muda o junta"]);
     scan(dir);
@@ -1006,12 +1006,12 @@ fn a_declaration_written_only_in_the_merge_gets_the_merge_commit() {
     let temp = project("scan-historia-junta-");
     let dir = temp.path();
     declare_base(dir, "main");
-    let escolhe = |n: u32| format!("pub fn escolhe() -> u32 {{\n    {n}\n}}\n");
-    commit(dir, "src/escolha.rs", &escolhe(0), "cria o escolhe");
+    let choose_source = |n: u32| format!("pub fn escolhe() -> u32 {{\n    {n}\n}}\n");
+    commit(dir, "src/escolha.rs", &choose_source(0), "cria o escolhe");
     git(dir, &["checkout", "-q", "-b", "lado"]);
-    commit(dir, "src/escolha.rs", &escolhe(1), "o lado escolhe 1");
+    commit(dir, "src/escolha.rs", &choose_source(1), "o lado escolhe 1");
     git(dir, &["checkout", "-q", "main"]);
-    commit(dir, "src/escolha.rs", &escolhe(2), "a main escolhe 2");
+    commit(dir, "src/escolha.rs", &choose_source(2), "a main escolhe 2");
     let merge = Command::new("git")
         .args(["-c", "user.email=scan@example.com", "-c", "user.name=scan", "-c", "commit.gpgsign=false", "merge", "-q", "lado"])
         .current_dir(dir)
@@ -1021,7 +1021,7 @@ fn a_declaration_written_only_in_the_merge_gets_the_merge_commit() {
     write(
         dir,
         "src/escolha.rs",
-        "pub fn escolhe() -> u32 {\n    3\n}\n\npub fn soma_das_escolhas(a: u32, b: u32) -> u32 {\n    let total = a + b;\n    total + escolhe()\n}\n",
+        "pub fn escolhe() -> u32 {\n    3\n}\n\npub fn sum_of_choices(a: u32, b: u32) -> u32 {\n    let total = a + b;\n    total + escolhe()\n}\n",
     );
     git(dir, &["add", "-A"]);
     git(dir, &["commit", "-q", "-m", "junta os dois lados"]);
@@ -1030,7 +1030,7 @@ fn a_declaration_written_only_in_the_merge_gets_the_merge_commit() {
     let report = history_all(dir, &[]);
     assert_eq!(report["failed"], json!(0), "{report}");
     let found = stored_lineage(dir, "src/escolha.rs").expect("the history of the file was written");
-    assert_eq!(changes(&found, "soma_das_escolhas"), listed(&["junta os dois lados"]), "{found:?}");
+    assert_eq!(changes(&found, "sum_of_choices"), listed(&["junta os dois lados"]), "{found:?}");
     assert_eq!(
         changes(&found, "escolhe"),
         listed(&["junta os dois lados", "cria o escolhe"]),
@@ -1046,11 +1046,11 @@ fn a_closing_line_repeated_elsewhere_does_not_give_a_declaration_the_commit_of_a
     let temp = project("scan-linhagem-linha-banal-");
     let dir = temp.path();
     declare_base(dir, "main");
-    let ramos = |name: &str, arg: &str, case: u32| {
+    let branches = |name: &str, arg: &str, case: u32| {
         format!("pub fn {name}({arg}: u32) -> u32 {{\n    if {arg} > {case} {{\n        {arg} + {case}\n    }} else {{\n        {case}\n    }}\n}}\n")
     };
-    commit(dir, "src/ramos.rs", &format!("{}\n{}", ramos("zero", "a", 10), ramos("dois", "c", 12)), "cria o zero e o dois");
-    commit(dir, "src/ramos.rs", &format!("{}\n{}", ramos("dois", "c", 12), ramos("um", "b", 11)), "troca o zero pelo um");
+    commit(dir, "src/ramos.rs", &format!("{}\n{}", branches("zero", "a", 10), branches("dois", "c", 12)), "cria o zero e o dois");
+    commit(dir, "src/ramos.rs", &format!("{}\n{}", branches("dois", "c", 12), branches("um", "b", 11)), "troca o zero pelo um");
     scan(dir);
 
     let found = lineage(dir, "src/ramos.rs");

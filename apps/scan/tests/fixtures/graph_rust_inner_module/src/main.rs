@@ -3,6 +3,6 @@ mod x;
 
 fn main() {}
 
-pub fn valor() -> usize {
+pub fn value() -> usize {
     0
 }

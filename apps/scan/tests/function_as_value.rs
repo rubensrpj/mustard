@@ -64,7 +64,7 @@ fn quadrado(x: u32) -> u32 {\n    x * x\n}\n\n\
 fn mostrar(x: u32) {\n    let _ = x;\n}\n\n\
 fn main() {\n    let f = quadrado;\n    let xs = [1u32, 2];\n    \
 let _: Vec<u32> = xs.iter().copied().map(dobro).collect();\n    \
-let _: Vec<u32> = xs.iter().copied().map(calc::somar_um).collect();\n    \
+let _: Vec<u32> = xs.iter().copied().map(calc::add_one).collect();\n    \
 let _: Vec<u32> = xs.iter().copied().map(crate::a::triplo).collect();\n    \
 let _: Vec<u32> = xs.iter().copied().map(solto).collect();\n    mostrar(f(3));\n}\n";
 
@@ -79,7 +79,7 @@ fn a_rust_function_handed_as_a_value_is_used_by_who_hands_it() {
         "rust",
         &[
             ("Cargo.toml", "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"),
-            ("src/calc.rs", "pub fn dobro(x: u32) -> u32 {\n    x * 2\n}\n\npub fn somar_um(x: u32) -> u32 {\n    x + 1\n}\n"),
+            ("src/calc.rs", "pub fn dobro(x: u32) -> u32 {\n    x * 2\n}\n\npub fn add_one(x: u32) -> u32 {\n    x + 1\n}\n"),
             ("src/a.rs", "pub fn triplo(x: u32) -> u32 {\n    x * 3\n}\n"),
             ("src/solto.rs", "pub fn solto(x: u32) -> u32 {\n    x\n}\n"),
             ("src/main.rs", RUST_MAIN),
@@ -87,14 +87,14 @@ fn a_rust_function_handed_as_a_value_is_used_by_who_hands_it() {
     );
     assert_eq!(proven_uses(&map, "src/main.rs", "quadrado"), ["src/main.rs:33:main"]);
     assert_eq!(proven_uses(&map, "src/calc.rs", "dobro"), ["src/main.rs:35:main"]);
-    assert_eq!(proven_uses(&map, "src/calc.rs", "somar_um"), ["src/main.rs:36:main"]);
+    assert_eq!(proven_uses(&map, "src/calc.rs", "add_one"), ["src/main.rs:36:main"]);
     assert_eq!(proven_uses(&map, "src/a.rs", "triplo"), ["src/main.rs:37:main"]);
     assert_eq!(proven_uses(&map, "src/main.rs", "metade"), ["src/main.rs:20:metades"]);
     let method = declarations(&map, "src/main.rs", "total").into_iter().find(|d| d["kind"] != "field").unwrap();
     assert_eq!(method["used_by"].as_array().cloned().unwrap_or_default(), Vec::<Value>::new(), "the field read is not a use of the method");
     assert_eq!(every_use(&map, "src/solto.rs", "solto"), Vec::<String>::new(), "a file out of sight does not link");
     let calls = declaration(&map, "src/main.rs", "main")["calls"].clone();
-    for name in ["quadrado", "dobro", "somar_um", "triplo"] {
+    for name in ["quadrado", "dobro", "add_one", "triplo"] {
         assert!(calls.as_array().unwrap().iter().any(|c| c == name), "{name} in {calls}");
     }
 }

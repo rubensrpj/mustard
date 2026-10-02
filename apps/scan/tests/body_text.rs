@@ -173,18 +173,18 @@ fn indexed(dir: &Path, name: &str, column: &str) -> Vec<String> {
 fn a_comment_inside_a_function_stays_in_it_and_not_in_the_one_beside_it() {
     let temp = project();
     let map = scan(temp.path());
-    let conferir = decl(&map, "src/pedido.rs", "conferir");
-    assert_eq!(field(conferir, "body_comment"), "o estoque precisa cobrir o total do pedido");
+    let check = decl(&map, "src/pedido.rs", "conferir");
+    assert_eq!(field(check, "body_comment"), "o estoque precisa cobrir o total do pedido");
     assert_eq!(field(decl(&map, "src/pedido.rs", "estoque_disponivel"), "body_comment"), "consulta o armazém central");
-    let reservar = decl(&map, "Loja/Estoque.cs", "Reservar");
-    assert_eq!(field(reservar, "body_comment"), "a reserva segura o item por trinta minutos");
+    let reserve = decl(&map, "Loja/Estoque.cs", "Reservar");
+    assert_eq!(field(reserve, "body_comment"), "a reserva segura o item por trinta minutos");
     assert_eq!(field(decl(&map, "Loja/Estoque.cs", "Consultar"), "body_comment"), "");
     assert!(
         field(decl(&map, "Loja/Estoque.cs", "Estoque"), "body_comment").contains("trinta minutos"),
         "the type that holds the method holds its comments too"
     );
-    let somar = decl(&map, "web/carrinho.service.ts", "somar");
-    assert_eq!(field(somar, "body_comment"), "cupom de frete grátis entra depois da soma");
+    let add = decl(&map, "web/carrinho.service.ts", "somar");
+    assert_eq!(field(add, "body_comment"), "cupom de frete grátis entra depois da soma");
     assert_eq!(field(decl(&map, "web/carrinho.service.ts", "aplicarCupom"), "body_comment"), "");
 }
 
@@ -196,14 +196,14 @@ fn a_quoted_text_is_not_among_the_names_of_the_body() {
         field(decl(&map, "src/pedido.rs", "conferir"), "body_names"),
         "conferir total u32 bool limite estoque_disponivel aviso is_empty"
     );
-    let somar = field(decl(&map, "web/carrinho.service.ts", "somar"), "body_names");
-    let names: Vec<&str> = somar.split(' ').collect();
+    let add = field(decl(&map, "web/carrinho.service.ts", "somar"), "body_names");
+    let names: Vec<&str> = add.split(' ').collect();
     for name in ["itens", "reduce", "aplicarCupom", "total"] {
-        assert!(names.contains(&name), "{name} in {somar}");
+        assert!(names.contains(&name), "{name} in {add}");
     }
-    assert!(!somar.contains("CUPOM_LITERAL"), "{somar}");
-    assert!(!somar.contains("cupom"), "a comment is not a name either: {somar}");
-    assert_eq!(names.iter().filter(|name| **name == "total").count(), 1, "each name once: {somar}");
+    assert!(!add.contains("CUPOM_LITERAL"), "{add}");
+    assert!(!add.contains("cupom"), "a comment is not a name either: {add}");
+    assert_eq!(names.iter().filter(|name| **name == "total").count(), 1, "each name once: {add}");
 }
 
 #[test]
@@ -214,14 +214,14 @@ fn a_documentation_of_600_characters_is_kept_whole() {
     let source = format!("{lines}pub fn regra() {{}}\n\n/// Curta.\npub fn curta() {{}}\n");
     let temp = project_with(&[("src/regra.rs", &source)]);
     let map = scan(temp.path());
-    let regra = decl(&map, "src/regra.rs", "regra");
-    assert_eq!(field(regra, "whole_doc"), doc);
-    let short = field(regra, "doc");
+    let rule = decl(&map, "src/regra.rs", "regra");
+    assert_eq!(field(rule, "whole_doc"), doc);
+    let short = field(rule, "doc");
     assert!(short.chars().count() < WHOLE_DOC_CHARS && doc.starts_with(short), "{short}");
     assert!(indexed(temp.path(), "regra", "whole_doc").contains(&"fim123".to_string()), "the last word reaches the index");
     assert!(!indexed(temp.path(), "regra", "doc").contains(&"fim123".to_string()));
-    let curta = decl(&map, "src/regra.rs", "curta");
-    assert_eq!((field(curta, "doc"), field(curta, "whole_doc")), ("Curta.", ""), "a doc under the ceiling is kept once");
+    let brief = decl(&map, "src/regra.rs", "curta");
+    assert_eq!((field(brief, "doc"), field(brief, "whole_doc")), ("Curta.", ""), "a doc under the ceiling is kept once");
     let whole = indexed(temp.path(), "curta", "whole_doc");
     assert!(whole.contains(&"curta".to_string()), "{whole:?}");
     assert_eq!(whole, indexed(temp.path(), "curta", "doc"), "the index takes the short doc as the whole one");
@@ -231,13 +231,13 @@ fn a_documentation_of_600_characters_is_kept_whole() {
 fn a_call_on_a_line_of_the_function_reaches_its_calls() {
     let temp = project();
     scan(temp.path());
-    let conferir = indexed(temp.path(), "conferir", "body_calls");
+    let check = indexed(temp.path(), "conferir", "body_calls");
     for word in ["estoqu", "disponivel", "empti", "is"] {
-        assert!(conferir.contains(&word.to_string()), "{word} in {conferir:?}");
+        assert!(check.contains(&word.to_string()), "{word} in {check:?}");
     }
     assert_eq!(indexed(temp.path(), "estoque_disponivel", "body_calls"), Vec::<String>::new());
-    let somar = indexed(temp.path(), "somar", "body_calls");
-    assert!(somar.contains(&"reduc".to_string()) && somar.contains(&"aplic".to_string()), "{somar:?}");
+    let add = indexed(temp.path(), "somar", "body_calls");
+    assert!(add.contains(&"reduc".to_string()) && add.contains(&"aplic".to_string()), "{add:?}");
     assert!(indexed(temp.path(), "Reservar", "body_calls").contains(&"consult".to_string()));
     assert!(!indexed(temp.path(), "Consultar", "body_calls").contains(&"consult".to_string()));
 }
@@ -324,8 +324,8 @@ fn the_titles_of_the_commits_that_changed_a_function_reach_its_commits_once_the_
         "pub fn saldo() -> u32 {\n    1\n}\n\npub fn saque() -> u32 {\n    10\n}\n",
     )]);
     let dir = temp.path();
-    let body = |saldo: &str, saque: &str| {
-        format!("pub fn saldo() -> u32 {{\n    {saldo}\n}}\n\npub fn saque() -> u32 {{\n    {saque}\n}}\n")
+    let body = |balance: &str, withdrawal: &str| {
+        format!("pub fn saldo() -> u32 {{\n    {balance}\n}}\n\npub fn saque() -> u32 {{\n    {withdrawal}\n}}\n")
     };
     write(dir, &[("src/conta.rs", &body("2", "10"))]);
     git(
@@ -354,29 +354,29 @@ fn the_titles_of_the_commits_that_changed_a_function_reach_its_commits_once_the_
 
     trace(dir, "src/conta.rs");
     search(dir, "saldo");
-    let saldo = indexed(dir, "saldo", "commits");
+    let balance = indexed(dir, "saldo", "commits");
     for word in ["rendiment", "soma"] {
         assert!(
-            saldo.iter().any(|term| term.starts_with(word)),
-            "{word} in {saldo:?}"
+            balance.iter().any(|term| term.starts_with(word)),
+            "{word} in {balance:?}"
         );
     }
     for word in ["feat", "zeta", "77", "limit", "xilofon"] {
         assert!(
-            !saldo.iter().any(|term| term.starts_with(word)),
-            "{word} not in {saldo:?}"
+            !balance.iter().any(|term| term.starts_with(word)),
+            "{word} not in {balance:?}"
         );
     }
-    let saque = indexed(dir, "saque", "commits");
+    let withdrawal = indexed(dir, "saque", "commits");
     assert!(
-        saque.iter().any(|term| term.starts_with("limit")),
-        "{saque:?}"
+        withdrawal.iter().any(|term| term.starts_with("limit")),
+        "{withdrawal:?}"
     );
     assert!(
-        !saque
+        !withdrawal
             .iter()
             .any(|term| term.starts_with("rendiment") || term.starts_with("xilofon")),
-        "{saque:?}"
+        "{withdrawal:?}"
     );
 }
 
@@ -392,9 +392,9 @@ fn the_history_answers_the_three_newest_titles_of_the_file() {
     git(dir, &["commit", "-q", "-am", "muda o leitor"]);
     scan(dir);
     let map = store::read(dir).expect("o mapa foi gravado");
-    let conta = file_history(&map.history, "src/conta.rs").expect("the file is in the history");
-    assert_eq!(conta.commits, 4);
-    assert_eq!(conta.titles, ["mostra o extrato", "trava o saque", "soma o saldo"]);
+    let account = file_history(&map.history, "src/conta.rs").expect("the file is in the history");
+    assert_eq!(account.commits, 4);
+    assert_eq!(account.titles, ["mostra o extrato", "trava o saque", "soma o saldo"]);
     assert_eq!(file_history(&map.history, "src/leitor.rs").unwrap().titles, ["muda o leitor", "primeiro"]);
 }
 
@@ -513,15 +513,15 @@ fn terms_of(text: &str) -> (Vec<(String, i64)>, i64) {
 fn the_comments_of_the_file_reach_the_index_once_as_they_did_when_the_file_kept_them_all() {
     let temp = project_with(&[("src/caixa.rs", EVERYWHERE)]);
     let map = scan(temp.path());
-    let caixa = module(&map, "src/caixa.rs");
-    assert_eq!(field(caixa, "file_doc"), "começo junto");
+    let boxed = module(&map, "src/caixa.rs");
+    assert_eq!(field(boxed, "file_doc"), "começo junto");
     assert_eq!(
-        field(caixa, "file_comment"),
+        field(boxed, "file_comment"),
         "solto entre as duas dentro do bloco",
         "only the comments outside every declaration; a block that declares nothing is not one"
     );
     assert_eq!(field(decl(&map, "src/caixa.rs", "primeira"), "body_comment"), "começo junto dentro da primeira linha dividida");
-    assert_eq!(caixa["file_doc_in_body"], json!("começo junto ".len()));
+    assert_eq!(boxed["file_doc_in_body"], json!("começo junto ".len()));
     assert_eq!(file_terms(temp.path(), "src/caixa.rs", "file_comment"), terms_of(EVERYWHERE_AFTER_CODE));
     assert_eq!(file_terms(temp.path(), "src/caixa.rs", "file_doc"), terms_of("começo junto"));
 }

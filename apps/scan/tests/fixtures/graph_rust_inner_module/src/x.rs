@@ -1,3 +1,3 @@
-pub fn dobro() -> usize {
+pub fn double() -> usize {
     2
 }

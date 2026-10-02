@@ -16,11 +16,11 @@ use mustard_core::io::map_search;
 use serde_json::Value;
 
 /// A classe `partial` com construtor primário e um campo no corpo.
-const PEDIDO: &str = "namespace Loja;\n\npublic partial class Pedido(IRepositorio repositorio)\n{\n    \
+const ORDER: &str = "namespace Loja;\n\npublic partial class Pedido(IRepositorio repositorio)\n{\n    \
                       private readonly int _desconto = 0;\n}\n\npublic interface IRepositorio { }\n";
 
 /// A estrutura com construtor primário.
-const PONTO: &str = "namespace Loja;\n\npublic struct Ponto(int largura)\n{\n    public int Largura => largura;\n}\n";
+const POINT: &str = "namespace Loja;\n\npublic struct Ponto(int largura)\n{\n    public int Largura => largura;\n}\n";
 
 /// Os parâmetros da classe de cabeçalho comprido: com o tipo, cada um passa
 /// de 65 caracteres, e o último começa depois do caractere 600 do cabeçalho.
@@ -39,7 +39,7 @@ const LONG_PARAMETERS: [&str; 10] = [
 
 /// A classe cujo cabeçalho passa do teto da assinatura, com um campo no
 /// corpo que o último parâmetro alimenta.
-fn relatorio() -> String {
+fn report() -> String {
     let parameters: Vec<String> =
         LONG_PARAMETERS.iter().map(|name| format!("IServicoDeCobrancaDaLojaVirtual {name}")).collect();
     format!(
@@ -69,9 +69,9 @@ fn scanned() -> (tempfile::TempDir, Value) {
     let exclude = mustard_core::footprint_rules().join("\n") + "\n";
     std::fs::write(dir.join(".git").join("info").join("exclude"), exclude).unwrap();
     let files = [
-        ("Loja/Pedido.cs", PEDIDO.to_string()),
-        ("Loja/Ponto.cs", PONTO.to_string()),
-        ("Loja/Relatorio.cs", relatorio()),
+        ("Loja/Pedido.cs", ORDER.to_string()),
+        ("Loja/Ponto.cs", POINT.to_string()),
+        ("Loja/Relatorio.cs", report()),
     ];
     for (rel, body) in files {
         let path = dir.join(rel);

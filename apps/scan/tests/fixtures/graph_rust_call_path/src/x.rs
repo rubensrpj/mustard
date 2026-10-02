@@ -1,3 +1,3 @@
-pub fn valor() -> usize {
+pub fn value() -> usize {
     2
 }

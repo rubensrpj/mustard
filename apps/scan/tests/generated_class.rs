@@ -132,9 +132,9 @@ fn a_machine_written_file_keeps_its_declarations_and_none_of_their_inner_text() 
     let by_hand = cart("// Soma os itens do carrinho.");
     let temp = project_with(&[("src/gerado.rs", &generated), ("src/mao.rs", &by_hand)]);
     let (map, _) = model::scan(temp.path(), &temp.path().join(".claude"), &[]);
-    let gerado = find_module(&map, "src/gerado.rs");
-    let mao = find_module(&map, "src/mao.rs");
-    assert_eq!(gerado["file_class"], "generated", "{gerado}");
+    let machine_module = find_module(&map, "src/gerado.rs");
+    let hand_module = find_module(&map, "src/mao.rs");
+    assert_eq!(machine_module["file_class"], "generated", "{machine_module}");
 
     let header = |module: &serde_json::Value| -> Vec<(String, String, u64, u64, String)> {
         module["declarations"]
@@ -147,12 +147,12 @@ fn a_machine_written_file_keeps_its_declarations_and_none_of_their_inner_text() 
             })
             .collect()
     };
-    assert!(header(gerado).iter().any(|(_, name, ..)| name == "somar"), "{gerado}");
-    assert_eq!(header(gerado), header(mao), "the same declarations in both files");
+    assert!(header(machine_module).iter().any(|(_, name, ..)| name == "somar"), "{machine_module}");
+    assert_eq!(header(machine_module), header(hand_module), "the same declarations in both files");
 
-    let kept = inner_text(mao);
+    let kept = inner_text(hand_module);
     assert!(kept.iter().all(|text| !text.is_empty()), "the hand-written file keeps all five: {kept:?}");
     assert!(kept.iter().any(|text| text.contains("o total começa do zero")), "{kept:?}");
-    let dropped = inner_text(gerado);
+    let dropped = inner_text(machine_module);
     assert!(dropped.iter().all(String::is_empty), "the machine-written file keeps none: {dropped:?}");
 }

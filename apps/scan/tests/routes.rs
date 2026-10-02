@@ -156,7 +156,7 @@ fn project() -> tempfile::TempDir {
         ("Loja/Controllers/PedidosController.cs", CONTROLLER),
         ("Loja/Program.cs", MINIMAL_API),
         ("api/pedidos.controller.ts", NEST),
-        ("src/rotas.rs", AXUM),
+        ("src/routes.rs", AXUM),
         ("web/rotas.ts", EXPRESS),
         ("web/app.ts", EXPRESS_APP),
         ("web/cache.ts", NO_FRAMEWORK),
@@ -199,15 +199,15 @@ fn an_action_joins_the_class_route_with_the_controller_name_and_its_own_template
     let kept = keys(&map, "Loja/Controllers/PedidosController.cs");
     assert!(kept.contains(&"GET api/pedidos/{} -> Ler:9".to_string()), "{kept:?}");
     assert!(kept.contains(&"POST api/pedidos -> Criar:12".to_string()), "{kept:?}");
-    let ler = routes(&map, "Loja/Controllers/PedidosController.cs")
+    let read_route = routes(&map, "Loja/Controllers/PedidosController.cs")
         .as_array()
         .unwrap()
         .iter()
         .find(|r| r["handler"] == json!("Ler"))
         .cloned()
         .unwrap();
-    assert_eq!(ler["written"], json!("api/[controller]/{id}"));
-    assert_eq!(ler["framework"], json!("aspnetcore"));
+    assert_eq!(read_route["written"], json!("api/[controller]/{id}"));
+    assert_eq!(read_route["framework"], json!("aspnetcore"));
 }
 
 #[test]
@@ -273,8 +273,8 @@ fn a_nest_controller_joins_its_prefix_with_the_path_of_each_method() {
 fn each_method_of_an_axum_route_is_a_route_served_by_its_function() {
     let temp = project();
     let (map, _) = scan(temp.path());
-    assert_eq!(keys(&map, "src/rotas.rs"), ["GET v1/pedidos/{} -> ler:11", "POST v1/pedidos/{} -> criar:15"]);
-    let kept = routes(&map, "src/rotas.rs");
+    assert_eq!(keys(&map, "src/routes.rs"), ["GET v1/pedidos/{} -> ler:11", "POST v1/pedidos/{} -> criar:15"]);
+    let kept = routes(&map, "src/routes.rs");
     let written: Vec<&str> = kept.as_array().unwrap().iter().map(|r| r["written"].as_str().unwrap()).collect();
     assert_eq!(written, ["v1/pedidos/:id", "v1/pedidos/:id"]);
 }
@@ -315,7 +315,7 @@ fn a_pass_that_does_not_read_the_file_again_keeps_the_same_routes() {
         "Loja/Controllers/PedidosController.cs",
         "Loja/Program.cs",
         "api/pedidos.controller.ts",
-        "src/rotas.rs",
+        "src/routes.rs",
         "web/rotas.ts",
         "web/app.ts",
     ] {
@@ -336,7 +336,7 @@ fn a_route_rule_is_compiled_only_when_a_file_turns_it_on() {
     let temp = project_with(&[
         ("web/cache.ts", NO_FRAMEWORK),
         ("web/leitor.ts", OTHER_PACKAGE),
-        ("src/lib.rs", "pub fn soma() -> u32 { 1 }\n"),
+        ("src/lib.rs", "pub fn sum() -> u32 { 1 }\n"),
         ("Loja/Caixa.cs", PLAIN_CSHARP),
     ]);
     let (_, report) = scan(temp.path());
@@ -631,14 +631,14 @@ fn a_router_mounted_in_a_router_mounted_in_the_app_sums_every_prefix_in_one_file
 /// posto no roteador vale também para as montagens feitas nele.
 #[test]
 fn a_router_mounted_in_a_router_mounted_in_the_app_sums_every_prefix_across_files() {
-    let pedidos = "import { Router } from 'express';\n\nconst pedidos = Router();\n\n\
+    let orders = "import { Router } from 'express';\n\nconst pedidos = Router();\n\n\
                    export function lerPedido(req, res) {}\n\npedidos.get('/:id', lerPedido);\n\nexport default pedidos;\n";
     let api = "import { Router } from 'express';\nimport pedidos from './pedidos';\n\nconst api = Router();\n\n\
                api.use('/pedidos', pedidos);\n\nexport default api;\n";
     let server = "import express from 'express';\nimport api from './rotas/api';\n\nconst app = express();\n\n\
                   app.use('/api', api);\n";
     let temp = project_with(&[
-        ("src/rotas/pedidos.ts", pedidos),
+        ("src/rotas/pedidos.ts", orders),
         ("src/rotas/api.ts", api),
         ("src/server.ts", server),
         ("web/src/pedido.ts", SCREEN_FETCH),
@@ -713,7 +713,7 @@ fn a_module_that_lists_the_controller_without_a_route_tree_keeps_the_global_pref
 /// (`pedidos::rotas()`) ou pelo nome trazido no `use`.
 #[test]
 fn an_axum_function_from_another_file_takes_the_prefix_of_the_nest() {
-    let pedidos = "use axum::{routing::get, Router};\n\npub fn rotas() -> Router {\n    \
+    let orders = "use axum::{routing::get, Router};\n\npub fn rotas() -> Router {\n    \
                    Router::new().route(\"/pedidos/:id\", get(ler))\n}\n\nasync fn ler() {}\n";
     let by_path = "use axum::Router;\n\nmod pedidos;\n\nfn app() -> Router {\n    \
                    Router::new().nest(\"/api\", pedidos::rotas())\n}\n";
@@ -722,7 +722,7 @@ fn an_axum_function_from_another_file_takes_the_prefix_of_the_nest() {
     for main in [by_path, by_use] {
         let temp = project_with(&[
             ("Cargo.toml", "[package]\nname = \"loja\"\nversion = \"0.1.0\"\n\n[dependencies]\naxum = \"0.7\"\n"),
-            ("src/pedidos.rs", pedidos),
+            ("src/pedidos.rs", orders),
             ("src/main.rs", main),
         ]);
         let (map, _) = scan(temp.path());
@@ -1140,13 +1140,13 @@ fn a_method_named_like_the_bare_call_is_not_a_screen_call() {
 
 /// O controlador de pedidos de um servidor C#: `GET api/pedidos/{}`, atendido
 /// por `Get`, e `POST api/pedidos`, por `Criar`.
-const PEDIDOS_CONTROLLER: &str = "[ApiController]\n[Route(\"api/[controller]\")]\npublic class PedidosController : ControllerBase\n{\n    \
+const ORDERS_CONTROLLER: &str = "[ApiController]\n[Route(\"api/[controller]\")]\npublic class PedidosController : ControllerBase\n{\n    \
                                   [HttpGet(\"{id}\")]\n    public string Get(int id) => \"um\";\n\n    \
                                   [HttpPost]\n    public string Criar() => \"ok\";\n}\n";
 
 /// O servidor C# de pedidos, sob `Api/`, com a tela dada nos `files`.
 fn with_orders_api(files: &[(&str, &str)]) -> tempfile::TempDir {
-    let mut all: Vec<(&str, &str)> = vec![("Api/Controllers/PedidosController.cs", PEDIDOS_CONTROLLER)];
+    let mut all: Vec<(&str, &str)> = vec![("Api/Controllers/PedidosController.cs", ORDERS_CONTROLLER)];
     all.extend_from_slice(files);
     web_project(&all)
 }
@@ -1513,7 +1513,7 @@ fn a_list_included_with_the_app_name_in_a_tuple_takes_the_same_prefix() {
     assert_eq!(served(&map, "loja/urls.py"), ["* api/pedidos -> listar", "* v1/pedidos/{} -> ler"]);
 }
 
-/// A lista de caminhos do app `loja`, com a rota de `ler`.
+/// A lista de caminhos do app `loja`, com a rota de `read_route`.
 const DJANGO_SHOP_URLS: &str =
     "from django.urls import path\n\nfrom . import views\n\nurlpatterns = [\n    path('pedidos/<int:id>/', views.ler),\n]\n";
 
@@ -1805,7 +1805,7 @@ fn a_scope_service_adds_its_prefix_to_the_function_of_another_file() {
     assert_eq!(served(&map, "src/handlers.rs"), ["GET api/aves/{} -> ler"]);
 }
 
-/// Um `src/main.rs` do Actix com a função `ler` e a montagem `app` escrita
+/// Um `src/main.rs` do Actix com a função `read_route` e a montagem `app` escrita
 /// na função `main`, que registra as rotas.
 fn actix_main(app: &str) -> String {
     format!(
@@ -1979,7 +1979,7 @@ fn a_scope_inside_the_function_of_a_configure_of_another_file_adds_the_outer_pre
 /// nela.
 #[test]
 fn a_name_changed_by_the_import_mounts_what_the_origin_file_names() {
-    let pedidos = "import { Router } from 'express';\n\nconst pedidos = Router();\npedidos.get('/:id', lerPedido);\n\n\
+    let orders = "import { Router } from 'express';\n\nconst pedidos = Router();\npedidos.get('/:id', lerPedido);\n\n\
                    function lerPedido() {}\n\nexport default pedidos;\n";
     let api = "import { Router } from 'express';\nimport pedidos from './pedidos';\n\nexport const router = Router();\n\
                router.get('/saude', saude);\nrouter.use('/pedidos', pedidos);\n\nexport const outro = Router();\n\
@@ -1991,7 +1991,7 @@ fn a_name_changed_by_the_import_mounts_what_the_origin_file_names() {
     let main = "use actix_web::{web, App};\nuse crate::handlers::config as rotas;\n\nmod handlers;\n\n\
                 fn main() {\n    App::new().service(web::scope(\"/api\").configure(rotas));\n}\n";
     let temp = project_with(&[
-        ("web/pedidos.ts", pedidos),
+        ("web/pedidos.ts", orders),
         ("web/api.ts", api),
         ("web/app.ts", app),
         ("Cargo.toml", ACTIX_CARGO),
@@ -2052,13 +2052,13 @@ fn a_router_brought_from_another_file_and_given_a_route_here_takes_the_prefix_in
 }
 
 /// O arquivo do meio monta o roteador trazido de outro arquivo no fim de
-/// duas montagens dele (`api` monta `v1`, que monta `pedidos`), e a
+/// duas montagens dele (`api` monta `v1`, que monta `orders`), e a
 /// aplicação monta o `api` pelo nome: as rotas de pedidos somam os três
 /// prefixos, de fora para dentro, como a rota escrita no `v1`. Com três
 /// montagens no meio, soma os quatro.
 #[test]
 fn a_mount_at_the_end_of_local_mounts_takes_the_prefix_of_the_file_that_mounts_the_outer_one() {
-    let pedidos = "import { Router } from 'express';\n\nconst pedidos = Router();\npedidos.get('/:id', lerPedido);\n\n\
+    let orders = "import { Router } from 'express';\n\nconst pedidos = Router();\npedidos.get('/:id', lerPedido);\n\n\
                    function lerPedido() {}\n\nexport default pedidos;\n";
     let api = "import { Router } from 'express';\nimport pedidos from './pedidos';\n\nexport const api = Router();\n\
                const v1 = Router();\n\napi.use('/v1', v1);\nv1.use('/pedidos', pedidos);\nv1.get('/saude', saude);\n\n\
@@ -2071,7 +2071,7 @@ fn a_mount_at_the_end_of_local_mounts_takes_the_prefix_of_the_file_that_mounts_t
     let deeper_app = "import express from 'express';\nimport { api } from './api';\n\nconst app = express();\n\
                       app.use('/api', api);\n";
     let temp = project_with(&[
-        ("dois/pedidos.ts", pedidos),
+        ("dois/pedidos.ts", orders),
         ("dois/api.ts", api),
         ("dois/app.ts", app),
         ("tres/api.ts", deeper),

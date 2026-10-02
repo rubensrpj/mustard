@@ -1,3 +1,3 @@
 pub fn f() -> usize {
-    crate::nada::f()
+    crate::nothing::f()
 }

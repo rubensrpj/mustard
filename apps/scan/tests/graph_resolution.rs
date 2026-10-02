@@ -22,19 +22,19 @@
 //!     E `graph_rust_qualified/`: chamadas pelo caminho completo no corpo, sem
 //!     `use` — a partir de `crate`, a partir de `super` e por um caminho de
 //!     fora do projeto (`std::fs::read`); subindo duas pastas
-//!     (`super::super::x::f()`), só o item depois do `super` (`super::soma()`),
-//!     com argumento de tipo (`crate::a::Caixa::<u8>::new()`), por um módulo
-//!     escrito dentro do arquivo (`crate::a::dentro::Pote::new()`), a partir
+//!     (`super::super::x::f()`), só o item depois do `super` (`super::sum()`),
+//!     com argumento de tipo (`crate::a::Boxed::<u8>::new()`), por um módulo
+//!     escrito dentro do arquivo (`crate::a::inside::Jar::new()`), a partir
 //!     do arquivo que responde pela própria pasta (`src/k/mod.rs`) e por um
-//!     caminho que não nomeia nada do projeto (`crate::nada::f()`, ao lado de
-//!     um `src/a/nada.rs`).
+//!     caminho que não nomeia nada do projeto (`crate::nothing::f()`, ao lado de
+//!     um `src/a/nothing.rs`).
 //!     E `graph_rust_inner_module/`: `super` escrito dentro de um módulo do
-//!     próprio arquivo (`mod interno { }` de `src/a.rs`) e dentro do trecho de
+//!     próprio arquivo (`mod inner { }` de `src/a.rs`) e dentro do trecho de
 //!     teste, que sai do módulo antes de subir pasta, também na passada que
 //!     reaproveita o arquivo sem relê-lo.
-//!     E `graph_rust_call_path/`: `valor` declarado em `src/a.rs` e em
-//!     `src/x.rs`, chamado de `src/a.rs` por `super::super::x::valor()`, por
-//!     `super::valor()` dentro de um módulo do arquivo e sem caminho.
+//!     E `graph_rust_call_path/`: `value` declarado em `src/a.rs` e em
+//!     `src/x.rs`, chamado de `src/a.rs` por `super::super::x::value()`, por
+//!     `super::value()` dentro de um módulo do arquivo e sem caminho.
 //!
 //! Characterization baseline (recorded on the code BEFORE the resolution fix):
 //! csharp, typescript and go already produced edges; python, rust and php
@@ -434,29 +434,29 @@ fn a_call_that_climbs_two_folders_links_to_the_file_there() {
 }
 
 /// O `super` seguido só do item liga ao arquivo que responde pela pasta de
-/// cima: `super::soma()` em `src/a/y.rs` liga a `src/a.rs`.
+/// cima: `super::sum()` em `src/a/y.rs` liga a `src/a.rs`.
 #[test]
 fn a_call_by_super_and_the_item_links_to_the_file_of_the_folder_above() {
     let v = scan_fixture_labeled("rs-super-item", "graph_rust_qualified");
     assert_eq!(deps_of(&v, "src/a/y.rs"), vec!["src/a.rs".to_string()]);
 }
 
-/// Os argumentos de tipo saem do caminho: `crate::a::Caixa::<u8>::new()` vira
-/// o import `crate::a::Caixa` e liga a `src/a.rs`, onde `Caixa` mora.
+/// Os argumentos de tipo saem do caminho: `crate::a::Boxed::<u8>::new()` vira
+/// o import `crate::a::Boxed` e liga a `src/a.rs`, onde `Boxed` mora.
 #[test]
 fn a_call_with_type_arguments_in_the_path_links_to_the_file() {
     let v = scan_fixture_labeled("rs-type-args", "graph_rust_qualified");
-    assert_eq!(imports_of(&v, "src/generico.rs"), vec!["crate::a::Caixa".to_string()]);
-    assert_eq!(deps_of(&v, "src/generico.rs"), vec!["src/a.rs".to_string()]);
+    assert_eq!(imports_of(&v, "src/generic.rs"), vec!["crate::a::Boxed".to_string()]);
+    assert_eq!(deps_of(&v, "src/generic.rs"), vec!["src/a.rs".to_string()]);
 }
 
 /// O caminho que passa por um módulo escrito dentro do arquivo, e termina em
 /// tipo, perde do fim quantas partes for preciso até achar arquivo:
-/// `crate::a::dentro::Pote::new()` liga a `src/a.rs`.
+/// `crate::a::inside::Jar::new()` liga a `src/a.rs`.
 #[test]
 fn a_path_through_a_module_inside_the_file_links_to_the_file() {
     let v = scan_fixture_labeled("rs-inner-module", "graph_rust_qualified");
-    assert_eq!(deps_of(&v, "src/interno.rs"), vec!["src/a.rs".to_string()]);
+    assert_eq!(deps_of(&v, "src/inner.rs"), vec!["src/a.rs".to_string()]);
 }
 
 /// O arquivo que responde pela própria pasta já é o módulo dela, e o `super`
@@ -469,13 +469,13 @@ fn the_file_that_answers_for_its_folder_climbs_from_the_folder_above() {
 }
 
 /// O caminho que não nomeia nada do projeto não liga a um arquivo de outro
-/// lugar só porque o caminho dele termina igual: `crate::nada::f()` em
-/// `src/sem_alvo.rs` não liga a `src/a/nada.rs`.
+/// lugar só porque o caminho dele termina igual: `crate::nothing::f()` em
+/// `src/no_target.rs` não liga a `src/a/nothing.rs`.
 #[test]
 fn a_crate_path_that_names_nothing_does_not_link_by_the_end_of_another_path() {
     let v = scan_fixture_labeled("rs-no-target", "graph_rust_qualified");
-    assert_eq!(imports_of(&v, "src/sem_alvo.rs"), vec!["crate::nada".to_string()]);
-    assert_eq!(deps_of(&v, "src/sem_alvo.rs"), Vec::<String>::new());
+    assert_eq!(imports_of(&v, "src/no_target.rs"), vec!["crate::nothing".to_string()]);
+    assert_eq!(deps_of(&v, "src/no_target.rs"), Vec::<String>::new());
 }
 
 /// O que o mapa grava em `key` para o arquivo `path`, como lista de textos.
@@ -513,17 +513,17 @@ fn used_by_of(v: &serde_json::Value, path: &str, name: &str) -> Vec<String> {
 }
 
 /// O `super` escrito dentro de um módulo do próprio arquivo sai desse módulo e
-/// fica no arquivo: `super::valor()` dentro de `mod interno { }` de `src/a.rs`
-/// é o `valor` de `src/a.rs`, e não o `valor` homônimo de `src/main.rs`, onde o
+/// fica no arquivo: `super::value()` dentro de `mod inner { }` de `src/a.rs`
+/// é o `value` de `src/a.rs`, e não o `value` homônimo de `src/main.rs`, onde o
 /// caminho cairia se subisse pasta direto.
 fn assert_super_inside_a_module_stays_in_the_file(v: &serde_json::Value) {
-    assert_eq!(used_by_of(v, "src/a.rs", "valor"), vec!["src/a.rs:7:perto".to_string()]);
-    assert_eq!(used_by_of(v, "src/main.rs", "valor"), Vec::<String>::new());
+    assert_eq!(used_by_of(v, "src/a.rs", "value"), vec!["src/a.rs:7:near".to_string()]);
+    assert_eq!(used_by_of(v, "src/main.rs", "value"), Vec::<String>::new());
     assert!(!deps_of(v, "src/a.rs").contains(&"src/main.rs".to_string()), "{:?}", deps_of(v, "src/a.rs"));
 }
 
 /// O segundo `super` escrito dentro do mesmo módulo é o que sobe pasta:
-/// `super::super::x::dobro()` liga `src/a.rs` a `src/x.rs`.
+/// `super::super::x::double()` liga `src/a.rs` a `src/x.rs`.
 fn assert_second_super_inside_a_module_climbs_one_folder(v: &serde_json::Value) {
     assert_eq!(deps_of(v, "src/a.rs"), vec!["src/x.rs".to_string()]);
 }
@@ -651,17 +651,17 @@ fn holders_of(v: &serde_json::Value, name: &str, site: &str) -> Vec<String> {
 }
 
 /// A chamada escrita por um caminho que nomeia um arquivo liga só às
-/// declarações dele: `super::super::x::valor()`, na linha 15 de `src/a.rs`, é
-/// o `valor` de `src/x.rs`, e não o `valor` homônimo do próprio arquivo.
+/// declarações dele: `super::super::x::value()`, na linha 15 de `src/a.rs`, é
+/// o `value` de `src/x.rs`, e não o `value` homônimo do próprio arquivo.
 fn assert_a_call_by_a_path_links_only_to_the_file_it_names(v: &serde_json::Value) {
-    assert_eq!(holders_of(v, "valor", "src/a.rs:15:longe"), vec!["src/x.rs".to_string()]);
+    assert_eq!(holders_of(v, "value", "src/a.rs:15:far"), vec!["src/x.rs".to_string()]);
 }
 
-/// O próprio arquivo só entra quando o caminho o nomeia: `super::valor()`
-/// dentro de `mod interno`, na linha 11 de `src/a.rs`, é o `valor` de
+/// O próprio arquivo só entra quando o caminho o nomeia: `super::value()`
+/// dentro de `mod inner`, na linha 11 de `src/a.rs`, é o `value` de
 /// `src/a.rs`, e não o de `src/x.rs`, que o arquivo também importa.
 fn assert_a_path_to_the_file_itself_links_only_to_the_file(v: &serde_json::Value) {
-    assert_eq!(holders_of(v, "valor", "src/a.rs:11:perto"), vec!["src/a.rs".to_string()]);
+    assert_eq!(holders_of(v, "value", "src/a.rs:11:near"), vec!["src/a.rs".to_string()]);
 }
 
 /// Os arquivos cuja declaração `name` tem `site` entre os usos suspeitos, em
@@ -680,12 +680,12 @@ fn suspect_holders_of(v: &serde_json::Value, name: &str, site: &str) -> Vec<(Str
 }
 
 /// A chamada sem caminho do nome que o próprio arquivo declara fora de todo
-/// tipo é essa declaração: `valor()`, na linha 6 de `src/a.rs`, é o `valor`
+/// tipo é essa declaração: `value()`, na linha 6 de `src/a.rs`, é o `value`
 /// do próprio arquivo, provado, e não o de `src/x.rs`, que o arquivo também
 /// importa pelo caminho da linha 15.
 fn assert_a_call_without_a_path_links_to_the_file_own_declaration(v: &serde_json::Value) {
-    assert_eq!(holders_of(v, "valor", "src/a.rs:6:soma"), vec!["src/a.rs".to_string()]);
-    assert!(suspect_holders_of(v, "valor", "src/a.rs:6:soma").is_empty(), "nenhuma suspeita");
+    assert_eq!(holders_of(v, "value", "src/a.rs:6:sum"), vec!["src/a.rs".to_string()]);
+    assert!(suspect_holders_of(v, "value", "src/a.rs:6:sum").is_empty(), "nenhuma suspeita");
 }
 
 #[test]
@@ -770,14 +770,14 @@ fn a_path_that_opens_with_a_child_module_resolves_inside_the_folder_of_its_modul
 
 /// O serviço e a tela que importa a pasta dele; o `index.ts` da pasta, que só
 /// repassa, é o arquivo dado.
-fn folder_that_passes_on(index: &str, tela: &str) -> Vec<(&'static str, String)> {
+fn folder_that_passes_on(index: &str, screen: &str) -> Vec<(&'static str, String)> {
     vec![
         ("web/src/pedidos/index.ts", index.to_string()),
         (
             "web/src/pedidos/pedido.service.ts",
             "export function buscarPedido(id: number) {\n  return id;\n}\n".to_string(),
         ),
-        ("web/src/tela.ts", tela.to_string()),
+        ("web/src/tela.ts", screen.to_string()),
     ]
 }
 
@@ -1351,7 +1351,7 @@ fn a_module_with_a_path_attribute_reaches_the_file_it_names() {
     // escrito antes ou depois dele. Um item que não é atributo corta: o
     // `path` dele não chega ao `mod`, e o `#[cfg(test)]` dele não é do `mod`.
     // Os cinco lado a lado, para que um desvio mostre todos de uma vez.
-    let outra = || vec!["tests/support/outra.rs".to_string()];
+    let other = || vec!["tests/support/outra.rs".to_string()];
     let none = Vec::<String>::new;
     let queues: Vec<_> = ["src/quarto.rs", "src/quinto.rs", "src/sexto.rs", "src/setimo.rs", "src/oitavo.rs"]
         .into_iter()
@@ -1360,11 +1360,11 @@ fn a_module_with_a_path_attribute_reaches_the_file_it_names() {
     assert_eq!(
         queues,
         vec![
-            ("src/quarto.rs", outra(), none()),
-            ("src/quinto.rs", none(), outra()),
-            ("src/sexto.rs", none(), outra()),
+            ("src/quarto.rs", other(), none()),
+            ("src/quinto.rs", none(), other()),
+            ("src/sexto.rs", none(), other()),
             ("src/setimo.rs", none(), none()),
-            ("src/oitavo.rs", outra(), none()),
+            ("src/oitavo.rs", other(), none()),
         ]
     );
     for site in ["tests/orcamento.rs:8:mede", "tests/orcamento.rs:9:mede"] {
@@ -1455,8 +1455,8 @@ fn a_test_covers_the_file_it_calls_without_importing_it_and_code_does_not_import
     assert_eq!(report["full"], serde_json::Value::Bool(true), "{report}");
     assert_the_same_package_test_covers_the_service(&full);
 
-    let rotas = std::fs::read_to_string(dir.join("api/rotas.go")).unwrap();
-    std::fs::write(dir.join("api/rotas.go"), format!("{rotas}\nfunc Outra() {{}}\n")).unwrap();
+    let routes_text = std::fs::read_to_string(dir.join("api/rotas.go")).unwrap();
+    std::fs::write(dir.join("api/rotas.go"), format!("{routes_text}\nfunc Outra() {{}}\n")).unwrap();
     git(dir, &["commit", "-q", "-am", "segundo"]);
     let (kept, report) = scan_in_place(dir);
     assert_eq!(report["read"], serde_json::json!(["api/rotas.go"]), "só o que mudou é relido: {report}");

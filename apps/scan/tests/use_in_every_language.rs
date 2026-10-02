@@ -67,8 +67,8 @@ use serde_json::Value;
 /// A pasta do projeto de teste, numa pasta temporária. Quem chama guarda o
 /// valor até o fim do teste: quando ele sai de cena, a pasta some, também
 /// quando uma conferência quebra no meio.
-fn pasta_do_projeto(nome: &str) -> tempfile::TempDir {
-    tempfile::Builder::new().prefix(&format!("scan-{nome}-")).tempdir().unwrap()
+fn project_dir(name: &str) -> tempfile::TempDir {
+    tempfile::Builder::new().prefix(&format!("scan-{name}-")).tempdir().unwrap()
 }
 
 fn write(dir: &Path, rel: &str, body: &str) {
@@ -78,28 +78,28 @@ fn write(dir: &Path, rel: &str, body: &str) {
 }
 
 /// A pasta do projeto onde o scan grava o mapa.
-fn pasta_do_mapa(dir: &Path) -> PathBuf {
+fn map_dir(dir: &Path) -> PathBuf {
     dir.join(".claude")
 }
 
 fn scan(dir: &Path) -> Value {
-    model::scan(dir, &pasta_do_mapa(dir), &[]).0
+    model::scan(dir, &map_dir(dir), &[]).0
 }
 
 /// Uma linguagem do projeto: o arquivo que chama, o texto da chamada da
 /// função, e os três arquivos com o que cada um tem dentro.
-struct Linguagem {
-    quem_chama: &'static str,
-    chamada: &'static str,
-    arquivos: [(&'static str, &'static str); 3],
+struct Language {
+    caller: &'static str,
+    call: &'static str,
+    files: [(&'static str, &'static str); 3],
 }
 
-fn linguagens() -> Vec<Linguagem> {
+fn languages() -> Vec<Language> {
     vec![
-        Linguagem {
-            quem_chama: "rs/src/main.rs",
-            chamada: "somar(1, 2)",
-            arquivos: [
+        Language {
+            caller: "rs/src/main.rs",
+            call: "somar(1, 2)",
+            files: [
                 (
                     "rs/src/main.rs",
                     "mod conta;\nuse crate::conta::somar;\nuse crate::conta::Item;\n\n\
@@ -113,10 +113,10 @@ fn linguagens() -> Vec<Linguagem> {
                 ("rs/src/texto.rs", "pub fn join(partes: &[&str]) -> String {\n    partes[0].to_string()\n}\n"),
             ],
         },
-        Linguagem {
-            quem_chama: "ts/src/app.ts",
-            chamada: "somar(1, 2)",
-            arquivos: [
+        Language {
+            caller: "ts/src/app.ts",
+            call: "somar(1, 2)",
+            files: [
                 (
                     "ts/src/app.ts",
                     "import { somar, Item } from \"./conta\";\n\n\
@@ -131,10 +131,10 @@ fn linguagens() -> Vec<Linguagem> {
                 ("ts/src/texto.ts", "export function join(partes: string[]): string {\n  return partes[0];\n}\n"),
             ],
         },
-        Linguagem {
-            quem_chama: "tsx/src/app.tsx",
-            chamada: "somar(1, 2)",
-            arquivos: [
+        Language {
+            caller: "tsx/src/app.tsx",
+            call: "somar(1, 2)",
+            files: [
                 (
                     "tsx/src/app.tsx",
                     "import { somar, Item } from \"./conta\";\n\n\
@@ -149,10 +149,10 @@ fn linguagens() -> Vec<Linguagem> {
                 ("tsx/src/texto.tsx", "export function join(partes: string[]): string {\n  return partes[0];\n}\n"),
             ],
         },
-        Linguagem {
-            quem_chama: "py/pkg/app.py",
-            chamada: "somar(1, 2)",
-            arquivos: [
+        Language {
+            caller: "py/pkg/app.py",
+            call: "somar(1, 2)",
+            files: [
                 (
                     "py/pkg/app.py",
                     "from pkg.conta import somar, Item\n\n\n\
@@ -163,10 +163,10 @@ fn linguagens() -> Vec<Linguagem> {
                 ("py/pkg/texto.py", "def join(partes):\n    return partes[0]\n"),
             ],
         },
-        Linguagem {
-            quem_chama: "go/conta/app.go",
-            chamada: "somar(1, 2)",
-            arquivos: [
+        Language {
+            caller: "go/conta/app.go",
+            call: "somar(1, 2)",
+            files: [
                 (
                     "go/conta/app.go",
                     "package conta\n\nfunc principal(x Item, nomes Lista) int {\n\ttotal := somar(1, 2)\n\tx.kind()\n\t\
@@ -180,10 +180,10 @@ fn linguagens() -> Vec<Linguagem> {
                 ("go/outro/texto.go", "package outro\n\nfunc join(partes []string) string {\n\treturn partes[0]\n}\n"),
             ],
         },
-        Linguagem {
-            quem_chama: "cs/App.cs",
-            chamada: "somar(1, 2)",
-            arquivos: [
+        Language {
+            caller: "cs/App.cs",
+            call: "somar(1, 2)",
+            files: [
                 (
                     "cs/App.cs",
                     "namespace Loja.Conta;\n\npublic class App\n{\n    public int principal(Item x, Lista nomes)\n    {\n        \
@@ -202,10 +202,10 @@ fn linguagens() -> Vec<Linguagem> {
                 ),
             ],
         },
-        Linguagem {
-            quem_chama: "php/App.php",
-            chamada: "somar(1, 2)",
-            arquivos: [
+        Language {
+            caller: "php/App.php",
+            call: "somar(1, 2)",
+            files: [
                 (
                     "php/App.php",
                     "<?php\n\nnamespace Loja\\Conta;\n\nfunction principal(Item $x, Lista $nomes): int\n{\n    \
@@ -222,10 +222,10 @@ fn linguagens() -> Vec<Linguagem> {
                 ),
             ],
         },
-        Linguagem {
-            quem_chama: "dart/lib/app.dart",
-            chamada: "somar(1, 2)",
-            arquivos: [
+        Language {
+            caller: "dart/lib/app.dart",
+            call: "somar(1, 2)",
+            files: [
                 (
                     "dart/lib/app.dart",
                     "import './conta.dart';\n\nint principal(Item x) {\n  final total = somar(1, 2);\n  x.kind();\n  \
@@ -242,30 +242,30 @@ fn linguagens() -> Vec<Linguagem> {
 }
 
 /// A linha, contada de 1, em que o texto aparece pela primeira vez.
-fn linha_de(corpo: &str, texto: &str) -> usize {
-    corpo.lines().position(|l| l.contains(texto)).expect("o texto está no arquivo") + 1
+fn line_of(body: &str, text: &str) -> usize {
+    body.lines().position(|l| l.contains(text)).expect("o texto está no arquivo") + 1
 }
 
 #[test]
-fn o_uso_so_liga_a_quem_se_chama_e_a_quem_o_arquivo_enxerga() {
-    let temp = pasta_do_projeto("uso-em-toda-linguagem");
+fn a_use_only_links_to_what_is_called_and_to_what_the_file_sees() {
+    let temp = project_dir("uso-em-toda-linguagem");
     let dir = temp.path().to_path_buf();
-    let todas = linguagens();
-    for l in &todas {
-        for (rel, corpo) in l.arquivos {
-            write(&dir, rel, corpo);
+    let every = languages();
+    for l in &every {
+        for (rel, body) in l.files {
+            write(&dir, rel, body);
         }
     }
     let map = scan(&dir);
     let modules = map["modules"].as_array().expect("modules");
-    let lingua: HashMap<&str, &str> =
+    let language: HashMap<&str, &str> =
         modules.iter().map(|m| (m["path"].as_str().unwrap(), m["language"].as_str().unwrap())).collect();
-    let usos = |d: &Value| -> Vec<String> {
+    let uses = |d: &Value| -> Vec<String> {
         d.get("used_by")
             .and_then(Value::as_array)
             .map_or(Vec::new(), |a| a.iter().map(|u| u.as_str().unwrap().to_string()).collect())
     };
-    let declaracoes = |nome: &str| -> Vec<(String, Value)> {
+    let declarations = |name: &str| -> Vec<(String, Value)> {
         modules
             .iter()
             .flat_map(|m| {
@@ -273,7 +273,7 @@ fn o_uso_so_liga_a_quem_se_chama_e_a_quem_o_arquivo_enxerga() {
                     .as_array()
                     .into_iter()
                     .flatten()
-                    .filter(move |d| d["name"] == nome)
+                    .filter(move |d| d["name"] == name)
                     .map(move |d| (m["path"].as_str().unwrap().to_string(), d.clone()))
             })
             .collect()
@@ -282,41 +282,41 @@ fn o_uso_so_liga_a_quem_se_chama_e_a_quem_o_arquivo_enxerga() {
     // Em cada linguagem, a função chamada tem um uso só: o do arquivo e da
     // linha da chamada. A declaração de onde a chamada parte fica fora da
     // conferência: no Dart, o scan ainda não sabe onde a função termina.
-    let somar = declaracoes("somar");
-    for l in &todas {
-        let corpo = l.arquivos.iter().find(|(rel, _)| *rel == l.quem_chama).unwrap().1;
-        let lugar = format!("{}:{}", l.quem_chama, linha_de(corpo, l.chamada));
-        let dono = l.arquivos[1].0;
-        let (_, d) = somar.iter().find(|(p, _)| p == dono).unwrap_or_else(|| panic!("somar declarada em {dono}"));
-        let u = usos(d);
+    let sum = declarations("somar");
+    for l in &every {
+        let body = l.files.iter().find(|(rel, _)| *rel == l.caller).unwrap().1;
+        let place = format!("{}:{}", l.caller, line_of(body, l.call));
+        let owner = l.files[1].0;
+        let (_, d) = sum.iter().find(|(p, _)| p == owner).unwrap_or_else(|| panic!("somar declarada em {owner}"));
+        let u = uses(d);
         assert!(
-            u.len() == 1 && (u[0] == lugar || u[0].starts_with(&format!("{lugar}:"))),
-            "o uso da função chamada, em {dono}, é {lugar}: {d}"
+            u.len() == 1 && (u[0] == place || u[0].starts_with(&format!("{place}:"))),
+            "o uso da função chamada, em {owner}, é {place}: {d}"
         );
     }
 
     // O campo `kind` não se chama: nenhum uso, em nenhuma linguagem que o
     // declara como campo ou propriedade.
-    let kind = declaracoes("kind");
+    let kind = declarations("kind");
     assert!(kind.len() >= 7, "o campo kind está declarado nas linguagens que leem campo: {kind:?}");
     for (p, d) in &kind {
-        assert!(usos(d).is_empty(), "o campo kind de {p} não tem uso: {d}");
+        assert!(uses(d).is_empty(), "o campo kind de {p} não tem uso: {d}");
     }
 
     // O `join` do terceiro arquivo, que quem chama não enxerga, não tem uso.
-    let join = declaracoes("join");
-    assert_eq!(join.len(), todas.len(), "um join por linguagem: {join:?}");
+    let join = declarations("join");
+    assert_eq!(join.len(), every.len(), "um join por linguagem: {join:?}");
     for (p, d) in &join {
-        assert!(usos(d).is_empty(), "o join de {p} não tem uso: {d}");
+        assert!(uses(d).is_empty(), "o join de {p} não tem uso: {d}");
     }
 
     // Nenhum uso liga arquivos de linguagens diferentes.
     for m in modules {
-        let dono = m["path"].as_str().unwrap();
+        let owner = m["path"].as_str().unwrap();
         for d in m["declarations"].as_array().into_iter().flatten() {
-            for u in usos(d) {
-                let de = u.split(':').next().unwrap();
-                assert_eq!(lingua.get(de), lingua.get(dono), "o uso {u} de {} em {dono}", d["name"]);
+            for u in uses(d) {
+                let origin = u.split(':').next().unwrap();
+                assert_eq!(language.get(origin), language.get(owner), "o uso {u} de {} em {owner}", d["name"]);
             }
         }
     }
@@ -327,70 +327,70 @@ fn o_uso_so_liga_a_quem_se_chama_e_a_quem_o_arquivo_enxerga() {
 /// função em `preco.rs`; `pedido.rs` importa a constante e a compara dentro de
 /// `abrir`; `caixa.rs`, sem nenhum `use`, chama a função pelo caminho do
 /// arquivo dentro de `pagar`.
-const PRECO: &str = "pub const LIMITE: u32 = 10;\n\npub fn total(a: u32, b: u32) -> u32 {\n    a + b\n}\n";
-const PEDIDO: &str = "use crate::preco::LIMITE;\n\npub fn abrir(n: u32) -> bool {\n    n > LIMITE\n}\n";
-const CAIXA: &str = "pub fn pagar() -> u32 {\n    crate::preco::total(1, 2)\n}\n";
+const PRICE: &str = "pub const LIMITE: u32 = 10;\n\npub fn total(a: u32, b: u32) -> u32 {\n    a + b\n}\n";
+const ORDER: &str = "use crate::preco::LIMITE;\n\npub fn abrir(n: u32) -> bool {\n    n > LIMITE\n}\n";
+const BOX: &str = "pub fn pagar() -> u32 {\n    crate::preco::total(1, 2)\n}\n";
 
 #[test]
-fn a_constante_e_o_tipo_citados_ganham_quem_os_usa() {
-    let temp = pasta_do_projeto("citacao-em-toda-linguagem");
+fn a_constant_and_a_type_that_are_mentioned_gain_their_users() {
+    let temp = project_dir("citacao-em-toda-linguagem");
     let dir = temp.path().to_path_buf();
-    let todas = linguagens();
-    for l in &todas {
-        for (rel, corpo) in l.arquivos {
-            write(&dir, rel, corpo);
+    let every = languages();
+    for l in &every {
+        for (rel, body) in l.files {
+            write(&dir, rel, body);
         }
     }
-    write(&dir, "rs/src/preco.rs", PRECO);
-    write(&dir, "rs/src/pedido.rs", PEDIDO);
-    write(&dir, "rs/src/caixa.rs", CAIXA);
+    write(&dir, "rs/src/preco.rs", PRICE);
+    write(&dir, "rs/src/pedido.rs", ORDER);
+    write(&dir, "rs/src/caixa.rs", BOX);
     let map = scan(&dir);
     let modules = map["modules"].as_array().expect("modules");
-    let usos = |arquivo: &str, nome: &str| -> Vec<String> {
-        let m = modules.iter().find(|m| m["path"] == arquivo).unwrap_or_else(|| panic!("{arquivo} no mapa"));
+    let uses = |file: &str, name: &str| -> Vec<String> {
+        let m = modules.iter().find(|m| m["path"] == file).unwrap_or_else(|| panic!("{file} no mapa"));
         let d = m["declarations"]
             .as_array()
             .into_iter()
             .flatten()
-            .find(|d| d["name"] == nome)
-            .unwrap_or_else(|| panic!("{nome} declarado em {arquivo}: {m}"));
+            .find(|d| d["name"] == name)
+            .unwrap_or_else(|| panic!("{name} declarado em {file}: {m}"));
         d.get("used_by")
             .and_then(Value::as_array)
             .map_or(Vec::new(), |a| a.iter().map(|u| u.as_str().unwrap().to_string()).collect())
     };
     // Junta as faltas antes de reprovar, para que um defeito só na leitura da
     // citação ou só no caminho pelo arquivo apareça inteiro de uma vez.
-    let mut faltas: Vec<String> = Vec::new();
+    let mut failures: Vec<String> = Vec::new();
 
     // Em cada linguagem, o tipo citado no parâmetro de `principal` tem o uso
     // com o arquivo e a linha da citação, e `principal` como quem usa.
-    for l in &todas {
-        let corpo = l.arquivos.iter().find(|(rel, _)| *rel == l.quem_chama).unwrap().1;
-        let esperado = format!("{}:{}:principal", l.quem_chama, linha_de(corpo, "principal("));
-        let u = usos(l.arquivos[1].0, "Item");
-        if !u.contains(&esperado) {
-            faltas.push(format!("o tipo Item de {} tem o uso {esperado}: {u:?}", l.arquivos[1].0));
+    for l in &every {
+        let body = l.files.iter().find(|(rel, _)| *rel == l.caller).unwrap().1;
+        let expected = format!("{}:{}:principal", l.caller, line_of(body, "principal("));
+        let u = uses(l.files[1].0, "Item");
+        if !u.contains(&expected) {
+            failures.push(format!("o tipo Item de {} tem o uso {expected}: {u:?}", l.files[1].0));
         }
     }
 
     // A constante comparada dentro de `abrir` tem o uso, com `abrir` como quem
     // usa. A linha do `use` que a importa não conta: o nome ali é o caminho do
     // import, não um uso.
-    let limite = usos("rs/src/preco.rs", "LIMITE");
-    let esperado = format!("rs/src/pedido.rs:{}:abrir", linha_de(PEDIDO, "n > LIMITE"));
-    if limite != [esperado.clone()] {
-        faltas.push(format!("a constante LIMITE tem só o uso {esperado}: {limite:?}"));
+    let limit = uses("rs/src/preco.rs", "LIMITE");
+    let expected = format!("rs/src/pedido.rs:{}:abrir", line_of(ORDER, "n > LIMITE"));
+    if limit != [expected.clone()] {
+        failures.push(format!("a constante LIMITE tem só o uso {expected}: {limit:?}"));
     }
 
     // A função chamada pelo caminho do arquivo, sem `use`, tem o uso na linha
     // da chamada, com `pagar` como quem usa.
-    let total = usos("rs/src/preco.rs", "total");
-    let esperado = format!("rs/src/caixa.rs:{}:pagar", linha_de(CAIXA, "crate::preco::total("));
-    if total != [esperado.clone()] {
-        faltas.push(format!("a função total tem só o uso {esperado}: {total:?}"));
+    let total = uses("rs/src/preco.rs", "total");
+    let expected = format!("rs/src/caixa.rs:{}:pagar", line_of(BOX, "crate::preco::total("));
+    if total != [expected.clone()] {
+        failures.push(format!("a função total tem só o uso {expected}: {total:?}"));
     }
 
-    assert!(faltas.is_empty(), "{}", faltas.join("\n"));
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
 /// O projeto do que cada linguagem põe à vista. No C#, dois projetos: `Loja`,
@@ -400,7 +400,7 @@ fn a_constante_e_o_tipo_citados_ganham_quem_os_usa() {
 /// duas pastas com o mesmo `package util`. No Dart, um import de arquivo sem
 /// `./`, ao lado de um pacote Go com o mesmo nome do arquivo; e um arquivo
 /// Python que importa esse mesmo nome, que no Python não é de ninguém.
-fn projeto_a_vista() -> Vec<(&'static str, &'static str)> {
+fn project_in_sight() -> Vec<(&'static str, &'static str)> {
     vec![
         ("Loja/Loja.csproj", "<Project Sdk=\"Microsoft.NET.Sdk\">\n</Project>\n"),
         ("Loja/GlobalUsings.cs", "global using Loja.Dominio;\n"),
@@ -442,32 +442,32 @@ fn projeto_a_vista() -> Vec<(&'static str, &'static str)> {
 }
 
 #[test]
-fn cada_arquivo_enxerga_o_que_a_linguagem_poe_a_vista() {
-    let temp = pasta_do_projeto("o-que-a-linguagem-poe-a-vista");
+fn each_file_sees_what_the_language_puts_in_sight() {
+    let temp = project_dir("o-que-a-linguagem-poe-a-vista");
     let dir = temp.path().to_path_buf();
-    let arquivos = projeto_a_vista();
-    for (rel, corpo) in &arquivos {
-        write(&dir, rel, corpo);
+    let files = project_in_sight();
+    for (rel, body) in &files {
+        write(&dir, rel, body);
     }
     let map = scan(&dir);
     let modules = map["modules"].as_array().expect("modules");
-    let modulo = |arquivo: &str| -> &Value {
-        modules.iter().find(|m| m["path"] == arquivo).unwrap_or_else(|| panic!("{arquivo} no mapa"))
+    let module = |file: &str| -> &Value {
+        modules.iter().find(|m| m["path"] == file).unwrap_or_else(|| panic!("{file} no mapa"))
     };
-    let lista = |v: &Value| -> Vec<String> {
+    let list = |v: &Value| -> Vec<String> {
         v.as_array().map_or(Vec::new(), |a| a.iter().map(|u| u.as_str().unwrap().to_string()).collect())
     };
     // O lugar de cada uso, provado ou suspeito: aqui se confere o que fica à
     // vista de cada arquivo, e a chamada por uma variável (`c.Total(1)`) é
     // suspeita mesmo com uma candidata só.
-    let usos = |arquivo: &str, nome: &str| -> Vec<String> {
-        let m = modulo(arquivo);
+    let uses = |file: &str, name: &str| -> Vec<String> {
+        let m = module(file);
         let d = m["declarations"]
             .as_array()
             .into_iter()
             .flatten()
-            .find(|d| d["name"] == nome)
-            .unwrap_or_else(|| panic!("{nome} declarado em {arquivo}: {m}"));
+            .find(|d| d["name"] == name)
+            .unwrap_or_else(|| panic!("{name} declarado em {file}: {m}"));
         d["used_by"]
             .as_array()
             .into_iter()
@@ -475,91 +475,91 @@ fn cada_arquivo_enxerga_o_que_a_linguagem_poe_a_vista() {
             .map(|u| u.as_str().or_else(|| u["at"].as_str()).unwrap().to_string())
             .collect::<Vec<String>>()
     };
-    let deps = |arquivo: &str| lista(&modulo(arquivo)["deps"]);
-    let corpo = |arquivo: &str| arquivos.iter().find(|(rel, _)| *rel == arquivo).unwrap().1;
+    let deps = |file: &str| list(&module(file)["deps"]);
+    let body = |file: &str| files.iter().find(|(rel, _)| *rel == file).unwrap().1;
     // Junta as faltas antes de reprovar, para que cada parte que voltar a ser
     // como antes apareça de uma vez.
-    let mut faltas: Vec<String> = Vec::new();
+    let mut failures: Vec<String> = Vec::new();
 
     // O `global using` de Loja/GlobalUsings.cs vale para todo arquivo C# do
     // projeto Loja: Pedido.cs usa Total sem `using`, e Conta.cs, do projeto
     // Outro, não o enxerga.
-    let pedido = "Loja/Pedidos/Pedido.cs";
-    let total = usos("Loja/Dominio/Calculadora.cs", "Total");
-    let esperado = format!("{pedido}:{}:Fechar", linha_de(corpo(pedido), "c.Total(1)"));
-    if !total.contains(&esperado) || total.iter().any(|u| u.starts_with("Outro/Conta.cs:")) {
-        faltas.push(format!("Total tem o uso {esperado} e nenhum de Outro/Conta.cs: {total:?}"));
+    let order = "Loja/Pedidos/Pedido.cs";
+    let total = uses("Loja/Dominio/Calculadora.cs", "Total");
+    let expected = format!("{order}:{}:Fechar", line_of(body(order), "c.Total(1)"));
+    if !total.contains(&expected) || total.iter().any(|u| u.starts_with("Outro/Conta.cs:")) {
+        failures.push(format!("Total tem o uso {expected} e nenhum de Outro/Conta.cs: {total:?}"));
     }
     // O import global fica guardado só no arquivo que o escreve, e a aresta do
     // grafo de import, só nele. Como todo import de namespace, ela liga só aos
     // arquivos que declaram um nome que o próprio arquivo usa: GlobalUsings.cs
     // não usa nada e não liga a nada, e Pedido.cs, que usa Calculadora pelo
     // import global, não ganha aresta por ele.
-    let globais = lista(&modulo("Loja/GlobalUsings.cs")["global_imports"]);
-    if globais != ["Loja.Dominio"] {
-        faltas.push(format!("GlobalUsings.cs guarda o import global Loja.Dominio: {globais:?}"));
+    let globals = list(&module("Loja/GlobalUsings.cs")["global_imports"]);
+    if globals != ["Loja.Dominio"] {
+        failures.push(format!("GlobalUsings.cs guarda o import global Loja.Dominio: {globals:?}"));
     }
     if let Some(m) = modules.iter().find(|m| m["path"] != "Loja/GlobalUsings.cs" && m.get("global_imports").is_some()) {
-        faltas.push(format!("só GlobalUsings.cs grava import global: {}", m["path"]));
+        failures.push(format!("só GlobalUsings.cs grava import global: {}", m["path"]));
     }
-    if !deps("Loja/GlobalUsings.cs").is_empty() || deps(pedido).contains(&"Loja/Dominio/Calculadora.cs".to_string()) {
-        faltas.push(format!(
+    if !deps("Loja/GlobalUsings.cs").is_empty() || deps(order).contains(&"Loja/Dominio/Calculadora.cs".to_string()) {
+        failures.push(format!(
             "nem GlobalUsings.cs, que não usa nada, nem Pedido.cs têm aresta para Calculadora.cs: {:?} / {:?}",
             deps("Loja/GlobalUsings.cs"),
-            deps(pedido)
+            deps(order)
         ));
     }
 
     // O namespace de cima: Pedido.cs, em Loja.Pedidos, enxerga Loja.
-    let arredondar = usos("Loja/Regra.cs", "Arredondar");
-    let esperado = format!("{pedido}:{}:Fechar", linha_de(corpo(pedido), "r.Arredondar(2)"));
-    if !arredondar.contains(&esperado) {
-        faltas.push(format!("Arredondar tem o uso {esperado}: {arredondar:?}"));
+    let round = uses("Loja/Regra.cs", "Arredondar");
+    let expected = format!("{order}:{}:Fechar", line_of(body(order), "r.Arredondar(2)"));
+    if !round.contains(&expected) {
+        failures.push(format!("Arredondar tem o uso {expected}: {round:?}"));
     }
     // O nome escrito dentro do `namespace Loja.Pedidos;` não é uso da classe
     // Pedidos, que agora está à vista.
-    let linha_do_namespace = format!("{pedido}:{}", linha_de(corpo(pedido), "namespace Loja.Pedidos;"));
-    let pedidos = usos("Loja/Pedidos.cs", "Pedidos");
-    if pedidos.iter().any(|u| u == &linha_do_namespace || u.starts_with(&format!("{linha_do_namespace}:"))) {
-        faltas.push(format!("a classe Pedidos não tem uso na linha do namespace: {pedidos:?}"));
+    let namespace_line = format!("{order}:{}", line_of(body(order), "namespace Loja.Pedidos;"));
+    let orders = uses("Loja/Pedidos.cs", "Pedidos");
+    if orders.iter().any(|u| u == &namespace_line || u.starts_with(&format!("{namespace_line}:"))) {
+        failures.push(format!("a classe Pedidos não tem uso na linha do namespace: {orders:?}"));
     }
 
     // O pacote do projeto com escopo: `@loja/core/server/preco` acha o arquivo
     // em `src/server/`, onde o package.json põe o código.
     let web = "apps/web/src/pedido.ts";
-    let total_ts = usos("packages/core/src/server/preco.ts", "total");
+    let total_ts = uses("packages/core/src/server/preco.ts", "total");
     if !total_ts.iter().any(|u| u.starts_with(&format!("{web}:"))) {
-        faltas.push(format!("o total do TypeScript tem o uso em {web}: {total_ts:?}"));
+        failures.push(format!("o total do TypeScript tem o uso em {web}: {total_ts:?}"));
     }
     if !deps(web).contains(&"packages/core/src/server/preco.ts".to_string()) {
-        faltas.push(format!("{web} tem packages/core/src/server/preco.ts nos deps: {:?}", deps(web)));
+        failures.push(format!("{web} tem packages/core/src/server/preco.ts nos deps: {:?}", deps(web)));
     }
 
     // O pacote do Go é a pasta: o Dobro de b/util não ganha o uso de a/util.
-    let dobro_a = usos("a/util/x.go", "Dobro");
-    let dobro_b = usos("b/util/y.go", "Dobro");
-    if dobro_a.is_empty() || dobro_a.iter().any(|u| !u.starts_with("a/util/usa.go:")) || !dobro_b.is_empty() {
-        faltas.push(format!("só o Dobro de a/util/x.go tem o uso de a/util/usa.go: {dobro_a:?} / {dobro_b:?}"));
+    let double_a = uses("a/util/x.go", "Dobro");
+    let double_b = uses("b/util/y.go", "Dobro");
+    if double_a.is_empty() || double_a.iter().any(|u| !u.starts_with("a/util/usa.go:")) || !double_b.is_empty() {
+        failures.push(format!("só o Dobro de a/util/x.go tem o uso de a/util/usa.go: {double_a:?} / {double_b:?}"));
     }
 
     // O import de arquivo sem `./` no Dart é o arquivo ao lado, e não o pacote
     // Go `conta`; nem o `import conta` do Python responde com esse pacote.
-    let total_dart = usos("dart/lib/conta.dart", "total");
+    let total_dart = uses("dart/lib/conta.dart", "total");
     if !total_dart.iter().any(|u| u.starts_with("dart/lib/pedido.dart:")) {
-        faltas.push(format!("o total de dart/lib/conta.dart tem o uso de dart/lib/pedido.dart: {total_dart:?}"));
+        failures.push(format!("o total de dart/lib/conta.dart tem o uso de dart/lib/pedido.dart: {total_dart:?}"));
     }
-    let total_go = usos("conta/conta.go", "total");
+    let total_go = uses("conta/conta.go", "total");
     if !total_go.is_empty() {
-        faltas.push(format!("o total de conta/conta.go não tem uso: {total_go:?}"));
+        failures.push(format!("o total de conta/conta.go não tem uso: {total_go:?}"));
     }
     if deps("dart/lib/pedido.dart") != ["dart/lib/conta.dart"] {
-        faltas.push(format!("o único dos deps de dart/lib/pedido.dart é dart/lib/conta.dart: {:?}", deps("dart/lib/pedido.dart")));
+        failures.push(format!("o único dos deps de dart/lib/pedido.dart é dart/lib/conta.dart: {:?}", deps("dart/lib/pedido.dart")));
     }
     if !deps("py/caixa.py").is_empty() {
-        faltas.push(format!("o import conta do Python não acha o pacote Go: {:?}", deps("py/caixa.py")));
+        failures.push(format!("o import conta do Python não acha o pacote Go: {:?}", deps("py/caixa.py")));
     }
 
-    assert!(faltas.is_empty(), "{}", faltas.join("\n"));
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
 /// A biblioteca Dart do projeto: `lib/caixa.dart` tem a função `dobro`, uma
@@ -568,49 +568,49 @@ fn cada_arquivo_enxerga_o_que_a_linguagem_poe_a_vista() {
 /// corpo em várias linhas que chamam `dobro`; `lib/caixa_parte.dart` é parte
 /// dela pelo arquivo. `lib/conta.dart` dá nome à biblioteca, e
 /// `lib/conta_parte.dart` é parte dela pelo nome.
-const CAIXA_DART: &str = "part 'caixa_parte.dart';\n\nint dobro(int n) {\n  return n * 2;\n}\n\n\
+const BOX_DART: &str = "part 'caixa_parte.dart';\n\nint dobro(int n) {\n  return n * 2;\n}\n\n\
 class Caixa {\n  int _v = 0;\n\n  Caixa(int n) {\n    _v = dobro(n);\n  }\n\n  \
 Caixa.vazia() {\n    _v = dobro(0);\n  }\n\n  factory Caixa.de(int n) {\n    return Caixa(dobro(n));\n  }\n\n  \
 int get valor {\n    return dobro(_v);\n  }\n\n  set valor(int v) {\n    _v = dobro(v);\n  }\n}\n\n\
 extension Metade on int {\n  int metade() {\n    return dobro(this) ~/ 4;\n  }\n}\n\n\
 enum Cor {\n  azul;\n\n  int peso() {\n    return dobro(1);\n  }\n}\n";
-const CAIXA_PARTE_DART: &str = "part of 'caixa.dart';\n\nint extra() {\n  return dobro(3);\n}\n";
-const CONTA_DART: &str = "library loja.conta;\n\npart 'conta_parte.dart';\n\nint triplo(int n) {\n  return n * 3;\n}\n";
-const CONTA_PARTE_DART: &str = "part of loja.conta;\n\nint usa() {\n  return triplo(1);\n}\n";
+const BOX_PART_DART: &str = "part of 'caixa.dart';\n\nint extra() {\n  return dobro(3);\n}\n";
+const ACCOUNT_DART: &str = "library loja.conta;\n\npart 'conta_parte.dart';\n\nint triplo(int n) {\n  return n * 3;\n}\n";
+const ACCOUNT_PART_DART: &str = "part of loja.conta;\n\nint usa() {\n  return triplo(1);\n}\n";
 
 /// A linha da chave que fecha o corpo que abre na linha do cabeçalho: a
 /// primeira, depois dele, que tem só `}` com o mesmo recuo.
-fn fim_do_corpo(corpo: &str, cabecalho: &str) -> usize {
-    let inicio = linha_de(corpo, cabecalho);
-    let linhas: Vec<&str> = corpo.lines().collect();
-    let recuo = &linhas[inicio - 1][..linhas[inicio - 1].len() - linhas[inicio - 1].trim_start().len()];
-    let fecha = format!("{recuo}}}");
-    inicio + linhas[inicio..].iter().position(|l| *l == fecha).expect("o corpo fecha") + 1
+fn end_of_body(body: &str, header: &str) -> usize {
+    let start = line_of(body, header);
+    let lines: Vec<&str> = body.lines().collect();
+    let indent = &lines[start - 1][..lines[start - 1].len() - lines[start - 1].trim_start().len()];
+    let closer = format!("{indent}}}");
+    start + lines[start..].iter().position(|l| *l == closer).expect("o corpo fecha") + 1
 }
 
 #[test]
-fn o_dart_termina_cada_declaracao_no_fim_do_corpo_e_a_parte_enxerga_o_dono() {
-    let temp = pasta_do_projeto("dart-fim-do-corpo");
+fn dart_ends_each_declaration_at_the_end_of_the_body_and_the_part_sees_the_owner() {
+    let temp = project_dir("dart-fim-do-corpo");
     let dir = temp.path().to_path_buf();
-    write(&dir, "lib/caixa.dart", CAIXA_DART);
-    write(&dir, "lib/caixa_parte.dart", CAIXA_PARTE_DART);
-    write(&dir, "lib/conta.dart", CONTA_DART);
-    write(&dir, "lib/conta_parte.dart", CONTA_PARTE_DART);
+    write(&dir, "lib/caixa.dart", BOX_DART);
+    write(&dir, "lib/caixa_parte.dart", BOX_PART_DART);
+    write(&dir, "lib/conta.dart", ACCOUNT_DART);
+    write(&dir, "lib/conta_parte.dart", ACCOUNT_PART_DART);
     let map = scan(&dir);
     let modules = map["modules"].as_array().expect("modules");
-    let modulo = |arquivo: &str| -> &Value {
-        modules.iter().find(|m| m["path"] == arquivo).unwrap_or_else(|| panic!("{arquivo} no mapa"))
+    let module = |file: &str| -> &Value {
+        modules.iter().find(|m| m["path"] == file).unwrap_or_else(|| panic!("{file} no mapa"))
     };
-    let lista = |v: &Value| -> Vec<String> {
+    let list = |v: &Value| -> Vec<String> {
         v.as_array().map_or(Vec::new(), |a| a.iter().map(|u| u.as_str().unwrap().to_string()).collect())
     };
-    let caixa = modulo("lib/caixa.dart");
-    let declaracoes = caixa["declarations"].as_array().expect("declarations");
-    let mut faltas: Vec<String> = Vec::new();
+    let box_module = module("lib/caixa.dart");
+    let declarations = box_module["declarations"].as_array().expect("declarations");
+    let mut failures: Vec<String> = Vec::new();
 
     // Cada declaração com corpo, de quem é o uso de `dobro` dentro dela: o
     // nome da própria declaração, o cabeçalho e o texto da chamada.
-    let membros = [
+    let members = [
         ("dobro", "int dobro(int n) {", None),
         ("Caixa", "  Caixa(int n) {", Some("_v = dobro(n);")),
         ("vazia", "Caixa.vazia() {", Some("_v = dobro(0);")),
@@ -620,48 +620,48 @@ fn o_dart_termina_cada_declaracao_no_fim_do_corpo_e_a_parte_enxerga_o_dono() {
         ("metade", "int metade() {", Some("return dobro(this) ~/ 4;")),
         ("peso", "int peso() {", Some("return dobro(1);")),
     ];
-    let mut esperado: Vec<String> = Vec::new();
-    for (nome, cabecalho, chamada) in membros {
-        let linha = linha_de(CAIXA_DART, cabecalho);
-        let fim = fim_do_corpo(CAIXA_DART, cabecalho);
-        match declaracoes.iter().find(|d| d["name"] == nome && d["line"] == linha) {
-            Some(d) if d["end_line"] == fim => {}
-            Some(d) => faltas.push(format!("{nome}, da linha {linha}, termina na linha {fim}: {d}")),
-            None => faltas.push(format!("{nome} é declarado na linha {linha}")),
+    let mut expected: Vec<String> = Vec::new();
+    for (name, header, call) in members {
+        let line = line_of(BOX_DART, header);
+        let end = end_of_body(BOX_DART, header);
+        match declarations.iter().find(|d| d["name"] == name && d["line"] == line) {
+            Some(d) if d["end_line"] == end => {}
+            Some(d) => failures.push(format!("{name}, da linha {line}, termina na linha {end}: {d}")),
+            None => failures.push(format!("{name} é declarado na linha {line}")),
         }
-        if let Some(chamada) = chamada {
-            esperado.push(format!("lib/caixa.dart:{}:{nome}", linha_de(CAIXA_DART, chamada)));
+        if let Some(call) = call {
+            expected.push(format!("lib/caixa.dart:{}:{name}", line_of(BOX_DART, call)));
         }
     }
     // O arquivo `part of 'caixa.dart';` divide a biblioteca com o dono, e a
     // chamada de lá liga ao `dobro` daqui.
-    esperado.push(format!("lib/caixa_parte.dart:{}:extra", linha_de(CAIXA_PARTE_DART, "dobro(3)")));
-    let dobro = declaracoes.iter().find(|d| d["name"] == "dobro").expect("dobro declarado");
-    let mut usos = lista(&dobro["used_by"]);
-    usos.sort();
-    esperado.sort();
-    if usos != esperado {
-        faltas.push(format!("cada uso de dobro vem da própria declaração, nunca da classe nem do enum: {usos:?}"));
+    expected.push(format!("lib/caixa_parte.dart:{}:extra", line_of(BOX_PART_DART, "dobro(3)")));
+    let double = declarations.iter().find(|d| d["name"] == "dobro").expect("dobro declarado");
+    let mut uses = list(&double["used_by"]);
+    uses.sort();
+    expected.sort();
+    if uses != expected {
+        failures.push(format!("cada uso de dobro vem da própria declaração, nunca da classe nem do enum: {uses:?}"));
     }
 
     // O cabeçalho do setter declara `valor`, e não o chama.
-    let setter = linha_de(CAIXA_DART, "set valor(int v)");
-    let chamadas = lista(&caixa["calls"]);
-    if chamadas.iter().any(|c| c == &format!("valor:{setter}")) {
-        faltas.push(format!("não há chamada valor na linha {setter}, do setter: {chamadas:?}"));
+    let setter = line_of(BOX_DART, "set valor(int v)");
+    let calls = list(&box_module["calls"]);
+    if calls.iter().any(|c| c == &format!("valor:{setter}")) {
+        failures.push(format!("não há chamada valor na linha {setter}, do setter: {calls:?}"));
     }
 
     // A parte pelo nome da biblioteca, `part of loja.conta;`, enxerga o dono
     // que se declara `library loja.conta;`.
-    let conta = modulo("lib/conta.dart");
-    let triplo = conta["declarations"].as_array().into_iter().flatten().find(|d| d["name"] == "triplo");
-    let usos_triplo = triplo.map(|d| lista(&d["used_by"])).unwrap_or_default();
-    let uso = format!("lib/conta_parte.dart:{}:usa", linha_de(CONTA_PARTE_DART, "triplo(1)"));
-    if !usos_triplo.contains(&uso) {
-        faltas.push(format!("triplo tem o uso {uso}: {usos_triplo:?}"));
+    let account = module("lib/conta.dart");
+    let triple = account["declarations"].as_array().into_iter().flatten().find(|d| d["name"] == "triplo");
+    let triple_uses = triple.map(|d| list(&d["used_by"])).unwrap_or_default();
+    let expected_use = format!("lib/conta_parte.dart:{}:usa", line_of(ACCOUNT_PART_DART, "triplo(1)"));
+    if !triple_uses.contains(&expected_use) {
+        failures.push(format!("triplo tem o uso {expected_use}: {triple_uses:?}"));
     }
 
-    assert!(faltas.is_empty(), "{}", faltas.join("\n"));
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
 /// O projeto da citação que liga pelo que o projeto declara. Em cada uma das
@@ -672,7 +672,7 @@ fn o_dart_termina_cada_declaracao_no_fim_do_corpo_e_a_parte_enxerga_o_dono() {
 /// `parcial` é uma variável de dentro da função. O C# cita `DateTime.Today`,
 /// que nenhum arquivo do projeto declara. E três linhas declaram duas
 /// constantes cada uma.
-fn projeto_da_citacao() -> Vec<(&'static str, &'static str)> {
+fn mention_project() -> Vec<(&'static str, &'static str)> {
     vec![
         ("src/limites.ts", "export const limiteDiario = 10;\n"),
         (
@@ -730,45 +730,45 @@ fn git(dir: &Path, args: &[&str]) {
 
 /// Uma leitura do scan, com os argumentos a mais: o mapa, os bytes dele e se
 /// a leitura foi inteira.
-fn ler(dir: &Path, extra: &[&str]) -> (Value, Vec<u8>, bool) {
-    let (mapa, relato) = model::scan(dir, &pasta_do_mapa(dir), extra);
-    (mapa, model::read_bytes(&pasta_do_mapa(dir)), relato["full"] == Value::Bool(true))
+fn scan_with_bytes(dir: &Path, extra: &[&str]) -> (Value, Vec<u8>, bool) {
+    let (map, report) = model::scan(dir, &map_dir(dir), extra);
+    (map, model::read_bytes(&map_dir(dir)), report["full"] == Value::Bool(true))
 }
 
 #[test]
-fn a_citacao_liga_pelo_que_o_projeto_declara_e_nao_pela_letra() {
-    let temp = pasta_do_projeto("citacao-que-liga");
+fn a_mention_links_by_what_the_project_declares_and_not_by_the_letter() {
+    let temp = project_dir("citacao-que-liga");
     let dir = temp.path().to_path_buf();
-    let projeto = projeto_da_citacao();
-    for (rel, corpo) in &projeto {
-        write(&dir, rel, corpo);
+    let project = mention_project();
+    for (rel, body) in &project {
+        write(&dir, rel, body);
     }
     git(&dir, &["init", "-q"]);
     let exclude = mustard_core::footprint_rules().join("\n") + "\n";
     std::fs::write(dir.join(".git").join("info").join("exclude"), exclude).unwrap();
     git(&dir, &["add", "-A"]);
     git(&dir, &["commit", "-q", "-m", "primeiro"]);
-    let corpo = |rel: &str| projeto.iter().find(|(p, _)| *p == rel).unwrap().1;
+    let body = |rel: &str| project.iter().find(|(p, _)| *p == rel).unwrap().1;
 
-    let (map, _, _) = ler(&dir, &["--all"]);
+    let (map, _, _) = scan_with_bytes(&dir, &["--all"]);
     let modules = map["modules"].as_array().expect("modules").clone();
-    let modulo = |arquivo: &str| -> Value {
-        modules.iter().find(|m| m["path"] == arquivo).cloned().unwrap_or_else(|| panic!("{arquivo} no mapa"))
+    let module = |file: &str| -> Value {
+        modules.iter().find(|m| m["path"] == file).cloned().unwrap_or_else(|| panic!("{file} no mapa"))
     };
-    let lista = |v: &Value| -> Vec<String> {
+    let list = |v: &Value| -> Vec<String> {
         v.as_array().map_or(Vec::new(), |a| a.iter().map(|u| u.as_str().unwrap().to_string()).collect())
     };
-    let declaracao = |arquivo: &str, nome: &str| -> Option<Value> {
-        modulo(arquivo)["declarations"].as_array().into_iter().flatten().find(|d| d["name"] == nome).cloned()
+    let declaration = |file: &str, name: &str| -> Option<Value> {
+        module(file)["declarations"].as_array().into_iter().flatten().find(|d| d["name"] == name).cloned()
     };
     // Junta as faltas antes de reprovar, para que cada regra que quebra
     // apareça inteira de uma vez.
-    let mut faltas: Vec<String> = Vec::new();
+    let mut failures: Vec<String> = Vec::new();
 
     // Em cada linguagem, a constante tem o tipo const e o uso com o arquivo e
     // a linha da citação, e a declaração de onde a citação vem. No
     // TypeScript, só a linha da citação: a do import não é uso.
-    let constantes = [
+    let constants = [
         ("cs/Regras.cs", "Limite", "cs/Pedido.cs", "Regras.Limite", "Pode"),
         ("go/conta/limites.go", "limite", "go/conta/pedido.go", "valor <= limite", "pode"),
         ("py/loja/regras.py", "LIMITE", "py/loja/pedido.py", "valor <= LIMITE", "pode"),
@@ -778,41 +778,41 @@ fn a_citacao_liga_pelo_que_o_projeto_declara_e_nao_pela_letra() {
         ("src/limites.ts", "limiteDiario", "src/pedido.ts", "valor <= limiteDiario", "podeComprar"),
         ("src/taxa.ts", "taxaPadrao", "src/taxa.ts", "parcial + taxaPadrao", "calcular"),
     ];
-    for (dono, nome, quem, citacao, de) in constantes {
-        let esperado = vec![format!("{quem}:{}:{de}", linha_de(corpo(quem), citacao))];
-        match declaracao(dono, nome) {
-            Some(d) if d["kind"] == "const" && lista(&d["used_by"]) == esperado => {}
-            Some(d) => faltas.push(format!("{nome}, de {dono}, é const com só o uso {esperado:?}: {d}")),
-            None => faltas.push(format!("{nome} está declarado em {dono}")),
+    for (owner, name, who, mention, enclosing) in constants {
+        let expected = vec![format!("{who}:{}:{enclosing}", line_of(body(who), mention))];
+        match declaration(owner, name) {
+            Some(d) if d["kind"] == "const" && list(&d["used_by"]) == expected => {}
+            Some(d) => failures.push(format!("{name}, de {owner}, é const com só o uso {expected:?}: {d}")),
+            None => failures.push(format!("{name} está declarado em {owner}")),
         }
     }
 
     // A variável de dentro da função e o nome da biblioteca que o projeto não
     // declara não ficam entre as citações do arquivo.
-    for (arquivo, nome) in [("src/taxa.ts", "parcial"), ("cs/Pedido.cs", "DateTime")] {
-        let citacoes = lista(&modulo(arquivo)["cites"]);
-        let achadas: Vec<&String> = citacoes
+    for (file, name) in [("src/taxa.ts", "parcial"), ("cs/Pedido.cs", "DateTime")] {
+        let mentions = list(&module(file)["cites"]);
+        let found: Vec<&String> = mentions
             .iter()
-            .filter(|c| c.starts_with(&format!("{nome}:")) || c.contains(&format!(".{nome}:")))
+            .filter(|c| c.starts_with(&format!("{name}:")) || c.contains(&format!(".{name}:")))
             .collect();
-        if !achadas.is_empty() {
-            faltas.push(format!("{nome} não liga a nada do projeto e não fica em {arquivo}: {citacoes:?}"));
+        if !found.is_empty() {
+            failures.push(format!("{name} não liga a nada do projeto e não fica em {file}: {mentions:?}"));
         }
     }
 
     // Cada linha que declara duas constantes dá as duas, cada uma com o
     // próprio nome, o tipo const e o próprio cabeçalho.
-    let pares = [
+    let pairs = [
         ("src/par.ts", [("a", "export const a"), ("b", "export const b")]),
         ("cs/Regras.cs", [("A", "public const int A"), ("B", "public const int B")]),
         ("php/Regras.php", [("A", "const A"), ("B", "const B")]),
     ];
-    for (arquivo, par) in pares {
-        for (nome, cabecalho) in par {
-            match declaracao(arquivo, nome) {
-                Some(d) if d["kind"] == "const" && d["signature"] == cabecalho => {}
-                Some(d) => faltas.push(format!("{nome}, de {arquivo}, é const com o cabeçalho {cabecalho}: {d}")),
-                None => faltas.push(format!("{nome} está declarado em {arquivo}")),
+    for (file, pair) in pairs {
+        for (name, header) in pair {
+            match declaration(file, name) {
+                Some(d) if d["kind"] == "const" && d["signature"] == header => {}
+                Some(d) => failures.push(format!("{name}, de {file}, é const com o cabeçalho {header}: {d}")),
+                None => failures.push(format!("{name} está declarado em {file}")),
             }
         }
     }
@@ -821,109 +821,109 @@ fn a_citacao_liga_pelo_que_o_projeto_declara_e_nao_pela_letra() {
     // mudou, já citava: a leitura que relê só o que mudou dá o uso, e o mesmo
     // mapa que a leitura inteira.
     write(&dir, "src/tipos.ts", "export interface Velho {\n  nome: string;\n}\n\nexport interface Novo {\n  id: number;\n}\n");
-    let (passo, bytes_passo, inteira) = ler(&dir, &[]);
-    if inteira {
-        faltas.push("a segunda leitura relê só o que mudou".to_string());
+    let (step, bytes_step, whole) = scan_with_bytes(&dir, &[]);
+    if whole {
+        failures.push("a segunda leitura relê só o que mudou".to_string());
     }
-    let usa = corpo("src/usa.ts");
-    let esperado = vec![format!("src/usa.ts:{}:usar", linha_de(usa, "x: Novo"))];
-    let novo = passo["modules"]
+    let user_file = body("src/usa.ts");
+    let expected = vec![format!("src/usa.ts:{}:usar", line_of(user_file, "x: Novo"))];
+    let fresh = step["modules"]
         .as_array()
         .into_iter()
         .flatten()
         .filter(|m| m["path"] == "src/tipos.ts")
         .flat_map(|m| m["declarations"].as_array().cloned().unwrap_or_default())
         .find(|d| d["name"] == "Novo");
-    match novo {
-        Some(d) if lista(&d["used_by"]) == esperado => {}
-        other => faltas.push(format!("o tipo novo tem o uso {esperado:?} do arquivo que não mudou: {other:?}")),
+    match fresh {
+        Some(d) if list(&d["used_by"]) == expected => {}
+        other => failures.push(format!("o tipo novo tem o uso {expected:?} do arquivo que não mudou: {other:?}")),
     }
-    let (_, bytes_inteira, _) = ler(&dir, &["--all"]);
-    if bytes_passo != bytes_inteira {
-        faltas.push("a leitura que relê só o que mudou dá o mesmo mapa que a leitura inteira".to_string());
+    let (_, bytes_whole, _) = scan_with_bytes(&dir, &["--all"]);
+    if bytes_step != bytes_whole {
+        failures.push("a leitura que relê só o que mudou dá o mesmo mapa que a leitura inteira".to_string());
     }
 
-    assert!(faltas.is_empty(), "{}", faltas.join("\n"));
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
 /// Uma linguagem do projeto das ligações provadas e suspeitas: a pasta dela e
 /// os arquivos, cada um com o que tem dentro. Em cada uma, `run` é declarada
-/// em dois módulos, `a` e `b`; `com_import` importa a de `a` e a chama;
-/// `sem_import` a chama sem importar nada; `usa_unica` chama `unica`,
-/// declarada uma vez só na linguagem, sem importar nada; e `por_valor`
+/// em dois módulos, `a` e `b`; `with_import` importa a de `a` e a chama;
+/// `without_import` a chama sem importar nada; `uses_unique` chama `unica`,
+/// declarada uma vez só na linguagem, sem importar nada; e `by_value`
 /// importa a `run` de `a` e a chama por uma variável.
-struct Ligacoes {
+struct Links {
     a: &'static str,
     b: &'static str,
-    com_import: &'static str,
-    sem_import: &'static str,
-    unica: &'static str,
-    usa_unica: &'static str,
-    por_valor: &'static str,
-    arquivos: [(&'static str, &'static str); 7],
+    with_import: &'static str,
+    without_import: &'static str,
+    unique: &'static str,
+    uses_unique: &'static str,
+    by_value: &'static str,
+    files: [(&'static str, &'static str); 7],
 }
 
-fn ligacoes() -> Vec<Ligacoes> {
+fn links() -> Vec<Links> {
     vec![
-        Ligacoes {
+        Links {
             a: "rs/src/a.rs",
             b: "rs/src/b.rs",
-            com_import: "rs/src/com_import.rs",
-            sem_import: "rs/src/sem_import.rs",
-            unica: "rs/src/unica.rs",
-            usa_unica: "rs/src/usa_unica.rs",
-            por_valor: "rs/src/por_valor.rs",
-            arquivos: [
+            with_import: "rs/src/with_import.rs",
+            without_import: "rs/src/without_import.rs",
+            unique: "rs/src/unica.rs",
+            uses_unique: "rs/src/uses_unique.rs",
+            by_value: "rs/src/by_value.rs",
+            files: [
                 ("rs/src/a.rs", "pub fn run() -> u32 {\n    1\n}\n"),
                 ("rs/src/b.rs", "pub fn run() -> u32 {\n    2\n}\n"),
-                ("rs/src/com_import.rs", "use crate::a::run;\n\npub fn com_import() -> u32 {\n    run()\n}\n"),
-                ("rs/src/sem_import.rs", "pub fn sem_import() -> u32 {\n    run()\n}\n"),
+                ("rs/src/with_import.rs", "use crate::a::run;\n\npub fn with_import() -> u32 {\n    run()\n}\n"),
+                ("rs/src/without_import.rs", "pub fn without_import() -> u32 {\n    run()\n}\n"),
                 ("rs/src/unica.rs", "pub fn unica() -> u32 {\n    3\n}\n"),
-                ("rs/src/usa_unica.rs", "pub fn usa_unica() -> u32 {\n    unica()\n}\n"),
-                ("rs/src/por_valor.rs", "use crate::a::run;\n\npub fn por_valor(x: Tarefa) -> u32 {\n    x.run()\n}\n"),
+                ("rs/src/uses_unique.rs", "pub fn uses_unique() -> u32 {\n    unica()\n}\n"),
+                ("rs/src/by_value.rs", "use crate::a::run;\n\npub fn by_value(x: Tarefa) -> u32 {\n    x.run()\n}\n"),
             ],
         },
-        Ligacoes {
+        Links {
             a: "ts/src/a/tarefa.ts",
             b: "ts/src/b/tarefa.ts",
-            com_import: "ts/src/com_import.ts",
-            sem_import: "ts/src/sem_import.ts",
-            unica: "ts/src/unica.ts",
-            usa_unica: "ts/src/usa_unica.ts",
-            por_valor: "ts/src/por_valor.ts",
-            arquivos: [
+            with_import: "ts/src/with_import.ts",
+            without_import: "ts/src/without_import.ts",
+            unique: "ts/src/unica.ts",
+            uses_unique: "ts/src/uses_unique.ts",
+            by_value: "ts/src/by_value.ts",
+            files: [
                 ("ts/src/a/tarefa.ts", "export function run(): number {\n  return 1;\n}\n"),
                 ("ts/src/b/tarefa.ts", "export function run(): number {\n  return 2;\n}\n"),
                 (
-                    "ts/src/com_import.ts",
-                    "import { run } from \"./a/tarefa\";\n\nexport function comImport(): number {\n  return run();\n}\n",
+                    "ts/src/with_import.ts",
+                    "import { run } from \"./a/tarefa\";\n\nexport function withImport(): number {\n  return run();\n}\n",
                 ),
-                ("ts/src/sem_import.ts", "export function semImport(): number {\n  return run();\n}\n"),
+                ("ts/src/without_import.ts", "export function withoutImport(): number {\n  return run();\n}\n"),
                 ("ts/src/unica.ts", "export function unica(): number {\n  return 3;\n}\n"),
-                ("ts/src/usa_unica.ts", "export function usaUnica(): number {\n  return unica();\n}\n"),
+                ("ts/src/uses_unique.ts", "export function usesUnique(): number {\n  return unica();\n}\n"),
                 (
-                    "ts/src/por_valor.ts",
-                    "import { run } from \"./a/tarefa\";\n\nexport function porValor(x: Tarefa): number {\n  \
+                    "ts/src/by_value.ts",
+                    "import { run } from \"./a/tarefa\";\n\nexport function byValue(x: Tarefa): number {\n  \
                      return x.run();\n}\n",
                 ),
             ],
         },
-        Ligacoes {
+        Links {
             a: "py/pkg/a/tarefa.py",
             b: "py/pkg/b/tarefa.py",
-            com_import: "py/pkg/com_import.py",
-            sem_import: "py/pkg/sem_import.py",
-            unica: "py/pkg/unica.py",
-            usa_unica: "py/pkg/usa_unica.py",
-            por_valor: "py/pkg/por_valor.py",
-            arquivos: [
+            with_import: "py/pkg/with_import.py",
+            without_import: "py/pkg/without_import.py",
+            unique: "py/pkg/unica.py",
+            uses_unique: "py/pkg/uses_unique.py",
+            by_value: "py/pkg/by_value.py",
+            files: [
                 ("py/pkg/a/tarefa.py", "def run():\n    return 1\n"),
                 ("py/pkg/b/tarefa.py", "def run():\n    return 2\n"),
-                ("py/pkg/com_import.py", "from pkg.a.tarefa import run\n\n\ndef com_import():\n    return run()\n"),
-                ("py/pkg/sem_import.py", "def sem_import():\n    return run()\n"),
+                ("py/pkg/with_import.py", "from pkg.a.tarefa import run\n\n\ndef with_import():\n    return run()\n"),
+                ("py/pkg/without_import.py", "def without_import():\n    return run()\n"),
                 ("py/pkg/unica.py", "def unica():\n    return 3\n"),
-                ("py/pkg/usa_unica.py", "def usa_unica():\n    return unica()\n"),
-                ("py/pkg/por_valor.py", "from pkg.a.tarefa import run\n\n\ndef por_valor(x):\n    return x.run()\n"),
+                ("py/pkg/uses_unique.py", "def uses_unique():\n    return unica()\n"),
+                ("py/pkg/by_value.py", "from pkg.a.tarefa import run\n\n\ndef by_value(x):\n    return x.run()\n"),
             ],
         },
     ]
@@ -945,7 +945,7 @@ fn ligacoes() -> Vec<Ligacoes> {
 /// `gravar` por `module.exports.gravar`, `mais.js` exporta a função `apagar`
 /// como o próprio módulo, `junta.js` declara `ler` e o exporta num objeto, e
 /// `app.js` traz `ler` de `servico.js` pelo `require` e o chama.
-const ALCANCE: &[(&str, &str)] = &[
+const REACH: &[(&str, &str)] = &[
     ("py/pyproject.toml", "[project]\nname = \"l\"\n"),
     ("py/l/__init__.py", ""),
     ("py/l/util.py", "def open(x):\n    return x\n\n\ndef dumps(x):\n    return x\n"),
@@ -990,25 +990,25 @@ const ALCANCE: &[(&str, &str)] = &[
 ];
 
 /// O mapa do projeto do alcance, montado uma vez para todos os testes dele.
-fn mapa_do_alcance() -> &'static Value {
-    static MAPA: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
-    MAPA.get_or_init(|| {
-        let temp = pasta_do_projeto("alcance-do-nome");
-        for (rel, corpo) in ALCANCE {
-            write(temp.path(), rel, corpo);
+fn reach_map() -> &'static Value {
+    static MAP: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+    MAP.get_or_init(|| {
+        let temp = project_dir("alcance-do-nome");
+        for (rel, body) in REACH {
+            write(temp.path(), rel, body);
         }
         scan(temp.path())
     })
 }
 
-/// Quantos usos provados e quantos suspeitos a declaração `nome` de `arquivo`
-/// recebe da linha `lugar` (`arquivo:linha`).
-fn no_lugar(arquivo: &str, nome: &str, lugar: &str) -> (usize, usize) {
-    let usos = usos_de(mapa_do_alcance(), arquivo, nome);
-    let lugar = format!("{lugar}:");
+/// Quantos usos provados e quantos suspeitos a declaração `name` de `file`
+/// recebe da linha `place` (`arquivo:linha`).
+fn counts_at(file: &str, name: &str, place: &str) -> (usize, usize) {
+    let uses = uses_of(reach_map(), file, name);
+    let place = format!("{place}:");
     (
-        usos.provados.iter().filter(|at| at.starts_with(&lugar)).count(),
-        usos.suspeitos.iter().filter(|(at, _)| at.starts_with(&lugar)).count(),
+        uses.proven.iter().filter(|at| at.starts_with(&place)).count(),
+        uses.suspect.iter().filter(|(at, _)| at.starts_with(&place)).count(),
     )
 }
 
@@ -1017,8 +1017,8 @@ fn no_lugar(arquivo: &str, nome: &str, lugar: &str) -> (usize, usize) {
 /// dele, e não o de `aves.ts`, que ele importa.
 #[test]
 fn a_bare_name_the_file_declares_is_its_own() {
-    assert_eq!(no_lugar("ts/src/app.ts", "router", "ts/src/app.ts:6"), (1, 0), "o router do próprio arquivo");
-    assert_eq!(no_lugar("ts/src/aves.ts", "router", "ts/src/app.ts:6"), (0, 0), "o router de aves.ts");
+    assert_eq!(counts_at("ts/src/app.ts", "router", "ts/src/app.ts:6"), (1, 0), "o router do próprio arquivo");
+    assert_eq!(counts_at("ts/src/aves.ts", "router", "ts/src/app.ts:6"), (0, 0), "o router de aves.ts");
 }
 
 /// O nome da língua escrito sozinho, que o arquivo não declara nem traz pelo
@@ -1027,8 +1027,8 @@ fn a_bare_name_the_file_declares_is_its_own() {
 /// módulo.
 #[test]
 fn a_name_of_the_language_the_file_does_not_bring_links_nowhere() {
-    assert_eq!(no_lugar("py/l/util.py", "open", "py/l/a.py:6"), (0, 0), "open(\"x\")");
-    assert_eq!(no_lugar("ts/src/util.ts", "setTimeout", "ts/src/a.ts:4"), (0, 0), "setTimeout");
+    assert_eq!(counts_at("py/l/util.py", "open", "py/l/a.py:6"), (0, 0), "open(\"x\")");
+    assert_eq!(counts_at("ts/src/util.ts", "setTimeout", "ts/src/a.ts:4"), (0, 0), "setTimeout");
 }
 
 /// O nome escrito depois do apelido de uma biblioteca é dela e não liga:
@@ -1036,28 +1036,28 @@ fn a_name_of_the_language_the_file_does_not_bring_links_nowhere() {
 /// apelido, `json.dumps({})` no Python e `strings.Join` no Go.
 #[test]
 fn a_name_after_a_library_alias_links_nowhere() {
-    assert_eq!(no_lugar("dart/lib/util.dart", "jsonEncode", "dart/lib/a.dart:5"), (0, 0), "c.jsonEncode");
-    assert_eq!(no_lugar("py/l/util.py", "dumps", "py/l/b.py:6"), (0, 0), "json.dumps");
-    assert_eq!(no_lugar("go/util/texto.go", "Join", "go/api/a.go:10"), (0, 0), "strings.Join");
+    assert_eq!(counts_at("dart/lib/util.dart", "jsonEncode", "dart/lib/a.dart:5"), (0, 0), "c.jsonEncode");
+    assert_eq!(counts_at("py/l/util.py", "dumps", "py/l/b.py:6"), (0, 0), "json.dumps");
+    assert_eq!(counts_at("go/util/texto.go", "Join", "go/api/a.go:10"), (0, 0), "strings.Join");
 }
 
 /// O apelido que um import do projeto dá ao módulo nomeia o arquivo dele:
 /// `u.join('a')` no TypeScript e `s.buscar()` no Python são provados.
 #[test]
 fn a_name_after_a_project_alias_is_proven() {
-    assert_eq!(no_lugar("ts/src/util.ts", "join", "ts/src/b.ts:4"), (1, 0), "u.join");
-    assert_eq!(no_lugar("py/loja/servico.py", "buscar", "py/l/c.py:5"), (1, 0), "s.buscar");
+    assert_eq!(counts_at("ts/src/util.ts", "join", "ts/src/b.ts:4"), (1, 0), "u.join");
+    assert_eq!(counts_at("py/loja/servico.py", "buscar", "py/l/c.py:5"), (1, 0), "s.buscar");
 }
 
 /// O nome sozinho sem nada à vista, declarado noutro arquivo, é suspeito,
 /// mesmo declarado uma vez só: nada no arquivo diz que é aquele.
 #[test]
 fn a_bare_name_with_nothing_in_sight_is_suspect() {
-    assert_eq!(no_lugar("py/loja/servico.py", "buscar", "py/l/d.py:2"), (0, 1), "buscar() sem import");
-    let usos = usos_de(mapa_do_alcance(), "py/loja/servico.py", "buscar");
-    let candidatas: Vec<&Vec<String>> =
-        usos.suspeitos.iter().filter(|(at, _)| at.starts_with("py/l/d.py:2:")).map(|(_, c)| c).collect();
-    assert_eq!(candidatas, [&vec!["py/loja/servico.py:1:buscar".to_string()]]);
+    assert_eq!(counts_at("py/loja/servico.py", "buscar", "py/l/d.py:2"), (0, 1), "buscar() sem import");
+    let uses = uses_of(reach_map(), "py/loja/servico.py", "buscar");
+    let candidates: Vec<&Vec<String>> =
+        uses.suspect.iter().filter(|(at, _)| at.starts_with("py/l/d.py:2:")).map(|(_, c)| c).collect();
+    assert_eq!(candidates, [&vec!["py/loja/servico.py:1:buscar".to_string()]]);
 }
 
 /// O nome que o arquivo traz segue provado: `util.open(1)` com o módulo
@@ -1065,10 +1065,10 @@ fn a_bare_name_with_nothing_in_sight_is_suspect() {
 /// `jsonEncode(1)` com `util.dart` importado sem prefixo.
 #[test]
 fn a_name_the_file_brings_stays_proven() {
-    assert_eq!(no_lugar("py/l/util.py", "open", "py/l/a.py:5"), (1, 0), "util.open(1)");
-    assert_eq!(no_lugar("py/l/util.py", "dumps", "py/l/b.py:7"), (1, 0), "dumps(1)");
-    assert_eq!(no_lugar("go/util/texto.go", "Join", "go/api/a.go:11"), (1, 0), "util.Join");
-    assert_eq!(no_lugar("dart/lib/util.dart", "jsonEncode", "dart/lib/a.dart:6"), (1, 0), "jsonEncode(1)");
+    assert_eq!(counts_at("py/l/util.py", "open", "py/l/a.py:5"), (1, 0), "util.open(1)");
+    assert_eq!(counts_at("py/l/util.py", "dumps", "py/l/b.py:7"), (1, 0), "dumps(1)");
+    assert_eq!(counts_at("go/util/texto.go", "Join", "go/api/a.go:11"), (1, 0), "util.Join");
+    assert_eq!(counts_at("dart/lib/util.dart", "jsonEncode", "dart/lib/a.dart:6"), (1, 0), "jsonEncode(1)");
 }
 
 /// O JavaScript antigo exporta a função pelo objeto `exports`: cada forma
@@ -1077,10 +1077,10 @@ fn a_name_the_file_brings_stays_proven() {
 /// declarados não declara nada de novo.
 #[test]
 fn an_old_style_export_is_a_function_its_importer_reaches() {
-    assert_eq!(no_lugar("js/servico.js", "ler", "js/app.js:4"), (1, 0), "ler()");
-    let map = mapa_do_alcance();
-    let declaradas = |arquivo: &str| -> Vec<(String, String)> {
-        let m = map["modules"].as_array().unwrap().iter().find(|m| m["path"] == arquivo).unwrap();
+    assert_eq!(counts_at("js/servico.js", "ler", "js/app.js:4"), (1, 0), "ler()");
+    let map = reach_map();
+    let declared = |file: &str| -> Vec<(String, String)> {
+        let m = map["modules"].as_array().unwrap().iter().find(|m| m["path"] == file).unwrap();
         m["declarations"]
             .as_array()
             .into_iter()
@@ -1088,40 +1088,40 @@ fn an_old_style_export_is_a_function_its_importer_reaches() {
             .map(|d| (d["name"].as_str().unwrap().to_string(), d["kind"].as_str().unwrap().to_string()))
             .collect()
     };
-    let funcao = |nome: &str| vec![(nome.to_string(), "function".to_string())];
-    assert_eq!(declaradas("js/servico.js"), funcao("ler"));
-    assert_eq!(declaradas("js/outro.js"), funcao("gravar"));
-    assert_eq!(declaradas("js/mais.js"), funcao("apagar"));
-    assert_eq!(declaradas("js/junta.js"), funcao("ler"));
+    let function = |name: &str| vec![(name.to_string(), "function".to_string())];
+    assert_eq!(declared("js/servico.js"), function("ler"));
+    assert_eq!(declared("js/outro.js"), function("gravar"));
+    assert_eq!(declared("js/mais.js"), function("apagar"));
+    assert_eq!(declared("js/junta.js"), function("ler"));
 }
 
 /// Os usos gravados de cada declaração do mapa, pelo arquivo e pelo nome:
 /// os provados, como o texto `arquivo:linha:quem`, e os suspeitos, cada um
 /// com o lugar e as candidatas.
-struct Usos {
-    provados: Vec<String>,
-    suspeitos: Vec<(String, Vec<String>)>,
-    comuns: u64,
+struct Uses {
+    proven: Vec<String>,
+    suspect: Vec<(String, Vec<String>)>,
+    common_count: u64,
 }
 
-fn usos_de(map: &Value, arquivo: &str, nome: &str) -> Usos {
+fn uses_of(map: &Value, file: &str, name: &str) -> Uses {
     let m = map["modules"]
         .as_array()
         .expect("modules")
         .iter()
-        .find(|m| m["path"] == arquivo)
-        .unwrap_or_else(|| panic!("{arquivo} no mapa"));
+        .find(|m| m["path"] == file)
+        .unwrap_or_else(|| panic!("{file} no mapa"));
     let d = m["declarations"]
         .as_array()
         .into_iter()
         .flatten()
-        .find(|d| d["name"] == nome)
-        .unwrap_or_else(|| panic!("{nome} declarado em {arquivo}: {m}"));
-    let mut usos = Usos { provados: Vec::new(), suspeitos: Vec::new(), comuns: d["common_calls"].as_u64().unwrap_or(0) };
+        .find(|d| d["name"] == name)
+        .unwrap_or_else(|| panic!("{name} declarado em {file}: {m}"));
+    let mut uses = Uses { proven: Vec::new(), suspect: Vec::new(), common_count: d["common_calls"].as_u64().unwrap_or(0) };
     for u in d["used_by"].as_array().into_iter().flatten() {
         match u.as_str() {
-            Some(lugar) => usos.provados.push(lugar.to_string()),
-            None => usos.suspeitos.push((
+            Some(place) => uses.proven.push(place.to_string()),
+            None => uses.suspect.push((
                 u["at"].as_str().expect("o uso suspeito tem o lugar").to_string(),
                 u["candidates"]
                     .as_array()
@@ -1132,7 +1132,7 @@ fn usos_de(map: &Value, arquivo: &str, nome: &str) -> Usos {
             )),
         }
     }
-    usos
+    uses
 }
 
 /// Cada ligação de quem chama diz se é provada ou suspeita, no Rust, no
@@ -1145,61 +1145,61 @@ fn usos_de(map: &Value, arquivo: &str, nome: &str) -> Usos {
 /// `run` importada: sem saber o tipo da variável, ela pode ser outro método.
 #[test]
 fn each_link_says_whether_it_is_proven_or_suspect() {
-    let temp = pasta_do_projeto("ligacao-provada-ou-suspeita");
+    let temp = project_dir("ligacao-provada-ou-suspeita");
     let dir = temp.path().to_path_buf();
-    let todas = ligacoes();
-    for l in &todas {
-        for (rel, corpo) in l.arquivos {
-            write(&dir, rel, corpo);
+    let every = links();
+    for l in &every {
+        for (rel, body) in l.files {
+            write(&dir, rel, body);
         }
     }
     let map = scan(&dir);
-    let corpo = |l: &Ligacoes, arquivo: &str| l.arquivos.iter().find(|(rel, _)| *rel == arquivo).unwrap().1;
+    let body = |l: &Links, file: &str| l.files.iter().find(|(rel, _)| *rel == file).unwrap().1;
     // Junta as faltas antes de reprovar, para que cada linguagem que voltar a
     // ligar sem marca apareça de uma vez.
-    let mut faltas: Vec<String> = Vec::new();
-    for l in &todas {
-        let (run_a, run_b) = (usos_de(&map, l.a, "run"), usos_de(&map, l.b, "run"));
-        let duas = vec![format!("{}:1:run", l.a), format!("{}:1:run", l.b)];
+    let mut failures: Vec<String> = Vec::new();
+    for l in &every {
+        let (run_a, run_b) = (uses_of(&map, l.a, "run"), uses_of(&map, l.b, "run"));
+        let both = vec![format!("{}:1:run", l.a), format!("{}:1:run", l.b)];
 
-        let lugar = format!("{}:{}", l.com_import, linha_de(corpo(l, l.com_import), "run()"));
-        let de_quem_importa = |u: &Usos| {
-            u.provados.iter().chain(u.suspeitos.iter().map(|(at, _)| at)).filter(|at| at.starts_with(&lugar)).count()
+        let place = format!("{}:{}", l.with_import, line_of(body(l, l.with_import), "run()"));
+        let of_the_importer = |u: &Uses| {
+            u.proven.iter().chain(u.suspect.iter().map(|(at, _)| at)).filter(|at| at.starts_with(&place)).count()
         };
-        if run_a.provados.iter().filter(|at| at.starts_with(&lugar)).count() != 1
-            || de_quem_importa(&run_a) != 1
-            || de_quem_importa(&run_b) != 0
+        if run_a.proven.iter().filter(|at| at.starts_with(&place)).count() != 1
+            || of_the_importer(&run_a) != 1
+            || of_the_importer(&run_b) != 0
         {
-            faltas.push(format!("a chamada de {lugar}, que importa a run de {}, é provada só para ela", l.a));
+            failures.push(format!("a chamada de {place}, que importa a run de {}, é provada só para ela", l.a));
         }
 
-        let lugar = format!("{}:{}", l.sem_import, linha_de(corpo(l, l.sem_import), "run()"));
-        for (dono, usos) in [(l.a, &run_a), (l.b, &run_b)] {
-            let suspeitas: Vec<&Vec<String>> =
-                usos.suspeitos.iter().filter(|(at, _)| at.starts_with(&lugar)).map(|(_, c)| c).collect();
-            if suspeitas != [&duas] || usos.provados.iter().any(|at| at.starts_with(&lugar)) {
-                faltas.push(format!("a chamada de {lugar}, sem import, é suspeita em {dono} com {duas:?}: {suspeitas:?}"));
+        let place = format!("{}:{}", l.without_import, line_of(body(l, l.without_import), "run()"));
+        for (owner, uses) in [(l.a, &run_a), (l.b, &run_b)] {
+            let suspect_candidates: Vec<&Vec<String>> =
+                uses.suspect.iter().filter(|(at, _)| at.starts_with(&place)).map(|(_, c)| c).collect();
+            if suspect_candidates != [&both] || uses.proven.iter().any(|at| at.starts_with(&place)) {
+                failures.push(format!("a chamada de {place}, sem import, é suspeita em {owner} com {both:?}: {suspect_candidates:?}"));
             }
         }
 
-        let lugar = format!("{}:{}", l.usa_unica, linha_de(corpo(l, l.usa_unica), " unica()"));
-        let unica = usos_de(&map, l.unica, "unica");
-        let so_ela = vec![format!("{}:1:unica", l.unica)];
-        let suspeitas: Vec<&Vec<String>> =
-            unica.suspeitos.iter().filter(|(at, _)| at.starts_with(&lugar)).map(|(_, c)| c).collect();
-        if suspeitas != [&so_ela] || !unica.provados.is_empty() {
-            faltas.push(format!("unica, declarada uma vez e sem import, é suspeita em {lugar}: {suspeitas:?}"));
+        let place = format!("{}:{}", l.uses_unique, line_of(body(l, l.uses_unique), " unica()"));
+        let unique = uses_of(&map, l.unique, "unica");
+        let only_itself = vec![format!("{}:1:unica", l.unique)];
+        let suspect_candidates: Vec<&Vec<String>> =
+            unique.suspect.iter().filter(|(at, _)| at.starts_with(&place)).map(|(_, c)| c).collect();
+        if suspect_candidates != [&only_itself] || !unique.proven.is_empty() {
+            failures.push(format!("unica, declarada uma vez e sem import, é suspeita em {place}: {suspect_candidates:?}"));
         }
 
-        let lugar = format!("{}:{}", l.por_valor, linha_de(corpo(l, l.por_valor), "x.run()"));
-        let so_a = vec![format!("{}:1:run", l.a)];
-        let suspeitas: Vec<&Vec<String>> =
-            run_a.suspeitos.iter().filter(|(at, _)| at.starts_with(&lugar)).map(|(_, c)| c).collect();
-        if suspeitas != [&so_a] || run_a.provados.iter().any(|at| at.starts_with(&lugar)) {
-            faltas.push(format!("a chamada por variável de {lugar} é suspeita, com a run importada: {suspeitas:?}"));
+        let place = format!("{}:{}", l.by_value, line_of(body(l, l.by_value), "x.run()"));
+        let only_a = vec![format!("{}:1:run", l.a)];
+        let suspect_candidates: Vec<&Vec<String>> =
+            run_a.suspect.iter().filter(|(at, _)| at.starts_with(&place)).map(|(_, c)| c).collect();
+        if suspect_candidates != [&only_a] || run_a.proven.iter().any(|at| at.starts_with(&place)) {
+            failures.push(format!("a chamada por variável de {place} é suspeita, com a run importada: {suspect_candidates:?}"));
         }
     }
-    assert!(faltas.is_empty(), "{}", faltas.join("\n"));
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
 /// O próprio objeto e o tipo escrito antes do método estreitam a ligação, no
@@ -1209,29 +1209,29 @@ fn each_link_says_whether_it_is_proven_or_suspect() {
 /// não declara: é uma chamada de fora e não liga a nada.
 #[test]
 fn the_object_itself_and_a_named_type_narrow_the_link() {
-    const CAIXA: &str = "pub struct Caixa;\n\nimpl Caixa {\n    pub fn abrir(&self) -> u32 {\n        self.fechar()\n    }\n\n    \
+    const BOX: &str = "pub struct Caixa;\n\nimpl Caixa {\n    pub fn abrir(&self) -> u32 {\n        self.fechar()\n    }\n\n    \
                          pub fn fechar(&self) -> u32 {\n        1\n    }\n\n    pub fn new() -> Caixa {\n        Caixa\n    }\n}\n";
-    const PORTA: &str = "pub struct Porta;\n\nimpl Porta {\n    pub fn fechar(&self) -> u32 {\n        2\n    }\n\n    \
+    const DOOR: &str = "pub struct Porta;\n\nimpl Porta {\n    pub fn fechar(&self) -> u32 {\n        2\n    }\n\n    \
                          pub fn new() -> Porta {\n        Porta\n    }\n}\n";
-    const USA: &str = "use crate::caixa::Caixa;\n\npub fn usa() -> Vec<u32> {\n    let _ = Caixa::new();\n    Vec::new()\n}\n";
-    let temp = pasta_do_projeto("ligacao-pelo-tipo");
+    const USER: &str = "use crate::caixa::Caixa;\n\npub fn usa() -> Vec<u32> {\n    let _ = Caixa::new();\n    Vec::new()\n}\n";
+    let temp = project_dir("ligacao-pelo-tipo");
     let dir = temp.path().to_path_buf();
-    write(&dir, "src/caixa.rs", CAIXA);
-    write(&dir, "src/porta.rs", PORTA);
-    write(&dir, "src/usa.rs", USA);
+    write(&dir, "src/caixa.rs", BOX);
+    write(&dir, "src/porta.rs", DOOR);
+    write(&dir, "src/usa.rs", USER);
     let map = scan(&dir);
 
-    let fechar = usos_de(&map, "src/caixa.rs", "fechar");
-    let esperado = format!("src/caixa.rs:{}:abrir", linha_de(CAIXA, "self.fechar()"));
-    assert_eq!((fechar.provados, fechar.suspeitos.len()), (vec![esperado], 0), "self.fechar() é o fechar de Caixa");
-    let fechar_porta = usos_de(&map, "src/porta.rs", "fechar");
-    assert!(fechar_porta.provados.is_empty() && fechar_porta.suspeitos.is_empty(), "o fechar de Porta não é chamado");
+    let close = uses_of(&map, "src/caixa.rs", "fechar");
+    let expected = format!("src/caixa.rs:{}:abrir", line_of(BOX, "self.fechar()"));
+    assert_eq!((close.proven, close.suspect.len()), (vec![expected], 0), "self.fechar() é o fechar de Caixa");
+    let close_door = uses_of(&map, "src/porta.rs", "fechar");
+    assert!(close_door.proven.is_empty() && close_door.suspect.is_empty(), "o fechar de Porta não é chamado");
 
-    let new = usos_de(&map, "src/caixa.rs", "new");
-    let esperado = format!("src/usa.rs:{}:usa", linha_de(USA, "Caixa::new()"));
-    assert_eq!((new.provados, new.suspeitos.len()), (vec![esperado], 0), "Caixa::new() é o new de Caixa, e Vec::new() não");
-    let new_porta = usos_de(&map, "src/porta.rs", "new");
-    assert!(new_porta.provados.is_empty() && new_porta.suspeitos.is_empty(), "o new de Porta não é chamado");
+    let new = uses_of(&map, "src/caixa.rs", "new");
+    let expected = format!("src/usa.rs:{}:usa", line_of(USER, "Caixa::new()"));
+    assert_eq!((new.proven, new.suspect.len()), (vec![expected], 0), "Caixa::new() é o new de Caixa, e Vec::new() não");
+    let new_door = uses_of(&map, "src/porta.rs", "new");
+    assert!(new_door.proven.is_empty() && new_door.suspect.is_empty(), "o new de Porta não é chamado");
 }
 
 /// O nome sozinho só alcança um método ou um membro de enum na língua que
@@ -1242,34 +1242,34 @@ fn the_object_itself_and_a_named_type_narrow_the_link() {
 /// provado.
 #[test]
 fn a_bare_name_reaches_a_member_only_where_the_language_calls_it_without_the_object() {
-    const ESTADO: &str = "pub enum Estado {\n    Ok,\n    Falha,\n}\n";
-    const CAIXA_RS: &str = "pub struct Caixa;\n\nimpl Caixa {\n    pub fn trancar(&self) -> u32 {\n        1\n    }\n}\n";
-    const USA: &str = "use crate::caixa::Caixa;\nuse crate::estado::Estado;\n\npub fn usa() -> Result<u32, ()> {\n    \
+    const STATE: &str = "pub enum Estado {\n    Ok,\n    Falha,\n}\n";
+    const BOX_RS: &str = "pub struct Caixa;\n\nimpl Caixa {\n    pub fn trancar(&self) -> u32 {\n        1\n    }\n}\n";
+    const USER: &str = "use crate::caixa::Caixa;\nuse crate::estado::Estado;\n\npub fn usa() -> Result<u32, ()> {\n    \
                        let trancar = || 2;\n    Ok(trancar())\n}\n";
-    const CAIXA_CS: &str = "namespace Loja;\n\npublic class Caixa\n{\n    public int Trancar()\n    {\n        return 1;\n    }\n\n    \
+    const BOX_CS: &str = "namespace Loja;\n\npublic class Caixa\n{\n    public int Trancar()\n    {\n        return 1;\n    }\n\n    \
                             public int Abrir()\n    {\n        return Trancar();\n    }\n}\n";
-    let temp = pasta_do_projeto("nome-sozinho-e-membro");
+    let temp = project_dir("nome-sozinho-e-membro");
     let dir = temp.path().to_path_buf();
-    write(&dir, "rs/src/estado.rs", ESTADO);
-    write(&dir, "rs/src/caixa.rs", CAIXA_RS);
-    write(&dir, "rs/src/usa.rs", USA);
-    write(&dir, "cs/Caixa.cs", CAIXA_CS);
+    write(&dir, "rs/src/estado.rs", STATE);
+    write(&dir, "rs/src/caixa.rs", BOX_RS);
+    write(&dir, "rs/src/usa.rs", USER);
+    write(&dir, "cs/Caixa.cs", BOX_CS);
     let map = scan(&dir);
 
-    for (arquivo, nome) in [("rs/src/estado.rs", "Ok"), ("rs/src/caixa.rs", "trancar")] {
-        let usos = usos_de(&map, arquivo, nome);
+    for (file, name) in [("rs/src/estado.rs", "Ok"), ("rs/src/caixa.rs", "trancar")] {
+        let uses = uses_of(&map, file, name);
         assert!(
-            usos.provados.is_empty() && usos.suspeitos.is_empty(),
-            "o {nome} de {arquivo} não é o nome escrito sozinho: {:?} {:?}",
-            usos.provados,
-            usos.suspeitos
+            uses.proven.is_empty() && uses.suspect.is_empty(),
+            "o {name} de {file} não é o nome escrito sozinho: {:?} {:?}",
+            uses.proven,
+            uses.suspect
         );
     }
-    let trancar = usos_de(&map, "cs/Caixa.cs", "Trancar");
-    let esperado = format!("cs/Caixa.cs:{}:Abrir", linha_de(CAIXA_CS, "return Trancar()"));
+    let lock = uses_of(&map, "cs/Caixa.cs", "Trancar");
+    let expected = format!("cs/Caixa.cs:{}:Abrir", line_of(BOX_CS, "return Trancar()"));
     assert_eq!(
-        (trancar.provados, trancar.suspeitos.len()),
-        (vec![esperado], 0),
+        (lock.proven, lock.suspect.len()),
+        (vec![expected], 0),
         "o Trancar() dentro da classe é o método dela"
     );
 }
@@ -1279,20 +1279,20 @@ fn a_bare_name_reaches_a_member_only_where_the_language_calls_it_without_the_obj
 /// o uso.
 #[test]
 fn a_name_above_the_ceiling_is_only_counted() {
-    let temp = pasta_do_projeto("nome-comum-so-se-conta");
+    let temp = project_dir("nome-comum-so-se-conta");
     let dir = temp.path().to_path_buf();
-    let donos: Vec<String> = (1..=9).map(|n| format!("src/m{n}.rs")).collect();
-    for (n, dono) in donos.iter().enumerate() {
-        write(&dir, dono, &format!("pub fn comum() -> u32 {{\n    {n}\n}}\n"));
+    let owners: Vec<String> = (1..=9).map(|n| format!("src/m{n}.rs")).collect();
+    for (n, owner) in owners.iter().enumerate() {
+        write(&dir, owner, &format!("pub fn comum() -> u32 {{\n    {n}\n}}\n"));
     }
     write(&dir, "src/chama.rs", "pub fn chama() -> u32 {\n    comum()\n}\n");
     let map = scan(&dir);
-    for dono in &donos {
-        let comum = usos_de(&map, dono, "comum");
+    for owner in &owners {
+        let common = uses_of(&map, owner, "comum");
         assert_eq!(
-            (comum.comuns, comum.provados.len(), comum.suspeitos.len()),
+            (common.common_count, common.proven.len(), common.suspect.len()),
             (1, 0, 0),
-            "o comum de {dono} só conta a chamada"
+            "o comum de {owner} só conta a chamada"
         );
     }
 }
@@ -1302,7 +1302,7 @@ fn a_name_above_the_ceiling_is_only_counted() {
 /// suspeita, a cada uma delas, com as nove como candidatas.
 #[test]
 fn the_project_ceiling_links_a_name_the_default_only_counts() {
-    let temp = pasta_do_projeto("teto-do-projeto");
+    let temp = project_dir("teto-do-projeto");
     let dir = temp.path().to_path_buf();
     let owners: Vec<String> = (1..=9).map(|n| format!("src/m{n}.rs")).collect();
     for (n, owner) in owners.iter().enumerate() {
@@ -1313,9 +1313,9 @@ fn the_project_ceiling_links_a_name_the_default_only_counts() {
     let map = scan(&dir);
     let candidates: Vec<String> = owners.iter().map(|owner| format!("{owner}:1:comum")).collect();
     for owner in &owners {
-        let comum = usos_de(&map, owner, "comum");
+        let common = uses_of(&map, owner, "comum");
         assert_eq!(
-            (comum.comuns, comum.provados.len(), comum.suspeitos),
+            (common.common_count, common.proven.len(), common.suspect),
             (0, 0, vec![("src/chama.rs:2:chama".to_string(), candidates.clone())]),
             "o comum de {owner} liga suspeito, com as nove candidatas"
         );
@@ -1330,14 +1330,14 @@ fn the_project_ceiling_links_a_name_the_default_only_counts() {
 /// função escrita dentro da que a liga. No Rust, `fs` trazido de fora por `use std::fs::{self}` ao lado
 /// da pasta `fs` do projeto, e o `Result` que o projeto declara, usado sem
 /// import, trazido pelo nome e trazido por `*`.
-fn projeto_do_nome_proprio() -> Vec<(&'static str, &'static str)> {
+fn own_name_project() -> Vec<(&'static str, &'static str)> {
     vec![
         ("rs/src/a.rs", "pub fn fill() -> u32 {\n    1\n}\n"),
         (
             "rs/src/b.rs",
-            "use crate::a::fill;\n\npub fn com_local() -> u32 {\n    let fill = |x: u32| x + 1;\n    fill(2)\n}\n\n\
-             pub fn com_parametro(fill: fn() -> u32) -> u32 {\n    fill()\n}\n\n\
-             pub fn mesma_linha() -> u32 {\n    let fill = fill();\n    fill\n}\n\n\
+            "use crate::a::fill;\n\npub fn with_local() -> u32 {\n    let fill = |x: u32| x + 1;\n    fill(2)\n}\n\n\
+             pub fn with_parameter(fill: fn() -> u32) -> u32 {\n    fill()\n}\n\n\
+             pub fn same_line() -> u32 {\n    let fill = fill();\n    fill\n}\n\n\
              pub fn vizinha() -> u32 {\n    fill()\n}\n",
         ),
         ("rs/src/fs/mod.rs", "pub mod real;\n\npub struct Disco;\n\npub fn remove_dir_all() -> u32 {\n    0\n}\n"),
@@ -1348,25 +1348,25 @@ fn projeto_do_nome_proprio() -> Vec<(&'static str, &'static str)> {
         ("rs/src/erro.rs", "pub type Result<T> = std::result::Result<T, Error>;\npub struct Error;\n"),
         ("rs/src/so_erro.rs", "use crate::erro::Error;\n\npub fn so_erro() -> Result<u32, Error> {\n    Ok(1)\n}\n"),
         (
-            "rs/src/com_result.rs",
-            "use crate::erro::{Error, Result};\n\npub fn com_result() -> Result<u32> {\n    Err(Error)\n}\n",
+            "rs/src/with_result.rs",
+            "use crate::erro::{Error, Result};\n\npub fn with_result() -> Result<u32> {\n    Err(Error)\n}\n",
         ),
-        ("rs/src/com_glob.rs", "use crate::erro::*;\n\npub fn com_glob() -> Result<u32> {\n    Ok(1)\n}\n"),
+        ("rs/src/with_glob.rs", "use crate::erro::*;\n\npub fn with_glob() -> Result<u32> {\n    Ok(1)\n}\n"),
         ("ts/src/a.ts", "export function fill(): number {\n  return 1;\n}\n"),
         (
             "ts/src/b.ts",
-            "import { fill } from \"./a\";\n\nexport function comLocal(): number {\n  const fill = (x: number) => x + 1;\n  \
-             return fill(2);\n}\n\nexport function comParametro(fill: () => number): number {\n  return fill();\n}\n\n\
-             export function comDesestruturacao(x: { mutate: () => number }): number {\n  const { mutate: fill } = x;\n  \
-             return fill();\n}\n\nexport function comAninhada(x: { mutate: () => number }): number {\n  \
+            "import { fill } from \"./a\";\n\nexport function withLocal(): number {\n  const fill = (x: number) => x + 1;\n  \
+             return fill(2);\n}\n\nexport function withParameter(fill: () => number): number {\n  return fill();\n}\n\n\
+             export function withDestructuring(x: { mutate: () => number }): number {\n  const { mutate: fill } = x;\n  \
+             return fill();\n}\n\nexport function withNested(x: { mutate: () => number }): number {\n  \
              const { mutate: fill } = x;\n  function chama(): number {\n    return fill();\n  }\n  return chama();\n}\n\n\
              export function vizinha(): number {\n  return fill();\n}\n",
         ),
         ("py/pkg/a.py", "def fill():\n    return 1\n"),
         (
             "py/pkg/b.py",
-            "from pkg.a import fill\n\n\ndef com_local():\n    fill = lambda x: x + 1\n    return fill(2)\n\n\n\
-             def com_parametro(fill):\n    return fill()\n\n\ndef vizinha():\n    return fill()\n",
+            "from pkg.a import fill\n\n\ndef with_local():\n    fill = lambda x: x + 1\n    return fill(2)\n\n\n\
+             def with_parameter(fill):\n    return fill()\n\n\ndef vizinha():\n    return fill()\n",
         ),
     ]
 }
@@ -1381,79 +1381,79 @@ fn projeto_do_nome_proprio() -> Vec<(&'static str, &'static str)> {
 /// pelo nome ou por `*` do arquivo que o declara.
 #[test]
 fn a_name_the_code_binds_itself_wins_over_the_project_declaration() {
-    let temp = pasta_do_projeto("nome-proprio");
+    let temp = project_dir("nome-proprio");
     let dir = temp.path().to_path_buf();
-    let projeto = projeto_do_nome_proprio();
-    for (rel, corpo) in &projeto {
-        write(&dir, rel, corpo);
+    let project = own_name_project();
+    for (rel, body) in &project {
+        write(&dir, rel, body);
     }
     let map = scan(&dir);
-    let corpo = |arquivo: &str| projeto.iter().find(|(rel, _)| *rel == arquivo).unwrap().1;
-    let mut faltas: Vec<String> = Vec::new();
-    for (a, b, quem) in [
-        ("rs/src/a.rs", "rs/src/b.rs", &["mesma_linha", "vizinha"][..]),
+    let body = |file: &str| project.iter().find(|(rel, _)| *rel == file).unwrap().1;
+    let mut failures: Vec<String> = Vec::new();
+    for (a, b, who) in [
+        ("rs/src/a.rs", "rs/src/b.rs", &["same_line", "vizinha"][..]),
         ("ts/src/a.ts", "ts/src/b.ts", &["vizinha"][..]),
         ("py/pkg/a.py", "py/pkg/b.py", &["vizinha"][..]),
     ] {
-        let fill = usos_de(&map, a, "fill");
-        let mut provados = fill.provados.clone();
-        provados.sort();
-        let mut esperados: Vec<String> =
-            quem.iter().map(|f| format!("{b}:{}:{f}", linha_de(corpo(b), &format!("{f}()")) + 1)).collect();
-        esperados.sort();
-        if provados != esperados || !fill.suspeitos.is_empty() {
-            faltas.push(format!("a fill de {a} só é usada por {quem:?}: {:?} {:?}", fill.provados, fill.suspeitos));
+        let fill = uses_of(&map, a, "fill");
+        let mut proven = fill.proven.clone();
+        proven.sort();
+        let mut expected_uses: Vec<String> =
+            who.iter().map(|f| format!("{b}:{}:{f}", line_of(body(b), &format!("{f}()")) + 1)).collect();
+        expected_uses.sort();
+        if proven != expected_uses || !fill.suspect.is_empty() {
+            failures.push(format!("a fill de {a} só é usada por {who:?}: {:?} {:?}", fill.proven, fill.suspect));
         }
     }
-    let remove = usos_de(&map, "rs/src/fs/mod.rs", "remove_dir_all");
-    if !remove.provados.is_empty() || !remove.suspeitos.is_empty() || remove.comuns != 0 {
-        faltas.push(format!(
+    let remove = uses_of(&map, "rs/src/fs/mod.rs", "remove_dir_all");
+    if !remove.proven.is_empty() || !remove.suspect.is_empty() || remove.common_count != 0 {
+        failures.push(format!(
             "fs::remove_dir_all, com fs trazido de fora, não liga: {:?} {:?}",
-            remove.provados, remove.suspeitos
+            remove.proven, remove.suspect
         ));
     }
-    let result = usos_de(&map, "rs/src/erro.rs", "Result");
-    let quem = vec![
-        format!("rs/src/com_glob.rs:{}:com_glob", linha_de(corpo("rs/src/com_glob.rs"), "Result")),
-        format!("rs/src/com_result.rs:{}:com_result", linha_de(corpo("rs/src/com_result.rs"), "-> Result")),
+    let result = uses_of(&map, "rs/src/erro.rs", "Result");
+    let who = vec![
+        format!("rs/src/with_glob.rs:{}:with_glob", line_of(body("rs/src/with_glob.rs"), "Result")),
+        format!("rs/src/with_result.rs:{}:with_result", line_of(body("rs/src/with_result.rs"), "-> Result")),
     ];
-    if result.provados != quem || !result.suspeitos.is_empty() {
-        faltas.push(format!(
+    if result.proven != who || !result.suspect.is_empty() {
+        failures.push(format!(
             "o Result do projeto só vale onde o arquivo o traz: {:?} {:?}",
-            result.provados, result.suspeitos
+            result.proven, result.suspect
         ));
     }
-    assert!(faltas.is_empty(), "{}", faltas.join("\n"));
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
 /// Um projeto Rust com uma pasta `fs` que declara `read_to_string`, e um
 /// arquivo que a importa e chama o nome de três jeitos: pelo nome que
 /// importou (l.4), pelo caminho da biblioteca (l.8) e pelo caminho inteiro do
 /// projeto (l.12).
-fn projeto_do_caminho_da_biblioteca() -> Vec<(&'static str, &'static str)> {
+fn library_path_project() -> Vec<(&'static str, &'static str)> {
     vec![
         ("src/lib.rs", "pub mod io;\npub mod leitor;\n"),
         ("src/io/mod.rs", "pub mod fs;\n"),
         ("src/io/fs/mod.rs", "pub fn read_to_string(_: &str) -> String {\n    String::new()\n}\n"),
         (
             "src/leitor.rs",
-            "use crate::io::fs;\n\npub fn pelo_projeto() -> String {\n    fs::read_to_string(\"a\")\n}\n\n\
-             pub fn pela_biblioteca() -> String {\n    std::fs::read_to_string(\"b\").unwrap()\n}\n\n\
-             pub fn pelo_caminho_inteiro() -> String {\n    crate::io::fs::read_to_string(\"c\")\n}\n",
+            "use crate::io::fs;\n\npub fn through_project() -> String {\n    fs::read_to_string(\"a\")\n}\n\n\
+             pub fn through_library() -> String {\n    std::fs::read_to_string(\"b\").unwrap()\n}\n\n\
+             pub fn through_whole_path() -> String {\n    crate::io::fs::read_to_string(\"c\")\n}\n",
         ),
     ]
 }
 
 /// Quem usa a `read_to_string` do projeto, lida no mapa do projeto do caminho
 /// da biblioteca.
-fn usos_do_caminho_da_biblioteca() -> (tempfile::TempDir, Usos) {
-    let temp = pasta_do_projeto("caminho-da-biblioteca");
-    for (rel, corpo) in projeto_do_caminho_da_biblioteca() {
-        write(temp.path(), rel, corpo);
+fn uses_through_library_path() -> (tempfile::TempDir, Uses) {
+    let temp = project_dir("caminho-da-biblioteca");
+    for (rel, body) in library_path_project() {
+        write(temp.path(), rel, body);
     }
     let map = scan(temp.path());
-    let usos = usos_de(&map, "src/io/fs/mod.rs", "read_to_string");
-    (temp, usos)
+    let uses = uses_of(&map, "src/io/fs/mod.rs", "read_to_string");
+    (temp, uses)
 }
 
 /// `std::fs::read_to_string("b")` é a função da biblioteca, mesmo com a pasta
@@ -1461,38 +1461,38 @@ fn usos_do_caminho_da_biblioteca() -> (tempfile::TempDir, Usos) {
 /// suspeita.
 #[test]
 fn a_call_through_a_library_path_does_not_link_to_the_project_function() {
-    let (_temp, usos) = usos_do_caminho_da_biblioteca();
-    let da_biblioteca = "src/leitor.rs:8:pela_biblioteca";
-    assert!(!usos.provados.iter().any(|lugar| lugar == da_biblioteca), "{:?}", usos.provados);
-    assert!(!usos.suspeitos.iter().any(|(lugar, _)| lugar == da_biblioteca), "{:?}", usos.suspeitos);
+    let (_temp, uses) = uses_through_library_path();
+    let from_library = "src/leitor.rs:8:through_library";
+    assert!(!uses.proven.iter().any(|place| place == from_library), "{:?}", uses.proven);
+    assert!(!uses.suspect.iter().any(|(place, _)| place == from_library), "{:?}", uses.suspect);
 }
 
 /// `fs::read_to_string("a")`, com o `fs` que o arquivo importou do projeto,
 /// segue ligando à função do projeto, provada.
 #[test]
 fn a_call_through_a_name_imported_from_the_project_stays_proven() {
-    let (_temp, usos) = usos_do_caminho_da_biblioteca();
-    assert!(usos.provados.iter().any(|lugar| lugar == "src/leitor.rs:4:pelo_projeto"), "{:?}", usos.provados);
+    let (_temp, uses) = uses_through_library_path();
+    assert!(uses.proven.iter().any(|place| place == "src/leitor.rs:4:through_project"), "{:?}", uses.proven);
 }
 
 /// `crate::io::fs::read_to_string("c")`, o caminho inteiro do projeto, segue
 /// ligando à função do projeto, provada.
 #[test]
 fn a_call_through_the_whole_project_path_stays_proven() {
-    let (_temp, usos) = usos_do_caminho_da_biblioteca();
-    assert!(usos.provados.iter().any(|lugar| lugar == "src/leitor.rs:12:pelo_caminho_inteiro"), "{:?}", usos.provados);
+    let (_temp, uses) = uses_through_library_path();
+    assert!(uses.proven.iter().any(|place| place == "src/leitor.rs:12:through_whole_path"), "{:?}", uses.proven);
 }
 
 /// O arquivo que usa o `require`, igual no JavaScript e no TypeScript: traz
 /// `ler` do projeto (l.1), `fs` inteiro (l.2) e `readFileSync` (l.3) da
 /// biblioteca, e chama os três (l.6 a 8).
-const APP_COM_REQUIRE: &str = "const { ler } = require('./servico');\nconst fs = require('fs');\n\
+const APP_WITH_REQUIRE: &str = "const { ler } = require('./servico');\nconst fs = require('fs');\n\
     const { readFileSync } = require('fs');\n\nfunction criar() {\n  ler(1);\n  fs.readFileSync('z');\n  \
     readFileSync('w');\n}\n\nclass Carrinho {\n  total() {\n    return criar();\n  }\n}\n";
 
 /// O arquivo que declara as funções que o `require` alcança, com uma de mesmo
 /// nome que a da biblioteca.
-const SERVICO_COM_REQUIRE: &str = "function ler(id) {\n  return id;\n}\n\nfunction readFileSync(p) {\n  return p;\n}\n\n\
+const SERVICE_WITH_REQUIRE: &str = "function ler(id) {\n  return id;\n}\n\nfunction readFileSync(p) {\n  return p;\n}\n\n\
     module.exports = { ler, readFileSync };\n";
 
 /// Um projeto com o `require` no JavaScript e no TypeScript, e um em C# cujo
@@ -1500,12 +1500,12 @@ const SERVICO_COM_REQUIRE: &str = "function ler(id) {\n  return id;\n}\n\nfuncti
 /// biblioteca. O `Servico` chama os dois de fora (l.9 e 10), o do projeto
 /// (l.11), o repositório pelo campo e pelo parâmetro (l.12 e 13) e o método do
 /// tipo de cima (l.14); o `Leitor` chama pelo caminho inteiro da biblioteca.
-fn projeto_da_biblioteca() -> Vec<(&'static str, &'static str)> {
+fn library_project() -> Vec<(&'static str, &'static str)> {
     vec![
-        ("js/src/app.js", APP_COM_REQUIRE),
-        ("js/src/servico.js", SERVICO_COM_REQUIRE),
-        ("ts/src/app.ts", APP_COM_REQUIRE),
-        ("ts/src/servico.ts", SERVICO_COM_REQUIRE),
+        ("js/src/app.js", APP_WITH_REQUIRE),
+        ("js/src/servico.js", SERVICE_WITH_REQUIRE),
+        ("ts/src/app.ts", APP_WITH_REQUIRE),
+        ("ts/src/servico.ts", SERVICE_WITH_REQUIRE),
         (
             "cs/Util.cs",
             "namespace Demo;\n\npublic static class Util\n{\n    \
@@ -1535,8 +1535,8 @@ fn projeto_da_biblioteca() -> Vec<(&'static str, &'static str)> {
             "cs/Pedido.Grava.cs",
             "namespace Demo;\n\npublic partial class Pedido\n{\n    public void Gravar() { repositorio.Salvar(); }\n}\n",
         ),
-        ("cs/Formas.cs", FORMAS_CS),
-        ("cs/Caixa.cs", CAIXA_CS),
+        ("cs/Formas.cs", SHAPES_CS),
+        ("cs/Caixa.cs", BOX_CS),
         ("js/src/medida.js", "function medir(x) {\n  return x;\n}\n\nmodule.exports = { medir };\n"),
         (
             "js/src/varre.js",
@@ -1550,7 +1550,7 @@ fn projeto_da_biblioteca() -> Vec<(&'static str, &'static str)> {
 /// do repositório por ele (l.7 a 14): o padrão com tipo, a variável de
 /// `out`, a desestruturação, a exceção pega, o padrão de propriedades, o
 /// laço que desestrutura e a consulta.
-const FORMAS_CS: &str = "namespace Demo;\n\npublic class Formas\n{\n    public void Ligar(object o, string texto)\n    {\n        \
+const SHAPES_CS: &str = "namespace Demo;\n\npublic class Formas\n{\n    public void Ligar(object o, string texto)\n    {\n        \
     if (o is Repo concreto) concreto.Salvar();\n        \
     if (Fabrica.Tentar(texto, out var achado)) achado.Salvar();\n        \
     var (primeiro, segundo) = Fabrica.Par();\n        primeiro.Salvar();\n        \
@@ -1561,31 +1561,31 @@ const FORMAS_CS: &str = "namespace Demo;\n\npublic class Formas\n{\n    public v
 
 /// Um comentário que termina em ponto logo antes de duas chamadas: a do
 /// método do próprio tipo (l.8) e a do `File` da biblioteca (l.10).
-const CAIXA_CS: &str = "namespace Demo;\n\npublic class Caixa\n{\n    public void Encerrar()\n    {\n        \
+const BOX_CS: &str = "namespace Demo;\n\npublic class Caixa\n{\n    public void Encerrar()\n    {\n        \
     // Soma antes de sair.\n        Somar();\n        // Lê o arquivo.\n        File.ReadAllText(\"c\");\n    }\n\n    \
     private void Somar() { }\n}\n";
 
 /// Os lugares, provados ou suspeitos, que usam a declaração.
-fn lugares(usos: &Usos) -> Vec<String> {
-    usos.provados.iter().cloned().chain(usos.suspeitos.iter().map(|(lugar, _)| lugar.clone())).collect()
+fn places(uses: &Uses) -> Vec<String> {
+    uses.proven.iter().cloned().chain(uses.suspect.iter().map(|(place, _)| place.clone())).collect()
 }
 
 /// O arquivo `.js` entra no mapa com as declarações dele: a função e a
 /// classe, com o método.
 #[test]
 fn a_javascript_file_enters_the_map_with_its_declarations() {
-    let temp = pasta_do_projeto("javascript");
-    for (rel, corpo) in projeto_da_biblioteca() {
-        write(temp.path(), rel, corpo);
+    let temp = project_dir("javascript");
+    for (rel, body) in library_project() {
+        write(temp.path(), rel, body);
     }
     let map = scan(temp.path());
     let app = map["modules"].as_array().unwrap().iter().find(|m| m["path"] == "js/src/app.js");
     let app = app.unwrap_or_else(|| panic!("o app.js no mapa: {map}"));
     assert_eq!(app["language"], "javascript", "{app}");
-    let nomes: Vec<&str> =
+    let names: Vec<&str> =
         app["declarations"].as_array().unwrap().iter().filter_map(|d| d["name"].as_str()).collect();
-    for nome in ["criar", "Carrinho", "total"] {
-        assert!(nomes.contains(&nome), "{nome} declarado no app.js: {nomes:?}");
+    for name in ["criar", "Carrinho", "total"] {
+        assert!(names.contains(&name), "{name} declarado no app.js: {names:?}");
     }
 }
 
@@ -1595,29 +1595,29 @@ fn a_javascript_file_enters_the_map_with_its_declarations() {
 /// projeto. Igual no JavaScript e no TypeScript.
 #[test]
 fn a_require_imports_like_an_import_in_javascript_and_typescript() {
-    let temp = pasta_do_projeto("require");
-    for (rel, corpo) in projeto_da_biblioteca() {
-        write(temp.path(), rel, corpo);
+    let temp = project_dir("require");
+    for (rel, body) in library_project() {
+        write(temp.path(), rel, body);
     }
     let map = scan(temp.path());
-    let mut faltas: Vec<String> = Vec::new();
-    for (pasta, ext) in [("js", "js"), ("ts", "ts")] {
-        let app = format!("{pasta}/src/app.{ext}");
-        let servico = format!("{pasta}/src/servico.{ext}");
-        let modulo = map["modules"].as_array().unwrap().iter().find(|m| m["path"] == app.as_str()).unwrap();
-        if !modulo["deps"].as_array().into_iter().flatten().any(|d| d == servico.as_str()) {
-            faltas.push(format!("{app} depende de {servico}: {}", modulo["deps"]));
+    let mut failures: Vec<String> = Vec::new();
+    for (folder, ext) in [("js", "js"), ("ts", "ts")] {
+        let app = format!("{folder}/src/app.{ext}");
+        let service = format!("{folder}/src/servico.{ext}");
+        let module = map["modules"].as_array().unwrap().iter().find(|m| m["path"] == app.as_str()).unwrap();
+        if !module["deps"].as_array().into_iter().flatten().any(|d| d == service.as_str()) {
+            failures.push(format!("{app} depende de {service}: {}", module["deps"]));
         }
-        let ler = usos_de(&map, &servico, "ler");
-        if ler.provados != [format!("{app}:6:criar")] || !ler.suspeitos.is_empty() {
-            faltas.push(format!("ler() liga a {servico}, provada: {:?} {:?}", ler.provados, ler.suspeitos));
+        let read_uses = uses_of(&map, &service, "ler");
+        if read_uses.proven != [format!("{app}:6:criar")] || !read_uses.suspect.is_empty() {
+            failures.push(format!("ler() liga a {service}, provada: {:?} {:?}", read_uses.proven, read_uses.suspect));
         }
-        let da_biblioteca = lugares(&usos_de(&map, &servico, "readFileSync"));
-        if !da_biblioteca.is_empty() {
-            faltas.push(format!("o readFileSync do fs não liga ao de {servico}: {da_biblioteca:?}"));
+        let from_library = places(&uses_of(&map, &service, "readFileSync"));
+        if !from_library.is_empty() {
+            failures.push(format!("o readFileSync do fs não liga ao de {service}: {from_library:?}"));
         }
     }
-    assert!(faltas.is_empty(), "{}", faltas.join("\n"));
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
 /// No C#, `File.ReadAllText()`, `Path.Combine()` e
@@ -1627,34 +1627,34 @@ fn a_require_imports_like_an_import_in_javascript_and_typescript() {
 /// ligando.
 #[test]
 fn a_call_opened_by_a_name_that_is_not_of_the_project_does_not_link() {
-    let temp = pasta_do_projeto("biblioteca-cs");
-    for (rel, corpo) in projeto_da_biblioteca() {
-        write(temp.path(), rel, corpo);
+    let temp = project_dir("biblioteca-cs");
+    for (rel, body) in library_project() {
+        write(temp.path(), rel, body);
     }
     let map = scan(temp.path());
-    let mut faltas: Vec<String> = Vec::new();
-    let read = usos_de(&map, "cs/Util.cs", "ReadAllText");
-    if read.provados != ["cs/Servico.cs:11:D"] || !read.suspeitos.is_empty() {
-        faltas.push(format!("só o Util.ReadAllText() liga ao do Util: {:?} {:?}", read.provados, read.suspeitos));
+    let mut failures: Vec<String> = Vec::new();
+    let read = uses_of(&map, "cs/Util.cs", "ReadAllText");
+    if read.proven != ["cs/Servico.cs:11:D"] || !read.suspect.is_empty() {
+        failures.push(format!("só o Util.ReadAllText() liga ao do Util: {:?} {:?}", read.proven, read.suspect));
     }
-    let combine = lugares(&usos_de(&map, "cs/Util.cs", "Combine"));
+    let combine = places(&uses_of(&map, "cs/Util.cs", "Combine"));
     if !combine.is_empty() {
-        faltas.push(format!("o Path.Combine() não liga ao do Util: {combine:?}"));
+        failures.push(format!("o Path.Combine() não liga ao do Util: {combine:?}"));
     }
-    let mut salvar = lugares(&usos_de(&map, "cs/Repo.cs", "Salvar"));
-    salvar.retain(|lugar| !lugar.starts_with("cs/Formas.cs"));
-    salvar.sort();
-    if salvar != ["cs/Pedido.Grava.cs:5:Gravar", "cs/Servico.cs:12:E", "cs/Servico.cs:13:F"] {
-        faltas.push(format!(
+    let mut save = places(&uses_of(&map, "cs/Repo.cs", "Salvar"));
+    save.retain(|place| !place.starts_with("cs/Formas.cs"));
+    save.sort();
+    if save != ["cs/Pedido.Grava.cs:5:Gravar", "cs/Servico.cs:12:E", "cs/Servico.cs:13:F"] {
+        failures.push(format!(
             "o Salvar() pelo campo, pelo parâmetro e pelo parâmetro do construtor primário noutra parte da classe liga: \
-             {salvar:?}"
+             {save:?}"
         ));
     }
-    let fechar = lugares(&usos_de(&map, "cs/Base.cs", "Fechar"));
-    if fechar != ["cs/Servico.cs:14:Fechar"] {
-        faltas.push(format!("o base.Fechar() liga ao do tipo de cima: {fechar:?}"));
+    let close = places(&uses_of(&map, "cs/Base.cs", "Fechar"));
+    if close != ["cs/Servico.cs:14:Fechar"] {
+        failures.push(format!("o base.Fechar() liga ao do tipo de cima: {close:?}"));
     }
-    assert!(faltas.is_empty(), "{}", faltas.join("\n"));
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
 /// O nome que a função liga, em qualquer forma da língua, é do arquivo: a
@@ -1664,23 +1664,23 @@ fn a_call_opened_by_a_name_that_is_not_of_the_project_does_not_link() {
 /// exceção pega.
 #[test]
 fn a_call_opened_by_a_name_the_function_binds_keeps_linking() {
-    let temp = pasta_do_projeto("formas");
-    for (rel, corpo) in projeto_da_biblioteca() {
-        write(temp.path(), rel, corpo);
+    let temp = project_dir("formas");
+    for (rel, body) in library_project() {
+        write(temp.path(), rel, body);
     }
     let map = scan(temp.path());
-    let mut formas: Vec<String> = lugares(&usos_de(&map, "cs/Repo.cs", "Salvar"))
+    let mut shapes: Vec<String> = places(&uses_of(&map, "cs/Repo.cs", "Salvar"))
         .into_iter()
-        .filter(|lugar| lugar.starts_with("cs/Formas.cs"))
+        .filter(|place| place.starts_with("cs/Formas.cs"))
         .collect();
-    formas.sort();
-    let mut esperadas: Vec<String> =
+    shapes.sort();
+    let mut expected_shapes: Vec<String> =
         [7, 8, 10, 11, 12, 13, 14].iter().map(|l| format!("cs/Formas.cs:{l}:Ligar")).collect();
-    esperadas.sort();
-    assert_eq!(formas, esperadas);
-    let mut medir = lugares(&usos_de(&map, "js/src/medida.js", "medir"));
-    medir.sort();
-    assert_eq!(medir, ["js/src/varre.js:4:varrer", "js/src/varre.js:5:varrer"]);
+    expected_shapes.sort();
+    assert_eq!(shapes, expected_shapes);
+    let mut measure = places(&uses_of(&map, "js/src/medida.js", "medir"));
+    measure.sort();
+    assert_eq!(measure, ["js/src/varre.js:4:varrer", "js/src/varre.js:5:varrer"]);
 }
 
 /// O ponto que fecha a frase de um comentário não liga o nome de depois à
@@ -1689,28 +1689,28 @@ fn a_call_opened_by_a_name_the_function_binds_keeps_linking() {
 /// segue sendo da biblioteca.
 #[test]
 fn a_comment_that_ends_in_a_period_does_not_qualify_the_call_after_it() {
-    let temp = pasta_do_projeto("comentario");
-    for (rel, corpo) in projeto_da_biblioteca() {
-        write(temp.path(), rel, corpo);
+    let temp = project_dir("comentario");
+    for (rel, body) in library_project() {
+        write(temp.path(), rel, body);
     }
     let map = scan(temp.path());
-    let somar = usos_de(&map, "cs/Caixa.cs", "Somar");
-    assert_eq!((somar.provados, somar.suspeitos.len()), (vec!["cs/Caixa.cs:8:Encerrar".to_string()], 0));
-    let read = lugares(&usos_de(&map, "cs/Util.cs", "ReadAllText"));
-    assert!(!read.iter().any(|lugar| lugar.starts_with("cs/Caixa.cs")), "{read:?}");
+    let sum = uses_of(&map, "cs/Caixa.cs", "Somar");
+    assert_eq!((sum.proven, sum.suspect.len()), (vec!["cs/Caixa.cs:8:Encerrar".to_string()], 0));
+    let read = places(&uses_of(&map, "cs/Util.cs", "ReadAllText"));
+    assert!(!read.iter().any(|place| place.starts_with("cs/Caixa.cs")), "{read:?}");
 }
 
 /// Todos os arquivos de texto debaixo de `dir`, menos a pasta da compilação.
-fn arquivos_de_texto(dir: &Path, achados: &mut Vec<(std::path::PathBuf, String)>) {
-    for entrada in std::fs::read_dir(dir).unwrap() {
-        let caminho = entrada.unwrap().path();
-        if caminho.is_dir() {
-            if caminho.file_name().is_some_and(|n| n == "target") {
+fn text_files(dir: &Path, found: &mut Vec<(std::path::PathBuf, String)>) {
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            if path.file_name().is_some_and(|n| n == "target") {
                 continue;
             }
-            arquivos_de_texto(&caminho, achados);
-        } else if let Ok(texto) = std::fs::read_to_string(&caminho) {
-            achados.push((caminho, texto));
+            text_files(&path, found);
+        } else if let Ok(text) = std::fs::read_to_string(&path) {
+            found.push((path, text));
         }
     }
 }
@@ -1721,32 +1721,32 @@ fn arquivos_de_texto(dir: &Path, achados: &mut Vec<(std::path::PathBuf, String)>
 /// do scan monta a pasta à mão, que é o que deixava as pastas em `/tmp` quando
 /// uma conferência falhava.
 #[test]
-fn a_pasta_do_projeto_de_teste_some_mesmo_quando_o_teste_falha() {
-    let (envia, recebe) = std::sync::mpsc::channel();
-    let quebra = std::thread::spawn(move || {
-        let temp = pasta_do_projeto("quebra-no-meio");
+fn the_test_project_dir_vanishes_even_when_the_test_fails() {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let crashing = std::thread::spawn(move || {
+        let temp = project_dir("quebra-no-meio");
         let dir = temp.path().to_path_buf();
         write(&dir, "src/lib.rs", "pub fn total() -> u32 {\n    1\n}\n");
         let map = scan(&dir);
-        assert!(model::path_in(&pasta_do_mapa(&dir)).is_file(), "o scan grava o mapa na pasta");
-        envia.send(dir).unwrap();
+        assert!(model::path_in(&map_dir(&dir)).is_file(), "o scan grava o mapa na pasta");
+        sender.send(dir).unwrap();
         assert!(map["modules"].as_array().unwrap().is_empty(), "esta conferência quebra de propósito");
     });
-    assert!(quebra.join().is_err(), "o teste de dentro devia ter quebrado");
-    let dir = recebe.recv().expect("a pasta foi criada antes da quebra");
+    assert!(crashing.join().is_err(), "o teste de dentro devia ter quebrado");
+    let dir = receiver.recv().expect("a pasta foi criada antes da quebra");
     assert!(!dir.exists(), "a pasta {} ficou depois da quebra", dir.display());
 
     // O nome da chamada é montado em partes, para este arquivo não se acusar.
-    let chamada = concat!("temp", "_dir", "()");
-    let mut achados = Vec::new();
-    arquivos_de_texto(&manifest_dir::manifest_dir(), &mut achados);
-    assert!(achados.iter().any(|(c, _)| c.ends_with("src/refresh.rs")), "a busca percorre o scan inteiro");
-    let a_mao: Vec<String> = achados
+    let call = concat!("temp", "_dir", "()");
+    let mut found = Vec::new();
+    text_files(&manifest_dir::manifest_dir(), &mut found);
+    assert!(found.iter().any(|(c, _)| c.ends_with("src/refresh.rs")), "a busca percorre o scan inteiro");
+    let by_hand: Vec<String> = found
         .iter()
-        .filter(|(_, texto)| texto.contains(chamada))
-        .map(|(caminho, _)| caminho.display().to_string())
+        .filter(|(_, text)| text.contains(call))
+        .map(|(path, _)| path.display().to_string())
         .collect();
-    assert!(a_mao.is_empty(), "estes arquivos montam a pasta do teste à mão: {a_mao:?}");
+    assert!(by_hand.is_empty(), "estes arquivos montam a pasta do teste à mão: {by_hand:?}");
 }
 
 /// `Leitor::novo()` no `app`, com o `Leitor` trazido por `use demo_core::Leitor`
@@ -1754,8 +1754,8 @@ fn a_pasta_do_projeto_de_teste_some_mesmo_quando_o_teste_falha() {
 /// do `novo` declarado lá.
 #[test]
 fn a_call_through_a_name_the_root_file_passes_on_is_a_proven_use() {
-    let temp = pasta_do_projeto("repasse");
-    for (rel, corpo) in [
+    let temp = project_dir("repasse");
+    for (rel, body) in [
         ("Cargo.toml", "[workspace]\nmembers = [\"core\", \"app\"]\n"),
         ("core/Cargo.toml", "[package]\nname = \"demo-core\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"),
         ("core/src/lib.rs", "pub mod io;\npub use io::leitor::Leitor;\n"),
@@ -1764,9 +1764,9 @@ fn a_call_through_a_name_the_root_file_passes_on_is_a_proven_use() {
         ("app/Cargo.toml", "[package]\nname = \"demo-app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"),
         ("app/src/main.rs", "use demo_core::Leitor;\n\nfn main() {\n    let _ = Leitor::novo();\n}\n"),
     ] {
-        write(temp.path(), rel, corpo);
+        write(temp.path(), rel, body);
     }
     let map = scan(temp.path());
-    let usos = usos_de(&map, "core/src/io/leitor.rs", "novo");
-    assert_eq!(usos.provados, vec!["app/src/main.rs:4:main".to_string()], "{:?}", usos.suspeitos);
+    let uses = uses_of(&map, "core/src/io/leitor.rs", "novo");
+    assert_eq!(uses.proven, vec!["app/src/main.rs:4:main".to_string()], "{:?}", uses.suspect);
 }

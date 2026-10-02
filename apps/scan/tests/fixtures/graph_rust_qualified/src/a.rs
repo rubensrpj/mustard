@@ -1,21 +1,21 @@
-pub mod dentro {
-    pub struct Pote(pub usize);
+pub mod inside {
+    pub struct Jar(pub usize);
 
-    impl Pote {
+    impl Jar {
         pub fn new(v: usize) -> Self {
-            Pote(v)
+            Jar(v)
         }
     }
 }
 
-pub struct Caixa<T>(pub T);
+pub struct Boxed<T>(pub T);
 
-impl<T> Caixa<T> {
+impl<T> Boxed<T> {
     pub fn new(v: T) -> Self {
-        Caixa(v)
+        Boxed(v)
     }
 }
 
-pub fn soma() -> usize {
+pub fn sum() -> usize {
     2
 }

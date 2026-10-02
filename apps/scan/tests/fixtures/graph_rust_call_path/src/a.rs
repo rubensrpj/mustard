@@ -1,17 +1,17 @@
-pub fn valor() -> usize {
+pub fn value() -> usize {
     1
 }
 
-pub fn soma() -> usize {
-    valor() + 1
+pub fn sum() -> usize {
+    value() + 1
 }
 
-pub mod interno {
-    pub fn perto() -> usize {
-        super::valor()
+pub mod inner {
+    pub fn near() -> usize {
+        super::value()
     }
 
-    pub fn longe() -> usize {
-        super::super::x::valor()
+    pub fn far() -> usize {
+        super::super::x::value()
     }
 }

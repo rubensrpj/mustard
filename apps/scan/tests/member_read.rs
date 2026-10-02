@@ -114,8 +114,8 @@ fn a_csharp_property_or_field_read_after_the_object_is_a_use_of_it() {
     assert_eq!(every_use(&map, "Loja/Pedido.cs", "Troco"), Vec::<String>::new(), "a property read from a value");
     assert_eq!(every_use(&map, "Loja/Pedido.cs", "Now"), Vec::<String>::new(), "a property read from the library");
     assert_eq!(every_use(&map, "Fora/Nota.cs", "Desconto"), Vec::<String>::new(), "a namespace out of sight");
-    let fechar = calls(&map, "Loja/Caixa.cs", "Fechar");
-    assert!(!fechar.iter().any(|c| c == "Desconto" || c == "Total"), "a member read is not a call: {fechar:?}");
+    let close = calls(&map, "Loja/Caixa.cs", "Fechar");
+    assert!(!close.iter().any(|c| c == "Desconto" || c == "Total"), "a member read is not a call: {close:?}");
 }
 
 /// No TypeScript e no JavaScript, o campo lido pelo próprio objeto
@@ -336,7 +336,7 @@ fn a_rust_field_read_after_a_typed_name_is_read_from_that_type_until_the_name_is
         fn trocar(item: &Pedido) -> u32 {\n    let item: &Nota = nota();\n    item.troco\n}\n\n\
         fn outra(item: &mut Nota) -> u32 {\n    item.troco\n}\n\n\
         fn medir(d: &Duration) -> u64 {\n    d.secs\n}\n\n\
-        fn de_fora(x: &Outro) -> u32 {\n    x.troco\n}\n";
+        fn from_outside(x: &Outro) -> u32 {\n    x.troco\n}\n";
     let map = scanned(
         "rust-typed",
         &[
@@ -347,9 +347,9 @@ fn a_rust_field_read_after_a_typed_name_is_read_from_that_type_until_the_name_is
     );
     assert_eq!(owned_uses(&map, "src/main.rs", "Pedido", "total"), ["src/main.rs:17:ler"]);
     assert_eq!(owned_uses(&map, "src/main.rs", "Pedido", "troco"), Vec::<String>::new(), "bound again with no type");
-    let mut nota = owned_uses(&map, "src/main.rs", "Nota", "troco");
-    nota.sort();
-    assert_eq!(nota, ["src/main.rs:27:trocar", "src/main.rs:31:outra"], "bound again with another type");
+    let mut note = owned_uses(&map, "src/main.rs", "Nota", "troco");
+    note.sort();
+    assert_eq!(note, ["src/main.rs:27:trocar", "src/main.rs:31:outra"], "bound again with another type");
     assert_eq!(owned_uses(&map, "src/main.rs", "Relogio", "secs"), Vec::<String>::new(), "a type of the library");
     assert_eq!(owned_uses(&map, "src/solto.rs", "Outro", "troco"), Vec::<String>::new(), "a type out of sight");
 }

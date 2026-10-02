@@ -139,8 +139,8 @@ fn changing_only_the_alias_configuration_reads_everything_again() {
     assert!(second["read"].as_array().unwrap().contains(&json!("src/usa.ts")), "{second}");
 
     let model: Value = model::read(&map_folder(&dir));
-    let usa = model["modules"].as_array().unwrap().iter().find(|m| m["path"] == json!("src/usa.ts")).unwrap();
-    assert_eq!(usa["deps"], json!(["src/b/pedido.ts"]), "{usa}");
+    let user_module = model["modules"].as_array().unwrap().iter().find(|m| m["path"] == json!("src/usa.ts")).unwrap();
+    assert_eq!(user_module["deps"], json!(["src/b/pedido.ts"]), "{user_module}");
 }
 
 /// Mudar só o teto do nome comum no `mustard.json`, sem mexer em arquivo de
@@ -162,18 +162,18 @@ fn changing_only_the_common_name_ceiling_links_again_without_reading() {
     git(&dir, &["add", "-A"]);
     git(&dir, &["commit", "-q", "-m", "first"]);
     assert_eq!(scan(&dir, &[])["full"], json!(true));
-    let comum = |model: &Value| -> Value {
+    let common = |model: &Value| -> Value {
         let m1 = model["modules"].as_array().unwrap().iter().find(|m| m["path"] == json!("src/m1.rs")).unwrap();
         m1["declarations"].as_array().unwrap().iter().find(|d| d["name"] == json!("comum")).unwrap().clone()
     };
-    let before = comum(&model::read(&map_folder(&dir)));
+    let before = common(&model::read(&map_folder(&dir)));
     let uses = |d: &Value| d["used_by"].as_array().map_or(0, Vec::len);
     assert_eq!((before["common_calls"].as_u64().unwrap_or(0), uses(&before)), (1, 0), "{before}");
 
     write(&dir, "mustard.json", r#"{"scan": {"max_same_name": 9}}"#);
     let second = scan(&dir, &[]);
     assert_eq!((second["full"].clone(), second["read"].clone()), (json!(false), json!([])), "{second}");
-    let after = comum(&model::read(&map_folder(&dir)));
+    let after = common(&model::read(&map_folder(&dir)));
     assert_eq!((after["common_calls"].as_u64().unwrap_or(0), uses(&after)), (0, 1), "{after}");
     let used_by = after["used_by"].as_array().unwrap();
     assert_eq!(used_by[0]["at"], json!("src/chama.rs:2:chama"), "{after}");
@@ -205,8 +205,8 @@ fn changing_only_the_javascript_alias_configuration_reads_everything_again() {
     assert!(second["read"].as_array().unwrap().contains(&json!("src/usa.js")), "{second}");
 
     let model: Value = model::read(&map_folder(&dir));
-    let usa = model["modules"].as_array().unwrap().iter().find(|m| m["path"] == json!("src/usa.js")).unwrap();
-    assert_eq!(usa["deps"], json!(["src/b/pedido.js"]), "{usa}");
+    let user_module = model["modules"].as_array().unwrap().iter().find(|m| m["path"] == json!("src/usa.js")).unwrap();
+    assert_eq!(user_module["deps"], json!(["src/b/pedido.js"]), "{user_module}");
 }
 
 /// A importação de namespace liga aos arquivos que declaram o nome que o
@@ -236,18 +236,18 @@ fn a_namespace_import_links_the_same_when_only_another_file_changed() {
     git(&dir, &["commit", "-q", "-m", "first"]);
     assert_eq!(scan(&dir, &[])["full"], json!(true));
 
-    let deps_of_uso = || -> Value {
+    let deps_of_usage = || -> Value {
         let model: Value = model::read(&map_folder(&dir));
         model["modules"].as_array().unwrap().iter().find(|m| m["path"] == json!("src/Services/Uso.cs")).unwrap()["deps"]
             .clone()
     };
-    assert_eq!(deps_of_uso(), json!(declaring), "the nine files that declare the name it cites");
+    assert_eq!(deps_of_usage(), json!(declaring), "the nine files that declare the name it cites");
 
     write(&dir, "src/Outro.cs", "namespace Loja;\n\npublic class Outro\n{\n    public int Contar() => 0;\n}\n");
     git(&dir, &["commit", "-q", "-am", "second"]);
     let second = scan(&dir, &[]);
     assert_eq!(second["read"], json!(["src/Outro.cs"]), "{second}");
-    assert_eq!(deps_of_uso(), json!(declaring), "a pass that did not read Uso.cs keeps its links");
+    assert_eq!(deps_of_usage(), json!(declaring), "a pass that did not read Uso.cs keeps its links");
 
     let stepped = model::read_bytes(&map_folder(&dir));
     assert_eq!(scan(&dir, &["--all"])["full"], json!(true));
@@ -267,8 +267,8 @@ fn a_name_the_code_binds_itself_links_the_same_when_only_another_file_changed() 
             ("src/a.rs", "pub fn fill() -> u32 {\n    1\n}\n"),
             (
                 "src/b.rs",
-                "use crate::a::fill;\n\npub fn com_local() -> u32 {\n    let fill = |x: u32| x + 1;\n    fill(2)\n}\n\n\
-                 pub fn com_parametro(fill: fn() -> u32) -> u32 {\n    fill()\n}\n\n\
+                "use crate::a::fill;\n\npub fn with_local() -> u32 {\n    let fill = |x: u32| x + 1;\n    fill(2)\n}\n\n\
+                 pub fn with_parameter(fill: fn() -> u32) -> u32 {\n    fill()\n}\n\n\
                  pub fn vizinha() -> u32 {\n    fill()\n}\n",
             ),
             ("src/fs/mod.rs", "pub mod real;\n\npub fn remove_dir_all() -> u32 {\n    0\n}\n"),
@@ -311,8 +311,8 @@ fn a_call_through_a_library_path_links_the_same_when_only_another_file_changed()
             ("src/io/fs/mod.rs", "pub fn read_to_string(_: &str) -> String {\n    String::new()\n}\n"),
             (
                 "src/leitor.rs",
-                "use crate::io::fs;\n\npub fn pelo_projeto() -> String {\n    fs::read_to_string(\"a\")\n}\n\n\
-                 pub fn pela_biblioteca() -> String {\n    std::fs::read_to_string(\"b\").unwrap()\n}\n",
+                "use crate::io::fs;\n\npub fn by_the_project() -> String {\n    fs::read_to_string(\"a\")\n}\n\n\
+                 pub fn by_the_library() -> String {\n    std::fs::read_to_string(\"b\").unwrap()\n}\n",
             ),
             ("src/outro.rs", "pub fn outro() {}\n"),
         ],
@@ -328,7 +328,7 @@ fn a_call_through_a_library_path_links_the_same_when_only_another_file_changed()
     let model = model::read(&map_folder(dir));
     let module = model["modules"].as_array().unwrap().iter().find(|m| m["path"] == json!("src/io/fs/mod.rs")).unwrap().clone();
     let decl = module["declarations"].as_array().unwrap().iter().find(|d| d["name"] == json!("read_to_string")).unwrap().clone();
-    assert_eq!(decl["used_by"], json!(["src/leitor.rs:4:pelo_projeto"]), "the library call does not link");
+    assert_eq!(decl["used_by"], json!(["src/leitor.rs:4:by_the_project"]), "the library call does not link");
     same_as_a_full_pass(dir);
 }
 
@@ -660,19 +660,19 @@ fn a_code_file_the_walk_stops_seeing_leaves_the_map() {
 /// segue dependendo do serviço que declara o nome.
 #[test]
 fn a_pass_that_rereads_only_the_importer_follows_what_the_kept_file_passes_on() {
-    let tela = "import { buscarPedido } from './pedidos';\n\nexport function tela() {\n  return buscarPedido(1);\n}\n";
+    let screen = "import { buscarPedido } from './pedidos';\n\nexport function tela() {\n  return buscarPedido(1);\n}\n";
     let temp = project(
         "scan-reexport-",
         &[
             ("web/src/pedidos/index.ts", "export * from './pedido.service';\n"),
             ("web/src/pedidos/pedido.service.ts", "export function buscarPedido(id: number) {\n  return id;\n}\n"),
-            ("web/src/tela.ts", tela),
+            ("web/src/tela.ts", screen),
         ],
     );
     let dir = temp.path();
     assert_eq!(scan(dir, &[])["full"], json!(true));
 
-    write(dir, "web/src/tela.ts", &format!("// a tela dos pedidos\n{tela}"));
+    write(dir, "web/src/tela.ts", &format!("// a tela dos pedidos\n{screen}"));
     let report = scan(dir, &[]);
     assert_eq!(report["read"], json!(["web/src/tela.ts"]), "{report}");
     assert_eq!(deps_in_the_map(dir, "web/src/tela.ts"), vec![json!("web/src/pedidos/pedido.service.ts")]);

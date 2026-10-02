@@ -74,8 +74,8 @@ fn a_class_with_three_methods_and_a_field_lists_the_three_methods_first() {
     );
     let (map, _) = scan(dir, &[]);
 
-    let carrinho = relations(&map, "Loja/Carrinho.cs", "Carrinho");
-    assert_eq!(member_names(&carrinho), ["Adicionar", "Remover", "Somar", "total"], "{carrinho:?}");
+    let cart = relations(&map, "Loja/Carrinho.cs", "Carrinho");
+    assert_eq!(member_names(&cart), ["Adicionar", "Remover", "Somar", "total"], "{cart:?}");
     assert_eq!(relations(&map, "Loja/Carrinho.cs", "Somar").owners, ["Carrinho"]);
     assert_eq!(relations(&map, "Loja/Carrinho.cs", "total").owners, ["Carrinho"]);
 }
@@ -110,15 +110,15 @@ fn a_method_written_outside_the_type_is_a_member_with_the_type_as_owner() {
     );
     let (map, _) = scan(dir, &[]);
 
-    let tipo = relations(&map, "src/lib.rs", "Tipo");
-    assert_eq!(member_names(&tipo), ["andar", "largura", "PADRAO"], "{tipo:?}");
+    let type_decl = relations(&map, "src/lib.rs", "Tipo");
+    assert_eq!(member_names(&type_decl), ["andar", "largura", "PADRAO"], "{type_decl:?}");
     assert_eq!(relations(&map, "src/lib.rs", "andar").owners, ["Tipo"]);
     assert_eq!(relations(&map, "src/lib.rs", "PADRAO").owners, ["Tipo"]);
-    let forma = relations(&map, "src/lib.rs", "Forma");
-    assert_eq!(member_names(&forma), ["area", "Ponto", "Circulo"], "{forma:?}");
+    let shape = relations(&map, "src/lib.rs", "Forma");
+    assert_eq!(member_names(&shape), ["area", "Ponto", "Circulo"], "{shape:?}");
 
-    let conta = relations(&map, "banco/conta.go", "Conta");
-    assert_eq!(member_names(&conta), ["Depositar", "Saldo", "saldo"], "{conta:?}");
+    let account = relations(&map, "banco/conta.go", "Conta");
+    assert_eq!(member_names(&account), ["Depositar", "Saldo", "saldo"], "{account:?}");
     assert_eq!(relations(&map, "banco/conta.go", "Depositar").owners, ["Conta"]);
     assert_eq!(relations(&map, "banco/conta.go", "Saldo").owners, ["Conta"]);
 }
@@ -141,17 +141,17 @@ fn a_trait_impl_in_one_file_links_its_method_to_the_trait_method_in_another() {
     );
     let (map, _) = scan(dir, &[]);
 
-    let falar = project_map::relations(&map, Some("src/bichos.rs"), "falar").unwrap();
-    let (cao, gato) = (&falar[0], &falar[1]);
-    assert_eq!(cao.owners, ["Cao", "Falante"], "{cao:?}");
-    assert_eq!(cao.implements, [at("src/falante.rs", 2, "falar")]);
+    let speak = project_map::relations(&map, Some("src/bichos.rs"), "falar").unwrap();
+    let (dog, cat) = (&speak[0], &speak[1]);
+    assert_eq!(dog.owners, ["Cao", "Falante"], "{dog:?}");
+    assert_eq!(dog.implements, [at("src/falante.rs", 2, "falar")]);
     // O método do bloco sem traço não cumpre o traço, mesmo com o mesmo nome.
-    assert_eq!(gato.owners, ["Gato"], "{gato:?}");
-    assert!(gato.implements.is_empty(), "{gato:?}");
+    assert_eq!(cat.owners, ["Gato"], "{cat:?}");
+    assert!(cat.implements.is_empty(), "{cat:?}");
 
-    let contrato = relations(&map, "src/falante.rs", "falar");
-    assert_eq!(contrato.owners, ["Falante"]);
-    assert_eq!(contrato.implemented_by, [at("src/bichos.rs", cao.line as usize, "falar")]);
+    let contract = relations(&map, "src/falante.rs", "falar");
+    assert_eq!(contract.owners, ["Falante"]);
+    assert_eq!(contract.implemented_by, [at("src/bichos.rs", dog.line as usize, "falar")]);
     assert_eq!(member_names(&relations(&map, "src/bichos.rs", "Cao")), ["falar"]);
 }
 
@@ -187,9 +187,9 @@ fn a_typescript_class_implementing_an_interface_links_the_method_of_the_same_nam
 fn an_interface_repeated_in_two_folders_links_to_the_closest_path_and_a_tie_links_none() {
     let temp = project("membros-repetido");
     let dir = temp.path();
-    let contrato = "export interface Cobravel {\n  cobrar(): void;\n}\n";
-    write(dir, "src/vendas/contrato.ts", contrato);
-    write(dir, "src/compras/contrato.ts", contrato);
+    let contract = "export interface Cobravel {\n  cobrar(): void;\n}\n";
+    write(dir, "src/vendas/contrato.ts", contract);
+    write(dir, "src/compras/contrato.ts", contract);
     // Mais pastas em comum com a interface de vendas.
     write(dir, "src/vendas/fatura.ts", "export class Fatura implements Cobravel {\n  cobrar(): void {}\n}\n");
     // As mesmas pastas em comum com as duas: empate.
