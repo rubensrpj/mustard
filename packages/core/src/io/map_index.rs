@@ -107,7 +107,7 @@ impl Level {
 /// 0,25 e a do cabeçalho do arquivo 0,1, porque dizem onde o código mora e do
 /// que trata, não o que ele faz; o comentário que diz o que o arquivo faz pesa
 /// 1. Os títulos dos commits ficam com peso 0: entram no índice, mas não
-/// ordenam o arquivo.
+///    ordenam o arquivo.
 pub(super) const FILE_LEVEL: Level = Level {
     fts: "file_fts",
     vocab: "file_vocab",

@@ -412,7 +412,7 @@ mod tests {
         let a = partial(0.9, &[(1, 0.1), (2, 0.1), (3, 0.8)]);
         let b = partial(0.2, &[(4, 0.3), (5, 0.3), (6, 0.2), (8, 0.2)]);
         let (exists, notes) = joined(&[a, b]);
-        assert_eq!(exists, 0.9, "the existence of the list is the highest of the requests");
+        assert!((exists - 0.9).abs() < 1e-6, "the existence of the list is the highest of the requests");
         let note = |id: i64| notes.iter().find(|scored| scored.id == id).unwrap().score;
         assert!((note(3) - 0.72).abs() < 1e-9, "0,9 × 0,8");
         assert!((note(4) - 0.06).abs() < 1e-9, "0,2 × 0,3");
@@ -430,7 +430,7 @@ mod tests {
         let a = partial(0.49, &[(1, 0.9), (2, 0.1)]);
         let b = partial(0.2, &[(3, 1.0)]);
         let (exists, notes) = joined(&[a, b]);
-        assert_eq!(exists, 0.49);
+        assert!((exists - 0.49).abs() < 1e-6);
         assert_eq!(judged(&notes, exists, CutRule::default()), (Verdict::NotFound, Vec::new()));
         let at_the_line = partial(0.50, &[(1, 0.9), (2, 0.1)]);
         let (exists, notes) = joined(&[at_the_line, partial(0.2, &[(3, 1.0)])]);
@@ -441,7 +441,7 @@ mod tests {
     fn a_candidate_split_in_several_requests_keeps_the_highest_of_its_notes() {
         let parts = [partial(0.1, &[(7, 1.0)]), partial(0.95, &[(7, 1.0)]), partial(0.3, &[(7, 1.0)])];
         let (exists, notes) = joined(&parts);
-        assert_eq!(exists, 0.95);
+        assert!((exists - 0.95).abs() < 1e-6);
         assert_eq!(notes, vec![Scored { id: 7, score: 0.95 }]);
     }
 

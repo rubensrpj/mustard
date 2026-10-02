@@ -39,7 +39,7 @@
 //!    os ganchos é de um commit anterior ao da base, e a base mudou código
 //!    depois dele.
 //! 10. **A versão velha do Mustard** — a gravada no projeto, a do plugin
-//!    carregado ou a do plugin instalado, quando uma delas ficou para trás.
+//!     carregado ou a do plugin instalado, quando uma delas ficou para trás.
 //! 11. **Os processos presos** — o que um agente deixou rodando (um laço de
 //!     espera, ou um comando na cópia de uma onda já apagada) é encerrado
 //!     aqui também, não só a cada rodada e no fechamento, e o aviso diz qual.
