@@ -45,6 +45,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // quem chama, já em milhares e arredondados.
         ("statusline.compact", Locale::PtBr) => "compacta em {point}k - faltam {distance}k",
         ("statusline.compact", Locale::EnUs) => "compacts at {point}k - {distance}k left",
+        // O indicador do consumo, na segunda linha da barra: `{change}` vem de
+        // quem chama, já com sinal e com o `%` (`−25%`). Compara o último dia
+        // de trabalho fechado com a média dos sete dias de trabalho anteriores
+        // a ele.
+        ("statusline.spend", Locale::PtBr) => "consumo {change} vs média de 7 dias",
+        ("statusline.spend", Locale::EnUs) => "usage {change} vs 7-day average",
         ("statusline.harness.inert", Locale::PtBr) => "harness inerte",
         ("statusline.harness.inert", Locale::EnUs) => "harness inert",
         // Dormant is NOT inert: inert means someone switched the plugin off,
@@ -219,8 +225,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("session.rs"),
             super::PREFIXES,
-            23,
-            0x994d_64eb_5e3d_a920,
+            24,
+            0xd48b_aa1a_54cd_f681,
         );
     }
 

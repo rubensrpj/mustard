@@ -37,10 +37,14 @@ pub enum SegmentKind {
     /// O ponto de tokens em que a compactação automática dispara e quanto
     /// falta até lá — na segunda linha, depois da economia do rtk.
     Compact = 9,
+    /// O consumo de tokens da máquina: o último dia de trabalho fechado contra
+    /// a média dos dias de trabalho de antes, como link para o painel do
+    /// consumo — na segunda linha, depois da economia do rtk.
+    Spend = 10,
 }
 
 /// Count of kinds — keep in sync with the last variant.
-pub const SEGMENT_KIND_COUNT: usize = 10;
+pub const SEGMENT_KIND_COUNT: usize = 11;
 
 /// A single line element with no theme coupling. Builders return
 /// `Option<Segment>` so a missing payload field omits the segment cleanly.
@@ -264,6 +268,45 @@ pub fn compact_segment(data: &Value, machine: Option<&str>, lang: SupportedLocal
         s.override_fg = Some(Color::Ansi(1)); // red: the cut lands too early
     }
     Some(s)
+}
+
+/// `consumo −25% vs média de 7 dias` — o consumo de tokens do último dia de
+/// trabalho fechado da máquina (o mais novo com 100 ações ou mais) contra a
+/// média dos sete dias de trabalho anteriores a ele, como link para o painel
+/// do consumo.
+///
+/// Lê só o arquivo dos dias fechados que fica em `dir` (a pasta do gasto da
+/// máquina, lida do ambiente por quem desenha): nunca abre uma conversa, para
+/// a barra não ficar mais lenta. `None` sem pasta, sem arquivo, com o arquivo
+/// ilegível, sem o endereço do painel, sem dia de trabalho fechado e sem dia de
+/// trabalho anterior a ele: o indicador some, e o resto da barra sai igual.
+#[must_use]
+pub fn spend_segment(dir: Option<&Path>, lang: SupportedLocale) -> Option<Segment> {
+    let ledger = mustard_core::io::spend::load(dir?).ok()?;
+    // Um endereço com caractere de controle (arquivo editado à mão) quebraria
+    // a sequência do link e sujaria a barra.
+    let url = ledger.url.as_deref().filter(|url| !url.chars().any(char::is_control))?;
+    let trend = mustard_core::domain::spend::trend(&ledger.rows)?;
+    Some(spend_indicator(trend.change_percent, Some(url), lang))
+}
+
+/// O indicador do consumo para a variação `change` (em percentual, com sinal),
+/// no idioma `lang`: o texto inteiro é o link para `url`, quando ele existe.
+/// Abaixo da média é bom e sai em verde nos temas de cor chapada.
+#[must_use]
+pub fn spend_indicator(change: i64, url: Option<&str>, lang: SupportedLocale) -> Segment {
+    let signed = match change {
+        0 => "0%".to_string(),
+        change if change < 0 => format!("\u{2212}{}%", change.unsigned_abs()),
+        change => format!("+{change}%"),
+    };
+    let label = mustard_core::translate("statusline.spend", lang).replace("{change}", &signed);
+    let text = url.map_or_else(|| label.clone(), |url| hyperlink(url, &label));
+    let mut segment = Segment::new(SegmentKind::Spend, text);
+    if change < 0 {
+        segment.override_fg = Some(Color::Ansi(2)); // green: spending under the average
+    }
+    segment
 }
 
 /// `Mustard 0.2.0` — a versão do Mustard que roda, no começo da segunda linha.
@@ -790,4 +833,46 @@ mod tests {
         assert_eq!(s.text, "Claude");
     }
 
+    /// O indicador leva a variação com o sinal: menos 25% com o sinal de
+    /// menos de verdade (U+2212) e em verde, mais 12% com o `+` e sem cor
+    /// própria, zero sem sinal; o texto inteiro é o link do painel, e sem o
+    /// endereço (a prévia) sai sem link.
+    #[test]
+    fn the_indicator_signs_the_change_and_links_the_whole_label_to_the_panel() {
+        let panel = "https://claude.ai/code/artifacts/painel";
+        let below = spend_indicator(-25, Some(panel), SupportedLocale::PtBr);
+        assert_eq!(visible(&below.text), "consumo \u{2212}25% vs média de 7 dias");
+        assert_eq!(below.text, hyperlink(panel, "consumo \u{2212}25% vs média de 7 dias"));
+        assert_eq!(below.override_fg, Some(Color::Ansi(2)), "under the average is good: green");
+
+        let above = spend_indicator(12, Some(panel), SupportedLocale::EnUs);
+        assert_eq!(visible(&above.text), "usage +12% vs 7-day average");
+        assert_eq!(above.override_fg, None);
+        assert_eq!(spend_indicator(0, None, SupportedLocale::PtBr).text, "consumo 0% vs média de 7 dias");
+        assert_eq!(spend_indicator(-25, None, SupportedLocale::PtBr).text, "consumo \u{2212}25% vs média de 7 dias", "no address, no link");
+    }
+
+    /// O indicador lê só o arquivo dos dias fechados: com ele e o endereço do
+    /// painel guardados, a variação sai da conta do último dia contra a média
+    /// dos de antes; sem a pasta, sem o arquivo ou sem endereço, nada.
+    #[test]
+    fn the_indicator_reads_only_the_closed_days_file() {
+        use mustard_core::domain::spend::{DayRow, Ledger};
+        let dir = tempfile::tempdir().unwrap();
+        assert!(spend_segment(None, SupportedLocale::PtBr).is_none(), "no machine folder");
+        assert!(spend_segment(Some(dir.path()), SupportedLocale::PtBr).is_none(), "no file yet");
+
+        let day = |day: &str, tokens: u64| DayRow { day: day.into(), project: "loja".into(), actions: 200, tokens, ..DayRow::default() };
+        let mut ledger = Ledger {
+            rows: vec![day("2026-09-26", 200), day("2026-09-27", 150)],
+            ..Ledger::default()
+        };
+        std::fs::write(mustard_core::io::spend::ledger_path(dir.path()), serde_json::to_string(&ledger).unwrap()).unwrap();
+        assert!(spend_segment(Some(dir.path()), SupportedLocale::PtBr).is_none(), "no panel address");
+
+        ledger.url = Some("https://claude.ai/code/artifacts/painel".into());
+        std::fs::write(mustard_core::io::spend::ledger_path(dir.path()), serde_json::to_string(&ledger).unwrap()).unwrap();
+        let shown = spend_segment(Some(dir.path()), SupportedLocale::PtBr).expect("the indicator");
+        assert_eq!(visible(&shown.text), "consumo \u{2212}25% vs média de 7 dias", "150 against an average of 200");
+    }
 }

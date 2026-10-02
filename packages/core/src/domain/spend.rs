@@ -423,6 +423,46 @@ pub fn summarize(closed: &[DayRow], open: &[DayRow], today: &str) -> Summary {
     }
 }
 
+/// O indicador do consumo da barra de status: o último dia de trabalho
+/// fechado contra a média dos sete dias de trabalho fechados anteriores a ele.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Trend {
+    /// O último dia fechado com [`MIN_ACTIONS`] ações ou mais, `AAAA-MM-DD`.
+    pub day: String,
+    /// Os tokens desse dia, a máquina inteira.
+    pub tokens: u64,
+    /// A média dos dias anteriores com ações bastantes.
+    pub average: Average,
+    /// A variação dele contra a média, em percentual inteiro e com sinal:
+    /// abaixo da média é negativo.
+    pub change_percent: i64,
+}
+
+/// O indicador do consumo a partir das linhas dos dias fechados: o dia fechado
+/// mais novo com [`MIN_ACTIONS`] ações ou mais, a máquina inteira, contra a
+/// média dos sete dias fechados anteriores a ele com o mesmo mínimo — o mesmo
+/// corte das médias da página, uma regra só: um fim de semana parado depois da
+/// sexta não vira o dia comparado. A variação é arredondada para o percentual
+/// inteiro mais próximo.
+///
+/// `None` sem dia de trabalho fechado, ou quando nenhum dia de trabalho veio
+/// antes dele: não há média contra a qual comparar.
+#[must_use]
+pub fn trend(closed: &[DayRow]) -> Option<Trend> {
+    let days = totals(closed);
+    let busy: Vec<&DayTotal> = days.iter().rev().filter(|day| day.actions >= MIN_ACTIONS).collect();
+    let (last, before) = busy.split_first()?;
+    let average = average(&before.iter().copied().take(LONG_WINDOW).collect::<Vec<_>>());
+    if average.tokens == 0 {
+        return None;
+    }
+    let base = i128::from(average.tokens);
+    let delta = i128::from(last.tokens) - base;
+    // Meio ponto arredonda para longe do zero: a variação de -12,5% é -13%.
+    let change_percent = i64::try_from((delta * 100 + delta.signum() * base / 2) / base).ok()?;
+    Some(Trend { day: last.day.clone(), tokens: last.tokens, average, change_percent })
+}
+
 /// A faixa de dias que falta contar: do dia seguinte ao último contado (ou do
 /// começo das conversas, quando nada foi contado ainda) até ontem.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -790,6 +830,91 @@ mod tests {
         assert_eq!(summary.month, Average { tokens: 4000, days: 2 }, "{summary:?}");
         assert_eq!(summary.last_3.days, 3);
         assert_eq!(summarize(&closed, &[], "2026-10-01").month, Average::default(), "the first day of a month has no closed day in it");
+    }
+
+    /// Sete dias fechados a 120 milhões de tokens e um último dia a 90
+    /// milhões dão menos 25%: o indicador compara o último dia fechado com a
+    /// média dos dias de antes, e abaixo da média o sinal é negativo.
+    #[test]
+    fn a_last_day_of_ninety_million_against_an_average_of_one_hundred_twenty_million_is_minus_twenty_five() {
+        let mut closed: Vec<DayRow> = (20..=26).map(|day| busy(&format!("2026-09-{day}"), "a", 300, 120_000_000)).collect();
+        closed.push(busy("2026-09-27", "a", 300, 90_000_000));
+        let trend = trend(&closed).unwrap();
+        assert_eq!(trend.day, "2026-09-27");
+        assert_eq!(trend.tokens, 90_000_000);
+        assert_eq!(trend.average, Average { tokens: 120_000_000, days: 7 });
+        assert_eq!(trend.change_percent, -25);
+
+        let above: Vec<DayRow> = vec![busy("2026-09-26", "a", 300, 100_000), busy("2026-09-27", "a", 300, 112_000)];
+        assert_eq!(super::trend(&above).unwrap().change_percent, 12, "above the average is positive");
+    }
+
+    /// Um dia com 50 ações fica fora da média, entre os dias de antes do
+    /// último: a média é a dos dias de trabalho.
+    #[test]
+    fn the_trend_average_leaves_out_a_day_with_fifty_actions() {
+        let closed = vec![
+            busy("2026-09-23", "a", 300, 100),
+            busy("2026-09-24", "a", 300, 300),
+            busy("2026-09-25", "a", 50, 1_000_000),
+            busy("2026-09-26", "a", 100, 400),
+        ];
+        let trend = trend(&closed).unwrap();
+        assert_eq!(trend.average, Average { tokens: 200, days: 2 }, "the 50-action day is not in the average: {trend:?}");
+        assert_eq!((trend.day.as_str(), trend.tokens), ("2026-09-26", 400), "a day with exactly 100 actions counts");
+        assert_eq!(trend.change_percent, 100);
+    }
+
+    /// Sexta com 300 ações, sábado com 5 e domingo com 5: o dia comparado é a
+    /// sexta, contra os sete dias de trabalho de antes dela, e os dois dias
+    /// parados que vieram depois não entram na conta.
+    #[test]
+    fn a_quiet_weekend_after_friday_never_becomes_the_compared_day() {
+        let mut closed: Vec<DayRow> = (13..=19).map(|day| busy(&format!("2026-09-{day}"), "a", 300, 120_000_000)).collect();
+        closed.push(busy("2026-09-20", "a", 300, 90_000_000)); // sexta
+        closed.push(busy("2026-09-21", "a", 5, 1_000)); // sábado
+        closed.push(busy("2026-09-22", "a", 5, 2_000)); // domingo
+        let trend = trend(&closed).unwrap();
+        assert_eq!((trend.day.as_str(), trend.tokens), ("2026-09-20", 90_000_000), "{trend:?}");
+        assert_eq!(trend.average, Average { tokens: 120_000_000, days: 7 });
+        assert_eq!(trend.change_percent, -25, "not the minus 100% of a quiet day");
+    }
+
+    /// Só os sete dias fechados anteriores ao último entram na média; o mais
+    /// velho de oito fica de fora, e os projetos do último dia se somam.
+    #[test]
+    fn the_trend_averages_only_the_seven_busy_days_before_the_last_one_and_adds_its_projects() {
+        let mut closed = vec![busy("2026-09-10", "a", 300, 8_000_000)];
+        closed.extend((11..=17).map(|day| busy(&format!("2026-09-{day}"), "a", 300, 1000)));
+        closed.push(busy("2026-09-18", "a", 200, 600));
+        closed.push(busy("2026-09-18", "b", 200, 900));
+        let trend = trend(&closed).unwrap();
+        assert_eq!(trend.average, Average { tokens: 1000, days: 7 }, "the eighth day back is left out");
+        assert_eq!(trend.tokens, 1500, "the projects of the last day add up");
+        assert_eq!(trend.change_percent, 50);
+    }
+
+    /// Sem dia fechado, com um dia de trabalho só, com os dias de antes
+    /// parados ou com só dias parados depois do único dia de trabalho, não há
+    /// média contra a qual comparar.
+    #[test]
+    fn the_trend_is_empty_without_a_closed_day_or_a_busy_day_before_the_last() {
+        assert_eq!(trend(&[]), None, "no closed day");
+        assert_eq!(trend(&[busy("2026-09-27", "a", 300, 5000)]), None, "no day before the last");
+        let idle = vec![busy("2026-09-25", "a", 99, 5000), busy("2026-09-26", "a", 10, 5000), busy("2026-09-27", "a", 300, 5000)];
+        assert_eq!(trend(&idle), None, "the days before had no work");
+        let quiet_after = vec![busy("2026-09-26", "a", 300, 5000), busy("2026-09-27", "a", 5, 5000)];
+        assert_eq!(trend(&quiet_after), None, "the only workday has no day before it");
+        assert_eq!(trend(&[busy("2026-09-27", "a", 5, 5000)]), None, "no workday at all");
+    }
+
+    /// Meio ponto arredonda para longe do zero, nos dois lados.
+    #[test]
+    fn the_trend_rounds_half_a_point_away_from_zero() {
+        let around = |last: u64| {
+            trend(&[busy("2026-09-26", "a", 300, 200), busy("2026-09-27", "a", 300, last)]).unwrap().change_percent
+        };
+        assert_eq!((around(175), around(225), around(201), around(199)), (-13, 13, 1, -1));
     }
 
     /// Hoje só entra em "hoje até agora", com as linhas do dia aberto

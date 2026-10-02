@@ -370,3 +370,41 @@ fn a_project_without_a_config_never_gets_the_spend_order() {
     assert!(!scene.session_start().contains("mustard-rt run spend"));
     assert!(!scene.spend.join("ledger.json").exists(), "nothing was written");
 }
+
+/// A barra de status, pelo binário, mostra o consumo contra a média lido do
+/// arquivo dos dias fechados da máquina: sete dias de 120 milhões de tokens e
+/// um último de 90 milhões dão menos 25%, com o link do painel, sem nenhuma
+/// spec aberta. Sem o arquivo, a barra não traz o indicador, mesmo com
+/// conversas na máquina: ela só lê o arquivo.
+#[test]
+fn the_status_bar_shows_the_consumption_against_the_average_with_the_panel_link() {
+    let scene = Scene::new();
+    assert!(!scene.project.join(".claude/spec").exists(), "no spec in this project");
+    let panel = "https://claude.ai/code/artifact/painel-do-consumo";
+    let payload = json!({"workspace": {"current_dir": scene.project.to_string_lossy()}, "model": {"display_name": "Opus 5"}})
+        .to_string();
+    let bar = |scene: &Scene| scene.rt(&["run", "statusline"], &payload).0;
+
+    // Conversas de ontem e de antes existem, mas a barra nunca as lê: sem o
+    // arquivo dos dias fechados, não há indicador.
+    let (yesterday, before) = (previous_day(&today()).unwrap(), previous_day(&previous_day(&today()).unwrap()).unwrap());
+    scene.conversation("s1", &[scene.reply("m1", &yesterday, 0, 90, &[]), scene.reply("m2", &before, 0, 120, &[])]);
+    assert!(!bar(&scene).contains("consumo"), "no closed-days file, no indicator, however many conversations there are");
+    assert!(!scene.spend.join("ledger.json").exists(), "the bar counts nothing and writes nothing");
+
+    let row = |day: &str, tokens: u64| json!({"day": day, "project": "loja", "tokens": tokens, "actions": 300});
+    let mut rows: Vec<Value> = (20..=26).map(|day| row(&format!("2026-09-{day}"), 120_000_000)).collect();
+    rows.push(row("2026-09-27", 90_000_000));
+    std::fs::create_dir_all(&scene.spend).unwrap();
+    std::fs::write(scene.spend.join("ledger.json"), json!({"counted_through": "2026-09-27", "url": panel, "rows": rows}).to_string())
+        .unwrap();
+
+    let shown = bar(&scene);
+    assert!(
+        shown.contains(&format!("\u{1b}]8;;{panel}\u{1b}\\")) && shown.contains("consumo \u{2212}25% vs média de 7 dias"),
+        "the label links the panel: {shown:?}"
+    );
+
+    std::fs::remove_file(scene.spend.join("ledger.json")).unwrap();
+    assert!(!bar(&scene).contains("consumo"), "the file is gone, so is the indicator");
+}
