@@ -247,7 +247,7 @@ fn the_candidates_for_the_filter_start_with_the_function_that_writes_a_one_word_
     scan(temp.path());
     let languages = Languages::of(&ProjectConfig::default());
     let map = model::path_in(&temp.path().join(".claude"));
-    let found = map_search::candidates_at(&map, "palavra", "", &languages, 10, map_search::any_path).expect("a busca lê o mapa");
+    let found = map_search::candidates_at(&map, "palavra", "", &languages, map_search::any_path).expect("a busca lê o mapa");
     let first = found.candidates.first().expect("a busca acha uma declaração");
     assert_eq!((first.path.as_str(), first.name.as_str()), ("src/consulta.rs", "carregar"), "{found:?}");
 }

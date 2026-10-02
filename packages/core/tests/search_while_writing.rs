@@ -33,7 +33,7 @@ fn saved_map() -> (tempfile::TempDir, std::path::PathBuf, Languages) {
 /// A busca dos candidatos e a da triagem, as duas que o Claude faz, sobre o
 /// mapa em `model`: quantos arquivos a triagem achou.
 fn search(model: &std::path::Path, languages: &Languages) -> usize {
-    candidates_at(model, "cobrar pedido", "", languages, 10, any_path).expect("the candidates answer while the map is being written");
+    candidates_at(model, "cobrar pedido", "", languages, any_path).expect("the candidates answer while the map is being written");
     triage_at(model, ("cobrar pedido", ""), languages, 10).expect("the search answers while the map is being written").files.len()
 }
 
@@ -124,7 +124,7 @@ fn a_search_that_has_to_redo_the_index_waits_for_the_write_that_holds_the_lock()
     };
     holding.recv().unwrap();
     let started = Instant::now();
-    candidates_at(&model, "cobrar pedido", "", &other_languages, 10, any_path).expect("the search waits for the write instead of failing");
+    candidates_at(&model, "cobrar pedido", "", &other_languages, any_path).expect("the search waits for the write instead of failing");
     let took = started.elapsed();
     assert!(!writer.join().unwrap(), "nobody told the write to let go: it held for its own 200 ms");
     assert!(took >= Duration::from_millis(100), "the redo of the index waited for the write that held the lock: {took:?}");

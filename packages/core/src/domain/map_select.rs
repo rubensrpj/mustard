@@ -5,19 +5,13 @@
 //! da chance. O tipo achado sozinho não diz onde está o trabalho, e o método
 //! de interface não diz quem o faz: por isso cada item do corte puxa, logo
 //! depois dele, o método do tipo ou a implementação do método de contrato.
-//! Nada mais entra: o que o filtro barrou não volta pelo banco. O teto corta
-//! o fim da volta.
+//! Nada mais entra: o que o filtro barrou não volta pelo banco. A volta não
+//! tem teto: volta tudo o que passou do corte e o que ele puxou.
 //!
 //! Função pura: as ligações chegam prontas, lidas do mapa pela porta. Sem
 //! disco, sem rede, sem relógio.
 
 use std::collections::{HashMap, HashSet};
-
-/// Quantas peças a busca com filtro devolve, no máximo, quando o projeto
-/// não diz outro número. Nas quatro réguas do laboratório (1.967 buscas,
-/// com 200 candidatos), o teto de 15 perdeu 6 buscas e o de 12 perdeu 29;
-/// sem teto, a volta chegou a 21 peças.
-pub const MAX_RETURNED: usize = 15;
 
 /// Os tipos que puxam o seu método.
 const TYPE_KINDS: [&str; 7] = ["class", "struct", "record", "interface", "trait", "enum", "type"];
@@ -64,17 +58,15 @@ pub struct Pick {
 ///
 /// O tipo puxa o seu método de melhor posição entre os candidatos. A função
 /// ou o método de contrato puxa a implementação: a de melhor posição entre os
-/// candidatos; se nenhuma está neles, a de melhor posição em `whole`, a lista
-/// inteira de onde os candidatos saíram; se nenhuma está nela, a de caminho
-/// mais parecido com o do item (mais pastas em comum no começo) e, no
-/// empate, a de menor id. O dublê de teste nunca é puxado: ele não chega nas
-/// implementações de `links`, mesmo quando o caminho dele é o mais parecido.
-/// O puxado entra só se ainda não voltou nem está no corte.
+/// candidatos, que são a lista inteira que o banco achou; se nenhuma está
+/// nela, a de caminho mais parecido com o do item (mais pastas em comum no
+/// começo) e, no empate, a de menor id. O dublê de teste nunca é puxado: ele
+/// não chega nas implementações de `links`, mesmo quando o caminho dele é o
+/// mais parecido. O puxado entra só se ainda não voltou nem está no corte.
 #[must_use]
-pub fn select(cut: &[i64], candidates: &[i64], whole: &[i64], links: &Links) -> Vec<Pick> {
+pub fn select(cut: &[i64], candidates: &[i64], links: &Links) -> Vec<Pick> {
     let in_cut: HashSet<i64> = cut.iter().copied().collect();
     let bank_at = positions(candidates);
-    let whole_at = positions(whole);
     let mut out: Vec<Pick> = Vec::new();
     let mut taken: HashSet<i64> = HashSet::new();
     for &id in cut {
@@ -85,7 +77,7 @@ pub fn select(cut: &[i64], candidates: &[i64], whole: &[i64], links: &Links) -> 
         let pulled = if TYPE_KINDS.contains(&linked.kind.as_str()) {
             best_placed(linked.methods.iter().copied(), &bank_at)
         } else if FUNCTION_KINDS.contains(&linked.kind.as_str()) {
-            implementation(linked, &bank_at, &whole_at)
+            implementation(linked, &bank_at)
         } else {
             None
         };
@@ -94,12 +86,6 @@ pub fn select(cut: &[i64], candidates: &[i64], whole: &[i64], links: &Links) -> 
         }
     }
     out
-}
-
-/// A volta com no máximo `max` peças: as primeiras, na ordem da volta.
-#[must_use]
-pub fn capped(picks: &[Pick], max: usize) -> Vec<Pick> {
-    picks.iter().take(max).copied().collect()
 }
 
 /// A posição de cada id na lista, a primeira quando ele se repete.
@@ -117,11 +103,10 @@ fn best_placed(ids: impl Iterator<Item = i64>, at: &HashMap<i64, usize>) -> Opti
 }
 
 /// A implementação que o método de contrato puxa: entre os candidatos; senão
-/// na lista inteira; senão pelo caminho mais parecido e, no empate, pelo
-/// menor id.
-fn implementation(linked: &Linked, bank_at: &HashMap<i64, usize>, whole_at: &HashMap<i64, usize>) -> Option<i64> {
+/// pelo caminho mais parecido e, no empate, pelo menor id.
+fn implementation(linked: &Linked, bank_at: &HashMap<i64, usize>) -> Option<i64> {
     let ids = || linked.implementations.iter().map(|(id, _)| *id);
-    best_placed(ids(), bank_at).or_else(|| best_placed(ids(), whole_at)).or_else(|| {
+    best_placed(ids(), bank_at).or_else(|| {
         linked
             .implementations
             .iter()
@@ -159,15 +144,14 @@ mod tests {
         // A classe 10 tem os métodos 15, 7 e 40; o 7 está mais acima no banco,
         // e o 40 nem é candidato.
         links.insert(10, Linked { methods: vec![15, 7, 40], ..linked("class", "src/a.rs") });
-        let picks = select(&[10, 12], &bank(), &bank(), &links);
+        let picks = select(&[10, 12], &bank(), &links);
         assert_eq!(ids(&picks), vec![10, 7, 12]);
         assert_eq!(picks[1].source, Source::Pulled);
     }
 
     #[test]
-    fn a_contract_method_pulls_its_implementation_from_the_candidates_the_whole_list_or_the_closest_path() {
+    fn a_contract_method_pulls_its_implementation_from_the_candidates_or_the_closest_path() {
         let candidates = bank();
-        let whole: Vec<i64> = (1..=60).collect();
         let contract = |implementations: Vec<(i64, &str)>| {
             let mut links = Links::new();
             links.insert(
@@ -180,16 +164,13 @@ mod tests {
             links
         };
         // Entre os candidatos: a de melhor posição.
-        let picks = select(&[5], &candidates, &whole, &contract(vec![(18, "x.rs"), (9, "y.rs"), (45, "z.rs")]));
+        let picks = select(&[5], &candidates, &contract(vec![(18, "x.rs"), (9, "y.rs"), (45, "z.rs")]));
         assert_eq!(ids(&picks), vec![5, 9]);
-        // Nenhuma nos candidatos: a de melhor posição na lista inteira.
-        let picks = select(&[5], &candidates, &whole, &contract(vec![(55, "x.rs"), (41, "y.rs")]));
-        assert_eq!(ids(&picks), vec![5, 41]);
-        // Nenhuma na lista: a de mais pastas em comum com o método.
-        let picks = select(&[5], &candidates, &whole, &contract(vec![(90, "src/web/pay.rs"), (80, "src/pay/card.rs")]));
+        // Nenhuma nos candidatos: a de mais pastas em comum com o método.
+        let picks = select(&[5], &candidates, &contract(vec![(90, "src/web/pay.rs"), (80, "src/pay/card.rs")]));
         assert_eq!(ids(&picks), vec![5, 80]);
         // O mesmo caminho parecido: a de menor id, a primeira do banco.
-        let picks = select(&[5], &candidates, &whole, &contract(vec![(95, "src/pay/b.rs"), (85, "src/pay/a.rs")]));
+        let picks = select(&[5], &candidates, &contract(vec![(95, "src/pay/b.rs"), (85, "src/pay/a.rs")]));
         assert_eq!(ids(&picks), vec![5, 85]);
     }
 
@@ -199,33 +180,32 @@ mod tests {
         links.insert(4, Linked { methods: vec![6], ..linked("struct", "src/a.rs") });
         links.insert(8, Linked { implementations: vec![(6, "src/a.rs".to_string())], ..linked("function", "src/b.rs") });
         // O 6 está no corte: nem a struct 4 nem a função 8 o puxam.
-        let picks = select(&[4, 6, 8, 2], &bank(), &bank(), &links);
+        let picks = select(&[4, 6, 8, 2], &bank(), &links);
         assert_eq!(ids(&picks), vec![4, 6, 8, 2]);
         assert!(picks.iter().all(|pick| pick.source == Source::Cut));
     }
 
     #[test]
     fn an_empty_cut_returns_nothing_and_the_bank_does_not_fill_it() {
-        assert!(select(&[], &bank(), &bank(), &Links::new()).is_empty());
+        assert!(select(&[], &bank(), &Links::new()).is_empty());
     }
 
     #[test]
     fn the_answer_is_only_the_cut_in_the_order_of_the_chance() {
-        let picks = select(&[14, 3, 9], &bank(), &bank(), &Links::new());
+        let picks = select(&[14, 3, 9], &bank(), &Links::new());
         assert_eq!(ids(&picks), vec![14, 3, 9], "the bank order does not come back and no bank piece is added");
     }
 
     #[test]
-    fn a_cap_keeps_the_first_places_in_the_order_of_the_answer() {
+    fn the_answer_has_no_ceiling_the_cut_and_all_it_pulls_come_back_in_order() {
         let mut links = Links::new();
         links.insert(10, Linked { methods: vec![11], ..linked("class", "src/a.rs") });
         links.insert(12, Linked { methods: vec![13], ..linked("class", "src/b.rs") });
-        // Corte de 4 (10, 12, 14, 16) que puxa 2 (11 e 13).
-        let picks = select(&[10, 12, 14, 16], &bank(), &bank(), &links);
+        // Corte de 4 (10, 12, 14, 16) que puxa 2 (11 e 13): voltam as 6.
+        let picks = select(&[10, 12, 14, 16], &bank(), &links);
         assert_eq!(ids(&picks), vec![10, 11, 12, 13, 14, 16]);
-        assert_eq!(ids(&capped(&picks, 3)), vec![10, 11, 12]);
-        // Abaixo do teto, nada sai.
-        assert_eq!(capped(&picks, 9), picks);
-        assert_eq!(capped(&picks, MAX_RETURNED), picks);
+        // Um corte de 20 candidatos volta inteiro, sem nenhum teto de peças.
+        let everything: Vec<i64> = bank();
+        assert_eq!(ids(&select(&everything, &bank(), &Links::new())), everything);
     }
 }

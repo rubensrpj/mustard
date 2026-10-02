@@ -406,7 +406,7 @@ fn search(
     let config = mustard_core::ProjectConfig::load(root);
     // Cravado, a resposta sai da triagem: o primeiro achado como peça inteira,
     // sem montar o filtro, sem chamá-lo, sem chave e sem gravar chamada.
-    if let Some(piece) = door::pinned(root, (&query, intent), languages, &config, &triaged)? {
+    if let Some(piece) = door::pinned(root, (&query, intent), languages, &triaged)? {
         return Ok(triage_view::pinned_report(&query, &triaged, &piece, lang));
     }
     let mut warnings: Vec<String> = Vec::new();
@@ -1112,7 +1112,6 @@ mod tests {
     use super::*;
     use crate::shared::search_door::Assembled;
     use mustard_core::domain::map_filter::{FilterError, FilterRequest, Filtered, MapFilter};
-    use mustard_core::domain::search::CANDIDATES;
     use mustard_core::domain::project_map::{
         DeclChange, DeclComment, DeclLineage, FileLineage, LineageCommit, PullComment, PullText,
     };
@@ -3037,6 +3036,7 @@ mod tests {
                 input_tokens: 21_000,
                 millis: 40,
                 cost_micro_usd: 882,
+                requests: 3,
                 model: "jev-1.13.0".to_string(),
             };
             let (verdict, kept) = mustard_core::domain::map_filter::judged(&scores, self.exists, request.cut);
@@ -3134,10 +3134,10 @@ mod tests {
     /// frase da documentação e a nota; nunca o corpo.
     #[test]
     fn three_scores_give_three_pieces_with_signature_and_doc_and_no_body() {
-        let dir = search_project(FILTER_MAP, &json!({"max_kept": 3}));
+        let dir = search_project(FILTER_MAP, &json!({}));
         let intent = "onde o pedido é gravado";
         let project = crate::commands::spec_events::project(dir.path());
-        let bank = map_search::candidates(&project.root, "pedido", intent, &project.languages, CANDIDATES, map_search::any_path).unwrap();
+        let bank = map_search::candidates(&project.root, "pedido", intent, &project.languages, map_search::any_path).unwrap();
         assert_eq!(bank.candidates.len(), 4, "{bank:?}");
         // As notas vão aos três primeiros do banco, que também são o topo
         // dele; o quarto fica sem nota e não passa do corte.
@@ -3361,25 +3361,59 @@ mod tests {
         assert_eq!(suggested_files(dir.path(), "gravar pagamento", 3, &languages), bank);
     }
 
-    /// `search.candidates`: ausente, vale 100; com valor, vale o valor; com
-    /// 0, vale 100 e avisa uma vez por sessão.
+    /// A lista inteira do banco vai ao filtro, sem teto: 120 funções que casam
+    /// com a busca chegam as 120, e a chave antiga de quantos candidatos
+    /// mandar não limita nada nem avisa.
     #[test]
-    fn the_candidates_setting_is_the_default_the_value_or_the_default_with_a_warning() {
+    fn the_whole_list_of_the_bank_goes_to_the_filter_and_the_old_candidates_key_limits_nothing() {
         let map = many_orders(120);
-        let sent = |search: Value, session: &str| {
+        let sent = |search: Value| {
             let dir = search_project(&map, &search);
             let fake = FakeFilter::scoring(&[0.9]);
-            let opts = search_opts(dir.path(), "pedido", None, Some(session));
-            let first = searched(&opts, &fake.assemble());
-            let second = searched(&opts, &fake.assemble());
-            (fake.last().candidates.len(), first["warnings"].clone(), second["warnings"].clone())
+            let report = searched(&search_opts(dir.path(), "pedido", None, Some("sessao")), &fake.assemble());
+            let project = crate::commands::spec_events::project(dir.path());
+            let bank = map_search::candidates(&project.root, "pedido", "", &project.languages, map_search::any_path).unwrap();
+            let asked = fake.last().candidates;
+            assert_eq!(asked.iter().map(|candidate| candidate.id).collect::<Vec<_>>(), bank.ids(), "the list of the bank, in order");
+            (asked.len(), report["warnings"].clone())
         };
-        assert_eq!(sent(json!({}), "s1"), (100, Value::Null, Value::Null));
-        assert_eq!(sent(json!({"candidates": 5}), "s2"), (5, Value::Null, Value::Null));
-        let warned = mustard_core::translate("map.search.bad_number", Locale::PtBr)
-            .replace("{key}", "candidates")
-            .replace("{default}", "100");
-        assert_eq!(sent(json!({"candidates": 0}), "s3"), (100, json!([warned]), Value::Null));
+        assert_eq!(sent(json!({})), (120, Value::Null));
+        assert_eq!(sent(json!({"candidates": 5})), (120, Value::Null));
+    }
+
+    /// A busca por assunto manda ao filtro, em cada candidato, a história
+    /// inteira que o mapa guarda: os 30 commits que mudaram a função e o
+    /// comentário de revisão de 500 letras, sem corte; a função sem história
+    /// vai sem ela.
+    #[test]
+    fn the_search_hands_the_filter_the_whole_history_of_each_candidate() {
+        let dir = search_project(FILTER_MAP, &json!({}));
+        let commits: Vec<LineageCommit> =
+            (0..30).map(|n| LineageCommit { id: format!("c{n}"), title: format!("passo{n:02} do pedido"), ..LineageCommit::default() }).collect();
+        let changes: Vec<DeclChange> = commits.iter().map(|commit| DeclChange { id: commit.id.clone(), form: false }).collect();
+        let review = "r".repeat(500);
+        let lineage = FileLineage {
+            path: "src/pedido.rs".to_string(),
+            commits,
+            declarations: vec![DeclLineage {
+                name: "gravar_pedido".to_string(),
+                nth: 0,
+                commits: changes,
+                comments: vec![DeclComment { pr: 7, commit: "c0".to_string(), body: review.clone() }],
+            }],
+            ..FileLineage::default()
+        };
+        store::save_lineage_at(&store::model_path(dir.path()), &lineage).unwrap();
+
+        let fake = FakeFilter::scoring(&[0.9]);
+        searched(&search_opts(dir.path(), "pedido", Some("onde o pedido é gravado"), None), &fake.assemble());
+
+        let sent = fake.last().candidates;
+        let saved = sent.iter().find(|candidate| candidate.name == "gravar_pedido").expect("the candidate is sent");
+        assert_eq!(saved.commits.len(), 30, "{:?}", saved.commits);
+        assert_eq!(saved.reviews, [review], "the review goes whole");
+        let bare = sent.iter().find(|candidate| candidate.name == "cancelar_pedido").expect("the candidate is sent");
+        assert!(bare.commits.is_empty() && bare.reviews.is_empty(), "{bare:?}");
     }
 
     /// `search.cut_share` vai no pedido: ausente, 10 pontos, 0,10; com valor,
@@ -3400,37 +3434,36 @@ mod tests {
         assert_eq!(sent(json!({"cut_share": 0})), (0.10, json!([warned])));
     }
 
-    /// `search.exists_from` e `search.max_kept` vão no pedido: ausentes, 50
-    /// pontos (0,50) e 2 candidatos; com valor, o valor; com 0, o padrão e o
-    /// aviso.
+    /// `search.exists_from` vai no pedido: ausente, 50 pontos (0,50); com
+    /// valor, o valor; com 0, o padrão e o aviso.
     #[test]
-    fn the_exists_line_and_the_kept_limit_settings_go_in_the_request() {
+    fn the_exists_line_setting_goes_in_the_request() {
         let sent = |search: Value| {
             let dir = search_project(FILTER_MAP, &search);
             let fake = FakeFilter::scoring(&[0.9]);
             let report = searched(&search_opts(dir.path(), "pedido", None, None), &fake.assemble());
-            let cut = fake.last().cut;
-            ((cut.exists_from, cut.max_kept), report["warnings"].clone())
+            (fake.last().cut.exists_from, report["warnings"].clone())
         };
-        assert_eq!(sent(json!({})), ((0.50, 2), Value::Null));
-        assert_eq!(sent(json!({"exists_from": 70, "max_kept": 4})), ((0.70, 4), Value::Null));
-        let warned = |key: &str, default: &str| {
-            json!([mustard_core::translate("map.search.bad_number", Locale::PtBr)
-                .replace("{key}", key)
-                .replace("{default}", default)])
-        };
-        assert_eq!(sent(json!({"exists_from": 0})), ((0.50, 2), warned("exists_from", "50")));
-        assert_eq!(sent(json!({"max_kept": 0})), ((0.50, 2), warned("max_kept", "2")));
+        assert_eq!(sent(json!({})), (0.50, Value::Null));
+        assert_eq!(sent(json!({"exists_from": 70})), (0.70, Value::Null));
+        let warned = mustard_core::translate("map.search.bad_number", Locale::PtBr)
+            .replace("{key}", "exists_from")
+            .replace("{default}", "50");
+        assert_eq!(sent(json!({"exists_from": 0})), (0.50, json!([warned])));
     }
 
-    /// Sem `search.max_kept`, só duas peças passam do corte, mesmo com cinco
-    /// candidatos de chance igual.
+    /// Todas as peças que passam do corte voltam, mesmo com cinco candidatos
+    /// de chance igual e com as chaves antigas de teto na configuração: o corte
+    /// é só a linha relativa à maior chance.
     #[test]
-    fn by_default_at_most_two_pieces_pass_the_cut() {
-        let dir = search_project(FILTER_MAP, &json!({}));
-        let fake = FakeFilter::scoring(&[0.4, 0.4, 0.4, 0.4]);
-        let report = searched(&search_opts(dir.path(), "pedido", Some("onde o pedido é gravado"), None), &fake.assemble());
-        assert_eq!(report["pieces"].as_array().unwrap().len(), 2, "{report}");
+    fn every_piece_that_passes_the_cut_comes_back_whatever_the_old_ceiling_keys_say() {
+        for search in [json!({}), json!({"max_kept": 1, "max_returned": 1})] {
+            let dir = search_project(FILTER_MAP, &search);
+            let fake = FakeFilter::scoring(&[0.4, 0.4, 0.4, 0.4]);
+            let report = searched(&search_opts(dir.path(), "pedido", Some("onde o pedido é gravado"), None), &fake.assemble());
+            assert_eq!(report["pieces"].as_array().unwrap().len(), 4, "{report}");
+            assert!(report.get("warnings").is_none(), "{report}");
+        }
     }
 
     /// `--described` e `--said` chegam ao filtro, aparados; sem eles, o
@@ -3455,50 +3488,42 @@ mod tests {
         assert_eq!((bare.last().described, bare.last().said), (String::new(), String::new()));
     }
 
-    /// `search.max_returned`: ausente, a volta de 12 peças do corte não se
-    /// corta; com 5, ficam as 5 primeiras na ordem da chance; com 0, vale o
-    /// padrão e avisa.
+    /// A volta de 12 peças do corte não se corta: as 12 voltam, na ordem da
+    /// chance, e a chave antiga de teto de peças não muda nada nem avisa.
     #[test]
-    fn the_max_returned_setting_caps_the_answer_or_warns() {
+    fn twelve_pieces_above_the_cut_all_come_back_in_the_order_of_the_chance() {
         let map = many_orders(40);
         // Doze chances que descem devagar: todas passam do corte.
         let notes: Vec<f64> = (0..12).map(|at| 0.5 - f64::from(at) * 0.02).collect();
-        let answered_with = |mut search: Value| {
-            search["max_kept"] = json!(12);
+        let answered_with = |search: Value| {
             let dir = search_project(&map, &search);
             let fake = FakeFilter::scoring(&notes);
             searched(&search_opts(dir.path(), "pedido", None, None), &fake.assemble())
         };
-        let whole = answered_with(json!({}));
-        let pieces = whole["pieces"].as_array().unwrap();
-        assert_eq!(pieces.len(), 12, "{whole}");
-        assert!(whole.get("warnings").is_none(), "{whole}");
-
-        let capped = answered_with(json!({"max_returned": 5}));
         let names = |report: &Value| -> Vec<String> {
             report["pieces"].as_array().unwrap().iter().map(|piece| piece["name"].as_str().unwrap().to_string()).collect()
         };
-        let all = names(&whole);
-        assert_eq!(names(&capped), all[..5].to_vec(), "{capped}");
+        let whole = answered_with(json!({}));
+        assert_eq!(names(&whole).len(), 12, "{whole}");
+        assert!(whole.get("warnings").is_none(), "{whole}");
+        let scores: Vec<f64> = whole["pieces"].as_array().unwrap().iter().map(|piece| piece["score"].as_f64().unwrap()).collect();
+        assert!(scores.windows(2).all(|pair| pair[0] >= pair[1]), "{scores:?}");
 
-        let zero = answered_with(json!({"max_returned": 0}));
-        assert_eq!(names(&zero), all);
-        let warned = mustard_core::translate("map.search.bad_number", Locale::PtBr)
-            .replace("{key}", "max_returned")
-            .replace("{default}", "15");
-        assert_eq!(zero["warnings"], json!([warned]), "{zero}");
+        let old_keys = answered_with(json!({"max_kept": 3, "max_returned": 5}));
+        assert_eq!(names(&old_keys), names(&whole), "{old_keys}");
+        assert!(old_keys.get("warnings").is_none(), "{old_keys}");
     }
 
     /// A resposta com filtro tem só o que passou do corte, na ordem da
     /// chance: com as chances 0,9, 0,05 e 0,03, é uma peça, e nenhum
-    /// candidato do topo do banco entra para encher; com 0,5, 0,45 e 0,05,
+    /// candidato do topo do banco entra para encher; com 0,5, 0,45 e 0,04,
     /// são duas.
     #[test]
     fn the_answer_has_only_what_passed_the_cut_in_the_order_of_the_chance() {
         let dir = search_project(FILTER_MAP, &json!({}));
         let intent = "onde o pedido é gravado";
         let project = crate::commands::spec_events::project(dir.path());
-        let bank = map_search::candidates(&project.root, "pedido", intent, &project.languages, CANDIDATES, map_search::any_path).unwrap();
+        let bank = map_search::candidates(&project.root, "pedido", intent, &project.languages, map_search::any_path).unwrap();
         assert_eq!(bank.candidates.len(), 4, "{bank:?}");
         let names_for = |notes: &[f64]| -> Vec<String> {
             let fake = FakeFilter::scoring(notes);
@@ -3507,7 +3532,7 @@ mod tests {
         };
         let name = |at: usize| bank.candidates[at].name.clone();
         assert_eq!(names_for(&[0.05, 0.9, 0.03]), [name(1)], "one piece: the top of the bank does not fill the answer");
-        assert_eq!(names_for(&[0.45, 0.5, 0.05]), [name(1), name(0)]);
+        assert_eq!(names_for(&[0.45, 0.5, 0.04]), [name(1), name(0)]);
     }
 
     /// A chance de 0,4 de algum candidato servir, abaixo da linha de 0,5,
@@ -3579,8 +3604,9 @@ mod tests {
         assert!(call["ms"].is_u64(), "{call:?}");
         assert_eq!(
             [&call["filter"], &call["filter_ms"], &call["tokens"], &call["cost_micro_usd"], &call["candidates"], &call["returned"], &call["model"]],
-            [&json!("jev"), &json!(40), &json!(21_000), &json!(882), &json!(4), &json!(2), &json!("jev-1.13.0")]
+            [&json!("jev"), &json!(40), &json!(21_000), &json!(882), &json!(4), &json!(3), &json!("jev-1.13.0")]
         );
+        assert_eq!(call["requests"], json!(3), "how many requests the filter made is recorded: {call:?}");
     }
 
     /// A busca sem filtro não grava chamada.
@@ -3856,9 +3882,9 @@ mod tests {
 
     /// Com o scan da mesma compilação, a pergunta relê o mapa cujas
     /// declarações voltaram vazias, mesmo sem commit nem arquivo novo, e a
-    /// busca com filtro manda os 100 candidatos, não nenhum.
+    /// busca com filtro manda os 120 candidatos, não nenhum.
     #[test]
-    fn declarations_emptied_by_a_format_change_are_read_again_and_the_search_sends_its_hundred_candidates() {
+    fn declarations_emptied_by_a_format_change_are_read_again_and_the_search_sends_all_its_candidates() {
         let (dir, map) = scanned_repo(&many_orders(120));
         let root = dir.path();
         opened_by_an_older_scan(root);
@@ -3872,7 +3898,7 @@ mod tests {
         let report = super::map_at(&search_opts(root, "pedido", None, None), &same_build, &no_history, &fake.assemble());
         assert_eq!(passes.get(), 1, "{report}");
         assert_eq!(report["ok"], json!(true), "{report}");
-        assert_eq!(fake.last().candidates.len(), 100, "{report}");
+        assert_eq!(fake.last().candidates.len(), 120, "{report}");
     }
 
     /// Com o scan de outra compilação, as perguntas que leem as declarações

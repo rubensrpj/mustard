@@ -530,7 +530,7 @@ fn calls_sum(command: &str, calls: &[&SpecEvent]) -> Map<String, Value> {
             sum.insert(field.into(), spread);
         }
     }
-    for field in ["tokens", "cost_micro_usd"] {
+    for field in ["tokens", "cost_micro_usd", "requests"] {
         let values = numbers(field);
         if !values.is_empty() {
             sum.insert(field.into(), json!(values.iter().fold(0_u64, |total, n| total.saturating_add(*n))));

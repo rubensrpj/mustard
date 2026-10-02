@@ -2,19 +2,29 @@
 //! de fora que não escreve texto: lê um estado e perguntas e devolve a chance
 //! de cada opção.
 //!
-//! Implementa a tomada [`MapFilter`] do núcleo. Um pedido só leva tudo, na
-//! ordem do banco. O estado é um texto, um bloco por candidato: o id, o
-//! caminho com as linhas da declaração, a documentação e as primeiras linhas
-//! do código dela, lidas do arquivo do projeto; se o estado passa do
-//! orçamento ([`STATE_TOKENS`]), as linhas de código caem de 24 para 8, 5 e 3.
+//! Implementa a tomada [`MapFilter`] do núcleo. A lista inteira do banco vai
+//! ao Jev, sem corte: cada candidato leva a declaração do início ao fim, a
+//! documentação inteira, os títulos de todos os commits que a mudaram, todos
+//! os comentários de revisão presos a ela e os nomes do que ela chama. O
+//! estado é um texto, um bloco por candidato, na ordem do banco.
 //!
-//! O pedido faz duas perguntas ao mesmo estado: `where`, uma escolha entre os
-//! ids dos candidatos (qual é o código que o agente pediu), e `exists`, um
-//! sim ou não (algum candidato é). Cada pergunta leva a frase de quem procura
-//! e, quando existem, a descrição que o agente deu à busca e a última fala
-//! dele antes dela. A chance de cada id e a de `exists` voltam para o
-//! veredito e o corte do núcleo ([`judged`]), os mesmos de toda
-//! implementação.
+//! A lista que não cabe num pedido vai em vários, todos ao mesmo tempo: os
+//! candidatos, em ordem, enchem cada pedido até [`REQUEST_TOKENS`] de estado
+//! mais a maior pergunta, e até [`MAX_CHOICES`] opções na escolha, que é o que
+//! o serviço aceita. O candidato que sozinho passa disso vai sozinho, o código
+//! em partes seguidas com o mesmo id, cada parte num pedido.
+//!
+//! Cada pedido faz duas perguntas ao seu estado: `where`, uma escolha entre
+//! os ids dos candidatos dele (qual é o código que o agente pediu), e
+//! `exists`, um sim ou não (algum candidato dele é). Cada pergunta leva a
+//! frase de quem procura e, quando existem, a descrição que o agente deu à
+//! busca e a última fala dele antes dela. As respostas dos pedidos se juntam
+//! ([`joined`]): a nota de cada candidato é a chance de existir do pedido dele
+//! vezes a nota dele na escolha, e é não achei quando nenhum pedido chega à
+//! linha de existência. O veredito e o corte do núcleo ([`judged`]), os
+//! mesmos de toda implementação, valem sobre a nota juntada. Um pedido que
+//! falha derruba o filtro inteiro: sem a resposta de todos, a lista não foi
+//! lida.
 //!
 //! O código do projeto vai ao Jev, e por isso todo texto que sai passa antes
 //! pela procura de segredo, o estado e o contexto inclusive: o trecho com cara
@@ -38,7 +48,8 @@ use std::path::{Component, Path};
 use std::time::{Duration, Instant};
 
 use mustard_core::domain::map_filter::{
-    FilterCandidate, FilterError, FilterRequest, FilterUsage, Filtered, MapFilter, Scored, Verdict, judged,
+    FilterCandidate, FilterError, FilterRequest, FilterUsage, Filtered, MapFilter, Partial, Scored, Verdict, joined,
+    judged,
 };
 use mustard_core::ProjectConfig;
 use serde_json::{Map, Value, json};
@@ -63,28 +74,34 @@ pub const PRICE_PER_MILLION_INPUT_TOKENS: f64 = 0.042;
 /// A variável de ambiente da chave; vence o `mustard.json`.
 pub const KEY_ENV: &str = "TYPESAFE_API_KEY";
 
-/// O maior pedido que o serviço aceita, em tokens. Passando dele, com o
-/// código já reduzido ao mínimo, o pedido não sai.
+/// O maior pedido que o serviço aceita, em tokens: o estado e todas as
+/// perguntas juntos. Um pedido montado que ainda passa dele não sai.
 const MAX_REQUEST_TOKENS: u64 = 64_000;
 
-/// O orçamento do estado, em tokens: acima dele, o código de cada candidato
-/// perde linhas até caber. A frase de quem procura, que vai nas duas
-/// perguntas, conta duas vezes.
-const STATE_TOKENS: u64 = 28_000;
+/// O tamanho de cada pedido, em tokens estimados: o estado mais a maior
+/// pergunta. O serviço aceita 32 mil; a estimativa por caracteres pode errar
+/// para menos, e os 4 mil de folga a cobrem. A frase de quem procura, que vai
+/// nas duas perguntas, entra na conta da maior delas.
+const REQUEST_TOKENS: u64 = 28_000;
+
+/// Quantas opções cabem numa pergunta de escolha do serviço.
+const MAX_CHOICES: usize = 255;
+
+/// Os caracteres que cada opção pesa na pergunta de escolha, o id com as
+/// aspas e a vírgula, com folga.
+const CHOICE_CHARS: usize = 14;
 
 /// Caracteres por token, para estimar o pedido antes de mandar, como a
 /// medida estimava.
 const CHARS_PER_TOKEN: f64 = 3.2;
 
-/// Quantas linhas do código de cada candidato vão no estado, da primeira
-/// tentativa para a última: as que sobram quando o estado passa do orçamento.
-const CODE_LINES: [usize; 4] = [24, 8, 5, 3];
+/// O menor espaço de uma parte do candidato grande demais, em caracteres.
+/// Abaixo dele a pergunta sozinha já come o pedido, e nada se divide.
+const MIN_PART_CHARS: usize = 1_000;
 
-/// Quantos caracteres da documentação vão por candidato.
-const DOCUMENTATION_CHARS: usize = 300;
-
-/// Quantos caracteres de cada linha de código vão.
-const LINE_CHARS: usize = 160;
+/// O rótulo que cada parte de um candidato leva no cabeçalho, ` (part 99 of
+/// 99)`, com folga.
+const PART_LABEL_CHARS: usize = 24;
 
 /// Quantos caracteres da descrição que o agente deu à busca vão.
 const DESCRIBED_CHARS: usize = 300;
@@ -273,6 +290,23 @@ impl JevFilter {
             return Err(FilterError::Refused { status });
         }
     }
+
+    /// Todos os pedidos de `payloads` ao mesmo tempo, cada um na sua linha de
+    /// execução e todos até `deadline`. Os documentos voltam na ordem dos
+    /// pedidos; a falha de um deles é a falha de todos, e vale a do primeiro
+    /// na ordem.
+    fn send_all(&self, payloads: &[String], deadline: Instant) -> Result<Vec<Value>, FilterError> {
+        std::thread::scope(|scope| {
+            let running: Vec<_> =
+                payloads.iter().map(|payload| scope.spawn(move || self.send(payload, deadline))).collect();
+            running
+                .into_iter()
+                .map(|handle| {
+                    handle.join().unwrap_or_else(|_| Err(FilterError::Network("a request thread failed".to_string())))
+                })
+                .collect()
+        })
+    }
 }
 
 impl MapFilter for JevFilter {
@@ -287,18 +321,33 @@ impl MapFilter for JevFilter {
                 usage: FilterUsage { model: String::new(), ..FilterUsage::default() },
             });
         }
-        let sent = payload(request)?;
-        let doc = self.send(&sent, deadline)?;
-        let answer = read_answer(&doc, &request.candidates)?;
-        let (verdict, kept) = judged(&answer.scores, answer.exists, request.cut);
+        let context = Context::of(request);
+        let batches = divide(request, &context)?;
+        let payloads: Vec<String> =
+            batches.iter().map(|batch| payload(batch, &context)).collect::<Result<_, _>>()?;
+        let docs = self.send_all(&payloads, deadline)?;
+        let mut partials = Vec::with_capacity(batches.len());
+        let mut input_tokens = 0;
+        let mut model = String::new();
+        for (batch, doc) in batches.iter().zip(&docs) {
+            let answer = read_answer(doc, batch, &request.candidates)?;
+            input_tokens += answer.input_tokens;
+            partials.push(Partial { exists: answer.exists, scores: answer.scores });
+            if model.is_empty() {
+                model = model_of(doc);
+            }
+        }
+        let (exists, notes) = joined(&partials);
+        let (verdict, kept) = judged(&notes, exists, request.cut);
         Ok(Filtered {
             verdict,
             kept,
             usage: FilterUsage {
-                input_tokens: answer.input_tokens,
+                input_tokens,
                 millis: started.elapsed().as_millis() as u64,
-                cost_micro_usd: cost_micro_usd(answer.input_tokens),
-                model: model_of(&doc),
+                cost_micro_usd: cost_micro_usd(input_tokens),
+                requests: batches.len() as u64,
+                model,
             },
         })
     }
@@ -317,21 +366,21 @@ fn cost_micro_usd(input_tokens: u64) -> u64 {
     (input_tokens as f64 * PRICE_PER_MILLION_INPUT_TOKENS).round() as u64
 }
 
-/// O que a resposta do serviço disse.
+/// O que a resposta de um pedido disse.
 #[derive(Debug, Clone, PartialEq)]
 struct Answer {
-    /// A chance de cada candidato ser o código, na ordem do banco.
+    /// A chance de cada candidato do pedido ser o código, na ordem dele.
     scores: Vec<Scored>,
-    /// A chance de algum candidato ser o código.
+    /// A chance de algum candidato do pedido ser o código.
     exists: f64,
     /// Os tokens de entrada que o pedido custou.
     input_tokens: u64,
 }
 
-/// A resposta lida do documento `doc`: a chance de cada candidato de
-/// `candidates` na escolha `where` e a de `exists`. Falta de `answers`, de uma
-/// chance ou do `exists` é resposta ilegível.
-fn read_answer(doc: &Value, candidates: &[FilterCandidate]) -> Result<Answer, FilterError> {
+/// A resposta do pedido `batch`, lida do documento `doc`: a chance de cada
+/// candidato dele, de `candidates`, na escolha `where` e a de `exists`. Falta
+/// de `answers`, de uma chance ou do `exists` é resposta ilegível.
+fn read_answer(doc: &Value, batch: &Batch, candidates: &[FilterCandidate]) -> Result<Answer, FilterError> {
     let answers = doc
         .get("answers")
         .and_then(Value::as_object)
@@ -341,14 +390,14 @@ fn read_answer(doc: &Value, candidates: &[FilterCandidate]) -> Result<Answer, Fi
         .and_then(|answer| answer.get("probabilities"))
         .and_then(Value::as_object)
         .ok_or_else(|| FilterError::Unreadable("no chances".to_string()))?;
-    let mut scores = Vec::with_capacity(candidates.len());
-    for (at, candidate) in candidates.iter().enumerate() {
+    let mut scores = Vec::with_capacity(batch.at.len());
+    for &at in &batch.at {
         let id = candidate_id(at);
         let score = chances
             .get(&id)
             .and_then(Value::as_f64)
             .ok_or_else(|| FilterError::Unreadable(format!("no chance for {id}")))?;
-        scores.push(Scored { id: candidate.id, score });
+        scores.push(Scored { id: candidates[at].id, score });
     }
     let exists = answers
         .get(EXISTS_KEY)
@@ -403,7 +452,7 @@ fn estimated_tokens(payload: &str) -> u64 {
 
 /// O que o agente queria, já sem segredo: a frase (ou, sem ela, as palavras),
 /// a descrição que ele deu à busca e a última fala dele. É o que acompanha as
-/// duas perguntas do pedido.
+/// duas perguntas de cada pedido.
 struct Context {
     request: String,
     described: String,
@@ -434,24 +483,155 @@ impl Context {
         }
         text
     }
+
+    /// A instrução da pergunta de escolha.
+    fn where_instructions(&self) -> String {
+        format!(
+            "Which candidate is the code that answers this request from a coding agent: \"{}\"?{}",
+            self.request,
+            self.suffix()
+        )
+    }
+
+    /// A instrução da pergunta de existência.
+    fn exists_instructions(&self) -> String {
+        format!(
+            "Does any candidate contain the code that answers this request from a coding agent: \"{}\"?{}",
+            self.request,
+            self.suffix()
+        )
+    }
+
+    /// Os caracteres da maior pergunta de um pedido com `choices` opções na
+    /// escolha: é ela que entra na conta do limite do serviço.
+    fn question_chars(&self, choices: usize) -> usize {
+        let choice = self.where_instructions().chars().count() + choices * CHOICE_CHARS;
+        let exists = self.exists_instructions().chars().count() + EXISTS_YES.len() + EXISTS_NO.len();
+        choice.max(exists)
+    }
+
+    /// Quantos caracteres de estado cabem num pedido com `choices` opções,
+    /// depois da maior pergunta.
+    fn room(&self, choices: usize) -> usize {
+        ((REQUEST_TOKENS as f64 * CHARS_PER_TOKEN).round() as usize).saturating_sub(self.question_chars(choices))
+    }
+
+    /// Se um estado de `state_chars` caracteres com `choices` candidatos cabe
+    /// num pedido: dentro de [`REQUEST_TOKENS`] e de [`MAX_CHOICES`].
+    fn fits(&self, state_chars: usize, choices: usize) -> bool {
+        choices <= MAX_CHOICES && state_chars <= self.room(choices)
+    }
 }
 
-/// O texto do pedido para `request`: o estado com as primeiras linhas de
-/// código de cada candidato — 24, e menos (8, 5, 3) enquanto o estado passa do
-/// orçamento — e as duas perguntas. Um pedido que ainda passa do limite do
-/// serviço não sai ([`FilterError::TooLarge`]).
-fn payload(request: &FilterRequest) -> Result<String, FilterError> {
-    let context = Context::of(request);
+/// Um pedido da divisão: o estado e os candidatos dele, pela posição na lista.
+#[derive(Debug, Default)]
+struct Batch {
+    state: String,
+    /// A posição na lista de cada candidato do pedido.
+    at: Vec<usize>,
+    /// Os caracteres do estado.
+    chars: usize,
+}
+
+impl Batch {
+    /// O pedido com o bloco de `chars` caracteres a mais, depois de uma linha
+    /// em branco quando já há outro.
+    fn push(&mut self, at: usize, block: &str, chars: usize) {
+        if !self.at.is_empty() {
+            self.state.push_str("\n\n");
+            self.chars += 2;
+        }
+        self.state.push_str(block);
+        self.chars += chars;
+        self.at.push(at);
+    }
+
+    /// Os caracteres do estado se o bloco de `chars` caracteres entrasse.
+    fn chars_with(&self, chars: usize) -> usize {
+        if self.at.is_empty() { chars } else { self.chars + 2 + chars }
+    }
+}
+
+/// A lista inteira de `request` repartida em pedidos, na ordem dela: os
+/// candidatos enchem cada pedido até onde o serviço aceita, e o que sozinho
+/// não cabe em um vai em pedidos só dele, em partes. Sem nenhum corte: todo
+/// candidato está em pelo menos um pedido, com tudo o que tem. Quando nem a
+/// pergunta cabe, nada se divide e o pedido não sai
+/// ([`FilterError::TooLarge`]).
+fn divide(request: &FilterRequest, context: &Context) -> Result<Vec<Batch>, FilterError> {
     let mut sources = Sources { root: &request.root, files: HashMap::new() };
-    let phrase = context.request.chars().count();
-    let mut state = String::new();
-    for lines in CODE_LINES {
-        state = state_text(&request.candidates, &mut sources, lines);
-        if tokens_of(state.chars().count() + 2 * phrase) <= STATE_TOKENS {
-            break;
+    let mut batches = Vec::new();
+    let mut open = Batch::default();
+    for (at, candidate) in request.candidates.iter().enumerate() {
+        let head = format!("{}| {}:{}-{}", candidate_id(at), without_secrets(&candidate.path), candidate.line, candidate.end_line);
+        let lines = block_lines(candidate, &mut sources);
+        let block = std::iter::once(head.as_str()).chain(lines.iter().map(String::as_str)).collect::<Vec<_>>().join("\n");
+        let chars = block.chars().count();
+        if context.fits(chars, 1) {
+            if !open.at.is_empty() && !context.fits(open.chars_with(chars), open.at.len() + 1) {
+                batches.push(std::mem::take(&mut open));
+            }
+            open.push(at, &block, chars);
+        } else {
+            if !open.at.is_empty() {
+                batches.push(std::mem::take(&mut open));
+            }
+            for part in parts(&head, &lines, context)? {
+                let chars = part.chars().count();
+                batches.push(Batch { state: part, at: vec![at], chars });
+            }
         }
     }
-    let text = serde_json::to_string(&body(&state, &context, request.candidates.len()))
+    if !open.at.is_empty() {
+        batches.push(open);
+    }
+    Ok(batches)
+}
+
+/// O candidato que sozinho passa do pedido, em partes seguidas: cada uma com
+/// o cabeçalho dele, o mesmo id e o rótulo da parte, e as linhas de depois do
+/// cabeçalho em ordem, sem perder nenhuma. A linha maior que a parte se parte
+/// também.
+fn parts(head: &str, lines: &[String], context: &Context) -> Result<Vec<String>, FilterError> {
+    let space = context.room(1).saturating_sub(head.chars().count() + PART_LABEL_CHARS + 1);
+    if space < MIN_PART_CHARS {
+        return Err(FilterError::TooLarge { estimated_tokens: tokens_of(context.question_chars(1)) });
+    }
+    let mut chunks: Vec<Vec<String>> = vec![Vec::new()];
+    let mut used = 0;
+    for line in lines {
+        for piece in char_chunks(line, space - 1) {
+            let need = piece.chars().count() + 1;
+            if used + need > space && used > 0 {
+                chunks.push(Vec::new());
+                used = 0;
+            }
+            if let Some(chunk) = chunks.last_mut() {
+                chunk.push(piece);
+            }
+            used += need;
+        }
+    }
+    let total = chunks.len();
+    Ok(chunks
+        .into_iter()
+        .enumerate()
+        .map(|(at, chunk)| format!("{head} (part {} of {total})\n{}", at + 1, chunk.join("\n")))
+        .collect())
+}
+
+/// `line` em pedaços de até `size` caracteres; a linha vazia é um pedaço só.
+fn char_chunks(line: &str, size: usize) -> Vec<String> {
+    let chars: Vec<char> = line.chars().collect();
+    if chars.is_empty() {
+        return vec![String::new()];
+    }
+    chars.chunks(size.max(1)).map(|chunk| chunk.iter().collect()).collect()
+}
+
+/// O texto de um pedido: o modelo, o estado e as duas perguntas.
+fn payload(batch: &Batch, context: &Context) -> Result<String, FilterError> {
+    let text = serde_json::to_string(&body(&batch.state, context, &batch.at))
         .map_err(|_| FilterError::Unreadable("the request did not serialize".to_string()))?;
     let estimated = estimated_tokens(&text);
     if estimated > MAX_REQUEST_TOKENS {
@@ -461,23 +641,19 @@ fn payload(request: &FilterRequest) -> Result<String, FilterError> {
 }
 
 /// O corpo de um pedido: o modelo, o estado e as duas perguntas, cada uma com
-/// a frase e o contexto. As opções da escolha são os ids dos `count`
-/// candidatos, sem descrição.
-fn body(state: &str, context: &Context, count: usize) -> Value {
-    let suffix = context.suffix();
-    let request = &context.request;
+/// a frase e o contexto. As opções da escolha são os ids dos candidatos de
+/// `at`, sem descrição.
+fn body(state: &str, context: &Context, at: &[usize]) -> Value {
     let mut criteria = Map::new();
-    for at in 0..count {
-        criteria.insert(candidate_id(at), Value::Null);
+    for &position in at {
+        criteria.insert(candidate_id(position), Value::Null);
     }
     let mut questions = Map::new();
     questions.insert(
         WHERE_KEY.to_string(),
         json!({
             "type": "choice",
-            "instructions": format!(
-                "Which candidate is the code that answers this request from a coding agent: \"{request}\"?{suffix}"
-            ),
+            "instructions": context.where_instructions(),
             "criteria": Value::Object(criteria),
         }),
     );
@@ -485,9 +661,7 @@ fn body(state: &str, context: &Context, count: usize) -> Value {
         EXISTS_KEY.to_string(),
         json!({
             "type": "noul",
-            "instructions": format!(
-                "Does any candidate contain the code that answers this request from a coding agent: \"{request}\"?{suffix}"
-            ),
+            "instructions": context.exists_instructions(),
             "criteria": { "true": EXISTS_YES, "false": EXISTS_NO },
         }),
     );
@@ -500,34 +674,33 @@ fn candidate_id(at: usize) -> String {
     format!("c{at:03}")
 }
 
-/// O estado: um bloco por candidato, separados por uma linha em branco. O
-/// bloco tem o id com o caminho e as linhas, a documentação num comentário e
-/// até `lines` linhas do código da declaração, cada uma com quatro espaços de
-/// recuo. Cada texto sai sem os segredos, antes dos cortes: o corte não parte
-/// um segredo num trecho que a procura já não reconhece.
-fn state_text(candidates: &[FilterCandidate], sources: &mut Sources<'_>, lines: usize) -> String {
-    let blocks: Vec<String> = candidates
-        .iter()
-        .enumerate()
-        .map(|(at, candidate)| {
-            let mut block =
-                format!("{}| {}:{}-{}", candidate_id(at), without_secrets(&candidate.path), candidate.line, candidate.end_line);
-            let documentation: String = squash(&without_secrets(&candidate.documentation))
-                .chars()
-                .take(DOCUMENTATION_CHARS)
-                .collect();
-            if !documentation.is_empty() {
-                block.push_str("\n    // ");
-                block.push_str(&documentation);
+/// As linhas do bloco de um candidato depois do cabeçalho, cada uma com
+/// quatro espaços de recuo: a documentação inteira, o título de cada commit
+/// que mudou a declaração, cada comentário de revisão preso a ela, os nomes do
+/// que ela chama e o código dela, do início ao fim. Cada texto sai sem os
+/// segredos antes de qualquer divisão: a divisão não parte um segredo num
+/// trecho que a procura já não reconhece.
+fn block_lines(candidate: &FilterCandidate, sources: &mut Sources<'_>) -> Vec<String> {
+    let clean = |text: &str| squash(&without_secrets(text));
+    let mut lines = Vec::new();
+    let documentation = clean(&candidate.documentation);
+    if !documentation.is_empty() {
+        lines.push(format!("    // {documentation}"));
+    }
+    for (label, texts) in [("commit", &candidate.commits), ("review", &candidate.reviews)] {
+        for text in texts {
+            let text = clean(text);
+            if !text.is_empty() {
+                lines.push(format!("    // {label}: {text}"));
             }
-            for line in sources.excerpt(candidate, lines) {
-                block.push('\n');
-                block.push_str(&line);
-            }
-            block
-        })
-        .collect();
-    blocks.join("\n\n")
+        }
+    }
+    let calls: Vec<String> = candidate.calls.iter().map(|name| clean(name)).filter(|name| !name.is_empty()).collect();
+    if !calls.is_empty() {
+        lines.push(format!("    // calls: {}", calls.join(", ")));
+    }
+    lines.extend(sources.excerpt(candidate));
+    lines
 }
 
 /// Os arquivos do projeto de onde vem o código dos candidatos, cada um lido
@@ -539,25 +712,21 @@ struct Sources<'a> {
 }
 
 impl Sources<'_> {
-    /// As primeiras `lines` linhas da declaração de `candidate`, da primeira à
-    /// última dela: cada uma sem o espaço do fim, com até [`LINE_CHARS`]
-    /// caracteres e quatro espaços de recuo. Vazio quando o arquivo não se
-    /// lê.
-    fn excerpt(&mut self, candidate: &FilterCandidate, lines: usize) -> Vec<String> {
+    /// As linhas da declaração de `candidate`, da primeira à última dela:
+    /// cada uma sem o espaço do fim e com quatro espaços de recuo. Vazio
+    /// quando o arquivo não se lê.
+    fn excerpt(&mut self, candidate: &FilterCandidate) -> Vec<String> {
         let root = self.root;
         let Some(text) = self.files.entry(candidate.path.clone()).or_insert_with(|| read_source(root, &candidate.path)) else {
             return Vec::new();
         };
         let start = candidate.line.saturating_sub(1) as usize;
-        let count = (candidate.end_line.max(candidate.line) as usize - start).min(lines);
+        let count = candidate.end_line.max(candidate.line) as usize - start;
         let taken: Vec<&str> = text.lines().skip(start).take(count).collect();
         if taken.is_empty() {
             return Vec::new();
         }
-        without_secrets(&taken.join("\n"))
-            .split('\n')
-            .map(|line| format!("    {}", line.trim_end().chars().take(LINE_CHARS).collect::<String>()))
-            .collect()
+        without_secrets(&taken.join("\n")).split('\n').map(|line| format!("    {}", line.trim_end())).collect()
     }
 }
 
@@ -589,7 +758,8 @@ fn squash(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mustard_core::domain::map_filter::{CutRule, EXISTS_FROM, MAX_KEPT};
+    use mustard_core::domain::map_filter::{CutRule, EXISTS_FROM};
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::{TcpListener, TcpStream};
     use std::path::PathBuf;
@@ -732,11 +902,17 @@ mod tests {
         body["questions"][WHERE_KEY]["criteria"].as_object().unwrap().keys().cloned().collect()
     }
 
+    /// A posição na lista de um id do pedido (`c012` é a 12).
+    fn position_of(id: &str) -> usize {
+        id[1..].parse().expect("an id is c and a number")
+    }
+
     /// A resposta do serviço ao pedido `body`: a chance de cada candidato
     /// pela posição dele na lista, a de `exists` e 1000 tokens de entrada.
     fn answer_by_position(body: &Value, chance_of: impl Fn(usize) -> f64, exists: f64) -> Value {
         let mut chances = Map::new();
-        for (at, id) in ids_of(body).into_iter().enumerate() {
+        for id in ids_of(body) {
+            let at = position_of(&id);
             chances.insert(id, json!(chance_of(at)));
         }
         json!({
@@ -818,10 +994,10 @@ mod tests {
     // -- o estado -------------------------------------------------------------------
 
     #[test]
-    fn the_state_is_text_with_a_header_the_documentation_and_the_first_lines_of_each_candidate() {
-        let code: Vec<String> = (1..=30).map(|n| format!("line {n}")).collect();
+    fn the_state_is_text_with_a_header_the_documentation_and_the_whole_declaration_of_each_candidate() {
+        let code: Vec<String> = (1..=70).map(|n| format!("line {n}")).collect();
         let project = project_with(&[("src/pay.rs", code.join("\n"))]);
-        let mut first = candidate_at(1, "src/pay.rs", 3, 30);
+        let mut first = candidate_at(1, "src/pay.rs", 3, 62);
         first.documentation = "  Cobra   o cartão.\n  Sem juros.  ".to_string();
         let second = candidate_at(2, "src/pay.rs", 1, 2);
         let mut asked = request(vec![first, second]);
@@ -829,16 +1005,16 @@ mod tests {
 
         let state = state_of(&sent_for(&asked));
 
-        let first_block: Vec<String> = (3..=26).map(|n| format!("    line {n}")).collect();
+        let first_block: Vec<String> = (3..=62).map(|n| format!("    line {n}")).collect();
         let expected = format!(
-            "c000| src/pay.rs:3-30\n    // Cobra o cartão. Sem juros.\n{}\n\nc001| src/pay.rs:1-2\n    line 1\n    line 2",
+            "c000| src/pay.rs:3-62\n    // Cobra o cartão. Sem juros.\n{}\n\nc001| src/pay.rs:1-2\n    line 1\n    line 2",
             first_block.join("\n")
         );
-        assert_eq!(state, expected, "24 lines of the declaration, the second block after a blank line");
+        assert_eq!(state, expected, "the 60 lines of the declaration go, the second block after a blank line");
     }
 
     #[test]
-    fn long_documentation_and_long_lines_are_cut_and_the_end_of_a_line_loses_its_blanks() {
+    fn long_documentation_and_long_lines_go_whole_and_the_end_of_a_line_loses_its_blanks() {
         let long_line = format!("{}   \t", "a".repeat(200));
         let project = project_with(&[("src/a.rs", format!("{long_line}\nshort   \n"))]);
         let mut only = candidate_at(1, "src/a.rs", 1, 2);
@@ -848,8 +1024,24 @@ mod tests {
 
         let state = state_of(&sent_for(&asked));
 
-        let expected = format!("c000| src/a.rs:1-2\n    // {}\n    {}\n    short", "d".repeat(300), "a".repeat(160));
+        let expected = format!("c000| src/a.rs:1-2\n    // {}\n    {}\n    short", "d".repeat(400), "a".repeat(200));
         assert_eq!(state, expected);
+    }
+
+    #[test]
+    fn every_commit_every_review_and_what_the_declaration_calls_go_in_the_block_without_a_cut() {
+        let mut only = candidate(1);
+        only.commits = (1..=200).map(|n| format!("commit title {n}")).collect();
+        only.reviews = vec![format!("review {}", "palavra ".repeat(400)), "second review".to_string()];
+        only.calls = vec!["open_account".to_string(), "charge_card".to_string()];
+        let state = state_of(&sent_for(&request(vec![only])));
+
+        for n in 1..=200 {
+            assert!(state.contains(&format!("\n    // commit: commit title {n}\n")), "commit {n} is in the state");
+        }
+        assert!(state.contains(&format!("    // review: review {}", "palavra ".repeat(400).trim_end())), "the long review goes whole");
+        assert!(state.contains("\n    // review: second review\n"), "{state}");
+        assert!(state.contains("\n    // calls: open_account, charge_card"), "{state}");
     }
 
     #[test]
@@ -891,78 +1083,233 @@ mod tests {
         assert_eq!(state.split("\n\n").count(), 5);
     }
 
-    #[test]
-    fn the_code_shrinks_to_eight_five_and_three_lines_when_the_state_passes_the_budget() {
-        let project = project_with(&[("src/big.rs", format!("{}\n", "a".repeat(160)).repeat(40))]);
-        for (count, lines) in [(10, 24), (60, 8), (100, 5), (150, 3)] {
-            let candidates = (1..=count).map(|id| candidate_at(id, "src/big.rs", 1, 40)).collect();
-            let mut asked = request(candidates);
-            asked.root = project.path().to_path_buf();
+    // -- a divisão da lista em pedidos -------------------------------------------
 
-            let state = state_of(&sent_for(&asked));
-
-            let blocks: Vec<&str> = state.split("\n\n").collect();
-            assert_eq!(blocks.len(), count as usize);
-            for block in blocks {
-                assert_eq!(block.lines().count() - 1, lines, "{count} candidates keep {lines} code lines");
-            }
-            assert!(estimated_tokens(&state) <= STATE_TOKENS, "{count} candidates: {}", estimated_tokens(&state));
-        }
+    /// Um projeto com um arquivo de `lines` linhas de 28 caracteres, e o
+    /// pedido com `count` candidatos que o leem inteiro: com 40 linhas, cada
+    /// um pesa cerca de 400 tokens.
+    fn big_request(count: i64, lines: usize) -> (tempfile::TempDir, FilterRequest) {
+        let code: Vec<String> = (1..=lines).map(|n| format!("{n:02}{}", "x".repeat(26))).collect();
+        let project = project_with(&[("src/big.rs", code.join("\n"))]);
+        let mut asked = request((1..=count).map(|id| candidate_at(id, "src/big.rs", 1, lines as u32)).collect());
+        asked.root = project.path().to_path_buf();
+        (project, asked)
     }
 
-    /// A borda exata do orçamento: o estado com 24 linhas de código mais a
-    /// frase duas vezes soma 89.600 caracteres, que dão 28.000 tokens e cabem;
-    /// com um caractere a mais, são 28.001 e o código cai para 8 linhas. Sem a
-    /// frase contada duas vezes, o caractere a mais ainda caberia.
-    #[test]
-    fn the_code_keeps_24_lines_up_to_the_exact_budget_counting_the_phrase_twice() {
-        let budget = 89_600;
-        assert_eq!((tokens_of(budget), tokens_of(budget + 1)), (STATE_TOKENS, STATE_TOKENS + 1));
-        let project = project_with(&[("src/big.rs", format!("{}\n", "a".repeat(160)).repeat(40))]);
-        // O pedido com `real` candidatos com código, um de cabeçalho só com
-        // `pad` caracteres no caminho e uma frase de `phrase` caracteres.
-        let build = |real: i64, pad: usize, phrase: usize| {
-            let mut candidates: Vec<FilterCandidate> = (1..=real).map(|id| candidate_at(id, "src/big.rs", 1, 40)).collect();
-            candidates.push(candidate_at(real + 1, &format!("p/{}", "q".repeat(pad)), 1, 1));
-            let mut asked = request(candidates);
-            asked.root = project.path().to_path_buf();
-            asked.phrase = "x".repeat(phrase);
-            asked
-        };
-        // Os caracteres que contam contra o orçamento com 24 linhas de código.
-        let counted = |asked: &FilterRequest| {
-            let mut sources = Sources { root: &asked.root, files: HashMap::new() };
-            let state = state_text(&asked.candidates, &mut sources, CODE_LINES[0]);
-            state.chars().count() + 2 * Context::of(asked).request.chars().count()
-        };
-        let mut real = 1;
-        while counted(&build(real + 1, 1, 10)) <= budget {
-            real += 1;
-        }
-        let spare = budget - counted(&build(real, 1, 10));
-        let (pad, phrase) = (1 + spare % 2, 10 + spare / 2);
-        let at_the_edge = build(real, pad, phrase);
-        let over = build(real, pad + 1, phrase);
-        assert_eq!((counted(&at_the_edge), counted(&over)), (budget, budget + 1));
-
-        for (asked, lines) in [(at_the_edge, 24), (over, 8)] {
-            let state = state_of(&sent_for(&asked));
-            let blocks: Vec<&str> = state.split("\n\n").collect();
-            assert_eq!(blocks.len(), real as usize + 1);
-            for block in &blocks[..real as usize] {
-                assert_eq!(block.lines().count() - 1, lines, "{lines} code lines for {} chars", counted(&asked));
-            }
-        }
+    /// Os tokens estimados de um pedido do ponto de vista do limite do
+    /// serviço: o estado mais a maior pergunta.
+    fn limit_tokens(body: &Value) -> u64 {
+        let question = |key: &str| estimated_tokens(&body["questions"][key].to_string());
+        estimated_tokens(&state_of(body)) + question(WHERE_KEY).max(question(EXISTS_KEY))
     }
 
     #[test]
-    fn a_secret_in_the_code_the_documentation_the_phrase_or_the_context_does_not_leave_the_machine() {
+    fn a_hundred_and_fifty_candidates_of_four_hundred_tokens_go_in_several_requests_none_above_32_thousand() {
+        let (_project, asked) = big_request(150, 40);
+        let service = FakeService::start(|_, body| Reply::json(200, &sure_answer(body)));
+
+        let got = service.filter().filter(&asked).unwrap();
+
+        let received = service.received();
+        assert!(received.len() >= 2, "sixty thousand tokens do not fit one request: {}", received.len());
+        assert_eq!(got.usage.requests, received.len() as u64);
+        // Os pedidos chegam em qualquer ordem, porque saem juntos; cada um
+        // leva uma fatia seguida da lista.
+        let mut slices: Vec<Vec<String>> = Vec::new();
+        for one in &received {
+            assert!(limit_tokens(&one.body) <= 32_000, "a request of {} tokens", limit_tokens(&one.body));
+            let ids = ids_of(&one.body);
+            let state = state_of(&one.body);
+            let heads: Vec<&str> = state.split("\n\n").map(|block| block.split('|').next().unwrap()).collect();
+            assert_eq!(heads, ids, "the blocks of the state are the options of the choice, in order");
+            slices.push(ids);
+        }
+        slices.sort();
+        let sent: Vec<String> = slices.into_iter().flatten().collect();
+        let all: Vec<String> = (0..150).map(candidate_id).collect();
+        assert_eq!(sent, all, "the 150 go, once each, in slices that follow the order of the list");
+    }
+
+    #[test]
+    fn a_declaration_of_sixty_lines_goes_whole() {
+        let (_project, asked) = big_request(1, 60);
+        let state = state_of(&sent_for(&asked));
+        assert_eq!(state.lines().count(), 61, "the header and the 60 lines");
+        assert!(state.contains("\n    60xxxxxxxxxxxxxxxxxxxxxxxxxx"), "the last line is there: {state}");
+    }
+
+    #[test]
+    fn a_list_above_the_choice_limit_of_the_service_is_split_even_when_it_is_small() {
+        let service = FakeService::start(|_, body| Reply::json(200, &sure_answer(body)));
+        let got = service.filter().filter(&request((1..=300).map(candidate).collect())).unwrap();
+        let received = service.received();
+        assert_eq!(received.len(), 2, "255 options and the 45 left");
+        let mut sizes: Vec<usize> = received.iter().map(|one| ids_of(&one.body).len()).collect();
+        sizes.sort_unstable();
+        assert_eq!(sizes, [45, 255]);
+        assert_eq!(got.usage.requests, 2);
+    }
+
+    #[test]
+    fn a_candidate_that_alone_passes_a_request_goes_alone_in_consecutive_parts_with_the_same_id() {
+        // 4.000 linhas de 28 caracteres: mais de 40 mil tokens, e não cabem
+        // num pedido.
+        let code: Vec<String> = (1..=4_000).map(|n| format!("{n:04}{}", "x".repeat(24))).collect();
+        let project = project_with(&[("src/huge.rs", code.join("\n")), ("src/small.rs", "small body\n".to_string())]);
+        let mut asked = request(vec![
+            candidate_at(1, "src/small.rs", 1, 1),
+            candidate_at(2, "src/huge.rs", 1, 4_000),
+            candidate_at(3, "src/small.rs", 1, 1),
+        ]);
+        asked.root = project.path().to_path_buf();
+        // O pedido da parte do meio existe com chance alta; os outros, baixa.
+        let service = FakeService::start(|_, body| {
+            let exists = if state_of(body).contains("\n    2000xxxx") { 0.9 } else { 0.1 };
+            Reply::json(200, &answer_by_position(body, |_| 1.0, exists))
+        });
+
+        let got = service.filter().filter(&asked).unwrap();
+
+        let received = service.received();
+        let mut by_head: Vec<(String, Vec<String>)> = received.iter().map(|one| (state_of(&one.body), ids_of(&one.body))).collect();
+        by_head.sort();
+        let parts: Vec<&(String, Vec<String>)> = by_head.iter().filter(|(state, _)| state.starts_with("c001| ")).collect();
+        assert!(parts.len() >= 2, "the huge candidate is in several requests: {}", parts.len());
+        assert!(received.len() >= parts.len() + 2, "the small ones before and after it go in their own requests");
+        for (state, ids) in &parts {
+            assert_eq!(ids, &["c001"], "each part is alone with the same id");
+            assert!(state.lines().next().unwrap().starts_with("c001| src/huge.rs:1-4000 (part "), "{}", state.lines().next().unwrap());
+        }
+        for one in &received {
+            assert!(limit_tokens(&one.body) <= 32_000, "a request of {} tokens", limit_tokens(&one.body));
+        }
+        // Todas as linhas, uma vez só, e em ordem dentro de cada parte: as
+        // partes saem em ordem de texto, e o número de cada linha cresce.
+        let in_parts: Vec<String> = parts.iter().flat_map(|(state, _)| state.lines().skip(1).map(str::to_string)).collect();
+        let expected: Vec<String> = code.iter().map(|line| format!("    {line}")).collect();
+        assert_eq!(in_parts, expected, "every line of the declaration is in some part, once, in order");
+        // O candidato que se repete fica com a maior nota.
+        let huge = got.kept.iter().filter(|scored| scored.id == 2).collect::<Vec<_>>();
+        assert_eq!(huge.len(), 1, "the candidate comes back once");
+        assert!((huge[0].score - 0.9).abs() < 1e-9, "the best of its parts: {}", huge[0].score);
+    }
+
+    #[test]
+    fn the_requests_leave_at_the_same_time() {
+        let (_project, asked) = big_request(150, 40);
+        let (live, peak) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+        let service = {
+            let (live, peak) = (Arc::clone(&live), Arc::clone(&peak));
+            FakeService::start(move |_, body| {
+                let now = live.fetch_add(1, Ordering::SeqCst) + 1;
+                peak.fetch_max(now, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(500));
+                live.fetch_sub(1, Ordering::SeqCst);
+                Reply::json(200, &sure_answer(body))
+            })
+        };
+
+        let started = Instant::now();
+        let got = service.filter().filter(&asked).unwrap();
+
+        assert!(got.usage.requests >= 2);
+        assert_eq!(peak.load(Ordering::SeqCst) as u64, got.usage.requests, "every request was in flight together");
+        assert!(started.elapsed() < Duration::from_millis(500 * got.usage.requests), "one wait, not one after the other");
+    }
+
+    /// A resposta de cada pedido da lista grande: o que tem o candidato 3 diz
+    /// `first` de chance de existir e escolhe o `c003` com 0,8; os outros
+    /// dizem `others` e repartem a chance igual.
+    fn answer_with_the_third(first: f64, others: f64) -> impl Fn(usize, &Value) -> Reply + Send + Sync + 'static {
+        move |_, body| {
+            let ids = ids_of(body);
+            let has = ids.iter().any(|id| id == "c003");
+            let chance = |at: usize| {
+                let rest = ids.len() as f64 - 1.0;
+                if has { if at == 3 { 0.8 } else { 0.2 / rest } } else { 1.0 / ids.len() as f64 }
+            };
+            Reply::json(200, &answer_by_position(body, chance, if has { first } else { others }))
+        }
+    }
+
+    #[test]
+    fn the_note_joins_the_existence_of_the_request_with_the_choice_inside_it() {
+        let (_project, asked) = big_request(150, 40);
+        let service = FakeService::start(answer_with_the_third(0.9, 0.2));
+
+        let got = service.filter().filter(&asked).unwrap();
+
+        assert_eq!(got.verdict, Verdict::Found);
+        let best = got.kept.first().unwrap();
+        assert_eq!(best.id, 4, "the candidate in position 3 is the c003");
+        assert!((best.score - 0.72).abs() < 1e-9, "0,9 of existence times 0,8 of choice: {}", best.score);
+        assert_eq!(got.kept.len(), 1 + got.kept.iter().skip(1).filter(|scored| scored.score >= 0.072).count());
+        assert!(got.kept.iter().skip(1).all(|scored| scored.score < best.score));
+    }
+
+    #[test]
+    fn when_no_request_reaches_the_existence_line_the_answer_is_not_found() {
+        let (_project, asked) = big_request(150, 40);
+        let service = FakeService::start(answer_with_the_third(0.49, 0.2));
+
+        let got = service.filter().filter(&asked).unwrap();
+
+        assert!(service.received().len() >= 2);
+        assert_eq!(got.verdict, Verdict::NotFound);
+        assert!(got.kept.is_empty());
+
+        let at_the_line = FakeService::start(answer_with_the_third(0.50, 0.2));
+        assert_eq!(at_the_line.filter().filter(&asked).unwrap().verdict, Verdict::Found, "on the line it is found");
+    }
+
+    #[test]
+    fn the_usage_adds_the_tokens_and_the_cost_of_every_request_and_counts_them() {
+        let (_project, asked) = big_request(150, 40);
+        let service = FakeService::start(|_, body| {
+            let mut answer = sure_answer(body);
+            answer["usage"]["input_tokens"] = json!(10_000);
+            answer["model"] = json!("jev-1.13.0");
+            Reply::json(200, &answer)
+        });
+
+        let got = service.filter().filter(&asked).unwrap();
+
+        let requests = service.received().len() as u64;
+        assert!(requests >= 2);
+        assert_eq!(got.usage.requests, requests);
+        assert_eq!(got.usage.input_tokens, 10_000 * requests);
+        // US$ 0,042 o milhão: 10.000 tokens custam 420 milionésimos.
+        assert_eq!(got.usage.cost_micro_usd, 420 * requests);
+        assert_eq!(got.usage.model, "jev-1.13.0");
+    }
+
+    #[test]
+    fn a_request_that_fails_fails_the_whole_filter() {
+        let (_project, asked) = big_request(150, 40);
+        let service = FakeService::start(|_, body| {
+            if ids_of(body).iter().any(|id| id == "c149") {
+                Reply::json(401, &json!({"error": "no"}))
+            } else {
+                Reply::json(200, &sure_answer(body))
+            }
+        });
+
+        let error = service.filter().filter(&asked).unwrap_err();
+
+        assert_eq!(error, FilterError::Refused { status: 401 });
+    }
+
+    #[test]
+    fn a_secret_in_the_code_the_documentation_the_history_the_calls_the_phrase_or_the_context_does_not_leave_the_machine() {
         let key = format!("ghp_{}", "a1B2c3D4".repeat(5));
         let secret = format!("DB_PASSWORD=S3nh4F0rte2024 {key}");
         let project =
             project_with(&[("src/pay.rs", format!("fn pay() {{\n    let token = \"{key}\";\n}}\n"))]);
         let mut leaky = candidate_at(1, "src/pay.rs", 1, 3);
         leaky.documentation = format!("Cobra o cartão. {secret}");
+        leaky.commits = vec![format!("troca a senha {secret}")];
+        leaky.reviews = vec![format!("não deixe a chave {key} no código")];
+        leaky.calls = vec!["charge".to_string()];
         let mut asked = request(vec![leaky]);
         asked.root = project.path().to_path_buf();
         asked.words.push(key.clone());
@@ -977,6 +1324,8 @@ mod tests {
         assert!(sent.contains("Cobra o cartão."), "the rest of the text still goes: {sent}");
         assert!(sent.contains("fn pay() {"), "{sent}");
         assert!(sent.contains("vou olhar"), "{sent}");
+        assert!(sent.contains("troca a senha") && sent.contains("não deixe a chave"), "the history still goes: {sent}");
+        assert!(sent.contains("charge"), "{sent}");
     }
 
     #[test]
@@ -1117,18 +1466,17 @@ mod tests {
     }
 
     #[test]
-    fn the_cut_keeps_at_most_two_pieces_and_the_limit_is_the_setting() {
+    fn every_candidate_that_passes_the_cut_comes_back_with_no_ceiling_on_the_count() {
         let equal = |_: usize| 0.2;
         let kept = filtered(5, 0.9, CutRule::default(), equal);
-        assert_eq!(MAX_KEPT, 2);
-        assert_eq!(kept.kept.len(), 2, "five equal chances keep two");
+        assert_eq!(kept.kept.len(), 5, "five equal chances above the line all come back");
 
-        let three = filtered(5, 0.9, CutRule { max_kept: 3, ..CutRule::default() }, equal);
-        assert_eq!(three.kept.len(), 3);
+        let many = filtered(150, 0.9, CutRule::default(), |_| 1.0 / 150.0);
+        assert_eq!(many.kept.len(), 150, "a hundred and fifty equal chances all come back");
 
         let uneven = filtered(5, 0.9, CutRule::default(), |at| [0.6, 0.3, 0.05, 0.03, 0.02][at]);
         let ids: Vec<i64> = uneven.kept.iter().map(|scored| scored.id).collect();
-        assert_eq!(ids, [1, 2], "in the order of the chance");
+        assert_eq!(ids, [1, 2], "the cut line is 0,06 and the order is the one of the chance");
 
         let lonely = filtered(5, 0.9, CutRule::default(), |at| if at == 3 { 0.9 } else { 0.01 });
         assert_eq!(lonely.kept.iter().map(|scored| scored.id).collect::<Vec<_>>(), [4], "a single concentrated chance keeps one");

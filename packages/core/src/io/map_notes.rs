@@ -247,7 +247,7 @@ mod tests {
         let dir = saved("ids-1");
         fill_at(&model_path(dir.path()), dir.path()).unwrap();
         let names = |dir: &TempDir| -> Vec<String> {
-            let found = candidates_at(&model_path(dir.path()), ASK, "", &languages(), TOP, any_path).unwrap();
+            let found = candidates_at(&model_path(dir.path()), ASK, "", &languages(), any_path).unwrap();
             found.candidates.into_iter().map(|candidate| candidate.name).collect()
         };
         let before = names(&dir);
@@ -384,14 +384,14 @@ mod tests {
         write_note(&dir, "src/ids.rs", "", NOTE);
         write_note(&dir, "src/ids.rs", "check_digits", "Confere os dígitos do documento.");
         let refreshed = search_at(&model_path(dir.path()), ASK, &languages(), TOP).unwrap();
-        let candidates = candidates_at(&model_path(dir.path()), ASK, "", &languages(), TOP, any_path).unwrap();
+        let candidates = candidates_at(&model_path(dir.path()), ASK, "", &languages(), any_path).unwrap();
         assert!(!refreshed.is_empty());
 
         let mut db = opened(&dir);
         db.write(|tx| forget(tx)).unwrap();
         drop(db);
         assert_eq!(search_at(&model_path(dir.path()), ASK, &languages(), TOP).unwrap(), refreshed);
-        assert_eq!(candidates_at(&model_path(dir.path()), ASK, "", &languages(), TOP, any_path).unwrap(), candidates);
+        assert_eq!(candidates_at(&model_path(dir.path()), ASK, "", &languages(), any_path).unwrap(), candidates);
     }
 
     /// Com o índice esvaziado, a nota grava sem refazê-lo, e a primeira busca o

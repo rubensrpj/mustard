@@ -8,11 +8,9 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use mustard_core::domain::map_filter::{
-    judged, FilterError, FilterRequest, FilterUsage, Filtered, MapFilter, Scored, CUT_SHARE, EXISTS_FROM, MAX_KEPT,
+    judged, FilterError, FilterRequest, FilterUsage, Filtered, MapFilter, Scored, CUT_SHARE, EXISTS_FROM,
 };
-use mustard_core::domain::map_select::MAX_RETURNED;
 use mustard_core::domain::normalize::Languages;
-use mustard_core::domain::search::CANDIDATES;
 use mustard_core::io::map_triage;
 use mustard_core::io::project_map as store;
 use serde_json::json;
@@ -168,20 +166,17 @@ fn a_search_without_a_folder_hands_the_filter_the_list_of_the_whole_project() {
     let (_dir, root) = project();
     let judge = Judge::sure_of(&[("calcular_frete", 0.9)]);
     searched(&root, &["."], (&[], RG), &judge);
-    let whole = map_search::candidates(&root, "imposto", "imposto", &both(), CANDIDATES, map_search::any_path).unwrap();
+    let whole = map_search::candidates(&root, "imposto", "imposto", &both(), map_search::any_path).unwrap();
     let ids: Vec<i64> = whole.candidates.iter().map(|candidate| candidate.id).collect();
     assert_eq!(judge.last().candidates.iter().map(|candidate| candidate.id).collect::<Vec<_>>(), ids);
     assert!(!ids.is_empty());
 }
 
-/// Os números da busca com o teto de `candidates` candidatos.
-fn numbers(candidates: usize) -> Numbers {
+/// Os números da busca: os padrões.
+fn numbers() -> Numbers {
     Numbers {
-        candidates,
         cut_share: (CUT_SHARE * 100.0).round() as usize,
         exists_from: (EXISTS_FROM * 100.0).round() as usize,
-        max_kept: MAX_KEPT,
-        max_returned: MAX_RETURNED,
     }
 }
 
@@ -207,18 +202,17 @@ impl MapFilter for ByPath {
 }
 
 /// A busca por `query` que a porta classifica nas pastas `rels` e com os
-/// filtros de nome `filters`, com o teto de `limit` candidatos e o filtro que
-/// escolhe o arquivo `favourite`: os caminhos dos candidatos que o filtro
+/// filtros de nome `filters` e o filtro que escolhe o arquivo `favourite`: os caminhos dos candidatos que o filtro
 /// recebeu e os das peças que voltaram.
 fn classified(
     root: &Path,
-    (query, limit): (&str, usize),
+    query: &str,
     (rels, filters): (&[String], &[NameFilter]),
     favourite: &'static str,
 ) -> (Vec<String>, Vec<String>) {
     let languages = both();
     let triaged = map_triage::triage_at(&store::model_path(root), (query, ""), &languages, RANKED_FILES).expect("triage");
-    let numbers = numbers(limit);
+    let numbers = numbers();
     let ask = Ask {
         root,
         query,
@@ -242,18 +236,18 @@ fn classified(
     (sent, pieces.into_iter().map(|piece| piece.path).collect())
 }
 
-/// O corte da pasta vem antes do teto: com o teto de dois candidatos, a pasta
-/// com três declarações manda duas das suas, e não as duas melhores do
-/// projeto, que são de fora dela.
+/// A pasta manda ao filtro todas as suas declarações, mesmo quando a melhor do
+/// projeto é de fora dela: a pasta com três declarações manda as três, e
+/// nenhuma de fora.
 #[test]
-fn the_limit_is_filled_from_the_folder_even_when_the_best_ones_are_outside_it() {
+fn a_folder_hands_the_filter_all_of_its_declarations_even_when_the_best_one_is_outside_it() {
     let (_dir, root) = project_with(&[("src/pedido/imposto.rs", "calcular_imposto", "rust", "imposto")]);
-    let (open, _) = classified(&root, ("imposto", 2), (&[], &[]), "src/pedido/imposto.rs");
+    let (open, _) = classified(&root, "imposto", (&[], &[]), "src/pedido/imposto.rs");
     assert!(open.contains(&"src/pedido/imposto.rs".to_string()), "the premise: the best one is outside src/frete: {open:?}");
 
     let folders = ["src/frete".to_string()];
-    let (inside, pieces) = classified(&root, ("imposto", 2), (&folders, &[]), "src/frete/calculo.rs");
-    assert_eq!(inside.len(), 2, "{inside:?}");
+    let (inside, pieces) = classified(&root, "imposto", (&folders, &[]), "src/frete/calculo.rs");
+    assert_eq!(inside.len(), 3, "{inside:?}");
     assert!(inside.iter().all(|path| path.starts_with("src/frete/")), "{inside:?}");
     assert!(pieces.iter().all(|path| path.starts_with("src/frete/")), "{pieces:?}");
 }
@@ -284,11 +278,11 @@ pub(crate) fn contract_project() -> (tempfile::TempDir, PathBuf) {
 #[test]
 fn a_contract_never_pulls_its_implementation_from_outside_the_folder() {
     let (_dir, root) = contract_project();
-    let (_, pulled) = classified(&root, ("charge", 2), (&[], &[]), "src/pay/port.rs");
+    let (_, pulled) = classified(&root, "charge", (&[], &[]), "src/pay/port.rs");
     assert!(pulled.contains(&"src/bank/card.rs".to_string()), "the premise: the whole project pulls the implementation: {pulled:?}");
 
     let folders = ["src/pay".to_string()];
-    let (_, kept) = classified(&root, ("charge", 2), (&folders, &[]), "src/pay/port.rs");
+    let (_, kept) = classified(&root, "charge", (&folders, &[]), "src/pay/port.rs");
     assert!(!kept.is_empty(), "the contract method itself comes back");
     assert!(kept.iter().all(|path| path.starts_with("src/pay/")), "{kept:?}");
 }

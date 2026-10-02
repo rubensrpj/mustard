@@ -7,11 +7,13 @@
 //!
 //! 1. a triagem crava: a resposta sai dela, com a primeira peça inteira, sem
 //!    filtro, sem aviso de chave e sem chamada gravada ([`pinned`]);
-//! 2. não cravou: os candidatos do banco vão ao filtro num pedido só, com a
-//!    frase de quem procura, a descrição que o agente deu à busca e a última
-//!    fala dele ([`classify`]);
+//! 2. não cravou: a lista inteira de candidatos do banco vai ao filtro, sem
+//!    corte, com a história que o mapa guarda de cada um, a frase de quem
+//!    procura, a descrição que o agente deu à busca e a última fala dele
+//!    ([`classify`]);
 //! 3. o filtro diz não achei, e nada volta; ou diz que algum candidato serve, e
-//!    voltam as peças que passam do corte, no máximo duas por padrão;
+//!    voltam todas as peças que passam do corte relativo, sem teto de
+//!    quantidade;
 //! 4. sem filtro (desligado, sem chave), sem candidato ou com o filtro
 //!    falhando, quem chamou responde só com a triagem, e o aviso do motivo
 //!    sai uma vez por sessão ([`chosen_filter`], [`failure_warning`]).
@@ -27,12 +29,11 @@ use std::path::Path;
 use std::time::Instant;
 
 use mustard_core::domain::map_filter::{
-    CutRule, FilterCandidate, FilterError, FilterRequest, MapFilter, Verdict, CUT_SHARE, EXISTS_FROM, MAX_KEPT,
+    CutRule, FilterCandidate, FilterError, FilterRequest, MapFilter, Verdict, CUT_SHARE, EXISTS_FROM,
 };
-use mustard_core::domain::map_select::{capped, select, Source, MAX_RETURNED};
+use mustard_core::domain::map_select::{select, Source};
 use mustard_core::domain::normalize::Languages;
 use mustard_core::domain::project_map::{self, MapRefusal};
-use mustard_core::domain::search::CANDIDATES;
 use mustard_core::io::map_search;
 use mustard_core::domain::triage::Mark;
 use mustard_core::io::map_triage::Triaged;
@@ -47,17 +48,11 @@ use crate::shared::triage_view;
 /// Os números da busca com filtro, com o padrão no lugar do ausente e do
 /// inválido.
 pub(crate) struct Numbers {
-    /// Quantos candidatos do banco vão ao filtro.
-    pub(crate) candidates: usize,
     /// A parte da maior chance que passa do corte, em pontos percentuais.
     pub(crate) cut_share: usize,
     /// A chance de algum candidato servir, em pontos percentuais, a partir da
     /// qual há resposta; abaixo dela é não achei.
     pub(crate) exists_from: usize,
-    /// Quantos candidatos passam do corte, no máximo.
-    pub(crate) max_kept: usize,
-    /// O teto de peças na resposta.
-    pub(crate) max_returned: usize,
 }
 
 impl Numbers {
@@ -82,11 +77,8 @@ impl Numbers {
             setting.or(default)
         };
         Self {
-            candidates: number("candidates", config.search_candidates(), CANDIDATES),
             cut_share: number("cut_share", config.search_cut_share(), (CUT_SHARE * 100.0).round() as usize),
             exists_from: number("exists_from", config.search_exists_from(), (EXISTS_FROM * 100.0).round() as usize),
-            max_kept: number("max_kept", config.search_max_kept(), MAX_KEPT),
-            max_returned: number("max_returned", config.search_max_returned(), MAX_RETURNED),
         }
     }
 }
@@ -191,14 +183,12 @@ pub(crate) fn pinned(
     root: &Path,
     (query, intent): (&str, &str),
     languages: &Languages,
-    config: &ProjectConfig,
     triaged: &Triaged,
 ) -> Result<Option<FilterCandidate>, MapRefusal> {
     if triaged.mark() != Mark::Pinned {
         return Ok(None);
     }
-    let limit = config.search_candidates().or(CANDIDATES);
-    triage_view::pinned_piece(root, (query, intent), languages, limit, triaged)
+    triage_view::pinned_piece(root, (query, intent), languages, triaged)
 }
 
 /// O filtro da busca montado com a chave do projeto: o nome dele, que a
@@ -310,19 +300,19 @@ pub(crate) fn failure_warning(
     }
 }
 
-/// A busca com o filtro montado: os candidatos do banco, só da pasta e dos
-/// tipos de arquivo da busca, vão ao filtro num pedido só, e o que passa do
-/// corte volta como peças. Na falha do filtro, o resultado é a falha, e quem
+/// A busca com o filtro montado: todos os candidatos do banco, só da pasta e
+/// dos tipos de arquivo da busca, com a história que o mapa guarda de cada
+/// um, vão ao filtro, e o que passa do corte volta como peças. Na falha do filtro, o resultado é a falha, e quem
 /// chamou responde da triagem.
 pub(crate) fn classify(ask: &Ask<'_>, assembled: &Assembled) -> Result<Classified, MapRefusal> {
     let admit = |rel: &str| in_search(rel, ask.rels, ask.filters, ask.walk);
-    let found = map_search::candidates(ask.root, ask.query, ask.intent, ask.languages, ask.numbers.candidates, admit)?;
+    let found = map_search::candidates(ask.root, ask.query, ask.intent, ask.languages, admit)?;
+    let candidates = map_search::with_history(ask.root, found.candidates)?;
     let words: Vec<String> = ask.query.split_whitespace().map(str::to_string).collect();
     let phrase = phrase_of(&words, ask.query, ask.intent, ask.lang);
     let cut = CutRule {
         share: (ask.numbers.cut_share as f64 / 100.0).min(1.0),
         exists_from: (ask.numbers.exists_from as f64 / 100.0).min(1.0),
-        max_kept: ask.numbers.max_kept,
     };
     let request = FilterRequest {
         words,
@@ -331,7 +321,7 @@ pub(crate) fn classify(ask: &Ask<'_>, assembled: &Assembled) -> Result<Classifie
         said: ask.said.to_string(),
         root: ask.root.to_path_buf(),
         cut,
-        candidates: found.candidates,
+        candidates,
     };
     #[cfg(test)]
     crate::shared::word_search::ruler::jev::remember_candidates(&request.candidates);
@@ -347,16 +337,12 @@ pub(crate) fn classify(ask: &Ask<'_>, assembled: &Assembled) -> Result<Classifie
     }
     match assembled.filter.filter(&request) {
         Ok(filtered) => {
-            let pieces = pieces(
-                ask.root,
-                (&request.candidates, &found.whole),
-                &filtered,
-                (ask.numbers.max_returned, admit),
-            )?;
+            let pieces = pieces(ask.root, &request.candidates, &filtered, admit)?;
             measured.insert("filter".to_string(), json!(assembled.name));
             measured.insert("filter_ms".to_string(), json!(filtered.usage.millis));
             measured.insert("tokens".to_string(), json!(filtered.usage.input_tokens));
             measured.insert("cost_micro_usd".to_string(), json!(filtered.usage.cost_micro_usd));
+            measured.insert("requests".to_string(), json!(filtered.usage.requests));
             measured.insert("returned".to_string(), json!(pieces.len()));
             if !filtered.usage.model.is_empty() {
                 measured.insert("model".to_string(), json!(filtered.usage.model));
@@ -372,18 +358,18 @@ pub(crate) fn classify(ask: &Ask<'_>, assembled: &Assembled) -> Result<Classifie
     }
 }
 
-/// As peças da resposta com filtro, na ordem da combinação e até o teto
-/// `max`: o que passou do corte, na ordem da chance, e o que cada item dele
-/// puxou. Nada do banco entra de fora do corte, e nada que `admit` não deixe
+/// As peças da resposta com filtro, na ordem da combinação, sem teto de
+/// quantidade: tudo o que passou do corte, na ordem da chance, e o que cada
+/// item dele puxou. Nada do banco entra de fora do corte, e nada que `admit` não deixe
 /// entrar: a implementação que um contrato puxaria de outra pasta fica de fora. Cada
 /// peça traz o caminho, a linha, o fim, o tipo, o nome, a assinatura e a
 /// primeira frase da documentação; só as do corte trazem a chance. Nunca o
 /// corpo.
 fn pieces(
     root: &Path,
-    (candidates, whole): (&[FilterCandidate], &[i64]),
+    candidates: &[FilterCandidate],
     filtered: &mustard_core::domain::map_filter::Filtered,
-    (max, admit): (usize, impl Fn(&str) -> bool),
+    admit: impl Fn(&str) -> bool,
 ) -> Result<Vec<Piece>, MapRefusal> {
     let cut: Vec<i64> = filtered.kept.iter().map(|scored| scored.id).collect();
     let scores: HashMap<i64, f64> = filtered.kept.iter().map(|scored| (scored.id, scored.score)).collect();
@@ -392,7 +378,7 @@ fn pieces(
     for linked in links.values_mut() {
         linked.implementations.retain(|(_, path)| admit(path));
     }
-    let picks = capped(&select(&cut, &bank, whole, &links), max);
+    let picks = select(&cut, &bank, &links);
     let outside: Vec<i64> = picks.iter().map(|pick| pick.id).filter(|id| !bank.contains(id)).collect();
     let pulled = map_search::declarations(root, &outside)?;
     let known: HashMap<i64, &FilterCandidate> =

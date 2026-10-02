@@ -1408,7 +1408,7 @@ mod tests {
             );
         }
 
-        // The SAME names, a different declared flow — the CANDIDATES follow the
+        // The SAME names, a different declared flow — the list of bases to choose from follows the
         // configuration, so nothing is read out of the string. That was always
         // this test's real subject; what changed is that the answer is now a
         // list to choose from instead of one value derived from the prefix.

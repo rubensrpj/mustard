@@ -534,12 +534,24 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "reply in {found}; the language of the project and the user is {expected}; write a \
              summary in {expected}"
         }
+        // O texto que barra o fim de uma resposta fora do idioma do projeto
+        // (`apps/rt/src/hooks/task/clarity_check.rs`): o assistente escreve de
+        // novo no idioma certo, no mesmo turno. Duas frases curtas.
+        // `{found}` e `{expected}` são códigos de idioma, como acima.
+        ("clarity.wrong_language_block", Locale::PtBr) => {
+            "A resposta saiu em {found}, e o idioma do projeto e do usuário é {expected}. \
+             Escreva a resposta de novo em {expected}."
+        }
+        ("clarity.wrong_language_block", Locale::EnUs) => {
+            "The reply came out in {found}, and the language of the project and the user is \
+             {expected}. Write the reply again in {expected}."
+        }
         // A frase curta que a linha escondida da mensagem seguinte leva
         // depois de uma resposta com erro de escrita
         // (`apps/rt/src/hooks/task/clarity_check.rs`), para o assistente
-        // corrigir na resposta seguinte. A resposta não é barrada, e a frase
-        // não aparece na tela. `{errors}` vem do chamador: os erros, separados
-        // por ponto e vírgula.
+        // corrigir na resposta seguinte. Só a resposta fora do idioma é
+        // barrada; a frase não aparece na tela. `{errors}` vem do chamador: os
+        // erros, separados por ponto e vírgula.
         ("clarity.next.head", Locale::PtBr) => "Na última resposta: {errors}.",
         ("clarity.next.head", Locale::EnUs) => "In the last reply: {errors}.",
         // O último item da lista quando há mais erros do que ela mostra.
@@ -562,8 +574,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("gates.rs"),
             super::PREFIXES,
-            71,
-            0x1795_f9da_bb65_a486,
+            72,
+            0x9512_a5d1_5d1e_2732,
         );
     }
 
@@ -710,7 +722,9 @@ mod tests {
     /// abre dizendo que o erro foi na última resposta. O pedido do complemento
     /// saiu com o bloqueio da escrita, e o aviso da volta saiu antes dele. O
     /// teto de linhas da resposta também saiu, com a linha dele e a que o
-    /// juntava à nota de leitura.
+    /// juntava à nota de leitura. O texto que barra a resposta fora do idioma
+    /// do projeto traz o idioma em que ela saiu e o do projeto, e nos dois
+    /// idiomas fica em duas frases curtas.
     #[test]
     fn i18n_translates_clarity_defect_keys() {
         for (key, slots) in [
@@ -719,6 +733,7 @@ mod tests {
             ("clarity.internal_code", &["{code}"][..]),
             ("clarity.hard_to_read", &["{score}", "{min}"][..]),
             ("clarity.wrong_language", &["{found}", "{expected}"][..]),
+            ("clarity.wrong_language_block", &["{found}", "{expected}"][..]),
             ("clarity.next.head", &["{errors}"][..]),
             ("clarity.more", &["{count}"][..]),
         ] {
@@ -738,6 +753,21 @@ mod tests {
             for key in ["clarity.too_long", "clarity.too_long_and_hard_to_read"] {
                 assert_eq!(translate(key, lang), "<missing-key>", "the reply line cap left: {key}");
             }
+        }
+    }
+
+    /// O texto que barra a resposta fora do idioma passa na conferência de
+    /// escrita das respostas, nos dois idiomas, com as vagas trocadas pelos
+    /// códigos de idioma de verdade.
+    #[test]
+    fn the_language_block_reads_clearly() {
+        for (lang, found, expected) in [(Locale::PtBr, "en-US", "pt-BR"), (Locale::EnUs, "pt-BR", "en-US")] {
+            let text = translate("clarity.wrong_language_block", lang)
+                .replace("{found}", found)
+                .replace("{expected}", expected);
+            let report = crate::domain::clarity::measure(&text, &[], Some(lang));
+            assert!(report.passed, "{lang:?}: {report:?}");
+            assert_eq!(text.matches(". ").count() + 1, 2, "two short sentences: {text}");
         }
     }
 }

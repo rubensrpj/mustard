@@ -302,10 +302,10 @@ mod tests {
         opened_by_an_older_scan(root);
         let refused = MapRefusal::MapUnfilled { blocks: vec!["decls".to_string()] };
         assert_eq!(map_search::search(root, "pedido", &languages(), 5).unwrap_err(), refused);
-        assert_eq!(map_search::candidates(root, "pedido", "", &languages(), 100, map_search::any_path).unwrap_err(), refused);
+        assert_eq!(map_search::candidates(root, "pedido", "", &languages(), map_search::any_path).unwrap_err(), refused);
 
         project_map::save_at(&model_path(root), &map, "scan 1", &languages()).unwrap();
-        let found = map_search::candidates(root, "pedido", "", &languages(), 100, map_search::any_path).unwrap();
+        let found = map_search::candidates(root, "pedido", "", &languages(), map_search::any_path).unwrap();
         assert_eq!(found.candidates.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["gravar_pedido"]);
     }
 
@@ -315,7 +315,7 @@ mod tests {
         [
             (map_search::search(root, "pedido", &languages(), 5).map(|found| format!("{found:?}")), &SEARCHED),
             (
-                map_search::candidates(root, "pedido", "", &languages(), 100, map_search::any_path).map(|found| format!("{found:?}")),
+                map_search::candidates(root, "pedido", "", &languages(), map_search::any_path).map(|found| format!("{found:?}")),
                 &READ_BY_CANDIDATES,
             ),
         ]

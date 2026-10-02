@@ -16,7 +16,7 @@
 //! - **A ordem dos vetores** ([`Meaning`]). O vetor do pedido contra o de
 //!   todas as declarações: as declarações da mais perto para a mais longe e
 //!   os arquivos, cada um pela melhor declaração dele. Ela entra na lista de
-//!   até cem candidatos do filtro, somada por posição recíproca à ordem única
+//!   candidatos do filtro, somada por posição recíproca à ordem única
 //!   das palavras com metade do peso
 //!   ([`crate::domain::search::VECTOR_WEIGHT`]); a resposta do banco e a
 //!   marca de "cravado" continuam lendo só as palavras.
@@ -631,8 +631,8 @@ mod tests {
         let db = open_existing(&model_path(dir.path())).unwrap();
         let today = ordered_with(db.conn(), Check::Off, &Sense::off(), request, "", &both()).unwrap();
         assert!(today.list.is_empty(), "{:?}", today.list);
-        let found = candidates_at(&model_path(dir.path()), request, "", &both(), 100, any_path).unwrap();
-        assert_eq!(found.candidates.first().map(|c| c.name.as_str()), Some("remove_dir"), "{:?}", found.whole);
+        let found = candidates_at(&model_path(dir.path()), request, "", &both(), any_path).unwrap();
+        assert_eq!(found.candidates.first().map(|c| c.name.as_str()), Some("remove_dir"), "{:?}", found.ids());
         assert_eq!(found.candidates.len(), 4, "every declaration is a candidate, the nearest first");
     }
 

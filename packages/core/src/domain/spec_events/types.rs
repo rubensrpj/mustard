@@ -434,12 +434,14 @@ pub const TYPES: &[TypeSpec] = &[
             opt("refusal", Kind::Text),
             // A busca que chamou o filtro: qual (`jev`, ou `jev:<motivo>` na
             // falha), o tempo dele, os tokens de entrada, o custo em
-            // milionésimos de dólar, os candidatos, as peças devolvidas e o
-            // modelo que respondeu.
+            // milionésimos de dólar (a soma de todos os pedidos), quantos
+            // pedidos foram, os candidatos, as peças devolvidas e o modelo
+            // que respondeu.
             opt("filter", Kind::Text),
             opt("filter_ms", Kind::Int),
             opt("tokens", Kind::Int),
             opt("cost_micro_usd", Kind::Int),
+            opt("requests", Kind::Int),
             opt("candidates", Kind::Int),
             opt("returned", Kind::Int),
             opt("model", Kind::Text),
@@ -995,7 +997,7 @@ mod tests {
         assert_eq!(call(json!({})), Ok(()));
         assert_eq!(
             call(json!({"filter": "jev", "filter_ms": 1500, "tokens": 20985, "cost_micro_usd": 881,
-                "candidates": 100, "returned": 12, "model": "jev-1.13.0"})),
+                "requests": 3, "candidates": 150, "returned": 12, "model": "jev-1.13.0"})),
             Ok(())
         );
         assert_eq!(call(json!({"filter": "jev:no_credit", "filter_ms": 40})), Ok(()));
@@ -1003,6 +1005,8 @@ mod tests {
         assert_eq!(call(json!({"request": "request-review", "item": "lesson-12"})), Ok(()));
         let refusal = call(json!({"tokens": "muitos"})).unwrap_err();
         assert!(matches!(refusal, Refusal::InvalidValue { ref field, .. } if field == "tokens"), "{refusal:?}");
+        let refusal = call(json!({"requests": "vários"})).unwrap_err();
+        assert!(matches!(refusal, Refusal::InvalidValue { ref field, .. } if field == "requests"), "{refusal:?}");
         let refusal = call(json!({"item": 7})).unwrap_err();
         assert!(matches!(refusal, Refusal::InvalidValue { ref field, .. } if field == "item"), "{refusal:?}");
     }

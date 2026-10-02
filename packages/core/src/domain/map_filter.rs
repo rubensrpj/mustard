@@ -1,15 +1,17 @@
 //! `map_filter` — o filtro da busca por assunto do mapa, como uma tomada.
 //!
-//! O banco devolve os melhores candidatos na ordem dele; o filtro lê todos de
-//! uma vez contra o que o agente queria e responde duas coisas: a chance de
+//! O banco devolve todos os candidatos que achou, na ordem dele; o filtro lê
+//! todos contra o que o agente queria e responde duas coisas: a chance de
 //! cada candidato ser o código que se procura (as chances somam 1) e a chance
 //! de algum deles ser. Devolve o veredito ([`Verdict`]) e só o que passa do
 //! corte ([`CutRule`]). A busca depende só do [`MapFilter`]: a implementação
 //! (um serviço pago, um modelo baixado) é escolhida num ponto só, na
 //! montagem, e pode ser trocada sem mexer na busca.
 //!
-//! O veredito e o corte são funções puras ([`judged`], [`cut`]) e moram aqui,
-//! para que toda implementação decida do mesmo jeito.
+//! Quando a lista não cabe num pedido só, a implementação a divide em vários
+//! e junta as respostas ([`joined`]). O veredito, o corte e a junção são
+//! funções puras ([`judged`], [`cut`], [`joined`]) e moram aqui, para que toda
+//! implementação decida do mesmo jeito.
 //!
 //! Sem disco, sem rede, sem relógio.
 
@@ -23,8 +25,8 @@ use thiserror::Error;
 
 /// Um candidato do banco, com o que o índice do código sabe dele.
 ///
-/// O tipo não guarda uma linha do corpo do código: o filtro que quer o começo
-/// do código lê o arquivo do candidato, pelo caminho e pelas linhas.
+/// O tipo não guarda uma linha do corpo do código: o filtro que quer o código
+/// lê o arquivo do candidato, pelo caminho e pelas linhas.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FilterCandidate {
     /// O id da declaração no banco; volta no que passa do corte.
@@ -41,13 +43,23 @@ pub struct FilterCandidate {
     pub end_line: u32,
     /// A assinatura, como o mapa a guarda.
     pub signature: String,
-    /// A documentação, como o mapa a guarda.
+    /// A documentação inteira, como o mapa a guarda.
     pub documentation: String,
+    /// Os títulos de todos os commits que mudaram a declaração, do mais novo
+    /// ao mais velho; vazio até quem monta o pedido ler a história do mapa.
+    pub commits: Vec<String>,
+    /// Os comentários de revisão presos às linhas da declaração, inteiros;
+    /// vazio até quem monta o pedido ler a história do mapa.
+    pub reviews: Vec<String>,
+    /// Os nomes das declarações do projeto que ela chama, como o grafo do
+    /// mapa os guarda.
+    pub calls: Vec<String>,
 }
 
-/// As três regras do corte, em números: a parte da maior chance que um
-/// candidato precisa ter, o sim a partir do qual algum candidato existe e
-/// quantos candidatos ficam, no máximo.
+/// As duas regras do corte, em números: a parte da maior chance que um
+/// candidato precisa ter e o sim a partir do qual algum candidato existe. São
+/// o veredito do filtro, e não um teto de quantidade: passa tudo o que chega
+/// à linha.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CutRule {
     /// A parte da maior chance que um candidato precisa ter para passar do
@@ -56,14 +68,12 @@ pub struct CutRule {
     /// A chance de algum candidato ser o que se procura, de 0 a 1, a partir
     /// da qual há resposta; abaixo dela é não achei.
     pub exists_from: f64,
-    /// Quantos candidatos passam do corte, no máximo.
-    pub max_kept: usize,
 }
 
 impl Default for CutRule {
-    /// Os números medidos: [`CUT_SHARE`], [`EXISTS_FROM`] e [`MAX_KEPT`].
+    /// Os números medidos: [`CUT_SHARE`] e [`EXISTS_FROM`].
     fn default() -> Self {
-        Self { share: CUT_SHARE, exists_from: EXISTS_FROM, max_kept: MAX_KEPT }
+        Self { share: CUT_SHARE, exists_from: EXISTS_FROM }
     }
 }
 
@@ -80,8 +90,7 @@ pub struct FilterRequest {
     /// A última fala do agente antes da busca; vazia quando não há. Nunca é
     /// texto do usuário.
     pub said: String,
-    /// A raiz do projeto, de onde o filtro lê o começo do código de cada
-    /// candidato.
+    /// A raiz do projeto, de onde o filtro lê o código de cada candidato.
     pub root: PathBuf,
     /// O corte da resposta.
     pub cut: CutRule,
@@ -109,7 +118,7 @@ pub enum Verdict {
     Found,
 }
 
-/// O que o filtro gastou numa chamada.
+/// O que o filtro gastou numa chamada, a soma de todos os pedidos dela.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FilterUsage {
     /// Tokens de entrada cobrados.
@@ -119,6 +128,9 @@ pub struct FilterUsage {
     /// O custo da chamada em milionésimos de dólar: os tokens cobrados vezes
     /// o preço de tabela do serviço.
     pub cost_micro_usd: u64,
+    /// Quantos pedidos ao serviço a chamada fez: um por lista que coube num
+    /// pedido, e os do candidato grande demais, cada um com o seu.
+    pub requests: u64,
     /// O nome do modelo que respondeu, como a resposta o diz. Vazio quando
     /// ela não diz.
     pub model: String,
@@ -193,11 +205,6 @@ pub trait MapFilter {
 // O veredito e o corte
 // ---------------------------------------------------------------------------
 
-/// Quantos candidatos passam do corte, no máximo, quando o projeto não diz
-/// outro número: 2. Nas 100 buscas reais medidas, com até 2 trechos o certo
-/// foi entregue em 30 delas.
-pub const MAX_KEPT: usize = 2;
-
 /// A chance de algum candidato ser o que se procura a partir da qual a
 /// resposta vale, quando o projeto não diz outra: 0,50. Abaixo dela é não
 /// achei. Medido nas mesmas 100 buscas, e conferido em outras 337.
@@ -208,10 +215,10 @@ pub const EXISTS_FROM: f64 = 0.50;
 pub const CUT_SHARE: f64 = 0.10;
 
 /// O corte: ordena pela chance, da maior para a menor, e no empate fica a
-/// ordem de `scores` (a do banco). Fica o melhor, sempre, e os de chance de
-/// pelo menos `rule.share` vezes a maior, até `rule.max_kept`. Sem mínimo e
-/// sem piso: as chances somam 1, e o que sobra depois do melhor é quase tudo
-/// zero; uma chance zero nunca entra atrás do melhor.
+/// ordem de `scores` (a do banco). Fica o melhor, sempre, e todos os de
+/// chance de pelo menos `rule.share` vezes a maior, sem teto de quantidade.
+/// Sem mínimo e sem piso: as chances somam 1, e o que sobra depois do melhor é
+/// quase tudo zero; uma chance zero nunca entra atrás do melhor.
 #[must_use]
 pub fn cut(scores: &[Scored], rule: CutRule) -> Vec<Scored> {
     let mut ranked = scores.to_vec();
@@ -226,7 +233,6 @@ pub fn cut(scores: &[Scored], rule: CutRule) -> Vec<Scored> {
         .enumerate()
         .filter(|(at, s)| *at == 0 || (s.score > 0.0 && s.score >= threshold))
         .map(|(_, s)| s)
-        .take(rule.max_kept.max(1))
         .collect()
 }
 
@@ -240,6 +246,42 @@ pub fn judged(scores: &[Scored], exists: f64, rule: CutRule) -> (Verdict, Vec<Sc
     } else {
         (Verdict::Found, cut(scores, rule))
     }
+}
+
+/// A resposta de um dos pedidos em que a lista de candidatos foi dividida: a
+/// chance de algum candidato dele ser o que se procura e a chance de cada um
+/// deles ser o escolhido entre os do pedido.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Partial {
+    /// A chance de algum candidato deste pedido ser o que se procura.
+    pub exists: f64,
+    /// A chance de cada candidato do pedido ser o escolhido entre os dele.
+    pub scores: Vec<Scored>,
+}
+
+/// As respostas dos pedidos juntas numa só: a nota de cada candidato é a
+/// chance de existir do pedido dele vezes a nota dele na escolha, e a chance
+/// de existir da lista é a maior das dos pedidos. Os candidatos saem na ordem
+/// em que aparecem nos pedidos. O candidato que se repete, o grande demais
+/// que vai em vários pedidos seguidos, fica com a maior das notas. Sem
+/// pedido, a chance de existir é zero e não há nota.
+#[must_use]
+pub fn joined(partials: &[Partial]) -> (f64, Vec<Scored>) {
+    let mut notes: Vec<Scored> = Vec::new();
+    let mut at: std::collections::HashMap<i64, usize> = std::collections::HashMap::new();
+    for partial in partials {
+        for scored in &partial.scores {
+            let note = partial.exists * scored.score;
+            match at.get(&scored.id) {
+                Some(&index) => notes[index].score = notes[index].score.max(note),
+                None => {
+                    at.insert(scored.id, notes.len());
+                    notes.push(Scored { id: scored.id, score: note });
+                }
+            }
+        }
+    }
+    (partials.iter().map(|partial| partial.exists).fold(0.0, f64::max), notes)
 }
 
 #[cfg(test)]
@@ -263,7 +305,7 @@ mod tests {
     #[test]
     fn the_measured_numbers_are_the_default_rule() {
         let rule = CutRule::default();
-        assert_eq!((rule.share, rule.exists_from, rule.max_kept), (0.10, 0.50, 2));
+        assert_eq!((rule.share, rule.exists_from), (0.10, 0.50));
     }
 
     #[test]
@@ -276,29 +318,32 @@ mod tests {
 
     #[test]
     fn a_split_chance_keeps_the_two_close_ones() {
-        assert_eq!(ids(&cut(&scores(&[0.5, 0.45, 0.05]), CutRule::default())), vec![1, 2]);
+        assert_eq!(ids(&cut(&scores(&[0.5, 0.45, 0.04]), CutRule::default())), vec![1, 2]);
     }
 
     #[test]
     fn the_chance_that_only_equals_the_cut_line_stays_in() {
         // 0,5 × 0,10 = 0,05: a chance de 0,05 chega à linha e fica; um fio
-        // abaixo, cai. Com o teto de 3, os três aparecem.
-        let three = CutRule { max_kept: 3, ..CutRule::default() };
-        assert_eq!(ids(&cut(&scores(&[0.5, 0.45, 0.05]), three)), vec![1, 2, 3]);
-        assert_eq!(ids(&cut(&scores(&[0.5, 0.45, 0.05 - 1e-9]), three)), vec![1, 2]);
+        // abaixo, cai.
+        let rule = CutRule::default();
+        assert_eq!(ids(&cut(&scores(&[0.5, 0.45, 0.05]), rule)), vec![1, 2, 3]);
+        assert_eq!(ids(&cut(&scores(&[0.5, 0.45, 0.05 - 1e-9]), rule)), vec![1, 2]);
     }
 
     #[test]
-    fn the_cut_returns_at_most_two_by_default_and_as_many_as_the_rule_says() {
-        let even = scores(&[0.08; 15]);
-        assert_eq!(ids(&cut(&even, CutRule::default())), vec![1, 2]);
-        assert_eq!(ids(&cut(&even, CutRule { max_kept: 5, ..CutRule::default() })), vec![1, 2, 3, 4, 5]);
+    fn every_candidate_that_reaches_the_cut_line_passes_with_no_ceiling_on_the_count() {
+        let five = ids(&cut(&scores(&[0.2; 5]), CutRule::default()));
+        assert_eq!(five, vec![1, 2, 3, 4, 5], "five equal chances above the line all stay");
+        let many = cut(&scores(&[0.008; 150]), CutRule::default());
+        assert_eq!(many.len(), 150, "a hundred and fifty equal chances all stay");
+        let beyond_the_line = ids(&cut(&scores(&[0.4, 0.4, 0.4, 0.4, 0.039]), CutRule::default()));
+        assert_eq!(beyond_the_line, vec![1, 2, 3, 4], "only the line cuts: 0,039 is under 0,4 × 0,10");
     }
 
     #[test]
     fn the_best_stays_even_when_every_chance_is_zero_and_zero_never_follows_it() {
         assert_eq!(ids(&cut(&scores(&[0.0, 0.0]), CutRule::default())), vec![1]);
-        assert_eq!(ids(&cut(&scores(&[0.0, 0.0, 0.0]), CutRule { max_kept: 3, ..CutRule::default() })), vec![1]);
+        assert_eq!(ids(&cut(&scores(&[0.0, 0.0, 0.0]), CutRule::default())), vec![1]);
     }
 
     #[test]
@@ -311,15 +356,13 @@ mod tests {
     #[test]
     fn the_bank_order_breaks_ties() {
         let kept = cut(&scores(&[0.3, 0.4, 0.3, 0.4]), CutRule::default());
-        assert_eq!(ids(&kept), vec![2, 4]);
-        let all = CutRule { max_kept: 4, ..CutRule::default() };
-        assert_eq!(ids(&cut(&scores(&[0.3, 0.4, 0.3, 0.4]), all)), vec![2, 4, 1, 3]);
+        assert_eq!(ids(&kept), vec![2, 4, 1, 3], "the equal chances keep the order of the bank");
     }
 
     #[test]
     fn a_bigger_share_cuts_closer_to_the_best() {
         let chances = scores(&[0.6, 0.25, 0.1]);
-        let wide = CutRule { max_kept: 3, ..sharing(0.10) };
+        let wide = sharing(0.10);
         assert_eq!(ids(&cut(&chances, wide)), vec![1, 2, 3]);
         assert_eq!(ids(&cut(&chances, CutRule { share: 0.5, ..wide })), vec![1]);
     }
@@ -351,9 +394,59 @@ mod tests {
     #[test]
     fn a_found_verdict_keeps_the_cut_of_the_rule() {
         let chances = scores(&[0.4, 0.1, 0.05]);
-        let (verdict, kept) = judged(&chances, 0.9, CutRule { max_kept: 3, ..CutRule::default() });
+        let (verdict, kept) = judged(&chances, 0.9, CutRule::default());
         assert_eq!((verdict, ids(&kept)), (Verdict::Found, vec![1, 2, 3]));
         let (verdict, kept) = judged(&chances, 0.9, CutRule { share: 0.5, ..CutRule::default() });
         assert_eq!((verdict, ids(&kept)), (Verdict::Found, vec![1]));
+    }
+
+    /// Um pedido do filtro dividido: a chance de existir e a nota dos
+    /// candidatos de `ids`, um a um.
+    fn partial(exists: f64, notes: &[(i64, f64)]) -> Partial {
+        Partial { exists, scores: notes.iter().map(|&(id, score)| Scored { id, score }).collect() }
+    }
+
+    #[test]
+    fn the_note_of_each_candidate_is_the_existence_of_its_request_times_its_own_choice_note() {
+        // O pedido A existe com 0,9 e escolhe o 3 com 0,8; o B existe com 0,2.
+        let a = partial(0.9, &[(1, 0.1), (2, 0.1), (3, 0.8)]);
+        let b = partial(0.2, &[(4, 0.3), (5, 0.3), (6, 0.2), (8, 0.2)]);
+        let (exists, notes) = joined(&[a, b]);
+        assert_eq!(exists, 0.9, "the existence of the list is the highest of the requests");
+        let note = |id: i64| notes.iter().find(|scored| scored.id == id).unwrap().score;
+        assert!((note(3) - 0.72).abs() < 1e-9, "0,9 × 0,8");
+        assert!((note(4) - 0.06).abs() < 1e-9, "0,2 × 0,3");
+        assert_eq!(ids(&notes), vec![1, 2, 3, 4, 5, 6, 8], "the candidates keep the order of the requests");
+        let (verdict, kept) = judged(&notes, exists, CutRule::default());
+        assert_eq!(
+            (verdict, ids(&kept)),
+            (Verdict::Found, vec![3, 1, 2]),
+            "the best joined note is the 3 (0,72); the 1 and the 2 (0,09) reach its line of 0,072; the 0,06 of the request that barely exists does not"
+        );
+    }
+
+    #[test]
+    fn no_request_reaching_the_existence_line_is_not_found() {
+        let a = partial(0.49, &[(1, 0.9), (2, 0.1)]);
+        let b = partial(0.2, &[(3, 1.0)]);
+        let (exists, notes) = joined(&[a, b]);
+        assert_eq!(exists, 0.49);
+        assert_eq!(judged(&notes, exists, CutRule::default()), (Verdict::NotFound, Vec::new()));
+        let at_the_line = partial(0.50, &[(1, 0.9), (2, 0.1)]);
+        let (exists, notes) = joined(&[at_the_line, partial(0.2, &[(3, 1.0)])]);
+        assert_eq!(judged(&notes, exists, CutRule::default()).0, Verdict::Found);
+    }
+
+    #[test]
+    fn a_candidate_split_in_several_requests_keeps_the_highest_of_its_notes() {
+        let parts = [partial(0.1, &[(7, 1.0)]), partial(0.95, &[(7, 1.0)]), partial(0.3, &[(7, 1.0)])];
+        let (exists, notes) = joined(&parts);
+        assert_eq!(exists, 0.95);
+        assert_eq!(notes, vec![Scored { id: 7, score: 0.95 }]);
+    }
+
+    #[test]
+    fn without_a_request_nothing_exists_and_nothing_has_a_note() {
+        assert_eq!(joined(&[]), (0.0, Vec::new()));
     }
 }

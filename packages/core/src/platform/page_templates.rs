@@ -115,7 +115,7 @@ pub const PROJECT_CAPABILITIES: &str = r#"{"db":{"rules":[{"path":"","read":"vie
 /// desenho da página já publicada mudou; a página só é publicada de novo
 /// quando ele pede. A trava dos testes falha quando o molde muda sem ela
 /// subir.
-pub const SPEC_LAYOUT_VERSION: u32 = 13;
+pub const SPEC_LAYOUT_VERSION: u32 = 14;
 
 /// A versão do layout da página do projeto, com a mesma regra de
 /// [`SPEC_LAYOUT_VERSION`].
@@ -377,8 +377,8 @@ mod tests {
     /// sobe a versão do layout dele e grava aqui a impressão nova que a falha
     /// mostra.
     const LAYOUT_TABLE: &[(&str, Locale, u32, &str)] = &[
-        ("spec", Locale::PtBr, 13, "74d7248f663c0900"),
-        ("spec", Locale::EnUs, 13, "bc92e4984f4a074f"),
+        ("spec", Locale::PtBr, 14, "66084342222d88e4"),
+        ("spec", Locale::EnUs, 14, "4f223a40cfef922d"),
         ("project", Locale::PtBr, 4, "5ce19b21c8d05b39"),
         ("project", Locale::EnUs, 4, "2bc07fa8f52ae1bc"),
     ];

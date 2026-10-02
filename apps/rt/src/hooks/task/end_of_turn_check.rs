@@ -9,10 +9,11 @@
 //!   spec fechou, ou entrou no merge, não termina sem citar cada pendência
 //!   aberta nascida nela. Esta barra;
 //! - a clareza ([`ClarityRule`], `clarity_check.rs`): a resposta segue a regra
-//!   de escrita e sai no idioma que o projeto declarou. Esta nunca barra: o
-//!   erro que ela acha fica guardado na pasta da sessão, e só por ele a
-//!   mensagem seguinte do usuário leva uma linha escondida, com o erro numa
-//!   frase curta.
+//!   de escrita e sai no idioma que o projeto declarou. Esta só barra a
+//!   resposta fora do idioma do projeto: o assistente a escreve de novo, no
+//!   mesmo turno. Os outros erros que ela acha ficam guardados na pasta
+//!   da sessão, e só por eles a mensagem seguinte do usuário leva uma linha
+//!   escondida, com o erro numa frase curta.
 //!
 //! ## Um bloqueio só
 //!
@@ -26,9 +27,9 @@
 //! Uma regra que barra devolve [`Finding::Block`]: o texto vai ao assistente,
 //! que responde no mesmo turno. A volta que um bloqueio pediu chega com
 //! `stop_hook_active` ([`Turn::retry`]), e cada regra decide o que faz com
-//! ela: a clareza soma o erro da volta ao da resposta barrada, e as
-//! pendências cobram até o contador delas. Nenhuma regra fala com o usuário:
-//! sem bloqueio, a resposta termina calada.
+//! ela: a clareza nunca barra na volta e soma o erro dela ao da resposta
+//! barrada, e as pendências cobram até o contador delas. Nenhuma regra fala
+//! com o usuário: sem bloqueio, a resposta termina calada.
 //!
 //! ## Tempo
 //!
@@ -80,8 +81,8 @@ impl Finding {
 
 /// Uma regra do fim da resposta.
 pub trait TurnRule {
-    /// Confere a resposta. `None` quando a regra não barra; a que não barra
-    /// pode guardar o que achou para depois, como a clareza. Uma regra nunca
+    /// Confere a resposta. `None` quando a regra não barra; a clareza guarda
+    /// para depois o erro que não barra. Uma regra nunca
     /// falha: o que ela não consegue ler vira `None`.
     fn check(&self, turn: &Turn<'_>) -> Option<Finding>;
 }
@@ -173,6 +174,14 @@ mod tests {
 
     /// A mesma linha num projeto em en-US.
     const EN_LINE: &str = "Answer in American English, in plain text: short sentences and no internal codes.";
+
+    /// O texto que barra a resposta em inglês num projeto em pt-BR.
+    const PT_BLOCK: &str =
+        "A resposta saiu em en-US, e o idioma do projeto e do usuário é pt-BR. Escreva a resposta de novo em pt-BR.";
+
+    /// O texto que barra a resposta em português num projeto em en-US.
+    const EN_BLOCK: &str = "The reply came out in pt-BR, and the language of the project and the user is en-US. \
+        Write the reply again in en-US.";
 
     fn project(config: &str) -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -342,18 +351,22 @@ mod tests {
         assert_eq!(timeouts, vec![STOP_BUDGET_SECS]);
     }
 
-    /// A resposta que sai noutro idioma que não o de `language.text` não é
-    /// barrada, e o erro vai na mensagem seguinte. O idioma vem da
+    /// A resposta que sai noutro idioma que não o de `language.text` é
+    /// barrada, e o erro também vai na mensagem seguinte. O idioma vem da
     /// configuração: o mesmo inglês passa num projeto em inglês, e o português
-    /// vira erro nele, no idioma dele. A chave antiga de idioma não é mais
-    /// lida: um projeto que só tem ela não declarou idioma, e nenhuma resposta
-    /// ganha erro de idioma.
+    /// é barrado nele, no idioma dele. A volta que o bloqueio pediu nunca
+    /// barra de novo. A chave antiga de idioma não é mais lida: um projeto que
+    /// só tem ela não declarou idioma, e nenhuma resposta é barrada nem ganha
+    /// erro de idioma.
     #[test]
-    fn a_reply_in_another_language_goes_with_the_next_message() {
+    fn a_reply_in_another_language_is_blocked_and_goes_with_the_next_message() {
         let pt = project(PT_PROJECT);
         let verdict = EndOfTurnCheck.evaluate(&stop("s1", ENGLISH_REPLY, false), &ctx(pt.path()));
-        assert_eq!(verdict.expect("never errors"), Verdict::Allow);
+        assert_eq!(verdict.expect("never errors"), Verdict::Deny { reason: PT_BLOCK.to_string() });
         assert_eq!(next_line(pt.path(), "s1"), format!("{PT_LINE} Na última resposta: resposta em en-US."));
+
+        let again = EndOfTurnCheck.evaluate(&stop("s2", ENGLISH_REPLY, true), &ctx(pt.path()));
+        assert_eq!(again.expect("never errors"), Verdict::Allow, "the retry is never blocked again");
 
         let en = project(EN_PROJECT);
         let english = EndOfTurnCheck.evaluate(&stop("s1", ENGLISH_REPLY, false), &ctx(en.path()));
@@ -364,13 +377,36 @@ mod tests {
             Ela conta as palavras comuns de cada idioma.\n\
             Uma resposta curta não é julgada por ela.";
         let verdict = EndOfTurnCheck.evaluate(&stop("s1", portuguese, false), &ctx(en.path()));
-        assert_eq!(verdict.expect("never errors"), Verdict::Allow);
+        assert_eq!(verdict.expect("never errors"), Verdict::Deny { reason: EN_BLOCK.to_string() });
         assert_eq!(next_line(en.path(), "s1"), format!("{EN_LINE} In the last reply: reply in pt-BR."));
 
         let old_key = project(r#"{"specLang":"pt-BR"}"#);
         let verdict = EndOfTurnCheck.evaluate(&stop("s1", ENGLISH_REPLY, false), &ctx(old_key.path()));
         assert_eq!(verdict.expect("never errors"), Verdict::Allow);
         assert_eq!(next_line(old_key.path(), "s1"), "", "the old key declares no language");
+    }
+
+    /// Um bloqueio só: o fechamento que omite uma pendência, numa resposta em
+    /// inglês, leva o texto das pendências e o do idioma no mesmo motivo, na
+    /// ordem das regras. Na volta, a pendência cobra de novo e o idioma não.
+    #[test]
+    fn the_language_block_and_the_pending_block_share_one_reason() {
+        let dir = project_with_open_items(PT_PROJECT);
+        let root = dir.path();
+        close_spec_with_both_items(root, "s-both");
+
+        let first = format!("{ENGLISH_REPLY}\nOnly the html padrao da spec item is left.");
+        let blocked = stop_event(root, "s-both", &first, false);
+        assert_eq!(blocked["decision"], json!("block"), "{blocked}");
+        let pending = mustard_core::translate("pending.gate.block", Locale::PtBr)
+            .replace("{spec}", "trava")
+            .replace("{count}", "1")
+            .replace("{items}", "P-1 \"Humanize\"");
+        assert_eq!(blocked["reason"], json!(format!("{pending}\n\n{PT_BLOCK}")), "pending first, language second");
+
+        let retry = stop_event(root, "s-both", &first, true);
+        assert_eq!(retry["decision"], json!("block"), "the pending item is still charged: {retry}");
+        assert!(!retry["reason"].as_str().unwrap_or_default().contains(PT_BLOCK), "the language is not charged twice");
     }
 
     /// Lado a lado — a cobrança de pendências mudou de gancho próprio para

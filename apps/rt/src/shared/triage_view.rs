@@ -30,21 +30,15 @@ pub(crate) fn bank_report(query: &str, triaged: &Triaged, lang: Locale) -> Value
     report
 }
 
-/// Quantas declarações além dos candidatos a busca do cravado olha, na ordem
-/// da lista inteira, para achar uma do primeiro arquivo achado.
-const PINNED_REACH: usize = 2_000;
-
 /// A peça da resposta cravada: a declaração do primeiro arquivo achado. Se o
 /// texto fixo que casou nasce numa declaração, é essa; senão, a que a lista
-/// do banco põe na frente. Olha primeiro os `limit` candidatos e, se o
-/// arquivo não tem nenhum entre eles, as [`PINNED_REACH`] seguintes da lista
-/// inteira. `None` quando não há arquivo achado ou ele não tem declaração na
-/// lista: a busca segue pelo caminho de sempre.
+/// do banco põe na frente, olhando a lista inteira. `None` quando não há
+/// arquivo achado ou ele não tem declaração na lista: a busca segue pelo
+/// caminho de sempre.
 pub(crate) fn pinned_piece(
     root: &Path,
     (query, intent): (&str, &str),
     languages: &Languages,
-    limit: usize,
     triaged: &Triaged,
 ) -> Result<Option<FilterCandidate>, MapRefusal> {
     let Some(file) = triaged.files.first() else { return Ok(None) };
@@ -55,17 +49,8 @@ pub(crate) fn pinned_piece(
         let named = owner.and_then(|owner| list.iter().find(|c| c.path == file.path && c.name == owner));
         Some(named.unwrap_or(first).clone())
     };
-    let found = map_search::candidates(root, query, intent, languages, limit, map_search::any_path)?;
-    if let Some(piece) = pick(&found.candidates) {
-        return Ok(Some(piece));
-    }
-    let beyond: Vec<i64> = found.whole.iter().skip(found.candidates.len()).take(PINNED_REACH).copied().collect();
-    let pulled = map_search::declarations(root, &beyond)?;
-    let mut in_order: Vec<FilterCandidate> = Vec::new();
-    for id in &beyond {
-        in_order.extend(pulled.iter().filter(|candidate| candidate.id == *id).cloned());
-    }
-    Ok(pick(&in_order))
+    let found = map_search::candidates(root, query, intent, languages, map_search::any_path)?;
+    Ok(pick(&found.candidates))
 }
 
 /// A resposta da marca cravado: só o primeiro achado, como peça inteira — o

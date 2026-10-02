@@ -1078,7 +1078,7 @@ fn a_search_made_while_the_history_is_being_read_answers_with_what_is_stored() {
     let model = model::path_in(&dir.join(".claude"));
     let languages = Languages::of(&ProjectConfig::default());
     let found = |asked: &str| {
-        candidates_at(&model, asked, "", &languages, 100, any_path).expect("the candidates answer");
+        candidates_at(&model, asked, "", &languages, any_path).expect("the candidates answer");
         triage_at(&model, (asked, ""), &languages, 100).expect("the search answers").files.len()
     };
     assert_eq!(found("guardanapo"), 0, "the word is only in the commit title, which is not read yet");

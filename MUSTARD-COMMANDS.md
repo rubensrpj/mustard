@@ -62,7 +62,7 @@ Não há comando de entrada: um pedido que muda arquivo, dito na conversa, abre 
 | `subagent_inject` | antes de despachar um agente | Troca o bilhete `MUSTARD-WAVE: <spec> <n>` pelo pedido montado da onda. |
 | `approval_witness` | depois de uma pergunta com opções | Grava o clique em "Aprovar" ou "Aceitar". |
 | `copy_witness` | depois de um lote mandado ao banco da página | Guarda a versão que o banco devolveu a cada documento do lote. Quando o último lote da cópia da página da spec volta, grava a cópia com essas versões e avisa. |
-| `end_of_turn_check` | fim da resposta | Confere a escrita sem barrar: o erro achado vai na linha da mensagem seguinte. Barra só quando a spec fecha ou entra no merge e a resposta não cita uma pendência aberta nascida nela. |
+| `end_of_turn_check` | fim da resposta | Confere a escrita: o erro achado vai na linha da mensagem seguinte, sem barrar. Barra quando a resposta sai noutro idioma que não o do projeto, para o assistente escrevê-la de novo, e quando a spec fecha ou entra no merge e a resposta não cita uma pendência aberta nascida nela. |
 | `session_cleanup_observer` | fim da sessão | Solta a spec da sessão. |
 
 ---

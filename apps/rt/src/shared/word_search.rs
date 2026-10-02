@@ -56,7 +56,6 @@ use mustard_core::domain::map_filter::{FilterError, Verdict};
 use mustard_core::domain::model::contract::{Ctx, HookInput};
 use mustard_core::domain::normalize::Languages;
 use mustard_core::domain::project_map::{self, FilePart, FileParts};
-use mustard_core::domain::search::CANDIDATES;
 use mustard_core::domain::triage::{not_found, Mark};
 use mustard_core::io::fs;
 use mustard_core::io::map_search;
@@ -557,8 +556,7 @@ fn ask_reply(scene: &Scene<'_>, request: &str) -> Option<String> {
 /// ordem única põe na frente, até [`PIECES_PER_FILE`]. `None` quando o mapa
 /// não se lê.
 fn places_of_triage(scene: &Scene<'_>, (question, intent): (&str, &str), triaged: &Triaged) -> Option<Vec<(String, Vec<String>)>> {
-    let limit = scene.config.search_candidates().or(CANDIDATES);
-    let found = map_search::candidates_at(scene.model, question, intent, scene.languages, limit, map_search::any_path).ok()?;
+    let found = map_search::candidates_at(scene.model, question, intent, scene.languages, map_search::any_path).ok()?;
     Some(
         triaged
             .files
@@ -2460,7 +2458,7 @@ mod tests {
         let text = note(search_through(&root, &root, &["imposto"], &["."], true, &judge.assemble()));
         assert_eq!(judge.calls(), 1);
         let asked = judge.last();
-        let bank = mustard_core::io::map_search::candidates(&root, "imposto", "imposto", &Languages::new(["pt-BR", "en-US"]), 100, mustard_core::io::map_search::any_path)
+        let bank = mustard_core::io::map_search::candidates(&root, "imposto", "imposto", &Languages::new(["pt-BR", "en-US"]), mustard_core::io::map_search::any_path)
             .expect("the bank candidates");
         assert_eq!(bank.candidates.len(), 2, "the bank lists the two functions of the file");
         assert_eq!(asked.candidates, bank.candidates, "every candidate of the bank goes in one request");

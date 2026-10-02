@@ -440,11 +440,18 @@ mod tests {
         }
     }
 
+    /// O veredito que barra uma resposta fora do idioma do projeto: o motivo
+    /// nomeia o idioma que o projeto declarou, pt-BR.
+    fn assert_blocked_for_language(verdict: Verdict) {
+        let Verdict::Deny { reason } = verdict else { panic!("a reply in another language is blocked: {verdict:?}") };
+        assert!(reason.contains("en-US") && reason.contains("pt-BR"), "{reason}");
+    }
+
     /// Sem `language.text` no `mustard.json`, o idioma nunca é suposto, e as
     /// chaves antigas de idioma não contam como declaração: a linha da
     /// correção manda responder no idioma de quem escreve, sem nomear idioma,
-    /// e uma resposta em inglês não ganha erro de idioma na mensagem seguinte.
-    /// Com pt-BR declarado, o erro vai.
+    /// e uma resposta em inglês não é barrada nem ganha erro de idioma na
+    /// mensagem seguinte. Com pt-BR declarado, ela é barrada, e o erro vai.
     #[test]
     fn undeclared_language_is_never_assumed() {
         use crate::hooks::task::end_of_turn_check::EndOfTurnCheck;
@@ -466,7 +473,7 @@ mod tests {
 
         let dir = project_with(PT_PROJECT);
         let c = Ctx::for_test(dir.path().to_string_lossy().to_string(), Some(Trigger::Stop));
-        assert_eq!(EndOfTurnCheck.evaluate(&english_stop(), &c).unwrap(), Verdict::Allow);
+        assert_blocked_for_language(EndOfTurnCheck.evaluate(&english_stop(), &c).unwrap());
         let on_prompt = Ctx { trigger: Some(Trigger::UserPromptSubmit), ..c };
         let next = context_of(PromptEntry.evaluate(&prompt_input("e agora?"), &on_prompt).unwrap());
         assert_eq!(next, format!("{PT_LINE} Na última resposta: resposta em en-US."));
@@ -474,9 +481,9 @@ mod tests {
 
     /// A linha curta e a medição de idioma valem para todo projeto com
     /// `mustard.json`. Com ou sem a antiga chave do tom, uma mensagem comum
-    /// não leva texto; uma resposta em inglês num projeto em pt-BR não é
-    /// barrada, e a mensagem seguinte leva a linha do idioma declarado com o
-    /// erro, uma vez só. Sem `mustard.json`, nada.
+    /// não leva texto; uma resposta em inglês num projeto em pt-BR é barrada,
+    /// e a mensagem seguinte leva a linha do idioma declarado com o erro, uma
+    /// vez só. Sem `mustard.json`, nada.
     #[test]
     fn the_language_line_reaches_every_mustard_project() {
         use crate::hooks::task::end_of_turn_check::EndOfTurnCheck;
@@ -489,7 +496,7 @@ mod tests {
 
             let on_stop = Ctx { trigger: Some(Trigger::Stop), ..c.clone() };
             let verdict = EndOfTurnCheck.evaluate(&english_stop(), &on_stop).unwrap();
-            assert_eq!(verdict, Verdict::Allow, "{config}: the writing check never blocks");
+            assert_blocked_for_language(verdict);
 
             let next = context_of(PromptEntry.evaluate(&prompt_input("e agora?"), &c).unwrap());
             assert_eq!(next, format!("{PT_LINE} Na última resposta: resposta em en-US."), "{config}");
