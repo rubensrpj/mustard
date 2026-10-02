@@ -373,6 +373,45 @@ pub fn linked_worktree_main(dir: &Path) -> Option<PathBuf> {
     std::fs::canonicalize(common.join(configured_worktree(&common)?)).ok()
 }
 
+/// The MAIN checkout of the Mustard source repository that `start` stands in,
+/// or `None` when `start` is anywhere else.
+///
+/// From `start`, the root of the git checkout above it; inside a linked
+/// worktree — the separate copy of a wave — the main checkout that
+/// [`linked_worktree_main`] leads to. A checkout is Mustard's when
+/// `apps/rt/Cargo.toml` declares the package `mustard-rt`: read from the file,
+/// and not from the folder name, so a clone under any name counts and a project
+/// that merely lives in a folder called `mustard` does not. Files only, no git
+/// process: the answer sits on the path of every `mustard-rt` call.
+#[must_use]
+pub fn mustard_checkout(start: &Path) -> Option<PathBuf> {
+    // A relative `.` only climbs to the folders above once it is absolute.
+    let start = std::path::absolute(start).unwrap_or_else(|_| start.to_path_buf());
+    let top = start.ancestors().find(|folder| is_git_repo_root(folder))?;
+    let main = linked_worktree_main(&start).unwrap_or_else(|| top.to_path_buf());
+    declares_mustard_rt(&main).then_some(main)
+}
+
+/// The checkout builds the package `mustard-rt`: its `apps/rt/Cargo.toml`
+/// names it in the `[package]` section.
+fn declares_mustard_rt(checkout: &Path) -> bool {
+    let Ok(manifest) = std::fs::read_to_string(checkout.join("apps").join("rt").join("Cargo.toml")) else {
+        return false;
+    };
+    let mut in_package = false;
+    for line in manifest.lines().map(str::trim) {
+        if line.starts_with('[') {
+            in_package = line == "[package]";
+        } else if in_package
+            && let Some((key, value)) = line.split_once('=')
+            && key.trim() == "name"
+        {
+            return value.trim().trim_matches('"') == "mustard-rt";
+        }
+    }
+    false
+}
+
 /// The git folder of the checkout rooted at `checkout`, read from files only:
 /// a `.git` folder is that folder; a `.git` file — a linked worktree's or a
 /// submodule's — names it on its `gitdir: <path>` line, absolute or relative
@@ -776,6 +815,57 @@ mod tests {
             matches!(resolve_with_override(&loose, None), Err(WorkspaceError::AnchorNotFound { .. })),
             "a folder outside any project still resolves nothing",
         );
+    }
+
+    /// Um repositório de mentira que declara o pacote `mustard-rt`, com o git
+    /// de verdade para que o `worktree` nasça.
+    fn mustard_repo(at: &Path) {
+        std::fs::create_dir_all(at.join("apps").join("rt")).unwrap();
+        std::fs::write(at.join("apps").join("rt").join("Cargo.toml"), "[package]\nname = \"mustard-rt\"\nversion = \"0.1.0\"\n").unwrap();
+        git(at, &["init", "-q"]);
+        git(at, &["add", "-A"]);
+        git(at, &["commit", "-q", "-m", "seed"]);
+    }
+
+    /// Dentro do repositório do Mustard, de qualquer pasta dele, a resposta é a
+    /// raiz do checkout; numa cópia de onda — um `worktree` fora do projeto —,
+    /// é o checkout principal; fora dele, em outro projeto, num manifesto que
+    /// não é do `mustard-rt` ou numa pasta fora do git, não é nada.
+    #[test]
+    fn the_mustard_checkout_is_found_from_the_repository_and_from_a_wave_copy() {
+        let dir = tempdir().unwrap();
+        let main = dir.path().join("qualquer-nome");
+        mustard_repo(&main);
+        let main_real = std::fs::canonicalize(&main).unwrap();
+        let same = |found: Option<PathBuf>, want: &Path| {
+            assert_eq!(found.map(|found| std::fs::canonicalize(found).unwrap()), Some(want.to_path_buf()));
+        };
+        same(mustard_checkout(&main), &main_real);
+        same(mustard_checkout(&main.join("apps").join("rt")), &main_real);
+
+        let copy = dir.path().join("cache").join("copias").join("projeto-0123abcd").join("x").join("a");
+        git(&main, &["worktree", "add", "-q", "--detach", &copy.to_string_lossy(), "HEAD"]);
+        same(mustard_checkout(&copy), &main_real);
+        same(mustard_checkout(&copy.join("apps").join("rt")), &main_real);
+
+        let other = dir.path().join("outro");
+        std::fs::create_dir_all(other.join("apps").join("rt")).unwrap();
+        std::fs::write(other.join("apps").join("rt").join("Cargo.toml"), "[package]\nname = \"outro-app\"\n").unwrap();
+        git(&other, &["init", "-q"]);
+        assert_eq!(mustard_checkout(&other), None, "a repository whose apps/rt is another package");
+        let renamed = dir.path().join("mustard");
+        std::fs::create_dir_all(renamed.join(".git")).unwrap();
+        assert_eq!(mustard_checkout(&renamed), None, "the folder name alone proves nothing");
+        let loose = dir.path().join("solta");
+        std::fs::create_dir_all(loose.join("apps").join("rt")).unwrap();
+        std::fs::write(loose.join("apps").join("rt").join("Cargo.toml"), "[package]\nname = \"mustard-rt\"\n").unwrap();
+        assert_eq!(mustard_checkout(&loose), None, "outside git there is no checkout");
+        std::fs::write(
+            main.join("apps").join("rt").join("Cargo.toml"),
+            "[dependencies]\nname = \"mustard-rt\"\n[package]\nname = \"outro\"\n",
+        )
+        .unwrap();
+        assert_eq!(mustard_checkout(&main), None, "only the name in [package] counts");
     }
 
     /// The git folder of a checkout is its `.git` folder, or the folder a

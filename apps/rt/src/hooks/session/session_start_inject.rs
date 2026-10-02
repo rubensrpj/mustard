@@ -35,9 +35,10 @@
 //!    na base e que seguem vivas, só pelo git local, sem pergunta nenhuma ao
 //!    provedor.
 //! 8. **O disco** — as cópias descartáveis antigas acima de 5 GB.
-//! 9. **O gancho velho** — só no código-fonte do Mustard: o programa que roda
-//!    os ganchos é de um commit anterior ao da base, e a base mudou código
-//!    depois dele.
+//! 9. **O programa compilado** — só no código-fonte do Mustard: o programa
+//!    compilado da branch falta ou está atrás do commit atual. A compilação é
+//!    solta em segundo plano, sem esperar, e o aviso diz qual programa a
+//!    sessão roda até ela acabar.
 //! 10. **A versão velha do Mustard** — a gravada no projeto, a do plugin
 //!     carregado ou a do plugin instalado, quando uma delas ficou para trás.
 //! 11. **Os processos presos** — o que um agente deixou rodando (um laço de
@@ -48,7 +49,7 @@
 //!
 //! Tudo junto cabe em [`MAX_BYTES`]. Quando o todo passa do teto, os avisos
 //! cedem o lugar um a um, na vez de cada um, com uma linha no stderr dizendo
-//! qual saiu: os processos presos primeiro, depois a versão, o gancho velho,
+//! qual saiu: os processos presos primeiro, depois a versão, o programa compilado,
 //! o disco, o gasto, as branches mergeadas, a contagem das pendências e a
 //! página do projeto, e só então os textos declarados.
 //! Entre os textos declarados está o mapa do início da sessão, que substitui
@@ -64,10 +65,11 @@
 //!
 //! ## As leituras da máquina são argumento
 //!
-//! O registro de plugins do Claude Code, o diretório temporário e o arquivo
-//! do gasto moram fora do projeto, e o carimbo de versão é o do programa que
-//! roda, não o do projeto. O [`Check`] os lê uma vez e os entrega a
-//! [`session_start_core`],
+//! O registro de plugins do Claude Code, o diretório temporário, o arquivo
+//! do gasto e o programa compilado da branch moram fora do projeto, e o
+//! carimbo de versão é o do programa que roda, não o do projeto. O [`Check`]
+//! os lê uma vez — e solta a compilação que falta, que é o único gesto dele
+//! — e os entrega a [`session_start_core`],
 //! que decide: um teste que monta um projeto temporário entrega "nada", e a
 //! máquina de quem roda a suíte nunca entra num veredito.
 //!
@@ -76,7 +78,6 @@
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::domain::spec_state::SpecState;
 use mustard_core::platform::error::Error;
-use mustard_core::platform::git;
 use mustard_core::platform::i18n::{translate, Locale};
 use std::path::Path;
 
@@ -84,6 +85,7 @@ use crate::commands::maint::scratch_gc::{human_bytes, survey, ScratchRoots};
 use crate::commands::review::pr_door::{merged_elsewhere, MergedElsewhere};
 use crate::hooks::session::injectables;
 use crate::shared::branch_state::merged_by_another;
+use crate::shared::development_build::{gap, start_in_background, Gap, Launch};
 
 /// O teto do texto que o início da sessão coloca: 3 kB. O bloco de retomada
 /// cabe nele sozinho.
@@ -116,12 +118,23 @@ struct Probe<'a> {
     /// Os textos declarados, lidos uma vez antes dos avisos: o bloco de
     /// retomada precisa saber quanto lugar eles tomam.
     declared: Option<&'a str>,
-    /// O carimbo de versão do programa que roda o gancho, quando a máquina o
-    /// deu: `<versão> (build N, g<commit>[-dirty] <data>)`.
-    hook_stamp: Option<&'a str>,
+    /// O programa compilado da branch do Mustard, quando falta ou está atrás
+    /// do commit atual, e o que foi feito a respeito.
+    build: Option<&'a DevelopmentBuild>,
     /// A máquina tem onde guardar o gasto: o comando do gasto não recusa por
     /// falta de pasta pessoal.
     spend: bool,
+}
+
+/// O programa compilado da branch do Mustard que falta ou está atrás do
+/// commit atual, o que foi feito a respeito e o programa que a sessão roda
+/// enquanto isso.
+struct DevelopmentBuild {
+    gap: Gap,
+    /// O que aconteceu com a compilação pedida em segundo plano.
+    launch: Launch,
+    /// O carimbo de versão do programa que roda esta sessão agora.
+    running: String,
 }
 
 /// Um aviso do início da sessão: o nome, o texto — que só existe quando a
@@ -145,23 +158,26 @@ const NOTICES: &[Notice] = &[
     Notice { name: "landed", text: landed_notice, cedes: None },
     Notice { name: "merged", text: merged_notice, cedes: Some(5) },
     Notice { name: "disk", text: disk_notice, cedes: Some(3) },
-    Notice { name: "old_hook", text: old_hook_notice, cedes: Some(2) },
+    Notice { name: "development_build", text: development_build_notice, cedes: Some(2) },
     Notice { name: "version", text: version_notice, cedes: Some(1) },
     Notice { name: "stuck", text: stuck_notice, cedes: Some(0) },
 ];
 
 impl Check for SessionStartInject {
-    /// Lê a máquina — o registro de plugins, o diretório temporário, o carimbo
-    /// deste programa e a pasta do gasto — e entrega a leitura a
-    /// [`session_start_core`], que decide.
+    /// Lê a máquina — o registro de plugins, o diretório temporário, o
+    /// programa compilado da branch e a pasta do gasto — e entrega a leitura
+    /// a [`session_start_core`], que decide.
     fn evaluate(&self, input: &HookInput, ctx: &Ctx) -> Result<Verdict, Error> {
         let scratch = ScratchProbe::from_env(input);
+        let build = (ctx.trigger == Some(Trigger::SessionStart))
+            .then(|| development_build(Path::new(&ctx.project_dir_or_cwd(input))))
+            .flatten();
         session_start_core(
             input,
             ctx,
             mustard_core::installed_harness_version().as_deref(),
             Some(&scratch),
-            Some(env!("MUSTARD_VERSION_FULL")),
+            build.as_ref(),
             mustard_core::io::spend::machine_dir().is_some(),
         )
     }
@@ -169,8 +185,8 @@ impl Check for SessionStartInject {
 
 /// A metade que decide, com as leituras da máquina recebidas: `installed` é
 /// a versão que o registro de plugins dá como instalada, `scratch` a
-/// varredura das cópias descartáveis, `hook_stamp` o carimbo do programa que
-/// roda o gancho e `spend` se a máquina tem onde guardar o gasto. `None` nas
+/// varredura das cópias descartáveis, `build` o programa compilado da branch
+/// que falta ou está atrás e `spend` se a máquina tem onde guardar o gasto. `None` nas
 /// três primeiras e `false` na última — o que todo teste que não fala delas
 /// entrega — calam os avisos que dependem delas.
 fn session_start_core(
@@ -178,7 +194,7 @@ fn session_start_core(
     ctx: &Ctx,
     installed: Option<&str>,
     scratch: Option<&ScratchProbe>,
-    hook_stamp: Option<&str>,
+    build: Option<&DevelopmentBuild>,
     spend: bool,
 ) -> Result<Verdict, Error> {
     if ctx.trigger != Some(Trigger::SessionStart) {
@@ -207,7 +223,7 @@ fn session_start_core(
         scratch,
         landing: landing.as_ref(),
         declared: declared.as_deref(),
-        hook_stamp,
+        build,
         spend,
     };
     let shown = within_cap(NOTICES.iter().filter_map(|notice| (notice.text)(&probe).map(|text| (notice, text))).collect());
@@ -469,72 +485,38 @@ fn disk_notice(probe: &Probe<'_>) -> Option<String> {
     )
 }
 
-/// O gancho velho: o programa que roda os ganchos é de um commit anterior ao
-/// da base do projeto, e a base mudou código depois dele. Só no código-fonte
-/// do Mustard: em qualquer outro projeto, sem git ou com carimbo sem commit,
-/// nada. A versão não entra aqui, porque o aviso da versão já a cobre.
-fn old_hook_notice(probe: &Probe<'_>) -> Option<String> {
-    old_hook(probe.root, probe.hook_stamp?, probe.lang)
+/// O programa compilado da branch do Mustard, só no código-fonte dele: o que
+/// a sessão roda é o compilado da branch, e ele falta ou está atrás do commit
+/// atual. O aviso diz qual programa a sessão roda até a compilação acabar — o
+/// instalado, se o compilado falta; o compilado anterior, se ele está atrás —
+/// e o que aconteceu com a compilação pedida em segundo plano. `None` fora do
+/// código-fonte do Mustard e com o compilado em dia.
+fn development_build_notice(probe: &Probe<'_>) -> Option<String> {
+    let build = probe.build?;
+    let progress = translate(
+        match build.launch {
+            Launch::Started => "session.build.started",
+            Launch::Running => "session.build.in_progress",
+            Launch::Failed => "session.build.not_started",
+        },
+        probe.lang,
+    );
+    let text = match &build.gap.compiled {
+        None => translate("session.build.missing", probe.lang).replace("{running}", &build.running),
+        Some(compiled) => translate("session.build.behind", probe.lang).replace("{compiled}", compiled),
+    };
+    Some(text.replace("{head}", &build.gap.head).replace("{progress}", progress))
 }
 
-/// Os caminhos de produto: o que entra no programa do gancho ou no que o
-/// instala.
-const PRODUCT_DIRS: &[&str] = &["apps/", "packages/", "plugin/", "scripts/"];
-
-/// Quantos dígitos tem, no mínimo, o commit que o carimbo cita.
-const MIN_COMMIT_DIGITS: usize = 7;
-
-/// O commit do carimbo de versão — `<versão> (build N, g<commit>[-dirty]
-/// <data>)` —, ou `None` no carimbo de uma compilação sem git, que traz só a
-/// versão.
-fn stamp_commit(stamp: &str) -> Option<&str> {
-    let (_, after) = stamp.split_once(", g")?;
-    let end = after.find(|c: char| !c.is_ascii_hexdigit()).unwrap_or(after.len());
-    (end >= MIN_COMMIT_DIGITS).then(|| &after[..end])
-}
-
-/// O projeto é o código-fonte do Mustard: o `Cargo.toml` da raiz lista os dois
-/// pacotes do programa e o script que o instala existe. Pelos arquivos, e não
-/// pelo nome da pasta.
-fn is_mustard_source(root: &Path) -> bool {
-    root.join("scripts/dev-install.sh").is_file()
-        && mustard_core::io::fs::read_to_string(root.join("Cargo.toml"))
-            .is_ok_and(|manifest| ["\"apps/rt\"", "\"packages/core\""].iter().all(|member| manifest.contains(member)))
-}
-
-/// O caminho de código de produto: sob uma pasta de [`PRODUCT_DIRS`], fora os
-/// documentos, as pastas `docs` e os testes das pastas `tests`.
-fn is_product_file(path: &str) -> bool {
-    PRODUCT_DIRS.iter().any(|dir| path.starts_with(dir))
-        && !path.ends_with(".md")
-        && !path.split('/').any(|part| matches!(part, "tests" | "docs"))
-}
-
-/// O texto do gancho velho: o commit do carimbo existe no repositório e é
-/// ancestral da base que o projeto declara, e `git diff` entre os dois lista
-/// ao menos um arquivo de produto. Cada falha do git cala o aviso: sem prova,
-/// nada. Três comandos locais e curtos, e o git do Mustard nunca pergunta nada
-/// nem toma trava de leitura.
-fn old_hook(root: &Path, stamp: &str, lang: Locale) -> Option<String> {
-    let hook = stamp_commit(stamp)?;
-    if !is_mustard_source(root) {
-        return None;
-    }
-    let base = crate::shared::context::config::project_config_cached(root).git.primary_base()?;
-    let base_ref = format!("refs/heads/{base}");
-    let tip = git::run(root, &["rev-parse", "--verify", "--quiet", "--short=12", &format!("{base_ref}^{{commit}}")]).out()?;
-    if !git::run(root, &["merge-base", "--is-ancestor", hook, &base_ref]).ok {
-        return None;
-    }
-    let changed = git::run(root, &["diff", "--name-only", "-z", &format!("{hook}..{base_ref}")]).out()?;
-    let count = changed.split('\0').filter(|path| is_product_file(path)).count();
-    (count > 0).then(|| {
-        translate("session.old_hook", lang)
-            .replace("{hook}", hook)
-            .replace("{base}", &base)
-            .replace("{tip}", &tip)
-            .replace("{count}", &count.to_string())
-    })
+/// Lê o programa compilado do repositório do Mustard em que `root` está e, se
+/// ele falta ou está atrás do commit atual, solta a compilação em segundo
+/// plano — sem esperar, e só uma de cada vez. `None` fora do código-fonte do
+/// Mustard e com o compilado em dia.
+fn development_build(root: &Path) -> Option<DevelopmentBuild> {
+    let main = mustard_core::mustard_checkout(root)?;
+    let gap = gap(&main)?;
+    let launch = start_in_background(&main);
+    Some(DevelopmentBuild { gap, launch, running: env!("MUSTARD_VERSION_FULL").to_string() })
 }
 
 /// A versão velha do Mustard: a gravada no projeto difere da que roda, o
@@ -659,8 +641,8 @@ mod tests {
     /// A varredura do temporário que um teste entrega: nenhuma.
     const NO_SCRATCH: Option<&ScratchProbe> = None;
 
-    /// O carimbo do programa do gancho que um teste entrega: nenhum.
-    const NO_STAMP: Option<&str> = None;
+    /// O programa compilado que um teste entrega: em dia, sem nada a dizer.
+    const NO_BUILD: Option<&DevelopmentBuild> = None;
 
     /// A máquina sem onde guardar o gasto, o que todo teste que não fala dele
     /// entrega: o aviso do gasto cala por construção, em qualquer máquina.
@@ -680,7 +662,7 @@ mod tests {
     }
 
     fn context_of(root: &Path, input: &HookInput, installed: Option<&str>, scratch: Option<&ScratchProbe>) -> String {
-        match session_start_core(input, &ctx(root), installed, scratch, NO_STAMP, NO_SPEND).unwrap() {
+        match session_start_core(input, &ctx(root), installed, scratch, NO_BUILD, NO_SPEND).unwrap() {
             Verdict::Inject { context } => context,
             _ => String::new(),
         }
@@ -706,8 +688,8 @@ mod tests {
         assert_eq!(
             names,
             [
-                "declared", "resume", "project_page", "spend", "pending", "landed", "merged", "disk", "old_hook",
-                "version", "stuck"
+                "declared", "resume", "project_page", "spend", "pending", "landed", "merged", "disk",
+                "development_build", "version", "stuck"
             ]
         );
         let mut ceding: Vec<(u8, &str)> = NOTICES.iter().filter_map(|n| n.cedes.map(|turn| (turn, n.name))).collect();
@@ -715,7 +697,7 @@ mod tests {
         let order: Vec<&str> = ceding.into_iter().map(|(_, name)| name).collect();
         assert_eq!(
             order,
-            ["stuck", "version", "old_hook", "disk", "spend", "merged", "pending", "project_page", "declared"]
+            ["stuck", "version", "development_build", "disk", "spend", "merged", "pending", "project_page", "declared"]
         );
         let kept: Vec<&str> = NOTICES.iter().filter(|n| n.cedes.is_none()).map(|n| n.name).collect();
         assert_eq!(kept, ["resume", "landed"]);
@@ -771,7 +753,7 @@ mod tests {
             &ctx(dir.path()),
             NO_REGISTRY,
             NO_SCRATCH,
-            NO_STAMP,
+            NO_BUILD,
             NO_SPEND,
         );
         assert_eq!(verdict.unwrap(), Verdict::Allow);
@@ -780,7 +762,7 @@ mod tests {
     /// O início da sessão de `root` numa máquina com onde guardar o gasto,
     /// vindo de `source` (`startup`, `resume`, `clear`, `compact`).
     fn context_with_spend(root: &Path, source: &str) -> String {
-        let verdict = session_start_core(&session_input("s-gasto", source), &ctx(root), NO_REGISTRY, NO_SCRATCH, NO_STAMP, true);
+        let verdict = session_start_core(&session_input("s-gasto", source), &ctx(root), NO_REGISTRY, NO_SCRATCH, NO_BUILD, true);
         match verdict.unwrap() {
             Verdict::Inject { context } => context,
             _ => String::new(),
@@ -804,7 +786,7 @@ mod tests {
             }
             assert!(!context_with_spend(root, "compact").contains(order), "{lang}: a compaction is the same session");
 
-            let silent = session_start_core(&session_input("s-gasto", "startup"), &ctx(root), NO_REGISTRY, NO_SCRATCH, NO_STAMP, false);
+            let silent = session_start_core(&session_input("s-gasto", "startup"), &ctx(root), NO_REGISTRY, NO_SCRATCH, NO_BUILD, false);
             assert!(!matches!(silent.unwrap(), Verdict::Inject { context } if context.contains(order)), "{lang}: no machine folder, no order");
 
             let loose = tempdir().unwrap();
@@ -1008,7 +990,7 @@ mod tests {
                 spend: NO_SPEND,
                 landing: None,
                 declared: declared.as_deref(),
-                hook_stamp: NO_STAMP,
+                build: NO_BUILD,
             };
             let all: Vec<String> = NOTICES.iter().filter_map(|notice| (notice.text)(&probe)).collect();
             assert!(all.iter().any(|text| text.contains("0.0.1-velha")), "{lang:?}: the old version speaks: {all:?}");
@@ -1136,7 +1118,7 @@ mod tests {
         let ctx = ctx(root);
         let input = session_input("s-stale-map", "startup");
         assert!(
-            session_start_core(&input, &ctx, NO_REGISTRY, NO_SCRATCH, NO_STAMP, NO_SPEND).is_ok(),
+            session_start_core(&input, &ctx, NO_REGISTRY, NO_SCRATCH, NO_BUILD, NO_SPEND).is_ok(),
             "a sessão não trava com o mapa velho"
         );
     }
@@ -1259,7 +1241,7 @@ mod tests {
             spend: NO_SPEND,
             landing: None,
             declared: None,
-            hook_stamp: NO_STAMP,
+            build: NO_BUILD,
         };
 
         let held = git_step_lock(root).unwrap();
@@ -1289,217 +1271,99 @@ mod tests {
         assert!(!outside.path().join(".claude").exists(), "no lock folder in a project without the Mustard");
     }
 
-    /// O início da sessão de `root` com `stamp` como carimbo do programa do
-    /// gancho.
-    fn context_with_stamp(root: &Path, source: &str, stamp: Option<&str>) -> String {
-        match session_start_core(&session_input("s-hook", source), &ctx(root), NO_REGISTRY, NO_SCRATCH, stamp, NO_SPEND).unwrap() {
-            Verdict::Inject { context } => context,
-            _ => String::new(),
-        }
-    }
-
-    /// A saída de um comando do git em `dir`, aparada.
-    fn git_out(dir: &Path, args: &[&str]) -> String {
-        let out = std::process::Command::new("git").args(args).current_dir(dir).output().expect("git on PATH");
-        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
-        String::from_utf8_lossy(&out.stdout).trim().to_string()
-    }
-
-    /// Grava `rel` em `root`, comita só ele e devolve o commit de 12 dígitos.
-    fn commit_file(root: &Path, rel: &str, body: &str) -> String {
-        let path = root.join(rel);
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, body).unwrap();
-        git(root, &["add", "-f", rel]);
-        git(root, &["commit", "-q", "-m", rel]);
-        git_out(root, &["rev-parse", "--short=12", "HEAD"])
-    }
-
-    /// O código-fonte do Mustard em miniatura, num repositório git com a base
-    /// `dev` que `config` declara: o `Cargo.toml` com os dois pacotes do
-    /// programa e o script que o instala. O último commit é o do programa do
-    /// gancho, e é ele que o carimbo cita; devolve o commit.
-    fn mustard_source(root: &Path, config: serde_json::Value) -> String {
-        git(root, &["init", "-q", "."]);
-        git(root, &["config", "user.email", "t@t"]);
-        git(root, &["config", "user.name", "t"]);
-        git(root, &["config", "commit.gpgsign", "false"]);
-        git(root, &["checkout", "-q", "-b", "dev"]);
-        std::fs::write(root.join("mustard.json"), config.to_string()).unwrap();
-        std::fs::write(root.join("Cargo.toml"), "[workspace]\nmembers = [\n    \"apps/rt\",\n    \"packages/core\",\n]\n")
-            .unwrap();
-        std::fs::create_dir_all(root.join("scripts")).unwrap();
-        std::fs::write(root.join("scripts/dev-install.sh"), "#!/bin/sh\n").unwrap();
-        git(root, &["add", "-f", "mustard.json", "Cargo.toml", "scripts/dev-install.sh"]);
-        git(root, &["commit", "-q", "-m", "seed"]);
-        commit_file(root, "apps/rt/src/main.rs", "fn main() {}\n")
-    }
-
-    /// A configuração de um projeto na versão que roda, com a base `dev`, nos
-    /// textos de `lang`: os avisos de versão calam.
-    fn dev_config(lang: Locale) -> serde_json::Value {
-        json!({
-            "version": mustard_core::harness_version(),
-            "language": {"text": lang.as_str()},
-            "git": {"flow": {"*": "dev"}},
-        })
-    }
-
-    /// O carimbo de versão que o programa de `commit` leva.
-    fn stamp_of(commit: &str) -> String {
-        format!("0.2.4 (build 7, g{commit} 2026-09-30)")
-    }
-
-    /// O carimbo de versão traz o commit do programa, com ou sem a marca de
-    /// código não comitado, e não traz nada na compilação sem git, que só
-    /// leva a versão.
+    /// O programa compilado que falta ou está atrás, a versão velha e os
+    /// processos presos: o aviso do programa compilado cede depois da versão e
+    /// dos processos e antes do disco. Quando o todo passa do teto, saem os
+    /// processos, a versão e então o programa compilado; quando só os dois
+    /// primeiros bastam, ele fica.
     #[test]
-    fn the_stamp_carries_the_commit_of_the_program_when_it_has_one() {
-        assert_eq!(stamp_commit("0.2.4 (build 12, g1a2b3c4d5e6f 2026-09-30)"), Some("1a2b3c4d5e6f"));
-        assert_eq!(stamp_commit("0.2.4 (build dev, g1a2b3c4d5e6f-dirty 2026-09-30)"), Some("1a2b3c4d5e6f"));
-        assert_eq!(stamp_commit("0.2.4"), None, "a build with no git carries the version alone");
-        assert_eq!(stamp_commit("0.2.4 (build 12, g12 2026-09-30)"), None, "too short to name a commit");
-        assert_eq!(stamp_commit("0.2.4 (build 12, gzzzzzzzzzzz 2026-09-30)"), None, "not a commit");
-    }
-
-    /// Conta como código de produto o arquivo sob as pastas do programa, fora
-    /// os documentos, as pastas de documentação e os testes.
-    #[test]
-    fn only_product_files_count_as_changed_code() {
-        for product in ["apps/rt/src/main.rs", "packages/core/src/lib.rs", "plugin/hooks/hooks.json", "scripts/dev-install.sh"] {
-            assert!(is_product_file(product), "{product}");
-        }
-        for other in [
-            "README.md",
-            "docs/guia.txt",
-            "apps/rt/README.md",
-            "apps/rt/tests/run.rs",
-            "packages/core/tests/fixtures/a.json",
-            "packages/core/docs/nota.txt",
-            "packaging/linux/build-deb.sh",
-            "Cargo.toml",
-        ] {
-            assert!(!is_product_file(other), "{other}");
-        }
-    }
-
-    /// O gancho mais velho que a base, com código de produto mudado depois
-    /// dele, vira um aviso que nomeia o commit do gancho, o da base, quantos
-    /// arquivos de código mudaram — os documentos e os testes não contam — e
-    /// o script que instala. Nos dois idiomas.
-    #[test]
-    fn a_hook_older_than_the_base_says_so_with_both_commits_and_the_install_script() {
-        for lang in [Locale::PtBr, Locale::EnUs] {
-            let dir = tempdir().unwrap();
-            let root = dir.path();
-            let hook = mustard_source(root, dev_config(lang));
-            commit_file(root, "packages/core/src/lib.rs", "pub fn a() {}\n");
-            commit_file(root, "packages/core/tests/a.rs", "// um teste\n");
-            commit_file(root, "README.md", "# nota\n");
-            let tip = commit_file(root, "apps/rt/src/main.rs", "fn main() { println!(\"novo\"); }\n");
-
-            let context = context_with_stamp(root, "startup", Some(&stamp_of(&hook)));
-            let expected = translate("session.old_hook", lang)
-                .replace("{hook}", &hook)
-                .replace("{base}", "dev")
-                .replace("{tip}", &tip)
-                .replace("{count}", "2");
-            assert!(context.contains(&expected), "{lang:?}: the notice names both commits and the count: {context}");
-            assert!(context.contains("scripts/dev-install.sh"), "{lang:?}: {context}");
-            assert!(context.len() <= MAX_BYTES, "{lang:?}: {} bytes", context.len());
-        }
-    }
-
-    /// O aviso do gancho velho cala quando nada o prova: o gancho está na
-    /// ponta da base, a base só mudou documento e teste, o carimbo não traz
-    /// commit, o commit é desconhecido do repositório ou está à frente da
-    /// base, o projeto não declara base, não é o código-fonte do Mustard ou
-    /// não tem git. Com código de produto mudado depois do gancho, o mesmo
-    /// projeto avisa.
-    #[test]
-    fn the_old_hook_notice_stays_quiet_when_nothing_proves_it() {
-        let says = |root: &Path, stamp: &str| {
-            context_with_stamp(root, "startup", Some(stamp)).contains("scripts/dev-install.sh")
-        };
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let hook = mustard_source(root, dev_config(Locale::PtBr));
-        let stamp = stamp_of(&hook);
-        assert!(!says(root, &stamp), "the hook is at the tip of the base");
-
-        commit_file(root, "docs/guia.md", "# guia\n");
-        commit_file(root, "apps/rt/README.md", "# rt\n");
-        commit_file(root, "apps/rt/tests/run.rs", "// teste\n");
-        assert!(!says(root, &stamp), "the base changed only documents and tests");
-
-        git(root, &["checkout", "-q", "-b", "ahead", &hook]);
-        let ahead = commit_file(root, "apps/rt/src/ahead.rs", "fn ahead() {}\n");
-        git(root, &["checkout", "-q", "dev"]);
-        commit_file(root, "packages/core/src/lib.rs", "pub fn a() {}\n");
-        assert!(says(root, &stamp), "the same project, with product code changed after the hook, says it");
-        assert!(!says(root, "0.2.4"), "a stamp with no commit");
-        assert!(!says(root, &stamp_of("0123456789ab")), "a commit the repository does not know");
-        assert!(!says(root, &stamp_of(&ahead)), "a commit that is not behind the base");
-
-        std::fs::remove_file(root.join("scripts/dev-install.sh")).unwrap();
-        assert!(!says(root, &stamp), "no install script: not the Mustard source");
-
-        let other = tempdir().unwrap();
-        let unbased = mustard_source(other.path(), json!({"version": mustard_core::harness_version()}));
-        commit_file(other.path(), "packages/core/src/lib.rs", "pub fn a() {}\n");
-        assert!(!says(other.path(), &stamp_of(&unbased)), "no base declared");
-
-        let bare = tempdir().unwrap();
-        std::fs::create_dir_all(bare.path().join("scripts")).unwrap();
-        std::fs::write(bare.path().join("scripts/dev-install.sh"), "#!/bin/sh\n").unwrap();
-        std::fs::write(bare.path().join("Cargo.toml"), "[workspace]\nmembers = [\"apps/rt\", \"packages/core\"]\n").unwrap();
-        std::fs::write(bare.path().join("mustard.json"), dev_config(Locale::PtBr).to_string()).unwrap();
-        assert!(!says(bare.path(), &stamp), "no git");
-    }
-
-    /// Com o gancho velho, a versão velha e os processos presos, o aviso do
-    /// gancho cede depois da versão e dos processos e antes do disco: quando
-    /// o todo passa do teto, saem os processos, a versão e então o gancho; e
-    /// quando só os dois primeiros bastam, o gancho fica.
-    #[test]
-    fn the_old_hook_notice_gives_way_after_the_version_and_before_the_disk() {
+    fn the_development_build_notice_gives_way_after_the_version_and_before_the_disk() {
         let lang = Locale::PtBr;
         let resume = (notice("resume"), "Retomada: spec uma-spec, fase running; último passo: round; próximo: onda 12.".to_string());
         let disk = (notice("disk"), translate("scratch.residue.notice", lang).replace("{total}", "12.3 GiB").replace("{count}", "14"));
-        let old_hook = (
-            notice("old_hook"),
-            translate("session.old_hook", lang)
-                .replace("{hook}", "1a2b3c4d5e6f")
-                .replace("{base}", "dev")
-                .replace("{tip}", "6f5e4d3c2b1a")
-                .replace("{count}", "12"),
+        let build = (
+            notice("development_build"),
+            development_build_text(&DevelopmentBuild { gap: Gap { compiled: Some("1a2b3c4d5e6f".into()), head: "6f5e4d3c2b1a".into() }, launch: Launch::Started, running: "0.2.4".into() }, lang),
         );
         let version = (notice("version"), translate("session.version.behind", lang).replace("{running}", "0.10.100").replace("{plugin}", "0.10.99"));
         let stuck = (notice("stuck"), "Encerrei o processo 4242, que ficou preso.".to_string());
         let size = |texts: &[&str]| texts.iter().map(|text| text.len()).sum::<usize>() + SEPARATOR_BYTES * (texts.len() - 1);
-        assert!(size(&[&old_hook.1]) < 400, "the notice fits the cap with room to spare");
+        assert!(build.1.contains("6f5e4d3c2b1a") && build.1.contains("1a2b3c4d5e6f"), "the notice names both commits: {}", build.1);
+        assert!(size(&[&build.1]) < 500, "the notice fits the cap with room to spare");
 
         let tight = "d".repeat(MAX_BYTES - size(&[&resume.1, &disk.1]) - SEPARATOR_BYTES);
         let kept = texts_within_cap(vec![
             (notice("declared"), tight.clone()),
             resume.clone(),
             disk.clone(),
-            old_hook.clone(),
+            build.clone(),
             version.clone(),
             stuck.clone(),
         ]);
-        assert_eq!(kept, vec![tight, resume.1.clone(), disk.1.clone()], "the processes, the version and the hook went, the disk stayed");
+        assert_eq!(kept, vec![tight, resume.1.clone(), disk.1.clone()], "the processes, the version and the build went, the disk stayed");
 
-        let roomy = "d".repeat(MAX_BYTES - size(&[&resume.1, &disk.1, &old_hook.1]) - SEPARATOR_BYTES);
+        let roomy = "d".repeat(MAX_BYTES - size(&[&resume.1, &disk.1, &build.1]) - SEPARATOR_BYTES);
         let kept = texts_within_cap(vec![
             (notice("declared"), roomy.clone()),
             resume.clone(),
             disk.clone(),
-            old_hook.clone(),
+            build.clone(),
             version,
             stuck,
         ]);
-        assert_eq!(kept, vec![roomy, resume.1, disk.1, old_hook.1], "the processes and the version were enough, the hook stayed");
+        assert_eq!(kept, vec![roomy, resume.1, disk.1, build.1], "the processes and the version were enough, the build stayed");
+    }
+
+    /// O texto do aviso do programa compilado que `build` gera, pelo caminho
+    /// do início da sessão, nos textos de `lang`.
+    fn development_build_text(build: &DevelopmentBuild, lang: Locale) -> String {
+        let dir = tempdir().unwrap();
+        let config = json!({"version": mustard_core::harness_version(), "language": {"text": lang.as_str()}});
+        std::fs::write(dir.path().join("mustard.json"), config.to_string()).unwrap();
+        let input = session_input("s-build", "startup");
+        match session_start_core(&input, &ctx(dir.path()), NO_REGISTRY, NO_SCRATCH, Some(build), NO_SPEND).unwrap() {
+            Verdict::Inject { context } => context,
+            _ => String::new(),
+        }
+    }
+
+    /// Com o programa compilado faltando, o aviso nomeia o commit atual e o
+    /// programa instalado que a sessão roda até a compilação acabar; com ele
+    /// atrás, nomeia os dois commits e diz que a sessão roda o compilado
+    /// anterior. Cada desfecho da compilação em segundo plano tem a própria
+    /// frase, nos dois idiomas, e o aviso cabe no teto.
+    #[test]
+    fn the_development_build_notice_names_the_program_the_session_runs_meanwhile() {
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let gap_of = |compiled: Option<&str>| Gap { compiled: compiled.map(str::to_string), head: "6f5e4d3c2b1a".into() };
+            let build = |compiled: Option<&str>, launch| DevelopmentBuild {
+                gap: gap_of(compiled),
+                launch,
+                running: "0.2.4 (build dev, g1111111111aa 2026-10-01)".into(),
+            };
+            let progress = |key: &str| translate(key, lang).to_string();
+
+            let missing = development_build_text(&build(None, Launch::Started), lang);
+            assert!(missing.contains("6f5e4d3c2b1a"), "{lang:?}: the head commit: {missing}");
+            assert!(missing.contains("0.2.4 (build dev, g1111111111aa 2026-10-01)"), "{lang:?}: the installed program: {missing}");
+            assert!(missing.contains(&progress("session.build.started")), "{lang:?}: {missing}");
+
+            let behind = development_build_text(&build(Some("1a2b3c4d5e6f"), Launch::Running), lang);
+            assert!(behind.contains("1a2b3c4d5e6f") && behind.contains("6f5e4d3c2b1a"), "{lang:?}: both commits: {behind}");
+            assert!(behind.contains(&progress("session.build.in_progress")), "{lang:?}: {behind}");
+            assert!(!behind.contains("0.2.4"), "{lang:?}: the session runs the previous compiled program, not the installed one: {behind}");
+
+            let failed = development_build_text(&build(None, Launch::Failed), lang);
+            assert!(failed.contains(&progress("session.build.not_started")), "{lang:?}: {failed}");
+            assert!(failed.contains("cargo build --release --locked"), "{lang:?}: the command to run by hand: {failed}");
+            for text in [&missing, &behind, &failed] {
+                assert!(!text.contains('{'), "{lang:?}: a slot stayed empty: {text}");
+                assert!(text.len() <= MAX_BYTES, "{lang:?}: {} bytes", text.len());
+            }
+            assert_ne!(missing, development_build_text(&build(None, Launch::Started), if lang == Locale::PtBr { Locale::EnUs } else { Locale::PtBr }), "the two languages differ");
+        }
+        let quiet = session_start_core(&session_input("s-build", "startup"), &ctx(tempdir().unwrap().path()), NO_REGISTRY, NO_SCRATCH, NO_BUILD, NO_SPEND).unwrap();
+        assert_eq!(quiet, Verdict::Allow, "with the compiled program up to date, nothing is said");
     }
 
     /// Um projeto na sessão `s-room`, com o texto declarado `declared` no

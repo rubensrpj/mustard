@@ -168,18 +168,38 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "[Mustard] The Claude Code plugin is on Mustard {plugin}, and the running binary is \
              {running}. Suggest `/mustard:upsert` and reopening Claude Code."
         }
-        // O gancho velho, só no código-fonte do Mustard: `{hook}` e `{tip}` são
-        // commits, `{base}` o nome da base e `{count}` quantos arquivos de código
-        // mudaram entre os dois.
-        ("session.old_hook", Locale::PtBr) => {
-            "[Mustard] O programa dos ganchos é do commit {hook}. A base {base} já está no commit \
-             {tip}, com {count} arquivo(s) de código mudado(s) depois dele. Rode \
-             `scripts/dev-install.sh` e reabra a sessão."
+        // O programa compilado da branch do Mustard, só no código-fonte dele,
+        // quando falta ou está atrás do commit: `{running}` é o programa que
+        // roda a sessão até a compilação acabar, `{compiled}` e `{head}` são
+        // commits, `{progress}` o que aconteceu com a compilação em segundo
+        // plano (um dos três textos abaixo).
+        ("session.build.missing", Locale::PtBr) => {
+            "[Mustard] O programa compilado da branch ainda não existe (commit {head}). {progress} \
+             Até ela acabar, esta sessão roda o programa instalado ({running})."
         }
-        ("session.old_hook", Locale::EnUs) => {
-            "[Mustard] The hooks program is from commit {hook}. The base {base} is already at commit \
-             {tip}, with {count} code file(s) changed after it. Run `scripts/dev-install.sh` and \
-             reopen the session."
+        ("session.build.missing", Locale::EnUs) => {
+            "[Mustard] The branch's compiled program does not exist yet (commit {head}). {progress} \
+             Until it finishes, this session runs the installed program ({running})."
+        }
+        ("session.build.behind", Locale::PtBr) => {
+            "[Mustard] O programa compilado da branch é do commit {compiled}, atrás do commit {head}. \
+             {progress} Até ela acabar, esta sessão roda o compilado anterior ({compiled})."
+        }
+        ("session.build.behind", Locale::EnUs) => {
+            "[Mustard] The branch's compiled program is from commit {compiled}, behind commit {head}. \
+             {progress} Until it finishes, this session runs the previous compiled program ({compiled})."
+        }
+        ("session.build.started", Locale::PtBr) => "A compilação foi solta em segundo plano.",
+        ("session.build.started", Locale::EnUs) => "The build was started in the background.",
+        ("session.build.in_progress", Locale::PtBr) => "Outra compilação já está em andamento.",
+        ("session.build.in_progress", Locale::EnUs) => "Another build is already running.",
+        ("session.build.not_started", Locale::PtBr) => {
+            "A compilação não pôde ser iniciada em segundo plano: rode \
+             `cargo build --release --locked -p mustard-rt -p scan -p mustard-cli` no repositório."
+        }
+        ("session.build.not_started", Locale::EnUs) => {
+            "The build could not be started in the background: run \
+             `cargo build --release --locked -p mustard-rt -p scan -p mustard-cli` in the repository."
         }
 
         // Aviso de disco do início da sessão: `{total}` e `{count}` são
@@ -225,8 +245,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("session.rs"),
             super::PREFIXES,
-            24,
-            0xd48b_aa1a_54cd_f681,
+            28,
+            0xe01c_2fbb_ce37_638e,
         );
     }
 

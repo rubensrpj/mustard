@@ -71,7 +71,7 @@ pub use platform::git_exclude::{
 // the SAME registry this crate does: a second copy drifts the day the host moves
 // the file, and the caller degrades to a permanent silent skip no test can see.
 pub use platform::harness::{
-    claude_config_dir, harness_version, installed_harness_version, installed_harness_version_from,
+    claude_config_dir, development_rt, development_rt_in, harness_version, installed_harness_version, installed_harness_version_from,
     installed_plugin_rt, installed_plugin_rt_from, is_behind, newer_installed_rt,
     newer_installed_rt_from, INSTALLED_PLUGINS, PLUGIN_NAME,
 };
@@ -140,7 +140,7 @@ pub use io::claude_paths::{ClaudePaths, ClaudePathsError, SpecPaths, WavePaths};
 
 // Canonical workspace-root resolver — single source of truth for "the
 // directory that contains `mustard.json` + `.claude/`". See `workspace.rs`.
-pub use io::workspace::{workspace_root, WorkspaceError};
+pub use io::workspace::{mustard_checkout, workspace_root, WorkspaceError};
 
 // Summary document — the versionable `.summary.json` artefact committed to
 // git alongside each spec. Re-exported at root so consumers can write

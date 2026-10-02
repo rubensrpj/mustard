@@ -123,6 +123,53 @@ pub fn newer_installed_rt_from(raw: &str, running: &str) -> Option<std::path::Pa
     is_behind(running, &plugin.version).then(|| plugin.rt_binary())
 }
 
+/// The file name of the `mustard-rt` binary on this platform.
+fn rt_file_name() -> &'static str {
+    if cfg!(windows) { "mustard-rt.exe" } else { "mustard-rt" }
+}
+
+/// The `mustard-rt` compiled from the Mustard source repository that `start`
+/// stands in — the program the session of the Mustard's own work should run —
+/// when `running`, the program answering now, may hand its call to it.
+///
+/// Only an INSTALLED program hands over: the plugin's binary, the system's. A
+/// program the repository itself builds never does — not the one under the
+/// `target` folder of the checkout, not the ones inside the separate copies of
+/// the waves, not the compiled program itself, and not any other cargo output
+/// folder, which is what `.rustc_info.json` at its root gives away. Otherwise
+/// `cargo test` would ask the compiled program, and test the wrong one.
+///
+/// `None` outside the Mustard repository, and while the compiled program is
+/// missing; the caller runs itself then. Never panics.
+#[must_use]
+pub fn development_rt(start: &std::path::Path, running: &std::path::Path) -> Option<std::path::PathBuf> {
+    let main = crate::io::workspace::mustard_checkout(start)?;
+    let build = crate::io::wave_prompt::development_build_dir(&main);
+    let own = [main.join("target"), crate::io::wave_prompt::copies_dir(&main), build.clone()];
+    development_rt_in(&build, &own, running)
+}
+
+/// The testable half of [`development_rt`]: the folder the compiled program
+/// lives in, the folders of the repository's own builds, and the running
+/// program in; the compiled program out, only when it is on disk and `running`
+/// is none of the repository's own.
+#[must_use]
+pub fn development_rt_in(
+    build: &std::path::Path,
+    own: &[std::path::PathBuf],
+    running: &std::path::Path,
+) -> Option<std::path::PathBuf> {
+    let program = build.join("release").join(rt_file_name());
+    if !program.is_file() {
+        return None;
+    }
+    let resolved = |path: &std::path::Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let running = resolved(running);
+    let in_own_folder = own.iter().any(|folder| running.starts_with(resolved(folder)));
+    let in_cargo_output = running.ancestors().skip(1).take(4).any(|folder| folder.join(".rustc_info.json").is_file());
+    (!in_own_folder && !in_cargo_output).then_some(program)
+}
+
 /// The `mustard-rt` inside the newest install the plugin registry records —
 /// whatever its version, and whether or not it is newer than this process.
 ///
@@ -181,8 +228,7 @@ impl InstalledPlugin {
     /// disk.
     #[must_use]
     pub fn rt_binary(&self) -> std::path::PathBuf {
-        let exe = if cfg!(windows) { "mustard-rt.exe" } else { "mustard-rt" };
-        self.dir.join("bin").join(exe)
+        self.dir.join("bin").join(rt_file_name())
     }
 }
 
@@ -271,7 +317,8 @@ fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
 /// dependência. A variável vazia vale como ausente: `None`, e quem chama cai
 /// no próprio plano B em vez de montar um caminho relativo à pasta em que o
 /// comando roda. A pasta de configuração do Claude Code, a pasta das cópias
-/// das ondas e o binário `mustard-rt` leem a pasta pessoal por aqui.
+/// das ondas, a pasta do programa compilado e o binário `mustard-rt` leem a
+/// pasta pessoal por aqui.
 #[must_use]
 pub fn home_dir() -> Option<std::path::PathBuf> {
     let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
@@ -532,14 +579,97 @@ mod tests {
         assert_eq!(installed_plugin_rt_in(home.path()), None);
     }
 
+    /// Um programa de mentira no caminho `at`, que cria as pastas.
+    fn touch(at: &std::path::Path) -> std::path::PathBuf {
+        std::fs::create_dir_all(at.parent().unwrap()).unwrap();
+        std::fs::write(at, b"programa").unwrap();
+        at.to_path_buf()
+    }
+
+    /// Só o programa instalado passa a chamada ao compilado: o instalado, onde
+    /// quer que esteja fora do repositório, passa; o que o próprio repositório
+    /// compila — a pasta `target` do checkout, uma cópia de onda, a pasta do
+    /// compilado e qualquer outra pasta de saída do cargo — nunca passa, para
+    /// o teste do cargo não provar o programa errado.
+    #[test]
+    fn only_an_installed_program_hands_over_to_the_compiled_one() {
+        let place = tempfile::tempdir().unwrap();
+        let root = place.path();
+        let main = root.join("projeto");
+        let build = root.join("cache").join("build").join("projeto-1");
+        let copies = root.join("cache").join("copias").join("projeto-1");
+        let own = [main.join("target"), copies.clone(), build.clone()];
+        let compiled = touch(&build.join("release").join(rt_file_name()));
+
+        let installed = touch(&root.join("plugin").join("bin").join(rt_file_name()));
+        assert_eq!(development_rt_in(&build, &own, &installed), Some(compiled.clone()), "the installed program hands over");
+
+        let mut refused: Vec<(&str, std::path::PathBuf)> = vec![
+            ("target of the checkout", touch(&main.join("target").join("debug").join(rt_file_name()))),
+            ("wave copy", touch(&copies.join("spec").join("a").join("target").join("debug").join(rt_file_name()))),
+            ("the compiled program itself", compiled.clone()),
+        ];
+        let elsewhere = root.join("saida-do-cargo");
+        touch(&elsewhere.join(".rustc_info.json"));
+        refused.push(("another cargo output folder", touch(&elsewhere.join("debug").join("deps").join("teste"))));
+        for (case, running) in refused {
+            assert_eq!(development_rt_in(&build, &own, &running), None, "{case} never hands over");
+        }
+    }
+
+    /// Sem o compilado em disco, ninguém passa a chamada: o programa que roda
+    /// responde por si.
+    #[test]
+    fn nothing_hands_over_while_the_compiled_program_is_missing() {
+        let place = tempfile::tempdir().unwrap();
+        let installed = touch(&place.path().join("plugin").join("bin").join(rt_file_name()));
+        let build = place.path().join("build");
+        assert_eq!(development_rt_in(&build, &[], &installed), None);
+        std::fs::create_dir_all(build.join("release").join(rt_file_name())).unwrap();
+        assert_eq!(development_rt_in(&build, &[], &installed), None, "a folder in its place is no program");
+    }
+
+    /// Apaga a pasta que o teste criou fora do que a `tempdir` limpa, ainda que
+    /// ele caia no meio.
+    struct Removed(std::path::PathBuf);
+
+    impl Drop for Removed {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Fora do repositório do Mustard, a pasta atual não leva a nenhum
+    /// compilado, mesmo para o programa instalado e com um compilado em disco
+    /// na pasta do projeto: um repositório que não declara o pacote
+    /// `mustard-rt` e uma pasta fora do git não passam nada.
+    #[test]
+    fn outside_the_mustard_repository_nothing_hands_over() {
+        let place = tempfile::tempdir().unwrap();
+        let installed = touch(&place.path().join("plugin").join("bin").join(rt_file_name()));
+        let project = place.path().join("outro-projeto");
+        std::fs::create_dir_all(project.join(".git")).unwrap();
+        let loose = place.path().join("solta");
+        std::fs::create_dir_all(&loose).unwrap();
+        let compiled_here = |folder: &std::path::Path| {
+            let build = crate::io::wave_prompt::development_build_dir(folder);
+            touch(&build.join("release").join(rt_file_name()));
+            Removed(build)
+        };
+        let _cleanup = (compiled_here(&project), compiled_here(&loose), compiled_here(place.path()));
+        assert_eq!(development_rt(&project, &installed), None);
+        assert_eq!(development_rt(&loose, &installed), None);
+        assert_eq!(development_rt(place.path(), &installed), None);
+    }
+
     /// A marca das linhas que o [`home_readers`] imprime.
     const HOME_MARK: &str = "leitura-da-pasta-pessoal";
 
     /// Não prova comportamento nenhum: é o programa que o teste abaixo roda
     /// com a pasta pessoal que ele escolhe. Rodado pela suíte, só passa.
     /// Imprime o que cada leitora da pasta pessoal respondeu — o ajudante, a
-    /// pasta de configuração do Claude Code, a pasta das cópias das ondas, as
-    /// pastas de ferramenta do executor da máquina e as pastas de fonte —, com
+    /// pasta de configuração do Claude Code, a pasta das cópias das ondas, a
+    /// pasta do programa compilado, as pastas de ferramenta do executor da máquina e as pastas de fonte —, com
     /// `-` no lugar da resposta vazia. Uma lista de pastas sai no formato do
     /// `PATH` do sistema.
     #[test]
@@ -556,6 +686,7 @@ mod tests {
         println!("{HOME_MARK} home={}", shown(home_dir()));
         println!("{HOME_MARK} config={}", shown(claude_config_dir()));
         println!("{HOME_MARK} copies={}", shown(Some(crate::io::wave_prompt::copies_dir(root.path()))));
+        println!("{HOME_MARK} build={}", shown(Some(crate::io::wave_prompt::development_build_dir(root.path()))));
         let runner = crate::platform::code_tools::MachineRunner::new("");
         println!("{HOME_MARK} tools={}", listed(runner.user_tool_dirs()));
         println!("{HOME_MARK} fonts={}", listed(crate::platform::fonts::font_dirs()));
@@ -573,6 +704,7 @@ mod tests {
             .env("USERPROFILE", home)
             .env_remove("CLAUDE_CONFIG_DIR")
             .env_remove("MUSTARD_COPIES_DIR")
+            .env_remove("MUSTARD_BUILD_DIR")
             .output()
             .expect("o executável dos testes roda");
         String::from_utf8_lossy(&out.stdout)
@@ -585,7 +717,8 @@ mod tests {
 
     /// A pasta pessoal vazia vale como ausente em todas as leitoras: o
     /// ajudante não responde nada, a pasta de configuração do Claude Code
-    /// também não, a pasta das cópias cai na pasta temporária do sistema, o
+    /// também não, a pasta das cópias e a do programa compilado caem na pasta
+    /// temporária do sistema, o
     /// executor da máquina fica sem pasta de ferramenta e as pastas de fonte
     /// ficam só as do sistema — nenhuma monta um caminho relativo à pasta em
     /// que o comando roda. Com a pasta pessoal preenchida, todas partem dela;
@@ -593,6 +726,7 @@ mod tests {
     #[test]
     fn an_empty_home_counts_as_absent_for_every_reader() {
         let temp = std::env::temp_dir().join("mustard").join("copias");
+        let temp_build = std::env::temp_dir().join("mustard").join("build");
         let empty = read_homes("");
         let fake_home = tempfile::tempdir().unwrap();
         let home = fake_home.path().display().to_string();
@@ -612,6 +746,9 @@ mod tests {
         expect("preenchida", &filled, "config", &|answer| std::path::Path::new(answer) == config);
         let copies = fake_home.path().join(".cache").join("mustard").join("copias");
         expect("preenchida", &filled, "copies", &|answer| std::path::Path::new(answer).starts_with(&copies));
+        expect("vazia", &empty, "build", &|answer| std::path::Path::new(answer).starts_with(&temp_build));
+        let build = fake_home.path().join(".cache").join("mustard").join("build");
+        expect("preenchida", &filled, "build", &|answer| std::path::Path::new(answer).starts_with(&build));
         let paths = |answer: &str| std::env::split_paths(answer).collect::<Vec<_>>();
         expect("vazia", &empty, "tools", &|answer| answer == "-");
         expect("vazia", &empty, "fonts", &|answer| answer != "-" && paths(answer).iter().all(|dir| dir.is_absolute()));

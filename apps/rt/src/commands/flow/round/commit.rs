@@ -993,64 +993,50 @@ pub(super) fn ensure_criteria_proofs(
     })
 }
 
-/// O comando que reinstala o binário do próprio Mustard, depois que a suíte
-/// passou: `cargo install` já não copia nada quando a compilação ou os
-/// testes de dentro dele falham, então uma instalação que sai do jeito
-/// errado nunca deixa o binário instalado pela metade.
-const REINSTALL_COMMAND: &str = "cargo install --path apps/rt --force";
+/// Os arquivos de uma rodada que mudam o programa: o que mora sob `apps/` ou
+/// `packages/`. Um documento, uma spec ou um texto do plugin não pedem
+/// compilação nenhuma.
+fn changes_the_program(files: &[String]) -> bool {
+    files.iter().any(|file| file.starts_with("apps/") || file.starts_with("packages/"))
+}
 
-/// Recompila e reinstala o binário do próprio Mustard, pela decisão
-/// registrada na spec: a obra do Mustard é conduzida pelo próprio Mustard, e
-/// por isso a troca do binário instalado passa a acontecer uma vez só, no
-/// fechamento, depois da aprovação final — nunca a cada rodada. A
-/// compilação de antes do commit ([`ensure_builds`]) já provou que o
-/// repositório principal compila com o que a rodada comitou; falta a suíte
-/// inteira, que só ela prova de verdade. Sem nenhuma onda entregue na spec
-/// inteira (`has_delivered`), sem comando de teste declarado no
-/// `mustard.json`, ou fora da raiz que constrói o próprio `mustard-rt` (sem
-/// `apps/rt/Cargo.toml`), nada roda: o fechamento de outro projeto nunca
-/// tenta instalar o binário de ninguém, e uma spec sem nada entregue não
-/// reinstala à toa. Com a suíte vermelha, ou com a instalação em si
-/// falhando depois da suíte verde, o binário instalado continua o de antes
-/// e o aviso mostra o comando e a saída.
-pub(crate) fn reinstall_binary(root: &Path, has_delivered: bool, lang: Locale) -> Option<Value> {
-    reinstall_with(root, has_delivered, lang, &|command, cwd| {
-        crate::commands::review::qa_run::run_command(command, cwd)
+/// Compila a versão em construção do Mustard depois do commit de uma onda que
+/// mexeu no programa, em primeiro plano, e devolve o aviso da falha: a sessão
+/// roda o programa compilado, e quem o refaz a cada commit é a rodada, para
+/// que a próxima chamada já rode o código recém-comitado.
+///
+/// Nada roda fora do repositório do Mustard (`mustard_core::mustard_checkout`),
+/// e nada roda quando os arquivos do commit não tocaram `apps/` nem
+/// `packages/`. A compilação vai para a pasta de
+/// `mustard_core::io::wave_prompt::development_build_dir`, e nenhum programa
+/// é instalado em lugar nenhum. Com a compilação vermelha, a sessão segue no
+/// programa compilado anterior, e o aviso traz o fim da saída — é ela que diz o
+/// que consertar —; a rodada nunca recusa por isso, porque o commit já saiu.
+pub(super) fn build_development_version(root: &Path, files: &[String], lang: Locale) -> Option<Value> {
+    build_development_version_with(root, files, lang, &|command, cwd| {
+        crate::commands::review::qa_run::run_server_command(command, cwd)
     })
 }
 
-/// [`reinstall_binary`] com o executor recebido, que é como um teste prova a
-/// regra inteira — suíte vermelha não instala, suíte verde chama a
-/// instalação, instalação vermelha ainda assim avisa — sem rodar `cargo`
-/// de verdade nem tocar no binário instalado desta máquina.
-fn reinstall_with(
+/// [`build_development_version`] com o executor recebido, que é como um teste
+/// prova a regra sem rodar o `cargo` de verdade.
+fn build_development_version_with(
     root: &Path,
-    has_delivered: bool,
+    files: &[String],
     lang: Locale,
     exec: &dyn Fn(&str, &Path) -> crate::commands::review::qa_run::ProofRun,
 ) -> Option<Value> {
-    if !has_delivered || !root.join("apps/rt/Cargo.toml").is_file() {
+    if !changes_the_program(files) {
         return None;
     }
-    let test = mustard_core::ProjectConfig::load(root).commands().test?;
-    let suite = exec(&test, root);
-    if suite.result != "pass" {
-        return Some(binary_not_reinstalled(&test, &suite.output, lang));
+    let main = mustard_core::mustard_checkout(root)?;
+    let target = mustard_core::io::wave_prompt::development_build_dir(&main);
+    let built = exec(&crate::shared::development_build::build_command(&target), &main);
+    if built.result == "pass" {
+        return None;
     }
-    let install = exec(REINSTALL_COMMAND, root);
-    if install.result != "pass" {
-        return Some(binary_not_reinstalled(REINSTALL_COMMAND, &install.output, lang));
-    }
-    None
-}
-
-/// O aviso de que o binário não foi reinstalado, com o comando que falhou e
-/// o que ele escreveu — nunca uma frase montada sem a saída, porque é ela
-/// que diz o que consertar.
-fn binary_not_reinstalled(command: &str, output: &str, lang: Locale) -> Value {
-    let hint =
-        translate("round.binary_not_reinstalled", lang).replace("{command}", command).replace("{output}", output);
-    json!({ "reason": "binary-not-reinstalled", "hint": hint })
+    let hint = translate("round.development_build_failed", lang).replace("{output}", &built.output);
+    Some(json!({ "reason": "development-build-failed", "hint": hint }))
 }
 
 /// Os caminhos que o `status --porcelain -z` lista, inclusive o nome antigo
@@ -2011,11 +1997,11 @@ mod tests {
         );
     }
 
-    /// A raiz de um repositório que constrói o próprio `mustard-rt`: o
-    /// bastante para `reinstall_with` reconhecer a raiz e seguir adiante.
-    fn mustard_like_root(root: &Path, test_command: &str) {
-        std::fs::write(root.join("mustard.json"), format!(r#"{{"testCommand":"{test_command}"}}"#)).unwrap();
+    /// A raiz de um repositório que constrói o próprio `mustard-rt`, com o git
+    /// de que a detecção precisa.
+    fn mustard_like_root(root: &Path) {
         std::fs::create_dir_all(root.join("apps/rt")).unwrap();
+        std::fs::create_dir_all(root.join(".git")).unwrap();
         std::fs::write(root.join("apps/rt/Cargo.toml"), b"[package]\nname=\"mustard-rt\"\n").unwrap();
     }
 
@@ -2030,91 +2016,58 @@ mod tests {
         }
     }
 
-    /// Sem nenhuma onda entregue na spec, ou fora da raiz que constrói o
-    /// próprio `mustard-rt` (sem `apps/rt/Cargo.toml`), a reinstalação nunca
-    /// chama o executor: nenhum projeto alheio tenta instalar o binário de
-    /// ninguém, e uma spec sem nada entregue não reinstala à toa.
+    /// Só a onda que tocou `apps/` ou `packages/` compila: um documento, um
+    /// arquivo do plugin ou da raiz nunca chama o executor, e fora do
+    /// repositório do Mustard nada compila nem com o código dele tocado.
     #[test]
-    fn reinstall_never_calls_the_executor_without_a_delivered_wave_or_outside_mustards_own_repo() {
+    fn the_development_build_only_runs_when_the_commit_touched_the_program() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        let calls = std::cell::Cell::new(0);
-        let counting = |_: &str, _: &Path| {
-            calls.set(calls.get() + 1);
-            proof("pass", "")
-        };
-
-        // Com apps/rt/Cargo.toml, mas sem nenhuma onda entregue na spec.
-        mustard_like_root(root, "exit 0");
-        assert!(reinstall_with(root, false, Locale::PtBr, &counting).is_none());
-        assert_eq!(calls.get(), 0, "sem entrega: o executor nunca é chamado");
-
-        // Com entrega, mas fora da raiz que constrói o mustard-rt.
-        std::fs::remove_file(root.join("apps/rt/Cargo.toml")).unwrap();
-        assert!(reinstall_with(root, true, Locale::PtBr, &counting).is_none());
-        assert_eq!(calls.get(), 0, "fora do próprio Mustard: o executor nunca é chamado");
-    }
-
-    /// A suíte vermelha nunca chama a instalação — é o "só depois de"
-    /// principal desta peça: só a compilação e a suíte verdes reinstalam. O
-    /// binário instalado continua o de antes, e o aviso mostra o comando e a
-    /// saída de verdade.
-    #[test]
-    fn reinstall_with_a_red_suite_never_calls_the_install_and_warns_with_the_output() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        mustard_like_root(root, "a suíte de teste");
-        let install_calls = std::cell::Cell::new(0);
-        let exec = |command: &str, _: &Path| {
-            if command == REINSTALL_COMMAND {
-                install_calls.set(install_calls.get() + 1);
-            }
-            proof("fail", "3 testes falharam")
-        };
-        let warning = reinstall_with(root, true, Locale::PtBr, &exec).expect("aviso de suíte vermelha");
-        assert_eq!(warning["reason"], json!("binary-not-reinstalled"), "{warning}");
-        let hint = warning["hint"].as_str().unwrap_or_default();
-        assert!(hint.contains("a suíte de teste"), "{warning}");
-        assert!(hint.contains("3 testes falharam"), "{warning}");
-        assert_eq!(install_calls.get(), 0, "suíte vermelha: a instalação nunca é chamada");
-    }
-
-    /// Compilação (já provada por [`ensure_builds`] antes do commit) e suíte
-    /// verdes: a instalação roda, na ordem certa, com o comando de teste do
-    /// projeto primeiro e a instalação depois — sem os dois, nada reinstala.
-    #[test]
-    fn reinstall_with_a_green_suite_calls_the_install_in_order_and_installs_when_it_passes_too() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        mustard_like_root(root, "a suíte de teste");
+        mustard_like_root(root);
         let commands = std::cell::RefCell::new(Vec::new());
-        let exec = |command: &str, _: &Path| {
-            commands.borrow_mut().push(command.to_string());
+        let exec = |command: &str, cwd: &Path| {
+            commands.borrow_mut().push((command.to_string(), cwd.to_path_buf()));
             proof("pass", "")
         };
-        assert!(reinstall_with(root, true, Locale::PtBr, &exec).is_none(), "suíte e instalação verdes: sem aviso");
-        assert_eq!(commands.into_inner(), vec!["a suíte de teste".to_string(), REINSTALL_COMMAND.to_string()]);
+        let files = |names: &[&str]| names.iter().map(|name| name.to_string()).collect::<Vec<_>>();
+
+        for untouched in [files(&[]), files(&["docs/guia.md", "plugin/hooks/hooks.json", "README.md", "scripts/x.sh"])] {
+            assert!(build_development_version_with(root, &untouched, Locale::PtBr, &exec).is_none());
+            assert!(commands.borrow().is_empty(), "{untouched:?} não toca o programa: {:?}", commands.borrow());
+        }
+        for touched in [files(&["apps/rt/src/main.rs"]), files(&["docs/guia.md", "packages/core/src/lib.rs"])] {
+            assert!(build_development_version_with(root, &touched, Locale::PtBr, &exec).is_none(), "compilação verde: sem aviso");
+        }
+        let commands = commands.into_inner();
+        assert_eq!(commands.len(), 2, "uma compilação por rodada que tocou o programa: {commands:?}");
+        let (command, cwd) = &commands[0];
+        let target = mustard_core::io::wave_prompt::development_build_dir(root);
+        assert_eq!(
+            command,
+            &format!("cargo build --release --locked -p mustard-rt -p scan -p mustard-cli --target-dir '{}'", target.display())
+        );
+        assert_eq!(std::fs::canonicalize(cwd).unwrap(), std::fs::canonicalize(root).unwrap(), "no checkout principal");
+
+        let other = tempdir().unwrap();
+        let counting = |_: &str, _: &Path| -> crate::commands::review::qa_run::ProofRun { panic!("fora do Mustard nada compila") };
+        assert!(build_development_version_with(other.path(), &files(&["apps/rt/src/main.rs"]), Locale::PtBr, &counting).is_none());
     }
 
-    /// Suíte verde, mas a instalação em si falha: o binário instalado
-    /// continua o de antes — `cargo install` não copia nada quando falha —
-    /// e o aviso mostra o comando da instalação e a saída dela, não a da
-    /// suíte.
+    /// A compilação vermelha vira o aviso, com o fim da saída do `cargo`, nos
+    /// dois idiomas, e nunca recusa a rodada.
     #[test]
-    fn reinstall_with_a_green_suite_and_a_red_install_warns_with_the_install_output() {
+    fn a_red_development_build_warns_with_the_end_of_the_output() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        mustard_like_root(root, "a suíte de teste");
-        let exec = |command: &str, _: &Path| {
-            if command == REINSTALL_COMMAND { proof("fail", "disco cheio") } else { proof("pass", "") }
-        };
-        let warning =
-            reinstall_with(root, true, Locale::PtBr, &exec).expect("aviso de instalação vermelha");
-        assert_eq!(warning["reason"], json!("binary-not-reinstalled"), "{warning}");
-        let hint = warning["hint"].as_str().unwrap_or_default();
-        assert!(hint.contains(REINSTALL_COMMAND), "{warning}");
-        assert!(hint.contains("disco cheio"), "{warning}");
-        assert!(!hint.contains("a suíte de teste"), "o aviso é da instalação, não da suíte: {warning}");
+        mustard_like_root(root);
+        let exec = |_: &str, _: &Path| proof("fail", "error[E0425]: cannot find value `x`");
+        let files = vec!["apps/rt/src/main.rs".to_string()];
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let warning = build_development_version_with(root, &files, lang, &exec).expect("aviso de compilação vermelha");
+            assert_eq!(warning["reason"], json!("development-build-failed"), "{warning}");
+            let hint = warning["hint"].as_str().unwrap_or_default();
+            assert!(hint.contains("error[E0425]: cannot find value `x`"), "{lang:?}: {warning}");
+            assert!(!hint.contains("{output}"), "{lang:?}: {warning}");
+        }
     }
 }
-

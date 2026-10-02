@@ -339,6 +339,40 @@ pub fn run_shell_with_deadline(command: &str, cwd: &Path, timeout: Duration) -> 
     }
 }
 
+/// Start `command` through the platform shell in `cwd` and leave it running
+/// on its own: no wait, no pipe to drain, and a process the caller's exit — a
+/// hook's, a terminal's — does not take down with it. The command writes its
+/// own output where it wants (a redirect inside `command`); the child's three
+/// standard streams are closed.
+///
+/// `PATH` gets the same conventional toolchain folders as
+/// [`run_shell_with_deadline`], so `cargo` is found from a non-interactive
+/// session too. Detached like `scan`'s long passes: its own process group on
+/// Unix, no console on Windows.
+///
+/// # Errors
+///
+/// The shell could not be started.
+pub fn spawn_detached_shell(command: &str, cwd: &Path) -> std::io::Result<()> {
+    let mut cmd = crate::util::platform::build_shell_command(command);
+    cmd.current_dir(cwd).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    if let Some(path) = augmented_path() {
+        cmd.env("PATH", path);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP`.
+        cmd.creation_flags(0x0000_0008 | 0x0000_0200);
+    }
+    cmd.spawn().map(drop)
+}
+
 /// Spawn a thread that drains one child pipe to EOF, returning whatever bytes
 /// arrived. Best-effort: an absent pipe or a read error yields what it has.
 fn drain<R: Read + Send + 'static>(pipe: Option<R>) -> std::thread::JoinHandle<Vec<u8>> {

@@ -642,6 +642,8 @@ mod tests {
             ("session.version.drift", &["{stamped}", "{running}"][..]),
             ("session.version.stale", &["{running}", "{installed}"][..]),
             ("session.version.behind", &["{running}", "{plugin}"][..]),
+            ("session.build.missing", &["{head}", "{progress}", "{running}"][..]),
+            ("session.build.behind", &["{compiled}", "{head}", "{progress}"][..]),
         ] {
             let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
             assert_ne!(pt, "<missing-key>", "{key} missing in pt-BR");
@@ -652,6 +654,15 @@ mod tests {
                 assert!(pt.contains(slot) && en.contains(slot), "{key} lost {slot}");
             }
         }
+        // O que aconteceu com a compilação em segundo plano entra no aviso
+        // do programa compilado no lugar de `{progress}`.
+        for key in ["session.build.started", "session.build.in_progress", "session.build.not_started"] {
+            let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
+            assert_ne!(pt, "<missing-key>", "{key} missing in pt-BR");
+            assert_ne!(en, "<missing-key>", "{key} missing in en-US");
+            assert_ne!(pt, en, "{key} must differ per locale");
+        }
+        assert_eq!(translate("session.old_hook", Locale::PtBr), "<missing-key>", "o aviso do script de instalação saiu");
         // A pergunta de aprovação da spec, um dos dois gestos em que a
         // testemunha age.
         assert_eq!(translate("approval.question", Locale::PtBr), "Aprovar esta spec?");

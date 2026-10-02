@@ -682,13 +682,13 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              project. The round committed nothing. Write that test or record the criterion's new version with \
              the right name, and run the round again."
         }
-        ("round.binary_not_reinstalled", Locale::PtBr) => {
-            "O binário do Mustard não foi reinstalado — `{command}` não passou, e o binário instalado \
-             continua o de antes: {output}"
+        ("round.development_build_failed", Locale::PtBr) => {
+            "O commit saiu, mas a versão em construção do Mustard não compilou, e a sessão segue no \
+             programa compilado anterior: {output}"
         }
-        ("round.binary_not_reinstalled", Locale::EnUs) => {
-            "Mustard's binary was not reinstalled — `{command}` did not pass, and the installed binary \
-             stays the one from before: {output}"
+        ("round.development_build_failed", Locale::EnUs) => {
+            "The commit landed, but the development build of Mustard did not compile, and the session \
+             stays on the previous compiled program: {output}"
         }
         ("round.file_unknown", Locale::PtBr) => {
             "A onda {wave} entregou {file}, que não está no disco nem no git: o commit não teria o que \
@@ -1766,7 +1766,7 @@ mod tests {
             include_str!("flow.rs"),
             super::PREFIXES,
             212,
-            0x26c6_cbe2_b209_fc29,
+            0x05f2_c4bd_e4d2_1e18,
         );
     }
 
@@ -1964,7 +1964,7 @@ mod tests {
             ("round.criterion_proof_failed", &["{code}", "{command}", "{output}"][..]),
             ("round.criterion_ran_no_test", &["{code}", "{command}", "{count}"][..]),
             ("round.criterion_missing_test", &["{code}", "{name}"][..]),
-            ("round.binary_not_reinstalled", &["{command}", "{output}"][..]),
+            ("round.development_build_failed", &["{output}"][..]),
             ("round.proof_ran_no_test", &["{code}"][..]),
             ("round.proof_missing_test", &["{code}", "{name}"][..]),
             ("round.commit.scope.one", &["{waves}"][..]),

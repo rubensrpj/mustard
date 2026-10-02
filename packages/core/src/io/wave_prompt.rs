@@ -359,11 +359,34 @@ pub fn wave_lessons<'a>(bank: &'a SpecLog, log: &SpecLog, wave: u64, languages: 
 /// barra invertida não mudam o código.
 #[must_use]
 pub fn copies_dir(root: &Path) -> PathBuf {
-    let base = std::env::var_os("MUSTARD_COPIES_DIR")
+    project_folder(root, "MUSTARD_COPIES_DIR", "copias")
+}
+
+/// A pasta onde nasce o programa compilado da versão em construção do
+/// projeto do checkout principal `root`: o `mustard-rt`, o `scan` e o
+/// `mustard` ficam em `<pasta>/release/`.
+///
+/// Mora ao lado das cópias, com a mesma chave por projeto de [`copies_dir`], e
+/// fora da pasta de compilação que o fechamento apaga: o programa que a sessão
+/// roda tem de sobreviver ao fechamento da spec. A base é a pasta que
+/// `MUSTARD_BUILD_DIR` indicar, ou `.cache/mustard/build` sob a pasta pessoal;
+/// sem nenhuma das duas, a pasta temporária do sistema.
+#[must_use]
+pub fn development_build_dir(root: &Path) -> PathBuf {
+    project_folder(root, "MUSTARD_BUILD_DIR", "build")
+}
+
+/// A pasta de `leaf` do projeto de `root`: a base que a variável `var`
+/// indicar, ou `.cache/mustard/<leaf>` sob a pasta pessoal, ou a pasta
+/// temporária, e dentro dela `<nome>-<código>`. A chave é uma só para toda
+/// pasta por projeto, para que duas delas nunca discordem sobre qual projeto
+/// é qual.
+fn project_folder(root: &Path, var: &str, leaf: &str) -> PathBuf {
+    let base = std::env::var_os(var)
         .filter(|dir| !dir.is_empty())
         .map(PathBuf::from)
-        .or_else(|| crate::platform::harness::home_dir().map(|home| home.join(".cache").join("mustard").join("copias")))
-        .unwrap_or_else(|| std::env::temp_dir().join("mustard").join("copias"));
+        .or_else(|| crate::platform::harness::home_dir().map(|home| home.join(".cache").join("mustard").join(leaf)))
+        .unwrap_or_else(|| std::env::temp_dir().join("mustard").join(leaf));
     let main = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     let name = main.file_name().map_or_else(|| String::from("projeto"), |name| name.to_string_lossy().into_owned());
     let code = crate::platform::page_templates::fingerprint(&shown(&main)) >> 32;
@@ -2774,6 +2797,27 @@ mod tests {
         assert_eq!(slot_name(25), "z");
         assert_eq!(slot_name(26), "27");
         assert_eq!(slot_path(root, "teste", 1), copies_dir(root).join("teste").join("b"));
+    }
+
+    /// A pasta do programa compilado leva a mesma chave por projeto da pasta
+    /// das cópias — o nome da pasta do checkout e o código do caminho dele —,
+    /// separa dois projetos de mesmo nome e nunca é a pasta das cópias nem
+    /// fica dentro do projeto.
+    #[test]
+    fn the_build_folder_carries_the_same_project_key_as_the_copies() {
+        let place = tempdir().unwrap();
+        let named = |parent: &str| {
+            let root = place.path().join(parent).join("mustard");
+            std::fs::create_dir_all(&root).unwrap();
+            root
+        };
+        let (one, other) = (named("um"), named("outro"));
+        assert_eq!(development_build_dir(&one).file_name(), copies_dir(&one).file_name());
+        assert!(development_build_dir(&one).file_name().unwrap().to_string_lossy().starts_with("mustard-"));
+        assert_ne!(development_build_dir(&one), development_build_dir(&other), "dois projetos de mesmo nome ficam separados");
+        assert_ne!(development_build_dir(&one), copies_dir(&one));
+        assert!(!development_build_dir(&one).starts_with(&one), "o fechamento só apaga o que está dentro do projeto");
+        assert_eq!(development_build_dir(&one), development_build_dir(&one.join(".")), "o caminho é lido já resolvido");
     }
 
     /// A obra da revisão de volta: três requisitos acordados, um critério, a

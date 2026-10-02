@@ -22,7 +22,7 @@ use serde_json::{json, Map, Value};
 
 use super::answer::RoundRefusal;
 use super::commit::{
-    commit_draft, commit_message, ensure_after_wave, ensure_builds, ensure_criteria_proofs, format_round_files, git_lock,
+    build_development_version, commit_draft, commit_message, ensure_after_wave, ensure_builds, ensure_criteria_proofs, format_round_files, git_lock,
     head, join_copies, make_commit, record_commit, refresh_map, reset_committed_copies, round_repos, unknown_file,
     write_joined, UNMADE_SHA,
 };
@@ -372,6 +372,11 @@ fn take_returns(
     // commit acabou de apagar.
     if commit.is_some() {
         refresh_map(root, mine);
+        // O programa compilado da branch acompanha o commit que tocou o
+        // código do Mustard: a próxima chamada já roda o que acabou de entrar.
+        // A falha só avisa — o commit já saiu — e a sessão segue no programa
+        // compilado anterior.
+        warnings.extend(build_development_version(root, &files, lang));
     }
     // O arquivo de conversa da onda pode não ser achado, e nunca em silêncio:
     // sem ele o envio da onda fica sem o consumo dela, e a página mostra um

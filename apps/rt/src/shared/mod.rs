@@ -65,6 +65,9 @@ pub mod context;
 /// readiness, packing into dispatch batches under a work cap (tasks and
 /// files), and the waiting task that joins the batch it depends on.
 pub mod dag;
+/// O programa compilado da branch do Mustard: se está em dia com o commit e a
+/// compilação dele, em primeiro e em segundo plano.
+pub mod development_build;
 pub mod jev;
 pub mod paths;
 /// A procura de segredo no texto, a mesma da página da spec, do expurgo e do

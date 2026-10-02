@@ -256,6 +256,78 @@ impl Project {
         project
     }
 
+    /// O projeto de [`Project::new`] como o código-fonte do Mustard: o pacote
+    /// `mustard-rt` declarado em `apps/rt` e um `cargo` de mentira à frente do
+    /// `PATH`, que anota a pasta e os argumentos de cada chamada em
+    /// `cargo.log` e, com o arquivo `cargo-falha` na pasta pessoal, escreve um
+    /// erro e sai vermelho.
+    fn as_mustard_source() -> Self {
+        let project = Self::new();
+        std::fs::create_dir_all(project.root.join("apps/rt/src")).expect("apps/rt/src");
+        std::fs::write(project.root.join("apps/rt/Cargo.toml"), "[package]\nname = \"mustard-rt\"\nversion = \"0.1.0\"\n")
+            .expect("the manifest");
+        std::fs::write(project.root.join("apps/rt/src/main.rs"), "fn main() {\n    println!(\"oi\");\n}\n").expect("the program");
+        git(&project.root, &["add", "-A"]);
+        git(&project.root, &["commit", "-q", "-m", "o programa"]);
+        let script = format!(
+            "#!/bin/sh\necho \"$PWD $*\" >> '{log}'\n\
+             if [ -f '{fail}' ]; then echo 'error[E0425]: cannot find value `x`' >&2; exit 101; fi\nexit 0\n",
+            log = project.cargo_log().display(),
+            fail = project.home.join("cargo-falha").display(),
+        );
+        executable::write_executable(&project.bin.join("cargo"), &script);
+        project
+    }
+
+    fn cargo_log(&self) -> PathBuf {
+        self.home.join("cargo.log")
+    }
+
+    /// As chamadas ao `cargo` de mentira, na ordem, cada uma como
+    /// `<pasta em que rodou> <argumentos>`.
+    fn cargo_calls(&self) -> Vec<String> {
+        std::fs::read_to_string(self.cargo_log()).unwrap_or_default().lines().map(str::to_string).collect()
+    }
+
+    /// A pasta onde o programa compilado da versão em construção nasce, e a
+    /// trava da compilação em segundo plano ao lado dela.
+    fn build_folder(&self) -> PathBuf {
+        let key = mustard_core::io::wave_prompt::development_build_dir(&self.root);
+        self.home.join("build").join(key.file_name().expect("the project key"))
+    }
+
+    fn build_marker(&self) -> PathBuf {
+        let folder = self.build_folder();
+        let mut name = folder.file_name().expect("the folder name").to_os_string();
+        name.push(".building");
+        folder.with_file_name(name)
+    }
+
+    /// O commit atual do projeto, em 12 dígitos.
+    fn head(&self) -> String {
+        git_out(&self.root, &["rev-parse", "--short=12", "HEAD"])
+    }
+
+    /// Um programa compilado de mentira na pasta da versão em construção, que
+    /// responde `says` ao `--version`.
+    fn compiled_program_says(&self, says: &str) {
+        let program = self.build_folder().join("release").join("mustard-rt");
+        std::fs::create_dir_all(program.parent().expect("release folder")).expect("the build folder");
+        executable::write_executable(&program, &format!("#!/bin/sh\necho '{says}'\n"));
+    }
+
+    /// As chamadas ao `cargo` depois de esperar até `at_least` delas, por um
+    /// tempo: a compilação do início da sessão roda em segundo plano.
+    fn cargo_calls_after_waiting(&self, at_least: usize) -> Vec<String> {
+        for _ in 0..200 {
+            if self.cargo_calls().len() >= at_least {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        self.cargo_calls()
+    }
+
     fn scan_log(&self) -> PathBuf {
         self.home.join("scan.log")
     }
@@ -343,6 +415,9 @@ impl Project {
             .env("USERPROFILE", &self.home)
             .env("CLAUDE_PROJECT_DIR", &self.root)
             .env("MUSTARD_CLAUDE_BIN", self.home.join("sem-claude"))
+            // O programa compilado da versão em construção nasce na pasta
+            // pessoal falsa, nunca na pasta de verdade de quem roda a suíte.
+            .env("MUSTARD_BUILD_DIR", self.home.join("build"))
             .env_remove("CLAUDE_CONFIG_DIR")
             .env_remove("CLAUDE_PLUGIN_ROOT")
             .env_remove("CARGO_TARGET_DIR")
@@ -1284,16 +1359,21 @@ fn a_project_in_a_temp_folder_with_two_names_is_asked_about_by_its_real_path() {
 /// A spec no ponto da entrega da onda 1: a cópia mudada e a entrega gravada
 /// pelo agente da onda, ainda por assumir.
 fn deliver_the_first_wave(project: &Project) {
+    deliver_the_first_wave_changing(project, "src/main.rs");
+}
+
+/// [`deliver_the_first_wave`] com a onda mudando o arquivo `file`.
+fn deliver_the_first_wave_changing(project: &Project, file: &str) {
     project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
     survey(project);
-    plan(project);
+    plan_files(project, &[file]);
     approve(project);
     first_round(project);
     let log = project.log();
     let sent = log.visible().into_iter().rfind(|e| e.event_type == "send").expect("the send");
     let copy = PathBuf::from(sent.str_field("copy").expect("the copy"));
-    std::fs::write(copy.join("src/main.rs"), "fn main() {\n    println!(\"olá\");\n}\n").expect("the change");
-    let delivered = json!({"wave": 1, "text": "A saudação virou olá.", "files": ["src/main.rs"],
+    std::fs::write(copy.join(file), "fn main() {\n    println!(\"olá\");\n}\n").expect("the change");
+    let delivered = json!({"wave": 1, "text": "A saudação virou olá.", "files": [file],
         "commit": "a saudação vira olá", "agreed": agreed_all_met(project)});
     project.read_request(1);
     project.run(&["write", "delivered", "--spec", SPEC, "--json", &delivered.to_string()]);
@@ -1353,4 +1433,239 @@ fn a_close_that_takes_the_last_return_starts_the_reading_of_the_history_of_the_p
         reads.iter().all(|read| *read == project.model_read_line()),
         "the reading is over the map of the project, never over the copy that is thrown away: {reads:?}"
     );
+}
+
+/// O `cargo` de mentira de quem compila a versão em construção do Mustard
+/// recebe a chamada de cada compilação como `<pasta> <argumentos>`.
+fn the_build_call(project: &Project) -> String {
+    format!(
+        "{} build --release --locked -p mustard-rt -p scan -p mustard-cli --target-dir {}",
+        project.root.display(),
+        project.build_folder().display()
+    )
+}
+
+/// A rodada que levou ao commit uma onda que mexeu no programa do Mustard
+/// compila a versão em construção: uma vez, no checkout principal, com os três
+/// programas, na pasta de compilação do projeto, e sem recusar nem avisar
+/// quando a compilação passa.
+#[test]
+fn a_round_that_committed_the_program_builds_the_development_version_once_in_the_main_checkout() {
+    let project = Project::as_mustard_source();
+    deliver_the_first_wave_changing(&project, "apps/rt/src/main.rs");
+    assert!(project.cargo_calls().is_empty(), "nada compila antes da rodada: {:?}", project.cargo_calls());
+
+    let second = project.run(&["round", "--spec", SPEC]);
+    assert!(second.get("commit").is_some(), "the round committed the return: {second}");
+    assert_eq!(project.cargo_calls(), [the_build_call(&project)], "{second}");
+    let reasons: Vec<&str> = second["warnings"].as_array().into_iter().flatten().filter_map(|w| w["reason"].as_str()).collect();
+    assert!(!reasons.contains(&"development-build-failed"), "a compilação verde não avisa: {second}");
+}
+
+/// A onda que não tocou `apps/` nem `packages/` comita sem compilar nada,
+/// mesmo no repositório do Mustard.
+#[test]
+fn a_round_whose_commit_left_the_program_alone_does_not_build() {
+    let project = Project::as_mustard_source();
+    deliver_the_first_wave_changing(&project, "src/main.rs");
+
+    let second = project.run(&["round", "--spec", SPEC]);
+    assert!(second.get("commit").is_some(), "the round committed the return: {second}");
+    assert!(project.cargo_calls().is_empty(), "o commit não tocou o programa: {:?}", project.cargo_calls());
+}
+
+/// Fora do repositório do Mustard a rodada nunca compila, nem com um arquivo
+/// sob `apps/` no commit.
+#[test]
+fn a_round_outside_the_mustard_repository_never_builds() {
+    let project = Project::as_mustard_source();
+    std::fs::remove_file(project.root.join("apps/rt/Cargo.toml")).expect("the manifest goes");
+    git(&project.root, &["commit", "-q", "-a", "-m", "o projeto deixa de ser o Mustard"]);
+    deliver_the_first_wave_changing(&project, "apps/rt/src/main.rs");
+
+    let second = project.run(&["round", "--spec", SPEC]);
+    assert!(second.get("commit").is_some(), "the round committed the return: {second}");
+    assert!(project.cargo_calls().is_empty(), "outro projeto: {:?}", project.cargo_calls());
+}
+
+/// A compilação vermelha vira um aviso com o fim da saída do `cargo`, e o
+/// commit sai do mesmo jeito: a rodada nunca recusa por causa dela.
+#[test]
+fn a_red_development_build_warns_with_the_output_and_the_round_still_commits() {
+    let project = Project::as_mustard_source();
+    deliver_the_first_wave_changing(&project, "apps/rt/src/main.rs");
+    std::fs::write(project.home.join("cargo-falha"), "").expect("the build is red");
+
+    let second = project.run(&["round", "--spec", SPEC]);
+    assert!(second.get("commit").is_some(), "the round committed anyway: {second}");
+    assert_eq!(project.cargo_calls(), [the_build_call(&project)], "{second}");
+    let warning = second["warnings"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|w| w["reason"] == json!("development-build-failed"))
+        .cloned()
+        .unwrap_or_else(|| panic!("o aviso da compilação vermelha: {second}"));
+    let hint = warning["hint"].as_str().unwrap_or_default();
+    let head = translate("round.development_build_failed", Locale::PtBr);
+    assert!(hint.starts_with(head.split("{output}").next().unwrap_or_default()), "{warning}");
+    assert!(hint.contains("error[E0425]: cannot find value `x`"), "{warning}");
+}
+
+/// O texto que o início da sessão põe no contexto, ou nada.
+fn session_notices(project: &Project) -> String {
+    let said = project.hook("SessionStart", &session_start(project));
+    serde_json::from_str::<Value>(&said)
+        .ok()
+        .and_then(|out| out["hookSpecificOutput"]["additionalContext"].as_str().map(str::to_string))
+        .unwrap_or_default()
+}
+
+/// O aviso do compilado de `key`, com o commit atual do projeto e o que
+/// aconteceu com a compilação em segundo plano, até o ponto em que o programa
+/// que roda a sessão é dito: cortado antes da versão dele, que muda a cada
+/// compilação.
+fn build_notice_head(project: &Project, key: &str, compiled: &str, progress: &str) -> String {
+    let text = translate(key, Locale::PtBr)
+        .replace("{head}", &project.head())
+        .replace("{compiled}", compiled)
+        .replace("{progress}", translate(progress, Locale::PtBr));
+    text.split("{running}").next().unwrap_or_default().to_string()
+}
+
+/// Espera a compilação em segundo plano acabar: a trava dela sai com ela.
+fn wait_for_the_background_build(project: &Project) {
+    for _ in 0..200 {
+        if !project.build_marker().exists() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    panic!("a compilação em segundo plano nunca soltou a trava");
+}
+
+/// No repositório do Mustard sem o programa compilado, o início da sessão
+/// solta a compilação em segundo plano, uma vez e no checkout principal, e
+/// avisa que a sessão roda o programa instalado até ela acabar.
+#[test]
+fn a_session_in_the_mustard_repository_without_the_compiled_program_starts_the_build_and_says_so() {
+    let project = Project::as_mustard_source();
+
+    let said = session_notices(&project);
+    let expected = build_notice_head(&project, "session.build.missing", "", "session.build.started");
+    assert!(said.contains(&format!("{expected}{}", env!("CARGO_PKG_VERSION"))), "o aviso diz o programa que a sessão roda: {said}");
+    assert_eq!(project.cargo_calls_after_waiting(1), [the_build_call(&project)]);
+    wait_for_the_background_build(&project);
+    assert_eq!(project.cargo_calls().len(), 1, "uma compilação só");
+}
+
+/// O programa compilado atrás do commit atual pede a mesma compilação, e o
+/// aviso diz de qual commit é o programa que a sessão roda até lá.
+#[test]
+fn a_session_with_the_compiled_program_behind_the_head_starts_the_build_and_names_the_old_commit() {
+    let project = Project::as_mustard_source();
+    project.compiled_program_says("mustard-rt 0.2.4 (build dev, g0123456789ab 2026-10-02)");
+
+    let said = session_notices(&project);
+    assert!(said.contains(&build_notice_head(&project, "session.build.behind", "0123456789ab", "session.build.started")), "{said}");
+    assert_eq!(project.cargo_calls_after_waiting(1), [the_build_call(&project)]);
+    wait_for_the_background_build(&project);
+}
+
+/// O programa compilado no commit atual, com ou sem o `-dirty` do carimbo,
+/// deixa a sessão calada e sem compilar nada.
+#[test]
+fn a_session_with_the_compiled_program_at_the_head_stays_silent_and_builds_nothing() {
+    let project = Project::as_mustard_source();
+    for stamp in [project.head(), format!("{}-dirty", project.head())] {
+        project.compiled_program_says(&format!("mustard-rt 0.2.4 (build dev, g{stamp} 2026-10-02)"));
+        let said = session_notices(&project);
+        assert!(!said.contains("compilado da branch"), "{stamp}: {said}");
+    }
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    assert!(project.cargo_calls().is_empty(), "em dia: nada compila: {:?}", project.cargo_calls());
+}
+
+/// Com outra compilação ainda valendo — a trava dela existe —, a sessão não
+/// solta uma segunda e diz que a outra está em andamento.
+#[test]
+fn a_session_while_another_build_runs_does_not_start_a_second_one() {
+    let project = Project::as_mustard_source();
+    std::fs::create_dir_all(project.build_marker().parent().expect("the build base")).expect("the base");
+    std::fs::write(project.build_marker(), "").expect("the lock of the other build");
+
+    let said = session_notices(&project);
+    assert!(said.contains(&build_notice_head(&project, "session.build.missing", "", "session.build.in_progress")), "{said}");
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    assert!(project.cargo_calls().is_empty(), "a trava vale: {:?}", project.cargo_calls());
+}
+
+/// Em qualquer outro projeto a sessão não fala do programa compilado nem
+/// compila nada.
+#[test]
+fn a_session_in_another_project_says_nothing_about_the_compiled_program() {
+    let project = Project::new();
+    executable::write_executable(&project.bin.join("cargo"), &format!("#!/bin/sh\necho \"$*\" >> '{}'\n", project.cargo_log().display()));
+
+    let said = session_notices(&project);
+    assert!(!said.contains("compilado da branch"), "{said}");
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    assert!(project.cargo_calls().is_empty(), "{:?}", project.cargo_calls());
+    assert!(!project.home.join("build").exists(), "nenhuma pasta de compilação nasce");
+}
+
+/// Cada arquivo sob `folder`, com o tamanho, a data de modificação e o
+/// conteúdo, pelo caminho relativo a ela: a fotografia da pasta que o teste
+/// compara antes e depois.
+fn snapshot_of(folder: &Path) -> BTreeMap<PathBuf, (u64, Option<std::time::SystemTime>, Vec<u8>)> {
+    let mut seen = BTreeMap::new();
+    let mut pending = vec![folder.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(&dir).expect("the folder reads").flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                pending.push(path);
+                continue;
+            }
+            let meta = std::fs::metadata(&path).expect("the file stats");
+            let at = path.strip_prefix(folder).expect("under the folder").to_path_buf();
+            seen.insert(at, (meta.len(), meta.modified().ok(), std::fs::read(&path).expect("the file reads")));
+        }
+    }
+    seen
+}
+
+/// A versão em construção compila e passa a chamada sem instalar nada: o
+/// plugin instalado do registro — a pasta dele, o programa dele e o registro —
+/// sai da sessão, da rodada e do fechamento idêntico ao que entrou, e o
+/// `cargo` de mentira nunca recebe outra coisa que o `build`.
+#[test]
+fn building_the_development_version_installs_nothing_and_leaves_the_plugin_folder_untouched() {
+    let project = Project::as_mustard_source();
+    let config = project.home.join(".claude");
+    let plugin = config.join("plugins").join("cache").join("mustard-local").join("mustard").join("0.0.1");
+    std::fs::create_dir_all(plugin.join("bin")).expect("the plugin folder");
+    executable::write_executable(&plugin.join("bin").join("mustard-rt"), "#!/bin/sh\necho plugin\n");
+    std::fs::write(plugin.join("README"), "o plugin instalado\n").expect("a plugin file");
+    std::fs::write(
+        config.join("plugins").join("installed_plugins.json"),
+        json!({"version": 2, "plugins": {"mustard@mustard-local": [
+            {"scope": "user", "version": "0.0.1", "installPath": plugin.to_string_lossy()}]}})
+        .to_string(),
+    )
+    .expect("the registry");
+    let before = snapshot_of(&config);
+
+    deliver_the_first_wave_changing(&project, "apps/rt/src/main.rs");
+    session_notices(&project);
+    wait_for_the_background_build(&project);
+    let second = project.run(&["round", "--spec", SPEC]);
+    assert!(second.get("commit").is_some(), "the round committed the return: {second}");
+
+    let calls = project.cargo_calls();
+    assert_eq!(calls.len(), 2, "uma compilação pela sessão e outra pela rodada: {calls:?}");
+    assert!(calls.iter().all(|call| call == &the_build_call(&project)), "o cargo só recebe o build: {calls:?}");
+    let after = snapshot_of(&config);
+    let changed: Vec<&PathBuf> = before.keys().chain(after.keys()).filter(|path| before.get(*path) != after.get(*path)).collect();
+    assert!(changed.is_empty(), "o plugin instalado e o registro ficam como estavam: {changed:?}");
 }

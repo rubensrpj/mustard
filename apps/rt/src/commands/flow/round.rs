@@ -134,7 +134,7 @@ mod usage;
 /// retomada as conta.
 pub(crate) use stops::{change_accepted, change_code_of, replan_code, swaps_decision, waves_stuck};
 
-pub(crate) use commit::{reinstall_binary, refresh_map_if_stale, waves_checked_only};
+pub(crate) use commit::{refresh_map_if_stale, waves_checked_only};
 
 use std::path::PathBuf;
 
