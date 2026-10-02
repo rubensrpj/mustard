@@ -51,12 +51,53 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("spec_events.task_declaration_depends_on", Locale::PtBr) => "de quais tarefas depende",
         ("spec_events.task_declaration_depends_on", Locale::EnUs) => "which tasks it depends on",
         ("spec_events.task_declaration_title", Locale::PtBr) => {
-            "um título curto, de até 70 caracteres, que diga o que ela entrega, e não o que a coisa \
-             é (exemplo: \"Fechamento confere cada critério contra o código\")"
+            "um título curto, de até 70 caracteres, com o que ela entrega (como \"Fechamento \
+             confere cada critério contra o código\")"
         }
         ("spec_events.task_declaration_title", Locale::EnUs) => {
-            "a short title, of up to 70 characters, saying what it delivers, not what the thing is \
-             (example: \"Closing checks each criterion against the code\")"
+            "a short title, of up to 70 characters, saying what it delivers (like \"Closing checks \
+             each criterion against the code\")"
+        }
+        ("spec_events.task_declaration_covers", Locale::PtBr) => {
+            "os itens que ela cobre, em `covers`, pelo número (a onda leva esses itens como critérios)"
+        }
+        ("spec_events.task_declaration_covers", Locale::EnUs) => {
+            "the items it covers, in `covers`, by number (the wave takes them as its criteria)"
+        }
+        ("spec_events.task_uncovered_items", Locale::PtBr) => "Itens que nenhuma tarefa cobre ainda: {items}.",
+        ("spec_events.task_uncovered_items", Locale::EnUs) => "Items no task covers yet: {items}.",
+        ("spec_events.task_uncovered_more", Locale::PtBr) => "e mais {n}",
+        ("spec_events.task_uncovered_more", Locale::EnUs) => "and {n} more",
+        // A forma fixa de um item que descreve o trabalho: título, parte do
+        // usuário e parte do agente, e a conferência de escrita das duas
+        // primeiras.
+        ("spec_events.item_form_missing", Locale::PtBr) => {
+            "Falta ao item: {missing}. Nada foi gravado."
+        }
+        ("spec_events.item_form_missing", Locale::EnUs) => "The item is missing: {missing}. Nothing was written.",
+        ("spec_events.item_part_title", Locale::PtBr) => "o título curto em `title`, com até 70 caracteres",
+        ("spec_events.item_part_title", Locale::EnUs) => "a short title in `title`, up to 70 characters",
+        ("spec_events.item_part_user", Locale::PtBr) => "a parte do usuário em `text`, com o porquê",
+        ("spec_events.item_part_user", Locale::EnUs) => "the user's part in `text`, with the why",
+        ("spec_events.item_part_agent", Locale::PtBr) => {
+            "a parte do agente em `agent`, com arquivos, linhas, comandos e o que testar"
+        }
+        ("spec_events.item_part_agent", Locale::EnUs) => {
+            "the agent's part in `agent`, with files, lines, commands and what to test"
+        }
+        ("spec_events.item_part_user_cites", Locale::PtBr) => {
+            "a parte do usuário sem {found}, porque crase, caminho e código de item vão para `agent`"
+        }
+        ("spec_events.item_part_user_cites", Locale::EnUs) => {
+            "the user's part without {found}, because backticks, paths and item codes go in `agent`"
+        }
+        ("spec_events.item_unclear", Locale::PtBr) => {
+            "O título e a parte do usuário passam pela conferência de escrita das respostas. Ela \
+             achou: {defects}. Reescreva e grave de novo. Nada foi gravado."
+        }
+        ("spec_events.item_unclear", Locale::EnUs) => {
+            "The title and the user's part go through the writing check of responses. It found: \
+             {defects}. Rewrite them and write again. Nothing was written."
         }
         ("spec_events.task_depends_on_unknown", Locale::PtBr) => {
             "A tarefa {task} depende de {depends_on}, que não existe nesta spec. Nada foi gravado."
@@ -79,16 +120,52 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "The final verdict must answer for all the vigent agreed requirements: {missing} is missing. \
              The reviewer writes the verdict again, with all of them. Nothing was written."
         }
+        ("spec_events.delivery_agreed_missing", Locale::PtBr) => {
+            "A entrega da onda {wave} precisa responder, em `agreed`, por cada item combinado que o pedido \
+             dela levou: faltou {missing}. Grave a entrega de novo com cada um em `agreed`, pelo código em \
+             `item` e com `met`: `true` se foi cumprido, ou `false` com o que falta em `text`. Nada foi \
+             gravado."
+        }
+        ("spec_events.delivery_agreed_missing", Locale::EnUs) => {
+            "The delivery of wave {wave} must answer, in `agreed`, for each agreed item its request carried: \
+             {missing} is missing. Record the delivery again with each one in `agreed`, by its code in \
+             `item` and with `met`: `true` if it was met, or `false` with what is missing in `text`. \
+             Nothing was written."
+        }
+        ("spec_events.delivery_read_missing", Locale::PtBr) => {
+            "A entrega da onda {wave} foi recusada: o pedido lista item que ainda não foi lido, e faltou \
+             {missing}. Leia cada um de dentro da cópia da onda. Use o comando de \"Como ler cada item\" \
+             do pedido; `lesson-<número>` é a lição desse número. Depois grave a entrega de novo. Nada foi \
+             gravado."
+        }
+        ("spec_events.delivery_read_missing", Locale::EnUs) => {
+            "The delivery of wave {wave} was refused: the request lists an item that was not read yet, and \
+             {missing} is missing. Read each one from inside the wave's copy. Use the command of \"How to \
+             read each item\" in the request; `lesson-<number>` is the lesson of that number. Then record \
+             the delivery again. Nothing was written."
+        }
+        ("spec_events.verdict_read_missing", Locale::PtBr) => {
+            "O veredito foi recusado: o pedido da revisão lista item que ainda não foi lido, e faltou \
+             {missing}. Leia cada um de dentro da cópia do revisor. Use o comando de \"Como ler cada \
+             item\" do pedido. Depois grave o veredito de novo. Nada foi gravado."
+        }
+        ("spec_events.verdict_read_missing", Locale::EnUs) => {
+            "The verdict was refused: the review request lists an item that was not read yet, and \
+             {missing} is missing. Read each one from inside the reviewer's copy. Use the command of \
+             \"How to read each item\" in the request. Then record the verdict again. Nothing was \
+             written."
+        }
         ("spec_events.criterion_form_missing", Locale::PtBr) => {
-            "O critério precisa declarar a forma dele, uma das cinco do padrão: a que vale sempre, a \
-             disparada por um acontecimento, a que só vale enquanto um estado durar, a que só vale se \
-             um recurso existir, ou a que trata um acontecimento indesejado. Nada foi gravado."
+            "O critério precisa declarar a forma dele, uma das cinco do padrão. São elas: a que vale \
+             sempre, a disparada por um acontecimento e a que só vale enquanto um estado durar. As \
+             outras duas são a que só vale se um recurso existir e a que trata um acontecimento \
+             indesejado. Nada foi gravado."
         }
         ("spec_events.criterion_form_missing", Locale::EnUs) => {
-            "The criterion must declare its form, one of the pattern's five: the kind that always \
-             holds, the kind triggered by an event, the kind that only holds while a state lasts, the \
-             kind that only holds if a resource exists, or the kind that handles an unwanted event. \
-             Nothing was written."
+            "The criterion must declare its form, one of the pattern's five. They are: the kind that \
+             always holds, the kind triggered by an event, and the kind that only holds while a \
+             state lasts. The other two are the kind that only holds if a resource exists and the \
+             kind that handles an unwanted event. Nothing was written."
         }
         ("spec_events.proof_not_a_command", Locale::PtBr) => {
             "A prova do critério {criterion} precisa ser uma linha de comando, a que demonstra o \
@@ -99,6 +176,37 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Criterion {criterion}'s proof must be a command line, the one that demonstrates the \
              criterion, and {found} arrived instead. Merge the proofs of the same criterion into a \
              single command and run the round again. Nothing was written."
+        }
+        ("spec_events.proof_program_unknown", Locale::PtBr) => {
+            "A prova do critério precisa ser um comando que roda, e o primeiro termo dela, {term}, \
+             não é um programa que o shell ache. Escreva no lugar o comando que demonstra o \
+             critério. A conferência que só se faz à mão vai para o texto do critério, e não para \
+             a prova. Nada foi gravado."
+        }
+        ("spec_events.proof_program_unknown", Locale::EnUs) => {
+            "A criterion's proof must be a command that runs, and its first term, {term}, is not a \
+             program the shell can find. Write the command that demonstrates the criterion \
+             instead. A check that can only be done by hand goes in the criterion's text, not in \
+             the proof. Nothing was written."
+        }
+        ("spec_events.proof_chained_by_semicolon", Locale::PtBr) => {
+            "A prova liga comandos por ponto e vírgula, e só o último decide o resultado: {found}. \
+             Ligue os comandos por && e a prova falha se qualquer um falhar. Nada foi gravado."
+        }
+        ("spec_events.proof_chained_by_semicolon", Locale::EnUs) => {
+            "The proof chains commands with a semicolon, and only the last one decides the result: \
+             {found}. Join the commands with && and the proof fails if any of them fails. Nothing \
+             was written."
+        }
+        ("spec_events.proof_search_not_negated", Locale::PtBr) => {
+            "A prova é uma busca sozinha, {found}, e uma busca sai com sucesso quando acha texto. \
+             Se ela deve sair vazia, escreva ! na frente: a prova passa quando nada é achado. Se \
+             ela deve achar o texto, acrescente -q. Nada foi gravado."
+        }
+        ("spec_events.proof_search_not_negated", Locale::EnUs) => {
+            "The proof is a lone search, {found}, and a search succeeds when it finds text. If it \
+             must come out empty, put ! in front: the proof then passes when nothing is found. If \
+             it must find the text, add -q. Nothing was written."
         }
         ("spec_events.invalid_value", Locale::PtBr) => {
             "O campo {field} do evento {type} precisa ser {expected}. Nada foi gravado."
@@ -293,13 +401,13 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "There is no open review request in this spec. Nothing was written."
         }
         ("spec_events.verdict_missing", Locale::PtBr) => {
-            "O pedido de revisão segue aberto, e o revisor ainda não gravou o veredito: peça a ele \
+            "O pedido de revisão segue aberto, e o revisor ainda não gravou o veredito. Peça a ele \
              que o grave com `mustard-rt run write verdict` e rode o fechamento de novo. Nenhum \
              pedido de revisão novo foi aberto."
         }
         ("spec_events.verdict_missing", Locale::EnUs) => {
-            "The review request is still open, and the reviewer has not written the verdict yet: \
-             ask them to write it with `mustard-rt run write verdict` and run the close again. No \
+            "The review request is still open, and the reviewer has not written the verdict yet. \
+             Ask them to write it with `mustard-rt run write verdict` and run the close again. No \
              new review request was opened."
         }
         ("spec_events.leftover_field_missing", Locale::PtBr) => {
@@ -310,30 +418,29 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("spec_events.report_carries_return_line", Locale::PtBr) => {
             "A entrega e o veredito moram na spec: o agente os grava com mustard-rt run write. O \
-             relatório leva só as linhas USAGE, PAUSED e ANALYSIS."
+             relatório leva só as linhas `USAGE`, `PAUSED` e `ANALYSIS`."
         }
         ("spec_events.report_carries_return_line", Locale::EnUs) => {
             "The delivery and the verdict live in the spec: the agent writes them with mustard-rt \
-             run write. The report carries only the USAGE, PAUSED and ANALYSIS lines."
+             run write. The report carries only the `USAGE`, `PAUSED` and `ANALYSIS` lines."
         }
         ("spec_events.return_missing", Locale::PtBr) => {
             "A onda {wave} terminou sem gravar a entrega: peça ao agente que a grave com `mustard-rt \
-             run write delivered` e rode a rodada de novo com o mesmo relatório. Nada foi gravado."
+             run write delivered` e rode a rodada de novo com a linha `USAGE` dela."
         }
         ("spec_events.return_missing", Locale::EnUs) => {
             "Wave {wave} ended without writing its delivery: ask the agent to write it with \
-             `mustard-rt run write delivered` and run the round again with the same report. Nothing \
-             was written."
+             `mustard-rt run write delivered` and run the round again with its `USAGE` line."
         }
         ("spec_events.return_needs_commit", Locale::PtBr) => {
             "A cópia da onda {wave} mudou arquivo, e a entrega que ela gravou não traz o resumo do \
-             commit (`commit`): peça ao agente que grave a entrega de novo, com o campo, e rode a \
+             commit (`commit`). Peça ao agente que grave a entrega de novo, com o campo, e rode a \
              rodada de novo. Nada foi gravado."
         }
         ("spec_events.return_needs_commit", Locale::EnUs) => {
             "The copy of wave {wave} changed files, and the delivery it wrote lacks the commit \
-             summary (`commit`): ask the agent to write the delivery again, with the field, and run \
-             the round again. Nothing was written."
+             summary (`commit`). Ask the agent to write the delivery again, with the field, and \
+             run the round again. Nothing was written."
         }
         ("spec_events.unknown_target", Locale::PtBr) => {
             "O evento {id} não existe nesta spec. Nada foi gravado."
@@ -348,6 +455,16 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("spec_events.unknown_code", Locale::EnUs) => {
             "Item {code} does not exist in this spec. Check the code on the page or in read. \
              Nothing was written."
+        }
+        ("spec_events.target_other_type", Locale::PtBr) => {
+            "O item {item} existe, mas é do tipo {found}, e este campo pede um item do tipo \
+             {expected}. Use o código de um {expected}, que a página e o read mostram. Nada foi \
+             gravado."
+        }
+        ("spec_events.target_other_type", Locale::EnUs) => {
+            "Item {item} exists, but it is a {found}, and this field asks for an item of type \
+             {expected}. Use the code of a {expected}, shown on the page and in read. Nothing was \
+             written."
         }
         ("spec_events.binary_only_field", Locale::PtBr) => {
             "O campo {field} é gravado só pelo binário e não pode vir no --json. Para apontar um \
@@ -373,6 +490,36 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("spec_events.replaces_other_type", Locale::EnUs) => {
             "Event {id} is a {found}, and the new version came as {type}; it must have the same \
              type. Nothing was written."
+        }
+        ("spec_events.replaces_superseded", Locale::PtBr) => {
+            "O evento {id} já foi substituído, e a versão vigente do item é {current}. Uma versão \
+             nova substitui só a vigente: releia-a e grave a versão nova por cima dela, com \
+             replaces apontando para ela. Nada foi gravado."
+        }
+        ("spec_events.replaces_superseded", Locale::EnUs) => {
+            "Event {id} was already replaced, and the item's current version is {current}. A new \
+             version replaces only the current one: read it again and write the new version over \
+             it, with replaces pointing at it. Nothing was written."
+        }
+        ("spec_events.replaces_removed", Locale::PtBr) => {
+            "O evento {id} é de uma tarefa que a remoção {by} tirou. Para refazer o trabalho, \
+             grave uma tarefa nova, sem replaces. Nada foi gravado."
+        }
+        ("spec_events.replaces_removed", Locale::EnUs) => {
+            "Event {id} belongs to a task that removal {by} took out. To redo the work, write a \
+             new task, without replaces. Nothing was written."
+        }
+        ("spec_events.depends_outside_wave", Locale::PtBr) => {
+            "A tarefa vai para a onda {wave}, que ainda não saiu, e depende de {missing}. Essas \
+             tarefas não estão nela, numa onda entregue nem numa onda que ela espera. A rodada \
+             soltaria a onda antes delas. Grave a tarefa sem wave: o backlog a põe numa onda \
+             depois das dependências. Nada foi gravado."
+        }
+        ("spec_events.depends_outside_wave", Locale::EnUs) => {
+            "The task goes to wave {wave}, which has not gone out yet, and depends on {missing}. \
+             Those tasks are not in it, in a delivered wave, or in a wave it waits for. The round \
+             would send the wave before them. Write the task without wave: the backlog puts it in \
+             a wave after its dependencies. Nothing was written."
         }
         ("spec_events.filter_matches_nothing", Locale::PtBr) => {
             "Nenhum evento {type} entre {from} e {to}. Nada foi gravado."
@@ -403,54 +550,55 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("spec_events.phase_change_refused", Locale::PtBr) => {
             "Esta gravação na spec {spec}, da fase {from} para {to}, não passa por esta porta, e \
              nada foi gravado. A aprovação nasce só quando o usuário escolhe \"Aprovar\" na \
-             pergunta \"Aprovar esta spec?\", pela testemunha; as fases depois dela, e a branch \
-             e a base, só pelo binário."
+             pergunta \"Aprovar esta spec?\", pela testemunha. As fases depois dela, e a branch e \
+             a base, só pelo binário."
         }
         ("spec_events.phase_change_refused", Locale::EnUs) => {
             "This write to the spec {spec}, from the phase {from} to {to}, does not go through \
              this door, and nothing was written. The approval is born only when the user chooses \
-             \"Approve\" in the question \"Approve this spec?\", through the witness; the phases \
-             after it, and the branch and the base, only through the binary."
+             \"Approve\" in the question \"Approve this spec?\", through the witness. The phases \
+             after it, and the branch and the base, go only through the binary."
         }
         ("spec_events.state_by_flow_only", Locale::PtBr) => {
-            "O estado da spec {spec} não é gravado pelo `run write`, e nada foi gravado: ele é \
+            "O estado da spec {spec} não é gravado pelo `run write`, e nada foi gravado. Ele é \
              gravado pelos comandos do fluxo e pela testemunha da aprovação, quando o usuário \
              escolhe \"Aprovar\" na pergunta \"Aprovar esta spec?\"."
         }
         ("spec_events.state_by_flow_only", Locale::EnUs) => {
-            "The state of the spec {spec} is not written by `run write`, and nothing was \
-             written: the flow's commands write it, and so does the approval witness, when the \
-             user chooses \"Approve\" in the question \"Approve this spec?\"."
+            "The state of the spec {spec} is not written by `run write`, and nothing was written. \
+             The flow's commands write it, and so does the approval witness, when the user \
+             chooses \"Approve\" in the question \"Approve this spec?\"."
         }
         ("spec_events.binary_only_type", Locale::PtBr) => {
             "O tipo {type} da spec {spec} não é gravado pelo `run write`, nem tirado ou revisto por \
-             ele, e nada foi gravado: o binário grava a execução dos critérios no fechamento, o \
-             veredito oficial, o envio, a entrega oficial de cada onda e o commit pela rodada, e a \
-             resposta do assistente no fim de cada resposta. A onda grava só a própria volta, com \
-             `run write delivered` enquanto o envio dela está aberto, e o revisor só o próprio \
-             veredito, com `run write verdict` enquanto o pedido de revisão está aberto; a rodada \
-             ou o fechamento assume a volta."
+             ele. Nada foi gravado. O binário grava a execução dos critérios no fechamento, o \
+             veredito oficial, o envio, a entrega oficial de cada onda e o commit pela rodada. Ele \
+             grava também a resposta do assistente, no fim de cada resposta. A onda grava só a \
+             própria volta, com `run write delivered`, enquanto o envio dela está aberto. O revisor \
+             grava só o próprio veredito, com `run write verdict`, enquanto o pedido de revisão \
+             está aberto. Fora disso, a rodada ou o fechamento assume a volta."
         }
         ("spec_events.binary_only_type", Locale::EnUs) => {
-            "The type {type} of the spec {spec} is not written, removed or revised by `run write`, \
-             and nothing was written: the binary writes the criteria runs at the close, the \
-             official verdict, the send, the official delivery of each wave and the commit through \
-             the round, and the assistant's response at the end of each answer. A wave writes only \
-             its own return, with `run write delivered` while its send is open, and the reviewer \
-             only its own verdict, with `run write verdict` while the review request is open; the \
-             round or the close takes the return over."
+            "The type {type} of the spec {spec} is not written, removed or revised by `run write`. \
+             Nothing was written. The binary writes the criteria runs at the close, the official \
+             verdict, the send, each wave's official delivery and the commit through the round. It \
+             also writes the assistant's response at the end of each answer. A wave writes only \
+             its own return, with `run write delivered`, while its send is open. The reviewer \
+             writes only its own verdict, with `run write verdict`, while the review request is \
+             open. Otherwise, the round or the close takes the return over."
         }
         ("spec_events.user_message_by_hook", Locale::PtBr) => {
-            "Na spec {spec}, a resposta a uma pergunta com opções (a mensagem com `witness`, de \
-             qualquer autor) e a fala do usuário que só o gancho grava não são gravadas, tiradas \
-             ou revistas pelo `run write`, e nada foi gravado: a resposta chega pela testemunha, e \
-             a fala, pelo gancho da entrada."
+            "Na spec {spec}, o `run write` não grava, não tira e não revê dois tipos de mensagem. Um \
+             é a resposta a uma pergunta com opções: a mensagem com `witness`, de qualquer autor. O \
+             outro é a fala do usuário, que só o gancho grava. Nada foi gravado: a resposta chega \
+             pela testemunha, e a fala, pelo gancho da entrada."
         }
         ("spec_events.user_message_by_hook", Locale::EnUs) => {
-            "In the spec {spec}, the answer to a question with options (the message with \
-             `witness`, from any author) and the user's speech that only the hook records are not \
-             written, removed or revised by `run write`, and nothing was written: the answer \
-             arrives through the witness, and the speech, through the entry hook."
+            "In the spec {spec}, `run write` does not write, remove or revise two kinds of message. \
+             One is the answer to a question with options: the message with `witness`, from any \
+             author. The other is the user's speech, which only the hook records. Nothing was \
+             written: the answer arrives through the witness, and the speech, through the entry \
+             hook."
         }
         ("spec_events.binary_author", Locale::PtBr) => {
             "O autor `binary` fica para as gravações de dentro do binário, e nada foi gravado: o \
@@ -461,28 +609,52 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              written: `run write` records the author who writes, `assistant` (the default) or `user`."
         }
         ("spec_events.wave_by_backlog", Locale::PtBr) => {
-            "A onda não é gravada pelo `run write`, e nada foi gravado: a onda nasce do backlog, e é \
+            "A onda não é gravada pelo `run write`, e nada foi gravado. A onda nasce do backlog, e é \
              o programa que monta o lote na hora de despachar. Grave só a tarefa, sem `wave`, com o \
              que ela faz (`text`), os arquivos (`files`) e as tarefas de que depende \
              (`depends_on`). Na versão nova de uma tarefa que já está numa onda, repita o `wave` da \
              versão que ela substitui."
         }
         ("spec_events.wave_by_backlog", Locale::EnUs) => {
-            "A wave is not written by `run write`, and nothing was written: the wave is born from \
+            "A wave is not written by `run write`, and nothing was written. The wave is born from \
              the backlog, and the program puts the batch together when it dispatches. Write only \
              the task, without `wave`, with what it does (`text`), the files (`files`) and the \
              tasks it depends on (`depends_on`). In the new version of a task that is already in a \
              wave, repeat the `wave` of the version it replaces."
         }
+        ("spec_events.request_on_closed_spec", Locale::PtBr) => {
+            "A spec {spec} está na fase {phase}: ela já fechou, e o pedido novo só entra nela \
+             depois de reaberta. Rode `mustard-rt run reopen --spec {spec} --reason \"<motivo>\"`: \
+             ela volta à execução, já aprovada, na mesma branch e com o mesmo pull request; depois \
+             grave o pedido de novo. Nada foi gravado."
+        }
+        ("spec_events.request_on_closed_spec", Locale::EnUs) => {
+            "The spec {spec} is in the {phase} phase: it has already closed, and a new request only \
+             goes into it after it is reopened. Run `mustard-rt run reopen --spec {spec} --reason \
+             \"<reason>\"`: it goes back to running, already approved, on the same branch and with \
+             the same pull request; then write the request again. Nothing was written."
+        }
+        ("spec_events.work_on_finished_spec", Locale::PtBr) => {
+            "A spec {spec} está na fase {phase}, e o `run write {type}` não grava nela. A spec \
+             entregue na base, com o merge feito, e a descartada não voltam. Pedido novo sobre ela \
+             é obra nova: abra uma spec nova com `mustard-rt run open` e grave nela. Nada foi \
+             gravado."
+        }
+        ("spec_events.work_on_finished_spec", Locale::EnUs) => {
+            "The spec {spec} is in the {phase} phase, and `run write {type}` does not write to it. \
+             A spec delivered to the base, already merged, and a discarded one do not come back. A \
+             new request on it is new work: open a new spec with `mustard-rt run open` and write \
+             there. Nothing was written."
+        }
         ("spec_events.old_format_spec", Locale::PtBr) => {
-            "A spec {spec} está no formato antigo (o `spec.md` dela traz a seção \"Critérios de \
-             Aceitação\", ou a pasta tem `meta.json` e nenhum `spec.ndjson`), e o binário não grava \
+            "A spec {spec} está no formato antigo: o `spec.md` dela traz a seção \"Critérios de \
+             Aceitação\", ou a pasta tem `meta.json` e nenhum `spec.ndjson`. O binário não grava \
              nela. Abra uma spec nova com `mustard-rt run open`. Nada foi gravado."
         }
         ("spec_events.old_format_spec", Locale::EnUs) => {
-            "Spec {spec} is in the old format (its `spec.md` carries the \"Acceptance Criteria\" \
-             section, or the folder has a `meta.json` and no `spec.ndjson`), and the binary does \
-             not write to it. Open a new spec with `mustard-rt run open`. Nothing was written."
+            "Spec {spec} is in the old format: its `spec.md` carries the \"Acceptance Criteria\" \
+             section, or the folder has a `meta.json` and no `spec.ndjson`. The binary does not \
+             write to it. Open a new spec with `mustard-rt run open`. Nothing was written."
         }
         ("spec_events.io_failed", Locale::PtBr) => "Não consegui usar o arquivo da spec: {detail}.",
         ("spec_events.io_failed", Locale::EnUs) => "Could not use the spec file: {detail}.",
@@ -527,14 +699,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("spec_events.kind.time", Locale::PtBr) => "uma data e hora como 2026-09-11T21:03",
         ("spec_events.kind.time", Locale::EnUs) => "a date and time like 2026-09-11T21:03",
         ("spec_events.kind.ref", Locale::PtBr) => {
-            "o número de um evento ou o código de um item, como MSTD-RULE-0002"
+            "o número de um evento ou o código de um item, como `MSTD-RULE-0002`"
         }
-        ("spec_events.kind.ref", Locale::EnUs) => "an event number or an item code, like MSTD-RULE-0002",
+        ("spec_events.kind.ref", Locale::EnUs) => "an event number or an item code, like `MSTD-RULE-0002`",
         ("spec_events.kind.refs", Locale::PtBr) => {
-            "uma lista de números de evento ou de códigos de item, como MSTD-RULE-0002"
+            "uma lista de números de evento ou de códigos de item, como `MSTD-RULE-0002`"
         }
         ("spec_events.kind.refs", Locale::EnUs) => {
-            "a list of event numbers or item codes, like MSTD-RULE-0002"
+            "a list of event numbers or item codes, like `MSTD-RULE-0002`"
         }
 
         // O índice das specs (`io::spec_index`, o comando `run index` e a
@@ -564,12 +736,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              `mustard-rt run index` to rebuild it."
         }
         ("spec_index.stale_search", Locale::PtBr) => {
-            "{count} linha(s) dos arquivos de eventos e do banco de lições têm o campo search \
-             calculado por outro redutor. Rode `mustard-rt run index` para recalculá-lo."
+            "{count} linha(s) dos arquivos de eventos e do banco de lições estão sem o campo \
+             search. Rode `mustard-rt run index` para pô-lo."
         }
         ("spec_index.stale_search", Locale::EnUs) => {
-            "{count} line(s) of the event files and the lesson bank have a search field computed \
-             by another stemmer. Run `mustard-rt run index` to recompute it."
+            "{count} line(s) of the event files and the lesson bank have no search field. Run \
+             `mustard-rt run index` to fill it."
         }
         ("spec_events.spec_required", Locale::PtBr) => {
             "Falta a spec: o tipo {type} é gravado no arquivo de eventos de uma spec. Passe \
@@ -613,6 +785,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              To change the one that exists, write its new version with `\"replaces\": {id}`. \
              Nothing was written."
         }
+        ("lessons.too_long", Locale::PtBr) => {
+            "A lição tem {lines} linhas, e o teto é {max}. Resuma o texto e grave de novo. Nada foi \
+             gravado."
+        }
+        ("lessons.too_long", Locale::EnUs) => {
+            "The lesson has {lines} lines, and the limit is {max}. Shorten the text and write it \
+             again. Nothing was written."
+        }
         ("lessons.unclear", Locale::PtBr) => {
             "A lição é um resumo do assistente no jeito de escrever do projeto, e a conferência de \
              escrita do fim da resposta achou: {defects}. Reescreva o texto e grave de novo. Nada \
@@ -630,61 +810,61 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("lessons.defect_by_task", Locale::PtBr) => {
             "O defeito que pode se repetir não entra no banco de lições, que fica só nesta máquina \
              e não vai ao git. Ele vira conserto no código, com o teste que falha se o defeito \
-             voltar, e o teste vai ao git no commit da obra: grave a tarefa desse conserto com \
+             voltar. O teste vai ao git no commit da obra. Grave a tarefa desse conserto com \
              `mustard-rt run write task`, na spec {spec}. Nada foi gravado."
         }
         ("lessons.defect_by_task", Locale::EnUs) => {
             "A defect that can happen again does not go in the lesson bank, which stays on this \
              machine only and never goes to git. It becomes a fix in the code, with the test that \
-             fails if the defect comes back, and the test goes to git in the commit of the work: \
-             write the task of that fix with `mustard-rt run write task`, in the spec {spec}. \
-             Nothing was written."
+             fails if the defect comes back. The test goes to git in the commit of the work. Write \
+             the task of that fix with `mustard-rt run write task`, in the spec {spec}. Nothing \
+             was written."
         }
         ("lessons.defect_in_code", Locale::PtBr) => {
             "O defeito que pode se repetir não entra no banco de lições, que fica só nesta máquina \
              e não vai ao git. Ele vira conserto no código, com o teste que falha se o defeito \
-             voltar, e o teste vai ao git no commit. Nada foi gravado."
+             voltar. O teste vai ao git no commit. Nada foi gravado."
         }
         ("lessons.defect_in_code", Locale::EnUs) => {
             "A defect that can happen again does not go in the lesson bank, which stays on this \
              machine only and never goes to git. It becomes a fix in the code, with the test that \
-             fails if the defect comes back, and the test goes to git in the commit. Nothing was \
+             fails if the defect comes back. The test goes to git in the commit. Nothing was \
              written."
         }
         ("lessons.rule_by_task", Locale::PtBr) => {
             "A regra do projeto não entra no banco de lições, que fica só nesta máquina e não vai \
-             ao git: em outra máquina, ela some. Ela vira teste no código da obra, que falha se a \
-             regra for quebrada, e o teste vai ao git no commit da obra: grave a tarefa desse \
-             teste com `mustard-rt run write task`, na spec {spec}. Nada foi gravado."
+             ao git. Em outra máquina, ela some. Ela vira teste no código da obra, que falha se a \
+             regra for quebrada. O teste vai ao git no commit da obra. Grave a tarefa desse teste \
+             com `mustard-rt run write task`, na spec {spec}. Nada foi gravado."
         }
         ("lessons.rule_by_task", Locale::EnUs) => {
             "A project rule does not go in the lesson bank, which stays on this machine only and \
-             never goes to git: on another machine, it is gone. It becomes a test in the code of \
-             the work, one that fails if the rule is broken, and the test goes to git in the \
-             commit of the work: write the task of that test with `mustard-rt run write task`, \
-             in the spec {spec}. Nothing was written."
+             never goes to git. On another machine, it is gone. It becomes a test in the code of \
+             the work, one that fails if the rule is broken. The test goes to git in the commit of \
+             the work. Write the task of that test with `mustard-rt run write task`, in the spec \
+             {spec}. Nothing was written."
         }
         ("lessons.rule_in_code", Locale::PtBr) => {
             "A regra do projeto não entra no banco de lições, que fica só nesta máquina e não vai \
-             ao git: em outra máquina, ela some. Ela vira teste no código, que falha se a regra \
-             for quebrada, e o teste vai ao git no commit. Nada foi gravado."
+             ao git. Em outra máquina, ela some. Ela vira teste no código, que falha se a regra \
+             for quebrada. O teste vai ao git no commit. Nada foi gravado."
         }
         ("lessons.rule_in_code", Locale::EnUs) => {
             "A project rule does not go in the lesson bank, which stays on this machine only and \
-             never goes to git: on another machine, it is gone. It becomes a test in the code, \
-             one that fails if the rule is broken, and the test goes to git in the commit. \
-             Nothing was written."
+             never goes to git. On another machine, it is gone. It becomes a test in the code, one \
+             that fails if the rule is broken. The test goes to git in the commit. Nothing was \
+             written."
         }
         // As regras que a limpeza da instalação tira dos arquivos de instrução
         // viram um item só da lista de pendências, com o texto de cada uma e o
         // arquivo de onde saiu.
         ("lessons.rules_left.title", Locale::PtBr) => {
-            "Regras que a instalação tirou dos arquivos de instrução ({count}): cada uma vira \
-             teste ou sai"
+            "Regras que a instalação tirou dos arquivos de instrução ({count}, lote {mark}): cada \
+             uma vira teste ou sai"
         }
         ("lessons.rules_left.title", Locale::EnUs) => {
-            "Rules the install took out of the instruction files ({count}): each becomes a test or \
-             goes"
+            "Rules the install took out of the instruction files ({count}, batch {mark}): each \
+             becomes a test or goes"
         }
         ("lessons.rules_left.detail", Locale::PtBr) => {
             "Um Mustard antigo escreveu estas regras entre as marcas dele nos arquivos de \
@@ -703,13 +883,25 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // O que o scan aponta para enxugar o banco de lições (`run scan`).
         ("lessons.scan_merge", Locale::PtBr) => {
             "Junte cada grupo de lições parecidas numa lição só, resumida no jeito de escrever do \
-             projeto, gravada com `mustard-rt run write lesson` e com `\"replaces\"` apontando as \
+             projeto. Grave-a com `mustard-rt run write lesson`, com `\"replaces\"` apontando as \
              lições do grupo: {groups}."
         }
         ("lessons.scan_merge", Locale::EnUs) => {
-            "Merge each group of similar lessons into one lesson, summarized the project's way, \
-             written with `mustard-rt run write lesson` and `\"replaces\"` naming the group's \
+            "Merge each group of similar lessons into one lesson, summarized the project's way. \
+             Write it with `mustard-rt run write lesson`, with `\"replaces\"` naming the group's \
              lessons: {groups}."
+        }
+        ("lessons.scan_test_or_retire", Locale::PtBr) => {
+            "Estes grupos são de lições de defeito ou de regras do projeto, e o banco recusa juntá-las: \
+             {groups}. Transforme cada uma num teste no código, que falha se a regra for quebrada. \
+             Ou retire do banco a que já não vale, com `mustard-rt run write lesson --json \
+             '{\"targets\":[…],\"reason\":\"…\"}'`."
+        }
+        ("lessons.scan_test_or_retire", Locale::EnUs) => {
+            "These groups hold defect lessons or project rules, and the bank refuses to merge \
+             them: {groups}. Turn each one into a test in the code, one that fails if the rule is \
+             broken. Or retire the one that no longer holds from the bank, with `mustard-rt run \
+             write lesson --json '{\"targets\":[…],\"reason\":\"…\"}'`."
         }
         ("lessons.scan_retire", Locale::PtBr) => {
             "Retire as lições que já não valem, porque citam um caminho que o projeto já não tem, \
@@ -744,8 +936,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("events.rs"),
             super::PREFIXES,
-            98,
-            0x5165_0806_b8a9_7240,
+            121,
+            0x57d0_6593_4b9c_600e,
         );
     }
 
@@ -762,11 +954,26 @@ mod tests {
             ("spec_events.task_declaration_files", &[][..]),
             ("spec_events.task_declaration_depends_on", &[][..]),
             ("spec_events.task_declaration_title", &[][..]),
+            ("spec_events.task_declaration_covers", &[][..]),
+            ("spec_events.task_uncovered_items", &["{items}"][..]),
+            ("spec_events.task_uncovered_more", &["{n}"][..]),
+            ("spec_events.item_form_missing", &["{missing}"][..]),
+            ("spec_events.item_part_title", &[][..]),
+            ("spec_events.item_part_user", &[][..]),
+            ("spec_events.item_part_agent", &[][..]),
+            ("spec_events.item_part_user_cites", &["{found}"][..]),
+            ("spec_events.item_unclear", &["{defects}"][..]),
             ("spec_events.task_depends_on_unknown", &["{task}", "{depends_on}"][..]),
             ("spec_events.task_dependency_cycle", &["{cycle}"][..]),
             ("spec_events.agreed_items_missing", &["{missing}"][..]),
+            ("spec_events.delivery_agreed_missing", &["{wave}", "{missing}"][..]),
+            ("spec_events.delivery_read_missing", &["{wave}", "{missing}"][..]),
+            ("spec_events.verdict_read_missing", &["{missing}"][..]),
             ("spec_events.criterion_form_missing", &[][..]),
             ("spec_events.proof_not_a_command", &["{criterion}", "{found}"][..]),
+            ("spec_events.proof_program_unknown", &["{term}"][..]),
+            ("spec_events.proof_chained_by_semicolon", &["{found}"][..]),
+            ("spec_events.proof_search_not_negated", &["{found}"][..]),
             ("spec_events.invalid_value", &["{type}", "{field}", "{expected}"][..]),
             ("spec_events.wrong_count", &["{type}", "{field}", "{min}", "{max}", "{count}"][..]),
             ("spec_events.fact_without_source", &["{fact}"][..]),
@@ -801,9 +1008,13 @@ mod tests {
             ("request.adjust_waves", &[][..]),
             ("spec_events.unknown_target", &["{id}"][..]),
             ("spec_events.unknown_code", &["{code}"][..]),
+            ("spec_events.target_other_type", &["{item}", "{found}", "{expected}"][..]),
             ("spec_events.binary_only_field", &["{field}"][..]),
             ("spec_events.unknown_field", &["{type}", "{field}", "{fields}"][..]),
             ("spec_events.replaces_other_type", &["{id}", "{found}", "{type}"][..]),
+            ("spec_events.replaces_superseded", &["{id}", "{current}"][..]),
+            ("spec_events.replaces_removed", &["{id}", "{by}"][..]),
+            ("spec_events.depends_outside_wave", &["{wave}", "{missing}"][..]),
             ("spec_events.filter_matches_nothing", &["{type}", "{from}", "{to}"][..]),
             ("spec_events.unknown_block", &["{block}", "{blocks}"][..]),
             ("spec_events.bad_spec_name", &["{spec}"][..]),
@@ -814,6 +1025,8 @@ mod tests {
             ("spec_events.binary_only_type", &["{type}", "{spec}"][..]),
             ("spec_events.binary_author", &[][..]),
             ("spec_events.wave_by_backlog", &[][..]),
+            ("spec_events.request_on_closed_spec", &["{spec}", "{phase}"][..]),
+            ("spec_events.work_on_finished_spec", &["{spec}", "{phase}", "{type}"][..]),
             ("spec_events.user_message_by_hook", &["{spec}"][..]),
             ("spec_events.old_format_spec", &["{spec}"][..]),
             ("spec_events.no_current_spec", &[][..]),
@@ -860,15 +1073,17 @@ mod tests {
             ("lessons.unknown_lesson", &["{id}"][..]),
             ("lessons.origin_missing", &[][..]),
             ("lessons.repeated", &["{id}", "{text}"][..]),
+            ("lessons.too_long", &["{lines}", "{max}"][..]),
             ("lessons.unclear", &["{defects}"][..]),
             ("lessons.defect_by_task", &["{spec}"][..]),
             ("lessons.defect_in_code", &[][..]),
             ("lessons.rule_by_task", &["{spec}"][..]),
             ("lessons.rule_in_code", &[][..]),
-            ("lessons.rules_left.title", &["{count}"][..]),
+            ("lessons.rules_left.title", &["{count}", "{mark}"][..]),
             ("lessons.rules_left.detail", &["{rules}"][..]),
             ("lessons.rules_left.rule", &["{n}", "{text}", "{sources}"][..]),
             ("lessons.scan_merge", &["{groups}"][..]),
+            ("lessons.scan_test_or_retire", &["{groups}"][..]),
             ("lessons.scan_retire", &["{lessons}"][..]),
             ("lessons.scan_untouched", &[][..]),
         ] {
@@ -879,6 +1094,68 @@ mod tests {
             for slot in slots {
                 assert!(pt.contains(slot) && en.contains(slot), "{key} lost {slot}");
             }
+        }
+    }
+
+    /// A recusa da versão nova de uma tarefa removida passa na conferência de
+    /// escrita das respostas, nos dois idiomas, com cada vaga trocada por uma
+    /// palavra.
+    #[test]
+    fn the_removed_task_refusal_reads_clearly() {
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let text = translate("spec_events.replaces_removed", lang).replace("{id}", "12").replace("{by}", "15");
+            let report = crate::domain::clarity::measure(&text, &[], Some(lang));
+            assert!(report.passed, "{lang:?}: {report:?}");
+        }
+    }
+
+    /// A recusa da tarefa que depende de outra fora da onda dela passa na
+    /// conferência de escrita das respostas, nos dois idiomas, com cada vaga
+    /// trocada por uma palavra.
+    #[test]
+    fn the_dependency_outside_the_wave_refusal_reads_clearly() {
+        for (lang, word) in [(Locale::PtBr, "tarefas"), (Locale::EnUs, "tasks")] {
+            let text = translate("spec_events.depends_outside_wave", lang).replace("{wave}", "3").replace("{missing}", word);
+            let report = crate::domain::clarity::measure(&text, &[], Some(lang));
+            assert!(report.passed, "{lang:?}: {report:?}");
+        }
+    }
+
+    /// O título do item da limpeza da instalação passa na conferência de
+    /// escrita das respostas, nos dois idiomas, com a contagem e a marca do
+    /// lote no lugar das vagas.
+    #[test]
+    fn the_cleanup_item_title_reads_clearly() {
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let text = translate("lessons.rules_left.title", lang).replace("{count}", "2").replace("{mark}", "3f9a1c07");
+            let report = crate::domain::clarity::measure(&text, &[], Some(lang));
+            assert!(report.passed, "{lang:?}: {text}: {report:?}");
+        }
+    }
+
+    /// A dica do scan para o grupo de defeitos ou de regras do projeto passa na
+    /// conferência de escrita das respostas, nos dois idiomas, com cada vaga
+    /// trocada por uma palavra, e traz o comando de retirada pronto.
+    #[test]
+    fn the_scan_hint_for_lessons_that_cannot_merge_reads_clearly() {
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let hint = translate("lessons.scan_test_or_retire", lang);
+            assert!(hint.contains("mustard-rt run write lesson --json '{\"targets\":["), "{lang:?}: {hint}");
+            let text = hint.replace("{groups}", "grupos");
+            let report = crate::domain::clarity::measure(&text, &[], Some(lang));
+            assert!(report.passed, "{lang:?}: {report:?}");
+        }
+    }
+
+    /// A recusa da lição acima do teto de linhas passa na conferência de
+    /// escrita das respostas, nos dois idiomas, com cada vaga trocada por uma
+    /// palavra.
+    #[test]
+    fn the_lesson_line_limit_refusal_reads_clearly() {
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let text = translate("lessons.too_long", lang).replace("{lines}", "16").replace("{max}", "15");
+            let report = crate::domain::clarity::measure(&text, &[], Some(lang));
+            assert!(report.passed, "{lang:?}: {report:?}");
         }
     }
 }

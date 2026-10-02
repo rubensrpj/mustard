@@ -295,7 +295,7 @@ fn render_powerline(theme: &Theme, segs: &[Segment], glyph: char) -> String {
 
 // Each themes block packs styles in the same order as `SegmentKind`:
 // Module, Git, Context, Duration, Savings, Mustard, Model, Unit, Inert,
-// Compact.
+// Compact, Spend.
 
 /// `default` — pipes, ANSI 8 colors, no bg. Looks like a classic terminal
 /// prompt; safe on any terminal.
@@ -327,6 +327,9 @@ pub const DEFAULT: Theme = Theme {
         // Compact — gray, same tone as Duration; override_fg reddens it
         // when the cut point falls under 100k tokens.
         Style::fg(Color::Ansi(8)),
+        // Spend — yellow; override_fg turns it green when the last closed
+        // day came in under the average.
+        Style::fg(Color::Ansi(3)),
     ],
 };
 
@@ -371,6 +374,8 @@ pub(crate) const CATPPUCCIN: Theme = Theme {
         // Compact — text on crust, same tone as Duration; override_fg
         // reddens it when the cut point falls under 100k tokens.
         Style::pl(Color::Rgb(0xcd, 0xd6, 0xf4), Color::Rgb(0x11, 0x11, 0x1b)),
+        // Spend — peach on crust: the machine's consumption
+        Style::pl(Color::Rgb(0xfa, 0xb3, 0x87), Color::Rgb(0x18, 0x18, 0x25)),
     ],
 };
 
@@ -405,6 +410,8 @@ pub(crate) const TOKYO_NIGHT: Theme = Theme {
         // Compact — fg on bg, same tone as Duration; override_fg reddens
         // it when the cut point falls under 100k tokens.
         Style::pl(Color::Rgb(0xc0, 0xca, 0xf5), Color::Rgb(0x1a, 0x1b, 0x26)),
+        // Spend — magenta on bg-storm: the machine's consumption
+        Style::pl(Color::Rgb(0xbb, 0x9a, 0xf7), Color::Rgb(0x24, 0x28, 0x3b)),
     ],
 };
 
@@ -439,6 +446,8 @@ pub(crate) const PASTEL_POWERLINE: Theme = Theme {
         // override_fg reddens it when the cut point falls under 100k
         // tokens.
         Style::pl(Color::Rgb(0x11, 0x11, 0x1b), Color::Rgb(0xa6, 0xe3, 0xa1)),
+        // Spend — crust on pastel peach: the machine's consumption
+        Style::pl(Color::Rgb(0x11, 0x11, 0x1b), Color::Rgb(0xfa, 0xb3, 0x87)),
     ],
 };
 
@@ -473,6 +482,8 @@ pub(crate) const GRUVBOX_RAINBOW: Theme = Theme {
         // Compact — fg on bg0_h, same tone as Duration; override_fg
         // reddens it when the cut point falls under 100k tokens.
         Style::pl(Color::Rgb(0xeb, 0xdb, 0xb2), Color::Rgb(0x1d, 0x20, 0x21)),
+        // Spend — bg on yellow: the machine's consumption
+        Style::pl(Color::Rgb(0x28, 0x28, 0x28), Color::Rgb(0xd7, 0x99, 0x21)),
     ],
 };
 
@@ -577,6 +588,33 @@ mod tests {
     fn render_line_empty_returns_empty() {
         assert_eq!(render_line(&DEFAULT, &[]), "");
         assert_eq!(render_line(&CATPPUCCIN, &[]), "");
+    }
+
+    /// O indicador do consumo tem cor nos seis temas: nos de cor chapada
+    /// (`default` e `minimal`) sai amarelo e, abaixo da média, verde; nos de
+    /// powerline sai na cor própria do tema, sem o verde, que não se mistura
+    /// com a paleta fixa.
+    #[test]
+    fn the_consumption_indicator_is_drawn_in_every_theme() {
+        use crate::commands::statusline::segment::spend_indicator;
+        use mustard_core::SupportedLocale;
+        let above = spend_indicator(12, None, SupportedLocale::PtBr);
+        let below = spend_indicator(-25, None, SupportedLocale::PtBr);
+        for theme in [&DEFAULT, &MINIMAL] {
+            let (up, down) = (render_line(theme, std::slice::from_ref(&above)), render_line(theme, std::slice::from_ref(&below)));
+            assert!(up.contains("\x1b[33m") && up.contains("consumo +12%"), "yellow above the average: {up:?}");
+            assert!(down.contains("\x1b[32m") && !down.contains("\x1b[33m"), "green below it: {down:?}");
+        }
+        for (theme, fg, bg) in [
+            (&CATPPUCCIN, "\x1b[38;2;250;179;135m", "\x1b[48;2;24;24;37m"),
+            (&TOKYO_NIGHT, "\x1b[38;2;187;154;247m", "\x1b[48;2;36;40;59m"),
+            (&PASTEL_POWERLINE, "\x1b[38;2;17;17;27m", "\x1b[48;2;250;179;135m"),
+            (&GRUVBOX_RAINBOW, "\x1b[38;2;40;40;40m", "\x1b[48;2;215;153;33m"),
+        ] {
+            let down = render_line(theme, std::slice::from_ref(&below));
+            assert!(down.contains(fg) && down.contains(bg) && down.contains("consumo \u{2212}25%"), "{down:?}");
+            assert!(!down.contains("\x1b[32m"), "the green override is for flat themes only: {down:?}");
+        }
     }
 
     #[test]

@@ -292,7 +292,7 @@ mod tests {
         let text = "a fase `survey`, a `plan`, `src/a.rs`, `mod.rs`, `--spec`, `MSTD-RULE-0025`, \
                     `cargo test -p x`, `{\"a\":1}`, `P-12`, `Não`, `Vec<String>`, `1024`, ``";
         assert_eq!(cited_names(text), Vec::<String>::new());
-        assert_eq!(check(&World::default(), "src/nada.rs", text), Vec::new(), "no names, no map warning");
+        assert_eq!(check(&World::default(), "src/nothing.rs", text), Vec::new(), "no names, no map warning");
         let text = "`State`, `SpecLog`, `check_citations`, `spanOf`, `TOP`, `State`";
         assert_eq!(cited_names(text), vec!["State", "SpecLog", "check_citations", "spanOf", "TOP"]);
     }

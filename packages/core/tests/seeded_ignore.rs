@@ -48,6 +48,9 @@
 //! therefore also writes `spec.md` and requires git to still SEE it — the
 //! sidecars are runtime output, the spec is not.
 
+#[path = "support/manifest_dir.rs"]
+mod manifest_dir;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -61,7 +64,7 @@ const WRITER_PATHS: &[&str] = &[
     // The copy of a spec for its published page's database, rebuilt at each
     // milestone. apps/rt/src/commands/spec_events/pages/copy.rs (`FOLDER`)
     "spec/demo/copy/spec-1.json",
-    "spec/demo/copy/ranges/0.json",
+    "spec/demo/copy/ranges/0@12.json",
     // Sanctioned scratch evidence: the write gate lets a diagnosis land here on
     // a protected base, so it has to be ignored by construction.
     // apps/rt/src/shared/paths.rs (`.claude/scratch/` carve-out)
@@ -188,7 +191,7 @@ fn field_proven_samples() -> Vec<String> {
 
 /// This repository's root — two levels up from `packages/core`.
 fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..")
+    manifest_dir::manifest_dir().join("..").join("..")
 }
 
 /// A fresh repository carrying the seeded `.claude/.gitignore` as its single

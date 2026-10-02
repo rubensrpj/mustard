@@ -1,6 +1,7 @@
 //! Build script: turn the external language registry (languages.toml) and the
 //! external query files (queries/<dir>/*.scm) into one generated Rust file in
-//! OUT_DIR. This is where — and the ONLY where — grammar crate symbols and
+//! OUT_DIR, and the route rules of each framework (routes/<framework>.toml and
+//! routes/<framework>/*.scm) into another. This is where — and the ONLY where — grammar crate symbols and
 //! language names are referenced. The crate's own `src/` therefore contains no
 //! language identifier, extension, or grammar node name: adding a language is a
 //! data change (a languages.toml row + .scm files), never a logic change.
@@ -18,11 +19,12 @@ fn main() {
 
     println!("cargo:rerun-if-changed=languages.toml");
     println!("cargo:rerun-if-changed=queries");
+    println!("cargo:rerun-if-changed=routes");
     println!("cargo:rerun-if-changed=src");
 
     // The map format: a digest of everything that decides what the scan
-    // yields from a file — the engine (src), the queries, and the data tables
-    // at the crate root. A map written by a scan built from other sources is
+    // yields from a file — the engine (src), the queries, the route rules, and
+    // the data tables at the crate root. A map written by a scan built from other sources is
     // read again in full, so no change to the scan can leave a stale map
     // behind, and nobody has to remember to bump a number by hand.
     println!("cargo:rustc-env=SCAN_MAP_DIGEST={}", source_digest(Path::new(&manifest)));
@@ -49,7 +51,7 @@ fn main() {
     ext_table.push_str("pub(crate) static LANG_EXTENSIONS: &[(&str, &[&str])] = &[\n");
 
     // (name, root_aliases) table — the OPTIONAL per-language import segments
-    // that alias the package root (e.g. Rust's `crate`/`self`/`super`). The
+    // that alias the package root (e.g. Rust's `crate`/`self`). The
     // graph's root-alias resolution branch only runs for imports whose first
     // segment is declared here; a language without the field gets an empty
     // slice and never takes that branch.
@@ -62,6 +64,104 @@ fn main() {
     // namespace is seen only by the files that declare the same one.
     let mut scope_table = String::new();
     scope_table.push_str("pub(crate) static LANG_NAMESPACE_SCOPE: &[(&str, &str)] = &[\n");
+
+    // (name, import_extensions) — as extensões OPCIONAIS que o import da
+    // língua escreve no lugar da do próprio arquivo. Sem o campo, lista vazia:
+    // o caminho importado só perde a extensão quando ela é da própria língua.
+    let mut import_ext_table = String::new();
+    import_ext_table.push_str("pub(crate) static LANG_IMPORT_EXTENSIONS: &[(&str, &[&str])] = &[\n");
+
+    // (name, alias_config) — os nomes OPCIONAIS do arquivo de configuração
+    // dos apelidos de pasta, em ordem de preferência na mesma pasta; o texto
+    // sozinho é lista de um. Sem o campo, lista vazia: a língua não tem
+    // apelido de pasta e a leitura nem começa.
+    // (name, alias_base), (name, alias_paths) e (name, alias_extends) — as
+    // três chaves lidas na configuração; sem o campo, texto vazio.
+    // (name, separator) — o import relativo OPCIONAL que a língua escreve com
+    // um separador no lugar da barra. Sem o campo, texto vazio: o import da
+    // língua nunca é lido assim. O arquivo que responde pela pasta vem da
+    // lista do núcleo (`CORE_ENTRY_FILES`), pelo nome da língua.
+    let mut relative_table = String::new();
+    relative_table.push_str("pub(crate) static LANG_RELATIVE_IMPORT: &[(&str, &str)] = &[\n");
+
+    // (name, qualified_separators) — os textos OPCIONAIS que juntam as partes
+    // de um nome qualificado na língua. Sem o campo, lista vazia: o motor usa
+    // os separadores de sempre.
+    let mut separators_table = String::new();
+    separators_table.push_str("pub(crate) static LANG_QUALIFIED_SEPARATORS: &[(&str, &[&str])] = &[\n");
+
+    // (name, parent_alias) — o nome OPCIONAL que, no começo de um caminho
+    // qualificado, sobe um módulo. Sem o campo, texto vazio: nenhum caminho
+    // da língua é lido assim.
+    let mut parent_table = String::new();
+    parent_table.push_str("pub(crate) static LANG_PARENT_ALIAS: &[(&str, &str)] = &[\n");
+
+    // (name, module_alias) — o nome OPCIONAL que, no começo de um caminho
+    // qualificado, nomeia o próprio módulo de quem escreve. Sem o campo,
+    // texto vazio: nenhum caminho da língua é lido assim.
+    let mut module_table = String::new();
+    module_table.push_str("pub(crate) static LANG_MODULE_ALIAS: &[(&str, &str)] = &[\n");
+
+    // (name, member_separators) e (name, self_receivers) — os textos
+    // OPCIONAIS que ligam o método ao valor antes dele sem juntar caminho, e
+    // os nomes que são o próprio objeto. Sem o campo, lista vazia.
+    let mut member_table = String::new();
+    member_table.push_str("pub(crate) static LANG_MEMBER_SEPARATORS: &[(&str, &[&str])] = &[\n");
+    let mut self_table = String::new();
+    self_table.push_str("pub(crate) static LANG_SELF_RECEIVERS: &[(&str, &[&str])] = &[\n");
+
+    // (name, implicit_self) — se o nome sozinho alcança um membro do próprio
+    // objeto. OPCIONAL: sem o campo, `false`.
+    let mut implicit_table = String::new();
+    implicit_table.push_str("pub(crate) static LANG_IMPLICIT_SELF: &[(&str, bool)] = &[\n");
+
+    // (name, single_part_paths) — se o import não relativo de uma parte só
+    // pode nomear um arquivo do projeto. OPCIONAL: sem o campo, `false`.
+    let mut single_part_table = String::new();
+    single_part_table.push_str("pub(crate) static LANG_SINGLE_PART_PATHS: &[(&str, bool)] = &[\n");
+
+    // (name, global_namespace) — se o arquivo que não declara namespace fica
+    // à vista dos arquivos da mesma família no mesmo projeto. OPCIONAL: sem o
+    // campo, `false`.
+    let mut global_namespace_table = String::new();
+    global_namespace_table.push_str("pub(crate) static LANG_GLOBAL_NAMESPACE: &[(&str, bool)] = &[\n");
+
+    // (name, import_self) — o nome OPCIONAL que, trazido por um import, traz
+    // o último nome escrito antes da lista que o contém. Sem o campo, texto
+    // vazio: todo nome trazido é ele mesmo.
+    let mut import_self_table = String::new();
+    import_self_table.push_str("pub(crate) static LANG_IMPORT_SELF: &[(&str, &str)] = &[\n");
+
+    // (name, prelude), (name, log_calls), (name, error_forms), (name,
+    // parent_receivers) e (name, package_entry) — os nomes OPCIONAIS que todo
+    // arquivo vê sem import, as chamadas que escrevem log, as formas que
+    // lançam ou devolvem erro, os nomes do próprio objeto visto pelo tipo de
+    // cima e os arquivos raiz de um pacote. Sem o campo, lista vazia.
+    let list_fields = ["prelude", "log_calls", "error_forms", "parent_receivers", "package_entry"];
+    let mut list_field_tables: Vec<String> = list_fields
+        .iter()
+        .map(|field| format!("pub(crate) static LANG_{}: &[(&str, &[&str])] = &[\n", field.to_ascii_uppercase()))
+        .collect();
+
+    // (name, dir) — a família da língua: as que leem as mesmas consultas
+    // (`dir`) são a mesma língua escrita em arquivos diferentes, e uma chamada
+    // alcança as declarações da família inteira.
+    let mut family_table = String::new();
+    family_table.push_str("pub(crate) static LANG_FAMILY: &[(&str, &str)] = &[\n");
+
+    // (name, markup) — OPCIONAL: a língua escrita dentro de um arquivo de
+    // marcação, com onde o código está e o tipo em que ele mora. Só as
+    // línguas que o declaram entram; nas outras, o arquivo inteiro é código.
+    let mut markup_table = String::new();
+    markup_table.push_str("pub(crate) static LANG_MARKUP: &[(&str, crate::markup::Markup)] = &[\n");
+
+    let mut alias_config_table = String::new();
+    alias_config_table.push_str("pub(crate) static LANG_ALIAS_CONFIG: &[(&str, &[&str])] = &[\n");
+    let alias_fields = ["alias_base", "alias_paths", "alias_extends"];
+    let mut alias_field_tables: Vec<String> = alias_fields
+        .iter()
+        .map(|field| format!("pub(crate) static LANG_{}: &[(&str, &str)] = &[\n", field.to_ascii_uppercase()))
+        .collect();
 
     for lang in languages {
         let tbl = lang.as_table().expect("each [[language]] must be a table");
@@ -97,6 +197,99 @@ fn main() {
                     .collect()
             })
             .unwrap_or_default();
+        let import_extensions: Vec<String> = tbl
+            .get("import_extensions")
+            .map(|v| {
+                v.as_array()
+                    .expect("language.import_extensions must be an array")
+                    .iter()
+                    .map(|e| e.as_str().expect("import extension must be a string").to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let alias_config: Vec<String> = tbl.get("alias_config").map_or_else(Vec::new, |v| {
+            let refused = "language.alias_config must be a string or a list of strings";
+            match (v.as_str(), v.as_array()) {
+                (Some(one), _) => vec![one.to_string()],
+                (None, Some(list)) => list.iter().map(|e| e.as_str().expect(refused).to_string()).collect(),
+                _ => panic!("{refused}"),
+            }
+        });
+        let alias_values: Vec<String> = alias_fields
+            .iter()
+            .map(|field| {
+                tbl.get(*field)
+                    .map(|v| v.as_str().unwrap_or_else(|| panic!("language.{field} must be a string")).to_string())
+                    .unwrap_or_default()
+            })
+            .collect();
+        let separator = tbl.get("relative_import").map_or_else(String::new, |v| {
+            let rule = v.as_table().expect("language.relative_import must be a table");
+            let separator = rule
+                .get("separator")
+                .map(|v| v.as_str().expect("language.relative_import.separator must be a string").to_string())
+                .unwrap_or_default();
+            assert!(!separator.is_empty(), "language.relative_import of `{name}` must declare a non-empty separator");
+            separator
+        });
+        let qualified_separators: Vec<String> = tbl
+            .get("qualified_separators")
+            .map(|v| {
+                v.as_array()
+                    .expect("language.qualified_separators must be an array")
+                    .iter()
+                    .map(|e| e.as_str().expect("qualified separator must be a string").to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+        // A lista vazia na tabela quer dizer "sem o campo": declarada, ela
+        // precisa de ao menos um separador, e nenhum deles vazio.
+        assert!(
+            tbl.get("qualified_separators").is_none()
+                || (!qualified_separators.is_empty() && qualified_separators.iter().all(|s| !s.is_empty())),
+            "language.qualified_separators of `{name}` must list at least one non-empty separator"
+        );
+        let member_separators = str_list(tbl, "member_separators");
+        let self_receivers = str_list(tbl, "self_receivers");
+        let implicit_self = tbl
+            .get("implicit_self")
+            .map(|v| v.as_bool().expect("language.implicit_self must be true or false"))
+            .unwrap_or(false);
+        let single_part_paths = tbl
+            .get("single_part_paths")
+            .map(|v| v.as_bool().expect("language.single_part_paths must be true or false"))
+            .unwrap_or(false);
+        let global_namespace = tbl
+            .get("global_namespace")
+            .map(|v| v.as_bool().expect("language.global_namespace must be true or false"))
+            .unwrap_or(false);
+        let parent_alias = tbl
+            .get("parent_alias")
+            .map(|v| v.as_str().expect("language.parent_alias must be a string").to_string())
+            .unwrap_or_default();
+        // O texto vazio na tabela quer dizer "sem o campo": declarado, ele
+        // não pode ser vazio.
+        assert!(
+            tbl.get("parent_alias").is_none() || !parent_alias.is_empty(),
+            "language.parent_alias of `{name}` must not be empty"
+        );
+        let module_alias = tbl
+            .get("module_alias")
+            .map(|v| v.as_str().expect("language.module_alias must be a string").to_string())
+            .unwrap_or_default();
+        assert!(
+            tbl.get("module_alias").is_none() || !module_alias.is_empty(),
+            "language.module_alias of `{name}` must not be empty"
+        );
+        let import_self = tbl
+            .get("import_self")
+            .map(|v| v.as_str().expect("language.import_self must be a string").to_string())
+            .unwrap_or_default();
+        assert!(
+            tbl.get("import_self").is_none() || !import_self.is_empty(),
+            "language.import_self of `{name}` must not be empty"
+        );
+        let list_values: Vec<Vec<String>> = list_fields.iter().map(|field| str_list(tbl, field)).collect();
         let namespace_scope = tbl
             .get("namespace_scope")
             .map(|v| v.as_str().expect("language.namespace_scope must be a string").to_string())
@@ -107,7 +300,17 @@ fn main() {
         );
 
         // Concatenate every .scm under queries/<dir>/, in stable filename order.
-        let query = read_queries(&queries_root, &dir);
+        let mut query = read_queries(Path::new(&manifest), &queries_root, &dir);
+        // A pasta a mais da entrada: os `.scm` dela entram só nesta consulta,
+        // depois dos de `dir`, que segue sendo a família da língua.
+        if let Some(extra) = tbl.get("extra_queries") {
+            let extra = extra.as_str().expect("language.extra_queries must be a string");
+            assert!(
+                !extra.is_empty() && queries_root.join(extra).is_dir(),
+                "language.extra_queries of `{name}` names `{extra}`, but queries/{extra}/ is not a folder"
+            );
+            query.push_str(&read_queries(Path::new(&manifest), &queries_root, extra));
+        }
 
         let exts = extensions
             .iter()
@@ -120,6 +323,8 @@ fn main() {
             .collect::<Vec<_>>()
             .join(", ");
         let tags = doc_tags.iter().map(|t| format!("{t:?}")).collect::<Vec<_>>().join(", ");
+        let import_exts = import_extensions.iter().map(|e| format!("{e:?}")).collect::<Vec<_>>().join(", ");
+        let separators = qualified_separators.iter().map(|s| format!("{s:?}")).collect::<Vec<_>>().join(", ");
 
         writeln!(
             body,
@@ -129,6 +334,43 @@ fn main() {
         writeln!(ext_table, "    ({name:?}, &[{exts}]),").expect("the generated table is a String, which never fails to write");
         writeln!(alias_table, "    ({name:?}, &[{aliases}]),").expect("the generated table is a String, which never fails to write");
         writeln!(scope_table, "    ({name:?}, {namespace_scope:?}),").expect("the generated table is a String, which never fails to write");
+        writeln!(import_ext_table, "    ({name:?}, &[{import_exts}]),")
+            .expect("the generated table is a String, which never fails to write");
+        writeln!(relative_table, "    ({name:?}, {separator:?}),")
+            .expect("the generated table is a String, which never fails to write");
+        writeln!(separators_table, "    ({name:?}, &[{separators}]),")
+            .expect("the generated table is a String, which never fails to write");
+        writeln!(parent_table, "    ({name:?}, {parent_alias:?}),")
+            .expect("the generated table is a String, which never fails to write");
+        writeln!(module_table, "    ({name:?}, {module_alias:?}),")
+            .expect("the generated table is a String, which never fails to write");
+        writeln!(member_table, "    ({name:?}, &[{}]),", quoted_list(&member_separators))
+            .expect("the generated table is a String, which never fails to write");
+        writeln!(self_table, "    ({name:?}, &[{}]),", quoted_list(&self_receivers))
+            .expect("the generated table is a String, which never fails to write");
+        writeln!(implicit_table, "    ({name:?}, {implicit_self}),")
+            .expect("the generated table is a String, which never fails to write");
+        writeln!(single_part_table, "    ({name:?}, {single_part_paths}),")
+            .expect("the generated table is a String, which never fails to write");
+        writeln!(global_namespace_table, "    ({name:?}, {global_namespace}),")
+            .expect("the generated table is a String, which never fails to write");
+        writeln!(import_self_table, "    ({name:?}, {import_self:?}),")
+            .expect("the generated table is a String, which never fails to write");
+        for (table, values) in list_field_tables.iter_mut().zip(&list_values) {
+            writeln!(table, "    ({name:?}, &[{}]),", quoted_list(values))
+                .expect("the generated table is a String, which never fails to write");
+        }
+        writeln!(family_table, "    ({name:?}, {dir:?}),").expect("the generated table is a String, which never fails to write");
+        if let Some(rule) = tbl.get("markup") {
+            let rule = rule.as_table().unwrap_or_else(|| panic!("language.markup of `{name}` must be a table"));
+            writeln!(markup_table, "    ({name:?}, {}),", markup_rule(&name, rule))
+                .expect("the generated table is a String, which never fails to write");
+        }
+        writeln!(alias_config_table, "    ({name:?}, &[{}]),", quoted_list(&alias_config))
+            .expect("the generated table is a String, which never fails to write");
+        for (table, value) in alias_field_tables.iter_mut().zip(&alias_values) {
+            writeln!(table, "    ({name:?}, {value:?}),").expect("the generated table is a String, which never fails to write");
+        }
     }
 
     body.push_str("    ]\n}\n");
@@ -138,9 +380,421 @@ fn main() {
     body.push_str(&alias_table);
     scope_table.push_str("];\n");
     body.push_str(&scope_table);
+    import_ext_table.push_str("];\n");
+    body.push_str(&import_ext_table);
+    relative_table.push_str("];\n");
+    body.push_str(&relative_table);
+    separators_table.push_str("];\n");
+    body.push_str(&separators_table);
+    parent_table.push_str("];\n");
+    body.push_str(&parent_table);
+    module_table.push_str("];\n");
+    body.push_str(&module_table);
+    for table in [
+        &mut member_table,
+        &mut self_table,
+        &mut implicit_table,
+        &mut single_part_table,
+        &mut global_namespace_table,
+        &mut family_table,
+        &mut import_self_table,
+    ]
+    .into_iter()
+    .chain(list_field_tables.iter_mut())
+    {
+        table.push_str("];\n");
+        body.push_str(table);
+    }
+    markup_table.push_str("];\n");
+    body.push_str(&markup_table);
+    for table in std::iter::once(&mut alias_config_table).chain(alias_field_tables.iter_mut()) {
+        table.push_str("];\n");
+        body.push_str(table);
+    }
 
     let out_path = Path::new(&out_dir).join("langs_generated.rs");
     fs::write(&out_path, body).expect("write langs_generated.rs");
+
+    let names: Vec<&str> = languages.iter().filter_map(|entry| entry.get("name").and_then(|v| v.as_str())).collect();
+    check_entry_file_languages(Path::new(&manifest), &names);
+    let routes = route_rules(Path::new(&manifest), &names);
+    fs::write(Path::new(&out_dir).join("routes_generated.rs"), routes).expect("write routes_generated.rs");
+}
+
+/// Cada língua da lista do arquivo de entrada do núcleo (`CORE_ENTRY_FILES`)
+/// é uma do registro (`languages`): a chave que ele não declara nunca seria
+/// lida, e o erro para a compilação.
+fn check_entry_file_languages(crate_root: &Path, languages: &[&str]) {
+    let path = crate_root.join(CORE_ENTRY_FILES);
+    let src = fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+    let table: toml::value::Table =
+        toml::from_str(&src).unwrap_or_else(|e| panic!("{CORE_ENTRY_FILES} is not valid TOML: {e}"));
+    for lang in table.keys() {
+        assert!(
+            languages.contains(&lang.as_str()),
+            "{CORE_ENTRY_FILES} names the language `{lang}`, which languages.toml does not declare"
+        );
+    }
+}
+
+/// A tabela das regras de rota: uma por `routes/<framework>.toml`, em ordem de
+/// nome, com a consulta dos `.scm` de `routes/<framework>/`. O nome do
+/// arquivo é o do framework. Cada língua da regra é uma do registro
+/// (`languages`), e cada método da tabela, como o método padrão, é um nome
+/// HTTP em maiúsculas ou `*`, que vale qualquer um; a regra sem tabela de
+/// métodos tem o padrão. O erro para a compilação.
+fn route_rules(crate_root: &Path, languages: &[&str]) -> String {
+    let root = crate_root.join("routes");
+    let mut files: Vec<_> = fs::read_dir(&root)
+        .unwrap_or_else(|e| panic!("cannot read {}: {e}", root.display()))
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("toml"))
+        .collect();
+    files.sort();
+
+    let mut table = String::from(
+        "// @generated by build.rs from routes/*.toml + routes/<framework>/*.scm — do not edit.\n\
+         pub(crate) static ROUTE_RULES: &[RawRouteRule] = &[\n",
+    );
+    for file in files {
+        println!("cargo:rerun-if-changed={}", relative_to(crate_root, &file));
+        let framework = file.file_stem().and_then(|s| s.to_str()).expect("a route file has a name").to_string();
+        let src = fs::read_to_string(&file).unwrap_or_else(|e| panic!("cannot read {}: {e}", file.display()));
+        let tbl: toml::value::Table =
+            toml::from_str(&src).unwrap_or_else(|e| panic!("routes/{framework}.toml is not valid TOML: {e}"));
+        let list = |key: &str, required: bool| -> Vec<String> {
+            let Some(value) = tbl.get(key) else {
+                assert!(!required, "routes/{framework}.toml must declare `{key}`");
+                return Vec::new();
+            };
+            let list: Vec<String> = value
+                .as_array()
+                .unwrap_or_else(|| panic!("routes/{framework}.toml: `{key}` must be an array"))
+                .iter()
+                .map(|e| e.as_str().unwrap_or_else(|| panic!("routes/{framework}.toml: each `{key}` is a string")).to_string())
+                .collect();
+            assert!(
+                !list.is_empty() && list.iter().all(|s| !s.is_empty()),
+                "routes/{framework}.toml: `{key}` must list at least one non-empty text"
+            );
+            list
+        };
+        let text = |key: &str| -> String {
+            tbl.get(key).map_or_else(String::new, |v| {
+                v.as_str().unwrap_or_else(|| panic!("routes/{framework}.toml: `{key}` must be a string")).to_string()
+            })
+        };
+        let rule_languages = list("language", true);
+        for lang in &rule_languages {
+            assert!(
+                languages.contains(&lang.as_str()),
+                "routes/{framework}.toml names the language `{lang}`, which languages.toml does not declare"
+            );
+        }
+        // A regra global liga em todo arquivo das línguas dela e não tem
+        // import; a outra liga pelo import, e precisa dele.
+        let global = match tbl.get("global") {
+            None => false,
+            Some(value) => value.as_bool().unwrap_or_else(|| panic!("routes/{framework}.toml: `global` must be true or false")),
+        };
+        let imports = list("imports", !global);
+        assert!(!global || imports.is_empty(), "routes/{framework}.toml: a `global` rule has no `imports`");
+        let http = |method: &str| method == "*" || (!method.is_empty() && method.chars().all(|c| c.is_ascii_uppercase()));
+        // O método da rota em que a consulta não captura método nenhum. A
+        // regra sem ele precisa da tabela `methods`, de onde toda rota dela
+        // tira o método.
+        let default_method = text("default_method");
+        assert!(
+            default_method.is_empty() || http(&default_method),
+            "routes/{framework}.toml: `default_method` must be an uppercase HTTP name or `*`, not `{default_method}`"
+        );
+        let methods: Vec<(String, String)> = match tbl.get("methods") {
+            None => {
+                assert!(
+                    !default_method.is_empty(),
+                    "routes/{framework}.toml must declare a [methods] table or a `default_method`"
+                );
+                Vec::new()
+            }
+            Some(value) => value
+                .as_table()
+                .unwrap_or_else(|| panic!("routes/{framework}.toml: `methods` must be a table"))
+                .iter()
+                .map(|(written, method)| {
+                    let method =
+                        method.as_str().unwrap_or_else(|| panic!("routes/{framework}.toml: method `{written}` is a string"));
+                    assert!(
+                        http(method),
+                        "routes/{framework}.toml: method `{written}` must be an uppercase HTTP name or `*`, not `{method}`"
+                    );
+                    (written.clone(), method.to_string())
+                })
+                .collect(),
+        };
+        assert!(
+            !methods.is_empty() || !default_method.is_empty(),
+            "routes/{framework}.toml: [methods] must name at least one method"
+        );
+        let wrappers: Vec<(String, String)> = tbl.get("param_wrappers").map_or_else(Vec::new, |v| {
+            v.as_array()
+                .unwrap_or_else(|| panic!("routes/{framework}.toml: `param_wrappers` must be an array"))
+                .iter()
+                .map(|pair| match pair.as_array().map(|p| p.iter().filter_map(|s| s.as_str()).collect::<Vec<_>>()) {
+                    Some(p) if p.len() == 2 && p.iter().all(|s| !s.is_empty()) => (p[0].to_string(), p[1].to_string()),
+                    _ => panic!("routes/{framework}.toml: each `param_wrappers` entry is [open, close]"),
+                })
+                .collect()
+        });
+        let (class_marker, class_suffix) = (text("class_marker"), text("class_suffix"));
+        assert!(
+            class_suffix.is_empty() || !class_marker.is_empty(),
+            "routes/{framework}.toml: `class_suffix` needs a `class_marker`"
+        );
+        // O caminho escrito pode trazer o método na frente, seguido de espaço.
+        let method_in_path = match tbl.get("method_in_path") {
+            None => false,
+            Some(value) => value
+                .as_bool()
+                .unwrap_or_else(|| panic!("routes/{framework}.toml: `method_in_path` must be true or false")),
+        };
+        // As rotas de recurso: o nome chamado e, de cada rota, o método, o
+        // pedaço de caminho e o nome de quem atende.
+        let resources: Vec<(String, Vec<[String; 3]>)> = tbl.get("resources").map_or_else(Vec::new, |v| {
+            v.as_table()
+                .unwrap_or_else(|| panic!("routes/{framework}.toml: `resources` must be a table"))
+                .iter()
+                .map(|(called, list)| {
+                    let rows: Vec<[String; 3]> = list
+                        .as_array()
+                        .unwrap_or_else(|| panic!("routes/{framework}.toml: resource `{called}` must be an array"))
+                        .iter()
+                        .map(|row| match row.as_array().map(|r| r.iter().filter_map(|s| s.as_str()).collect::<Vec<_>>()) {
+                            Some(r) if r.len() == 3 && http(r[0]) && !r[2].is_empty() => {
+                                [r[0].to_string(), r[1].to_string(), r[2].to_string()]
+                            }
+                            _ => panic!(
+                                "routes/{framework}.toml: each route of resource `{called}` is [METHOD, path piece, handler name]"
+                            ),
+                        })
+                        .collect();
+                    assert!(!rows.is_empty(), "routes/{framework}.toml: resource `{called}` must list at least one route");
+                    (called.clone(), rows)
+                })
+                .collect()
+        });
+        // O prefixo das rotas do arquivo cujo caminho termina num destes.
+        let file_prefixes: Vec<(String, String)> = tbl.get("file_prefixes").map_or_else(Vec::new, |v| {
+            v.as_table()
+                .unwrap_or_else(|| panic!("routes/{framework}.toml: `file_prefixes` must be a table"))
+                .iter()
+                .map(|(end, prefix)| match prefix.as_str() {
+                    Some(prefix) if !end.is_empty() && !prefix.is_empty() => (end.clone(), prefix.to_string()),
+                    _ => panic!("routes/{framework}.toml: each `file_prefixes` entry is a path end and a non-empty prefix"),
+                })
+                .collect()
+        });
+        let query = read_queries(crate_root, &root, &framework);
+        // A regra é do servidor, que acha rotas, ou da tela, que acha as
+        // chamadas a elas: a consulta usa as capturas de um lado só.
+        assert!(
+            !(query.contains("@route.") && query.contains("@client.")),
+            "routes/{framework}: a query captures either `@route.` or `@client.`, never both"
+        );
+        let pairs = |list: &[(String, String)]| list.iter().map(|(a, b)| format!("({a:?}, {b:?})")).collect::<Vec<_>>().join(", ");
+        writeln!(
+            table,
+            "    RawRouteRule {{ framework: {framework:?}, languages: &[{}], global: {global}, imports: &[{}], \
+             manifest_dependencies: &[{}], query: {query:?}, \
+             methods: &[{}], param_prefixes: &[{}], param_wrappers: &[{}], reset_marks: &[{}], \
+             path_starts: &[{}], exclude_wildcards: &[{}], class_marker: {class_marker:?}, \
+             class_suffix: {class_suffix:?}, default_method: {default_method:?}, path_trims: &[{}], \
+             method_in_path: {method_in_path}, handler_separators: &[{}], resources: &[{}], file_prefixes: &[{}] }},",
+            quoted_list(&rule_languages),
+            quoted_list(&imports),
+            quoted_list(&list("manifest_dependencies", false)),
+            pairs(&methods),
+            quoted_list(&list("param_prefixes", false)),
+            pairs(&wrappers),
+            quoted_list(&list("reset_marks", false)),
+            quoted_list(&list("path_starts", false)),
+            quoted_list(&list("exclude_wildcards", false)),
+            quoted_list(&list("path_trims", false)),
+            quoted_list(&list("handler_separators", false)),
+            resources
+                .iter()
+                .map(|(called, rows)| {
+                    let rows: Vec<String> = rows.iter().map(|[m, p, h]| format!("({m:?}, {p:?}, {h:?})")).collect();
+                    format!("({called:?}, &[{}])", rows.join(", "))
+                })
+                .collect::<Vec<_>>()
+                .join(", "),
+            pairs(&file_prefixes),
+        )
+        .expect("the generated table is a String, which never fails to write");
+    }
+    table.push_str("];\n");
+    table
+}
+
+/// O `Markup` da língua `name`, escrito como código Rust, a partir da tabela
+/// `markup` dela: `blocks`, `bodies`, `lines` e `head` são opcionais, mas ao
+/// menos um vem; cada forma de `lines` e de `head` tem um `{}`; `wrap` traz o
+/// texto que abre e o que fecha o tipo do arquivo, e `method`, o do método
+/// dos blocos de `bodies`, que vem junto com eles e só com eles. A
+/// `expression` mora nesse método e só vem com ele; `escape`, `keywords` e
+/// `prefixes` só vêm com ela. O `comment` traz quatro textos, e `bases` vem
+/// com `base_list` e com o `{bases}` no texto que abre o tipo. O erro para a
+/// compilação.
+fn markup_rule(name: &str, rule: &toml::value::Table) -> String {
+    let refused = |what: &str| format!("language.markup of `{name}`: {what}");
+    let markers = |key: &str| -> Vec<String> {
+        rule.get(key).map_or_else(Vec::new, |v| {
+            v.as_array()
+                .unwrap_or_else(|| panic!("{}", refused(&format!("`{key}` must be an array"))))
+                .iter()
+                .map(|e| {
+                    e.as_str()
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or_else(|| panic!("{}", refused(&format!("each marker of `{key}` is a non-empty string"))))
+                        .to_string()
+                })
+                .collect()
+        })
+    };
+    let (blocks, bodies) = (markers("blocks"), markers("bodies"));
+    let pair = |key: &str| -> Option<[String; 2]> {
+        let list: Vec<&str> = rule.get(key)?.as_array().map(|list| list.iter().filter_map(|e| e.as_str()).collect()).unwrap_or_default();
+        let [open, close] = list.as_slice() else { panic!("{}", refused(&format!("`{key}` must list the text that opens and the one that closes"))) };
+        Some([(*open).to_string(), (*close).to_string()])
+    };
+    let method = pair("method");
+    assert_eq!(bodies.is_empty(), method.is_none(), "{}", refused("`bodies` and `method` come together"));
+    let forms = |key: &str| -> Vec<(String, String)> {
+        rule.get(key).map_or_else(Vec::new, |v| {
+            v.as_table()
+                .unwrap_or_else(|| panic!("{}", refused(&format!("`{key}` must be a table of marker = form"))))
+                .iter()
+                .map(|(marker, form)| {
+                    let form = form.as_str().unwrap_or_else(|| panic!("{}", refused(&format!("the form of `{marker}` must be a string"))));
+                    assert!(!marker.is_empty() && form.contains("{}"), "{}", refused(&format!("`{marker}` needs a form with `{{}}`")));
+                    (marker.clone(), form.to_string())
+                })
+                .collect()
+        })
+    };
+    let (lines, head) = (forms("lines"), forms("head"));
+    let text = |key: &str| -> String {
+        rule.get(key).map_or_else(String::new, |v| {
+            v.as_str()
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| panic!("{}", refused(&format!("`{key}` must be a non-empty string"))))
+                .to_string()
+        })
+    };
+    let expression = pair("expression");
+    if let Some([marker, statement]) = &expression {
+        assert!(!marker.is_empty() && statement.contains("{}"), "{}", refused("`expression` needs the marker and a statement with `{}`"));
+    }
+    assert!(expression.is_none() || method.is_some(), "{}", refused("`expression` lives in the method of `bodies`: it needs `method`"));
+    let (escape, keywords, prefixes) = (text("escape"), markers("keywords"), markers("prefixes"));
+    assert!(
+        expression.is_some() || (escape.is_empty() && keywords.is_empty() && prefixes.is_empty()),
+        "{}",
+        refused("`escape`, `keywords` and `prefixes` come only with `expression`")
+    );
+    let comment = markers("comment");
+    assert!(comment.is_empty() || comment.len() == 4, "{}", refused("`comment` lists the markup's opening and closing and the code's"));
+    let comment: [String; 4] = comment.try_into().unwrap_or_default();
+    let bases = markers("bases");
+    let base_list = pair("base_list");
+    let Some([open, close]) = pair("wrap") else { panic!("{}", refused("`wrap` must list the text that opens the type and the one that closes it")) };
+    assert!(
+        bases.is_empty() == base_list.is_none() && (bases.is_empty() || open.contains("{bases}")),
+        "{}",
+        refused("`bases` comes with `base_list` and with `{bases}` in the text that opens the type")
+    );
+    assert!(
+        !(blocks.is_empty() && bodies.is_empty() && lines.is_empty() && head.is_empty() && bases.is_empty()),
+        "{}",
+        refused("it must declare `blocks`, `bodies`, `lines`, `head` or `bases`")
+    );
+    let [method_open, method_close] = method.unwrap_or_default();
+    let expressed = expression.is_some();
+    let [marker, statement] = expression.unwrap_or_default();
+    let [base_open, base_between] = base_list.unwrap_or_default();
+    let pairs = |list: &[(String, String)]| list.iter().map(|(m, f)| format!("({m:?}, {f:?})")).collect::<Vec<_>>().join(", ");
+    let imports_file = text("imports_file");
+    let folder = markers("folder");
+    let line_markers: Vec<&String> = lines.iter().chain(&head).map(|(marker, _)| marker).chain(&bases).collect();
+    assert!(
+        folder.is_empty() || (!imports_file.is_empty() && folder.iter().all(|marker| line_markers.contains(&marker))),
+        "{}",
+        refused("`folder` lists markers of `lines`, `head` or `bases`, and comes only with `imports_file`")
+    );
+    let [path_marker, path_joiner] = pair("folder_path").unwrap_or_default();
+    assert!(
+        path_marker.is_empty() || (folder.contains(&path_marker) && !path_joiner.is_empty()),
+        "{}",
+        refused("`folder_path` names a marker of `folder` and the text that joins the folders")
+    );
+    let folder_root = text("folder_root");
+    assert!(folder_root.is_empty() || !path_marker.is_empty(), "{}", refused("`folder_root` comes only with `folder_path`"));
+    let (controls, chains, filters) = (markers("controls"), markers("chains"), markers("filters"));
+    assert!(controls.is_empty() || expressed, "{}", refused("`controls` come only with `expression`"));
+    assert!(chains.is_empty() || !controls.is_empty(), "{}", refused("`chains` come only with `controls`"));
+    assert!(filters.is_empty() || !controls.is_empty(), "{}", refused("`filters` come only with `controls`"));
+    let component = text("component");
+    assert!(
+        component.is_empty() || (component.contains("{}") && expressed),
+        "{}",
+        refused("`component` is a statement with `{}` and comes only with `expression`")
+    );
+    let [element, markup_line] = pair("code_markup").unwrap_or_default();
+    assert!(
+        element.is_empty() || (!markup_line.is_empty() && !bodies.is_empty()),
+        "{}",
+        refused("`code_markup` lists what opens an element and a line of markup, and comes only with `bodies`")
+    );
+    format!(
+        "crate::markup::Markup {{ blocks: &[{}], bodies: &[{}], method: [{method_open:?}, {method_close:?}], lines: &[{}], head: &[{}], \
+         open: {open:?}, close: {close:?}, expression: [{marker:?}, {statement:?}], escape: {escape:?}, keywords: &[{}], prefixes: &[{}], \
+         comment: {comment:?}, bases: &[{}], base_list: [{base_open:?}, {base_between:?}], imports_file: {imports_file:?}, \
+         folder: &[{}], folder_path: [{path_marker:?}, {path_joiner:?}], folder_root: {folder_root:?}, controls: &[{}], chains: &[{}], filters: &[{}], \
+         component: {component:?}, code_markup: [{element:?}, {markup_line:?}] }}",
+        quoted_list(&blocks),
+        quoted_list(&bodies),
+        pairs(&lines),
+        pairs(&head),
+        quoted_list(&keywords),
+        quoted_list(&prefixes),
+        quoted_list(&bases),
+        quoted_list(&folder),
+        quoted_list(&controls),
+        quoted_list(&chains),
+        quoted_list(&filters)
+    )
+}
+
+/// A lista OPCIONAL de textos do campo `key`: vazia sem o campo. Declarada,
+/// ela precisa de ao menos um texto, e nenhum deles vazio.
+fn str_list(tbl: &toml::value::Table, key: &str) -> Vec<String> {
+    let Some(value) = tbl.get(key) else { return Vec::new() };
+    let list: Vec<String> = value
+        .as_array()
+        .unwrap_or_else(|| panic!("language.{key} must be an array"))
+        .iter()
+        .map(|e| e.as_str().unwrap_or_else(|| panic!("each language.{key} must be a string")).to_string())
+        .collect();
+    assert!(
+        !list.is_empty() && list.iter().all(|s| !s.is_empty()),
+        "language.{key} must list at least one non-empty text"
+    );
+    list
+}
+
+/// Os textos como literais de Rust, separados por vírgula.
+fn quoted_list(list: &[String]) -> String {
+    list.iter().map(|s| format!("{s:?}")).collect::<Vec<_>>().join(", ")
 }
 
 fn str_field(tbl: &toml::value::Table, key: &str) -> String {
@@ -150,9 +804,10 @@ fn str_field(tbl: &toml::value::Table, key: &str) -> String {
         .to_string()
 }
 
-/// Read and concatenate every `.scm` file under `queries/<dir>/`, sorted by name
-/// so `tags.scm` and `supertypes.scm` combine deterministically.
-fn read_queries(root: &Path, dir: &str) -> String {
+/// Read and concatenate every `.scm` file under `<root>/<dir>/` —
+/// `queries/<dir>/` or `routes/<framework>/` —, sorted by name so `tags.scm`
+/// and `supertypes.scm` combine deterministically.
+fn read_queries(crate_root: &Path, root: &Path, dir: &str) -> String {
     let langdir = root.join(dir);
     let mut files: Vec<_> = fs::read_dir(&langdir)
         .unwrap_or_else(|e| panic!("cannot read query dir {}: {e}", langdir.display()))
@@ -163,7 +818,7 @@ fn read_queries(root: &Path, dir: &str) -> String {
 
     let mut combined = String::new();
     for f in files {
-        println!("cargo:rerun-if-changed={}", f.display());
+        println!("cargo:rerun-if-changed={}", relative_to(crate_root, &f));
         let part = fs::read_to_string(&f)
             .unwrap_or_else(|e| panic!("cannot read {}: {e}", f.display()));
         combined.push_str(&part);
@@ -172,9 +827,11 @@ fn read_queries(root: &Path, dir: &str) -> String {
     combined
 }
 
-/// A digest of the scan's own sources: every file under `src/` and `queries/`,
-/// and every data `.toml` at the crate root (the package manifest apart, whose
-/// version already enters the format). Paths are relative and sorted, so the
+/// A digest of the scan's own sources: every file under `src/`, `queries/` and
+/// `routes/`, every data `.toml` at the crate root (the package manifest apart, whose
+/// version already enters the format), the core's test-file data, which
+/// decides what the scan keeps from each file it reads, and the core's entry-file
+/// data, which decides where an import of a folder lands. Paths are relative and sorted, so the
 /// digest depends on the content only, never on where the crate is checked
 /// out. FNV-1a over 64 bits: stable across builds and toolchains, with no
 /// dependency to add.
@@ -182,22 +839,23 @@ fn source_digest(crate_root: &Path) -> String {
     let mut files: Vec<std::path::PathBuf> = Vec::new();
     collect_files(&crate_root.join("src"), &mut files);
     collect_files(&crate_root.join("queries"), &mut files);
+    collect_files(&crate_root.join("routes"), &mut files);
+    for core_data in [CORE_TEST_FILES, CORE_ENTRY_FILES] {
+        let core_data = crate_root.join(core_data);
+        println!("cargo:rerun-if-changed={}", relative_to(crate_root, &core_data));
+        files.push(core_data);
+    }
     for entry in fs::read_dir(crate_root).expect("read the crate root").flatten() {
         let path = entry.path();
         let is_data_toml = path.extension().and_then(|e| e.to_str()) == Some("toml")
             && path.file_name().and_then(|n| n.to_str()) != Some("Cargo.toml");
         if is_data_toml && path.is_file() {
-            println!("cargo:rerun-if-changed={}", path.display());
+            println!("cargo:rerun-if-changed={}", relative_to(crate_root, &path));
             files.push(path);
         }
     }
-    let mut named: Vec<(String, std::path::PathBuf)> = files
-        .into_iter()
-        .map(|p| {
-            let rel = p.strip_prefix(crate_root).unwrap_or(&p).to_string_lossy().replace('\\', "/");
-            (rel, p)
-        })
-        .collect();
+    let mut named: Vec<(String, std::path::PathBuf)> =
+        files.into_iter().map(|p| (relative_to(crate_root, &p), p)).collect();
     named.sort();
 
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
@@ -215,6 +873,26 @@ fn source_digest(crate_root: &Path) -> String {
         feed(&body);
     }
     format!("{hash:016x}")
+}
+
+/// The core's test-file data, from the crate root: which files are tests and
+/// which content marks a file that holds its own tests.
+const CORE_TEST_FILES: &str = "../../packages/core/src/domain/ast/test-files.toml";
+
+/// The core's entry-file data, from the crate root: for each language of the
+/// registry, the names of the file that answers for its folder.
+const CORE_ENTRY_FILES: &str = "../../packages/core/src/domain/ast/entry-files.toml";
+
+/// `path` as cargo should record a watched file: relative to the crate root.
+///
+/// Cargo keeps a watched path as it is printed. An absolute one names the copy
+/// of the project that ran this script; the build folder is shared between
+/// copies, so the next copy sees another path, or a missing file once that
+/// copy is gone, and runs this script again — which recompiles the crate and
+/// everything above it. A relative path is read from the crate root of the copy
+/// being built.
+fn relative_to(crate_root: &Path, path: &Path) -> String {
+    path.strip_prefix(crate_root).unwrap_or(path).to_string_lossy().replace('\\', "/")
 }
 
 /// Every file under `dir`, at any depth.

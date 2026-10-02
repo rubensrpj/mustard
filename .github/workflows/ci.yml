@@ -93,19 +93,20 @@ jobs:
           shared-key: mustard-workspace
           save-if: ${{ github.event_name == 'push' }}
 
-      - name: Expose the scan binary to core's spawn-based tests
+      - name: Expose the scan binary to the tests that spawn it
         shell: bash
         run: echo "${GITHUB_WORKSPACE}/target/debug" >> "$GITHUB_PATH"
 
       # Scope to the logic crates (mustard-core / mustard-cli / mustard-rt).
       #
-      # `-p scan` is here because mustard-core's stack-registry tests exercise
-      # `Scan::locate()` at runtime (spawn, fail-open): without `scan` reachable
-      # the test degrades to an empty project list and fails — green on any dev
-      # machine (installed scan on PATH), red on a bare runner. `cargo test`
-      # builds a package's BIN targets alongside its tests, so `scan.exe` lands
-      # in target/debug before any test runs; the PATH step above only has to
-      # name the directory, not wait for the file.
+      # `-p scan` is here because mustard-rt's map tests run the scan compiled
+      # with them: `Scan::locate()` looks for `scan` next to the test binary, and
+      # the test that reads the projects table after a real scan
+      # (`apps/rt/src/commands/scan.rs`) fails without it, asking for
+      # `cargo build -p scan` — green on any dev machine that built it, red on a
+      # bare runner. `cargo test` builds a package's BIN targets alongside its
+      # tests, so `scan.exe` lands in target/debug before any test runs; the
+      # PATH step above only has to name the directory, not wait for the file.
       #
       # There is no separate `cargo build` step any more. It compiled the same
       # four crates this line compiles, and the per-step attribution of run
@@ -132,8 +133,15 @@ jobs:
       # extra test threads mostly buy contention. Kept because 54s per Windows
       # round is free — but read 6,8% as the number, not 41%.
       # Full figures: docs/2026-08-14-build-cycle-measurements.md.
+      #
+      # `--no-fail-fast` is here because `cargo test` stops at the first test
+      # FILE that fails: every file after it, in every crate, goes unrun. On a
+      # pull request that read as a short list of failures per system while
+      # whole files had never been tried there — each push of a fix showed the
+      # next batch, one round trip per batch. With the flag the run tries every
+      # file and lists every failure at once.
       - name: Test
-        run: cargo test --locked -p mustard-core -p mustard-cli -p mustard-rt -p scan -- --test-threads=8
+        run: cargo test --locked --no-fail-fast -p mustard-core -p mustard-cli -p mustard-rt -p scan -- --test-threads=8
 
       # `-D warnings`: EVERY warning fails the build, not only the deny-level
       # ones. The lint table used to keep pedantic at warn "without drowning in

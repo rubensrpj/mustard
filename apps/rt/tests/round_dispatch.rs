@@ -6,8 +6,10 @@
 //! O backlog despachado pelo binário de verdade, numa pasta temporária: seis
 //! tarefas com dependência e arquivo compartilhado, e os lotes que a rodada
 //! grava, como onda de autor `binary`, sempre saem os mesmos — quem
-//! compartilha arquivo cai junto, ninguém divide arquivo entre lotes, e a
-//! capacidade de cinco arquivos fecha o primeiro lote antes do segundo abrir.
+//! compartilha arquivo cai junto, ninguém divide arquivo entre lotes, a
+//! tarefa que espera só por tarefas do lote e divide arquivo com ele entra
+//! depois delas, e o teto de trabalho do lote, em tarefas e em arquivos,
+//! fecha o lote.
 //!
 //! Move a prova que antes vivia só como teste de unidade do módulo do grafo
 //! (`apps/rt/src/shared/dag.rs`): o critério fala em despacho pelo binário,
@@ -26,6 +28,8 @@ use mustard_core::domain::spec_state::State;
 use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Value};
+
+mod support;
 
 const SPEC: &str = "backlog-lotes";
 const GOAL: &str = "Trocar a saudação do programa.";
@@ -68,13 +72,19 @@ impl Project {
         git(&root, &["add", "-A"]);
         git(&root, &["commit", "-q", "-m", "init"]);
         git(&root, &["checkout", "-q", "-b", "dev"]);
+        support::copies_leave_with_the_test(&root);
         Self { _dir: dir, root, home }
     }
 
     fn command(&self, args: &[&str], stdin: &str) -> Output {
+        self.command_in(&self.root, args, stdin)
+    }
+
+    /// Como [`Self::command`], rodando de dentro de `dir`.
+    fn command_in(&self, dir: &Path, args: &[&str], stdin: &str) -> Output {
         let mut child = Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
             .args(args)
-            .current_dir(&self.root)
+            .current_dir(dir)
             .env("HOME", &self.home)
             .env("USERPROFILE", &self.home)
             .env("CLAUDE_PROJECT_DIR", &self.root)
@@ -95,6 +105,30 @@ impl Project {
             let _ = pipe.write_all(stdin.as_bytes());
         }
         child.wait_with_output().expect("the binary finishes")
+    }
+
+    /// O agente lê, de dentro da cópia e pelo comando que o pedido ensina,
+    /// cada item que o envio da onda `wave` manda ler (`read_items`): sem
+    /// isso a entrega é recusada.
+    fn read_request(&self, wave: u64) {
+        let log = self.log();
+        let sent = log
+            .visible()
+            .into_iter()
+            .rfind(|e| e.event_type == "send" && e.wave() == Some(wave))
+            .unwrap_or_else(|| panic!("nenhum envio gravado para a onda {wave}"));
+        let copy = PathBuf::from(sent.str_field("copy").expect("the copy"));
+        let root = self.root.display().to_string();
+        let listed = sent.fields.get("read_items").and_then(Value::as_array).cloned().unwrap_or_default();
+        for item in listed.iter().filter_map(Value::as_str) {
+            let block = format!("item-{item}");
+            let lesson = item.strip_prefix("lesson-");
+            let mut args = vec!["run", "read", lesson.map_or(block.as_str(), |_| "lessons")];
+            args.extend(lesson.into_iter().flat_map(|n| ["--term", n]));
+            args.extend(["--root", &root, "--spec", SPEC]);
+            let out = self.command_in(&copy, &args, "");
+            assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stdout));
+        }
     }
 
     /// Um comando `run`, que precisa responder `ok`.
@@ -136,6 +170,23 @@ impl Project {
         let path = store::spec_file(&self.root, SPEC).expect("spec file");
         store::write(&path, event_type, fields.as_object().cloned().expect("an object"), &[]).expect(event_type).id
     }
+
+    /// Uma linha escrita direto no arquivo da spec, como a versão antiga do
+    /// programa a deixava: a gravação de hoje recusa um campo que já saiu, e
+    /// é assim que a tarefa com ele chega à rodada. Devolve o `id` da linha.
+    fn seed_old_line(&self, event_type: &str, fields: &Value) -> u64 {
+        let path = store::spec_file(&self.root, SPEC).expect("spec file");
+        let id = self.log().max_id() + 1;
+        let mut line = json!({"v": 1, "id": id, "at": "2026-09-18T10:00:00-03:00", "type": event_type});
+        for (key, value) in fields.as_object().expect("an object") {
+            line[key] = value.clone();
+        }
+        let mut text = std::fs::read_to_string(&path).expect("the spec file");
+        text.push_str(&line.to_string());
+        text.push('\n');
+        std::fs::write(&path, text).expect("the spec file is written");
+        id
+    }
 }
 
 /// A fala do usuário, pelo gancho da entrada; devolve o número dela.
@@ -158,7 +209,7 @@ fn user_says(project: &Project, text: &str) -> u64 {
 /// respondido e fechado.
 fn survey(project: &Project) -> u64 {
     let said = user_says(project, GOAL);
-    project.write("context", &json!({"text": GOAL, "origin": said}));
+    project.write("context", &json!({"title": "Combinar o item", "agent": "- conferir pelo teste", "text": GOAL, "origin": said}));
     let grilled = project.run(&["grill", "--spec", SPEC, "--kinds", "feature"]);
     let points = grilled["points"].as_array().cloned().expect("the point list");
     assert!(!points.is_empty(), "{grilled}");
@@ -173,7 +224,7 @@ fn survey(project: &Project) -> u64 {
         let code = current["code"].as_str().expect("the open point").to_string();
         let answer = project.write(
             "decision",
-            &json!({"text": format!("Resposta ao ponto {code}."), "keys": ["levantamento"],
+            &json!({"title": "Combinar o item", "agent": format!("- ponto {code}"), "text": "O usuário respondeu ao ponto.", "keys": ["levantamento"],
                 "why": "o usuário respondeu", "origin": said, "applies_to": {"files": ["**"]}}),
         );
         let closed = project.write(
@@ -215,7 +266,7 @@ fn backlog_task(project: &Project, criterion: u64, said: u64, files: &[&str], de
     let depends_on: Vec<Value> = depends_on.iter().map(|id| json!(id)).collect();
     let written = project.write(
         "task",
-        &json!({"title": "Entregar a tarefa", "text": "Tarefa do backlog.", "files": files, "depends_on": depends_on,
+        &json!({"agent": "- conferir pelo teste", "title": "Entregar a tarefa", "text": "Tarefa do backlog.", "files": files, "depends_on": depends_on,
             "covers": [criterion], "origin": said}),
     );
     written["id"].as_u64().expect("the recorded task has an id")
@@ -228,22 +279,23 @@ fn backlog_task(project: &Project, criterion: u64, said: u64, files: &[&str], de
 /// módulo do grafo (`apps/rt/src/shared/dag.rs`), agora conferido na saída
 /// de uma rodada de verdade.
 #[test]
-fn o_backlog_vira_sempre_os_mesmos_lotes() {
+fn backlog_always_becomes_the_same_batches() {
     let project = Project::new();
     project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
     let said = survey(&project);
     let criterion = project.write(
         "criterion",
-        &json!({"when": "o programa roda", "then": "a saudação nova aparece", "proof": "git --version",
+        &json!({"title": "Combinar o item", "when": "o programa roda", "then": "a saudação nova aparece", "proof": "git --version",
             "form": "ubiquitous", "origin": said}),
     );
     let crit_id = criterion["id"].as_u64().expect("the criterion has an id");
 
-    // O mesmo grafo do teste puro: 1 e 5 dividem `b.rs`; 4 é a maior parte,
-    // sozinha; 2 não compartilha arquivo com ninguém; 3 espera 1, 6 espera 4.
+    // 1 e 5 dividem `b.rs`; 4 é a maior parte, sozinha; 2 não compartilha
+    // arquivo com ninguém; 3 espera 1 e divide `b.rs` com ela; 6 espera 4,
+    // mas não divide arquivo com o lote.
     let t1 = backlog_task(&project, crit_id, said, &["a.rs", "b.rs"], &[]);
     let t2 = backlog_task(&project, crit_id, said, &["c.rs"], &[]);
-    let t3 = backlog_task(&project, crit_id, said, &["d.rs"], &[t1]);
+    let t3 = backlog_task(&project, crit_id, said, &["b.rs", "d.rs"], &[t1]);
     let t4 = backlog_task(&project, crit_id, said, &["e.rs", "f.rs", "g.rs"], &[]);
     let t5 = backlog_task(&project, crit_id, said, &["b.rs"], &[]);
     let t6 = backlog_task(&project, crit_id, said, &["h.rs"], &[t4]);
@@ -259,46 +311,46 @@ fn o_backlog_vira_sempre_os_mesmos_lotes() {
     let after = project.log();
     let waves: Vec<_> =
         after.visible().into_iter().filter(|e| e.event_type == "wave" && e.str_field("author") == Some("binary")).collect();
-    assert_eq!(waves.len(), 2, "1, 4 e 5 num lote, 2 sozinho no outro; 3 e 6 esperam dependência aberta: {waves:?}");
+    assert_eq!(waves.len(), 1, "as cinco cabem no teto de um lote só: {waves:?}");
 
-    let order_of = |w: &mustard_core::domain::spec_events::SpecEvent| -> BTreeSet<u64> {
-        w.fields.get("order").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_u64).collect()
-    };
-    let big = waves.iter().find(|w| order_of(w).len() == 3).expect("o lote de três tarefas");
-    let small = waves.iter().find(|w| order_of(w).len() == 1).expect("o lote de uma tarefa só");
+    let order = waves[0].ints("order");
+    assert_eq!(
+        order.iter().copied().collect::<BTreeSet<u64>>(),
+        BTreeSet::from([t1, t2, t3, t4, t5]),
+        "1, 2, 4 e 5 prontas, e 3, que espera só a 1 e divide `b.rs` com ela: {order:?}"
+    );
+    let at = |task: u64| order.iter().position(|id| *id == task).expect("a tarefa está no lote");
+    assert!(at(t1) < at(t3), "a 3 entra depois da 1, de que depende: {order:?}");
 
-    assert_eq!(order_of(big), BTreeSet::from([t1, t4, t5]), "1, 4 e 5 dividem arquivo ou cabem juntos até a capacidade de 5");
-    assert_eq!(order_of(small), BTreeSet::from([t2]), "2 não compartilha arquivo com a parte de 1, 4 e 5");
-
-    // 3 e 6 esperam a dependência aberta: nenhuma das duas ondas os leva.
-    assert!(!order_of(big).contains(&t3) && !order_of(small).contains(&t3), "3 espera 1, ainda aberta");
-    assert!(!order_of(big).contains(&t6) && !order_of(small).contains(&t6), "6 espera 4, ainda aberta");
-
-    // A capacidade de 5 arquivos fecha o lote maior antes do menor abrir: o
-    // lote com mais arquivos distintos (1, 4 e 5, com 5 arquivos ao todo)
-    // sai antes do lote com menos (2, com 1 arquivo só).
-    let big_n = big.int("n").expect("wave n");
-    let small_n = small.int("n").expect("wave n");
-    assert!(big_n < small_n, "o lote maior abre antes do menor: {big_n} vs {small_n}");
+    // A 6 espera a 4, que está no lote, mas não divide arquivo com ele.
+    assert_eq!(after.current(t6).and_then(|t| t.wave()), None, "a 6 fica no backlog, sem onda");
 }
 
-/// Uma tarefa solta no backlog, sem onda própria, forma um lote sozinha: o
-/// binário, despachado pela rodada de verdade, grava o evento de onda com o
-/// autor binário, a tarefa do lote na ordem de despacho, os critérios que são
-/// a união do que ela cobre e o pronta-quando tirado da prova desse critério.
+/// Duas tarefas soltas no backlog, cada uma com um critério, cabem no mesmo
+/// lote: o binário, despachado pela rodada de verdade, grava o evento de onda
+/// com o autor binário, as duas tarefas na ordem de despacho, os critérios que
+/// são a união do que elas cobrem e o pronta-quando tirado da prova dos dois
+/// critérios, ligadas por " && ".
 #[test]
-fn o_binario_grava_o_evento_de_onda_do_lote() {
+fn binary_writes_the_wave_event_of_the_batch() {
     let project = Project::new();
     project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
     let said = survey(&project);
     let criterion = project.write(
         "criterion",
-        &json!({"when": "o programa roda", "then": "a saudação nova aparece", "proof": "git --version",
+        &json!({"title": "Combinar o item", "when": "o programa roda", "then": "a saudação nova aparece", "proof": "git --version",
             "form": "ubiquitous", "origin": said}),
     );
     let crit_id = criterion["id"].as_u64().expect("the criterion has an id");
+    let other = project.write(
+        "criterion",
+        &json!({"title": "Combinar a despedida", "when": "o programa termina", "then": "a despedida nova aparece",
+            "proof": "git status --short", "form": "ubiquitous", "origin": said}),
+    );
+    let other_id = other["id"].as_u64().expect("the second criterion has an id");
 
     let t1 = backlog_task(&project, crit_id, said, &["src/b.rs"], &[]);
+    let t2 = backlog_task(&project, other_id, said, &["src/c.rs"], &[]);
 
     project.run(&["plan", "--spec", SPEC]);
     approve(&project);
@@ -311,12 +363,69 @@ fn o_binario_grava_o_evento_de_onda_do_lote() {
     let after = project.log();
     let wave = after.visible().into_iter().find(|e| e.event_type == "wave" && e.wave() == Some(1)).expect("the batch wave");
     assert_eq!(wave.str_field("author"), Some("binary"), "onda de lote é do binário: {:?}", wave.fields);
-    assert_eq!(wave.ints("order"), vec![t1], "as tarefas do lote, na ordem de despacho");
-    assert_eq!(wave.ints("criteria"), vec![crit_id], "os critérios são a união do que as tarefas cobrem");
-    assert_eq!(wave.str_field("done_when"), Some("git --version"), "a prova do critério coberto");
+    assert_eq!(wave.ints("order"), vec![t1, t2], "as duas tarefas do lote, na ordem de despacho");
+    assert_eq!(wave.ints("criteria"), vec![crit_id, other_id], "os critérios são a união do que as tarefas cobrem");
+    assert_eq!(
+        wave.str_field("done_when"),
+        Some("git --version && git status --short"),
+        "a prova dos dois critérios cobertos"
+    );
 
-    let task_now = after.current(t1).expect("the task");
-    assert_eq!(task_now.wave(), Some(1), "a tarefa ganha a onda do lote que a levou");
+    for task in [t1, t2] {
+        let task_now = after.current(task).expect("the task");
+        assert_eq!(task_now.wave(), Some(1), "a tarefa ganha a onda do lote que a levou");
+    }
+}
+
+/// A tarefa de uma spec antiga que traz a nota de trabalho (o campo `points`,
+/// que a gravação de hoje recusa), dentro de uma onda desenhada à mão que
+/// nunca saiu: a rodada de verdade converte a onda, e a versão nova da tarefa
+/// volta ao backlog sem a nota e sem o número velho de onda, já no lote que o
+/// backlog formou. A versão antiga continua na história, com a nota.
+#[test]
+fn round_removes_the_work_note_from_the_task_of_an_old_spec() {
+    let project = Project::new();
+    project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    let said = survey(&project);
+    let criterion = project.write(
+        "criterion",
+        &json!({"title": "Combinar o item", "when": "o programa roda", "then": "a saudação nova aparece", "proof": "git --version",
+            "form": "ubiquitous", "origin": said}),
+    );
+    let crit_id = criterion["id"].as_u64().expect("the criterion has an id");
+
+    // A onda 1, desenhada à mão por quem não é o programa, com a tarefa que
+    // traz a nota: semeada crua, como a spec antiga a deixou.
+    project.seed(
+        "wave",
+        &json!({"author": "assistant", "n": 1, "text": "Onda 1, à mão.", "criteria": [crit_id],
+            "done_when": "git --version", "origin": said}),
+    );
+    let old = project.seed_old_line(
+        "task",
+        &json!({"title": "Entregar a tarefa", "agent": "- conferir pelo teste", "author": "assistant", "wave": 1,
+            "text": "Tarefa da onda 1.", "files": [{"path": "src/b.rs", "new": true}], "depends_on": [],
+            "covers": [crit_id], "points": 3, "origin": said}),
+    );
+
+    project.run(&["plan", "--spec", SPEC]);
+    approve(&project);
+    project.run(&["round", "--spec", SPEC]);
+
+    let after = project.log();
+    let now = after.current(old).expect("the task");
+    assert!(!now.fields.contains_key("points"), "a nota some da versão nova: {:?}", now.fields);
+    assert_ne!(now.id, old, "a tarefa ganhou versão nova");
+    let batch = after
+        .visible()
+        .into_iter()
+        .find(|e| e.event_type == "wave" && e.str_field("author") == Some("binary"))
+        .expect("o lote que o backlog formou");
+    let in_batch = batch.ints("order").into_iter().filter_map(|id| after.current(id)).any(|task| task.id == now.id);
+    assert!(in_batch, "a tarefa vigente é a do lote: {:?}", batch.fields);
+    assert_eq!(now.wave(), batch.wave(), "a tarefa está no lote: {:?}", now.fields);
+    let history = after.events.iter().find(|e| e.id == old).expect("a versão antiga fica na história");
+    assert!(history.fields.contains_key("points"), "a versão antiga guarda a nota: {:?}", history.fields);
 }
 
 /// Uma spec antiga, com a onda 1 numerada à mão e já entregue de ponta a
@@ -326,13 +435,13 @@ fn o_binario_grava_o_evento_de_onda_do_lote() {
 /// tendo onda gravada, o número velho é ignorado, e ela é relotada com o
 /// próximo número livre, numa rodada seguinte de verdade.
 #[test]
-fn uma_spec_antiga_tem_as_tarefas_nao_entregues_relotadas() {
+fn old_spec_has_its_undelivered_tasks_rebatched() {
     let project = Project::new();
     project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
     let said = survey(&project);
     let criterion = project.write(
         "criterion",
-        &json!({"when": "o programa roda", "then": "a saudação nova aparece", "proof": "git --version",
+        &json!({"title": "Combinar o item", "when": "o programa roda", "then": "a saudação nova aparece", "proof": "git --version",
             "form": "ubiquitous", "origin": said}),
     );
     let crit_id = criterion["id"].as_u64().expect("the criterion has an id");
@@ -347,7 +456,7 @@ fn uma_spec_antiga_tem_as_tarefas_nao_entregues_relotadas() {
     );
     project.seed(
         "task",
-        &json!({"author": "assistant", "wave": 1, "text": "Tarefa da onda 1.", "files": [{"path": "src/main.rs"}],
+        &json!({"title": "Entregar a tarefa", "agent": "- conferir pelo teste", "author": "assistant", "wave": 1, "text": "Tarefa da onda 1.", "files": [{"path": "src/main.rs"}],
             "depends_on": [], "covers": [crit_id], "origin": said}),
     );
 
@@ -366,7 +475,14 @@ fn uma_spec_antiga_tem_as_tarefas_nao_entregues_relotadas() {
         log.visible().into_iter().rfind(|e| e.event_type == "send" && e.wave() == Some(1)).expect("o envio da onda 1");
     let copy = PathBuf::from(sent.str_field("copy").expect("a cópia da onda 1"));
     std::fs::write(copy.join("src/main.rs"), "fn main() {\n    println!(\"olá\");\n}\n").expect("a mudança");
-    let delivered = json!({"wave": 1, "text": "A onda 1 saiu.", "files": ["src/main.rs"], "commit": "a onda 1 saiu"});
+    // A entrega responde pelas decisões do levantamento, que o pedido leva.
+    let agreed: Vec<Value> = mustard_core::domain::wave_prompt::all_agreed(&log)
+        .iter()
+        .map(|item| json!({"item": item.id, "met": true}))
+        .collect();
+    let delivered = json!({"wave": 1, "text": "A onda 1 saiu.", "files": ["src/main.rs"], "commit": "a onda 1 saiu",
+        "agreed": agreed});
+    project.read_request(1);
     project.run(&["write", "delivered", "--spec", SPEC, "--json", &delivered.to_string()]);
     project.run(&["round", "--spec", SPEC]);
 
@@ -374,7 +490,7 @@ fn uma_spec_antiga_tem_as_tarefas_nao_entregues_relotadas() {
     // semeada crua como a spec antiga a traz.
     let old = project.seed(
         "task",
-        &json!({"author": "assistant", "wave": 7, "text": "Tarefa de spec antiga.",
+        &json!({"title": "Entregar a tarefa", "agent": "- conferir pelo teste", "author": "assistant", "wave": 7, "text": "Tarefa de spec antiga.",
             "files": [{"path": "src/b.rs", "new": true}], "depends_on": [], "covers": [crit_id], "origin": said}),
     );
 
@@ -468,7 +584,7 @@ fn backlog_project(files: &[&[&str]]) -> (Project, u64, u64, Vec<u64>) {
     let said = survey(&project);
     let criterion = project.write(
         "criterion",
-        &json!({"when": "o programa roda", "then": "a saudação nova aparece", "proof": "git --version",
+        &json!({"title": "Combinar o item", "when": "o programa roda", "then": "a saudação nova aparece", "proof": "git --version",
             "form": "ubiquitous", "origin": said}),
     );
     let crit_id = criterion["id"].as_u64().expect("the criterion has an id");
@@ -484,7 +600,7 @@ fn seed_backlog_task(project: &Project, criterion: u64, said: u64, files: &[&str
     let files: Vec<Value> = files.iter().map(|f| json!({"path": f, "new": true})).collect();
     project.seed(
         "task",
-        &json!({"author": "assistant", "text": "Tarefa do backlog.", "files": files, "depends_on": [],
+        &json!({"title": "Entregar a tarefa", "agent": "- conferir pelo teste", "author": "assistant", "text": "Tarefa do backlog.", "files": files, "depends_on": [],
             "covers": [criterion], "origin": said}),
     )
 }
@@ -498,7 +614,7 @@ fn wave_of(project: &Project, task: u64) -> Option<u64> {
 /// arquivos próprios: sai um lote só com ela, e as outras esperam. Com a
 /// onda dela em andamento, nada mais sai.
 #[test]
-fn a_tarefa_com_curinga_sai_sozinha() {
+fn task_with_a_wildcard_goes_out_alone() {
     let (project, _, _, tasks) = backlog_project(&[&["**"], &["a.rs"], &["b.rs"]]);
 
     let (asked, out) = dispatch_ready(&project);
@@ -521,7 +637,7 @@ fn a_tarefa_com_curinga_sai_sozinha() {
 /// O outro lado: com uma onda em andamento, a tarefa do curinga que chega ao
 /// backlog vira lote, mas não sai ao lado dela.
 #[test]
-fn a_tarefa_com_curinga_sai_sozinha_e_espera_a_onda_em_andamento() {
+fn task_with_a_wildcard_goes_out_alone_and_waits_for_the_wave_in_progress() {
     let (project, crit, said, tasks) = backlog_project(&[&["a.rs"]]);
     let (_, out) = dispatch_ready(&project);
     let first = wave_of(&project, tasks[0]).expect("a primeira tarefa vira onda");
@@ -534,16 +650,16 @@ fn a_tarefa_com_curinga_sai_sozinha_e_espera_a_onda_em_andamento() {
 }
 
 /// Um padrão cruza com todo arquivo que ele casa: `src/**` e `src/a.rs`
-/// caem no mesmo lote mesmo passando da capacidade de cinco arquivos, e com
-/// `src/**` em andamento a tarefa de `src/b.rs` espera, enquanto a de
-/// `docs/` sai.
+/// caem no mesmo lote, e com `src/**` em andamento a tarefa de `src/b.rs`
+/// vai para um lote só dela e espera, enquanto a de `docs/`, que caberia no
+/// mesmo lote, sai no seu.
 #[test]
-fn a_tarefa_com_curinga_sai_sozinha_e_o_padrao_junta_com_o_arquivo_que_casa() {
+fn task_with_a_wildcard_goes_out_alone_and_the_pattern_joins_the_file_it_matches() {
     let own = ["src/a.rs", "lib/1.rs", "lib/2.rs", "lib/3.rs", "lib/4.rs"];
     let (project, crit, said, tasks) = backlog_project(&[&own, &["src/**"]]);
     let (_, out) = dispatch_ready(&project);
     let joined = wave_of(&project, tasks[0]).expect("a tarefa de src/a.rs vira onda");
-    assert_eq!(wave_of(&project, tasks[1]), Some(joined), "src/** junta com src/a.rs, acima da capacidade");
+    assert_eq!(wave_of(&project, tasks[1]), Some(joined), "src/** junta com src/a.rs, que ele casa");
     assert_eq!(out, vec![joined]);
 
     let inside = seed_backlog_task(&project, crit, said, &["src/b.rs"]);
@@ -552,6 +668,6 @@ fn a_tarefa_com_curinga_sai_sozinha_e_o_padrao_junta_com_o_arquivo_que_casa() {
     let (_, out) = dispatch_ready(&project);
     let inside_wave = wave_of(&project, inside).expect("src/b.rs vira lote");
     let outside_wave = wave_of(&project, outside).expect("docs vira lote");
-    assert_ne!(inside_wave, outside_wave, "os dois não cabem juntos na capacidade de cinco");
+    assert_ne!(inside_wave, outside_wave, "src/b.rs, presa a src/** em andamento, não leva docs junto");
     assert_eq!(out, vec![outside_wave], "src/b.rs espera src/** em andamento; docs, que ele não casa, sai");
 }

@@ -13,8 +13,10 @@
 //!
 //! **O que trava** e segura a pergunta até ser corrigido: ponto do
 //! levantamento aberto; skill que a conferência recusa; arquivo citado que
-//! não existe e não está marcado como novo; e tarefa que mexe em código sem
-//! dizer em que arquivo, que volta com os arquivos que o mapa sugere.
+//! não existe e não está marcado como novo; critério cuja prova não é um
+//! comando de verdade (programa que não roda, comandos ligados por `;`, busca
+//! sozinha que devia sair vazia); e tarefa que mexe em código sem dizer em
+//! que arquivo, que volta com os arquivos que o mapa sugere.
 //!
 //! O item combinado sem dono — nenhuma tarefa de uma onda do plano o cobre,
 //! ele não diz as ondas dele nem vale no projeto todo — não trava nem avisa:
@@ -54,6 +56,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use mustard_core::domain::citation::{self, CitationWorld, Finding};
+use mustard_core::domain::normalize::Languages;
 use mustard_core::domain::project_map::MapRefusal;
 use mustard_core::domain::spec_events::{Block, BlockQuery, Refusal, SpecEvent, SpecLog};
 use mustard_core::domain::spec_state::{PhaseWriter, SpecState, State};
@@ -66,8 +69,8 @@ use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Map, Value};
 
 use crate::commands::flow::skill_search::{best_skill, skills_on_disk, MAP_SUGGESTIONS};
-use crate::commands::spec_events::{self, read::checkout, write::record};
-use crate::shared::spec_state::{session_from_env, DiskSpecState};
+use crate::commands::spec_events::{self, write::record};
+use crate::shared::spec_state::{checkout, session_from_env, DiskSpecState};
 
 /// As opções de `mustard-rt run plan`.
 pub struct PlanOpts {
@@ -98,25 +101,24 @@ enum PlanFinding {
     TaskWithoutFile { task: String, files: String },
     /// Uma tarefa sem skill para a qual já existe uma skill que serve.
     TaskCouldNameASkill { task: String, skill: String },
-    /// Uma tarefa sem skill cujo trabalho se repete no projeto: o plano
-    /// precisa da tarefa que faz a skill dela nascer.
-    SkillToBeBorn { task: String },
     /// O comando de compilar ou de testar que o projeto ainda não declarou
     /// no `mustard.json`, pelo nome do campo (`buildCommand`/`testCommand`).
     CommandNotDeclared { field: &'static str },
+    /// Um critério cuja prova não é um comando que se sustente: a rodada e o
+    /// fechamento a rodariam e ela passaria ou falharia sem provar nada.
+    Proof { criterion: String, refusal: Refusal },
 }
 
 impl PlanFinding {
     /// `true` para o achado que segura a pergunta de aprovação.
     fn blocks(&self) -> bool {
         match self {
-            Self::Refused(_) | Self::Skill { .. } | Self::TaskWithoutFile { .. } => true,
+            Self::Refused(_) | Self::Skill { .. } | Self::TaskWithoutFile { .. } | Self::Proof { .. } => true,
             Self::Cited { finding, .. } => finding.is_refusal(),
             Self::FileOutsideGit { .. }
             | Self::ItemWithoutTask { .. }
             | Self::ContractWithoutCriterion { .. }
             | Self::TaskCouldNameASkill { .. }
-            | Self::SkillToBeBorn { .. }
             | Self::CommandNotDeclared { .. } => false,
         }
     }
@@ -124,7 +126,7 @@ impl PlanFinding {
     /// A razão curta, estável, para quem lê a saída por máquina.
     fn reason(&self) -> String {
         match self {
-            Self::Refused(refusal) => refusal.reason().to_string(),
+            Self::Refused(refusal) | Self::Proof { refusal, .. } => refusal.reason().to_string(),
             Self::Skill { refusal, .. } => refusal.reason().to_string(),
             Self::FileOutsideGit { .. } => "file-outside-git".into(),
             Self::Cited { finding, .. } => match finding {
@@ -138,7 +140,6 @@ impl PlanFinding {
             Self::ContractWithoutCriterion { .. } => "contract-without-criterion".into(),
             Self::TaskWithoutFile { .. } => "task-without-file".into(),
             Self::TaskCouldNameASkill { .. } => "task-could-name-a-skill".into(),
-            Self::SkillToBeBorn { .. } => "skill-to-be-born".into(),
             Self::CommandNotDeclared { .. } => "command-not-declared".into(),
         }
     }
@@ -153,6 +154,7 @@ impl PlanFinding {
             Self::Skill { name, refusal } => {
                 format!("{name}: {}", refusal.message(lang))
             }
+            Self::Proof { criterion, refusal } => format!("{criterion}: {}", refusal.message(lang)),
             Self::FileOutsideGit { task, path } => {
                 fill("plan.file_outside_git", &[("{task}", task.clone()), ("{path}", path.clone())])
             }
@@ -182,7 +184,6 @@ impl PlanFinding {
             Self::TaskCouldNameASkill { task, skill } => {
                 fill("plan.task_could_name_a_skill", &[("{task}", task.clone()), ("{skill}", skill.clone())])
             }
-            Self::SkillToBeBorn { task } => fill("plan.skill_to_be_born", &[("{task}", task.clone())]),
             Self::CommandNotDeclared { field } => {
                 fill("plan.command_not_declared", &[("{field}", (*field).to_string())])
             }
@@ -285,7 +286,7 @@ pub(crate) fn plan_for(opts: &PlanOpts, session: Option<&str>) -> Value {
     // link mora na barra de status. O item que ainda guarda um trecho com
     // cara de segredo sai dito, para ser expurgado, sem segurar a cópia nem a
     // pergunta.
-    let prepared = match spec_events::pages::copy::prepare(&project.root, &spec, lang) {
+    let prepared = match spec_events::pages::copy::prepare_milestone(&project.root, &spec, "approval", lang) {
         Ok(prepared) => prepared,
         Err(refusal) => return refuse(&refusal),
     };
@@ -356,6 +357,7 @@ fn check(
     let mut out: Vec<PlanFinding> = Vec::new();
     let codes = log.codes();
     let code_of = |event: &SpecEvent| codes.get(&event.id).cloned().unwrap_or_else(|| event.id.to_string());
+    let languages = Languages::of_project(root);
 
     // Nenhum ponto do levantamento aberto.
     let open = open_points(log);
@@ -411,7 +413,7 @@ fn check(
         if files.is_empty() && !says_it_touches_no_file(text) {
             out.push(PlanFinding::TaskWithoutFile {
                 task: code.clone(),
-                files: crate::commands::map::suggested_files(root, text, MAP_SUGGESTIONS).join(", "),
+                files: crate::commands::map::suggested_files(root, text, MAP_SUGGESTIONS, &languages).join(", "),
             });
         }
         for (path, new) in &files {
@@ -471,25 +473,27 @@ fn check(
             }
         }
     }
-    // A skill nasce por demanda e é escolhida pela tarefa: a tarefa que não
-    // nomeia skill ganha o nome da que já existe e serve; quando nenhuma
-    // serve e o trabalho dela se repete no projeto, o plano precisa da tarefa
-    // que faz a skill nascer. Como as outras conferências das tarefas, esta
-    // olha só as ondas que ainda vêm.
+    // A skill é escolhida pela tarefa: a tarefa que não nomeia skill ganha o
+    // nome da que já existe e serve. Como as outras conferências das
+    // tarefas, esta olha só as ondas que ainda vêm.
     let on_disk = skills_on_disk(root, &tasks);
     for task in &ahead {
         if task.str_field("skill").is_some_and(|s| !s.trim().is_empty()) {
             continue;
         }
         let text = task.str_field("text").unwrap_or_default();
-        match best_skill(&on_disk, text) {
-            Some(name) => {
-                out.push(PlanFinding::TaskCouldNameASkill { task: code_of(task), skill: name });
-            }
-            None if repeats_in_the_project(root, task) => {
-                out.push(PlanFinding::SkillToBeBorn { task: code_of(task) });
-            }
-            None => {}
+        if let Some(name) = best_skill(&on_disk, text, &languages) {
+            out.push(PlanFinding::TaskCouldNameASkill { task: code_of(task), skill: name });
+        }
+    }
+
+    // A prova de cada critério é o comando que a rodada e o fechamento
+    // rodam: a que não roda, liga comandos por `;` ou é uma busca sem `!`
+    // segura a pergunta de aprovação.
+    for criterion in log.block(BlockQuery::Block(Block::Criteria)).into_iter().filter(|e| e.event_type == "criterion") {
+        let refusal = criterion.str_field("proof").and_then(spec_events::proof_check::proof_defect);
+        if let Some(refusal) = refusal {
+            out.push(PlanFinding::Proof { criterion: code_of(criterion), refusal });
         }
     }
 
@@ -505,14 +509,6 @@ fn check(
         }
     }
     out
-}
-
-/// `true` quando o trabalho de uma tarefa se repete no projeto: o mapa acha
-/// arquivos do mesmo tipo dos que ela mexe. É o sinal de que vale uma skill.
-fn repeats_in_the_project(root: &Path, task: &SpecEvent) -> bool {
-    let Some((target, _)) = declared_files(task).into_iter().next() else { return false };
-    let Ok(map) = mustard_core::io::project_map::read(root) else { return false };
-    !mustard_core::domain::project_map::examples(&map, &target, Locale::PtBr).picks.is_empty()
 }
 
 /// As frases com que uma tarefa declara, no texto, que não mexe em arquivo
@@ -606,7 +602,7 @@ mod tests {
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::write(root.join("mustard.json"), b"{}").unwrap();
         for name in ["a.rs", "b.rs"] {
-            std::fs::write(root.join("src").join(name), "fn um() {}\nfn dois() {}\n").unwrap();
+            std::fs::write(root.join("src").join(name), "fn one() {}\nfn dois() {}\n").unwrap();
         }
         git(root, &["init", "-q"]);
         git(root, &["add", "src"]);
@@ -738,10 +734,11 @@ mod tests {
         for prompt in &built {
             assert!(prompt.lines > 0);
             // O texto que o banco da página recebe é o mesmo que o agente lê,
-            // instruções fixas incluídas: nenhuma linha fica de fora.
+            // seções fixas incluídas: nenhuma linha fica de fora.
             assert_eq!(computed["body"]["prompts"][prompt.wave.to_string()], json!(prompt.text), "{computed}");
         }
-        assert!(built.iter().any(|prompt| prompt.text.contains(translate("prompt.fixed", Locale::PtBr).lines().next().unwrap())));
+        let returns = format!("## {}", translate("prompt.part.return", Locale::PtBr));
+        assert!(built.iter().all(|prompt| prompt.text.contains(&returns)), "{built:?}");
     }
 
     /// Um ponto do levantamento ainda aberto trava a pergunta de aprovação, e
@@ -832,6 +829,43 @@ mod tests {
         assert!(!reasons(&report, "blocking").contains(&"wave-too-big".to_string()), "{report}");
     }
 
+    /// O plano segura a pergunta de aprovação quando a prova de um critério
+    /// não é um comando de verdade — a frase no lugar do comando, os
+    /// comandos ligados por `;` ou a busca sozinha sem `!` —, e a recusa
+    /// nomeia o critério e o termo que falhou. O critério com prova boa não
+    /// trava o plano.
+    #[test]
+    fn a_criterion_proof_that_is_not_a_real_command_holds_the_question() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = surveyed(root, "x");
+        sound_plan(root, "x", said);
+        assert_eq!(plan(root, "x")["ok"], json!(true), "a prova boa não trava o plano");
+
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let mut next = log.max_id();
+        for proof in ["sai vazio", "git --version ; git --help", "git grep -n x"] {
+            next += 1;
+            append_raw(root, "x", "criterion", json!({"when": "a", "then": "b", "proof": proof, "form": "ubiquitous",
+                "origin": said}), next);
+        }
+
+        let report = plan(root, "x");
+        assert_eq!(report["ok"], json!(false), "{report}");
+        let blocking = reasons(&report, "blocking");
+        for reason in ["proof-program-unknown", "proof-chained-by-semicolon", "proof-search-not-negated"] {
+            assert!(blocking.contains(&reason.to_string()), "{reason}: {report}");
+        }
+        let hints: Vec<String> = report["blocking"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|f| f["hint"].as_str().map(str::to_string))
+            .collect();
+        assert!(hints.iter().any(|h| h.starts_with("MSTD-CRIT-") && h.contains("sai")), "{hints:?}");
+    }
+
     /// As citações do plano passam pela mesma conferência do ponto do
     /// levantamento: o arquivo que não existe e não está marcado como novo
     /// trava; o marcado como novo passa; e o nome que o mapa não acha avisa.
@@ -914,15 +948,14 @@ mod tests {
             let text = &built[0].text;
             assert!(!text.contains(mustard_core::BUILD_COMMAND_FALLBACK), "{text}");
             assert_eq!(text.contains("Compile com"), missing != "buildCommand", "{text}");
-            assert_eq!(text.contains("Teste com"), missing != "testCommand", "{text}");
+            assert_eq!(text.contains("Rode a suíte do projeto com"), missing != "testCommand", "{text}");
         }
     }
 
     /// A tarefa que não nomeia skill ganha o nome da skill que já existe e
-    /// serve para ela; a que não tem skill nenhuma que sirva, e cujo trabalho
-    /// se repete no projeto, pede a tarefa que faz a skill nascer.
+    /// serve para ela.
     #[test]
-    fn the_plan_names_the_skill_that_serves_and_asks_for_the_one_that_is_missing() {
+    fn the_plan_names_the_skill_that_serves() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let said = surveyed(root, "x");
@@ -1314,7 +1347,7 @@ mod tests {
     /// pergunta não cita a nota do Scrum: o plano segue só com o que o
     /// catálogo já dizia antes de a nota existir.
     #[test]
-    fn o_plano_nao_pede_nem_soma_nota() {
+    fn plan_neither_asks_for_nor_adds_a_note() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let said = surveyed(root, "x");
@@ -1340,7 +1373,7 @@ mod tests {
     /// pergunta, sem agente. Uma spec que uma versão antiga publicou inteira,
     /// ainda no plano, ganha o template num link novo na aprovação.
     #[test]
-    fn a_aprovacao_de_uma_spec_nova_manda_o_orquestrador_copiar_a_spec_inteira() {
+    fn approving_a_new_spec_tells_the_orchestrator_to_copy_the_whole_spec() {
         use crate::commands::spec_events::pages::copy::{batches_order, old_page_order};
         let lang = Locale::PtBr;
         for old in [false, true] {

@@ -2,7 +2,7 @@
 name = "scan"
 version.workspace = true
 edition = "2024"
-description = "Mine a codebase's recurring conventions into a rich, language-agnostic model. Framework- and language-agnostic. (Mustard's scan engine.)"
+description = "Map a codebase (files, declarations, links, history and stacks) into a rich, language-agnostic model. Framework- and language-agnostic. (Mustard's scan engine.)"
 license = "MIT"
 build = "build.rs"
 
@@ -52,10 +52,6 @@ anyhow = "1"
 # detection is data, not a hardcoded list of filenames. The 1.x line matches
 # mustard-core's pin; the `toml::Value` read surface is unchanged from 0.8.
 toml = "1"
-# Snowball stemmers (pure Rust, MIT) for tier-3 of the match ladder. Which
-# NATURAL languages exist is data mirrored in src/stemmers.rs (the approved
-# carve-out module) — the engine itself has no per-language behavior.
-rust-stemmers = "1.2"
 # Stack inference engine + the StackDetection contract live in mustard-core
 # (registry-driven: stacks are DATA in core's stacks.toml, never logic here).
 # Same apps→packages direction as rt/cli; tree-sitter pins are coordinated
@@ -79,10 +75,20 @@ grammar_go = { package = "tree-sitter-go", version = "0.25" }
 grammar_php = { package = "tree-sitter-php", version = "0.24" }
 grammar_dart = { package = "tree-sitter-dart-orchard", version = "0.6" }
 
+[target.'cfg(unix)'.dependencies]
+# Baixa a prioridade da leitura da história em segundo plano (`setpriority`):
+# quem busca no mapa enquanto ela roda passa na frente. Só o scan a usa, e só
+# no Unix; a versão é a que o resto da árvore já resolve.
+libc = "0.2"
+
 [dev-dependencies]
 # Each test builds its project in a TempDir, which deletes the folder when it
 # goes out of scope — also when the test panics (the workspace keeps unwinding).
 tempfile = { workspace = true }
+# Os testes que olham o banco do mapa por dentro o leem direto: o índice de
+# busca, que se refaz das tabelas e a porta do mapa não devolve, e as colunas
+# de cada tabela.
+rusqlite = { workspace = true }
 
 [build-dependencies]
 # Used only at build time to read the external language registry and embed the

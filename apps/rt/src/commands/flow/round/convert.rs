@@ -354,6 +354,7 @@ fn agreed_versions(
 mod tests {
     use std::path::Path;
 
+    use mustard_core::domain::scan::ScanReport;
     use mustard_core::io::spec_events as store;
     use serde_json::{json, Value};
     use tempfile::tempdir;
@@ -428,7 +429,7 @@ mod tests {
     fn old_spec(root: &Path) -> Old {
         for file in ["src/um.rs", "src/dois.rs", "src/tres.rs", "src/quatro_a.rs", "src/quatro_b.rs"] {
             std::fs::create_dir_all(root.join("src")).unwrap();
-            std::fs::write(root.join(file), "fn um() {}\n").unwrap();
+            std::fs::write(root.join(file), "fn one() {}\n").unwrap();
         }
         let mut old = Old { wave: BTreeMap::new(), task: BTreeMap::new(), shared: 0 };
         approved_with(root, "x", &[], |said| {
@@ -438,9 +439,9 @@ mod tests {
             old.wave.insert(1, hand_wave(root, said, 1, &[one], &[]));
             old.task.insert("um", hand_task(root, said, 1, "Fazer a parte um.", Some("src/um.rs"), &[one]));
             old.wave.insert(2, hand_wave(root, said, 2, &[two], &[1]));
-            let dois = old_line(root, "task", json!({"wave": 2, "text": "Fazer a parte dois.", "origin": said,
+            let second = old_line(root, "task", json!({"wave": 2, "text": "Fazer a parte dois.", "origin": said,
                 "files": [{"path": "src/dois.rs"}], "covers": [two], "points": 3}));
-            old.task.insert("dois", dois);
+            old.task.insert("dois", second);
             old.wave.insert(3, hand_wave(root, said, 3, &[old.shared], &[1]));
             old.task.insert("tres_a", hand_task(root, said, 3, "Fazer a parte três.", Some("src/tres.rs"), &[old.shared]));
             old.task.insert("tres_b", hand_task(root, said, 3, "Documentar a parte três.", None, &[]));
@@ -544,7 +545,7 @@ mod tests {
     /// comum fica numa tarefa só, e o primeiro lote sai com o número 2, sem
     /// número de onda repetido.
     #[test]
-    fn o_primeiro_lote_depois_da_onda_1_entregue_e_a_onda_2() {
+    fn first_batch_after_wave_1_delivered_is_wave_2() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let old = old_spec(root);
@@ -581,7 +582,7 @@ mod tests {
     /// para ela, a rodada completa só o que faltava, e o resultado é o mesmo
     /// da conversão inteira.
     #[test]
-    fn a_conversao_numa_spec_ja_convertida_nao_grava_nada() {
+    fn conversion_of_an_already_converted_spec_writes_nothing() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let old = old_spec(root);
@@ -622,11 +623,11 @@ mod tests {
     /// na leitura, as duas saíram pela remoção do programa, e a tarefa dela
     /// foi para o backlog, de onde o lote a leva.
     #[test]
-    fn a_onda_a_mao_com_versao_anterior_sai_inteira_na_conversao() {
+    fn hand_made_wave_with_a_previous_version_comes_out_whole_in_the_conversion() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         std::fs::create_dir_all(root.join("src")).unwrap();
-        std::fs::write(root.join("src/um.rs"), "fn um() {}\n").unwrap();
+        std::fs::write(root.join("src/um.rs"), "fn one() {}\n").unwrap();
         let (mut first, mut second, mut task) = (0, 0, 0);
         approved_with(root, "x", &[], |said| {
             let crit = criterion(root, said, "a parte um passa");
@@ -665,12 +666,12 @@ mod tests {
     /// entregue ou aprovada fica como história: nenhuma tarefa delas vai para
     /// o backlog. Só a que nunca saiu é convertida.
     #[test]
-    fn a_onda_que_ja_saiu_termina_como_saiu() {
+    fn wave_that_already_went_out_ends_as_it_went_out() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         for file in ["src/um.rs", "src/dois.rs", "src/tres.rs", "src/quatro.rs"] {
             std::fs::create_dir_all(root.join("src")).unwrap();
-            std::fs::write(root.join(file), "fn um() {}\n").unwrap();
+            std::fs::write(root.join(file), "fn one() {}\n").unwrap();
         }
         let mut waves = BTreeMap::new();
         let mut tasks = BTreeMap::new();
@@ -706,7 +707,7 @@ mod tests {
     /// onda; a rodada segue sem pedir a análise, e a regra vai no pedido do
     /// lote que toca esses arquivos.
     #[test]
-    fn o_item_com_dono_pelos_arquivos_vai_no_pedido_da_onda_que_toca_neles_depois_da_conversao() {
+    fn item_owned_by_its_files_goes_in_the_request_of_the_wave_that_touches_them_after_the_conversion() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let old = old_spec(root);
@@ -714,7 +715,9 @@ mod tests {
         let rule = seed_event(root, "x", "rule", json!({"text": "A parte três segue o molde da parte um.",
             "keys": ["molde"], "example": "o mesmo formato da um", "waves": [3], "origin": said}));
 
-        let out = round(root, "x", None);
+        // Sem mapa e sem passada do scan: com o mapa, as tarefas ganham
+        // arquivos parecidos e a rodada pede a análise por eles.
+        let out = round_with_mine(root, "x", None, &|_, _| Ok(ScanReport::default()));
         assert_ne!(out["ok"], json!(false), "a rodada não trava: {out}");
         assert_converted(root, &old);
         let log = log_of(root);
@@ -726,14 +729,8 @@ mod tests {
 
         assert!(out.get("analysis").is_none(), "a regra com dono não pede a análise: {out}");
         let code = log.codes().get(&version.id).cloned().expect("o código da regra");
-        let prompt = out["dispatch"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .find(|d| d["wave"] == json!(2))
-            .and_then(|d| d["prompt"].as_str())
-            .unwrap_or_else(|| panic!("o lote 2 sai: {out}"))
-            .to_string();
+        assert!(waves_in(&out, "dispatch").contains(&2), "o lote 2 sai: {out}");
+        let prompt = request_of(&out, 2);
         assert!(prompt.contains(&code), "o lote que toca src/tres.rs leva a regra: {prompt}");
     }
 }

@@ -1,0 +1,3 @@
+# A raiz das palavras desta língua: o algoritmo do Snowball, pelo nome.
+# Sem palavras de ligação: o Snowball não publica a lista desta língua.
+stem: romanian

@@ -161,48 +161,11 @@ fn tail_matches(mut rest: &str, words: &[&str], bounds: Boundaries) -> bool {
 // Palavras comuns
 // ---------------------------------------------------------------------------
 //
-// São três listas porque as três perguntas são diferentes. O slug descarta só
-// o que encurta um nome sem perder o sentido. O voto de idioma da busca conta
-// palavras funcionais dos dois lados, mesmo as que os dois idiomas têm ("a",
-// "no"), porque só compara as contagens. A medição de clareza decide o idioma
+// São listas diferentes porque as perguntas são diferentes. O voto de idioma
+// da busca conta palavras funcionais dos dois lados, mesmo as que os dois
+// idiomas têm ("a", "no"), porque só compara as contagens. A medição de clareza decide o idioma
 // da resposta pelas palavras, então deixa de fora as que existem nos dois
 // idiomas e aceita a grafia sem acento de quem digita sem ("nao", "voce").
-
-/// Artigos e preposições que o slug do português descarta.
-pub const SLUG_STOPWORDS_PT: &[&str] = &[
-    "a", "o", "as", "os", "de", "da", "do", "das", "dos", "e", "em",
-    // Contrações de `em`/`a` com artigo: sem elas, um `no` no fim ("em o")
-    // ocupa uma vaga do slug e empurra a palavra seguinte para fora.
-    "no", "na", "nos", "nas", "ao", "aos",
-];
-
-/// Artigos e preposições que o slug do inglês descarta.
-pub const SLUG_STOPWORDS_EN: &[&str] = &["a", "an", "the", "of", "and", "or", "in"];
-
-/// Palavras funcionais do inglês para o voto de idioma da busca.
-pub const FUNCTION_WORDS_EN: &[&str] = &[
-    "a", "an", "the", "and", "or", "but", "if", "of", "at", "by", "for", "with", "about", "into",
-    "through", "before", "after", "to", "from", "in", "out", "on", "off", "over", "under", "again",
-    "then", "once", "here", "there", "when", "where", "why", "how", "all", "any", "both", "each",
-    "few", "more", "most", "some", "such", "no", "not", "only", "same", "than", "too", "very",
-    "is", "are", "was", "were", "been", "being", "be", "have", "has", "had", "does", "did", "this",
-    "that", "these", "those", "will", "would", "can", "could", "should", "must", "it", "its",
-    "his", "her", "our", "their", "your", "you", "they", "she", "what", "which", "who", "as",
-];
-
-/// Palavras funcionais do português para o voto de idioma da busca.
-pub const FUNCTION_WORDS_PT: &[&str] = &[
-    "o", "a", "os", "as", "um", "uma", "uns", "umas", "de", "do", "da", "dos", "das", "no", "na",
-    "nos", "nas", "ao", "aos", "à", "às", "pelo", "pela", "pelos", "pelas", "em", "por", "para",
-    "com", "sem", "sob", "sobre", "entre", "até", "e", "ou", "mas", "que", "se", "não", "sim",
-    "é", "são", "foi", "foram", "ser", "sendo", "era", "eram", "está", "estão", "estava", "tem",
-    "têm", "tinha", "há", "já", "mais", "menos", "muito", "muitos", "como", "quando", "onde",
-    "qual", "quais", "quem", "isso", "isto", "esse", "essa", "esses", "essas", "este", "esta",
-    "estes", "estas", "ele", "ela", "eles", "elas", "você", "nós", "eu", "seu", "sua", "seus",
-    "suas", "meu", "minha", "nosso", "nossa", "também", "depois", "antes", "agora", "aqui",
-    "cada", "todo", "toda", "todos", "todas", "outro", "outra", "outros", "outras", "mesmo",
-    "mesma", "ainda", "então", "pois", "porque",
-];
 
 /// Palavras comuns do português para a medição de clareza, com e sem acento.
 /// Ficam de fora as que existem nos dois idiomas ("a", "as", "no", "do", "se",
@@ -435,12 +398,6 @@ mod tests {
             }
             false
         }
-
-        pub const SLUG_PT: &[&str] = &[
-            "a", "o", "as", "os", "de", "da", "do", "das", "dos", "e", "em", "no", "na", "nos",
-            "nas", "ao", "aos",
-        ];
-        pub const SLUG_EN: &[&str] = &["a", "an", "the", "of", "and", "or", "in"];
     }
 
     /// Textos variados: comandos com e sem `rtk`, critérios de aceite, prosa
@@ -581,13 +538,6 @@ mod tests {
                 "triple in {text:?}"
             );
         }
-    }
-
-    /// Critério da onda de preparo: as listas do slug chegaram iguais.
-    #[test]
-    fn slug_stopwords_are_the_old_lists() {
-        assert_eq!(SLUG_STOPWORDS_PT, before::SLUG_PT);
-        assert_eq!(SLUG_STOPWORDS_EN, before::SLUG_EN);
     }
 
     #[test]

@@ -84,7 +84,6 @@ fn project(name: &str, dir: &str) -> Project {
         kind: "rust".into(),
         code_files: 1,
         frameworks: Vec::new(),
-        dependencies: Vec::new(),
         scripts: Vec::new(),
         detected_stacks: Vec::new(),
         own_git_root: false,

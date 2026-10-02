@@ -24,6 +24,11 @@
 //! item (`replaces`, os alvos de `remove` e `purge`) pode usar o número do
 //! evento ou esse código.
 //!
+//! A linha que o disco cheio cortou no meio e que começa como um evento vira,
+//! na próxima gravação, um registro do tipo [`CUT_LINE_TYPE`], que a leitura
+//! aceita sem aviso e que guarda o pedaço inteiro ([`repair_cut_lines`]). Esse
+//! tipo não está entre os 36 do gravador: só o binário o cria.
+//!
 //! Função pura: sem disco e sem relógio. A trava, a gravação e o caminho do
 //! arquivo moram em `io::spec_events`.
 //!
@@ -48,12 +53,12 @@ pub use codes::code_after;
 pub use line::{render_line, shown_line, stamp};
 pub use message::{check_message, pr_message, MessageRefusal, MESSAGE_BODY_MAX, MESSAGE_TITLE_MAX};
 pub use purge::{purge_excerpts, purge_lines};
-pub use read::{parse_log, Hidden, SkipReason, SkippedLine, SpecEvent, SpecLog, Step, TimeFilter};
-pub use refusal::{Refusal, TaskDeclaration, TASK_TITLE_MAX};
-pub use search::{found_by, refresh_search_lines, search_field, search_terms};
+pub use read::{parse_log, repair_cut_lines, Hidden, SkipReason, SkippedLine, SpecEvent, SpecLog, Step, TimeFilter};
+pub use refusal::{ItemPart, Refusal, TaskDeclaration, TASK_TITLE_MAX};
+pub use search::{calls_command, found_by, refresh_search_lines, search_field};
 pub use types::{
-    type_names, type_spec, Block, BlockQuery, EventRef, Field, Kind, TypeSpec, DELIVERED_MAX_CHARS, METRIC_TYPES,
-    PHASES, TYPES, WORK_KINDS,
+    type_names, type_spec, Block, BlockQuery, EventRef, Field, Kind, ReadQuery, TypeSpec, CUT_LINE_TYPE,
+    DELIVERED_MAX_CHARS, METRIC_TYPES, PHASES, TYPES, WORK_KINDS,
 };
 pub(crate) use types::{opt, req};
 
@@ -63,8 +68,9 @@ pub use crate::domain::citation::file_citation;
 /// A versão do formato de cada linha. O leitor entende as anteriores.
 pub const FORMAT_VERSION: u64 = 1;
 
-/// Quem pode ter produzido um evento.
-pub const AUTHORS: &[&str] = &["user", "assistant", "hook", "binary", "wave", "review", "skill"];
+/// Quem pode gravar um evento. Só a gravação confere o autor: a linha antiga
+/// com um autor que saiu, como o agente que escrevia skills, continua lida.
+pub const AUTHORS: &[&str] = &["user", "assistant", "hook", "binary", "wave", "review"];
 
 /// Quem grava pelo comando `write` sem dizer quem é: o assistente.
 pub const DEFAULT_AUTHOR: &str = "assistant";
@@ -91,8 +97,6 @@ pub const PURGED_MARK: &str = "…";
 /// chamam por este caminho e a medida das linhas de cada parte.
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
     use serde_json::{json, Map, Value};
 
     use super::*;
@@ -113,13 +117,39 @@ mod tests {
         format!("{{\"v\":1,\"id\":{id},\"at\":\"2026-09-12T10:00:00-03:00\",\"type\":\"{event_type}\"{extra}}}\n")
     }
 
+    /// O agente que escrevia skills saiu: a gravação nova recusa o autor e o
+    /// papel dele, e a spec antiga, que tem o envio e a nota desse agente,
+    /// continua lida inteira, sem linha pulada.
+    #[test]
+    fn an_old_spec_with_the_skill_agent_is_still_read_and_the_new_write_refuses_it() {
+        let send = |role: &str| {
+            json!({"author": "binary", "wave": 1, "role": role, "text": "pedido", "lines": 1, "chars": 6, "mustard": "0.2.0"})
+        };
+        assert_eq!(checked("send", send("wave")), Ok(()));
+        let refused = checked("send", send("skill")).unwrap_err();
+        assert!(format!("{refused:?}").contains("role"), "{refused:?}");
+        let note = |author: &str| json!({"author": author, "text": "t", "keys": ["k"]});
+        assert_eq!(checked("note", note("review")), Ok(()));
+        let refused = checked("note", note("skill")).unwrap_err();
+        assert!(format!("{refused:?}").contains("author"), "{refused:?}");
+
+        let old = line(1, "send", r#","author":"binary","wave":1,"role":"skill","text":"pedido","lines":1,"chars":6,"mustard":"0.1.0""#)
+            + &line(2, "note", r#","author":"skill","text":"t","keys":["k"]"#);
+        let log = parse_log(&old);
+        assert!(log.skipped.is_empty(), "{:?}", log.skipped);
+        assert_eq!(log.events.iter().map(|e| (e.id, e.str_field("role"), e.str_field("author"))).collect::<Vec<_>>(), [
+            (1, Some("skill"), Some("binary")),
+            (2, None, Some("skill")),
+        ]);
+    }
+
     /// Uma spec de teste com 8 ondas e 40 critérios abre um pull request: o
     /// corpo cabe no teto, o título cabe no teto, um título maior é recusado
     /// com a mensagem do limite, e um resumo com link da conversa, o nome do
     /// modelo, um e-mail ou um caminho da máquina é recusado apontando o
     /// trecho.
     #[test]
-    fn a_mensagem_do_pull_request_cabe_nos_limites_e_recusa_dado_de_usuario() {
+    fn the_pull_request_message_fits_the_limits_and_refuses_user_data() {
         let mut lines: Vec<String> = Vec::new();
         let mut id = 0u64;
         let mut push = |fields: Value| {
@@ -160,7 +190,7 @@ mod tests {
             "exit": 1,
             "ms": 12,
         }));
-        let resumo = push(json!({"type": "pr_summary", "text": "O portão lê o estado."}));
+        let summary = push(json!({"type": "pr_summary", "text": "O portão lê o estado."}));
 
         let log = parse_log(&lines.join("\n"));
         let (title, body) = pr_message(&log).expect("a spec tem objetivo e resumo");
@@ -177,33 +207,33 @@ mod tests {
         assert!(body.contains("1 com falha"), "e a falha é nomeada: {body}");
 
         // Um título maior é recusado com a mensagem do limite.
-        let longo = "x".repeat(MESSAGE_TITLE_MAX + 1);
-        let refusal = check_message(&longo, "corpo", MESSAGE_TITLE_MAX, MESSAGE_BODY_MAX)
+        let long_title = "x".repeat(MESSAGE_TITLE_MAX + 1);
+        let refusal = check_message(&long_title, "corpo", MESSAGE_TITLE_MAX, MESSAGE_BODY_MAX)
             .expect_err("um título acima do teto é recusado");
         assert_eq!(refusal.reason(), "message-too-long");
         let said = refusal.message(Locale::PtBr);
         assert!(said.contains(&MESSAGE_TITLE_MAX.to_string()), "a recusa diz o limite: {said}");
 
         // Cada dado de usuário é recusado apontando o trecho.
-        for (resumo_ruim, esperado) in [
+        for (bad_summary, expected) in [
             ("Veja https://claude.ai/code/x para o resto.", "claude.ai"),
             ("Escrito com a ajuda do Claude.", "Claude"),
             ("Dúvidas com fulano@empresa.com.br.", "fulano@empresa.com.br"),
             ("O arquivo está em /home/fulano/projetos/x.rs.", "/home/"),
         ] {
-            let mut com_dado = lines.clone();
-            let mut map = obj(json!({"type": "pr_summary", "text": resumo_ruim}));
+            let mut with_data = lines.clone();
+            let mut map = obj(json!({"type": "pr_summary", "text": bad_summary}));
             map.insert("v".into(), json!(1));
-            map.insert("id".into(), json!(resumo + 1));
+            map.insert("id".into(), json!(summary + 1));
             map.insert("at".into(), json!("2026-09-16T11:00:00-03:00"));
             map.insert("author".into(), json!("assistant"));
-            com_dado.push(render_line(&map));
-            let refusal = pr_message(&parse_log(&com_dado.join("\n")))
-                .expect_err(&format!("o resumo com `{esperado}` é recusado"));
-            assert_eq!(refusal.reason(), "message-forbidden-text", "{esperado}");
+            with_data.push(render_line(&map));
+            let refusal = pr_message(&parse_log(&with_data.join("\n")))
+                .expect_err(&format!("o resumo com `{expected}` é recusado"));
+            assert_eq!(refusal.reason(), "message-forbidden-text", "{expected}");
             let said = refusal.message(Locale::PtBr);
             assert!(
-                said.to_lowercase().contains(&esperado.to_lowercase()),
+                said.to_lowercase().contains(&expected.to_lowercase()),
                 "a recusa diz o que achou: {said}",
             );
             assert!(said.contains('"'), "e mostra o trecho em que achou: {said}");
@@ -233,7 +263,7 @@ mod tests {
     /// código: a porta e cada parte da pasta dela, pela medida única.
     #[test]
     fn no_file_of_the_spec_events_goes_over_the_code_line_cap() {
-        let gate = Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("domain").join("spec_events.rs");
+        let gate = crate::manifest_dir::manifest_dir().join("src").join("domain").join("spec_events.rs");
         assert_eq!(crate::io::fs::files_over_code_line_cap(&gate), Ok(Vec::new()));
     }
 }

@@ -275,9 +275,8 @@ pub fn scenario_statement(when: &str, then: &str) -> String {
 /// Deterministic, agnostic slug of `text`: lowercase ASCII alphanumerics kept
 /// verbatim, every other run of characters collapsed to a single `-`, leading /
 /// trailing `-` trimmed. A fully non-alphanumeric (or empty) input degrades to
-/// `"x"` — mirroring the documented `interpret::slugify` floor. Language-blind
-/// by design (no accent folding, no stopwords) so the compiled AC id carries no
-/// locale assumption.
+/// `"x"`. Language-blind by design (no accent folding, no stopwords) so the
+/// compiled AC id carries no locale assumption.
 fn slug(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut pending_dash = false;

@@ -119,8 +119,8 @@ pub fn newer_installed_rt() -> Option<std::path::PathBuf> {
 /// disk is the outer half's business.
 #[must_use]
 pub fn newer_installed_rt_from(raw: &str, running: &str) -> Option<std::path::PathBuf> {
-    let (version, path) = newest_installed_rt_from(raw)?;
-    is_behind(running, &version).then_some(path)
+    let plugin = newest_installed_plugin_from(raw)?;
+    is_behind(running, &plugin.version).then(|| plugin.rt_binary())
 }
 
 /// The `mustard-rt` inside the newest install the plugin registry records —
@@ -153,8 +153,7 @@ pub fn installed_plugin_rt() -> Option<std::path::PathBuf> {
 /// no test can watch.
 #[must_use]
 pub fn installed_plugin_rt_in(config_dir: &std::path::Path) -> Option<std::path::PathBuf> {
-    let raw = std::fs::read_to_string(config_dir.join(INSTALLED_PLUGINS)).ok()?;
-    let path = installed_plugin_rt_from(&raw)?;
+    let path = installed_plugin_in(config_dir)?.rt_binary();
     path.is_file().then_some(path)
 }
 
@@ -163,19 +162,60 @@ pub fn installed_plugin_rt_in(config_dir: &std::path::Path) -> Option<std::path:
 /// business.
 #[must_use]
 pub fn installed_plugin_rt_from(raw: &str) -> Option<std::path::PathBuf> {
-    newest_installed_rt_from(raw).map(|(_, path)| path)
+    newest_installed_plugin_from(raw).map(|plugin| plugin.rt_binary())
 }
 
-/// The newest install of this plugin the registry records: its version paired
-/// with the `bin/mustard-rt` inside it. The single reader of the registry's
-/// shape, shared by the stale-copy handover and the statusline heal, so a
-/// change to that shape can never move one without the other.
+/// One install of this plugin, as the registry records it: the directory the
+/// plugin lives in and the version that same record carries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstalledPlugin {
+    /// The install's directory (`installPath`): `bin/` and the plugin manifest
+    /// live under it.
+    pub dir: std::path::PathBuf,
+    /// The version the record carries.
+    pub version: String,
+}
+
+impl InstalledPlugin {
+    /// The `mustard-rt` inside this install's `bin/`, whether or not it is on
+    /// disk.
+    #[must_use]
+    pub fn rt_binary(&self) -> std::path::PathBuf {
+        let exe = if cfg!(windows) { "mustard-rt.exe" } else { "mustard-rt" };
+        self.dir.join("bin").join(exe)
+    }
+}
+
+/// The newest install of this plugin the registry records, read from Claude
+/// Code's config directory — the one [`claude_config_dir`] resolves, so an
+/// operator who moved it with `CLAUDE_CONFIG_DIR` is followed here too.
+///
+/// This is what the installation doctor inspects: whether the binary of the
+/// version that is SUPPOSED to be here is on disk. `None` when the registry
+/// cannot be located, read or parsed, or records no install of this plugin.
+#[must_use]
+pub fn installed_plugin() -> Option<InstalledPlugin> {
+    installed_plugin_in(&claude_config_dir()?)
+}
+
+/// [`installed_plugin`] with the config directory named explicitly — the seam
+/// the tests need.
+#[must_use]
+pub fn installed_plugin_in(config_dir: &std::path::Path) -> Option<InstalledPlugin> {
+    let raw = std::fs::read_to_string(config_dir.join(INSTALLED_PLUGINS)).ok()?;
+    newest_installed_plugin_from(&raw)
+}
+
+/// The newest install of this plugin the registry records. The single reader
+/// of the registry's shape, shared by the stale-copy handover, the statusline
+/// heal and the installation doctor, so a change to that shape can never move
+/// one without the others.
 ///
 /// Version and `installPath` come from the SAME record — the one with the
 /// highest version. [`installed_harness_version_from`] takes the max over
 /// versions alone; pairing its answer with a path picked independently could
 /// marry scope A's version to scope B's directory.
-fn newest_installed_rt_from(raw: &str) -> Option<(String, std::path::PathBuf)> {
+fn newest_installed_plugin_from(raw: &str) -> Option<InstalledPlugin> {
     let doc: serde_json::Value = serde_json::from_str(raw).ok()?;
     let (version, install) = doc
         .get("plugins")?
@@ -190,11 +230,10 @@ fn newest_installed_rt_from(raw: &str) -> Option<(String, std::path::PathBuf)> {
             Some((version, install))
         })
         .max_by(|(a, _), (b, _)| compare_versions(a, b))?;
-    let exe = if cfg!(windows) { "mustard-rt.exe" } else { "mustard-rt" };
-    Some((
-        version.to_string(),
-        std::path::Path::new(install).join("bin").join(exe),
-    ))
+    Some(InstalledPlugin {
+        dir: std::path::PathBuf::from(install),
+        version: version.to_string(),
+    })
 }
 
 /// Whether `running` names a version strictly OLDER than `installed`.
@@ -228,17 +267,25 @@ fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
     std::cmp::Ordering::Equal
 }
 
+/// A pasta pessoal do usuário: `HOME`, ou `USERPROFILE` no Windows, lida sem
+/// dependência. A variável vazia vale como ausente: `None`, e quem chama cai
+/// no próprio plano B em vez de montar um caminho relativo à pasta em que o
+/// comando roda. A pasta de configuração do Claude Code, a pasta das cópias
+/// das ondas e o binário `mustard-rt` leem a pasta pessoal por aqui.
+#[must_use]
+pub fn home_dir() -> Option<std::path::PathBuf> {
+    let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    std::env::var_os(var).filter(|dir| !dir.is_empty()).map(std::path::PathBuf::from)
+}
+
 /// Claude Code's config directory: `CLAUDE_CONFIG_DIR` when the operator moved
-/// it, `~/.claude` otherwise (`HOME`, or `USERPROFILE` on Windows). `None` when
-/// neither resolves — this crate reads no home directory through a dependency.
+/// it, `.claude` under [`home_dir`] otherwise. `None` when neither resolves —
+/// this crate reads no home directory through a dependency.
 pub fn claude_config_dir() -> Option<std::path::PathBuf> {
     if let Some(dir) = std::env::var_os("CLAUDE_CONFIG_DIR").filter(|d| !d.is_empty()) {
         return Some(std::path::PathBuf::from(dir));
     }
-    let home = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
-    std::env::var_os(home)
-        .filter(|h| !h.is_empty())
-        .map(|h| std::path::PathBuf::from(h).join(".claude"))
+    home_dir().map(|home| home.join(".claude"))
 }
 
 #[cfg(test)]
@@ -438,6 +485,39 @@ mod tests {
         assert_eq!(newer_installed_rt_from(&raw, "0.1.57"), None);
     }
 
+    /// O diagnóstico da instalação lê o registro pela pasta de configuração
+    /// que recebe, e o registro com duas instalações responde a mais nova,
+    /// com a pasta dela — nunca a primeira da lista, e nunca a versão de uma
+    /// casada com a pasta da outra. A comparação é por número: `0.1.10` vem
+    /// depois de `0.1.9`.
+    #[test]
+    fn the_newest_install_answers_with_its_own_folder_and_version() {
+        let config = tempfile::tempdir().unwrap();
+        let older = config.path().join("cache/mustard/0.1.9");
+        let newer = config.path().join("cache/mustard/0.1.10");
+        let plugins = config.path().join("plugins");
+        std::fs::create_dir_all(&plugins).unwrap();
+        let quoted = |path: &std::path::Path| serde_json::to_string(&path.to_string_lossy()).unwrap();
+        std::fs::write(
+            plugins.join("installed_plugins.json"),
+            format!(
+                r#"{{"version":2,"plugins":{{"mustard@mustard-local":[
+                  {{"scope":"project","installPath":{},"version":"0.1.9"}},
+                  {{"scope":"user","installPath":{},"version":"0.1.10"}}
+                ]}}}}"#,
+                quoted(&older),
+                quoted(&newer),
+            ),
+        )
+        .unwrap();
+
+        assert_eq!(
+            installed_plugin_in(config.path()),
+            Some(InstalledPlugin { dir: newer, version: "0.1.10".to_string() })
+        );
+        assert_eq!(installed_plugin_in(&config.path().join("sem-registro")), None);
+    }
+
     #[test]
     fn a_registry_naming_another_plugin_answers_nothing() {
         let home = tempfile::tempdir().unwrap();
@@ -450,5 +530,97 @@ mod tests {
         .unwrap();
 
         assert_eq!(installed_plugin_rt_in(home.path()), None);
+    }
+
+    /// A marca das linhas que o [`home_readers`] imprime.
+    const HOME_MARK: &str = "leitura-da-pasta-pessoal";
+
+    /// Não prova comportamento nenhum: é o programa que o teste abaixo roda
+    /// com a pasta pessoal que ele escolhe. Rodado pela suíte, só passa.
+    /// Imprime o que cada leitora da pasta pessoal respondeu — o ajudante, a
+    /// pasta de configuração do Claude Code, a pasta das cópias das ondas, as
+    /// pastas de ferramenta do executor da máquina e as pastas de fonte —, com
+    /// `-` no lugar da resposta vazia. Uma lista de pastas sai no formato do
+    /// `PATH` do sistema.
+    #[test]
+    fn home_readers() {
+        let shown = |path: Option<std::path::PathBuf>| path.map_or_else(|| "-".to_string(), |p| p.display().to_string());
+        let listed = |paths: Vec<std::path::PathBuf>| {
+            if paths.is_empty() {
+                "-".to_string()
+            } else {
+                std::env::join_paths(paths).expect("pastas sem o separador do PATH").to_string_lossy().into_owned()
+            }
+        };
+        let root = tempfile::tempdir().unwrap();
+        println!("{HOME_MARK} home={}", shown(home_dir()));
+        println!("{HOME_MARK} config={}", shown(claude_config_dir()));
+        println!("{HOME_MARK} copies={}", shown(Some(crate::io::wave_prompt::copies_dir(root.path()))));
+        let runner = crate::platform::code_tools::MachineRunner::new("");
+        println!("{HOME_MARK} tools={}", listed(runner.user_tool_dirs()));
+        println!("{HOME_MARK} fonts={}", listed(crate::platform::fonts::font_dirs()));
+    }
+
+    /// Roda o [`home_readers`] num processo próprio, com `HOME` e
+    /// `USERPROFILE` valendo `home` e sem as duas variáveis que passam na
+    /// frente da pasta pessoal, e devolve cada resposta pelo nome dela.
+    fn read_homes(home: &str) -> std::collections::BTreeMap<String, String> {
+        let module = module_path!();
+        let module = module.split_once("::").map_or(module, |(_, rest)| rest);
+        let out = std::process::Command::new(std::env::current_exe().expect("o executável dos testes"))
+            .args([&format!("{module}::home_readers"), "--exact", "--nocapture"])
+            .env("HOME", home)
+            .env("USERPROFILE", home)
+            .env_remove("CLAUDE_CONFIG_DIR")
+            .env_remove("MUSTARD_COPIES_DIR")
+            .output()
+            .expect("o executável dos testes roda");
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter_map(|line| line.strip_prefix(&format!("{HOME_MARK} ")))
+            .filter_map(|line| line.split_once('='))
+            .map(|(name, value)| (name.to_string(), value.to_string()))
+            .collect()
+    }
+
+    /// A pasta pessoal vazia vale como ausente em todas as leitoras: o
+    /// ajudante não responde nada, a pasta de configuração do Claude Code
+    /// também não, a pasta das cópias cai na pasta temporária do sistema, o
+    /// executor da máquina fica sem pasta de ferramenta e as pastas de fonte
+    /// ficam só as do sistema — nenhuma monta um caminho relativo à pasta em
+    /// que o comando roda. Com a pasta pessoal preenchida, todas partem dela;
+    /// só a pasta de fontes do usuário no Windows sai de outra variável.
+    #[test]
+    fn an_empty_home_counts_as_absent_for_every_reader() {
+        let temp = std::env::temp_dir().join("mustard").join("copias");
+        let empty = read_homes("");
+        let fake_home = tempfile::tempdir().unwrap();
+        let home = fake_home.path().display().to_string();
+        let filled = read_homes(&home);
+        let mut wrong: Vec<String> = Vec::new();
+        let mut expect = |case: &str, answers: &std::collections::BTreeMap<String, String>, name: &str, ok: &dyn Fn(&str) -> bool| {
+            let answer = answers.get(name).map_or("(sem resposta)", String::as_str);
+            if !ok(answer) {
+                wrong.push(format!("{case}: {name}={answer}"));
+            }
+        };
+        expect("vazia", &empty, "home", &|answer| answer == "-");
+        expect("vazia", &empty, "config", &|answer| answer == "-");
+        expect("vazia", &empty, "copies", &|answer| std::path::Path::new(answer).starts_with(&temp));
+        expect("preenchida", &filled, "home", &|answer| answer == home);
+        let config = fake_home.path().join(".claude");
+        expect("preenchida", &filled, "config", &|answer| std::path::Path::new(answer) == config);
+        let copies = fake_home.path().join(".cache").join("mustard").join("copias");
+        expect("preenchida", &filled, "copies", &|answer| std::path::Path::new(answer).starts_with(&copies));
+        let paths = |answer: &str| std::env::split_paths(answer).collect::<Vec<_>>();
+        expect("vazia", &empty, "tools", &|answer| answer == "-");
+        expect("vazia", &empty, "fonts", &|answer| answer != "-" && paths(answer).iter().all(|dir| dir.is_absolute()));
+        expect("preenchida", &filled, "tools", &|answer| {
+            answer != "-" && paths(answer).iter().all(|dir| dir.starts_with(fake_home.path()))
+        });
+        expect("preenchida", &filled, "fonts", &|answer| {
+            answer != "-" && (cfg!(windows) || paths(answer).iter().any(|dir| dir.starts_with(fake_home.path())))
+        });
+        assert!(wrong.is_empty(), "cada leitora responde pela mesma pasta pessoal: {wrong:?}");
     }
 }

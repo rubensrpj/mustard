@@ -5,13 +5,17 @@
 //! C#/TS project. `.claude` lives in `manifests.toml`'s skip_dirs, so the walker
 //! prunes it by name at any depth (same mechanism as `.git`/`node_modules`).
 
+#[path = "support/manifest_dir.rs"]
+mod manifest_dir;
+#[path = "support/model.rs"]
+mod model;
+
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 /// A committed fixture root, resolved from the crate manifest dir so the test
 /// is location-independent.
 fn fixture(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures").join(name)
+    manifest_dir::manifest_dir().join("tests").join("fixtures").join(name)
 }
 
 /// Recursively copy a committed fixture into the assembled temp repo.
@@ -29,15 +33,9 @@ fn copy_tree(src: &Path, dst: &Path) {
     }
 }
 
-/// Scan a root into a temp `grain.model.json` and return the parsed value.
+/// Scan a root into a temp map and return the parsed value.
 fn scan_root(root: &Path, out_dir: &Path) -> serde_json::Value {
-    let model = out_dir.join("grain.model.json");
-    let out = Command::new(env!("CARGO_BIN_EXE_scan"))
-        .args(["scan", root.to_str().unwrap(), "--out", model.to_str().unwrap()])
-        .output()
-        .expect("run scan over temp repo");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    serde_json::from_str(&std::fs::read_to_string(&model).expect("read model")).expect("valid model JSON")
+    model::scan(root, out_dir, &[]).0
 }
 
 #[test]
@@ -87,4 +85,109 @@ fn scan_skips_harness_claude_dir() {
     assert!(none_under_claude(&v["projects"], "dir"), "no project unit under .claude: {:?}", v["projects"]);
     assert!(none_under_claude(&v["manifests"], "path"), "no manifest under .claude: {:?}", v["manifests"]);
 
+}
+
+fn git(dir: &Path, args: &[&str]) {
+    let out = std::process::Command::new("git")
+        .args(["-c", "user.email=scan@example.com", "-c", "user.name=scan", "-c", "commit.gpgsign=false"])
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .expect("run git");
+    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+}
+
+fn write(dir: &Path, rel: &str, body: &str) {
+    let path = dir.join(rel);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, body).unwrap();
+}
+
+/// Um repositório do git com `committed` comitado e `loose` só na pasta,
+/// fora do índice.
+fn repo(prefix: &str, committed: &[(&str, &str)], loose: &[(&str, &str)]) -> tempfile::TempDir {
+    let temp = tempfile::Builder::new().prefix(prefix).tempdir().unwrap();
+    let dir = temp.path();
+    git(dir, &["init", "-q", "-b", "main"]);
+    for (rel, body) in committed {
+        write(dir, rel, body);
+    }
+    git(dir, &["add", "-A"]);
+    git(dir, &["commit", "-q", "-m", "primeiro"]);
+    for (rel, body) in loose {
+        write(dir, rel, body);
+    }
+    temp
+}
+
+/// Os caminhos dos módulos e as pastas puladas do mapa da pasta `root`.
+fn modules_and_skipped(root: &Path) -> (Vec<String>, Vec<String>) {
+    let out = tempfile::Builder::new().prefix("scan-skip-out-").tempdir().unwrap();
+    let map = scan_root(root, out.path());
+    let texts = |value: &serde_json::Value, key: Option<&str>| -> Vec<String> {
+        value
+            .as_array()
+            .map(|all| all.iter().filter_map(|e| key.map_or(e, |k| &e[k]).as_str().map(str::to_string)).collect())
+            .unwrap_or_default()
+    };
+    (texts(&map["modules"], Some("path")), texts(&map["coverage"]["skipped_build_dirs"], None))
+}
+
+#[test]
+fn a_committed_code_folder_named_like_build_output_is_read() {
+    let temp = repo(
+        "scan-skip-build-lida-",
+        &[("ferramentas/build/gerar.rs", "pub fn gerar() {}\n"), ("src/lib.rs", "pub fn raiz() {}\n")],
+        &[],
+    );
+    let (modules, skipped) = modules_and_skipped(temp.path());
+    assert!(modules.contains(&"ferramentas/build/gerar.rs".to_string()), "{modules:?}");
+    assert!(!skipped.contains(&"ferramentas/build".to_string()), "{skipped:?}");
+}
+
+#[test]
+fn a_dependency_folder_outside_the_index_is_skipped_and_reported_by_its_path() {
+    let temp = repo(
+        "scan-skip-dependencia-",
+        &[("web/src/app.ts", "export const app = 1;\n")],
+        &[("web/node_modules/pacote/index.ts", "export const pacote = 1;\n")],
+    );
+    let (modules, skipped) = modules_and_skipped(temp.path());
+    assert!(!modules.iter().any(|m| m.contains("node_modules")), "{modules:?}");
+    assert!(modules.contains(&"web/src/app.ts".to_string()), "{modules:?}");
+    assert!(skipped.contains(&"web/node_modules".to_string()), "{skipped:?}");
+}
+
+#[test]
+fn a_folder_the_gitignore_takes_stays_out_and_off_the_list() {
+    let temp = repo(
+        "scan-skip-ignorada-",
+        &[(".gitignore", "bin/\n"), ("app/main.ts", "export const main = 1;\n")],
+        &[("app/bin/saida.ts", "export const saida = 1;\n")],
+    );
+    let (modules, skipped) = modules_and_skipped(temp.path());
+    assert!(!modules.contains(&"app/bin/saida.ts".to_string()), "{modules:?}");
+    assert!(!skipped.contains(&"app/bin".to_string()), "the folder the gitignore takes is not the list's: {skipped:?}");
+}
+
+#[test]
+fn outside_git_a_build_folder_stays_out_and_is_reported() {
+    let temp = tempfile::Builder::new().prefix("scan-skip-sem-git-").tempdir().unwrap();
+    write(temp.path(), "build/x.rs", "pub fn x() {}\n");
+    write(temp.path(), "src/lib.rs", "pub fn raiz() {}\n");
+    let (modules, skipped) = modules_and_skipped(temp.path());
+    assert!(!modules.contains(&"build/x.rs".to_string()), "{modules:?}");
+    assert!(skipped.contains(&"build".to_string()), "{skipped:?}");
+}
+
+#[test]
+fn a_committed_claude_folder_stays_out_and_is_reported() {
+    let temp = repo(
+        "scan-skip-claude-comitada-",
+        &[(".claude/hooks/x.py", "def x():\n    return 1\n"), ("src/lib.rs", "pub fn raiz() {}\n")],
+        &[],
+    );
+    let (modules, skipped) = modules_and_skipped(temp.path());
+    assert!(!modules.iter().any(|m| m.starts_with(".claude/")), "{modules:?}");
+    assert!(skipped.contains(&".claude".to_string()), "{skipped:?}");
 }

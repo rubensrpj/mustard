@@ -32,22 +32,35 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              `mustard-rt run write publish --spec {spec} --json '{\"page\":\"{key}\",\"milestone\":\"{milestone}\",\"ok\":true,\"template\":true,\"stamp\":\"{stamp}\",\"url\":\"…\"}'`, \
              with `\"ok\":false` and a `\"reason\"` when it fails."
         }
-        // A página já publicada com um molde de outro carimbo, ou sem carimbo,
-        // é publicada de novo no mesmo endereço, antes do lote de cópia: o
-        // banco dela continua lá, e a cópia segue de onde parou.
-        ("page.copy.republish", Locale::PtBr) => {
-            "A {page} foi publicada com um molde diferente do que esta versão do Mustard monta: \
-             publique de novo o template `{template}` com a ferramenta `Artifact` no mesmo endereço, \
-             {url}, passando em `capabilities` o valor `{capabilities}`, antes de copiar os lotes, e \
-             grave a publicação com \
+        // Entra logo depois de `page.copy.publish`: a página acabou de sair, e o
+        // usuário fica sabendo, sem o endereço, que mora na barra de status.
+        ("page.copy.tell_published", Locale::PtBr) => {
+            "Depois, conte ao usuário que a {page} foi publicada. O link dela fica na barra de status: não \
+             escreva o endereço."
+        }
+        ("page.copy.tell_published", Locale::EnUs) => {
+            "Then tell the user the {page} is published. Its link is in the status line: do not write the \
+             address."
+        }
+        // A página já publicada com outra versão do layout, ou com a marca de
+        // antes da versão do layout, não é publicada de novo sozinha: o marco
+        // avisa uma vez por versão, e ela só sai de novo, no mesmo endereço,
+        // quando o usuário pede. O banco dela segue recebendo a cópia.
+        ("page.copy.layout_changed", Locale::PtBr) => {
+            "O desenho da {page} mudou de versão, e a página segue com o desenho de antes. Conte isso ao \
+             usuário e diga que ela só é publicada de novo quando ele pedir. Sem o pedido dele, não publique \
+             nada: a cópia para o banco segue no mesmo endereço. Se ele pedir, publique de novo o template \
+             `{template}` com a ferramenta `Artifact` no mesmo endereço, {url}, passando em `capabilities` o \
+             valor `{capabilities}`. Grave a publicação com \
              `mustard-rt run write publish --spec {spec} --json '{\"page\":\"{key}\",\"milestone\":\"{milestone}\",\"ok\":true,\"template\":true,\"stamp\":\"{stamp}\",\"url\":\"{url}\"}'`, \
              com `\"ok\":false` e `\"reason\"` quando falhar."
         }
-        ("page.copy.republish", Locale::EnUs) => {
-            "The {page} was published with a template other than the one this Mustard version builds: \
-             publish the template `{template}` again with the `Artifact` tool at the same address, \
-             {url}, passing `{capabilities}` as `capabilities`, before copying the batches, and record \
-             the publication with \
+        ("page.copy.layout_changed", Locale::EnUs) => {
+            "The {page}'s design has a new version, and the page keeps the old design. Tell the user, and \
+             say it is published again only when they ask. Without their request, publish nothing: the copy \
+             into the database goes on at the same address. If they ask, publish the template `{template}` \
+             again with the `Artifact` tool at the same address, {url}, passing `{capabilities}` as \
+             `capabilities`. Record the publication with \
              `mustard-rt run write publish --spec {spec} --json '{\"page\":\"{key}\",\"milestone\":\"{milestone}\",\"ok\":true,\"template\":true,\"stamp\":\"{stamp}\",\"url\":\"{url}\"}'`, \
              with `\"ok\":false` and a `\"reason\"` when it fails."
         }
@@ -55,50 +68,56 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // inteira ganha o template num link novo; a antiga fica parada.
         // `{page}` é o nome da página (`page.name.*`).
         ("page.copy.old_page", Locale::PtBr) => {
-            "A {page} que uma versão antiga do Mustard publicou fica parada como está, como um \
-             retrato: publique o template como página nova, com link novo, sem mexer na antiga e sem \
-             copiar nada para ela, e a barra de status passa a mostrar o link novo."
+            "A {page} que uma versão antiga do Mustard publicou fica parada como está, como um retrato. \
+             Publique o template como página nova, com link novo. Não mexa na antiga nem copie nada para \
+             ela. A barra de status passa a mostrar o link novo."
         }
         ("page.copy.old_page", Locale::EnUs) => {
-            "The {page} an older Mustard version published stays still as it is, like a snapshot: \
-             publish the template as a new page, with a new link, without touching the old one or \
-             copying anything into it, and the status line starts showing the new link."
+            "The {page} an older Mustard version published stays still as it is, like a snapshot. Publish \
+             the template as a new page, with a new link. Leave the old one alone and copy nothing into it. \
+             The status line starts showing the new link."
         }
         // A migração de uma spec antiga: as notas de trabalho das tarefas das
         // ondas que ainda não saíram.
         ("page.migration.unrated", Locale::PtBr) => {
-            "Esta spec veio de uma versão do Mustard sem a nota de trabalho das tarefas: grave uma \
-             versão nova de cada tarefa das ondas que ainda não saíram, {tasks}, com a nota dela. \
-             {scale} Depois some as notas de cada onda: a que passar de {cap} pontos volta para o \
-             usuário aprovar a divisão dela antes de sair."
+            "Esta spec veio de uma versão do Mustard sem a nota de trabalho das tarefas. Grave uma versão \
+             nova de cada tarefa das ondas que ainda não saíram, {tasks}, com a nota dela. {scale} Depois \
+             some as notas de cada onda. A que passar de {cap} pontos volta para o usuário aprovar a \
+             divisão dela antes de sair."
         }
         ("page.migration.unrated", Locale::EnUs) => {
-            "This spec came from a Mustard version without the tasks' points: record a new version of \
-             each task of the waves that have not gone out yet, {tasks}, with its points. {scale} \
-             Then add up the points of each wave: the one over {cap} points goes back to the user to \
-             approve its split before it goes out."
+            "This spec came from a Mustard version without the tasks' points. Record a new version of each \
+             task of the waves that have not gone out yet, {tasks}, with its points. {scale} Then add up \
+             the points of each wave. The one over {cap} points goes back to the user to approve its split \
+             before it goes out."
         }
         ("page.migration.over_cap", Locale::PtBr) => {
-            "A onda {wave} ainda não saiu e soma {points} pontos, acima do teto de {cap}: ela volta \
-             para o usuário aprovar a divisão dela antes de sair."
+            "A onda {wave} ainda não saiu e soma {points} pontos, acima do teto de {cap}. Ela volta para o \
+             usuário aprovar a divisão dela antes de sair."
         }
         ("page.migration.over_cap", Locale::EnUs) => {
-            "Wave {wave} has not gone out yet and adds up to {points} points, over the cap of {cap}: \
-             it goes back to the user to approve its split before it goes out."
+            "Wave {wave} has not gone out yet and adds up to {points} points, over the cap of {cap}. It \
+             goes back to the user to approve its split before it goes out."
         }
         // Quem copia é o orquestrador, na própria conversa, também na
-        // primeira cópia, que leva a spec inteira.
+        // primeira cópia, que leva a spec inteira. As escritas de cada lote
+        // já vêm prontas na resposta, em `copy.<página>.writes`: nenhum
+        // arquivo é lido para mandá-las. A saída da versão recusada entra
+        // sempre: a escrita que já leva a versão guardada também pode ser
+        // recusada, se o documento mudou no banco depois da última cópia.
         ("page.copy.batches", Locale::PtBr) => {
-            "Copie você mesmo, nesta conversa e sem agente, para o banco de dados da {page}, no \
-             endereço {url}, os lotes {files}, nessa ordem: cada arquivo é a lista `writes` de uma \
-             chamada da ferramenta `ArtifactData` com `action` `batch`, e cada documento vai pelo \
-             `file_path` dele, sem você ler os itens."
+            "Copie você mesmo, nesta conversa e sem agente, para o banco de dados da {page}, no endereço \
+             {url}. Mande cada lista de `copy.{key}.writes` desta resposta numa chamada da ferramenta \
+             `ArtifactData` com `action` `batch`, uma chamada por lote, na ordem. Cada documento vai pelo \
+             `file_path` dele, sem você ler arquivo nenhum. Se o banco recusar uma versão, leia aquele \
+             documento com `get`, ponha a versão dele na escrita e mande o lote de novo."
         }
         ("page.copy.batches", Locale::EnUs) => {
-            "Copy it yourself, in this conversation and without an agent, into the {page}'s database, \
-             at {url}, the batches {files}, in this order: each file is the `writes` list of one \
-             `ArtifactData` call with `action` `batch`, and each document goes by its `file_path`, \
-             without reading the items."
+            "Copy it yourself, in this conversation and without an agent, into the {page}'s database at \
+             {url}. Send each list in `copy.{key}.writes` of this response in one `ArtifactData` call with \
+             `action` `batch`, one call per batch, in order. Each document goes by its `file_path`, without \
+             reading any file. If the database refuses a version, read that document with `get`, put its \
+             version on the write and send the batch again."
         }
         // Só entra depois de `page.copy.batches`, quando algum documento do
         // lote já existe no banco sem versão guardada, de uma cópia gravada
@@ -106,33 +125,59 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // documento assim sem a versão dele. O que tem versão guardada já vai
         // com ela no lote.
         ("page.copy.existing", Locale::PtBr) => {
-            "Os documentos {docs} já existem no banco sem versão guardada: leia a versão de cada um com \
-             a ação `get` da ferramenta `ArtifactData` e ponha cada uma em `if_version` na escrita dele \
-             antes de mandar o lote; as escritas que já trazem `if_version` vão como estão, e as outras \
-             vão sem versão. Se o banco recusar uma versão, leia aquele documento com `get`, ponha a \
-             versão dele na escrita e mande o lote de novo."
+            "Os documentos {docs} já existem no banco sem versão guardada. Leia a versão de cada um com a \
+             ação `get` da ferramenta `ArtifactData` e ponha essa versão em `if_version` na escrita dele, \
+             antes de mandar o lote. As escritas que já trazem `if_version` vão como estão, e as outras vão \
+             sem versão."
         }
         ("page.copy.existing", Locale::EnUs) => {
-            "The documents {docs} already exist in the database without a stored version: read each \
-             one's version with the `get` action of the `ArtifactData` tool and put it in `if_version` on \
-             that write before sending the batch; the writes that already carry `if_version` go as they \
-             are, and the others go without a version. If the database refuses a version, read that \
-             document with `get`, put its version on the write and send the batch again."
+            "The documents {docs} already exist in the database without a stored version. Read each one's \
+             version with the `get` action of the `ArtifactData` tool and put it in `if_version` on that \
+             write, before sending the batch. The writes that already carry `if_version` go as they are, and \
+             the others go without a version."
         }
         // Só entra depois de `page.copy.batches`, e só fora do descarte: a
         // spec descartada é terminal, sem cópia seguinte para continuar dela.
-        // As versões gravadas poupam a leitura na cópia seguinte.
+        // As versões gravadas poupam a leitura na cópia seguinte. Na página
+        // da spec, o gancho que lê o resultado de cada lote grava a cópia
+        // sozinho quando o último volta; a gravação à mão fica para quando
+        // ele não avisar que gravou.
         ("page.copy.record", Locale::PtBr) => {
+            "A cópia da {page} se grava sozinha quando o último lote volta, e o Mustard avisa que gravou. \
+             Se esse aviso não vier, grave a cópia com `mustard-rt run write copy --spec {spec} --json '{record}'`. \
+             Some ao `--json` o campo `versions`: a versão que o resultado do lote devolveu para cada \
+             documento escrito, pelo nome `coleção/doc_id` dele, como \
+             `{\"versions\":{\"ranges/200\":3,\"computed/current\":7}}`."
+        }
+        ("page.copy.record", Locale::EnUs) => {
+            "The copy to the {page} records itself when the last batch comes back, and Mustard says it did. \
+             If that notice does not come, record the copy with \
+             `mustard-rt run write copy --spec {spec} --json '{record}'`. Add to the `--json` the `versions` \
+             field: the version the batch result returned for each document written, by its \
+             `collection/doc_id` name, as in `{\"versions\":{\"ranges/200\":3,\"computed/current\":7}}`."
+        }
+        // O mesmo registro na página do projeto, que ninguém grava sozinho.
+        ("page.copy.record_project", Locale::PtBr) => {
             "Depois grave a cópia com `mustard-rt run write copy --spec {spec} --json '{record}'`, \
              somando ao `--json` o campo `versions`: a versão que o resultado do lote devolveu para cada \
              documento escrito, pelo nome `coleção/doc_id` dele, como \
              `{\"versions\":{\"ranges/200\":3,\"computed/current\":7}}`."
         }
-        ("page.copy.record", Locale::EnUs) => {
+        ("page.copy.record_project", Locale::EnUs) => {
             "Then record the copy with `mustard-rt run write copy --spec {spec} --json '{record}'`, adding \
              to the `--json` the `versions` field: the version the batch result returned for each document \
              written, by its `collection/doc_id` name, as in \
              `{\"versions\":{\"ranges/200\":3,\"computed/current\":7}}`."
+        }
+        // O que o gancho diz quando o último lote da cópia da página da spec
+        // voltou e ele gravou a cópia com as versões de todos os lotes.
+        ("page.copy.recorded", Locale::PtBr) => {
+            "A cópia da {page} foi gravada na spec, com a versão de cada documento. Não rode o \
+             `write copy` desta cópia."
+        }
+        ("page.copy.recorded", Locale::EnUs) => {
+            "The copy to the {page} was recorded in the spec, with each document's version. Do not run \
+             `write copy` for this copy."
         }
         // Sempre entra em `{url}` de `page.copy.batches`, depois de "no
         // endereço": sem "o endereço" aqui, ou a frase dobra a palavra.
@@ -146,26 +191,167 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("page.copy.failed", Locale::PtBr) => {
             "A cópia para o banco de dados das páginas não pôde ser preparada, e o motivo está em \
-             `warnings`: não copie nada agora, porque a próxima cópia leva os mesmos itens."
+             `warnings`. Não copie nada agora: a próxima cópia leva os mesmos itens."
         }
         ("page.copy.failed", Locale::EnUs) => {
-            "The copy into the pages' database could not be prepared, and the reason is in `warnings`: \
-             copy nothing now, since the next copy carries the same items."
+            "The copy into the pages' database could not be prepared, and the reason is in `warnings`. \
+             Copy nothing now: the next copy carries the same items."
         }
         ("page.purge_pending", Locale::PtBr) => {
-            "Os itens {codes} guardam no arquivo um trecho com cara de segredo e ficam fora da cópia \
-             para o banco de dados da página até serem expurgados: expurgue cada um com \
+            "Os itens {codes} guardam no arquivo um trecho com cara de segredo. Eles ficam fora da cópia \
+             para o banco de dados da página até serem expurgados. Expurgue cada um com \
              `mustard-rt run write purge --spec {spec} --json '{\"targets\":[\"<código>\"],\"reason\":\"secret\"}'`."
         }
         ("page.purge_pending", Locale::EnUs) => {
-            "Items {codes} keep in the file an excerpt that looks like a secret and stay out of the \
-             copy into the page's database until they are purged: purge each one with \
+            "Items {codes} keep in the file an excerpt that looks like a secret. They stay out of the copy \
+             into the page's database until they are purged. Purge each one with \
              `mustard-rt run write purge --spec {spec} --json '{\"targets\":[\"<item>\"],\"reason\":\"secret\"}'`."
         }
         ("page.name.spec", Locale::PtBr) => "página da spec",
         ("page.name.spec", Locale::EnUs) => "spec page",
         ("page.name.project", Locale::PtBr) => "página do projeto",
         ("page.name.project", Locale::EnUs) => "project page",
+        ("page.name.spend", Locale::PtBr) => "página do gasto",
+        ("page.name.spend", Locale::EnUs) => "spend page",
+
+        // A cópia da página do gasto, dita pelo comando `spend`
+        // (`commands/spec_events/pages/spend.rs`): a página é uma só por
+        // máquina, e o endereço dela se grava pelo próprio comando.
+        ("page.copy.spend_publish", Locale::PtBr) => {
+            "A {page} ainda não foi publicada. Publique o arquivo `{template}` com a ferramenta `Artifact`, \
+             passando em `capabilities` o valor `{capabilities}`. Grave o endereço que a publicação devolver \
+             com `mustard-rt run spend --url <endereço>`."
+        }
+        ("page.copy.spend_publish", Locale::EnUs) => {
+            "The {page} is not published yet. Publish the file `{template}` with the `Artifact` tool, passing \
+             `{capabilities}` as `capabilities`. Record the address the publication returns with \
+             `mustard-rt run spend --url <address>`."
+        }
+        // A publicação nova pedida pelo usuário (`--republish`): a página antiga
+        // fica como está, e o endereço novo vale para a máquina inteira.
+        ("page.copy.spend_republish", Locale::PtBr) => {
+            "O usuário pediu para publicar a {page} de novo. Publique o arquivo `{template}` com a \
+             ferramenta `Artifact` como página nova, passando em `capabilities` o valor `{capabilities}`. A \
+             antiga fica como está. Grave o endereço que a publicação devolver com \
+             `mustard-rt run spend --url <endereço>`."
+        }
+        ("page.copy.spend_republish", Locale::EnUs) => {
+            "The user asked to publish the {page} again. Publish the file `{template}` with the `Artifact` \
+             tool as a new page, passing `{capabilities}` as `capabilities`. The old one stays as it is. \
+             Record the address the publication returns with `mustard-rt run spend --url <address>`."
+        }
+        // Depois do último lote: a cópia feita se grava pelo comando, sem
+        // `--json`.
+        ("page.copy.spend_record", Locale::PtBr) => {
+            "Depois de enviar todos os lotes, grave a cópia com `mustard-rt run spend --copied`."
+        }
+        ("page.copy.spend_record", Locale::EnUs) => {
+            "After sending every batch, record the copy with `mustard-rt run spend --copied`."
+        }
+
+        // A página do gasto (`platform::page_templates`): o que ela diz
+        // sobre cada dia e cada projeto.
+        ("page.spend.kind", Locale::PtBr) => "gasto",
+        ("page.spend.kind", Locale::EnUs) => "spend",
+        ("page.spend.title", Locale::PtBr) => "Gasto por dia",
+        ("page.spend.title", Locale::EnUs) => "Spend per day",
+        ("page.spend.chart_title", Locale::PtBr) => "Parte das ações que são procuras de código",
+        ("page.spend.chart_title", Locale::EnUs) => "Share of the actions that are code searches",
+        // `{day}` é o dia, `{percent}` a parte em porcentagem, `{searches}` as
+        // procuras de código e `{actions}` todas as ações do dia.
+        ("page.spend.chart_point", Locale::PtBr) => "{day}: {percent}% das ações ({searches} de {actions})",
+        ("page.spend.chart_point", Locale::EnUs) => "{day}: {percent}% of the actions ({searches} of {actions})",
+        ("page.spend.col.day", Locale::PtBr) => "Dia",
+        ("page.spend.col.day", Locale::EnUs) => "Day",
+        ("page.spend.col.project", Locale::PtBr) => "Projeto",
+        ("page.spend.col.project", Locale::EnUs) => "Project",
+        ("page.spend.col.tokens", _) => "Tokens",
+        ("page.spend.col.actions", Locale::PtBr) => "Ações",
+        ("page.spend.col.actions", Locale::EnUs) => "Actions",
+        ("page.spend.col.searches", Locale::PtBr) => "Procuras de código",
+        ("page.spend.col.searches", Locale::EnUs) => "Code searches",
+        ("page.spend.col.share", Locale::PtBr) => "Parte das ações",
+        ("page.spend.col.share", Locale::EnUs) => "Share of actions",
+        ("page.spend.col.reads", Locale::PtBr) => "Leituras de arquivo",
+        ("page.spend.col.reads", Locale::EnUs) => "File reads",
+        ("page.spend.col.mustard", Locale::PtBr) => "Buscas do Mustard",
+        ("page.spend.col.mustard", Locale::EnUs) => "Mustard searches",
+        ("page.spend.col.empty", Locale::PtBr) => "Respostas vazias",
+        ("page.spend.col.empty", Locale::EnUs) => "Empty answers",
+        ("page.spend.col.jev_cost", Locale::PtBr) => "Custo do Jev",
+        ("page.spend.col.jev_cost", Locale::EnUs) => "Jev cost",
+
+        // O resumo no topo da página do gasto: a máquina inteira, todos os
+        // projetos somados.
+        ("page.spend.summary.title", Locale::PtBr) => "Resumo da máquina",
+        ("page.spend.summary.title", Locale::EnUs) => "Machine summary",
+        ("page.spend.summary.today", Locale::PtBr) => "Hoje até agora",
+        ("page.spend.summary.today", Locale::EnUs) => "Today so far",
+        ("page.spend.summary.partial", Locale::PtBr) => "parcial",
+        ("page.spend.summary.partial", Locale::EnUs) => "partial",
+        ("page.spend.summary.yesterday", Locale::PtBr) => "Ontem",
+        ("page.spend.summary.yesterday", Locale::EnUs) => "Yesterday",
+        ("page.spend.summary.avg3", Locale::PtBr) => "Média dos últimos 3 dias",
+        ("page.spend.summary.avg3", Locale::EnUs) => "Average of the last 3 days",
+        ("page.spend.summary.avg7", Locale::PtBr) => "Média dos últimos 7 dias",
+        ("page.spend.summary.avg7", Locale::EnUs) => "Average of the last 7 days",
+        ("page.spend.summary.avg_month", Locale::PtBr) => "Média do mês",
+        ("page.spend.summary.avg_month", Locale::EnUs) => "Average of the month",
+        ("page.spend.summary.tokens", _) => "tokens",
+        // `{day}` é o dia e `{n}` as ações dele.
+        ("page.spend.summary.day_actions", Locale::PtBr) => "{day} · {n} ações",
+        ("page.spend.summary.day_actions", Locale::EnUs) => "{day} · {n} actions",
+        // `{n}` é quantos dias entraram na média.
+        ("page.spend.summary.days_used", Locale::PtBr) => "{n} dias contados",
+        ("page.spend.summary.days_used", Locale::EnUs) => "{n} days counted",
+        // `{min}` é o mínimo de ações de um dia para entrar numa média.
+        ("page.spend.summary.note", Locale::PtBr) => "Nas médias só entram dias fechados com pelo menos {min} ações.",
+        ("page.spend.summary.note", Locale::EnUs) => "Averages only count closed days with at least {min} actions.",
+        ("page.spend.summary.forecast", Locale::PtBr) => "Previsão do Jev no mês",
+        ("page.spend.summary.forecast", Locale::EnUs) => "Jev forecast for the month",
+        // `{spent}` é o já gasto no mês, `{daily}` a média por dia dos últimos
+        // dias com busca e `{left}` os dias que faltam no mês.
+        ("page.spend.summary.forecast_detail", Locale::PtBr) => {
+            "{spent} já gastos, mais {daily} por dia nos {left} dias que faltam"
+        }
+        ("page.spend.summary.forecast_detail", Locale::EnUs) => {
+            "{spent} spent so far, plus {daily} a day for the {left} days left"
+        }
+
+        // As recusas do comando `spend`, com as lacunas que ele troca.
+        ("page.spend.refusal.not_an_address", Locale::PtBr) => {
+            "O texto `{found}` não é o endereço de uma página publicada: ele começa com `https://`. Passe o \
+             endereço que a publicação devolveu."
+        }
+        ("page.spend.refusal.not_an_address", Locale::EnUs) => {
+            "The text `{found}` is not the address of a published page: it starts with `https://`. Pass the \
+             address the publication returned."
+        }
+        ("page.spend.refusal.nothing_prepared", Locale::PtBr) => {
+            "Nenhuma cópia do gasto foi preparada. Rode `mustard-rt run spend` antes de gravar a cópia como feita."
+        }
+        ("page.spend.refusal.nothing_prepared", Locale::EnUs) => {
+            "No copy of the spend was prepared. Run `mustard-rt run spend` before recording the copy as done."
+        }
+        ("page.spend.refusal.no_machine_folder", Locale::PtBr) => {
+            "Não achei a pasta pessoal da máquina para guardar o gasto. Defina `MUSTARD_SPEND_DIR` com a pasta \
+             onde guardar."
+        }
+        ("page.spend.refusal.no_machine_folder", Locale::EnUs) => {
+            "Could not find the machine's home folder to keep the spend. Set `MUSTARD_SPEND_DIR` to the folder \
+             where it goes."
+        }
+        ("page.spend.refusal.unreadable_ledger", Locale::PtBr) => {
+            "O arquivo do gasto {path} não se lê: {detail}. Apague o arquivo para contar tudo de novo pelas \
+             conversas. O endereço da página se perde, e `mustard-rt run spend --republish` publica outra."
+        }
+        ("page.spend.refusal.unreadable_ledger", Locale::EnUs) => {
+            "The spend file {path} cannot be read: {detail}. Delete the file to count everything again from \
+             the conversations. The page address is lost, and `mustard-rt run spend --republish` publishes \
+             another one."
+        }
+        ("page.spend.refusal.io", Locale::PtBr) => "Não consegui ler ou gravar o gasto: {detail}.",
+        ("page.spend.refusal.io", Locale::EnUs) => "Could not read or write the spend: {detail}.",
 
         // A moldura de toda página: o menu lateral, a busca e os botões de
         // abrir e fechar. `{n}` e `{total}` são preenchidos pelo script da
@@ -180,8 +366,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.open_all", Locale::EnUs) => "Open all",
         ("page.close_all", Locale::PtBr) => "Fechar tudo",
         ("page.close_all", Locale::EnUs) => "Close all",
-        ("page.not_found", Locale::PtBr) => "Nada encontrado. Tente outra palavra ou o código do item, como DEC-0142.",
-        ("page.not_found", Locale::EnUs) => "Nothing found. Try another word or an item's code, like DEC-0142.",
+        ("page.not_found", Locale::PtBr) => "Nada encontrado. Tente outra palavra ou o código do item, como `DEC-0142`.",
+        ("page.not_found", Locale::EnUs) => "Nothing found. Try another word or an item's code, like `DEC-0142`.",
         ("page.of", Locale::PtBr) => "{n} de {total}",
         ("page.of", Locale::EnUs) => "{n} of {total}",
         ("page.count.one", _) => "{n} item",
@@ -201,6 +387,10 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Ainda não há dados: o Mustard ainda não copiou nada para o banco de dados desta página."
         }
         ("page.no_data", Locale::EnUs) => "No data yet: Mustard has not copied anything to this page's database.",
+        // O banco recusou ou perdeu a leitura: ele pode ter dado, e dizer que
+        // não há dados seria falso.
+        ("page.read_failed", Locale::PtBr) => "Não deu para ler o banco de dados da página. Recarregue a página.",
+        ("page.read_failed", Locale::EnUs) => "Could not read the page's database. Reload the page.",
         // O banco já tem o documento calculado (uma cópia já rodou), mas
         // nenhum item aparece: o modelo instalado está velho, lendo uma
         // coleção que a cópia de agora não usa mais.
@@ -264,8 +454,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.block.backlog", _) => "Backlog",
         ("page.block.waves", Locale::PtBr) => "Ondas",
         ("page.block.waves", Locale::EnUs) => "Waves",
-        ("page.block.review", Locale::PtBr) => "Revisão e QA",
-        ("page.block.review", Locale::EnUs) => "Review and QA",
+        ("page.block.review", Locale::PtBr) => "Revisão e testes",
+        ("page.block.review", Locale::EnUs) => "Review and tests",
         ("page.review.final", Locale::PtBr) => "Veredito final",
         ("page.review.final", Locale::EnUs) => "Final verdict",
         ("page.group.tracking", Locale::PtBr) => "Matriz de rastreabilidade",
@@ -487,12 +677,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.now.running", Locale::EnUs) => "Running",
         ("page.now.backlog", Locale::PtBr) => "Backlog · tarefas que ainda não viraram onda",
         ("page.now.backlog", Locale::EnUs) => "Backlog · tasks not yet in a wave",
-        ("page.now.pill.wave", Locale::PtBr) => "ONDA {n}",
-        ("page.now.pill.wave", Locale::EnUs) => "WAVE {n}",
-        ("page.now.pill.waits", Locale::PtBr) => "ESPERA",
-        ("page.now.pill.waits", Locale::EnUs) => "WAITS",
-        ("page.now.pill.ready", Locale::PtBr) => "PRONTA",
-        ("page.now.pill.ready", Locale::EnUs) => "READY",
+        ("page.now.pill.wave", Locale::PtBr) => "Onda {n}",
+        ("page.now.pill.wave", Locale::EnUs) => "Wave {n}",
+        ("page.now.pill.waits", Locale::PtBr) => "Espera",
+        ("page.now.pill.waits", Locale::EnUs) => "Waits",
+        ("page.now.pill.ready", Locale::PtBr) => "Pronta",
+        ("page.now.pill.ready", Locale::EnUs) => "Ready",
         ("page.now.files.one", Locale::PtBr) => "{n} arquivo",
         ("page.now.files.one", Locale::EnUs) => "{n} file",
         ("page.now.files.many", Locale::PtBr) => "{n} arquivos",
@@ -576,6 +766,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.proof.none", Locale::EnUs) => "no proof",
         ("page.point.answer", Locale::PtBr) => "Resposta",
         ("page.point.answer", Locale::EnUs) => "Answer",
+        ("page.item.agent", Locale::PtBr) => "Para o agente",
+        ("page.item.agent", Locale::EnUs) => "For the agent",
         ("page.finding", Locale::PtBr) => "achado do plano",
         ("page.finding", Locale::EnUs) => "plan finding",
         ("page.md.status", Locale::PtBr) => "Situação",
@@ -709,8 +901,13 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.field.mustard", Locale::EnUs) => "Mustard version",
         ("page.field.model", Locale::PtBr) => "Modelo pedido",
         ("page.field.model", Locale::EnUs) => "Requested model",
+        ("page.field.effort", Locale::PtBr) => "Esforço pedido",
+        ("page.field.effort", Locale::EnUs) => "Requested effort",
         ("page.field.model_used", Locale::PtBr) => "Modelo usado",
         ("page.field.model_used", Locale::EnUs) => "Model used",
+        // O nome do agente chamado, gravado no envio da onda.
+        ("page.field.agent", Locale::PtBr) => "Agente chamado",
+        ("page.field.agent", Locale::EnUs) => "Agent called",
         ("page.field.steps", Locale::PtBr) => "Passos",
         ("page.field.steps", Locale::EnUs) => "Steps",
         ("page.field.tokens", Locale::PtBr) => "Tokens",
@@ -805,8 +1002,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.value.wave", Locale::EnUs) => "wave agent",
         ("page.value.review", Locale::PtBr) => "revisor",
         ("page.value.review", Locale::EnUs) => "reviewer",
-        ("page.value.skill", Locale::PtBr) => "autor de skill",
-        ("page.value.skill", Locale::EnUs) => "skill author",
         ("page.value.approved", Locale::PtBr) => "aprovada",
         ("page.value.approved", Locale::EnUs) => "approved",
         ("page.value.rejected", Locale::PtBr) => "reprovada",
@@ -863,8 +1058,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.author.wave", Locale::EnUs) => "wave agent",
         ("page.author.review", Locale::PtBr) => "revisor",
         ("page.author.review", Locale::EnUs) => "reviewer",
-        ("page.author.skill", Locale::PtBr) => "autor de skill",
-        ("page.author.skill", Locale::EnUs) => "skill author",
 
         ("page.metrics.col.measure", Locale::PtBr) => "Medida",
         ("page.metrics.col.measure", Locale::EnUs) => "Measure",
@@ -984,25 +1177,84 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("page.rs"),
             super::PREFIXES,
-            385,
-            0x57c0_a867_d1ce_d5eb,
+            426,
+            0xec06_ca28_0e68_e913,
         );
     }
 
-    /// As duas ordens de publicar levam o carimbo do molde na gravação da
-    /// publicação, nos dois idiomas; a de publicar de novo leva também o
-    /// endereço de agora, na publicação e na gravação.
+    /// A ordem de publicar leva o carimbo do molde na gravação da publicação,
+    /// nos dois idiomas; o aviso de desenho novo, que ensina a publicar de
+    /// novo quando o usuário pedir, leva também o endereço de agora, na
+    /// publicação e na gravação.
     #[test]
     fn the_publish_orders_record_the_template_stamp() {
         for lang in [Locale::PtBr, Locale::EnUs] {
             let publish = super::text("page.copy.publish", lang).expect("page.copy.publish");
             assert!(publish.contains(r#""stamp":"{stamp}""#), "{publish}");
-            let again = super::text("page.copy.republish", lang).expect("page.copy.republish");
+            let again = super::text("page.copy.layout_changed", lang).expect("page.copy.layout_changed");
             for slot in ["{page}", "{template}", "{capabilities}", "{spec}", "{key}", "{milestone}"] {
                 assert!(again.contains(slot), "{slot}: {again}");
             }
             assert!(again.contains(r#""stamp":"{stamp}","url":"{url}""#), "{again}");
             assert!(again.matches("{url}").count() >= 2, "{again}");
+        }
+    }
+
+    /// O aviso de desenho novo manda contar ao usuário e esperar o pedido
+    /// dele, sem mandar publicar antes dos lotes; a frase da primeira
+    /// publicação manda contar que a página saiu e que o link está na barra
+    /// de status, sem escrever o endereço. As duas passam na conferência de
+    /// escrita nos dois idiomas, com cada vaga trocada por uma palavra.
+    #[test]
+    fn the_page_notices_tell_the_user_and_read_clearly() {
+        for (lang, user, ask, status, word) in [
+            (Locale::PtBr, "Conte isso ao usuário", "só é publicada de novo quando ele pedir", "barra de status", "página"),
+            (Locale::EnUs, "Tell the user", "published again only when they ask", "status line", "page"),
+        ] {
+            let changed = super::text("page.copy.layout_changed", lang).expect("page.copy.layout_changed");
+            assert!(changed.contains(user) && changed.contains(ask), "{lang:?}: {changed}");
+            assert!(!changed.contains("Antes de copiar") && !changed.contains("Before copying"), "{changed}");
+            let told = super::text("page.copy.tell_published", lang).expect("page.copy.tell_published");
+            assert!(told.contains("{page}") && told.contains(status), "{lang:?}: {told}");
+            for (key, text) in [("page.copy.layout_changed", changed), ("page.copy.tell_published", told)] {
+                let filled = ["{page}", "{template}", "{capabilities}", "{spec}", "{key}", "{milestone}", "{stamp}", "{url}"]
+                    .iter()
+                    .fold(text.to_string(), |text, slot| text.replace(slot, word));
+                let report = crate::domain::clarity::measure(&filled, &[], Some(lang));
+                assert!(report.passed, "{key} {lang:?}: {report:?}");
+            }
+        }
+    }
+
+    /// A frase da leitura que falhou não é a do banco vazio: conta que a
+    /// leitura falhou e manda recarregar, e passa na conferência de escrita
+    /// nos dois idiomas.
+    #[test]
+    fn the_read_failed_text_differs_from_the_empty_one_and_reads_clearly() {
+        for (lang, failed, reload) in
+            [(Locale::PtBr, "Não deu para ler", "Recarregue"), (Locale::EnUs, "Could not read", "Reload")]
+        {
+            let text = super::text("page.read_failed", lang).expect("page.read_failed");
+            let empty = super::text("page.no_data", lang).expect("page.no_data");
+            assert_ne!(text, empty, "{lang:?}");
+            assert!(text.contains(failed) && text.contains(reload), "{lang:?}: {text}");
+            let report = crate::domain::clarity::measure(text, &[], Some(lang));
+            assert!(report.passed, "{lang:?}: {report:?}");
+        }
+    }
+
+    /// A frase dos lotes aponta as escritas prontas da resposta pela chave
+    /// da página, sem arquivo de lote a ler, e a do registro da página da
+    /// spec continua com o comando de gravar a cópia à mão, para quando o
+    /// gancho não gravar.
+    #[test]
+    fn the_copy_order_points_to_the_ready_writes() {
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let batches = super::text("page.copy.batches", lang).expect("page.copy.batches");
+            assert!(batches.contains("`copy.{key}.writes`"), "{batches}");
+            assert!(!batches.contains("{files}"), "no batch file to read: {batches}");
+            let record = super::text("page.copy.record", lang).expect("page.copy.record");
+            assert!(record.contains("write copy --spec {spec} --json '{record}'"), "the way out stays: {record}");
         }
     }
 

@@ -4,7 +4,8 @@
 
 use std::path::Path;
 
-use mustard_core::io::fs;
+use mustard_core::io::spec_index::DISCARDED_DIR;
+use mustard_core::io::{fs, project_map};
 use mustard_core::platform::i18n::{translate, Locale};
 
 use super::CheckResult;
@@ -21,20 +22,19 @@ use super::CheckResult;
 ///
 /// Two findings, both about the file the whole harness reads: a spec folder
 /// with no event file at all (nothing states what it is), and an event file
-/// that cannot be read. Plus the repository model (`grain.model.json`) the
+/// that cannot be read. Plus the repository model (`.claude/grain.db`) the
 /// scan produces, which is not state but is the other thing whose absence
 /// makes every later answer worse.
 pub(super) fn check_state_health(claude_dir: &Path) -> CheckResult {
     let mut warnings: Vec<String> = Vec::new();
 
-    if !claude_dir.join("grain.model.json").exists() {
-        warnings.push("grain.model.json missing (run `mustard-rt run scan`)".to_string());
-    }
-
     let root = claude_dir
         .parent()
         .filter(|_| claude_dir.file_name().and_then(|s| s.to_str()) == Some(".claude"))
         .map_or_else(|| claude_dir.to_path_buf(), Path::to_path_buf);
+    if !project_map::exists_at(&project_map::model_path(&root)) {
+        warnings.push(format!("{} missing (run `mustard-rt run scan`)", project_map::MAP_FILE_NAME));
+    }
     for spec in collect_active_spec_names(claude_dir) {
         let Ok(path) = mustard_core::io::spec_events::spec_file(&root, &spec) else {
             warnings.push(format!("'{spec}' is not a name a spec can have"));
@@ -65,6 +65,8 @@ pub(super) fn check_state_health(claude_dir: &Path) -> CheckResult {
 }
 
 /// Collect the directory names under `.claude/spec/` (flat layout — no buckets).
+/// The folder `run discard` keeps the discarded specs in is an archive, not a
+/// spec: it has no event file of its own, and each spec inside it does.
 fn collect_active_spec_names(claude_dir: &Path) -> Vec<String> {
     // ClaudePaths-exempt: `claude_dir` is already resolved via the seam in
     // `run()`; re-deriving with `for_project` here would be circular.
@@ -74,7 +76,7 @@ fn collect_active_spec_names(claude_dir: &Path) -> Vec<String> {
     };
     entries
         .into_iter()
-        .filter(|e| e.is_dir)
+        .filter(|e| e.is_dir && e.file_name != DISCARDED_DIR)
         .map(|e| e.file_name)
         .collect()
 }
@@ -167,7 +169,7 @@ fn is_wave_link(s: &str) -> bool {
 
 /// O índice das specs do projeto `root` contra os arquivos de eventos. Só lê:
 /// sem spec, não há o que conferir; índice que falta, linha que diverge e
-/// `search` calculado por outro redutor viram WARN, cada um com a mensagem no
+/// linha sem o campo `search` viram WARN, cada um com a mensagem no
 /// idioma `lang`, que manda rodar `mustard-rt run index`. Um erro de leitura
 /// também é WARN: a conferência nunca derruba o `doctor`.
 pub(super) fn check_spec_index(root: &Path, lang: Locale) -> CheckResult {
@@ -218,11 +220,11 @@ mod tests {
     /// Uma spec cuja pasta existe e cujo arquivo de eventos não: nada diz o
     /// que ela é nem onde ela está, e o diagnóstico acusa isso pelo nome.
     #[test]
-    fn a_spec_sem_arquivo_de_eventos_vira_achado() {
+    fn spec_without_an_events_file_becomes_a_finding() {
         let dir = tempdir().unwrap();
         let claude_dir = dir.path().join(".claude");
         std::fs::create_dir_all(claude_dir.join("spec").join("trava")).unwrap();
-        write_file(&claude_dir.join("grain.model.json"), "{}");
+        project_map::write_text(dir.path(), "{}").unwrap();
 
         let result = check_state_health(&claude_dir);
         assert_eq!(result.status, Status::Warn, "{:?}", result.details);
@@ -233,16 +235,35 @@ mod tests {
         );
     }
 
+    /// A pasta em que o `run discard` guarda as specs descartadas não é spec:
+    /// sem arquivo de eventos próprio, ela não é acusada. Uma spec de verdade
+    /// sem o arquivo continua acusada ao lado dela.
+    #[test]
+    fn discarded_folder_is_not_a_spec() {
+        let dir = tempdir().unwrap();
+        let claude_dir = dir.path().join(".claude");
+        let specs = claude_dir.join("spec");
+        std::fs::create_dir_all(specs.join(DISCARDED_DIR).join("velha")).unwrap();
+        project_map::write_text(dir.path(), "{}").unwrap();
+        assert_eq!(check_state_health(&claude_dir).status, Status::Ok);
+
+        std::fs::create_dir_all(specs.join("trava")).unwrap();
+        let result = check_state_health(&claude_dir);
+        assert_eq!(result.status, Status::Warn, "{:?}", result.details);
+        assert!(result.details.iter().all(|d| !d.contains(DISCARDED_DIR)), "{:?}", result.details);
+        assert!(result.details.iter().any(|d| d.contains("trava")), "{:?}", result.details);
+    }
+
     /// Uma spec com arquivo de eventos não é achado nenhum — e a pasta velha
     /// de estado, com o que quer que tenha sobrado dentro, também não: ela
     /// deixou de ser lida.
     #[test]
-    fn uma_spec_com_arquivo_de_eventos_esta_sa() {
+    fn spec_with_an_events_file_is_healthy() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let claude_dir = root.join(".claude");
         std::fs::create_dir_all(claude_dir.join("spec").join("trava")).unwrap();
-        write_file(&claude_dir.join("grain.model.json"), "{}");
+        project_map::write_text(root, "{}").unwrap();
         let states = claude_dir.join(".pipeline-states");
         std::fs::create_dir_all(&states).unwrap();
         write_file(&states.join("orfa.json"), r#"{ "spec": "nao-existe", "state": "execute" }"#);
@@ -264,7 +285,7 @@ mod tests {
         std::fs::create_dir_all(&claude_dir).unwrap();
         let result = check_state_health(&claude_dir);
         assert_eq!(result.status, Status::Warn);
-        let has_model = result.details.iter().any(|d| d.contains("grain.model.json"));
+        let has_model = result.details.iter().any(|d| d.contains(project_map::MAP_FILE_NAME));
         assert!(has_model, "expected model warning, got: {:?}", result.details);
     }
 
@@ -273,7 +294,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let claude_dir = dir.path().join(".claude");
         std::fs::create_dir_all(&claude_dir).unwrap();
-        write_file(&claude_dir.join("grain.model.json"), "{}");
+        project_map::write_text(dir.path(), "{}").unwrap();
         let result = check_state_health(&claude_dir);
         assert_eq!(result.status, Status::Ok, "{:?}", result.details);
     }

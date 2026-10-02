@@ -16,14 +16,14 @@ The project's thesis is **minimum AI, maximum determinism**: everything statisti
 
 ```mermaid
 flowchart LR
-    repo[("Repository")] -->|"census at the base gate (Rust, no AI)"| model[("grain.model.json")]
-    model -->|digest| anchors["~12 anchors<br/>(anchor files)"]
+    repo[("Repository")] -->|"census when a spec opens and after each round commit (Rust, no AI)"| model[("grain.db")]
+    model -->|map| anchors["files it points at"]
     anchors -->|"AI reads only these"| work["feature/bugfix pipeline"]
 ```
 
-1. The **census** mines the repository into a durable model (`grain.model.json`) — **deterministic, AI-free, language- and architecture-agnostic**: modules, declarations, dependency graph, roles, slices, contracts, and touchpoints. It is not a command: the **base gate** triggers it on its own whenever the census is stale and the tree is clean.
-2. The flow's commands consume that model through a **digest** and read only the ~12 anchors the digest points at.
-3. Result: **context economy** — the digest finds *where to look*; it does not replace reading.
+1. The **census** mines the repository into a durable model (`grain.db`, a SQLite database in blocks that rewrites only the block that changed) — **deterministic, AI-free, language- and architecture-agnostic**: modules, declarations, dependency graph, roles, slices, and contracts. It is not a command: it runs on its own when a spec opens and after each round commit.
+2. The flow's commands query that model through the **map** (`mustard-rt run map`) and read only the files it points at.
+3. Result: **context economy** — the map finds *where to look*; it does not replace reading.
 
 > The harness's real weight is not the commands but the **re-injection of ceremony into the context on every turn**. Routing therefore always picks the **cheapest path that serves** — the full pipeline is the exception that must justify itself (≥2 layers/subprojects **or** a new entity), never the default.
 
@@ -74,7 +74,7 @@ cd /path/to/your/project
 mustard init
 ```
 
-This creates `mustard.json` (the single configuration) and the `.claude/` folder (hooks, skills, templates). From there, **open Claude Code normally inside the project** and **describe the work in your own words** — there is no command to "get started", and no mapping step to run. The router is injected on every prompt and classifies the request on its own; the base gate mines the repository on the way in.
+This creates `mustard.json` (the single configuration) and the `.claude/` folder (hooks, skills, templates). From there, **open Claude Code normally inside the project** and **describe the work in your own words** — there is no command to "get started", and no mapping step to run. The router is injected on every prompt and classifies the request on its own; the census mines the repository when a spec opens and after each round commit.
 
 ### For developers of this repository
 
@@ -133,8 +133,8 @@ Mid-flight changes are auto-recorded (`change-requests.ndjson` + a readable `cha
 
 | Path | Crate/App | Stack | Role |
 |---|---|---|---|
-| `apps/rt` | `mustard-rt` | Rust | **Deterministic core** — scan-digest, events, gates, hooks, pipeline commands. The engine. |
-| `apps/scan` | `scan` | Rust | Repository miner → `grain.model.json`. |
+| `apps/rt` | `mustard-rt` | Rust | **Deterministic core** — scan, map, events, gates, hooks, pipeline commands. The engine. |
+| `apps/scan` | `scan` | Rust | Repository miner → `grain.db` (SQLite). |
 | `apps/cli` | `mustard` | Rust | Install & scaffold — `init`, grammars, git-flow, fonts. |
 | `packages/core` | `core` | Rust | Shared types and logic (e.g. `ProjectConfig`). |
 | `plugin/` | — | — | The Claude Code plugin: commands, hooks, agents and the `mustard-boot` bootstrap (downloads the binaries from the Release on the first session). |
@@ -172,12 +172,12 @@ cargo clippy --workspace           # lint
   "typeCheckCommand": "cargo check",
   "language": {             // the two languages, each on its own key
     "text": "en-US",        // conversation, specs, pages, comments and commits
-    "code": "en"            // names in the code: always English
+    "code": "en-US"         // names in the code: variables, functions, tests, files, commands and tables; without the key, English
   }
 }
 ```
 
-Mustard is language- and architecture-**agnostic**: generated text follows `language.text`; names in the code (variables, functions, files, commands) are always English, so the install does not ask for a code language. The install asks only for the text language and writes only what you choose. Build/test/lint commands are read from here. Monorepo rule: all state lives at the git repository **root**; a subproject is its own Mustard project only when it is an independent git repository (submodule).
+Mustard is language- and architecture-**agnostic**: generated text follows `language.text`; names in the code (variables, functions, tests, files, commands and database tables) follow `language.code`. The install asks for both languages and writes only what you choose; with no choice, names in the code stay in English. Build/test/lint commands are read from here. Monorepo rule: all state lives at the git repository **root**; a subproject is its own Mustard project only when it is an independent git repository (submodule).
 
 ---
 
@@ -193,7 +193,7 @@ packages/
 plugin/       Claude Code plugin (commands, hooks, agents, bootstrap)
 packaging/    Win/macOS/Linux installers + tutorials
 docs/         architecture analyses and redesigns
-.claude/      harness config (hooks, skills, refs, specs, grain.model.json)
+.claude/      harness config (hooks, skills, refs, specs, grain.db)
 install.ps1   development installer (build + scaffold)
 mustard.json  project configuration
 ```
@@ -204,7 +204,7 @@ mustard.json  project configuration
 
 - **[MUSTARD-COMMANDS.md](MUSTARD-COMMANDS.md)** — visual reference for each command and its flow (Mermaid diagrams).
 - **Install tutorials** — `packaging/installer/TUTORIAL-{WINDOWS,MACOS,LINUX}.md` (also attached to every release).
-- **[docs/](docs/)** — architecture redesigns (agnostic index/digest, multi-signal stack detection, plugin validation).
+- **[docs/](docs/)** — architecture redesigns (agnostic index, multi-signal stack detection, plugin validation).
 
 ---
 

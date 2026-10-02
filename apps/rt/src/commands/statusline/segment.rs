@@ -9,11 +9,9 @@
 use super::theme::Color;
 use crate::shared::rtk_gain::RtkGain;
 use crate::shared::spec_state::DiskSpecState;
-use mustard_core::domain::spec_events::{Block, BlockQuery};
 use mustard_core::domain::spec_state::SpecState;
 use mustard_core::SupportedLocale;
 use serde_json::Value;
-use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::path::Path;
 use mustard_core::platform::git as git_exec;
@@ -39,10 +37,14 @@ pub enum SegmentKind {
     /// O ponto de tokens em que a compactação automática dispara e quanto
     /// falta até lá — na segunda linha, depois da economia do rtk.
     Compact = 9,
+    /// O consumo de tokens da máquina: o último dia de trabalho fechado contra
+    /// a média dos dias de trabalho de antes, como link para o painel do
+    /// consumo — na segunda linha, depois da economia do rtk.
+    Spend = 10,
 }
 
 /// Count of kinds — keep in sync with the last variant.
-pub const SEGMENT_KIND_COUNT: usize = 10;
+pub const SEGMENT_KIND_COUNT: usize = 11;
 
 /// A single line element with no theme coupling. Builders return
 /// `Option<Segment>` so a missing payload field omits the segment cleanly.
@@ -268,6 +270,45 @@ pub fn compact_segment(data: &Value, machine: Option<&str>, lang: SupportedLocal
     Some(s)
 }
 
+/// `consumo −25% vs média de 7 dias` — o consumo de tokens do último dia de
+/// trabalho fechado da máquina (o mais novo com 100 ações ou mais) contra a
+/// média dos sete dias de trabalho anteriores a ele, como link para o painel
+/// do consumo.
+///
+/// Lê só o arquivo dos dias fechados que fica em `dir` (a pasta do gasto da
+/// máquina, lida do ambiente por quem desenha): nunca abre uma conversa, para
+/// a barra não ficar mais lenta. `None` sem pasta, sem arquivo, com o arquivo
+/// ilegível, sem o endereço do painel, sem dia de trabalho fechado e sem dia de
+/// trabalho anterior a ele: o indicador some, e o resto da barra sai igual.
+#[must_use]
+pub fn spend_segment(dir: Option<&Path>, lang: SupportedLocale) -> Option<Segment> {
+    let ledger = mustard_core::io::spend::load(dir?).ok()?;
+    // Um endereço com caractere de controle (arquivo editado à mão) quebraria
+    // a sequência do link e sujaria a barra.
+    let url = ledger.url.as_deref().filter(|url| !url.chars().any(char::is_control))?;
+    let trend = mustard_core::domain::spend::trend(&ledger.rows)?;
+    Some(spend_indicator(trend.change_percent, Some(url), lang))
+}
+
+/// O indicador do consumo para a variação `change` (em percentual, com sinal),
+/// no idioma `lang`: o texto inteiro é o link para `url`, quando ele existe.
+/// Abaixo da média é bom e sai em verde nos temas de cor chapada.
+#[must_use]
+pub fn spend_indicator(change: i64, url: Option<&str>, lang: SupportedLocale) -> Segment {
+    let signed = match change {
+        0 => "0%".to_string(),
+        change if change < 0 => format!("\u{2212}{}%", change.unsigned_abs()),
+        change => format!("+{change}%"),
+    };
+    let label = mustard_core::translate("statusline.spend", lang).replace("{change}", &signed);
+    let text = url.map_or_else(|| label.clone(), |url| hyperlink(url, &label));
+    let mut segment = Segment::new(SegmentKind::Spend, text);
+    if change < 0 {
+        segment.override_fg = Some(Color::Ansi(2)); // green: spending under the average
+    }
+    segment
+}
+
 /// `Mustard 0.2.0` — a versão do Mustard que roda, no começo da segunda linha.
 /// Quem desenha só a pede num projeto com o Mustard.
 #[must_use]
@@ -302,10 +343,11 @@ pub fn model_segment(data: &Value) -> Segment {
 /// link dela (OSC 8, aceito pela barra do Claude Code) fica no nome e, sem o
 /// nome, passa para a fase. Sem fase conhecida, o nome aparece sempre, para o
 /// link não sumir. O andamento aparece com a spec aprovada ou em execução e
-/// com ondas no plano, como contagem: quantas ondas foram entregues e quantas
-/// o plano tem. O número de uma onda não aparece, porque os números não seguem
-/// a ordem; o da onda que vem fica na linha de retomada. `None` fora de um
-/// projeto com o Mustard e sem spec atual.
+/// com ondas que contam, como contagem: quantas ondas foram entregues e
+/// quantas contam — a onda que ficou sem tarefa não entra, e a retomada da
+/// obra conta igual. O número de uma onda não aparece, porque os números não
+/// seguem a ordem; o da onda que vem fica na linha de retomada. `None` fora de
+/// um projeto com o Mustard e sem spec atual.
 ///
 /// [`current_spec`]: crate::shared::context::checkout::current_spec
 #[must_use]
@@ -345,22 +387,18 @@ pub fn unit_segment(cwd: &Path, branch: Option<&str>) -> Option<Segment> {
     Some(Segment::new(SegmentKind::Unit, text))
 }
 
-/// O andamento das ondas da spec `slug`: quantas ondas do plano foram
-/// entregues e quantas o plano tem. `None` sem arquivo de eventos ou sem onda
-/// no plano.
+/// O andamento das ondas da spec `slug`: quantas ondas que contam foram
+/// entregues e quantas contam, pela mesma conta da retomada da obra
+/// ([`mustard_core::domain::spec_events::SpecLog::counted_waves`]): a onda
+/// esvaziada não entra. `None` sem arquivo de eventos e sem onda que conte.
 fn wave_progress(cwd: &Path, slug: &str) -> Option<(usize, usize)> {
     let log = DiskSpecState::new(cwd).log(slug)?;
-    let planned: BTreeSet<u64> = log
-        .block(BlockQuery::Block(Block::Waves))
-        .into_iter()
-        .filter(|e| e.event_type == "wave")
-        .filter_map(|e| e.wave())
-        .collect();
-    if planned.is_empty() {
+    let counted = log.counted_waves();
+    if counted.is_empty() {
         return None;
     }
-    let delivered = log.delivered_waves().intersection(&planned).count();
-    Some((delivered, planned.len()))
+    let delivered = log.delivered_waves().intersection(&counted).count();
+    Some((delivered, counted.len()))
 }
 
 /// `label` como hiperlink OSC 8 para `url`: `ESC ]8;;URL ESC \ label ESC ]8;; ESC \`.
@@ -369,7 +407,7 @@ fn hyperlink(url: &str, label: &str) -> String {
     format!("\u{1b}]8;;{url}\u{1b}\\{label}\u{1b}]8;;\u{1b}\\")
 }
 
-/// Is the Mustard plugin listed in `settings` and switched OFF?
+/// Is the Mustard plugin listed in `settings` and switched off?
 ///
 /// `Some(true)` disabled, `Some(false)` enabled, `None` when the question
 /// cannot be answered — no file, unparseable, or the plugin unlisted (a source
@@ -390,7 +428,7 @@ pub fn plugin_switched_off(settings: &Path) -> Option<bool> {
         .map(|(_, value)| value.as_bool() == Some(false))
 }
 
-/// `⨯ harness inerte` — the plugin is installed and switched OFF.
+/// `⨯ harness inerte` — the plugin is installed and switched off.
 ///
 /// With the plugin disabled no hook runs at all: no router, no gates. Measured
 /// in the field 2026-08-25, that state is indistinguishable from a working
@@ -584,6 +622,77 @@ mod tests {
         }
     }
 
+    /// A barra de status e o bloco de retomada da obra contam as mesmas ondas
+    /// quando há ondas esvaziadas — a que perdeu a tarefa para outra onda, a
+    /// que teve a tarefa removida, a que voltou ao backlog e a combinada sem
+    /// tarefa, de autor do binário ou não. Conta a entregue, mesmo sem
+    /// tarefa, e a que ainda tem tarefa: o total da barra é o das entregues
+    /// mais o da lista do que falta.
+    #[test]
+    fn the_bar_and_the_resume_block_count_the_same_waves_with_emptied_waves() {
+        use serde_json::json;
+
+        if std::env::var_os("MUSTARD_ACTIVE_SPEC").is_some() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), r#"{"version":"1.0.0","language":{"text":"pt-BR"}}"#).unwrap();
+        crate::shared::spec_state::stand_on_spec_branch(root, "x");
+        crate::commands::spec_events::write::record_open(root, "x", "feature/x", "dev").expect("open");
+        crate::shared::spec_state::approve_in(&root.join(".claude").join("spec").join("x"));
+        let seed = |event_type: &str, body: Value| crate::shared::spec_state::seed_event(root, "x", event_type, body);
+        seed("state", json!({"phase": "running", "author": "binary"}));
+        let said = seed("message", json!({"author": "user", "text": "o plano"}));
+        let crit = seed("criterion", json!({"when": "a", "then": "b", "proof": "p", "form": "ubiquitous", "origin": said}));
+        for n in 1..=8 {
+            let author = if n % 2 == 0 { "binary" } else { "assistant" };
+            seed("wave", json!({"n": n, "text": format!("Onda {n}."), "criteria": [crit], "done_when": "x",
+                "origin": said, "author": author}));
+        }
+        let task = |wave: Option<u64>, text: &str, replaces: Option<u64>| {
+            let mut body = json!({"text": text, "files": [], "depends_on": [], "origin": said});
+            if let Some(wave) = wave {
+                body["wave"] = json!(wave);
+            }
+            if let Some(old) = replaces {
+                body["replaces"] = json!(old);
+            }
+            seed("task", body)
+        };
+        // Onda 1: entregue, com a tarefa. Onda 7: entregue, sem tarefa.
+        task(Some(1), "Um.", None);
+        seed("delivered", json!({"wave": 1, "text": "Pronta.", "files": ["a.rs"], "author": "wave"}));
+        seed("delivered", json!({"wave": 7, "text": "Pronta.", "files": ["g.rs"], "author": "wave"}));
+        // Onda 3: a tarefa passou para a onda 2. Onda 4: a tarefa foi removida.
+        // Onda 6: a tarefa voltou ao backlog. Onda 5: nunca teve tarefa.
+        let three = task(Some(3), "Três.", None);
+        task(Some(2), "Três, na dois.", Some(three));
+        let four = task(Some(4), "Quatro.", None);
+        seed("remove", json!({"targets": [four], "reason": "Saiu da obra."}));
+        let six = task(Some(6), "Seis.", None);
+        task(None, "Seis, no backlog.", Some(six));
+        // Onda 8: com tarefa, ainda por fazer.
+        task(Some(8), "Oito.", None);
+
+        let bar = unit_segment(root, Some("feature/x")).expect("the running unit reaches the bar");
+        let block = crate::commands::flow::resume::current_block(root, Some("s1")).expect("the resume block");
+        let between = |text: &str, from: &str, to: &str| -> Vec<String> {
+            let rest = text.split(from).nth(1).unwrap_or_else(|| panic!("no {from:?} in {text}"));
+            let list = rest.split(to).next().unwrap();
+            list.split(", ").map(str::to_string).collect()
+        };
+        let delivered = between(&block, "Ondas entregues: ", " no total. Em andamento");
+        let missing = between(&block, "Falta: ", ". Gravado depois");
+        assert_eq!(delivered, ["2"], "the block counts the delivered waves: {block}");
+        assert_eq!(missing, ["2", "8"], "the emptied waves are not missing: {block}");
+        let progress = mustard_core::translate("statusline.wave", mustard_core::SupportedLocale::PtBr)
+            .replace("{delivered}", &delivered[0])
+            .replace("{total}", &(delivered[0].parse::<usize>().unwrap() + missing.len()).to_string());
+        assert_eq!(progress, "2 de 4 ondas");
+        assert!(bar.text.ends_with(&progress), "the bar counts what the block counts: {}", bar.text);
+    }
+
     /// O nome do projeto vira link para a página do projeto quando o índice
     /// das specs traz o endereço dela; sem ele, fica só o nome.
     #[test]
@@ -681,7 +790,7 @@ mod tests {
     /// de 25 corta em 50 mil — abaixo de cem mil —, então o trecho vem com
     /// aviso vermelho mesmo tendo tokens de sobra até lá.
     #[test]
-    fn a_janela_pequena_demais_para_a_fatia_vira_aviso_vermelho() {
+    fn window_too_small_for_the_slice_becomes_a_red_warning() {
         let data = json!({
             "model": { "display_name": "Opus 4.7" },
             "context_window": { "total_input_tokens": 40_000, "total_output_tokens": 5_000 }
@@ -724,4 +833,46 @@ mod tests {
         assert_eq!(s.text, "Claude");
     }
 
+    /// O indicador leva a variação com o sinal: menos 25% com o sinal de
+    /// menos de verdade (U+2212) e em verde, mais 12% com o `+` e sem cor
+    /// própria, zero sem sinal; o texto inteiro é o link do painel, e sem o
+    /// endereço (a prévia) sai sem link.
+    #[test]
+    fn the_indicator_signs_the_change_and_links_the_whole_label_to_the_panel() {
+        let panel = "https://claude.ai/code/artifacts/painel";
+        let below = spend_indicator(-25, Some(panel), SupportedLocale::PtBr);
+        assert_eq!(visible(&below.text), "consumo \u{2212}25% vs média de 7 dias");
+        assert_eq!(below.text, hyperlink(panel, "consumo \u{2212}25% vs média de 7 dias"));
+        assert_eq!(below.override_fg, Some(Color::Ansi(2)), "under the average is good: green");
+
+        let above = spend_indicator(12, Some(panel), SupportedLocale::EnUs);
+        assert_eq!(visible(&above.text), "usage +12% vs 7-day average");
+        assert_eq!(above.override_fg, None);
+        assert_eq!(spend_indicator(0, None, SupportedLocale::PtBr).text, "consumo 0% vs média de 7 dias");
+        assert_eq!(spend_indicator(-25, None, SupportedLocale::PtBr).text, "consumo \u{2212}25% vs média de 7 dias", "no address, no link");
+    }
+
+    /// O indicador lê só o arquivo dos dias fechados: com ele e o endereço do
+    /// painel guardados, a variação sai da conta do último dia contra a média
+    /// dos de antes; sem a pasta, sem o arquivo ou sem endereço, nada.
+    #[test]
+    fn the_indicator_reads_only_the_closed_days_file() {
+        use mustard_core::domain::spend::{DayRow, Ledger};
+        let dir = tempfile::tempdir().unwrap();
+        assert!(spend_segment(None, SupportedLocale::PtBr).is_none(), "no machine folder");
+        assert!(spend_segment(Some(dir.path()), SupportedLocale::PtBr).is_none(), "no file yet");
+
+        let day = |day: &str, tokens: u64| DayRow { day: day.into(), project: "loja".into(), actions: 200, tokens, ..DayRow::default() };
+        let mut ledger = Ledger {
+            rows: vec![day("2026-09-26", 200), day("2026-09-27", 150)],
+            ..Ledger::default()
+        };
+        std::fs::write(mustard_core::io::spend::ledger_path(dir.path()), serde_json::to_string(&ledger).unwrap()).unwrap();
+        assert!(spend_segment(Some(dir.path()), SupportedLocale::PtBr).is_none(), "no panel address");
+
+        ledger.url = Some("https://claude.ai/code/artifacts/painel".into());
+        std::fs::write(mustard_core::io::spend::ledger_path(dir.path()), serde_json::to_string(&ledger).unwrap()).unwrap();
+        let shown = spend_segment(Some(dir.path()), SupportedLocale::PtBr).expect("the indicator");
+        assert_eq!(visible(&shown.text), "consumo \u{2212}25% vs média de 7 dias", "150 against an average of 200");
+    }
 }

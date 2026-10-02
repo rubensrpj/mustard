@@ -28,7 +28,7 @@
 //! ├── CLAUDE.md
 //! ├── settings.json
 //! ├── mustard.json
-//! ├── grain.model.json
+//! ├── grain.db
 //! ├── pipeline-config.md
 //! ├── .cache/
 //! │   ├── detect.json
@@ -176,14 +176,16 @@ const DOCUMENTED_DIRS: &[&str] = &[
     "capabilities",
     // Plan-mode plan files — `settings.json#plansDirectory` points here.
     "plans",
-    // The separate copies of each wave and of its reviewer, which the round
-    // and the close create and remove.
+    // The git worktrees Claude Code creates for its own sessions. The
+    // separate copies of each wave and of the final reviewer are not here:
+    // the round and the close create them in the copies folder outside the
+    // project, under the user's cache (`io::wave_prompt::copies_dir`).
     "worktrees",
     // Sanctioned scratch evidence — the throwaway a diagnosis RUNS to decide
     // between two hypotheses. Carved out of branch protection by the write
     // gate (`shared::paths` in the rt), alongside `plans`.
     "scratch",
-    // Rendered agent dispatch stubs (`agent-prompt-render --emit ref`), read
+    // Rendered agent dispatch stubs (the prompt renderer with `--emit ref`), read
     // back by the PreToolUse hook that expands them.
     ".dispatch",
     // Per-session event directories, read by the MCP server and the dashboard

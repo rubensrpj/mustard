@@ -99,7 +99,7 @@ Foram quatro passadas.
   - Hoje a spec é um arquivo de eventos, `.claude/spec/<nome>/spec.ndjson`, com 36 tipos de evento (`packages/core/src/domain/spec_events/types.rs:301`).
   - Esse arquivo só é gravado por `mustard-rt run write`.
 - **O README cita "≥2 camadas/subprojetos ou entidade nova"** como critério do fluxo completo. Esse critério só existe no enum `Scope` (`Light`, `Medium`, `Full`, em `packages/core/src/domain/model/pipeline.rs:51-57`), que é código morto no fluxo atual.
-- **O `CLAUDE.md` da raiz cita `base_gate.rs:149` como mecanismo ativo.** O arquivo está desligado: "Sem nenhum chamador… segue no repositório por decisão do usuário… Decidido em 17/09" (`apps/rt/src/commands/event/base_gate.rs:46-49`).
+- **O `CLAUDE.md` da raiz cita o portão da base como mecanismo ativo.** O portão estava desligado, sem nenhum chamador, e seguia no repositório por decisão do usuário de 17/09. Resolvido em 01/10: o portão saiu do código, e a regra passou a citar o avanço da base depois do merge (`apps/rt/src/commands/git_settle.rs`).
 - **O README diz que o porteiro de base minera o repositório.** Hoje o scan roda ao abrir uma spec (`apps/rt/src/commands/flow/open.rs:432`) e depois de cada commit de rodada.
 - **As fases reais não são as 6 do checklist.** São `survey, plan, approved, running, closed, pr_open, delivered, discarded` (`types.rs:277-278`). O mapeamento usado neste documento:
 
@@ -112,7 +112,7 @@ Foram quatro passadas.
 | QA | lint e testes do `close`; não existe fase QA separada |
 | CLOSE | `closed` |
 
-**Correção:** reescrever as seções afetadas do README e do `README.en.md`. Para a regra do `base_gate` no `CLAUDE.md`, há duas saídas: corrigir a regra ou religar o portão. Essa decisão é sua.
+**Correção:** reescrever as seções afetadas do README e do `README.en.md`. Para a regra do portão da base no `CLAUDE.md`, há duas saídas: corrigir a regra ou religar o portão. Essa decisão é sua.
 - **Custo:** baixo.
 - **Risco de não corrigir:** quem lê a documentação, inclusive o modelo quando ela entra no contexto, raciocina sobre um sistema que não existe.
 
@@ -250,7 +250,7 @@ Foram quatro passadas.
   - **Limite do estudo:** só Python. São 138 instâncias de 12 repositórios no conjunto novo e 300 tarefas do SWE-bench Lite, de 11 repositórios populares. A revisão 3 citava só o primeiro conjunto.
 
 #### 1.3a O Mustard gera ou injeta visão geral do repositório?
-- **Resposta:** injeta. É o "terreno": uma linha por subprojeto, no máximo 16 linhas (`TERRAIN_ROWS_CAP`, `apps/rt/src/commands/orient.rs:192-223`), em todo início de sessão.
+- **Resposta:** injeta. É o "terreno": uma linha por subprojeto, no máximo 16 linhas, em todo início de sessão.
 - **Fonte externa:**
   - "repository overviews, although popular and recommended by model providers, are not helpful" (versão 2) [ALTA];
   - nas versões 1 e 2, as visões gerais não reduziram o número de passos até o agente tocar o primeiro arquivo relevante [ALTA].
@@ -289,7 +289,7 @@ Foram quatro passadas.
 - **Veredito:** ATENDE [ALTA]
 - **Evidência:**
   - O estilo de saída é estático.
-  - O terreno é "byte-stable… no timestamps" (`orient.rs:31`).
+  - O terreno é "byte-stable… no timestamps".
   - A linha por mensagem é fixa (`prompt_entry.rs:18-28`). A nota de clareza, que aparece uma vez, entra no fim, na mensagem do usuário.
 - **Fonte externa (`prompt-caching`) [ALTA]:** "The match is exact, so a change anywhere in the prefix recomputes everything after it."
 - **Observação [ALTA]:** a linha curta também é anexada aos avisos do próprio ambiente, como notificações de tarefa (`prompt_entry.rs:110-113`: só a gravação é pulada, a linha não). O custo é pequeno e fica no fim, então não quebra o cache.
@@ -764,7 +764,7 @@ Foram quatro passadas.
 2. **Código morto e sobras** [ALTA]:
    - `Scope`;
    - `TelemetrySummaryEntry`;
-   - `base_gate`, desligado por decisão sua;
+   - o portão da base, desligado por decisão sua (saiu do código em 01/10);
    - o modo solo (`round.next.solo`);
    - as fixtures `dependency_precheck`;
    - as referências em `lib.rs:110` e `source_lang.rs:10`;

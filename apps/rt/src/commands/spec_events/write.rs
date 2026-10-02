@@ -169,6 +169,12 @@
 //! plano —, ou o projeto todo, em `applies_to`. O item sem dono é recusado,
 //! e nada é gravado.
 //!
+//! Numa spec que já fechou, este comando não grava trabalho novo
+//! (`closed_spec_work_rule`): o pedido na fechada ou na com o pull request
+//! aberto é recusado e a recusa aponta a reabertura, pelo `reopen`; o pedido
+//! e a tarefa na entregue na base ou na descartada são recusados e a recusa
+//! aponta uma spec nova, pelo `open`. Nada é gravado.
+//!
 //! Numa spec em levantamento com o tipo de trabalho ou algum ponto gravado,
 //! a saída traz o passo seguinte (`mustard_core::domain::survey::next_step`):
 //! em `next`, o que fazer; em `points`, enquanto alguma lacuna do tipo não
@@ -186,18 +192,20 @@
 //! dela também não tem teto de idas e voltas: a gravação não corta o custo da
 //! onda, e nem o molde do agente corta.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+use mustard_core::domain::clarity::ClarityReport;
 use mustard_core::domain::lessons::{for_the_code, DEFECT, LESSON, RETIRE};
 use mustard_core::domain::spec_events::{
-    type_spec, EventRef, Hidden, Refusal, SpecEvent, SpecLog, TaskDeclaration, PHASES,
+    type_spec, EventRef, Hidden, ItemPart, Refusal, SpecEvent, SpecLog, TaskDeclaration, PHASES,
     TASK_TITLE_MAX,
 };
 use mustard_core::domain::spec_index;
 use mustard_core::domain::spec_state::{
-    birth_event, goal_rule, phase_write_allowed, reopenable, reply_rule, survey_rule, PhaseWriter,
-    SpecState, State,
+    birth_event, goal_rule, not_closed_yet, phase_write_allowed, reply_rule, returns_to_running, survey_rule,
+    PhaseWriter, SpecState, State,
 };
 use mustard_core::domain::survey::{self, SurveyStep};
 use mustard_core::domain::wave_prompt::owner_rule;
@@ -206,7 +214,7 @@ use mustard_core::platform::i18n::{translate, Locale};
 use mustard_core::ClaudePaths;
 use serde_json::{json, Map, Value};
 
-use crate::shared::spec_state::{session_from_env, DiskSpecState};
+use crate::shared::spec_state::{checkout, session_from_env, DiskSpecState};
 
 /// Os tipos que só o binário grava: a execução de um critério, que o
 /// fechamento grava ao rodar a prova; o veredito oficial, o envio do pedido
@@ -226,6 +234,14 @@ const DEFECT_BY_TASK: &str = "defect-by-task";
 /// A razão curta da recusa da lição de regra do projeto: ela vira teste no
 /// código, que falha se a regra for quebrada.
 const RULE_BY_TEST: &str = "rule-by-test";
+
+/// Linhas não vazias acima das quais a lição é recusada. A lição é um resumo
+/// curto, que volta ao contexto do trabalho que ela cobre; o teto é só dela,
+/// e a resposta do assistente não tem teto de linhas.
+const LESSON_MAX_LINES: usize = 15;
+
+/// A razão curta da recusa da lição acima de [`LESSON_MAX_LINES`] linhas.
+const LESSON_TOO_LONG: &str = "lesson-too-long";
 
 /// Os números dos eventos `event_type` que a leitura de `log` mostra.
 fn visible_of(log: &SpecLog, event_type: &str) -> Vec<u64> {
@@ -350,15 +366,26 @@ pub(crate) fn write_at_with(opts: &WriteOpts, copy: bool) -> Value {
     // conferências que só leem a volta: a recusa vem antes de gravar, e o
     // agente grava de novo. A trava do passo do git que a conferência prende
     // fica presa até a volta estar no arquivo: a rodada que assume a mesma
-    // onda nunca grava a entrega oficial entre a conferência e a gravação.
-    let held = if event_type == "delivered" {
-        match crate::commands::flow::round::check_return(&opts.root, spec, &mut draft) {
+    // onda nunca grava a entrega oficial entre a conferência e a gravação. O
+    // veredito do revisor prende a mesma trava, para o fechamento não assumir
+    // o pedido de revisão entre a conferência dele e a gravação.
+    let held = if ["delivered", "verdict"].contains(&event_type) {
+        match crate::commands::flow::round::check_return(&opts.root, spec, event_type, &mut draft) {
             Ok(held) => Some(held),
             Err(refusal) => return refusal.to_value(lang),
         }
     } else {
         None
     };
+    // A prova do critério é o comando que a rodada e o fechamento rodam: a que
+    // não roda, liga comandos por `;` ou é uma busca sem `!` recusa antes de
+    // gravar.
+    if event_type == "criterion"
+        && let Some(refusal) =
+            draft.get("proof").and_then(Value::as_str).and_then(super::proof_check::proof_defect)
+    {
+        return refuse(refusal);
+    }
     // A volta do revisor só entra com pedido de revisão aberto, e o veredito
     // final que não responde por todo o combinado recusa antes de gravar.
     if event_type == "verdict"
@@ -375,6 +402,10 @@ pub(crate) fn write_at_with(opts: &WriteOpts, copy: bool) -> Value {
     drop(held);
     match recorded {
         Ok(Recorded { written, survey }) => {
+            // O item gravado entra no bloco das specs do mapa. A gravação na
+            // spec já está feita: a falha no mapa não a desfaz, e a próxima
+            // resposta do mapa tenta de novo.
+            let _ = mustard_core::io::map_specs::sync_spec(&project.root, spec, &project.languages);
             let mut report = json!({
                 "ok": true,
                 "spec": spec.trim(),
@@ -465,10 +496,17 @@ pub(crate) fn seed_at(opts: &WriteOpts) -> Value {
     let by_hooks = matches!(event_type, "delivered" | "commit") || (event_type == "message" && by_user(&draft));
     let by_program = event_type == "wave" || (event_type == "task" && draft.contains_key("wave"));
     if !(by_hooks || by_program) || spec_was_opened(&project.root, spec).is_err() {
-        // A tarefa do backlog vai pela porta do modelo, que exige o título: o
-        // ajudante manda um quando o teste não deu o seu.
-        if event_type == "task" && !draft.contains_key("title") {
-            draft.insert("title".to_string(), json!("Entregar a tarefa"));
+        // O item que descreve o trabalho vai pela porta do modelo, que exige
+        // as partes da forma fixa: o ajudante manda o título e a parte do
+        // agente quando o teste não deu os seus.
+        if let Some((_, agent)) = item_form(event_type)
+            .filter(|(_, agent)| !draft.contains_key("title") || (*agent && !draft.contains_key("agent")))
+        {
+            let title = if event_type == "task" { "Entregar a tarefa" } else { "Combinar o item" };
+            draft.entry("title").or_insert_with(|| json!(title));
+            if agent {
+                draft.entry("agent").or_insert_with(|| json!("- conferir pelo teste"));
+            }
             return write_at(&WriteOpts {
                 root: opts.root.clone(),
                 spec: opts.spec.clone(),
@@ -569,12 +607,20 @@ pub fn record(
 
 /// As declarações que faltam num rascunho de tarefa: o que ela faz, os
 /// arquivos que toca, de quais tarefas depende e, na tarefa gravada pelo
-/// modelo (`by_model`), o título curto que diz o que ela entrega. `files` e
-/// `depends_on` contam como declarados só pela chave estar presente, mesmo
-/// com a lista vazia — uma tarefa sem dependência declara `"depends_on": []`.
-/// O título vazio ou com mais de [`TASK_TITLE_MAX`] caracteres conta como
-/// faltando. A versão que o programa grava não precisa dele: herda o da
-/// versão que substitui ([`inherit_task_title`]).
+/// modelo (`by_model`), o título curto que diz o que ela entrega e os itens
+/// que ela cobre. `files` e `depends_on` contam como declarados só pela chave
+/// estar presente, mesmo com a lista vazia — uma tarefa sem dependência
+/// declara `"depends_on": []`. O título vazio ou com mais de
+/// [`TASK_TITLE_MAX`] caracteres conta como faltando. A versão que o programa
+/// grava não precisa dele: herda o da versão que substitui
+/// ([`inherit_task_title`]).
+///
+/// Os itens cobertos (`covers`) faltam também com a lista vazia: a onda leva
+/// como critérios os itens que as tarefas dela cobrem, e a tarefa que não
+/// cobre nenhum só seria recusada depois, quando a rodada formasse a onda. A
+/// tarefa que o programa grava fica de fora: a do item combinado não cumprido
+/// cobre o item, a da sobra cobre os critérios da onda que a apontou, e a da
+/// onda de conserto nasce com a onda já gravada, com os critérios da obra.
 fn task_declarations_missing(draft: &Map<String, Value>, by_model: bool) -> Vec<TaskDeclaration> {
     let mut missing = Vec::new();
     let what = draft.get("text").and_then(Value::as_str).is_none_or(|text| text.trim().is_empty());
@@ -591,22 +637,215 @@ fn task_declarations_missing(draft: &Map<String, Value>, by_model: bool) -> Vec<
     if by_model && (title.is_empty() || title.chars().count() > TASK_TITLE_MAX) {
         missing.push(TaskDeclaration::Title);
     }
+    let covers = draft.get("covers").and_then(Value::as_array).is_some_and(|items| !items.is_empty());
+    if by_model && !covers {
+        missing.push(TaskDeclaration::Covers);
+    }
     missing
+}
+
+/// Recusa a tarefa com declaração faltando ([`task_declarations_missing`]);
+/// os outros tipos passam. É a mesma conferência para a gravação ([`record`])
+/// e para a conferência antes dela ([`RecordCheck`]).
+fn task_declared(event_type: &str, draft: &Map<String, Value>, by_model: bool) -> Result<(), Refusal> {
+    if event_type != "task" {
+        return Ok(());
+    }
+    let missing = task_declarations_missing(draft, by_model);
+    if missing.is_empty() { Ok(()) } else { Err(Refusal::TaskDeclarationMissing { missing, uncovered: Vec::new() }) }
+}
+
+/// Na recusa da tarefa sem os itens que ela cobre, a dica de qual cobrir: os
+/// itens da spec `spec` que nenhuma tarefa cobre ainda ([`uncovered_items`]).
+/// A leitura do arquivo, por `source`, só serve à mensagem: nada é gravado.
+fn with_uncovered_items(source: Option<&Source>, refusal: Refusal) -> Refusal {
+    match refusal {
+        Refusal::TaskDeclarationMissing { missing, .. } if missing.contains(&TaskDeclaration::Covers) => {
+            let log = source.and_then(|source| source.log().ok().flatten());
+            let uncovered = log.as_deref().map(uncovered_items).unwrap_or_default();
+            Refusal::TaskDeclarationMissing { missing, uncovered }
+        }
+        other => other,
+    }
+}
+
+/// Os itens que uma tarefa pode cobrir e que nenhuma tarefa cobre ainda, na
+/// versão vigente e na ordem do arquivo, cada um pelo número, que é o que
+/// `covers` leva, e pelo código: os critérios e os itens combinados. Ficam de
+/// fora o item que vale no projeto todo, que nenhuma tarefa implementa, e o
+/// marcado como "não vira código".
+fn uncovered_items(log: &SpecLog) -> Vec<String> {
+    const COVERABLE: [&str; 8] =
+        ["criterion", "rule", "limit", "contract", "error", "edge_case", "out_of_scope", "decision"];
+    let covered: BTreeSet<u64> = log
+        .visible()
+        .into_iter()
+        .filter(|e| e.event_type == "task")
+        .flat_map(|task| task.ints("covers"))
+        .filter_map(|id| log.current(id).map(|e| e.id))
+        .collect();
+    let owners = mustard_core::domain::wave_prompt::owners(log);
+    let codes = log.codes();
+    log.visible()
+        .into_iter()
+        .filter(|e| COVERABLE.contains(&e.event_type.as_str()))
+        .filter(|e| !covered.contains(&e.id) && e.str_field("no_code").is_none())
+        .filter(|e| !matches!(owners.get(&e.id), Some(mustard_core::domain::wave_prompt::Owner::Project)))
+        .map(|e| codes.get(&e.id).map_or_else(|| e.id.to_string(), |code| format!("{} ({code})", e.id)))
+        .collect()
+}
+
+/// As partes da forma fixa que um tipo de item exige além do título: a parte
+/// do usuário (`text`) e a parte do agente (`agent`). `None` para o tipo que
+/// não descreve o trabalho — a conversa, o estado, os relatos dos agentes e a
+/// lista de pendências seguem como são. O critério exige só o título: `when`
+/// e `then` já são do usuário, e `proof` é do agente. O pedido e a anotação
+/// exigem título e parte do usuário, e a parte do agente fica opcional.
+fn item_form(event_type: &str) -> Option<(bool, bool)> {
+    match event_type {
+        "rule" | "limit" | "contract" | "error" | "edge_case" | "out_of_scope" | "decision" | "context"
+        | "concern" | "task" => Some((true, true)),
+        "request" | "note" => Some((true, false)),
+        "criterion" => Some((false, false)),
+        _ => None,
+    }
+}
+
+/// O texto não vazio do campo `field`.
+fn filled<'a>(fields: &'a Map<String, Value>, field: &str) -> Option<&'a str> {
+    fields.get(field).and_then(Value::as_str).map(str::trim).filter(|text| !text.is_empty())
+}
+
+/// As partes da forma fixa que faltam num rascunho do tipo `event_type`: o
+/// título curto, de até [`TASK_TITLE_MAX`] caracteres, a parte do usuário e a
+/// parte do agente, conforme o tipo ([`item_form`]); e a parte do usuário que
+/// cita o que é do agente ([`agent_detail_in`]). Vale só para o item que o
+/// modelo grava (`by_model`): o programa grava as próprias versões.
+fn item_form_missing(draft: &Map<String, Value>, event_type: &str, by_model: bool) -> Vec<ItemPart> {
+    let Some((user, agent)) = item_form(event_type).filter(|_| by_model) else { return Vec::new() };
+    let mut missing = Vec::new();
+    if filled(draft, "title").is_none_or(|title| title.chars().count() > TASK_TITLE_MAX) {
+        missing.push(ItemPart::Title);
+    }
+    if user {
+        match filled(draft, "text") {
+            None => missing.push(ItemPart::UserPart),
+            Some(text) => {
+                if let Some(found) = agent_detail_in(text) {
+                    missing.push(ItemPart::UserPartCites { found });
+                }
+            }
+        }
+    }
+    if agent && filled(draft, "agent").is_none() {
+        missing.push(ItemPart::AgentPart);
+    }
+    missing
+}
+
+/// O item gravado antes da forma fixa não é reescrito: a versão nova dele só
+/// segue a forma quando a versão que ela substitui já seguia. `true` quando o
+/// rascunho substitui um item do tipo `event_type` sem todas as partes que o
+/// tipo exige. O código do item vira o número da versão mais nova dele, como
+/// a gravação faz; o evento gravado não muda mais, então ler antes da trava
+/// não perde nada. O item que não se acha fica para a conferência da
+/// gravação, que o recusa.
+fn revises_an_item_without_the_form(
+    source: &Source,
+    draft: &Map<String, Value>,
+    event_type: &str,
+) -> Result<bool, Refusal> {
+    let Some((user, agent)) = item_form(event_type) else { return Ok(false) };
+    let Some(replaces) = draft.get("replaces").filter(|value| !value.is_array()) else { return Ok(false) };
+    let Some(log) = source.log()? else { return Ok(false) };
+    let mut probe = Map::new();
+    probe.insert("replaces".into(), replaces.clone());
+    if mustard_core::domain::spec_events::resolve_codes(&log, &mut probe).is_err() {
+        return Ok(false);
+    }
+    let Some(old) = probe.get("replaces").and_then(Value::as_u64).and_then(|id| log.get(id)) else {
+        return Ok(false);
+    };
+    let had = filled(&old.fields, "title").is_some()
+        && (!user || filled(&old.fields, "text").is_some())
+        && (!agent || filled(&old.fields, "agent").is_some());
+    Ok(!had)
+}
+
+/// O primeiro trecho da parte do usuário que é do agente: uma crase, o
+/// código de outro item ou um caminho de arquivo, com ou sem a linha
+/// (`write.rs:635`). O caminho sai do mesmo detector da conferência de
+/// escrita, que tira da medição o trecho que esta gravação recusa. `None`
+/// quando ela fala só pelo efeito.
+fn agent_detail_in(text: &str) -> Option<String> {
+    if let Some(open) = text.find('`') {
+        let rest = &text[open + 1..];
+        let quoted = rest.find('`').map_or(rest, |close| &rest[..close]);
+        return Some(format!("`{}`", quoted.chars().take(60).collect::<String>()));
+    }
+    if let Some((start, end)) = mustard_core::domain::mustard_id::find(text).first().copied() {
+        return Some(text[start..end].to_string());
+    }
+    mustard_core::domain::clarity::file_paths_in(text).next().map(str::to_string)
+}
+
+/// A conferência de escrita das respostas sobre o título e a parte do usuário
+/// de um item (`title`, `text`, `why`, `when` e `then`), com o que o projeto
+/// em `root` declara. A parte do agente, a prova, o exemplo e os outros
+/// campos do agente ficam de fora: são feitos de caminhos e comandos. A sigla
+/// explicada num campo vale nos outros, porque a página mostra o item
+/// inteiro. Os campos com defeito, na ordem, cada um com a medição dele.
+fn unclear_fields(root: &Path, draft: &Map<String, Value>, lang: Locale) -> Vec<(String, ClarityReport)> {
+    use crate::hooks::task::clarity_check::measure_in_project;
+    const MEASURED: &[&str] = &["title", "text", "why", "when", "then"];
+    let parts: Vec<(&str, &str)> =
+        MEASURED.iter().filter_map(|field| filled(draft, field).map(|text| (*field, text))).collect();
+    let explained: Vec<String> =
+        parts.iter().flat_map(|(_, text)| measure_in_project(root, text, &[]).explained).collect();
+    parts
+        .into_iter()
+        .map(|(field, text)| (field.to_string(), measure_in_project(root, text, &explained)))
+        .filter(|(_, report)| !report.defects(lang).is_empty())
+        .collect()
 }
 
 /// A versão de tarefa gravada pelo programa sem título leva o título da
 /// versão que ela substitui, quando essa tinha um. O evento gravado não muda
 /// mais, então ler a versão antiga antes da trava não perde nada.
-fn inherit_task_title(path: &Path, draft: &mut Map<String, Value>) -> Result<(), Refusal> {
+fn inherit_task_title(source: &Source, draft: &mut Map<String, Value>) -> Result<(), Refusal> {
     if draft.get("title").and_then(Value::as_str).is_some_and(|t| !t.trim().is_empty()) {
         return Ok(());
     }
     let Some(old) = draft.get("replaces").and_then(Value::as_u64) else { return Ok(()) };
-    let Some(log) = store::read(path)? else { return Ok(()) };
+    let Some(log) = source.log()? else { return Ok(()) };
     if let Some(title) = log.get(old).and_then(|e| e.fields.get("title")).filter(|t| t.is_string()) {
         draft.insert("title".into(), title.clone());
     }
     Ok(())
+}
+
+/// Onde uma gravação lê o arquivo de eventos como ele está antes de gravar:
+/// pelo caminho, com a trava compartilhada, ou pelo trecho que já segura a
+/// trava exclusiva dele ([`record_locked`]) — ali dentro, ler pelo caminho
+/// esperaria para sempre pela trava do próprio trecho.
+enum Source<'a> {
+    Path(&'a Path),
+    Locked(&'a store::LockedLog),
+}
+
+impl<'a> Source<'a> {
+    /// O trecho travado `locked`, quando há um; sem ele, o caminho `path`.
+    fn of(path: &'a Path, locked: Option<&'a store::LockedLog>) -> Self {
+        locked.map_or(Source::Path(path), Source::Locked)
+    }
+
+    /// O arquivo como está; `None` quando a spec ainda não tem arquivo.
+    fn log(&self) -> Result<Option<Cow<'_, SpecLog>>, Refusal> {
+        match self {
+            Source::Path(path) => Ok(store::read(path)?.map(Cow::Owned)),
+            Source::Locked(locked) => Ok(Some(Cow::Borrowed(locked.log()))),
+        }
+    }
 }
 
 /// A única gravação no arquivo de eventos de uma spec: toda porta chega
@@ -623,41 +862,87 @@ fn record_in(
     draft: Map<String, Value>,
     by: Option<PhaseWriter>,
 ) -> Result<Recorded, Refusal> {
+    record_to(project, start, spec, event_type, draft, by, None)
+}
+
+/// Grava um evento da spec `spec`, vista de `start`, dentro do trecho que já
+/// segura a trava exclusiva do arquivo de eventos dela
+/// ([`store::with_locked_writer`]), sem soltá-la: a mesma gravação e as
+/// mesmas conferências de [`record`], e `locked` passa a trazer o evento.
+/// Quem lê o arquivo, mexe numa pasta que depende dele e grava no fim faz
+/// tudo sem que outra gravação, ou quem pega a mesma trava, entre no meio.
+///
+/// # Errors
+///
+/// As recusas de [`record`].
+pub(crate) fn record_locked(
+    locked: &mut store::LockedLog,
+    start: &Path,
+    spec: &str,
+    event_type: &str,
+    draft: Map<String, Value>,
+    by: PhaseWriter,
+) -> Result<Recorded, Refusal> {
+    record_to(&super::project(start), start, spec, event_type, draft, Some(by), Some(locked))
+}
+
+/// O corpo de [`record_in`] e de [`record_locked`]: com `locked`, lê e grava
+/// pelo trecho travado; sem ele, pelo caminho do arquivo.
+fn record_to(
+    project: &super::Project,
+    start: &Path,
+    spec: &str,
+    event_type: &str,
+    draft: Map<String, Value>,
+    by: Option<PhaseWriter>,
+    locked: Option<&mut store::LockedLog>,
+) -> Result<Recorded, Refusal> {
     if super::pages::old_format_spec(&project.root, spec) {
         return Err(Refusal::OldFormatSpec { spec: spec.trim().to_string() });
     }
-    if event_type == "task" {
-        let missing = task_declarations_missing(&draft, by.is_none());
+    let file = store::spec_file(&project.root, spec);
+    task_declared(event_type, &draft, by.is_none()).map_err(|refusal| {
+        let source = file.as_deref().ok().map(|path| Source::of(path, locked.as_deref()));
+        with_uncovered_items(source.as_ref(), refusal)
+    })?;
+    let mut draft = draft;
+    let path = file?;
+    // O item que descreve o trabalho, gravado pelo modelo, entra com as
+    // partes da forma fixa, e o título e a parte do usuário passam pela
+    // conferência de escrita. A versão nova de um item de antes da forma
+    // segue como ele era.
+    let by_model = by.is_none() && item_form(event_type).is_some();
+    if by_model && !revises_an_item_without_the_form(&Source::of(&path, locked.as_deref()), &draft, event_type)? {
+        let missing = item_form_missing(&draft, event_type, by_model);
         if !missing.is_empty() {
-            return Err(Refusal::TaskDeclarationMissing { missing });
+            return Err(Refusal::ItemFormMissing { missing });
+        }
+        let unclear = unclear_fields(&project.root, &draft, project.lang);
+        if !unclear.is_empty() {
+            return Err(Refusal::ItemUnclear { fields: unclear });
         }
     }
-    let mut draft = draft;
-    let path = store::spec_file(&project.root, spec)?;
     if event_type == "task" && by.is_some() {
-        inherit_task_title(&path, &mut draft)?;
+        inherit_task_title(&Source::of(&path, locked.as_deref()), &mut draft)?;
     }
     let roots = store::citation_roots(start, &project.root);
     let (carried, replaces) = phase_carried(event_type, &draft);
     let name = spec.trim().to_string();
     let mut survey = None;
     let lang = project.lang;
-    let written = store::write_guarded(
-        &path,
-        event_type,
-        draft,
-        &roots,
-        &super::pages::secret::secret_excerpts,
-        |before, after| {
-            record_rules(&name, before, after, carried.as_deref(), replaces, by)?;
-            // O passo do levantamento só vai ao relatório do modelo.
-            if by.is_none() {
-                survey = survey_report(&project.root, &name, before, after, lang);
-            }
-            Ok(())
-        },
-        |_| {},
-    )?;
+    let guard = |before: &SpecLog, after: &SpecLog| {
+        record_rules(&name, before, after, carried.as_deref(), replaces, by)?;
+        // O passo do levantamento só vai ao relatório do modelo.
+        if by.is_none() {
+            survey = survey_report(&project.root, &name, before, after, lang);
+        }
+        Ok(())
+    };
+    let find = &crate::shared::secret::secret_excerpts;
+    let written = match locked {
+        Some(locked) => locked.write_guarded(event_type, draft, &roots, find, guard, |_| {})?,
+        None => store::write_guarded(&path, event_type, draft, &roots, find, guard, |_| {})?,
+    };
     Ok(Recorded { written, survey })
 }
 
@@ -672,9 +957,9 @@ fn phase_carried(event_type: &str, draft: &Map<String, Value>) -> (Option<String
 }
 
 /// As regras que toda gravação na spec `spec` cumpre, sobre o arquivo antes e
-/// depois dela: a mudança de fase, a mensagem que a resposta responde, o
-/// objetivo, o levantamento, o dono do item combinado e a dependência entre
-/// tarefas.
+/// depois dela: a mudança de fase, o trabalho novo numa spec que já fechou, a
+/// mensagem que a resposta responde, o objetivo, o levantamento, o dono do
+/// item combinado e a dependência entre tarefas.
 fn record_rules(
     spec: &str,
     before: &SpecLog,
@@ -685,6 +970,7 @@ fn record_rules(
 ) -> Result<(), Refusal> {
     phase_rule(spec, before, after, carried, replaces, by)?;
     if by.is_none() {
+        closed_spec_work_rule(spec, before, after)?;
         wave_by_backlog_rule(before, after)?;
     }
     reply_rule(before, after)?;
@@ -692,6 +978,35 @@ fn record_rules(
     survey_rule(spec, before, after)?;
     task_dependency_rule(before, after)?;
     owner_rule(before, after)
+}
+
+/// O trabalho novo que o assistente grava numa spec que já fechou, pela fase
+/// dela antes da gravação. A fechada e a com o pull request aberto recebem o
+/// pedido novo depois de reabertas, na mesma spec e na mesma branch: o pedido
+/// é recusado e a recusa aponta a reabertura. A entregue na base e a
+/// descartada não voltam por caminho nenhum: o pedido e a tarefa são
+/// recusados, e a recusa aponta uma spec nova. Antes do fechamento, e na spec
+/// sem fase gravada, tudo grava como sempre.
+fn closed_spec_work_rule(spec: &str, before: &SpecLog, after: &SpecLog) -> Result<(), Refusal> {
+    let Some(phase) = State::from_log(before).phase.filter(|phase| !not_closed_yet(phase)) else {
+        return Ok(());
+    };
+    let had: BTreeSet<u64> = before.events.iter().map(|event| event.id).collect();
+    for event in after.events.iter().filter(|event| !had.contains(&event.id)) {
+        let event_type = event.event_type.as_str();
+        if returns_to_running(phase) {
+            if event_type == "request" {
+                return Err(Refusal::RequestOnClosedSpec { spec: spec.to_string(), phase: phase.to_string() });
+            }
+        } else if matches!(event_type, "request" | "task") {
+            return Err(Refusal::WorkOnFinishedSpec {
+                spec: spec.to_string(),
+                phase: phase.to_string(),
+                event_type: event_type.to_string(),
+            });
+        }
+    }
+    Ok(())
 }
 
 /// A onda nasce do backlog: só o programa a grava, na hora de despachar. Pelo
@@ -822,8 +1137,9 @@ fn task_dependency_rule(before: &SpecLog, after: &SpecLog) -> Result<(), Refusal
 }
 
 /// Gravações do binário na spec conferidas antes, sem gravar nada: cada uma
-/// passa pela mesma conferência de [`record`] — a do evento, a do arquivo e as
-/// regras da spec —, sobre o arquivo como as anteriores o deixariam. É assim
+/// passa pela mesma conferência de [`record`] — as declarações da tarefa, a
+/// do evento, a do arquivo e as regras da spec —, sobre o arquivo como as
+/// anteriores o deixariam. É assim
 /// que a rodada sabe, antes do commit, que nenhuma gravação depois dele será
 /// recusada.
 pub(crate) struct RecordCheck {
@@ -846,7 +1162,7 @@ impl RecordCheck {
         }
         let path = store::spec_file(&project.root, spec)?;
         let roots = store::citation_roots(start, &project.root);
-        let dry = store::DryRun::open(&path, roots, &super::pages::secret::secret_excerpts)?;
+        let dry = store::DryRun::open(&path, roots, &crate::shared::secret::secret_excerpts)?;
         Ok(Self { dry, name: spec.trim().to_string(), by })
     }
 
@@ -861,6 +1177,7 @@ impl RecordCheck {
     ///
     /// A recusa que a gravação daria.
     pub(crate) fn record(&mut self, event_type: &str, draft: Map<String, Value>) -> Result<(), Refusal> {
+        task_declared(event_type, &draft, false)?;
         let (carried, replaces) = phase_carried(event_type, &draft);
         let (name, by) = (&self.name, self.by);
         self.dry.write(event_type, draft, |before, after| {
@@ -948,18 +1265,20 @@ fn survey_report(
 fn unrecorded_points(root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> Vec<Value> {
     let kinds = survey::work_type(log).map(survey::kinds_of).unwrap_or_default();
     let goal = survey::goal(log);
-    let map = project_map::read(root).ok();
+    let map = |need: project_map::Need<'_>| project_map::read_for(root, need);
     let list = survey::build(&survey::Sources {
         kinds: &kinds,
         goal: goal.and_then(|g| g.str_field("text")).map(str::trim).unwrap_or_default(),
+        goal_agent: goal.and_then(|g| g.str_field("agent")).map(str::trim).unwrap_or_default(),
         current: spec,
         bank: None,
         lessons_file: "",
         index: &[],
         prior: &[],
-        map: map.as_ref(),
+        map: Some(&map),
         condensed: survey::condensed(log),
         lang,
+        languages: &mustard_core::domain::normalize::Languages::of_project(root),
     });
     let origin = goal.and_then(|g| g.int("origin"));
     survey::missing(log, &list).into_iter().map(|item| item.to_value(origin)).collect()
@@ -1186,8 +1505,9 @@ fn record_project_page(project: &super::Project, draft: &Map<String, Value>) -> 
 }
 
 /// Grava uma lição no banco de lições do projeto. `spec`, quando vem, diz em
-/// que spec a lição nasceu. O texto passa antes pela medição da conferência
-/// de escrita do fim da resposta; com defeito, nada é gravado.
+/// que spec a lição nasceu. O texto tem até [`LESSON_MAX_LINES`] linhas e
+/// passa antes pela medição da conferência de escrita do fim da resposta;
+/// acima do teto ou com defeito, nada é gravado.
 ///
 /// A lição de defeito e a de regra do projeto, sozinhas ou juntando outras,
 /// são recusadas antes de tudo, sem gravar ([`fixed_in_code`]): o banco não
@@ -1199,6 +1519,13 @@ fn write_lesson(project: &super::Project, spec: Option<&str>, draft: Map<String,
     }
     let refuse = |refusal: Refusal| super::refused(&refusal, project.lang);
     if let Some(text) = draft.get("text").and_then(Value::as_str) {
+        let lines = text.lines().filter(|line| !line.trim().is_empty()).count();
+        if lines > LESSON_MAX_LINES {
+            let hint = translate("lessons.too_long", project.lang)
+                .replace("{lines}", &lines.to_string())
+                .replace("{max}", &LESSON_MAX_LINES.to_string());
+            return json!({ "ok": false, "reason": LESSON_TOO_LONG, "hint": hint });
+        }
         let report = crate::hooks::task::clarity_check::measure_in_project(&project.root, text, &[]);
         if !report.passed {
             return refuse(Refusal::LessonUnclear { report: Box::new(report) });
@@ -1242,13 +1569,13 @@ fn fixed_in_code(project: &super::Project, spec: Option<&str>, class: &str) -> V
 /// fechado. `None` quando não há nenhuma: a spec em que a lição nasceu pode já
 /// ter fechado, e aí não recebe tarefa.
 fn open_spec_for_the_fix(root: &Path, spec: Option<&str>) -> Option<String> {
-    let disk = DiskSpecState::new(&super::read::checkout(root));
+    let disk = DiskSpecState::new(&checkout(root));
     let spec = match spec.map(str::trim).filter(|named| !named.is_empty()) {
         Some(named) => named.to_string(),
         None => disk.active(session_from_env().as_deref())?,
     };
     let state = disk.state(&spec)?;
-    state.phase.is_none_or(reopenable).then_some(spec)
+    state.phase.is_none_or(not_closed_yet).then_some(spec)
 }
 
 /// Run `write` and print the JSON report; with `copy`, the write also
@@ -1323,10 +1650,9 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         std::fs::create_dir_all(root.join("src")).unwrap();
-        std::fs::write(root.join("src/real.rs"), "fn um() {}\nfn dois_passos() {}\n").unwrap();
-        std::fs::create_dir_all(root.join(".claude")).unwrap();
-        std::fs::write(
-            mustard_core::io::project_map::model_path(root),
+        std::fs::write(root.join("src/real.rs"), "fn one() {}\nfn dois_passos() {}\n").unwrap();
+        mustard_core::io::project_map::write_text(
+            root,
             r#"{"modules":[{"path":"src/real.rs","declarations":[{"kind":"function","name":"dois_passos","line":2}]}]}"#,
         )
         .unwrap();
@@ -1417,13 +1743,13 @@ mod tests {
         assert_eq!(refused["reason"], json!("binary-only-type"), "{refused}");
         assert_eq!(lines(root), before, "nothing was written");
 
-        let fechamento = crate::commands::flow::close::close_at(&crate::commands::flow::close::CloseOpts {
+        let closing = crate::commands::flow::close::close_at(&crate::commands::flow::close::CloseOpts {
             spec: Some("teste".to_string()),
             report: None,
             root: root.to_path_buf(),
             ..Default::default()
         });
-        assert_eq!(fechamento["ok"], json!(false), "the close still refuses: {fechamento}");
+        assert_eq!(closing["ok"], json!(false), "the close still refuses: {closing}");
     }
 
     /// Um pedido de revisão aberto na spec `teste`, como o fechamento o grava.
@@ -1440,7 +1766,7 @@ mod tests {
     /// não fecha o pedido. O veredito oficial que a assume fecha: a gravação
     /// seguinte recusa outra vez.
     #[test]
-    fn o_revisor_so_grava_veredito_com_revisao_pedida() {
+    fn reviewer_only_writes_a_verdict_with_a_requested_review() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         message(root, "user", "revise a obra");
@@ -1482,7 +1808,7 @@ mod tests {
     /// nomeando o item e mandando o revisor gravar de novo; o que responde
     /// por todos entra, mesmo com um item não atendido.
     #[test]
-    fn o_veredito_final_sem_todo_o_combinado_e_recusado_na_gravacao() {
+    fn final_verdict_without_all_that_was_agreed_is_refused_on_write() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let said = message(root, "user", "revise a obra");
@@ -1841,7 +2167,7 @@ mod tests {
         born(root);
         let said = write(root, "message", r#"{"author":"user","text":"decidi"}"#)["id"].as_u64().unwrap();
         let crit = write(root, "criterion",
-            &json!({"when": "a", "then": "b", "proof": "p", "form": "ubiquitous", "origin": said}).to_string());
+            &json!({"when": "a", "then": "b", "proof": "echo p", "form": "ubiquitous", "origin": said}).to_string());
         let wave = json!({"n": 1, "text": "Onda.", "criteria": [crit["id"]], "done_when": "passa", "origin": said});
         assert_eq!(write(root, "wave", &wave.to_string())["ok"], json!(true));
         let decision = |extra: Value| {
@@ -1870,6 +2196,60 @@ mod tests {
         }
     }
 
+    /// A prova de um critério é o comando que a rodada e o fechamento rodam,
+    /// e a gravação recusa a que não se sustenta, dizendo o termo que falhou
+    /// e o que escrever no lugar, sem gravar nada: a frase no lugar do
+    /// comando, os comandos ligados por `;` e a busca sozinha sem `!` na
+    /// frente. O comando de verdade passa, inclusive o programa que só está
+    /// nos diretórios de ferramenta do usuário. O critério já gravado com uma
+    /// prova assim segue lido como estava, e só a regravação dele é recusada.
+    #[test]
+    fn the_proof_of_a_criterion_has_to_be_a_real_command() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        born(root);
+        let said = write(root, "message", r#"{"author":"user","text":"o pedido"}"#)["id"].as_u64().unwrap();
+        let criterion = |proof: &str| {
+            json!({"when": "a", "then": "b", "proof": proof, "form": "ubiquitous", "origin": said}).to_string()
+        };
+
+        let before = lines(root);
+        for (proof, reason, said_in_hint) in [
+            ("sai vazio", "proof-program-unknown", "sai"),
+            ("sum_comes_out_right", "proof-program-unknown", "sum_comes_out_right"),
+            ("git --version ; git --help", "proof-chained-by-semicolon", "&&"),
+            ("git grep -n x", "proof-search-not-negated", "!"),
+        ] {
+            let refused = write(root, "criterion", &criterion(proof));
+            assert_eq!(refused["reason"], json!(reason), "{proof}: {refused}");
+            let hint = refused["hint"].as_str().unwrap_or_default();
+            assert!(hint.contains(said_in_hint), "{proof}: a recusa diz o que escrever: {hint}");
+            assert_eq!(lines(root), before, "{proof}: nada foi gravado");
+        }
+        for proof in ["! git grep -n x", "cargo test", "git --version && git --help"] {
+            let accepted = write(root, "criterion", &criterion(proof));
+            assert_eq!(accepted["ok"], json!(true), "{proof}: {accepted}");
+        }
+
+        let old = crate::shared::spec_state::seed_event(
+            root,
+            "teste",
+            "criterion",
+            json!({"when": "a", "then": "b", "proof": "sai vazio", "form": "ubiquitous", "origin": said}),
+        );
+        let log = store::read(&store::spec_file(root, "teste").unwrap()).unwrap().unwrap();
+        assert!(log.visible().iter().any(|e| e.id == old), "o critério antigo segue lido");
+        let revise = |proof: &str| {
+            let mut body: Value = serde_json::from_str(&criterion(proof)).unwrap();
+            body["replaces"] = json!(old);
+            body.to_string()
+        };
+        let kept = write(root, "criterion", &revise("sai vazio"));
+        assert_eq!(kept["reason"], json!("proof-program-unknown"), "a regravação é conferida: {kept}");
+        let fixed = write(root, "criterion", &revise("git --version"));
+        assert_eq!(fixed["ok"], json!(true), "{fixed}");
+    }
+
     /// A onda não nasce mais pequena por contagem: a quarta tarefa é gravada
     /// que nem a terceira, e do mesmo jeito a quarta prova de critério — a
     /// gravação não corta o custo da onda. Este é o caso que a recusa
@@ -1882,7 +2262,7 @@ mod tests {
         born(root);
         let said = write(root, "message", r#"{"author":"user","text":"o pedido"}"#)["id"].as_u64().unwrap();
         let crit1 = write(root, "criterion",
-            &json!({"when": "a", "then": "b", "proof": "p1", "form": "ubiquitous", "origin": said}).to_string())["id"].as_u64().unwrap();
+            &json!({"when": "a", "then": "b", "proof": "echo p1", "form": "ubiquitous", "origin": said}).to_string())["id"].as_u64().unwrap();
         let wave = write(root, "wave",
             &json!({"n": 1, "text": "Onda 1.", "criteria": [crit1], "done_when": "passa", "origin": said}).to_string());
         assert_eq!(wave["ok"], json!(true), "{wave}");
@@ -1904,7 +2284,7 @@ mod tests {
                 .as_u64()
                 .unwrap()
         };
-        let crit2 = crit("p2");
+        let crit2 = crit("echo p2");
         let revise = |criteria: &[u64], replaces: u64| {
             json!({
                 "n": 1, "text": "Onda 1.", "criteria": criteria, "done_when": "passa",
@@ -1915,12 +2295,12 @@ mod tests {
         let revised = write(root, "wave", &revise(&[crit1, crit2], wave_id));
         assert_eq!(revised["ok"], json!(true), "{revised}");
         let revised_id = revised["id"].as_u64().unwrap();
-        let crit3 = crit("p3");
+        let crit3 = crit("echo p3");
         let revised = write(root, "wave", &revise(&[crit1, crit2, crit3], revised_id));
         assert_eq!(revised["ok"], json!(true), "a terceira prova passa: {revised}");
         let revised_id = revised["id"].as_u64().unwrap();
 
-        let crit4 = crit("p4");
+        let crit4 = crit("echo p4");
         let revised = write(root, "wave", &revise(&[crit1, crit2, crit3, crit4], revised_id));
         assert_eq!(revised["ok"], json!(true), "a quarta prova também passa: {revised}");
     }
@@ -2050,7 +2430,7 @@ mod tests {
         // O mesmo campo, agora declarado pelo tipo da onda, passa.
         let said = write(root, "message", r#"{"author":"user","text":"o pedido"}"#)["id"].as_u64().unwrap();
         let crit = write(root, "criterion",
-            &json!({"when": "a", "then": "b", "proof": "p", "form": "ubiquitous", "origin": said}).to_string())["id"]
+            &json!({"when": "a", "then": "b", "proof": "echo p", "form": "ubiquitous", "origin": said}).to_string())["id"]
             .as_u64()
             .unwrap();
         let wave = write(root, "wave",
@@ -2199,7 +2579,7 @@ mod tests {
     /// do ambiente e a preferência do usuário continuam entrando, e a
     /// retirada também.
     #[test]
-    fn a_licao_de_defeito_e_recusada_e_aponta_a_tarefa() {
+    fn defect_lesson_is_refused_and_points_to_the_task() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let bank = root.join(".claude").join("spec").join("lessons.ndjson");
@@ -2254,7 +2634,7 @@ mod tests {
     /// aberta, manda gravar a tarefa nela, pelo nome; sem spec aberta, não
     /// fala em spec. Nos dois idiomas.
     #[test]
-    fn a_licao_de_regra_do_projeto_e_recusada_e_vira_teste() {
+    fn project_rule_lesson_is_refused_and_becomes_a_test() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let bank = root.join(".claude").join("spec").join("lessons.ndjson");
@@ -2296,7 +2676,7 @@ mod tests {
     /// a busca por escopo que o pedido de cada onda usa a acha para um
     /// arquivo do subprojeto dela. A recusa de uma regra nova não apaga nada.
     #[test]
-    fn a_regra_do_projeto_ja_no_banco_segue_na_leitura() {
+    fn project_rule_already_in_the_database_stays_in_the_read() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let path = root.join(".claude").join("spec").join("lessons.ndjson");
@@ -2368,6 +2748,26 @@ mod tests {
         std::fs::write(root.join("mustard.json"), r#"{"acronyms":["CI"]}"#).unwrap();
         assert_eq!(lesson_text(root, "O CI quebra quando a pasta some.")["ok"], json!(true), "the project's acronym passes");
         assert_eq!(bank_lines(root), 2);
+    }
+
+    /// Pelo comando de gravar, a lição de 16 linhas é recusada com o teto e o
+    /// número de linhas, e nada é gravado; a de 15 entra, e a linha em branco
+    /// não conta.
+    #[test]
+    fn a_lesson_over_fifteen_lines_is_refused_with_the_limit_and_the_count() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let lines = |n: usize| (1..=n).map(|i| format!("Passo {i} da lição.")).collect::<Vec<_>>();
+
+        let long = lesson_text(root, &lines(16).join("\n"));
+        assert_eq!(long["reason"], json!("lesson-too-long"), "{long}");
+        let hint = long["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains("16 linhas") && hint.contains("teto é 15") && hint.contains("Nada foi gravado"), "{hint}");
+        assert_eq!(bank_lines(root), 0, "nothing was written");
+
+        let written = lesson_text(root, &lines(15).join("\n\n"));
+        assert_eq!(written["ok"], json!(true), "15 lines with blank lines between them pass: {written}");
+        assert_eq!(bank_lines(root), 1);
     }
 
     /// Pelo comando de gravar, a lição com o mesmo texto de outra já guardada,
@@ -2472,6 +2872,289 @@ mod tests {
         assert_eq!(kept(), [4, 6]);
     }
 
+    /// Um rascunho pela porta do modelo, como o `run write` o recebe, sem o
+    /// ajudante que completa as partes da forma fixa.
+    fn by_model(root: &std::path::Path, event_type: &str, draft: &Value) -> Value {
+        open_spec(root, "teste");
+        write_at(&WriteOpts {
+            root: root.to_path_buf(),
+            spec: Some("teste".into()),
+            event_type: event_type.into(),
+            json: draft.to_string(),
+        })
+    }
+
+    /// Uma regra gravada direto no arquivo, num bloco só, sem título nem parte
+    /// do agente, como as specs de antes da forma fixa têm; devolve o número.
+    fn old_rule(root: &std::path::Path, origin: u64, code: &str) -> u64 {
+        let path = root.join(".claude").join("spec").join("teste").join("spec.ndjson");
+        let id = store::read(&path).unwrap().unwrap().max_id() + 1;
+        let line = json!({"v": 1, "id": id, "code": code, "at": "2026-01-01T10:00:00-03:00", "type": "rule",
+            "author": "assistant", "text": "A pasta de cache nunca é apagada.", "keys": ["cache"], "example": "e",
+            "origin": origin});
+        let mut content = std::fs::read_to_string(&path).unwrap();
+        content.push_str(&format!("{line}\n"));
+        std::fs::write(&path, content).unwrap();
+        id
+    }
+
+    /// Uma regra nas três partes: o título, o porquê pelo efeito e o que o
+    /// agente precisa para fazer e testar.
+    fn whole_rule(origin: u64) -> Value {
+        json!({"title": "Travar o apagar da pasta", "text": "A trava barra o comando que apaga a pasta, e nada se perde.",
+            "keys": ["trava"], "example": "rm -rf pasta", "origin": origin,
+            "agent": "- o gancho fica em `apps/rt/src/hooks/gate.rs:40`\n- testar com `cargo test -- trava`"})
+    }
+
+    /// O item combinado que o modelo grava num bloco só é recusado com as
+    /// partes que faltam, e nada é gravado; o título de 71 caracteres conta
+    /// como faltando. O pedido passa sem a parte do agente, e o critério, só
+    /// com o título.
+    #[test]
+    fn item_form_refuses_an_item_in_one_block_and_writes_nothing() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = message(root, "user", "combine a trava");
+        let one_block = json!({"text": "A trava barra o comando que apaga a pasta.", "keys": ["trava"],
+            "example": "rm -rf pasta", "origin": said});
+        let before = lines(root);
+        let refused = by_model(root, "rule", &one_block);
+        assert_eq!(refused["reason"], json!("item-form-missing"), "{refused}");
+        let hint = refused["hint"].as_str().unwrap_or_default();
+        for part in ["`title`", "`agent`", "Nada foi gravado"] {
+            assert!(hint.contains(part), "{part}: {hint}");
+        }
+        assert!(!hint.contains("`text`"), "the user's part came: {hint}");
+        assert_eq!(lines(root), before, "nothing was written");
+
+        let mut long = whole_rule(said);
+        long["title"] = json!("a".repeat(71));
+        let refused = by_model(root, "rule", &long);
+        assert_eq!(refused["reason"], json!("item-form-missing"), "{refused}");
+        let hint = refused["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains("`title`") && !hint.contains("`agent`"), "{hint}");
+        assert_eq!(lines(root), before, "nothing was written");
+
+        assert_eq!(by_model(root, "rule", &whole_rule(said))["ok"], json!(true));
+
+        let request = json!({"text": "Travar também a pasta de cache, que guarda o trabalho da semana.", "keys": ["cache"],
+            "effect": "new_waves", "origin": said});
+        assert_eq!(by_model(root, "request", &request)["reason"], json!("item-form-missing"));
+        let mut titled = request.clone();
+        titled["title"] = json!("Travar a pasta de cache");
+        let written = by_model(root, "request", &titled);
+        assert_eq!(written["ok"], json!(true), "the request needs no agent's part: {written}");
+
+        let criterion = json!({"when": "o comando apaga a pasta", "then": "a trava barra o comando",
+            "proof": "git --version", "form": "ubiquitous", "origin": said});
+        assert_eq!(by_model(root, "criterion", &criterion)["reason"], json!("item-form-missing"));
+        let mut titled = criterion.clone();
+        titled["title"] = json!("A trava barra o apagar");
+        assert_eq!(by_model(root, "criterion", &titled)["ok"], json!(true), "the criterion needs only its title");
+    }
+
+    /// A parte do usuário fala pelo efeito: o caminho de arquivo, com ou sem
+    /// a linha, a crase e o código de outro item são recusados, e a recusa
+    /// mostra o trecho. O mesmo detalhe na parte do agente passa, e número ou
+    /// versão no texto seguem texto.
+    #[test]
+    fn item_form_refuses_a_path_a_backtick_or_an_item_code_in_the_users_part() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = message(root, "user", "combine a trava");
+        let before = lines(root);
+        for (text, found) in [
+            ("A trava mora em apps/rt/src/hooks/gate.rs e barra o comando.", "apps/rt/src/hooks/gate.rs"),
+            ("A linha gate.rs:40 barra o comando.", "gate.rs:40"),
+            ("A trava barra o `rm -rf` na pasta.", "`rm -rf`"),
+            ("A trava segue a regra MSTD-RULE-0005.", "MSTD-RULE-0005"),
+        ] {
+            let mut draft = whole_rule(said);
+            draft["text"] = json!(text);
+            let refused = by_model(root, "rule", &draft);
+            assert_eq!(refused["reason"], json!("item-form-missing"), "{text}: {refused}");
+            let hint = refused["hint"].as_str().unwrap_or_default();
+            assert!(hint.contains(found) && hint.contains("`agent`"), "{text}: {hint}");
+            assert_eq!(lines(root), before, "{text}: nothing was written");
+        }
+
+        let mut draft = whole_rule(said);
+        draft["text"] = json!("A trava barra o comando desde a versão 0.2.0, em menos de 3.5 segundos.");
+        draft["agent"] = json!("- `apps/rt/src/hooks/gate.rs:40`, pela regra MSTD-RULE-0005");
+        let written = by_model(root, "rule", &draft);
+        assert_eq!(written["ok"], json!(true), "{written}");
+    }
+
+    /// A gravação e a conferência de escrita acham o caminho de arquivo do
+    /// mesmo jeito, lado a lado: o trecho que o comando de gravar recusa na
+    /// parte do usuário é o que a conferência tira da medição, e o que ela
+    /// mede como palavra a gravação aceita. Os casos vêm das duas pontas.
+    #[test]
+    fn item_form_the_write_and_the_writing_check_agree_on_every_path() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = message(root, "user", "combine a trava");
+        let filler = vec!["palavra"; mustard_core::domain::clarity::MAX_SENTENCE_WORDS].join(" ");
+        for (token, path) in [
+            ("apps/rt/src/hooks/gate.rs", true),
+            ("gate.rs:40", true),
+            ("mod.rs:10-20", true),
+            ("CLAUDE.md", true),
+            ("/home/rubens/projetos", true),
+            ("~/projetos/app", true),
+            ("./target", true),
+            (".claude/spec", true),
+            ("3.5", false),
+            ("v0.2.0", false),
+            ("e/ou", false),
+            ("24/09/2026", false),
+            ("Windows/Linux/macOS", false),
+            ("apps/rt/src", false),
+        ] {
+            let mut draft = whole_rule(said);
+            draft["text"] = json!(format!("A trava vale para {token} agora."));
+            let out = by_model(root, "rule", &draft);
+            let hint = out["hint"].as_str().unwrap_or_default();
+            let refused = out["reason"] == json!("item-form-missing") && hint.contains(token);
+            assert_eq!(refused, path, "{token}: the write says {out}");
+
+            let report =
+                mustard_core::domain::clarity::measure(&format!("{filler} {token}."), &[], Some(Locale::PtBr));
+            assert_eq!(report.long_sentences.is_empty(), path, "{token}: the writing check says {report:?}");
+        }
+    }
+
+    /// O título e a parte do usuário passam pela conferência de escrita das
+    /// respostas, e a recusa lista todos os defeitos de uma vez, cada um com o
+    /// campo; nada é gravado. A parte do agente e o exemplo ficam de fora, e a
+    /// sigla explicada num campo vale no outro.
+    #[test]
+    fn item_form_measures_the_title_and_the_users_part_listing_every_defect() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = message(root, "user", "combine a trava");
+        let sentence = |n: usize| format!("{}.", vec!["teste"; n].join(" "));
+        let draft = json!({"title": "O CI barra a pasta", "text": sentence(26), "why": "Vem da regra MSTD-RULE-0005.",
+            "keys": ["trava"], "origin": said, "agent": sentence(40)});
+        let before = lines(root);
+        let refused = by_model(root, "decision", &draft);
+        assert_eq!(refused["reason"], json!("item-unclear"), "{refused}");
+        let hint = refused["hint"].as_str().unwrap_or_default();
+        for piece in ["title: ", "CI", "text: ", "26", "why: ", "MSTD-RULE-0005", "Nada foi gravado"] {
+            assert!(hint.contains(piece), "{piece}: {hint}");
+        }
+        assert!(!hint.contains("agent: "), "the agent's part is not measured: {hint}");
+        assert_eq!(lines(root), before, "nothing was written");
+
+        let mut rule = whole_rule(said);
+        rule["title"] = json!("O CI barra a pasta");
+        rule["text"] = json!("A integração contínua (CI) barra a pasta.");
+        rule["example"] = json!(sentence(30));
+        rule["agent"] = json!(sentence(40));
+        let written = by_model(root, "rule", &rule);
+        assert_eq!(written["ok"], json!(true), "{written}");
+    }
+
+    /// O programa grava os próprios itens sem a forma fixa: a mesma regra num
+    /// bloco só, que a porta do modelo recusa, entra pela gravação do programa.
+    #[test]
+    fn item_form_is_not_asked_of_what_the_program_writes() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = message(root, "user", "combine a trava");
+        let one_block = json!({"text": "A trava barra o comando em apps/rt/src/hooks/gate.rs.", "keys": ["trava"],
+            "example": "rm -rf pasta", "origin": said});
+        assert_eq!(by_model(root, "rule", &one_block)["reason"], json!("item-form-missing"));
+        let written = record(root, "teste", "rule", one_block.as_object().cloned().unwrap(), PhaseWriter::Binary);
+        assert_eq!(written.err(), None, "the program writes the rule in one block");
+    }
+
+    /// A regra gravada antes da forma fixa, num bloco só, segue lida como era:
+    /// a leitura a traz, sem aviso e sem linha pulada.
+    #[test]
+    fn item_form_an_old_item_is_read_without_a_warning() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = message(root, "user", "combine a trava");
+        let old = old_rule(root, said, "MSTD-RULE-0001");
+        let read = super::super::read::read_at(&super::super::read::ReadOpts {
+            root: root.to_path_buf(),
+            spec: Some("teste".into()),
+            block: "agreed".into(),
+            term: None,
+        })
+        .expect("the agreed block reads");
+        let read: Value = serde_json::from_str(&read).expect("the reading is JSON");
+        assert_eq!(read["warnings"], Value::Null, "{read}");
+        let events = read["events"].as_array().expect("events");
+        let found = events.iter().find(|e| e["id"] == json!(old)).expect("the old rule is read");
+        assert_eq!(found["text"], json!("A pasta de cache nunca é apagada."), "{read}");
+    }
+
+    /// A versão nova de um item de três partes precisa das três, pelo número
+    /// ou pelo código; a versão nova de um item de antes da forma segue como
+    /// ele era, num bloco só, também pelo número ou pelo código.
+    #[test]
+    fn item_form_a_new_version_of_a_three_part_item_needs_the_three_parts() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = message(root, "user", "combine a trava");
+        let first = by_model(root, "rule", &whole_rule(said));
+        assert_eq!(first["ok"], json!(true), "{first}");
+        let before = lines(root);
+        for target in [first["id"].clone(), first["code"].clone()] {
+            let bare = json!({"text": "A trava barra também a pasta de cache.", "keys": ["trava"], "example": "e",
+                "origin": said, "replaces": target});
+            let refused = by_model(root, "rule", &bare);
+            assert_eq!(refused["reason"], json!("item-form-missing"), "{target}: {refused}");
+            let hint = refused["hint"].as_str().unwrap_or_default();
+            assert!(hint.contains("`title`") && hint.contains("`agent`"), "{target}: {hint}");
+            assert_eq!(lines(root), before, "{target}: nothing was written");
+        }
+        let mut revised = whole_rule(said);
+        revised["replaces"] = first["id"].clone();
+        assert_eq!(by_model(root, "rule", &revised)["ok"], json!(true));
+
+        let old = old_rule(root, said, "MSTD-RULE-0002");
+        let texts = ["A pasta de cache nunca é apagada, nem a de logs.", "A pasta de cache e a de logs ficam."];
+        for (target, text) in [json!(old), json!("MSTD-RULE-0002")].into_iter().zip(texts) {
+            let bare = json!({"text": text, "keys": ["cache"], "example": "e", "origin": said, "replaces": target});
+            let written = by_model(root, "rule", &bare);
+            assert_eq!(written["ok"], json!(true), "{target}: the old item keeps its form: {written}");
+        }
+        let log = store::read(&root.join(".claude").join("spec").join("teste").join("spec.ndjson")).unwrap().unwrap();
+        let current = log.current(old).expect("the old item is still there");
+        assert_eq!(current.str_field("text"), Some(texts[1]), "the revision by code is the one in force");
+    }
+
+    /// Procurar por uma palavra que só o título tem, ou só a parte do agente,
+    /// acha o item; o outro item não aparece.
+    #[test]
+    fn item_form_the_search_finds_an_item_by_its_title_and_by_its_agent_part() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = message(root, "user", "combine a trava");
+        let mut rule = whole_rule(said);
+        rule["title"] = json!("Proteger o diretório de cache");
+        rule["agent"] = json!("- o gancho fica na sentinela do comando");
+        let wanted = by_model(root, "rule", &rule)["id"].clone();
+        let other = json!({"title": "Relatório em português", "text": "O relatório sai em português.", "keys": ["idioma"],
+            "example": "e", "origin": said, "agent": "- conferir o idioma"});
+        let other = by_model(root, "rule", &other)["id"].clone();
+        for term in ["diretório", "sentinela"] {
+            let read = super::super::read::read_at(&super::super::read::ReadOpts {
+                root: root.to_path_buf(),
+                spec: Some("teste".into()),
+                block: "agreed".into(),
+                term: Some(term.into()),
+            })
+            .expect("the agreed block reads");
+            let read: Value = serde_json::from_str(&read).expect("the reading is JSON");
+            let ids: Vec<Value> = read["events"].as_array().expect("events").iter().map(|e| e["id"].clone()).collect();
+            assert!(ids.contains(&wanted) && !ids.contains(&other), "{term}: {read}");
+        }
+    }
+
     /// O `search` é gravado no arquivo de eventos para a busca no banco da
     /// página, mas `shown()` — o que qualquer leitura do evento mostra —
     /// nunca o traz: é um campo binário (`BINARY_FIELDS`), fora do tipo do
@@ -2569,6 +3252,138 @@ mod tests {
         assert_eq!(specs, ["teste"], "no spec was opened");
     }
 
+    /// Deixa a spec `spec` na fase `phase` pelo caminho que ela anda: a
+    /// mensagem do usuário, o levantamento com a branch, a aprovação com a
+    /// testemunha, a execução, o fechamento e o pull request aberto até a
+    /// fase pedida; a descartada sai da execução. Devolve o número da
+    /// mensagem, de onde o pedido vem.
+    fn spec_in_phase(root: &std::path::Path, spec: &str, phase: &str) -> u64 {
+        const STEPS: &[&str] = &["survey", "plan", "approved", "running", "closed", "pr_open", "delivered"];
+        let said = write_to(root, Some(spec), "message", r#"{"author":"user","text":"mais um ajuste nela"}"#);
+        let said = said["id"].as_u64().unwrap_or_else(|| panic!("the user's message: {said}"));
+        let last = if phase == "discarded" { "running" } else { phase };
+        for step in STEPS.iter().take(STEPS.iter().position(|step| *step == last).unwrap() + 1) {
+            let mut fields = json!({"phase": step, "author": "binary"});
+            match *step {
+                "survey" => {
+                    fields["branch"] = json!(format!("feature/{spec}"));
+                    fields["base"] = json!("dev");
+                }
+                "approved" => fields["witness"] = json!({"question": "Aprovar?", "answer": "Aprovar"}),
+                "pr_open" => fields["pr"] = json!({"number": 1, "url": "https://exemplo/1"}),
+                _ => {}
+            }
+            crate::shared::spec_state::seed_event(root, spec, "state", fields);
+        }
+        if phase == "discarded" {
+            let gone = json!({"phase": "discarded", "author": "binary", "reason": "Descartada."});
+            crate::shared::spec_state::seed_event(root, spec, "state", gone);
+        }
+        assert_eq!(DiskSpecState::new(root).state(spec).and_then(|state| state.phase), Some(phase));
+        said
+    }
+
+    /// A gravação do assistente pelo `run write`, e os bytes do arquivo da
+    /// spec antes e depois dela.
+    fn by_assistant(root: &std::path::Path, spec: &str, event_type: &str, draft: &Value) -> (Value, Vec<u8>, Vec<u8>) {
+        let file = store::spec_file(root, spec).unwrap();
+        let before = std::fs::read(&file).unwrap();
+        let out = write_at(&WriteOpts {
+            root: root.to_path_buf(),
+            spec: Some(spec.to_string()),
+            event_type: event_type.to_string(),
+            json: draft.to_string(),
+        });
+        (out, before, std::fs::read(&file).unwrap())
+    }
+
+    /// O pedido novo que o assistente grava numa spec fechada, e noutra com o
+    /// pull request aberto, é recusado com a razão própria e a frase que
+    /// manda reabrir a spec pelo `reopen`, nos dois idiomas, e o arquivo da
+    /// spec fica com os mesmos bytes. Na spec em execução, o mesmo pedido
+    /// grava como sempre.
+    #[test]
+    fn a_request_on_a_closed_spec_is_refused_pointing_to_the_reopen() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        for (language, nothing) in [("pt-BR", "Nada foi gravado"), ("en-US", "Nothing was written")] {
+            std::fs::write(root.join("mustard.json"), json!({"language": {"text": language}}).to_string()).unwrap();
+            let tag = language.to_lowercase();
+            for phase in ["closed", "pr_open"] {
+                let spec = format!("fechada-{}-{tag}", phase.replace('_', "-"));
+                let said = spec_in_phase(root, &spec, phase);
+                let request = json!({"title": "Ajustar o otimizador", "text": "Ajustar o otimizador.", "keys": ["otimizador"],
+                    "effect": "new_waves",
+                    "origin": said});
+                let (out, before, after) = by_assistant(root, &spec, "request", &request);
+                assert_eq!(out["ok"], json!(false), "{language} {phase}: {out}");
+                assert_eq!(out["reason"], json!("request-on-closed-spec"), "{language} {phase}: {out}");
+                let hint = out["hint"].as_str().unwrap_or_default();
+                let reopen = format!("mustard-rt run reopen --spec {spec}");
+                assert!(hint.contains(&reopen), "{language} {phase}: no {reopen:?} in {hint}");
+                assert!(hint.contains(phase) && hint.contains(nothing), "{language} {phase}: {hint}");
+                assert_eq!(after, before, "{language} {phase}: nothing was written");
+            }
+            let running = format!("em-execucao-{tag}");
+            let said = spec_in_phase(root, &running, "running");
+            let request = json!({"title": "Ajustar o otimizador", "text": "Ajustar o otimizador.", "keys": ["otimizador"],
+                    "effect": "new_waves",
+                "origin": said});
+            let (out, before, after) = by_assistant(root, &running, "request", &request);
+            assert_eq!(out["ok"], json!(true), "{language}: the running spec takes the request: {out}");
+            assert_eq!(out["type"], json!("request"), "{out}");
+            assert!(after.len() > before.len(), "{language}: the request was written");
+        }
+    }
+
+    /// O pedido e a tarefa novos que o assistente grava numa spec entregue na
+    /// base e noutra descartada são recusados, e a frase manda abrir uma spec
+    /// nova pelo `open`, sem falar em reabrir, nos dois idiomas; o arquivo da
+    /// spec fica com os mesmos bytes. A tarefa na spec com o pull request
+    /// aberto, a última fase antes da entrega, grava como sempre.
+    #[test]
+    fn a_request_or_task_on_a_delivered_or_discarded_spec_is_refused() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        for (language, nothing) in [("pt-BR", "Nada foi gravado"), ("en-US", "Nothing was written")] {
+            std::fs::write(root.join("mustard.json"), json!({"language": {"text": language}}).to_string()).unwrap();
+            let tag = language.to_lowercase();
+            for phase in ["delivered", "discarded"] {
+                let spec = format!("saiu-{phase}-{tag}");
+                let said = spec_in_phase(root, &spec, phase);
+                let crit = crate::shared::spec_state::seed_event(root, &spec, "criterion", json!({"when": "a obra roda",
+                    "then": "a suíte passa", "proof": "git --version", "form": "ubiquitous"}));
+                let drafts = [
+                    ("request", json!({"title": "Ajustar o otimizador", "text": "Ajustar o otimizador.", "keys": ["otimizador"],
+                    "effect": "new_waves",
+                        "origin": said})),
+                    ("task", json!({"title": "Ajustar o otimizador", "text": "Ajustar o otimizador.", "agent": "- otimizador", "files": [],
+                        "depends_on": [], "covers": [crit], "origin": said})),
+                ];
+                for (event_type, draft) in &drafts {
+                    let (out, before, after) = by_assistant(root, &spec, event_type, draft);
+                    let case = format!("{language} {phase} {event_type}");
+                    assert_eq!(out["ok"], json!(false), "{case}: {out}");
+                    assert_eq!(out["reason"], json!("work-on-finished-spec"), "{case}: {out}");
+                    let hint = out["hint"].as_str().unwrap_or_default();
+                    assert!(hint.contains("mustard-rt run open"), "{case}: no new spec in {hint}");
+                    assert!(!hint.contains("reopen"), "{case}: a finished spec is never reopened: {hint}");
+                    assert!(hint.contains(phase) && hint.contains(nothing), "{case}: {hint}");
+                    assert_eq!(after, before, "{case}: nothing was written");
+                }
+            }
+            let open_pr = format!("pr-aberto-{tag}");
+            let said = spec_in_phase(root, &open_pr, "pr_open");
+            let crit = crate::shared::spec_state::seed_event(root, &open_pr, "criterion", json!({"when": "a obra roda",
+                "then": "a suíte passa", "proof": "git --version", "form": "ubiquitous"}));
+            let task = json!({"title": "Ajustar o otimizador", "text": "Ajustar o otimizador.", "agent": "- otimizador", "files": [],
+                "depends_on": [], "covers": [crit], "origin": said});
+            let (out, before, after) = by_assistant(root, &open_pr, "task", &task);
+            assert_eq!(out["ok"], json!(true), "{language}: the task on the open pull request is written: {out}");
+            assert!(after.len() > before.len(), "{language}: the task was written");
+        }
+    }
+
     /// Numa spec aprovada, com a página já publicada, a gravação que muda o
     /// plano — um critério, uma tarefa do backlog, uma regra e o próprio
     /// pedido do usuário — não prepara cópia da página: a saída não traz
@@ -2577,7 +3392,7 @@ mod tests {
     /// uma vez, com os lotes calculados na hora: eles levam tudo o que veio
     /// desde a publicação, o pedido e a tarefa dele juntos.
     #[test]
-    fn a_gravacao_que_muda_o_plano_nao_prepara_copia() {
+    fn write_that_changes_the_plan_does_not_prepare_a_copy() {
         use mustard_core::platform::i18n::Locale;
         use mustard_core::platform::page_templates::{spec_page_template, template_stamp};
         const URL: &str = "https://claude.ai/code/artifact/teste";
@@ -2621,8 +3436,8 @@ mod tests {
 
         // A última gravação do pedido, com `--copy`: a cópia sai uma vez só,
         // com tudo o que o pedido gerou.
-        let task = json!({"title": "Dividir", "text": "Dividir dois números.", "files": [], "depends_on": [],
-            "covers": [criterion], "origin": asked});
+        let task = json!({"title": "Dividir", "text": "Dividir dois números.", "agent": "- dividir",
+            "files": [], "depends_on": [], "covers": [criterion], "origin": asked});
         let last = write_at_with(
             &WriteOpts { root: root.to_path_buf(), spec: Some("teste".into()), event_type: "task".into(),
                 json: task.to_string() },
@@ -2638,6 +3453,53 @@ mod tests {
         for id in &written {
             assert!(copied.contains(id), "the copy misses item {id}: {copied:?}");
         }
+    }
+
+    /// A gravação com `--copy` devolve as escritas de cada lote prontas para
+    /// a ferramenta do banco: o arquivo de cada documento pelo caminho
+    /// absoluto, e a troca do documento já copiado com a versão que a cópia
+    /// anterior guardou. A ordem manda mandá-las, sem ler arquivo.
+    #[test]
+    fn the_copying_write_answers_with_the_writes_ready() {
+        use mustard_core::platform::i18n::Locale;
+        use mustard_core::platform::page_templates::{spec_page_template, template_stamp};
+        const URL: &str = "https://claude.ai/code/artifact/teste";
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), "{}").unwrap();
+        born(root);
+        let msg = write(root, "message", r#"{"author":"user","text":"o plano"}"#)["id"].as_u64().unwrap();
+        let criterion = json!({"when": "w", "then": "t", "proof": "cargo test", "form": "ubiquitous", "origin": msg});
+        let criterion = write(root, "criterion", &criterion.to_string())["id"].as_u64().unwrap();
+        witness_approves(root);
+        let stamp = template_stamp(&spec_page_template(Locale::PtBr)).expect("the stamp").to_string();
+        let publish = json!({"page": "spec", "milestone": "approval", "ok": true, "template": true, "stamp": stamp,
+            "url": URL});
+        assert_eq!(write(root, "publish", &publish.to_string())["ok"], json!(true));
+        let last = DiskSpecState::new(root).log("teste").unwrap().max_id();
+        let copied = json!({"page": "spec", "last": last, "versions": {"ranges/0": 5, "computed/current": 5}});
+        assert_eq!(write(root, "copy", &copied.to_string())["ok"], json!(true));
+
+        let task = json!({"title": "Dividir", "text": "Dividir dois números.", "agent": "- dividir",
+            "files": [], "depends_on": [], "covers": [criterion], "origin": msg});
+        let out = write_at_with(
+            &WriteOpts { root: root.to_path_buf(), spec: Some("teste".into()), event_type: "task".into(),
+                json: task.to_string() },
+            true,
+        );
+        assert_eq!(out["ok"], json!(true), "{out}");
+        let batches = out["copy"]["spec"]["writes"].as_array().cloned().unwrap_or_default();
+        assert_eq!(batches.len(), out["copy"]["spec"]["batches"].as_array().map_or(0, Vec::len), "one list per batch");
+        let writes: Vec<Value> = batches.iter().flat_map(|b| b.as_array().cloned().unwrap_or_default()).collect();
+        for write in &writes {
+            let file = write["file_path"].as_str().unwrap_or_else(|| panic!("{write}"));
+            assert!(std::path::Path::new(file).is_absolute(), "{file}");
+            assert!(std::path::Path::new(file).is_file(), "{file}");
+        }
+        let range = writes.iter().find(|w| w["collection"] == json!("ranges") && w["doc_id"] == json!("0"));
+        assert_eq!(range.map(|w| w["if_version"].clone()), Some(json!(5)), "{writes:?}");
+        let next = out["next"].as_str().unwrap_or_default();
+        assert!(next.contains("`copy.spec.writes`") && next.contains("write copy"), "{next}");
     }
 
     /// A onda nasce do backlog: pela porta do modelo, a onda nova e a versão
@@ -2674,7 +3536,7 @@ mod tests {
     /// vai pela mesma porta. Nada passa pela gravação do modelo: ela recusa o
     /// autor do programa, a onda e a tarefa que já traz o número da onda.
     #[test]
-    fn a_onda_semeada_pelos_testes_sai_com_autor_binario() {
+    fn wave_seeded_by_the_tests_comes_out_with_the_binary_as_author() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         born(root);
@@ -3104,7 +3966,7 @@ mod tests {
         assert_eq!(seen(root).as_deref(), Some("Travar o envio."));
     }
 
-    /// Uma spec que nasce em plano, como as do `spec-draft`, não tem a vaga do
+    /// Uma spec que nasce em plano, sem levantamento, não tem a vaga do
     /// objetivo: o primeiro `context` dela é livre, e a porta do `open` nunca
     /// a leva de volta ao levantamento.
     #[test]
@@ -4123,7 +4985,7 @@ mod tests {
         assert_eq!(armed, expected, "no closing armed at the same time was lost");
     }
 
-    /// Uma spec sem nenhum ponto, como as do `spec-draft`, grava e aprova
+    /// Uma spec sem nenhum ponto, escrita direto, grava e aprova
     /// como antes: sem passo do levantamento e sem recusa nova.
     #[test]
     fn an_old_spec_without_points_writes_and_approves_as_before() {
@@ -4205,7 +5067,7 @@ mod tests {
     /// o título da versão que ela substitui; a mesma versão pela porta do
     /// modelo é recusada sem gravar nada.
     #[test]
-    fn tarefa_sem_titulo_e_recusada_e_com_titulo_e_gravada_e_a_versao_do_programa_herda_o_titulo() {
+    fn task_without_a_title_is_refused_and_with_a_title_is_written_and_the_program_version_inherits_the_title() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let said = write(root, "message", r#"{"text":"o plano"}"#)["id"].as_u64().unwrap();
@@ -4217,19 +5079,49 @@ mod tests {
                 json: body.to_string(),
             })
         };
+        let crit = crate::shared::spec_state::seed_event(root, "teste", "criterion", json!({"when": "a obra fecha",
+            "then": "cada critério é conferido", "proof": "git --version", "form": "ubiquitous"}));
         let first = by_model(json!({"title": "Fechamento confere cada critério", "text": "Conferir.",
-            "files": [], "depends_on": [], "origin": said}));
+            "agent": "- conferir cada critério", "files": [], "depends_on": [], "covers": [crit], "origin": said}));
         let first = first["id"].as_u64().unwrap_or_else(|| panic!("a tarefa com título grava: {first}"));
 
-        let version = json!({"text": "Conferir, revista.", "files": [], "depends_on": [], "origin": said,
-            "replaces": first});
+        let version = json!({"text": "Conferir, revista.", "files": [], "depends_on": [], "covers": [crit],
+            "origin": said, "replaces": first});
         let refused = by_model(version.clone());
         assert_eq!(refused["reason"], json!("task-declaration-missing"), "{refused}");
+        assert!(!refused["hint"].as_str().unwrap_or_default().contains("covers"), "só falta o título: {refused}");
 
         let draft = version.as_object().cloned().unwrap();
         let recorded = record(root, "teste", "task", draft, PhaseWriter::Binary).expect("o programa grava");
         let log = store::read(&store::spec_file(root, "teste").unwrap()).unwrap().unwrap();
         let written = log.get(recorded.written.id).expect("a versão gravada");
         assert_eq!(written.str_field("title"), Some("Fechamento confere cada critério"), "{:?}", written.fields);
+    }
+
+    /// O item gravado pelo comando de gravação entra na hora no bloco das
+    /// specs do mapa: a busca seguinte o acha lendo só o mapa. Com o mapa
+    /// estragado, a gravação na spec sai do mesmo jeito, e o item fica no
+    /// arquivo.
+    #[test]
+    fn a_written_item_enters_the_map_and_a_broken_map_never_undoes_the_write() {
+        use mustard_core::io::{map_search, project_map};
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        project_map::write_text(root, r#"{"modules": []}"#).unwrap();
+        let said = message(root, "user", "e o estorno?");
+        let decision =
+            json!({"title": "Estorno volta ao cartão", "text": "O estorno volta ao cartão.", "keys": ["estorno"], "why": "w", "origin": said});
+        assert_eq!(write(root, "decision", &decision.to_string())["code"], json!("MSTD-DEC-0001"));
+        let languages = crate::commands::spec_events::project(root).languages;
+        let found = map_search::search_specs(root, "estorno", &languages, 5).unwrap();
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!((found[0].spec.as_str(), found[0].code.as_str()), ("teste", "MSTD-DEC-0001"));
+
+        std::fs::write(project_map::model_path(root), "não é um banco").unwrap();
+        let second = json!({"title": "Pix confirma na hora", "text": "O pix confirma na hora.", "keys": ["pix"], "why": "w", "origin": said});
+        let out = write(root, "decision", &second.to_string());
+        assert_eq!((out["ok"].clone(), out["code"].clone()), (json!(true), json!("MSTD-DEC-0002")), "{out}");
+        let log = DiskSpecState::new(root).log("teste").unwrap();
+        assert!(log.visible().iter().any(|event| event.str_field("title") == Some("Pix confirma na hora")));
     }
 }

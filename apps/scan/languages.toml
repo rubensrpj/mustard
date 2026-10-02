@@ -11,17 +11,60 @@
 # No change to grain's logic is ever required — build.rs reads this file and
 # embeds the queries; the engine stays generic.
 #
+# O arquivo que responde pela pasta (o de entrada) vem da lista do núcleo,
+# `packages/core/src/domain/ast/entry-files.toml`, pelo `name` daqui.
+#
 # Fields:
 #   name          display id, stored on each module (e.g. shown in the JSON model)
 #   extensions    file extensions that select this language (no leading dot)
 #   dir           subdirectory under queries/ holding this language's .scm files
+#   extra_queries OPTIONAL — mais uma pasta sob queries/, cujos .scm entram só
+#                 na consulta desta entrada, depois dos de `dir`. Serve à
+#                 entrada que divide o `dir` (e a família) com outra, mas cuja
+#                 gramática tem nós que a outra não tem: o padrão com esses
+#                 nós na pasta comum seria pulado na outra. A pasta precisa
+#                 existir, ou a compilação para.
 #   grammar       Rust expression yielding the grammar's tree-sitter LanguageFn;
 #                 build.rs emits it verbatim, so the crate symbol never appears in src/.
 #   root_aliases  OPTIONAL — leading import segments that alias the package root
 #                 in qualified import paths. Only imports starting with one of
-#                 these earn the graph's root-alias resolution probe; languages
+#                 these earn the graph's root-alias resolution probe: o resto
+#                 se lê na pasta do arquivo raiz do pacote de quem importa
+#                 (`package_entry` sob o manifesto mais perto acima dele) e só
+#                 nela; quem importa fora dessa pasta, ou o pacote sem arquivo
+#                 raiz, lê subindo as pastas a partir da sua; languages
 #                 that declare none never take that branch, so a fully external
-#                 import can never be mistaken for an internal module.
+#                 import can never be mistaken for an internal module. O
+#                 caminho de uma chamada qualificada (`@call.path`) só vira
+#                 import do arquivo quando começa por um destes ou pelo
+#                 `parent_alias`. O outro, de duas partes ou mais, fica com a
+#                 chamada; quando a raiz dele não é peça do projeto, a
+#                 chamada é da biblioteca e não liga ao projeto.
+#   parent_alias  OPTIONAL — o nome que, no começo de um caminho qualificado,
+#                 sobe um módulo (`super` em `super::x::f()`). O primeiro é a
+#                 pasta de quem importa, e cada um a mais sobe uma pasta, como
+#                 no import relativo; o arquivo que responde pela própria
+#                 pasta (o de índice) já é o módulo dela, e sobe a partir da
+#                 de cima. O resto do caminho é procurado nessa pasta, tirando
+#                 do fim quantas partes for preciso até achar arquivo, porque
+#                 o caminho pode terminar em tipo e método; sem arquivo para
+#                 nenhuma parte, o alvo é o arquivo que responde pela pasta
+#                 (`super::f()`). O que sobe além da raiz, ou não existe no
+#                 projeto, não liga a nada. Dentro de N módulos escritos no
+#                 próprio arquivo (`@inner_module`, o trecho de teste
+#                 incluído), os N primeiros só saem deles e ficam no arquivo;
+#                 os outros sobem pasta.
+#   module_alias  OPTIONAL — o nome que, no começo de um caminho qualificado,
+#                 nomeia o próprio módulo de quem o escreve (`self` em
+#                 `self::x::f()`). O resto do caminho é lido na pasta dos
+#                 módulos do arquivo, sem subir nenhuma: a que leva o nome
+#                 dele ou, no arquivo que responde pela própria pasta e no
+#                 arquivo raiz do pacote, a pasta dele. Tira do fim quantas
+#                 partes for preciso até achar arquivo, como o
+#                 `parent_alias`; sem arquivo para nenhuma parte, o alvo é o
+#                 próprio arquivo. Como os `root_aliases` e o
+#                 `parent_alias`, faz do caminho de uma chamada qualificada
+#                 um import do arquivo.
 #   namespace_scope OPTIONAL — how a declared namespace is seen by the other files
 #                 of the same language, with no import between them:
 #                   "folder" the namespace holds only together with its folder
@@ -30,64 +73,529 @@
 #                            (a file in A.B sees A);
 #                 without the field, a namespace is seen by the files that
 #                 declare that same namespace, and nothing else.
+#   global_namespace OPTIONAL — `true` na língua em que o arquivo que não
+#                 declara namespace fica no namespace de todos: o que ele
+#                 declara está à vista de todo arquivo da mesma família no
+#                 mesmo projeto (sob a pasta do manifesto mais perto acima
+#                 dele), sem import. Sem o campo, `false`: esse arquivo só é
+#                 visto por quem o importa.
 #   doc_tags      OPTIONAL — the markup tags the language writes its documentation
 #                 comments with. The engine drops them from the comment and keeps
 #                 the text; a self-closing tag with a value leaves the value
 #                 (`<see cref="Base"/>` reads `Base`). A `<...>` not named here
 #                 stays as written. Without the field, the comment is kept as is.
+#   import_extensions OPTIONAL — as extensões que o import da língua escreve no
+#                 lugar da do próprio arquivo (o import cita `x.js` para o
+#                 arquivo `x.ts`). O caminho importado só perde a última parte
+#                 depois do ponto quando ela é uma de `extensions` ou uma
+#                 destas; qualquer outro ponto é parte do nome
+#                 (`./order.service` cita `order.service.<ext>`, nunca
+#                 `order.<ext>`).
+#   alias_config  OPTIONAL — o nome do arquivo de configuração que declara os
+#                 apelidos de pasta dos imports da língua, ou a lista dos nomes
+#                 que ela lê, em ordem de preferência. O arquivo é JSON e
+#                 aceita comentário e vírgula sobrando. Cada arquivo lê a
+#                 configuração mais próxima, subindo as pastas; na mesma pasta,
+#                 vale o primeiro nome da lista que existe. O scan lê o projeto
+#                 inteiro de novo sempre que um arquivo com um desses nomes
+#                 muda. As três chaves abaixo apontam lugares dentro dele, em
+#                 caminho com pontos, e valem para todos os nomes da lista:
+#   alias_base    OPTIONAL — a pasta de onde se leem os imports não relativos,
+#                 relativa à configuração que a declara;
+#   alias_paths   OPTIONAL — o objeto que liga um padrão de import (no máximo
+#                 um `*`) às pastas que ele representa, lidas a partir de
+#                 `alias_base` quando existe, senão da configuração que o
+#                 declara;
+#   alias_extends OPTIONAL — o caminho, ou a lista deles, das configurações de
+#                 que esta herda: a última da lista vence, e o próprio arquivo
+#                 vence todas. Só se segue caminho relativo dentro do projeto;
+#                 nome de pacote fica de fora.
+#   relative_import OPTIONAL — o import relativo que a língua escreve com um
+#                 separador no lugar da barra (`..core.models`). Uma chave:
+#                   separator     o texto entre as partes do caminho. Repetido
+#                                 no começo, ele faz o import relativo: um só
+#                                 é a pasta de quem importa, e cada um a mais
+#                                 sobe uma pasta; o resto, cortado nele, vira
+#                                 o caminho dentro dela. Quando o import é só
+#                                 esse começo, cada nome que ele traz
+#                                 (`@imported` no mesmo pattern) é um arquivo
+#                                 da pasta.
+#                 O alvo é o arquivo da língua com esse caminho ou, sem ele, o
+#                 arquivo de entrada da pasta, da lista do núcleo; o que não
+#                 existe no projeto não liga a nada. O import que não começa
+#                 pelo separador segue como os outros.
+#   qualified_separators — os textos que juntam as partes de um nome
+#                 qualificado na língua (`crate::a::b`). Cada um vira `/` na
+#                 forma única com que o grafo compara imports e namespaces,
+#                 menos no texto que já é caminho (tem `/` ou começa por `.`)
+#                 e, no import que termina na extensão da língua, menos na
+#                 extensão. É também o que liga um nome ao qualificador
+#                 escrito antes dele (`a` em `a::f()`). Toda língua declara o
+#                 campo, e um teste recusa a que não declara: sem ele a língua
+#                 não teria separador nenhum, só o `\` viraria `/` e nenhum
+#                 nome se ligaria ao que vem antes dele.
+#   member_separators OPTIONAL — os textos que ligam o método chamado ao
+#                 valor escrito antes dele quando não juntam também as partes
+#                 de um nome qualificado (`.` em `x.f()` numa língua cujo
+#                 caminho usa `::`). O que vem antes deles é um valor, nunca
+#                 um módulo: a chamada por ele só se prova quando o valor é o
+#                 próprio objeto (`self_receivers`). Sem o campo, nenhum: o
+#                 separador de nome qualificado já liga o método.
+#   self_receivers OPTIONAL — os nomes que, escritos antes do método chamado,
+#                 são o próprio objeto ou o próprio tipo (`self.f()`,
+#                 `this.f()`): a chamada procura o método entre os membros do
+#                 tipo em que ela está escrita. Sem o campo, nenhum nome é o
+#                 próprio objeto.
+#   parent_receivers OPTIONAL — os nomes que, escritos antes do método
+#                 chamado, são o próprio objeto visto pelo tipo de cima
+#                 (`base.f()`, `super.f()`). Como o próprio objeto, são do
+#                 arquivo: a chamada por eles nunca é tomada por chamada de
+#                 biblioteca. Sem o campo, nenhum.
+#   package_entry OPTIONAL — os arquivos raiz de um pacote do repositório,
+#                 sem a extensão e a partir da pasta do manifesto dele
+#                 (`src/lib` no Rust). O caminho que nomeia um pacote do
+#                 projeto e cujo resto não chega a arquivo nenhum
+#                 (`demo_core::Leitor`) liga ao arquivo raiz, que declara o
+#                 nome ou o repassa; e os módulos filhos do arquivo raiz moram
+#                 na pasta dele, como os do arquivo que responde pela pasta.
+#                 O import que é só o nome do pacote (`use demo_core;`,
+#                 `from '@empresa/core'`) liga ao arquivo raiz também.
+#                 Sem o campo, nenhum: o caminho que não chega a arquivo não
+#                 liga a nada.
+#   implicit_self OPTIONAL — `true` na língua que chama um membro do próprio
+#                 objeto pelo nome sozinho, sem escrever o objeto (`Fechar()`
+#                 dentro da classe). Sem o campo, `false`: o nome sozinho
+#                 nunca alcança um método, um campo ou um membro de enum, e o
+#                 `Ok(` ou o `fechar()` escrito sem o objeto não liga a eles.
+#   single_part_paths OPTIONAL — `true` na língua em que o import não
+#                 relativo de uma parte só (`import util`, `from loja import
+#                 x`) pode nomear um arquivo ou uma pasta do projeto: ele é
+#                 procurado como os caminhos de mais partes, o arquivo exato
+#                 primeiro e depois o que termina nele numa parte inteira,
+#                 primeiro no projeto de quem importa. Sem o campo, `false`:
+#                 o import de uma parte só é pacote de fora (`import x from
+#                 'react'`) e nunca liga a arquivo pelo caminho.
+#   import_self   OPTIONAL — o nome que, trazido por um import (`@imported`),
+#                 traz o último nome escrito antes da lista que o contém
+#                 (`self` em `use std::fs::{self, File}` traz `fs`). Sem o
+#                 campo, todo nome trazido é ele mesmo.
+#   prelude       OPTIONAL — os nomes que todo arquivo da língua vê sem
+#                 import (`Result`, `Option`). O nome escrito sozinho que está
+#                 aqui só liga a uma declaração do projeto quando o arquivo o
+#                 declara, o traz pelo nome num import ou importa com `*` o
+#                 arquivo que o declara; senão é o da língua e não liga. Sem o
+#                 campo, nenhum nome é da língua.
+#   log_calls     OPTIONAL — as chamadas que escrevem no log (`console.log`,
+#                 `println!`). O texto fixo (`@text`) escrito dentro de uma
+#                 delas ganha a marca log. Cada entrada casa com o nome escrito
+#                 antes do texto inteiro ou com o fim dele depois de um
+#                 separador (`info!` casa com `tracing::info!`), e o `*` casa
+#                 com qualquer nome (`console.*`). Vale o nome mais próximo do
+#                 texto que casa com este campo ou com `error_forms`. Sem o
+#                 campo, nenhum texto da língua é de log.
+#   error_forms   OPTIONAL — o que lança ou devolve erro: a palavra que abre o
+#                 comando (`throw`, `raise`) ou o nome escrito antes do texto
+#                 (`Err`, `*Exception`), casados como em `log_calls`. O texto
+#                 fixo escrito dentro de um deles ganha a marca erro. Sem o
+#                 campo, nenhum texto da língua é de erro.
+#   markup        OPTIONAL — a língua escrita dentro de um arquivo de marcação,
+#                 a página que mistura o texto da tela com trechos de código.
+#                 Só o código se lê: o resto do arquivo vira espaço, e cada
+#                 linha fica no lugar dela. Chaves:
+#                   blocks  os marcadores seguidos de um bloco entre chaves
+#                           (`@code { … }`): o de dentro das chaves é código,
+#                           os membros do tipo do arquivo. O marcador colado
+#                           a outra palavra não conta, e a chave escrita em
+#                           texto entre aspas, entre apóstrofos ou em
+#                           comentário (`//`, `/* */`) não fecha o bloco;
+#                   bodies  como `blocks`, mas o de dentro das chaves é o
+#                           corpo de um método, com comandos, e não membros
+#                           (`@{ … }`). O marcador que começa como outro
+#                           (`@` e `@functions`) vale pelo que tem a chave
+#                           logo depois;
+#                   method  o texto que abre e o que fecha o método em que
+#                           o código de `bodies` mora, dentro do tipo do
+#                           arquivo. Vem junto com `bodies`, e só com ele. Os
+#                           blocos de corpo seguidos, sem membro entre eles,
+#                           dividem o mesmo método; o membro entre dois o
+#                           fecha, e o bloco seguinte abre outro;
+#                   lines   o marcador que abre uma linha de código e a forma
+#                           dela, com `{}` no lugar do resto da linha
+#                           (`"@inject" = "{};"` lê `@inject T n` como `T n;`);
+#                   head    como `lines`, mas o código vai antes do tipo do
+#                           arquivo (`"@using" = "using {};"`);
+#                   bases   os marcadores de linha cujo resto é uma base do
+#                           tipo do arquivo (`@inherits Base`): o tipo herda
+#                           delas, na ordem da lista e, com o mesmo marcador,
+#                           na do arquivo;
+#                   base_list o texto antes da lista de bases e o que fica
+#                           entre duas delas (`[" : ", ", "]`). Vem junto com
+#                           `bases`, e só com ele;
+#                   wrap    o texto que abre e o que fecha o tipo em que o
+#                           código dos blocos e das linhas mora, com `{file}`
+#                           no lugar do nome do arquivo sem a extensão e
+#                           `{bases}` no lugar da lista de bases, vazio sem
+#                           nenhuma. O tipo abre no começo da linha do
+#                           primeiro código ou da primeira base, depois do
+#                           código de `head`, e fecha logo depois do último.
+#                           O arquivo sem código do tipo, que não é o de
+#                           `imports_file`, é o tipo mesmo assim, vazio, no
+#                           começo da primeira linha, depois de todo o código
+#                           de `head`;
+#                   expression o marcador que abre código no meio da
+#                           marcação e a forma do comando em que o código vira,
+#                           com `{}` no lugar dele (`["@", "_ = {};"]`). Seguido
+#                           de um nome, é a expressão até onde ela para: os
+#                           nomes ligados por `.` ou `?.` e o que vem entre
+#                           parênteses ou colchetes logo depois deles
+#                           (`@Model.Total`, `@Html.Raw(x)`); seguido de `(`,
+#                           o de dentro dos parênteses (`@(a + b)`); seguido de
+#                           um nome, `=` e um valor entre aspas, o valor
+#                           (`@onclick="Salvar"`). O marcador colado depois de
+#                           outra palavra não conta (`x@loja.com`). O comando
+#                           mora no método de `bodies`, com o código dos
+#                           blocos de corpo, e só vem com `method`;
+#                   escape  o texto que se lê como o marcador escrito na tela,
+#                           e não como código (`@@`);
+#                   keywords os nomes que, logo depois do marcador, abrem
+#                           uma diretiva ou um comando, e não uma expressão
+#                           (`@page`, `@if`);
+#                   prefixes os nomes que, logo depois do marcador, seguem
+#                           de um espaço e da expressão, que os leva junto
+#                           (`@await Html.PartialAsync("x")`);
+#                   comment o texto que abre e o que fecha o comentário da
+#                           marcação, e os que o trocam no código
+#                           (`["@*", "*@", "/*", "*/"]`): o de dentro é
+#                           comentário, e nada nele é código;
+#                   imports_file o nome, sem a extensão, do arquivo cujos
+#                           imports valem também nos arquivos da mesma língua
+#                           da pasta dele e das de baixo (`_ViewImports`);
+#                   folder  os marcadores de `lines`, `head` e `bases` cujas
+#                           linhas, escritas no arquivo de `imports_file`,
+#                           valem também nos arquivos da mesma língua da pasta
+#                           dele e das de baixo, no tipo de cada um, quando o
+#                           arquivo abre o tipo (`@inject`, `@inherits`). As
+#                           de `lines` se somam, da pasta de cima para a de
+#                           baixo; das de `head` e `bases`, vale a do arquivo
+#                           de imports mais perto, e a linha com o mesmo
+#                           marcador escrita no próprio arquivo vence as
+#                           herdadas. Vem só com `imports_file`;
+#                   folder_path o marcador de `folder` cujo resto, herdado,
+#                           ganha os nomes das pastas entre a do arquivo de
+#                           imports e a do arquivo, e o texto que os junta
+#                           (`["@namespace", "."]`: `@namespace Loja` vale
+#                           `Loja.Admin` na página de `Admin/`);
+#                   folder_root o `kind` do manifesto (manifests.toml) cujo
+#                           projeto escreve o marcador de `folder_path` com o
+#                           namespace que o manifesto declara
+#                           (`namespace_pattern`) ou, sem ele, com o nome
+#                           dele, como um arquivo de imports na pasta do
+#                           manifesto, que o arquivo de imports da mesma
+#                           pasta e os de baixo vencem: sem esse marcador na
+#                           página nem num arquivo de imports acima dela, a
+#                           página de `Web/Pages/Admin/` do `Web/Web.csproj`
+#                           fica em `Web.Pages.Admin`. Vem só com
+#                           `folder_path`;
+#                   controls os nomes que, logo depois do marcador, abrem um
+#                           comando de controle (`@if (x) { … }`,
+#                           `@foreach (var p in ps) { … }`, `@try { … }`): o
+#                           comando inteiro, com o cabeçalho entre parênteses,
+#                           quando há, e as chaves, é código do método de
+#                           `bodies`, como o de um bloco de corpo. No começo
+#                           da linha, o comando vence a linha de mesmo
+#                           marcador (`@using (…) { … }` é comando, e
+#                           `@using Loja`, linha). Vem só com `expression`;
+#                   chains  os nomes que, depois das chaves de um comando de
+#                           controle, o continuam, seguidos ou não de um nome
+#                           de `controls`, do cabeçalho e das chaves (`else`,
+#                           `else if (y)`, `catch (E e)`, `finally`), ou do
+#                           cabeçalho e de `;` (o `while (x);` do `do`);
+#                   filters os nomes que, entre o cabeçalho de um trecho de um
+#                           comando de controle, ou no lugar dele, e as chaves,
+#                           abrem uma condição entre parênteses, que fica no
+#                           trecho (`catch (E e) when (x) { … }`,
+#                           `catch when (x) { … }`). Vem só com `controls`;
+#                   component a forma do comando em que vira a tag de
+#                           componente, a tag da marcação cujo nome começa
+#                           com letra maiúscula (`<Contador />`), com `{}` no
+#                           lugar do nome (`"_ = typeof({});"`): o nome é uso
+#                           do tipo que ele nomeia. O comando mora no método
+#                           de `bodies`, e só vem com `expression`;
+#                   code_markup o texto que abre um elemento de marcação no
+#                           meio do código de um bloco de corpo ou de um
+#                           comando de controle, e o que abre uma linha de
+#                           marcação ali (`["<", "@:"]`). No começo de um
+#                           comando, o primeiro seguido de letra abre o
+#                           elemento até a tag que o fecha (ou até o fim da
+#                           tag que o abre, sem ela), e o segundo abre o
+#                           resto da linha. Essa marcação não é código; as
+#                           expressões, os comandos de controle e as tags de
+#                           componente escritos nela, sim. Vem só com
+#                           `bodies`.
+#                 O marcador de linha vale no começo da linha, depois dos
+#                 espaços, e fora dos blocos. Sem o campo, o arquivo inteiro é
+#                 código.
 
 [[language]]
 name = "csharp"
 extensions = ["cs"]
 dir = "csharp"
 grammar = "grammar_cs::LANGUAGE"
+qualified_separators = ["::", "."]
 namespace_scope = "nested"
+global_namespace = true
+self_receivers = ["this"]
+parent_receivers = ["base"]
+implicit_self = true
 doc_tags = [
     "summary", "remarks", "returns", "param", "typeparam", "value", "example",
     "para", "c", "code", "list", "item", "term", "description", "exception",
     "see", "seealso", "paramref", "typeparamref", "inheritdoc", "include",
 ]
+log_calls = ["LogError", "LogWarning", "LogInformation", "LogDebug", "LogTrace", "LogCritical", "Log", "Console.*", "Debug.*", "Trace.*"]
+error_forms = ["throw", "*Exception"]
+
+# A página do Blazor (`.razor`): marcação com C# dentro. O framework faz da
+# página uma classe com o nome do arquivo; os blocos `@code` e `@functions`
+# são os membros dela, e o `@inject` é uma propriedade. O que a marcação
+# desenha, com o bloco `@{ … }` e as expressões escritas no meio dela
+# (`@pedido.Total`, `@(a + b)`, `@onclick="Salvar"`), é o corpo do método que
+# desenha a página, o `BuildRenderTree`. O `@inherits` e o `@implements` são
+# as bases da classe, e o `@namespace`, o namespace dela. O `@using` vale
+# para a página inteira, e o do `_Imports.razor`, para as páginas da pasta
+# dele e das de baixo; o `@inject`, o `@inherits` e o `@namespace` dele
+# também, e o `@namespace` ganha o nome de cada subpasta. Sem `@namespace`,
+# a página fica no namespace do projeto mais as pastas até ela. A página sem
+# código também é uma classe. O `@* … *@` é comentário. Os comandos de
+# controle (`@if (…) { … }`, `@foreach`, `@try`, `@using (…)`) são comandos
+# do `BuildRenderTree`, com a marcação de dentro deles e a do `@{ … }` fora
+# do código, e a tag de componente (`<Contador />`) é uso da classe da
+# página que ela nomeia.
+[[language]]
+name = "razor"
+extensions = ["razor"]
+dir = "csharp"
+grammar = "grammar_cs::LANGUAGE"
+qualified_separators = ["::", "."]
+namespace_scope = "nested"
+self_receivers = ["this"]
+parent_receivers = ["base"]
+implicit_self = true
+doc_tags = [
+    "summary", "remarks", "returns", "param", "typeparam", "value", "example",
+    "para", "c", "code", "list", "item", "term", "description", "exception",
+    "see", "seealso", "paramref", "typeparamref", "inheritdoc", "include",
+]
+log_calls = ["LogError", "LogWarning", "LogInformation", "LogDebug", "LogTrace", "LogCritical", "Log", "Console.*", "Debug.*", "Trace.*"]
+error_forms = ["throw", "*Exception"]
+
+[language.markup]
+blocks = ["@code", "@functions"]
+bodies = ["@"]
+method = ["protected override void BuildRenderTree(RenderTreeBuilder __builder) {", "}"]
+lines = { "@inject" = "{};" }
+head = { "@using" = "using {};", "@namespace" = "namespace {};" }
+bases = ["@inherits", "@implements"]
+base_list = [" : ", ", "]
+wrap = ["partial class {file}{bases} {", "}"]
+expression = ["@", "_ = {};"]
+escape = "@@"
+keywords = [
+    "page", "layout", "namespace", "attribute", "typeparam", "rendermode", "preservewhitespace",
+    "inject", "inherits", "implements", "using", "code", "functions", "section", "model",
+    "addTagHelper", "removeTagHelper", "tagHelperPrefix",
+    "if", "else", "for", "foreach", "while", "do", "switch", "try", "catch", "finally", "lock",
+]
+prefixes = ["await"]
+comment = ["@*", "*@", "/*", "*/"]
+imports_file = "_Imports"
+folder = ["@inject", "@inherits", "@namespace"]
+folder_path = ["@namespace", "."]
+folder_root = "dotnet"
+controls = ["if", "foreach", "for", "while", "switch", "do", "try", "using", "lock"]
+chains = ["else", "catch", "finally", "while"]
+filters = ["when"]
+component = "_ = typeof({});"
+code_markup = ["<", "@:"]
+
+# A página do Razor Pages e a view do MVC (`.cshtml`): marcação com C#
+# dentro. O framework faz da página uma classe; o bloco `@{ … }` e as
+# expressões escritas no meio da marcação (`@Model.Total`, `@Html.Raw(x)`,
+# `@(a + b)`) são o corpo do método que desenha a página, o `ExecuteAsync`, e
+# o `@functions` traz os membros dela. O `@model` é a propriedade `Model`, com
+# o tipo do modelo, e o `@inject`, uma propriedade. O `@inherits` e o
+# `@implements` são as bases da classe, e o `@namespace`, o namespace dela.
+# O `@using` vale para a página inteira, e o do `_ViewImports.cshtml`, para
+# as páginas da pasta dele e das de baixo; o `@inject`, o `@inherits` e o
+# `@namespace` dele também, e o `@namespace` ganha o nome de cada subpasta.
+# O `@* … *@` é comentário. A classe que atende a página, a do
+# `.cshtml.cs`, é outra, e não parte desta. Os comandos de controle
+# (`@if (…) { … }`, `@foreach`, `@try`, `@using (…)`) são comandos do
+# `ExecuteAsync`, com a marcação de dentro deles e a do `@{ … }` fora do
+# código.
+[[language]]
+name = "cshtml"
+extensions = ["cshtml"]
+dir = "csharp"
+grammar = "grammar_cs::LANGUAGE"
+qualified_separators = ["::", "."]
+namespace_scope = "nested"
+self_receivers = ["this"]
+parent_receivers = ["base"]
+implicit_self = true
+doc_tags = [
+    "summary", "remarks", "returns", "param", "typeparam", "value", "example",
+    "para", "c", "code", "list", "item", "term", "description", "exception",
+    "see", "seealso", "paramref", "typeparamref", "inheritdoc", "include",
+]
+log_calls = ["LogError", "LogWarning", "LogInformation", "LogDebug", "LogTrace", "LogCritical", "Log", "Console.*", "Debug.*", "Trace.*"]
+error_forms = ["throw", "*Exception"]
+
+[language.markup]
+blocks = ["@functions"]
+bodies = ["@"]
+method = ["async Task ExecuteAsync() {", "}"]
+lines = { "@inject" = "{};", "@model" = "{} Model;" }
+head = { "@using" = "using {};", "@namespace" = "namespace {};" }
+bases = ["@inherits", "@implements"]
+base_list = [" : ", ", "]
+wrap = ["class {file}{bases} {", "}"]
+expression = ["@", "_ = {};"]
+escape = "@@"
+keywords = [
+    "page", "layout", "namespace", "attribute", "typeparam", "rendermode", "preservewhitespace",
+    "inject", "inherits", "implements", "using", "code", "functions", "section", "model",
+    "addTagHelper", "removeTagHelper", "tagHelperPrefix",
+    "if", "else", "for", "foreach", "while", "do", "switch", "try", "catch", "finally", "lock",
+]
+prefixes = ["await"]
+comment = ["@*", "*@", "/*", "*/"]
+imports_file = "_ViewImports"
+folder = ["@inject", "@inherits", "@namespace"]
+folder_path = ["@namespace", "."]
+controls = ["if", "foreach", "for", "while", "switch", "do", "try", "using", "lock"]
+chains = ["else", "catch", "finally", "while"]
+filters = ["when"]
+code_markup = ["<", "@:"]
 
 [[language]]
 name = "typescript"
 extensions = ["ts", "mts", "cts"]
 dir = "typescript"
 grammar = "grammar_ts::LANGUAGE_TYPESCRIPT"
+qualified_separators = ["."]
+self_receivers = ["this"]
+parent_receivers = ["super"]
+import_extensions = ["js", "mjs", "cjs", "jsx"]
+package_entry = ["src/index", "index"]
+alias_config = "tsconfig.json"
+alias_base = "compilerOptions.baseUrl"
+alias_paths = "compilerOptions.paths"
+alias_extends = "extends"
+prelude = ["setTimeout", "setInterval", "setImmediate", "clearTimeout", "clearInterval", "clearImmediate", "queueMicrotask", "structuredClone", "requestAnimationFrame", "cancelAnimationFrame", "parseInt", "parseFloat", "isNaN", "isFinite", "encodeURI", "encodeURIComponent", "decodeURI", "decodeURIComponent", "escape", "unescape", "eval", "atob", "btoa", "fetch", "require", "alert", "confirm", "prompt", "Array", "Object", "String", "Number", "Boolean", "Symbol", "BigInt", "Date", "RegExp", "Error", "TypeError", "RangeError", "SyntaxError", "ReferenceError", "Promise", "Map", "Set", "WeakMap", "WeakSet", "JSON", "Math", "Reflect", "Proxy", "Intl", "console", "globalThis", "window", "document", "process", "Buffer"]
+log_calls = ["console.*", "logger.*", "Logger.*"]
+error_forms = ["throw", "*Error", "*Exception", "reject"]
 
 [[language]]
 name = "tsx"
 extensions = ["tsx"]
 dir = "typescript"
+extra_queries = "tsx"
 grammar = "grammar_ts::LANGUAGE_TSX"
+qualified_separators = ["."]
+self_receivers = ["this"]
+parent_receivers = ["super"]
+import_extensions = ["js", "jsx", "mjs", "cjs"]
+package_entry = ["src/index", "index"]
+alias_config = "tsconfig.json"
+alias_base = "compilerOptions.baseUrl"
+alias_paths = "compilerOptions.paths"
+alias_extends = "extends"
+prelude = ["setTimeout", "setInterval", "setImmediate", "clearTimeout", "clearInterval", "clearImmediate", "queueMicrotask", "structuredClone", "requestAnimationFrame", "cancelAnimationFrame", "parseInt", "parseFloat", "isNaN", "isFinite", "encodeURI", "encodeURIComponent", "decodeURI", "decodeURIComponent", "escape", "unescape", "eval", "atob", "btoa", "fetch", "require", "alert", "confirm", "prompt", "Array", "Object", "String", "Number", "Boolean", "Symbol", "BigInt", "Date", "RegExp", "Error", "TypeError", "RangeError", "SyntaxError", "ReferenceError", "Promise", "Map", "Set", "WeakMap", "WeakSet", "JSON", "Math", "Reflect", "Proxy", "Intl", "console", "globalThis", "window", "document", "process", "Buffer"]
+log_calls = ["console.*", "logger.*", "Logger.*"]
+error_forms = ["throw", "*Error", "*Exception", "reject"]
+
+# JavaScript: a gramática do TypeScript estende a do JavaScript, e a variante
+# TSX lê também o JSX; as consultas são as do TypeScript e as do TSX.
+[[language]]
+name = "javascript"
+extensions = ["js", "jsx", "mjs", "cjs"]
+dir = "typescript"
+extra_queries = "tsx"
+grammar = "grammar_ts::LANGUAGE_TSX"
+qualified_separators = ["."]
+self_receivers = ["this"]
+parent_receivers = ["super"]
+package_entry = ["src/index", "index"]
+alias_config = ["tsconfig.json", "jsconfig.json"]
+alias_base = "compilerOptions.baseUrl"
+alias_paths = "compilerOptions.paths"
+alias_extends = "extends"
+prelude = ["setTimeout", "setInterval", "setImmediate", "clearTimeout", "clearInterval", "clearImmediate", "queueMicrotask", "structuredClone", "requestAnimationFrame", "cancelAnimationFrame", "parseInt", "parseFloat", "isNaN", "isFinite", "encodeURI", "encodeURIComponent", "decodeURI", "decodeURIComponent", "escape", "unescape", "eval", "atob", "btoa", "fetch", "require", "alert", "confirm", "prompt", "Array", "Object", "String", "Number", "Boolean", "Symbol", "BigInt", "Date", "RegExp", "Error", "TypeError", "RangeError", "SyntaxError", "ReferenceError", "Promise", "Map", "Set", "WeakMap", "WeakSet", "JSON", "Math", "Reflect", "Proxy", "Intl", "console", "globalThis", "window", "document", "process", "Buffer"]
+log_calls = ["console.*", "logger.*", "Logger.*"]
+error_forms = ["throw", "*Error", "*Exception", "reject"]
 
 [[language]]
 name = "python"
 extensions = ["py", "pyi"]
 dir = "python"
 grammar = "grammar_py::LANGUAGE"
+qualified_separators = ["."]
+relative_import = { separator = "." }
+single_part_paths = true
+self_receivers = ["self", "cls"]
+prelude = ["abs", "aiter", "all", "anext", "any", "ascii", "bin", "bool", "breakpoint", "bytearray", "bytes", "callable", "chr", "classmethod", "compile", "complex", "delattr", "dict", "dir", "divmod", "enumerate", "eval", "exec", "filter", "float", "format", "frozenset", "getattr", "globals", "hasattr", "hash", "help", "hex", "id", "input", "int", "isinstance", "issubclass", "iter", "len", "list", "locals", "map", "max", "memoryview", "min", "next", "object", "oct", "open", "ord", "pow", "print", "property", "range", "repr", "reversed", "round", "set", "setattr", "slice", "sorted", "staticmethod", "str", "sum", "super", "tuple", "type", "vars", "zip", "__import__"]
+log_calls = ["print", "logging.*", "logger.*", "log.*"]
+error_forms = ["raise", "*Error", "*Exception"]
 
 [[language]]
 name = "rust"
 extensions = ["rs"]
 dir = "rust"
 grammar = "grammar_rs::LANGUAGE"
-root_aliases = ["crate", "self", "super"]
+root_aliases = ["crate"]
+parent_alias = "super"
+module_alias = "self"
+qualified_separators = ["::"]
+member_separators = ["."]
+self_receivers = ["self", "Self"]
+import_self = "self"
+package_entry = ["src/lib", "src/main"]
+prelude = ["Result", "Option", "Ok", "Err", "Some", "None", "Vec", "String", "Box"]
+log_calls = ["println!", "eprintln!", "print!", "eprint!", "info!", "warn!", "error!", "debug!", "trace!", "log!"]
+error_forms = ["Err", "panic!", "bail!", "anyhow!", "ensure!", "unreachable!", "unimplemented!", "todo!", "expect", "context", "with_context", "error"]
 
 [[language]]
 name = "go"
 extensions = ["go"]
 dir = "go"
 grammar = "grammar_go::LANGUAGE"
+qualified_separators = ["."]
 namespace_scope = "folder"
+prelude = ["append", "cap", "clear", "close", "complex", "copy", "delete", "imag", "len", "make", "max", "min", "new", "panic", "print", "println", "real", "recover"]
+log_calls = ["log.*", "fmt.Print*", "fmt.Fprint*", "slog.*"]
+error_forms = ["errors.New", "fmt.Errorf", "panic", "Error"]
 
 [[language]]
 name = "php"
 extensions = ["php"]
 dir = "php"
 grammar = "grammar_php::LANGUAGE_PHP"
+qualified_separators = ["::"]
+member_separators = ["->"]
+self_receivers = ["this", "self", "static"]
+log_calls = ["error_log", "Log::*", "logger->*", "logger"]
+error_forms = ["throw", "*Exception", "abort"]
 
 [[language]]
 name = "dart"
 extensions = ["dart"]
 dir = "dart"
 grammar = "grammar_dart::LANGUAGE"
+qualified_separators = ["."]
+self_receivers = ["this"]
+parent_receivers = ["super"]
+implicit_self = true
+prelude = ["print", "identical", "identityHashCode"]
+log_calls = ["print", "debugPrint", "log", "logger.*"]
+error_forms = ["throw", "*Exception", "*Error"]

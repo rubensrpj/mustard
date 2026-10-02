@@ -2,13 +2,14 @@
 // e diz em JSON o que a página mostra. É o apoio do teste dos templates
 // (`platform::page_templates`): o teste escreve na entrada padrão o HTML
 // preenchido, o banco de dados da página e os passos (ler a tela, buscar,
-// trocar de aba, abrir uma onda pelo gráfico ou pelo endereço, baixar o .md,
-// receber uma cópia nova), e lê a resposta na saída.
+// trocar de aba, abrir uma onda pelo gráfico ou pelo endereço, abrir ou
+// fechar um cartão, baixar o .md, receber uma cópia nova), e lê a resposta na
+// saída.
 //
 // A página roda com uma imitação pequena do DOM (só o que os templates usam)
 // e das capacidades do claude.ai: o banco de dados (`db`), com a leitura em
-// páginas, o aviso de mudança e o aviso de falha da escuta (o passo `fail`),
-// e o salvar arquivo (`downloads`).
+// páginas, a recusa da resposta grande demais, o aviso de mudança e o aviso
+// de falha da escuta (o passo `fail`), e o salvar arquivo (`downloads`).
 'use strict';
 const fs = require('fs');
 const vm = require('vm');
@@ -140,6 +141,17 @@ const document = {
 // O banco de dados e o salvar arquivo do claude.ai
 // ---------------------------------------------------------------------------
 const reads = [];
+// O servidor de verdade recusa a resposta grande demais (`resource_exhausted`):
+// cada documento de `ranges` tem até 256 KiB, e a leitura sem limite ou com
+// mais de 8 documentos passa do que ele aceita. O banco de mentira recusa do
+// mesmo jeito, e a leitura recusada fica em `reads` com `refused`.
+const RANGES_MAX_LIMIT = 8;
+// `input.refuse` lista o que o banco de mentira recusa de vez, com
+// `{code: 'unavailable'}`: o caminho de uma coleção ou de um documento (a
+// leitura dele falha), `listen:<caminho>` (a escuta dele cai logo ao abrir,
+// pelo erro da própria escuta) e `db` (o claude.ai nem abre o banco).
+const refuse = input.refuse || [];
+const unavailable = () => ({ code: 'unavailable', message: 'the database is not reachable' });
 function makeDb(state) {
   const listeners = [];
   const docsOf = (path) => state[path] || [];
@@ -176,8 +188,20 @@ function makeDb(state) {
         if (!(Number.isInteger(n) && n >= 1 && n <= 1000)) throw new TypeError('limit out of range: ' + n);
         return query(path, filters, order, n);
       },
-      get: async () => { const r = run(); reads.push({ path, filters, order, limit: lim, size: r.size }); return r; },
-      onSnapshot: (next, onError) => { const l = () => next(run()); listeners.push({ path, run: l, err: onError }); setTimeout(l, 0); return () => {}; },
+      get: async () => {
+        if (refuse.includes(path)) throw unavailable();
+        if (path === 'ranges' && (!lim || lim > RANGES_MAX_LIMIT)) {
+          reads.push({ path, filters, order, limit: lim, refused: true });
+          throw { code: 'resource_exhausted', message: "the query's result is too large" };
+        }
+        const r = run();
+        reads.push({ path, filters, order, limit: lim, size: r.size });
+        return r;
+      },
+      onSnapshot: (next, onError) => {
+        if (refuse.includes('listen:' + path)) { setTimeout(() => onError && onError(unavailable()), 0); return () => {}; }
+        const l = () => next(run()); listeners.push({ path, run: l, err: onError }); setTimeout(l, 0); return () => {};
+      },
       doc: (id) => docRef(path + '/' + id),
     };
   }
@@ -187,7 +211,7 @@ function makeDb(state) {
     const find = () => { const d = docsOf(col).find((x) => x.id === id); return snap(id, d ? d.data : null); };
     return {
       id, path,
-      get: async () => { reads.push({ path }); return find(); },
+      get: async () => { if (refuse.includes(path)) throw unavailable(); reads.push({ path }); return find(); },
       onSnapshot: (next, onError) => { const l = () => next(find()); listeners.push({ path, run: l, err: onError }); setTimeout(l, 0); return () => {}; },
     };
   }
@@ -207,7 +231,12 @@ const saves = [];
 // verdade.
 const hasDownloads = input.downloads !== false;
 const downloads = { save: async (req) => { saves.push({ filename: req.filename, data: String(req.data) }); return { status: 'saved' }; } };
-const claude = { use: async (name) => (name === 'db' ? (store ? store.db : null) : name === 'downloads' ? (hasDownloads ? downloads : null) : null) };
+const claude = {
+  use: async (name) => {
+    if (name === 'db' && refuse.includes('db')) throw unavailable();
+    return name === 'db' ? (store ? store.db : null) : name === 'downloads' ? (hasDownloads ? downloads : null) : null;
+  },
+};
 
 // O endereço da página: `input.hash` é o `#…` com que ela abre, e o passo
 // `hash` troca o endereço e avisa, como o navegador faz.
@@ -262,6 +291,11 @@ function ownFields(el) {
   }
   return out;
 }
+// A parte do agente de um cartão: o nome dela, o texto, o HTML e se está
+// aberta.
+function scrapeAgent(d) {
+  return d ? { summary: text(d.firstChild), text: text(d.lastChild), html: d.lastChild.innerHTML, open: d.open } : null;
+}
 // Um cartão: no alto (`top`, os nomes de classe na ordem) o código, o selo
 // do tipo, as marcas, o selo da prova e a data; embaixo o título.
 function scrapeItem(el) {
@@ -269,6 +303,7 @@ function scrapeItem(el) {
   const top = byClass(summary, 'top');
   const bodyEl = el.childNodes[1];
   const prose = bodyEl ? ownOne(bodyEl, (e) => has(e, 'prose')) : null;
+  const agent = bodyEl ? ownOne(bodyEl, (e) => e.tagName === 'DETAILS' && has(e, 'agent')) : null;
   const runs = bodyEl ? ownOne(bodyEl, (e) => has(e, 'runs')) : null;
   const answer = bodyEl ? ownOne(bodyEl, (e) => has(e, 'answer')) : null;
   const typeTag = top ? top.childNodes.find((c) => has(c, 'tag') && !has(c, 'mark') && !has(c, 'extra')) : null;
@@ -283,6 +318,7 @@ function scrapeItem(el) {
     status: pill ? pill.textContent : null, statusClass: pill ? pill.className : null,
     date: text(byClass(summary, 'when')), text: prose ? prose.textContent : '',
     html: prose ? prose.innerHTML : '', fields: bodyEl ? ownFields(bodyEl) : [], hidden: el.hidden, open: el.open,
+    agent: scrapeAgent(agent),
     runs: runs ? runs.childNodes.filter((c) => c.tagName === 'DETAILS').map(scrapeItem) : [],
     answer: answer ? scrapeItem(answer.childNodes.find((c) => c.tagName === 'DETAILS')) : null,
   };
@@ -318,7 +354,11 @@ function scrapeSpec() {
     title: text(one(appEl, (e) => e.tagName === 'H1')),
     phase: phase && !phase.hidden ? phase.textContent : null,
     branch: branch && !branch.hidden ? branch.textContent : null,
-    goal: byId('goal') ? { label: text(byClass(byId('goal'), 'lbl')), text: text(byClass(byId('goal'), 'prose')), html: byClass(byId('goal'), 'prose').innerHTML } : null,
+    // O objetivo: o rótulo, o título do contexto de três partes, o texto e a
+    // parte do agente, fechada como nos cartões.
+    goal: byId('goal') ? { label: text(byClass(byId('goal'), 'lbl')), title: text(byClass(byId('goal'), 't')),
+      text: text(byClass(byId('goal'), 'prose')), html: byClass(byId('goal'), 'prose').innerHTML,
+      agent: scrapeAgent(ownOne(byId('goal'), (e) => e.tagName === 'DETAILS' && has(e, 'agent'))) } : null,
     tiles: tiles ? tiles.childNodes.map((x) => ({
       id: x.getAttribute('data-tile'), tag: x.tagName, href: x.getAttribute('href'), key: text(byClass(x, 'k')),
       value: text(byClass(x, 'v')), meter: byClass(x, 'meter') !== null,
@@ -394,6 +434,27 @@ function scrapeProject() {
     })),
   };
 }
+// A página do gasto: o estado, o texto de aviso, as barras do gráfico (uma por
+// dia, com a altura e o texto de cada uma) e a tabela (o cabeçalho e uma linha
+// por dia e por projeto, com o texto de cada célula).
+function scrapeSpend() {
+  const table = document.getElementById('days');
+  const chart = document.getElementById('chart');
+  return {
+    state: appEl.getAttribute('data-state'), status: text(document.getElementById('status')),
+    statusHidden: document.getElementById('status').hidden, title: text(one(appEl, (e) => e.tagName === 'H1')),
+    chartTitle: chart ? text(one(chart, (e) => e.tagName === 'H2')) : null,
+    bars: chart ? walk(chart, (e) => e.tagName === 'RECT').map((r) => ({ day: r.getAttribute('data-day'),
+      height: Number(r.getAttribute('height')), title: text(one(r, (e) => e.tagName === 'TITLE')) })) : [],
+    cards: walk(appEl, (e) => has(e, 'card')).map((c) => ({ id: c.getAttribute('data-card'), label: text(byClass(c, 'label')),
+      badge: text(byClass(c, 'badge')), value: text(byClass(c, 'value')), subs: walk(c, (e) => has(e, 'sub')).map(text) })),
+    summaryNote: text(one(appEl, (e) => e.tagName === 'P' && has(e, 'note'))),
+    head: table ? walk(table, (e) => e.tagName === 'TH').map((th) => th.textContent) : [],
+    rows: table ? walk(table, (e) => e.tagName === 'TR' && e.getAttribute('data-day') !== null).map((tr) => ({
+      day: tr.getAttribute('data-day'), project: tr.getAttribute('data-project'),
+      cells: tr.childNodes.map((td) => td.textContent) })) : [],
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Os passos
@@ -413,7 +474,7 @@ async function until(check) {
     if (step.do === 'wait') {
       if (!(await until(() => appEl.getAttribute('data-state') !== 'loading'))) errors.push('the page never left the loading state');
     } else if (step.do === 'scrape') {
-      results[step.as] = input.page === 'project' ? scrapeProject() : scrapeSpec();
+      results[step.as] = input.page === 'project' ? scrapeProject() : input.page === 'spend' ? scrapeSpend() : scrapeSpec();
     } else if (step.do === 'search') {
       const q = document.getElementById('q');
       q.value = step.value;
@@ -429,6 +490,14 @@ async function until(check) {
     } else if (step.do === 'hash') {
       location.hash = '#' + step.value;
       (windowListeners.hashchange || []).forEach((fn) => fn({ type: 'hashchange' }));
+    } else if (step.do === 'click') {
+      // Um clique no nome de um cartão (`part` vazio) ou da parte do agente
+      // dele (`part: "agent"`), que abre o que está fechado e fecha o que
+      // está aberto, como o navegador faz com um <details>.
+      const card = one(appEl, (e) => e.tagName === 'DETAILS' && has(e, 'item') && e.getAttribute('id') === step.value);
+      const target = card && step.part === 'agent' ? ownOne(card.childNodes[1], (e) => e.tagName === 'DETAILS' && has(e, 'agent')) : card;
+      if (!target) errors.push('nothing to click in ' + step.value);
+      else target.open = !target.open;
     } else if (step.do === 'more') {
       const panel = document.getElementById(step.value);
       const more = panel && panel.childNodes.find((c) => has(c, 'more'));

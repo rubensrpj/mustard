@@ -24,7 +24,9 @@ pub(crate) fn is_empty(value: &Value) -> bool {
 
 /// A marca que o binário põe em toda remoção que grava. Com ela, a remoção
 /// que aponta pelo número a versão nova de um item tira só essa versão, e a
-/// versão que ela substituiu volta à leitura. A remoção gravada antes da
+/// versão que ela substituiu volta à leitura. A tarefa é a exceção: qualquer
+/// versão dela tira a tarefa inteira, porque a gravação da remoção já troca o
+/// número pelo de todas as versões. A remoção gravada antes da
 /// marca segue a regra de quando foi gravada: tirava o item inteiro, e a
 /// leitura de uma spec antiga não muda. Por isso a marca é só do binário: o
 /// que vier nela de quem grava é trocado.
@@ -77,9 +79,10 @@ pub fn validate(event: &Map<String, Value>) -> Result<(), Refusal> {
         .collect();
     absent.extend(nested_absent(event, spec.name));
     // A sobra sem título ou sem detalhe tem recusa própria, com o campo que
-    // falta na primeira sobra incompleta: ela vira pendência da spec, e a
-    // mensagem diz o que a pendência não teria. Faltando também outro campo,
-    // a recusa de sempre cita todos de uma vez.
+    // falta na primeira sobra incompleta: a rodada grava cada sobra como
+    // tarefa da spec, pelo título e pelo detalhe, e a mensagem diz qual dos
+    // dois falta. Faltando também outro campo, a recusa de sempre cita todos
+    // de uma vez.
     if let Some(field) = leftover_field_missing(&absent) {
         return Err(Refusal::LeftoverFieldMissing { field });
     }
@@ -181,10 +184,11 @@ const NESTED: &[(&str, &str, &[&str])] = &[
     ("task", "files", &["path"]),
     ("skill", "examples", &["path", "why"]),
     ("send", "skills", &["name", "sha"]),
-    // A sobra que a onda relata vira pendência da spec: sem título ou sem
+    // A sobra que a onda relata vira tarefa da spec: sem título ou sem
     // detalhe, não há o que abrir.
     ("delivered", "leftovers", &["title", "detail"]),
     ("delivered", "proofs", &["criterion", "proof"]),
+    ("delivered", "agreed", &["item", "met"]),
     ("verdict", "criteria", &["criterion", "tests_rule"]),
     ("verdict", "lessons", &["lesson", "repeated"]),
     ("tracking", "items", &["item", "met"]),
@@ -412,7 +416,7 @@ mod tests {
     /// toda remoção sai com ela, mesmo quando quem grava manda outro valor, e
     /// num evento de outro tipo ela não entra.
     #[test]
-    fn a_marca_da_remocao_e_posta_pelo_binario() {
+    fn the_removal_mark_is_set_by_the_binary() {
         let draft = |v: Value| v.as_object().cloned().expect("um objeto");
         for sent in [json!({"targets": [3], "reason": "r"}), json!({"targets": [3], "reason": "r", "gives_back": false})] {
             let removal = normalize(draft(sent.clone()), "remove");

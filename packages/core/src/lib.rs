@@ -38,6 +38,11 @@ pub mod domain;
 pub mod view;
 pub use platform::time;
 pub mod platform;
+
+// A pasta do pacote lida na hora de rodar, para os testes de dentro de `src/`.
+#[cfg(test)]
+#[path = "../tests/support/manifest_dir.rs"]
+pub(crate) mod manifest_dir;
 // Project seeding — the compiled-in seed payload (`seeds`) and the
 // install/update engine (`project_seed`) shared by `mustard init` and
 // `mustard-rt run upsert`. See `platform/seeds.rs` + `platform/project_seed/`.
@@ -90,24 +95,24 @@ pub use domain::spec::{
 // (`mustard_config`, `git_flow::MustardConfig`, `read_mustard_tone`, …). See
 // `domain/config.rs`.
 pub use domain::config::{
-    glob_matches, Amend, Commands, GateModes, GitConfig, Injectable, Language, LanguageConfig,
-    ProjectConfig, RolePattern, Runtime, Subprojects, BUILD_COMMAND_FALLBACK,
+    glob_matches, Amend, Commands, GitConfig, Injectable, Language, LanguageConfig,
+    FilterSetting, MapConfig, ProjectConfig, Runtime, SearchConfig, Setting, Subprojects, BUILD_COMMAND_FALLBACK,
 };
 // Agnostic build/test/lint/type-check command detection (`detect_commands` for
 // `init`, `detect_commands_for_unit` for the per-subproject `scan` pass). See
 // `domain/command_detect.rs`.
 pub use domain::command_detect::{detect_commands, detect_commands_for_unit};
 
-// scan tool client — the single boundary to the external `scan` miner (scan /
-// digest / facts / spec / verify). Replaces the deleted in-tree scan engine;
+// scan tool client — the single boundary to the external `scan` miner (the
+// `scan` pass). Replaces the deleted in-tree scan engine;
 // Mustard consumes the tool's JSON/Markdown, never project source — and never
-// parses `grain.model.json` itself (the scan tool owns that schema). See
-// `domain/scan.rs`.
-pub use domain::scan::{read_entity_names, read_projects, DigestQuery, ModelFacts, Project, Scan};
+// reads the map `.claude/grain.db` outside the port `io/project_map.rs` (the
+// scan tool fills its blocks). See `domain/scan.rs`.
+pub use domain::scan::{read_projects, Project, Scan};
 
 // Source-language resolution — the single owner of "what language is this target
 // (a set of file paths), and can the JS/TS-family gates reason about it?".
-// Consulted by `dependency-precheck` and `wave-size-check` so both loosen
+// Consulted by the dependency precheck and the wave size check so both loosen
 // consistently on a non-JS/TS subproject. See `domain/source_lang.rs`.
 pub use domain::source_lang::{resolve_target_languages, target_understood};
 
@@ -125,8 +130,7 @@ pub use domain::source_lang::{resolve_target_languages, target_understood};
 // The project's own language is not read here: `ProjectConfig::language` is
 // its one reader.
 pub use platform::i18n::{
-    slugify, translate, wave_label, I18n, LocaleError, SupportedLocale, UserLocale,
-    UserLocaleError,
+    translate, wave_label, I18n, LocaleError, SupportedLocale, UserLocale, UserLocaleError,
 };
 
 // Canonical `.claude/` path catalog — every consumer in `apps/rt` builds a

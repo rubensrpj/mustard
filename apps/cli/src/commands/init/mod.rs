@@ -23,7 +23,7 @@
 //!      enablement is NOT planted (user-scope choice);
 //!    - `mustard/session-map.md`, `mustard/pages/*.html` and
 //!      `agents/mustard/*.md` — the session map, the two page templates and
-//!      the three agents, always rewritten, in the language of
+//!      the two agents, always rewritten, in the language of
 //!      `language.text`;
 //!    - `.gitignore` — covers the ephemeral harness state;
 //!
@@ -32,8 +32,15 @@
 //!    `runtime`/`version` stamp + the default `inject` declaration (seeded
 //!    only when the user has none). It comes first because its language
 //!    decides which texts are seeded;
-//! 5. seed the `.github/` scaffolding, skipped by the private install;
-//! 6. list what an older Mustard left in files that are not its own — the
+//! 5. recompute, once, the search of every spec and of the lesson bank that an
+//!    older Mustard wrote under another rule ([`refresh_search`]): the
+//!    ordinary write to a spec only appends, so this is where an old line is
+//!    brought up to date. A failure is a warning, never an abort;
+//! 6. create the project map ([`map`]): the scan reads the project once, so
+//!    the first search of the assistant already has a map to answer from,
+//!    also with `--yes` and in a project with no code yet. A scan that fails
+//!    is a warning: the next session start or search creates the map;
+//! 7. list what an older Mustard left in files that are not its own — the
 //!    marks in the `CLAUDE.md` files, the seed's lines in the team's
 //!    `.claude/settings.json`, a planted `.claude/CLAUDE.md` — and say how to
 //!    take it out. Nothing of it is removed here: that happens through
@@ -46,8 +53,11 @@
 //!
 //! The install is always PRIVATE (`mustard_core::InstallMode::Private`): every
 //! file above lands on disk — the harness needs it there — but none of it is
-//! visible to the host repository's git, and no `.github/` scaffolding is
-//! seeded. There is no flag and no prompt for it.
+//! visible to the host repository's git, and nothing is written outside
+//! `.claude/` but `mustard.json`. There is no flag and no prompt for it.
+//!
+//! Everything laid down is compiled into the binary: `init` looks up no folder
+//! of molds, so it runs in an empty project with no extra setting.
 //!
 //! What is NOT a step of `init`, though it still happens on a `mustard init`
 //! run: the rtk gate, the ripgrep installer and the code-tool step ([`tools`]).
@@ -59,19 +69,22 @@
 //!
 //! ## The parts
 //!
-//! - this file — the flow and its two library entry points;
+//! - this file — the flow and its library entry point;
 //! - [`questions`] — what to do with an existing `.claude/`;
-//! - [`seeding`] — the guard, the footprint, the narration and the payload;
+//! - [`seeding`] — the guard, the footprint and the narration;
+//! - [`map`] — the project map, created at the end of the install;
 //! - [`project_config`] — the one write of `mustard.json`;
 //! - [`tools`] — the rtk gate, the ripgrep installer and the call into the
 //!   code-tool step.
 
+use std::io::Write;
 use std::path::Path;
 
 use anyhow::{Context, Result};
 use mustard_core::io::fs as mfs;
 use mustard_core::{InstallMode, ProjectConfig, Runtime};
 
+mod map;
 mod project_config;
 mod questions;
 mod seeding;
@@ -116,20 +129,17 @@ pub enum InitOutcome {
     DryRun,
 }
 
-/// [`init`] with the `templates/` directory supplied explicitly.
+/// Run `mustard init` against `project_path`.
 ///
-/// Splitting this out keeps template resolution (an environment concern) out
-/// of the install logic, so tests can drive a fixture tree and a caller can
-/// point at its own bundled payload — no process-global env var.
-pub fn init_with_templates(
-    project_path: &Path,
-    templates_dir: &Path,
-    options: &InitOptions,
-) -> Result<InitOutcome> {
-    // NO RTK PROBE HERE, and that is the point of this function's split.
+/// This is the library entry point. The binary passes the process working
+/// directory; a caller may pass any folder. Everything the install lays down
+/// is compiled into the binary: no folder of molds is looked up, so the
+/// installer runs in an empty project with no extra setting.
+pub fn init(project_path: &Path, options: &InitOptions) -> Result<InitOutcome> {
+    // NO RTK PROBE HERE.
     //
-    // Probing `PATH` is an environment concern, which the doc above says this
-    // half deliberately does not carry. It used to call `probe_rtk()`, and that
+    // Probing `PATH` is an environment concern, which a library entry point
+    // deliberately does not carry. It used to call `probe_rtk()`, and that
     // function ends in `std::process::exit(1)` — so this function, which
     // returns `Result<()>`, could instead KILL ITS CALLER'S PROCESS. Any
     // library consumer lost the chance to handle it; a `Result` that sometimes
@@ -145,6 +155,17 @@ pub fn init_with_templates(
     // The gate itself is not softened — it moved to `cli::dispatch`, where the
     // terminal user still meets it before any disk write. See `probe_rtk`.
 
+    init_with_scan(project_path, options, &map::located_scan)
+}
+
+/// [`init`] com o scan que cria o mapa dado por `scan`, no lugar do que está
+/// ao lado deste programa. O scan é a única peça da instalação que roda outro
+/// programa, e os testes da instalação não dependem de qual a máquina tem.
+fn init_with_scan(
+    project_path: &Path,
+    options: &InitOptions,
+    scan: &dyn Fn(&Path, &Path) -> mustard_core::platform::error::Result<mustard_core::domain::scan::ScanReport>,
+) -> Result<InitOutcome> {
     let project_path = project_path
         .canonicalize()
         .with_context(|| format!("resolving project path {}", project_path.display()))?;
@@ -165,19 +186,13 @@ pub fn init_with_templates(
     println!("[mustard] runtime: {} {}/{}", runtime.kind, runtime.os, runtime.arch);
 
     if options.dry_run {
-        if mode.is_private() {
-            println!(
-                "  (dry-run) would install PRIVATELY: the harness settings would go to settings.local.json,"
-            );
-            println!(
-                "            the footprint would be added to this clone's git exclude file, and no .github/ would be seeded"
-            );
-        }
+        println!("  (dry-run) would install PRIVATELY: the harness settings would go to settings.local.json,");
+        println!("            and the footprint would be added to this clone's git exclude file");
         println!("  (dry-run) would seed the harness into {}:", claude_path.display());
         println!("    settings.local.json — reduced seed, rtk's hook per mustard.json#rtk, Claude Code's signature off");
         println!("    mustard/session-map.md — the session map, delivered at session start per mustard.json#inject");
         println!("    mustard/pages/*.html — the spec page and project page templates, in the project's text language");
-        println!("    agents/mustard/*.md — the mustard-wave, mustard-review and mustard-skill agents, in the project's text language");
+        println!("    agents/mustard/*.md — the mustard-wave and mustard-review agents, in the project's text language");
         println!("    .gitignore     — ephemeral harness state");
         println!("  (dry-run) would list what an older Mustard left in CLAUDE.md files and .claude/settings.json (nothing leaves without a yes)");
         println!(
@@ -188,13 +203,11 @@ pub fn init_with_templates(
         return Ok(InitOutcome::DryRun);
     }
 
-    // Step 0, private only: hide the footprint BEFORE any of it exists — before
-    // `.claude/` is created, and before the backup-and-overwrite branch below
-    // can leave a `.claude.backup.<stamp>/` beside it. A refusal here writes
-    // nothing at all, not even a directory.
-    if mode.is_private() {
-        seeding::hide_footprint(&project_path)?;
-    }
+    // Step 0: hide the footprint BEFORE any of it exists — before `.claude/` is
+    // created, and before the backup-and-overwrite branch below can leave a
+    // `.claude.backup.<stamp>/` beside it. A refusal here writes nothing at
+    // all, not even a directory.
+    seeding::hide_footprint(&project_path)?;
 
     // Decide how to treat an existing `.claude/`. A fresh project is a plain
     // overwrite of an empty tree.
@@ -232,18 +245,17 @@ pub fn init_with_templates(
     // the response style of the text language and Claude Code's signature off
     // — the core engine owns the content, the merge rules and the destination
     // (the untracked local layer).
-    let settings_name = if mode.is_private() {
-        ".claude/settings.local.json"
-    } else {
-        ".claude/settings.json"
-    };
-    let outcome = mustard_core::seed_settings(&claude_path, overwrite, mode, config.rtk(), text)
-        .with_context(|| format!("seeding {settings_name}"))?;
-    seeding::report_seed(settings_name, outcome, false);
+    // The local settings also receive the folder of the project's separate
+    // copies, in either mode — in shared mode, that is all they receive.
+    let seeded = mustard_core::seed_settings(&claude_path, overwrite, mode, config.rtk(), text)
+        .context("seeding the settings under .claude/")?;
+    for (name, outcome) in seeded {
+        seeding::report_seed(name, outcome, false);
+    }
     // Mustard's own texts — so the answer to "merge or overwrite?" does not
     // reach them: the seeder takes no such argument and always lays the
     // shipped text down again, in the text language.
-    for (rel, outcome) in mustard_core::seed_harness_texts(&claude_path, text)
+    for (rel, outcome) in mustard_core::seed_harness_texts(&claude_path, text, config.agent_settings())
         .context("seeding Mustard's texts under .claude/")?
     {
         seeding::report_seed(&format!(".claude/{rel}"), outcome, true);
@@ -253,18 +265,14 @@ pub fn init_with_templates(
         .context("seeding .claude/.gitignore")?;
     seeding::report_seed(".claude/.gitignore", outcome, false);
 
-    // Project-root `.github/` scaffolding (PR template) — skipped by a private
-    // install: it lands outside `.claude/`, where nothing else covers it, and
-    // writing it into a client's repository is the visible trace the mode
-    // exists to avoid.
-    if mode.is_private() {
-        println!("  skipped .github/ templates (private install — the host repository stays untouched)");
-    } else {
-        let gh = seeding::install_github_templates(templates_dir, &project_path)?;
-        if gh > 0 {
-            println!("  wrote {gh} GitHub template(s) at .github/");
-        }
-    }
+    // A busca das specs e do banco de lições, acertada uma vez, depois de
+    // tudo semeado: a gravação comum só acrescenta no fim do arquivo.
+    refresh_search(&project_path, &mut std::io::stdout());
+
+    // O mapa do projeto, por último de tudo o que se grava: a primeira busca
+    // do assistente responde por ele, e o projeto sem código ganha um mapa
+    // vazio. O scan que falha vira aviso, nunca aborta.
+    map::build(&project_path, &mut std::io::stdout(), scan);
 
     // What an older Mustard left in files that are not its own: listed, never
     // taken out from here.
@@ -277,15 +285,22 @@ pub fn init_with_templates(
     Ok(InitOutcome::Installed)
 }
 
-/// Run `mustard init` against `project_path`.
-///
-/// This is the library entry point. The binary passes the process working
-/// directory; a caller may pass any folder. The bundled `templates/` directory
-/// is located by the seeding part; callers that already know its location use
-/// [`init_with_templates`].
-pub fn init(project_path: &Path, options: &InitOptions) -> Result<InitOutcome> {
-    let templates_dir = seeding::resolve_templates_dir()?;
-    init_with_templates(project_path, &templates_dir, options)
+/// Põe o campo de busca que falta nas linhas das specs e do banco de lições
+/// de `project`, pela mesma função da atualização pelo plugin
+/// ([`mustard_core::io::spec_index::refresh_search`]), e diz em `out` quantas
+/// linhas o ganharam. A falha vira um aviso com o comando que o põe depois,
+/// e a instalação segue. Uma escrita em `out` que falha é descartada.
+fn refresh_search(project: &Path, out: &mut impl Write) {
+    match mustard_core::io::spec_index::refresh_search(project) {
+        Ok(0) => {}
+        Ok(lines) => {
+            let noun = if lines == 1 { "line" } else { "lines" };
+            let _ = writeln!(out, "  filled the search of {lines} {noun} an older Mustard wrote without it");
+        }
+        Err(failed) => {
+            let _ = writeln!(out, "  warning: {failed}");
+        }
+    }
 }
 
 /// Print the closing "next steps" block.
@@ -320,34 +335,28 @@ fn print_next_steps() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
     use std::fs;
-    use std::path::PathBuf;
     use std::process::Command;
+    use mustard_core::domain::scan::ScanReport;
     use tempfile::tempdir;
 
-    /// Build a minimal fake `templates/` tree and return its path. Tests point
-    /// `init_with_templates` at this so they never touch the real payload. The
-    /// harness seeds (settings, Mustard's texts, `.gitignore`) come from the
-    /// COMPILED-IN core constants now — this fixture only carries what the
-    /// templates dir still owns for init (`.github/`, manifests) plus a
-    /// `commands/` decoy: the thin init must NOT copy it into `.claude/`.
-    fn fake_templates(root: &Path) -> PathBuf {
-        let templates = root.join("templates");
-        fs::create_dir_all(templates.join("commands")).unwrap();
-        fs::write(templates.join("commands/feature.md"), "feature").unwrap();
-        templates
+    /// O `init` dos testes: a instalação com um scan que não cria nada, para
+    /// nenhum teste depender do scan que a máquina tem. Os testes do mapa dão o
+    /// scan deles a [`init_with_scan`].
+    fn init(project_path: &Path, options: &InitOptions) -> Result<InitOutcome> {
+        init_with_scan(project_path, options, &|_, _| Ok(ScanReport::default()))
     }
+
 
     #[test]
     fn init_seeds_harness_and_enables_plugin() {
         let work = tempdir().unwrap();
-        let templates = fake_templates(work.path());
         let project = work.path().join("project");
         fs::create_dir_all(&project).unwrap();
 
-        init_with_templates(
+        init(
             &project,
-            &templates,
             &InitOptions { yes: true, ..InitOptions::default() },
         )
         .unwrap();
@@ -368,7 +377,7 @@ mod tests {
             claude.join("mustard").join("session-map.md").exists(),
             ".claude/mustard/session-map.md seeded"
         );
-        for name in ["wave.md", "review.md", "skill.md"] {
+        for name in ["wave.md", "review.md"] {
             assert!(claude.join("agents/mustard").join(name).exists(), "agent {name} seeded");
         }
         assert!(
@@ -376,6 +385,8 @@ mod tests {
             "init must NOT plant .claude/CLAUDE.md — the orchestrator is injected now"
         );
         assert!(claude.join(".gitignore").exists(), ".claude/.gitignore seeded");
+        // Sem specs, a busca não tem o que acertar e a pasta delas não nasce.
+        assert!(!claude.join("spec").exists(), "a fresh install must not plant the specs folder");
 
         // The content payload is the plugin's now — init must NOT copy it.
         assert!(
@@ -396,9 +407,9 @@ mod tests {
         assert_eq!(
             settings
                 .get("env")
-                .and_then(|e| e.get("MUSTARD_BOUNDARY_MODE"))
+                .and_then(|e| e.get("FORCE_HYPERLINK"))
                 .and_then(|v| v.as_str()),
-            Some("warn"),
+            Some("1"),
             "the compiled-in seed's env is laid down verbatim"
         );
         assert!(settings.get("statusLine").is_some(), "seed statusLine present");
@@ -457,8 +468,8 @@ mod tests {
             "no .claude/mustard.json — config lives only at the project root"
         );
 
-        // init seeds no entity-registry — the repo model is grain's
-        // `.claude/grain.model.json`, produced on demand by `mustard-rt run scan`.
+        // init seeds no entity-registry — the repo model is the map in
+        // `.claude/grain.db`, which the scan builds at the end of the install.
         assert!(!claude.join("entity-registry.json").exists());
     }
 
@@ -480,7 +491,6 @@ mod tests {
     #[test]
     fn install_never_commits_anything() {
         let work = tempdir().unwrap();
-        let templates = fake_templates(work.path());
         let project = work.path().join("project");
         fs::create_dir_all(&project).unwrap();
 
@@ -495,9 +505,8 @@ mod tests {
         // The operator's own uncommitted edit, present BEFORE the install runs.
         fs::write(project.join("notes.md"), "draft, still being written\n").unwrap();
 
-        init_with_templates(
+        init(
             &project,
-            &templates,
             &InitOptions { yes: true, ..InitOptions::default() },
         )
         .unwrap();
@@ -526,13 +535,11 @@ mod tests {
     #[test]
     fn init_dry_run_writes_nothing() {
         let work = tempdir().unwrap();
-        let templates = fake_templates(work.path());
         let dry = work.path().join("dry");
         fs::create_dir_all(&dry).unwrap();
 
-        init_with_templates(
+        init(
             &dry,
-            &templates,
             &InitOptions { yes: true, dry_run: true, ..InitOptions::default() },
         )
         .unwrap();
@@ -541,26 +548,17 @@ mod tests {
     }
 
     /// Regression guard for the `.claude/.claude/` nesting bug (the project root
-    /// is never a `.claude` folder): even
-    /// if `templates/` carries a stray `.claude/` sub-directory, the thin init —
-    /// whose harness seeds are compiled-in constants, not directory copies —
-    /// must never propagate it.
+    /// is never a `.claude` folder): the thin init — whose harness seeds are
+    /// compiled-in constants, not directory copies — never creates it.
     #[test]
     fn init_does_not_create_nested_claude_dir() {
         let work = tempdir().unwrap();
 
-        let templates = work.path().join("templates");
-        fs::create_dir_all(templates.join("commands")).unwrap();
-        // Inject the offending .claude/ inside templates/.
-        fs::create_dir_all(templates.join(".claude/commands")).unwrap();
-        fs::write(templates.join(".claude/commands/notes.md"), "boilerplate").unwrap();
-
         let project = work.path().join("project");
         fs::create_dir_all(&project).unwrap();
 
-        init_with_templates(
+        init(
             &project,
-            &templates,
             &InitOptions { yes: true, ..InitOptions::default() },
         )
         .unwrap();
@@ -572,7 +570,6 @@ mod tests {
     #[test]
     fn init_merge_rewrites_the_session_map_and_backfills() {
         let work = tempdir().unwrap();
-        let templates = fake_templates(work.path());
         let project = work.path().join("project");
         let claude = project.join(".claude");
         // A diverged session map already present in .claude/mustard/.
@@ -580,9 +577,8 @@ mod tests {
         fs::write(claude.join("mustard/session-map.md"), "USER EDIT").unwrap();
 
         // Non-interactive existing-dir path resolves to a merge.
-        init_with_templates(
+        init(
             &project,
-            &templates,
             &InitOptions { yes: true, ..InitOptions::default() },
         )
         .unwrap();
@@ -610,13 +606,184 @@ mod tests {
         );
     }
 
+    /// Uma versão anterior gravou uma decisão numa spec com a busca de outra
+    /// regra, outra decisão sem busca nenhuma e uma lição no banco sem busca.
+    /// A instalação põe o campo só onde ele falta: a busca de outra regra
+    /// fica byte a byte, a linha sem busca ganha as palavras do título e do texto, e a
+    /// instalação seguinte não tem mais o que pôr.
+    #[test]
+    fn an_install_fills_the_missing_search_of_the_specs_and_the_lessons_once() {
+        use mustard_core::domain::spec_events::refresh_search_lines;
+        use serde_json::{json, Map, Value};
+
+        let work = tempdir().unwrap();
+        let project = work.path().join("project");
+        let paths = mustard_core::ClaudePaths::for_project(&project).unwrap();
+        let object = |value: Value| -> Map<String, Value> { value.as_object().cloned().unwrap() };
+        let at = "2026-09-11T10:00:00-03:00";
+        let events = paths.spec_dir().join("teste").join("spec.ndjson");
+        mustard_core::io::spec_events::write_at(
+            &events,
+            "message",
+            object(json!({"author": "user", "text": "combine"})),
+            &[],
+            at,
+        )
+        .unwrap();
+        let mut spec = fs::read_to_string(&events).unwrap();
+        spec.push_str(
+            "{\"v\":1,\"id\":2,\"at\":\"2026-09-11T10:01:00-03:00\",\"type\":\"decision\",\"author\":\"assistant\",\
+             \"title\":\"Somar a fatura\",\"text\":\"A fatura soma centavos.\",\"keys\":[\"soma\"],\"origin\":1,\
+             \"search\":\"fatur som centav\"}\n",
+        );
+        spec.push_str(
+            "{\"v\":1,\"id\":3,\"at\":\"2026-09-11T10:02:00-03:00\",\"type\":\"decision\",\"author\":\"assistant\",\
+             \"title\":\"Arredondar a fatura\",\"text\":\"A fatura arredonda centavos.\",\"keys\":[\"soma\"],\"origin\":1}\n",
+        );
+        fs::write(&events, &spec).unwrap();
+        let bank = paths.lessons_path();
+        let lesson = json!({"class": "defect", "text": "Apagar a pasta.", "keys": ["apagar"],
+            "applies_to": {"subproject": "apps/rt"}, "found_in": {"spec": "teste"}});
+        mustard_core::io::lessons::write_at(&bank, object(lesson), None, at).unwrap();
+        let lessons = fs::read_to_string(&bank).unwrap();
+        let (head, _) = lessons.trim_end().rsplit_once(",\"search\":").unwrap();
+        fs::write(&bank, format!("{head}}}\n")).unwrap();
+        let missing = |text: &str| refresh_search_lines(text).1;
+        assert_eq!((missing(&spec), missing(&fs::read_to_string(&bank).unwrap())), (1, 1), "the fixture lacks two fields");
+
+        let opts = InitOptions { yes: true, ..InitOptions::default() };
+        assert_eq!(init(&project, &opts).unwrap(), InitOutcome::Installed);
+
+        let fixed = fs::read_to_string(&events).unwrap();
+        assert_eq!(missing(&fixed), 0, "the install left a line without search in the spec:\n{fixed}");
+        let (before, after): (Vec<&str>, Vec<&str>) = (spec.lines().collect(), fixed.lines().collect());
+        assert_eq!(after.len(), before.len(), "{fixed}");
+        assert_eq!(after[0], before[0], "the line with today's search stays byte for byte");
+        assert_eq!(after[1], before[1], "the search of another rule stays byte for byte");
+        let parse = |line: &str| object(serde_json::from_str(line).unwrap());
+        let (old, mut new) = (parse(before[2]), parse(after[2]));
+        let search = new.remove("search").unwrap();
+        let words: Vec<&str> = search.as_str().unwrap().split(' ').collect();
+        assert!(words.contains(&"arredondar") && words.contains(&"arredonda"), "{search}");
+        assert_eq!(old, new, "only the search field was added to the line without it");
+        assert_eq!(fs::read_to_string(&bank).unwrap(), lessons, "the lesson got its search");
+
+        assert_eq!(init(&project, &opts).unwrap(), InitOutcome::Installed);
+        assert_eq!(fs::read_to_string(&events).unwrap(), fixed, "a second install has nothing left to fill");
+    }
+
+    /// Quando a busca não pode ser refeita — aqui, o índice das specs é uma
+    /// pasta —, a instalação termina assim mesmo, e a saída traz um aviso com
+    /// o comando que refaz a busca depois.
+    #[test]
+    fn an_install_whose_search_cannot_be_recomputed_warns_and_finishes() {
+        let work = tempdir().unwrap();
+        let project = work.path().join("project");
+        let paths = mustard_core::ClaudePaths::for_project(&project).unwrap();
+        fs::create_dir_all(paths.spec_index_path()).unwrap();
+
+        let outcome = init(&project, &InitOptions { yes: true, ..InitOptions::default() });
+        assert_eq!(outcome.unwrap(), InitOutcome::Installed, "a failed search must not abort the install");
+        assert!(project.join(".claude").join("settings.local.json").exists(), "the seeding happened");
+
+        let mut out = Vec::new();
+        refresh_search(&project, &mut out);
+        let out = String::from_utf8(out).unwrap();
+        assert!(out.starts_with("  warning: ") && out.contains("mustard-rt run index"), "{out}");
+    }
+
+    /// O `init --yes` numa pasta vazia escreve `agents.model` e `agents.effort`
+    /// com os padrões no `mustard.json` e os mesmos valores no cabeçalho dos
+    /// dois agentes. Com `opus` e `medium` no arquivo, uma instalação por cima
+    /// escreve os dois nos agentes e mantém os campos; um esforço fora da
+    /// lista do Claude Code fica no arquivo e os agentes recebem o padrão; um
+    /// `mustard.json` sem os campos os ganha, sem perder o que já tinha.
+    #[test]
+    fn init_writes_the_agent_model_and_effort_and_the_agents_carry_them() {
+        let header_of = |project: &Path, name: &str, key: &str| -> String {
+            let text = fs::read_to_string(project.join(format!(".claude/agents/mustard/{name}.md"))).unwrap();
+            let header = text.split("\n---\n").next().unwrap().to_string();
+            let prefix = format!("{key}: ");
+            header.lines().find_map(|line| line.strip_prefix(&prefix)).unwrap_or_default().to_string()
+        };
+        let carried = |project: &Path, key: &str| (header_of(project, "wave", key), header_of(project, "review", key));
+        let both = |value: &str| (value.to_string(), value.to_string());
+        let agents = |project: &Path| {
+            crate::fs_ops::read_json_object(&project.join("mustard.json")).get("agents").cloned().unwrap_or_default()
+        };
+
+        let work = tempdir().unwrap();
+        let project = work.path().join("project");
+        fs::create_dir_all(&project).unwrap();
+        init(&project, &InitOptions { yes: true, ..InitOptions::default() }).unwrap();
+        assert_eq!(agents(&project), serde_json::json!({"model": "sonnet", "effort": "xhigh"}));
+        assert_eq!(carried(&project, "model"), both("sonnet"));
+        assert_eq!(carried(&project, "effort"), both("xhigh"));
+
+        let mut config = crate::fs_ops::read_json_object(&project.join("mustard.json"));
+        config.insert("agents".into(), serde_json::json!({"model": "opus", "effort": "medium"}));
+        fs::write(project.join("mustard.json"), serde_json::to_string(&config).unwrap()).unwrap();
+        init(&project, &InitOptions { yes: true, ..InitOptions::default() }).unwrap();
+        assert_eq!(
+            agents(&project),
+            serde_json::json!({"model": "opus", "effort": "medium"}),
+            "the install kept the person's choice"
+        );
+        assert_eq!(carried(&project, "model"), both("opus"));
+        assert_eq!(carried(&project, "effort"), both("medium"));
+
+        let mut config = crate::fs_ops::read_json_object(&project.join("mustard.json"));
+        config.insert("agents".into(), serde_json::json!({"model": "opus", "effort": "ultra"}));
+        fs::write(project.join("mustard.json"), serde_json::to_string(&config).unwrap()).unwrap();
+        init(&project, &InitOptions { yes: true, ..InitOptions::default() }).unwrap();
+        assert_eq!(agents(&project)["effort"], serde_json::json!("ultra"), "what the person wrote stays");
+        assert_eq!(carried(&project, "effort"), both("xhigh"), "an effort Claude Code does not accept falls back");
+        assert_eq!(carried(&project, "model"), both("opus"));
+
+        let mut config = crate::fs_ops::read_json_object(&project.join("mustard.json"));
+        config.remove("agents");
+        config.insert("acronyms".into(), serde_json::json!(["PI"]));
+        fs::write(project.join("mustard.json"), serde_json::to_string(&config).unwrap()).unwrap();
+        init(&project, &InitOptions { yes: true, ..InitOptions::default() }).unwrap();
+        assert_eq!(agents(&project), serde_json::json!({"model": "sonnet", "effort": "xhigh"}), "the missing fields came back");
+        assert_eq!(crate::fs_ops::read_json_object(&project.join("mustard.json"))["acronyms"], serde_json::json!(["PI"]));
+        assert_eq!(carried(&project, "model"), both("sonnet"));
+        assert_eq!(carried(&project, "effort"), both("xhigh"));
+    }
+
+    /// A instalação sobre um projeto de uma versão antiga, que ainda tem o
+    /// agente de onda de tarefa única e o que escrevia skills, tira os dois
+    /// arquivos e deixa os dois agentes de hoje; o agente do projeto com o
+    /// mesmo nome, fora da pasta do Mustard, fica intocado.
+    #[test]
+    fn an_install_over_an_older_project_removes_the_retired_single_task_wave_agent() {
+        let work = tempdir().unwrap();
+        let project = work.path().join("project");
+        let claude = project.join(".claude");
+        fs::create_dir_all(claude.join("agents/mustard")).unwrap();
+        fs::write(claude.join("agents/mustard/wave-solo.md"), "---\nname: mustard-wave-solo\n---\n").unwrap();
+        fs::write(claude.join("agents/mustard/skill.md"), "O molde antigo.\n").unwrap();
+        let own = "---\nname: wave-solo\n---\n\nO agente do projeto.\n";
+        fs::write(claude.join("agents/wave-solo.md"), own).unwrap();
+
+        init(&project, &InitOptions { yes: true, ..InitOptions::default() }).unwrap();
+
+        let mut agents: Vec<String> = fs::read_dir(claude.join("agents/mustard"))
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        agents.sort();
+        assert_eq!(agents, ["review.md", "wave.md"], "the install left another set of agents");
+        assert_eq!(fs::read_to_string(claude.join("agents/wave-solo.md")).unwrap(), own, "the project's agent changed");
+    }
+
     /// Um orquestrador plantado por uma instalação antiga e as marcas do
     /// Mustard num `CLAUDE.md` são só listados: o instalador não tira nada, e
     /// o `.claude/CLAUDE.md` que não é do Mustard nem aparece.
     #[test]
     fn init_lists_what_an_older_mustard_left_and_removes_nothing() {
         let work = tempdir().unwrap();
-        let templates = fake_templates(work.path());
         let project = work.path().join("project");
         let claude = project.join(".claude");
         fs::create_dir_all(&claude).unwrap();
@@ -624,9 +791,8 @@ mod tests {
         let root_md = "@.claude/scan-map.md\n\n# (root)\n\n## Guards\n\n<!-- mustard:guards -->\n- keep this guard\n<!-- /mustard:guards -->\n";
         fs::write(project.join("CLAUDE.md"), root_md).unwrap();
 
-        init_with_templates(
+        init(
             &project,
-            &templates,
             &InitOptions { yes: true, ..InitOptions::default() },
         )
         .unwrap();
@@ -647,7 +813,6 @@ mod tests {
     #[test]
     fn init_preserves_user_inject_entries() {
         let work = tempdir().unwrap();
-        let templates = fake_templates(work.path());
         let project = work.path().join("project");
         fs::create_dir_all(&project).unwrap();
         // The user already curated their own inject list.
@@ -657,9 +822,8 @@ mod tests {
         )
         .unwrap();
 
-        init_with_templates(
+        init(
             &project,
-            &templates,
             &InitOptions { yes: true, ..InitOptions::default() },
         )
         .unwrap();
@@ -677,15 +841,13 @@ mod tests {
     #[test]
     fn init_refuses_inside_git_repo_when_not_at_its_root() {
         let work = tempdir().unwrap();
-        let templates = fake_templates(work.path());
         // `work` is a git repository root; the init target is a subdirectory.
         fs::create_dir_all(work.path().join(".git")).unwrap();
         let project = work.path().join("apps").join("dashboard");
         fs::create_dir_all(&project).unwrap();
 
-        let err = init_with_templates(
+        let err = init(
             &project,
-            &templates,
             &InitOptions { yes: true, ..InitOptions::default() },
         )
         .unwrap_err();
@@ -707,13 +869,11 @@ mod tests {
     #[test]
     fn init_allows_at_git_repo_root() {
         let work = tempdir().unwrap();
-        let templates = fake_templates(work.path());
         let project = work.path().join("project");
         fs::create_dir_all(project.join(".git")).unwrap(); // project IS a repo root
 
-        init_with_templates(
+        init(
             &project,
-            &templates,
             &InitOptions { yes: true, ..InitOptions::default() },
         )
         .unwrap();
@@ -725,7 +885,6 @@ mod tests {
     #[test]
     fn init_allows_at_submodule_root_with_git_file() {
         let work = tempdir().unwrap();
-        let templates = fake_templates(work.path());
         // Outer repository root…
         fs::create_dir_all(work.path().join(".git")).unwrap();
         // …and a submodule below it: `.git` is a FILE with a `gitdir:` pointer.
@@ -733,9 +892,8 @@ mod tests {
         fs::create_dir_all(&sub).unwrap();
         fs::write(sub.join(".git"), "gitdir: ../../.git/modules/service\n").unwrap();
 
-        init_with_templates(
+        init(
             &sub,
-            &templates,
             &InitOptions { yes: true, ..InitOptions::default() },
         )
         .unwrap();
@@ -749,17 +907,77 @@ mod tests {
     #[test]
     fn init_allows_in_git_less_tree() {
         let work = tempdir().unwrap();
-        let templates = fake_templates(work.path());
         let project = work.path().join("plain");
         fs::create_dir_all(&project).unwrap(); // no .git anywhere up the tempdir
 
-        init_with_templates(
+        init(
             &project,
-            &templates,
             &InitOptions { yes: true, ..InitOptions::default() },
         )
         .unwrap();
 
         assert!(project.join(".claude").join("settings.local.json").exists());
+    }
+
+    /// A instalação pede o mapa do projeto ao scan uma vez, por último de tudo
+    /// o que grava — os ajustes e o `mustard.json` já estão no disco —, sobre o
+    /// projeto e o lugar onde o mapa mora, e termina como instalada.
+    #[test]
+    fn init_builds_the_map_once_after_the_install_is_on_disk() {
+        let work = tempdir().unwrap();
+        let project = work.path().join("project");
+        fs::create_dir_all(project.join(".git")).unwrap();
+
+        let calls = RefCell::new(Vec::new());
+        let scan = |root: &Path, out: &Path| {
+            let installed = root.join(".claude").join("settings.local.json").exists() && root.join("mustard.json").exists();
+            calls.borrow_mut().push((root.to_path_buf(), out.to_path_buf(), installed));
+            Ok(ScanReport::default())
+        };
+        let outcome = init_with_scan(&project, &InitOptions { yes: true, ..InitOptions::default() }, &scan).unwrap();
+
+        assert_eq!(outcome, InitOutcome::Installed);
+        let root = project.canonicalize().unwrap();
+        let calls = calls.into_inner();
+        assert_eq!(
+            calls,
+            vec![(root.clone(), mustard_core::io::project_map::model_path(&root), true)],
+            "one pass over the project, into its map, with the install already written"
+        );
+    }
+
+    /// O scan que falha — ausente da máquina, ou saindo com erro — não derruba
+    /// a instalação: o que ela instala está no disco e a rodada termina como
+    /// instalada.
+    #[test]
+    fn init_installs_even_when_the_scan_fails() {
+        let work = tempdir().unwrap();
+        let project = work.path().join("project");
+        fs::create_dir_all(project.join(".git")).unwrap();
+
+        let failing = |_: &Path, _: &Path| Err(mustard_core::platform::error::Error::check_failed("scan: not found"));
+        let outcome = init_with_scan(&project, &InitOptions { yes: true, ..InitOptions::default() }, &failing).unwrap();
+
+        assert_eq!(outcome, InitOutcome::Installed);
+        assert!(project.join(".claude").join("settings.local.json").exists());
+        assert!(project.join("mustard.json").exists());
+    }
+
+    /// A simulação não toca em nada, então também não roda o scan.
+    #[test]
+    fn init_dry_run_does_not_run_the_scan() {
+        let work = tempdir().unwrap();
+        let dry = work.path().join("dry");
+        fs::create_dir_all(&dry).unwrap();
+
+        let calls = RefCell::new(0);
+        let scan = |_: &Path, _: &Path| {
+            *calls.borrow_mut() += 1;
+            Ok(ScanReport::default())
+        };
+        let options = InitOptions { yes: true, dry_run: true, ..InitOptions::default() };
+        assert_eq!(init_with_scan(&dry, &options, &scan).unwrap(), InitOutcome::DryRun);
+
+        assert_eq!(*calls.borrow(), 0);
     }
 }

@@ -30,10 +30,12 @@
 //!
 //! Além do nível, o módulo também forma o backlog de despacho: tarefa pronta —
 //! toda dependência entregue ou aprovada —, o desempate entre prontas por
-//! quantas outras cada uma destrava, e o empacotamento delas em lotes com
-//! capacidade de arquivos distintos, sem nunca dividir um arquivo entre dois
-//! lotes. É o mesmo grafo e o mesmo peel de [`assign_levels`], só que sobre
-//! tarefas: nasce aqui para não virar um segundo motor ao lado.
+//! quantas outras cada uma destrava, e o empacotamento delas em lotes com um
+//! teto de trabalho, em tarefas e em arquivos distintos, sem nunca dividir um
+//! arquivo entre dois lotes. A tarefa que espera só por tarefas do mesmo lote,
+//! ou já entregues, e divide arquivo com ele entra no lote, depois delas. É o
+//! mesmo grafo e o mesmo peel de [`assign_levels`], só que sobre tarefas:
+//! nasce aqui para não virar um segundo motor ao lado.
 //!
 //! Dois arquivos "se cruzam" ([`files_cross`]) quando são o mesmo caminho,
 //! ou quando um deles é padrão (tem `*`, `?` ou `[`) e casa o outro. O `**`
@@ -153,10 +155,22 @@ pub(crate) fn assign_levels<N: Ord + Clone>(deps: &BTreeMap<N, BTreeSet<N>>) -> 
     Levels { level, cycle }
 }
 
-/// A capacidade de um lote: 5 arquivos distintos, fixa no código. A rodada
-/// monta os lotes do backlog com ela; a tarefa que sozinha toca mais arquivos
-/// sai sozinha, acima dela, porque a capacidade nunca impede o despacho.
-pub(crate) const BACKLOG_CAPACITY: usize = 5;
+/// O teto de trabalho de um lote: quantas tarefas e quantos arquivos
+/// distintos ele leva. O lote fecha no que chegar primeiro.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BatchCap {
+    pub(crate) tasks: usize,
+    pub(crate) files: usize,
+}
+
+/// O teto de todo lote da rodada, fixo no código: 5 tarefas e 32 arquivos
+/// distintos. É o tamanho da maior onda deste repositório entregue sem
+/// conserto — 5 tarefas e 32 arquivos, em 74 minutos, com todo item atendido
+/// na primeira volta. O tempo de uma onda segue o tamanho das tarefas, não o
+/// número de arquivos: o teto em tarefas segura o agente da onda, e o de
+/// arquivos, o lote que junta tarefas grandes. A tarefa que sozinha passa do
+/// teto sai sozinha, acima dele, porque o teto nunca impede o despacho.
+pub(crate) const BATCH_CAP: BatchCap = BatchCap { tasks: 5, files: 32 };
 
 /// Uma tarefa do backlog: o que ela depende, os arquivos que declara e se o
 /// trabalho dela já está entregue ou aprovado.
@@ -174,15 +188,6 @@ pub(crate) struct BacklogTask<N> {
 pub(crate) struct Batch<N> {
     pub(crate) tasks: Vec<N>,
     pub(crate) files: BTreeSet<String>,
-}
-
-/// O nível topológico de cada tarefa do backlog, pelo mesmo peelamento que já
-/// ordena qualquer grafo do binário — o backlog não é um segundo motor ao lado
-/// de [`assign_levels`], é o mesmo, sobre o grafo de dependência das tarefas.
-pub(crate) fn task_levels<N: Ord + Clone>(tasks: &[BacklogTask<N>]) -> Levels<N> {
-    let deps: BTreeMap<N, BTreeSet<N>> =
-        tasks.iter().map(|t| (t.id.clone(), t.depends_on.clone())).collect();
-    assign_levels(&deps)
 }
 
 /// As tarefas prontas — todas as dependências entregues ou aprovadas —, na
@@ -297,40 +302,114 @@ fn clustered_by_file<N: Ord + Clone>(tasks: &[BacklogTask<N>], order: &[N]) -> V
     groups
 }
 
-/// Empacota `order` (a saída de [`ready_tasks`]) em lotes de despacho: do
-/// maior para o menor, cada tarefa — ou a parte inteira que o arquivo
-/// compartilhado a prendeu, ver [`clustered_by_file`] — no primeiro lote
-/// onde ainda couber, medindo pelo número de arquivos distintos do lote. A
-/// parte que sozinha já passa de `capacity` sai sozinha, acima dela: a
-/// capacidade nunca impede o despacho.
+/// Empacota `order` (a saída de [`ready_tasks`]) em lotes de despacho, dentro
+/// do teto de trabalho `cap`:
 ///
-/// A tarefa com o curinga da árvore inteira vem antes de tudo, cada uma no
-/// seu lote, sem nenhuma outra dentro: o lote dela ganha o número de onda
-/// mais baixo da leva, e a rodada, que solta pela ordem do número, a solta
-/// primeiro e segura as outras até ela entregar.
+/// 1. A tarefa com o curinga da árvore inteira vem antes de tudo, cada uma no
+///    seu lote, sem nenhuma outra dentro: o lote dela ganha o número de onda
+///    mais baixo da leva, e a rodada, que solta pela ordem do número, a solta
+///    primeiro e segura as outras até ela entregar. As demais seguem em
+///    partes: a tarefa e todas as que o arquivo compartilhado prendeu a ela
+///    ([`clustered_by_file`]).
+/// 2. A parte que cruza arquivo de uma onda ainda aberta (`busy`) vai para um
+///    lote só dela, sem outra parte dentro: ela espera a onda aberta
+///    entregar, e a parte que entrasse junto esperaria também.
+/// 3. As outras, da maior para a menor, no primeiro lote que não é de
+///    curinga nem de parte presa, onde a soma ainda cabe no teto, em tarefas
+///    e em arquivos. A parte que sozinha já passa do teto sai sozinha, acima
+///    dele: o teto nunca impede o despacho.
+/// 4. Cada lote recebe, no fim, as tarefas de `waiting` que esperam só por
+///    ele ([`chain_dependents`]).
 pub(crate) fn pack_batches<N: Ord + Clone>(
     tasks: &[BacklogTask<N>],
     order: &[N],
-    capacity: usize,
+    waiting: &[N],
+    busy: &BTreeSet<String>,
+    cap: BatchCap,
 ) -> Vec<Batch<N>> {
     let (mut batches, mut groups): (Vec<Batch<N>>, Vec<Batch<N>>) =
         clustered_by_file(tasks, order).into_iter().partition(|g| touches_whole_tree(&g.files));
-    let alone = batches.len();
+    // O lote que não recebe outra parte: o do curinga e o da parte presa a
+    // uma onda aberta.
+    let mut shut: Vec<bool> = vec![true; batches.len()];
     // Maior primeiro; `sort_by` é estável, então empate preserva a ordem de
     // prontidão (desempate por destrava, depois por número) que `order` já
     // carrega.
     groups.sort_by_key(|g| std::cmp::Reverse(g.files.len()));
 
     for group in groups {
-        match batches.iter_mut().skip(alone).find(|b| b.files.len() + group.files.len() <= capacity) {
+        if sets_cross(&group.files, busy) {
+            batches.push(group);
+            shut.push(true);
+            continue;
+        }
+        let fits = |batch: &Batch<N>| {
+            batch.tasks.len() + group.tasks.len() <= cap.tasks && batch.files.len() + group.files.len() <= cap.files
+        };
+        let open = batches.iter().zip(&shut).position(|(batch, closed)| !closed && fits(batch));
+        match open.and_then(|at| batches.get_mut(at)) {
             Some(batch) => {
                 batch.tasks.extend(group.tasks);
                 batch.files.extend(group.files);
             }
-            None => batches.push(group),
+            None => {
+                batches.push(group);
+                shut.push(false);
+            }
         }
     }
+    chain_dependents(tasks, &mut batches, waiting, busy, cap);
     batches
+}
+
+/// Põe no fim de cada lote, um lote de cada vez e na ordem deles, as tarefas
+/// de `waiting` que esperam só por ele, na ordem em que `waiting` as traz.
+/// Entra a tarefa que: não está feita nem em lote nenhum; tem cada
+/// dependência feita ou já dentro deste lote; divide arquivo com o lote
+/// ([`sets_cross`]); não declara o curinga da árvore inteira; não cruza
+/// arquivo de outro lote desta passada nem de uma onda aberta (`busy`); e
+/// cabe no teto, com uma tarefa a mais e a união dos arquivos. A cada tarefa
+/// que entra a varredura recomeça, porque a que entrou pode ser a dependência
+/// que faltava a outra; o lote para quando nenhuma entra. A dependente fica
+/// depois das dependências dela, porque só entra quando elas já estão lá. O
+/// lote do curinga nunca recebe: ele sai sozinho.
+fn chain_dependents<N: Ord + Clone>(
+    tasks: &[BacklogTask<N>],
+    batches: &mut [Batch<N>],
+    waiting: &[N],
+    busy: &BTreeSet<String>,
+    cap: BatchCap,
+) {
+    let by_id: BTreeMap<&N, &BacklogTask<N>> = tasks.iter().map(|t| (&t.id, t)).collect();
+    let done: BTreeSet<&N> = tasks.iter().filter(|t| t.done).map(|t| &t.id).collect();
+    let mut placed: BTreeSet<N> = batches.iter().flat_map(|b| b.tasks.iter().cloned()).collect();
+    for at in 0..batches.len() {
+        while let Some(batch) = batches.get(at) {
+            if touches_whole_tree(&batch.files) {
+                break;
+            }
+            let crosses_another = |files: &BTreeSet<String>| {
+                batches.iter().enumerate().any(|(other, b)| other != at && sets_cross(files, &b.files))
+            };
+            let entering = waiting.iter().filter_map(|id| by_id.get(id).copied()).find(|task| {
+                !task.done
+                    && !placed.contains(&task.id)
+                    && task.depends_on.iter().all(|d| done.contains(d) || batch.tasks.contains(d))
+                    && sets_cross(&task.files, &batch.files)
+                    && !touches_whole_tree(&task.files)
+                    && !sets_cross(&task.files, busy)
+                    && !crosses_another(&task.files)
+                    && batch.tasks.len() < cap.tasks
+                    && batch.files.union(&task.files).count() <= cap.files
+            });
+            let Some(task) = entering else { break };
+            placed.insert(task.id.clone());
+            if let Some(batch) = batches.get_mut(at) {
+                batch.tasks.push(task.id.clone());
+                batch.files.extend(task.files.iter().cloned());
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -417,26 +496,6 @@ mod tests {
         }
     }
 
-    /// O nível topológico de uma tarefa do backlog espera a dependência dela:
-    /// mesmo grafo do teste de ponta a ponta do despacho
-    /// (`apps/rt/tests/round_dispatch.rs`), só que sobre o nível, não o lote.
-    #[test]
-    fn a_task_waits_the_level_of_its_dependency() {
-        let tasks = [
-            task(1, &[], &["a.rs", "b.rs"], false),
-            task(2, &[], &["c.rs"], false),
-            task(3, &[1], &["d.rs"], false),
-            task(4, &[], &["e.rs", "f.rs", "g.rs"], false),
-            task(5, &[], &["b.rs"], false),
-            task(6, &[4], &["h.rs"], false),
-        ];
-        let levels = task_levels(&tasks);
-        assert!(levels.cycle.is_empty());
-        assert_eq!(levels.level[&1], 0);
-        assert_eq!(levels.level[&3], 1, "a 3 espera a 1");
-        assert_eq!(levels.level[&6], 1, "a 6 espera a 4");
-    }
-
     /// O exemplo da regra em código, com os dois lados: a tarefa 7 depende
     /// das tarefas 3 e 5; com a 3 entregue e a 5 aberta, a 7 não entra em
     /// lote (o "antes" falha); entregue a 5 também, a 7 entra na rodada
@@ -474,9 +533,9 @@ mod tests {
         assert_eq!(ready_tasks(&tied), vec![3, 5], "sem ninguém destravado, decide o número");
     }
 
-    /// O exemplo da regra de empacotamento: A com 4 arquivos, B com 2, C com
-    /// 1, capacidade 5. A abre o lote 1; B não cabe e abre o lote 2; C cabe
-    /// no lote 1, que fecha com 5.
+    /// O exemplo da regra de empacotamento, com um teto pequeno de 5
+    /// arquivos: A com 4 arquivos, B com 2, C com 1. A abre o lote 1; B não
+    /// cabe e abre o lote 2; C cabe no lote 1, que fecha com 5.
     #[test]
     fn packing_goes_from_largest_to_smallest_into_the_first_batch_that_fits() {
         let tasks = [
@@ -485,23 +544,25 @@ mod tests {
             task(3, &[], &["c1.rs"], false),
         ];
         let order = ready_tasks(&tasks);
-        let batches = pack_batches(&tasks, &order, BACKLOG_CAPACITY);
+        let batches = pack_batches(&tasks, &order, &[], &BTreeSet::new(), BatchCap { tasks: 5, files: 5 });
         assert_eq!(batches.len(), 2, "{batches:?}");
         assert_eq!(batches[0].tasks, vec![1, 3], "a maior abre, a menor fecha o lote em 5");
         assert_eq!(batches[0].files.len(), 5);
         assert_eq!(batches[1].tasks, vec![2]);
     }
 
-    /// Uma tarefa sozinha que toque mais arquivo que a capacidade sai
-    /// sozinha, acima dela: a capacidade nunca impede o despacho.
+    /// Uma tarefa sozinha que toque mais arquivo que o teto sai sozinha,
+    /// acima dele: o teto nunca impede o despacho.
     #[test]
     fn a_task_alone_over_capacity_ships_alone() {
-        let tasks = [task(1, &[], &["a.rs", "b.rs", "c.rs", "d.rs", "e.rs", "f.rs"], false)];
+        let files: Vec<String> = (0..=BATCH_CAP.files).map(|n| format!("f{n}.rs")).collect();
+        let files: Vec<&str> = files.iter().map(String::as_str).collect();
+        let tasks = [task(1, &[], &files, false)];
         let order = ready_tasks(&tasks);
-        let batches = pack_batches(&tasks, &order, BACKLOG_CAPACITY);
+        let batches = pack_batches(&tasks, &order, &[], &BTreeSet::new(), BATCH_CAP);
         assert_eq!(batches.len(), 1);
         assert_eq!(batches[0].tasks, vec![1]);
-        assert_eq!(batches[0].files.len(), 6, "acima da capacidade de 5, e mesmo assim despachada");
+        assert_eq!(batches[0].files.len(), BATCH_CAP.files + 1, "acima do teto, e mesmo assim despachada");
     }
 
     /// Duas tarefas prontas que tocam o mesmo arquivo podem cair no mesmo
@@ -510,7 +571,7 @@ mod tests {
     fn two_ready_tasks_sharing_a_file_never_split_across_batches() {
         let tasks = [task(1, &[], &["shared.rs"], false), task(2, &[], &["shared.rs"], false)];
         let order = ready_tasks(&tasks);
-        let batches = pack_batches(&tasks, &order, BACKLOG_CAPACITY);
+        let batches = pack_batches(&tasks, &order, &[], &BTreeSet::new(), BATCH_CAP);
         assert_eq!(batches.len(), 1, "{batches:?}");
         assert_eq!(batches[0].tasks.len(), 2);
     }
@@ -520,14 +581,14 @@ mod tests {
     fn an_empty_backlog_has_no_ready_task_and_no_batch() {
         let tasks: [BacklogTask<u32>; 0] = [];
         assert!(ready_tasks(&tasks).is_empty());
-        assert!(pack_batches(&tasks, &[], BACKLOG_CAPACITY).is_empty());
+        assert!(pack_batches(&tasks, &[], &[], &BTreeSet::new(), BATCH_CAP).is_empty());
     }
 
     /// O casamento de padrão, na divisa: o padrão cruza com o caminho que
     /// ele casa e não com o vizinho que só parece; dois padrões cruzam quando
     /// podem casar o mesmo arquivo; o `**` cruza com tudo.
     #[test]
-    fn a_tarefa_com_curinga_sai_sozinha_pelo_casamento_de_padrao() {
+    fn task_with_a_wildcard_goes_out_alone_by_the_pattern_match() {
         assert!(files_cross("src/**", "src/a.rs"));
         assert!(!files_cross("src/**", "srcx/a.rs"), "o trecho fixo é src/, não src");
         assert!(files_cross("src/**", "src/x/*.rs"));
@@ -539,15 +600,128 @@ mod tests {
     }
 
     /// No empacotamento, a tarefa do curinga abre o primeiro lote, sozinha,
-    /// e as outras seguem empacotadas entre si.
+    /// e as outras seguem empacotadas entre si. A tarefa que espera só pela
+    /// do curinga não entra no lote dele: ele sai sozinho.
     #[test]
-    fn a_tarefa_com_curinga_sai_sozinha_no_empacotamento() {
-        let tasks = [task(1, &[], &["a.rs"], false), task(2, &[], &["**"], false), task(3, &[], &["b.rs"], false)];
+    fn task_with_a_wildcard_goes_out_alone_in_the_packing() {
+        let tasks = [
+            task(1, &[], &["a.rs"], false),
+            task(2, &[], &["**"], false),
+            task(3, &[], &["b.rs"], false),
+            task(4, &[2], &["c.rs"], false),
+        ];
         let order = ready_tasks(&tasks);
-        let batches = pack_batches(&tasks, &order, BACKLOG_CAPACITY);
+        let batches = pack_batches(&tasks, &order, &[4], &BTreeSet::new(), BATCH_CAP);
         assert_eq!(batches.len(), 2, "{batches:?}");
         assert_eq!(batches[0].tasks, vec![2], "o curinga primeiro, sozinho");
-        assert_eq!(batches[1].tasks, vec![1, 3]);
+        assert_eq!(batches[1].tasks, vec![1, 3], "a dependente do curinga fica fora dos dois lotes");
+    }
+
+    /// Os lotes de uma passada, só com as tarefas de cada um, na ordem.
+    fn batch_tasks(batches: &[Batch<u32>]) -> Vec<Vec<u32>> {
+        batches.iter().map(|b| b.tasks.clone()).collect()
+    }
+
+    /// Os arquivos `<prefix>1.rs` a `<prefix><count>.rs`, mais `shared.rs`.
+    fn own_files(prefix: &str, count: usize) -> Vec<String> {
+        std::iter::once("shared.rs".to_string()).chain((1..=count).map(|n| format!("{prefix}{n}.rs"))).collect()
+    }
+
+    /// Uma tarefa com arquivos montados em tempo de teste.
+    fn task_with(id: u32, depends_on: &[u32], files: &[String]) -> BacklogTask<u32> {
+        let files: Vec<&str> = files.iter().map(String::as_str).collect();
+        task(id, depends_on, &files, false)
+    }
+
+    /// A 2 espera a 1 e divide `a.rs` com ela; a 3 espera a 2 e divide `b.rs`
+    /// com ela. Só a 1 está pronta, e o lote leva as três, cada dependente
+    /// depois da dependência, mesmo com a 3 chegando antes da 2 na espera.
+    #[test]
+    fn dependent_that_shares_a_file_joins_the_batch_after_its_dependency() {
+        let tasks = [
+            task(1, &[], &["a.rs"], false),
+            task(2, &[1], &["a.rs", "b.rs"], false),
+            task(3, &[2], &["b.rs"], false),
+        ];
+        let batches = pack_batches(&tasks, &[1], &[3, 2], &BTreeSet::new(), BATCH_CAP);
+        assert_eq!(batch_tasks(&batches), vec![vec![1, 2, 3]], "{batches:?}");
+        assert_eq!(batches[0].files, BTreeSet::from(["a.rs".to_string(), "b.rs".to_string()]));
+    }
+
+    /// A 2 espera só a 1, mas não divide arquivo com ela; a 3 divide `a.rs`
+    /// com a 1, mas espera também a 7, ainda aberta e fora do lote. As duas
+    /// ficam fora: o lote leva só a 1.
+    #[test]
+    fn dependent_without_a_shared_file_or_with_an_open_dependency_stays_out() {
+        let tasks = [
+            task(1, &[], &["a.rs"], false),
+            task(2, &[1], &["z.rs"], false),
+            task(3, &[1, 7], &["a.rs"], false),
+            task(7, &[], &["q.rs"], false),
+        ];
+        let batches = pack_batches(&tasks, &[1], &[2, 3], &BTreeSet::new(), BATCH_CAP);
+        assert_eq!(batch_tasks(&batches), vec![vec![1]], "{batches:?}");
+    }
+
+    /// Com teto de 3 arquivos, a 1 e a 2 saem em dois lotes. As três
+    /// dependentes da 1 dividem `a1.rs` ou `a2.rs` com ela: a 3 também toca
+    /// `b1.rs`, do outro lote, e fica fora; a 4 toca `c.rs`, de uma onda
+    /// aberta, e fica fora; a 5 entra.
+    #[test]
+    fn dependent_that_crosses_another_batch_or_open_wave_stays_out() {
+        let tasks = [
+            task(1, &[], &["a1.rs", "a2.rs"], false),
+            task(2, &[], &["b1.rs", "b2.rs"], false),
+            task(3, &[1], &["a1.rs", "b1.rs"], false),
+            task(4, &[1], &["a1.rs", "c.rs"], false),
+            task(5, &[1], &["a2.rs"], false),
+        ];
+        let busy = BTreeSet::from(["c.rs".to_string()]);
+        let batches = pack_batches(&tasks, &[1, 2], &[3, 4, 5], &busy, BatchCap { tasks: 5, files: 3 });
+        assert_eq!(batch_tasks(&batches), vec![vec![1, 5], vec![2]], "{batches:?}");
+    }
+
+    /// A 1 divide `a.rs` com uma onda aberta, a 2 não divide nada com
+    /// ninguém: cabem juntas no teto, mas saem em dois lotes, porque a 2 não
+    /// espera a onda aberta com a 1.
+    #[test]
+    fn part_held_by_an_open_wave_does_not_share_a_batch_with_a_free_part() {
+        let tasks = [task(1, &[], &["a.rs"], false), task(2, &[], &["b.rs"], false)];
+        let busy = BTreeSet::from(["a.rs".to_string()]);
+        let batches = pack_batches(&tasks, &[1, 2], &[], &busy, BATCH_CAP);
+        assert_eq!(batch_tasks(&batches), vec![vec![1], vec![2]], "{batches:?}");
+    }
+
+    /// Seis tarefas em corrente, cada uma com `shared.rs` e cinco arquivos
+    /// próprios, do tamanho das tarefas da cadeia do mapa: as cinco primeiras
+    /// saem num lote só, com 26 arquivos; a sexta, que ainda caberia em
+    /// arquivos, fica pelo teto de tarefas.
+    #[test]
+    fn five_chained_tasks_the_size_of_the_map_ones_go_out_in_a_single_batch() {
+        let tasks: Vec<BacklogTask<u32>> = (1..=6u32)
+            .map(|n| {
+                let deps: Vec<u32> = if n == 1 { Vec::new() } else { vec![n - 1] };
+                task_with(n, &deps, &own_files(&format!("t{n}_"), 5))
+            })
+            .collect();
+        let batches = pack_batches(&tasks, &[1], &[2, 3, 4, 5, 6], &BTreeSet::new(), BATCH_CAP);
+        assert_eq!(batch_tasks(&batches), vec![vec![1, 2, 3, 4, 5]], "{batches:?}");
+        assert_eq!(batches[0].files.len(), 26);
+    }
+
+    /// A 1 tem `shared.rs` e 30 arquivos próprios, 31 ao todo. A 2 espera a
+    /// 1 e traz dois arquivos novos: passaria de 32 e fica. A 3 espera a 1 e
+    /// traz um novo: fecha o lote em 32.
+    #[test]
+    fn file_cap_closes_the_batch() {
+        let tasks = [
+            task_with(1, &[], &own_files("a", BATCH_CAP.files - 2)),
+            task_with(2, &[1], &["shared.rs".to_string(), "b1.rs".to_string(), "b2.rs".to_string()]),
+            task_with(3, &[1], &["shared.rs".to_string(), "c1.rs".to_string()]),
+        ];
+        let batches = pack_batches(&tasks, &[1], &[2, 3], &BTreeSet::new(), BATCH_CAP);
+        assert_eq!(batch_tasks(&batches), vec![vec![1, 3]], "{batches:?}");
+        assert_eq!(batches[0].files.len(), BATCH_CAP.files);
     }
 
     // O backlog inteiro, com dependência e arquivo compartilhado, despachada

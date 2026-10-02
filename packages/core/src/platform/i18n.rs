@@ -8,8 +8,7 @@
 //! across three or more files. There was no single place to:
 //!
 //! - declare the canonical locale codes (BCP-47, never short forms);
-//! - translate a banner key into the user's language;
-//! - slugify free-form text in a way that respects PT-vs-EN accent rules.
+//! - translate a banner key into the user's language.
 //!
 //! This module is now that single place, a boundary-typed module exported
 //! from `mustard_core`.
@@ -226,64 +225,6 @@ fn key_as_static(_key: &str) -> &'static str {
     "<missing-key>"
 }
 
-/// Slugify `text` to a kebab-case identifier, lang-aware.
-///
-/// PT locale strips Latin diacritics (`ç → c`, `ã → a`, …) before kebab-casing
-/// so spec slugs round-trip cleanly. EN locale keeps the input as-is (no
-/// Unicode normalisation): accents are removed only in PT.
-/// Stopword lists differ per locale (basic articles/prepositions are dropped).
-///
-/// The output never contains leading/trailing dashes and never collapses to an
-/// empty string — fully non-alphanumeric input degrades to `"x"`, mirroring
-/// the existing `apps/rt/src/run/scan/interpret.rs::slugify` contract.
-#[must_use]
-pub fn slugify(text: &str, lang: Locale) -> String {
-    let normalised = match lang {
-        Locale::PtBr => crate::domain::text::fold_accents(text),
-        Locale::EnUs => text.to_string(),
-    };
-    let stopwords: &[&str] = match lang {
-        Locale::PtBr => crate::domain::text::SLUG_STOPWORDS_PT,
-        Locale::EnUs => crate::domain::text::SLUG_STOPWORDS_EN,
-    };
-    // 1. lowercase + split on non-alphanumeric.
-    let mut tokens: Vec<String> = Vec::new();
-    let mut cur = String::new();
-    for ch in normalised.chars() {
-        let lc = ch.to_ascii_lowercase();
-        if lc.is_ascii_alphanumeric() {
-            cur.push(lc);
-        } else if !cur.is_empty() {
-            tokens.push(std::mem::take(&mut cur));
-        }
-    }
-    if !cur.is_empty() {
-        tokens.push(cur);
-    }
-    // 2. drop stopwords — but only when at least one token in the input is
-    //    longer than a single character. Pure single-char inputs (e.g.
-    //    `"ç ã õ"`) and pure-stopword inputs keep every token so callers
-    //    always get *something* slug-shaped back. After filtering, if nothing
-    //    is left, fall back to the original tokens.
-    let has_long = tokens.iter().any(|tok| tok.chars().count() > 1);
-    let kept: Vec<String> = if has_long {
-        let filtered: Vec<String> = tokens
-            .iter()
-            .filter(|tok| !stopwords.contains(&tok.as_str()))
-            .cloned()
-            .collect();
-        if filtered.is_empty() { tokens } else { filtered }
-    } else {
-        tokens
-    };
-    let joined = kept.join("-");
-    if joined.is_empty() {
-        "x".to_string()
-    } else {
-        joined
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Type aliases — `SupportedLocale` (catalogue) + `UserLocale` (open BCP-47)
 // ---------------------------------------------------------------------------
@@ -414,7 +355,7 @@ impl FileMarker {
 /// EN canonical first (`(create)` for [`FileMarker::Create`]). The synonyms
 /// are data in the [`translate`] catalogue (`marker.*` keys, `|`-separated per
 /// locale) — the SINGLE origin shared by the drafter and every validator
-/// (`analyze-validation`, scope-classify), so a localized marker like the
+/// (the validation analysis, the scope classifier), so a localized marker like the
 /// pt-BR `(novo)` can never drift out of recognition.
 ///
 /// Spellings are lowercase literals including the surrounding parentheses;
@@ -443,6 +384,37 @@ pub fn line_has_file_marker(line: &str, marker: FileMarker) -> bool {
     file_marker_synonyms(marker).iter().any(|syn| lower.contains(syn))
 }
 
+// ---------------------------------------------------------------------------
+// Palavras em maiúsculas nas frases do programa
+// ---------------------------------------------------------------------------
+
+/// As palavras em maiúsculas que podem ficar fora de crase numa frase do
+/// programa: siglas e unidades de uso comum. Uma sigla nova só passa se
+/// alguém a puser aqui de propósito.
+pub const CAPS_ALLOWED: [&str; 4] = ["JSON", "UTF", "MB", "GB"];
+
+/// Cada palavra de duas letras ou mais, toda em maiúsculas e fora de crase,
+/// uma vez só, na ordem em que aparece, salvo as de [`CAPS_ALLOWED`].
+///
+/// É a regra única das frases fixas do programa, as do catálogo e as da
+/// ajuda dos comandos: elas são escritas por nós, então a conferência não
+/// adivinha se a palavra é grito ou sigla, e o nome de código vai entre
+/// crases. Lista vazia quer dizer que o texto segue a regra.
+#[must_use]
+pub fn uppercase_words(text: &str) -> Vec<&str> {
+    let mut found = Vec::new();
+    for outside in text.split('`').step_by(2) {
+        for word in outside.split(|c: char| !(c.is_alphanumeric() || c == '_')) {
+            let letters = word.chars().filter(|c| c.is_alphabetic()).count();
+            let upper = letters >= 2 && !word.chars().any(char::is_lowercase);
+            if upper && !CAPS_ALLOWED.contains(&word) && !found.contains(&word) {
+                found.push(word);
+            }
+        }
+    }
+    found
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -454,16 +426,7 @@ mod tests {
     /// são os que a parte gravou. Uma chave que sai, que vai para a parte
     /// errada ou que muda de texto derruba a conferência.
     pub(super) fn assert_part_unchanged(source: &str, prefixes: &[&str], keys: usize, fingerprint: u64) {
-        let arms = source.split("#[cfg(test)]").next().unwrap_or(source);
-        let mut found = BTreeSet::new();
-        for line in arms.lines().map(str::trim_start).filter(|line| line.starts_with("(\"")) {
-            let (key, pattern) = line[2..].split_once('"').expect("the key closes its quotes");
-            assert!(
-                [", Locale::PtBr) =>", ", Locale::EnUs) =>", ", _) =>"].iter().any(|shape| pattern.starts_with(shape)),
-                "each arm is written (\"key\", Locale::PtBr) =>, (\"key\", Locale::EnUs) => or (\"key\", _) =>: {line}"
-            );
-            found.insert(key);
-        }
+        let found = part_keys(source);
         // A impressão é o FNV-1a de 64 bits sobre chave, idioma e texto, na
         // ordem das chaves: estável entre versões do Rust, ao contrário do
         // hasher da biblioteca padrão.
@@ -492,6 +455,231 @@ mod tests {
              write these two numbers in the part's test",
             found.len()
         );
+    }
+
+    /// As chaves de uma parte, lidas do texto do arquivo dela: cada braço do
+    /// `match` antes dos testes, no formato `("chave", Locale::PtBr) =>`,
+    /// `("chave", Locale::EnUs) =>` ou `("chave", _) =>`.
+    fn part_keys(source: &str) -> BTreeSet<&str> {
+        let arms = source.split("#[cfg(test)]").next().unwrap_or(source);
+        let mut found = BTreeSet::new();
+        for line in arms.lines().map(str::trim_start).filter(|line| line.starts_with("(\"")) {
+            let (key, pattern) = line[2..].split_once('"').expect("the key closes its quotes");
+            assert!(
+                [", Locale::PtBr) =>", ", Locale::EnUs) =>", ", _) =>"].iter().any(|shape| pattern.starts_with(shape)),
+                "each arm is written (\"key\", Locale::PtBr) =>, (\"key\", Locale::EnUs) => or (\"key\", _) =>: {line}"
+            );
+            found.insert(key);
+        }
+        found
+    }
+
+    /// O texto de cada parte do catálogo, na mesma ordem de `PARTS`. O tamanho
+    /// vem de `PARTS`: uma parte nova não compila sem o texto dela aqui.
+    const PART_SOURCES: [&str; PARTS.len()] = [
+        include_str!("i18n/flow.rs"),
+        include_str!("i18n/survey.rs"),
+        include_str!("i18n/prompt.rs"),
+        include_str!("i18n/gates.rs"),
+        include_str!("i18n/pending.rs"),
+        include_str!("i18n/session.rs"),
+        include_str!("i18n/map.rs"),
+        include_str!("i18n/events.rs"),
+        include_str!("i18n/page.rs"),
+        include_str!("i18n/install.rs"),
+        include_str!("i18n/spec_text.rs"),
+    ];
+
+    /// O texto com cada marcador (`{spec}`, `{count}`…) trocado por uma
+    /// palavra, como ele chega a quem lê. Chave com outra coisa dentro, como o
+    /// JSON de um exemplo, fica como está.
+    fn with_markers_filled(text: &str) -> String {
+        let mut out = String::with_capacity(text.len());
+        let mut rest = text;
+        while let Some(open) = rest.find('{') {
+            out.push_str(&rest[..open]);
+            let after = &rest[open + 1..];
+            match after.find('}') {
+                Some(close) if close > 0 && after[..close].chars().all(|c| c.is_ascii_alphanumeric() || c == '_') => {
+                    out.push_str("item");
+                    rest = &after[close + 1..];
+                }
+                _ => {
+                    out.push('{');
+                    rest = after;
+                }
+            }
+        }
+        out.push_str(rest);
+        out
+    }
+
+    /// Os defeitos de escrita de um texto do catálogo, cada um com a chave e o
+    /// idioma: os da conferência das respostas e, além deles, cada palavra
+    /// toda em maiúsculas fora de crase. O texto é medido com as lacunas já
+    /// preenchidas.
+    fn catalog_text_defects(key: &str, lang: Locale, raw: &str) -> Vec<String> {
+        let text = with_markers_filled(raw);
+        let report = crate::domain::clarity::measure(&text, &[], Some(lang));
+        let mut defects: Vec<String> =
+            report.defects(lang).into_iter().map(|defect| format!("{key} ({lang}): {defect}")).collect();
+        for word in uppercase_words(&text) {
+            defects.push(format!("{key} ({lang}): uppercase word {word} outside backticks"));
+        }
+        defects
+    }
+
+    /// Toda frase do catálogo, nos dois idiomas, passa na mesma conferência de
+    /// escrita das respostas: frase de até 25 palavras, sigla explicada, nenhum
+    /// código interno, leitura fácil e o idioma certo. Além dela, nenhuma
+    /// palavra toda em maiúsculas fora de crase, salvo a lista curta de
+    /// exceções. Cada texto é medido sozinho, com os
+    /// marcadores já trocados por uma palavra, porque é assim que ele chega a
+    /// quem lê. A falha lista cada chave, o idioma e o defeito.
+    #[test]
+    fn every_catalog_text_reads_clearly() {
+        let mut failures = Vec::new();
+        let mut measured = 0;
+        for source in PART_SOURCES {
+            for key in part_keys(source) {
+                for lang in [Locale::PtBr, Locale::EnUs] {
+                    measured += 1;
+                    failures.extend(catalog_text_defects(key, lang, translate(key, lang)));
+                }
+            }
+        }
+        assert!(measured > 1_000, "the measure reached every part, in both languages: {measured} texts");
+        assert!(
+            failures.is_empty(),
+            "{} catalog texts fail the writing check:\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
+    }
+
+    /// As posições, no texto, de cada vez que ele cita `grep`, `Grep` ou
+    /// `Glob` como palavra inteira (`pgrep` não conta).
+    fn search_tool_mentions(text: &str) -> Vec<usize> {
+        let lower = text.to_ascii_lowercase();
+        let mut found = Vec::new();
+        for word in ["grep", "glob"] {
+            for (at, _) in lower.match_indices(word) {
+                let before = lower[..at].chars().next_back();
+                let after = lower[at + word.len()..].chars().next();
+                if !before.is_some_and(char::is_alphanumeric) && !after.is_some_and(char::is_alphanumeric) {
+                    found.push(at);
+                }
+            }
+        }
+        found.sort_unstable();
+        found
+    }
+
+    /// Nenhum texto do catálogo, nos dois idiomas, manda achar código com
+    /// `Grep`, `Glob` ou `grep` antes de o mapa não achar nada. Só quatro
+    /// chaves as citam: a linha do não achou, o aviso de que o achado pode não
+    /// ser o lugar, a dica do mapa, que diz que essas buscas passam pelo
+    /// Mustard, e o portão da chave, em que `glob` é o parâmetro da busca e
+    /// não uma ferramenta a usar.
+    #[test]
+    fn no_catalog_text_sends_the_reader_to_grep_or_glob_before_the_map_finds_nothing() {
+        let mut cited = BTreeSet::new();
+        for source in PART_SOURCES {
+            for key in part_keys(source) {
+                for lang in [Locale::PtBr, Locale::EnUs] {
+                    let text = translate(key, lang);
+                    let mentions = search_tool_mentions(text);
+                    let Some(first) = mentions.first().copied() else { continue };
+                    cited.insert(key);
+                    match key {
+                        "map.search.not_found" | "map.search.use_tools" | "config_key.swept_tool" => {}
+                        "scan.map.pointer" => {
+                            let through = text.find("passam pelo Mustard").or_else(|| text.find("go through Mustard"));
+                            assert!(through.is_some_and(|at| first < at), "{key} ({lang}): the hint says the search goes through Mustard: {text}");
+                        }
+                        _ => panic!("{key} ({lang}) sends the reader to a search tool to find code: {text}"),
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            cited.into_iter().collect::<Vec<_>>(),
+            ["config_key.swept_tool", "map.search.not_found", "map.search.use_tools", "scan.map.pointer"],
+            "the four keys are the only ones that cite a search tool"
+        );
+    }
+
+    /// A conferência do catálogo mede o texto como ele chega a quem lê: o
+    /// marcador vira uma palavra, e a frase que passa de 25 palavras só com
+    /// ele cai.
+    #[test]
+    fn a_marker_counts_as_one_word_in_the_catalog_measure() {
+        assert_eq!(with_markers_filled("A spec {spec} tem {count} itens."), "A spec item tem item itens.");
+        assert_eq!(with_markers_filled("O exemplo {\"class\":\"x\"} fica."), "O exemplo {\"class\":\"x\"} fica.");
+        assert_eq!(with_markers_filled("Sem par { aqui."), "Sem par { aqui.");
+        let words = |n: usize| vec!["palavra"; n].join(" ");
+        let measure = |text: &str| crate::domain::clarity::measure(&with_markers_filled(text), &[], None);
+        assert!(measure(&format!("{} {{spec}}.", words(24))).long_sentences.is_empty(), "25 words pass");
+        assert_eq!(measure(&format!("{} {{spec}}.", words(25))).long_sentences.len(), 1, "26 words fail");
+    }
+
+    /// Palavra toda em maiúsculas fora de crase derruba o texto do catálogo,
+    /// com a chave, o idioma e a palavra: o "NÃO" solto, o nome de código e a
+    /// sigla fora da lista, mesmo explicada. Entre crases ela passa, e as
+    /// exceções da lista também.
+    #[test]
+    fn an_uppercase_word_outside_backticks_fails_the_catalog_measure() {
+        let key = "spec_events.report_carries_return_line";
+        let defect = |word: &str| format!("{key} (pt-BR): uppercase word {word} outside backticks");
+        assert_eq!(catalog_text_defects(key, Locale::PtBr, "Isso NÃO apaga nada."), vec![defect("NÃO")]);
+        assert_eq!(
+            catalog_text_defects(key, Locale::PtBr, "O relatório leva as linhas USAGE, PAUSED e USAGE de novo."),
+            vec![defect("USAGE"), defect("PAUSED")]
+        );
+        assert_eq!(catalog_text_defects(key, Locale::PtBr, "Busque pelo código, como DEC-0142."), vec![defect("DEC")]);
+        assert_eq!(catalog_text_defects(key, Locale::PtBr, "O PR (pull request) de {spec} saiu."), vec![defect("PR")]);
+        for calm in [
+            "Isso `NÃO` apaga nada.",
+            "O relatório leva as linhas `USAGE` e `PAUSED`.",
+            "Busque pelo código, como `DEC-0142`.",
+            "O JSON em UTF-8 passa de 2 MB, longe de 1 GB.",
+            "O item A de {spec} saiu.",
+        ] {
+            assert_eq!(catalog_text_defects(key, Locale::PtBr, calm), Vec::<String>::new(), "{calm}");
+        }
+    }
+
+    /// Nenhum texto do catálogo, em nenhuma das duas línguas, diz que o mapa
+    /// ou o terreno já está na janela de quem lê: o mapa não vem mais
+    /// injetado no início da sessão, e um texto que dissesse isso mandaria o
+    /// modelo confiar num resumo que não existe.
+    #[test]
+    fn no_catalog_text_says_the_map_is_in_the_window() {
+        let says_in_window = |text: &str, window: &str, subjects: &[&str]| {
+            let text = text.to_lowercase();
+            let words: Vec<&str> = text.split(|c: char| !c.is_alphanumeric()).collect();
+            words.contains(&window) && subjects.iter().any(|subject| words.contains(subject))
+        };
+        let mut found = Vec::new();
+        let mut swept = 0;
+        for source in PART_SOURCES {
+            for key in part_keys(source) {
+                for (lang, window, subjects) in [
+                    (Locale::PtBr, "janela", &["mapa", "terreno", "resumo"][..]),
+                    (Locale::EnUs, "window", &["map", "terrain", "summary"][..]),
+                ] {
+                    swept += 1;
+                    if says_in_window(translate(key, lang), window, subjects) {
+                        found.push(format!("{key} ({lang})"));
+                    }
+                }
+            }
+        }
+        assert!(swept > 1_000, "the sweep reached every part, in both languages: {swept} texts");
+        assert!(found.is_empty(), "these texts put the map in the window: {found:?}");
+        assert!(says_in_window("O terreno já está na sua janela.", "janela", &["terreno"]));
+        assert!(says_in_window("The map is already in your window.", "window", &["map"]));
+        assert!(!says_in_window("Começa numa janela limpa.", "janela", &["mapa", "terreno", "resumo"]));
     }
 
     /// Cada começo de chave é respondido por uma parte só do catálogo.
@@ -550,8 +738,6 @@ mod tests {
         );
         assert_eq!(translate("wave.label", Locale::PtBr), "Onda");
         assert_eq!(translate("wave.label", Locale::EnUs), "W");
-        assert_eq!(translate("ac.label", Locale::PtBr), "CA");
-        assert_eq!(translate("ac.label", Locale::EnUs), "AC");
     }
 
     #[test]
@@ -559,40 +745,6 @@ mod tests {
         // Missing keys return a stable sentinel rather than panicking.
         assert_eq!(translate("banner.missing.xyz", Locale::PtBr), "<missing-key>");
         assert_eq!(translate("banner.missing.xyz", Locale::EnUs), "<missing-key>");
-    }
-
-    #[test]
-    fn slugify_pt_strips_accents() {
-        assert_eq!(slugify("Configuração do Idioma", Locale::PtBr), "configuracao-idioma");
-        assert_eq!(slugify("São Paulo é grande", Locale::PtBr), "sao-paulo-grande");
-        assert_eq!(slugify("ç ã õ", Locale::PtBr), "c-a-o");
-    }
-
-    #[test]
-    fn slugify_pt_drops_em_a_contractions() {
-        // `no` ("em o") is a stopword now: it must not eat a token slot and leave
-        // a `...-erro-no` tail — the meaningful word (`nome`) survives instead.
-        assert_eq!(slugify("erro no nome", Locale::PtBr), "erro-nome");
-        assert_eq!(slugify("tratamento na base", Locale::PtBr), "tratamento-base");
-        assert_eq!(slugify("volta ao topo", Locale::PtBr), "volta-topo");
-    }
-
-    #[test]
-    fn slugify_en_keeps_input_keeps_no_accents() {
-        // EN never had accents to strip in the first place; stopwords differ.
-        assert_eq!(slugify("The Quick Brown Fox", Locale::EnUs), "quick-brown-fox");
-        // PT stopwords are NOT applied in EN mode.
-        assert_eq!(slugify("de para", Locale::EnUs), "de-para");
-    }
-
-    #[test]
-    fn slugify_handles_empty_and_punctuation() {
-        // Mirror the existing `interpret::slugify` floor — degrade to "x".
-        assert_eq!(slugify("///", Locale::PtBr), "x");
-        assert_eq!(slugify("", Locale::EnUs), "x");
-        // A single-token input is preserved even if it would be a stopword,
-        // so callers always get *something* slug-shaped back.
-        assert_eq!(slugify("the", Locale::EnUs), "the");
     }
 
     #[test]

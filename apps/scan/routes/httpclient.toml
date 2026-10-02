@@ -1,0 +1,58 @@
+# As chamadas da tela feitas com o `HttpClient` do .NET, como as de uma página
+# Blazor, no `.cs` dela e no código da `.razor` e da `.cshtml`. O nome deste
+# arquivo é o nome do framework; a consulta que acha as chamadas está em
+# `httpclient/routes.scm`, e o que cada captura dela diz, em `src/routes.rs`.
+#
+# A chamada é a de um método do cliente, com o caminho escrito ali
+# (`Http.GetFromJsonAsync<Pedido>("api/pedidos/1")`) ou na mensagem que ela
+# manda (`Http.SendAsync(new HttpRequestMessage(HttpMethod.Get, "api/x"))`).
+# O nome que só o cliente tem (`…JsonAsync`, `GetStringAsync`) conta com
+# qualquer objeto; o que outras bibliotecas também usam (`GetAsync`,
+# `DeleteAsync`), só no cliente declarado com o tipo `HttpClient` ou feito no
+# arquivo. O `BaseAddress = new Uri("https://loja.com/api/")`, ao fazer o
+# cliente ou depois, é a base, sem o esquema e a máquina. O caminho escrito
+# como soma que começa por texto (`"api/pedidos/" + id + "/itens"`) junta os
+# pedaços, com um parâmetro no lugar de cada valor; a soma que começa pelo
+# valor não faz chamada.
+#
+# Os campos:
+# - `language`: as línguas do registro (`languages.toml`) cujos arquivos a
+#   consulta lê. Ela precisa compilar na gramática de cada uma.
+# - `imports`: a regra roda no arquivo que importa um destes nomes, ou um
+#   caminho que começa por ele seguido de separador (`System.Net.Http.Json`).
+# - `manifest_dependencies`: a regra roda também, sem import nenhum, nos
+#   arquivos cujo manifesto mais próximo acima declara uma destas
+#   dependências: o SDK do projeto, que traz o `System.Net.Http` no `using`
+#   implícito, sem escrevê-lo no arquivo.
+# - `methods`: o nome do método e o método HTTP que ele diz. No `SendAsync`,
+#   o método é o do `HttpMethod` da mensagem, e o da tabela não vale. O nome
+#   fora da tabela não é chamada.
+# - `param_wrappers`: as marcas que abrem e fecham um parâmetro no caminho
+#   (`{id}` em `$"api/pedidos/{id}"`).
+
+language = ["csharp", "razor", "cshtml"]
+imports = ["System.Net.Http"]
+manifest_dependencies = [
+  "Microsoft.NET.Sdk",
+  "Microsoft.NET.Sdk.Web",
+  "Microsoft.NET.Sdk.BlazorWebAssembly",
+  "Microsoft.NET.Sdk.Razor",
+  "Microsoft.NET.Sdk.Worker",
+]
+param_wrappers = [["{", "}"]]
+
+[methods]
+GetFromJsonAsync = "GET"
+GetStringAsync = "GET"
+GetByteArrayAsync = "GET"
+GetStreamAsync = "GET"
+GetAsync = "GET"
+PostAsJsonAsync = "POST"
+PostAsync = "POST"
+PutAsJsonAsync = "PUT"
+PutAsync = "PUT"
+PatchAsJsonAsync = "PATCH"
+PatchAsync = "PATCH"
+DeleteFromJsonAsync = "DELETE"
+DeleteAsync = "DELETE"
+SendAsync = "GET"

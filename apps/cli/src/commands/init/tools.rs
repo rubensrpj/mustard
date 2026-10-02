@@ -19,6 +19,8 @@
 use std::path::Path;
 use std::process::Command;
 
+use mustard_core::platform::process;
+
 /// Whether `rtk --version` succeeds (RTK reachable on PATH).
 fn rtk_on_path() -> bool {
     Command::new("rtk")
@@ -110,6 +112,7 @@ fn rg_on_path() -> bool {
 /// command exited successfully. Every spawn failure is swallowed.
 ///
 /// - Windows: try `scoop install ripgrep` first, then `cargo install ripgrep`.
+///   O `scoop` é `scoop.cmd`: roda pelo arquivo que o `PATH` tem para ele.
 /// - Unix: return `false` so the caller prints manual instructions.
 fn install_ripgrep() -> bool {
     let run_ok = |cmd: &mut Command| -> bool {
@@ -117,10 +120,10 @@ fn install_ripgrep() -> bool {
     };
 
     if cfg!(windows) {
-        if run_ok(Command::new("scoop").args(["install", "ripgrep"])) {
+        if run_ok(process::command("scoop").args(["install", "ripgrep"])) {
             return true;
         }
-        return run_ok(Command::new("cargo").args(["install", "ripgrep"]));
+        return run_ok(process::command("cargo").args(["install", "ripgrep"]));
     }
     false
 }
@@ -148,24 +151,17 @@ pub(crate) fn ensure_code_tools(project_root: &Path, model_path: &Path, path_env
 mod tests {
     use super::*;
 
-    /// Write a fake executable named `name` under `dir` that appends its own
-    /// argv to `log` — the "programs used in fake temp dir, log arguments
-    /// instead of installing anything real" shape the proof needs. On Windows
-    /// it is a `.cmd` batch file, an extension the machine runner looks for; a
-    /// shell script under a bare name is found on Unix only.
+    /// Grava em `dir` um programa falso chamado `name`, que anota os próprios
+    /// argumentos em `log` em vez de instalar qualquer coisa. No Windows é um
+    /// `.cmd`, extensão que o executor da máquina procura; fora dele, um
+    /// script de shell com o nome puro.
     fn write_fake_program(dir: &Path, name: &str, log: &Path) {
-        let path = if cfg!(windows) { dir.join(format!("{name}.cmd")) } else { dir.join(name) };
-        let script = if cfg!(windows) {
-            format!("@echo off\r\necho %0 %* >> \"{}\"\r\nexit /b 0\r\n", log.display())
+        let (file, script) = if cfg!(windows) {
+            (format!("{name}.cmd"), format!("@echo off\r\necho %0 %* >> \"{}\"\r\nexit /b 0\r\n", log.display()))
         } else {
-            format!("#!/bin/sh\necho \"$0 $*\" >> \"{}\"\nexit 0\n", log.display())
+            (name.to_string(), format!("#!/bin/sh\necho \"$0 $*\" >> \"{}\"\nexit 0\n", log.display()))
         };
-        std::fs::write(&path, script).unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
+        crate::executable::write_executable(&dir.join(file), &script);
     }
 
     /// The proof: a Rust project, with every real toolchain replaced by a
@@ -182,7 +178,7 @@ mod tests {
     fn the_install_sets_up_the_code_tool_of_each_language() {
         let project = tempfile::tempdir().unwrap();
         std::fs::write(project.path().join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
-        let model_path = project.path().join(".claude").join("grain.model.json");
+        let model_path = mustard_core::io::project_map::model_path(project.path());
 
         let bin = tempfile::tempdir().unwrap();
         let log = bin.path().join("log.txt");
@@ -210,7 +206,7 @@ mod tests {
     fn a_language_without_a_catalog_entry_gets_a_no_plugin_notice_instead_of_an_install_attempt() {
         let project = tempfile::tempdir().unwrap();
         std::fs::write(project.path().join("pom.xml"), "<project></project>\n").unwrap();
-        let model_path = project.path().join(".claude").join("grain.model.json");
+        let model_path = mustard_core::io::project_map::model_path(project.path());
 
         let bin = tempfile::tempdir().unwrap();
         let log = bin.path().join("log.txt");

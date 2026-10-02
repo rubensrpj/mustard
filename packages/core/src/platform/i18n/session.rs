@@ -45,6 +45,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // quem chama, já em milhares e arredondados.
         ("statusline.compact", Locale::PtBr) => "compacta em {point}k - faltam {distance}k",
         ("statusline.compact", Locale::EnUs) => "compacts at {point}k - {distance}k left",
+        // O indicador do consumo, na segunda linha da barra: `{change}` vem de
+        // quem chama, já com sinal e com o `%` (`−25%`). Compara o último dia
+        // de trabalho fechado com a média dos sete dias de trabalho anteriores
+        // a ele.
+        ("statusline.spend", Locale::PtBr) => "consumo {change} vs média de 7 dias",
+        ("statusline.spend", Locale::EnUs) => "usage {change} vs 7-day average",
         ("statusline.harness.inert", Locale::PtBr) => "harness inerte",
         ("statusline.harness.inert", Locale::EnUs) => "harness inert",
         // Dormant is NOT inert: inert means someone switched the plugin off,
@@ -67,7 +73,7 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // `{capabilities}` a declaração do banco de dados da página.
         ("session.project_page", Locale::PtBr) => {
             "[Mustard] A página do projeto ainda não foi publicada. Ela é a página do claude.ai que \
-             lista as specs deste projeto, com a fase e o link de cada uma, e o link dela fica na \
+             lista as specs deste projeto, com a fase e o link de cada uma. O link dela fica na \
              barra de status. Publique agora o template dela, o arquivo `{template}`, lido uma vez só \
              e publicado como está, declarando o banco de dados da página: `{capabilities}`. Depois \
              grave o endereço com `mustard-rt run write publish --json \
@@ -76,12 +82,23 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("session.project_page", Locale::EnUs) => {
             "[Mustard] The project page has not been published yet. It is the claude.ai page that \
-             lists this project's specs, with the phase and the link of each one, and its link lives \
+             lists this project's specs, with the phase and the link of each one. Its link lives \
              in the status line. Publish its template now, the file `{template}`, read only once and \
              published as it is, declaring the page's database: `{capabilities}`. Then record the \
              address with `mustard-rt run write publish --json \
              '{\"page\":\"project\",\"ok\":true,\"url\":\"…\"}'`. Never write the address in the \
              reply: it lives in the status line."
+        }
+        // O gasto: o início de toda sessão manda contar o que falta, contar
+        // hoje de novo e copiar as linhas para a página do gasto, que o
+        // comando `spend` prepara.
+        ("session.spend", Locale::PtBr) => {
+            "[Mustard] O gasto de hoje e dos dias fechados vai para a página do gasto a cada início de sessão. \
+             Rode `mustard-rt run spend` e siga a resposta dele. Não escreva o endereço da página na resposta."
+        }
+        ("session.spend", Locale::EnUs) => {
+            "[Mustard] The spend of today and of the closed days goes to the spend page at the start of each \
+             session. Run `mustard-rt run spend` and follow its answer. Never write the page address in the reply."
         }
         // O merge feito por outra pessoa: o pull request da spec atual entrou,
         // e o início da sessão rodou o mesmo caminho do merge do Mustard.
@@ -106,12 +123,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Tidying up the branch {branch} did not finish ({reason}), and it stayed on this machine."
         }
         ("session.landed.pending", Locale::PtBr) => {
-            "Pergunte ao usuário o que fazer com cada pendência nascida nela — virar spec, ficar na \
-             lista ou sair com motivo —, pelo título: {items}."
+            "Pergunte ao usuário, pelo título, o que fazer com cada pendência nascida nela: {items}. \
+             Cada uma pode virar spec, ficar na lista ou sair com motivo."
         }
         ("session.landed.pending", Locale::EnUs) => {
-            "Ask the user what to do with each pending item born in it — turn it into a spec, keep \
-             it on the list, or drop it with a reason —, by title: {items}."
+            "Ask the user, by title, what to do with each pending item born in it: {items}. Each \
+             one can become a spec, stay on the list, or leave with a reason."
         }
         ("session.provider_silent", Locale::PtBr) => {
             "[Mustard] A spec {spec} está com o pull request aberto, e o provedor não respondeu se \
@@ -151,6 +168,19 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "[Mustard] The Claude Code plugin is on Mustard {plugin}, and the running binary is \
              {running}. Suggest `/mustard:upsert` and reopening Claude Code."
         }
+        // O gancho velho, só no código-fonte do Mustard: `{hook}` e `{tip}` são
+        // commits, `{base}` o nome da base e `{count}` quantos arquivos de código
+        // mudaram entre os dois.
+        ("session.old_hook", Locale::PtBr) => {
+            "[Mustard] O programa dos ganchos é do commit {hook}. A base {base} já está no commit \
+             {tip}, com {count} arquivo(s) de código mudado(s) depois dele. Rode \
+             `scripts/dev-install.sh` e reabra a sessão."
+        }
+        ("session.old_hook", Locale::EnUs) => {
+            "[Mustard] The hooks program is from commit {hook}. The base {base} is already at commit \
+             {tip}, with {count} code file(s) changed after it. Run `scripts/dev-install.sh` and \
+             reopen the session."
+        }
 
         // Aviso de disco do início da sessão: `{total}` e `{count}` são
         // preenchidos pelo chamador (`session_start_inject::disk_notice`).
@@ -170,7 +200,7 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Responda em português do Brasil, em texto simples: frases curtas e nenhum código interno."
         }
         ("prompt_entry.line", Locale::EnUs) => {
-            "Answer in US English, in plain text: short sentences and no internal codes."
+            "Answer in American English, in plain text: short sentences and no internal codes."
         }
         ("prompt_entry.line.undeclared", Locale::PtBr) => {
             "Responda no idioma de quem escreve, em texto simples: frases curtas e nenhum código interno."
@@ -195,8 +225,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("session.rs"),
             super::PREFIXES,
-            21,
-            0x3135_b272_fd04_2958,
+            24,
+            0xd48b_aa1a_54cd_f681,
         );
     }
 

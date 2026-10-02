@@ -22,13 +22,17 @@
 //!
 //! The UNIT/MEMBER line every entry below encodes: a named type is a unit; a
 //! free (top-level) function is a unit; anything declared INSIDE a type — a
-//! method, a field, a property, an enum member — is a member. `mine.rs` mines
-//! roles from units only, so a dialect that files a member as `function`
-//! silently promotes helpers into architecture.
+//! method, a field, a property, an enum member — is a member. O kind é o que o
+//! mapa devolve com cada declaração, e o grafo o lê: um campo ou uma
+//! propriedade é lido, nunca chamado, e nenhuma chamada liga a ele; e os
+//! membros de um tipo saem com os métodos primeiro.
+
+#[path = "support/manifest_dir.rs"]
+mod manifest_dir;
+#[path = "support/model.rs"]
+mod model;
 
 use std::collections::BTreeSet;
-use std::path::PathBuf;
-use std::process::Command;
 
 /// Scan a committed fixture into a temp model and return every
 /// `(declaration name, kind)` pair it produced, deduplicated and sorted.
@@ -37,19 +41,9 @@ use std::process::Command;
 /// by fixture and pid, so tests running in parallel never yank each other's
 /// output directory.
 fn pairs_for(fixture_dir: &str) -> BTreeSet<(String, String)> {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures").join(fixture_dir);
+    let root = manifest_dir::manifest_dir().join("tests").join("fixtures").join(fixture_dir);
     let temp = tempfile::Builder::new().prefix(&format!("scan-content-{}-", fixture_dir)).tempdir().unwrap();
-    let tmp = temp.path().to_path_buf();
-    let model = tmp.join("grain.model.json");
-
-    let out = Command::new(env!("CARGO_BIN_EXE_scan"))
-        .args(["scan", root.to_str().expect("fixture path"), "--out", model.to_str().expect("model path")])
-        .output()
-        .expect("run scan over fixture");
-    assert!(out.status.success(), "scan failed: {}", String::from_utf8_lossy(&out.stderr));
-
-    let text = std::fs::read_to_string(&model).expect("read model");
-    let v: serde_json::Value = serde_json::from_str(&text).expect("valid model JSON");
+    let (v, _) = model::scan(&root, temp.path(), &[]);
     v["modules"]
         .as_array()
         .expect("model.modules")
@@ -128,12 +122,19 @@ fn python_files_a_module_level_def_as_unit_and_a_class_def_as_member() {
 fn dart_files_a_library_function_as_unit_and_a_body_member_as_member() {
     // `summarize` is declared at library level — a unit. `describe` (class),
     // `touch` (mixin, abstract) and `shout` (extension) are members, and the
-    // three of them reach the engine through two different wrappers.
+    // three of them reach the engine through two different wrappers. Os
+    // campos da classe, o `get` e os itens do enum são membros também, cada
+    // um com o seu tipo.
     assert_pairs(
         "graph_dart",
         &[
             ("Role", "enum"),
+            ("admin", "enum_member"),
+            ("member", "enum_member"),
             ("Account", "class"),
+            ("id", "field"),
+            ("visits", "field"),
+            ("label", "property"),
             // The constructor is a member of its class, like a method.
             ("Account", "method"),
             ("describe", "method"),
@@ -235,6 +236,9 @@ fn csharp_files_every_member_as_member_because_it_has_no_free_function() {
             ("User", "class"),
             ("Name", "property"),
             ("UserService", "class"),
+            // O parâmetro escrito no cabeçalho do tipo é parâmetro, e não
+            // campo: a assinatura do tipo já o traz.
+            ("prefix", "parameter"),
             ("Load", "method"),
         ],
     );

@@ -199,21 +199,6 @@ swap_file_root_owned() {
   chmod 755 "$destino"
 }
 
-# --- o mesmo, para uma pasta inteira (os moldes da cópia do sistema) --------
-swap_tree_root_owned() {
-  fonte_dir=$1
-  destino_dir=$2
-  backup_dir=$3
-  if [ -d "$destino_dir" ]; then
-    mkdir -p "$(dirname -- "$backup_dir")"
-    cp -pR "$destino_dir" "$backup_dir"
-  fi
-  rm -rf "$destino_dir"
-  mkdir -p "$(dirname -- "$destino_dir")"
-  cp -R "$fonte_dir" "$destino_dir"
-  chown -R root:root "$destino_dir"
-}
-
 # --- o oposto de cada uma, para o --restore ----------------------------------
 # Sem backup, o destino não existia antes da troca — o desfazer tem de
 # APAGAR o que a troca criou, não deixá-lo para trás.
@@ -259,7 +244,6 @@ if [ -n "$SYSTEM_ONLY_RELEASE_DIR" ]; then
   for b in mustard mustard-rt scan; do
     swap_file_root_owned "$SYSTEM_ONLY_RELEASE_DIR/$b" "$SYSTEM_DIR/bin/$b" "$SYSTEM_ONLY_BACKUP_DIR/bin/$b"
   done
-  swap_tree_root_owned "$REPO_ROOT/apps/cli/templates" "$SYSTEM_DIR/templates" "$SYSTEM_ONLY_BACKUP_DIR/templates"
   # A pasta datada nasce de root (este modo só roda assim, via sudo) dentro da
   # pasta pessoal de quem chamou — sem devolver o DONO DAS PASTAS a essa
   # pessoa, ela não apaga o próprio backup depois sem sudo de novo. Só as
@@ -287,7 +271,6 @@ if [ -n "$RESTORE_SYSTEM_ONLY_DIR" ]; then
   for b in mustard mustard-rt scan; do
     restore_file "$RESTORE_SYSTEM_ONLY_DIR/bin/$b" "$SYSTEM_DIR/bin/$b"
   done
-  restore_tree "$RESTORE_SYSTEM_ONLY_DIR/templates" "$SYSTEM_DIR/templates"
   echo "==> Sistema restaurado a partir de $RESTORE_SYSTEM_ONLY_DIR."
   exit 0
 fi
@@ -338,7 +321,6 @@ if [ -n "$RESTORE_DIR" ]; then
     for b in mustard mustard-rt scan; do
       restore_file "$RESTORE_DIR/plugin/bin/$b" "$PLUGIN_COPY/bin/$b"
     done
-    restore_tree "$RESTORE_DIR/plugin/bin/templates" "$PLUGIN_COPY/bin/templates"
     restore_tree "$RESTORE_DIR/plugin/commands" "$PLUGIN_COPY/commands"
     restore_tree "$RESTORE_DIR/plugin/hooks" "$PLUGIN_COPY/hooks"
     restore_tree "$RESTORE_DIR/plugin/output-styles" "$PLUGIN_COPY/output-styles"
@@ -352,7 +334,6 @@ if [ -n "$RESTORE_DIR" ]; then
       for b in mustard mustard-rt scan; do
         restore_file "$RESTORE_DIR/system/bin/$b" "$SYSTEM_DIR/bin/$b"
       done
-      restore_tree "$RESTORE_DIR/system/templates" "$SYSTEM_DIR/templates"
     else
       echo "==> A cópia do sistema ($SYSTEM_DIR) pede administrador. Para restaurá-la:"
       echo "        sudo env MUSTARD_DEV_INSTALL_SYSTEM_DIR=\"$SYSTEM_DIR\" sh \"$SCRIPT_PATH\" --restore-system-only \"$RESTORE_DIR/system\""
@@ -415,14 +396,13 @@ if [ -e "$BACKUP_DIR" ]; then
 fi
 mkdir "$BACKUP_DIR"
 
-# --- cópia do plugin: os três programas, os moldes, o estilo de resposta,
-#     os comandos e os ganchos. O selo de versão (bin/.version) nunca entra
+# --- cópia do plugin: os três programas, o estilo de resposta, os comandos
+#     e os ganchos. O selo de versão (bin/.version) nunca entra
 #     aqui — nem para ler, nem para trocar, nem para o backup.
 echo "==> Trocando a cópia do plugin ($PLUGIN_COPY)…"
 for b in mustard mustard-rt scan; do
   swap_file "$RELEASE_DIR/$b" "$PLUGIN_COPY/bin/$b" "$BACKUP_DIR/plugin/bin/$b"
 done
-swap_tree "$REPO_ROOT/apps/cli/templates" "$PLUGIN_COPY/bin/templates" "$BACKUP_DIR/plugin/bin/templates"
 swap_tree "$REPO_ROOT/plugin/commands" "$PLUGIN_COPY/commands" "$BACKUP_DIR/plugin/commands"
 swap_tree "$REPO_ROOT/plugin/hooks" "$PLUGIN_COPY/hooks" "$BACKUP_DIR/plugin/hooks"
 swap_tree "$REPO_ROOT/plugin/output-styles" "$PLUGIN_COPY/output-styles" "$BACKUP_DIR/plugin/output-styles"
@@ -433,7 +413,6 @@ if [ "$(id -u)" -eq 0 ]; then
   for b in mustard mustard-rt scan; do
     swap_file "$RELEASE_DIR/$b" "$SYSTEM_DIR/bin/$b" "$BACKUP_DIR/system/bin/$b"
   done
-  swap_tree "$REPO_ROOT/apps/cli/templates" "$SYSTEM_DIR/templates" "$BACKUP_DIR/system/templates"
 else
   echo "==> A cópia do sistema ($SYSTEM_DIR) pede administrador. Para trocá-la:"
   echo "        sudo env MUSTARD_DEV_INSTALL_SYSTEM_DIR=\"$SYSTEM_DIR\" sh \"$SCRIPT_PATH\" --system-copy-only \"$RELEASE_DIR\" \"$BACKUP_DIR/system\""

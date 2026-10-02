@@ -236,7 +236,8 @@ autocomplete=\"off\" spellcheck=\"false\" aria-label=\"{search_label}\"><span cl
             icon = SEARCH_ICON,
             placeholder = t("page.search.placeholder"),
             search_label = t("page.search.label"),
-            not_found = t("page.not_found"),
+            // O exemplo de código da frase vem entre crases e sai como código.
+            not_found = markdown::inline(translate("page.not_found", lang), &std::collections::BTreeSet::new()),
             body = self.body,
             script = SCRIPT,
         )
@@ -476,7 +477,8 @@ mod tests {
             "<button type=\"button\" class=\"menu-btn\" id=\"menuBtn\" aria-controls=\"side\" aria-expanded=\"false\">Seções</button>",
             "<input id=\"q\" type=\"search\" placeholder=\"Buscar texto ou código\"",
             "<kbd>/</kbd>",
-            "<p class=\"empty\" id=\"empty\" hidden>Nada encontrado.",
+            "<p class=\"empty\" id=\"empty\" hidden>Nada encontrado. Tente outra palavra ou o código do item, como \
+             <code>DEC-0142</code>.</p>",
             "data-of=\"{n} de {total}\" data-one=\"{n} item\" data-many=\"{n} itens\"",
         ] {
             assert!(pt.contains(piece), "{piece} is missing:\n{pt}");
@@ -491,7 +493,12 @@ mod tests {
         }
 
         let en = Report::new("demo", "").with_lang("en-US").render();
-        for piece in ["placeholder=\"Search text or code\"", ">Open all</button>", "data-of=\"{n} of {total}\""] {
+        for piece in [
+            "placeholder=\"Search text or code\"",
+            ">Open all</button>",
+            "data-of=\"{n} of {total}\"",
+            "an item&#39;s code, like <code>DEC-0142</code>.</p>",
+        ] {
             assert!(en.contains(piece), "{piece} is missing in English");
         }
     }

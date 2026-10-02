@@ -10,13 +10,18 @@
 //! plugin, os moldes, os comandos, os ganchos e o estilo de resposta — vem
 //! do próprio repositório, não de um resumo escrito à mão.
 
+#[path = "support/manifest_dir.rs"]
+mod manifest_dir;
+#[path = "support/executable.rs"]
+mod executable;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 /// A raiz do repositório, a partir deste crate (`apps/cli`).
 fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
+    manifest_dir::manifest_dir()
         .join("../..")
         .canonicalize()
         .expect("repo root resolves")
@@ -46,13 +51,7 @@ fn read(path: &Path) -> String {
 /// arquivo qualquer que já estivesse lá.
 fn shim_cargo(dir: &Path) {
     let script = "#!/bin/sh\nset -e\nmkdir -p \"$CARGO_TARGET_DIR/release\"\nfor b in scan mustard-rt mustard; do\n  printf 'built-%s' \"$b\" > \"$CARGO_TARGET_DIR/release/$b\"\n  chmod +x \"$CARGO_TARGET_DIR/release/$b\"\ndone\n";
-    let path = dir.join("cargo");
-    write(&path, script);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).expect("chmod shim");
-    }
+    executable::write_executable(&dir.join("cargo"), script);
 }
 
 /// Um executável (qualquer nome) que sempre escreve `stdout` para stdout,
@@ -61,13 +60,7 @@ fn shim_cargo(dir: &Path) {
 /// root sem precisar de root de verdade).
 fn shim_fixed_output(dir: &Path, name: &str, stdout: &str) {
     let script = format!("#!/bin/sh\necho '{stdout}'\n");
-    let path = dir.join(name);
-    write(&path, &script);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).expect("chmod shim");
-    }
+    executable::write_executable(&dir.join(name), &script);
 }
 
 /// Roda `scripts/dev-install.sh` de dentro do repositório de verdade (é dali
@@ -176,13 +169,7 @@ fn seed_system_copy(system_dir: &Path) {
 /// o script tentou tornar dono de quê, sem precisar de privilégio real.
 fn shim_logging_chown(dir: &Path, log: &Path) {
     let script = format!("#!/bin/sh\necho \"$*\" >> \"{}\"\n", log.display());
-    let path = dir.join("chown");
-    write(&path, &script);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).expect("chmod shim");
-    }
+    executable::write_executable(&dir.join("chown"), &script);
 }
 
 /// `id -u` de verdade — decide qual dos dois ramos da cópia do sistema o
@@ -222,20 +209,23 @@ fn the_dev_install_script_swaps_files_in_place() {
     // script não teria como produzir sozinho (ele só escreveria a versão).
     assert_eq!(read(&plugin_copy.join("bin/.version")), VERSION_SEAL_SEED, "o selo de versão mudou");
 
-    // Os moldes, o estilo de resposta e os comandos vêm do repositório de
-    // verdade, não de um resumo escrito à mão para o teste.
-    assert_trees_equal(&plugin_copy.join("bin/templates"), &repo_root().join("apps/cli/templates"));
+    // O estilo de resposta, os comandos e os ganchos vêm do repositório de
+    // verdade, não de um resumo escrito à mão para o teste. A pasta de moldes
+    // que uma instalação antiga deixou ao lado dos programas fica como está:
+    // nenhum programa a lê.
+    assert_eq!(read(&plugin_copy.join("bin/templates/OLD.txt")), "old templates", "a pasta de moldes não é trocada");
     assert_trees_equal(&plugin_copy.join("commands"), &repo_root().join("plugin/commands"));
     assert_trees_equal(&plugin_copy.join("hooks"), &repo_root().join("plugin/hooks"));
     assert_trees_equal(&plugin_copy.join("output-styles"), &repo_root().join("plugin/output-styles"));
 
-    // A pasta datada guarda os originais — inclusive os moldes, os comandos
-    // e os ganchos antigos — mas nunca o selo de versão.
+    // A pasta datada guarda os originais — inclusive os comandos e os
+    // ganchos antigos — mas nunca o selo de versão nem a pasta de moldes,
+    // que não foi trocada.
     let backup_dir = the_dated_backup(&backup_root);
     assert_eq!(read(&backup_dir.join("plugin/bin/mustard")), "old-mustard");
     assert_eq!(read(&backup_dir.join("plugin/bin/mustard-rt")), "old-mustard-rt");
     assert_eq!(read(&backup_dir.join("plugin/bin/scan")), "old-scan");
-    assert_eq!(read(&backup_dir.join("plugin/bin/templates/OLD.txt")), "old templates");
+    assert!(!backup_dir.join("plugin/bin/templates").exists(), "a pasta de moldes não vai para o backup");
     assert_eq!(read(&backup_dir.join("plugin/commands/OLD.md")), "old command");
     assert_eq!(read(&backup_dir.join("plugin/hooks/hooks.json")), "{\"old\":true}");
     assert_eq!(read(&backup_dir.join("plugin/output-styles/OLD.md")), "old style");
@@ -248,7 +238,7 @@ fn the_dev_install_script_swaps_files_in_place() {
         assert_eq!(read(&system_dir.join("bin/mustard")), "built-mustard");
         assert_eq!(read(&system_dir.join("bin/mustard-rt")), "built-mustard-rt");
         assert_eq!(read(&system_dir.join("bin/scan")), "built-scan");
-        assert_trees_equal(&system_dir.join("templates"), &repo_root().join("apps/cli/templates"));
+        assert_eq!(read(&system_dir.join("templates/OLD.txt")), "old system templates");
     } else {
         assert_eq!(read(&system_dir.join("bin/mustard")), "old-system-mustard");
         assert_eq!(read(&system_dir.join("bin/mustard-rt")), "old-system-mustard-rt");
@@ -419,7 +409,7 @@ fn the_printed_sudo_command_swaps_the_system_copy_without_cargo_or_the_real_home
     assert_eq!(read(&system_dir.join("bin/mustard")), "built-mustard");
     assert_eq!(read(&system_dir.join("bin/mustard-rt")), "built-mustard-rt");
     assert_eq!(read(&system_dir.join("bin/scan")), "built-scan");
-    assert_trees_equal(&system_dir.join("templates"), &repo_root().join("apps/cli/templates"));
+    assert_eq!(read(&system_dir.join("templates/OLD.txt")), "old system templates", "a pasta de moldes não é trocada");
 
     // E o original foi para a pasta datada que a rodada sem root já tinha
     // criado — a mesma que o comando impresso citou.
@@ -427,7 +417,7 @@ fn the_printed_sudo_command_swaps_the_system_copy_without_cargo_or_the_real_home
     assert_eq!(read(&backup_dir.join("system/bin/mustard")), "old-system-mustard");
     assert_eq!(read(&backup_dir.join("system/bin/mustard-rt")), "old-system-mustard-rt");
     assert_eq!(read(&backup_dir.join("system/bin/scan")), "old-system-scan");
-    assert_eq!(read(&backup_dir.join("system/templates/OLD.txt")), "old system templates");
+    assert!(!backup_dir.join("system/templates").exists(), "a pasta de moldes não vai para o backup");
 }
 
 /// Desfaz, no fim do escopo, a permissão original de um arquivo — mesmo que
@@ -817,14 +807,13 @@ fn the_system_copy_is_owned_by_root() {
 
     // O dono — a máquina de teste não é root de verdade, então a prova é a
     // chamada que o script fez ao `chown` de mentira: ele tem de pedir
-    // root:root para os três binários e para os moldes.
+    // root:root para os três binários, e a pasta de moldes nem entra.
     let log = read(&chown_log);
     for b in ["mustard", "mustard-rt", "scan"] {
         let expected = format!("root:root {}", system_dir.join("bin").join(b).display());
         assert!(log.contains(&expected), "o script tem de deixar {b} de root:root: log={log}");
     }
-    let templates_line = format!("-R root:root {}", system_dir.join("templates").display());
-    assert!(log.contains(&templates_line), "os moldes da cópia do sistema também têm de ficar de root:root: log={log}");
+    assert!(!log.contains(&system_dir.join("templates").display().to_string()), "a pasta de moldes não é trocada: log={log}");
 }
 
 /// A pasta datada do `--system-copy-only` nasce de root (só roda com sudo)
@@ -1066,15 +1055,16 @@ fn restore_deletes_what_did_not_exist_before_the_swap() {
     let install = run_script(&[], &shim, &home, &system_dir, &cargo_target, &backup_root);
     assert!(install.status.success(), "stdout={}\nstderr={}", String::from_utf8_lossy(&install.stdout), String::from_utf8_lossy(&install.stderr));
 
-    // O script criou as pastas que não existiam, sem backup para elas.
-    assert!(plugin_copy.join("bin/templates").is_dir(), "o script cria os moldes que não existiam");
+    // O script criou as pastas que não existiam, sem backup para elas; a
+    // pasta de moldes não nasce.
+    assert!(plugin_copy.join("commands").is_dir(), "o script cria os comandos que não existiam");
+    assert!(!plugin_copy.join("bin/templates").exists(), "o script não cria pasta de moldes");
     let backup_dir = the_dated_backup(&backup_root);
-    assert!(!backup_dir.join("plugin/bin/templates").exists(), "sem original, não há o que guardar em backup");
+    assert!(!backup_dir.join("plugin/commands").exists(), "sem original, não há o que guardar em backup");
 
     let restore = run_script(&["--restore", backup_dir.to_str().expect("utf8 path")], &shim, &home, &system_dir, &cargo_target, &backup_root);
     assert!(restore.status.success(), "stdout={}\nstderr={}", String::from_utf8_lossy(&restore.stdout), String::from_utf8_lossy(&restore.stderr));
 
-    assert!(!plugin_copy.join("bin/templates").exists(), "o desfazer tem de apagar os moldes que a instalação criou do zero");
     assert!(!plugin_copy.join("commands").exists(), "o desfazer tem de apagar os comandos que a instalação criou do zero");
     assert!(!plugin_copy.join("hooks").exists(), "o desfazer tem de apagar os ganchos que a instalação criou do zero");
     assert!(!plugin_copy.join("output-styles").exists(), "o desfazer tem de apagar o estilo que a instalação criou do zero");

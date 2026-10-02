@@ -11,7 +11,6 @@ O que será instalado (gerenciado pelo apt):
 
 ```
 /usr/lib/mustard/bin/        binários reais
-/usr/lib/mustard/templates/  a carga que o `mustard init` copia para os projetos
 /usr/bin/mustard, …          atalhos no PATH (mustard, mustard-rt, scan, rtk)
 ```
 
@@ -72,8 +71,8 @@ curl -fsSL https://github.com/rubensrpj/mustard/releases/latest/download/install
 
 O instalador chama o `apt`, que:
 
-1. instala os binários do CLI em `/usr/lib/mustard/bin` e os templates em
-   `/usr/lib/mustard/templates`, criando os atalhos em `/usr/bin`;
+1. instala os binários do CLI em `/usr/lib/mustard/bin`, criando os atalhos
+   em `/usr/bin`;
 2. se você passou um projeto, roda `mustard init` nele (cria a pasta `.claude/`
    e o `mustard.json`).
 
@@ -135,7 +134,7 @@ mustard init
 
 Isso escreve, escondidos do git do projeto, o `mustard.json` na raiz e a pasta
 `.claude/`: o `.claude/settings.local.json` (com o gancho do rtk e o estilo de
-resposta do idioma do projeto), o mapa do início da sessão e os três agentes do
+resposta do idioma do projeto), o mapa do início da sessão e os dois agentes do
 Mustard. Os **hooks** do Mustard **não** vêm daqui: chegam junto com o plugin,
 que é o passo do item 6, e é por isso que ele não é opcional.
 
@@ -143,7 +142,7 @@ que é o passo do item 6, e é por isso que ele não é opcional.
 
 ## 6. Instalar o plugin dentro do Claude Code
 
-O `.deb` traz **binários e templates**; ele não toca no seu `~/.claude`. Os comandos `/mustard:*`, o estilo de resposta e os hooks vêm do **plugin do Claude Code** — e esse passo é dado **dentro** do Claude Code, não no terminal.
+O `.deb` traz **os binários**; ele não toca no seu `~/.claude`. Os comandos `/mustard:*`, o estilo de resposta e os hooks vêm do **plugin do Claude Code** — e esse passo é dado **dentro** do Claude Code, não no terminal.
 
 Abra o Claude Code no projeto (`claude`) e digite:
 

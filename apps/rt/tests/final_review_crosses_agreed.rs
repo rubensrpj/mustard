@@ -15,9 +15,11 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use mustard_core::domain::spec_events::SpecLog;
+use mustard_core::domain::spec_events::{SpecEvent, SpecLog};
 use mustard_core::io::spec_events as store;
 use serde_json::{json, Value};
+
+mod support;
 
 const SPEC: &str = "revisao";
 const SESSION: &str = "s-revisao";
@@ -56,13 +58,19 @@ impl Project {
         git(&root, &["add", "-A"]);
         git(&root, &["commit", "-q", "-m", "init"]);
         git(&root, &["checkout", "-q", "-b", "dev"]);
+        support::copies_leave_with_the_test(&root);
         Self { _dir: dir, root, home }
     }
 
     fn command(&self, args: &[&str], stdin: &str) -> std::process::Output {
+        self.command_in(&self.root, args, stdin)
+    }
+
+    /// Como [`Self::command`], rodando de dentro de `dir`.
+    fn command_in(&self, dir: &Path, args: &[&str], stdin: &str) -> std::process::Output {
         let mut child = Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
             .args(args)
-            .current_dir(&self.root)
+            .current_dir(dir)
             .env("HOME", &self.home)
             .env("USERPROFILE", &self.home)
             .env("CLAUDE_PROJECT_DIR", &self.root)
@@ -102,6 +110,16 @@ impl Project {
             .unwrap_or_else(|e| panic!("{args:?} did not answer JSON ({e}): {text}{}", String::from_utf8_lossy(&out.stderr)))
     }
 
+    /// O texto que um comando `mustard-rt run read …`, entregue por uma
+    /// resposta no lugar do pedido, imprime quando o binário o roda, cru.
+    fn read_command(&self, command: &str) -> String {
+        let words: Vec<&str> = command.split_whitespace().collect();
+        assert_eq!(words.get(..3), Some(&["mustard-rt", "run", "read"][..]), "{command}");
+        let out = self.command(&words[1..], "");
+        assert!(out.status.success(), "{command}: {}", String::from_utf8_lossy(&out.stdout));
+        String::from_utf8(out.stdout).expect("the request is text")
+    }
+
     fn write(&self, event_type: &str, fields: &Value) -> Value {
         self.run(&["write", event_type, "--spec", SPEC, "--json", &fields.to_string()])
     }
@@ -109,6 +127,43 @@ impl Project {
     fn hook(&self, event: &str, payload: &Value) {
         let out = self.command(&["on", event], &payload.to_string());
         assert_eq!(out.status.code(), Some(0), "a hook always exits 0: {}", String::from_utf8_lossy(&out.stderr));
+    }
+
+    /// O agente lê, de dentro da cópia e pelo comando que o pedido ensina,
+    /// cada item que o envio da onda `wave` manda ler (`read_items`): sem
+    /// isso a entrega é recusada.
+    fn read_request(&self, wave: u64) {
+        self.read_send(|sent| sent.wave() == Some(wave) && sent.str_field("role") != Some("review"));
+    }
+
+    /// O revisor lê, de dentro da cópia dele e pelo comando que o pedido
+    /// ensina, cada item que o envio da revisão manda ler: sem isso o
+    /// veredito é recusado.
+    fn read_review(&self) {
+        self.read_send(|sent| sent.str_field("role") == Some("review"));
+    }
+
+    /// A leitura, de dentro da cópia do último envio que `pick` escolhe, de
+    /// cada item da lista dele.
+    fn read_send(&self, pick: impl Fn(&SpecEvent) -> bool) {
+        let log = self.log();
+        let sent = log
+            .visible()
+            .into_iter()
+            .rfind(|e| e.event_type == "send" && pick(e))
+            .unwrap_or_else(|| panic!("nenhum envio gravado para a leitura"));
+        let copy = PathBuf::from(sent.str_field("copy").expect("the copy"));
+        let root = self.root.display().to_string();
+        let listed = sent.fields.get("read_items").and_then(Value::as_array).cloned().unwrap_or_default();
+        for item in listed.iter().filter_map(Value::as_str) {
+            let block = format!("item-{item}");
+            let lesson = item.strip_prefix("lesson-");
+            let mut args = vec!["run", "read", lesson.map_or(block.as_str(), |_| "lessons")];
+            args.extend(lesson.into_iter().flat_map(|n| ["--term", n]));
+            args.extend(["--root", &root, "--spec", SPEC]);
+            let out = self.command_in(&copy, &args, "");
+            assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stdout));
+        }
     }
 
     fn log(&self) -> SpecLog {
@@ -140,7 +195,7 @@ fn user_says(project: &Project, text: &str) -> u64 {
 /// responder.
 fn survey(project: &Project) -> Vec<Value> {
     let said = user_says(project, GOAL);
-    project.write("context", &json!({"text": GOAL, "origin": said}));
+    project.write("context", &json!({"title": "Combinar o item", "agent": "- conferir pelo teste", "text": GOAL, "origin": said}));
     let grilled = project.run(&["grill", "--spec", SPEC, "--kinds", "feature"]);
     let points = grilled["points"].as_array().cloned().expect("the point list");
     assert!(!points.is_empty(), "{grilled}");
@@ -156,7 +211,7 @@ fn survey(project: &Project) -> Vec<Value> {
         let code = current["code"].as_str().expect("the open point").to_string();
         let answer = project.write(
             "decision",
-            &json!({"text": format!("Resposta ao ponto {code}."), "keys": ["levantamento"],
+            &json!({"title": "Combinar o item", "agent": format!("- ponto {code}"), "text": "O usuário respondeu ao ponto.", "keys": ["levantamento"],
                 "why": "o usuário respondeu", "origin": said, "applies_to": {"files": ["**"]}}),
         );
         decisions.push(answer.clone());
@@ -176,12 +231,12 @@ fn plan(project: &Project) {
     let said = user_says(project, "O plano é uma tarefa só, que soma dois números.");
     let criterion = project.write(
         "criterion",
-        &json!({"when": "o programa roda", "then": "a soma aparece", "proof": "git --version", "form": "ubiquitous",
+        &json!({"title": "Combinar o item", "when": "o programa roda", "then": "a soma aparece", "proof": "git --version", "form": "ubiquitous",
             "origin": said}),
     );
     project.write(
         "task",
-        &json!({"title": "Entregar a tarefa", "text": "Somar dois números no programa.", "files": [{"path": "src/main.rs"}],
+        &json!({"agent": "- conferir pelo teste", "title": "Entregar a tarefa", "text": "Somar dois números no programa.", "files": [{"path": "src/main.rs"}],
             "depends_on": [], "covers": [criterion["id"]], "origin": said}),
     );
     project.run(&["plan", "--spec", SPEC]);
@@ -241,7 +296,16 @@ fn deliver_wave(project: &Project, wave: u64, text: &str, changes: &[(&str, &str
         std::fs::write(copy.join(path), content).expect("the change");
     }
     let files: Vec<&str> = changes.iter().map(|(path, _)| *path).collect();
-    let delivered = json!({"wave": wave, "text": text, "files": files, "commit": format!("ajuste da onda {wave}")});
+    // A entrega responde por cada item combinado que o pedido da onda levou:
+    // as respostas do levantamento valem para o projeto todo, e o pedido as
+    // leva todas.
+    let agreed: Vec<Value> = mustard_core::domain::wave_prompt::all_agreed(&log)
+        .iter()
+        .map(|item| json!({"item": item.id, "met": true}))
+        .collect();
+    let delivered = json!({"wave": wave, "text": text, "files": files, "commit": format!("ajuste da onda {wave}"),
+        "agreed": agreed});
+    project.read_request(wave);
     project.run(&["write", "delivered", "--spec", SPEC, "--json", &delivered.to_string()]);
     project.run(&["round", "--spec", SPEC])
 }
@@ -266,14 +330,15 @@ fn ready(project: &Project) -> Vec<Value> {
 /// item de fora — a prova corta a leitura para a de antes (`agreed_for`, por
 /// onda) e vê o código sumir do pedido.
 #[test]
-fn a_revisao_final_recebe_o_acordado_inteiro() {
+fn final_review_receives_the_whole_agreed_set() {
     let project = Project::new();
     let decisions = ready(&project);
 
     let asked = project.run(&["close", "--spec", SPEC]);
     assert_eq!(asked["phase"], json!("running"), "{asked}");
     assert_eq!(asked["review"]["final"], json!(true), "{asked}");
-    let prompt = asked["review"]["prompt"].as_str().unwrap_or_default();
+    assert!(asked["review"].get("prompt").is_none(), "a resposta não leva o pedido inteiro: {asked}");
+    let prompt = project.read_command(asked["review"]["read"].as_str().unwrap_or_default());
     for decision in &decisions {
         let code = decision["code"].as_str().expect("the decision code");
         assert!(prompt.contains(code), "o pedido da revisão final não traz o item {code}: {prompt}");
@@ -287,7 +352,7 @@ fn a_revisao_final_recebe_o_acordado_inteiro() {
 /// veredito final sem checar o combinado: a prova corta essa conferência e vê
 /// os dois vereditos malformados gravados como se estivessem completos.
 #[test]
-fn o_fechamento_recusa_veredito_final_com_item_acordado_de_fora() {
+fn closing_refuses_a_final_verdict_with_an_agreed_item_left_out() {
     let project = Project::new();
     let decisions = ready(&project);
     let asked = project.run(&["close", "--spec", SPEC]);
@@ -339,7 +404,7 @@ fn o_fechamento_recusa_veredito_final_com_item_acordado_de_fora() {
 /// virava onda sozinha: a prova corta o laço que liga `dispatch_backlog` à
 /// rodada e vê a tarefa parada no backlog, sem onda, rodada após rodada.
 #[test]
-fn item_nao_atendido_vira_tarefa_no_backlog_e_a_revisao_final_roda_de_novo() {
+fn unmet_item_becomes_a_backlog_task_and_the_final_review_runs_again() {
     let project = Project::new();
     let decisions = ready(&project);
     let target = decisions.first().expect("at least one decision").clone();
@@ -359,6 +424,7 @@ fn item_nao_atendido_vira_tarefa_no_backlog_e_a_revisao_final_roda_de_novo() {
     let verdict = json!({"final": true, "result": "approved", "text": "Quase tudo certo.", "agreed": agreed});
     let asked = project.run(&["close", "--spec", SPEC]);
     assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+    project.read_review();
     project.write("verdict", &verdict);
     let after_verdict = project.answer(&["close", "--spec", SPEC]);
     // A obra não fecha: o item de fora força o veredito a reprovado e vira
@@ -394,6 +460,7 @@ fn item_nao_atendido_vira_tarefa_no_backlog_e_a_revisao_final_roda_de_novo() {
 
     let all_met: Vec<Value> = decisions.iter().map(|decision| json!({"item": decision["code"], "met": true})).collect();
     let approved = json!({"final": true, "result": "approved", "text": "Tudo atendido.", "agreed": all_met});
+    project.read_review();
     project.write("verdict", &approved);
     let closed = project.run(&["close", "--spec", SPEC]);
     assert_eq!(closed["phase"], json!("closed"), "{closed}");

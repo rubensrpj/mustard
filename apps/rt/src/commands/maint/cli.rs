@@ -31,6 +31,12 @@ pub enum MaintCmd {
     /// 8 GB. `--path <dir>` apaga uma pasta só, sem o filtro de idade, depois
     /// de conferir que ela está no temp e é uma cópia — fora do temp é
     /// recusado (exit 1). A exclusão é do próprio binário, nunca de shell.
+    ///
+    /// Sem `--path`, lista também as cópias de obra do projeto da pasta
+    /// atual: saem as de obra fechada, descartada ou que não existe mais, sem
+    /// regra de idade; a de obra aberta fica. A cópia da página de um
+    /// descarte sai só com mais de um dia; a de descarte recém-feito fica. A
+    /// pasta principal nunca entra.
     #[command(name = "clean")]
     #[command(display_order = 18)]
     ScratchGc {
@@ -48,6 +54,63 @@ pub enum MaintCmd {
         #[arg(long, conflicts_with = "apply")]
         path: Option<PathBuf>,
     },
+    /// Roda uma régua de medida (um teste ignorado) compilando o código
+    /// certo, e grava com o número a versão que o gerou.
+    ///
+    /// `<teste>` é o nome da régua, como `measure_the_spend_of_the_search`; o
+    /// comando acha o pacote dela no código (`--package` diz qual, quando o
+    /// nome está em mais de um). Sem `--commit` mede a pasta atual: o commit é
+    /// o `HEAD`, e o que falta comitar entra como um resumo no nome da pasta e
+    /// na prova. Com `--commit <sha>` separa o código daquele commit numa cópia
+    /// própria, sem mexer na pasta atual.
+    ///
+    /// Cada código compila na sua pasta, `~/.cache/mustard/medida/<commit>`
+    /// (`MUSTARD_MEASURE_DIR` troca a base): o mesmo código reaproveita a
+    /// compilação, e código diferente nunca divide pasta. O programa de teste
+    /// vem do JSON do cargo, nunca do mais novo da pasta, e a régua mora no
+    /// `src/` da biblioteca do pacote. Roda com o `scan` compilado do mesmo
+    /// código ao lado e com o commit, o sujo e o resumo em variáveis
+    /// `MUSTARD_MEASURE_*`; a régua que não imprime a linha `PROVA` falha.
+    ///
+    /// Com `--trees <pasta>` (ou `SPEND_TREES` em `--env`), o mapa de cada
+    /// projeto da pasta é refeito antes da régua: o banco velho sai e o `scan`
+    /// compilado do mesmo código grava um novo, e a medida espera a leitura da
+    /// história de cada mapa terminar antes de rodar a régua; o scan que falha
+    /// recusa a medida. A linha `PROVA` traz também `gancho=<commit>`: o
+    /// commit que o `mustard-rt` do plugin instalado carimbou em si, ou `não
+    /// instalado`.
+    ///
+    /// Imprime ao fim as linhas `PROVA`, uma linha `PECAS` por mapa que a
+    /// régua abriu (o estado de cada peça da busca nele, ligada ou ainda não
+    /// ligada, e quantos arquivos a leitura da história não leu, que a régua
+    /// recebe do comando e grava também no resultado, em cada mapa) e o caminho do resultado (`--out`, ou `<pasta>/<teste>.json`,
+    /// que a régua lê em `MUSTARD_MEASURE_OUT`). Ao terminar, só as três
+    /// pastas de medida usadas por último ficam. Só mede
+    /// o código-fonte do Mustard: em outro projeto recusa (exit 1).
+    #[command(display_order = 22)]
+    Measure {
+        /// O nome da régua: o teste ignorado a rodar.
+        test: String,
+        /// Mede o código deste commit, numa cópia própria, em vez da pasta atual.
+        #[arg(long, value_name = "sha")]
+        commit: Option<String>,
+        /// O pacote que tem a régua; sem ele o comando a procura no código.
+        #[arg(long, value_name = "pacote")]
+        package: Option<String>,
+        /// Uma variável de ambiente para a régua, `CHAVE=VALOR`; repete-se. As
+        /// `MUSTARD_MEASURE_*` são do comando e se recusam.
+        #[arg(long = "env", value_name = "K=V")]
+        env: Vec<String>,
+        /// O arquivo onde a régua grava o resultado.
+        #[arg(long, value_name = "arquivo")]
+        out: Option<PathBuf>,
+        /// A pasta com a árvore de cada projeto da régua (`SPEND_TREES`): o
+        /// mapa de cada uma é refeito antes da medida, com o `scan` compilado
+        /// do mesmo código, e a medida espera a história de cada mapa terminar
+        /// antes da régua.
+        #[arg(long, value_name = "pasta")]
+        trees: Option<PathBuf>,
+    },
     /// Install or update Mustard in the current project (the plugin's
     /// bootstrap door).
     ///
@@ -56,14 +119,13 @@ pub enum MaintCmd {
     /// `.claude/settings.json` — plus `.claude/.gitignore` and the
     /// project-root `mustard.json` are yours and are merged, never clobbered:
     /// an existing file is preserved, only what is missing is created or
-    /// backfilled. Mustard's own texts — the session map
-    /// `.claude/mustard/session-map.md`, the two page templates under
-    /// `.claude/mustard/pages/` and the three agents under
-    /// `.claude/agents/mustard/` — are ALWAYS rewritten, in the language of
-    /// `language.text`: they are the harness's own text, not project
-    /// configuration, so a copy you edited is replaced and listed under
-    /// `updated`, while one that already matched the shipped text comes back
-    /// under `preserved` because there was nothing left to write. Emits the
+    /// backfilled. Mustard's own texts are always rewritten, in the language
+    /// of `language.text`: the session map `.claude/mustard/session-map.md`,
+    /// the two page templates under `.claude/mustard/pages/` and the three
+    /// agents under `.claude/agents/mustard/`. They are the harness's own
+    /// text, not project configuration. So a copy you edited is replaced and
+    /// listed under `updated`. One that already matched the shipped text comes
+    /// back under `preserved`, because there was nothing left to write. Emits the
     /// `UpsertReport` as deterministic pretty JSON.
     ///
     /// What an older Mustard wrote into files that are not its own — the
@@ -73,8 +135,25 @@ pub enum MaintCmd {
     /// project's pending list, in one item, never to the lesson bank, and
     /// `cleanup` and `cleaned` say what left. A file without a mark is only
     /// listed. The commit stays with the person.
+    ///
+    /// The local settings also allow the folder of the project's separate
+    /// copies, which live outside the project. While `mustard.json` has no
+    /// `localFiles`, the answer carries `localFilesFound`: the files git
+    /// ignores outside an ignored folder (such as `.env`), for the person to
+    /// confirm once. `--local-files` records the confirmed list and
+    /// `--prepare` the command that prepares each copy before it compiles.
     #[command(display_order = 19)]
-    Upsert,
+    Upsert {
+        /// The local files each copy receives, comma-separated and relative
+        /// to the project root, as the person confirmed them; an empty value
+        /// records that the project needs none.
+        #[arg(long, value_name = "a,b")]
+        local_files: Option<String>,
+        /// The command that brings the dependencies into each copy, such as
+        /// `npm ci`; an empty value records that the project has none.
+        #[arg(long, value_name = "command")]
+        prepare: Option<String>,
+    },
 }
 
 /// Dispatch one `maint`-family `run` subcommand.
@@ -88,7 +167,12 @@ pub fn dispatch(cmd: MaintCmd) {
             let _ = dry_run;
             maint::scratch_gc::run(maint::scratch_gc::ScratchGcOpts { apply, path });
         }
-        MaintCmd::Upsert => maint::upsert::run(),
+        MaintCmd::Measure { test, commit, package, env, out, trees } => {
+            maint::measure::run(&maint::measure::MeasureOpts { test, commit, package, env, out, trees });
+        }
+        MaintCmd::Upsert { local_files, prepare } => {
+            maint::upsert::run(&maint::upsert::UpsertOpts { local_files, prepare });
+        }
     }
 }
 
@@ -135,5 +219,63 @@ mod tests {
     fn upsert_takes_no_confirm_code() {
         assert!(Probe::try_parse_from(["probe", "upsert"]).is_ok());
         assert!(Probe::try_parse_from(["probe", "upsert", "--confirm", "abcd1234"]).is_err());
+    }
+
+    /// O `upsert` recebe a lista confirmada e o comando de preparo, e o valor
+    /// vazio chega como resposta, não como falta dela.
+    #[test]
+    fn upsert_takes_the_local_files_and_the_prepare_command() {
+        let Ok(Probe { cmd: MaintCmd::Upsert { local_files, prepare } }) = Probe::try_parse_from([
+            "probe",
+            "upsert",
+            "--local-files",
+            ".env,apps/api/.env.local",
+            "--prepare",
+            "pnpm install --frozen-lockfile",
+        ]) else {
+            panic!("both options must parse");
+        };
+        assert_eq!(local_files.as_deref(), Some(".env,apps/api/.env.local"));
+        assert_eq!(prepare.as_deref(), Some("pnpm install --frozen-lockfile"));
+
+        let Ok(Probe { cmd: MaintCmd::Upsert { local_files, prepare } }) =
+            Probe::try_parse_from(["probe", "upsert", "--local-files", "", "--prepare", ""])
+        else {
+            panic!("empty answers must parse");
+        };
+        assert_eq!((local_files.as_deref(), prepare.as_deref()), (Some(""), Some("")));
+    }
+
+    /// O `measure` pede o nome da régua e aceita o commit, o pacote, o
+    /// resultado e as variáveis, estas quantas vezes se repetirem.
+    #[test]
+    fn measure_takes_the_test_and_its_options() {
+        let Ok(Probe { cmd: MaintCmd::Measure { test, commit, package, env, out, trees } }) = Probe::try_parse_from([
+            "probe",
+            "measure",
+            "measure_the_spend_of_the_search",
+            "--commit",
+            "abc1234",
+            "--package",
+            "mustard-rt",
+            "--env",
+            "A=1",
+            "--env",
+            "B=2",
+            "--out",
+            "/tmp/saida.json",
+            "--trees",
+            "/tmp/arvores",
+        ]) else {
+            panic!("the full form must parse");
+        };
+        assert_eq!(test, "measure_the_spend_of_the_search");
+        assert_eq!((commit.as_deref(), package.as_deref()), (Some("abc1234"), Some("mustard-rt")));
+        assert_eq!(env, ["A=1", "B=2"]);
+        assert_eq!(out.as_deref(), Some(std::path::Path::new("/tmp/saida.json")));
+        assert_eq!(trees.as_deref(), Some(std::path::Path::new("/tmp/arvores")));
+
+        assert!(Probe::try_parse_from(["probe", "measure", "so_o_nome"]).is_ok());
+        assert!(Probe::try_parse_from(["probe", "measure"]).is_err(), "sem o nome da régua não há o que medir");
     }
 }

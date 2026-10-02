@@ -115,6 +115,10 @@ pub trait Fs {
     /// and any missing parent directory. Backs append-only logs (NDJSON
     /// metrics). The caller passes the line *without* a trailing newline.
     ///
+    /// The write is not an atomic append at the end of the file between
+    /// processes: it seeks to the end, then writes. Writers that share a file
+    /// exclude each other with [`LockedFile`](lock::LockedFile).
+    ///
     /// # Errors
     ///
     /// [`Error::Io`](crate::platform::error::Error::Io) if the directory cannot be

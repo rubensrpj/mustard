@@ -33,6 +33,10 @@
 //! desfez — trava o fechamento, com os arquivos: ler código sabotado como se
 //! fosse o da obra é pior do que parar.
 //!
+//! **A pasta de compilação.** No fim, a obra fechada apaga da pasta principal
+//! a pasta de compilação que o projeto declarou descartável no `mustard.json`
+//! (`buildOutput`), e nada mais dela; a resposta diz o que saiu.
+//!
 //! **O que trava.** Onda sem commit; onda cuja última revisão reprovou e
 //! ainda não recebeu o conserto; pedido do usuário que nenhuma onda entregou;
 //! a cópia do revisor com mudança, ou que não pôde ser criada; o lint ou a
@@ -60,13 +64,15 @@ use std::path::{Path, PathBuf};
 use mustard_core::domain::spec_events::{Block, BlockQuery, Refusal, SpecEvent, SpecLog};
 use mustard_core::domain::spec_index::title_of;
 use mustard_core::domain::spec_state::{final_approval, last_change, PhaseWriter, SpecState, State};
-use mustard_core::domain::wave_prompt::{count_lines, recorded_choice, requested_model, unowned};
+use mustard_core::domain::wave_prompt::{count_lines, recorded_choice, unowned};
 use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Map, Value};
 
-use crate::commands::spec_events::{self, read::checkout, write::record};
-use crate::shared::spec_state::{session_from_env, DiskSpecState};
+use crate::commands::flow::round::Caller;
+use crate::commands::review::qa_run::ProofFault;
+use crate::commands::spec_events::{self, write::record};
+use crate::shared::spec_state::{checkout, session_from_env, DiskSpecState};
 
 /// As opções de `mustard-rt run close`.
 #[derive(Default)]
@@ -112,6 +118,9 @@ enum CloseRefusal {
     /// Um critério cuja prova saiu verde sem rodar teste nenhum, com o
     /// comando dela e o número de testes que a saída dele disse.
     CriterionRanNoTest { code: String, command: String, tests: u64 },
+    /// Um critério cuja prova saiu verde citando um nome de teste que não
+    /// existe no projeto, com o nome que faltou.
+    CriterionMissingTest { code: String, name: String },
 }
 
 impl CloseRefusal {
@@ -130,6 +139,7 @@ impl CloseRefusal {
             Self::ReviewCopyFailed { .. } => "review-copy-failed".into(),
             Self::CriterionFailed { .. } => "criterion-failed".into(),
             Self::CriterionRanNoTest { .. } => "criterion-ran-no-test".into(),
+            Self::CriterionMissingTest { .. } => "criterion-missing-test".into(),
         }
     }
 
@@ -168,6 +178,9 @@ impl CloseRefusal {
                 "close.criterion_ran_no_test",
                 &[("{code}", code.clone()), ("{command}", command.clone()), ("{count}", tests.to_string())],
             ),
+            Self::CriterionMissingTest { code, name } => {
+                fill("close.criterion_missing_test", &[("{code}", code.clone()), ("{name}", name.clone())])
+            }
         }
     }
 
@@ -179,19 +192,41 @@ impl CloseRefusal {
     }
 }
 
-/// O núcleo testável de [`run_cmd`]. A sessão vem do ambiente. Nunca entra em
-/// pânico.
+/// O núcleo testável de [`run_cmd`]. A sessão e a pasta de configuração da
+/// plataforma vêm do ambiente. Nunca entra em pânico.
 pub(crate) fn close_at(opts: &CloseOpts) -> Value {
-    close_for(opts, session_from_env().as_deref())
+    let session = session_from_env();
+    let config_dir = mustard_core::claude_config_dir();
+    close_in(opts, Caller { session: session.as_deref(), config_dir: config_dir.as_deref() })
 }
 
-/// [`close_at`] com a sessão recebida, que é como um teste a escolhe.
+/// [`close_at`] com a sessão recebida, que é como um teste a escolhe, sem a
+/// pasta de configuração da plataforma: o consumo da última onda não é
+/// medido.
+#[cfg(test)]
 pub(crate) fn close_for(opts: &CloseOpts, session: Option<&str>) -> Value {
+    close_in(opts, Caller { session, config_dir: None })
+}
+
+/// [`close_at`] com a sessão e a pasta de configuração da plataforma
+/// recebidas (`caller`), de onde a última onda assumida tem o consumo medido.
+fn close_in(opts: &CloseOpts, caller: Caller<'_>) -> Value {
     let project = spec_events::project(&opts.root);
     let lang = project.lang;
-    match run_close(opts, &project.root, lang, session) {
+    // O código que a cópia do revisor guardou antes de zerar vai na resposta
+    // também quando o fechamento recusa depois disso: a ref já existe, e a
+    // próxima chamada acha a cópia limpa e não teria mais o que dizer.
+    let mut review_kept = Vec::new();
+    match run_close(opts, &project.root, lang, caller, &mut review_kept) {
         Ok(report) => report,
-        Err(refusal) => refusal.to_value(lang),
+        Err(refusal) => {
+            let mut value = refusal.to_value(lang);
+            for kept in &review_kept {
+                let hint = crate::commands::flow::round::code_kept_hint(kept, lang);
+                spec_events::pages::push_warning(&mut value, "code-kept", &hint);
+            }
+            value
+        }
     }
 }
 
@@ -199,8 +234,10 @@ fn run_close(
     opts: &CloseOpts,
     root: &Path,
     lang: Locale,
-    session: Option<&str>,
+    caller: Caller<'_>,
+    review_kept: &mut Vec<crate::commands::flow::round::Kept>,
 ) -> Result<Value, CloseRefusal> {
+    let session = caller.session;
     let spec = match opts.spec.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         Some(spec) => spec.to_string(),
         None => DiskSpecState::new(&checkout(&opts.root))
@@ -231,18 +268,29 @@ fn run_close(
 
     // Nada fica preso: todo processo que um agente deixou rodando — um laço
     // de espera, ou um comando na cópia de uma onda já apagada — é encerrado
-    // no fechamento, e a resposta diz qual.
-    let stuck_hint =
-        crate::commands::flow::stuck::report_line(&crate::commands::flow::stuck::end_stuck_processes(root), lang);
+    // no fechamento, e a resposta diz qual. A busca espera a trava do passo
+    // do git e a solta logo depois, antes de qualquer outro passo que a pega:
+    // uma rodada no meio do despacho termina de gravar o envio da vaga que
+    // preparou antes. Sem a trava, a busca não roda.
+    let stuck_hint = crate::commands::git_settle::git_step_lock(root).ok().and_then(|held| {
+        crate::commands::flow::stuck::report_line(&crate::commands::flow::stuck::end_stuck_processes(root, &held), lang)
+    });
 
     // O que voltou da última rodada entra antes das conferências, pela mesma
     // porta da rodada, com o commit: a volta que a última onda gravou na spec
     // é assumida aqui, com ou sem relatório, e é o commit dela que fecha a
     // última onda.
     let raw = opts.report.as_deref().map(str::trim).filter(|r| !r.is_empty());
-    let recorded: Vec<Value> = crate::commands::flow::round::take_report(&opts.root, root, &spec, raw, &log, lang)
-        .map_err(CloseRefusal::Report)?
-        .recorded;
+    let taken = crate::commands::flow::round::take_report(&opts.root, root, &spec, raw, &log, lang, caller)
+        .map_err(CloseRefusal::Report)?;
+    // A volta que ficou fora do commit — a que pede novo plano sem o clique
+    // do usuário, ou a recusada por uma conferência dela — segura o
+    // fechamento, que depende de todas: as outras voltas já foram assumidas
+    // acima, e a recusa traz a pergunta que a decide ou o que falta à volta.
+    if let Some(waiting) = taken.waiting.into_iter().next() {
+        return Err(CloseRefusal::Report(waiting.refusal));
+    }
+    let recorded: Vec<Value> = taken.recorded;
 
     // A spec antiga passa para o backlog antes de ler as ondas: a onda
     // desenhada à mão que nunca saiu não recusa o fechamento, porque a versão
@@ -260,10 +308,18 @@ fn run_close(
     // A cópia do revisor sai antes da máquina, pela mesma porta das cópias de
     // onda: a que chegou com mudança trava aqui, antes de gastar a suíte, e
     // a limpa vai para o commit da obra. Com a obra já aprovada, ninguém mais
-    // revisa, e a cópia só espera ser apagada lá embaixo.
-    if !final_approved(&log) {
-        prepare_review_copy(root, &spec, &log)?;
-    }
+    // revisa, e a cópia só espera ser apagada lá embaixo. Os arquivos locais
+    // que não chegaram a ela viram aviso no pedido do revisor. A vaga é
+    // escolhida uma vez só: a mesma que é preparada vai gravada no envio da
+    // revisão, e fica presa por ele até o veredito.
+    let review_copy = mustard_core::io::wave_prompt::final_copy_path(root, &spec, &log);
+    let not_copied = if final_approved(&log) {
+        Vec::new()
+    } else {
+        let (not_copied, kept) = prepare_review_copy(root, &spec, &review_copy, &log)?;
+        *review_kept = kept;
+        not_copied
+    };
 
     // A máquina antes do agente de teste dedicado: os dois comandos do
     // servidor e cada critério, uma vez por fechamento. A volta que só
@@ -277,29 +333,41 @@ fn run_close(
 
     let log = read(&path)?;
     if !final_approved(&log) {
-        let prompt = mustard_core::io::wave_prompt::final_review(root, &spec, &log, lang);
+        let review = mustard_core::io::wave_prompt::final_review(root, &spec, &log, lang);
+        let prompt = review.text;
         // O pedido do agente de revisão final é gravado como evento de
         // envio antes de sair daqui, pela mesma porta que grava o pedido de
-        // cada onda: o texto inteiro, o papel de revisão e o modelo — nunca
-        // um segundo caminho de gravação. O molde do revisor não vai junto:
-        // ele mora no projeto, e o papel já diz qual é.
+        // cada onda: o texto inteiro, o papel de revisão, o modelo, o esforço
+        // e a vaga em que o revisor trabalha, no mesmo formato do envio de
+        // onda — nunca um segundo caminho de gravação. O molde do revisor não
+        // vai junto: ele mora no projeto, e o papel já diz qual é.
+        let copy = mustard_core::io::wave_prompt::shown(&review_copy);
         let mut draft = Map::new();
         draft.insert("role".into(), json!("review"));
+        draft.insert("copy".into(), json!(copy));
         draft.insert("lines".into(), json!(count_lines(&prompt)));
         draft.insert("chars".into(), json!(prompt.chars().count()));
         draft.insert("text".into(), json!(prompt));
-        draft.insert("model".into(), json!(requested_model("review")));
+        // Os itens que o pedido lista, para o veredito conferir que o revisor
+        // leu cada um; o envio sem essa lista é de antes da conferência.
+        draft.insert("read_items".into(), json!(review.listed));
+        let agents = mustard_core::ProjectConfig::load(root);
+        draft.insert("model".into(), json!(agents.agent_model()));
+        draft.insert("effort".into(), json!(agents.agent_effort()));
         draft.insert("mustard".into(), json!(env!("CARGO_PKG_VERSION")));
         draft.insert("author".into(), json!("binary"));
         record(&opts.root, &spec, "send", draft, PhaseWriter::Binary).map_err(CloseRefusal::Refused)?;
         let next = translate("close.final_review", lang).replace("{spec}", &spec);
+        // A resposta não leva o pedido inteiro: leva o comando que o lê, e o
+        // revisor lê o próprio pedido por ele, de dentro da cópia dele.
+        let read = crate::commands::flow::round::read_command(root, &spec, "request-review");
         let mut out = json!({
             "ok": true,
             "spec": spec,
             "phase": "running",
             "recorded": recorded,
             "criteria": runs,
-            "review": { "final": true, "prompt": prompt },
+            "review": { "final": true, "lines": count_lines(&prompt), "read": read },
             "next": next,
         });
         if let Some(hint) = &stuck_hint {
@@ -310,6 +378,14 @@ fn run_close(
         }
         for hint in &unowned_tests {
             spec_events::pages::push_warning(&mut out, "unowned-test", hint);
+        }
+        for file in &not_copied {
+            let hint = crate::commands::flow::round::local_file_missing(file, &copy, lang);
+            spec_events::pages::push_warning(&mut out, "local-file-missing", &hint);
+        }
+        for kept in review_kept.iter() {
+            let hint = crate::commands::flow::round::code_kept_hint(kept, lang);
+            spec_events::pages::push_warning(&mut out, "code-kept", &hint);
         }
         return Ok(out);
     }
@@ -336,13 +412,17 @@ fn run_close(
     // raiz que constrói o próprio `mustard-rt`, nada roda.
     let reinstall_warning =
         crate::commands::flow::round::reinstall_binary(root, !log.delivered_waves().is_empty(), lang);
-    // A obra fechou: ninguém mais revisa, e a cópia do revisor sai daqui,
-    // com o que tiver dentro — o que ele cortou para ver a prova cair não é
-    // trabalho de ninguém, e ficar para o próximo fechamento é o defeito.
-    let review_copy_kept = remove_review_copy(root, &spec, lang);
+    // A obra fechou: ninguém mais trabalha nas cópias dela, e todas saem
+    // daqui, cada vaga com o que tiver dentro e com a compilação — o que o
+    // revisor cortou para ver a prova cair não é trabalho de ninguém. A que
+    // não sai vira aviso, e a obra fecha do mesmo jeito.
+    let removal = crate::commands::flow::round::remove_spec_copies(root, &spec, Some(&log));
+    // Por último, a pasta de compilação que o projeto declarou descartável
+    // sai da pasta principal: ela só cresce, e a próxima obra a refaz uma vez.
+    let build_output = remove_build_output(root, lang);
     // O fechamento é um marco: a cópia para o banco da página sai aqui, com a
     // fase fechada na linha da spec da página do projeto.
-    let prepared = crate::commands::spec_events::pages::copy::prepare(root, &spec, lang);
+    let prepared = crate::commands::spec_events::pages::copy::prepare_milestone(root, &spec, "close", lang);
 
     // O pull request é o passo seguinte, e a linha dele sai pronta, com a base
     // e a branch tiradas do estado — pela mesma tabela que a retomada usa.
@@ -362,9 +442,10 @@ fn run_close(
         let hint = warning["hint"].as_str().unwrap_or_default();
         spec_events::pages::push_warning(&mut out, "binary-not-reinstalled", hint);
     }
-    if let Some(hint) = &review_copy_kept {
-        spec_events::pages::push_warning(&mut out, "review-copy-kept", hint);
+    for (reason, hint) in removal_warnings(&removal, lang) {
+        spec_events::pages::push_warning(&mut out, reason, &hint);
     }
+    build_output.tell(&mut out);
     for hint in &undeclared {
         spec_events::pages::push_warning(&mut out, "server-command-not-declared", hint);
     }
@@ -535,11 +616,12 @@ fn machine(
         runs.push(json!({ "criterion": code, "result": out.result, "exit": out.exit, "ms": out.ms }));
     }
     match failed {
-        Some(failed) => Err(match failed.ran_no_test {
-            Some(tests) => {
+        Some(failed) => Err(match failed.fault {
+            ProofFault::RanNoTest(tests) => {
                 CloseRefusal::CriterionRanNoTest { code: failed.code, command: failed.command, tests }
             }
-            None => CloseRefusal::CriterionFailed { code: failed.code, output: failed.output },
+            ProofFault::MissingTest(name) => CloseRefusal::CriterionMissingTest { code: failed.code, name },
+            ProofFault::Failed(output) => CloseRefusal::CriterionFailed { code: failed.code, output },
         }),
         None => Ok((runs, undeclared)),
     }
@@ -590,20 +672,32 @@ fn clean_env(command: &str) -> String {
     )
 }
 
-/// Cria a cópia do revisor final da spec `spec` no commit da obra, pela
-/// mesma porta das cópias de onda (`ensure_copy`), com a trava do passo do
-/// git presa, como a rodada cria as dela. A cópia que já existe e está limpa
-/// vai para o commit; a que tem mudança recusa, com os arquivos, e a
-/// recusa diz como descartar — é o corte que o revisor anterior deixou, e
-/// revisar por cima dele é ler código sabotado como se fosse o da obra.
-fn prepare_review_copy(root: &Path, spec: &str, log: &SpecLog) -> Result<(), CloseRefusal> {
-    use mustard_core::io::wave_prompt::{final_copy_path, final_review_commit, shown};
+/// Prepara a cópia do revisor final, na vaga `path`, no commit da obra, com
+/// a trava do passo do git presa, como a rodada prepara as dela. A vaga é a
+/// da última onda ([`mustard_core::io::wave_prompt::final_copy_path`]), que
+/// já tem a compilação da obra, e o envio da revisão a grava. Quando um
+/// revisor já trabalhou nela depois da última onda — há envio de revisão
+/// depois do último envio de onda —, a cópia com mudança recusa, com os
+/// arquivos, e a recusa diz como descartar: é o corte que o revisor
+/// anterior deixou, e revisar por cima dele é ler código sabotado como se
+/// fosse o da obra; a limpa vai para o commit. Sem revisão depois da última
+/// onda, a mudança é da onda, que a rodada já comitou no principal, e a vaga
+/// é zerada no commit. Como a cópia de onda, ela recebe os arquivos locais do
+/// projeto pelo conteúdo; devolve os que não chegaram e o código que a limpeza
+/// da vaga guardou antes de zerá-la.
+fn prepare_review_copy(
+    root: &Path,
+    spec: &str,
+    path: &Path,
+    log: &SpecLog,
+) -> Result<(Vec<String>, Vec<crate::commands::flow::round::Kept>), CloseRefusal> {
+    use mustard_core::io::wave_prompt::{final_review_commit, shown};
     use mustard_core::platform::git;
-    let path = final_copy_path(root, spec);
-    let copy = shown(&path);
+    let copy = shown(path);
     let failed = |detail: String| CloseRefusal::ReviewCopyFailed { copy: copy.clone(), detail };
-    if path.join(".git").is_file() {
-        let status = git::run(&path, &["status", "--porcelain", "--untracked-files=all"]);
+    let reviewed = reviewed_after_last_wave(log);
+    if reviewed && path.join(".git").is_file() {
+        let status = git::run(path, &["status", "--porcelain", "--untracked-files=all"]);
         if !status.ok {
             return Err(failed(status.stderr.trim().to_string()));
         }
@@ -618,25 +712,174 @@ fn prepare_review_copy(root: &Path, spec: &str, log: &SpecLog) -> Result<(), Clo
         None => git::run(root, &["rev-parse", "HEAD"]).result().map_err(&failed)?,
     };
     let _held = crate::commands::git_settle::git_step_lock(root).map_err(&failed)?;
-    crate::commands::flow::round::ensure_copy(root, &path, &commit).map_err(failed)
+    let owner = crate::commands::flow::round::slot_owner(spec, log, path);
+    let prepared = if reviewed {
+        crate::commands::flow::round::ensure_copy(root, path, &commit, &owner)
+    } else {
+        crate::commands::flow::round::reset_slot(root, path, &commit, &owner)
+    };
+    prepared.map(|prepared| (prepared.missing, prepared.kept)).map_err(failed)
 }
 
-/// Apaga a cópia do revisor final da spec `spec`, quando ela existe, com a
-/// trava do passo do git presa. Devolve o aviso quando o git não deixou
-/// apagar: a obra fecha do mesmo jeito, e o aviso diz qual pasta ficou.
-fn remove_review_copy(root: &Path, spec: &str, lang: Locale) -> Option<String> {
-    use mustard_core::io::wave_prompt::{final_copy_path, shown};
-    let path = final_copy_path(root, spec);
-    if !path.exists() {
+/// Um revisor já recebeu pedido depois do último envio de onda: o envio de
+/// revisão mais novo vem depois do envio de onda mais novo, ou não há envio
+/// de onda nenhum.
+fn reviewed_after_last_wave(log: &SpecLog) -> bool {
+    let sends: Vec<&SpecEvent> = log.visible().into_iter().filter(|e| e.event_type == "send").collect();
+    let newest = |review: bool| {
+        sends.iter().filter(|e| (e.str_field("role") == Some("review")) == review).map(|e| e.id).max()
+    };
+    newest(true).is_some_and(|review| newest(false).is_none_or(|wave| review > wave))
+}
+
+/// O aviso das cópias da obra que não saíram (`left`, cada uma com o motivo
+/// que o git deu), no idioma `lang`. `None` quando todas saíram.
+pub(crate) fn copies_kept_hint(left: &[(String, String)], lang: Locale) -> Option<String> {
+    if left.is_empty() {
         return None;
     }
-    let copy = shown(&path);
-    let removed = crate::commands::git_settle::git_step_lock(root).and_then(|_held| {
-        mustard_core::platform::git::run(root, &["worktree", "remove", "--force", &copy]).result().map(|_| ())
-    });
-    removed.err().map(|detail| {
-        translate("close.review_copy_kept", lang).replace("{copy}", &copy).replace("{detail}", &detail)
+    let copies: Vec<String> = left.iter().map(|(copy, _)| format!("`{copy}`")).collect();
+    let details: Vec<&str> = left.iter().map(|(_, detail)| detail.as_str()).collect();
+    Some(
+        translate("close.review_copy_kept", lang)
+            .replace("{copies}", &copies.join(", "))
+            .replace("{detail}", &details.join("; ")),
+    )
+}
+
+/// Os avisos do que a remoção das cópias da obra fez, cada um com o motivo da
+/// resposta: as cópias que não saíram, as que ficaram porque o código delas
+/// não pôde ser guardado, e o código que ficou guardado, com o comando para
+/// trazê-lo de volta.
+pub(crate) fn removal_warnings(
+    removal: &crate::commands::flow::round::Removal,
+    lang: Locale,
+) -> Vec<(&'static str, String)> {
+    let mut warnings = Vec::new();
+    if let Some(hint) = copies_kept_hint(&removal.left, lang) {
+        warnings.push(("copies-kept", hint));
+    }
+    if !removal.unkept.is_empty() {
+        let copies: Vec<String> = removal.unkept.iter().map(|(copy, _)| format!("`{copy}`")).collect();
+        let details: Vec<&str> = removal.unkept.iter().map(|(_, detail)| detail.as_str()).collect();
+        let hint = translate("close.code_not_kept", lang)
+            .replace("{copies}", &copies.join(", "))
+            .replace("{detail}", &details.join("; "));
+        warnings.push(("code-not-kept", hint));
+    }
+    warnings.extend(
+        removal.kept.iter().map(|kept| ("code-kept", crate::commands::flow::round::code_kept_hint(kept, lang))),
+    );
+    warnings
+}
+
+/// O que [`remove_build_output`] fez com as pastas de compilação declaradas:
+/// as que saíram, como o projeto as declarou, e o aviso de cada uma que ficou.
+pub(crate) struct BuildOutputSwept {
+    removed: Vec<String>,
+    kept: Vec<String>,
+}
+
+impl BuildOutputSwept {
+    /// Põe na resposta `out` as pastas apagadas (`build_output_removed`) e um
+    /// aviso para cada uma que ficou no disco.
+    pub(crate) fn tell(&self, out: &mut Value) {
+        if !self.removed.is_empty() {
+            out["build_output_removed"] = json!(self.removed);
+        }
+        for hint in &self.kept {
+            spec_events::pages::push_warning(out, "build-output-kept", hint);
+        }
+    }
+}
+
+/// Apaga da pasta principal `root` cada pasta de compilação que o projeto
+/// declarou descartável (`buildOutput`, no `mustard.json`), no fim do
+/// fechamento e do descarte, depois que as cópias da obra saíram. Nada mais
+/// da pasta principal é apagado, e sem a declaração nada sai.
+///
+/// A pasta só sai quando é um caminho relativo que fica dentro da raiz, que
+/// não é a raiz nem o `.git`, que o git ignora e onde ele não guarda arquivo
+/// nenhum; a que não passa fica, com um aviso. A que não existe não é erro. A
+/// remoção segura a trava do passo do git, a mesma que a rodada segura ao
+/// compilar antes do commit, e assim não corta a compilação de outra rodada.
+/// A falha ao apagar vira aviso e não derruba quem chamou.
+pub(crate) fn remove_build_output(root: &Path, lang: Locale) -> BuildOutputSwept {
+    let mut swept = BuildOutputSwept { removed: Vec::new(), kept: Vec::new() };
+    let mut held = None;
+    for folder in mustard_core::ProjectConfig::load(root).commands().build_output {
+        let warn = |key: &str| translate(key, lang).replace("{folder}", &folder);
+        let Some(rel) = declared_folder(&folder) else {
+            swept.kept.push(warn("close.build_output_unsafe"));
+            continue;
+        };
+        let path = root.join(&rel);
+        if std::fs::symlink_metadata(&path).is_err() {
+            continue;
+        }
+        if !path.is_dir() || !resolves_inside(root, &path) {
+            swept.kept.push(warn("close.build_output_unsafe"));
+            continue;
+        }
+        if !ignored_and_untracked(root, &rel) {
+            swept.kept.push(warn("close.build_output_not_ignored"));
+            continue;
+        }
+        if held.is_none() {
+            match crate::commands::git_settle::git_step_lock(root) {
+                Ok(lock) => held = Some(lock),
+                Err(detail) => {
+                    swept.kept.push(warn("close.build_output_failed").replace("{detail}", &detail));
+                    continue;
+                }
+            }
+        }
+        match std::fs::remove_dir_all(&path) {
+            Ok(()) => swept.removed.push(folder.clone()),
+            Err(err) => swept.kept.push(warn("close.build_output_failed").replace("{detail}", &err.to_string())),
+        }
+    }
+    swept
+}
+
+/// A pasta declarada `folder` como caminho relativo à raiz, com as partes
+/// separadas por `/`. `None` quando ela sai da raiz (caminho absoluto ou com
+/// `..`), quando é a própria raiz ou quando passa pelo `.git`.
+fn declared_folder(folder: &str) -> Option<String> {
+    let mut parts = Vec::new();
+    for part in Path::new(folder).components() {
+        match part {
+            std::path::Component::Normal(name) if !name.to_string_lossy().eq_ignore_ascii_case(".git") => {
+                parts.push(name.to_string_lossy().to_string());
+            }
+            std::path::Component::CurDir => {}
+            _ => return None,
+        }
+    }
+    (!parts.is_empty()).then(|| parts.join("/"))
+}
+
+/// A pasta `path`, com cada atalho resolvido, fica dentro da raiz `root`, não
+/// é a raiz e não passa pelo `.git`: um atalho no caminho não leva a remoção
+/// para fora do projeto.
+fn resolves_inside(root: &Path, path: &Path) -> bool {
+    let (Ok(root), Ok(path)) = (std::fs::canonicalize(root), std::fs::canonicalize(path)) else {
+        return false;
+    };
+    path.strip_prefix(&root).is_ok_and(|rel| {
+        rel.components().next().is_some()
+            && rel.components().all(|part| !part.as_os_str().to_string_lossy().eq_ignore_ascii_case(".git"))
     })
+}
+
+/// O git da raiz `root` ignora a pasta `rel` e não guarda nenhum arquivo
+/// dentro dela. Sem git, a pasta não passa.
+fn ignored_and_untracked(root: &Path, rel: &str) -> bool {
+    use mustard_core::platform::git;
+    if !git::run(root, &["check-ignore", "-q", "--", rel]).ok {
+        return false;
+    }
+    git::run(root, &["--literal-pathspecs", "ls-files", "-z", "--", rel]).out().is_some_and(|tracked| tracked.is_empty())
 }
 
 /// A máquina já passou depois da última mudança: cada critério vigente tem,
@@ -773,6 +1016,20 @@ fn finished(log: &SpecLog) -> Result<(), CloseRefusal> {
     Ok(())
 }
 
+/// A recusa de [`finished`] para a obra `log`, pelo motivo e pela onda
+/// cobrada quando há uma; `None` quando a obra está pronta para fechar. Os
+/// testes da rodada conferem o fechamento lado a lado com a resposta dela.
+#[cfg(test)]
+pub(crate) fn finished_refusal(log: &SpecLog) -> Option<(String, Option<u64>)> {
+    finished(log).err().map(|refusal| {
+        let wave = match &refusal {
+            CloseRefusal::WaveWithoutCommit { wave } | CloseRefusal::WaveRejected { wave } => Some(*wave),
+            _ => None,
+        };
+        (refusal.reason(), wave)
+    })
+}
+
 /// Os critérios vigentes da spec: id, código e a prova de cada um, na ordem
 /// em que a leitura os dá. A máquina roda a prova de cada um daqui, e o
 /// caminho de volta ([`unowned_test_hints`]) usa a mesma lista para saber
@@ -796,7 +1053,7 @@ const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 /// A base de onde ler o que a obra mudou em `file`: o pai do commit mais
 /// velho, entre os que esta spec gravou, que tocou `file` — ou a árvore
 /// vazia, quando esse commit não tem pai (o arquivo nasceu nele).
-fn obra_base(root: &Path, log: &SpecLog, file: &str) -> Option<String> {
+fn diff_base_for_file(root: &Path, log: &SpecLog, file: &str) -> Option<String> {
     let sha = log
         .block(BlockQuery::Block(Block::Progress))
         .into_iter()
@@ -889,7 +1146,7 @@ fn test_spans(content: &str) -> Vec<(String, usize, usize)> {
 /// no texto de hoje e cujo trecho — do `#[test]` à última chave do corpo —
 /// tem alguma linha que o `git diff` desde a base da obra marca como mudada.
 fn changed_test_names(root: &Path, log: &SpecLog, file: &str) -> Vec<String> {
-    let Some(base) = obra_base(root, log, file) else { return Vec::new() };
+    let Some(base) = diff_base_for_file(root, log, file) else { return Vec::new() };
     let Ok(content) = std::fs::read_to_string(root.join(file)) else { return Vec::new() };
     let changed = changed_lines(root, &base, file);
     if changed.is_empty() {
@@ -950,12 +1207,20 @@ mod tests {
     /// a rodada assumi-la. Ela precisa sair gravada: a rodada lê a volta da
     /// spec, e não do relatório.
     fn returned(root: &Path, spec: &str, body: Value) {
-        let out = crate::commands::spec_events::write::write_at(&WriteOpts {
-            root: root.to_path_buf(),
-            spec: Some(spec.to_string()),
-            event_type: "delivered".into(),
-            json: body.to_string(),
-        });
+        let write = |body: &Value| {
+            crate::commands::spec_events::write::write_at(&WriteOpts {
+                root: root.to_path_buf(),
+                spec: Some(spec.to_string()),
+                event_type: "delivered".into(),
+                json: body.to_string(),
+            })
+        };
+        let mut out = write(&body);
+        // O pedido não lido recusa a entrega: o agente lê e grava de novo.
+        if let Some(wave) = body["wave"].as_u64().filter(|_| out["reason"] == json!("delivery-read-missing")) {
+            crate::commands::flow::round::read_request(root, spec, wave);
+            out = write(&body);
+        }
         assert_eq!(out["ok"], json!(true), "a volta não gravou: {out}");
     }
 
@@ -1001,7 +1266,7 @@ mod tests {
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::write(root.join("mustard.json"), b"{}").unwrap();
         for n in 1..=waves {
-            std::fs::write(root.join(wave_file(n)), "fn um() {}\n").unwrap();
+            std::fs::write(root.join(wave_file(n)), "fn one() {}\n").unwrap();
         }
         git_at(root, &["init", "-q"]);
         git_at(root, &["add", "-A"]);
@@ -1038,6 +1303,7 @@ mod tests {
                 "files": [{"path": wave_file(n)}], "origin": said}));
         }
         crate::shared::spec_state::approve_in(&root.join(".claude").join("spec").join(spec));
+        crate::commands::flow::round::copies_leave_with_the_test(root);
         std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":4}"#).unwrap();
 
         let round = |report: Option<String>| {
@@ -1047,7 +1313,7 @@ mod tests {
         assert_eq!(dispatch["ok"], json!(true), "{dispatch}");
         let mut delivered = false;
         for n in (1..=waves).filter(|n| !checked.contains(n)) {
-            std::fs::write(root.join(wave_file(n)), "fn um() {}\nfn dois() {}\n").unwrap();
+            std::fs::write(root.join(wave_file(n)), "fn one() {}\nfn dois() {}\n").unwrap();
             returned(root, spec, json!({"wave": n, "text": "Saiu.", "files": [wave_file(n)], "commit": "a soma sai"}));
             delivered = true;
         }
@@ -1064,9 +1330,18 @@ mod tests {
         std::fs::write(root.join("mustard.json"), b"{}").unwrap();
     }
 
+    /// O pedido do revisor final, lido como o revisor o lê: rodando o comando
+    /// que a resposta do fechamento traz em `review.read`, no lugar do texto.
+    fn review_prompt(asked: &Value) -> String {
+        let command =
+            asked["review"]["read"].as_str().unwrap_or_else(|| panic!("a resposta não traz o comando de leitura: {asked}"));
+        crate::commands::spec_events::read::read_by_command(command)
+    }
+
     /// O veredito que o revisor grava pela porta do binário. Devolve a
     /// resposta da gravação, com a recusa quando ela recusa.
     fn judged(root: &Path, spec: &str, body: Value) -> Value {
+        crate::commands::flow::round::read_review(root, spec);
         crate::commands::spec_events::write::write_at(&WriteOpts {
             root: root.to_path_buf(),
             spec: Some(spec.to_string()),
@@ -1109,10 +1384,10 @@ mod tests {
 
     /// O pedido do agente de revisão final vira evento de envio no
     /// spec.ndjson antes de sair para quem despacha: o texto inteiro, o
-    /// papel de revisão e o modelo — pela mesma porta que já grava o pedido
+    /// papel de revisão, o modelo e o esforço — pela mesma porta que já grava o pedido
     /// de cada onda, sem onda dona nenhuma.
     #[test]
-    fn o_pedido_da_revisao_vira_evento_de_envio() {
+    fn review_request_becomes_a_send_event() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         ready_to_close(root, "x", &["git --version"]);
@@ -1124,8 +1399,22 @@ mod tests {
         let asked =
             close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None, ..Default::default() }, None);
         assert_eq!(asked["review"]["final"], json!(true), "{asked}");
-        let prompt = asked["review"]["prompt"].as_str().unwrap_or_default().to_string();
+        assert!(asked["review"].get("prompt").is_none(), "a resposta não leva o pedido inteiro: {asked}");
+        assert_eq!(
+            asked["review"]["read"],
+            json!(format!(
+                "mustard-rt run read request-review --root {} --spec x",
+                mustard_core::io::wave_prompt::shown(root)
+            )),
+            "{asked}"
+        );
+        let prompt = review_prompt(&asked);
         assert!(!prompt.is_empty(), "{asked}");
+        assert_eq!(asked["review"]["lines"], json!(count_lines(&prompt)), "{asked}");
+        let opening = prompt.lines().next().unwrap_or_default();
+        assert!(!opening.is_empty() && !asked.to_string().contains(opening), "o texto do pedido não está na resposta: {asked}");
+        let next = asked["next"].as_str().unwrap_or_default();
+        assert!(next.contains("review.read") && !next.contains("review.prompt"), "o passo cita o campo que a resposta traz: {next}");
 
         let after = store::read(&path).unwrap().unwrap();
         let sent: Vec<&SpecEvent> = after.visible().into_iter().filter(|e| e.event_type == "send").collect();
@@ -1133,8 +1422,106 @@ mod tests {
         let sent = sent.last().unwrap_or_else(|| panic!("nenhum envio gravado"));
         assert_eq!(sent.str_field("role"), Some("review"), "{sent:?}");
         assert_eq!(sent.str_field("text"), Some(prompt.as_str()), "o texto gravado é o pedido inteiro que voltou: {sent:?}");
-        assert!(sent.str_field("model").is_some_and(|m| !m.is_empty()), "o modelo pedido vai junto: {sent:?}");
+        assert_eq!(sent.str_field("model"), Some("sonnet"), "o modelo pedido vai junto, o padrão da instalação: {sent:?}");
+        assert_eq!(sent.str_field("effort"), Some("xhigh"), "o esforço pedido vai junto, o padrão da instalação: {sent:?}");
         assert!(sent.wave().is_none(), "a revisão final não é dona de onda nenhuma: {sent:?}");
+    }
+
+    /// O envio do pedido da revisão grava a lista dos itens que o pedido
+    /// lista, a mesma que o texto imprime, e o veredito só grava depois de o
+    /// revisor ler cada um de dentro da cópia dele: a leitura feita do
+    /// repositório principal não conta, e a recusa nomeia o item que falta.
+    #[test]
+    fn the_review_send_records_what_it_lists_and_the_verdict_waits_for_the_reading() {
+        use crate::commands::spec_events::read::{read_for, ReadOpts};
+
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        ready_to_close(root, "x", &["git --version"]);
+        let asked =
+            close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None, ..Default::default() }, None);
+        assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+        let prompt = review_prompt(&asked);
+
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let sent = log.visible().into_iter().rfind(|e| e.event_type == "send").expect("the review send");
+        let recorded: Vec<String> = sent
+            .fields
+            .get("read_items")
+            .and_then(Value::as_array)
+            .expect("the send records the list")
+            .iter()
+            .filter_map(|item| item.as_str().map(str::to_string))
+            .collect();
+        let mut printed: Vec<String> = Vec::new();
+        for line in prompt.lines().filter(|line| line.starts_with("- ")) {
+            let Some(at) = line.find("MSTD-") else { continue };
+            let code = line[at..].split(' ').next().unwrap_or_default().to_string();
+            if !printed.contains(&code) {
+                printed.push(code);
+            }
+        }
+        assert!(printed.len() > 2, "{prompt}");
+        assert_eq!(recorded, printed, "the send records the codes the request prints: {prompt}");
+
+        let copy = sent.str_field("copy").expect("the reviewer's copy").to_string();
+        let read = |code: &str, from: &Path| {
+            let opts = ReadOpts { root: root.to_path_buf(), spec: Some("x".into()), block: format!("item-{code}"), term: None };
+            read_for(&opts, None, from).unwrap_or_else(|refused| panic!("{code}: {refused}"));
+        };
+        let approved = || {
+            crate::commands::spec_events::write::write_at(&WriteOpts {
+                root: root.to_path_buf(),
+                spec: Some("x".into()),
+                event_type: "verdict".into(),
+                json: json!({"final": true, "result": "approved", "text": "A obra está pronta."}).to_string(),
+            })
+        };
+
+        let refused = approved();
+        assert_eq!(refused["reason"], json!("verdict-read-missing"), "{refused}");
+        for code in &recorded {
+            assert!(refused["hint"].as_str().unwrap_or_default().contains(code.as_str()), "{code}: {refused}");
+        }
+        for code in &recorded {
+            read(code, root);
+        }
+        assert_eq!(approved()["reason"], json!("verdict-read-missing"), "reading from the main repository does not count");
+
+        for code in &recorded[1..] {
+            read(code, Path::new(&copy));
+        }
+        let refused = approved();
+        assert_eq!(refused["reason"], json!("verdict-read-missing"), "{refused}");
+        let hint = refused["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains(recorded[0].as_str()) && !hint.contains(recorded[1].as_str()), "{refused}");
+
+        read(&recorded[0], Path::new(&copy));
+        assert_eq!(approved()["ok"], json!(true), "the verdict passes once every item was read from the copy");
+    }
+
+    /// O envio do pedido da revisão final grava o modelo e o esforço que o
+    /// `mustard.json` declara em `agents.model` e `agents.effort`, os mesmos
+    /// que a instalação escreve no agente de revisão, e não valores fixos; um
+    /// esforço fora da lista do Claude Code grava o padrão.
+    #[test]
+    fn the_final_review_send_carries_the_model_and_effort_of_the_project_config() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        ready_to_close(root, "x", &["git --version"]);
+        std::fs::write(root.join("mustard.json"), br#"{"agents":{"model":"opus","effort":"medium"}}"#).unwrap();
+        git_at(root, &["add", "-A"]);
+        git_at(root, &["commit", "-q", "-m", "modelo dos agentes"]);
+
+        let asked =
+            close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None, ..Default::default() }, None);
+        assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let sent = log.visible().into_iter().rfind(|e| e.event_type == "send").unwrap_or_else(|| panic!("nenhum envio gravado"));
+        assert_eq!(sent.str_field("role"), Some("review"), "{sent:?}");
+        assert_eq!(sent.str_field("model"), Some("opus"), "o envio segue o modelo da configuração: {sent:?}");
+        assert_eq!(sent.str_field("effort"), Some("medium"), "o envio segue o esforço da configuração: {sent:?}");
     }
 
     /// O revisor grava o veredito, e o fechamento o assume sem relatório. A
@@ -1143,7 +1530,7 @@ mod tests {
     /// resposta manda o revisor gravar o dele. Gravado o veredito, o
     /// fechamento grava o oficial, com `replaces` para a volta, e fecha.
     #[test]
-    fn o_fechamento_assume_o_veredito_gravado_pelo_revisor() {
+    fn closing_takes_the_verdict_written_by_the_reviewer() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         ready_to_close(root, "x", &["git --version"]);
@@ -1184,18 +1571,103 @@ mod tests {
         assert_eq!(asked_reviews(), 1, "{closed}");
     }
 
+    /// O revisor que grava o veredito enquanto o fechamento tem o passo do git
+    /// e assume o pedido de revisão: a gravação espera a trava e, com o
+    /// pedido já fechado pelo veredito oficial, é recusada, e o revisor grava
+    /// de novo. Ela nunca responde ok com o veredito parado, sem quem o
+    /// assuma. Sem relógio: o teste segue quando a lista de travas do sistema
+    /// mostra a gravação parada na trava, ou falha quando ela termina antes,
+    /// sem ter esperado.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_verdict_written_while_the_close_takes_the_review_is_refused_and_never_lost() {
+        use crate::commands::git_settle::{git_step_lock, waiting_for_lock};
+        use std::os::unix::fs::MetadataExt;
+
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        ready_to_close(root, "x", &["git --version"]);
+        let asked =
+            close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None, ..Default::default() }, None);
+        assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+
+        let approved = json!({"final": true, "result": "approved", "text": "A obra está pronta."});
+        let held = git_step_lock(root).unwrap();
+        let inode = std::fs::metadata(root.join(".claude").join("spec").join("round-git.lock")).unwrap().ino();
+        let refused = std::thread::scope(|scope| {
+            let reviewer = scope.spawn(|| judged(root, "x", approved.clone()));
+            while !waiting_for_lock(inode) {
+                assert!(!reviewer.is_finished(), "the verdict was written while the close held the git step");
+                std::thread::yield_now();
+            }
+            // O fechamento, com a trava presa, assume o pedido de revisão: grava
+            // o veredito oficial e solta a trava.
+            crate::shared::spec_state::seed_event(root, "x", "verdict", approved.clone());
+            drop(held);
+            reviewer.join().unwrap()
+        });
+
+        assert_eq!(refused["ok"], json!(false), "{refused}");
+        assert_eq!(refused["reason"], json!("no-open-review"), "{refused}");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let verdicts: Vec<&SpecEvent> = log.events.iter().filter(|e| e.event_type == "verdict").collect();
+        assert_eq!(verdicts.len(), 1, "no verdict is left parked after the official one: {verdicts:?}");
+        assert!(!verdicts[0].returned(), "{verdicts:?}");
+    }
+
+    /// O outro lado da mesma janela: o revisor que chega enquanto o passo do
+    /// git está preso, mas antes de o fechamento assumir o pedido, espera a
+    /// trava e grava: a resposta é ok, e o fechamento seguinte assume esse
+    /// veredito e fecha a spec com ele.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_verdict_that_waits_for_the_git_step_is_written_and_the_close_takes_it() {
+        use crate::commands::git_settle::{git_step_lock, waiting_for_lock};
+        use std::os::unix::fs::MetadataExt;
+
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        ready_to_close(root, "x", &["git --version"]);
+        let close = || {
+            close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None, ..Default::default() }, None)
+        };
+        let asked = close();
+        assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+
+        let approved = json!({"final": true, "result": "approved", "text": "A obra está pronta."});
+        let held = git_step_lock(root).unwrap();
+        let inode = std::fs::metadata(root.join(".claude").join("spec").join("round-git.lock")).unwrap().ino();
+        let wrote = std::thread::scope(|scope| {
+            let reviewer = scope.spawn(|| judged(root, "x", approved.clone()));
+            while !waiting_for_lock(inode) {
+                assert!(!reviewer.is_finished(), "the verdict was written while another step held the git lock");
+                std::thread::yield_now();
+            }
+            drop(held);
+            reviewer.join().unwrap()
+        });
+        assert_eq!(wrote["ok"], json!(true), "{wrote}");
+
+        let closed = close();
+        assert_eq!(closed["phase"], json!("closed"), "{closed}");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let verdicts: Vec<&SpecEvent> = log.visible().into_iter().filter(|e| e.event_type == "verdict").collect();
+        assert_eq!(verdicts.len(), 1, "{verdicts:?}");
+        assert_eq!(verdicts[0].fields.get("replaces"), Some(&json!(wrote["id"].as_u64().unwrap())), "{verdicts:?}");
+    }
+
     /// O caminho de volta: a onda entrega um teste novo, e o único critério
     /// da spec não o cita na prova dele. O fechamento não trava — a obra
     /// fecha do mesmo jeito —, mas a resposta traz um aviso de teste sem
     /// dono com o nome do teste e o arquivo.
     #[test]
-    fn o_fechamento_aponta_o_teste_sem_dono() {
+    fn closing_points_at_the_test_without_an_owner() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let spec = "x";
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::write(root.join("mustard.json"), b"{}").unwrap();
-        std::fs::write(root.join("src/w1.rs"), "fn um() {}\n").unwrap();
+        std::fs::write(root.join("src/w1.rs"), "fn one() {}\n").unwrap();
         git_at(root, &["init", "-q"]);
         git_at(root, &["add", "-A"]);
         git_at(root, &["commit", "-q", "-m", "semente"]);
@@ -1227,6 +1699,7 @@ mod tests {
             json!({"wave": 1, "text": "Tarefa da onda 1.", "files": [{"path": "src/w1.rs"}], "origin": said}),
         );
         crate::shared::spec_state::approve_in(&root.join(".claude").join("spec").join(spec));
+        crate::commands::flow::round::copies_leave_with_the_test(root);
         std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":4}"#).unwrap();
 
         let round = |report: Option<String>| {
@@ -1237,7 +1710,7 @@ mod tests {
 
         std::fs::write(
             root.join("src/w1.rs"),
-            "#[cfg(test)]\nmod tests {\n    #[test]\n    fn soma_um_mais_um() { assert_eq!(1 + 1, 2); }\n}\n",
+            "#[cfg(test)]\nmod tests {\n    #[test]\n    fn one_plus_one() { assert_eq!(1 + 1, 2); }\n}\n",
         )
         .unwrap();
         returned(root, spec, json!({"wave": 1, "text": "Saiu.", "files": ["src/w1.rs"], "commit": "soma o teste novo"}));
@@ -1254,7 +1727,7 @@ mod tests {
             .unwrap_or_else(|| panic!("nenhum aviso de teste sem dono: {closed}"));
         let hint = found["hint"].as_str().unwrap_or_default();
         assert!(
-            hint.contains("soma_um_mais_um") && hint.contains("src/w1.rs"),
+            hint.contains("one_plus_one") && hint.contains("src/w1.rs"),
             "o aviso traz o nome do teste e o arquivo: {hint}"
         );
     }
@@ -1315,7 +1788,7 @@ mod tests {
     /// vermelha, o aviso de que o binário instalado continua o de antes é a
     /// prova de que ela rodou.
     #[test]
-    fn a_troca_do_binario_acontece_uma_vez_so_no_fechamento_depois_da_aprovacao_final() {
+    fn binary_swap_happens_only_once_at_closing_after_the_final_approval() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         ready_to_close(root, "x", &["git --version"]);
@@ -1353,19 +1826,26 @@ mod tests {
         );
     }
 
-    /// A cópia do revisor final nasce pelo binário, no commit da obra, e é
-    /// ele que a apaga quando a obra fecha. A cópia que chega com mudança — o
+    /// O revisor final usa a vaga da última onda, que o binário põe no
+    /// commit da obra, e é ele que apaga as cópias da obra quando ela fecha.
+    /// O que a onda deixou na vaga, sem revisão pedida depois dela, sai: a
+    /// vaga é zerada. A cópia que chega com mudança depois de uma revisão — o
     /// corte que um revisor fez para ver a prova cair e não desfez — trava o
     /// fechamento seguinte, nomeando o arquivo; desfeito o corte, o
     /// fechamento volta a pedir a revisão sobre a mesma cópia.
     #[test]
-    fn a_copia_do_revisor_e_criada_e_apagada_pelo_binario() {
+    fn reviewer_copy_is_created_and_deleted_by_the_binary() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         ready_to_close(root, "x", &["git --version"]);
-        let copy = mustard_core::io::wave_prompt::final_copy_path(root, "x");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let copy = mustard_core::io::wave_prompt::final_copy_path(root, "x", &log);
         let shown = mustard_core::io::wave_prompt::shown(&copy);
-        assert!(!copy.exists(), "ninguém criou a cópia antes do fechamento");
+        let wave_copy = mustard_core::io::wave_prompt::recorded_copy(&log, 1).expect("the wave's copy").path;
+        assert_eq!(shown, wave_copy, "o revisor usa a vaga da última onda");
+        assert!(copy.join(".git").is_file(), "a vaga da onda ficou depois do commit dela");
+        std::fs::write(copy.join(wave_file(1)), "fn wave_leftover() {}\n").unwrap();
+        std::fs::write(copy.join("sobra.txt"), "sobra").unwrap();
         let ask = |report: Option<String>| {
             close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report, ..Default::default() }, None)
         };
@@ -1375,12 +1855,13 @@ mod tests {
         };
 
         let asked = ask(None);
-        assert_eq!(asked["review"]["final"], json!(true), "{asked}");
-        assert!(copy.join(".git").is_file(), "o fechamento criou a cópia como checkout ligado: {asked}");
+        assert_eq!(asked["review"]["final"], json!(true), "o que a onda deixou não trava a revisão: {asked}");
+        assert!(copy.join(".git").is_file(), "{asked}");
+        assert_eq!(git_out(&copy, &["status", "--porcelain"]), "", "a vaga foi zerada para a revisão: {asked}");
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let commit = mustard_core::io::wave_prompt::final_review_commit(root, &log).expect("a obra comitou");
         assert_eq!(git_out(&copy, &["rev-parse", "HEAD"]), commit, "a cópia está no commit da obra");
-        let prompt = asked["review"]["prompt"].as_str().unwrap_or_default();
+        let prompt = review_prompt(&asked);
         assert!(prompt.contains(&format!("`{shown}`")) && prompt.contains(&format!("`{commit}`")), "{prompt}");
 
         // O revisor corta uma prova, não desfaz e reprova a obra: o
@@ -1399,11 +1880,560 @@ mod tests {
         assert_eq!(again["review"]["final"], json!(true), "{again}");
         assert_eq!(git_out(&copy, &["rev-parse", "HEAD"]), commit, "{again}");
 
-        // Aprovada a obra, o binário apaga a cópia, e o git não a lista mais.
+        // Aprovada a obra, o binário apaga todas as vagas dela, com o que
+        // compilaram, e a pasta das cópias da obra, e o git não as lista
+        // mais. A pasta principal e o que ela compilou ficam.
+        let second = mustard_core::io::wave_prompt::slot_path(root, "x", 1);
+        git_at(root, &["worktree", "add", "-q", "--detach", &second.to_string_lossy()]);
+        std::fs::create_dir_all(second.join("target")).unwrap();
+        std::fs::write(second.join("target").join("compilado"), "x").unwrap();
+        let built = main_build(root);
         let closed = ask(approve(root, "x"));
         assert_eq!(closed["phase"], json!("closed"), "{closed}");
-        assert!(!copy.exists(), "o fechamento apagou a cópia: {closed}");
-        assert!(!git_out(root, &["worktree", "list", "--porcelain"]).contains(&shown), "{closed}");
+        assert!(!copy.exists() && !second.exists(), "o fechamento apagou as vagas: {closed}");
+        assert!(!copy.parent().unwrap().exists(), "o fechamento apagou a pasta das cópias da obra: {closed}");
+        let listed = git_out(root, &["worktree", "list", "--porcelain"]);
+        assert!(!listed.contains(&shown) && !listed.contains(&mustard_core::io::wave_prompt::shown(&second)), "{listed}");
+        assert_eq!(std::fs::read_to_string(&built).unwrap(), "compilado", "a compilação principal fica");
+        assert!(root.join(wave_file(1)).is_file() && root.join(".git").is_dir(), "a pasta principal fica");
+    }
+
+    /// As refs em que a limpeza das cópias guarda código, no repositório
+    /// principal.
+    fn kept_refs(root: &Path) -> Vec<String> {
+        let out = Command::new("git")
+            .args(["for-each-ref", "--format=%(refname)", "refs/mustard/kept"])
+            .current_dir(root)
+            .output()
+            .expect("git");
+        String::from_utf8_lossy(&out.stdout).lines().map(str::to_string).collect()
+    }
+
+    /// O conteúdo de `file` na ref `refname` do repositório `root`.
+    fn kept_content(root: &Path, refname: &str, file: &str) -> String {
+        let out = Command::new("git")
+            .args(["show", &format!("{refname}:{file}")])
+            .current_dir(root)
+            .output()
+            .expect("git");
+        String::from_utf8_lossy(&out.stdout).to_string()
+    }
+
+    /// Os textos de aviso da resposta `out` com o motivo `reason`.
+    fn hints_of<'a>(out: &'a Value, reason: &str) -> Vec<&'a str> {
+        out["warnings"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|w| w["reason"] == json!(reason))
+            .filter_map(|w| w["hint"].as_str())
+            .collect()
+    }
+
+    /// A vaga da última onda, zerada para o revisor, guarda antes o que a
+    /// onda deixou nela além do commit, e a resposta que pede a revisão
+    /// nomeia a onda, a ref e o comando para trazer o código de volta.
+    #[test]
+    fn the_close_names_the_code_it_kept_when_it_cleans_the_review_copy() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        ready_to_close(root, "x", &["git --version"]);
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let copy = mustard_core::io::wave_prompt::final_copy_path(root, "x", &log);
+        std::fs::write(copy.join("sobra.txt"), "o que a onda deixou").unwrap();
+
+        let asked =
+            close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), ..Default::default() }, None);
+        assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+        let refs = kept_refs(root);
+        assert_eq!(refs.len(), 1, "{refs:?}");
+        assert_eq!(kept_content(root, &refs[0], "sobra.txt"), "o que a onda deixou", "{refs:?}");
+        let hints = hints_of(&asked, "code-kept");
+        assert_eq!(hints.len(), 1, "{asked}");
+        let shown = mustard_core::io::wave_prompt::shown(&copy);
+        assert!(hints[0].contains(&refs[0]) && hints[0].contains("onda 1") && hints[0].contains(&shown), "{}", hints[0]);
+        assert!(hints[0].contains(&format!("git cherry-pick --no-commit {}", refs[0])), "{}", hints[0]);
+    }
+
+    /// O código guardado ao zerar a cópia do revisor é nomeado também quando
+    /// o fechamento recusa logo depois (a suíte vermelha): a ref existe, e a
+    /// chamada seguinte acharia a cópia já limpa e nada diria dele.
+    #[test]
+    fn the_close_names_the_code_it_kept_even_when_it_refuses_right_after() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        ready_to_close(root, "x", &["git --version"]);
+        std::fs::write(root.join("mustard.json"), json!({ "testCommand": "false" }).to_string()).unwrap();
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let copy = mustard_core::io::wave_prompt::final_copy_path(root, "x", &log);
+        std::fs::write(copy.join("sobra.txt"), "o que a onda deixou").unwrap();
+
+        let refused =
+            close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), ..Default::default() }, None);
+        assert_eq!(refused["reason"], json!("suite-failed"), "{refused}");
+        let refs = kept_refs(root);
+        assert_eq!(refs.len(), 1, "{refs:?}");
+        assert_eq!(kept_content(root, &refs[0], "sobra.txt"), "o que a onda deixou", "{refs:?}");
+        let hints = hints_of(&refused, "code-kept");
+        assert_eq!(hints.len(), 1, "{refused}");
+        assert!(hints[0].contains(&format!("git cherry-pick --no-commit {}", refs[0])), "{}", hints[0]);
+    }
+
+    /// Uma vaga a mais da obra, com um arquivo dentro que o git do projeto
+    /// não tem: o que o fechamento apagaria sem guardar.
+    fn second_slot_with_code(root: &Path) -> PathBuf {
+        let second = mustard_core::io::wave_prompt::slot_path(root, "x", 1);
+        git_at(root, &["worktree", "add", "-q", "--detach", &second.to_string_lossy()]);
+        std::fs::write(second.join("depois.txt"), "código de última hora").unwrap();
+        second
+    }
+
+    /// O fechamento guarda o código que uma vaga tem além do commit antes de
+    /// apagá-la: a vaga sai, o código fica sob uma ref do repositório
+    /// principal, e a resposta nomeia a ref e o comando para trazê-lo de volta.
+    #[test]
+    fn the_close_keeps_the_code_a_copy_holds_beyond_the_commit_before_removing_it() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        ready_to_close(root, "x", &["git --version"]);
+        let ask = |report: Option<String>| {
+            close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report, ..Default::default() }, None)
+        };
+        assert_eq!(ask(None)["review"]["final"], json!(true));
+        let second = second_slot_with_code(root);
+
+        let closed = ask(approve(root, "x"));
+        assert_eq!(closed["phase"], json!("closed"), "{closed}");
+        assert!(!second.exists(), "a vaga saiu: {closed}");
+        let refs = kept_refs(root);
+        assert_eq!(refs.len(), 1, "{refs:?}");
+        assert!(refs[0].starts_with("refs/mustard/kept/x/"), "{refs:?}");
+        assert_eq!(kept_content(root, &refs[0], "depois.txt"), "código de última hora", "{refs:?}");
+        let hints = hints_of(&closed, "code-kept");
+        assert_eq!(hints.len(), 1, "{closed}");
+        assert!(hints[0].contains(&format!("git cherry-pick --no-commit {}", refs[0])), "{}", hints[0]);
+    }
+
+    /// A vaga cujo código o git não deixa guardar não é apagada: fica no
+    /// disco com o arquivo dentro, a resposta nomeia a vaga e o motivo, e a
+    /// obra fecha do mesmo jeito. A vaga que não tem o que guardar sai.
+    #[test]
+    fn a_copy_whose_code_could_not_be_kept_is_not_removed_and_the_close_says_why() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        ready_to_close(root, "x", &["git --version"]);
+        let ask = |report: Option<String>| {
+            close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report, ..Default::default() }, None)
+        };
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let clean = mustard_core::io::wave_prompt::final_copy_path(root, "x", &log);
+        assert_eq!(ask(None)["review"]["final"], json!(true));
+        let second = second_slot_with_code(root);
+        // Uma ref no lugar da pasta das refs da obra: o git não cria as de dentro.
+        let head = {
+            let out = Command::new("git").args(["rev-parse", "HEAD"]).current_dir(root).output().expect("git");
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        git_at(root, &["update-ref", "refs/mustard/kept/x", &head]);
+
+        let closed = ask(approve(root, "x"));
+        assert_eq!(closed["phase"], json!("closed"), "{closed}");
+        assert_eq!(std::fs::read_to_string(second.join("depois.txt")).unwrap(), "código de última hora", "{closed}");
+        assert!(!clean.exists(), "a vaga sem código a guardar saiu: {closed}");
+        let hints = hints_of(&closed, "code-not-kept");
+        assert_eq!(hints.len(), 1, "{closed}");
+        let shown = mustard_core::io::wave_prompt::shown(&second);
+        assert!(hints[0].contains(&shown) && hints[0].contains("nada delas foi apagado"), "{}", hints[0]);
+        assert!(hints_of(&closed, "code-kept").is_empty(), "nada foi guardado: {closed}");
+    }
+
+    /// O que a pasta principal compilou: um arquivo em `target`, que o git
+    /// ignora. Devolve o caminho do arquivo.
+    fn main_build(root: &Path) -> PathBuf {
+        let exclude = root.join(".git").join("info").join("exclude");
+        std::fs::create_dir_all(exclude.parent().unwrap()).unwrap();
+        std::fs::write(&exclude, "target/\n").unwrap();
+        let built = root.join("target").join("debug").join("mustard");
+        std::fs::create_dir_all(built.parent().unwrap()).unwrap();
+        std::fs::write(&built, "compilado").unwrap();
+        built
+    }
+
+    /// A cópia da obra que não sai do disco vira aviso, nomeando a cópia, e
+    /// o fechamento segue: a obra fecha assim mesmo, e a pasta principal e o
+    /// que ela compilou ficam.
+    #[cfg(unix)]
+    #[test]
+    fn a_copy_that_does_not_leave_becomes_a_warning_and_the_close_goes_on() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        ready_to_close(root, "x", &["git --version"]);
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let copy = mustard_core::io::wave_prompt::final_copy_path(root, "x", &log);
+        let ask = |report: Option<String>| {
+            close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report, ..Default::default() }, None)
+        };
+        let asked = ask(None);
+        assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+        let built = main_build(root);
+
+        // A pasta das cópias da obra sem escrita: a vaga não sai dela.
+        let folder = copy.parent().unwrap().to_path_buf();
+        std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let closed = ask(approve(root, "x"));
+        std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert_eq!(closed["ok"], json!(true), "{closed}");
+        assert_eq!(closed["phase"], json!("closed"), "{closed}");
+        let warnings = closed["warnings"].as_array().cloned().unwrap_or_default();
+        let kept: Vec<&str> =
+            warnings.iter().filter(|w| w["reason"] == json!("copies-kept")).filter_map(|w| w["hint"].as_str()).collect();
+        assert_eq!(kept.len(), 1, "{closed}");
+        assert!(kept[0].contains(&mustard_core::io::wave_prompt::shown(&copy)), "o aviso nomeia a cópia: {}", kept[0]);
+        assert!(copy.exists(), "a cópia ficou no disco");
+        assert_eq!(std::fs::read_to_string(&built).unwrap(), "compilado", "a compilação principal fica");
+        assert!(root.join(wave_file(1)).is_file() && root.join(".git").is_dir(), "a pasta principal fica");
+    }
+
+    /// Uma pasta que o git do projeto ignora, com um arquivo dentro. Devolve o
+    /// arquivo.
+    fn ignored_folder(root: &Path, name: &str) -> PathBuf {
+        let exclude = root.join(".git").join("info").join("exclude");
+        std::fs::create_dir_all(exclude.parent().unwrap()).unwrap();
+        let rules = std::fs::read_to_string(&exclude).unwrap_or_default();
+        std::fs::write(&exclude, format!("{rules}{name}/\n")).unwrap();
+        let file = root.join(name).join("dentro");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "x").unwrap();
+        file
+    }
+
+    /// O fechamento apaga da pasta principal a pasta de compilação que o
+    /// projeto declarou, só quando fecha — o pedido da revisão não apaga — e
+    /// a resposta diz o que saiu. O resto fica: o código, o `.git` e a pasta
+    /// ignorada que ninguém declarou. A pasta que não sai do disco vira aviso,
+    /// e a obra fecha assim mesmo.
+    #[test]
+    fn closing_removes_the_declared_build_output_and_keeps_the_rest() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        ready_to_close(root, "x", &["git --version"]);
+        let built = main_build(root);
+        let other = ignored_folder(root, "outra");
+        // A pasta com uma pasta sem escrita dentro não sai do disco.
+        #[cfg(unix)]
+        let stuck = {
+            use std::os::unix::fs::PermissionsExt;
+            let file = ignored_folder(root, "presa");
+            let inner = root.join("presa").join("trava");
+            std::fs::create_dir_all(&inner).unwrap();
+            std::fs::write(inner.join("arquivo"), "x").unwrap();
+            std::fs::set_permissions(&inner, std::fs::Permissions::from_mode(0o555)).unwrap();
+            (file, inner)
+        };
+        let declared = if cfg!(unix) { vec!["target", "presa"] } else { vec!["target"] };
+        std::fs::write(root.join("mustard.json"), json!({"buildOutput": declared}).to_string()).unwrap();
+
+        let asked =
+            close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), ..Default::default() }, None);
+        assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+        assert!(built.is_file(), "the review request removes nothing: {asked}");
+
+        let closed = close(root, "x");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&stuck.1, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        assert_eq!(closed["ok"], json!(true), "{closed}");
+        assert_eq!(closed["phase"], json!("closed"), "{closed}");
+        assert_eq!(closed["build_output_removed"], json!(["target"]), "{closed}");
+        assert!(!root.join("target").exists(), "the declared folder is gone: {closed}");
+        assert!(other.is_file(), "an ignored folder nobody declared stays");
+        assert!(root.join(wave_file(1)).is_file() && root.join(".git").is_dir(), "the main folder stays");
+        let kept: Vec<String> = closed["warnings"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|w| w["reason"] == json!("build-output-kept"))
+            .filter_map(|w| w["hint"].as_str().map(str::to_string))
+            .collect();
+        #[cfg(unix)]
+        {
+            assert_eq!(kept.len(), 1, "{closed}");
+            assert!(kept[0].contains("`presa`"), "the warning names the folder: {}", kept[0]);
+            assert!(stuck.0.is_file() || root.join("presa").exists(), "the folder that failed stays on disk");
+        }
+        #[cfg(not(unix))]
+        assert!(kept.is_empty(), "{closed}");
+    }
+
+    /// Um projeto git com uma pasta de compilação `target` que o git ignora,
+    /// com um arquivo dentro, e o `mustard.json` com a declaração `config`.
+    fn project_with_build(root: &Path, config: &str) -> PathBuf {
+        git_at(root, &["init", "-q"]);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/lib.rs"), "fn one() {}\n").unwrap();
+        std::fs::write(root.join(".gitignore"), "target/\n").unwrap();
+        git_at(root, &["add", "-A"]);
+        git_at(root, &["commit", "-q", "-m", "semente"]);
+        std::fs::write(root.join("mustard.json"), config).unwrap();
+        std::fs::create_dir_all(root.join("target").join("debug")).unwrap();
+        let built = root.join("target").join("debug").join("programa");
+        std::fs::write(&built, "compilado").unwrap();
+        built
+    }
+
+    /// Os avisos de pasta que ficou, na resposta `swept` posta num objeto.
+    fn kept_of(swept: &BuildOutputSwept) -> Vec<String> {
+        let mut out = json!({});
+        swept.tell(&mut out);
+        out["warnings"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|w| w["reason"] == json!("build-output-kept"))
+            .filter_map(|w| w["hint"].as_str().map(str::to_string))
+            .collect()
+    }
+
+    /// Sem a declaração no `mustard.json`, nada da pasta principal sai, nem
+    /// a pasta de compilação que o git ignora; a declaração vazia também não
+    /// apaga nada.
+    #[test]
+    fn without_a_declaration_nothing_is_removed() {
+        for config in ["{}", r#"{"buildOutput":[]}"#] {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            let built = project_with_build(root, config);
+            let swept = remove_build_output(root, Locale::PtBr);
+            assert!(swept.removed.is_empty() && swept.kept.is_empty(), "{config}");
+            assert!(built.is_file(), "{config}: the build stays");
+        }
+    }
+
+    /// A declaração que sai da raiz, que é a própria raiz, que passa pelo
+    /// `.git`, que é um caminho absoluto ou que tem `..` — mesmo quando ele
+    /// acaba numa pasta ignorada dentro da raiz — não apaga nada: fica e vira
+    /// o aviso do caminho. A que aponta uma pasta que o git não ignora ou uma
+    /// pasta com arquivo versionado também fica, com o aviso do git. A pasta
+    /// que não existe não é erro nem aviso. A pasta boa da mesma lista sai.
+    #[test]
+    fn an_unsafe_declaration_removes_nothing_and_warns() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("obra");
+        std::fs::create_dir_all(&root).unwrap();
+        let root = root.as_path();
+        let outside = dir.path().join("fora");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("arquivo"), "x").unwrap();
+        let built = project_with_build(root, "{}");
+        // Ignorada, mas com um arquivo versionado dentro.
+        std::fs::create_dir_all(root.join("dist")).unwrap();
+        std::fs::write(root.join("dist/versionado"), "x").unwrap();
+        git_at(root, &["add", "-f", "dist/versionado"]);
+        git_at(root, &["commit", "-q", "-m", "dist"]);
+        // Ignorada e sem nada versionado, alcançada só por um caminho torto.
+        std::fs::write(root.join(".gitignore"), "target/\ndist/\nlixo/\n").unwrap();
+        std::fs::create_dir_all(root.join("lixo")).unwrap();
+        std::fs::write(root.join("lixo/sobra"), "x").unwrap();
+        // Não ignorada.
+        std::fs::create_dir_all(root.join("build")).unwrap();
+        std::fs::write(root.join("build/saida"), "x").unwrap();
+        let outside_abs = outside.to_string_lossy().to_string();
+        let inside_abs = root.join("lixo").to_string_lossy().to_string();
+        let by_path = ["../fora", outside_abs.as_str(), inside_abs.as_str(), "src/../lixo", ".", "./", ".git", "src/../.."];
+        let by_git = ["dist", "build"];
+        let declared: Vec<&str> = by_path.iter().chain(&by_git).copied().chain(["nao-existe", "target"]).collect();
+        std::fs::write(root.join("mustard.json"), json!({"buildOutput": declared}).to_string()).unwrap();
+
+        let swept = remove_build_output(root, Locale::PtBr);
+        assert_eq!(swept.removed, vec!["target".to_string()], "only the good folder leaves");
+        assert!(!built.exists());
+        let kept = kept_of(&swept);
+        let hint = |key: &str, folder: &str| translate(key, Locale::PtBr).replace("{folder}", folder);
+        let expected: Vec<String> = by_path
+            .iter()
+            .map(|folder| hint("close.build_output_unsafe", folder))
+            .chain(by_git.iter().map(|folder| hint("close.build_output_not_ignored", folder)))
+            .collect();
+        assert_eq!(kept, expected, "each folder that stays gets its own warning, and the missing one none");
+        assert!(outside.join("arquivo").is_file(), "nothing outside the root is touched");
+        assert!(root.join("lixo/sobra").is_file(), "a crooked path to an ignored folder removes nothing");
+        assert!(root.join(".git").join("HEAD").is_file() && root.join("src/lib.rs").is_file());
+        assert!(root.join("dist/versionado").is_file() && root.join("build/saida").is_file());
+    }
+
+    /// Um atalho declarado como pasta de compilação, que leva para fora do
+    /// projeto, não apaga nada do lugar para onde ele aponta.
+    #[cfg(unix)]
+    #[test]
+    fn a_declared_link_out_of_the_root_removes_nothing() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("obra");
+        std::fs::create_dir_all(&root).unwrap();
+        let outside = dir.path().join("fora");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("arquivo"), "x").unwrap();
+        project_with_build(&root, r#"{"buildOutput":["saida"]}"#);
+        std::fs::write(root.join(".gitignore"), "target/\nsaida\n").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("saida")).unwrap();
+
+        let swept = remove_build_output(&root, Locale::PtBr);
+        assert!(swept.removed.is_empty(), "the link is not removed");
+        let warned = translate("close.build_output_unsafe", Locale::PtBr).replace("{folder}", "saida");
+        assert_eq!(kept_of(&swept), vec![warned]);
+        assert!(root.join("saida").exists(), "the link stays");
+        assert!(outside.join("arquivo").is_file(), "the link's target stays");
+    }
+
+    /// A remoção espera a trava do passo do git, que a rodada segura ao
+    /// compilar antes do commit: enquanto outra rodada a segura, a pasta fica;
+    /// solta a trava, ela sai. Sem relógio: o teste segue quando a lista de
+    /// travas do sistema mostra a remoção parada na trava, ou falha quando a
+    /// remoção termina antes, sem ter esperado.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_removal_waits_for_the_git_step_lock() {
+        use crate::commands::git_settle::waiting_for_lock;
+        use std::os::unix::fs::MetadataExt;
+        use std::sync::mpsc;
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let built = project_with_build(root, r#"{"buildOutput":["target"]}"#);
+        let specs = root.join(".claude").join("spec");
+        std::fs::create_dir_all(&specs).unwrap();
+
+        let held = crate::commands::git_settle::git_step_lock(root).unwrap();
+        let lock: Vec<PathBuf> = std::fs::read_dir(&specs).unwrap().flatten().map(|entry| entry.path()).collect();
+        assert_eq!(lock.len(), 1, "the lock is the only file in the spec folder: {lock:?}");
+        let inode = std::fs::metadata(&lock[0]).unwrap().ino();
+        std::thread::scope(|scope| {
+            let (done_tx, done_rx) = mpsc::channel();
+            scope.spawn(move || done_tx.send(remove_build_output(root, Locale::PtBr).removed));
+            while !waiting_for_lock(inode) {
+                if let Ok(removed) = done_rx.try_recv() {
+                    panic!("the removal ran while another round held the lock: {removed:?}");
+                }
+                std::thread::yield_now();
+            }
+            assert!(built.is_file(), "the build of the other round stays while it holds the lock");
+            drop(held);
+            assert_eq!(done_rx.recv(), Ok(vec!["target".to_string()]));
+        });
+        assert!(!built.exists());
+    }
+
+    /// O fechamento procura processo preso só com a trava do passo do git
+    /// presa. Outra rodada, no meio do despacho, segura a trava e roda o git
+    /// numa vaga viva cujo envio ainda não gravou: o fechamento espera a
+    /// trava, e quando procura o envio daquela vaga já está gravado; o git da
+    /// outra rodada segue vivo. Sem relógio: o teste segue quando a lista de
+    /// travas do sistema mostra o fechamento parado na trava.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_close_never_ends_the_git_of_a_round_preparing_a_slot() {
+        use crate::commands::git_settle::{git_step_lock, waiting_for_lock};
+        use mustard_core::io::wave_prompt::{shown, slot_path};
+        use std::os::unix::fs::MetadataExt;
+        use std::process::{Command, Stdio};
+
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        ready_to_close(root, "x", &["git --version"]);
+        let slot = slot_path(root, "x", 1);
+        std::fs::create_dir_all(slot.join("src")).unwrap();
+        std::fs::write(slot.join(".git"), "gitdir: /nowhere\n").unwrap();
+
+        let held = git_step_lock(root).unwrap();
+        let inode = std::fs::metadata(root.join(".claude").join("spec").join("round-git.lock")).unwrap().ino();
+        let mut preparing = Command::new("sleep")
+            .arg("30")
+            .current_dir(slot.join("src"))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn the other round's git in the slot");
+        crate::commands::flow::stuck::wait_until_spawned(preparing.id(), "sleep");
+
+        let out = std::thread::scope(|scope| {
+            let closing = scope.spawn(|| {
+                close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), ..Default::default() }, None)
+            });
+            while !waiting_for_lock(inode) {
+                assert!(!closing.is_finished(), "the close ran without waiting for the git step lock");
+                std::thread::yield_now();
+            }
+            // A outra rodada termina: grava o envio com a vaga que preparou e
+            // solta a trava.
+            crate::shared::spec_state::seed_event(
+                root,
+                "x",
+                "send",
+                json!({"role": "review", "text": "revise", "lines": 1, "chars": 6, "mustard": "0", "author": "binary",
+                    "copy": shown(&slot)}),
+            );
+            drop(held);
+            closing.join().unwrap()
+        });
+
+        let alive = preparing.try_wait().ok().flatten().is_none();
+        let _ = preparing.kill();
+        let _ = preparing.wait();
+        assert!(alive, "the other round's git in its slot must stay alive: {out}");
+        let warned = out["warnings"].as_array().cloned().unwrap_or_default();
+        assert!(!warned.iter().any(|w| w["reason"] == json!("stuck-ended")), "{out}");
+    }
+
+    /// A cópia do revisor final recebe os arquivos da lista de arquivos
+    /// locais do projeto como a cópia da onda: no mesmo caminho, como arquivo
+    /// comum, com o mesmo conteúdo, nunca como link; o que falta no principal
+    /// vira aviso no pedido do revisor, e o pedido sai assim mesmo. O arquivo
+    /// copiado, que o git ignora, não suja a cópia: depois de uma reprovação,
+    /// o fechamento seguinte pede a revisão de novo sobre ela, que recebe os
+    /// arquivos com o conteúdo de agora.
+    #[test]
+    fn the_final_review_copy_gets_the_local_files_too() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        ready_to_close(root, "x", &["git --version"]);
+        let exclude = root.join(".git").join("info").join("exclude");
+        std::fs::create_dir_all(exclude.parent().unwrap()).unwrap();
+        std::fs::write(&exclude, ".env\n").unwrap();
+        std::fs::write(root.join(".env"), "SEGREDO=1\n").unwrap();
+        std::fs::write(root.join("mustard.json"), br#"{"localFiles":[".env","falta.env"]}"#).unwrap();
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let copy = mustard_core::io::wave_prompt::final_copy_path(root, "x", &log);
+        let shown = mustard_core::io::wave_prompt::shown(&copy);
+        let ask = |report: Option<String>| {
+            close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report, ..Default::default() }, None)
+        };
+        let regular = |file: &Path| std::fs::symlink_metadata(file).is_ok_and(|m| m.file_type().is_file());
+
+        let asked = ask(None);
+        assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+        assert!(regular(&copy.join(".env")), "o arquivo local chega como arquivo comum: {asked}");
+        assert_eq!(std::fs::read_to_string(copy.join(".env")).unwrap(), "SEGREDO=1\n");
+        std::fs::write(copy.join(".env"), "MUDOU=1\n").unwrap();
+        assert_eq!(std::fs::read_to_string(root.join(".env")).unwrap(), "SEGREDO=1\n", "a cópia não escreve no principal");
+        let warnings = asked["warnings"].as_array().cloned().unwrap_or_default();
+        let missing: Vec<&str> = warnings
+            .iter()
+            .filter(|w| w["reason"] == json!("local-file-missing"))
+            .filter_map(|w| w["hint"].as_str())
+            .collect();
+        assert_eq!(missing.len(), 1, "{asked}");
+        assert!(missing[0].contains("`falta.env`") && missing[0].contains(&shown), "{}", missing[0]);
+
+        std::fs::remove_file(copy.join(".env")).unwrap();
+        std::fs::write(root.join(".env"), "SEGREDO=2\n").unwrap();
+        let rejected = json!({"final": true, "result": "rejected", "text": "Refazer a conferência."});
+        let again = ask(verdict_written(root, "x", rejected));
+        assert_eq!(again["review"]["final"], json!(true), "o arquivo local não suja a cópia: {again}");
+        assert!(regular(&copy.join(".env")), "{again}");
+        assert_eq!(std::fs::read_to_string(copy.join(".env")).unwrap(), "SEGREDO=2\n", "{again}");
     }
 
     /// O roteiro que os dois comandos do servidor rodam no teste: grava, num
@@ -1439,7 +2469,7 @@ exit "${2:-0}"
     /// suíte; a suíte que falha recusa também, antes de critério nenhum; os
     /// dois verdes deixam a máquina seguir para o revisor.
     #[test]
-    fn o_fechamento_roda_os_comandos_do_servidor_em_ambiente_limpo() {
+    fn closing_runs_the_server_commands_in_a_clean_environment() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         ready_to_close(root, "x", &["git --version"]);
@@ -1488,7 +2518,7 @@ exit "${2:-0}"
     /// O projeto que não declara um dos dois comandos do servidor fecha do
     /// mesmo jeito: o que falta não roda, e a resposta avisa qual chave falta.
     #[test]
-    fn o_fechamento_roda_os_comandos_do_servidor_em_ambiente_limpo_e_avisa_o_que_falta() {
+    fn closing_runs_the_server_commands_in_a_clean_environment_and_warns_what_is_missing() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         ready_to_close(root, "x", &["git --version"]);
@@ -1518,7 +2548,7 @@ exit "${2:-0}"
     /// pela porta do critério ela seria cortada e o fechamento recusaria com
     /// a suíte vermelha.
     #[test]
-    fn a_suite_do_fechamento_nao_usa_o_teto_do_criterio() {
+    fn closing_suite_does_not_use_the_criterion_cap() {
         use crate::commands::review::qa_run::{ceiling_secs, with_timeout_variable, Ceiling};
         let hour = 60 * 60;
         for command in ["pnpm test", "pnpm lint"] {
@@ -1749,7 +2779,7 @@ exit "${2:-0}"
         let root = dir.path();
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::write(root.join("mustard.json"), b"{}").unwrap();
-        std::fs::write(root.join(wave_file(1)), "fn um() {}\n").unwrap();
+        std::fs::write(root.join(wave_file(1)), "fn one() {}\n").unwrap();
         git_at(root, &["init", "-q"]);
         git_at(root, &["add", "-A"]);
         git_at(root, &["commit", "-q", "-m", "semente"]);
@@ -1774,6 +2804,7 @@ exit "${2:-0}"
         write(root, "x", "task", json!({"wave": 1, "text": "Tarefa da onda 1.",
             "files": [{"path": wave_file(1)}], "origin": said}));
         crate::shared::spec_state::approve_in(&root.join(".claude").join("spec").join("x"));
+        crate::commands::flow::round::copies_leave_with_the_test(root);
         std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":4}"#).unwrap();
 
         let round = |report: Option<String>| {
@@ -1790,8 +2821,10 @@ exit "${2:-0}"
         let dispatched = round(Some(format!("<ANALYSIS>{analysis}</ANALYSIS>")));
         assert_eq!(dispatched["ok"], json!(true), "{dispatched}");
 
-        std::fs::write(root.join(wave_file(1)), "fn um() {}\nfn dois() {}\n").unwrap();
-        returned(root, "x", json!({"wave": 1, "text": "Saiu.", "files": [wave_file(1)], "commit": "a soma sai"}));
+        std::fs::write(root.join(wave_file(1)), "fn one() {}\nfn dois() {}\n").unwrap();
+        // A entrega responde pela decisão que o pedido da onda levou.
+        returned(root, "x", json!({"wave": 1, "text": "Saiu.", "files": [wave_file(1)], "commit": "a soma sai",
+            "agreed": [{"item": "MSTD-DEC-0001", "met": true}]}));
         let back = round(None);
         assert_eq!(back["ok"], json!(true), "{back}");
         std::fs::write(root.join("mustard.json"), b"{}").unwrap();
@@ -1827,12 +2860,12 @@ exit "${2:-0}"
     /// atendido sem arquivo nenhum na resposta fica com o campo vazio — a
     /// tabela não inventa um.
     #[test]
-    fn a_aceitacao_grava_a_tabela_de_rastreabilidade() {
+    fn acceptance_writes_the_traceability_table() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::write(root.join("mustard.json"), b"{}").unwrap();
-        std::fs::write(root.join(wave_file(1)), "fn um() {}\n").unwrap();
+        std::fs::write(root.join(wave_file(1)), "fn one() {}\n").unwrap();
         git_at(root, &["init", "-q"]);
         git_at(root, &["add", "-A"]);
         git_at(root, &["commit", "-q", "-m", "semente"]);
@@ -1853,6 +2886,7 @@ exit "${2:-0}"
         write(root, "x", "task", json!({"wave": 1, "text": "Tarefa da onda 1.",
             "files": [{"path": wave_file(1)}], "origin": said}));
         crate::shared::spec_state::approve_in(&root.join(".claude").join("spec").join("x"));
+        crate::commands::flow::round::copies_leave_with_the_test(root);
         std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":4}"#).unwrap();
 
         let round = |report: Option<String>| {
@@ -1864,7 +2898,7 @@ exit "${2:-0}"
         let analysis = json!({"wave": 1, "removed": [], "added": []});
         let dispatched = round(Some(format!("<ANALYSIS>{analysis}</ANALYSIS>")));
         assert_eq!(dispatched["ok"], json!(true), "{dispatched}");
-        std::fs::write(root.join(wave_file(1)), "fn um() {}\nfn dois() {}\n").unwrap();
+        std::fs::write(root.join(wave_file(1)), "fn one() {}\nfn dois() {}\n").unwrap();
         returned(root, "x", json!({"wave": 1, "text": "Saiu.", "files": [wave_file(1)], "commit": "a soma sai"}));
         let back = round(None);
         assert_eq!(back["ok"], json!(true), "{back}");
@@ -1963,7 +2997,7 @@ exit "${2:-0}"
         // teste — sempre verde, para a rodada não travar a entrega.
         assert_eq!(asked["criteria"].as_array().map(Vec::len), Some(2), "{asked}");
         assert_eq!(asked["review"]["final"], json!(true), "{asked}");
-        let prompt = asked["review"]["prompt"].as_str().unwrap_or_default();
+        let prompt = review_prompt(&asked);
         assert!(prompt.contains(translate("prompt.final.fixed", Locale::PtBr)), "{prompt}");
         assert!(prompt.contains("código repetido entre ondas") && prompt.contains("verificação que uma apagou da outra"), "{prompt}");
         for n in [1, 2] {
@@ -1985,7 +3019,7 @@ exit "${2:-0}"
         let fix = round(None);
         let sent: Vec<u64> = fix["dispatch"].as_array().unwrap().iter().filter_map(|d| d["wave"].as_u64()).collect();
         assert_eq!(sent, vec![2], "{fix}");
-        std::fs::write(root.join(wave_file(2)), "fn um() {}\nfn tres() {}\n").unwrap();
+        std::fs::write(root.join(wave_file(2)), "fn one() {}\nfn tres() {}\n").unwrap();
         let line = json!({"wave": 2, "text": "Sem repetir a 1.", "files": [wave_file(2)], "commit": "a onda 2 sem repetição"});
         returned(root, "x", line);
         let back = round(None);
@@ -1998,8 +3032,8 @@ exit "${2:-0}"
         let again = close_with_lint(root, lint, None);
         assert_eq!(again["review"]["final"], json!(true), "{again}");
         assert!(ran(root), "{again}");
-        let fix_prompt = again["review"]["prompt"].as_str().unwrap_or_default();
-        assert!(fix_prompt.contains(translate("prompt.fix.final", Locale::PtBr)), "{fix_prompt}");
+        let fix_prompt = review_prompt(&again);
+        assert!(fix_prompt.contains(translate("prompt.final.look_again", Locale::PtBr)), "{fix_prompt}");
         assert!(fix_prompt.contains("MSTD-WAVE-0002") && !fix_prompt.contains("MSTD-WAVE-0001"), "só o conserto: {fix_prompt}");
 
         // Aprovado, a spec fecha sem rodar a máquina outra vez.
@@ -2052,7 +3086,7 @@ exit "${2:-0}"
         ready_with_waves(root, "x", &["git --version"], 2);
         let asked = close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None, ..Default::default() }, None);
         assert_eq!(asked["review"]["final"], json!(true), "{asked}");
-        let prompt = asked["review"]["prompt"].as_str().unwrap_or_default();
+        let prompt = review_prompt(&asked);
         for n in [1, 2] {
             assert!(prompt.contains(&format!("MSTD-DELIV-000{n}")), "a entrega da onda {n} está no pedido: {prompt}");
         }
@@ -2063,7 +3097,7 @@ exit "${2:-0}"
         ready_to_close(solo_root, "x", &["git --version"]);
         let asked_solo = close_for(&CloseOpts { root: solo_root.to_path_buf(), spec: Some("x".into()), report: None, ..Default::default() }, None);
         assert_eq!(asked_solo["review"]["final"], json!(true), "uma onda só também pede o agente: {asked_solo}");
-        let solo_prompt = asked_solo["review"]["prompt"].as_str().unwrap_or_default();
+        let solo_prompt = review_prompt(&asked_solo);
         assert!(solo_prompt.contains("MSTD-DELIV-0001"), "a entrega da onda única está no pedido: {solo_prompt}");
         let round_solo =
             round_for(&RoundOpts { root: solo_root.to_path_buf(), spec: Some("x".into()), report: None }, None);
@@ -2082,7 +3116,7 @@ exit "${2:-0}"
         let fix = round(None);
         assert_eq!(waves_in(&fix, "dispatch"), vec![2], "{fix}");
         assert!(fix.get("reviews").is_none(), "{fix}");
-        std::fs::write(root.join(wave_file(2)), "fn um() {}\nfn tres() {}\n").unwrap();
+        std::fs::write(root.join(wave_file(2)), "fn one() {}\nfn tres() {}\n").unwrap();
         let line = json!({"wave": 2, "text": "Consertou.", "files": [wave_file(2)], "commit": "conserta a onda 2"});
         returned(root, "x", line);
         let back = round(None);
@@ -2093,8 +3127,8 @@ exit "${2:-0}"
         // para conferir o conserto — não a obra inteira de novo.
         let rechecked = close(None);
         assert_eq!(rechecked["review"]["final"], json!(true), "{rechecked}");
-        let fix_prompt = rechecked["review"]["prompt"].as_str().unwrap_or_default();
-        assert!(fix_prompt.contains(translate("prompt.fix.final", Locale::PtBr)), "{fix_prompt}");
+        let fix_prompt = review_prompt(&rechecked);
+        assert!(fix_prompt.contains(translate("prompt.final.look_again", Locale::PtBr)), "{fix_prompt}");
         assert!(fix_prompt.contains("MSTD-WAVE-0002") && !fix_prompt.contains("MSTD-WAVE-0001"), "só o conserto: {fix_prompt}");
 
         // A segunda volta de conserto: reprovado de novo, o conserto sai mais
@@ -2103,7 +3137,7 @@ exit "${2:-0}"
         assert_eq!(refused_again["reason"], json!("wave-rejected"), "{refused_again}");
         let fix_again = round(None);
         assert_eq!(waves_in(&fix_again, "dispatch"), vec![2], "{fix_again}");
-        std::fs::write(root.join(wave_file(2)), "fn um() {}\nfn quatro() {}\n").unwrap();
+        std::fs::write(root.join(wave_file(2)), "fn one() {}\nfn quatro() {}\n").unwrap();
         let line = json!({"wave": 2, "text": "Consertou de novo.", "files": [wave_file(2)], "commit": "conserta de novo"});
         returned(root, "x", line);
         assert_eq!(round(None)["ok"], json!(true));
@@ -2121,8 +3155,8 @@ exit "${2:-0}"
     }
 
     /// O conserto de uma onda que não é a última do plano: o agente de teste
-    /// dedicado reprova a onda 1 de duas, e a aprovação final, sem onda, fica
-    /// gravada na onda 2, a última — nunca ganha um veredito próprio a onda 1.
+    /// dedicado reprova a onda 1 de duas, e a aprovação final, sem onda, é
+    /// gravada sem onda nenhuma — nunca ganha um veredito próprio a onda 1.
     /// Três coisas têm de continuar certas mesmo assim: (1) o fechamento
     /// recusa enquanto o conserto está só despachado, sem entrega ainda; (2)
     /// entregue o conserto, a rodada solta a onda e manda fechar; e (3) depois
@@ -2155,7 +3189,7 @@ exit "${2:-0}"
 
         // A onda 1 entrega o conserto, com um código diferente do que já
         // estava no disco.
-        std::fs::write(root.join(wave_file(1)), "fn um() {}\nfn tres() {}\n").unwrap();
+        std::fs::write(root.join(wave_file(1)), "fn one() {}\nfn tres() {}\n").unwrap();
         let line = json!({"wave": 1, "text": "Sem faltar o teste.", "files": [wave_file(1)], "commit": "conserta a onda 1"});
         returned(root, "x", line);
         let back = round(None);
@@ -2167,9 +3201,9 @@ exit "${2:-0}"
         assert_eq!(released["command"], json!("mustard-rt run close --spec x"), "{released}");
 
         // O agente de teste dedicado confere só o conserto, e aprova a obra
-        // inteira: a aprovação sem onda fica gravada na última onda do plano
-        // (a 2), não na 1, que foi a reprovada.
-        let fix_prompt = close(None)["review"]["prompt"].as_str().unwrap_or_default().to_string();
+        // inteira: a aprovação sem onda é gravada sem onda nenhuma — nem na 1,
+        // que foi a reprovada, nem na 2, a última do plano.
+        let fix_prompt = review_prompt(&close(None));
         assert!(fix_prompt.contains("MSTD-WAVE-0001") && !fix_prompt.contains("MSTD-WAVE-0002"), "{fix_prompt}");
         let approved = json!({"final": true, "result": "approved", "text": "O conserto ficou certo."});
         let closed = close(verdict_written(root, "x", approved));
@@ -2186,6 +3220,71 @@ exit "${2:-0}"
             .map(|(n, _)| n)
             .collect();
         assert_eq!(rejected, Vec::<u64>::new(), "{closed}");
+    }
+
+    /// O fechamento que pede a revisão de volta, depois de um veredito final
+    /// que reprovou e do conserto que a rodada comitou: o pedido lista o que
+    /// mudou desde o veredito — ele e o commit do conserto, nunca os commits
+    /// de antes dele. Nem a primeira revisão nem a de volta mandam rodar a
+    /// suíte inteira, que o próprio fechamento acabou de rodar: as duas dizem
+    /// que ela passou no commit da cópia.
+    #[test]
+    fn the_review_after_a_rejection_lists_what_changed_and_never_reruns_the_suite() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        ready_with_waves(root, "x", &["git --version"], 2);
+        std::fs::write(root.join("mustard.json"), json!({"testCommand": "git --version"}).to_string()).unwrap();
+        let round = |report: Option<String>| round_for(&RoundOpts { root: root.to_path_buf(), spec: Some("x".into()), report }, None);
+        let close = |report: Option<String>| close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report, ..Default::default() }, None);
+        let since = translate("prompt.part.since_verdict", Locale::PtBr);
+        let listed = |prompt: &str| -> String {
+            let Some((_, rest)) = prompt.split_once(&format!("## {since}\n")) else { return String::new() };
+            rest.split("\n## ").next().unwrap_or_default().to_string()
+        };
+        let suite_line = |prompt: &str| {
+            let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+            let commit = mustard_core::io::wave_prompt::final_review_commit(root, &log).unwrap_or_else(|| "HEAD".into());
+            let said = translate("prompt.review.suite", Locale::PtBr).replace("{command}", "git --version");
+            assert!(prompt.contains(&said.replace("{commit}", &commit)), "a suíte passou no commit da cópia: {prompt}");
+            assert!(!prompt.contains("Teste com `git --version`"), "a revisão não roda a suíte inteira: {prompt}");
+        };
+
+        let first = close(None);
+        assert_eq!(first["review"]["final"], json!(true), "{first}");
+        let prompt = review_prompt(&first);
+        assert!(listed(&prompt).is_empty(), "a primeira revisão confere a obra inteira: {prompt}");
+        suite_line(&prompt);
+
+        let reject = json!({"final": true, "wave": 2, "result": "rejected", "text": "A onda 2 repete a 1."});
+        assert_eq!(close(verdict_written(root, "x", reject))["reason"], json!("wave-rejected"));
+        assert_eq!(round(None)["ok"], json!(true));
+        std::fs::write(root.join(wave_file(2)), "fn one() {}\nfn tres() {}\n").unwrap();
+        returned(root, "x", json!({"wave": 2, "text": "Sem repetir a 1.", "files": [wave_file(2)], "commit": "a onda 2 sem repetir"}));
+        assert_eq!(round(None)["ok"], json!(true));
+
+        let again = close(None);
+        assert_eq!(again["review"]["final"], json!(true), "{again}");
+        let prompt = review_prompt(&again);
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let codes = log.codes();
+        let verdict = log
+            .visible()
+            .into_iter()
+            .rfind(|e| e.event_type == "verdict" && e.fields.get("final") == Some(&json!(true)))
+            .map(|e| e.id)
+            .unwrap();
+        let commits: Vec<u64> = log.visible().into_iter().filter(|e| e.event_type == "commit").map(|e| e.id).collect();
+        let (before, after): (Vec<u64>, Vec<u64>) = commits.into_iter().partition(|id| *id < verdict);
+        assert!(!before.is_empty() && !after.is_empty(), "um commit antes do veredito e o do conserto depois: {prompt}");
+        let part = listed(&prompt);
+        assert!(part.contains(&codes[&verdict]), "{prompt}");
+        for id in after {
+            assert!(part.contains(&codes[&id]), "o commit do conserto está no que mudou: {prompt}");
+        }
+        for id in before {
+            assert!(!part.contains(&codes[&id]), "o commit de antes do veredito fica fora do que mudou: {prompt}");
+        }
+        suite_line(&prompt);
     }
 
     /// Um veredito de onda do fluxo antigo, sem o campo `final` — como o
@@ -2216,8 +3315,8 @@ exit "${2:-0}"
         // inteira, sem entrar em modo de conserto.
         let asked = close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None, ..Default::default() }, None);
         assert_eq!(asked["review"]["final"], json!(true), "{asked}");
-        let prompt = asked["review"]["prompt"].as_str().unwrap_or_default();
-        assert!(!prompt.contains(translate("prompt.fix.final", Locale::PtBr)), "não é modo de conserto: {prompt}");
+        let prompt = review_prompt(&asked);
+        assert!(!prompt.contains(translate("prompt.final.look_again", Locale::PtBr)), "não é modo de conserto: {prompt}");
         for n in [1, 2] {
             assert!(prompt.contains(&format!("MSTD-WAVE-000{n}")), "a onda {n} está no pedido: {prompt}");
         }
@@ -2461,6 +3560,10 @@ exit "${2:-0}"
                 "origin": said})));
         write(root, "x", "wave", json!({"n": 2, "text": "Onda 2.", "criteria": [crit],
             "done_when": "passa", "origin": said}));
+        // A onda precisa de tarefa: a que o binário formou e ficou sem
+        // nenhuma sai do plano e não é cobrada.
+        write(root, "x", "task", json!({"wave": 2, "text": "Tarefa da onda 2.", "files": [],
+            "depends_on": [], "covers": [crit], "origin": said}));
         let refused = close(root, "x");
         assert_eq!(refused["reason"], json!("wave-without-commit"), "{refused}");
         assert!(refused["hint"].as_str().unwrap_or_default().contains('2'), "{refused}");
@@ -2489,13 +3592,15 @@ exit "${2:-0}"
     /// O fechamento com tarefa no backlog recusa com a razão própria e nomeia a
     /// tarefa; tirada a tarefa da spec, o mesmo fechamento passa.
     #[test]
-    fn o_fechamento_recusa_com_tarefa_no_backlog() {
+    fn closing_refuses_with_a_task_in_the_backlog() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         ready_to_close(root, "x", &["git --version"]);
         let said = id_of(&write(root, "x", "message", json!({"author": "user", "text": "mais uma"})));
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let crit = log.visible().into_iter().find(|e| e.event_type == "criterion").expect("o critério").id;
         let task = id_of(&write(root, "x", "task", json!({"text": "Tarefa que ficou no backlog.",
-            "files": [{"path": "src/w1.rs"}], "depends_on": [], "origin": said})));
+            "files": [{"path": "src/w1.rs"}], "depends_on": [], "covers": [crit], "origin": said})));
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let code = log.codes().get(&task).cloned().expect("a tarefa tem código");
 
@@ -2564,14 +3669,14 @@ exit "${2:-0}"
         .unwrap();
         std::fs::write(
             root.join("src/lib.rs"),
-            "pub fn soma(a: u32, b: u32) -> u32 { a + b }\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn soma_de_dois() { assert_eq!(super::soma(1, 1), 2); }\n}\n",
+            "pub fn sum(a: u32, b: u32) -> u32 { a + b }\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn sum_of_two() { assert_eq!(super::sum(1, 1), 2); }\n}\n",
         )
         .unwrap();
         std::fs::write(root.join(".gitignore"), "target/\n").unwrap();
         ready_to_close(
             root,
             "x",
-            &["cargo test --lib -- tests::soma_de_dois --exact", "cargo test --lib -- tests::soma --exact"],
+            &["cargo test --lib -- tests::sum_of_two --exact", "cargo test --lib -- tests::sum --exact"],
         );
 
         let refused = close(root, "x");
@@ -2579,7 +3684,7 @@ exit "${2:-0}"
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let codes = log.codes();
         let criteria: Vec<u64> = log.visible().into_iter().filter(|e| e.event_type == "criterion").map(|e| e.id).collect();
-        let wrong_name = "cargo test --lib -- tests::soma --exact";
+        let wrong_name = "cargo test --lib -- tests::sum --exact";
         let expected = translate("close.criterion_ran_no_test", Locale::PtBr)
             .replace("{code}", &codes[&criteria[1]])
             .replace("{command}", wrong_name)
@@ -2598,6 +3703,53 @@ exit "${2:-0}"
         assert_eq!(
             runs,
             vec![(Some(criteria[0]), Some("pass")), (Some(criteria[1]), Some("fail")), (Some(criteria[2]), Some("pass"))]
+        );
+        assert_eq!(State::from_log(&log).phase, Some("running"), "a spec não fechou");
+    }
+
+    /// Uma prova verde que cita dois testes, um que existe num arquivo do
+    /// projeto e outro que não existe em arquivo nenhum, trava o fechamento:
+    /// a recusa diz qual critério e o nome que faltou, e a execução dele fica
+    /// gravada como reprovada. A prova que cita só nomes presentes passa, e a
+    /// que não cita nome nenhum segue como antes.
+    #[test]
+    fn a_green_proof_citing_a_test_that_exists_nowhere_blocks_the_close() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/lib.rs"), "#[test]\nfn sum_of_two() {}\n#[test]\nfn sum_of_three() {}\n")
+            .unwrap();
+        let absent = "echo sum_of_two sum_of_four";
+        ready_to_close(root, "x", &["echo Tests: 3 total", "echo sum_of_two sum_of_three", absent]);
+
+        let refused = close(root, "x");
+        assert_eq!(refused["reason"], json!("criterion-missing-test"), "{refused}");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let codes = log.codes();
+        let criteria: Vec<u64> = log.visible().into_iter().filter(|e| e.event_type == "criterion").map(|e| e.id).collect();
+        let expected = translate("close.criterion_missing_test", Locale::PtBr)
+            .replace("{code}", &codes[&criteria[2]])
+            .replace("{name}", "sum_of_four");
+        assert_eq!(refused["hint"], json!(expected), "{refused}");
+        let hint = refused["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains(&codes[&criteria[2]]) && hint.contains("sum_of_four"), "{hint}");
+        assert!(!hint.contains("sum_of_two"), "a recusa não acusa o nome que existe: {hint}");
+        let runs: Vec<(Option<u64>, Option<&str>)> = log
+            .visible()
+            .into_iter()
+            .filter(|e| e.event_type == "criterion_run")
+            .map(|e| (e.int("criterion"), e.str_field("result")))
+            .collect();
+        // O quarto é o critério que cobre a onda na cópia de teste — sempre
+        // verde, para a rodada não travar a entrega.
+        assert_eq!(
+            runs,
+            vec![
+                (Some(criteria[0]), Some("pass")),
+                (Some(criteria[1]), Some("pass")),
+                (Some(criteria[2]), Some("fail")),
+                (Some(criteria[3]), Some("pass")),
+            ]
         );
         assert_eq!(State::from_log(&log).phase, Some("running"), "a spec não fechou");
     }
@@ -2714,6 +3866,101 @@ exit "${2:-0}"
         assert_eq!(State::from_log(&log).phase, Some("closed"));
     }
 
+    /// A revisão final aberta guarda, pelas rodadas, a vaga que o fechamento
+    /// preparou e gravou no envio dela, até o veredito: enquanto o revisor
+    /// trabalha na vaga a, com uma mudança sem comitar e um processo rodando
+    /// nela, a onda 2 sai na vaga b e é comitada. Na rodada seguinte, o
+    /// processo do revisor continua vivo, a onda 3 sai sem pegar a vaga a, e
+    /// a mudança do revisor fica.
+    #[test]
+    fn an_open_final_review_keeps_its_slot_through_the_rounds_until_the_verdict() {
+        use mustard_core::io::wave_prompt::{recorded_copy, shown, slot_path};
+        use std::process::Stdio;
+
+        /// O processo do revisor, encerrado no fim do teste, passe ele ou não.
+        struct Reviewer(std::process::Child);
+        impl Drop for Reviewer {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        ready_to_close(root, "x", &["git --version"]);
+        let path = store::spec_file(root, "x").unwrap();
+        let spec_log = || store::read(&path).unwrap().unwrap();
+        let asked =
+            close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None, ..Default::default() }, None);
+        assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+        let review = slot_path(root, "x", 0);
+        let log = spec_log();
+        let sent = log
+            .visible()
+            .into_iter()
+            .rev()
+            .find(|e| e.event_type == "send" && e.str_field("role") == Some("review"))
+            .expect("o envio da revisão");
+        assert_eq!(sent.str_field("copy"), Some(shown(&review).as_str()), "o envio grava a vaga que o fechamento preparou");
+
+        std::fs::write(review.join(wave_file(1)), "fn revisto() {}\n").unwrap();
+        // Um processo que fica vivo por dois minutos: o `sleep` do sistema, e,
+        // onde ele não vem de fábrica, o `ping` que o Windows sempre tem.
+        let mut waiting = if cfg!(windows) {
+            let mut ping = Command::new("ping");
+            ping.args(["-n", "121", "127.0.0.1"]);
+            ping
+        } else {
+            let mut sleep = Command::new("sleep");
+            sleep.arg("120");
+            sleep
+        };
+        let mut reviewer = Reviewer(
+            waiting
+                .current_dir(&review)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("o processo do revisor"),
+        );
+        #[cfg(target_os = "linux")]
+        crate::commands::flow::stuck::wait_until_spawned(reviewer.0.id(), "sleep");
+        let alive = |reviewer: &mut Reviewer| reviewer.0.try_wait().ok().flatten().is_none();
+
+        let said = log.visible().into_iter().find(|e| e.event_type == "message").map(|e| e.id).unwrap();
+        let gate = log.visible().into_iter().rev().find(|e| e.event_type == "criterion").map(|e| e.id).unwrap();
+        let plan = |n: u64| {
+            write(root, "x", "wave", json!({"n": n, "text": format!("Onda {n}."), "criteria": [gate],
+                "done_when": "A suíte passa.", "origin": said}));
+            write(root, "x", "task", json!({"wave": n, "text": format!("Tarefa da onda {n}."),
+                "files": [{"path": wave_file(n)}], "origin": said}));
+        };
+        let round = || round_for(&RoundOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None }, None);
+        let sent_copy = |n: u64| recorded_copy(&spec_log(), n).map(|copy| copy.path);
+
+        plan(2);
+        let out = round();
+        assert_eq!(out["ok"], json!(true), "{out}");
+        assert_eq!(sent_copy(2), Some(shown(&slot_path(root, "x", 1))), "a onda 2 sai na vaga b: {out}");
+        std::fs::write(slot_path(root, "x", 1).join(wave_file(2)), "fn dois() {}\n").unwrap();
+        returned(root, "x", json!({"wave": 2, "text": "Saiu.", "files": [wave_file(2)], "commit": "a onda dois sai"}));
+        let committed = round();
+        assert_eq!(committed["ok"], json!(true), "{committed}");
+        assert_eq!(std::fs::read_to_string(root.join(wave_file(2))).unwrap(), "fn dois() {}\n", "{committed}");
+        assert!(alive(&mut reviewer), "o processo do revisor fica depois do commit da onda 2: {committed}");
+
+        plan(3);
+        let out = round();
+        assert_eq!(out["ok"], json!(true), "{out}");
+        let third = sent_copy(3).expect("a onda 3 saiu numa vaga");
+        assert_ne!(third, shown(&review), "a onda 3 não pega a vaga da revisão aberta: {out}");
+        assert!(alive(&mut reviewer), "o processo do revisor continua vivo: {out}");
+        let kept = std::fs::read_to_string(review.join(wave_file(1))).unwrap();
+        assert_eq!(kept, "fn revisto() {}\n", "a mudança do revisor fica na vaga dele");
+    }
+
     /// Um critério cuja prova não passa trava o fechamento, e a execução dele
     /// fica gravada assim mesmo: é o registro de que ele rodou.
     #[test]
@@ -2734,5 +3981,32 @@ exit "${2:-0}"
         assert_eq!(runs[0].str_field("result"), Some("fail"));
         assert_eq!(runs[1].str_field("result"), Some("pass"));
         assert_eq!(State::from_log(&log).phase, Some("running"), "a spec não fechou");
+    }
+
+    /// A recusa de um critério cuja prova falha mostra o fim da saída dela,
+    /// onde o motivo aparece: uma prova que escreve 200 linhas e falha na
+    /// última recusa o fechamento com a última linha, e não com o começo. O
+    /// que fica gravado na execução é o mesmo trecho.
+    #[test]
+    fn the_refusal_of_a_failing_proof_shows_the_end_of_its_output() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        ready_to_close(
+            root,
+            "x",
+            &["sh -c 'i=1; while [ $i -le 200 ]; do echo \"linha $i\"; i=$((i+1)); done; exit 3'"],
+        );
+
+        let refused = close(root, "x");
+        assert_eq!(refused["reason"], json!("criterion-failed"), "{refused}");
+        let hint = refused["hint"].as_str().unwrap_or_default();
+        assert!(hint.ends_with("linha 200"), "a recusa termina no fim da saída: {hint}");
+        assert!(hint.contains("linha 161"), "e traz as últimas 40 linhas: {hint}");
+        assert!(!hint.contains("linha 1\n"), "o começo da saída fica de fora: {hint}");
+
+        let path = store::spec_file(root, "x").unwrap();
+        let log = store::read(&path).unwrap().unwrap();
+        let run = log.visible().into_iter().find(|e| e.event_type == "criterion_run").unwrap();
+        assert!(run.str_field("output").is_some_and(|out| out.ends_with("linha 200")), "{run:?}");
     }
 }

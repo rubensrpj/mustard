@@ -24,6 +24,11 @@
 //! do submódulo que o merge não levou, envio que o servidor recusa — deixam o
 //! principal como rascunho, e duas sessões conferindo ao mesmo tempo movem o
 //! ponteiro uma vez só.
+//!
+//! Com uma cópia do programa ao lado de um scan de mentira, o mesmo projeto
+//! prova que a abertura, a rodada e o fechamento, ao criar ou reler o mapa do
+//! projeto, começam a leitura da história dos arquivos dele — e só a dele: a
+//! cópia do mapa que a conferência depois da onda joga fora fica sem leitura.
 
 #![cfg(unix)]
 
@@ -32,11 +37,17 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
-use mustard_core::domain::spec_events::SpecLog;
+use mustard_core::domain::normalize::Languages;
+use mustard_core::domain::spec_events::{SpecEvent, SpecLog};
 use mustard_core::domain::spec_state::State;
+use mustard_core::io::project_map as map_store;
 use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Value};
+
+mod support;
+#[path = "support/executable.rs"]
+mod executable;
 
 const SPEC: &str = "ponta";
 const GOAL: &str = "Trocar a saudação do programa.";
@@ -107,35 +118,45 @@ exit 1
 
 /// O projeto de teste: um repositório com `main` e `dev`, parado em `dev`, com
 /// as bases declaradas, o provedor do GitHub, o lint do projeto e o Mustard
-/// fora do git; uma pasta pessoal falsa; e o `gh` falso, que anota cada
-/// chamada e responde que a branch não tem pull request e que o criado é o 7.
+/// fora do git; um servidor local vazio como `origin`; uma pasta pessoal
+/// falsa; e o `gh` falso, que anota cada chamada e responde que a branch não
+/// tem pull request e que o criado é o 7.
 struct Project {
     _dir: tempfile::TempDir,
     root: PathBuf,
     home: PathBuf,
     bin: PathBuf,
-    /// Os servidores locais do projeto com submódulo.
+    /// Os servidores locais do projeto: o do principal (`projeto.git`) e, com
+    /// submódulo, o dele.
     remotes: PathBuf,
+    /// A cópia do programa que roda ao lado do scan de mentira, quando o
+    /// projeto tem um ([`Project::with_scan`]).
+    rt: Option<PathBuf>,
 }
 
 impl Project {
     fn new() -> Self {
-        Self::build(false)
+        Self::build(tempfile::tempdir().expect("tempdir"), false)
     }
 
     /// O projeto com o submódulo `libs/sub`, que vem de um servidor local com
     /// a base `main`; o principal tem o servidor dele, com `main` e `dev`; e o
     /// `gh` falso responde por repositório ([`SUBMODULE_GH`]).
     fn with_submodule() -> Self {
-        Self::build(true)
+        Self::build(tempfile::tempdir().expect("tempdir"), true)
     }
 
-    fn build(submodule: bool) -> Self {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let root = dir.path().join("projeto");
-        let home = dir.path().join("casa");
-        let bin = dir.path().join("bin");
-        let remotes = dir.path().join("servidores");
+    /// O projeto em `dir`, pela forma canônica dela: o que o programa grava
+    /// e o que o teste espera citam o mesmo caminho. Onde a pasta temporária
+    /// tem dois nomes — `/var` e `/private/var` no Mac —, o programa lê o
+    /// projeto pelo nome resolvido, e o caminho montado com o outro nome
+    /// nunca casaria com o que ele anota.
+    fn build(dir: tempfile::TempDir, submodule: bool) -> Self {
+        let base = dir.path().canonicalize().expect("the canonical temp folder");
+        let root = base.join("projeto");
+        let home = base.join("casa");
+        let bin = base.join("bin");
+        let remotes = base.join("servidores");
         for folder in [&root, &home, &bin, &remotes] {
             std::fs::create_dir_all(folder).expect("folder");
         }
@@ -167,8 +188,11 @@ impl Project {
             git(&root, &["-c", "protocol.file.allow=always", "submodule", "add", "-q", &sub_url, SUB]);
             identify(&root.join(SUB));
             git(&root, &["commit", "-q", "-m", "submodulo"]);
-            git(&remotes, &["init", "-q", "--bare", "projeto.git"]);
-            git(&root, &["remote", "add", "origin", &remotes.join("projeto.git").to_string_lossy()]);
+        }
+        // O servidor do principal, sem a branch da spec: o `pr-open` a envia.
+        git(&remotes, &["init", "-q", "--bare", "projeto.git"]);
+        git(&root, &["remote", "add", "origin", &remotes.join("projeto.git").to_string_lossy()]);
+        if submodule {
             git(&root, &["push", "-q", "origin", "main"]);
         }
         git(&root, &["checkout", "-q", "-b", "dev"]);
@@ -186,20 +210,116 @@ impl Project {
              esac\nexit 1\n"
                 .to_string()
         };
-        std::fs::write(&gh, script).expect("the fake gh");
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).expect("chmod");
-        Self { _dir: dir, root, home, bin, remotes }
+        executable::write_executable(&gh, &script);
+        support::copies_leave_with_the_test(&root);
+        Self { _dir: dir, root, home, bin, remotes, rt: None }
+    }
+
+    /// O projeto de [`Project::new`] com uma cópia do programa ao lado de um
+    /// scan de mentira: cada passada grava no `--out` o mesmo mapa pronto e é
+    /// anotada em `scan.log`, e cada leitura da história é anotada em
+    /// `history.log`. A cópia é feita por outro processo (ver
+    /// `support/executable.rs`), e o scan é o que está ao lado de quem roda.
+    fn with_scan() -> Self {
+        Self::with_scan_in(tempfile::tempdir().expect("tempdir"))
+    }
+
+    /// [`Project::with_scan`] na pasta temporária `dir`.
+    fn with_scan_in(dir: tempfile::TempDir) -> Self {
+        let mut project = Self::build(dir, false);
+        let rt = project.bin.join("mustard-rt");
+        let copied = Command::new("cp").arg(env!("CARGO_BIN_EXE_mustard-rt")).arg(&rt).status().expect("cp runs");
+        assert!(copied.success(), "the copy of the program is made");
+
+        let now = map_store::listing(&project.root).expect("inside git");
+        let map = json!({
+            "state": {"head": now.head, "listing": now.digest(), "base": now.base.name, "base_tip": now.base.tip},
+            "modules": [{"path": "src/main.rs", "loc": 3, "declarations": [
+                {"kind": "function", "name": "main", "line": 1, "end_line": 3}]}]
+        });
+        let template = project.home.join("map.db");
+        map_store::save_at(&template, &map, "0.2.4+map-test", &Languages::new(["pt-BR", "en-US"])).expect("the map");
+
+        let script = format!(
+            "#!/bin/sh\ncase \"$1\" in\n\
+             history-all) echo \"$@\" >> '{history}'; exit 0 ;;\n\
+             scan) echo \"$@\" >> '{scans}'\n\
+             mkdir -p \"$(dirname \"$4\")\" && cp '{template}' \"$4\"\n\
+             echo '{{\"ok\":true,\"full\":true,\"read\":[],\"files\":1,\"head\":\"\"}}'; exit 0 ;;\n\
+             *) exit 1 ;;\nesac\n",
+            history = project.history_log().display(),
+            scans = project.scan_log().display(),
+            template = template.display(),
+        );
+        executable::write_executable(&project.bin.join("scan"), &script);
+        project.rt = Some(rt);
+        project
+    }
+
+    fn scan_log(&self) -> PathBuf {
+        self.home.join("scan.log")
+    }
+
+    fn history_log(&self) -> PathBuf {
+        self.home.join("history.log")
+    }
+
+    /// As passadas que o scan de mentira recebeu, na ordem, uma por linha.
+    fn scan_passes(&self) -> Vec<String> {
+        std::fs::read_to_string(self.scan_log()).unwrap_or_default().lines().map(str::to_string).collect()
+    }
+
+    /// As leituras da história que o scan de mentira recebeu, na ordem, sem
+    /// esperar por nenhuma: o programa não espera o processo em segundo plano.
+    fn history_reads(&self) -> Vec<String> {
+        std::fs::read_to_string(self.history_log()).unwrap_or_default().lines().map(str::to_string).collect()
+    }
+
+    /// As leituras da história depois de o processo em segundo plano parar de
+    /// anotar: a lista só vale quando não muda por meio segundo.
+    fn settled_history_reads(&self) -> Vec<String> {
+        let mut last = self.history_reads();
+        for _ in 0..100 {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            let now = self.history_reads();
+            if now == last {
+                return now;
+            }
+            last = now;
+        }
+        panic!("the reads of the history never stopped: {last:?}");
+    }
+
+    /// As leituras da história depois de esperar até `at_least` delas
+    /// chegarem, por um tempo.
+    fn history_reads_after_waiting(&self, at_least: usize) -> Vec<String> {
+        for _ in 0..200 {
+            if self.history_reads().len() >= at_least {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        self.history_reads()
+    }
+
+    /// A linha que a leitura da história do mapa do projeto deixa no registro.
+    fn model_read_line(&self) -> String {
+        format!("history-all {} --out {} --json", self.root.display(), map_store::model_path(&self.root).display())
     }
 
     /// O binário com `args`, no projeto, com a pasta pessoal falsa, o `gh`
     /// falso à frente do `PATH` e nenhuma sessão nem spec forçada.
     fn command(&self, args: &[&str], stdin: &str) -> Output {
-        let mut binary = Command::new(env!("CARGO_BIN_EXE_mustard-rt"));
+        self.command_in(&self.root, args, stdin)
+    }
+
+    /// Como [`Self::command`], rodando de dentro de `dir`.
+    fn command_in(&self, dir: &Path, args: &[&str], stdin: &str) -> Output {
+        let mut binary = Command::new(self.rt.as_deref().unwrap_or_else(|| Path::new(env!("CARGO_BIN_EXE_mustard-rt"))));
         let mut child = self
             .env(&mut binary)
             .args(args)
-            .current_dir(&self.root)
+            .current_dir(dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -230,6 +350,43 @@ impl Project {
             .env_remove("MUSTARD_SESSION_ID")
             .env_remove("CLAUDE_SESSION_ID")
             .env_remove("CLAUDE_CODE_SESSION_ID")
+    }
+
+    /// O agente lê, de dentro da cópia e pelo comando que o pedido ensina,
+    /// cada item que o envio da onda `wave` manda ler (`read_items`): sem
+    /// isso a entrega é recusada.
+    fn read_request(&self, wave: u64) {
+        self.read_send(|sent| sent.wave() == Some(wave) && sent.str_field("role") != Some("review"));
+    }
+
+    /// O revisor lê, de dentro da cópia dele e pelo comando que o pedido
+    /// ensina, cada item que o envio da revisão manda ler: sem isso o
+    /// veredito é recusado.
+    fn read_review(&self) {
+        self.read_send(|sent| sent.str_field("role") == Some("review"));
+    }
+
+    /// A leitura, de dentro da cópia do último envio que `pick` escolhe, de
+    /// cada item da lista dele.
+    fn read_send(&self, pick: impl Fn(&SpecEvent) -> bool) {
+        let log = self.log();
+        let sent = log
+            .visible()
+            .into_iter()
+            .rfind(|e| e.event_type == "send" && pick(e))
+            .unwrap_or_else(|| panic!("nenhum envio gravado para a leitura"));
+        let copy = PathBuf::from(sent.str_field("copy").expect("the copy"));
+        let root = self.root.display().to_string();
+        let listed = sent.fields.get("read_items").and_then(Value::as_array).cloned().unwrap_or_default();
+        for item in listed.iter().filter_map(Value::as_str) {
+            let block = format!("item-{item}");
+            let lesson = item.strip_prefix("lesson-");
+            let mut args = vec!["run", "read", lesson.map_or(block.as_str(), |_| "lessons")];
+            args.extend(lesson.into_iter().flat_map(|n| ["--term", n]));
+            args.extend(["--root", &root, "--spec", SPEC]);
+            let out = self.command_in(&copy, &args, "");
+            assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stdout));
+        }
     }
 
     /// Um comando `run`, que precisa responder `ok`.
@@ -276,10 +433,11 @@ impl Project {
     }
 }
 
-/// A lista `agreed` do veredito final, com todo o combinado vigente atendido:
-/// estes testes provam o fluxo do fechamento e do pull request, não o do
-/// combinado — sem a lista inteira, a revisão final seria recusada por
-/// faltar item.
+/// A lista `agreed` do veredito final e da entrega da onda, com todo o
+/// combinado vigente atendido: estes testes provam o fluxo do fechamento e do
+/// pull request, não o do combinado — sem a lista, a revisão final e a
+/// entrega da onda, cujo pedido leva as respostas do levantamento, seriam
+/// recusadas por faltar item.
 fn agreed_all_met(project: &Project) -> Value {
     let log = project.log();
     let codes = log.codes();
@@ -311,7 +469,7 @@ fn user_says(project: &Project, text: &str) -> u64 {
 /// respondido e fechado.
 fn survey(project: &Project) {
     let said = user_says(project, GOAL);
-    project.write("context", &json!({"text": GOAL, "origin": said}));
+    project.write("context", &json!({"title": "Combinar o item", "agent": "- conferir pelo teste", "text": GOAL, "origin": said}));
     let grilled = project.run(&["grill", "--spec", SPEC, "--kinds", "feature"]);
     let points = grilled["points"].as_array().cloned().expect("the point list");
     assert!(!points.is_empty(), "{grilled}");
@@ -326,7 +484,7 @@ fn survey(project: &Project) {
         let code = current["code"].as_str().expect("the open point").to_string();
         let answer = project.write(
             "decision",
-            &json!({"text": format!("Resposta ao ponto {code}."), "keys": ["levantamento"],
+            &json!({"title": "Combinar o item", "agent": format!("- ponto {code}"), "text": "O usuário respondeu ao ponto.", "keys": ["levantamento"],
                 "why": "o usuário respondeu", "origin": said, "applies_to": {"files": ["**"]}}),
         );
         let closed = project.write(
@@ -349,13 +507,13 @@ fn plan_files(project: &Project, files: &[&str]) {
     let said = user_says(project, "O plano é uma tarefa só, que muda a saudação.");
     let criterion = project.write(
         "criterion",
-        &json!({"when": "o programa roda", "then": "a saudação nova aparece", "proof": "git --version",
+        &json!({"title": "Combinar o item", "when": "o programa roda", "then": "a saudação nova aparece", "proof": "git --version",
             "form": "ubiquitous", "origin": said}),
     );
     let files: Vec<Value> = files.iter().map(|path| json!({"path": path})).collect();
     project.write(
         "task",
-        &json!({"title": "Entregar a tarefa", "text": "Trocar a saudação no programa.", "files": files, "depends_on": [],
+        &json!({"agent": "- conferir pelo teste", "title": "Entregar a tarefa", "text": "Trocar a saudação no programa.", "files": files, "depends_on": [],
             "covers": [criterion["id"]], "origin": said}),
     );
     let planned = project.run(&["plan", "--spec", SPEC]);
@@ -441,11 +599,12 @@ fn a_test_spec_runs_end_to_end_one_call_per_step_and_leaves_three_files() {
     // rodada assume a volta e não pede revisão nenhuma dela.
     std::fs::write(copy.join("src/main.rs"), "fn main() {\n    println!(\"olá\");\n}\n").expect("the change");
     let delivered = json!({"wave": 1, "text": "A saudação virou olá.", "files": ["src/main.rs"],
-        "commit": "a saudação vira olá"});
+        "commit": "a saudação vira olá", "agreed": agreed_all_met(&project)});
+    project.read_request(1);
     project.run(&["write", "delivered", "--spec", SPEC, "--json", &delivered.to_string()]);
     let second = project.run(&["round", "--spec", SPEC]);
     assert!(second.get("reviews").is_none(), "{second}");
-    assert!(!copy.exists(), "the copy is removed once the round takes the change back: {second}");
+    assert!(copy.join(".git").is_file(), "the copy stays for the next wave once the round takes the change back: {second}");
     assert_eq!(std::fs::read_to_string(project.root.join("src/main.rs")).unwrap(), "fn main() {\n    println!(\"olá\");\n}\n");
 
     // O fechamento roda o lint e o critério e pede o agente de teste
@@ -457,10 +616,12 @@ fn a_test_spec_runs_end_to_end_one_call_per_step_and_leaves_three_files() {
     // O revisor grava o veredito aprovado; o fechamento o assume e fecha.
     let verdict = json!({"final": true, "result": "approved", "text": "A saudação mudou.",
         "agreed": agreed_all_met(&project)});
+    project.read_review();
     project.run(&["write", "verdict", "--spec", SPEC, "--json", &verdict.to_string()]);
     let closed = project.run(&["close", "--spec", SPEC]);
     assert_eq!(closed["phase"], json!("closed"), "{closed}");
     assert!(closed.get("review").is_none(), "{closed}");
+    assert!(!copy.exists() && !copy.parent().expect("the folder of the work").exists(), "closing removes the copies of the work: {closed}");
     let pr_line = format!("mustard-rt run pr-open --base dev --head feature/{SPEC} --spec {SPEC}");
     assert_eq!(closed["command"], json!(pr_line), "{closed}");
 
@@ -478,7 +639,10 @@ fn a_test_spec_runs_end_to_end_one_call_per_step_and_leaves_three_files() {
             .into_iter()
             .map(|(command, count)| (command.to_string(), count))
             .collect();
-    assert_eq!(calls(&project), expected, "each flow step is one call, the approval none and closing two");
+    // A leitura que o agente faz do pedido dele é dele, e não um passo do fluxo.
+    let mut seen = calls(&project);
+    assert!(seen.remove("read").is_some_and(|reads| reads > 0), "the agent read what its request lists: {seen:?}");
+    assert_eq!(seen, expected, "each flow step is one call, the approval none and closing two");
 
     let folder = project.root.join(".claude/spec").join(SPEC);
     let mut names: Vec<String> = std::fs::read_dir(&folder)
@@ -496,7 +660,7 @@ fn a_test_spec_runs_end_to_end_one_call_per_step_and_leaves_three_files() {
 /// crua, com as versões antigas e as removidas — tem autor binário, e há ao
 /// menos uma, para a conferência não passar num arquivo sem onda.
 #[test]
-fn o_fluxo_inteiro_nao_grava_onda_pela_linha_de_comando() {
+fn whole_flow_does_not_write_a_wave_on_the_command_line() {
     let project = Project::new();
     project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
     survey(&project);
@@ -510,12 +674,14 @@ fn o_fluxo_inteiro_nao_grava_onda_pela_linha_de_comando() {
     let copy = PathBuf::from(sent.str_field("copy").expect("the copy"));
     std::fs::write(copy.join("src/main.rs"), "fn main() {\n    println!(\"olá\");\n}\n").expect("the change");
     let delivered = json!({"wave": 1, "text": "A saudação virou olá.", "files": ["src/main.rs"],
-        "commit": "a saudação vira olá"});
+        "commit": "a saudação vira olá", "agreed": agreed_all_met(&project)});
+    project.read_request(1);
     project.run(&["write", "delivered", "--spec", SPEC, "--json", &delivered.to_string()]);
     project.run(&["round", "--spec", SPEC]);
     project.run(&["close", "--spec", SPEC]);
     let verdict = json!({"final": true, "result": "approved", "text": "A saudação mudou.",
         "agreed": agreed_all_met(&project)});
+    project.read_review();
     project.run(&["write", "verdict", "--spec", SPEC, "--json", &verdict.to_string()]);
     let closed = project.run(&["close", "--spec", SPEC]);
     let pr_line = closed["command"].as_str().expect("the pr-open line").to_string();
@@ -536,10 +702,86 @@ fn o_fluxo_inteiro_nao_grava_onda_pela_linha_de_comando() {
     }
 }
 
+/// A spec de uma onda, da abertura ao fechamento, com a mudança entregue: devolve
+/// os argumentos do `pr-open` que o fechamento apontou.
+fn closed_with_one_wave(project: &Project) -> Vec<String> {
+    project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    survey(project);
+    plan(project);
+    approve(project);
+    let first = first_round(project);
+    assert_eq!(first["dispatch"].as_array().map(Vec::len), Some(1), "{first}");
+    let log = project.log();
+    let sent = log.visible().into_iter().rfind(|e| e.event_type == "send").expect("the send");
+    let copy = PathBuf::from(sent.str_field("copy").expect("the copy"));
+    std::fs::write(copy.join("src/main.rs"), "fn main() {\n    println!(\"olá\");\n}\n").expect("the change");
+    let delivered = json!({"wave": 1, "text": "A saudação virou olá.", "files": ["src/main.rs"],
+        "commit": "a saudação vira olá", "agreed": agreed_all_met(project)});
+    project.read_request(1);
+    project.run(&["write", "delivered", "--spec", SPEC, "--json", &delivered.to_string()]);
+    project.run(&["round", "--spec", SPEC]);
+    project.run(&["close", "--spec", SPEC]);
+    let verdict = json!({"final": true, "result": "approved", "text": "A saudação mudou.",
+        "agreed": agreed_all_met(project)});
+    project.read_review();
+    project.run(&["write", "verdict", "--spec", SPEC, "--json", &verdict.to_string()]);
+    let closed = project.run(&["close", "--spec", SPEC]);
+    let line = closed["command"].as_str().expect("the pr-open line").to_string();
+    line.split_whitespace().skip(2).map(str::to_string).collect()
+}
+
+/// O `pr-open` envia a branch da spec ao servidor antes de abrir o pull
+/// request: com o servidor recusando o recebimento, o pedido não nasce (o
+/// provedor nem é chamado), a resposta traz o `push:` com a mensagem do git e a
+/// spec segue fechada; com o servidor aceitando, o mesmo comando, de novo,
+/// leva a branch, abre o pedido e a spec passa a pull request aberto. Um
+/// commit novo na branch chega ao servidor no `pr-open` seguinte.
+#[test]
+fn a_pr_open_sends_the_branch_first_and_a_refused_send_opens_nothing() {
+    let project = Project::new();
+    let server = project.remotes.join("projeto.git");
+    let refuse = server.join("hooks/pre-receive");
+    executable::write_executable(&refuse, "#!/bin/sh\necho 'o servidor recusou o envio' >&2\nexit 1\n");
+    let line = closed_with_one_wave(&project);
+    let argv: Vec<&str> = line.iter().map(String::as_str).collect();
+
+    let asked_before = project.gh_calls();
+    let refused = project.answer(&argv);
+    assert_eq!(refused["ok"], json!(false), "{refused}");
+    let error = refused["error"].as_str().unwrap_or_default().to_string();
+    assert!(error.starts_with("push: ") && error.contains("o servidor recusou o envio"), "{refused}");
+    assert_eq!(project.gh_calls(), asked_before, "the provider was not asked anything by the refused open");
+    assert!(git_out(&server, &["for-each-ref", &format!("refs/heads/{BRANCH}")]).is_empty(), "nothing reached the server");
+    assert_eq!(State::from_log(&project.log()).phase, Some("closed"), "{refused}");
+
+    std::fs::remove_file(&refuse).expect("the server hook leaves");
+    let opened = project.answer(&argv);
+    assert_eq!(opened["ok"], json!(true), "{opened}");
+    assert_eq!(opened["number"], json!(7), "{opened}");
+    assert_eq!(
+        git_out(&server, &["rev-parse", &format!("refs/heads/{BRANCH}")]),
+        git_out(&project.root, &["rev-parse", "HEAD"]),
+        "the branch of the spec is on the server"
+    );
+    assert!(project.gh_calls().iter().any(|call| call.starts_with("pr create")), "{:?}", project.gh_calls());
+    assert!(!asked_before.iter().any(|call| call.starts_with("pr create")), "{asked_before:?}");
+    assert_eq!(State::from_log(&project.log()).phase, Some("pr_open"), "{opened}");
+
+    // O commit que vem depois chega ao servidor no `pr-open` seguinte.
+    git(&project.root, &["commit", "-q", "--allow-empty", "-m", "o ajuste depois do pedido"]);
+    let again = project.answer(&argv);
+    assert_eq!(again["ok"], json!(true), "{again}");
+    assert_eq!(
+        git_out(&server, &["rev-parse", &format!("refs/heads/{BRANCH}")]),
+        git_out(&project.root, &["rev-parse", "HEAD"]),
+        "the new commit is on the server"
+    );
+}
+
 /// Um critério gravado sem declarar a forma dele é recusado, e a recusa lista
 /// as cinco formas do padrão pelo nome, em vez de um nome de campo cru.
 #[test]
-fn o_criterio_sem_forma_declarada_e_recusado() {
+fn criterion_without_a_declared_form_is_refused() {
     let project = Project::new();
     project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
     survey(&project);
@@ -551,27 +793,27 @@ fn o_criterio_sem_forma_declarada_e_recusado() {
         "--spec",
         SPEC,
         "--json",
-        &json!({"when": "o programa roda", "then": "a saudação nova aparece", "proof": "git --version",
+        &json!({"title": "Combinar o item", "when": "o programa roda", "then": "a saudação nova aparece", "proof": "git --version",
             "origin": said})
             .to_string(),
     ]);
     assert_eq!(refused["ok"], json!(false), "{refused}");
     assert_eq!(refused["reason"], json!("criterion-form-missing"), "{refused}");
     let hint = refused["hint"].as_str().unwrap_or_default();
-    for forma in [
+    for shape in [
         "vale sempre",
         "disparada por um acontecimento",
         "estado durar",
         "recurso existir",
         "acontecimento indesejado",
     ] {
-        assert!(hint.contains(forma), "a recusa lista a forma {forma:?} pelo nome: {hint}");
+        assert!(hint.contains(shape), "a recusa lista a forma {shape:?} pelo nome: {hint}");
     }
 
     // Com a forma declarada, a mesma gravação passa.
     let accepted = project.write(
         "criterion",
-        &json!({"when": "o programa roda", "then": "a saudação nova aparece", "proof": "git --version",
+        &json!({"title": "Combinar o item", "when": "o programa roda", "then": "a saudação nova aparece", "proof": "git --version",
             "form": "ubiquitous", "origin": said}),
     );
     assert_eq!(accepted["ok"], json!(true), "{accepted}");
@@ -582,7 +824,7 @@ fn o_criterio_sem_forma_declarada_e_recusado() {
 /// forma, como as specs de antes da exigência têm, recebe a emenda dele
 /// também sem forma, e a gravação passa.
 #[test]
-fn a_emenda_de_criterio_antigo_nao_exige_forma() {
+fn amending_an_old_criterion_does_not_require_a_form() {
     let project = Project::new();
     project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
     survey(&project);
@@ -607,7 +849,7 @@ fn a_emenda_de_criterio_antigo_nao_exige_forma() {
     // antigo.
     let amended = project.write(
         "criterion",
-        &json!({"when": "o programa roda", "then": "a saudação nova aparece", "proof": "git --version",
+        &json!({"title": "Combinar o item", "when": "o programa roda", "then": "a saudação nova aparece", "proof": "git --version",
             "origin": said, "replaces": old_id}),
     );
     assert_eq!(amended["ok"], json!(true), "{amended}");
@@ -615,7 +857,7 @@ fn a_emenda_de_criterio_antigo_nao_exige_forma() {
     // Um critério novo (sem `replaces`) continua exigindo a forma: a
     // exigência segue protegida para quem nasce agora.
     let new_criterion =
-        json!({"when": "outra coisa", "then": "outro efeito", "proof": "git --version", "origin": said});
+        json!({"title": "Outro efeito", "when": "outra coisa", "then": "outro efeito", "proof": "git --version", "origin": said});
     let refused_new =
         project.answer(&["write", "criterion", "--spec", SPEC, "--json", &new_criterion.to_string()]);
     assert_eq!(refused_new["ok"], json!(false), "{refused_new}");
@@ -628,8 +870,8 @@ fn a_emenda_de_criterio_antigo_nao_exige_forma() {
 /// nome antigo no texto impresso, inclusive no pedido de verdade que o
 /// binário monta para o agente da onda.
 #[test]
-fn os_tres_termos_usam_o_nome_de_mercado() {
-    let esperado = [
+fn three_terms_use_the_market_name() {
+    let expected = [
         (Locale::PtBr, "page.block.agreed", "Requisitos acordados"),
         (Locale::EnUs, "page.block.agreed", "Agreed requirements"),
         (Locale::PtBr, "page.field.proof", "Verificação"),
@@ -639,8 +881,8 @@ fn os_tres_termos_usam_o_nome_de_mercado() {
         (Locale::PtBr, "prompt.part.agreed", "Requisitos acordados"),
         (Locale::EnUs, "prompt.part.agreed", "Agreed requirements"),
     ];
-    for (locale, key, texto) in esperado {
-        assert_eq!(translate(key, locale), texto, "{key} ({locale:?}) usa o nome de mercado");
+    for (locale, key, expected_text) in expected {
+        assert_eq!(translate(key, locale), expected_text, "{key} ({locale:?}) usa o nome de mercado");
     }
 
     let project = Project::new();
@@ -683,10 +925,15 @@ fn open_pull_requests_with_a_submodule(project: &Project) -> Value {
     std::fs::write(copy.join("src/main.rs"), "fn main() {\n    println!(\"olá\");\n}\n").expect("the change");
     std::fs::write(copy.join(SUB_FILE), "a biblioteca nova\n").expect("the submodule change");
     let delivered = json!({"wave": 1, "text": "A saudação e a biblioteca mudaram.",
-        "files": ["src/main.rs", SUB_FILE], "commit": "a saudação e a biblioteca mudam"});
+        "files": ["src/main.rs", SUB_FILE], "commit": "a saudação e a biblioteca mudam",
+        "agreed": agreed_all_met(project)});
+    project.read_request(1);
     project.run(&["write", "delivered", "--spec", SPEC, "--json", &delivered.to_string()]);
     let second = project.run(&["round", "--spec", SPEC]);
-    assert!(!copy.exists(), "the copy and the submodule copy inside it are removed: {second}");
+    assert!(
+        copy.join(".git").is_file() && copy.join(SUB).join(".git").is_file(),
+        "the copy and the submodule copy inside it stay for the next wave: {second}"
+    );
 
     // O commit sai dentro do submódulo, na branch de mesmo nome, e o do
     // principal leva o ponteiro novo junto com o arquivo dele.
@@ -708,8 +955,12 @@ fn open_pull_requests_with_a_submodule(project: &Project) -> Value {
     let asked = project.run(&["close", "--spec", SPEC]);
     assert_eq!(asked["review"]["final"], json!(true), "{asked}");
     let verdict = json!({"final": true, "result": "approved", "text": "Mudaram.", "agreed": agreed_all_met(project)});
+    project.read_review();
     project.run(&["write", "verdict", "--spec", SPEC, "--json", &verdict.to_string()]);
     let closed = project.run(&["close", "--spec", SPEC]);
+    assert!(!copy.exists(), "closing removes the copy of the work: {closed}");
+    let inner = copy.join(SUB).to_string_lossy().replace('\\', "/");
+    assert!(!git_out(&sub, &["worktree", "list", "--porcelain"]).contains(&inner), "git no longer lists the submodule copy: {closed}");
     let pr_line = closed["command"].as_str().expect("the pr-open line").to_string();
     let argv: Vec<&str> = pr_line.split_whitespace().skip(2).collect();
     project.run(&argv)
@@ -782,6 +1033,10 @@ fn a_spec_on_the_main_repository_and_a_submodule_readies_the_main_pull_request_o
     assert!(
         !git_out(&sub_server, &["for-each-ref", &format!("refs/heads/{BRANCH}")]).is_empty(),
         "the submodule branch, with the same name, is on its server"
+    );
+    assert!(
+        !git_out(&project.remotes.join("projeto.git"), &["for-each-ref", &format!("refs/heads/{BRANCH}")]).is_empty(),
+        "the main branch is on its server once the pull request is open"
     );
     assert_eq!(pr["number"], json!(7), "{pr}");
     assert_eq!(pr["submodules"][0]["path"], json!(SUB), "{pr}");
@@ -926,9 +1181,7 @@ fn a_submodule_pointer_the_server_refuses_keeps_the_main_pull_request_a_draft() 
     open_pull_requests_with_a_submodule(&project);
 
     let refuse = project.remotes.join("projeto.git/hooks/pre-receive");
-    std::fs::write(&refuse, "#!/bin/sh\nexit 1\n").expect("the server hook");
-    use std::os::unix::fs::PermissionsExt as _;
-    std::fs::set_permissions(&refuse, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    executable::write_executable(&refuse, "#!/bin/sh\nexit 1\n");
 
     let sub = project.root.join(SUB);
     let merged = project.answer(&["pr-merge", "--pr", "3", "--root", &sub.to_string_lossy()]);
@@ -959,9 +1212,7 @@ fn two_sessions_checking_the_submodule_at_the_same_time_move_the_pointer_once() 
 
     // O commit do ponteiro demora, e as duas sessões se encontram dentro dele.
     let hook = project.root.join(".git/hooks/pre-commit");
-    std::fs::write(&hook, "#!/bin/sh\nsleep 1\n").expect("the commit hook");
-    use std::os::unix::fs::PermissionsExt as _;
-    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    executable::write_executable(&hook, "#!/bin/sh\nsleep 1\n");
 
     let commits = git_out(&project.root, &["rev-list", "--count", "HEAD"]);
     let start = session_start(&project);
@@ -979,4 +1230,127 @@ fn two_sessions_checking_the_submodule_at_the_same_time_move_the_pointer_once() 
     let after: usize = git_out(&project.root, &["rev-list", "--count", "HEAD"]).parse().expect("a number");
     assert_eq!(after, commits.parse::<usize>().expect("a number") + 1, "the pointer commit happened once");
     assert_eq!(pointer(&project), submodule_base_tip(&project), "the pointer is the submodule base");
+}
+
+/// A abertura da spec deixa o mapa do projeto em dia e, com ele gravado,
+/// começa em segundo plano a leitura da história de todo arquivo dele: uma
+/// passada e uma leitura, as duas sobre o mapa do projeto.
+#[test]
+fn opening_a_spec_starts_the_reading_of_the_history_of_the_map_it_refreshes() {
+    let project = Project::with_scan();
+    let opened = project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    assert_eq!(opened["step"], json!("ask_goal"), "{opened}");
+
+    let model = map_store::model_path(&project.root);
+    assert_eq!(
+        project.scan_passes(),
+        [format!("scan {} --out {} --json", project.root.display(), model.display())],
+        "the open asks one pass over the project, for its map"
+    );
+    assert_eq!(
+        project.history_reads_after_waiting(1),
+        [project.model_read_line()],
+        "the open that refreshed the map starts the reading of the history of every file, in the background"
+    );
+}
+
+/// A pasta temporária que tem dois nomes — o atalho e o caminho de verdade,
+/// como `/var` e `/private/var` no Mac — não muda o que a abertura pede ao
+/// scan: o projeto e o mapa dele saem pelo caminho de verdade nas duas
+/// pontas, a que o programa anota e a que o teste espera.
+#[test]
+fn a_project_in_a_temp_folder_with_two_names_is_asked_about_by_its_real_path() {
+    let real = tempfile::tempdir().expect("the real folder");
+    let aside = tempfile::tempdir().expect("the folder of the shortcut");
+    let shortcut = aside.path().join("atalho");
+    std::os::unix::fs::symlink(real.path(), &shortcut).expect("the shortcut");
+
+    let project = Project::with_scan_in(tempfile::tempdir_in(&shortcut).expect("a folder through the shortcut"));
+    assert!(
+        project.root.starts_with(real.path().canonicalize().expect("the real path")),
+        "the project is named by the real path, not through the shortcut: {}",
+        project.root.display()
+    );
+    let opened = project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    assert_eq!(opened["step"], json!("ask_goal"), "{opened}");
+    let model = map_store::model_path(&project.root);
+    assert_eq!(
+        project.scan_passes(),
+        [format!("scan {} --out {} --json", project.root.display(), model.display())],
+        "the open asks the pass over the project by its real path"
+    );
+}
+
+/// A spec no ponto da entrega da onda 1: a cópia mudada e a entrega gravada
+/// pelo agente da onda, ainda por assumir.
+fn deliver_the_first_wave(project: &Project) {
+    project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    survey(project);
+    plan(project);
+    approve(project);
+    first_round(project);
+    let log = project.log();
+    let sent = log.visible().into_iter().rfind(|e| e.event_type == "send").expect("the send");
+    let copy = PathBuf::from(sent.str_field("copy").expect("the copy"));
+    std::fs::write(copy.join("src/main.rs"), "fn main() {\n    println!(\"olá\");\n}\n").expect("the change");
+    let delivered = json!({"wave": 1, "text": "A saudação virou olá.", "files": ["src/main.rs"],
+        "commit": "a saudação vira olá", "agreed": agreed_all_met(project)});
+    project.read_request(1);
+    project.run(&["write", "delivered", "--spec", SPEC, "--json", &delivered.to_string()]);
+}
+
+/// As passadas e as leituras da história que uma chamada trouxe, contadas
+/// desde o ponto `(passes, reads)` anterior a ela; a lista de leituras só
+/// vale depois de o processo em segundo plano parar de anotar.
+fn since(project: &Project, before: &(usize, usize)) -> (Vec<String>, Vec<String>) {
+    let reads = project.settled_history_reads();
+    (project.scan_passes()[before.0..].to_vec(), reads[before.1..].to_vec())
+}
+
+/// A passada que leu uma cópia descartável do mapa, e não o mapa do projeto:
+/// a que a conferência depois da onda pede e joga fora.
+fn is_throwaway_pass(project: &Project, pass: &str) -> bool {
+    let model = map_store::model_path(&project.root);
+    pass.starts_with("scan ") && !pass.contains(&format!("--out {} ", model.display()))
+}
+
+/// A rodada que assume a entrega e comita relê o mapa do projeto e começa a
+/// leitura da história dele; a cópia do mapa que a conferência depois da onda
+/// relê e joga fora só ganha a passada.
+#[test]
+fn a_round_that_commits_the_return_starts_the_reading_of_the_history_of_the_project_map_only() {
+    let project = Project::with_scan();
+    deliver_the_first_wave(&project);
+    let before = (project.scan_passes().len(), project.settled_history_reads().len());
+
+    let second = project.run(&["round", "--spec", SPEC]);
+    assert!(second.get("commit").is_some(), "the round committed the return: {second}");
+
+    let (passes, reads) = since(&project, &before);
+    assert!(passes.iter().any(|pass| is_throwaway_pass(&project, pass)), "the check after the wave read a copy of the map: {passes:?}");
+    assert!(!reads.is_empty(), "the round that refreshed the map starts the reading of its history: {passes:?}");
+    assert!(
+        reads.iter().all(|read| *read == project.model_read_line()),
+        "the reading is over the map of the project, never over the copy that is thrown away: {reads:?}"
+    );
+}
+
+/// O fechamento que assume a última entrega, pela mesma porta da rodada,
+/// começa a leitura da história do mapa do projeto que ele releu.
+#[test]
+fn a_close_that_takes_the_last_return_starts_the_reading_of_the_history_of_the_project_map_only() {
+    let project = Project::with_scan();
+    deliver_the_first_wave(&project);
+    let before = (project.scan_passes().len(), project.settled_history_reads().len());
+
+    let asked = project.run(&["close", "--spec", SPEC]);
+    assert_eq!(asked["phase"], json!("running"), "{asked}");
+
+    let (passes, reads) = since(&project, &before);
+    assert!(passes.iter().any(|pass| is_throwaway_pass(&project, pass)), "the check after the wave read a copy of the map: {passes:?}");
+    assert!(!reads.is_empty(), "the close that refreshed the map starts the reading of its history: {passes:?}");
+    assert!(
+        reads.iter().all(|read| *read == project.model_read_line()),
+        "the reading is over the map of the project, never over the copy that is thrown away: {reads:?}"
+    );
 }

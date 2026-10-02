@@ -508,11 +508,25 @@ pub fn apply(root: &Path, plan: &CleanupPlan, pending: &dyn PendingList) -> Resu
     Ok(done)
 }
 
+/// The short mark of a set of rules: the same rules, in the same order, always
+/// give the same mark, and any other set gives another. It is what tells one
+/// cleanup's pending item from the next one's when both took out as many
+/// rules.
+fn rules_mark(rules: &[LeavingRule]) -> String {
+    let body: Vec<String> =
+        rules.iter().map(|rule| format!("{}\u{1f}{}", rule.text, rule.sources.join("\u{1e}"))).collect();
+    format!("{:08x}", crate::platform::page_templates::fingerprint(&body.join("\n")) >> 32)
+}
+
 /// The one pending item of a cleanup, in the project's language `lang`: the
-/// title says how many rules left, and the detail says what to do with them
-/// and lists each rule's text with the files it left.
+/// title says how many rules left and marks the set (two cleanups that took
+/// out as many rules keep two items, and the same cleanup twice keeps one),
+/// and the detail says what to do with them and lists each rule's text with
+/// the files it left.
 fn pending_item(rules: &[LeavingRule], lang: Locale) -> (String, String) {
-    let title = translate("lessons.rules_left.title", lang).replace("{count}", &rules.len().to_string());
+    let title = translate("lessons.rules_left.title", lang)
+        .replace("{count}", &rules.len().to_string())
+        .replace("{mark}", &rules_mark(rules));
     let listed: Vec<String> = rules
         .iter()
         .enumerate()
@@ -744,7 +758,7 @@ Never make this fixture buildable or runnable (no `main`, no dependencies, no `g
         let items = list.items.borrow();
         assert_eq!(items.len(), 1, "one item for the whole cleanup: {items:?}");
         let (title, detail) = &items[0];
-        assert!(title.contains("(5)"), "{title}");
+        assert!(title.contains("(5, lote "), "{title}");
         for (at, rule) in expected.iter().enumerate() {
             let line = format!("{}) {rule} (saiu de apps/graph_go/CLAUDE.md)", at + 1);
             assert!(detail.contains(&line), "the item keeps `{line}`: {detail}");
@@ -793,9 +807,27 @@ Never make this fixture buildable or runnable (no `main`, no dependencies, no `g
         let done = apply(root, &plan(root), &list).unwrap();
         assert!(done.failed.is_empty(), "{done:?}");
         let (title, detail) = list.items.borrow()[0].clone();
-        assert!(title.starts_with("Rules the install took out") && title.contains("(2)"), "{title}");
+        assert!(title.starts_with("Rules the install took out") && title.contains("(2, batch "), "{title}");
         assert!(detail.contains("1) Never panic in a hook. (taken from apps/rt/CLAUDE.md)"), "{detail}");
         assert!(detail.contains("2) Keep `main.rs` thin: routing only. (taken from apps/rt/CLAUDE.md)"), "{detail}");
+    }
+
+    /// O título do item leva a marca do conjunto de regras: o mesmo conjunto dá
+    /// sempre o mesmo título, e outro conjunto com a mesma contagem dá outro.
+    #[test]
+    fn the_title_marks_the_set_of_rules() {
+        let rule = |text: &str, source: &str| LeavingRule { text: text.to_string(), sources: vec![source.to_string()] };
+        let first = [rule("Keep the client shared.", "a/CLAUDE.md"), rule("Never block the render.", "b/CLAUDE.md")];
+        let same = [rule("Keep the client shared.", "a/CLAUDE.md"), rule("Never block the render.", "b/CLAUDE.md")];
+        let other = [rule("Keep the client shared.", "a/CLAUDE.md"), rule("Never block the paint.", "b/CLAUDE.md")];
+        let elsewhere = [rule("Keep the client shared.", "c/CLAUDE.md"), rule("Never block the render.", "b/CLAUDE.md")];
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let title = |rules: &[LeavingRule]| pending_item(rules, lang).0;
+            assert_eq!(title(&first), title(&same), "the same set keeps its title");
+            assert_ne!(title(&first), title(&other), "another rule, another title");
+            assert_ne!(title(&first), title(&elsewhere), "another file, another title");
+            assert!(title(&first).contains("(2, "), "{}", title(&first));
+        }
     }
 
     /// O bloco antigo do mapa guardava o resumo da pasta, não regras: ele sai
@@ -932,7 +964,7 @@ Never make this fixture buildable or runnable (no `main`, no dependencies, no `g
     fn the_deny_rules_stay_in_the_team_settings() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        let team = "{\n  \"respectGitignore\": true,\n  \"cleanupPeriodDays\": 30,\n  \"env\": { \"MUSTARD_BOUNDARY_MODE\": \"warn\" },\n  \"permissions\": {\n    \"allow\": [\"Read\", \"Grep\"],\n    \"deny\": [\"Bash(rm -rf:*)\", \"Read(**/*.pem)\"]\n  }\n}\n";
+        let team = "{\n  \"respectGitignore\": true,\n  \"cleanupPeriodDays\": 30,\n  \"env\": { \"FORCE_HYPERLINK\": \"1\" },\n  \"permissions\": {\n    \"allow\": [\"Read\", \"Grep\"],\n    \"deny\": [\"Bash(rm -rf:*)\", \"Read(**/*.pem)\"]\n  }\n}\n";
         write(root, ".claude/settings.json", team);
 
         let listed = plan(root);
@@ -941,7 +973,7 @@ Never make this fixture buildable or runnable (no `main`, no dependencies, no `g
         assert_eq!(change.action, Action::Edit, "a file with deny rules is not deleted");
         assert_eq!(
             change.removes,
-            ["respectGitignore", "cleanupPeriodDays", "env.MUSTARD_BOUNDARY_MODE", "permissions.allow: Read", "permissions.allow: Grep"],
+            ["respectGitignore", "cleanupPeriodDays", "env.FORCE_HYPERLINK", "permissions.allow: Read", "permissions.allow: Grep"],
         );
         let done = apply(root, &listed, &NoPendingList).unwrap();
         assert!(done.failed.is_empty(), "{done:?}");

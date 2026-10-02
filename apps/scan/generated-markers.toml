@@ -26,13 +26,6 @@
 # header that precedes the generator banner.
 head_lines = 30
 
-[index]
-# Digest term-index weight for occurrences inside generated|vendored modules:
-# their terms stay findable (a query must still land, answered with reason
-# "generated_only" when nothing hand-written matches) but never outrank
-# hand-written code. Applied per module as max(1, floor(count * multiplier)).
-generated_multiplier = 0.25
-
 [minified]
 # Machine-compacted output: long average lines, and enough bytes that the
 # average is meaningful (a short one-liner is not minified).
@@ -40,8 +33,7 @@ avg_line_len = 400
 min_bytes = 1024
 
 # Lockfiles by basename (compared ASCII-lowercased). Machine-resolved
-# dependency pins: never vocabulary, never an anchor — they leave the digest
-# index entirely.
+# dependency pins: never vocabulary, never an example to follow.
 lockfiles = [
   "bun.lock",
   "bun.lockb",
@@ -133,7 +125,7 @@ class = "generated"
 # Timestamp-scaffolded migration files (EF Core `20260422034143_AddFoo.cs`,
 # Rails `20240101010101_add_foo.rb`): the 14-digit clock prefix is machine-
 # stamped and the body is scaffolded — a filename convention no human wrote,
-# so it must never teach one (nor anchor the digest).
+# so it must never teach one.
 glob = "**/[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]_*"
 
 [[path]]

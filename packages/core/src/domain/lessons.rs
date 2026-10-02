@@ -65,14 +65,15 @@
 
 use serde_json::{Map, Value};
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use crate::domain::config::glob_matches;
+use crate::domain::normalize::{Languages, Normalizer};
 use crate::domain::project_map::{cited_paths, written_paths};
 use crate::domain::search::{self, Hit, SearchIndex};
 use crate::domain::text::fold;
 use crate::domain::spec_events::{
-    check_field, is_empty, opt, req, search_terms, shown_line, Kind, Refusal, SpecEvent, SpecLog, AUTHORS,
+    check_field, is_empty, opt, req, shown_line, Kind, Refusal, SpecEvent, SpecLog, AUTHORS,
     BINARY_FIELDS, DEFAULT_AUTHOR, PURGED_FIELD, REFUSED_FIELDS,
 };
 
@@ -109,9 +110,6 @@ pub const RETIRE: &str = "remove";
 /// da spec aceita tirariam da leitura lições que a conferência não olhou e
 /// que a saída não diz; por isso a retirada os recusa pelo nome.
 const RETIRE_FIELDS: &[&str] = &["targets", "reason", "author"];
-
-/// O padrão de arquivos da lição que vale no projeto todo.
-pub const WHOLE_PROJECT: &str = "**";
 
 /// Os campos de `applies_to`: onde a lição vale.
 const SCOPE_FIELDS: &[(&str, Kind)] = &[("subproject", Kind::Text), ("files", Kind::Texts), ("skill", Kind::Text)];
@@ -376,6 +374,20 @@ pub fn applies_to(event: &SpecEvent, scope: &Scope) -> bool {
     applies(event, scope)
 }
 
+/// A lição diz os arquivos onde vale (`applies_to.files`, o projeto todo
+/// incluído): o pedido de toda onda que mexe neles a leva sozinho, pela
+/// mesma leitura do campo que [`in_scope`] faz. Quem monta a lista de
+/// perguntas do levantamento não pergunta por ela, porque a onda a recebe de
+/// qualquer modo.
+#[must_use]
+pub fn reaches_waves_by_files(lesson: &SpecEvent) -> bool {
+    lesson
+        .fields
+        .get("applies_to")
+        .and_then(Value::as_object)
+        .is_some_and(|at| file_patterns(at).iter().any(|pattern| !pattern.is_empty()))
+}
+
 fn applies(lesson: &SpecEvent, scope: &Scope) -> bool {
     let Some(at) = lesson.fields.get("applies_to").and_then(Value::as_object) else {
         return false;
@@ -432,18 +444,22 @@ fn path_matches(pattern: &str, file: &str) -> bool {
 }
 
 /// As lições vigentes cujo `search` casa as palavras do pedido, as 5 mais
-/// fortes, pelo BM25.
+/// fortes, pelo BM25, nas línguas `languages`.
 #[must_use]
-pub fn matching(bank: &SpecLog, words: &str) -> Vec<Hit> {
-    matching_among(&kept(bank), words)
+pub fn matching(bank: &SpecLog, words: &str, languages: &Languages) -> Vec<Hit> {
+    matching_among(&kept(bank), words, languages)
 }
 
 /// A mesma busca de [`matching`], só entre `lessons`: quem já separou as
 /// lições que interessam não deixa as outras tomarem o lugar delas entre as
 /// 5 mais fortes.
 #[must_use]
-pub fn matching_among(lessons: &[&SpecEvent], words: &str) -> Vec<Hit> {
-    search::search(lessons.iter().map(|lesson| (lesson.id, lesson.str_field("search").unwrap_or_default())), words)
+pub fn matching_among(lessons: &[&SpecEvent], words: &str, languages: &Languages) -> Vec<Hit> {
+    search::search(
+        lessons.iter().map(|lesson| (lesson.id, lesson.str_field("search").unwrap_or_default())),
+        words,
+        languages,
+    )
 }
 
 /// As lições que o pedido de uma onda leva, entre as `found`
@@ -455,14 +471,14 @@ pub fn matching_among(lessons: &[&SpecEvent], words: &str) -> Vec<Hit> {
 /// mesma escolha serve ao item combinado sem dono ([`tied_to_wave`]), que diz
 /// as palavras-chave do mesmo jeito; a classe dele é o tipo do item.
 #[must_use]
-pub fn related_to_tasks<'a>(found: Vec<&'a SpecEvent>, words: &str) -> Vec<&'a SpecEvent> {
+pub fn related_to_tasks<'a>(found: Vec<&'a SpecEvent>, words: &str, languages: &Languages) -> Vec<&'a SpecEvent> {
     let mut by_class: BTreeMap<&str, Vec<&SpecEvent>> = BTreeMap::new();
     for lesson in found {
         by_class.entry(lesson.event_type.as_str()).or_default().push(lesson);
     }
     let mut taken: Vec<&SpecEvent> = Vec::new();
     for lessons in by_class.into_values() {
-        let related = by_keys(&lessons, words);
+        let related = by_keys(&lessons, words, languages);
         taken.extend(lessons.into_iter().filter(|lesson| related.iter().any(|hit| hit.id == lesson.id)));
     }
     taken.sort_by_key(|lesson| lesson.id);
@@ -547,9 +563,15 @@ fn cites_one_of(cited: &[String], files: &[String]) -> bool {
 /// palavras-chave e o texto como a lição, e o que não se liga à onda por
 /// nenhuma das duas não é candidato dela.
 #[must_use]
-pub fn tied_to_wave<'a>(found: Vec<&'a SpecEvent>, words: &str, files: &[String]) -> Vec<&'a SpecEvent> {
+pub fn tied_to_wave<'a>(
+    found: Vec<&'a SpecEvent>,
+    words: &str,
+    files: &[String],
+    languages: &Languages,
+) -> Vec<&'a SpecEvent> {
     let files: Vec<String> = files.iter().map(|f| clean_path(f)).filter(|f| !f.is_empty()).collect();
-    let related: BTreeSet<u64> = related_to_tasks(found.clone(), words).into_iter().map(|event| event.id).collect();
+    let related: BTreeSet<u64> =
+        related_to_tasks(found.clone(), words, languages).into_iter().map(|event| event.id).collect();
     found
         .into_iter()
         .filter(|event| {
@@ -573,38 +595,49 @@ fn by_pattern_or_skill(lesson: &SpecEvent, files: &[String], skills: &[String]) 
     by_pattern || skill.is_some_and(|skill| skills.iter().any(|named| named.trim() == skill))
 }
 
-/// Cada palavra-chave de uma lição como um termo só da busca: as raízes de
-/// todas as palavras dela, ligadas por `_`. "ao mesmo tempo" vira um termo, e
-/// não três: a lição só é ligada a uma tarefa quando a palavra-chave inteira
-/// aparece nela, e não só um pedaço, como "tempo".
-fn key_terms(lesson: &SpecEvent) -> Vec<String> {
+/// Cada palavra-chave de uma lição como um termo só da busca: a primeira
+/// forma de cada palavra dela, ligadas por `_`. "ao mesmo tempo" vira um
+/// termo, e não três: a lição só é ligada a uma tarefa quando a palavra-chave
+/// inteira aparece nela, e não só um pedaço, como "tempo".
+fn key_terms(lesson: &SpecEvent, normalizer: &mut Normalizer) -> Vec<String> {
     let keys = lesson.fields.get("keys").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
-    keys.iter().filter_map(Value::as_str).filter_map(key_term).collect()
+    keys.iter().filter_map(Value::as_str).filter_map(|key| key_term(key, normalizer)).collect()
 }
 
 /// Uma palavra-chave como termo da busca; `None` quando ela só tem palavras
-/// funcionais, que qualquer texto tem.
-fn key_term(key: &str) -> Option<String> {
-    if search::query_terms(key).is_empty() {
+/// de ligação, que qualquer texto tem.
+fn key_term(key: &str, normalizer: &mut Normalizer) -> Option<String> {
+    if normalizer.query(key).is_empty() {
         return None;
     }
-    Some(search_terms(key).join("_"))
+    let firsts: Vec<String> = normalizer.forms(key).into_iter().filter_map(|word| word.into_iter().next()).collect();
+    Some(firsts.join("_"))
+}
+
+/// Os termos como documento ou pergunta da busca: cada termo, uma palavra de
+/// uma forma só.
+fn single(terms: &[String]) -> Vec<Vec<String>> {
+    terms.iter().map(|term| vec![term.clone()]).collect()
 }
 
 /// A busca de [`matching_among`], só que sobre as palavras-chave de cada
-/// lição: as 5 mais fortes para as palavras `words`. O pedido é feito com as
-/// palavras-chave que aparecem inteiras em `words`, com todas as palavras
-/// delas, na forma reduzida do `search`.
+/// lição: as 5 mais fortes para as palavras `words`, nas línguas
+/// `languages`. O pedido é feito com as palavras-chave que aparecem inteiras
+/// em `words`: cada palavra da chave tem a sua primeira forma entre as formas
+/// das palavras de `words`.
 #[must_use]
-pub fn by_keys(lessons: &[&SpecEvent], words: &str) -> Vec<Hit> {
-    let said: BTreeSet<String> = search_terms(words).into_iter().collect();
-    let docs: Vec<(u64, String)> = lessons.iter().map(|lesson| (lesson.id, key_terms(lesson).join(" "))).collect();
-    let asked: Vec<String> = lessons
+pub fn by_keys(lessons: &[&SpecEvent], words: &str, languages: &Languages) -> Vec<Hit> {
+    let mut normalizer = Normalizer::new(languages);
+    let said: HashSet<String> = normalizer.forms(words).into_iter().flatten().collect();
+    let terms: Vec<(u64, Vec<String>)> =
+        lessons.iter().map(|lesson| (lesson.id, key_terms(lesson, &mut normalizer))).collect();
+    let asked: Vec<String> = terms
         .iter()
-        .flat_map(|lesson| key_terms(lesson))
+        .flat_map(|(_, own)| own.iter())
         .filter(|term| term.split('_').all(|root| said.contains(root)))
+        .cloned()
         .collect();
-    SearchIndex::build(docs.iter().map(|(id, terms)| (*id, terms.as_str()))).top(&asked, search::TOP)
+    SearchIndex::build(terms.iter().map(|(id, own)| (*id, single(own)))).top(&single(&asked), search::TOP)
 }
 
 /// Os grupos de lições parecidas que o scan manda juntar, cada um em ordem de
@@ -617,14 +650,14 @@ pub fn by_keys(lessons: &[&SpecEvent], words: &str) -> Vec<Hit> {
 /// por uma corrente de pares parecidos ficam no mesmo grupo. As lições de
 /// `leaving`, que o scan já manda retirar, não entram em grupo nenhum.
 #[must_use]
-pub fn similar(bank: &SpecLog, leaving: &[u64]) -> Vec<Vec<u64>> {
+pub fn similar(bank: &SpecLog, leaving: &[u64], languages: &Languages) -> Vec<Vec<u64>> {
     let mut buckets: BTreeMap<(String, String), Vec<&SpecEvent>> = BTreeMap::new();
     for lesson in kept(bank).into_iter().filter(|lesson| !leaving.contains(&lesson.id)) {
         buckets.entry((lesson.event_type.clone(), place(lesson))).or_default().push(lesson);
     }
     let mut groups: Vec<Vec<u64>> = Vec::new();
     for lessons in buckets.into_values().filter(|lessons| lessons.len() > 1) {
-        let scores = key_scores(&lessons);
+        let scores = key_scores(&lessons, languages);
         let ids: Vec<u64> = lessons.iter().map(|lesson| lesson.id).collect();
         let mut group_of: BTreeMap<u64, usize> = BTreeMap::new();
         let mut bucket_groups: Vec<BTreeSet<u64>> = Vec::new();
@@ -666,14 +699,15 @@ pub fn similar(bank: &SpecLog, leaving: &[u64]) -> Vec<Vec<u64>> {
 
 /// A nota com que as palavras-chave de cada lição de `lessons` acham cada
 /// uma delas, a própria inclusive: de quem pede para quem é achada.
-fn key_scores(lessons: &[&SpecEvent]) -> BTreeMap<u64, BTreeMap<u64, u64>> {
-    let terms: Vec<(u64, Vec<String>)> = lessons.iter().map(|lesson| (lesson.id, key_terms(lesson))).collect();
-    let docs: Vec<(u64, String)> = terms.iter().map(|(id, own)| (*id, own.join(" "))).collect();
-    let index = SearchIndex::build(docs.iter().map(|(id, own)| (*id, own.as_str())));
+fn key_scores(lessons: &[&SpecEvent], languages: &Languages) -> BTreeMap<u64, BTreeMap<u64, u64>> {
+    let mut normalizer = Normalizer::new(languages);
+    let terms: Vec<(u64, Vec<String>)> =
+        lessons.iter().map(|lesson| (lesson.id, key_terms(lesson, &mut normalizer))).collect();
+    let index = SearchIndex::build(terms.iter().map(|(id, own)| (*id, single(own))));
     terms
         .iter()
         .map(|(id, own)| {
-            let hits = index.top(own, lessons.len());
+            let hits = index.top(&single(own), lessons.len());
             (*id, hits.into_iter().map(|hit| (hit.id, hit.score)).collect())
         })
         .collect()
@@ -774,6 +808,11 @@ mod tests {
     use crate::platform::i18n::Locale;
     use serde_json::json;
 
+    /// As línguas de um projeto com o texto em português e o código em inglês.
+    fn languages() -> Languages {
+        Languages::new(["pt-BR", "en-US"])
+    }
+
     fn obj(value: Value) -> Map<String, Value> {
         match value {
             Value::Object(map) => map,
@@ -802,7 +841,7 @@ mod tests {
                 lesson(1, base(json!({"files": ["apps/rt/src/hooks/**"]}))),
                 lesson(2, base(json!({"subproject": "packages/core"}))),
                 lesson(3, base(json!({"skill": "add-run-command"}))),
-                lesson(4, json!({"class": "user_preference", "text": "Resposta curta.", "keys": ["resposta"], "applies_to": {"files": [WHOLE_PROJECT]}, "found_in": {"spec": "s"}})),
+                lesson(4, json!({"class": "user_preference", "text": "Resposta curta.", "keys": ["resposta"], "applies_to": {"files": ["**"]}, "found_in": {"spec": "s"}})),
                 lesson(5, base(json!({"files": ["apps/cli/src/main.rs"]}))),
             ]
             .concat(),
@@ -849,7 +888,7 @@ mod tests {
         content.push_str(&lesson(2, json!({"class": "defect", "text": "Remover a pasta perde trabalho.", "keys": ["remover"], "applies_to": {"files": ["apps/rt/src/hooks/**"]}, "found_in": {"spec": "s"}, "replaces": 1})));
         let bank = parse_log(&content);
         assert_eq!(found(&bank, &files(&["apps/rt/src/hooks/x.rs"])), [2]);
-        assert!(matching(&bank, "apagando a pasta").iter().all(|hit| hit.id != 1));
+        assert!(matching(&bank, "apagando a pasta", &languages()).iter().all(|hit| hit.id != 1));
     }
 
     /// A lição achada pelas palavras é mostrada com o texto original, e o
@@ -862,7 +901,7 @@ mod tests {
         ]
         .concat();
         let bank = parse_log(&content);
-        let hits = matching(&bank, "apagando a pasta");
+        let hits = matching(&bank, "apagando a pasta", &languages());
         assert_eq!(hits.first().map(|h| h.id), Some(2), "{hits:?}");
         let lesson = bank.get(2).unwrap();
         let shown = shown(lesson);
@@ -881,7 +920,7 @@ mod tests {
     fn of_each_class_only_the_five_lessons_closest_to_the_tasks_are_kept() {
         let of = |id: u64, class: &str, text: &str| {
             let keys: Vec<&str> = text.trim_end_matches('.').split(' ').collect();
-            lesson(id, json!({"class": class, "text": text, "keys": keys, "applies_to": {"files": [WHOLE_PROJECT]}, "found_in": {"source": "CLAUDE.md"}}))
+            lesson(id, json!({"class": class, "text": text, "keys": keys, "applies_to": {"files": ["**"]}, "found_in": {"source": "CLAUDE.md"}}))
         };
         let mut content = vec![of(1, "environment_trap", "O cargo não está no PATH.")];
         for id in 2..=7 {
@@ -896,7 +935,7 @@ mod tests {
         content.push(of(16, "user_preference", "O total da fatura sai em reais."));
         let bank = parse_log(&content.concat());
         let kept: Vec<u64> =
-            related_to_tasks(bank.visible(), "Somar o total da fatura no relatório").iter().map(|l| l.id).collect();
+            related_to_tasks(bank.visible(), "Somar o total da fatura no relatório", &languages()).iter().map(|l| l.id).collect();
         let rules: Vec<u64> = kept.iter().copied().filter(|id| (2..=8).contains(id)).collect();
         assert_eq!(rules.len(), 5, "cinco regras: {kept:?}");
         assert!(!kept.contains(&8), "a regra sem palavra em comum sai: {kept:?}");
@@ -915,7 +954,7 @@ mod tests {
     /// e aparece numa que diz "ao mesmo tempo".
     #[test]
     fn a_lesson_is_tied_to_the_tasks_by_its_whole_keywords_and_never_by_its_text() {
-        let of = |id: u64, text: &str, keys: &[&str]| lesson(id, json!({"class": "defect", "text": text, "keys": keys, "applies_to": {"files": [WHOLE_PROJECT]}, "found_in": {"spec": "s"}}));
+        let of = |id: u64, text: &str, keys: &[&str]| lesson(id, json!({"class": "defect", "text": text, "keys": keys, "applies_to": {"files": ["**"]}, "found_in": {"spec": "s"}}));
         let bank = parse_log(
             &[
                 of(1, "A primeira linha da lista mostra o uso e o tempo da conversa inteira.", &["pedido", "subagente"]),
@@ -925,9 +964,9 @@ mod tests {
             .concat(),
         );
         let task = "A primeira linha da barra mostra o uso da conversa e o tempo. O teste confere a linha.";
-        let ids = |words: &str| -> Vec<u64> { related_to_tasks(bank.visible(), words).iter().map(|l| l.id).collect() };
+        let ids = |words: &str| -> Vec<u64> { related_to_tasks(bank.visible(), words, &languages()).iter().map(|l| l.id).collect() };
         assert_eq!(ids(task), [2], "só a lição com palavra-chave na tarefa entra");
-        assert!(matching(&bank, task).iter().any(|hit| hit.id == 1), "pelo texto, a lição 1 entraria");
+        assert!(matching(&bank, task, &languages()).iter().any(|hit| hit.id == 1), "pelo texto, a lição 1 entraria");
         assert_eq!(ids(&format!("{task} As duas gravam ao mesmo tempo.")), [2, 3], "a palavra-chave inteira entra");
     }
 
@@ -956,7 +995,7 @@ mod tests {
             content.push('\n');
         }
         let log = parse_log(&content);
-        crate::io::wave_prompt::wave_lessons(bank, &log, 1).iter().map(|l| l.id).collect()
+        crate::io::wave_prompt::wave_lessons(bank, &log, 1, &languages()).iter().map(|l| l.id).collect()
     }
 
     /// A lição que cita arquivo vai só à onda que mexe num dos arquivos
@@ -965,7 +1004,7 @@ mod tests {
     /// (`xdomain/config.rs`, `config.rs.bak`) não é o citado. A lição sem
     /// arquivo citado continua indo a toda onda do lugar dela.
     #[test]
-    fn licao_que_cita_arquivo_so_vai_a_onda_que_mexe_nele() {
+    fn a_lesson_citing_a_file_only_goes_to_the_wave_that_touches_it() {
         let core = json!({"subproject": "packages/core"});
         let bank = parse_log(
             &[
@@ -989,7 +1028,7 @@ mod tests {
     /// núcleo que não mexe nela, e a que cita um arquivo de dentro da mesma
     /// pasta não vai.
     #[test]
-    fn licao_que_cita_so_pasta_continua_indo_a_onda_do_subprojeto() {
+    fn a_lesson_citing_only_a_folder_still_goes_to_the_subproject_wave() {
         let core = json!({"subproject": "packages/core"});
         let bank = parse_log(
             &[
@@ -1009,10 +1048,10 @@ mod tests {
     /// em views Razor ou só na página HTML não é só de texto e recebe as
     /// lições como qualquer onda de código.
     #[test]
-    fn onda_so_de_texto_nao_recebe_licao_do_projeto_nem_do_subprojeto() {
+    fn a_text_only_wave_gets_no_lesson_from_the_project_or_the_subproject() {
         let bank = parse_log(
             &[
-                placed(1, "defect", "O teste tem de falhar quando o código está errado.", json!({"files": [WHOLE_PROJECT]})),
+                placed(1, "defect", "O teste tem de falhar quando o código está errado.", json!({"files": ["**"]})),
                 placed(2, "project_rule", "Escreva arquivos sempre pela escrita atômica.", json!({"subproject": "packages/core"})),
                 placed(3, "project_rule", "O molde diz o passo inteiro.", json!({"files": ["packages/core/templates/**"]})),
                 placed(4, "project_rule", "O molde tem as quatro seções.", json!({"skill": "moldes"})),
@@ -1058,15 +1097,15 @@ mod tests {
     #[test]
     fn two_lessons_on_the_same_subject_in_other_words_form_one_group() {
         let bank = parse_log(&rt_rules(None).concat());
-        assert_eq!(similar(&bank, &[]), vec![vec![7, 78]]);
-        assert!(similar(&bank, &[78]).is_empty(), "a lição que já vai sair não entra em grupo");
+        assert_eq!(similar(&bank, &[], &languages()), vec![vec![7, 78]]);
+        assert!(similar(&bank, &[78], &languages()).is_empty(), "a lição que já vai sair não entra em grupo");
 
         let elsewhere = parse_log(&rt_rules(Some("packages/core")).concat());
-        assert!(similar(&elsewhere, &[]).is_empty(), "outro lugar, outra lição");
+        assert!(similar(&elsewhere, &[], &languages()).is_empty(), "outro lugar, outra lição");
 
         let mut other_class = rt_rules(None);
         other_class[4] = other_class[4].replace("\"type\":\"project_rule\"", "\"type\":\"defect\"");
-        assert!(similar(&parse_log(&other_class.concat()), &[]).is_empty(), "outra classe, outra lição");
+        assert!(similar(&parse_log(&other_class.concat()), &[], &languages()).is_empty(), "outra classe, outra lição");
     }
 
     /// Uma regra do subprojeto `apps/rt` só com as palavras-chave `keys`: o
@@ -1079,7 +1118,7 @@ mod tests {
     /// `bank`: a nota com que as palavras-chave de `from` acham `to`, e a nota
     /// com que acham a própria `from`.
     fn notes(bank: &SpecLog, from: u64, to: u64) -> (u64, u64) {
-        let scores = key_scores(&kept(bank));
+        let scores = key_scores(&kept(bank), &languages());
         let hits = &scores[&from];
         (hits.get(&to).copied().unwrap_or_default(), hits[&from])
     }
@@ -1105,14 +1144,14 @@ mod tests {
             let (score, own) = notes(&half, from, to);
             assert_eq!(score * 2, own, "exatamente a metade, de {from} para {to}");
         }
-        assert_eq!(similar(&half, &[]), vec![vec![1, 2]], "a metade ainda é parecida");
+        assert_eq!(similar(&half, &[], &languages()), vec![vec![1, 2]], "a metade ainda é parecida");
 
         let above = pair(&["trava", "pasta", "suíte", "cache", "barra"], &["página", "versão", "branch"], &["commit", "gancho", "sessão"]);
         for (from, to) in [(1, 2), (2, 1)] {
             let (score, own) = notes(&above, from, to);
             assert!(score * 2 > own && score * 20 < own * 11, "um pouco acima da metade, de {from} para {to}: {score} de {own}");
         }
-        assert_eq!(similar(&above, &[]), vec![vec![1, 2]]);
+        assert_eq!(similar(&above, &[], &languages()), vec![vec![1, 2]]);
 
         let below = pair(
             &["trava", "pasta", "suíte", "cache", "barra", "página", "versão"],
@@ -1123,7 +1162,7 @@ mod tests {
             let (score, own) = notes(&below, from, to);
             assert!(score * 2 < own && score * 20 > own * 9, "um pouco abaixo da metade, de {from} para {to}: {score} de {own}");
         }
-        assert!(similar(&below, &[]).is_empty(), "abaixo da metade não é parecida");
+        assert!(similar(&below, &[], &languages()).is_empty(), "abaixo da metade não é parecida");
     }
 
     /// Quando só uma das duas acha a outra, elas não são parecidas: a lição
@@ -1136,7 +1175,7 @@ mod tests {
         assert!(score * 2 >= own, "a curta acha a longa: {score} de {own}");
         let (score, own) = notes(&bank, 2, 1);
         assert!(score * 2 < own, "a longa não acha a curta: {score} de {own}");
-        assert!(similar(&bank, &[]).is_empty());
+        assert!(similar(&bank, &[], &languages()).is_empty());
     }
 
     /// Lições ligadas por uma corrente de pares parecidos ficam num grupo só,
@@ -1163,7 +1202,7 @@ mod tests {
         for (a, b) in [(1, 2), (1, 4), (2, 3)] {
             assert_eq!(notes(&bank, a, b).0, 0, "{a} não acha {b}");
         }
-        assert_eq!(similar(&bank, &[]), vec![vec![1, 2, 3, 4]]);
+        assert_eq!(similar(&bank, &[], &languages()), vec![vec![1, 2, 3, 4]]);
     }
 
     /// A lição que cita um arquivo que o projeto já não tem é apontada com o
@@ -1221,7 +1260,7 @@ mod tests {
 
         let whole_project = parse_log(&lesson(
             2,
-            json!({"class": "user_preference", "text": "t", "keys": ["k"], "applies_to": {"files": [WHOLE_PROJECT]}, "found_in": {"spec": "s"}}),
+            json!({"class": "user_preference", "text": "t", "keys": ["k"], "applies_to": {"files": ["**"]}, "found_in": {"spec": "s"}}),
         ));
         assert_eq!(citing_missing_paths(&whole_project, nothing_exists), vec![], "sem prefixo, nada para conferir");
     }
@@ -1254,9 +1293,9 @@ mod tests {
     fn a_lesson_repeating_the_text_of_one_already_kept_is_refused_naming_it() {
         let bank = parse_log(
             &[
-                lesson(1, json!({"class": "defect", "text": "Não apague a pasta.", "keys": ["apagar"], "applies_to": {"files": [WHOLE_PROJECT]}, "found_in": {"spec": "s"}})),
-                lesson(2, json!({"class": "defect", "text": "Rode em primeiro plano.", "keys": ["rodar"], "applies_to": {"files": [WHOLE_PROJECT]}, "found_in": {"spec": "s"}})),
-                lesson(3, json!({"class": "defect", "text": "Rode tudo em primeiro plano.", "keys": ["rodar"], "applies_to": {"files": [WHOLE_PROJECT]}, "found_in": {"spec": "s"}, "replaces": 2})),
+                lesson(1, json!({"class": "defect", "text": "Não apague a pasta.", "keys": ["apagar"], "applies_to": {"files": ["**"]}, "found_in": {"spec": "s"}})),
+                lesson(2, json!({"class": "defect", "text": "Rode em primeiro plano.", "keys": ["rodar"], "applies_to": {"files": ["**"]}, "found_in": {"spec": "s"}})),
+                lesson(3, json!({"class": "defect", "text": "Rode tudo em primeiro plano.", "keys": ["rodar"], "applies_to": {"files": ["**"]}, "found_in": {"spec": "s"}, "replaces": 2})),
             ]
             .concat(),
         );

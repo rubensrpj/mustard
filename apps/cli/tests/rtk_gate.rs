@@ -3,7 +3,7 @@
 //!
 //! ## Why this test exists
 //!
-//! The gate used to sit inside `init_with_templates`, which returns `Result<()>`
+//! The gate used to sit inside the library `init`, which returns a `Result`
 //! — so a library caller could be killed by `process::exit(1)` instead of
 //! getting an error. It moved to the binary's dispatch arm, and the move was
 //! reviewed with two findings this file answers:
@@ -24,6 +24,11 @@
 //! unix, because the shims are shell scripts. Closing that means shims the
 //! Windows shell can run — its own unit, not a line here.
 
+#[path = "support/manifest_dir.rs"]
+mod manifest_dir;
+#[path = "support/executable.rs"]
+mod executable;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -43,13 +48,7 @@ fn shim_dir(log: &Path, with_rtk: bool) -> PathBuf {
             "#!/bin/sh\necho \"{tool} $*\" >> \"{}\"\nexit 0\n",
             log.display()
         );
-        let path = dir.join(tool);
-        fs::write(&path, script).expect("write shim");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).expect("chmod shim");
-        }
+        executable::write_executable(&dir.join(tool), &script);
     }
     // The real git: `init` inspects the repository, and faking that would test a
     // path the product never runs.
@@ -187,13 +186,7 @@ fn the_binary_installs_the_code_tool_of_a_detected_language() {
     let bin = shim_dir(&log, true);
     for tool in ["rustup", "claude"] {
         let script = format!("#!/bin/sh\necho \"{tool} $*\" >> \"{}\"\nexit 0\n", log.display());
-        let path = bin.join(tool);
-        fs::write(&path, script).expect("write shim");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).expect("chmod shim");
-        }
+        executable::write_executable(&bin.join(tool), &script);
     }
     let project = fresh_repo(tmp.path());
     fs::write(project.join("Cargo.toml"), "[package]\nname = \"x\"\n").expect("write Cargo.toml");
@@ -223,6 +216,106 @@ fn the_binary_installs_the_code_tool_of_a_detected_language() {
             .lines()
             .any(|l| l.starts_with("claude plugin enable rust-analyzer-lsp@claude-plugins-official")),
         "the install must enable the catalog plugin; log was:\n{spawned}"
+    );
+}
+
+/// The TypeScript server on PATH whose check fails — the TypeScript it finds
+/// ships no `tsserver.js`, so it opens and answers nothing — counts as
+/// missing: through the REAL binary, with `npm`, `claude` and the server
+/// shimmed and a `node` that fails the check, the install puts the server
+/// back and brings `typescript@6` into the server's own folder, never
+/// installing `typescript` globally, and prints the warning with the command
+/// because the check still fails afterwards.
+#[test]
+#[cfg_attr(not(unix), ignore = "the shims are shell scripts")]
+fn the_binary_brings_typescript_6_into_the_servers_folder() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let log = tmp.path().join("spawn.log");
+    let bin = shim_dir(&log, true);
+    for (tool, exit) in [("npm", 0), ("claude", 0), ("typescript-language-server", 0), ("node", 1)] {
+        let script = format!("#!/bin/sh\necho \"{tool} $*\" >> \"{}\"\nexit {exit}\n", log.display());
+        executable::write_executable(&bin.join(tool), &script);
+    }
+    let project = fresh_repo(tmp.path());
+    fs::write(project.join("package.json"), r#"{"devDependencies":{"typescript":"7.0.2"}}"#).expect("package.json");
+    fs::write(project.join("tsconfig.json"), "{}\n").expect("tsconfig.json");
+    let home = tmp.path().join("home");
+    fs::create_dir_all(&home).expect("mkdir home");
+
+    let out = run_init(&project, &bin, &home);
+
+    assert!(out.status.success(), "the install must still succeed: {}", String::from_utf8_lossy(&out.stderr));
+    let spawned = fs::read_to_string(&log).unwrap_or_default();
+    let npm: Vec<&str> = spawned.lines().filter(|l| l.starts_with("npm ")).collect();
+    assert_eq!(
+        npm,
+        vec![
+            "npm install -g typescript-language-server",
+            "npm explore -g typescript-language-server -- npm install --global=false --prefix lib --no-save typescript@6",
+        ],
+        "log was:\n{spawned}"
+    );
+    assert_eq!(spawned.lines().filter(|l| l.starts_with("node -e ")).count(), 2, "checked before and after: {spawned}");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("typescript-language-server is on PATH but does not answer - install manually: npm install -g"),
+        "the install must say the server does not answer: {stdout}"
+    );
+}
+
+/// No Windows, o `npm` e o `claude` instalados pelo npm são `npm.cmd` e
+/// `claude.cmd`: o sistema os acha pelo nome, e o `Command` do Rust, dado só
+/// o nome, completa apenas o `.exe`. Pelo binário de verdade, com os falsos
+/// escritos como `.cmd` e um `node` que falha a conferência do servidor, a
+/// instalação chega a rodar `npm install -g typescript-language-server`.
+#[cfg(windows)]
+#[test]
+fn on_windows_the_binary_runs_npm_by_its_cmd_file() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let log = tmp.path().join("spawn.log");
+    let bin = tmp.path().join("bin");
+    fs::create_dir_all(&bin).expect("mkdir bin");
+    // O portão só pede que `rtk --version` responda: o próprio binário do
+    // Mustard responde.
+    fs::copy(env!("CARGO_BIN_EXE_mustard"), bin.join("rtk.exe")).expect("copy rtk");
+    for (tool, exit) in [("npm", 0), ("claude", 0), ("typescript-language-server", 0), ("node", 1)] {
+        let script = format!("@echo {tool} %* >> \"{}\"\r\n@exit /b {exit}\r\n", log.display());
+        fs::write(bin.join(format!("{tool}.cmd")), script).expect("write shim");
+    }
+    let project = fresh_repo(tmp.path());
+    fs::write(project.join("package.json"), r#"{"devDependencies":{"typescript":"7.0.2"}}"#).expect("package.json");
+    fs::write(project.join("tsconfig.json"), "{}\n").expect("tsconfig.json");
+    let home = tmp.path().join("home");
+    fs::create_dir_all(&home).expect("mkdir home");
+
+    // O `git` de verdade vem da pasta dele no `PATH` do teste, como no
+    // `shim_dir` dos outros sistemas.
+    let git_dir = std::env::var_os("PATH")
+        .map(|path| std::env::split_paths(&path).collect::<Vec<PathBuf>>())
+        .unwrap_or_default()
+        .into_iter()
+        .find(|dir| dir.join("git.exe").is_file())
+        .expect("git on PATH");
+    let path = std::env::join_paths([bin.clone(), git_dir]).expect("join PATH");
+    let mut init = Command::new(env!("CARGO_BIN_EXE_mustard"));
+    init.args(["init", "--yes"])
+        .current_dir(&project)
+        .env_clear()
+        .env("PATH", &path)
+        .env("HOME", &home)
+        .env("USERPROFILE", &home);
+    for key in ["SystemRoot", "TEMP", "TMP"] {
+        if let Some(value) = std::env::var_os(key) {
+            init.env(key, value);
+        }
+    }
+    let out = init.output().expect("the mustard binary runs");
+
+    assert!(out.status.success(), "the install must still succeed: {}", String::from_utf8_lossy(&out.stderr));
+    let spawned = fs::read_to_string(&log).unwrap_or_default();
+    assert!(
+        spawned.lines().any(|l| l.starts_with("npm install -g typescript-language-server")),
+        "the install must run npm through npm.cmd; log was:\n{spawned}"
     );
 }
 
@@ -283,11 +376,11 @@ fn a_dry_run_changes_neither_the_project_nor_the_machine() {
 /// because it measures the acts instead of matching their spelling.
 ///
 /// Why a ratchet at all: review measured that restoring the installer calls
-/// into `init_with_templates` left the entire suite green,
+/// into the library `init` left the entire suite green,
 /// including this file's other two tests. A revert of the fix was invisible.
 #[test]
 fn the_library_half_of_init_calls_no_environment_installer() {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands/init");
+    let dir = manifest_dir::manifest_dir().join("src/commands/init");
     // The library half is every part of `init` except the tools it defines.
     let mut source = String::new();
     for part in ["mod.rs", "questions.rs", "seeding.rs", "project_config.rs"] {
@@ -310,7 +403,7 @@ fn the_library_half_of_init_calls_no_environment_installer() {
     // And the call site that IS allowed must still exist, so this test cannot
     // pass by the installer having disappeared altogether.
     let dispatch = fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli.rs"),
+        manifest_dir::manifest_dir().join("src/cli.rs"),
     )
     .expect("cli.rs is readable");
     for call in ["init::ensure_ripgrep();", "init::probe_rtk();", "init::ensure_code_tools("] {

@@ -12,10 +12,11 @@
 //! só (o já usado, o mesmo da barrinha), o tempo (`5h49m`) e o aviso vermelho
 //! de quando o Mustard está desligado; na segunda, a versão do Mustard
 //! (`Mustard 0.2.0`, só num projeto com o Mustard), a economia do rtk
-//! (`rtk poupou 64%`) e o modelo. O custo não aparece: na assinatura ele é só
-//! estimativa. A contagem de linhas mudadas (`+156-23`) também não: o exemplo
-//! aprovado da barra não a traz. A versão do Claude Code o próprio Claude Code
-//! já mostra.
+//! (`rtk poupou 64%`), o indicador do consumo (`consumo −25% vs média de 7
+//! dias`, só num projeto com o Mustard, como link do painel do consumo) e o
+//! modelo. O custo não aparece: na assinatura ele é só estimativa. A contagem
+//! de linhas mudadas (`+156-23`) também não: o exemplo aprovado da barra não a
+//! traz. A versão do Claude Code o próprio Claude Code já mostra.
 //!
 //! Submodules:
 //! - [`segment`] — pure data ([`segment::Segment`]) and per-kind builders.
@@ -39,11 +40,11 @@ pub(crate) mod theme;
 use crate::shared::rtk_gain::{get_rtk_gain, RtkGain};
 use segment::{
     compact_segment, context_segment, duration_segment, git_segment, inert_segment, model_segment, module_segment,
-    mustard_segment, savings_segment, unit_segment, Segment,
+    mustard_segment, savings_segment, spend_segment, unit_segment, Segment,
 };
 use serde_json::Value;
 use std::io::Read;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use theme::{render_line, Theme, ThemeId};
 
 /// Build the ordered segment list from the parsed payload and the `rtk gain`
@@ -58,7 +59,11 @@ use theme::{render_line, Theme, ThemeId};
 /// aqui como parâmetro — nunca lido direto nesta função — para o teste poder
 /// variá-lo sem tocar o ambiente, que nesta máquina já traz a variável
 /// definida.
-fn build_segments(data: &Value, gain: Option<&RtkGain>, machine: Option<&str>) -> Vec<Segment> {
+///
+/// `spend_dir` é a pasta do gasto da máquina, lida do ambiente pelo chamador
+/// pela mesma razão: o indicador do consumo lê só o arquivo dos dias fechados
+/// que mora nela, e o teste aponta uma pasta sua em vez da da máquina.
+fn build_segments(data: &Value, gain: Option<&RtkGain>, machine: Option<&str>, spend_dir: Option<&Path>) -> Vec<Segment> {
     let cwd: PathBuf = data
         .get("workspace")
         .and_then(|w| w.get("current_dir"))
@@ -89,20 +94,25 @@ fn build_segments(data: &Value, gain: Option<&RtkGain>, machine: Option<&str>) -
         segs.push(mustard_segment());
     }
     segs.extend(savings_segment(gain, lang));
+    // O consumo da máquina, com ou sem spec aberta: o painel é da máquina.
+    if mustard {
+        segs.extend(spend_segment(spend_dir, lang));
+    }
     segs.extend(compact_segment(data, machine, lang));
     segs.push(model_segment(data));
     segs
 }
 
-/// A linha de cada segmento: a versão do Mustard, a economia do rtk e o
-/// modelo vão para a segunda; todo o resto, para a primeira.
+/// A linha de cada segmento: a versão do Mustard, a economia do rtk, o
+/// consumo da máquina, o ponto de corte e o modelo vão para a segunda; todo o
+/// resto, para a primeira.
 ///
 /// O Claude Code mostra uma linha por linha impressa (documentado), então são
 /// dois `println!`, e não um truque de desenho. Uma linha sem segmento nenhum
 /// não é impressa.
 const fn is_place_row(kind: segment::SegmentKind) -> bool {
     use segment::SegmentKind as K;
-    !matches!(kind, K::Mustard | K::Savings | K::Compact | K::Model)
+    !matches!(kind, K::Mustard | K::Savings | K::Spend | K::Compact | K::Model)
 }
 
 /// Render the statusline from a parsed payload: one row per non-empty group,
@@ -111,7 +121,11 @@ const fn is_place_row(kind: segment::SegmentKind) -> bool {
 /// shape it had before this split.
 fn render(data: &Value) -> Vec<String> {
     let machine = std::env::var("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE").ok();
-    rows(ThemeId::from_env().theme(), build_segments(data, get_rtk_gain().as_ref(), machine.as_deref()))
+    let spend_dir = mustard_core::io::spend::machine_dir();
+    rows(
+        ThemeId::from_env().theme(),
+        build_segments(data, get_rtk_gain().as_ref(), machine.as_deref(), spend_dir.as_deref()),
+    )
 }
 
 /// The rows of `segs` in `theme`: the partition by [`is_place_row`], one
@@ -290,7 +304,7 @@ mod tests {
     /// `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` is set to — the compact segment gets
     /// its own tests, below.
     fn shown_rows(data: &Value) -> Vec<String> {
-        let mut segs = build_segments(data, Some(&GAIN), None);
+        let mut segs = build_segments(data, Some(&GAIN), None, None);
         segs.retain(|s| s.kind != segment::SegmentKind::Inert);
         rows(ThemeId::Minimal.theme(), segs).iter().map(|line| visible(line)).collect()
     }
@@ -298,9 +312,199 @@ mod tests {
     /// `shown_rows`, mas com a fatia de compactação da máquina explícita —
     /// para as duas linhas próprias do ponto de corte, abaixo.
     fn shown_rows_with_machine(data: &Value, machine: &str) -> Vec<String> {
-        let mut segs = build_segments(data, Some(&GAIN), Some(machine));
+        let mut segs = build_segments(data, Some(&GAIN), Some(machine), None);
         segs.retain(|s| s.kind != segment::SegmentKind::Inert);
         rows(ThemeId::Minimal.theme(), segs).iter().map(|line| visible(line)).collect()
+    }
+
+    /// `shown_rows`, mas com a pasta do gasto da máquina explícita: a segunda
+    /// linha leva o indicador do consumo quando o arquivo dos dias fechados
+    /// dela o permite.
+    fn shown_rows_with_spend(data: &Value, spend_dir: &Path) -> Vec<String> {
+        let mut segs = build_segments(data, Some(&GAIN), None, Some(spend_dir));
+        segs.retain(|s| s.kind != segment::SegmentKind::Inert);
+        rows(ThemeId::Minimal.theme(), segs).iter().map(|line| visible(line)).collect()
+    }
+
+    /// O arquivo dos dias fechados da máquina em `dir`, com o endereço do
+    /// painel `url` e uma linha por dia: o dia, as ações e os tokens.
+    fn write_ledger(dir: &Path, url: Option<&str>, days: &[(&str, u64, u64)]) {
+        use mustard_core::domain::spend::{DayRow, Ledger};
+        let ledger = Ledger {
+            url: url.map(str::to_string),
+            counted_through: days.last().map(|(day, _, _)| (*day).to_string()),
+            rows: days
+                .iter()
+                .map(|(day, actions, tokens)| DayRow {
+                    day: (*day).to_string(),
+                    project: "loja".to_string(),
+                    actions: *actions,
+                    tokens: *tokens,
+                    ..DayRow::default()
+                })
+                .collect(),
+            ..Ledger::default()
+        };
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(mustard_core::io::spend::ledger_path(dir), serde_json::to_string(&ledger).unwrap()).unwrap();
+    }
+
+    /// Sete dias de trabalho a 120 milhões de tokens (de 20 a 26 de
+    /// setembro) e um último dia fechado com `last` tokens.
+    fn week_then(last: u64) -> Vec<(&'static str, u64, u64)> {
+        let mut days: Vec<(&str, u64, u64)> = [
+            "2026-09-20", "2026-09-21", "2026-09-22", "2026-09-23", "2026-09-24", "2026-09-25", "2026-09-26",
+        ]
+        .into_iter()
+        .map(|day| (day, 300, 120_000_000))
+        .collect();
+        days.push(("2026-09-27", 300, last));
+        days
+    }
+
+    const PANEL: &str = "https://claude.ai/code/artifacts/painel-do-consumo";
+    const MINUS_25: &str = "consumo \u{2212}25% vs média de 7 dias";
+
+    /// Média de 120 milhões nos sete dias de antes e 90 milhões no último dia
+    /// fechado: a segunda linha da barra mostra menos 25%, no idioma do
+    /// projeto, entre a economia do rtk e o modelo, e o texto inteiro é o
+    /// link do painel. Sem nenhuma spec aberta, o indicador está lá.
+    #[test]
+    fn the_bar_shows_minus_twenty_five_percent_as_the_panel_link_without_an_open_spec() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("loja");
+        project_on_branch(&root, "dev", "pt-BR");
+        assert!(!root.join(".claude").join("spec").exists(), "no spec is open in this project");
+        let spend = dir.path().join("spend");
+        write_ledger(&spend, Some(PANEL), &week_then(90_000_000));
+        let data = example_payload(&root);
+
+        let segs = build_segments(&data, Some(&GAIN), None, Some(&spend));
+        let indicator = segs.iter().find(|s| s.kind == segment::SegmentKind::Spend).expect("the indicator is on the bar");
+        assert_eq!(indicator.text, link(PANEL, MINUS_25), "the whole label is the panel link");
+        assert_eq!(indicator.override_fg, Some(theme::Color::Ansi(2)), "under the average is good, so it is green");
+
+        let rows = shown_rows_with_spend(&data, &spend);
+        assert_eq!(
+            rows[1],
+            format!("Mustard {}  \u{26A1} rtk poupou 64%  {MINUS_25}  Opus 5 (1M context)", mustard_core::harness_version()),
+            "second row, between the rtk savings and the model: {rows:?}"
+        );
+
+        std::fs::write(root.join("mustard.json"), r#"{"version":"0.0.1-velha","language":{"text":"en-US"}}"#).unwrap();
+        let english = shown_rows_with_spend(&data, &spend);
+        assert!(english[1].contains("usage \u{2212}25% vs 7-day average"), "{english:?}");
+    }
+
+    /// Com a spec aberta e a página dela publicada, a barra tem os dois
+    /// links, cada um no seu endereço: o indicador leva ao painel do consumo
+    /// e nunca ao da spec, e a fase da spec nunca ao do painel.
+    #[test]
+    fn the_indicator_links_the_panel_and_never_the_spec_page() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("loja");
+        project_on_branch(&root, "feature/checkout", "pt-BR");
+        let spec_url = "https://claude.ai/code/artifacts/spec-checkout";
+        seed_event(&root, "checkout", "state", json!({"phase": "plan", "branch": "feature/checkout"}));
+        seed_event(&root, "checkout", "publish", json!({"page": "spec", "milestone": "round", "ok": true, "url": spec_url}));
+        let spend = dir.path().join("spend");
+        write_ledger(&spend, Some(PANEL), &week_then(90_000_000));
+
+        let segs = build_segments(&example_payload(&root), Some(&GAIN), None, Some(&spend));
+        let text = |kind: segment::SegmentKind| segs.iter().find(|s| s.kind == kind).map(|s| s.text.clone()).unwrap();
+        let (unit, spend_text) = (text(segment::SegmentKind::Unit), text(segment::SegmentKind::Spend));
+        assert!(spend_text.contains(&format!("\u{1b}]8;;{PANEL}\u{1b}\\")) && !spend_text.contains(spec_url), "{spend_text:?}");
+        assert!(unit.contains(spec_url) && !unit.contains(PANEL), "{unit:?}");
+    }
+
+    /// Um dia com 50 ações fica fora da média: com um dia de 9 bilhões de
+    /// tokens e 50 ações entre os sete de antes, a barra segue mostrando menos
+    /// 25% sobre os dias de trabalho.
+    #[test]
+    fn a_day_with_fifty_actions_stays_out_of_the_average_on_the_bar() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("loja");
+        project_on_branch(&root, "dev", "pt-BR");
+        let spend = dir.path().join("spend");
+        let mut days = week_then(90_000_000);
+        days[3] = ("2026-09-23", 50, 9_000_000_000);
+        write_ledger(&spend, Some(PANEL), &days);
+        let rows = shown_rows_with_spend(&example_payload(&root), &spend);
+        assert!(rows[1].contains(MINUS_25), "the 50-action day is not in the average: {rows:?}");
+    }
+
+    /// Sem a pasta do gasto, sem o arquivo dos dias, sem o endereço do painel,
+    /// sem dia anterior com trabalho, com o arquivo ilegível ou fora de um
+    /// projeto com o Mustard, o indicador não aparece, e o resto da barra sai
+    /// igual.
+    #[test]
+    fn the_bar_shows_no_indicator_without_the_file_the_address_a_previous_workday_or_a_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("loja");
+        project_on_branch(&root, "dev", "pt-BR");
+        let data = example_payload(&root);
+        let baseline = shown_rows(&data);
+        assert!(baseline.iter().all(|row| !row.contains("consumo")), "{baseline:?}");
+
+        let bare = |name: &str| {
+            let folder = dir.path().join(name);
+            std::fs::create_dir_all(&folder).unwrap();
+            folder
+        };
+        let no_file = bare("sem-arquivo");
+        let no_address = bare("sem-endereco");
+        write_ledger(&no_address, None, &week_then(90_000_000));
+        let one_day = bare("um-dia");
+        write_ledger(&one_day, Some(PANEL), &[("2026-09-27", 300, 90_000_000)]);
+        let idle_before = bare("dias-parados");
+        write_ledger(&idle_before, Some(PANEL), &[("2026-09-26", 99, 120_000_000), ("2026-09-27", 300, 90_000_000)]);
+        let unreadable = bare("ilegivel");
+        std::fs::write(mustard_core::io::spend::ledger_path(&unreadable), "{ isto nao e json").unwrap();
+        let controlled = bare("endereco-quebrado");
+        write_ledger(&controlled, Some("https://claude.ai/\u{7}x"), &week_then(90_000_000));
+        for folder in [&no_file, &no_address, &one_day, &idle_before, &unreadable, &controlled] {
+            assert_eq!(shown_rows_with_spend(&data, folder), baseline, "{}", folder.display());
+        }
+        assert_eq!(rows(ThemeId::Minimal.theme(), build_segments(&data, Some(&GAIN), None, None)).len(), 2);
+
+        let ready = bare("pronto");
+        write_ledger(&ready, Some(PANEL), &week_then(90_000_000));
+        assert_ne!(shown_rows_with_spend(&data, &ready), baseline, "with the file the indicator is there");
+        std::fs::remove_file(root.join("mustard.json")).unwrap();
+        let outside: Vec<String> = shown_rows_with_spend(&data, &ready);
+        assert!(outside.iter().all(|row| !row.contains("consumo")), "not a Mustard project: {outside:?}");
+    }
+
+    /// Sexta com 300 ações e sábado e domingo com 5: a barra compara a sexta,
+    /// o último dia de trabalho, com os sete dias de trabalho de antes dela, e
+    /// o fim de semana parado não vira menos 100% na segunda-feira inteira.
+    #[test]
+    fn a_quiet_weekend_after_friday_does_not_replace_the_compared_day_on_the_bar() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("loja");
+        project_on_branch(&root, "dev", "pt-BR");
+        let spend = dir.path().join("spend");
+        let mut days = week_then(90_000_000); // a sexta é o 27, depois de sete dias a 120 milhões
+        days.push(("2026-09-28", 5, 1_000));
+        days.push(("2026-09-29", 5, 2_000));
+        write_ledger(&spend, Some(PANEL), &days);
+        let rows = shown_rows_with_spend(&example_payload(&root), &spend);
+        assert!(rows[1].contains(MINUS_25), "Friday against the workdays before it: {rows:?}");
+    }
+
+    /// Acima da média, a variação sai com o `+` e sem o verde de quem gastou
+    /// menos: 134,4 milhões contra 120 milhões são mais 12%.
+    #[test]
+    fn a_day_above_the_average_shows_the_plus_sign_and_is_not_green() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("loja");
+        project_on_branch(&root, "dev", "pt-BR");
+        let spend = dir.path().join("spend");
+        write_ledger(&spend, Some(PANEL), &week_then(134_400_000));
+        let segs = build_segments(&example_payload(&root), Some(&GAIN), None, Some(&spend));
+        let indicator = segs.iter().find(|s| s.kind == segment::SegmentKind::Spend).unwrap();
+        assert_eq!(indicator.text, link(PANEL, "consumo +12% vs média de 7 dias"));
+        assert_eq!(indicator.override_fg, None, "above the average keeps the theme color");
     }
 
     /// A barra do exemplo aprovado, na sessão numa branch cujo nome termina
@@ -329,7 +533,7 @@ mod tests {
         let data = example_payload(&root);
         assert_eq!((data["cost"]["total_lines_added"].as_i64(), data["cost"]["total_lines_removed"].as_i64()), (Some(156), Some(23)));
 
-        let segs = build_segments(&data, Some(&GAIN), None);
+        let segs = build_segments(&data, Some(&GAIN), None, None);
         let text = |kind: segment::SegmentKind| {
             segs.iter().find(|s| s.kind == kind).map(|s| s.text.clone()).unwrap_or_else(|| panic!("no {kind:?}: {segs:?}"))
         };
@@ -381,7 +585,7 @@ mod tests {
     /// corte; ele menos os tokens já usados (230 mil + 10 mil, do exemplo
     /// aprovado) dá quanto falta.
     #[test]
-    fn a_segunda_linha_mostra_o_ponto_de_corte_e_quanto_falta() {
+    fn second_line_shows_the_cut_point_and_how_much_is_left() {
         let version = mustard_core::harness_version();
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("loja");
@@ -398,7 +602,7 @@ mod tests {
     /// fica exatamente como era antes desta onda — nenhum ponto de corte
     /// inventado, e a barra não perde nem ganha nada além disso.
     #[test]
-    fn sem_a_fatia_na_maquina_a_segunda_linha_nao_muda() {
+    fn without_the_slice_on_the_machine_the_second_line_does_not_change() {
         let version = mustard_core::harness_version();
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("loja");
@@ -434,7 +638,7 @@ mod tests {
                 std::fs::write(root.join(".claude").join("spec").join("index.ndjson"), bytes).unwrap();
             }
             let data = example_payload(&root);
-            let module = build_segments(&data, Some(&GAIN), None)
+            let module = build_segments(&data, Some(&GAIN), None, None)
                 .into_iter()
                 .find(|s| s.kind == segment::SegmentKind::Module)
                 .expect("the project name is always on the bar");
@@ -474,6 +678,11 @@ mod tests {
             seed_event(&root, "checkout", "wave", json!({"n": n, "text": format!("Onda {n}."), "criteria": [said],
                 "done_when": "x", "origin": said}));
         }
+        // A onda 1 já saiu; as outras três seguem com tarefa, e por isso contam.
+        for n in 2..=4 {
+            seed_event(&root, "checkout", "task", json!({"wave": n, "text": format!("Tarefa {n}."), "files": [],
+                "depends_on": [], "origin": said}));
+        }
         crate::shared::spec_state::approve_in(&root.join(".claude").join("spec").join("checkout"));
         seed_event(&root, "checkout", "state", json!({"phase": "running", "author": "binary"}));
         seed_event(&root, "checkout", "delivered", json!({"wave": 1, "text": "Pronta.", "files": ["a.rs"], "author": "wave"}));
@@ -490,7 +699,7 @@ mod tests {
             "model": { "display_name": "Claude Opus 5" },
             "version": "2.1.267",
         });
-        let segs = build_segments(&data, None, None);
+        let segs = build_segments(&data, None, None, None);
         let text = |kind: segment::SegmentKind| {
             segs.iter().find(|s| s.kind == kind).map(|s| s.text.clone()).unwrap_or_else(|| panic!("no {kind:?}: {segs:?}"))
         };
@@ -531,7 +740,7 @@ mod tests {
             "version": "2.1.146",
             "cost": { "total_cost_usd": 0.42, "total_duration_ms": 1000 }
         });
-        let built = build_segments(&data, None, None);
+        let built = build_segments(&data, None, None, None);
         let placed = built.iter().filter(|s| is_place_row(s.kind)).count();
         let spent = built.iter().filter(|s| !is_place_row(s.kind)).count();
         assert_eq!(placed + spent, built.len(), "the partition is total by construction");

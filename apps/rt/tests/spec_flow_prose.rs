@@ -19,6 +19,9 @@
 //! 3. a porta que o usuário tem manda repassar o campo `command` e proíbe
 //!    escolher o passo por conta própria.
 
+#[path = "support/manifest_dir.rs"]
+mod manifest_dir;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -27,7 +30,7 @@ use mustard_rt::commands::flow::resume::NEXT_BY_PHASE;
 
 /// A raiz do repositório, a partir deste crate (`apps/rt`).
 fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+    manifest_dir::manifest_dir().join("../..")
 }
 
 /// Os nomes que o `run --help` publica, lidos do mesmo retrato que a catraca
@@ -79,9 +82,9 @@ fn run(dir: &Path, args: &[&str]) -> serde_json::Value {
         .current_dir(dir)
         .output()
         .expect("o binário roda");
-    let texto = String::from_utf8_lossy(&out.stdout).to_string();
-    serde_json::from_str(&texto).unwrap_or_else(|e| {
-        panic!("a resposta de {args:?} não é JSON ({e}): {texto}{}", String::from_utf8_lossy(&out.stderr))
+    let raw_output = String::from_utf8_lossy(&out.stdout).to_string();
+    serde_json::from_str(&raw_output).unwrap_or_else(|e| {
+        panic!("a resposta de {args:?} não é JSON ({e}): {raw_output}{}", String::from_utf8_lossy(&out.stderr))
     })
 }
 
@@ -91,18 +94,18 @@ fn run(dir: &Path, args: &[&str]) -> serde_json::Value {
 /// ordem. Um nome errado aqui não quebra a compilação — o passo seguinte
 /// simplesmente morre num erro de parser, na mão de quem obedeceu a resposta.
 #[test]
-fn o_proximo_passo_so_nomeia_comando_publicado() {
-    let publicados = published_names();
-    let mut orfaos = Vec::new();
-    for (fase, comando) in NEXT_BY_PHASE {
-        if !publicados.contains(&(*comando).to_string()) {
-            orfaos.push(format!("a fase `{fase}` manda rodar `{comando}`, que não é publicado"));
+fn next_step_only_names_a_published_command() {
+    let published = published_names();
+    let mut orphans = Vec::new();
+    for (phase, command) in NEXT_BY_PHASE {
+        if !published.contains(&(*command).to_string()) {
+            orphans.push(format!("a fase `{phase}` manda rodar `{command}`, que não é publicado"));
         }
     }
     assert!(
-        orfaos.is_empty(),
+        orphans.is_empty(),
         "o campo de próximo passo aponta comando que a superfície não tem:\n{}",
-        orfaos.join("\n")
+        orphans.join("\n")
     );
     assert!(!NEXT_BY_PHASE.is_empty(), "a tabela do próximo passo está vazia");
 }
@@ -114,32 +117,32 @@ fn o_proximo_passo_so_nomeia_comando_publicado() {
 /// conduz a conversa, e uma tabela certa com um relatório que não a usa seria
 /// exatamente o defeito que este teste existe para pegar.
 #[test]
-fn a_resposta_do_passo_traz_a_fase_o_passo_em_palavras_e_o_comando() {
+fn step_answer_carries_the_phase_the_step_in_words_and_the_command() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     project(root);
 
-    let aberta = run(root, &["open", "--kind", "feature", "--name", "unidade-de-teste", "--base", "dev"]);
-    assert_eq!(aberta["ok"], serde_json::json!(true), "a abertura falhou: {aberta}");
-    let spec = aberta["spec"].as_str().expect("a abertura nomeia a spec").to_string();
+    let opened = run(root, &["open", "--kind", "feature", "--name", "unidade-de-teste", "--base", "dev"]);
+    assert_eq!(opened["ok"], serde_json::json!(true), "a abertura falhou: {opened}");
+    let spec = opened["spec"].as_str().expect("a abertura nomeia a spec").to_string();
 
-    let retomada = run(root, &["resume", "--spec", &spec]);
-    assert_eq!(retomada["ok"], serde_json::json!(true), "{retomada}");
-    let fase = retomada["phase"].as_str().expect("a resposta traz a fase");
+    let resumed = run(root, &["resume", "--spec", &spec]);
+    assert_eq!(resumed["ok"], serde_json::json!(true), "{resumed}");
+    let phase = resumed["phase"].as_str().expect("a resposta traz a fase");
     assert!(
-        retomada["next"].as_str().is_some_and(|t| !t.trim().is_empty()),
-        "a resposta não diz o próximo passo em palavras: {retomada}"
+        resumed["next"].as_str().is_some_and(|t| !t.trim().is_empty()),
+        "a resposta não diz o próximo passo em palavras: {resumed}"
     );
 
-    let esperado = NEXT_BY_PHASE
+    let expected = NEXT_BY_PHASE
         .iter()
-        .find(|(f, _)| *f == fase)
-        .map(|(_, nome)| *nome)
-        .unwrap_or_else(|| panic!("a fase `{fase}` não está na tabela do próximo passo"));
-    let comando = retomada["command"].as_str().unwrap_or_default();
+        .find(|(f, _)| *f == phase)
+        .map(|(_, name)| *name)
+        .unwrap_or_else(|| panic!("a fase `{phase}` não está na tabela do próximo passo"));
+    let command = resumed["command"].as_str().unwrap_or_default();
     assert!(
-        comando.starts_with(&format!("mustard-rt run {esperado} ")),
-        "a resposta manda rodar outra coisa que não `{esperado}`: {retomada}"
+        command.starts_with(&format!("mustard-rt run {expected} ")),
+        "a resposta manda rodar outra coisa que não `{expected}`: {resumed}"
     );
 }
 
@@ -150,19 +153,19 @@ fn a_resposta_do_passo_traz_a_fase_o_passo_em_palavras_e_o_comando() {
 /// fase decide. Sem isso, a prosa volta a ensinar a ordem, que é o que a
 /// resposta do comando substituiu.
 #[test]
-fn a_porta_repassa_o_campo_e_nao_escolhe_o_passo() {
-    let texto = fs::read_to_string(repo_root().join("plugin/commands/continue.md"))
+fn door_passes_the_field_on_and_does_not_choose_the_step() {
+    let prose = fs::read_to_string(repo_root().join("plugin/commands/continue.md"))
         .expect("a porta da retomada está entregue");
     assert!(
-        texto.contains("`command`"),
+        prose.contains("`command`"),
         "a porta não nomeia o campo do próximo passo"
     );
     assert!(
-        texto.contains("Never decide the next step yourself"),
+        prose.contains("Never decide the next step yourself"),
         "a porta não proíbe escolher o passo por conta própria"
     );
     assert!(
-        !texto.contains("mustard-rt run qa-run"),
+        !prose.contains("mustard-rt run qa-run"),
         "a porta ainda manda rodar um comando que saiu"
     );
 }

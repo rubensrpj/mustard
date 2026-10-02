@@ -18,13 +18,16 @@
 //! caminho de busca montado aqui: uma vez com uma terceira cópia à frente
 //! (tem de avisar) e uma vez com a cópia do plugin à frente (não avisa).
 
+#[path = "support/manifest_dir.rs"]
+mod manifest_dir;
+
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// A raiz do repositório, subindo de `<repo>/apps/rt` até achar o script.
 fn repo_root() -> PathBuf {
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let manifest = manifest_dir::manifest_dir();
     let mut dir = manifest.as_path();
     loop {
         if dir.join("scripts").join("dev-install.sh").is_file() {
@@ -78,49 +81,49 @@ fn run_closing_block(dir: &Path, plugin_copy: &Path, system_dir: &Path, path: &s
 }
 
 #[test]
-fn o_script_de_desenvolvimento_avisa_quem_responde_no_caminho() {
+fn development_script_warns_who_answers_on_the_path() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     let plugin_copy = root.join("plugin-copy");
     let system_dir = root.join("system-copy");
-    let intruso = root.join("outra-copia");
+    let intruder = root.join("outra-copia");
     fake_binary(&plugin_copy.join("bin").join("mustard-rt"));
     fake_binary(&system_dir.join("bin").join("mustard-rt"));
-    fake_binary(&intruso.join("mustard-rt"));
+    fake_binary(&intruder.join("mustard-rt"));
 
     // Caso 1 — a terceira cópia vem antes no caminho, exatamente como a de
     // `~/.cargo/bin` vinha em 21/09/2026: o fecho tem de avisar, dizendo de
     // onde o nome responde e que aquilo não é cópia trocada nenhuma.
-    let (_, erros) = run_closing_block(
+    let (_, errors) = run_closing_block(
         root,
         &plugin_copy,
         &system_dir,
-        &format!("{}:/usr/bin:/bin", intruso.display()),
+        &format!("{}:/usr/bin:/bin", intruder.display()),
     );
-    let intruso_rt = intruso.join("mustard-rt");
+    let intruder_rt = intruder.join("mustard-rt");
     assert!(
-        erros.contains("aviso: mustard-rt responde de") && erros.contains(&intruso_rt.display().to_string()),
-        "o fecho não avisou sobre a cópia de fora do script: {erros}"
+        errors.contains("aviso: mustard-rt responde de") && errors.contains(&intruder_rt.display().to_string()),
+        "o fecho não avisou sobre a cópia de fora do script: {errors}"
     );
     assert!(
-        erros.contains("NÃO é nenhuma das cópias trocadas"),
-        "o aviso não diz que quem responde está fora das duas cópias: {erros}"
+        errors.contains("NÃO é nenhuma das cópias trocadas"),
+        "o aviso não diz que quem responde está fora das duas cópias: {errors}"
     );
 
     // Caso 2 — a cópia do plugin, que o script acabou de trocar, é quem
     // responde: nada de aviso, e o script diz de onde o nome vem.
-    let (saida, erros) = run_closing_block(
+    let (output, errors) = run_closing_block(
         root,
         &plugin_copy,
         &system_dir,
         &format!("{}:/usr/bin:/bin", plugin_copy.join("bin").display()),
     );
     assert!(
-        saida.contains("mustard-rt responde de") && saida.contains("uma das cópias trocadas"),
-        "o fecho não disse que quem responde é a cópia trocada: {saida}"
+        output.contains("mustard-rt responde de") && output.contains("uma das cópias trocadas"),
+        "o fecho não disse que quem responde é a cópia trocada: {output}"
     );
     assert!(
-        !erros.contains("aviso: mustard-rt"),
-        "o fecho avisou sobre a própria cópia que acabou de trocar: {erros}"
+        !errors.contains("aviso: mustard-rt"),
+        "o fecho avisou sobre a própria cópia que acabou de trocar: {errors}"
     );
 }

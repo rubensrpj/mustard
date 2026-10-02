@@ -18,7 +18,8 @@
 //! 3. `code_signatures` — literal source substrings, matched in one pass over
 //!    the supplied contents by the shared [`super::aho::KeyedAutomaton`]
 //!    engine (the same primitive behind the framework detector — no second
-//!    Aho-Corasick wiring).
+//!    Aho-Corasick wiring). A stack that names its `language` counts them
+//!    only when the project has a file of that language.
 //!
 //! Confidence is a deterministic function of how many signal *classes*
 //! converged (see [`confidence_for`]), and every detection carries the
@@ -220,6 +221,20 @@ impl StackRegistry {
             .and_then(|s| s.language.as_deref())
     }
 
+    /// The host language ([`StackDef::language`]) of the stack that owns the
+    /// code signature `signal`: the first stack of the registry that declares
+    /// it, the one the inference credits when two declare the same literal.
+    /// `None` when that stack names no language or no stack declares the
+    /// signature. A caller that reads the files one by one uses it to keep a
+    /// stack's signatures to the files written in that stack's language.
+    #[must_use]
+    pub fn signature_language(&self, signal: &str) -> Option<&str> {
+        self.stacks
+            .iter()
+            .find(|s| s.code_signatures.iter().any(|sig| sig.trim() == signal))
+            .and_then(|s| s.language.as_deref())
+    }
+
     /// Run the inference engine against caller-supplied evidence.
     ///
     /// For every `[[stack]]` in this registry, three signal **classes** are
@@ -238,7 +253,11 @@ impl StackRegistry {
     ///   [`super::aho::KeyedAutomaton`] engine, keyed by registry index. When
     ///   two stacks declare the same signature, the engine's first-key-wins
     ///   dedup applies: the stack listed first in the registry owns the
-    ///   signature (deterministic, document order = priority order).
+    ///   signature (deterministic, document order = priority order). The
+    ///   engine reads `contents` as given: which files feed it is the
+    ///   caller's call, and a caller that knows the language of each file
+    ///   keeps a stack's signatures out of the files of another language
+    ///   ([`StackRegistry::signature_language`] names the language to match).
     ///
     /// The engine never reads stack names: `name` is copied verbatim from the
     /// registry into the detection. Confidence is a pure function of how many
@@ -413,6 +432,16 @@ pub fn code_signals(content: &str) -> Vec<String> {
     };
     let found: std::collections::BTreeSet<String> = ac.scan(content).into_iter().map(|hit| hit.term).collect();
     found.into_iter().collect()
+}
+
+/// The host language of the built-in stack that owns the code signature
+/// `signal` (one of [`code_signals`]'s), or `None` when that stack names no
+/// language or the signature is not one of the registry's. See
+/// [`StackRegistry::signature_language`].
+#[must_use]
+pub fn code_signal_language(signal: &str) -> Option<&'static str> {
+    static REGISTRY: std::sync::OnceLock<Option<StackRegistry>> = std::sync::OnceLock::new();
+    REGISTRY.get_or_init(|| StackRegistry::builtin().ok()).as_ref()?.signature_language(signal)
 }
 
 /// Infer the stacks a project uses from parsed dependency names, project file
@@ -762,6 +791,71 @@ code_signatures = ["@SharedSig"]
         let out = reg.infer(&[], &[], &strings(&["x @SharedSig y"]));
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].name, "first");
+    }
+
+    /// A assinatura pertence à linguagem da pilha que a tem: a primeira do
+    /// registro que a declara, a mesma a que a inferência credita a
+    /// assinatura repetida. Quem lê os arquivos um a um usa isso para deixar
+    /// as palavras de um framework PHP ou Dart fora de um arquivo de Rust.
+    #[test]
+    fn a_code_signature_names_the_language_of_the_stack_that_owns_it() {
+        assert_eq!(code_signal_language("extends Controller"), Some("php"));
+        assert_eq!(code_signal_language("package:flutter/"), Some("dart"));
+        assert_eq!(code_signal_language("next/link"), Some("javascript"));
+        assert_eq!(code_signal_language("not a signature of any stack"), None);
+
+        let doc = StackRegistryDoc::parse_str(
+            r#"
+[[stack]]
+name = "first"
+language = "solidity"
+code_signatures = ["@Shared", "@Own"]
+
+[[stack]]
+name = "second"
+language = "php"
+code_signatures = ["@Shared"]
+
+[[stack]]
+name = "plain"
+code_signatures = ["@Plain"]
+"#,
+        )
+        .unwrap();
+        let reg = StackRegistry::from_doc(doc).unwrap();
+        assert_eq!(reg.signature_language("@Shared"), Some("solidity"), "the first stack that declares it owns it");
+        assert_eq!(reg.signature_language("@Own"), Some("solidity"));
+        assert_eq!(reg.signature_language("@Plain"), None, "a stack with no language names none");
+        assert_eq!(reg.signature_language("@Missing"), None);
+    }
+
+    /// A inferência lê o conteúdo que recebe: a pilha de um arquivo `.tsx`, a
+    /// de uma linguagem que a tabela de extensões não conhece e a sem
+    /// linguagem mantêm a assinatura, sem que o caminho dos arquivos mude o
+    /// resultado.
+    #[test]
+    fn a_code_signature_keeps_its_meaning_for_the_js_family_and_for_stacks_without_a_known_language() {
+        let next = infer_stacks(&[], &strings(&["src/app/page.tsx"]), &strings(&["import Link from 'next/link'"]));
+        assert_eq!(next.len(), 1);
+        assert_eq!(next[0].name, "nextjs", "a .tsx file is a file of the JavaScript stack");
+
+        let doc = StackRegistryDoc::parse_str(
+            r#"
+[[stack]]
+name = "bespoke"
+language = "solidity"
+code_signatures = ["pragma solidity"]
+
+[[stack]]
+name = "plain"
+code_signatures = ["@PlainSig"]
+"#,
+        )
+        .unwrap();
+        let reg = StackRegistry::from_doc(doc).unwrap();
+        let out = reg.infer(&[], &strings(&["src/lib.rs"]), &strings(&["pragma solidity ^0.8;\n@PlainSig"]));
+        let names: Vec<&str> = out.iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(names, ["bespoke", "plain"]);
     }
 
     #[test]

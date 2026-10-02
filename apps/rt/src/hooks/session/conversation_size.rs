@@ -27,10 +27,11 @@ use mustard_core::platform::error::Error;
 use mustard_core::platform::i18n::Locale;
 use mustard_core::translate;
 
-/// O valor de compactação que esta versão instalada do Mustard recomenda —
-/// verificado contra o binário do Claude Code 2.1.278, que ainda honra
-/// `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`
-/// (`docs/2026-07-25-revisao-portoes-pipeline-ondas.md`, seção 9).
+/// O valor de compactação que esta versão instalada do Mustard recomenda à
+/// máquina que ainda não escolheu o seu — verificado contra o binário do
+/// Claude Code 2.1.278, que ainda honra `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`
+/// (`docs/2026-07-25-revisao-portoes-pipeline-ondas.md`, seção 9). Máquina
+/// com valor próprio não o recebe: a escolha dela vale.
 const RECOMMENDED_AUTOCOMPACT_PCT: &str = "15";
 
 /// O aviso, antes de compactar: o bloco de retomada, que volta sozinho
@@ -51,20 +52,20 @@ impl Check for PrecompactNotice {
     }
 }
 
-/// A linha que compara o valor de compactação configurado na máquina (a
-/// variável `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`, quando presente) com o que
-/// esta versão instalada do Mustard recomenda, dizendo os dois valores e o
-/// que fazer quando divergem. `machine` chega como parâmetro, e não por
-/// `std::env::var` direto aqui dentro, para o teste poder variá-lo sem
-/// `std::env::set_var` — `unsafe` no Rust 2024 e vedado neste crate.
+/// A linha do valor de compactação no aviso. Com valor escolhido na máquina
+/// (a variável `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`, presente e não vazia), ela
+/// só informa esse valor: não cita o recomendado nem manda trocar. Sem valor,
+/// recomenda o [`RECOMMENDED_AUTOCOMPACT_PCT`] e diz onde ajustá-lo.
+/// `machine` chega como parâmetro, e não por `std::env::var` direto aqui
+/// dentro, para o teste poder variá-lo sem `std::env::set_var` — `unsafe` no
+/// Rust 2024 e vedado neste crate.
 fn autocompact_line(machine: Option<&str>, lang: Locale) -> String {
-    let machine_display = match machine {
-        Some(value) if !value.is_empty() => value.to_string(),
-        _ => translate("resume.none", lang).to_string(),
-    };
-    translate("conversation_size.autocompact", lang)
-        .replace("{machine}", &machine_display)
-        .replace("{installed}", RECOMMENDED_AUTOCOMPACT_PCT)
+    match machine {
+        Some(value) if !value.is_empty() => {
+            translate("conversation_size.autocompact_set", lang).replace("{machine}", value)
+        }
+        _ => translate("conversation_size.autocompact", lang).replace("{installed}", RECOMMENDED_AUTOCOMPACT_PCT),
+    }
 }
 
 /// O aviso antes de compactar: o bloco de retomada da spec atual, dizendo
@@ -137,9 +138,11 @@ mod tests {
         crit
     }
 
-    /// A pasta da cópia da onda `wave`, como a rodada a grava no envio.
+    /// A vaga da onda `wave`, como a rodada a grava no envio: a onda n na
+    /// n-ésima vaga.
     fn copy_of(root: &Path, wave: u64) -> String {
-        mustard_core::io::wave_prompt::shown(&mustard_core::io::wave_prompt::copy_path(root, "x", wave, false))
+        let slot = usize::try_from(wave).unwrap() - 1;
+        mustard_core::io::wave_prompt::shown(&mustard_core::io::wave_prompt::slot_path(root, "x", slot))
     }
 
     /// A chamada de ferramenta de quem conduz, com a transcrição `transcript`.
@@ -156,21 +159,26 @@ mod tests {
         }
     }
 
-    /// Numa máquina configurada para `33`, que não bate com o `15` que a
-    /// versão instalada recomenda, o aviso diz os dois valores e o que
-    /// fazer. Sem nada configurado, a máquina aparece como "nenhum", nunca
-    /// como um número inventado.
+    /// Numa máquina que escolheu `25`, o aviso só informa esse valor: não
+    /// cita o `15` que a versão instalada recomenda nem manda ajustar. Numa
+    /// máquina sem valor (a variável ausente ou vazia), o aviso recomenda o
+    /// `15` e diz onde ajustá-lo. Nos dois idiomas.
     #[test]
-    fn o_aviso_compara_o_valor_de_compactacao_com_a_versao_instalada() {
-        let line = autocompact_line(Some("33"), Locale::PtBr);
-        assert!(line.contains("33"), "{line}");
-        assert!(line.contains(RECOMMENDED_AUTOCOMPACT_PCT), "{line}");
-        assert!(line.contains("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"), "{line}");
-        assert!(line.contains("settings.json"), "{line}");
+    fn warning_respects_the_machine_value_and_only_recommends_when_it_has_none() {
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let set = autocompact_line(Some("25"), lang);
+            assert!(set.contains("25"), "{lang:?}: {set}");
+            assert!(!set.contains(RECOMMENDED_AUTOCOMPACT_PCT), "{lang:?}: cites the recommended value: {set}");
+            for order in ["settings.json", "ajuste", "ponha", "set ", "reload", "recarregue"] {
+                assert!(!set.contains(order), "{lang:?}: tells the machine to change its value ({order}): {set}");
+            }
 
-        let unset = autocompact_line(None, Locale::PtBr);
-        assert!(unset.contains("nenhum"), "{unset}");
-        assert!(unset.contains(RECOMMENDED_AUTOCOMPACT_PCT), "{unset}");
+            for unset in [autocompact_line(None, lang), autocompact_line(Some(""), lang)] {
+                assert!(unset.contains(RECOMMENDED_AUTOCOMPACT_PCT), "{lang:?}: {unset}");
+                assert!(unset.contains("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"), "{lang:?}: {unset}");
+                assert!(unset.contains("~/.claude/settings.json"), "{lang:?}: {unset}");
+            }
+        }
     }
 
     /// O aviso de compactar chega pelo gancho de `PreCompact`, com o bloco de
@@ -180,7 +188,7 @@ mod tests {
     /// registro inteiro, com uma transcrição de 200 mil tokens (o antigo
     /// degrau), deixa passar um `PreToolUse` comum.
     #[test]
-    fn aviso_de_compactar_chega_no_gancho_e_ninguem_mais_e_barrado_por_tamanho() {
+    fn compaction_warning_arrives_in_the_hook_and_nobody_else_is_blocked_by_size() {
         let dir = open_project("x");
         let root = dir.path();
 
@@ -199,14 +207,6 @@ mod tests {
         };
         assert!(context.contains('x'), "o bloco traz a spec: {context}");
         assert!(context.contains("fase"), "o bloco traz a fase: {context}");
-        assert!(
-            context.contains(RECOMMENDED_AUTOCOMPACT_PCT),
-            "o aviso cita o valor de compactação que a versão instalada recomenda: {context}"
-        );
-        assert!(
-            context.contains("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"),
-            "o aviso diz o que fazer quando o valor da máquina não bate: {context}"
-        );
 
         // Com uma onda em andamento, o bloco continua saindo, com a onda
         // citada.
@@ -257,7 +257,7 @@ mod tests {
         seed(
             root,
             "delivered",
-            serde_json::json!({"wave": n, "text": "O plano não fecha.", "replan": format!("Dividir a onda {n}."),
+            serde_json::json!({"wave": n, "text": "O plano não fecha.", "replan": format!("Dividir a onda {n}."), "changes_decision": "A ordem escolhida.",
                 "returned": true, "author": "wave"}),
         );
     }
@@ -350,7 +350,7 @@ mod tests {
     }
 
     /// Depois da compactação, o início da sessão coloca sozinho o bloco de
-    /// retomada, pelo evento do gancho: a onda entregue, a onda em andamento
+    /// retomada, pelo evento do gancho: quantas ondas foram entregues, a onda em andamento
     /// com a pasta da cópia dela, a onda cuja volta espera a rodada pedindo
     /// mudança de plano ainda sem o clique, a onda parada no limite de
     /// consertos, e o código da decisão gravada depois da última rodada — e
@@ -358,7 +358,7 @@ mod tests {
     /// bloco e não pede para colá-lo. Nos dois idiomas, e dentro do teto do
     /// início da sessão.
     #[test]
-    fn depois_da_compactacao_o_inicio_da_sessao_traz_o_bloco_da_obra() {
+    fn after_compaction_the_session_start_brings_the_work_block() {
         use crate::hooks::session::session_start_inject::MAX_BYTES;
         use serde_json::json;
 
@@ -373,10 +373,17 @@ mod tests {
                 "items": [crit], "mustard": "0", "author": "binary", "copy": copy_of(root, 2),
                 "claude_pid": pid, "claude_started": started}));
             seed_replan_return(root, 2);
+            // A onda 5 também pede mudança de plano, mas não troca decisão do
+            // usuário: não espera clique nenhum, e o bloco a lista sem aviso.
+            plan_wave(root, 5, crit, said);
+            seed(root, "delivered", json!({"wave": 5, "text": "Parei.", "replan": "Trocar o nome da função.",
+                "returned": true, "author": "wave"}));
             // A onda 3 entregue, e a 4 reprovada uma vez e depois de cada uma
             // das duas rodadas de conserto: parada no limite.
             plan_wave(root, 3, crit, said);
             seed(root, "delivered", json!({"wave": 3, "text": "Pronta.", "files": ["src/tres.rs"], "author": "wave"}));
+            plan_wave(root, 6, crit, said);
+            seed(root, "delivered", json!({"wave": 6, "text": "Pronta.", "files": ["src/seis.rs"], "author": "wave"}));
             plan_wave(root, 4, crit, said);
             for _ in 0..3 {
                 crate::shared::spec_state::seed_verdict(root, "x", 4, "rejected", crit);
@@ -393,9 +400,13 @@ mod tests {
                 .replace("{copy}", &copy_of(root, 1));
             let replan = translate("conversation_size.replan", lang).replace("{wave}", "2");
             for (moment, context) in [("session start", &started), ("precompact", &precompact)] {
-                assert_eq!(slot_value(context, lang, "{delivered}"), "3", "{lang:?} {moment}: the delivered wave");
+                assert_eq!(slot_value(context, lang, "{delivered}"), "2", "{lang:?} {moment}: how many waves were delivered");
                 assert_eq!(slot_value(context, lang, "{running}"), running, "{lang:?} {moment}: the wave in flight");
-                assert_eq!(slot_value(context, lang, "{returned}"), replan, "{lang:?} {moment}: the return");
+                assert_eq!(
+                    slot_value(context, lang, "{returned}"),
+                    format!("{replan}, 5"),
+                    "{lang:?} {moment}: the return that swaps a decision asks for the click, the other does not"
+                );
                 assert_eq!(slot_value(context, lang, "{stuck}"), "4", "{lang:?} {moment}: the wave at the fix limit");
                 assert_eq!(slot_value(context, lang, "{recorded}"), after[0], "{lang:?} {moment}: after the round");
                 assert!(!context.contains(&before), "{lang:?} {moment}: the decision before the round: {context}");
@@ -410,12 +421,42 @@ mod tests {
         }
     }
 
+    /// Numa obra com muitas ondas entregues, o bloco de retomada diz só
+    /// quantas foram, e não o número de cada uma: o passo seguinte vem das que
+    /// faltam e do próximo comando, e a lista das entregues crescia com a obra
+    /// e ocupava mais da metade do bloco. O início da sessão depois da
+    /// compactação e o aviso de compactar trazem o mesmo bloco curto. Nos dois
+    /// idiomas.
+    #[test]
+    fn work_block_counts_the_delivered_waves_instead_of_listing_each_one() {
+        use serde_json::json;
+
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let dir = open_project_in("x", lang);
+            let root = dir.path();
+            let crit = seed_running_wave(root, "x");
+            let said = seed(root, "message", json!({"author": "user", "text": "obra longa"}));
+            for n in 2..=150 {
+                plan_wave(root, n, crit, said);
+                seed(root, "delivered", json!({"wave": n, "text": "Pronta.", "files": ["src/a.rs"], "author": "wave"}));
+            }
+
+            let (started, precompact) = hook_contexts(root, lang);
+            for (moment, context) in [("session start", &started), ("precompact", &precompact)] {
+                assert_eq!(slot_value(context, lang, "{delivered}"), "149", "{lang:?} {moment}: the count: {context}");
+                assert!(!context.contains("2, 3, 4"), "{lang:?} {moment}: the delivered waves are listed: {context}");
+            }
+            let block = crate::commands::flow::resume::current_block(root, Some("s1")).expect("the block");
+            assert!(block.len() < 900, "{lang:?}: the block grew with the delivered waves: {} bytes: {block}", block.len());
+        }
+    }
+
     /// Com mais códigos gravados depois da última rodada do que cabem no teto
     /// do início da sessão, o bloco que o gancho injeta mostra os primeiros
     /// que cabem — um a mais já não caberia — e quantos ficaram de fora; o
     /// resto do bloco fica inteiro. Nos dois idiomas.
     #[test]
-    fn depois_da_compactacao_o_inicio_da_sessao_traz_o_bloco_da_obra_com_os_codigos_cortados_no_teto() {
+    fn after_compaction_the_session_start_brings_the_work_block_with_the_codes_cut_at_the_cap() {
         use serde_json::json;
 
         for lang in [Locale::PtBr, Locale::EnUs] {
@@ -443,7 +484,7 @@ mod tests {
     /// uma a mais já não caberia — e quantas ficaram de fora. A onda em
     /// andamento, que cede por último, fica inteira. Nos dois idiomas.
     #[test]
-    fn depois_da_compactacao_o_inicio_da_sessao_traz_o_bloco_da_obra_cortando_as_outras_partes_ate_caber() {
+    fn after_compaction_the_session_start_brings_the_work_block_cutting_the_other_parts_until_it_fits() {
         use serde_json::json;
 
         for lang in [Locale::PtBr, Locale::EnUs] {

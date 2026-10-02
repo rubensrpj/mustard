@@ -305,7 +305,7 @@ mod tests {
     /// Um projeto que não declara nada não protege nada: a proteção é a
     /// declaração do próprio projeto, nunca uma lista escrita no código.
     #[test]
-    fn um_projeto_que_nao_declara_nada_nao_protege_nome_nenhum() {
+    fn a_project_that_declares_nothing_protects_no_name() {
         let protected = protected_branches(&GitConfig::default());
         assert!(
             protected.is_empty(),
@@ -316,7 +316,7 @@ mod tests {
     /// As bases do fluxo são protegidas, e a lista `git.protected` se soma a
     /// elas — nada além do que o projeto escreveu entra.
     #[test]
-    fn a_protecao_sai_do_fluxo_e_da_lista_declarada() {
+    fn the_protection_comes_from_the_flow_and_the_declared_list() {
         let mut flow = BTreeMap::new();
         flow.insert("*".to_string(), "develop".to_string());
         flow.insert("develop".to_string(), "master".to_string());

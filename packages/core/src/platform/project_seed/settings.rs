@@ -15,6 +15,7 @@ use serde_json::{Map, Value};
 use crate::domain::config::ProjectConfig;
 use crate::io::claude_paths::ClaudePaths;
 use crate::io::fs;
+use crate::io::wave_prompt::copies_dir;
 use crate::platform::error::Result;
 use crate::platform::harness::PLUGIN_NAME;
 use crate::platform::i18n::Locale;
@@ -40,18 +41,6 @@ const PLUGIN_ID: &str = "mustard@mustard";
 /// is user-authored and survives. Plugin enablement is the USER's choice at
 /// user scope (`~/.claude/settings.json`) — the project seed never writes it.
 const MARKETPLACE_REPO_URL: &str = "REPLACE_WITH_MUSTARD_PLUGIN_MARKETPLACE_GIT_URL";
-
-/// The `settings.json#env` name an older seed planted for the skill-frontmatter
-/// gate. No binary ever read it (retired — see
-/// [`rename_dead_skill_validate_key`]).
-///
-/// Written as a plain literal because it has to be: it is the key the migration
-/// matches against what is on disk, and only the name itself can do that.
-const SKILL_VALIDATE_DEAD_KEY: &str = "MUSTARD_SKILL_VALIDATE_LINES_MODE";
-
-/// The name that gate actually resolves — `size_gate`'s `skill-validate-gate`
-/// mode. The live half of the pair [`rename_dead_skill_validate_key`] joins.
-const SKILL_VALIDATE_LIVE_KEY: &str = "MUSTARD_SKILL_VALIDATE_GATE_MODE";
 
 /// The command of rtk's own hook, the one Mustard writes into the local
 /// settings while `mustard.json#rtk` is on and takes out when it is off.
@@ -98,9 +87,26 @@ const RETIRED_DENY_RULES: &[&str] = &[
 /// configurações que a instalação grava, e a limpeza do arquivo da equipe
 /// ainda a reconhece como do molde. O valor que a pessoa mudou é dela e fica.
 ///
-/// O modo de tamanho da spec: nenhuma conferência o lia, e o molde deixou de
-/// escrevê-lo.
-const RETIRED_ENV: &[(&str, &str)] = &[("MUSTARD_SPEC_SIZE_MODE", "warn")];
+/// São nove, e nenhuma conferência lê nenhuma delas: o modo de tamanho da spec
+/// e o das habilidades, o da conferência das habilidades (com o nome antigo
+/// dela, que nunca foi lido), o da lista de conferência, o da fronteira, o do
+/// orçamento da conversa principal, o do aviso de delegação e a emissão dupla
+/// do arnês. O molde deixou de escrevê-las.
+const RETIRED_ENV: &[(&str, &str)] = &[
+    ("MUSTARD_SPEC_SIZE_MODE", "warn"),
+    ("MUSTARD_SKILL_SIZE_MODE", "warn"),
+    ("MUSTARD_SKILL_VALIDATE_GATE_MODE", "warn"),
+    ("MUSTARD_SKILL_VALIDATE_LINES_MODE", "warn"),
+    ("MUSTARD_CHECKLIST_GATE_MODE", "strict"),
+    ("MUSTARD_BOUNDARY_MODE", "warn"),
+    ("MUSTARD_MAIN_BUDGET_MODE", "warn"),
+    ("MUSTARD_DELEGATION_WARN_MODE", "warn"),
+    ("MUSTARD_HARNESS_DUAL_EMIT", "1"),
+];
+
+/// A lista de `permissions` em que o Claude Code guarda as pastas de fora do
+/// projeto que a sessão pode ler e editar sem perguntar.
+const ADDITIONAL_DIRECTORIES_KEY: &str = "additionalDirectories";
 
 /// The signature value the seed used to write before it wrote the empty one.
 const RETIRED_SIGNATURE: &str = "assistant";
@@ -121,14 +127,22 @@ const FORCE_HYPERLINK_KEY: &str = "FORCE_HYPERLINK";
 /// The destination follows `mode`: `.claude/settings.json` when shared,
 /// `.claude/settings.local.json` when private (see [`settings_dest`]). The
 /// merge semantics are the same either way, applied to whichever file is the
-/// target — the other one is never read and never written.
+/// target.
+///
+/// A pasta das cópias separadas do projeto
+/// ([`crate::io::wave_prompt::copies_dir`]) entra em
+/// `permissions.additionalDirectories` das configurações locais, qualquer que
+/// seja o modo, uma vez só ([`allow_copies_dir`]): o caminho é desta máquina,
+/// e o `.claude/settings.json` da equipe nunca o recebe. No modo
+/// compartilhado, é a única escrita no arquivo local, que é da pessoa e fica
+/// como está quando não se lê.
 ///
 /// - Absent (or `overwrite == true`): the seed is the base.
 /// - Present under merge: the user's file is the base and any top-level seed
 ///   key it lacks is backfilled — user edits are never clobbered.
 ///
 /// Both paths pass through the point migrations —
-/// [`retire_planted_plugin_enablement`], [`rename_dead_skill_validate_key`],
+/// [`retire_planted_plugin_enablement`],
 /// [`backfill_own_permission_rules`] and [`retire_old_rules`] — and through the
 /// two switches this file holds: in the local layer, the rtk hook follows `rtk`
 /// ([`apply_rtk_hook`]), the response style follows `text`
@@ -141,15 +155,38 @@ const FORCE_HYPERLINK_KEY: &str = "FORCE_HYPERLINK";
 /// only rewritten when the serialized result differs from what is on disk, so
 /// a settled project reports [`SeedOutcome::Preserved`].
 ///
+/// Answers each file it seeded, by its project-root-relative name, with what
+/// happened to it: the destination first, then — shared mode only — the local
+/// settings that hold the copies folder.
+///
 /// # Errors
 ///
-/// An IO error writing the file, or a serialization failure.
+/// An IO error writing a file, or a serialization failure.
 pub fn seed_settings(
     claude_dir: &Path,
     overwrite: bool,
     mode: InstallMode,
     rtk: bool,
     text: Locale,
+) -> Result<Vec<(&'static str, SeedOutcome)>> {
+    let copies = copies_dir_of(claude_dir);
+    let mut seeded = vec![(settings_footprint(mode), seed_dest(claude_dir, overwrite, mode, rtk, text, &copies)?)];
+    if !mode.is_private() {
+        seeded.push((SETTINGS_LOCAL_JSON, seed_local_copies_dir(claude_dir, &copies)?));
+    }
+    Ok(seeded)
+}
+
+/// O arquivo de destino de [`seed_settings`]: a semente, as migrações e, no
+/// modo privado, as chaves das configurações locais, a pasta das cópias
+/// inclusive.
+fn seed_dest(
+    claude_dir: &Path,
+    overwrite: bool,
+    mode: InstallMode,
+    rtk: bool,
+    text: Locale,
+    copies: &str,
 ) -> Result<SeedOutcome> {
     let dest = settings_dest(claude_dir, mode);
     let existing_raw = fs::read_to_string(&dest).ok();
@@ -172,7 +209,6 @@ pub fn seed_settings(
     };
 
     retire_planted_plugin_enablement(&mut settings);
-    rename_dead_skill_validate_key(&mut settings);
     backfill_own_permission_rules(&mut settings, &seed);
     retire_old_rules(&mut settings);
     // rtk's hook belongs to the local layer only: a shared install writes the
@@ -181,16 +217,66 @@ pub fn seed_settings(
         apply_rtk_hook(&mut settings, rtk);
         apply_output_style(&mut settings, text);
         backfill_force_hyperlink(&mut settings, &seed);
+        allow_copies_dir(&mut settings, copies);
     }
     turn_signature_off(&mut settings);
+    write_if_changed(&dest, existing_raw.as_deref(), settings)
+}
 
+/// No modo compartilhado, leva a pasta das cópias ao arquivo local, que o
+/// modo não semeia: só essa chave entra, e o resto do arquivo fica. O arquivo
+/// que existe e não é um objeto JSON fica intocado.
+fn seed_local_copies_dir(claude_dir: &Path, copies: &str) -> Result<SeedOutcome> {
+    let dest = settings_dest(claude_dir, InstallMode::Private);
+    let existing_raw = fs::read_to_string(&dest).ok();
+    let mut settings = match existing_raw.as_deref() {
+        None => Map::new(),
+        Some(raw) => match serde_json::from_str::<Value>(raw) {
+            Ok(Value::Object(settings)) => settings,
+            _ => return Ok(SeedOutcome::Preserved),
+        },
+    };
+    allow_copies_dir(&mut settings, copies);
+    write_if_changed(&dest, existing_raw.as_deref(), settings)
+}
+
+/// Grava `settings` em `dest` só quando o texto muda: o arquivo igual volta
+/// como [`SeedOutcome::Preserved`].
+fn write_if_changed(dest: &Path, existing_raw: Option<&str>, settings: Map<String, Value>) -> Result<SeedOutcome> {
     let mut serialized = serde_json::to_string_pretty(&Value::Object(settings))?;
     serialized.push('\n');
-    if existing_raw.as_deref() == Some(serialized.as_str()) {
+    if existing_raw == Some(serialized.as_str()) {
         return Ok(SeedOutcome::Preserved);
     }
-    fs::write_atomic(&dest, serialized.as_bytes())?;
-    Ok(if existed { SeedOutcome::Updated } else { SeedOutcome::Created })
+    fs::write_atomic(dest, serialized.as_bytes())?;
+    Ok(if existing_raw.is_some() { SeedOutcome::Updated } else { SeedOutcome::Created })
+}
+
+/// A pasta das cópias separadas do projeto cujo `.claude/` é `claude_dir`,
+/// pela mesma função que dá o lugar da cópia de cada onda.
+fn copies_dir_of(claude_dir: &Path) -> String {
+    copies_dir(claude_dir.parent().unwrap_or(claude_dir)).to_string_lossy().into_owned()
+}
+
+/// Põe a pasta `dir` em `permissions.additionalDirectories`, quando ela ainda
+/// não está lá: as cópias moram fora do projeto, e sem a pasta liberada o
+/// agente de cada onda pararia a cada arquivo que lê ou edita na cópia dele.
+/// As pastas que a pessoa já liberou ficam, na ordem delas. Um `permissions`
+/// ou uma lista que não é do tipo esperado fica como está.
+fn allow_copies_dir(settings: &mut Map<String, Value>, dir: &str) {
+    let permissions = settings.entry("permissions").or_insert_with(|| Value::Object(Map::new()));
+    let Some(permissions) = permissions.as_object_mut() else {
+        return;
+    };
+    let list = permissions
+        .entry(ADDITIONAL_DIRECTORIES_KEY)
+        .or_insert_with(|| Value::Array(Vec::new()));
+    let Some(list) = list.as_array_mut() else {
+        return;
+    };
+    if !list.iter().any(|known| known.as_str() == Some(dir)) {
+        list.push(Value::String(dir.to_string()));
+    }
 }
 
 /// The settings file `mode` seeds, composed through [`ClaudePaths`] — the
@@ -266,38 +352,6 @@ pub fn retire_planted_plugin_enablement(settings: &mut Map<String, Value>) {
         }
     }
 }
-
-/// Rename the dead skill-validate gate key inside an installed
-/// `settings.json#env` — [`SKILL_VALIDATE_DEAD_KEY`] becomes
-/// [`SKILL_VALIDATE_LIVE_KEY`], carrying the operator's own value over.
-///
-/// The seed merge is top-level only: a project that already has an `env` object
-/// keeps it verbatim, so the corrected name never arrives and the dead one never
-/// leaves. Fusing `env` key by key would read every absent variable as "wanted
-/// back", which is the guess this engine refuses to make; renaming ONE key that
-/// only an old seed ever wrote guesses nothing.
-///
-/// Nothing happens when there is no `env` object or no dead key. When BOTH names
-/// are present the live one wins and the dead one is simply dropped: it is the
-/// name the gate reads, so it is already the operator's effective choice.
-fn rename_dead_skill_validate_key(settings: &mut Map<String, Value>) {
-    let Some(env) = settings.get_mut("env").and_then(Value::as_object_mut) else {
-        return;
-    };
-    // `shift_remove`, never `remove`. The workspace builds `serde_json` with
-    // `preserve_order` (enabled by `apps/scan`, and cargo features UNIFY across a
-    // workspace, so this crate gets it too), and there `Map::remove` is a
-    // `swap_remove`: it teleports the LAST key of `env` into the hole. Measured on
-    // the shipped binary 2026-09-03 — an operator `env` came back with its final
-    // key moved four slots up. JSON order carries no meaning, so nothing resolves
-    // wrong; it is churn WE cause in a file that is the operator's, and a diff
-    // nobody asked for is how a settings file stops being trusted.
-    let Some(value) = env.shift_remove(SKILL_VALIDATE_DEAD_KEY) else {
-        return;
-    };
-    env.entry(SKILL_VALIDATE_LIVE_KEY.to_string()).or_insert(value);
-}
-
 
 /// Backfill the seed's own permission rules into an installed settings file:
 /// the `Bash(mustard-rt run …)` allow rules, the page database tool
@@ -597,7 +651,7 @@ pub fn without_seed_lines(settings: &Map<String, Value>) -> (Map<String, Value>,
                 if let (Some(env), Some(seed_env)) = (out.get_mut("env").and_then(Value::as_object_mut), seed_env) {
                     let mine: Vec<String> = env
                         .iter()
-                        .filter(|(name, v)| seed_value_of_env(seed_env, name) == Some(*v) || is_retired_env(name, v))
+                        .filter(|(name, v)| seed_env.get(name.as_str()) == Some(*v) || is_retired_env(name, v))
                         .map(|(name, _)| name.clone())
                         .collect();
                     for name in mine {
@@ -648,13 +702,6 @@ pub fn without_seed_lines(settings: &Map<String, Value>) -> (Map<String, Value>,
         }
     }
     (out, removed)
-}
-
-/// The seed's value for an `env` variable, reading the dead skill-validate name
-/// as the live one an older seed wrote it under.
-fn seed_value_of_env<'a>(seed_env: &'a Map<String, Value>, name: &str) -> Option<&'a Value> {
-    let name = if name == SKILL_VALIDATE_DEAD_KEY { SKILL_VALIDATE_LIVE_KEY } else { name };
-    seed_env.get(name)
 }
 
 /// `true` para a variável do `env` que um molde antigo escrevia, com o valor
@@ -866,89 +913,6 @@ mod tests {
         assert!(settings.get("enabledPlugins").is_none(), "emptied container dropped");
     }
 
-    // --- rename_dead_skill_validate_key --------------------------------------
-
-    #[test]
-    fn the_dead_skill_validate_key_is_renamed() {
-        // An INSTALLED project: it already has `env`, so the top-level merge
-        // preserves that object whole and the corrected name can only arrive
-        // through the point migration.
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        std_fs::create_dir_all(root.join(".claude")).unwrap();
-        std_fs::write(
-            root.join(".claude/settings.json"),
-            format!(r#"{{"env":{{"{SKILL_VALIDATE_DEAD_KEY}":"warn","MY_OWN":"1"}}}}"#),
-        )
-        .unwrap();
-
-        upsert_project(root, None, InstallMode::Shared).unwrap();
-
-        let settings: Value = serde_json::from_str(
-            &std_fs::read_to_string(root.join(".claude/settings.json")).unwrap(),
-        )
-        .unwrap();
-        let env = &settings["env"];
-        assert_eq!(env[SKILL_VALIDATE_LIVE_KEY], json!("warn"), "operator's value carried over");
-        assert!(env.get(SKILL_VALIDATE_DEAD_KEY).is_none(), "dead name gone");
-        assert_eq!(env["MY_OWN"], json!("1"), "the rest of their env survives");
-    }
-
-    /// The operator's OWN keys keep the order they were written in.
-    ///
-    /// `Map::remove` under `preserve_order` is a `swap_remove`: it teleports the
-    /// last key into the hole. Measured on the shipped binary 2026-09-03, an
-    /// operator's final env key moved four slots up — values intact, file
-    /// scrambled. Nothing resolves wrong, and that is exactly why no other test
-    /// would ever have caught it: a diff nobody asked for in a file that is theirs.
-    #[test]
-    fn the_migration_leaves_the_operators_other_keys_where_they_were() {
-        let mut settings: Map<String, Value> = serde_json::from_str(&format!(
-            r#"{{"env":{{"A_FIRST":"1","{SKILL_VALIDATE_DEAD_KEY}":"warn","B_AFTER":"2","Z_LAST":"3"}}}}"#
-        ))
-        .unwrap();
-
-        rename_dead_skill_validate_key(&mut settings);
-
-        let env = settings["env"].as_object().expect("env survives as an object");
-        let order: Vec<&str> = env.keys().map(String::as_str).collect();
-        assert_eq!(
-            order,
-            vec!["A_FIRST", "B_AFTER", "Z_LAST", SKILL_VALIDATE_LIVE_KEY],
-            "the dead key is lifted OUT and the live one appended; nothing else moves",
-        );
-    }
-
-    #[test]
-    fn the_live_skill_validate_key_wins_when_both_names_are_present() {
-        // The live name is what the gate reads, so it is already the effective
-        // choice: the dead one is dropped without overwriting it.
-        let mut settings: Map<String, Value> = serde_json::from_str(&format!(
-            r#"{{"env":{{"{SKILL_VALIDATE_DEAD_KEY}":"warn","{SKILL_VALIDATE_LIVE_KEY}":"strict"}}}}"#,
-        ))
-        .unwrap();
-
-        rename_dead_skill_validate_key(&mut settings);
-
-        assert_eq!(settings["env"][SKILL_VALIDATE_LIVE_KEY], json!("strict"));
-        assert!(settings["env"].get(SKILL_VALIDATE_DEAD_KEY).is_none());
-    }
-
-    #[test]
-    fn a_settings_file_without_the_dead_key_is_untouched() {
-        // No `env` at all, and an `env` carrying only the operator's own names:
-        // neither gains a key.
-        let mut no_env: Map<String, Value> = serde_json::from_str(r#"{"permissions":{}}"#).unwrap();
-        rename_dead_skill_validate_key(&mut no_env);
-        assert!(no_env.get("env").is_none(), "no env object is invented");
-
-        let mut theirs: Map<String, Value> =
-            serde_json::from_str(r#"{"env":{"MY_OWN":"1"}}"#).unwrap();
-        rename_dead_skill_validate_key(&mut theirs);
-        assert!(theirs["env"].get(SKILL_VALIDATE_LIVE_KEY).is_none(), "no name is planted");
-        assert_eq!(theirs["env"]["MY_OWN"], json!("1"));
-    }
-
     // --- install mode ---------------------------------------------------------
 
     /// The path `seed_settings` writes and the name `upsert_project` reports for
@@ -1086,7 +1050,7 @@ mod tests {
         assert!(!removed.iter().any(|r| r.starts_with("permissions.deny")), "{removed:?}");
 
         let team = parse_json_object(
-            r#"{"env":{"MUSTARD_SKILL_SIZE_MODE":"strict","TEAM":"1","MUSTARD_BOUNDARY_MODE":"warn"},
+            r#"{"env":{"FORCE_HYPERLINK":"1","TEAM":"1"},
                 "permissions":{"allow":["Read","Bash(npm test:*)"],"deny":["Bash(git branch -D main:*)"]},
                 "attribution":{"commit":"assistant","pr":"assistant"},
                 "cleanupPeriodDays":7,
@@ -1095,9 +1059,12 @@ mod tests {
         let (left, removed) = without_seed_lines(&team);
         assert_eq!(
             removed,
-            ["env.MUSTARD_BOUNDARY_MODE", "permissions.allow: Read", "attribution"],
+            ["env.FORCE_HYPERLINK", "permissions.allow: Read", "attribution"],
         );
-        assert_eq!(left["env"], json!({"MUSTARD_SKILL_SIZE_MODE": "strict", "TEAM": "1"}), "a changed value is theirs");
+        assert_eq!(left["env"], json!({"TEAM": "1"}));
+        let (changed, kept) = without_seed_lines(&parse_json_object(r#"{"env":{"FORCE_HYPERLINK":"0"}}"#));
+        assert!(kept.is_empty(), "a changed value is theirs: {kept:?}");
+        assert_eq!(changed["env"], json!({"FORCE_HYPERLINK": "0"}));
         assert_eq!(
             left["permissions"],
             json!({"allow": ["Bash(npm test:*)"], "deny": ["Bash(git branch -D main:*)"]}),
@@ -1108,34 +1075,74 @@ mod tests {
         assert!(left.get("attribution").is_none());
     }
 
-    /// O modo de tamanho da spec saiu do molde: a instalação nova não o
-    /// escreve; na instalação que já existe, a linha com o valor que o molde
-    /// antigo escrevia sai das configurações locais, e a limpeza do arquivo da
-    /// equipe ainda a reconhece como do molde. O valor que a pessoa mudou é
-    /// dela e fica, nos dois arquivos.
+    /// As variáveis que o molde antigo escrevia e o de hoje aposentou, cada
+    /// uma com o valor que o molde escrevia, letra por letra. A lista é escrita
+    /// aqui por extenso: tirar uma da constante faz este teste cair.
+    const RETIRED_WITH_SEED_VALUE: [(&str, &str); 9] = [
+        ("MUSTARD_SPEC_SIZE_MODE", "warn"),
+        ("MUSTARD_SKILL_SIZE_MODE", "warn"),
+        ("MUSTARD_SKILL_VALIDATE_GATE_MODE", "warn"),
+        ("MUSTARD_SKILL_VALIDATE_LINES_MODE", "warn"),
+        ("MUSTARD_CHECKLIST_GATE_MODE", "strict"),
+        ("MUSTARD_BOUNDARY_MODE", "warn"),
+        ("MUSTARD_MAIN_BUDGET_MODE", "warn"),
+        ("MUSTARD_DELEGATION_WARN_MODE", "warn"),
+        ("MUSTARD_HARNESS_DUAL_EMIT", "1"),
+    ];
+
+    /// Toda variável aposentada do molde sai da instalação que já existe
+    /// quando tem o valor que o molde escrevia, das configurações locais e do
+    /// arquivo da equipe (que ainda a reconhece como do molde); o valor que a
+    /// pessoa mudou é dela e fica, nos dois arquivos.
     #[test]
-    fn the_retired_spec_size_line_leaves_and_is_still_known_as_the_seeds() {
+    fn every_retired_key_leaves_the_install_with_the_template_value() {
         let seed = parse_json_object(SETTINGS_SEED);
-        assert!(seed["env"].get("MUSTARD_SPEC_SIZE_MODE").is_none(), "the seed still writes it");
+        for (name, written) in RETIRED_WITH_SEED_VALUE {
+            assert!(RETIRED_ENV.contains(&(name, written)), "{name} left the retired list");
+            assert!(seed["env"].get(name).is_none(), "the seed still writes {name}");
+            let changed = if written == "warn" { "strict" } else { "warn" };
 
-        for (value, leaves) in [("warn", true), ("strict", false)] {
+            for (value, leaves) in [(written, true), (changed, false)] {
+                let dir = tempdir().unwrap();
+                let claude = dir.path().join(".claude");
+                std_fs::create_dir_all(&claude).unwrap();
+                std_fs::write(
+                    claude.join("settings.local.json"),
+                    format!(r#"{{"env":{{"{name}":"{value}","MY_OWN":"1"}}}}"#),
+                )
+                .unwrap();
+                seed_settings(&claude, false, InstallMode::Private, true, Locale::PtBr).unwrap();
+                let env = local_settings(dir.path())["env"].clone();
+                assert_eq!(env.get(name).is_none(), leaves, "{name}={value}: {env}");
+                assert_eq!(env["MY_OWN"], json!("1"), "{name}={value}: {env}");
+
+                let team = parse_json_object(&format!(r#"{{"env":{{"{name}":"{value}"}}}}"#));
+                let (left, removed) = without_seed_lines(&team);
+                assert_eq!(removed.contains(&format!("env.{name}")), leaves, "{name}={value}: {removed:?}");
+                assert_eq!(left.is_empty(), leaves, "{name}={value}: {left:?}");
+            }
+        }
+    }
+
+    /// O molde de configuração e a instalação nova não plantam nenhuma
+    /// variável aposentada, e sobra no molde a que ainda vale.
+    #[test]
+    fn the_config_template_does_not_plant_a_retired_key() {
+        let seed = parse_json_object(SETTINGS_SEED);
+        let env = seed["env"].as_object().expect("the seed has an env");
+        for (name, _) in RETIRED_WITH_SEED_VALUE {
+            assert!(!env.contains_key(name), "the seed plants {name}");
+        }
+        assert_eq!(env.get(FORCE_HYPERLINK_KEY), Some(&json!("1")), "the live variable stays: {env:?}");
+
+        for mode in [InstallMode::Shared, InstallMode::Private] {
             let dir = tempdir().unwrap();
-            let claude = dir.path().join(".claude");
-            std_fs::create_dir_all(&claude).unwrap();
-            std_fs::write(
-                claude.join("settings.local.json"),
-                format!(r#"{{"env":{{"MUSTARD_SPEC_SIZE_MODE":"{value}","MY_OWN":"1"}}}}"#),
-            )
-            .unwrap();
-            seed_settings(&claude, false, InstallMode::Private, true, Locale::PtBr).unwrap();
-            let env = local_settings(dir.path())["env"].clone();
-            assert_eq!(env.get("MUSTARD_SPEC_SIZE_MODE").is_none(), leaves, "{value}: {env}");
-            assert_eq!(env["MY_OWN"], json!("1"), "{value}: {env}");
-
-            let team = parse_json_object(&format!(r#"{{"env":{{"MUSTARD_SPEC_SIZE_MODE":"{value}"}}}}"#));
-            let (left, removed) = without_seed_lines(&team);
-            assert_eq!(removed.contains(&"env.MUSTARD_SPEC_SIZE_MODE".to_string()), leaves, "{value}: {removed:?}");
-            assert_eq!(left.is_empty(), leaves, "{value}: {left:?}");
+            upsert_project(dir.path(), None, mode).unwrap();
+            let file = if mode.is_private() { "settings.local.json" } else { "settings.json" };
+            let written = std_fs::read_to_string(dir.path().join(".claude").join(file)).unwrap();
+            for (name, _) in RETIRED_WITH_SEED_VALUE {
+                assert!(!written.contains(name), "a fresh install wrote {name} in {file}");
+            }
         }
     }
 
@@ -1172,7 +1179,7 @@ mod tests {
         assert!(team.get("outputStyle").is_none(), "the team's file never gets the style");
 
         // A outra metade: o plugin entrega um estilo com esse nome.
-        let plugin = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugin");
+        let plugin = crate::manifest_dir::manifest_dir().join("../../plugin");
         let manifest: Value =
             serde_json::from_str(&std_fs::read_to_string(plugin.join(".claude-plugin/plugin.json")).unwrap()).unwrap();
         for text in [Locale::PtBr, Locale::EnUs] {
@@ -1215,14 +1222,67 @@ mod tests {
         std_fs::create_dir_all(&claude).unwrap();
         std_fs::write(
             claude.join("settings.local.json"),
-            r#"{"env":{"MUSTARD_SKILL_SIZE_MODE":"strict","MY_OWN":"1"}}"#,
+            r#"{"env":{"MY_MODE":"strict","MY_OWN":"1"}}"#,
         )
         .unwrap();
         let env = env_after_upsert(installed.path());
         assert_eq!(env.get(FORCE_HYPERLINK_KEY), Some(&json!("1")), "an installed project: {env:?}");
-        assert_eq!(env["MUSTARD_SKILL_SIZE_MODE"], json!("strict"), "the person's value stays");
+        assert_eq!(env["MY_MODE"], json!("strict"), "the person's value stays");
         assert_eq!(env["MY_OWN"], json!("1"));
         assert_eq!(env.len(), 3, "only the link variable arrives: {env:?}");
+    }
+
+    // --- a pasta das cópias -------------------------------------------------
+
+    /// As pastas liberadas em `permissions.additionalDirectories` do arquivo
+    /// `name` em `.claude/`, ou nenhuma quando a lista falta.
+    fn additional_directories(root: &Path, name: &str) -> Vec<String> {
+        let raw = std_fs::read_to_string(root.join(".claude").join(name)).unwrap();
+        parse_json_object(&raw)
+            .get("permissions")
+            .and_then(|p| p.get(ADDITIONAL_DIRECTORIES_KEY))
+            .and_then(Value::as_array)
+            .map(|list| list.iter().filter_map(Value::as_str).map(str::to_string).collect())
+            .unwrap_or_default()
+    }
+
+    /// O upsert, rodado duas vezes, põe a pasta das cópias do projeto uma vez
+    /// só nas pastas liberadas das configurações locais, nos dois modos, ao
+    /// lado da pasta que a pessoa já tinha liberado. O `settings.json` da
+    /// equipe fica igual: no modo privado, byte a byte; no compartilhado, é o
+    /// molde e nada mais.
+    #[test]
+    fn the_upsert_adds_the_copies_folder_to_the_local_settings_only() {
+        let seed = format!("{}\n", serde_json::to_string_pretty(&Value::Object(parse_json_object(SETTINGS_SEED))).unwrap());
+        for mode in [InstallMode::Private, InstallMode::Shared] {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            let claude = root.join(".claude");
+            std_fs::create_dir_all(&claude).unwrap();
+            std_fs::write(
+                claude.join("settings.local.json"),
+                r#"{"permissions":{"additionalDirectories":["../docs"]}}"#,
+            )
+            .unwrap();
+            let team = "{\n  \"env\": {\"TEAM\": \"1\"}\n}\n";
+            if mode.is_private() {
+                std_fs::write(claude.join("settings.json"), team).unwrap();
+            }
+            let copies = copies_dir(root).to_string_lossy().into_owned();
+
+            upsert_project(root, None, mode).unwrap();
+            let second = upsert_project(root, None, mode).unwrap();
+
+            let local = additional_directories(root, "settings.local.json");
+            assert_eq!(local, vec!["../docs".to_string(), copies.clone()], "{mode:?}: once, after the person's own");
+            assert!(
+                second.preserved.iter().any(|name| name == SETTINGS_LOCAL_JSON),
+                "{mode:?}: the second run changes nothing in the local settings: {second:?}",
+            );
+            let shared = std_fs::read_to_string(claude.join("settings.json")).unwrap();
+            assert_eq!(shared, if mode.is_private() { team.to_string() } else { seed.clone() }, "{mode:?}");
+            assert!(!shared.contains(&copies), "{mode:?}: the team's file got the copies folder");
+        }
     }
 
     /// A variável que a pessoa já tinha, como `"0"`, não é trocada por `"1"`,

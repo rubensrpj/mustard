@@ -11,7 +11,7 @@ use super::Locale;
 
 /// Os começos de chave (o trecho antes do primeiro ponto) que esta parte
 /// responde. Nenhum deles é de outra parte.
-pub(super) const PREFIXES: &[&str] = &["heading", "placeholder", "checklist", "ac", "context", "marker", "memory", "scope", "wave"];
+pub(super) const PREFIXES: &[&str] = &["heading", "placeholder", "checklist", "ac", "marker", "memory", "wave"];
 
 /// O texto de `key` em `lang`, ou `None` quando a chave não está aqui.
 pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
@@ -29,10 +29,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("wave.hand_drawn_removed", Locale::EnUs) => {
             "Drawn by hand before the backlog and never sent; its tasks went back to the backlog."
         }
-
-        // Acceptance-criterion label (used as a prefix before the AC id).
-        ("ac.label", Locale::PtBr) => "CA",
-        ("ac.label", Locale::EnUs) => "AC",
 
         // Spec narrative headings — canonical translation table mirrors
         // `refs/feature/spec-language.md § Header Translation Table` and the
@@ -122,9 +118,10 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
 
         // Trackable `## Checklist` item label (`spec_draft::build_checklist`).
         // `first_task` is the single hand-trackable task the draft seeds; the
-        // draft no longer materialises per-anchor `touch_file` items (a digest
-        // anchor is a READ candidate, never an implementation target — seeding
-        // write-tracking from it baked lexical noise into the artifact).
+        // draft no longer materialises per-anchor `touch_file` items (a file
+        // the map points at is a READ candidate, never an implementation
+        // target — seeding write-tracking from it baked lexical noise into the
+        // artifact).
         ("checklist.first_task", Locale::PtBr) => "T1 — primeira tarefa rastreável.",
         ("checklist.first_task", Locale::EnUs) => "T1 — first trackable task.",
 
@@ -154,23 +151,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // catch. A spec that wants the suite says so in a criterion of its own.
         ("ac.safety.build_green", Locale::PtBr) => "o build do projeto passa verde",
         ("ac.safety.build_green", Locale::EnUs) => "the project build passes green",
-
-        // Scan-digest enrichment block injected into the Context section by
-        // `spec_draft::context_enrichment` — the anchors/precedent the digest
-        // already found, so the drafted Context is not an empty placeholder.
-        // The `_weak` variant labels the anchor list when the digest's honest
-        // match report came back `weak`/`none`: the anchors are shown for
-        // transparency but flagged so nobody plans on top of noise.
-        ("context.scan_anchors", Locale::PtBr) => "Âncoras (do scan)",
-        ("context.scan_anchors", Locale::EnUs) => "Anchors (from scan)",
-        ("context.scan_anchors_weak", Locale::PtBr) => {
-            "Âncoras (do scan — BAIXA CONFIANÇA: casamento fraco, confirme lendo antes de usar)"
-        }
-        ("context.scan_anchors_weak", Locale::EnUs) => {
-            "Anchors (from scan — LOW CONFIDENCE: weak match, confirm by reading before relying)"
-        }
-        ("context.scan_slices", Locale::PtBr) => "Fatias recorrentes (precedente a espelhar)",
-        ("context.scan_slices", Locale::EnUs) => "Recurring slices (precedent to mirror)",
 
         // File-operation markers accepted in a spec's `## Files` bullet lines
         // (e.g. "- `src/Payable.cs` (create)"). Synonyms for one locale are
@@ -210,37 +190,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("heading.context.position", Locale::EnUs) => "Position in map",
         ("heading.context.next_steps_suggestion", Locale::PtBr) => "Sugestão de próximos passos",
         ("heading.context.next_steps_suggestion", Locale::EnUs) => "Next-steps suggestion",
-
-        // Scope-classify `## Files` diagnostics — the three ZERO-PATH shapes,
-        // each named for what was actually measured (a diagnostic must never
-        // assert "empty" about a section that has content). Config-language:
-        // the warning is user-facing feedback in the spec's own language.
-        ("scope.files.absent", Locale::PtBr) => {
-            "## Arquivos ausente — fileCount=0; scope=abstain até autorar o censo \
-             (adicione ## Arquivos e re-rode)"
-        }
-        ("scope.files.absent", Locale::EnUs) => {
-            "## Files section absent — fileCount=0; scope=abstain until the census is \
-             authored (add ## Files and re-run)"
-        }
-        ("scope.files.empty", Locale::PtBr) => {
-            "## Arquivos vazio/placeholder — fileCount=0; scope=abstain até autorar o \
-             censo (preencha ## Arquivos e re-rode)"
-        }
-        ("scope.files.empty", Locale::EnUs) => {
-            "## Files section empty/placeholder — fileCount=0; scope=abstain until the \
-             census is authored (fill ## Files and re-run)"
-        }
-        ("scope.files.unrecognised", Locale::PtBr) => {
-            "## Arquivos tem conteúdo, mas nenhum caminho foi reconhecido — fileCount=0; \
-             scope=abstain; declare cada arquivo como bullet `- caminho` ou linha de \
-             tabela com coluna de caminho, e re-rode"
-        }
-        ("scope.files.unrecognised", Locale::EnUs) => {
-            "## Files has content, but no path was recognised — fileCount=0; \
-             scope=abstain; declare each file as a `- path` bullet or a table row with \
-             a path column, then re-run"
-        }
         _ => return None,
     })
 }
@@ -258,8 +207,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("spec_text.rs"),
             super::PREFIXES,
-            61,
-            0xdf26_c3bc_0154_7c23,
+            54,
+            0x6426_2a56_bb24_5223,
         );
     }
 
@@ -274,5 +223,17 @@ mod tests {
         assert_eq!(translate("heading.spec.ac_list", Locale::EnUs), "<missing-key>");
         // `placeholder.see_below` retired with the same fix (dead copy).
         assert_eq!(translate("placeholder.see_below", Locale::PtBr), "<missing-key>");
+    }
+
+    /// Os rótulos das âncoras e das fatias do scan no contexto da spec saíram
+    /// junto com o enriquecimento que os pedia: nos dois idiomas, cada chave
+    /// responde o texto de chave ausente.
+    #[test]
+    fn the_scan_anchor_labels_are_gone() {
+        for key in ["context.scan_anchors", "context.scan_anchors_weak", "context.scan_slices"] {
+            for lang in [Locale::PtBr, Locale::EnUs] {
+                assert_eq!(translate(key, lang), "<missing-key>", "{key} in {lang}");
+            }
+        }
     }
 }

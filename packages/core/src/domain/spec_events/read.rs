@@ -9,8 +9,9 @@ use serde_json::{Map, Value};
 use crate::platform::i18n::{translate, Locale};
 
 use super::check::GIVES_BACK_FIELD;
-use super::search::{found_by, roots};
-use super::{shown_line, type_spec, Block, BlockQuery, METRIC_TYPES, PURGED_FIELD};
+use super::search::found_by;
+use crate::domain::normalize::Languages;
+use super::{render_line, shown_line, type_spec, Block, BlockQuery, CUT_LINE_TYPE, FORMAT_VERSION, METRIC_TYPES, PURGED_FIELD};
 
 /// Um evento lido do arquivo.
 #[derive(Debug, Clone, PartialEq)]
@@ -74,21 +75,6 @@ impl SpecEvent {
     #[must_use]
     pub fn wave(&self) -> Option<u64> {
         wave_of(&self.event_type, |field| self.int(field))
-    }
-
-    /// `true` quando o evento tem todas as raízes do termo, somando as do
-    /// `search` e as do código do item (`code`, o que a leitura dá a ele): o
-    /// `search` não guarda o código, e sem ele um item não seria achado pelo
-    /// próprio código que a página mostra. `None` olha só o `search`.
-    #[must_use]
-    pub fn matches(&self, terms: &[String], code: Option<&str>) -> bool {
-        if terms.is_empty() {
-            return true;
-        }
-        let code_roots = code.map(|c| roots([c])).unwrap_or_default();
-        let mut words: BTreeSet<&str> = self.str_field("search").unwrap_or_default().split(' ').collect();
-        words.extend(code_roots.iter().map(String::as_str));
-        terms.iter().all(|t| words.contains(t.as_str()))
     }
 
     /// A linha como a leitura mostra, sem o `search`.
@@ -224,8 +210,9 @@ pub enum Step {
     Review { wave: u64 },
     /// Fechar: o estado e os critérios.
     Close,
-    /// Tirar uma dúvida: a conversa, filtrada pelo termo.
-    Question { term: String },
+    /// Tirar uma dúvida: a conversa, filtrada pelo termo, cortado nas
+    /// línguas do projeto.
+    Question { term: String, languages: Languages },
 }
 
 /// O arquivo lido: os eventos em ordem e as linhas puladas.
@@ -291,6 +278,79 @@ fn id_hint(raw: &str) -> Option<u64> {
     let rest = raw[at + 4..].trim_start().strip_prefix(':')?.trim_start();
     let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
     digits.parse().ok()
+}
+
+/// O arquivo `content`, lido como `log`, com cada linha cortada trocada, no
+/// lugar, por um registro que se lê. Cortada é a linha que não se entende e
+/// começa como um evento, `{"v":1,"id":N` com o número inteiro: o disco cheio
+/// parou a gravação no meio dela. O registro é do tipo [`CUT_LINE_TYPE`], com
+/// o mesmo número, o `code` e o `at` quando o pedaço os traz por inteiro, o
+/// autor `binary` e o pedaço todo em `piece`. Nenhuma outra linha muda, nem um
+/// byte, e nenhum evento muda de número. A linha que não começa assim fica
+/// como está, e a que tem o número de um evento que se lê também: trocar uma
+/// pela outra repetiria o número. `None` quando nenhuma linha pede o conserto.
+#[must_use]
+pub fn repair_cut_lines(content: &str, log: &SpecLog) -> Option<String> {
+    let mut lines: Vec<String> = content.split('\n').map(str::to_string).collect();
+    let mut taken: BTreeSet<u64> = log.events.iter().map(|e| e.id).collect();
+    let mut changed = false;
+    for skipped in log.skipped.iter().filter(|s| s.reason == SkipReason::Unreadable) {
+        let Some(slot) = skipped.line.checked_sub(1).and_then(|i| lines.get_mut(i)) else { continue };
+        let carriage_return = slot.ends_with('\r');
+        let piece = slot.trim_end_matches('\r');
+        let Some((id, record)) = cut_record(piece) else { continue };
+        if !taken.insert(id) {
+            continue;
+        }
+        let mut repaired = render_line(&record);
+        if carriage_return {
+            repaired.push('\r');
+        }
+        *slot = repaired;
+        changed = true;
+    }
+    changed.then(|| lines.join("\n"))
+}
+
+/// O número e o registro que tomam o lugar da linha cortada `piece`; `None`
+/// quando ela não começa como um evento ou quando o número pode estar
+/// incompleto — o pedaço que para logo depois dos dígitos pode ter perdido
+/// algum, e o número errado repetiria o de outro evento.
+fn cut_record(piece: &str) -> Option<(u64, Map<String, Value>)> {
+    let rest = piece.strip_prefix(&format!("{{\"v\":{FORMAT_VERSION},\"id\":"))?;
+    let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+    if digits == 0 || digits == rest.len() {
+        return None;
+    }
+    let id = rest[..digits].parse::<u64>().ok().filter(|n| *n > 0)?;
+    let mut tail = &rest[digits..];
+    let mut record = Map::new();
+    record.insert("v".into(), Value::from(FORMAT_VERSION));
+    record.insert("id".into(), Value::from(id));
+    if let Some(code) = leading_string(&mut tail, "code").filter(|code| crate::domain::mustard_id::is_id(code)) {
+        record.insert("code".into(), Value::String(code));
+    }
+    if let Some(at) = leading_string(&mut tail, "at").filter(|at| chrono::DateTime::parse_from_rfc3339(at).is_ok()) {
+        record.insert("at".into(), Value::String(at));
+    }
+    record.insert("type".into(), Value::from(CUT_LINE_TYPE));
+    record.insert("author".into(), Value::from("binary"));
+    record.insert("piece".into(), Value::String(piece.to_string()));
+    Some((id, record))
+}
+
+/// O valor de texto do campo `key` quando `tail` começa por ele
+/// (`,"key":"valor"`), com o fecho das aspas dentro do pedaço; `tail` avança
+/// para depois dele. Um valor com barra ou cortado no meio não conta.
+fn leading_string(tail: &mut &str, key: &str) -> Option<String> {
+    let after = tail.strip_prefix(&format!(",\"{key}\":\""))?;
+    let end = after.find('"')?;
+    let value = &after[..end];
+    if value.contains('\\') {
+        return None;
+    }
+    *tail = &after[end + 1..];
+    Some(value.to_string())
 }
 
 impl SpecLog {
@@ -505,17 +565,65 @@ impl SpecLog {
             .collect()
     }
 
-    /// As ondas do plano: as que a leitura mostra. O que foi gravado em nome
-    /// de uma onda que saiu do plano — o veredito, que o binário não deixa
-    /// tirar, e o pedido e a entrega — não conta na rodada, no fechamento nem
-    /// no pedido.
+    /// As ondas do plano: as que a leitura mostra, menos a onda que o binário
+    /// formou (autor `binary`) e ficou sem tarefa visível nenhuma — o corte
+    /// devolveu as tarefas dela ao backlog, ou a tarefa foi regravada sem
+    /// onda antes do envio. Sem tarefa não há o que despachar nem o que
+    /// entregar, e o backlog reempacota o que ela perdeu numa onda nova. A
+    /// onda combinada à mão fica no plano mesmo sem tarefa, porque o backlog
+    /// nunca reempacota o que ela perdeu. O que foi gravado em nome de uma
+    /// onda que saiu do plano — o veredito, que o binário não deixa tirar, e
+    /// o pedido e a entrega — não conta na rodada, no fechamento nem no
+    /// pedido.
     #[must_use]
     pub fn planned_waves(&self) -> BTreeSet<u64> {
+        let waves = self.block(BlockQuery::Block(Block::Waves));
+        let with_task: BTreeSet<u64> =
+            waves.iter().filter(|e| e.event_type == "task").filter_map(|e| e.wave()).collect();
+        waves
+            .into_iter()
+            .filter(|e| e.event_type == "wave")
+            .filter(|e| e.str_field("author") != Some("binary") || e.wave().is_some_and(|n| with_task.contains(&n)))
+            .filter_map(SpecEvent::wave)
+            .collect()
+    }
+
+    /// As ondas que contam no andamento da obra: das que a leitura mostra, a
+    /// que já tem entrega e a que a última versão de alguma tarefa não
+    /// removida aponta. A onda esvaziada — as tarefas dela foram para outra
+    /// onda, voltaram ao backlog ou saíram da obra — não conta, seja qual for
+    /// o autor dela, e assim não infla o total nem a lista do que falta. É
+    /// a única conta das ondas que a barra de status e a retomada mostram, para
+    /// as duas dizerem o mesmo número; [`Self::planned_waves`] segue sendo o
+    /// que a rodada despacha e confere.
+    #[must_use]
+    pub fn counted_waves(&self) -> BTreeSet<u64> {
+        let waves = self.block(BlockQuery::Block(Block::Waves));
+        let alive: BTreeSet<u64> = waves
+            .iter()
+            .filter(|e| matches!(e.event_type.as_str(), "task" | "delivered"))
+            .filter_map(|e| e.wave())
+            .collect();
+        waves
+            .into_iter()
+            .filter(|e| e.event_type == "wave")
+            .filter_map(SpecEvent::wave)
+            .filter(|n| alive.contains(n))
+            .collect()
+    }
+
+    /// O maior número de onda que a leitura mostra, com a onda que saiu do
+    /// plano por ficar vazia ([`Self::planned_waves`]) incluída; zero sem
+    /// onda nenhuma. A onda nova nasce depois dele, para nunca repetir o
+    /// número de uma onda que já foi gravada.
+    #[must_use]
+    pub fn last_wave_number(&self) -> u64 {
         self.block(BlockQuery::Block(Block::Waves))
             .into_iter()
             .filter(|e| e.event_type == "wave")
             .filter_map(SpecEvent::wave)
-            .collect()
+            .max()
+            .unwrap_or(0)
     }
 
     /// Os vereditos de cada onda do plano, do mais velho ao mais novo.
@@ -532,8 +640,9 @@ impl SpecLog {
     }
 
     /// As ondas do plano cuja última revisão final reprovou, cada uma com o
-    /// número dessa reprovação. A rodada, o fechamento e o pedido leem
-    /// daqui. Um veredito sem o campo final não conta: só o veredito final
+    /// número dessa reprovação. A rodada e o fechamento leem daqui; o pedido
+    /// da revisão recorta as ondas só pelo veredito final mais novo. Um
+    /// veredito sem o campo final não conta: só o veredito final
     /// do agente de teste dedicado pode pôr uma onda em modo de conserto.
     #[must_use]
     pub fn last_rejected(&self) -> BTreeMap<u64, u64> {
@@ -562,6 +671,43 @@ impl SpecLog {
             }
         }
         last
+    }
+
+    /// A posição em que o envio `id` despachou a onda: o número do envio
+    /// original da cadeia de `replaces`. A versão de um envio que só
+    /// acrescenta o consumo não despacha nada de novo — ela substitui o
+    /// envio e o mantém no lugar em que a onda saiu —, então a entrega, o
+    /// veredito, o clique do usuário e a mudança de plano que chegam depois do
+    /// despacho valem depois dele, esteja a versão do consumo gravada antes ou
+    /// depois deles. É a única conta de "antes ou depois do envio": quem
+    /// compara um número da spec com o envio de uma onda lê daqui, nunca do
+    /// número da versão mais nova. O envio que não substitui nada — o pedido
+    /// novo e o reenvio — é a própria posição.
+    #[must_use]
+    pub fn dispatch_position(&self, id: u64) -> u64 {
+        chain_root(&self.send_versions(), id)
+    }
+
+    /// O último envio de cada onda do bloco das ondas, na posição em que ele
+    /// despachou a onda ([`Self::dispatch_position`]): o número que a entrega,
+    /// o veredito e o plano que vêm depois dele são comparados. A onda sem
+    /// envio não aparece.
+    #[must_use]
+    pub fn last_dispatch_by_wave(&self) -> BTreeMap<u64, u64> {
+        let versions = self.send_versions();
+        self.last_by_wave("send").into_iter().map(|(n, id)| (n, chain_root(&versions, id))).collect()
+    }
+
+    /// Cada versão de envio que substitui outro envio, com o número do que ela
+    /// substitui.
+    fn send_versions(&self) -> BTreeMap<u64, u64> {
+        let sends: BTreeSet<u64> =
+            self.events.iter().filter(|e| e.event_type == "send").map(|e| e.id).collect();
+        self.events
+            .iter()
+            .filter(|e| e.event_type == "send")
+            .filter_map(|e| e.int("replaces").filter(|older| sends.contains(older)).map(|older| (e.id, older)))
+            .collect()
     }
 
     /// Um bloco, só com o que a leitura mostra. Uma onda (`wave-2`) traz a
@@ -606,11 +752,11 @@ impl SpecLog {
                 pick(&mut picked,self.block(BlockQuery::Block(Block::State)));
                 pick(&mut picked,self.block(BlockQuery::Block(Block::Criteria)));
             }
-            Step::Question { term } => {
+            Step::Question { term, languages } => {
                 let codes = self.codes();
                 pick(
                     &mut picked,
-                    found_by(self.block(BlockQuery::Block(Block::Conversation)), term, &codes),
+                    found_by(self.block(BlockQuery::Block(Block::Conversation)), term, &codes, languages),
                 );
             }
             Step::Review { wave } => {
@@ -644,6 +790,21 @@ impl SpecLog {
 
 }
 
+/// O envio original da cadeia de versões que começa em `id`: segue cada versão
+/// até a que ela substitui, até uma que não substitui nada. O limite só
+/// protege a leitura de um arquivo editado à mão que feche a cadeia em
+/// círculo.
+fn chain_root(versions: &BTreeMap<u64, u64>, id: u64) -> u64 {
+    let mut at = id;
+    for _ in 0..=versions.len() {
+        match versions.get(&at) {
+            Some(older) => at = *older,
+            None => break,
+        }
+    }
+    at
+}
+
 /// Junta eventos por número, sem repetição.
 fn pick<'a>(picked: &mut BTreeMap<u64, &'a SpecEvent>, events: Vec<&'a SpecEvent>) {
     for event in events {
@@ -663,8 +824,9 @@ impl SpecLog {
     }
 
     /// Os critérios que as ondas de `waves` apontam, juntos, sem repetição e
-    /// na ordem do código: o que a rodada prova, uma vez cada, antes de
-    /// comitar o que essas ondas entregaram.
+    /// na ordem do código: de onde a rodada parte para provar, uma vez cada,
+    /// antes de comitar o que essas ondas entregaram. Ela deixa de fora o
+    /// critério que outra tarefa ainda por entregar também cobre.
     #[must_use]
     pub fn criteria_for_waves(&self, waves: &[u64]) -> Vec<&SpecEvent> {
         let mut picked: BTreeMap<u64, &SpecEvent> = BTreeMap::new();
@@ -715,6 +877,65 @@ mod tests {
         assert_eq!(panel, [5, 6, 7]);
     }
 
+    /// A onda que o binário formou e ficou sem tarefa sai do plano; a
+    /// combinada à mão sem tarefa fica. O número mais alto conta a onda que
+    /// saiu, para a onda nova não repetir o número dela.
+    #[test]
+    fn a_binary_wave_without_a_task_leaves_the_plan_but_keeps_its_number() {
+        let content = "{\"v\":1,\"id\":1,\"at\":\"t\",\"type\":\"wave\",\"n\":1,\"text\":\"Uma.\",\"author\":\"assistant\"}\n\
+                       {\"v\":1,\"id\":2,\"at\":\"t\",\"type\":\"wave\",\"n\":2,\"text\":\"Duas.\",\"author\":\"binary\"}\n\
+                       {\"v\":1,\"id\":3,\"at\":\"t\",\"type\":\"wave\",\"n\":3,\"text\":\"Três.\",\"author\":\"binary\"}\n\
+                       {\"v\":1,\"id\":4,\"at\":\"t\",\"type\":\"wave\",\"n\":4,\"text\":\"Quatro.\",\"author\":\"binary\"}\n\
+                       {\"v\":1,\"id\":5,\"at\":\"t\",\"type\":\"task\",\"wave\":2,\"text\":\"Mexer.\"}\n\
+                       {\"v\":1,\"id\":6,\"at\":\"t\",\"type\":\"task\",\"wave\":4,\"text\":\"Mexer mais.\"}\n\
+                       {\"v\":1,\"id\":7,\"at\":\"t\",\"type\":\"task\",\"text\":\"Mexer mais, de volta ao backlog.\",\"replaces\":6}\n";
+        let log = parse_log(content);
+        assert_eq!(log.planned_waves(), BTreeSet::from([1, 2]));
+        assert_eq!(log.last_wave_number(), 4);
+        assert_eq!(parse_log("").last_wave_number(), 0);
+    }
+
+    /// Conta a onda entregue e a que a última versão de uma tarefa não
+    /// removida aponta, e só elas, de qualquer autor: a que perdeu a tarefa
+    /// para outra onda, a que a remoção esvaziou e a combinada à mão sem
+    /// tarefa nenhuma ficam de fora, e a entregue sem tarefa fica. A onda que
+    /// só tem entrega gravada em nome de um número fora do plano não entra.
+    #[test]
+    fn the_waves_that_count_are_the_delivered_one_and_the_one_a_task_still_points_to() {
+        let waves: Vec<serde_json::Value> = (1..=8)
+            .map(|n| {
+                serde_json::json!({"v":1,"id":n,"at":"t","type":"wave","n":n,"text":"Onda.","author":
+                    if n % 2 == 0 { "binary" } else { "assistant" }})
+            })
+            .collect();
+        let mut lines = waves;
+        lines.extend([
+            // Onda 1: entregue, com a tarefa.
+            serde_json::json!({"v":1,"id":11,"at":"t","type":"task","wave":1,"text":"Um."}),
+            serde_json::json!({"v":1,"id":12,"at":"t","type":"delivered","wave":1,"text":"Saiu."}),
+            // Onda 2: a tarefa vive; a 3 perdeu a dela para a 2 numa versão nova.
+            serde_json::json!({"v":1,"id":13,"at":"t","type":"task","wave":3,"text":"Três."}),
+            serde_json::json!({"v":1,"id":14,"at":"t","type":"task","wave":2,"text":"Três, na dois.","replaces":13}),
+            // Onda 4: a tarefa foi removida.
+            serde_json::json!({"v":1,"id":15,"at":"t","type":"task","wave":4,"text":"Quatro."}),
+            serde_json::json!({"v":1,"id":16,"at":"t","type":"remove","targets":[15]}),
+            // Onda 5: combinada à mão, nunca teve tarefa.
+            // Onda 6: a tarefa voltou ao backlog, sem onda.
+            serde_json::json!({"v":1,"id":17,"at":"t","type":"task","wave":6,"text":"Seis."}),
+            serde_json::json!({"v":1,"id":18,"at":"t","type":"task","text":"Seis, no backlog.","replaces":17}),
+            // Onda 7: entregue, sem tarefa nenhuma.
+            serde_json::json!({"v":1,"id":19,"at":"t","type":"delivered","wave":7,"text":"Saiu."}),
+            // Onda 8: só tem a tarefa e vale; a 9 não está no plano.
+            serde_json::json!({"v":1,"id":20,"at":"t","type":"task","wave":8,"text":"Oito."}),
+            serde_json::json!({"v":1,"id":21,"at":"t","type":"task","wave":9,"text":"Nove."}),
+            serde_json::json!({"v":1,"id":22,"at":"t","type":"delivered","wave":9,"text":"Saiu."}),
+        ]);
+        let log = log_of(&lines);
+        assert_eq!(log.counted_waves(), BTreeSet::from([1, 2, 7, 8]));
+        // O plano da rodada segue como era: a combinada à mão sem tarefa fica.
+        assert!(log.planned_waves().contains(&5), "a rodada continua vendo a onda combinada à mão");
+    }
+
     /// Os arquivos entregues são os dos eventos `commit`, sem repetir, e não
     /// os de outro tipo de evento — a tarefa que só declara o que uma onda
     /// vai tocar não conta, porque nada garante que ela tocou aquilo de
@@ -738,13 +959,58 @@ mod tests {
         parse_log(&lines.iter().map(serde_json::Value::to_string).collect::<Vec<_>>().join("\n"))
     }
 
+    /// A versão de um envio que só traz o consumo mantém o lugar em que o
+    /// envio despachou a onda, gravada antes ou depois da entrega, do
+    /// veredito ou de uma mudança de plano; o reenvio, que não substitui
+    /// nada, é um despacho novo. Só um envio conta como envio substituído, e
+    /// a cadeia fechada em círculo por um arquivo editado à mão termina.
+    #[test]
+    fn a_consumption_version_of_a_send_keeps_the_place_where_the_send_dispatched_the_wave() {
+        use serde_json::json;
+        let log = log_of(&[
+            json!({"v":1,"id":1,"at":"t","type":"wave","n":2,"text":"Duas."}),
+            json!({"v":1,"id":2,"at":"t","type":"send","wave":2,"role":"wave","text":"Pedido."}),
+            json!({"v":1,"id":3,"at":"t","type":"delivered","wave":2,"text":"Saiu.","returned":true}),
+            json!({"v":1,"id":4,"at":"t","type":"send","wave":2,"role":"wave","text":"Pedido.","replaces":2}),
+            json!({"v":1,"id":5,"at":"t","type":"send","wave":2,"role":"wave","text":"Pedido.","replaces":4}),
+        ]);
+        assert_eq!(log.last_by_wave("send").get(&2), Some(&5), "a versão mais nova é a que a leitura mostra");
+        assert_eq!((log.dispatch_position(2), log.dispatch_position(4), log.dispatch_position(5)), (2, 2, 2));
+        assert_eq!(log.last_dispatch_by_wave().get(&2), Some(&2), "a versão do consumo não despacha nada de novo");
+
+        let mut resent = log_of(&[
+            json!({"v":1,"id":1,"at":"t","type":"wave","n":2,"text":"Duas."}),
+            json!({"v":1,"id":2,"at":"t","type":"send","wave":2,"role":"wave","text":"Pedido."}),
+            json!({"v":1,"id":3,"at":"t","type":"send","wave":2,"role":"wave","text":"Pedido.","replaces":2}),
+            json!({"v":1,"id":4,"at":"t","type":"send","wave":2,"role":"wave","text":"Pedido.","resends":3}),
+            json!({"v":1,"id":5,"at":"t","type":"send","wave":2,"role":"wave","text":"Pedido.","replaces":4}),
+        ]);
+        assert_eq!(resent.last_dispatch_by_wave().get(&2), Some(&4), "o reenvio é um despacho novo");
+        assert_eq!(resent.dispatch_position(3), 2);
+
+        // Uma versão que aponta outra coisa que não um envio não substitui envio nenhum.
+        resent = log_of(&[
+            json!({"v":1,"id":1,"at":"t","type":"wave","n":2,"text":"Duas."}),
+            json!({"v":1,"id":2,"at":"t","type":"delivered","wave":2,"text":"Saiu."}),
+            json!({"v":1,"id":3,"at":"t","type":"send","wave":2,"role":"wave","text":"Pedido.","replaces":2}),
+        ]);
+        assert_eq!(resent.dispatch_position(3), 3);
+
+        let circle = log_of(&[
+            json!({"v":1,"id":1,"at":"t","type":"send","wave":2,"role":"wave","text":"A.","replaces":2}),
+            json!({"v":1,"id":2,"at":"t","type":"send","wave":2,"role":"wave","text":"B.","replaces":1}),
+        ]);
+        assert!([1, 2].contains(&circle.dispatch_position(1)), "a leitura termina");
+        assert_eq!(parse_log("").dispatch_position(7), 7);
+    }
+
     /// A volta do agente que a rodada assumiu segue substituída pela entrega
     /// oficial mesmo depois que a oficial é removida, pela remoção de hoje,
     /// com a marca, e pela gravada antes dela: a volta fica fora da leitura
     /// sem o motivo de volta, que é o que a rodada lê como espera, e o leitor
     /// de voltas não a devolve.
     #[test]
-    fn a_volta_assumida_nao_volta_a_esperar_quando_a_entrega_oficial_sai() {
+    fn an_assumed_return_does_not_wait_again_when_the_official_delivery_comes_out() {
         use serde_json::json;
         for removal in [
             json!({"v":1,"id":4,"at":"t","type":"remove","targets":[3],"reason":"engano","gives_back":true}),
@@ -770,7 +1036,7 @@ mod tests {
     /// com o mesmo código; a versão do meio removida sai da cadeia, e o item
     /// segue pela mais nova, sem trazer a antiga de volta.
     #[test]
-    fn remover_uma_versao_pelo_numero_tira_so_ela() {
+    fn removing_a_version_by_its_number_removes_only_that_one() {
         use serde_json::json;
         let versions = [
             json!({"v":1,"id":1,"at":"t","type":"note","text":"Primeira.","keys":["k"]}),
@@ -809,5 +1075,37 @@ mod tests {
         assert_eq!(log.events.len(), 2);
         assert!(log.skipped.is_empty());
         assert_eq!(log.events[1].block(), None, "an unknown type belongs to no block");
+    }
+
+    /// A linha cortada que começa como um evento é trocada no lugar; a linha
+    /// com fim `\r\n` guarda o `\r`, o arquivo sem `\n` no fim continua sem, e
+    /// duas linhas cortadas com o mesmo número não repetem o número.
+    #[test]
+    fn repairing_replaces_each_cut_line_in_place_and_never_repeats_a_number() {
+        let first = r#"{"v":1,"id":2,"code":"MSTD-RULE-0002","at":"2026-09-12T10:00:00-03:00","type":"ru"#;
+        let again = r#"{"v":1,"id":2,"code":"MSTD-RULE-0002","at":"2026-09-12T10:00:00-03:00","type":"r"#;
+        let content = format!(
+            "{{\"v\":1,\"id\":1,\"type\":\"note\",\"text\":\"um\"}}\r\n{first}\r\n{again}\n{{\"v\":1,\"id\":9,\"type\":\"note\"}}"
+        );
+        let log = parse_log(&content);
+        assert_eq!(log.skipped.len(), 2, "{:?}", log.skipped);
+
+        let repaired = repair_cut_lines(&content, &log).expect("a cut line is repaired");
+        let lines: Vec<&str> = repaired.split('\n').collect();
+        assert_eq!(lines.len(), 4, "no line appears or goes");
+        assert_eq!(lines[0], content.split('\n').next().unwrap(), "the first line is byte-equal");
+        assert!(lines[1].ends_with('\r'), "the line ending stays: {:?}", lines[1]);
+        assert_eq!(lines[2], again, "the second cut line with the same number is left alone");
+        assert_eq!(lines[3], content.split('\n').nth(3).unwrap(), "the last line is byte-equal, still without a newline");
+
+        let again_log = parse_log(&repaired);
+        let record = again_log.get(2).expect("the record has the number of the cut line");
+        assert_eq!(
+            (record.event_type.as_str(), record.line, record.str_field("piece")),
+            (CUT_LINE_TYPE, 2, Some(first)),
+        );
+        assert_eq!(again_log.skipped.len(), 1, "only the repeated number stays skipped");
+        assert_eq!(repair_cut_lines(&repaired, &again_log), None, "nothing else to repair");
+        assert_eq!(repair_cut_lines("", &parse_log("")), None);
     }
 }

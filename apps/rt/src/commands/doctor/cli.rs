@@ -21,8 +21,8 @@ use crate::commands::{doctor};
 #[allow(clippy::large_enum_variant)] // CLI parser enum - clap-Subcommand; boxing breaks derive
 pub enum DoctorCmd {
     /// Read-only installation health diagnostic: wiring, drift, state health,
-    /// wave-integrity and (optionally) residue. Prints a compact OK/WARN/FAIL
-    /// report and exits 1 if any category is FAIL, 0 otherwise.
+    /// wave-integrity and (optionally) residue. Prints a compact `OK`/`WARN`/`FAIL`
+    /// report and exits 1 if any category is `FAIL`, 0 otherwise.
     ///
     /// Pass `--json` as a shortcut for `--format json`.
     #[command(display_order = 20)]
@@ -79,11 +79,11 @@ mod tests {
     /// sem que nada mais volte: o parser aceita, o diagnóstico não tem o que
     /// rodar, e a pessoa lê um relatório vazio como "está tudo certo".
     #[test]
-    fn o_diagnostico_recusa_conferencia_que_o_contrato_nao_nomeia() {
-        for nome in ["claude-paths", "workspace-leaks", "i1"] {
+    fn doctor_refuses_a_check_the_contract_does_not_name() {
+        for name in ["claude-paths", "workspace-leaks", "i1"] {
             assert!(
-                Harness::try_parse_from(["x", "doctor", "--check", nome]).is_err(),
-                "--check {nome} tem de ser recusado: não é conferência do contrato",
+                Harness::try_parse_from(["x", "doctor", "--check", name]).is_err(),
+                "--check {name} tem de ser recusado: não é conferência do contrato",
             );
         }
     }
@@ -91,11 +91,11 @@ mod tests {
     /// E o que o contrato nomeia continua respondendo, para o teste acima não
     /// passar por um parser que recusa tudo.
     #[test]
-    fn as_conferencias_do_contrato_continuam_aceitas() {
-        for nome in ["branch-protection", "spec-index"] {
+    fn contract_checks_remain_accepted() {
+        for name in ["branch-protection", "spec-index"] {
             assert!(
-                Harness::try_parse_from(["x", "doctor", "--check", nome]).is_ok(),
-                "--check {nome} é do contrato e tem de ser aceito",
+                Harness::try_parse_from(["x", "doctor", "--check", name]).is_ok(),
+                "--check {name} é do contrato e tem de ser aceito",
             );
         }
     }
@@ -103,16 +103,16 @@ mod tests {
     /// A ajuda não pode prometer uma conferência que saiu: a pessoa lê o nome
     /// ali e o digita.
     #[test]
-    fn a_ajuda_do_diagnostico_nao_promete_conferencia_que_saiu() {
-        let mut arvore = Harness::command();
-        let diagnostico = arvore
+    fn doctor_help_does_not_promise_a_check_that_was_removed() {
+        let mut command_tree = Harness::command();
+        let doctor_command = command_tree
             .find_subcommand_mut("doctor")
             .expect("o diagnóstico tem de estar registrado");
-        let ajuda = diagnostico.render_long_help().to_string();
-        for nome in ["claude-paths", "workspace-leaks"] {
+        let help = doctor_command.render_long_help().to_string();
+        for name in ["claude-paths", "workspace-leaks"] {
             assert!(
-                !ajuda.contains(nome),
-                "a ajuda ainda promete a conferência '{nome}', que saiu",
+                !help.contains(name),
+                "a ajuda ainda promete a conferência '{name}', que saiu",
             );
         }
     }

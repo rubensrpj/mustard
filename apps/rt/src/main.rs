@@ -31,6 +31,9 @@
 //! - `mustard-rt run <nome>` — um comando: lê os argumentos, nunca o stdin, e
 //!   imprime o próprio relatório.
 
+// A linha de comando mora num módulo que a biblioteca também declara, para o
+// teste da ajuda percorrer a árvore inteira a partir da raiz.
+mod cli;
 mod dispatch;
 mod registry;
 mod hooks;
@@ -43,34 +46,20 @@ mod hook_output;
 mod commands;
 mod shared;
 mod util;
+// A pasta do pacote lida na hora de rodar, que os testes de dentro de `src/`
+// usam: a conferência de todos os alvos também compila esta face como teste.
+#[cfg(test)]
+#[path = "../tests/support/manifest_dir.rs"]
+mod manifest_dir;
+// O programa falso que os testes de dentro de `src/` gravam e depois rodam.
+#[cfg(test)]
+#[path = "../tests/support/executable.rs"]
+mod executable;
 
-use clap::{Parser, Subcommand};
+use clap::Parser;
+use cli::{Cli, Command};
 use mustard_core::domain::model::contract::{HookInput, Outcome, Trigger};
 use std::io::{Read, Write};
-
-/// The `mustard-rt` command line.
-#[derive(Debug, Parser)]
-#[command(name = "mustard-rt", version = env!("MUSTARD_VERSION_FULL"), about = "Mustard enforcement runtime")]
-struct Cli {
-    #[command(subcommand)]
-    command: Command,
-}
-
-/// As faces do binário. `Run` não lê o stdin.
-#[derive(Debug, Subcommand)]
-#[allow(clippy::large_enum_variant)] // CLI parser enum — single-use stack alloc, indirection adds no value
-enum Command {
-    /// Roda os ganchos de um evento do Claude Code.
-    On {
-        /// O nome do evento, como `PreToolUse` ou `Stop`.
-        event: String,
-    },
-    /// Roda um comando. Recebe argumentos, não o stdin.
-    Run {
-        #[command(subcommand)]
-        command: commands::RunCmd,
-    },
-}
 
 fn main() {
     // Before ANY face runs: if the plugin registry records a strictly newer

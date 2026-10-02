@@ -115,7 +115,7 @@ mod tests {
         let event = stamp(normalize(obj(json!({"text": "x", "keys": ["k"], "origin": 1})), "note"), 7, None, "t");
         let line = render_line(&event);
         assert!(line.starts_with(r#"{"v":1,"id":7,"at":"t","type":"note","author":"assistant","keys":"#), "{line}");
-        assert!(line.ends_with(r#""search":"x k anot not"}"#), "{line}");
+        assert!(line.ends_with(r#""search":"x k anotação note"}"#), "{line}");
         assert!(!shown_line(&event).contains("search"));
     }
 }

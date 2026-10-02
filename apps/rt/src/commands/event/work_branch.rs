@@ -436,7 +436,7 @@ pub(crate) enum BaseRefresh {
 ///
 /// **Scope is the point.** This used to walk every preselected base of the
 /// declared flow and advance each one, and it ran from the explicit open too —
-/// so `emit-pipeline` moved local `main` and `release/*` refs the operator never
+/// so the explicit open moved local `main` and `release/*` refs the operator never
 /// asked about. Moving other refs was never this decision's job: a settlement
 /// is about the base the unit is cut from or opened on, and it refreshes that
 /// one.
@@ -533,7 +533,7 @@ pub(crate) fn base_for(
 /// marker that carried the name from the gate is consumed and deleted by the
 /// first checkout ([`cut_pending_work_branch`]), so after that moment the
 /// branch itself is the only thing that still remembers what the unit is
-/// called — which is what lets `spec-draft` consume the gate's name instead of
+/// called — which is what lets the drafting cut consume the gate's name instead of
 /// deriving a second one.
 ///
 /// `None` when the name carries neither a kind prefix nor a declared `{base}_`
@@ -843,8 +843,11 @@ const HARNESS_SCRATCH_DIRS: &[&str] = &[
     "agent-memory",
     "knowledge",
     "memory",
-    // The separate copies of each wave and of its reviewer, which the round
-    // and the close create and remove — never branch content.
+    // The git worktrees Claude Code creates for its own sessions — never
+    // branch content. The separate copies of each wave and of the final
+    // reviewer live outside the project, in the copies folder under the
+    // user's cache (`wave_prompt::copies_dir`), so they never show up under
+    // `.claude/`.
     "worktrees",
 ];
 
@@ -860,7 +863,10 @@ const HARNESS_SCRATCH_FILES: &[&str] = &[
 /// Os arquivos que o próprio Mustard escreve ao MAPEAR o projeto — o censo.
 /// Lidos diretamente sob um `.claude/`, em qualquer profundidade da árvore: o
 /// `scan-map.md` de cada subprojeto mora no `.claude/` dele, e o modelo, o
-/// dicionário e a lista de recusas moram no do raiz.
+/// dicionário e a lista de recusas moram no do raiz. O mapa entra com os
+/// nomes que a porta dele dá: o banco, o diário que o SQLite deixa ao lado
+/// enquanto grava e o mapa em JSON de antes do banco, que o scan apaga — o
+/// sumiço dele também é saída da ferramenta.
 ///
 /// Categoria PRÓPRIA, nem rascunho nem trabalho, e as duas leituras erradas
 /// custam coisas diferentes. Rascunho não serve: nenhuma regra de ignore os
@@ -873,7 +879,15 @@ const HARNESS_SCRATCH_FILES: &[&str] = &[
 /// FORA da base não há gravação nenhuma para fechar esse atrito, e aí a
 /// categoria continua nomeando os caminhos mas não libera nada: ver
 /// [`crate::commands::event::census_settlement`].
-const CENSUS_FILES: &[&str] = &["grain.model.json", "scan-declined.json", "scan-map.md"];
+const CENSUS_FILES: &[&str] = &[
+    mustard_core::io::project_map::MAP_FILE_NAME,
+    mustard_core::io::project_map::MAP_JOURNAL_FILE_NAME,
+    mustard_core::io::project_map::MAP_WAL_FILE_NAME,
+    mustard_core::io::project_map::MAP_SHARED_FILE_NAME,
+    mustard_core::io::project_map::LEGACY_MAP_FILE_NAME,
+    "scan-declined.json",
+    "scan-map.md",
+];
 
 /// A subárvore sob um `.claude/` onde os moldes `{papel}-pattern` do censo
 /// vivem, e o nome do arquivo que fecha cada um. A passagem de enriquecimento
@@ -1146,7 +1160,7 @@ impl BusyCheckout {
 /// git untouched and mean opposite things to the caller.
 ///
 /// No serde derive — the JSON shape belongs to whichever command reports it
-/// (`spec-draft` folds it into its own document).
+/// (the drafting cut folds it into its own document).
 #[derive(Debug, Clone, PartialEq, Eq)]
 // Sem chamador na produção desde a refatoração que enxugou o runtime: o que
 // ainda exercita o corte da branch pendente são os testes do portão de base,
@@ -1198,7 +1212,7 @@ pub(crate) enum CutOutcome {
 /// Consume this session's `pending-work-branch` marker and check that branch
 /// out in `project`, creating it off its base.
 ///
-/// The only cut: no hook cuts a branch on a file mutation. `spec-draft` calls
+/// The only cut: no hook cuts a branch on a file mutation. the drafting step calls
 /// it because the spec
 /// must be written INSIDE the unit: the draft is the first thing the work
 /// produces, and it used to land on the integration base (a `.claude/spec/`
@@ -1211,7 +1225,7 @@ pub(crate) enum CutOutcome {
 /// retry, exactly as the hook gate keeps it.
 ///
 /// The refusal is the point the review found missing: this door opens FIRST
-/// (`spec-draft` calls it at approval, before any `Write` reaches the hook
+/// (the drafting step calls it at approval, before any `Write` reaches the hook
 /// gate), so a guard living only in the gate never ran. The decision is
 /// [`crate::commands::event::census_settlement::settle`], the same one the gate
 /// takes — one question, one answer, and the base refresh happens inside it
@@ -1316,7 +1330,7 @@ mod tests {
     /// chama de padrão e por isso também é; `feature/x` não é nem uma coisa
     /// nem outra. Nenhum dos três nomes está escrito no código.
     #[test]
-    fn a_base_sai_da_declaracao_ou_do_proprio_remoto() {
+    fn base_comes_from_the_declaration_or_from_the_remote_itself() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         let git = |args: &[&str]| mustard_core::platform::git::run(root, args).ok;
@@ -1394,7 +1408,7 @@ mod tests {
             );
         }
 
-        // The SAME names, a different declared flow — the CANDIDATES follow the
+        // The SAME names, a different declared flow — the list of bases to choose from follows the
         // configuration, so nothing is read out of the string. That was always
         // this test's real subject; what changed is that the answer is now a
         // list to choose from instead of one value derived from the prefix.
@@ -1518,7 +1532,7 @@ mod tests {
         assert_eq!(flow.bases(), ["dev", "main", "qas"], "the fixture really does leave a choice");
 
         // The operator picks the MIDDLE base. That answer reaches the cut the
-        // one way it can — the pending marker `emit-pipeline` writes.
+        // one way it can — the pending marker the explicit open writes.
         let sid = "sess-hotfix-pick";
         crate::shared::context::pending_branch::set_pending_branch(&root_s, sid, "hotfix/my-unit", Some("qas"));
 
@@ -1971,7 +1985,7 @@ mod tests {
     ///
     /// This test deliberately drives [`super::cut_pending_work_branch`] and NOT
     /// the old write-hook gate: the previous round's tests all went through
-    /// that gate and passed while the real defect sat here. `spec-draft` calls
+    /// that gate and passed while the real defect sat here. The drafting step calls
     /// this function at APPROVAL — before any `Write` exists for a PreToolUse
     /// hook to see — so a guard living only in the gate was a guard on the door
     /// that opens second.
@@ -1988,7 +2002,7 @@ mod tests {
         seed_repo(root);
         a_first_unit_holds_the_checkout(root);
 
-        // A SECOND unit is signalled — this is what `spec-draft` consumes.
+        // A SECOND unit is signalled — this is what the drafting cut consumes.
         let sid = "sess-cut-refuses";
         crate::shared::context::pending_branch::set_pending_branch(&root_s, sid, "dev_second", None);
 
@@ -2200,8 +2214,17 @@ mod tests {
         // Censo — escrito pela ferramenta, versionado de propósito. Nem
         // rascunho (seria descartado de todo commit) nem trabalho (recusaria o
         // corte pela saída da própria ferramenta).
+        let beside = |name: &str| format!(".claude/{name}");
+        let journal = beside(mustard_core::io::project_map::MAP_JOURNAL_FILE_NAME);
+        let wal = beside(mustard_core::io::project_map::MAP_WAL_FILE_NAME);
+        let shared = beside(mustard_core::io::project_map::MAP_SHARED_FILE_NAME);
+        let legacy = format!(".claude/{}", mustard_core::io::project_map::LEGACY_MAP_FILE_NAME);
         for census in [
-            ".claude/grain.model.json",
+            mustard_core::io::project_map::MAP_FILE,
+            journal.as_str(),
+            wal.as_str(),
+            shared.as_str(),
+            legacy.as_str(),
             ".claude/scan-declined.json",
             ".claude/scan-map.md",
             "apps/rt/.claude/scan-map.md",
@@ -2241,7 +2264,7 @@ mod tests {
             ".claude/skills/",
             ".claude/skills/rt-gate-pattern/",
             "docs/scan-map.md",
-            ".claude/grain.model.json.bak",
+            format!("{}.bak", mustard_core::io::project_map::MAP_FILE).as_str(),
             // O molde ADOTADO (`source: manual`) é escrita do OPERADOR: o nome
             // do arquivo é o mesmo de um gerado e o frontmatter é o que separa.
             "apps/rt/.claude/skills/rt-verdict-pattern/SKILL.md",

@@ -47,7 +47,7 @@ pub(super) fn check_residue(claude_dir: &Path) -> CheckResult {
 }
 
 /// Sobras de cópias descartáveis e tamanho da compilação compartilhada, lidos
-/// pela varredura do `scratch-gc` — uma leitura só, para o doctor e a porta
+/// pela varredura do `clean` — uma leitura só, para o doctor e a porta
 /// de limpeza nunca discordarem sobre o que é sobra. Só com `--residue`: a
 /// medida percorre cada candidata inteira.
 pub(super) fn check_scratch_residue(roots: &crate::commands::maint::scratch_gc::ScratchRoots) -> CheckResult {

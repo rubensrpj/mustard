@@ -1,13 +1,12 @@
 //! `clarity_check` — a regra de clareza do fim da resposta ([`ClarityRule`],
 //! uma das regras do `end_of_turn_check`): mede o texto final do assistente
-//! contra a regra de escrita, e o erro que ela acha vai junto da mensagem
-//! seguinte do usuário.
+//! contra a regra de escrita. A resposta fora do idioma do projeto é barrada;
+//! os outros erros vão junto da mensagem seguinte do usuário.
 //!
 //! ## Por que existe
 //!
-//! O assistente recebe a regra de escrita no estilo de resposta, e toda
-//! mensagem leva uma linha curta que a lembra (`prompt_entry`). Nada conferia
-//! se ela foi cumprida: em 09/09/2026 o usuário reclamou duas vezes de
+//! O assistente recebe a regra de escrita no estilo de resposta. Nada
+//! conferia se ela foi cumprida: em 09/09/2026 o usuário reclamou duas vezes de
 //! respostas difíceis de entender, com a regra ativa, e nenhum gancho
 //! percebeu.
 //!
@@ -29,20 +28,26 @@
 //!
 //! Mede o texto com o medidor do núcleo (`domain::clarity`): frase longa,
 //! sigla sem as palavras por extenso, código de item da spec
-//! (`MSTD-RULE-NNNN`), tamanho, a nota de Flesch em português e o idioma.
+//! (`MSTD-RULE-NNNN`), a nota de Flesch em português e o idioma. O tamanho da
+//! resposta não é medido: ela tem o tamanho que a pergunta pede.
 //!
-//! - Nunca barra a resposta, e nada aparece na tela. A barragem aparecia duas
-//!   vezes no terminal e custava outra rodada; na Suzano foram 22.
+//! - Barra a resposta só quando ela sai noutro idioma que não o do projeto:
+//!   o texto vai ao assistente, que a escreve de novo no idioma certo, no
+//!   mesmo turno. Na volta que esse bloqueio pede (`stop_hook_active`) a
+//!   regra nunca barra de novo, para não prender o turno. Os outros erros, como
+//!   frase longa e sigla, nunca barram: a barragem aparecia duas vezes no
+//!   terminal e custava outra rodada a cada frase; na Suzano foram 22. Uma
+//!   resposta inteira em outro idioma custa mais que a rodada.
 //! - Guarda em `.claude/.session/<sid>/clarity.json` o erro de cada defeito,
 //!   como "frase com 29 palavras": a linha do defeito até os dois-pontos ou o
 //!   ponto e vírgula, sem o jeito de consertar, que o estilo de resposta já
 //!   diz ([`error_of`]). A mensagem seguinte do usuário leva os erros numa
-//!   frase curta, junto da linha escondida, e os apaga ([`take_next_note`]):
-//!   o assistente corrige na resposta seguinte. Uma resposta sem erro apaga o
-//!   que estava guardado, porque a frase fala só da última resposta.
-//! - A volta que o bloqueio das pendências pede chega com
-//!   `stop_hook_active`, no mesmo turno: os erros dela somam aos da resposta
-//!   barrada, porque o usuário leu as duas.
+//!   frase curta, junto da linha curta, e os apaga ([`take_next_note`]):
+//!   o assistente corrige na resposta seguinte. O erro de idioma também fica
+//!   guardado, barrado ou não. Uma resposta sem erro apaga o que estava
+//!   guardado, porque a frase fala só da última resposta.
+//! - A volta que um bloqueio pede chega com `stop_hook_active`, no mesmo
+//!   turno: os erros dela somam aos da resposta barrada.
 //! - Guarda também as siglas já explicadas na sessão, para a próxima medição
 //!   não cobrar de novo. É tudo o que a medição grava: nenhum arquivo de
 //!   eventos.
@@ -58,7 +63,7 @@
 
 use std::path::{Path, PathBuf};
 
-use mustard_core::domain::clarity::{measure, ClarityReport};
+use mustard_core::domain::clarity::{measure, ClarityReport, WrongLanguage};
 use mustard_core::io::fs;
 use mustard_core::platform::i18n::Locale;
 use mustard_core::{ClaudePaths, ProjectConfig};
@@ -95,17 +100,29 @@ impl TurnRule for ClarityRule {
         if !ProjectConfig::exists(root) || turn.message.trim().is_empty() {
             return None;
         }
-        if let Some(path) = record_path(root, turn.session) {
-            keep_errors(root, &path, turn);
-        }
-        // A escrita nunca barra: o erro espera a mensagem seguinte.
-        None
+        let report = match record_path(root, turn.session) {
+            Some(path) => keep_errors(root, &path, turn),
+            None => measure_in_project(root, turn.message, &[]),
+        };
+        // Só o idioma barra; a frase longa e a sigla esperam a mensagem seguinte.
+        // Na volta que o bloqueio pediu, nada barra de novo.
+        let wrong = report.wrong_language?;
+        (!turn.retry).then(|| Finding::Block(wrong_language_block(wrong, turn.lang)))
     }
 }
 
+/// O texto que barra o fim da resposta fora do idioma do projeto, no idioma
+/// `lang`: diz em que idioma a resposta saiu e pede que seja escrita de novo no
+/// do projeto.
+fn wrong_language_block(wrong: WrongLanguage, lang: Locale) -> String {
+    mustard_core::translate("clarity.wrong_language_block", lang)
+        .replace("{found}", wrong.found.as_str())
+        .replace("{expected}", wrong.expected.as_str())
+}
+
 /// Mede a resposta com a memória da sessão e guarda nela, em `path`, as siglas
-/// que a resposta explicou e os erros que ela teve.
-fn keep_errors(root: &Path, path: &Path, turn: &Turn<'_>) {
+/// que a resposta explicou e os erros que ela teve. Devolve a medição.
+fn keep_errors(root: &Path, path: &Path, turn: &Turn<'_>) -> ClarityReport {
     let mut record = read_record(path);
     let report = measure_in_project(root, turn.message, &record.explained);
     for term in &report.explained {
@@ -124,6 +141,7 @@ fn keep_errors(root: &Path, path: &Path, turn: &Turn<'_>) {
         }
     }
     write_record(path, &record);
+    report
 }
 
 /// O erro de uma linha de defeito: o trecho antes dos primeiros dois-pontos ou
@@ -135,7 +153,8 @@ fn error_of(defect: &str) -> String {
 }
 
 /// A frase curta com os erros da última resposta da sessão `session`, no
-/// idioma do projeto em `root`, para a linha escondida da mensagem seguinte.
+/// idioma do projeto em `root`, que a mensagem seguinte leva junto da linha
+/// curta; sem ela, a mensagem não leva texto nenhum.
 /// `None` quando a resposta não teve erro, quando outra mensagem já levou a
 /// frase ou sem sessão que se use. Levar apaga os erros: a frase vai uma vez
 /// só.
@@ -234,11 +253,29 @@ mod tests {
     /// Passa: frase curta e sem sigla.
     const CLEAR: &str = "A resposta ficou curta e clara.";
 
-    /// A linha escondida de um projeto que declarou pt-BR, a mesma de antes.
+    /// A linha curta que abre a correção num projeto que declarou pt-BR.
     const PT_LINE: &str =
         "Responda em português do Brasil, em texto simples: frases curtas e nenhum código interno.";
-    /// A linha escondida de um projeto que declarou en-US.
-    const EN_LINE: &str = "Answer in US English, in plain text: short sentences and no internal codes.";
+    /// A mesma linha num projeto que declarou en-US.
+    const EN_LINE: &str = "Answer in American English, in plain text: short sentences and no internal codes.";
+
+    /// Prosa em inglês com palavras bastantes para o idioma ser julgado, e
+    /// clara: só o idioma pode reprovar.
+    const ENGLISH_REPLY: &str = "The wave is done and the tests pass.\n\
+        The check now compares the language of the reply with the language of the project.\n\
+        It counts the common words of each language.\n\
+        A short reply is not judged at all.";
+    /// O mesmo conteúdo em português, para o projeto que declarou en-US.
+    const PORTUGUESE_REPLY: &str = "A onda terminou e os testes passaram.\n\
+        A medição agora compara o idioma da resposta com o idioma do projeto.\n\
+        Ela conta as palavras comuns de cada idioma.\n\
+        Uma resposta curta não é julgada por ela.";
+    /// O texto que barra a resposta em inglês num projeto em pt-BR.
+    const PT_BLOCK: &str =
+        "A resposta saiu em en-US, e o idioma do projeto e do usuário é pt-BR. Escreva a resposta de novo em pt-BR.";
+    /// O texto que barra a resposta em português num projeto em en-US.
+    const EN_BLOCK: &str = "The reply came out in pt-BR, and the language of the project and the user is en-US. \
+        Write the reply again in en-US.";
 
     /// Uma frase de 25 palavras, o limite: o último tamanho que passa.
     const TWENTY_FIVE_WORDS: &str = "Eu li os arquivos do projeto e conferi cada teste que ainda falhava \
@@ -332,13 +369,19 @@ mod tests {
     /// os campos, pelo despachante inteiro, e a resposta JSON que volta a ele;
     /// `Value::Null` quando nada volta: nem bloqueio, nem aviso na tela.
     fn stop_event(root: &Path, session: &str, message: &str) -> Value {
+        stop_event_at(root, session, message, false)
+    }
+
+    /// O mesmo `Stop`, com o `stop_hook_active` dado: `true` é a volta que um
+    /// bloqueio pediu.
+    fn stop_event_at(root: &Path, session: &str, message: &str, retry: bool) -> Value {
         let payload = json!({
             "session_id": session,
             "transcript_path": root.join(format!("{session}.jsonl")),
             "cwd": root,
             "permission_mode": "default",
             "hook_event_name": "Stop",
-            "stop_hook_active": false,
+            "stop_hook_active": retry,
             "last_assistant_message": message,
         });
         let input: HookInput = serde_json::from_value(payload).expect("a Stop payload");
@@ -350,7 +393,8 @@ mod tests {
 
     /// A mensagem do usuário como o Claude Code a manda ao `mustard-rt on
     /// UserPromptSubmit`, com todos os campos, pelo despachante inteiro. Devolve
-    /// o texto escondido que vai junto dela ao assistente.
+    /// o texto escondido que vai junto dela ao assistente, vazio quando não vai
+    /// nenhum.
     fn next_line(root: &Path, session: &str, prompt: &str) -> String {
         let payload = json!({
             "session_id": session,
@@ -369,11 +413,11 @@ mod tests {
         out["hookSpecificOutput"]["additionalContext"].as_str().unwrap_or_default().to_string()
     }
 
-    /// Uma frase de 25 palavras, o limite, não tem erro: nada barra, e a linha
-    /// escondida da mensagem seguinte fica igual à de antes. Com 26 palavras,
-    /// a resposta também não é barrada e nada volta para a tela; a linha da
-    /// mensagem seguinte leva mais uma frase curta com o erro, uma vez só. Nos
-    /// dois idiomas, pelos ganchos de verdade.
+    /// Uma frase de 25 palavras, o limite, não tem erro: nada barra, e a
+    /// mensagem seguinte não leva texto. Com 26 palavras, a resposta também
+    /// não é barrada e nada volta para a tela; a mensagem seguinte leva a
+    /// linha curta com uma frase curta com o erro, uma vez só. Nos dois
+    /// idiomas, pelos ganchos de verdade.
     #[test]
     fn a_long_sentence_goes_with_the_next_message_instead_of_blocking() {
         assert_eq!(TWENTY_FIVE_WORDS.split_whitespace().count(), 25);
@@ -383,14 +427,14 @@ mod tests {
         let root = dir.path();
 
         assert_eq!(stop_event(root, "s1", TWENTY_FIVE_WORDS), Value::Null, "25 words pass");
-        assert_eq!(next_line(root, "s1", "e agora?"), PT_LINE, "no error, the line is the same");
+        assert_eq!(next_line(root, "s1", "e agora?"), "", "no error, no text");
 
         assert_eq!(stop_event(root, "s1", TWENTY_SIX_WORDS), Value::Null, "26 words are not blocked");
         assert_eq!(
             next_line(root, "s1", "e agora?"),
             format!("{PT_LINE} Na última resposta: frase com 26 palavras.")
         );
-        assert_eq!(next_line(root, "s1", "e depois?"), PT_LINE, "the phrase goes once");
+        assert_eq!(next_line(root, "s1", "e depois?"), "", "the phrase goes once");
 
         let en = project_with(r#"{"language":{"text":"en-US"}}"#);
         assert_eq!(stop_event(en.path(), "s1", TWENTY_SIX_WORDS_EN), Value::Null);
@@ -410,20 +454,80 @@ mod tests {
         assert_eq!(kept_errors(root, "s1"), [FAILING_ERROR]);
         assert_eq!(check(root, &stop("s1", CLEAR)), Verdict::Allow);
         assert_eq!(kept_errors(root, "s1"), Vec::<String>::new());
-        assert_eq!(next_line(root, "s1", "e agora?"), PT_LINE);
+        assert_eq!(next_line(root, "s1", "e agora?"), "");
     }
 
-    /// Uma resposta em inglês num projeto em português não é barrada; o erro
-    /// de idioma fica guardado para a mensagem seguinte.
+    /// Uma resposta em inglês num projeto em português é barrada, pelo `Stop`
+    /// de verdade, com o texto que pede a resposta de novo em português, e o
+    /// erro de idioma fica guardado para a mensagem seguinte, que o leva uma
+    /// vez só. Num projeto em inglês, a resposta em português é barrada com o
+    /// texto em inglês; o mesmo inglês passa no projeto em inglês.
     #[test]
-    fn a_reply_in_another_language_is_kept_for_the_next_message() {
+    fn a_reply_in_another_language_is_blocked_and_kept_for_the_next_message() {
         let dir = project();
-        let reply = "The wave is done and the tests pass.\n\
-            The check now compares the language of the reply with the language of the project.\n\
-            It counts the common words of each language.\n\
-            A short reply is not judged at all.";
-        assert_eq!(check(dir.path(), &stop("s1", reply)), Verdict::Allow);
-        assert_eq!(kept_errors(dir.path(), "s1"), ["resposta em en-US"]);
+        let root = dir.path();
+        let blocked = stop_event(root, "s1", ENGLISH_REPLY);
+        assert_eq!(blocked["decision"], json!("block"), "{blocked}");
+        assert_eq!(blocked["reason"], json!(PT_BLOCK));
+        assert_eq!(check(root, &stop("s2", ENGLISH_REPLY)), Verdict::Deny { reason: PT_BLOCK.to_string() });
+        assert_eq!(kept_errors(root, "s1"), ["resposta em en-US"]);
+        assert_eq!(
+            next_line(root, "s1", "e agora?"),
+            format!("{PT_LINE} Na última resposta: resposta em en-US.")
+        );
+        assert_eq!(next_line(root, "s1", "e depois?"), "", "the phrase goes once");
+
+        let en = project_with(r#"{"language":{"text":"en-US"}}"#);
+        let blocked = stop_event(en.path(), "s1", PORTUGUESE_REPLY);
+        assert_eq!(blocked["decision"], json!("block"), "{blocked}");
+        assert_eq!(blocked["reason"], json!(EN_BLOCK));
+        assert_eq!(kept_errors(en.path(), "s1"), ["reply in pt-BR"]);
+        assert_eq!(stop_event(en.path(), "s2", ENGLISH_REPLY), Value::Null, "the same English passes in en-US");
+    }
+
+    /// A volta que o bloqueio de idioma pediu nunca barra de novo, mesmo
+    /// ainda fora do idioma, para não prender o turno; o erro continua
+    /// guardado, uma vez só, para a mensagem seguinte. Só depois de uma
+    /// resposta nova, que não é volta, o bloqueio volta a valer.
+    #[test]
+    fn the_retry_after_a_language_block_is_never_blocked_again() {
+        let dir = project();
+        let root = dir.path();
+        assert_eq!(stop_event_at(root, "s1", ENGLISH_REPLY, false)["decision"], json!("block"));
+        assert_eq!(stop_event_at(root, "s1", ENGLISH_REPLY, true), Value::Null, "still English, but a retry");
+        assert_eq!(check(root, &retry("s1", ENGLISH_REPLY)), Verdict::Allow);
+        assert_eq!(kept_errors(root, "s1"), ["resposta em en-US"], "kept once, not twice");
+
+        assert_eq!(stop_event_at(root, "s1", "Reescrevi a resposta no idioma certo.", true), Value::Null);
+        assert_eq!(kept_errors(root, "s1"), ["resposta em en-US"], "the barred reply's error is still kept");
+        assert_eq!(stop_event_at(root, "s1", ENGLISH_REPLY, false)["decision"], json!("block"), "a new reply");
+    }
+
+    /// Sem sessão que se use, a resposta fora do idioma também é barrada, e a
+    /// medição continua sem gravar nada.
+    #[test]
+    fn a_reply_in_another_language_is_blocked_even_without_a_session() {
+        let mut no_session = stop("s1", ENGLISH_REPLY);
+        no_session.session_id = None;
+        for input in [no_session, stop("unknown", ENGLISH_REPLY)] {
+            let dir = project();
+            let root = dir.path();
+            assert_eq!(check(root, &input), Verdict::Deny { reason: PT_BLOCK.to_string() });
+            assert!(!root.join(".claude").exists(), "{:?}", files_under(&root.join(".claude")));
+        }
+    }
+
+    /// Só o idioma barra: a resposta no idioma certo, com frase longa, sigla e
+    /// código interno, segue sem bloqueio, e o texto curto demais para o
+    /// idioma ser julgado também.
+    #[test]
+    fn only_the_language_blocks_the_other_writing_errors_do_not() {
+        let dir = project();
+        let root = dir.path();
+        let reply = format!("A regra MSTD-RULE-0008 ficou pronta no CI.\n{TWENTY_SIX_WORDS}");
+        assert_eq!(stop_event(root, "s1", &reply), Value::Null);
+        assert_eq!(kept_errors(root, "s1").len(), 3, "{:?}", kept_errors(root, "s1"));
+        assert_eq!(stop_event(root, "s1", "The test passed."), Value::Null, "too short to judge");
     }
 
     /// A escrita é medida em todo projeto com `mustard.json`, declare ou não o
@@ -493,19 +597,20 @@ mod tests {
     /// A frase da mensagem seguinte lista no máximo [`MAX_LISTED_ERRORS`]
     /// erros, numa linha só, e o resto vira uma contagem, qualquer que seja a
     /// resposta. Sessenta frases longas, cada uma de um tamanho, dão sessenta
-    /// erros, e as sessenta linhas dão mais um.
+    /// erros; as sessenta linhas não somam erro, porque a resposta não tem
+    /// teto de linhas.
     #[test]
     fn the_next_note_lists_at_most_five_errors() {
         let dir = project();
         let root = dir.path();
         let reply = (26..86).map(|words| vec!["palavra"; words].join(" ")).collect::<Vec<_>>().join(".\n");
         assert_eq!(check(root, &stop("s1", &reply)), Verdict::Allow);
-        assert_eq!(kept_errors(root, "s1").len(), 61);
+        assert_eq!(kept_errors(root, "s1").len(), 60);
         assert_eq!(
             next_line(root, "s1", "e agora?"),
             format!(
                 "{PT_LINE} Na última resposta: frase com 26 palavras; frase com 27 palavras; \
-                 frase com 28 palavras; frase com 29 palavras; frase com 30 palavras; e mais 56."
+                 frase com 28 palavras; frase com 29 palavras; frase com 30 palavras; e mais 55."
             )
         );
     }
@@ -573,7 +678,7 @@ mod tests {
         let root = listed.path();
         assert_eq!(stop_event(root, "s1", "A PI da fábrica mudou, e o PCP já sabe."), Value::Null);
         assert!(!std::fs::read_to_string(record_file(root, "s1")).unwrap_or_default().contains("PI"));
-        assert_eq!(next_line(root, "s1", "e agora?"), PT_LINE);
+        assert_eq!(next_line(root, "s1", "e agora?"), "");
 
         assert_eq!(stop_event(root, "s2", "A PI da fábrica mudou, e o PCP e o MRP já sabem."), Value::Null);
         assert_eq!(
@@ -602,7 +707,7 @@ mod tests {
         let path = record_file(root, "s1");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, r#"{"explained":["slug","CI"],"defects":["um defeito antigo"]}"#).unwrap();
-        assert_eq!(next_line(root, "s1", "e agora?"), PT_LINE, "the old defects are not carried");
+        assert_eq!(next_line(root, "s1", "e agora?"), "", "the old defects are not carried");
         assert_eq!(check(root, &stop("s1", FAILING)), Verdict::Allow);
         let kept = read_record(&path);
         assert_eq!(kept.explained, ["slug", "CI"].map(String::from));
@@ -613,8 +718,8 @@ mod tests {
     /// trecho antes da primeira pontuação que fecha o erro. As linhas vêm do
     /// próprio catálogo, lidas por `ClarityReport::defects`, não de cópias
     /// escritas à mão: se o catálogo mudar a pontuação de uma linha, o
-    /// recorte muda e este teste cai. Longa e difícil de ler ao mesmo tempo
-    /// vira uma linha só, a junta; cada uma sozinha continua como sempre.
+    /// recorte muda e este teste cai. Nenhuma linha fala do tamanho da
+    /// resposta: a nota de leitura baixa leva só a linha dela.
     #[test]
     fn every_catalog_defect_line_yields_its_error_name() {
         let full_report = |found: Locale, expected: Locale| ClarityReport {
@@ -622,8 +727,6 @@ mod tests {
             unexpanded_acronyms: vec!["CI".to_string()],
             internal_codes: vec!["MSTD-RULE-0008".to_string()],
             prose_lines: 16,
-            lines: 16,
-            too_long: true,
             reading_ease: Some(12),
             hard_to_read: true,
             wrong_language: Some(WrongLanguage { found, expected }),
@@ -638,7 +741,7 @@ mod tests {
                     "frase com 29 palavras",
                     "CI é uma sigla sem explicação",
                     "MSTD-RULE-0008 é um código interno",
-                    "resposta com 16 linhas (o limite é 15) e difícil de ler",
+                    "texto difícil de ler",
                     "resposta em en-US",
                 ],
             ),
@@ -649,7 +752,7 @@ mod tests {
                     "sentence with 29 words",
                     "CI is an unexplained acronym",
                     "MSTD-RULE-0008 is an internal code",
-                    "reply with 16 lines (the limit is 15) and hard to read",
+                    "hard to read",
                     "reply in pt-BR",
                 ],
             ),
@@ -661,43 +764,6 @@ mod tests {
             }
         }
 
-        // Só a resposta longa, sem ser difícil de ler: a linha própria dela,
-        // sem juntar com nada.
-        let only_too_long = ClarityReport {
-            long_sentences: Vec::new(),
-            unexpanded_acronyms: Vec::new(),
-            internal_codes: Vec::new(),
-            prose_lines: 16,
-            lines: 16,
-            too_long: true,
-            reading_ease: None,
-            hard_to_read: false,
-            wrong_language: None,
-            passed: false,
-            explained: Vec::new(),
-        };
-        let lines = only_too_long.defects(Locale::PtBr);
-        assert_eq!(lines.len(), 1, "{lines:?}");
-        assert_eq!(error_of(&lines[0]), "resposta com 16 linhas, e o limite é 15");
-
-        // Só difícil de ler, sem ser longa: a linha própria dela, sem juntar
-        // com nada.
-        let only_hard_to_read = ClarityReport {
-            long_sentences: Vec::new(),
-            unexpanded_acronyms: Vec::new(),
-            internal_codes: Vec::new(),
-            prose_lines: 8,
-            lines: 8,
-            too_long: false,
-            reading_ease: Some(12),
-            hard_to_read: true,
-            wrong_language: None,
-            passed: false,
-            explained: Vec::new(),
-        };
-        let lines = only_hard_to_read.defects(Locale::PtBr);
-        assert_eq!(lines.len(), 1, "{lines:?}");
-        assert_eq!(error_of(&lines[0]), "texto difícil de ler");
 
         let dir = project();
         let reply = "A regra MSTD-RULE-0008 ficou pronta.";

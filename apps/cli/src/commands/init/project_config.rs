@@ -37,6 +37,11 @@ pub(super) fn write_project_config(project_path: &Path, runtime: &Runtime, inter
         println!("  seeded the inject declaration (the session map rides the session start)");
     }
 
+    // The agents' model and effort are written out so the person can see them
+    // and change them; a value already there is kept as it is.
+    config.ensure_agent_model();
+    config.ensure_agent_effort();
+
     config.runtime = Some(runtime.clone());
     // The stamp is the HARNESS version (plugin manifest when launched from the
     // plugin, the core line otherwise) — no longer this CLI crate's version.

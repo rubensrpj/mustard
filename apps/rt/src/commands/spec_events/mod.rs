@@ -20,27 +20,33 @@ pub mod cli;
 pub(crate) mod conversation;
 pub mod index;
 pub(crate) mod pages;
+pub(crate) mod proof_check;
 pub mod read;
+mod read_record;
 pub mod write;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use mustard_core::domain::normalize::Languages;
 use mustard_core::domain::spec_events::{Refusal, SpecEvent};
 use mustard_core::SupportedLocale;
 use serde_json::{json, Value};
 
-/// O projeto em que as specs moram, visto de onde o comando roda, e o idioma
-/// das mensagens dele.
+/// O projeto em que as specs moram, visto de onde o comando roda, o idioma
+/// das mensagens dele e as línguas em que as buscas cortam as palavras.
 pub(crate) struct Project {
     pub root: PathBuf,
     pub lang: SupportedLocale,
+    pub languages: Languages,
 }
 
 pub(crate) fn project(start: &Path) -> Project {
     let root = mustard_core::io::spec_events::spec_root(start);
-    let lang = mustard_core::ProjectConfig::load(&root).language().text_or_default();
-    Project { root, lang }
+    let config = mustard_core::ProjectConfig::load(&root);
+    let lang = config.language().text_or_default();
+    let languages = Languages::of(&config);
+    Project { root, lang, languages }
 }
 
 /// A recusa como o comando imprime.

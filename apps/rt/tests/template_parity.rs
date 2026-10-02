@@ -11,14 +11,17 @@
 //!   unexpected argument` and exit 2. This walk turns both into a test failure.
 //! - **REVERSE** — every registered subcommand must have at least one static
 //!   product caller (prose instruction or spawned argv). Sem lista de
-//!   exceções: com 22 comandos, um comando que nenhum texto chama é superfície
-//!   escura — ele é entregue, apodrece, e nada percebe.
+//!   exceções: um comando que nenhum texto chama é superfície escura — ele é
+//!   entregue, apodrece, e nada percebe.
 //!
 //! - **GANCHOS** — o registro dos ganchos tem só os que ficam, nenhum que
 //!   saiu, e casa com os eventos do `plugin/hooks/hooks.json`: uma entrada que
 //!   chama evento sem gancho gasta uma chamada à toa.
 //!
 //! Deterministic: walks the repo tree only (sorted), no network, no env vars.
+
+#[path = "support/manifest_dir.rs"]
+mod manifest_dir;
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -41,7 +44,28 @@ use mustard_rt::commands::RunCmd;
 /// honest fixes are to document it or to remove it. A row here says the flag is
 /// reachable some OTHER way — it mirrors a documented sibling, it is the escape
 /// hatch a refusal message prints, or it exists for a caller that is not prose.
-const FLAG_WHITELIST: &[(&str, &str, &str)] = &[];
+const FLAG_WHITELIST: &[(&str, &str, &str)] = &[
+    (
+        "map",
+        "described",
+        "hidden option of the search measurement: the terminal hook fills the description of the call by itself",
+    ),
+    (
+        "map",
+        "intent",
+        "hidden alias of the search measurement (the ruler and the install lab script); the search teaches the text of Grep",
+    ),
+    (
+        "map",
+        "query",
+        "hidden alias of the search measurement (the ruler and the install lab script); the search teaches the text of Grep",
+    ),
+    (
+        "map",
+        "said",
+        "hidden option of the search measurement: the terminal hook fills the last speech of the agent by itself",
+    ),
+];
 
 /// Caller spellings that precede a `run <name>` instruction in product files.
 /// `$RtExe` is `install.ps1`'s handle for the freshly built `mustard-rt.exe`.
@@ -49,7 +73,7 @@ const CALLER_PREFIXES: &[&str] = &["mustard-rt run ", "mustard-rt.exe run ", "$R
 
 /// The repo root, resolved from this crate (`apps/rt`).
 fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+    manifest_dir::manifest_dir().join("../..")
 }
 
 /// Build the `run` command tree exactly as `main.rs` hands it to clap.
@@ -386,43 +410,43 @@ fn forward_every_instructed_flag_is_declared() {
 /// a própria cópia e continuaria verde depois de a montagem mudar. Entram as
 /// fases da tabela e o fechamento, que a rodada devolve com tudo aprovado.
 #[test]
-fn o_campo_do_proximo_passo_passa_pela_mesma_catraca() {
+fn next_step_field_goes_through_the_same_gate() {
     let tree = run_command_tree();
     assert!(!NEXT_BY_PHASE.is_empty(), "a tabela do próximo passo está vazia");
 
-    let estado = State {
+    let state = State {
         branch: Some("feature/alguma-spec".to_string()),
         base: Some("dev".to_string()),
         ..State::default()
     };
-    let mut montadas: Vec<(String, Option<String>)> = NEXT_BY_PHASE
+    let mut assembled: Vec<(String, Option<String>)> = NEXT_BY_PHASE
         .iter()
-        .map(|(fase, _)| {
-            (format!("a fase `{fase}`"), next_command(fase, "alguma-spec", &estado).as_str().map(str::to_string))
+        .map(|(phase, _)| {
+            (format!("a fase `{phase}`"), next_command(phase, "alguma-spec", &state).as_str().map(str::to_string))
         })
         .collect();
-    montadas.push(("a rodada com tudo aprovado".to_string(), step_command(DONE_STEP, "alguma-spec", &estado)));
+    assembled.push(("a rodada com tudo aprovado".to_string(), step_command(DONE_STEP, "alguma-spec", &state)));
 
     let mut offenders = Vec::new();
-    for (quem, montado) in &montadas {
-        let Some(instrucao) = montado.as_deref() else {
-            offenders.push(format!("{quem} está na tabela e não monta comando nenhum"));
+    for (who, assembled_one) in &assembled {
+        let Some(instruction) = assembled_one.as_deref() else {
+            offenders.push(format!("{who} está na tabela e não monta comando nenhum"));
             continue;
         };
-        let mut invocacoes = extract_run_invocations(instrucao);
-        let Some(inv) = invocacoes.pop() else {
-            offenders.push(format!("{quem} monta `{instrucao}`, que não é uma chamada de `mustard-rt run`"));
+        let mut invocations = extract_run_invocations(instruction);
+        let Some(inv) = invocations.pop() else {
+            offenders.push(format!("{who} monta `{instruction}`, que não é uma chamada de `mustard-rt run`"));
             continue;
         };
         let Some(cmd) = tree.get_subcommands().find(|c| c.get_name() == inv.name) else {
-            offenders.push(format!("{quem} manda rodar `run {}`, que não é registrado", inv.name));
+            offenders.push(format!("{who} manda rodar `run {}`, que não é registrado", inv.name));
             continue;
         };
-        let declaradas = declared_long_flags(cmd);
+        let declared = declared_long_flags(cmd);
         for flag in inv.flags {
-            if !declaradas.contains(flag.as_str()) {
+            if !declared.contains(flag.as_str()) {
                 offenders.push(format!(
-                    "{quem} manda rodar `run {} --{flag}`, que esse comando não declara",
+                    "{who} manda rodar `run {} --{flag}`, que esse comando não declara",
                     inv.name
                 ));
             }
@@ -430,9 +454,9 @@ fn o_campo_do_proximo_passo_passa_pela_mesma_catraca() {
         // A linha inteira, como quem obedece a resposta a roda: o parser de
         // verdade cobra as opções obrigatórias que a conferência das opções
         // escritas não vê.
-        let argv: Vec<&str> = instrucao.split_whitespace().skip(1).collect();
-        if let Err(erro) = tree.clone().try_get_matches_from(argv) {
-            offenders.push(format!("{quem} monta `{instrucao}`, que o parser recusa: {erro}"));
+        let argv: Vec<&str> = instruction.split_whitespace().skip(1).collect();
+        if let Err(error) = tree.clone().try_get_matches_from(argv) {
+            offenders.push(format!("{who} monta `{instruction}`, que o parser recusa: {error}"));
         }
     }
     assert!(
@@ -448,7 +472,9 @@ fn o_campo_do_proximo_passo_passa_pela_mesma_catraca() {
 const KEPT_HOOKS: &[&str] = &[
     "approval_witness",
     "command_guard",
+    "copy_witness",
     "end_of_turn_check",
+    "glossary_witness",
     "precompact_notice",
     "prompt_entry",
     "session_cleanup_observer",
@@ -850,6 +876,42 @@ fn no_printed_text_names_a_command_or_hook_that_left() {
     );
 }
 
+/// Todo comando `mustard-rt run <nome>` que um texto impresso manda rodar
+/// existe, e a opção que a linha já traz é uma que o comando declara. Este é o
+/// outro lado da varredura dos nomes que saíram: aquela precisa que alguém
+/// anote cada nome cortado, e um corte esquecido escapa; esta parte do que o
+/// binário registra e não depende de anotação nenhuma. Cortar ou renomear um
+/// comando sem varrer o catálogo de textos, as dicas, a ajuda e o próximo
+/// passo faz alguma dessas frases mandar rodar algo que não existe.
+#[test]
+fn every_run_command_a_printed_text_gives_exists_with_the_flags_it_types() {
+    let root = repo_root();
+    let tree = run_command_tree();
+    let mut offenders = Vec::new();
+    let mut seen = 0;
+    for (origin, text) in printed_texts(&root) {
+        for inv in extract_run_invocations(&text) {
+            seen += 1;
+            let Some(cmd) = tree.get_subcommands().find(|c| c.get_name() == inv.name) else {
+                offenders.push(format!("{origin}: `run {}` is not a registered command", inv.name));
+                continue;
+            };
+            let declared: BTreeSet<&str> =
+                cmd.get_arguments().filter_map(clap::Arg::get_long).chain(["help"]).collect();
+            for flag in inv.flags.iter().filter(|flag| !declared.contains(flag.as_str())) {
+                offenders.push(format!("{origin}: `run {} --{flag}` is not declared by the command", inv.name));
+            }
+        }
+    }
+    assert!(seen > 200, "the sweep read only {seen} `run` instructions");
+    assert!(
+        offenders.is_empty(),
+        "texts the binary prints or writes send the reader to a `mustard-rt run` call that \
+         fails - a command that is not registered, or a flag it does not declare:\n{}",
+        offenders.join("\n")
+    );
+}
+
 /// A varredura acha o nome que saiu em cada forma que o leitor toma por
 /// comando, e deixa passar o que não é chamada: o comando que fica, a palavra
 /// comum citada como código, o comentário e o código de teste.
@@ -878,7 +940,7 @@ fn the_sweep_finds_each_way_a_removed_name_reaches_the_reader() {
         "#[cfg(test)]\nconst C: &[&str] = &[\"`spec-doc`\"];\n",
         "const D: &str = \"fica\";\n",
         "#[cfg(test)]\nmod tests {\n    fn t() { let _ = \"{ `wave-done`\"; }\n}\n",
-        "fn e() { spawn(&[\"run\", \"orient\"]); }\n",
+        "fn f() { spawn(&[\"run\", \"orient\"]); }\n",
     );
     let texts = rust_texts(source);
     assert_eq!(texts, ["rode `mustard-rt run git-settle`", "um \"cru\" `emit-event`", "fica", "run", "orient", "run orient"]);
@@ -998,22 +1060,80 @@ fn wave_numbers_in(comment: &str) -> Vec<String> {
     WAVE.captures_iter(&bare).map(|c| c[1].to_string()).collect()
 }
 
+/// Toda menção a uma onda por número, como em "vazou na onda 21" ou "a onda 2
+/// entrega". Só o que está entre crases ou aspas fica de fora: é dado.
+fn every_wave_number_in(comment: &str) -> Vec<String> {
+    static WAVE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?i)\b((?:onda|wave)s?\s+\d+)").expect("the wave pattern compiles"));
+    let bare = QUOTED.replace_all(comment, " ");
+    WAVE.captures_iter(&bare).map(|c| c[1].to_string()).collect()
+}
+
+/// Os comandos que saíram, escritos com o hífen, que um comentário cita, com
+/// crase ou sem ela: quem lê o código procura o nome e não o acha. O comando
+/// entre aspas é dado de exemplo e passa.
+fn hyphenated_commands_in(comment: &str) -> Vec<&'static str> {
+    static DATA: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r#""[^"]*"|“[^”]*”"#).expect("the data pattern compiles"));
+    let unquoted = DATA.replace_all(comment, " ");
+    REMOVED_COMMANDS
+        .iter()
+        .filter(|name| name.contains('-') && whole_name_at(&unquoted, name).next().is_some())
+        .copied()
+        .collect()
+}
+
 /// O que um comentário cita e quem lê o código não acha: o código de spec, o
-/// comando que saiu escrito com espaço no lugar do hífen e o número de onda.
-/// O comando entre aspas é dado de exemplo e passa; entre crases, é citado.
-fn cited_in_comment(comment: &str) -> Vec<String> {
+/// comando que saiu, escrito com hífen ou com espaço no lugar dele, e o
+/// número de onda. O comando entre aspas é dado de exemplo e passa; entre
+/// crases, é citado. A onda dada como origem (`(onda 7)`, `decidida na onda
+/// 4`) conta em qualquer lugar; qualquer outra menção a uma onda, como em
+/// "vazou na onda 21", só passa no que é de teste (`in_test`), onde a onda é
+/// a do cenário.
+fn cited_in_comment(comment: &str, in_test: bool) -> Vec<String> {
     let unquoted = QUOTED.replace_all(comment, |quoted: &regex::Captures| {
         if quoted[0].starts_with('`') { quoted[0].to_string() } else { " ".to_string() }
     });
     let commands = spaced_commands_in(&unquoted).into_iter().map(str::to_string);
-    spec_codes_in(comment).into_iter().chain(commands).chain(wave_numbers_in(comment)).collect()
+    let hyphenated = hyphenated_commands_in(comment).into_iter().map(str::to_string);
+    let mut waves = wave_numbers_in(comment);
+    if !in_test {
+        for wave in every_wave_number_in(comment) {
+            if !waves.iter().any(|seen| seen.eq_ignore_ascii_case(&wave)) {
+                waves.push(wave);
+            }
+        }
+    }
+    spec_codes_in(comment).into_iter().chain(commands).chain(hyphenated).chain(waves).collect()
+}
+
+/// A linha em que começa a parte de teste do arquivo: 1 para o que é todo de
+/// teste (a pasta `tests` e o módulo `tests.rs`) e, nos demais, a do
+/// `#[cfg(test)]` que abre um módulo. Sem ele, o arquivo não tem parte de
+/// teste e a linha é `usize::MAX`.
+fn test_area_from(relative: &Path, source: &str) -> usize {
+    let name = relative.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+    if relative.components().any(|c| c.as_os_str() == "tests") || name == "tests.rs" || name.ends_with("_tests.rs") {
+        return 1;
+    }
+    let lines: Vec<&str> = source.lines().map(str::trim).collect();
+    for (at, line) in lines.iter().enumerate() {
+        if *line != "#[cfg(test)]" && !line.starts_with("#[cfg(all(test") {
+            continue;
+        }
+        let next = lines[at + 1..].iter().find(|l| !l.is_empty() && !l.starts_with("#["));
+        if next.is_some_and(|l| l.starts_with("mod ") || (l.starts_with("pub") && l.contains(" mod "))) {
+            return at + 1;
+        }
+    }
+    usize::MAX
 }
 
 /// Nenhum comentário nem nome de teste do código cita código de spec, e
-/// nenhum comentário cita comando que saiu escrito com espaço nem número de
-/// onda: a spec fica fora do git, e o que aponta para ela ou para um comando
-/// que não existe não leva a lugar nenhum. Cada comentário diz o
-/// comportamento em palavras.
+/// nenhum comentário cita comando que saiu, com hífen ou com espaço, nem
+/// número de onda que conte a história do código: a spec fica fora do git, e
+/// o que aponta para ela ou para um comando que não existe não leva a lugar
+/// nenhum. Cada comentário diz o comportamento em palavras.
 #[test]
 fn no_comment_or_test_name_cites_a_spec_code() {
     let root = repo_root();
@@ -1026,11 +1146,14 @@ fn no_comment_or_test_name_cites_a_spec_code() {
     let mut found = Vec::new();
     let mut read = 0;
     for file in files {
-        let shown = file.strip_prefix(&root).unwrap_or(file).display().to_string();
-        let (comments, code) = comments_and_code(&read_lossy(file));
+        let relative = file.strip_prefix(&root).unwrap_or(file);
+        let shown = relative.display().to_string();
+        let source = read_lossy(file);
+        let test_from = test_area_from(relative, &source);
+        let (comments, code) = comments_and_code(&source);
         read += comments.len();
         for (line, comment) in comments {
-            for cited in cited_in_comment(&comment) {
+            for cited in cited_in_comment(&comment, line >= test_from) {
                 found.push(format!("{shown}:{line}: {cited} in {}", comment.trim()));
             }
         }
@@ -1086,35 +1209,81 @@ fn the_comment_sweep_finds_each_spec_code_and_lets_data_pass() {
     assert_eq!(spec_coded_fn_names(&code), ["ac8_host_is_clean"]);
 }
 
-/// A varredura dos comentários acha o comando que saiu escrito com espaço e o
-/// número de onda dado como origem, e deixa passar o módulo que continua, o
-/// comando que fica, as palavras soltas de outra ferramenta e a onda do
-/// cenário de um teste.
+/// A varredura dos comentários acha o comando que saiu escrito com espaço ou
+/// com hífen e o número de onda dado como origem, e deixa passar o módulo que
+/// continua, o comando que fica, as palavras soltas de outra ferramenta e o
+/// dado entre aspas.
 #[test]
-fn the_comment_sweep_finds_a_spaced_command_that_left_and_a_wave_number() {
+fn the_comment_sweep_finds_a_command_that_left_and_a_wave_number() {
     for (comment, cited) in [
         ("///    `git settle`'s containment check included, asserting", "git-settle"),
         ("/// `git delete` offered to REMOVE the release line", "git-delete"),
         ("/// and `pr list` refused to run from it", "pr-list"),
+        ("/// `qa-run` matches the command's own output", "qa-run"),
+        ("// the door `emit-pipeline` opened, now folded in", "emit-pipeline"),
+        ("/// so the cut spec-draft takes reads the marker back", "spec-draft"),
         ("/// mais essas frases (onda 11), e o molde da onda", "onda 11"),
         ("/// a prova isolada que a revisão pediu (wave 7).", "wave 7"),
         ("/// Por decisão da onda 13, o item que continua à mostra", "onda 13"),
         ("// decided in wave 4, the reader keeps both", "wave 4"),
     ] {
-        assert_eq!(cited_in_comment(comment), [cited], "{comment}");
+        for in_test in [false, true] {
+            assert_eq!(cited_in_comment(comment, in_test), [cited], "{comment} (in_test: {in_test})");
+        }
     }
     for clean in [
         "/// the exit ritual (`crate::commands::git_settle`) prunes the unit",
         "/// the tidying up `pr-merge` runs right after its merge",
         "/// `gh pr list --state open` answers the provider",
-        "// A onda 1 entrega e a onda 2 espera pela vaga.",
-        "/// Retrato da barra com uma spec em execução na onda 2 de 4",
+        "/// the module `qa_run` runs the acceptance criteria",
+        "/// `qa-runner` and `spec-drafting` are not commands",
+        r#"/// o dado de exemplo "`git settle`" de um teste"#,
+        r#"/// o exemplo de teste "mustard-rt run qa-run""#,
         r#"/// e procurar por "onda 13" acha o que é dela"#,
         "/// o rótulo `(onda 3)` é o dado da página",
-        r#"/// o dado de exemplo "`git settle`" de um teste"#,
     ] {
-        assert!(cited_in_comment(clean).is_empty(), "{clean}: {:?}", cited_in_comment(clean));
+        for in_test in [false, true] {
+            assert!(cited_in_comment(clean, in_test).is_empty(), "{clean}: {:?}", cited_in_comment(clean, in_test));
+        }
     }
+}
+
+/// A onda contada como história só passa no que é de teste, onde ela é a do
+/// cenário; no código de produção a varredura a acha, e o que está entre
+/// aspas ou crases é dado e passa dos dois lados.
+#[test]
+fn the_comment_sweep_lets_a_wave_number_through_only_in_a_test() {
+    for bad in [
+        "// vazou na onda 21 e o portão ficou cego",
+        "/// the wave 3 spec keeps its own copy",
+        "/// A onda 1 entrega e a onda 2 espera pela vaga.",
+    ] {
+        assert!(!cited_in_comment(bad, false).is_empty(), "{bad}");
+        assert!(cited_in_comment(bad, true).is_empty(), "{bad}: {:?}", cited_in_comment(bad, true));
+    }
+    for data in [
+        r#"/// e procurar por "onda 13" acha o que é dela"#,
+        "/// `Locale::PtBr` → `\"Onda 3\"`",
+        "/// Retrato da barra com uma spec em execução na `onda 2` de 4",
+    ] {
+        assert!(cited_in_comment(data, false).is_empty(), "{data}: {:?}", cited_in_comment(data, false));
+    }
+
+    let source = concat!(
+        "//! módulo de produção\n",
+        "fn produce() {}\n",
+        "\n",
+        "#[cfg(test)]\n",
+        "#[allow(clippy::x)]\n",
+        "mod tests {\n",
+        "    // a onda 1 entrega\n",
+        "}\n",
+    );
+    let path = Path::new("apps/rt/src/commands/x.rs");
+    assert_eq!(test_area_from(path, source), 4, "the test module opens at its attribute");
+    assert_eq!(test_area_from(path, "#[cfg(test)]\nuse a::b;\nfn f() {}\n"), usize::MAX);
+    assert_eq!(test_area_from(Path::new("apps/rt/tests/x.rs"), "fn f() {}\n"), 1);
+    assert_eq!(test_area_from(Path::new("apps/rt/src/x/tests.rs"), "fn f() {}\n"), 1);
 }
 
 /// Os eventos que o manifesto do Claude Code registra.

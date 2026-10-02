@@ -1,0 +1,41 @@
+# As rotas do FastAPI. O nome deste arquivo é o nome do framework; a consulta
+# que acha as rotas está em `fastapi/routes.scm`, e o que cada captura dela
+# diz, em `src/routes.rs`. A rota é o decorador sobre a função, que é quem a
+# atende: `@app.get("/pedidos/{id}")`, `@router.post("/")`. O
+# `@app.api_route("/x", methods=["GET", "POST"])` dá uma rota por método
+# escrito na lista; sem a lista, a do método padrão.
+#
+# O `APIRouter(prefix="/pedidos")` faz um grupo com o prefixo; guardado num
+# nome (`router = APIRouter(…)`), ele vale para as rotas registradas nesse
+# nome. O `app.include_router(router, prefix="/api")` monta o roteador: o
+# prefixo vale para as rotas dele, no mesmo arquivo ou no arquivo de onde o
+# nome vem — o que o import traz (`from .pedidos import router`) ou o que a
+# ligação acha (`pedidos.router`).
+#
+# Os campos:
+# - `language`: as línguas do registro (`languages.toml`) cujos arquivos a
+#   consulta lê. Ela precisa compilar na gramática de cada uma.
+# - `imports`: a regra só roda no arquivo que importa um destes nomes, ou um
+#   caminho que começa por ele seguido de separador (`fastapi.routing`).
+# - `methods`: o nome do decorador e o método HTTP que ele diz. O nome fora
+#   da tabela não faz rota. O método escrito como texto na lista `methods`
+#   (`route.method.text`) vale sem as aspas, em maiúsculas.
+# - `default_method`: o método da rota em que a consulta não captura método
+#   nenhum (o `api_route` sem a lista `methods`). O caminho com método
+#   escrito não ganha também o padrão.
+# - `param_wrappers`: as marcas que abrem e fecham um parâmetro (`{id}`,
+#   `{caminho:path}`).
+
+language = ["python"]
+imports = ["fastapi"]
+default_method = "GET"
+param_wrappers = [["{", "}"]]
+
+[methods]
+get = "GET"
+post = "POST"
+put = "PUT"
+patch = "PATCH"
+delete = "DELETE"
+head = "HEAD"
+options = "OPTIONS"

@@ -23,7 +23,7 @@ $sw = [Diagnostics.Stopwatch]::StartNew()
 & mustard-rt run scan --full 2>&1 | Select-Object -Last 6
 $sw.Stop()
 Write-Host ("  scan total: {0} s" -f [math]::Round($sw.Elapsed.TotalSeconds,1))
-foreach ($f in @('grain.model.json')) {
+foreach ($f in @('grain.db')) {
     $p = Join-Path 'C:\Atiz\sialia\.claude' $f
     if (Test-Path $p) { $i = Get-Item $p; Write-Host ("  {0}  {1} KB" -f $f, [math]::Round($i.Length/1KB,0)) }
     else { Write-Host "  AVISO: $f nao foi gerado" }

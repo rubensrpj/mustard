@@ -1,0 +1,5 @@
+# As cópias separadas que os testes criam nascem dentro de target/, nunca na
+# pasta de cache de verdade do usuário. O caminho é relativo à raiz do
+# repositório; uma variável já definida no ambiente continua valendo.
+[env]
+MUSTARD_COPIES_DIR = { value = "target/testes-copias", relative = true }

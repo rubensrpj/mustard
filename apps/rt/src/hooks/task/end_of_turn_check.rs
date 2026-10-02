@@ -9,9 +9,11 @@
 //!   spec fechou, ou entrou no merge, não termina sem citar cada pendência
 //!   aberta nascida nela. Esta barra;
 //! - a clareza ([`ClarityRule`], `clarity_check.rs`): a resposta segue a regra
-//!   de escrita e sai no idioma que o projeto declarou. Esta nunca barra: o
-//!   erro que ela acha fica guardado na pasta da sessão, e a linha escondida
-//!   da mensagem seguinte do usuário o leva numa frase curta.
+//!   de escrita e sai no idioma que o projeto declarou. Esta só barra a
+//!   resposta fora do idioma do projeto: o assistente a escreve de novo, no
+//!   mesmo turno. Os outros erros que ela acha ficam guardados na pasta
+//!   da sessão, e só por eles a mensagem seguinte do usuário leva uma linha
+//!   escondida, com o erro numa frase curta.
 //!
 //! ## Um bloqueio só
 //!
@@ -25,9 +27,9 @@
 //! Uma regra que barra devolve [`Finding::Block`]: o texto vai ao assistente,
 //! que responde no mesmo turno. A volta que um bloqueio pediu chega com
 //! `stop_hook_active` ([`Turn::retry`]), e cada regra decide o que faz com
-//! ela: a clareza soma o erro da volta ao da resposta barrada, e as
-//! pendências cobram até o contador delas. Nenhuma regra fala com o usuário:
-//! sem bloqueio, a resposta termina calada.
+//! ela: a clareza nunca barra na volta e soma o erro dela ao da resposta
+//! barrada, e as pendências cobram até o contador delas. Nenhuma regra fala
+//! com o usuário: sem bloqueio, a resposta termina calada.
 //!
 //! ## Tempo
 //!
@@ -79,8 +81,8 @@ impl Finding {
 
 /// Uma regra do fim da resposta.
 pub trait TurnRule {
-    /// Confere a resposta. `None` quando a regra não barra; a que não barra
-    /// pode guardar o que achou para depois, como a clareza. Uma regra nunca
+    /// Confere a resposta. `None` quando a regra não barra; a clareza guarda
+    /// para depois o erro que não barra. Uma regra nunca
     /// falha: o que ela não consegue ler vira `None`.
     fn check(&self, turn: &Turn<'_>) -> Option<Finding>;
 }
@@ -136,12 +138,13 @@ mod tests {
     use serde_json::{json, Value};
     use std::time::{Duration, Instant};
 
-    /// O manifesto de ganchos que o plugin entrega.
-    const HOOKS_JSON: &str = include_str!("../../../../../plugin/hooks/hooks.json");
-
-    /// Os estilos de resposta que o plugin entrega, um por idioma.
-    const STYLE_PT: &str = include_str!("../../../../../plugin/output-styles/mustard-pt-BR.md");
-    const STYLE_EN: &str = include_str!("../../../../../plugin/output-styles/mustard-en-US.md");
+    /// Um arquivo do plugin, lido da cópia que roda o teste: o `plugin/`
+    /// fica fora do pacote, e embutido na compilação ele seria guardado pelo
+    /// endereço da cópia que compilou.
+    fn plugin_file(relative: &str) -> String {
+        let path = crate::manifest_dir::manifest_dir().join("../../plugin").join(relative);
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{} unreadable: {e}", path.display()))
+    }
 
     /// O tempo que o Claude Code dá ao `Stop`, em segundos.
     const STOP_BUDGET_SECS: u64 = 30;
@@ -165,17 +168,20 @@ mod tests {
     /// Um projeto que declarou o inglês dos Estados Unidos.
     const EN_PROJECT: &str = r#"{"language":{"text":"en-US"}}"#;
 
-    /// A linha escondida de cada mensagem num projeto em pt-BR, a mesma de
-    /// antes.
+    /// A linha curta que abre a correção num projeto em pt-BR.
     const PT_LINE: &str =
         "Responda em português do Brasil, em texto simples: frases curtas e nenhum código interno.";
 
     /// A mesma linha num projeto em en-US.
-    const EN_LINE: &str = "Answer in US English, in plain text: short sentences and no internal codes.";
+    const EN_LINE: &str = "Answer in American English, in plain text: short sentences and no internal codes.";
 
-    /// A mesma linha num projeto que não declarou idioma.
-    const UNDECLARED_LINE: &str =
-        "Responda no idioma de quem escreve, em texto simples: frases curtas e nenhum código interno.";
+    /// O texto que barra a resposta em inglês num projeto em pt-BR.
+    const PT_BLOCK: &str =
+        "A resposta saiu em en-US, e o idioma do projeto e do usuário é pt-BR. Escreva a resposta de novo em pt-BR.";
+
+    /// O texto que barra a resposta em português num projeto em en-US.
+    const EN_BLOCK: &str = "The reply came out in pt-BR, and the language of the project and the user is en-US. \
+        Write the reply again in en-US.";
 
     fn project(config: &str) -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -240,7 +246,7 @@ mod tests {
     }
 
     /// O texto escondido que a mensagem seguinte do usuário leva ao
-    /// assistente, pelo gancho de verdade.
+    /// assistente, pelo gancho de verdade; vazio quando não leva nenhum.
     fn next_line(root: &Path, session: &str) -> String {
         let out = hook_event(root, "UserPromptSubmit", session, json!({ "prompt": "e agora?" }));
         out["hookSpecificOutput"]["additionalContext"].as_str().unwrap_or_default().to_string()
@@ -295,38 +301,46 @@ mod tests {
         );
     }
 
-    /// A resposta com 16 linhas, uma a mais que o limite de 15, e sem nenhum
-    /// outro defeito não é barrada pelo `Stop` de verdade; a mensagem seguinte
-    /// leva o erro, nos dois idiomas. Com 15 linhas nada vai: a conta das
-    /// linhas não mudou. O jeito de consertar mora no estilo de resposta de
-    /// cada idioma, que manda o JSON, a tabela ou o documento pedido para a
-    /// página avulsa.
+    /// Uma resposta longa e clara não leva aviso: com 16 linhas curtas, a
+    /// primeira quantidade que o teto antigo apontava, e com 200, o `Stop` de
+    /// verdade não barra, e a mensagem seguinte não leva texto nenhum, nos
+    /// dois idiomas. A resposta tem o tamanho que a pergunta pede; só a
+    /// escrita de cada frase é conferida.
     #[test]
-    fn a_reply_over_fifteen_lines_goes_with_the_next_message() {
-        let cases = [
-            (PT_PROJECT, "Uma linha curta.", PT_LINE, "Na última resposta: resposta com 16 linhas, e o limite é 15."),
-            (EN_PROJECT, "The test runs fine.", EN_LINE, "In the last reply: reply with 16 lines, and the limit is 15."),
-        ];
-        for style in [STYLE_PT, STYLE_EN] {
-            assert!(style.contains("`mustard-rt run page`"), "the answer style names the page: {style}");
-        }
-        for (config, line, hidden, note) in cases {
+    fn a_long_clear_reply_carries_no_warning() {
+        let cases = [(PT_PROJECT, "Uma linha curta."), (EN_PROJECT, "The test runs fine.")];
+        for (config, line) in cases {
             let dir = project(config);
             let root = dir.path();
-            let fits = vec![line; 15].join("\n");
-            assert_eq!(run_stop(root, &stop("s1", &fits, false)), Value::Null, "{config}");
-            assert_eq!(next_line(root, "s1"), hidden, "15 lines carry nothing: {config}");
+            for count in [16, 200] {
+                let long = vec![line; count].join("\n");
+                assert_eq!(stop_event(root, "s1", &long, false), Value::Null, "{count} lines are not blocked: {config}");
+                assert_eq!(next_line(root, "s1"), "", "{count} lines carry no warning: {config}");
+            }
+        }
+    }
 
-            let over = vec![line; 16].join("\n");
-            assert_eq!(run_stop(root, &stop("s1", &over, false)), Value::Null, "16 lines are not blocked: {config}");
-            assert_eq!(next_line(root, "s1"), format!("{hidden} {note}"));
+    /// O estilo de resposta de cada idioma não põe teto de linhas na
+    /// resposta, manda o JSON, a tabela ou o documento pedido para a página
+    /// avulsa e pede o contexto antes do código.
+    #[test]
+    fn the_answer_styles_drop_the_line_cap_and_put_context_before_code() {
+        for (style, context) in [
+            (plugin_file("output-styles/mustard-pt-BR.md"), "Contexto antes do código"),
+            (plugin_file("output-styles/mustard-en-US.md"), "Context before code"),
+        ] {
+            assert!(style.contains("`mustard-rt run page`"), "the answer style names the page: {style}");
+            for cap in ["15 linhas", "15 lines"] {
+                assert!(!style.contains(cap), "the answer style still caps the reply at `{cap}`: {style}");
+            }
+            assert!(style.contains(context), "the answer style lacks `{context}`: {style}");
         }
     }
 
     /// O `Stop` tem 30 segundos no `hooks.json`, não mais 5.
     #[test]
     fn the_stop_hook_has_thirty_seconds() {
-        let manifest: Value = serde_json::from_str(HOOKS_JSON).expect("hooks.json");
+        let manifest: Value = serde_json::from_str(&plugin_file("hooks/hooks.json")).expect("hooks.json");
         let timeouts: Vec<u64> = manifest["hooks"]["Stop"]
             .as_array()
             .expect("a Stop entry")
@@ -337,35 +351,62 @@ mod tests {
         assert_eq!(timeouts, vec![STOP_BUDGET_SECS]);
     }
 
-    /// A resposta que sai noutro idioma que não o de `language.text` não é
-    /// barrada, e o erro vai na mensagem seguinte. O idioma vem da
+    /// A resposta que sai noutro idioma que não o de `language.text` é
+    /// barrada, e o erro também vai na mensagem seguinte. O idioma vem da
     /// configuração: o mesmo inglês passa num projeto em inglês, e o português
-    /// vira erro nele, no idioma dele. A chave antiga de idioma não é mais
-    /// lida: um projeto que só tem ela não declarou idioma, e nenhuma resposta
-    /// ganha erro de idioma.
+    /// é barrado nele, no idioma dele. A volta que o bloqueio pediu nunca
+    /// barra de novo. A chave antiga de idioma não é mais lida: um projeto que
+    /// só tem ela não declarou idioma, e nenhuma resposta é barrada nem ganha
+    /// erro de idioma.
     #[test]
-    fn a_reply_in_another_language_goes_with_the_next_message() {
+    fn a_reply_in_another_language_is_blocked_and_goes_with_the_next_message() {
         let pt = project(PT_PROJECT);
         let verdict = EndOfTurnCheck.evaluate(&stop("s1", ENGLISH_REPLY, false), &ctx(pt.path()));
-        assert_eq!(verdict.expect("never errors"), Verdict::Allow);
+        assert_eq!(verdict.expect("never errors"), Verdict::Deny { reason: PT_BLOCK.to_string() });
         assert_eq!(next_line(pt.path(), "s1"), format!("{PT_LINE} Na última resposta: resposta em en-US."));
+
+        let again = EndOfTurnCheck.evaluate(&stop("s2", ENGLISH_REPLY, true), &ctx(pt.path()));
+        assert_eq!(again.expect("never errors"), Verdict::Allow, "the retry is never blocked again");
 
         let en = project(EN_PROJECT);
         let english = EndOfTurnCheck.evaluate(&stop("s1", ENGLISH_REPLY, false), &ctx(en.path()));
         assert_eq!(english.expect("never errors"), Verdict::Allow);
-        assert_eq!(next_line(en.path(), "s1"), EN_LINE);
+        assert_eq!(next_line(en.path(), "s1"), "");
         let portuguese = "A onda terminou e os testes passaram.\n\
             A medição agora compara o idioma da resposta com o idioma do projeto.\n\
             Ela conta as palavras comuns de cada idioma.\n\
             Uma resposta curta não é julgada por ela.";
         let verdict = EndOfTurnCheck.evaluate(&stop("s1", portuguese, false), &ctx(en.path()));
-        assert_eq!(verdict.expect("never errors"), Verdict::Allow);
+        assert_eq!(verdict.expect("never errors"), Verdict::Deny { reason: EN_BLOCK.to_string() });
         assert_eq!(next_line(en.path(), "s1"), format!("{EN_LINE} In the last reply: reply in pt-BR."));
 
         let old_key = project(r#"{"specLang":"pt-BR"}"#);
         let verdict = EndOfTurnCheck.evaluate(&stop("s1", ENGLISH_REPLY, false), &ctx(old_key.path()));
         assert_eq!(verdict.expect("never errors"), Verdict::Allow);
-        assert_eq!(next_line(old_key.path(), "s1"), UNDECLARED_LINE, "the old key declares no language");
+        assert_eq!(next_line(old_key.path(), "s1"), "", "the old key declares no language");
+    }
+
+    /// Um bloqueio só: o fechamento que omite uma pendência, numa resposta em
+    /// inglês, leva o texto das pendências e o do idioma no mesmo motivo, na
+    /// ordem das regras. Na volta, a pendência cobra de novo e o idioma não.
+    #[test]
+    fn the_language_block_and_the_pending_block_share_one_reason() {
+        let dir = project_with_open_items(PT_PROJECT);
+        let root = dir.path();
+        close_spec_with_both_items(root, "s-both");
+
+        let first = format!("{ENGLISH_REPLY}\nOnly the html padrao da spec item is left.");
+        let blocked = stop_event(root, "s-both", &first, false);
+        assert_eq!(blocked["decision"], json!("block"), "{blocked}");
+        let pending = mustard_core::translate("pending.gate.block", Locale::PtBr)
+            .replace("{spec}", "trava")
+            .replace("{count}", "1")
+            .replace("{items}", "P-1 \"Humanize\"");
+        assert_eq!(blocked["reason"], json!(format!("{pending}\n\n{PT_BLOCK}")), "pending first, language second");
+
+        let retry = stop_event(root, "s-both", &first, true);
+        assert_eq!(retry["decision"], json!("block"), "the pending item is still charged: {retry}");
+        assert!(!retry["reason"].as_str().unwrap_or_default().contains(PT_BLOCK), "the language is not charged twice");
     }
 
     /// Lado a lado — a cobrança de pendências mudou de gancho próprio para
@@ -411,6 +452,11 @@ mod tests {
             .replace("{count}", "1")
             .replace("{items}", "P-1 \"Humanize\"");
         assert_eq!(blocked["reason"], json!(pending), "the block carries the pending text and nothing else");
+        let reason = blocked["reason"].as_str().unwrap_or_default();
+        assert!(
+            reason.contains("mustard-rt run close --spec trava --pending-later \"<id>=<motivo>\""),
+            "a recusa traz a saída de deixar para depois, com o comando pronto: {reason}"
+        );
 
         let rewrite = "Fechei a unidade; seguem o Humanize e o html padrao da spec.";
         assert_eq!(stop_event(root, "s-both", rewrite, true), Value::Null, "the cited items pass");
@@ -421,6 +467,23 @@ mod tests {
         assert_eq!(stop_event(root, "s-both", "Fechei a unidade.", false), Value::Null, "the closure settled");
     }
 
+    /// Num projeto em inglês, a recusa da pendência omitida traz a saída de
+    /// deixar para depois, com o comando pronto, pelo `Stop` de verdade.
+    #[test]
+    fn the_pending_block_in_english_offers_the_later_answer() {
+        let dir = project_with_open_items(EN_PROJECT);
+        let root = dir.path();
+        close_spec_with_both_items(root, "s-en");
+
+        let blocked = stop_event(root, "s-en", "The unit is closed; only the html item is left.", false);
+        assert_eq!(blocked["decision"], json!("block"), "{blocked}");
+        let reason = blocked["reason"].as_str().unwrap_or_default();
+        assert!(
+            reason.contains("mustard-rt run close --spec trava --pending-later \"<id>=<reason>\""),
+            "the refusal carries the ready command for leaving an item for later: {reason}"
+        );
+    }
+
     /// Letra com número fora do formato do Mustard é texto comum: o nome de
     /// um produto ou o tamanho de uma folha não vira erro.
     #[test]
@@ -429,7 +492,7 @@ mod tests {
         let reply = "Guardei o arquivo no R2 da Cloudflare, no S3 e numa folha A4.";
         let verdict = EndOfTurnCheck.evaluate(&stop("s1", reply, false), &ctx(dir.path())).expect("never errors");
         assert_eq!(verdict, Verdict::Allow);
-        assert_eq!(next_line(dir.path(), "s1"), PT_LINE);
+        assert_eq!(next_line(dir.path(), "s1"), "");
     }
 
     /// Fora do `Stop` da sessão principal nada é conferido nem guardado.
@@ -443,6 +506,6 @@ mod tests {
         let pre = Ctx::for_test(dir.path().to_string_lossy().into_owned(), Some(Trigger::PreToolUse));
         let other = EndOfTurnCheck.evaluate(&stop("s1", &reply, false), &pre).expect("never errors");
         assert_eq!(other, Verdict::Allow);
-        assert_eq!(next_line(dir.path(), "s1"), PT_LINE, "nothing was kept");
+        assert_eq!(next_line(dir.path(), "s1"), "", "nothing was kept");
     }
 }

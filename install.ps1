@@ -5,18 +5,12 @@
 # in release, installs them to ~/.cargo/bin (so the hooks in .claude/settings.json
 # — which invoke `mustard-rt` from PATH — resolve at runtime, and `mustard-rt`
 # finds the `scan` miner as a ~/.cargo/bin sibling), then runs `mustard init`
-# in the target project, pointed at this repo's bundled templates/ payload.
-#
-# Why MUSTARD_TEMPLATES_DIR: `cargo install` copies only the binary to
-# ~/.cargo/bin, not its templates/ payload. Without an explicit pointer the
-# installed `mustard` would fall back to the compile-time CARGO_MANIFEST_DIR
-# path, which silently breaks if this repo is ever moved. We set the env var to
-# apps/cli/templates for the init invocation so it always resolves the payload
-# that ships with the binaries we just built.
+# in the target project. Everything init lays down is compiled into the
+# binary, so it needs no folder beside it.
 #
 # Usage:
 #   .\install.ps1                  # prompt for the target (default CWD), then `mustard init`
-#   .\install.ps1 -Target ..\app   # scaffold (new) OR refresh templates (existing); `mustard init` is idempotent
+#   .\install.ps1 -Target ..\app   # scaffold (new) OR refresh (existing); `mustard init` is idempotent
 #   .\install.ps1 -Force           # overwrite an existing .claude/ (no backup)
 #   .\install.ps1 -DryRun          # show init actions without writing
 #   .\install.ps1 -SkipBuild       # skip cargo install (binaries already installed)
@@ -33,7 +27,6 @@ $CargoBin     = Join-Path $env:USERPROFILE '.cargo\bin'
 $MustardExe   = Join-Path $CargoBin 'mustard.exe'
 $RtExe        = Join-Path $CargoBin 'mustard-rt.exe'
 $ScanExe      = Join-Path $CargoBin 'scan.exe'
-$TemplatesDir = Join-Path $Root 'apps\cli\templates'
 $BuildNumFile = Join-Path $Root '.mustard-build-number'
 
 # Native commands don't throw on a non-zero exit under $ErrorActionPreference;
@@ -111,11 +104,6 @@ function Sync-PluginBin([string]$SourceExe, [string]$PluginBinDir) {
     Copy-Item -LiteralPath $SourceExe -Destination $dest -Force
 }
 
-# Prerequisite: the bundled templates/ payload `mustard init` copies from.
-if (-not (Test-Path $TemplatesDir)) {
-    throw "Templates payload not found at $TemplatesDir — run this script from the Mustard repo root."
-}
-
 # Resolve the target project — the directory `mustard init` scaffolds .claude/
 # into. Defaults to the CWD; pass -Target to script it, or accept the prompt
 # when running interactively without -Target. The directory must already exist
@@ -138,8 +126,7 @@ if (-not $SkipBuild) {
     # Bump the per-build counter and feed it to the cargo build as
     # MUSTARD_BUILD_NUMBER (the build.rs in apps/rt + apps/cli stamps it into
     # `--version`). Scope the env var to the two build invocations and restore
-    # it afterwards, exactly like MUSTARD_TEMPLATES_DIR below, so the script
-    # stays safe to dot-source.
+    # it afterwards, so the script stays safe to dot-source.
     $buildNumber       = Step-BuildNumber $BuildNumFile
     $prevBuildNumber   = $env:MUSTARD_BUILD_NUMBER
     $env:MUSTARD_BUILD_NUMBER = $buildNumber
@@ -159,7 +146,7 @@ if (-not $SkipBuild) {
     Write-Host "    CARGO_TARGET_DIR=$env:CARGO_TARGET_DIR (shared cache — later runs are incremental)"
     try {
         # scan first: mustard-rt resolves it as a ~/.cargo/bin sibling at runtime
-        # (Scan::locate), and the digest/facts projections depend on it.
+        # (Scan::locate), and the facts projection depends on it.
         Install-Bin $ScanExe      (Join-Path $Root 'apps\scan')      'scan'
         Install-Bin $RtExe        (Join-Path $Root 'apps\rt')        'mustard-rt'
         Install-Bin $MustardExe   (Join-Path $Root 'apps\cli')       'mustard'
@@ -207,21 +194,13 @@ if ($Force)  { $cmdArgs += '--force' }
 if ($DryRun) { $cmdArgs += '--dry-run' }
 $cmdLabel = 'mustard init'
 
-# Point the command at this repo's templates/ payload (init resolves it
-# via MUSTARD_TEMPLATES_DIR). Scope the env var to the child process
-# and restore it afterwards so the script is safe to dot-source.
-$prevTemplates = $env:MUSTARD_TEMPLATES_DIR
-$env:MUSTARD_TEMPLATES_DIR = $TemplatesDir
-
 Write-Host "==> mustard $($cmdArgs -join ' ')   (target: $Target)"
-Write-Host "    MUSTARD_TEMPLATES_DIR=$TemplatesDir"
 Push-Location $Target
 try {
     & $MustardExe @cmdArgs
     Assert-LastExit $cmdLabel
 } finally {
     Pop-Location
-    $env:MUSTARD_TEMPLATES_DIR = $prevTemplates
 }
 Write-Host '==> Done. .claude/ is installed; mustard-rt hooks are wired via settings.json.'
 

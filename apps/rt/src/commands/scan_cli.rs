@@ -19,15 +19,17 @@ use crate::commands::scan;
 #[derive(Debug, Subcommand)]
 #[allow(clippy::large_enum_variant)] // CLI parser enum - clap-Subcommand; boxing breaks derive
 pub enum ScanCmd {
-    /// Mine the workspace into `grain.model.json` via the bundled `scan` tool —
-    /// THE scan (replaced the old in-tree miner + per-project skill/agent
-    /// generation; the model is the single durable artifact).
+    /// Mine the workspace into the SQLite map `grain.db` with the bundled `scan`
+    /// tool; only the blocks that changed are written again.
+    /// This is the one scan of the project, and the model is the single
+    /// durable artifact. It replaced the old in-tree miner and the per-project
+    /// skill and agent generation.
     #[command(display_order = 15)]
     Scan {
         /// The workspace root to scan. Defaults to the current directory.
         #[arg(long, default_value = ".")]
         root: PathBuf,
-        /// Output path. Defaults to `<root>/.claude/grain.model.json`.
+        /// Output path. Defaults to `<root>/.claude/grain.db`.
         #[arg(long)]
         out: Option<PathBuf>,
         /// (Re)generate the mustard-owned `.claude/scan-map.md` for every
@@ -42,32 +44,89 @@ pub enum ScanCmd {
     /// `tests --file`, `slice --file --name <declaration>` (the declaration's
     /// own lines, without opening the file), `users --name <declaration>` (who
     /// uses it, as `file:line:caller`; `--file` keeps the one declared in that
-    /// file), `search --query`, `summary` (the session-start digest, up to
-    /// 3 kB) or `skill --path <SKILL.md>` (every cited path exists and the
-    /// skill stays under 500 lines). Reads
-    /// `.claude/grain.model.json`; prints JSON and exits 1 on a refusal.
+    /// file), `history --name <declaration>` (the commits of the base branch
+    /// that changed it, newest first, with title and pull request number;
+    /// `--file` picks the file when the name lives in more than one), `search
+    /// "<pattern>" [<folder>]` (the same text you would give `Grep`, with the
+    /// options `Grep` and `grep` take: `-i`, `-w`, `-F`, `--glob` and
+    /// `--type`; the answer is the one Mustard gives to that search), `summary` (the
+    /// summary of the project map, up to 3 kB; with `--file`, the parts of that
+    /// file: each declaration with its kind, name and lines, and the line
+    /// where its tests start), `skill --path <SKILL.md>` (every cited path exists and the
+    /// skill stays under 500 lines), `dump` (the map database table by
+    /// table, in a fixed order, for debugging) or `note "<sentence>" --file
+    /// <file> [--name <declaration>]` (writes the one-sentence meaning of that
+    /// file, or declaration, in business words, so the search finds it by
+    /// them; it stays valid until the file changes, and `slice` shows it, as
+    /// stale once the file changed). Reads `.claude/grain.db`;
+    /// prints JSON and exits 1 on a refusal.
     #[command(display_order = 16)]
     Map {
         /// The question to ask.
         #[arg(value_enum)]
         question: crate::commands::map::Question,
+        /// The text to look for (`search`), the same you would give `Grep`:
+        /// a regular expression, or plain text with `-F`; for `note`, the
+        /// sentence of what the file or declaration is for.
+        #[arg(value_name = "PATTERN")]
+        pattern: Option<String>,
+        /// The folder to look in (`search`); the current one by default.
+        #[arg(value_name = "FOLDER")]
+        folder: Option<PathBuf>,
+        /// Ignore case (`search`).
+        #[arg(short = 'i', long = "ignore-case")]
+        ignore_case: bool,
+        /// Match whole words only (`search`).
+        #[arg(short = 'w', long = "word-regexp")]
+        whole_word: bool,
+        /// Read the pattern as plain text (`search`).
+        #[arg(short = 'F', long = "fixed-strings")]
+        fixed: bool,
+        /// Only the files whose name matches, as the `glob` of `Grep`; a
+        /// leading `!` leaves them out (`search`).
+        #[arg(long)]
+        glob: Option<String>,
+        /// Only the files of this type, as the `type` of `Grep` (`search`).
+        #[arg(long = "type", value_name = "TYPE")]
+        kind: Option<String>,
         /// The file the question is about (for `examples`, the file the task
-        /// creates or changes, or its folder; for `users`, optional, keeps the
-        /// declaration of that file).
+        /// creates or changes, or its folder; for `users` and `history`,
+        /// optional, keeps the declaration of that file; for `summary`,
+        /// optional, lists the parts of that file).
         #[arg(long)]
         file: Option<String>,
         /// The task, in words, when there is no target file (`examples`).
         #[arg(long)]
         task: Option<String>,
-        /// The words to look for (`search`).
-        #[arg(long)]
+        /// The words to look for (`search`); an alias kept for the
+        /// measurements of the search, hidden from the help.
+        #[arg(long, hide = true)]
         query: Option<String>,
+        /// The sentence of what is looked for and why (`search`); an alias
+        /// kept for the measurements of the search, hidden from the help.
+        #[arg(long, hide = true)]
+        intent: Option<String>,
+        /// The description the agent gave the search (`search`); the terminal
+        /// hook fills it by itself, so it is only an option for the
+        /// measurements of the search, hidden from the help.
+        #[arg(long, hide = true)]
+        described: Option<String>,
+        /// The last thing the agent said before the search (`search`); the
+        /// terminal hook fills it by itself, so it is only an option for the
+        /// measurements of the search, hidden from the help.
+        #[arg(long, hide = true)]
+        said: Option<String>,
         /// The skill to check (`skill`).
         #[arg(long)]
         path: Option<PathBuf>,
-        /// The declaration the question is about (`slice`, `users`).
+        /// The declaration the question is about (`slice`, `users`,
+        /// `history`, `note`).
         #[arg(long)]
         name: Option<String>,
+        /// The pull request whose description `history` shows, first
+        /// paragraph only.
+        #[arg(long)]
+        pr: Option<u32>,
         /// Any directory inside the project. Defaults to the current dir.
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -79,16 +138,94 @@ pub enum ScanCmd {
 pub fn dispatch(cmd: ScanCmd) {
     match cmd {
         ScanCmd::Scan { root, out, full } => scan::run(&root, out.as_deref(), full),
-        ScanCmd::Map { question, file, task, query, path, name, root } => {
-            crate::commands::map::run(&crate::commands::map::MapOpts {
-                root,
-                question,
-                file,
-                task,
-                query,
-                path,
-                name,
-            });
-        }
+        map @ ScanCmd::Map { .. } => crate::commands::map::run(&map_opts(map)),
+    }
+}
+
+/// The options of `run map` that the command line carries, every flag in its
+/// field. Only called with the `Map` command.
+fn map_opts(cmd: ScanCmd) -> crate::commands::map::MapOpts {
+    let ScanCmd::Map {
+        question,
+        pattern,
+        folder,
+        ignore_case,
+        whole_word,
+        fixed,
+        glob,
+        kind,
+        file,
+        task,
+        query,
+        intent,
+        described,
+        said,
+        path,
+        name,
+        pr,
+        root,
+    } = cmd
+    else {
+        unreachable!("the options of `run map` are read from the `Map` command only")
+    };
+    let grep = pattern.map(|pattern| crate::commands::map::GrepSearch {
+        pattern,
+        folder,
+        ignore_case,
+        whole_word,
+        fixed,
+        glob,
+        kind,
+    });
+    crate::commands::map::MapOpts {
+        root,
+        question,
+        grep,
+        file,
+        task,
+        query,
+        intent,
+        described,
+        said,
+        path,
+        name,
+        pr,
+        session: crate::shared::spec_state::session_from_env(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct Probe {
+        #[command(subcommand)]
+        cmd: ScanCmd,
+    }
+
+    fn opts_of(args: &[&str]) -> crate::commands::map::MapOpts {
+        let mut line = vec!["probe", "map"];
+        line.extend_from_slice(args);
+        map_opts(Probe::try_parse_from(line).expect("the command line parses").cmd)
+    }
+
+    /// `--described` e `--said` da linha de comando chegam às opções da busca,
+    /// com `--query` e com o texto do `Grep`, e sem eles ficam vazios.
+    #[test]
+    fn the_description_and_the_speech_of_the_command_line_reach_the_search_options() {
+        let with_query = opts_of(&["search", "--query", "frete", "--described", "Procura o frete", "--said", "Vou olhar"]);
+        assert_eq!(with_query.query.as_deref(), Some("frete"));
+        assert_eq!(with_query.described.as_deref(), Some("Procura o frete"));
+        assert_eq!(with_query.said.as_deref(), Some("Vou olhar"));
+
+        let with_pattern = opts_of(&["search", "frete", ".", "--described", "Procura o frete", "--said", "Vou olhar"]);
+        assert_eq!(with_pattern.grep.as_ref().map(|grep| grep.pattern.as_str()), Some("frete"));
+        assert_eq!(with_pattern.described.as_deref(), Some("Procura o frete"));
+        assert_eq!(with_pattern.said.as_deref(), Some("Vou olhar"));
+
+        let bare = opts_of(&["search", "--query", "frete"]);
+        assert_eq!((bare.described, bare.said), (None, None));
     }
 }

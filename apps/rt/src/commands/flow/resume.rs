@@ -25,8 +25,8 @@ use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Value};
 
-use crate::commands::spec_events::{self, read::checkout};
-use crate::shared::spec_state::{session_from_env, DiskSpecState};
+use crate::commands::spec_events;
+use crate::shared::spec_state::{checkout, session_from_env, DiskSpecState};
 
 /// As opções de `mustard-rt run resume`.
 pub struct ResumeOpts {
@@ -110,10 +110,18 @@ pub(crate) fn current_line(root: &Path, session: Option<&str>) -> Option<String>
 }
 
 /// O bloco de retomada da spec atual da sessão `session`, vista de `root`,
-/// com os mesmos `None` de [`current_line`].
+/// com os mesmos `None` de [`current_line`]: cabe no teto do início da sessão
+/// sozinho.
 pub(crate) fn current_block(root: &Path, session: Option<&str>) -> Option<String> {
+    current_block_within(root, session, crate::hooks::session::session_start_inject::MAX_BYTES)
+}
+
+/// [`current_block`] encolhido para caber em `cap` bytes, quando algo mais
+/// precisa do mesmo teto: as listas cedem na ordem de [`fit`]. Se nem o bloco
+/// com todas as listas vazias cabe, ele volta nesse tamanho mínimo.
+pub(crate) fn current_block_within(root: &Path, session: Option<&str>, cap: usize) -> Option<String> {
     let (spec, log, lang) = current_log(root, session)?;
-    Some(resume_block(&spec, &log, lang))
+    Some(resume_block(&spec, &log, lang, cap))
 }
 
 /// A spec atual da sessão `session`, o arquivo de eventos dela e o idioma do
@@ -135,15 +143,18 @@ fn current_log(root: &Path, session: Option<&str>) -> Option<(String, SpecLog, L
 /// não levou às ondas.
 const RECORDED_KINDS: &[&str] = &["decision", "rule", "limit", "request", "criterion", "task"];
 
-/// O bloco de retomada da spec `spec`: a spec e a fase; as ondas entregues;
-/// cada onda em andamento com a pasta da cópia dela; as ondas cuja volta está
-/// gravada e espera a rodada, dizendo qual pede mudança de plano ainda sem o
-/// clique do usuário; as paradas no limite de consertos; as que faltam; o
+/// O bloco de retomada da spec `spec`: a spec e a fase; quantas ondas foram
+/// entregues, só a conta, porque o número de cada uma não muda o passo
+/// seguinte e cresce com a obra; cada onda em andamento com a pasta da cópia dela; as ondas cuja volta está
+/// gravada e espera a rodada, dizendo qual troca uma decisão do usuário ainda
+/// sem o clique dele; as paradas no limite de consertos; as que faltam; o
 /// código de cada item gravado depois da última rodada; e o próximo comando.
-/// Cabe no teto do início da sessão: quando passa, as listas encolhem na
-/// ordem de [`fit`] e cada uma diz quantos ficaram de fora.
-pub(crate) fn resume_block(spec: &str, log: &SpecLog, lang: Locale) -> String {
-    use crate::commands::flow::round::{change_accepted, replan_code, waves_in_progress, waves_stuck};
+/// Cabe em `cap` bytes: quando passa, as listas encolhem na ordem de [`fit`] e
+/// cada uma diz quantos ficaram de fora.
+pub(crate) fn resume_block(spec: &str, log: &SpecLog, lang: Locale, cap: usize) -> String {
+    use crate::commands::flow::round::{
+        change_accepted, replan_code, swaps_decision, waves_in_progress, waves_stuck,
+    };
 
     let state = State::from_log(log);
     let phase = state.phase.unwrap_or("survey");
@@ -157,11 +168,7 @@ pub(crate) fn resume_block(spec: &str, log: &SpecLog, lang: Locale) -> String {
         waves_in_progress(log).into_keys().filter(|n| !returned.contains(n)).collect();
     let stuck: Vec<String> = waves_stuck(log).into_keys().map(|n| n.to_string()).collect();
     let missing: Vec<String> = log
-        .block(BlockQuery::Block(Block::Waves))
-        .into_iter()
-        .filter(|e| e.event_type == "wave")
-        .filter_map(|e| e.wave())
-        .collect::<BTreeSet<u64>>()
+        .counted_waves()
         .into_iter()
         .filter(|n| !delivered.contains(n) && !running.contains(n) && !returned.contains(n))
         .map(|n| n.to_string())
@@ -179,9 +186,9 @@ pub(crate) fn resume_block(spec: &str, log: &SpecLog, lang: Locale) -> String {
         .iter()
         .filter_map(|e| {
             let wave = e.wave()?;
-            let asks = e
-                .str_field("replan")
-                .is_some_and(|change| !change_accepted(log, wave, &replan_code(wave, change)));
+            let asks = e.str_field("replan").is_some_and(|change| {
+                swaps_decision(e) && !change_accepted(log, wave, &replan_code(wave, change))
+            });
             Some(if asks {
                 translate("conversation_size.replan", lang).replace("{wave}", &wave.to_string())
             } else {
@@ -197,16 +204,16 @@ pub(crate) fn resume_block(spec: &str, log: &SpecLog, lang: Locale) -> String {
         .replace("{spec}", spec)
         .replace("{phase}", phase)
         .replace("{command}", &command)
+        .replace("{delivered}", &delivered.len().to_string())
         .replace("{next}", &next);
     let lists = [
         ("{recorded}", recorded_since_round(log)),
-        ("{delivered}", delivered.iter().map(u64::to_string).collect()),
         ("{missing}", missing),
         ("{stuck}", stuck),
         ("{returned}", waiting),
         ("{running}", in_flight),
     ];
-    fit(&text, &lists, lang)
+    fit(&text, &lists, lang, cap)
 }
 
 /// O código de cada decisão, regra, limite, pedido, critério e tarefa
@@ -230,13 +237,12 @@ fn recorded_since_round(log: &SpecLog) -> Vec<String> {
 }
 
 /// O bloco `text` com cada lista de `lists` no lugar da vaga dela: inteiras,
-/// quando cabem no teto do início da sessão. Senão, as listas cedem na ordem
+/// quando cabem em `cap` bytes. Senão, as listas cedem na ordem
 /// em que vêm — os códigos gravados primeiro, as ondas em andamento por
 /// último —, cada uma mostrando só os primeiros itens e quantos ficaram de
 /// fora, até o bloco caber; a lista seguinte só encolhe quando a anterior já
 /// não mostra item nenhum.
-fn fit(text: &str, lists: &[(&str, Vec<String>)], lang: Locale) -> String {
-    let cap = crate::hooks::session::session_start_inject::MAX_BYTES;
+fn fit(text: &str, lists: &[(&str, Vec<String>)], lang: Locale, cap: usize) -> String {
     let render = |kept: &[usize]| {
         lists.iter().zip(kept).fold(text.to_string(), |block, ((slot, items), &kept)| {
             let mut shown: Vec<String> = items[..kept].to_vec();
@@ -256,14 +262,19 @@ fn fit(text: &str, lists: &[(&str, Vec<String>)], lang: Locale) -> String {
     render(&kept)
 }
 
-/// O último passo do fluxo: o comando da chamada mais nova que deu certo.
+/// As chamadas que não são passo do fluxo: a busca do mapa grava a chamada
+/// para a conta do filtro, e não diz onde o fluxo parou.
+const NOT_A_STEP: &[&str] = &["map search"];
+
+/// O último passo do fluxo: o comando da chamada mais nova que deu certo,
+/// fora as de [`NOT_A_STEP`].
 fn last_step(log: &SpecLog) -> Option<String> {
     log.block(BlockQuery::Block(Block::Conversation))
         .into_iter()
         .filter(|e| e.event_type == "call" && e.str_field("result") == Some("ok"))
         .filter_map(|e| e.str_field("command"))
         .map(str::trim)
-        .rfind(|command| !command.is_empty())
+        .rfind(|command| !command.is_empty() && !NOT_A_STEP.contains(command))
         .map(str::to_string)
 }
 
@@ -338,8 +349,8 @@ pub const NEXT_BY_PHASE: &[(&str, &str)] = &[
 pub fn next_command(phase: &str, spec: &str, state: &State) -> Value {
     NEXT_BY_PHASE
         .iter()
-        .find(|(fase, _)| *fase == phase)
-        .and_then(|(_, nome)| step_command(nome, spec, state))
+        .find(|(candidate_phase, _)| *candidate_phase == phase)
+        .and_then(|(_, command_name)| step_command(command_name, spec, state))
         .map_or(Value::Null, Value::from)
 }
 
@@ -454,6 +465,22 @@ mod tests {
 
         let started = crate::hooks::session::session_start_inject::started_after_clear(root, "s-clear");
         assert!(started.lines().any(|l| l == line), "the session start carries the resume line: {started}");
+    }
+
+    /// A busca do mapa depois do passo da rodada não vira o último passo: a
+    /// retomada ainda diz que foi a rodada.
+    #[test]
+    fn a_map_search_after_the_round_does_not_become_the_last_step() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), b"{}").unwrap();
+        assert_eq!(record_open(root, "x", "feature/x", "dev"), Ok(true));
+        let seed = |event_type: &str, body: Value| crate::shared::spec_state::seed_event(root, "x", event_type, body);
+        seed("call", json!({"command": "round", "ms": 3, "result": "ok", "author": "binary"}));
+        seed("call", json!({"command": "map search", "ms": 1800, "result": "ok", "author": "binary", "filter": "jev",
+            "filter_ms": 1500, "tokens": 20985, "cost_micro_usd": 881, "candidates": 100, "returned": 12}));
+        let log = crate::shared::spec_state::DiskSpecState::new(root).log("x").unwrap();
+        assert_eq!(last_step(&log).as_deref(), Some("round"));
     }
 
     /// Na linha de retomada, a onda em andamento é a que a rodada diz que

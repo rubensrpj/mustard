@@ -10,7 +10,7 @@
 # Ubuntu 22.04 (glibc 2.35 -> roda em Ubuntu 22.04+):
 #   dist/mustard_<versao>_amd64.deb    + install.sh (apt) + TUTORIAL-LINUX.md
 #
-# O pacote Windows contém: bin/ (scan, mustard-rt, mustard, rtk), templates/,
+# O pacote Windows contém: bin/ (scan, mustard-rt, mustard, rtk),
 # install.ps1 e README.txt — the NSIS installer is built by the release workflow
 # (packaging/windows/mustard.nsi), not here. O .deb Linux instala tudo via `apt`
 # — ver packaging/linux/Dockerfile + packaging/linux/build-deb.sh.
@@ -35,7 +35,6 @@ $Root         = Split-Path -Parent $PkgDir
 $Installer    = Join-Path $PkgDir 'installer'
 $Dist         = Join-Path $Root 'dist'
 $Stage        = Join-Path $Dist '_stage'
-$TemplatesSrc = Join-Path $Root 'apps\cli\templates'
 $Bins         = @('scan', 'mustard-rt', 'mustard')
 
 function New-CleanDir([string]$p) {
@@ -78,8 +77,7 @@ if ($Targets -eq 'rtk') {
     return
 }
 
-if (-not (Test-Path $TemplatesSrc)) { throw "templates payload não encontrado em $TemplatesSrc — rode da raiz do repo." }
-if (-not (Test-Path $Installer))    { throw "instaladores não encontrados em $Installer." }
+if (-not (Test-Path $Installer)) { throw "instaladores não encontrados em $Installer." }
 
 # ---------------------------------------------------------------- Windows ----
 if ($Targets -in 'windows', 'both') {
@@ -100,7 +98,6 @@ if ($Targets -in 'windows', 'both') {
     # rtk empacotado na versão fixa, conferida; sem ele o pacote não sai.
     $rtk = Get-PinnedRtk
     Copy-Item $rtk (Join-Path $pkg 'bin\rtk.exe') -Force
-    Copy-Item $TemplatesSrc (Join-Path $pkg 'templates') -Recurse -Force
     Copy-Item (Join-Path $Installer 'install.ps1') $pkg -Force
     Copy-Item (Join-Path $Installer 'README.txt')  $pkg -Force
 

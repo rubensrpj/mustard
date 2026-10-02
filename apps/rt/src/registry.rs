@@ -5,14 +5,17 @@
 //! registro e não muda. Cada gancho diz os pares `(Trigger, ToolMatch)` em que
 //! roda, e uma chamada que não casa com nenhum deles nem o executa.
 //!
-//! São onze, e só eles: a trava de comandos, o portão de escrita, o pedido do
-//! subagente, a testemunha da aprovação, a entrada da mensagem, o início da
-//! sessão, o conserto da barra de status, o sinal de vida da onda, o aviso
-//! antes de compactar, a faxina do fim da sessão e a conferência do fim da
+//! São treze, e só eles: a trava de comandos, o portão de escrita, o pedido
+//! do subagente, a testemunha da aprovação, a testemunha da cópia da página,
+//! a entrada da mensagem, o início da sessão, o conserto da barra de status,
+//! o sinal de vida da onda, a testemunha do glossário do mapa, o aviso antes
+//! de compactar, a faxina do fim da sessão e a conferência do fim da
 //! resposta.
 
 use crate::hooks::bash::command_guard::CommandGuard;
 use crate::hooks::observe::approval_witness::ApprovalWitness;
+use crate::hooks::observe::copy_witness::CopyWitness;
+use crate::hooks::observe::glossary_witness::GlossaryWitness;
 use crate::hooks::observe::wave_alive_observer::WaveAliveObserver;
 use crate::hooks::session::conversation_size::PrecompactNotice;
 use crate::hooks::session::prompt_entry::PromptEntry;
@@ -23,6 +26,7 @@ use crate::hooks::task::end_of_turn_check::EndOfTurnCheck;
 use crate::hooks::task::subagent_inject::SubagentInject;
 use crate::hooks::write::write_gate::WriteGate;
 use mustard_core::domain::model::contract::{Check, Observer, Trigger};
+use mustard_core::platform::project_seed::PAGE_DATABASE_TOOL;
 
 /// Em que ferramenta uma entrada do registro roda.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,9 +71,14 @@ impl Module {
     }
 }
 
-/// As ferramentas que escrevem ou leem arquivo, que o portão de escrita
-/// confere.
-const FILE_TOOLS: &[&str] = &["Read", "Write", "Edit", "MultiEdit", "NotebookEdit"];
+/// As ferramentas que escrevem, leem ou buscam arquivo, que o portão de
+/// escrita confere: a busca por palavra (`Grep`) e a busca por nome
+/// (`Glob`).
+const FILE_TOOLS: &[&str] = &["Read", "Write", "Edit", "MultiEdit", "NotebookEdit", "Grep", "Glob"];
+
+/// As ferramentas que editam arquivo de texto, cuja edição ensina o
+/// glossário do mapa.
+const EDIT_TOOLS: &[&str] = &["Edit", "Write", "MultiEdit"];
 
 /// As ferramentas que despacham um subagente.
 const AGENT_TOOLS: &[&str] = &["Task", "Agent"];
@@ -93,10 +102,11 @@ impl Registry {
                 check: Some(Box::new(CommandGuard)),
                 observer: None,
             },
-            // O portão de escrita, nas cinco ferramentas de arquivo. As
-            // regras, em ordem: segredo, arquivos que só o binário escreve,
-            // aprovação, a branch da spec (só aviso) e a base do `git.flow`.
-            // A primeira que responde decide.
+            // O portão de escrita, nas cinco ferramentas de arquivo e nas
+            // duas buscas (por palavra e por nome). As regras, em ordem: segredo, a chave do Jev, arquivos
+            // que só o binário escreve, aprovação, a branch da spec (só
+            // aviso), a base do `git.flow`, a leitura inteira grande e a
+            // leitura cortada. A primeira que responde decide.
             Module {
                 id: "write_gate",
                 applies_to: &[(Trigger::PreToolUse, ToolMatch::OneOf(FILE_TOOLS))],
@@ -121,8 +131,17 @@ impl Registry {
                 check: Some(Box::new(ApprovalWitness)),
                 observer: None,
             },
+            // A testemunha da cópia: no resultado de um lote mandado ao banco
+            // da página da spec, guarda as versões que o banco devolveu e,
+            // quando o último lote volta, grava a cópia. Nunca barra.
+            Module {
+                id: "copy_witness",
+                applies_to: &[(Trigger::PostToolUse, ToolMatch::Named(PAGE_DATABASE_TOOL))],
+                check: Some(Box::new(CopyWitness)),
+                observer: None,
+            },
             // A entrada da mensagem, numa chamada só: a trava de instalação,
-            // a mensagem gravada e a linha curta.
+            // a mensagem gravada e a correção da escrita, quando houver.
             Module {
                 id: "prompt_entry",
                 applies_to: &[(Trigger::UserPromptSubmit, ToolMatch::Any)],
@@ -153,6 +172,15 @@ impl Registry {
                 check: None,
                 observer: Some(Box::new(WaveAliveObserver)),
             },
+            // A testemunha do glossário do mapa: depois de cada edição, a
+            // declaração mudada que a última busca da sessão entregou ganha a
+            // marca das palavras da pergunta. Nunca barra.
+            Module {
+                id: "glossary_witness",
+                applies_to: &[(Trigger::PostToolUse, ToolMatch::OneOf(EDIT_TOOLS))],
+                check: None,
+                observer: Some(Box::new(GlossaryWitness)),
+            },
             // O aviso antes de compactar: em toda compactação, manual ou
             // automática, injeta o bloco de retomada pronto para colar.
             Module {
@@ -169,8 +197,9 @@ impl Registry {
                 observer: Some(Box::new(SessionCleanupObserver)),
             },
             // A conferência do fim da resposta, o único gancho do `Stop`: a
-            // regra das pendências bloqueia; a de clareza nunca bloqueia, só
-            // grava o erro para a mensagem seguinte.
+            // regra das pendências bloqueia; a de clareza só bloqueia a
+            // resposta fora do idioma do projeto, e os outros erros ela grava
+            // para a mensagem seguinte.
             Module {
                 id: "end_of_turn_check",
                 applies_to: &[(Trigger::Stop, ToolMatch::Any)],
@@ -232,9 +261,9 @@ mod tests {
         registry.applicable(trigger, tool).iter().map(|m| m.id).collect()
     }
 
-    /// O registro tem os onze ganchos que ficam, e só eles.
+    /// O registro tem os treze ganchos que ficam, e só eles.
     #[test]
-    fn the_registry_holds_exactly_the_eleven_hooks() {
+    fn the_registry_holds_exactly_the_thirteen_hooks() {
         let registry = Registry::new();
         let mut ids = registry.ids();
         ids.sort_unstable();
@@ -243,7 +272,9 @@ mod tests {
             [
                 "approval_witness",
                 "command_guard",
+                "copy_witness",
                 "end_of_turn_check",
+                "glossary_witness",
                 "precompact_notice",
                 "prompt_entry",
                 "session_cleanup_observer",
@@ -281,16 +312,25 @@ mod tests {
         assert!(!applicable_ids(&registry, Trigger::PreToolUse, Some("Write")).contains(&"command_guard"));
     }
 
-    /// O portão de escrita roda antes das cinco ferramentas de arquivo, e só
-    /// delas; o sinal de vida da onda segue rodando depois de cada uma.
+    /// O portão de escrita roda antes das cinco ferramentas de arquivo e das
+    /// duas buscas (por palavra e por nome), e só delas; o sinal de vida da
+    /// onda segue rodando depois de cada uma, e a testemunha do glossário, só
+    /// depois das três que editam texto: a leitura nunca ensina.
     #[test]
-    fn the_write_gate_runs_on_the_five_file_tools() {
+    fn the_write_gate_runs_on_the_file_tools_and_the_searches() {
         let registry = Registry::new();
-        for tool in ["Read", "Write", "Edit", "MultiEdit", "NotebookEdit"] {
+        for tool in ["Read", "Write", "Edit", "MultiEdit", "NotebookEdit", "Grep", "Glob"] {
             assert_eq!(applicable_ids(&registry, Trigger::PreToolUse, Some(tool)), ["write_gate"], "{tool}");
-            assert_eq!(applicable_ids(&registry, Trigger::PostToolUse, Some(tool)), ["wave_alive_observer"], "{tool}");
+            let after: &[&str] = if ["Write", "Edit", "MultiEdit"].contains(&tool) {
+                &["wave_alive_observer", "glossary_witness"]
+            } else {
+                &["wave_alive_observer"]
+            };
+            assert_eq!(applicable_ids(&registry, Trigger::PostToolUse, Some(tool)), after, "{tool}");
         }
-        for tool in ["Bash", "Task", "Agent", "Skill"] {
+        let module = registry.by_id("glossary_witness").expect("registered");
+        assert!(module.check.is_none() && module.observer.is_some());
+        for tool in ["Bash", "Task", "Agent", "Skill", "WebFetch"] {
             assert!(!applicable_ids(&registry, Trigger::PreToolUse, Some(tool)).contains(&"write_gate"), "{tool}");
         }
         let module = registry.by_id("write_gate").expect("registered");

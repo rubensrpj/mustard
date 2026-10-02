@@ -54,7 +54,6 @@ use crate::commands::event::work_branch::{
     checkout_work_branch, local_branch_exists, name_dirty_paths, remote_branch_exists, BusyCheckout,
     CheckoutWork, RefusalCause,
 };
-use crate::commands::scan::default_model_path;
 use crate::commands::spec_events::{self, write::record_open};
 use crate::shared::spec_state::DiskSpecState;
 use crate::shared::work_kind::WorkKind;
@@ -426,10 +425,13 @@ fn opened(
     report
 }
 
-/// O núcleo testável de [`run`], com o mapa do projeto atualizado de verdade.
-/// Nunca entra em pânico.
+/// O núcleo testável de [`run`], com o mapa do projeto atualizado de verdade
+/// e, com o mapa gravado, a leitura da história dos arquivos dele começada em
+/// segundo plano. Nunca entra em pânico.
 pub(crate) fn open_at(opts: &OpenOpts) -> Value {
-    open_with(opts, |root| Scan::locate().scan(root, &default_model_path(root)).map_err(|e| e.to_string()))
+    open_with(opts, |root| {
+        Scan::locate().scan_then_read_history(root, &mustard_core::io::project_map::model_path(root)).map_err(|e| e.to_string())
+    })
 }
 
 /// O `open`, com quem atualiza o mapa do projeto dado por quem chama.
@@ -1021,7 +1023,7 @@ use crate::shared::context::pending_branch::set_pending_branch;
 
     /// A pendência que virou a spec `spec`, pela leitura do merge.
     fn became(root: &Path, spec: &str) -> Option<String> {
-        crate::commands::event::pending::became_of(root, spec)
+        crate::commands::event::pending::carried_by(root, spec).into_iter().next()
     }
 
     /// Nada foi criado: nem branch nova, nem pasta de spec, e a lista de
@@ -1382,14 +1384,17 @@ use crate::shared::context::pending_branch::set_pending_branch;
         let log = DiskSpecState::new(root).log("x").expect("the spec has an event file");
         let said = log.visible().into_iter().find(|e| e.event_type == "message").map(|e| e.id);
         let said = said.expect("the hook records the user's answer");
-        let context = |text: &str| {
+        // O card vai em duas partes: o que o usuário lê em `text`, e o
+        // caminho dos documentos antigos na parte do agente.
+        let context = |text: &str, agent: &str| {
             write_at(&WriteOpts {
                 root: root.to_path_buf(),
                 spec: Some("x".into()),
                 event_type: "context".into(),
-                json: json!({ "text": text, "origin": said }).to_string(),
+                json: json!({ "title": "O objetivo da obra", "agent": agent, "text": text, "origin": said }).to_string(),
             })
         };
+        let (card_text, card_agent) = card.split_once("\nDocumentos antigos: ").expect("the card cites the old documents");
         let events = || std::fs::read_to_string(spec_dir(root, "x").join("spec.ndjson")).unwrap().lines().count();
         let before = events();
         let state = log.visible().into_iter().find(|e| e.event_type == "state").map(|e| e.id);
@@ -1398,12 +1403,12 @@ use crate::shared::context::pending_branch::set_pending_branch;
             root: root.to_path_buf(),
             spec: Some("x".into()),
             event_type: "context".into(),
-            json: json!({ "text": goal, "origin": state }).to_string(),
+            json: json!({ "title": "O objetivo da obra", "agent": "- conferir o objetivo", "text": goal, "origin": state }).to_string(),
         });
         assert_eq!(refused["reason"], json!("goal-origin-not-user"), "{refused}");
         assert_eq!(events(), before, "a refusal writes nothing");
-        assert_eq!(context(goal)["ok"], json!(true));
-        assert_eq!(context(card)["ok"], json!(true));
+        assert_eq!(context(goal, "- conferir o objetivo")["ok"], json!(true));
+        assert_eq!(context(card_text, &format!("- documentos antigos: {card_agent}"))["ok"], json!(true));
 
         let log = DiskSpecState::new(root).log("x").expect("the spec has an event file");
         let recorded = mustard_core::domain::survey::goal(&log).expect("the goal was recorded");

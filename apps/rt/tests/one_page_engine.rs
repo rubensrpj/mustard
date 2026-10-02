@@ -13,6 +13,9 @@
 //! crases e dos asteriscos. O código de teste fica de fora: ele confere
 //! páginas, não as escreve.
 
+#[path = "support/manifest_dir.rs"]
+mod manifest_dir;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -23,7 +26,7 @@ use serde_json::Value;
 const ENGINE_ONLY: &[&str] = &["<!doctype", "<style", "<code>", "<strong>", "<em>"];
 
 fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+    manifest_dir::manifest_dir().join("../..")
 }
 
 /// Os arquivos `.rs` de código sob `dir`, em ordem; pastas de teste, de
@@ -195,19 +198,19 @@ fn each_draft_item_becomes_an_event_of_its_type_and_lands_in_its_block() {
     // (tipo, bloco da leitura, campos, os textos que ficam iguais)
     let items: [(&str, &str, Value, &[&str]); 4] = [
         ("rule", "agreed",
-            serde_json::json!({"text": "A trava confere o programa, nunca o texto entre aspas.",
+            serde_json::json!({"title": "Combinar o item", "agent": "- conferir pelo teste", "text": "A trava confere o programa, nunca o texto entre aspas.",
                 "example": "rm -rf pasta é barrado.", "keys": ["trava"], "origin": 2}),
             &["text"]),
         ("criterion", "criteria",
-            serde_json::json!({"when": "O pedido de uma onda passa de 500 linhas.",
+            serde_json::json!({"title": "Combinar o item", "when": "O pedido de uma onda passa de 500 linhas.",
                 "then": "O binário recusa o despacho.", "proof": "cargo test", "form": "ubiquitous", "origin": 2}),
             &["when", "then"]),
         ("limit", "agreed",
-            serde_json::json!({"text": "Tamanho do pedido de cada onda.", "value": "500 linhas",
+            serde_json::json!({"title": "Combinar o item", "agent": "- conferir pelo teste", "text": "Tamanho do pedido de cada onda.", "value": "500 linhas",
                 "keys": ["pedido"], "origin": 2}),
             &["text"]),
         ("edge_case", "agreed",
-            serde_json::json!({"text": "Duas sessões gravam a mesma spec ao mesmo tempo.",
+            serde_json::json!({"title": "Combinar o item", "agent": "- conferir pelo teste", "text": "Duas sessões gravam a mesma spec ao mesmo tempo.",
                 "expected": "A segunda espera a trava.", "keys": ["trava"], "origin": 2}),
             &["text"]),
     ];

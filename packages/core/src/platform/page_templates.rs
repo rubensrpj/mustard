@@ -1,11 +1,11 @@
-//! Os templates das páginas do Mustard: a página de uma spec e a página do
-//! projeto.
+//! Os templates das páginas do Mustard: a página de uma spec, a página do
+//! projeto e a página do gasto.
 //!
 //! Cada template é um HTML pronto, com o visual do Mustard (mostarda e
 //! carvão), igual para toda spec e para todo projeto. Ele é publicado uma vez
 //! só no claude.ai e, ao abrir, lê o banco de dados que o claude.ai guarda
 //! junto da página publicada: o binário não monta mais a página, só prepara
-//! os dados. Os dois arquivos moram em `packages/core/templates/pages/` e vão
+//! os dados. Os três arquivos moram em `packages/core/templates/pages/` e vão
 //! embutidos no binário; o estilo e o script deles mudam sem mexer no código
 //! Rust.
 //!
@@ -13,7 +13,8 @@
 //!
 //! O template tem um lugar vazio para o catálogo, a tag
 //! `<script type="application/json" id="mustard-catalog">{}</script>`.
-//! [`spec_page_template`] e [`project_page_template`] o preenchem com o que o
+//! [`spec_page_template`], [`project_page_template`] e [`spend_page_template`]
+//! o preenchem com o que o
 //! binário sabe e o banco não traz: os textos da página no idioma do projeto,
 //! lidos do catálogo de textos, e, na página da spec, os tipos de evento
 //! (sigla do código, bloco e campos de cada um), os nomes dos blocos e das
@@ -72,7 +73,7 @@ use serde_json::{json, Value};
 
 use crate::domain::spec_events::{Block, Kind, AUTHORS, PHASES, PURGED_MARK, TYPES};
 use crate::domain::spec_state::is_approved_phase;
-use crate::platform::harness::harness_version;
+use crate::domain::spend::{SUMMARY_COLLECTION, SUMMARY_DOC};
 use crate::platform::i18n::{translate, Locale};
 
 /// O template da página da spec, como mora no repositório.
@@ -80,6 +81,9 @@ const SPEC_PAGE: &str = include_str!("../../templates/pages/spec.html");
 
 /// O template da página do projeto, como mora no repositório.
 const PROJECT_PAGE: &str = include_str!("../../templates/pages/project.html");
+
+/// O template da página do gasto, como mora no repositório.
+const SPEND_PAGE: &str = include_str!("../../templates/pages/spend.html");
 
 /// O lugar do catálogo em cada template, vazio até o binário preenchê-lo.
 const CATALOG_SLOT: &str = r#"<script type="application/json" id="mustard-catalog">{}</script>"#;
@@ -101,6 +105,10 @@ pub const COMPUTED: &str = "computed/current";
 /// A coleção das specs no banco da página do projeto.
 pub const SPECS: &str = "specs";
 
+/// A coleção das linhas do gasto no banco da página do gasto: um documento
+/// por dia e por projeto.
+pub const DAYS: &str = "days";
+
 /// O que a página da spec declara ao ser publicada: o banco de dados, que só
 /// quem edita a página grava, e o salvar arquivo do botão de baixar o `.md`.
 pub const SPEC_CAPABILITIES: &str =
@@ -109,6 +117,26 @@ pub const SPEC_CAPABILITIES: &str =
 /// O que a página do projeto declara ao ser publicada: o banco de dados, que
 /// só quem edita a página grava.
 pub const PROJECT_CAPABILITIES: &str = r#"{"db":{"rules":[{"path":"","read":"view","write":"admin"}]}}"#;
+
+/// O que a página do gasto declara ao ser publicada: o banco de dados, que só
+/// quem edita a página grava.
+pub const SPEND_CAPABILITIES: &str = PROJECT_CAPABILITIES;
+
+/// A versão do layout da página da spec, escrita na marca do molde. Sobe a
+/// cada mudança no molde montado (o template ou o catálogo dele): é ela, e
+/// não a versão do Mustard, que faz o marco avisar o usuário de que o
+/// desenho da página já publicada mudou; a página só é publicada de novo
+/// quando ele pede. A trava dos testes falha quando o molde muda sem ela
+/// subir.
+pub const SPEC_LAYOUT_VERSION: u32 = 14;
+
+/// A versão do layout da página do projeto, com a mesma regra de
+/// [`SPEC_LAYOUT_VERSION`].
+pub const PROJECT_LAYOUT_VERSION: u32 = 4;
+
+/// A versão do layout da página do gasto, com a mesma regra de
+/// [`SPEC_LAYOUT_VERSION`].
+pub const SPEND_LAYOUT_VERSION: u32 = 1;
 
 /// O template da página da spec, com o catálogo no idioma `lang`.
 #[must_use]
@@ -125,7 +153,7 @@ pub fn spec_page_template(lang: Locale) -> String {
         "purgedMark": PURGED_MARK,
         "labels": labels(SPEC_PAGE, lang),
     });
-    fill(SPEC_PAGE, &catalog)
+    fill(SPEC_PAGE, &catalog, SPEC_LAYOUT_VERSION)
 }
 
 /// O template da página do projeto, com o catálogo no idioma `lang`.
@@ -137,17 +165,32 @@ pub fn project_page_template(lang: Locale) -> String {
         "phases": PHASES,
         "labels": labels(PROJECT_PAGE, lang),
     });
-    fill(PROJECT_PAGE, &catalog)
+    fill(PROJECT_PAGE, &catalog, PROJECT_LAYOUT_VERSION)
 }
 
-/// O template com o catálogo no lugar dele. O catálogo vai como JSON dentro
-/// de uma tag `<script>`: todo `<` vira o escape `\u003c` do JSON, para nenhum texto
-/// fechar a tag antes da hora.
-fn fill(template: &str, catalog: &Value) -> String {
+/// O template da página do gasto, com o catálogo no idioma `lang`: só os
+/// textos que ele cita, porque ele não mostra tipos de evento.
+#[must_use]
+pub fn spend_page_template(lang: Locale) -> String {
+    let catalog = json!({
+        "lang": lang.as_str(),
+        "db": { "days": DAYS, "summary": format!("{SUMMARY_COLLECTION}/{SUMMARY_DOC}") },
+        "limit": 1000,
+        "chartDays": 60,
+        "labels": texts(cited_keys(SPEND_PAGE), lang),
+    });
+    fill(SPEND_PAGE, &catalog, SPEND_LAYOUT_VERSION)
+}
+
+/// O template com o catálogo no lugar dele, marcado com a versão `layout`
+/// do molde. O catálogo vai como JSON dentro de uma tag `<script>`: todo `<`
+/// vira o escape `\u003c` do JSON, para nenhum texto fechar a tag antes da
+/// hora.
+fn fill(template: &str, catalog: &Value, layout: u32) -> String {
     let json = catalog.to_string().replace('<', "\\u003c");
     let filled = format!(r#"<script type="application/json" id="mustard-catalog">{json}</script>"#);
     let body = template.replacen(CATALOG_SLOT, &filled, 1);
-    stamp(&body)
+    stamp(&body, layout)
 }
 
 /// O que vem antes do carimbo na marca do começo do modelo, na primeira
@@ -157,35 +200,52 @@ const VERSION_MARK_PREFIX: &str = "<!-- mustard:";
 /// O que vem depois do carimbo na marca do começo do modelo.
 const VERSION_MARK_SUFFIX: &str = "-->";
 
+/// O começo da versão do layout dentro do carimbo: `layout-1`, `layout-2`…
+const LAYOUT_PREFIX: &str = "layout-";
+
 /// `body` com o carimbo do modelo na frente, numa linha só: a versão do
-/// Mustard rodando e a impressão do conteúdo montado, o template com o
-/// catálogo já no lugar. É pelo carimbo inteiro que o passo que publica
-/// compara o modelo instalado no projeto e o da última publicação com o que
-/// o binário monta agora, sem reconstruir o catálogo inteiro: dois programas
-/// com a mesma versão e moldes diferentes, um instalado e outro compilado no
-/// meio de uma obra, dão carimbos diferentes.
-fn stamp(body: &str) -> String {
-    format!("{VERSION_MARK_PREFIX} {} {:016x} {VERSION_MARK_SUFFIX}\n{body}", harness_version(), fingerprint(body))
+/// layout do molde, `layout`, e a impressão do conteúdo montado, o template
+/// com o catálogo já no lugar. A versão decide se o desenho da página já
+/// publicada mudou ([`layout_version`]); a impressão fica para o modelo
+/// instalado no projeto, que o passo que publica compara pelo carimbo
+/// inteiro, sem reconstruir o catálogo: dois programas com a mesma versão de
+/// layout e moldes diferentes, um instalado e outro compilado no meio de uma
+/// obra, dão carimbos diferentes.
+fn stamp(body: &str, layout: u32) -> String {
+    format!(
+        "{VERSION_MARK_PREFIX} {LAYOUT_PREFIX}{layout} {:016x} {VERSION_MARK_SUFFIX}\n{body}",
+        fingerprint(body)
+    )
 }
 
 /// A impressão do conteúdo `body`: o FNV-1a de 64 bits sobre os bytes dele,
 /// estável entre versões do Rust e entre máquinas, ao contrário do hasher da
 /// biblioteca padrão. Qualquer mudança no template ou no catálogo muda a
-/// impressão.
-fn fingerprint(body: &str) -> u64 {
+/// impressão. O código curto da pasta das cópias de um projeto sai da mesma
+/// conta, sobre o caminho dele.
+pub(crate) fn fingerprint(body: &str) -> u64 {
     body.bytes().fold(0xcbf2_9ce4_8422_2325, |hash, byte| (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3))
 }
 
-/// O carimbo do modelo `text`, lido da primeira linha: a versão do Mustard
-/// que o gerou e a impressão do conteúdo, juntas, como a publicação o grava.
-/// `None` quando a marca não está lá — um modelo de antes dela, ou qualquer
-/// outro texto. O modelo de antes da impressão tem só a versão no carimbo, e
-/// por isso nunca é igual ao de agora.
+/// O carimbo do modelo `text`, lido da primeira linha: a versão do layout e
+/// a impressão do conteúdo, juntas, como a publicação o grava. `None` quando
+/// a marca não está lá — um modelo de antes dela, ou qualquer outro texto. O
+/// modelo de antes da versão do layout traz a versão do Mustard no lugar
+/// dela, e por isso nunca é igual ao de agora.
 #[must_use]
 pub fn template_stamp(text: &str) -> Option<&str> {
     let line = text.lines().next()?;
     let rest = line.strip_prefix(VERSION_MARK_PREFIX)?.trim();
     rest.strip_suffix(VERSION_MARK_SUFFIX).map(str::trim)
+}
+
+/// A versão do layout que o carimbo `stamp` guarda, como [`template_stamp`]
+/// o lê e a publicação o grava: `Some(2)` para `layout-2 <impressão>`. `None`
+/// para o carimbo de antes da versão do layout, que traz a versão do Mustard,
+/// e para qualquer texto sem ela.
+#[must_use]
+pub fn layout_version(stamp: &str) -> Option<u32> {
+    stamp.split_whitespace().next()?.strip_prefix(LAYOUT_PREFIX)?.parse().ok()
 }
 
 /// Cada tipo de evento como o template o lê: o nome, a sigla do código, o
@@ -228,6 +288,12 @@ fn kind_name(kind: Kind) -> &'static str {
 fn labels(template: &str, lang: Locale) -> BTreeMap<String, &'static str> {
     let mut keys = cited_keys(template);
     keys.extend(named_keys());
+    texts(keys, lang)
+}
+
+/// O texto de cada chave de `keys` no idioma `lang`; uma chave sem texto no
+/// catálogo fica de fora.
+fn texts(keys: BTreeSet<String>, lang: Locale) -> BTreeMap<String, &'static str> {
     keys.into_iter()
         .filter_map(|key| {
             let text = translate(&key, lang);
@@ -290,51 +356,153 @@ mod tests {
     use crate::domain::spec_index::ProjectRow;
     use crate::view::document::{RtkDay, WaveState, WaveStates};
 
-    /// O modelo gerado leva na primeira linha o carimbo: a versão do binário
-    /// rodando e a impressão do conteúdo montado. É essa marca que o passo
-    /// que publica confere para saber se o modelo instalado no projeto, ou o
-    /// da página publicada, está velho.
+    /// O modelo gerado leva na primeira linha o carimbo: a versão do layout
+    /// do molde e a impressão do conteúdo montado. A versão é a do molde, e
+    /// não a do Mustard: é por ela que o passo que publica sabe se a página
+    /// publicada está velha; a impressão diz se o modelo instalado no
+    /// projeto está em dia.
     #[test]
-    fn the_generated_template_is_stamped_with_the_version_and_the_content() {
-        for html in [spec_page_template(Locale::PtBr), project_page_template(Locale::PtBr)] {
+    fn the_generated_template_is_stamped_with_the_layout_version_and_the_content() {
+        for (html, layout) in [
+            (spec_page_template(Locale::PtBr), SPEC_LAYOUT_VERSION),
+            (project_page_template(Locale::PtBr), PROJECT_LAYOUT_VERSION),
+            (spend_page_template(Locale::PtBr), SPEND_LAYOUT_VERSION),
+        ] {
             let stamp = template_stamp(&html).expect("the stamp");
             let (version, print) = stamp.split_once(' ').expect("the version and the fingerprint");
-            assert_eq!(version, harness_version(), "{stamp}");
+            assert_eq!(version, format!("layout-{layout}"), "{stamp}");
+            assert_eq!(layout_version(stamp), Some(layout), "{stamp}");
+            let mustard = crate::platform::harness::harness_version();
+            assert!(!stamp.contains(mustard.as_str()), "the Mustard version stays out of the stamp: {stamp}");
             let body = html.split_once('\n').map(|(_, body)| body).expect("the body after the stamp");
             assert_eq!(print, format!("{:016x}", fingerprint(body)), "{stamp}");
         }
     }
 
-    /// Com a mesma versão, um molde de conteúdo diferente dá outro carimbo:
-    /// o idioma do catálogo muda o conteúdo, e muda o carimbo; o mesmo molde
-    /// montado duas vezes dá o mesmo carimbo.
+    /// Com a mesma versão de layout, um molde de conteúdo diferente dá outro
+    /// carimbo: o idioma do catálogo muda o conteúdo, e muda o carimbo; o
+    /// mesmo molde montado duas vezes dá o mesmo carimbo.
     #[test]
-    fn the_same_version_with_another_content_has_another_stamp() {
+    fn the_same_layout_version_with_another_content_has_another_stamp() {
         let pt = spec_page_template(Locale::PtBr);
         let en = spec_page_template(Locale::EnUs);
         assert_ne!(template_stamp(&pt), template_stamp(&en), "the content differs");
         assert_eq!(template_stamp(&pt), template_stamp(&spec_page_template(Locale::PtBr)), "the same content");
-        assert_ne!(stamp("a"), stamp("b"), "one byte is enough");
+        assert_ne!(stamp("a", 1), stamp("b", 1), "one byte is enough");
+        assert_ne!(stamp("a", 1), stamp("a", 2), "the layout version is in the stamp");
     }
 
     /// Um modelo sem a marca — de antes dela, ou qualquer outro texto — não
-    /// tem carimbo nenhum: a leitura não inventa um. O de antes da impressão
-    /// tem só a versão, e por isso não é o carimbo de agora.
+    /// tem carimbo nenhum: a leitura não inventa um. A marca de antes da
+    /// versão do layout traz a versão do Mustard: ela tem carimbo, mas
+    /// nenhuma versão de layout, e por isso não é o carimbo de agora.
     #[test]
     fn a_template_without_the_stamp_has_no_stamp() {
         assert_eq!(template_stamp("<!doctype html><html></html>"), None);
         assert_eq!(template_stamp(""), None);
-        let only_version = format!("<!-- mustard: {} -->\n<html></html>", harness_version());
-        assert_eq!(template_stamp(&only_version), Some(harness_version().as_str()));
-        assert_ne!(template_stamp(&only_version), template_stamp(&spec_page_template(Locale::PtBr)));
+        let old = "<!-- mustard: 0.2.0 0123456789abcdef -->\n<html></html>";
+        assert_eq!(template_stamp(old), Some("0.2.0 0123456789abcdef"));
+        assert_eq!(layout_version("0.2.0 0123456789abcdef"), None, "the old stamp has no layout version");
+        assert_eq!(layout_version("0.2.0"), None, "the stamp with only the version either");
+        assert_eq!(layout_version(""), None);
+        assert_eq!(layout_version("layout-x 0123"), None, "the version is a number");
+        assert_eq!(layout_version("layout-7 0123456789abcdef"), Some(7));
+        assert_ne!(template_stamp(old), template_stamp(&spec_page_template(Locale::PtBr)));
+    }
+
+    /// A versão do layout e a impressão de cada molde montado, nos dois
+    /// idiomas, como a última mudança de molde as deixou. Quem muda o molde
+    /// sobe a versão do layout dele e grava aqui a impressão nova que a falha
+    /// mostra.
+    const LAYOUT_TABLE: &[(&str, Locale, u32, &str)] = &[
+        ("spec", Locale::PtBr, 14, "66084342222d88e4"),
+        ("spec", Locale::EnUs, 14, "4f223a40cfef922d"),
+        ("project", Locale::PtBr, 4, "5ce19b21c8d05b39"),
+        ("project", Locale::EnUs, 4, "2bc07fa8f52ae1bc"),
+        ("spend", Locale::PtBr, 1, "c45efb7fc2593426"),
+        ("spend", Locale::EnUs, 1, "991dad9b6459540e"),
+    ];
+
+    /// Confere o carimbo `built` do molde `page` em `lang` contra a linha
+    /// dele em `table`: a impressão mudou com a mesma versão de layout, a
+    /// versão subiu sem a tabela acompanhar, ou a linha falta. Cada falha diz
+    /// o que fazer.
+    fn layout_drift(table: &[(&str, Locale, u32, &str)], page: &str, lang: Locale, built: &str) -> Option<String> {
+        let Some(&(_, _, version, print)) = table.iter().find(|(p, l, _, _)| *p == page && *l == lang) else {
+            return Some(format!("{page} ({lang}): no row in the layout table for the stamp {built}"));
+        };
+        let built_version = layout_version(built);
+        let built_print = built.split_whitespace().nth(1).unwrap_or_default();
+        if built_version == Some(version) && built_print != print {
+            return Some(format!(
+                "{page} ({lang}): the template changed without a new layout version. Raise the layout \
+                 version of this page and write in the layout table the version and the fingerprint \
+                 {built_print}"
+            ));
+        }
+        if built_version != Some(version) || built_print != print {
+            return Some(format!(
+                "{page} ({lang}): the layout version is {built_version:?}, and the table says {version}. Write \
+                 in the layout table the version and the fingerprint {built_print}"
+            ));
+        }
+        None
+    }
+
+    /// A trava das versões de layout: cada molde montado, nas duas páginas e
+    /// nos dois idiomas, tem a versão e a impressão da tabela. Mudar o molde
+    /// — o template ou o catálogo dele — sem subir a versão do layout falha
+    /// aqui, porque o usuário só é avisado de que o desenho da página já
+    /// publicada mudou quando a versão sobe.
+    #[test]
+    fn a_template_change_needs_a_new_layout_version() {
+        let mut failures = Vec::new();
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            for (page, html) in [
+                ("spec", spec_page_template(lang)),
+                ("project", project_page_template(lang)),
+                ("spend", spend_page_template(lang)),
+            ] {
+                let built = template_stamp(&html).expect("the stamp");
+                failures.extend(layout_drift(LAYOUT_TABLE, page, lang, built));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// A trava falha quando o molde muda com a mesma versão de layout, e a
+    /// falha manda subir a versão; com a versão nova e a tabela em dia, ela
+    /// passa, nas duas páginas.
+    #[test]
+    fn the_layout_lock_fails_on_a_new_template_with_the_same_version() {
+        let table = [("spec", Locale::PtBr, 3, "00000000000000aa"), ("project", Locale::PtBr, 5, "00000000000000bb")];
+        for (page, version) in [("spec", 3), ("project", 5)] {
+            let print = if page == "spec" { "00000000000000aa" } else { "00000000000000bb" };
+            let same = format!("layout-{version} {print}");
+            assert_eq!(layout_drift(&table, page, Locale::PtBr, &same), None, "{page}: the same template");
+            let changed = format!("layout-{version} 00000000000000cc");
+            let failure = layout_drift(&table, page, Locale::PtBr, &changed).expect("the new template fails");
+            assert!(failure.contains("Raise the layout version"), "{page}: {failure}");
+            let raised = format!("layout-{} 00000000000000cc", version + 1);
+            let failure = layout_drift(&table, page, Locale::PtBr, &raised).expect("the table is behind");
+            assert!(failure.contains("00000000000000cc"), "{page}: {failure}");
+            assert!(!failure.contains("Raise"), "{page}: the version already went up: {failure}");
+        }
     }
 
     /// O apoio que roda um template no Node, com o DOM e as capacidades do
-    /// claude.ai imitados.
-    const HARNESS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/page_templates/harness.js");
+    /// claude.ai imitados, lido da cópia que roda o teste.
+    fn harness() -> std::path::PathBuf {
+        crate::manifest_dir::manifest_dir().join("tests/fixtures/page_templates/harness.js")
+    }
 
-    /// A spec de exemplo da página de hoje, com um item de cada tipo.
-    const FIXTURE: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../apps/rt/tests/fixtures/spec_page/spec.ndjson"));
+    /// A spec de exemplo da página de hoje, com um item de cada tipo, lida da
+    /// cópia que roda o teste: ela mora no pacote do `rt`, e embutida na
+    /// compilação seria guardada pelo endereço da cópia que compilou.
+    fn fixture() -> String {
+        let path = crate::manifest_dir::manifest_dir().join("../../apps/rt/tests/fixtures/spec_page/spec.ndjson");
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{} unreadable: {e}", path.display()))
+    }
 
     /// As seções, os grupos e os itens que o motor antigo (`spec_page`, saído
     /// nesta obra) montava para a spec de exemplo: gravados uma vez, à mão,
@@ -373,7 +541,7 @@ mod tests {
             // vereditos de onda mesmo apontando a mesma onda 2.
             json!({"v":1,"id":46,"at":"2026-09-12T12:05:00-03:00","type":"verdict","author":"review","wave":2,"result":"approved","final":true,"text":"As ondas se encaixam sem prova perdida."}),
         ];
-        FIXTURE
+        fixture()
             .lines()
             .filter(|line| !line.trim().is_empty())
             .map(|line| serde_json::from_str::<Value>(line).expect("a fixture line"))
@@ -382,8 +550,10 @@ mod tests {
             .collect()
     }
 
+    /// O estado calculado das ondas da spec de exemplo, como a rodada o grava:
+    /// toda onda do plano, a por fazer inclusive.
     fn wave_states() -> WaveStates {
-        WaveStates::from([(2, WaveState::Approved), (3, WaveState::Running)])
+        WaveStates::from([(1, WaveState::Todo), (2, WaveState::Approved), (3, WaveState::Running), (4, WaveState::Todo)])
     }
 
     fn wave_prompts() -> BTreeMap<u64, String> {
@@ -451,14 +621,31 @@ mod tests {
     /// (`downloads`): sem ele, o botão de baixar não pode nem tentar o
     /// navegador direto, porque isso não funciona dentro do claude.ai.
     fn run_with_downloads(page: &str, html: &str, db: Option<Value>, steps: Value, downloads: bool) -> Value {
+        run_refusing(page, html, db, steps, downloads, &[])
+    }
+
+    /// [`run_with_downloads`] com o banco de mentira recusando de vez o que
+    /// `refuse` lista: o caminho de uma coleção ou de um documento (a leitura
+    /// dele falha) e `db` (o claude.ai nem abre o banco). Além disso, o banco
+    /// de mentira recusa, como o servidor, a leitura de `ranges` sem limite
+    /// ou com mais de 8 documentos (`resource_exhausted`).
+    fn run_refusing(
+        page: &str,
+        html: &str,
+        db: Option<Value>,
+        steps: Value,
+        downloads: bool,
+        refuse: &[&str],
+    ) -> Value {
         let mut child = Command::new("node")
-            .arg(HARNESS)
+            .arg(harness())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .expect("the page templates run in Node.js during the test: install Node and put `node` on the PATH");
-        let input = json!({"page": page, "html": html, "db": db, "steps": steps, "downloads": downloads}).to_string();
+        let input = json!({"page": page, "html": html, "db": db, "steps": steps, "downloads": downloads, "refuse": refuse})
+            .to_string();
         child.stdin.take().expect("stdin").write_all(input.as_bytes()).expect("the harness reads its input");
         let out = child.wait_with_output().expect("the harness ends");
         assert!(out.status.success(), "the harness failed: {}", String::from_utf8_lossy(&out.stderr));
@@ -805,7 +992,7 @@ mod tests {
             json!({"v":1,"id":2,"at":"2026-09-19T09:01:00-03:00","type":"send","author":"binary","wave":9,
                 "role":"wave","template":"# molde\n\nTexto do molde.","text":"# pedido\n\nTexto do pedido.",
                 "lines":2,"chars":40,"items":[1],"mustard":"0.2.1",
-                "model":"sonnet","model_used":"sonnet","steps":12,"tokens":3400,"origin":1}),
+                "model":"sonnet","effort":"xhigh","model_used":"sonnet","steps":12,"tokens":3400,"origin":1}),
             json!({"v":1,"id":3,"at":"2026-09-19T09:02:00-03:00","type":"verdict","author":"review",
                 "wave":9,"result":"approved","final":false,"text":"A onda fecha certo.","origin":1}),
         ];
@@ -826,7 +1013,7 @@ mod tests {
         let detail = &page["detail"];
         assert_eq!(detail["wave"], json!(9), "the only wave opens: {detail}");
         let labels: Vec<Value> = detail["measures"].as_array().expect("measures").iter().map(|f| f[0].clone()).collect();
-        for key in ["page.field.model", "page.field.model_used", "page.field.steps", "page.field.tokens", "page.metrics.col.delivery"] {
+        for key in ["page.field.model", "page.field.effort", "page.field.model_used", "page.field.steps", "page.field.tokens", "page.metrics.col.delivery"] {
             let label = json!(translate(key, Locale::PtBr));
             assert!(labels.contains(&label), "{key} ({label}) is not shown among {labels:?}");
         }
@@ -845,6 +1032,483 @@ mod tests {
         // O gasto que o binário compôs vai para o .md como veio.
         let md = got["md"]["data"].as_str().unwrap_or_default();
         assert!(md.contains(line), "{md}");
+    }
+
+    /// O cartão de código `code` na aba `anchor`.
+    fn card_of<'a>(seen: &'a Value, anchor: &str, code: &str) -> &'a Value {
+        cards(seen, anchor).iter().find(|i| i["code"] == json!(code)).unwrap_or_else(|| panic!("no {code} in {anchor}"))
+    }
+
+    /// Os rótulos da tabela de um cartão, na ordem.
+    fn field_labels(card: &Value) -> Vec<String> {
+        card["fields"].as_array().expect("fields").iter().map(|f| f[0].as_str().unwrap_or_default().to_string()).collect()
+    }
+
+    /// Cada pedaço aparece em `text`, na ordem dada.
+    fn assert_in_order(text: &str, pieces: &[&str]) {
+        let mut from = 0;
+        for piece in pieces {
+            let at = text[from..].find(piece).unwrap_or_else(|| panic!("{piece:?} is missing, or out of order, in:\n{text}"));
+            from += at + piece.len();
+        }
+    }
+
+    /// Uma decisão gravada na forma de três partes: título, porquê com
+    /// parágrafos e lista, e a parte do agente.
+    fn three_part_decision(id: u64) -> Value {
+        json!({"v":1,"id":id,"code":"MSTD-DEC-0001","at":"2026-09-25T09:01:00-03:00","type":"decision","author":"assistant",
+            "title":"Item antigo aparece como hoje",
+            "text":"O item gravado antes desta obra não é reescrito.\n\nNa página:\n\n- a primeira frase vira o título;\n- o porquê não se separa.",
+            "agent":"- página: `e.title` ou `firstParagraph`\n- conferir pelo harness",
+            "why":"Separar o bloco antigo seria adivinhar.","keys":["item antigo"],"origin":1})
+    }
+
+    /// O item de três partes abre na página com o título no nome do cartão,
+    /// o porquê à vista, com parágrafos e listas, e a parte do agente
+    /// fechada dentro dele. Um clique abre a parte do agente, e ela continua
+    /// aberta quando uma cópia nova chega; o cartão que o usuário fechou
+    /// também continua fechado. O título e a parte do agente não se repetem
+    /// na tabela, a busca acha o item pela parte do agente, e o `.md` traz o
+    /// título, o porquê e a parte do agente. O critério com título mostra o
+    /// título, e o quando e o então vão para a tabela.
+    #[test]
+    fn a_new_item_shows_its_title_and_why_open_and_its_agent_part_folded() {
+        let context = json!({"v":1,"id":1,"code":"MSTD-CTX-0001","at":"2026-09-25T09:00:00-03:00","type":"context","author":"assistant","text":"A página lê o banco."});
+        let criterion = json!({"v":1,"id":3,"code":"MSTD-CRIT-0001","at":"2026-09-25T09:02:00-03:00","type":"criterion","author":"assistant",
+            "title":"O cartão novo nasce aberto","when":"A página mostra um item novo.","then":"O porquê fica à vista.",
+            "proof":"cargo test -p mustard-core -- page_templates","origin":1});
+        let lines = vec![context, three_part_decision(2), criterion];
+        let note = |id: u64| json!({"v":1,"id":id,"at":"2026-09-25T10:00:00-03:00","type":"note","author":"assistant","text":format!("Nota {id}."),"keys":["nota"],"origin":1});
+        let copy = |extra: Vec<Value>| {
+            let items = [lines.clone(), extra].concat();
+            json!({"do": "copy", "set": {"ranges": [{"id": "0", "data": {"seq": 0, "items": items}}]}})
+        };
+        let steps = json!([
+            {"do": "wait"}, {"do": "scrape", "as": "page"}, {"do": "download", "as": "md"},
+            {"do": "search", "value": "harness"}, {"do": "scrape", "as": "search"}, {"do": "search", "value": ""},
+            {"do": "click", "value": "MSTD-DEC-0001", "part": "agent"}, copy(vec![note(4)]), {"do": "scrape", "as": "clicked"},
+            {"do": "click", "value": "MSTD-DEC-0001"}, copy(vec![note(4), note(5)]), {"do": "scrape", "as": "closed"},
+        ]);
+        let got = run("spec", &spec_page_template(Locale::PtBr), Some(spec_database(&lines)), steps);
+        let page = &got["page"];
+
+        let decision = card_of(page, "agreed", "MSTD-DEC-0001");
+        assert_eq!(decision["title"], json!("Item antigo aparece como hoje"), "{decision}");
+        assert_eq!(decision["open"], json!(true), "the new item opens with its why in view: {decision}");
+        assert_in_order(
+            decision["html"].as_str().unwrap_or_default(),
+            &[
+                "<p>O item gravado antes desta obra não é reescrito.</p>",
+                "<p>Na página:</p>",
+                "<ul><li>a primeira frase vira o título;</li><li>o porquê não se separa.</li></ul>",
+            ],
+        );
+        let agent = &decision["agent"];
+        assert_eq!((&agent["summary"], &agent["open"]), (&json!("Para o agente"), &json!(false)), "{decision}");
+        assert_eq!(
+            agent["html"],
+            json!("<ul><li>página: <code>e.title</code> ou <code>firstParagraph</code></li><li>conferir pelo harness</li></ul>")
+        );
+        assert_eq!(
+            field_labels(decision),
+            [translate("page.field.why", Locale::PtBr), translate("page.field.origin", Locale::PtBr)],
+            "neither the title nor the agent part repeats in the table"
+        );
+
+        let crit = card_of(page, "criteria", "MSTD-CRIT-0001");
+        assert_eq!((&crit["title"], &crit["open"], &crit["agent"]), (&json!("O cartão novo nasce aberto"), &json!(false), &Value::Null));
+        let labels = field_labels(crit);
+        for key in ["page.field.when", "page.field.then", "page.field.proof"] {
+            assert!(labels.contains(&translate(key, Locale::PtBr).to_string()), "{key} is not in {labels:?}");
+        }
+
+        assert_eq!(visible_codes(&got["search"]), ["MSTD-DEC-0001"], "the search reads the agent part");
+
+        let clicked = card_of(&got["clicked"], "agreed", "MSTD-DEC-0001");
+        assert_eq!((&clicked["open"], &clicked["agent"]["open"]), (&json!(true), &json!(true)), "a new copy keeps the opened agent part");
+        let closed = card_of(&got["closed"], "agreed", "MSTD-DEC-0001");
+        assert_eq!(closed["open"], json!(false), "a new copy keeps the card the user closed");
+
+        let md = got["md"]["data"].as_str().unwrap_or_default();
+        assert_in_order(
+            md,
+            &[
+                "\n- **MSTD-DEC-0001** — Item antigo aparece como hoje\n",
+                "\n  O item gravado antes desta obra não é reescrito.\n",
+                "\n  - a primeira frase vira o título;\n",
+                "\n  **Para o agente**\n",
+                "\n  - página: `e.title` ou `firstParagraph`\n",
+                "\n  - Por quê: Separar o bloco antigo seria adivinhar.\n",
+            ],
+        );
+        assert!(md.contains("\n- **MSTD-CRIT-0001** — O cartão novo nasce aberto\n"), "{md}");
+    }
+
+    /// A tabela de medidas da onda mostra o agente chamado, gravado no envio,
+    /// sob o rótulo do catálogo nos dois idiomas, nunca pela chave crua. O
+    /// objetivo feito de um contexto de três partes abre pelo título, com o
+    /// porquê à vista e a parte do agente fechada, como nos cartões; o
+    /// contexto antigo, só com texto, segue mostrando o texto inteiro, sem
+    /// título à parte.
+    #[test]
+    fn the_called_agent_has_a_label_and_the_goal_opens_by_the_context_title() {
+        let context = json!({"v":1,"id":1,"code":"MSTD-CTX-0001","at":"2026-09-25T09:00:00-03:00","type":"context","author":"assistant",
+            "title":"O painel diz cada coisa uma vez",
+            "text":"Hoje o painel repete o estado.\n\nDepois, cada dado aparece num lugar só.",
+            "agent":"- página: `renderGoal`\n- conferir pelo harness"});
+        let wave = json!({"v":1,"id":2,"at":"2026-09-25T09:01:00-03:00","type":"wave","author":"assistant",
+            "n":9,"text":"A onda nove.","criteria":[],"done_when":"A suíte passa.","origin":1});
+        let send = json!({"v":1,"id":3,"at":"2026-09-25T09:02:00-03:00","type":"send","author":"binary","wave":9,
+            "role":"wave","agent":"wave","text":"# pedido\n\nTexto do pedido.","lines":2,"chars":24,"items":[1],
+            "mustard":"0.2.1","origin":1});
+        let steps = json!([{"do": "wait"}, {"do": "scrape", "as": "page"}]);
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let lines = vec![context.clone(), wave.clone(), send.clone()];
+            let mut db = spec_database(&lines);
+            db["computed"][0]["data"]["waves"] = json!({"9": "running"});
+            db["computed"][0]["data"]["prompts"] = json!({});
+            let got = run("spec", &spec_page_template(lang), Some(db), steps.clone());
+            let page = &got["page"];
+
+            let measures = page["detail"]["measures"].as_array().expect("measures");
+            let label = translate("page.field.agent", lang);
+            assert_ne!(label, "<missing-key>", "{lang}");
+            assert!(measures.contains(&json!([label, "wave"])), "{lang}: the called agent under its label: {measures:?}");
+            assert!(
+                measures.iter().all(|f| !f[0].as_str().unwrap_or_default().starts_with("page.")),
+                "{lang}: no raw key among the measures: {measures:?}"
+            );
+
+            let goal = &page["goal"];
+            assert_eq!(goal["title"], json!("O painel diz cada coisa uma vez"), "{lang}: {goal}");
+            assert_eq!(
+                goal["html"],
+                json!("<p>Hoje o painel repete o estado.</p><p>Depois, cada dado aparece num lugar só.</p>"),
+                "{lang}: the whole why stays in view under the title"
+            );
+            let agent = &goal["agent"];
+            assert_eq!((&agent["summary"], &agent["open"]), (&json!(translate("page.item.agent", lang)), &json!(false)), "{lang}: {goal}");
+            assert_eq!(agent["html"], json!("<ul><li>página: <code>renderGoal</code></li><li>conferir pelo harness</li></ul>"), "{lang}");
+        }
+
+        let old = json!({"v":1,"id":1,"code":"MSTD-CTX-0001","at":"2026-09-25T09:00:00-03:00","type":"context","author":"assistant",
+            "text":"O painel antigo abre pelo texto.\n\nO segundo parágrafo fica junto."});
+        let got = run("spec", &spec_page_template(Locale::PtBr), Some(spec_database(&[old])), steps);
+        let goal = &got["page"]["goal"];
+        assert_eq!((&goal["title"], &goal["agent"]), (&Value::Null, &Value::Null), "the old context has no title of its own: {goal}");
+        assert_eq!(goal["html"], json!("<p>O painel antigo abre pelo texto.</p><p>O segundo parágrafo fica junto.</p>"), "{goal}");
+    }
+
+    /// O item gravado antes da forma de três partes aparece como antes: a
+    /// primeira frase é o título, o cartão nasce fechado e o resto do texto
+    /// abre dentro dele, sem parte do agente; o critério sem título junta os
+    /// campos no nome do cartão. A tarefa que já tinha título segue com ele
+    /// na lista Agora, e o `.md` dela continua abrindo pelo texto.
+    #[test]
+    fn an_old_item_shows_as_before() {
+        let lines = vec![
+            json!({"v":1,"id":1,"code":"MSTD-CTX-0001","at":"2026-09-25T09:00:00-03:00","type":"context","author":"assistant","text":"A página lê o banco."}),
+            json!({"v":1,"id":2,"code":"MSTD-RULE-0001","at":"2026-09-25T09:01:00-03:00","type":"rule","author":"assistant",
+                "text":"A trava confere o programa.\n\nVale para o Bash e o PowerShell.","example":"`rm -rf pasta` é barrado.","keys":["trava"],"origin":1}),
+            json!({"v":1,"id":3,"code":"MSTD-CRIT-0001","at":"2026-09-25T09:02:00-03:00","type":"criterion","author":"assistant",
+                "when":"A página abre.","then":"O cartão fecha.","proof":"cargo test","origin":1}),
+            board_task(4, "MSTD-TASK-0001", None, Some("Título curto do backlog"), "A tarefa com título. Segunda frase.", json!([])),
+        ];
+        let got = run("spec", &spec_page_template(Locale::PtBr), Some(spec_database(&lines)),
+            json!([{"do": "wait"}, {"do": "scrape", "as": "page"}, {"do": "download", "as": "md"}]));
+        let page = &got["page"];
+
+        let rule = card_of(page, "agreed", "MSTD-RULE-0001");
+        assert_eq!(
+            (&rule["title"], &rule["open"], &rule["agent"], &rule["text"]),
+            (&json!("A trava confere o programa."), &json!(false), &Value::Null, &json!("Vale para o Bash e o PowerShell.")),
+            "{rule}"
+        );
+        assert_eq!(field_labels(rule), [translate("page.field.example", Locale::PtBr), translate("page.field.origin", Locale::PtBr)]);
+
+        let crit = card_of(page, "criteria", "MSTD-CRIT-0001");
+        assert_eq!(
+            (&crit["title"], &crit["open"], &crit["agent"]),
+            (&json!("Quando: A página abre. · Então: O cartão fecha. · Verificação: cargo test"), &json!(false), &Value::Null),
+            "{crit}"
+        );
+        assert_eq!(field_labels(crit), [translate("page.field.origin", Locale::PtBr)]);
+
+        let backlog = now_rows(page);
+        assert!(backlog.contains(&json!(["backlog", "Pronta", "Título curto do backlog", "0 arquivos"])), "{backlog:?}");
+        let md = got["md"]["data"].as_str().unwrap_or_default();
+        let ready = translate("page.now.ready", Locale::PtBr);
+        for line in [
+            format!("- **MSTD-TASK-0001** · {ready} · 2026-09-22 10:00 — A tarefa com título. Segunda frase."),
+            "- **MSTD-RULE-0001**".to_string(),
+            "  A trava confere o programa.".to_string(),
+            "  Vale para o Bash e o PowerShell.".to_string(),
+        ] {
+            assert!(md.lines().any(|l| l == line), "{line:?} not in the .md:\n{md}");
+        }
+        assert!(!md.contains("Para o agente"), "no agent part in an old item:\n{md}");
+    }
+
+    /// O pedido da onda aparece inteiro nos dois formatos da linha de item.
+    /// No de hoje, cada linha traz o bloco, o código e o título, e a página
+    /// põe o item inteiro no lugar: o título, o porquê e a parte do agente
+    /// do item novo, e o texto todo do item antigo. A linha da tarefa ganha
+    /// o porquê dela logo abaixo, antes da parte do agente que o pedido já
+    /// traz. No formato antigo, com os códigos de um bloco numa linha só, o
+    /// item novo também abre pelo título, com o porquê e a parte do agente.
+    #[test]
+    fn a_wave_request_shows_whole_in_the_new_and_the_old_item_line() {
+        let new_request = "# demo — onda 5\n\n## Itens da onda\n\n\
+            - `waves` MSTD-WAVE-0001: A onda cinco.\n\
+            - `specification` MSTD-CTX-0001: A página lê o banco.\n\
+            - `agreed` MSTD-RULE-0001: A linha de item\n\n\
+            ## Tarefas, na ordem em que se faz\n\n\
+            - `MSTD-TASK-0001` Página mostra o título: `packages/core/templates/pages/spec.html`\n\
+            \x20 - `item()` separa as partes\n\
+            \x20 - quem testa `packages/core/templates/pages/spec.html`: `apps/rt/tests/project_page_install.rs`\n";
+        let old_request = "# demo — onda 6\n\n## Requisitos acordados\n\n- `agreed`: MSTD-RULE-0001\n- `specification`: MSTD-CTX-0001\n";
+        let lines = vec![
+            json!({"v":1,"id":1,"code":"MSTD-CTX-0001","at":"2026-09-25T09:00:00-03:00","type":"context","author":"assistant",
+                "text":"A página lê o banco.\n\nO banco guarda os itens."}),
+            json!({"v":1,"id":2,"code":"MSTD-RULE-0001","at":"2026-09-25T09:01:00-03:00","type":"rule","author":"assistant",
+                "title":"A linha de item","text":"O pedido e a página leem a mesma linha.","agent":"- o formato mora em `wave_prompt.rs`",
+                "example":"- `agreed` MSTD-DEC-0001: Título","keys":["linha"],"origin":1}),
+            json!({"v":1,"id":3,"code":"MSTD-WAVE-0001","at":"2026-09-25T09:02:00-03:00","type":"wave","author":"binary","n":5,
+                "text":"A onda cinco.","criteria":[],"done_when":"A suíte passa.","origin":1}),
+            json!({"v":1,"id":4,"code":"MSTD-TASK-0001","at":"2026-09-25T09:03:00-03:00","type":"task","author":"assistant","wave":5,
+                "title":"Página mostra o título","text":"Hoje o cartão fecha. Depois ele abre.","agent":"- `item()` separa as partes",
+                "files":[{"path":"packages/core/templates/pages/spec.html"}],"depends_on":[],"origin":1}),
+            json!({"v":1,"id":5,"at":"2026-09-25T09:04:00-03:00","type":"send","author":"binary","wave":5,"role":"wave","agent":"wave",
+                "text":new_request,"lines":12,"chars":400,"items":[1,2,3,4],"mustard":"0.2.4"}),
+            json!({"v":1,"id":6,"code":"MSTD-WAVE-0002","at":"2026-09-25T09:05:00-03:00","type":"wave","author":"binary","n":6,
+                "text":"A onda seis.","criteria":[],"done_when":"A suíte passa.","origin":1}),
+        ];
+        let mut db = spec_database(&lines);
+        db["computed"][0]["data"]["waves"] = json!({"5": "approved", "6": "todo"});
+        db["computed"][0]["data"]["prompts"] = json!({"6": old_request});
+        let steps = json!([
+            {"do": "wait"}, {"do": "hash", "value": "waves-5"}, {"do": "scrape", "as": "new"},
+            {"do": "hash", "value": "waves-6"}, {"do": "scrape", "as": "old"}, {"do": "download", "as": "md"},
+        ]);
+        let got = run("spec", &spec_page_template(Locale::PtBr), Some(db), steps);
+
+        let sent = prompt_of(&got["new"]);
+        let text = sent["text"].as_str().unwrap_or_default();
+        assert_in_order(
+            text,
+            &[
+                "MSTD-WAVE-0001 — A onda cinco.",
+                "MSTD-CTX-0001 — A página lê o banco.",
+                "O banco guarda os itens.",
+                "MSTD-RULE-0001 — A linha de item",
+                "O pedido e a página leem a mesma linha.",
+                "Para o agente",
+                "o formato mora em wave_prompt.rs",
+                "MSTD-TASK-0001 Página mostra o título: packages/core/templates/pages/spec.html",
+                "Hoje o cartão fecha. Depois ele abre.",
+                "item() separa as partes",
+                "quem testa",
+            ],
+        );
+        for raw in ["MSTD-RULE-0001: ", "MSTD-CTX-0001: ", "MSTD-WAVE-0001: "] {
+            assert!(!text.contains(raw), "the line {raw:?} kept only the title:\n{text}");
+        }
+        let html = sent["html"].as_str().unwrap_or_default();
+        for piece in [
+            "<p>O pedido e a página leem a mesma linha.</p><p><strong>Para o agente</strong></p><ul><li>o formato mora em <code>wave_prompt.rs</code></li></ul>",
+            "<strong><a href=\"#MSTD-TASK-0001\">MSTD-TASK-0001</a></strong> Página mostra o título",
+            "<p>Hoje o cartão fecha. Depois ele abre.</p><ul><li><code>item()</code> separa as partes</li>",
+        ] {
+            assert!(html.contains(piece), "{piece:?} is not in the request:\n{html}");
+        }
+
+        assert_eq!(got["old"]["detail"]["wave"], json!(6), "the address opens wave 6");
+        let old = prompt_of(&got["old"])["text"].as_str().unwrap_or_default().to_string();
+        assert_in_order(
+            &old,
+            &[
+                "MSTD-RULE-0001 — A linha de item",
+                "O pedido e a página leem a mesma linha.",
+                "Para o agente",
+                "o formato mora em wave_prompt.rs",
+                "MSTD-CTX-0001 — A página lê o banco.",
+                "O banco guarda os itens.",
+            ],
+        );
+        assert!(!old.contains("agreed: MSTD-RULE-0001"), "no line keeps only the codes:\n{old}");
+
+        let md = got["md"]["data"].as_str().unwrap_or_default();
+        for line in [
+            "- `agreed` **MSTD-RULE-0001** — A linha de item",
+            "- **MSTD-TASK-0001** Página mostra o título: `packages/core/templates/pages/spec.html`",
+            "  - **MSTD-RULE-0001** — A linha de item",
+            "    **Para o agente**",
+        ] {
+            assert!(md.lines().any(|l| l == line), "{line:?} not in the .md:\n{md}");
+        }
+    }
+
+    /// O pedido de hoje traz cada item numa linha só — o tipo por extenso, o
+    /// código e o título —, num passo numerado ou numa linha de lista, e nada
+    /// do texto dele. A página põe embaixo de cada linha o texto inteiro do
+    /// item, recuado sob ela: a tarefa com o porquê e a parte do agente, a
+    /// regra do mesmo jeito, e a mensagem do usuário com o texto todo, do qual
+    /// a linha só mostra o começo. A lição, que não mora na spec, fica como o
+    /// pedido a traz, e a linha aparece uma vez só.
+    #[test]
+    fn a_wave_request_of_one_line_per_item_shows_each_item_whole_under_its_line() {
+        let said = "Pode liberar mais espaço, é voce que está lotando o disco e mais coisas aqui agora";
+        let request = String::from(
+            "# demo — onda 5\n\n## O que esta onda entrega\n\nA página mostra o título.\n\n\
+            ## Como ler cada item\n\nLeia o texto inteiro de cada item.\n\n\
+            ## O que fazer\n\n\
+            1. Leia o texto inteiro de cada item de \"O que obedecer\".\n\
+            2. Faça a tarefa MSTD-TASK-0001 — Página mostra o título\n\
+            \x20  - Atende: mensagem do usuário MSTD-MSG-0001 — \"Pode liberar mais espaço, é voce que está lotando o disco e…\"\n\
+            \x20  - Leia a tarefa e a mensagem inteiras antes de mexer.\n\
+            \x20  - Arquivo: `packages/core/templates/pages/spec.html`\n\
+            3. Grave a entrega, como diz \"O que devolver\".\n\n\
+            ## O que obedecer\n\n\
+            - Regra MSTD-RULE-0001 — A linha de item\n\
+            - Lição 7 — Nunca apague o cache\n"
+        );
+        let lines = vec![
+            json!({"v":1,"id":1,"code":"MSTD-MSG-0001","at":"2026-09-25T09:00:00-03:00","type":"message","author":"user","text":said}),
+            json!({"v":1,"id":2,"code":"MSTD-RULE-0001","at":"2026-09-25T09:01:00-03:00","type":"rule","author":"assistant",
+                "title":"A linha de item","text":"O pedido e a página leem a mesma linha.","agent":"- o formato mora em `wave_prompt.rs`",
+                "keys":["linha"],"origin":1}),
+            json!({"v":1,"id":3,"code":"MSTD-WAVE-0001","at":"2026-09-25T09:02:00-03:00","type":"wave","author":"binary","n":5,
+                "text":"A onda cinco.","criteria":[],"done_when":"A suíte passa.","origin":1}),
+            json!({"v":1,"id":4,"code":"MSTD-TASK-0001","at":"2026-09-25T09:03:00-03:00","type":"task","author":"assistant","wave":5,
+                "title":"Página mostra o título","text":"Hoje o cartão fecha. Depois ele abre.","agent":"- `item()` separa as partes",
+                "files":[{"path":"packages/core/templates/pages/spec.html"}],"depends_on":[],"origin":1}),
+            json!({"v":1,"id":5,"at":"2026-09-25T09:04:00-03:00","type":"send","author":"binary","wave":5,"role":"wave","agent":"wave",
+                "text":request,"lines":20,"chars":600,"items":[1,2,4],"mustard":"0.2.4"}),
+        ];
+        let mut db = spec_database(&lines);
+        db["computed"][0]["data"]["waves"] = json!({"5": "approved"});
+        let steps = json!([{"do": "wait"}, {"do": "hash", "value": "waves-5"}, {"do": "scrape", "as": "sent"}, {"do": "download", "as": "md"}]);
+        let got = run("spec", &spec_page_template(Locale::PtBr), Some(db), steps);
+
+        let text = prompt_of(&got["sent"])["text"].as_str().unwrap_or_default().to_string();
+        assert_in_order(
+            &text,
+            &[
+                "Faça a tarefa MSTD-TASK-0001 — Página mostra o título",
+                "Hoje o cartão fecha. Depois ele abre.",
+                "item() separa as partes",
+                "Atende: mensagem do usuário MSTD-MSG-0001 — \"Pode liberar mais espaço, é voce que está lotando o disco e…\"",
+                said,
+                "Leia a tarefa e a mensagem inteiras antes de mexer.",
+                "Regra MSTD-RULE-0001 — A linha de item",
+                "O pedido e a página leem a mesma linha.",
+                "Para o agente",
+                "o formato mora em wave_prompt.rs",
+                "Lição 7 — Nunca apague o cache",
+            ],
+        );
+        for once in ["Hoje o cartão fecha. Depois ele abre.", said, "O pedido e a página leem a mesma linha.", "Lição 7 — Nunca apague o cache"] {
+            assert_eq!(text.matches(once).count(), 1, "{once:?} should show once in:\n{text}");
+        }
+        let html = prompt_of(&got["sent"])["html"].as_str().unwrap_or_default().to_string();
+        for piece in [
+            "<strong><a href=\"#MSTD-TASK-0001\">MSTD-TASK-0001</a></strong> — Página mostra o título",
+            "<p>Hoje o cartão fecha. Depois ele abre.</p>",
+        ] {
+            assert!(html.contains(piece), "{piece:?} is not in the request:\n{html}");
+        }
+
+        let md = got["md"]["data"].as_str().unwrap_or_default();
+        for line in [
+            "2. Faça a tarefa **MSTD-TASK-0001** — Página mostra o título",
+            "   - Atende: mensagem do usuário **MSTD-MSG-0001** — \"Pode liberar mais espaço, é voce que está lotando o disco e…\"",
+            "- Regra **MSTD-RULE-0001** — A linha de item",
+            "- Lição 7 — Nunca apague o cache",
+        ] {
+            assert!(md.lines().any(|l| l == line), "{line:?} not in the .md:\n{md}");
+        }
+    }
+
+    /// No pedido de hoje, a linha de cada item traz embaixo, recuada, a parte
+    /// do agente do item novo ou o texto inteiro do item antigo. A página
+    /// mostra essa parte uma vez: a linha do item, o porquê do item novo logo
+    /// abaixo dela e as linhas recuadas como vieram; o texto do item antigo
+    /// também aparece uma vez. No pedido antigo, sem linha recuada sob o
+    /// item, a página segue pondo o item inteiro no lugar, como antes.
+    #[test]
+    fn the_agent_part_under_an_item_line_shows_once() {
+        let long = "A página lê o banco de eventos da spec, linha a linha, e monta cada cartão sem guardar cópia.";
+        let title = "A página lê o banco de eventos da spec, linha a linha, e monta cada…";
+        let new_request = format!(
+            "# demo — onda 5\n\n## Itens da onda\n\n\
+            - `agreed` MSTD-RULE-0001: A linha de item\n\
+            \x20 - o formato mora em `wave_prompt.rs`\n\
+            - `specification` MSTD-CTX-0001: {title}\n\
+            \x20 {long}\n\
+            \x20 O banco guarda os itens.\n"
+        );
+        let old_request = format!(
+            "# demo — onda 6\n\n## Itens da onda\n\n\
+            - `agreed` MSTD-RULE-0001: A linha de item\n\
+            - `specification` MSTD-CTX-0001: {title}\n"
+        );
+        let lines = vec![
+            json!({"v":1,"id":1,"code":"MSTD-CTX-0001","at":"2026-09-25T09:00:00-03:00","type":"context","author":"assistant",
+                "text":format!("{long}\n\nO banco guarda os itens.")}),
+            json!({"v":1,"id":2,"code":"MSTD-RULE-0001","at":"2026-09-25T09:01:00-03:00","type":"rule","author":"assistant",
+                "title":"A linha de item","text":"O pedido e a página leem a mesma linha.","agent":"- o formato mora em `wave_prompt.rs`",
+                "keys":["linha"],"origin":1}),
+            json!({"v":1,"id":3,"code":"MSTD-WAVE-0001","at":"2026-09-25T09:02:00-03:00","type":"wave","author":"binary","n":5,
+                "text":"A onda cinco.","criteria":[],"done_when":"A suíte passa.","origin":1}),
+            json!({"v":1,"id":4,"at":"2026-09-25T09:04:00-03:00","type":"send","author":"binary","wave":5,"role":"wave","agent":"wave",
+                "text":new_request,"lines":9,"chars":300,"items":[1,2,3],"mustard":"0.2.4"}),
+            json!({"v":1,"id":5,"code":"MSTD-WAVE-0002","at":"2026-09-25T09:05:00-03:00","type":"wave","author":"binary","n":6,
+                "text":"A onda seis.","criteria":[],"done_when":"A suíte passa.","origin":1}),
+        ];
+        let mut db = spec_database(&lines);
+        db["computed"][0]["data"]["waves"] = json!({"5": "approved", "6": "todo"});
+        db["computed"][0]["data"]["prompts"] = json!({"6": old_request});
+        let steps = json!([
+            {"do": "wait"}, {"do": "hash", "value": "waves-5"}, {"do": "scrape", "as": "new"},
+            {"do": "hash", "value": "waves-6"}, {"do": "scrape", "as": "old"},
+        ]);
+        let got = run("spec", &spec_page_template(Locale::PtBr), Some(db), steps);
+        let once = |text: &str, piece: &str| {
+            assert_eq!(text.matches(piece).count(), 1, "{piece:?} should show once in:\n{text}");
+        };
+
+        let new = prompt_of(&got["new"])["text"].as_str().unwrap_or_default().to_string();
+        assert_in_order(
+            &new,
+            &[
+                "MSTD-RULE-0001 — A linha de item",
+                "O pedido e a página leem a mesma linha.",
+                "o formato mora em wave_prompt.rs",
+                &format!("MSTD-CTX-0001 — {title}"),
+                long,
+                "O banco guarda os itens.",
+            ],
+        );
+        for piece in ["O pedido e a página leem a mesma linha.", "o formato mora em wave_prompt.rs", long, "O banco guarda os itens."] {
+            once(&new, piece);
+        }
+
+        assert_eq!(got["old"]["detail"]["wave"], json!(6), "the address opens wave 6");
+        let old = prompt_of(&got["old"])["text"].as_str().unwrap_or_default().to_string();
+        assert_in_order(
+            &old,
+            &[
+                "MSTD-RULE-0001 — A linha de item",
+                "O pedido e a página leem a mesma linha.",
+                "Para o agente",
+                "o formato mora em wave_prompt.rs",
+                &format!("MSTD-CTX-0001 — {long}"),
+                "O banco guarda os itens.",
+            ],
+        );
+        for piece in ["O pedido e a página leem a mesma linha.", "o formato mora em wave_prompt.rs", long, "O banco guarda os itens."] {
+            once(&old, piece);
+        }
     }
 
     /// O ponto do levantamento respondido ganha a marca de fechado, e a
@@ -994,7 +1658,7 @@ mod tests {
     /// aba dos removidos ganha a regra e a decisão, e a conversa, o registro
     /// da remoção.
     #[test]
-    fn remover_a_versao_nova_devolve_a_anterior_na_leitura_e_na_pagina() {
+    fn removing_the_new_version_returns_the_previous_one_in_the_read_and_on_the_page() {
         use crate::domain::spec_events::SpecLog;
         use crate::io::spec_events::write_at;
 
@@ -1112,7 +1776,7 @@ mod tests {
     /// leva a marca, devolve a versão anterior do item dela e deixa a leitura
     /// e a página como estavam antes da versão nova que ela tira.
     #[test]
-    fn uma_remocao_antiga_sem_a_marca_le_como_antes_na_leitura_e_na_pagina() {
+    fn an_old_removal_without_the_mark_reads_as_before_in_the_read_and_on_the_page() {
         use crate::domain::spec_events::{Hidden, SpecLog, TimeFilter};
         use crate::io::spec_events::write_at;
 
@@ -1315,13 +1979,214 @@ mod tests {
         }
     }
 
-    /// Sem banco, e com o banco ainda vazio, as duas páginas abrem e dizem que
+    /// O banco da página do gasto de exemplo: três linhas de dois dias e dois
+    /// projetos, e um documento sem projeto, que a página deixa de fora.
+    fn spend_database() -> Value {
+        let row = |id: &str, day: &str, project: &str, tokens: u64, actions: u64, searches: u64, cost: u64| {
+            json!({"id": id, "data": {"day": day, "project": project, "tokens": tokens, "actions": actions,
+                "code_searches": searches, "file_reads": 4, "mustard_searches": 3, "empty_searches": 1,
+                "jev_cost_micro_usd": cost}})
+        };
+        json!({"days": [
+            row("2026-09-30-mustard", "2026-09-30", "mustard", 1_234_567, 100, 25, 1_500_000),
+            row("2026-09-30-atiz", "2026-09-30", "atiz", 500, 50, 5, 0),
+            row("2026-10-01-mustard", "2026-10-01", "mustard", 10, 0, 0, 0),
+            {"id": "sem-projeto", "data": {"day": "2026-10-01", "tokens": 99}},
+        ]})
+    }
+
+    /// [`spend_database`] com o dia aberto, marcado como parcial, e o
+    /// documento do resumo da máquina, como o Mustard os copia.
+    fn spend_database_with_summary() -> Value {
+        let mut db = spend_database();
+        db["days"].as_array_mut().expect("days").push(json!({"id": "2026-10-02-mustard", "data": {
+            "day": "2026-10-02", "project": "mustard", "tokens": 7_500, "actions": 400, "code_searches": 40,
+            "file_reads": 4, "mustard_searches": 3, "empty_searches": 1, "jev_cost_micro_usd": 0, "partial": true}}));
+        db["summary"] = json!([{"id": "current", "data": {
+            "today": {"day": "2026-10-02", "tokens": 7_500, "actions": 400},
+            "yesterday": {"day": "2026-10-01", "tokens": 1_234_567, "actions": 1_000},
+            "last_3": {"tokens": 2_000_000, "days": 3}, "last_7": {"tokens": 1_500_000, "days": 6},
+            "month": {"tokens": 1_000_000, "days": 2},
+            "forecast": {"spent_micro_usd": 200_000, "spent_tokens": 7_000, "daily_micro_usd": 20_000,
+                "daily_tokens": 700, "days_left": 21, "micro_usd": 620_000, "tokens": 21_700},
+            "min_actions": 100}}]);
+        db
+    }
+
+    /// A página do gasto mostra uma linha por dia e por projeto, do dia mais
+    /// novo para o mais velho, com os números no jeito de cada idioma, e um
+    /// gráfico com a parte das ações que são procuras de código em cada dia,
+    /// do mais velho para o mais novo.
+    #[test]
+    fn the_spend_page_shows_a_row_per_day_and_project_and_the_share_of_code_searches_per_day() {
+        let steps = json!([{"do": "wait"}, {"do": "scrape", "as": "page"}]);
+        let cases = [
+            (Locale::PtBr, "1.234.567", "US$ 1,5000", "US$ 0,0000"),
+            (Locale::EnUs, "1,234,567", "US$ 1.5000", "US$ 0.0000"),
+        ];
+        for (lang, tokens, cost, free) in cases {
+            let got = run("spend", &spend_page_template(lang), Some(spend_database()), steps.clone());
+            let page = &got["page"];
+            assert_eq!(page["state"], json!("ready"), "{lang:?}: {page}");
+            assert_eq!(page["statusHidden"], json!(true), "{lang:?}");
+            assert_eq!(page["title"], json!(translate("page.spend.title", lang)), "{lang:?}");
+            let head: Vec<String> = [
+                "day", "project", "tokens", "actions", "searches", "share", "reads", "mustard", "empty", "jev_cost",
+            ]
+            .iter()
+            .map(|c| translate(&format!("page.spend.col.{c}"), lang).to_string())
+            .collect();
+            assert_eq!(page["head"], json!(head), "{lang:?}: the columns come from the catalog");
+            let cells = |day: &str, project: &str, rest: [&str; 8]| {
+                let mut all = vec![day.to_string(), project.to_string()];
+                all.extend(rest.iter().map(|c| (*c).to_string()));
+                json!({"day": day, "project": project, "cells": all})
+            };
+            assert_eq!(
+                page["rows"],
+                json!([
+                    cells("2026-10-01", "mustard", ["10", "0", "0", "0%", "4", "3", "1", free]),
+                    cells("2026-09-30", "atiz", ["500", "50", "5", "10%", "4", "3", "1", free]),
+                    cells("2026-09-30", "mustard", [tokens, "100", "25", "25%", "4", "3", "1", cost]),
+                ]),
+                "{lang:?}: a row per day and project, newest day first, the row without a project left out"
+            );
+            let point = |day: &str, percent: u64, searches: u64, actions: u64| {
+                translate("page.spend.chart_point", lang)
+                    .replace("{day}", day)
+                    .replace("{percent}", &percent.to_string())
+                    .replace("{searches}", &searches.to_string())
+                    .replace("{actions}", &actions.to_string())
+            };
+            assert_eq!(
+                page["bars"],
+                json!([
+                    {"day": "2026-09-30", "height": 27, "title": point("2026-09-30", 20, 30, 150)},
+                    {"day": "2026-10-01", "height": 0, "title": point("2026-10-01", 0, 0, 0)},
+                ]),
+                "{lang:?}: one bar per day, oldest first, the projects of the day summed"
+            );
+            assert_eq!(page["chartTitle"], json!(translate("page.spend.chart_title", lang)), "{lang:?}");
+        }
+    }
+
+    /// O topo da página do gasto traz o resumo da máquina: hoje até agora,
+    /// com a marca de parcial, ontem, as três médias e a previsão do Jev em
+    /// dólares e em tokens, no jeito de cada idioma; a linha do dia aberto vem
+    /// marcada como parcial na tabela e fora do gráfico; sem o documento do
+    /// resumo, a página mostra o resto.
+    #[test]
+    fn the_spend_page_shows_the_machine_summary_and_marks_the_open_day_as_partial() {
+        let steps = json!([{"do": "wait"}, {"do": "scrape", "as": "page"}]);
+        let tokens_of = |n: &str| format!("{n} tokens");
+        let money = |v: &str| format!("US$ {v}");
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let got = run("spend", &spend_page_template(lang), Some(spend_database_with_summary()), steps.clone());
+            let page = &got["page"];
+            assert_eq!(page["state"], json!("ready"), "{lang:?}: {page}");
+            let (thousands, point) = if lang == Locale::PtBr { ('.', ',') } else { (',', '.') };
+            let n = |digits: &str| {
+                let mut out = String::new();
+                for (at, c) in digits.chars().enumerate() {
+                    if at > 0 && (digits.len() - at).is_multiple_of(3) {
+                        out.push(thousands);
+                    }
+                    out.push(c);
+                }
+                out
+            };
+            let usd = |v: &str| money(&v.replace('.', &point.to_string()));
+            let day_actions = |day: &str, n: &str| {
+                translate("page.spend.summary.day_actions", lang).replace("{day}", day).replace("{n}", n)
+            };
+            let used = |days: &str| translate("page.spend.summary.days_used", lang).replace("{n}", days);
+            let detail = |spent: &str, daily: &str| {
+                translate("page.spend.summary.forecast_detail", lang)
+                    .replace("{spent}", spent)
+                    .replace("{daily}", daily)
+                    .replace("{left}", "21")
+            };
+            let card = |id: &str, name: &str, badge: Value, value: String, subs: Vec<String>| {
+                json!({"id": id, "label": translate(name, lang), "badge": badge, "value": value, "subs": subs})
+            };
+            let partial = json!(translate("page.spend.summary.partial", lang));
+            assert_eq!(
+                page["cards"],
+                json!([
+                    card("today", "page.spend.summary.today", partial, tokens_of(&n("7500")), vec![day_actions("2026-10-02", "400")]),
+                    card("yesterday", "page.spend.summary.yesterday", Value::Null, tokens_of(&n("1234567")), vec![day_actions("2026-10-01", &n("1000"))]),
+                    card("avg3", "page.spend.summary.avg3", Value::Null, tokens_of(&n("2000000")), vec![used("3")]),
+                    card("avg7", "page.spend.summary.avg7", Value::Null, tokens_of(&n("1500000")), vec![used("6")]),
+                    card("month", "page.spend.summary.avg_month", Value::Null, tokens_of(&n("1000000")), vec![used("2")]),
+                    card(
+                        "forecast",
+                        "page.spend.summary.forecast",
+                        Value::Null,
+                        usd("0.6200"),
+                        vec![
+                            detail(&usd("0.2000"), &usd("0.0200")),
+                            format!("{} · {}", tokens_of(&n("21700")), detail(&n("7000"), &n("700"))),
+                        ],
+                    ),
+                ]),
+                "{lang:?}: the summary of the whole machine, in the language's way"
+            );
+            assert_eq!(
+                page["summaryNote"],
+                json!(translate("page.spend.summary.note", lang).replace("{min}", "100")),
+                "{lang:?}"
+            );
+            let partial_label = format!("2026-10-02 ({})", translate("page.spend.summary.partial", lang));
+            assert_eq!(page["rows"][0]["cells"][0], json!(partial_label), "{lang:?}: the open day row is marked");
+            assert_eq!(page["rows"][0]["day"], json!("2026-10-02"), "{lang:?}: the row keeps the plain day");
+            let days: Vec<&str> = page["bars"].as_array().expect("bars").iter().filter_map(|b| b["day"].as_str()).collect();
+            assert_eq!(days, ["2026-09-30", "2026-10-01"], "{lang:?}: the open day is not in the chart");
+
+            let plain = run("spend", &spend_page_template(lang), Some(spend_database()), steps.clone());
+            assert_eq!(plain["page"]["state"], json!("ready"), "{lang:?}");
+            assert_eq!(plain["page"]["cards"], json!([]), "{lang:?}: no summary document, no cards");
+        }
+    }
+
+    /// Com o banco vazio a página do gasto diz que não há dados; quando o
+    /// banco recusa a leitura — a escuta cai logo ou o claude.ai nem abre o
+    /// banco —, ela diz que a leitura falhou, e não que não há dados; uma
+    /// escuta que cai depois de a página ler mantém o que ela já mostra.
+    #[test]
+    fn the_spend_page_tells_an_empty_database_from_a_failed_read() {
+        let steps = json!([{"do": "wait"}, {"do": "scrape", "as": "page"}]);
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let html = spend_page_template(lang);
+            let read_failed = translate("page.read_failed", lang);
+            let no_data = translate("page.no_data", lang);
+            assert_ne!(read_failed, no_data, "{lang:?}: the two texts differ");
+            for refuse in [vec!["listen:days"], vec!["db"]] {
+                let got = run_refusing("spend", &html, Some(spend_database()), steps.clone(), true, &refuse);
+                assert_eq!(got["page"]["state"], json!("failed"), "{lang:?} {refuse:?}: {got}");
+                assert_eq!(got["page"]["status"], json!(read_failed), "{lang:?} {refuse:?}");
+                assert_eq!(got["page"]["rows"], json!([]), "{lang:?} {refuse:?}: no row is shown");
+            }
+            let empty = run("spend", &html, Some(json!({"days": []})), steps.clone());
+            assert_eq!(empty["page"]["state"], json!("empty"), "{lang:?}");
+            assert_eq!(empty["page"]["status"], json!(no_data), "{lang:?}");
+            let after = json!([{"do": "wait"}, {"do": "fail", "path": "days"}, {"do": "scrape", "as": "page"}]);
+            let kept = run("spend", &html, Some(spend_database()), after);
+            assert_eq!(kept["page"]["state"], json!("ready"), "{lang:?}: a listener that fails later keeps the page");
+            assert_eq!(kept["page"]["rows"].as_array().map(Vec::len), Some(3), "{lang:?}");
+        }
+    }
+
+    /// Sem banco, e com o banco ainda vazio, as páginas abrem e dizem que
     /// ainda não há dados.
     #[test]
     fn without_the_database_the_pages_say_there_is_no_data_yet() {
         let steps = json!([{"do": "wait"}, {"do": "scrape", "as": "page"}]);
         let no_data = translate("page.no_data", Locale::PtBr);
-        for (page, html) in [("spec", spec_page_template(Locale::PtBr)), ("project", project_page_template(Locale::PtBr))] {
+        for (page, html) in [
+            ("spec", spec_page_template(Locale::PtBr)),
+            ("project", project_page_template(Locale::PtBr)),
+            ("spend", spend_page_template(Locale::PtBr)),
+        ] {
             for db in [None, Some(json!({}))] {
                 let got = run(page, &html, db.clone(), steps.clone());
                 assert_eq!(got["page"]["state"], json!("empty"), "{page} {db:?}");
@@ -1441,6 +2306,30 @@ mod tests {
         assert_eq!(got["recovered"]["statusHidden"], json!(true), "the next copy that succeeds clears the warning");
     }
 
+    /// A página lista só as ondas do estado calculado: a onda de lote que
+    /// ficou sem tarefa, com o evento dela ainda na spec e fora do estado, não
+    /// aparece no gráfico nem na lista Agora; as quatro ondas do estado, a por
+    /// fazer inclusive, aparecem.
+    #[test]
+    fn the_page_lists_only_the_waves_of_the_computed_state() {
+        let mut lines = spec_lines();
+        lines.push(json!({"v":1,"id":47,"at":"2026-09-12T12:06:00-03:00","type":"wave","author":"binary","n":5,
+            "text":"O lote que ficou sem tarefa.","criteria":[],"done_when":"A suíte passa.","origin":2}));
+        let steps = json!([{"do": "wait"}, {"do": "scrape", "as": "page"}]);
+        let got = run("spec", &spec_page_template(Locale::PtBr), Some(spec_database(&lines)), steps);
+        let page = &got["page"];
+        let bars: Vec<Value> = page["chart"]["bars"].as_array().expect("bars").iter().map(|b| b["wave"].clone()).collect();
+        assert_eq!(bars, [json!(1), json!(2), json!(3), json!(4)], "the empty batch has no bar");
+        let listed: Vec<Value> = page["now"]["parts"]
+            .as_array()
+            .expect("parts")
+            .iter()
+            .filter(|p| p["kind"] == json!("wave"))
+            .map(|p| p["pill"].clone())
+            .collect();
+        assert!(!listed.contains(&json!("Onda 5")), "the empty batch is not in the Now list: {listed:?}");
+    }
+
     /// Uma cópia que só muda o documento das coisas calculadas — nenhum item
     /// novo, nenhum apagado, nenhum tocado — sozinha faz a página aberta
     /// reler: a escuta de `computed/current` não depende de nada acontecer
@@ -1467,12 +2356,12 @@ mod tests {
         assert_ne!(bars_of(&got["before"]), bars_of(&got["after"]), "the reload read the new wave state: {got}");
     }
 
-    /// Uma spec longa é lida inteira, em páginas de até 500 documentos da
+    /// Uma spec longa é lida inteira, em páginas de até 8 documentos da
     /// coleção das faixas, seguindo o cursor da mais velha para a mais nova:
     /// aqui, cada item na própria faixa (só para este teste — a faixa de
-    /// verdade tem [`RANGE_WIDTH`] itens, e só passa de 500 documentos com
-    /// mais de 50 mil itens), 1.200 itens somados aos da spec de exemplo
-    /// pedem três idas ao banco. A aba longa mostra 40 cartões e o botão de
+    /// verdade tem [`RANGE_WIDTH`] itens), 1.200 itens somados aos da spec de
+    /// exemplo pedem uma ida ao banco a cada 8 documentos, e a última ida
+    /// volta com menos de 8. A aba longa mostra 40 cartões e o botão de
     /// mostrar mais, que traz os 40 seguintes.
     #[test]
     fn a_long_spec_is_read_in_pages() {
@@ -1515,11 +2404,126 @@ mod tests {
             .filter(|r| r["path"] == json!(RANGES))
             .map(|r| (r["filters"][0][2].clone(), r["size"].clone()))
             .collect();
-        let last_of_first_page = lines.iter().map(|l| l["id"].as_u64().unwrap_or(0) * 1_000).collect::<Vec<_>>()[499];
-        assert_eq!(pages.len(), 3, "{pages:?}");
-        assert_eq!(pages[0], (json!(-1), json!(500)));
-        assert_eq!(pages[1], (json!(last_of_first_page), json!(500)));
-        assert_eq!(pages[2].1, json!(lines.len() - 1_000));
+        let mut seqs: Vec<u64> = lines.iter().map(|l| l["id"].as_u64().unwrap_or(0) * 1_000).collect();
+        seqs.sort_unstable();
+        assert_eq!(pages.len(), lines.len() / 8 + 1, "one read per 8 documents, and the last one comes short");
+        assert_eq!(pages[0], (json!(-1), json!(8)));
+        assert_eq!(pages[1], (json!(seqs[7]), json!(8)));
+        assert_eq!(pages[2], (json!(seqs[15]), json!(8)));
+        assert_eq!(pages[pages.len() - 1].1, json!(lines.len() % 8), "{pages:?}");
+        assert!(pages[..pages.len() - 1].iter().all(|p| p.1 == json!(8)), "every full read has 8 documents");
+    }
+
+    /// O servidor recusa a leitura de `ranges` que passa de uns 2 MiB
+    /// (`resource_exhausted`), e cada documento de faixa tem até 256 KiB: o
+    /// banco de mentira recusa a consulta com mais de 8 documentos. Uma spec
+    /// com 30 faixas mostra todos os itens, lidos em quatro idas de 8, 8, 8 e
+    /// 6 documentos, cada uma seguindo o cursor da anterior.
+    #[test]
+    fn a_spec_of_thirty_ranges_shows_every_item_in_reads_of_at_most_eight() {
+        let base = run(
+            "spec",
+            &spec_page_template(Locale::PtBr),
+            Some(spec_database(&spec_lines())),
+            json!([{"do": "wait"}, {"do": "scrape", "as": "page"}]),
+        );
+        let mut lines = spec_lines();
+        lines.extend((1..30).map(|k| {
+            json!({"v":1,"id":k * RANGE_WIDTH,"at":"2026-09-13T10:00:00-03:00","type":"note","author":"assistant","text":format!("Nota da faixa {k}."),"keys":["k"],"origin":2})
+        }));
+        let db = spec_database(&lines);
+        assert_eq!(db["ranges"].as_array().expect("ranges").len(), 30, "one document per range");
+        let steps = json!([{"do": "wait"}, {"do": "scrape", "as": "page"}, {"do": "reads", "as": "reads"}]);
+        let got = run("spec", &spec_page_template(Locale::PtBr), Some(db), steps);
+        assert_eq!(got["page"]["state"], json!("ready"), "the page read the database: {}", got["page"]["status"]);
+        let titles: Vec<String> =
+            cards(&got["page"], "notes").iter().map(|i| i["title"].as_str().unwrap_or_default().to_string()).collect();
+        assert_eq!(titles.len(), cards(&base["page"], "notes").len() + 29, "every item of the 30 ranges is on the page");
+        for k in 1..30 {
+            assert!(titles.contains(&format!("Nota da faixa {k}.")), "the note of range {k} is missing");
+        }
+        let reads: Vec<&Value> =
+            got["reads"].as_array().expect("reads").iter().filter(|r| r["path"] == json!(RANGES)).collect();
+        assert!(reads.iter().all(|r| r["refused"].is_null() && r["limit"].as_u64() <= Some(8)), "{reads:?}");
+        let cursors: Vec<Value> = reads.iter().map(|r| r["filters"][0][2].clone()).collect();
+        let sizes: Vec<Value> = reads.iter().map(|r| r["size"].clone()).collect();
+        assert_eq!(cursors, [json!(-1), json!(700_000), json!(1_500_000), json!(2_300_000)]);
+        assert_eq!(sizes, [json!(8), json!(8), json!(8), json!(6)]);
+    }
+
+    /// A leitura que o banco recusa ou perde não é banco vazio: a página diz
+    /// que a leitura falhou, nos dois idiomas, e não que ainda não há dados.
+    /// Vale para o molde antigo, que pedia 500 documentos de faixa e topava
+    /// com a recusa do servidor, para a coleção das faixas e o documento
+    /// calculado que falham, e para o claude.ai que nem abre o banco.
+    #[test]
+    fn a_refused_read_says_the_read_failed_and_not_that_there_is_no_data() {
+        let steps = json!([{"do": "wait"}, {"do": "scrape", "as": "page"}]);
+        let mut lines = spec_lines();
+        lines.extend((1..30).map(|k| {
+            json!({"v":1,"id":k * RANGE_WIDTH,"at":"2026-09-13T10:00:00-03:00","type":"note","author":"assistant","text":format!("Nota da faixa {k}."),"keys":["k"],"origin":2})
+        }));
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let read_failed = translate("page.read_failed", lang);
+            let no_data = translate("page.no_data", lang);
+            assert_ne!(read_failed, no_data, "{lang:?}: the two texts differ");
+            let html = spec_page_template(lang);
+            let old_size = html.replace("var PAGE = 8;", "var PAGE = 500;");
+            assert_ne!(old_size, html, "the template reads 8 ranges at a time");
+            let cases: [(&str, &str, Vec<&str>); 4] = [
+                ("the old size of 500 documents", old_size.as_str(), vec![]),
+                ("the ranges refused", html.as_str(), vec![RANGES]),
+                ("the computed document refused", html.as_str(), vec![COMPUTED]),
+                ("the database not opened", html.as_str(), vec!["db"]),
+            ];
+            for (case, template, refuse) in cases {
+                let got = run_refusing("spec", template, Some(spec_database(&lines)), steps.clone(), true, &refuse);
+                assert_eq!(got["page"]["state"], json!("failed"), "{lang:?} {case}: {got}");
+                assert_eq!(got["page"]["status"], json!(read_failed), "{lang:?} {case}");
+                assert_eq!(got["page"]["statusHidden"], json!(false), "{lang:?} {case}");
+            }
+        }
+    }
+
+    /// A página do projeto também não chama de banco vazio a leitura que o
+    /// banco recusou ou perdeu: a escuta das specs que cai ao abrir e o
+    /// claude.ai que nem abre o banco dizem que a leitura falhou, nos dois
+    /// idiomas. O banco que abre e não tem spec nenhuma segue dizendo que não
+    /// há dados, e a página que já mostrou as specs não as perde quando a
+    /// escuta cai depois.
+    #[test]
+    fn a_refused_read_of_the_project_page_says_the_read_failed_and_not_that_there_is_no_data() {
+        let rows = [project_row("busca", Some("running"), None), project_row("trava", Some("plan"), None)];
+        let db = json!({"specs": rows.iter().map(|r| json!({"id": r.name, "data": {
+            "name": r.name, "goal": r.goal, "phase": r.phase, "branch": r.branch,
+            "created": r.created, "updated": r.updated, "url": r.url,
+        }})).collect::<Vec<_>>()});
+        let steps = json!([{"do": "wait"}, {"do": "scrape", "as": "page"}]);
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let read_failed = translate("page.read_failed", lang);
+            let no_data = translate("page.no_data", lang);
+            assert_ne!(read_failed, no_data, "{lang:?}: the two texts differ");
+            let html = project_page_template(lang);
+            let cases: [(&str, Vec<&str>); 2] =
+                [("the specs listener refused", vec!["listen:specs"]), ("the database not opened", vec!["db"])];
+            for (case, refuse) in cases {
+                let got = run_refusing("project", &html, Some(db.clone()), steps.clone(), true, &refuse);
+                assert_eq!(got["page"]["state"], json!("failed"), "{lang:?} {case}: {got}");
+                assert_eq!(got["page"]["status"], json!(read_failed), "{lang:?} {case}");
+                assert_eq!(got["page"]["statusHidden"], json!(false), "{lang:?} {case}");
+                assert_eq!(got["page"]["groups"], json!([]), "{lang:?} {case}: no spec is listed");
+            }
+
+            let empty = run("project", &html, Some(json!({"specs": []})), steps.clone());
+            assert_eq!(empty["page"]["state"], json!("empty"), "{lang:?}: an open database with no spec");
+            assert_eq!(empty["page"]["status"], json!(no_data), "{lang:?}: an open database with no spec");
+
+            let after = json!([{"do": "wait"}, {"do": "fail", "path": "specs"}, {"do": "scrape", "as": "page"}]);
+            let kept = run("project", &html, Some(db.clone()), after);
+            assert_eq!(kept["page"]["state"], json!("ready"), "{lang:?}: a listener that fails later keeps the page");
+            assert_eq!(kept["page"]["statusHidden"], json!(true), "{lang:?}");
+            assert_eq!(kept["page"]["groups"].as_array().map(Vec::len), Some(2), "{lang:?}: the two groups stay");
+        }
     }
 
     /// O primeiro pedaço de uma faixa leva `chunks`, quantos pedaços ela tem
@@ -1617,7 +2621,7 @@ mod tests {
     /// vazio e nada rodando, a lista não tem grupo e faltam a revisão final
     /// e o fechamento; na spec fechada, nada falta.
     #[test]
-    fn a_lista_agora_mostra_o_que_roda_e_o_backlog() {
+    fn the_list_now_shows_what_runs_and_the_backlog() {
         let s90 = format!("Noventa {}.", "n".repeat(81));
         let s91 = format!("Noventa e um {}.", "u".repeat(77));
         assert_eq!((s90.chars().count(), s91.chars().count()), (90, 91));
@@ -1645,10 +2649,10 @@ mod tests {
             now_rows(page),
             vec![
                 json!(["group", "Rodando"]),
-                json!(["wave", "ONDA 3", "3 tarefas", "0 arquivos · em andamento"]),
+                json!(["wave", "Onda 3", "3 tarefas", "0 arquivos · em andamento"]),
                 json!(["group", "Backlog · tarefas que ainda não viraram onda"]),
-                json!(["backlog", "ESPERA", "Título curto do backlog", "0 arquivos · espera 1 tarefa do backlog"]),
-                json!(["backlog", "PRONTA", "A tarefa sem título espera nada.", "0 arquivos"]),
+                json!(["backlog", "Espera", "Título curto do backlog", "0 arquivos · espera 1 tarefa do backlog"]),
+                json!(["backlog", "Pronta", "A tarefa sem título espera nada.", "0 arquivos"]),
                 json!(["after", "Depois vêm a revisão final e o fechamento."]),
             ],
             "{}",
@@ -1685,13 +2689,13 @@ mod tests {
     }
 
     /// Rodando mostra toda onda que não foi entregue nem aprovada, e não só a
-    /// que roda: a onda que o backlog já formou e espera sair (sem estado
-    /// calculado nenhum) e a reprovada que volta para conserto ganham cada
+    /// que roda: a onda que o backlog já formou e espera sair (por fazer no
+    /// estado calculado) e a reprovada que volta para conserto ganham cada
     /// uma a sua linha, com o selo, a situação e as tarefas. Enquanto uma
     /// delas existir, a lista nunca diz que faltam só a revisão final e o
     /// fechamento, nem com o backlog vazio e nenhuma onda rodando.
     #[test]
-    fn a_lista_agora_mostra_a_onda_que_espera_e_a_reprovada() {
+    fn the_list_now_shows_the_waiting_wave_and_the_rejected_one() {
         let task = |id: u64, code: &str, wave: u64, title: &str| {
             board_task(id, code, Some(wave), Some(title), "O texto da tarefa.", json!([]))
         };
@@ -1717,14 +2721,14 @@ mod tests {
         let tail = |page: &Value| now_rows(page).last().cloned().unwrap_or_default();
 
         let all: Vec<Value> = [vec![state.clone()], delivered.clone(), running, waiting.clone(), rejected.clone()].concat();
-        let states = json!({"1": "approved", "2": "running", "4": "rejected"});
+        let states = json!({"1": "approved", "2": "running", "3": "todo", "4": "rejected"});
         let page = open(all.clone(), states.clone(), Locale::PtBr);
         assert_eq!(
             pills(&page),
             vec![
-                json!(["ONDA 2", "pill running", "O lote que roda", "0 arquivos · em andamento", []]),
-                json!(["ONDA 3", "pill wait", "2 tarefas", "0 arquivos · espera sair", ["O scan lê tudo", "O mapa mostra o uso"]]),
-                json!(["ONDA 4", "pill fail", "O conserto do quadro", "0 arquivos · volta para conserto", []]),
+                json!(["Onda 2", "pill running", "O lote que roda", "0 arquivos · em andamento", []]),
+                json!(["Onda 3", "pill wait", "2 tarefas", "0 arquivos · espera sair", ["O scan lê tudo", "O mapa mostra o uso"]]),
+                json!(["Onda 4", "pill fail", "O conserto do quadro", "0 arquivos · volta para conserto", []]),
             ],
             "{}",
             page["now"]
@@ -1734,9 +2738,9 @@ mod tests {
         assert_eq!(
             pills(&page),
             vec![
-                json!(["WAVE 2", "pill running", "O lote que roda", "0 files · in progress", []]),
-                json!(["WAVE 3", "pill wait", "2 tasks", "0 files · waiting to go out", ["O scan lê tudo", "O mapa mostra o uso"]]),
-                json!(["WAVE 4", "pill fail", "O conserto do quadro", "0 files · back for a fix", []]),
+                json!(["Wave 2", "pill running", "O lote que roda", "0 files · in progress", []]),
+                json!(["Wave 3", "pill wait", "2 tasks", "0 files · waiting to go out", ["O scan lê tudo", "O mapa mostra o uso"]]),
+                json!(["Wave 4", "pill fail", "O conserto do quadro", "0 files · back for a fix", []]),
             ],
             "{}",
             page["now"]
@@ -1744,13 +2748,14 @@ mod tests {
         assert_eq!(tail(&page), json!(["after", "Then come the final review and the closing."]));
 
         // Só a onda que espera sair, com o backlog vazio e nada rodando.
-        let page = open([vec![state.clone()], delivered.clone(), waiting].concat(), json!({"1": "approved"}), Locale::PtBr);
+        let page =
+            open([vec![state.clone()], delivered.clone(), waiting].concat(), json!({"1": "approved", "3": "todo"}), Locale::PtBr);
         assert_eq!(pills(&page).len(), 1, "{}", page["now"]);
         assert_eq!(tail(&page), json!(["after", "Depois vêm a revisão final e o fechamento."]));
 
         // Só a onda reprovada, do mesmo jeito.
         let page = open([vec![state], delivered, rejected].concat(), json!({"1": "approved", "4": "rejected"}), Locale::PtBr);
-        assert_eq!(pills(&page)[0][0], json!("ONDA 4"));
+        assert_eq!(pills(&page)[0][0], json!("Onda 4"));
         assert_eq!(tail(&page), json!(["after", "Depois vêm a revisão final e o fechamento."]));
     }
 
@@ -1831,7 +2836,7 @@ mod tests {
     /// `#waves-N` abre a onda N; as partes antigas não existem; o título de
     /// uma tarefa aparece uma vez só; e o `.md` baixado tem todo item.
     #[test]
-    fn a_pagina_da_spec_e_um_painel_sem_nada_repetido() {
+    fn the_spec_page_is_a_panel_with_nothing_repeated() {
         let lines = dashboard_lines();
         let content = lines.iter().map(Value::to_string).collect::<Vec<_>>().join("\n");
         let codes = parse_log(&content).codes();
@@ -1861,11 +2866,11 @@ mod tests {
             ],
             now: [
                 json!(["group", "Rodando"]),
-                json!(["wave", "ONDA 2", "A lista do meio", "1 arquivo · em andamento"]),
-                json!(["wave", "ONDA 3", "3 tarefas", "3 arquivos · em andamento"]),
+                json!(["wave", "Onda 2", "A lista do meio", "1 arquivo · em andamento"]),
+                json!(["wave", "Onda 3", "3 tarefas", "3 arquivos · em andamento"]),
                 json!(["group", "Backlog · tarefas que ainda não viraram onda"]),
-                json!(["backlog", "ESPERA", "A troca de tema", "1 arquivo · espera a onda 2"]),
-                json!(["backlog", "PRONTA", "A busca por código", "1 arquivo"]),
+                json!(["backlog", "Espera", "A troca de tema", "1 arquivo · espera a onda 2"]),
+                json!(["backlog", "Pronta", "A busca por código", "1 arquivo"]),
                 json!(["after", "Depois vêm a revisão final e o fechamento."]),
             ],
             tabs: ["Especificação", "Acordado", "Critérios", "Anotações", "Revisão", "Andamento", "Conversa", "Removidos"],
@@ -1884,11 +2889,11 @@ mod tests {
             ],
             now: [
                 json!(["group", "Running"]),
-                json!(["wave", "WAVE 2", "A lista do meio", "1 file · in progress"]),
-                json!(["wave", "WAVE 3", "3 tasks", "3 files · in progress"]),
+                json!(["wave", "Wave 2", "A lista do meio", "1 file · in progress"]),
+                json!(["wave", "Wave 3", "3 tasks", "3 files · in progress"]),
                 json!(["group", "Backlog · tasks not yet in a wave"]),
-                json!(["backlog", "WAITS", "A troca de tema", "1 file · waits for wave 2"]),
-                json!(["backlog", "READY", "A busca por código", "1 file"]),
+                json!(["backlog", "Waits", "A troca de tema", "1 file · waits for wave 2"]),
+                json!(["backlog", "Ready", "A busca por código", "1 file"]),
                 json!(["after", "Then come the final review and the closing."]),
             ],
             tabs: ["Specification", "Agreed", "Criteria", "Notes", "Review", "Progress", "Conversation", "Removed"],
@@ -2053,7 +3058,7 @@ mod tests {
     /// o número de barras, e a moldura rola de lado quando as barras não
     /// cabem. Nenhuma regra do celular devolve ao gráfico uma largura mínima.
     #[test]
-    fn a_pagina_da_spec_tem_coluna_de_1040_e_grafico_de_altura_fixa() {
+    fn the_spec_page_has_a_1040_column_and_a_fixed_height_chart() {
         // As declarações de cada regra do molde com exatamente esse seletor,
         // na ordem, contando também as de dentro de um @media, numa linha
         // própria ou na mesma linha dele. Um seletor mais longo que termina
@@ -2099,7 +3104,7 @@ mod tests {
     /// As cores do painel moram em variáveis, com o tema escuro pelo sistema
     /// e pela escolha da página, e o painel cabe na tela do celular.
     #[test]
-    fn o_painel_segue_o_tema_e_cabe_no_celular() {
+    fn the_panel_follows_the_theme_and_fits_on_the_phone() {
         let html = spec_page_template(Locale::PtBr);
         for piece in [
             ":root{",
@@ -2119,7 +3124,7 @@ mod tests {
     /// vazio.
     #[test]
     fn every_text_the_templates_cite_exists_in_both_languages() {
-        for (name, template) in [("spec", SPEC_PAGE), ("project", PROJECT_PAGE)] {
+        for (name, template) in [("spec", SPEC_PAGE), ("project", PROJECT_PAGE), ("spend", SPEND_PAGE)] {
             assert!(template.contains(CATALOG_SLOT), "{name} has the catalog slot");
             for key in cited_keys(template).into_iter().filter(|k| !k.ends_with('.')) {
                 for lang in [Locale::PtBr, Locale::EnUs] {
@@ -2128,7 +3133,7 @@ mod tests {
             }
         }
         for lang in [Locale::PtBr, Locale::EnUs] {
-            for filled in [spec_page_template(lang), project_page_template(lang)] {
+            for filled in [spec_page_template(lang), project_page_template(lang), spend_page_template(lang)] {
                 assert!(!filled.contains(CATALOG_SLOT), "the catalog is in place");
                 assert!(filled.contains(&format!("\"lang\":\"{}\"", lang.as_str())));
             }

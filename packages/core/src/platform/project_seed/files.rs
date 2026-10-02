@@ -1,18 +1,20 @@
 //! The static seeds: Mustard's own texts — the session map under
 //! `.claude/mustard/`, the two page templates under `.claude/mustard/pages/`
-//! and the three agents under `.claude/agents/mustard/` —,
+//! and the two agents under `.claude/agents/mustard/` —,
 //! the `.claude/.gitignore` rule list, and the project-root `mustard.json`,
 //! with the migrations that bring an older `inject` list onto the session map.
 
 use std::path::Path;
 
 use crate::domain::command_detect::detect_commands;
-use crate::domain::config::{Injectable, ProjectConfig, Runtime};
+use crate::domain::config::{AgentSettings, Injectable, ProjectConfig, Runtime};
 use crate::io::fs;
 use crate::platform::error::Result;
 use crate::platform::i18n::Locale;
 use crate::platform::page_templates::{project_page_template, spec_page_template};
-use crate::platform::seeds::{agent_texts, session_map, AGENT_NAMES, CLAUDE_GITIGNORE, SESSION_MAP_NAME};
+use crate::platform::seeds::{
+    agent_texts, session_map, with_agent_settings, AGENT_NAMES, CLAUDE_GITIGNORE, SESSION_MAP_NAME,
+};
 
 use super::SeedOutcome;
 
@@ -35,22 +37,25 @@ const AGENTS_DIR: &str = "agents/mustard";
 
 /// Os textos do Mustard no projeto, a partir de `.claude/`, com o corpo no
 /// idioma `text`: o mapa do início da sessão, os dois templates das páginas (a
-/// da spec e a do projeto) e os três agentes, nessa ordem.
+/// da spec e a do projeto) e os dois agentes, nessa ordem.
 ///
 /// Os dois idiomas são molde do produto; o projeto recebe só o do
 /// `language.text`. O caminho não muda com o idioma, então trocar o idioma e
 /// rodar o instalador de novo troca o texto no mesmo arquivo. Cada template
 /// vai com o catálogo já preenchido nesse idioma: é o arquivo que o assistente
-/// publica como está, uma vez só, quando a página nasce.
+/// publica como está, uma vez só, quando a página nasce. O `model:` e o
+/// `effort:` do cabeçalho de cada agente são os que o projeto declara.
 #[must_use]
-pub fn harness_texts(text: Locale) -> Vec<(String, String)> {
+pub fn harness_texts(text: Locale, agents: AgentSettings<'_>) -> Vec<(String, String)> {
     let mut out = vec![
         (format!("{SESSION_MAP_DIR}/{SESSION_MAP_NAME}"), session_map(text).to_string()),
         (format!("{PAGES_DIR}/{SPEC_PAGE_NAME}"), spec_page_template(text)),
         (format!("{PAGES_DIR}/{PROJECT_PAGE_NAME}"), project_page_template(text)),
     ];
     out.extend(
-        agent_texts(text).into_iter().map(|(name, body)| (format!("{AGENTS_DIR}/{name}.md"), body.to_string())),
+        agent_texts(text)
+            .into_iter()
+            .map(|(name, body)| (format!("{AGENTS_DIR}/{name}.md"), with_agent_settings(body, agents))),
     );
     out
 }
@@ -99,9 +104,13 @@ pub fn session_map_declared_path() -> String {
 /// # Errors
 ///
 /// An IO error creating a directory or writing a file.
-pub fn seed_harness_texts(claude_dir: &Path, text: Locale) -> Result<Vec<(String, SeedOutcome)>> {
+pub fn seed_harness_texts(
+    claude_dir: &Path,
+    text: Locale,
+    agents: AgentSettings<'_>,
+) -> Result<Vec<(String, SeedOutcome)>> {
     let mut out = Vec::new();
-    for (rel, body) in harness_texts(text) {
+    for (rel, body) in harness_texts(text, agents) {
         let dest = claude_dir.join(&rel);
         if let Some(parent) = dest.parent() {
             fs::create_dir_all(parent)?;
@@ -239,8 +248,10 @@ pub fn default_inject_entries() -> Vec<Injectable> {
 /// agnostically detected commands, the default `inject` declarations,
 /// `runtime`, and `version` (when supplied). Present → `version` is re-stamped
 /// (only when `Some` and different), an empty `inject` is backfilled with the
-/// defaults, an absent `runtime` is filled — everything else is preserved
-/// verbatim, and the file is not rewritten when nothing changed.
+/// defaults, an absent `runtime` is filled, an absent `agents.model` and
+/// `agents.effort` get their defaults, an absent `buildOutput` is filled
+/// when the detection finds a folder — everything else is preserved verbatim,
+/// and the file is not rewritten when nothing changed.
 pub(super) fn upsert_mustard_json(root: &Path, version: Option<&str>) -> Result<SeedOutcome> {
     let existed = ProjectConfig::exists(root);
     let mut config = ProjectConfig::load(root);
@@ -251,8 +262,11 @@ pub(super) fn upsert_mustard_json(root: &Path, version: Option<&str>) -> Result<
         config.test_command = commands.test;
         config.lint_command = commands.lint;
         config.type_check_command = commands.type_check;
+        config.build_output = (!commands.build_output.is_empty()).then_some(commands.build_output);
         config.inject = default_inject_entries();
         config.runtime = Some(Runtime::detect());
+        config.ensure_agent_model();
+        config.ensure_agent_effort();
         config.version = version.map(str::to_string);
         config.write(root)?;
         return Ok(SeedOutcome::Created);
@@ -272,6 +286,21 @@ pub(super) fn upsert_mustard_json(root: &Path, version: Option<&str>) -> Result<
         config.runtime = Some(Runtime::detect());
         changed = true;
     }
+    // O modelo e o esforço dos agentes ficam escritos no arquivo, para a
+    // pessoa vê-los e trocá-los. O que já está lá, valendo ou não, não é
+    // tocado.
+    changed |= config.ensure_agent_model();
+    changed |= config.ensure_agent_effort();
+    // O projeto instalado antes da pasta de compilação declarada a ganha aqui,
+    // pela mesma detecção da instalação nova. A lista que o projeto gravou,
+    // mesmo vazia, fica como está.
+    if config.build_output.is_none() {
+        let detected = detect_commands(root).build_output;
+        if !detected.is_empty() {
+            config.build_output = Some(detected);
+            changed = true;
+        }
+    }
     if !changed {
         return Ok(SeedOutcome::Preserved);
     }
@@ -288,8 +317,9 @@ pub(super) fn upsert_mustard_json(root: &Path, version: Option<&str>) -> Result<
 ///
 /// Mexe só no `mustard.json`, que é do Mustard, e nos arquivos que ele mesmo
 /// semeou antes: o estilo de resposta que virou estilo do plugin sai (com o
-/// arquivo órfão), o mapa do início da sessão troca o nome antigo pelo novo, e
-/// as três partes do roteador antigo dão lugar ao mapa. Idempotente e sem
+/// arquivo órfão), o mapa do início da sessão troca o nome antigo pelo novo,
+/// as três partes do roteador antigo dão lugar ao mapa, e o agente que o
+/// Mustard não entrega mais sai da pasta dos agentes dele. Idempotente e sem
 /// erro: uma configuração que não se lê ou não se grava vira "nada migrado".
 pub fn migrate_inject_declarations(root: &Path, claude_dir: &Path) -> Vec<String> {
     let mut migrated = Vec::new();
@@ -301,6 +331,9 @@ pub fn migrate_inject_declarations(root: &Path, claude_dir: &Path) -> Vec<String
     }
     if retire_router_parts(root, claude_dir) {
         migrated.push("mustard.json (router injectables → session map)".to_string());
+    }
+    for name in retire_agents(claude_dir) {
+        migrated.push(format!(".claude/{AGENTS_DIR}/{name}.md (retired agent)"));
     }
     migrated
 }
@@ -436,6 +469,27 @@ fn retire_router_parts(root: &Path, claude_dir: &Path) -> bool {
         }
     }
     changed
+}
+
+/// Os agentes que instalações antigas semeavam em [`AGENTS_DIR`] e que o
+/// Mustard não entrega mais: o de onda de tarefa única, juntado ao agente de
+/// onda, que recebe toda onda, e o que escrevia skills, cuja receita o
+/// programa monta sozinho a partir do histórico do projeto.
+const RETIRED_AGENTS: [&str; 2] = ["wave-solo", "skill"];
+
+/// Apaga de [`AGENTS_DIR`] o arquivo órfão de cada agente de
+/// [`RETIRED_AGENTS`]. A pasta é só do Mustard: o agente do projeto com o
+/// mesmo nome, ao lado dela em `agents/`, fica intocado.
+///
+/// Devolve os nomes que saíram. Idempotente e sem erro.
+fn retire_agents(claude_dir: &Path) -> Vec<&'static str> {
+    RETIRED_AGENTS
+        .into_iter()
+        .filter(|name| {
+            let orphan = claude_dir.join(AGENTS_DIR).join(format!("{name}.md"));
+            orphan.is_file() && fs::remove_file(&orphan).is_ok()
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -749,21 +803,21 @@ mod tests {
     fn the_harness_texts_are_always_rewritten() {
         let dir = tempdir().unwrap();
         let claude = dir.path().join(".claude");
-        let first = seed_harness_texts(&claude, Locale::PtBr).unwrap();
+        let first = seed_harness_texts(&claude, Locale::PtBr, AgentSettings::default()).unwrap();
         assert!(first.iter().all(|(_, o)| *o == SeedOutcome::Created), "{first:?}");
-        for (rel, _) in harness_texts(Locale::PtBr) {
+        for (rel, _) in harness_texts(Locale::PtBr, AgentSettings::default()) {
             std_fs::write(claude.join(&rel), "# the operator wrote this\n").unwrap();
         }
 
-        let report = seed_harness_texts(&claude, Locale::PtBr).unwrap();
+        let report = seed_harness_texts(&claude, Locale::PtBr, AgentSettings::default()).unwrap();
 
-        assert_eq!(report.len(), harness_texts(Locale::PtBr).len());
-        for ((reported, outcome), (rel, body)) in report.iter().zip(harness_texts(Locale::PtBr)) {
+        assert_eq!(report.len(), harness_texts(Locale::PtBr, AgentSettings::default()).len());
+        for ((reported, outcome), (rel, body)) in report.iter().zip(harness_texts(Locale::PtBr, AgentSettings::default())) {
             assert_eq!(*reported, rel, "the report must name the file it wrote");
             assert_eq!(*outcome, SeedOutcome::Updated, "{rel} diverged and was replaced silently");
             assert_eq!(std_fs::read_to_string(claude.join(&rel)).unwrap(), body, "{rel} kept the edit");
         }
-        let again = seed_harness_texts(&claude, Locale::PtBr).unwrap();
+        let again = seed_harness_texts(&claude, Locale::PtBr, AgentSettings::default()).unwrap();
         for (rel, outcome) in &again {
             assert_eq!(*outcome, SeedOutcome::Preserved, "{rel} rewritten with no change");
         }
@@ -775,15 +829,15 @@ mod tests {
     fn an_unreadable_harness_text_is_rewritten_not_silently_preserved() {
         let dir = tempdir().unwrap();
         let claude = dir.path().join(".claude");
-        for (rel, _) in harness_texts(Locale::EnUs) {
+        for (rel, _) in harness_texts(Locale::EnUs, AgentSettings::default()) {
             let path = claude.join(&rel);
             std_fs::create_dir_all(path.parent().unwrap()).unwrap();
             std_fs::write(path, [0x80_u8, 0xFF, 0xFE]).unwrap();
         }
 
-        let report = seed_harness_texts(&claude, Locale::EnUs).unwrap();
+        let report = seed_harness_texts(&claude, Locale::EnUs, AgentSettings::default()).unwrap();
 
-        for ((rel, outcome), (_, body)) in report.iter().zip(harness_texts(Locale::EnUs)) {
+        for ((rel, outcome), (_, body)) in report.iter().zip(harness_texts(Locale::EnUs, AgentSettings::default())) {
             assert_eq!(*outcome, SeedOutcome::Updated, "{rel} was unreadable and reported `{outcome:?}`");
             assert_eq!(std_fs::read_to_string(claude.join(rel)).unwrap(), body);
         }
@@ -795,10 +849,10 @@ mod tests {
     fn a_language_change_swaps_the_text_in_place() {
         let dir = tempdir().unwrap();
         let claude = dir.path().join(".claude");
-        seed_harness_texts(&claude, Locale::PtBr).unwrap();
-        let swapped = seed_harness_texts(&claude, Locale::EnUs).unwrap();
+        seed_harness_texts(&claude, Locale::PtBr, AgentSettings::default()).unwrap();
+        let swapped = seed_harness_texts(&claude, Locale::EnUs, AgentSettings::default()).unwrap();
         assert!(swapped.iter().all(|(_, o)| *o == SeedOutcome::Updated), "{swapped:?}");
-        for (rel, body) in harness_texts(Locale::EnUs) {
+        for (rel, body) in harness_texts(Locale::EnUs, AgentSettings::default()) {
             assert_eq!(std_fs::read_to_string(claude.join(&rel)).unwrap(), body, "{rel}");
         }
         let agents: Vec<String> = std_fs::read_dir(claude.join("agents/mustard"))
@@ -806,7 +860,7 @@ mod tests {
             .flatten()
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .collect();
-        assert_eq!(agents.len(), 4, "{agents:?}");
+        assert_eq!(agents.len(), 2, "{agents:?}");
     }
 
     /// O mapa é declarado no início da sessão, o único evento que entrega

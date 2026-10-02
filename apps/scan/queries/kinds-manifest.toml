@@ -15,9 +15,9 @@
 # Adding a language = a languages.toml row + queries/<dir>/tags.scm + a
 # graph_<dir> fixture + an entry here; the parity test flags any gap by itself.
 #
-# Member kinds (method, property, field, enum_member) feed the digest's
-# domain-term index only — the miner's significance allowlist (mine.rs) is
-# kind-based and never includes them, so role mining stays member-blind.
+# Os kinds de membro (method, property, field, enum_member) chegam ao mapa com
+# as outras declarações do arquivo, e o grafo lista cada um sob o tipo dono
+# dele (veja `@owner` em queries/README.md).
 
 [csharp]
 kinds = [
@@ -29,6 +29,7 @@ kinds = [
   "method",
   "property",
   "field",
+  "parameter",
   "enum_member",
   "const",
 ]
@@ -102,4 +103,7 @@ kinds = [
   "function",
   "method",
   "const",
+  "field",
+  "property",
+  "enum_member",
 ]

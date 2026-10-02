@@ -1,11 +1,13 @@
-//! `process` — cross-crate helpers for spawning subprocesses.
+//! `process` — o que os pacotes usam para abrir outro programa.
 //!
-//! Currently exposes [`rtk_command`], the Golden Rule helper that prepends
-//! `rtk` to every subprocess `mustard-rt` and `mustard-cli` spawn. RTK is a
-//! mandatory dependency of Mustard, so the helper does no fail-open probing —
-//! callers can assume `rtk` is reachable on `PATH` (the `mustard init` flow
-//! enforces this at install time).
+//! [`rtk_command`] põe o `rtk` na frente de todo programa que o `mustard-rt`
+//! e o `mustard-cli` abrem. O RTK é dependência obrigatória do Mustard, e por
+//! isso o ajudante não confere se ele existe: o `mustard init` já recusa
+//! seguir sem ele. [`program`] acha o arquivo de um programa no `PATH` como o
+//! sistema o acha, para rodar pelo nome o que no Windows é `.cmd` ou `.bat`.
 
+pub mod program;
 pub mod rtk_command;
 
+pub use program::{command, program_file, program_file_names};
 pub use rtk_command::rtk_command;

@@ -16,9 +16,11 @@
 //!   o "Aprovar" grava no `spec.ndjson` um `state` com a fase `approved`, o
 //!   autor `user` e a testemunha `{question, answer}`, e a testemunha diz ao
 //!   assistente para sugerir `/clear`.
-//! - **a mudança que uma onda propõe**, com "Aceitar" e "Recusar". A rodada
-//!   para quando uma onda diz que o plano dela não funciona, e só segue
-//!   depois do clique em "Aceitar" gravado aqui. O enunciado é escrito com as
+//! - **a mudança que uma onda propõe e que troca uma decisão do usuário**,
+//!   com "Aceitar" e "Recusar". A rodada para só quando a onda diz que a
+//!   mudança de plano dela troca uma decisão do usuário, e só segue depois do
+//!   clique em "Aceitar" gravado aqui; a mudança que não troca decisão
+//!   nenhuma não pede clique. O enunciado é escrito com as
 //!   palavras que o usuário entender e nunca é comparado: quem diz qual
 //!   mudança o clique decide é o código no cabeçalho da pergunta, que a
 //!   testemunha guarda ao lado da resposta.
@@ -667,12 +669,10 @@ mod tests {
         }
     }
 
-    /// A pergunta da mudança que parte de um agente, como a rodada a manda
-    /// fazer: em palavras, sem o código dentro dela.
+    /// A pergunta da mudança que troca uma decisão do usuário, como quem
+    /// conduz a escreve: em palavras, sem o código dentro dela.
     fn change_question(wave: u64, change: &str) -> String {
-        translate("change.question", Locale::PtBr)
-            .replace("{wave}", &wave.to_string())
-            .replace("{change}", change)
+        format!("Para seguir, a onda {wave} pede esta troca: {change} Você aceita?")
     }
 
     /// As mensagens de usuário da spec `epic`, com a testemunha de cada uma.
@@ -743,7 +743,7 @@ mod tests {
     /// testemunha com o código do cabeçalho ao lado da resposta. Sem código
     /// no cabeçalho nada é aceito, e a testemunha diz o que fazer.
     #[test]
-    fn o_gesto_e_reconhecido_na_pergunta_escrita_com_as_palavras_do_usuario() {
+    fn gesture_is_recognised_in_the_question_written_with_the_users_words() {
         if ambient_override() {
             return;
         }
