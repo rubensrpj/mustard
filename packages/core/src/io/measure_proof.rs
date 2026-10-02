@@ -31,10 +31,14 @@
 //! Se outra leitura da história do mesmo mapa já está em andamento, a medida
 //! espera ela terminar e diz na tela que está lendo; e a linha do mapa
 //! refeito diz quantos arquivos o git não deixou ler ([`Rebuilt::line`]), para
-//! o número nunca esconder um mapa com parte da história faltando.
+//! o número nunca esconder um mapa com parte da história faltando. A régua roda
+//! noutro processo e não vê essa conta: o comando de medida a leva numa
+//! variável ([`UNREAD_VAR`]), e o resultado da régua a traz em cada mapa que
+//! ela abriu ([`MapProof::unread`]), na linha `PECAS` e no JSON da prova.
 
+use std::collections::BTreeMap;
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
@@ -57,6 +61,11 @@ pub const OUT_VAR: &str = "MUSTARD_MEASURE_OUT";
 /// o commit do `mustard-rt` do plugin instalado, ou uma das duas frases
 /// ([`HOOK_NOT_INSTALLED`], [`HOOK_WITHOUT_COMMIT`]).
 pub const HOOK_VAR: &str = "MUSTARD_MEASURE_HOOK";
+/// Quantos arquivos a leitura da história não leu em cada mapa que o comando de
+/// medida refez: um objeto JSON do caminho do mapa (o banco) para a conta, `{}`
+/// quando ele não refez mapa nenhum. A régua a lê para pôr no resultado a conta
+/// de cada mapa que abriu.
+pub const UNREAD_VAR: &str = "MUSTARD_MEASURE_UNREAD";
 /// O que a prova diz do gancho quando não há `mustard-rt` de plugin instalado.
 pub const HOOK_NOT_INSTALLED: &str = "não instalado";
 /// O que a prova diz do gancho quando há plugin, mas a versão dele não traz o
@@ -64,19 +73,29 @@ pub const HOOK_NOT_INSTALLED: &str = "não instalado";
 pub const HOOK_WITHOUT_COMMIT: &str = "sem commit na versão";
 
 /// A frase de quem roda a régua sem o comando de medida.
-const REFUSAL: &str = "rode pelo comando de medida: `mustard-rt run measure <teste>` compila o código certo e põe o commit, o sujo, o resumo do que falta comitar e a versão do gancho; sem eles a prova ficaria em branco";
+const REFUSAL: &str = "rode pelo comando de medida: `mustard-rt run measure <teste>` compila o código certo e põe o commit, o sujo, o resumo do que falta comitar, a versão do gancho e quantos arquivos a história não leu em cada mapa; sem eles a prova ficaria em branco";
 
-/// As quatro variáveis de ambiente que o comando de medida põe para a régua
-/// ler, na ordem commit, sujo, resumo, gancho. O resumo vai vazio quando a
-/// pasta está limpa.
+/// As cinco variáveis de ambiente que o comando de medida põe para a régua
+/// ler, na ordem commit, sujo, resumo, gancho, arquivos que a história não
+/// leu. O resumo vai vazio quando a pasta está limpa. `unread` traz o mapa
+/// (o banco) de cada árvore que o comando refez e quantos arquivos a leitura
+/// da história dela não leu; vazio quando ele não refez árvore nenhuma.
 #[must_use]
-pub fn measure_vars(commit: &str, dirty: bool, diff: &str, hook: &str) -> [(&'static str, String); 4] {
+pub fn measure_vars(commit: &str, dirty: bool, diff: &str, hook: &str, unread: &[(PathBuf, usize)]) -> [(&'static str, String); 5] {
+    let unread: serde_json::Map<String, Value> = unread.iter().map(|(map, count)| (map.display().to_string(), json!(count))).collect();
     [
         (COMMIT_VAR, commit.to_string()),
         (DIRTY_VAR, if dirty { "1" } else { "0" }.to_string()),
         (DIFF_VAR, diff.to_string()),
         (HOOK_VAR, hook.to_string()),
+        (UNREAD_VAR, Value::Object(unread).to_string()),
     ]
+}
+
+/// A frase de quantos arquivos a leitura da história não leu, a mesma na linha
+/// do mapa refeito e na do mapa que a régua abriu.
+fn unread_phrase(unread: usize) -> String {
+    format!("arquivos que a história não leu: {unread}")
 }
 
 /// O commit que a versão completa de um `mustard-rt` carimba nele mesmo
@@ -99,31 +118,43 @@ pub fn result_path(own: &str) -> Option<String> {
     [OUT_VAR, own].iter().filter_map(|name| std::env::var(name).ok()).find(|path| !path.trim().is_empty())
 }
 
-/// Um mapa aberto pela régua, a marca que todos os blocos dele traziam e o
-/// estado de cada peça da busca nele.
+/// Um mapa aberto pela régua, a marca que todos os blocos dele traziam, o
+/// estado de cada peça da busca nele e quantos arquivos a leitura da história
+/// não leu.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MapProof {
     pub path: String,
     pub mark: String,
     pub pieces: Vec<Piece>,
+    /// Quantos arquivos o git não deixou ler na história deste mapa, como o
+    /// comando de medida contou ao refazê-lo; `None` quando ele não refez este
+    /// mapa e, por isso, não esperou a história dele.
+    pub unread: Option<usize>,
 }
 
 impl MapProof {
-    /// O mapa como o resultado da régua o guarda: o caminho, a marca e o
-    /// estado de cada peça da busca.
+    /// O mapa como o resultado da régua o guarda: o caminho, a marca, o estado
+    /// de cada peça da busca e quantos arquivos a história não leu (`null`
+    /// quando o comando de medida não refez o mapa).
     #[must_use]
     pub fn to_json(&self) -> Value {
         json!({
             "path": self.path,
             "mark": self.mark,
             "pieces": self.pieces.iter().map(Piece::to_json).collect::<Vec<_>>(),
+            "unread": self.unread,
         })
     }
 
-    /// A linha `PECAS` com o estado de cada peça deste mapa.
+    /// A linha `PECAS` com o estado de cada peça deste mapa e, quando o
+    /// comando de medida o refez, quantos arquivos a história não leu.
     #[must_use]
     pub fn pieces_line(&self) -> String {
-        search_pieces::line(&self.path, &self.pieces)
+        let line = search_pieces::line(&self.path, &self.pieces);
+        match self.unread {
+            Some(unread) => format!("{line}; {}", unread_phrase(unread)),
+            None => line,
+        }
     }
 }
 
@@ -145,6 +176,9 @@ pub struct MeasureProof {
     pub hook: String,
     /// Cada mapa que a régua abriu, na ordem em que o abriu.
     pub maps: Vec<MapProof>,
+    /// Quantos arquivos a leitura da história não leu em cada mapa que o
+    /// comando de medida refez, pelo caminho do mapa ([`UNREAD_VAR`]).
+    pub unread: BTreeMap<String, usize>,
 }
 
 impl MeasureProof {
@@ -162,8 +196,9 @@ impl MeasureProof {
     /// A prova do programa `exe`, com as variáveis lidas por `vars`.
     ///
     /// # Errors
-    /// [`REFUSAL`] se faltar o commit, o sujo ou o gancho, ou se um sujo vier
-    /// sem resumo; erro se o executável não se lê.
+    /// [`REFUSAL`] se faltar o commit, o sujo, o gancho ou a conta dos arquivos
+    /// que a história não leu, ou se um sujo vier sem resumo ou a conta não
+    /// for lida; erro se o executável não se lê.
     pub fn from_vars(vars: &dyn Fn(&str) -> Option<String>, exe: &Path) -> Result<Self> {
         let given = |name: &str| vars(name).map(|value| value.trim().to_string()).filter(|value| !value.is_empty());
         let commit = given(COMMIT_VAR).ok_or_else(|| Error::check_failed(REFUSAL))?;
@@ -178,6 +213,10 @@ impl MeasureProof {
             return Err(Error::check_failed(format!("{DIRTY_VAR} diz que havia código por comitar e {DIFF_VAR} não traz o resumo dele")));
         }
         let hook = given(HOOK_VAR).ok_or_else(|| Error::check_failed(REFUSAL))?;
+        let unread = given(UNREAD_VAR).ok_or_else(|| Error::check_failed(REFUSAL))?;
+        let unread = serde_json::from_str::<BTreeMap<String, usize>>(&unread).map_err(|e| {
+            Error::check_failed(format!("{UNREAD_VAR} não diz, por mapa, quantos arquivos a história não leu (um objeto JSON do caminho para a conta): {e}"))
+        })?;
         let binary_sha256 = sha256_of_file(exe)
             .map_err(|e| Error::check_failed(format!("o programa {} não se lê para o SHA-256: {e}", exe.display())))?;
         Ok(Self {
@@ -188,6 +227,7 @@ impl MeasureProof {
             binary_path: exe.display().to_string(),
             hook,
             maps: Vec::new(),
+            unread,
         })
     }
 
@@ -263,7 +303,7 @@ impl Rebuilt {
     /// arquivos a leitura da história não leu (zero quando leu todos).
     #[must_use]
     pub fn line(&self, tree: &Path) -> String {
-        format!("mapa refeito: {}; arquivos que a história não leu: {}", tree.display(), self.unread)
+        format!("mapa refeito: {}; {}", tree.display(), unread_phrase(self.unread))
     }
 }
 
@@ -353,7 +393,7 @@ pub fn check_map(db: &Path, expected: &str) -> Result<MapProof> {
         }
     }
     let pieces = search_pieces::of_map(db)?;
-    Ok(MapProof { path: db.display().to_string(), mark: expected.to_string(), pieces })
+    Ok(MapProof { path: db.display().to_string(), mark: expected.to_string(), pieces, unread: None })
 }
 
 /// O que a compilação do programa de medida carimbou nele mesmo: a versão
@@ -437,13 +477,15 @@ impl MeasureGate {
         Ok(Self { expected, proof })
     }
 
-    /// Confere o mapa em `db` e o põe na prova. A régua o chama antes de
-    /// abrir o mapa para medir.
+    /// Confere o mapa em `db` e o põe na prova, com quantos arquivos a
+    /// história dele não leu quando o comando de medida o refez. A régua o
+    /// chama antes de abrir o mapa para medir.
     ///
     /// # Errors
     /// Os de [`check_map`].
     pub fn check(&mut self, db: &Path) -> Result<()> {
-        let map = check_map(db, &self.expected)?;
+        let mut map = check_map(db, &self.expected)?;
+        map.unread = self.proof.unread.get(&map.path).copied();
         self.proof.maps.push(map);
         Ok(())
     }
@@ -493,11 +535,18 @@ mod tests {
     }
 
     fn vars_with_hook(commit: &str, dirty: &str, diff: &str, hook: &str) -> impl Fn(&str) -> Option<String> {
+        vars_with_unread(commit, dirty, diff, hook, "{}")
+    }
+
+    /// As variáveis do comando de medida com a conta `unread` de arquivos que a
+    /// história não leu, como o texto que a variável leva.
+    fn vars_with_unread(commit: &str, dirty: &str, diff: &str, hook: &str, unread: &str) -> impl Fn(&str) -> Option<String> {
         let all = [
             (COMMIT_VAR, commit.to_string()),
             (DIRTY_VAR, dirty.to_string()),
             (DIFF_VAR, diff.to_string()),
             (HOOK_VAR, hook.to_string()),
+            (UNREAD_VAR, unread.to_string()),
         ];
         move |name| all.iter().find(|(key, _)| *key == name).map(|(_, value)| value.clone())
     }
@@ -611,11 +660,58 @@ mod tests {
         let dir = tempdir().unwrap();
         let exe = exe_abc(dir.path());
         for (dirty, diff) in [(true, "aaaabbbbcccc"), (false, "")] {
-            let set = measure_vars("deadbeef1234", dirty, diff, "10d66039a5b1");
+            let set = measure_vars("deadbeef1234", dirty, diff, "10d66039a5b1", &[(PathBuf::from("/a/.claude/grain.db"), 0), (PathBuf::from("/b/.claude/grain.db"), 7)]);
             let read = |name: &str| set.iter().find(|(key, _)| *key == name).map(|(_, value)| value.clone());
             let proof = MeasureProof::from_vars(&read, &exe).unwrap();
             assert_eq!((proof.commit.as_str(), proof.dirty, proof.diff.as_str()), ("deadbeef1234", dirty, diff));
             assert_eq!(proof.hook, "10d66039a5b1");
+            assert_eq!(proof.unread, BTreeMap::from([("/a/.claude/grain.db".to_string(), 0), ("/b/.claude/grain.db".to_string(), 7)]));
+        }
+        let none = measure_vars("deadbeef1234", false, "", "10d66039a5b1", &[]);
+        let read = |name: &str| none.iter().find(|(key, _)| *key == name).map(|(_, value)| value.clone());
+        assert!(MeasureProof::from_vars(&read, &exe).unwrap().unread.is_empty(), "a measure that rebuilt no map says so");
+    }
+
+    /// O resultado da régua diz, em cada mapa que ela abriu, quantos arquivos a
+    /// história não leu, como o comando de medida contou ao refazê-lo: o JSON
+    /// traz o número, e a linha das peças do mapa o diz depois das peças. O mapa
+    /// que o comando não refez sai sem número (`null`) e sem a frase.
+    #[test]
+    fn the_result_says_how_many_files_the_history_of_each_opened_map_did_not_read() {
+        let dir = tempdir().unwrap();
+        let (_one, rebuilt) = saved_with("scan 1");
+        let (_two, untouched) = saved_with("scan 1");
+        let unread = format!("{{{}:2}}", json!(rebuilt.display().to_string()));
+        let proof = MeasureProof::from_vars(&vars_with_unread("0123456789ab", "0", "", "10d66039a5b1", &unread), &exe_abc(dir.path())).unwrap();
+        let mut gate = MeasureGate::with(proof, "scan 1".to_string(), None).unwrap();
+        gate.check(&rebuilt).unwrap();
+        gate.check(&untouched).unwrap();
+
+        let json = gate.proof().to_json();
+        assert_eq!(json["maps"][0]["unread"], json!(2), "{json}");
+        assert!(json["maps"][1]["unread"].is_null(), "a map the command did not rebuild has no count: {json}");
+        let lines = gate.proof().lines();
+        assert!(lines[1].ends_with("conferencia=ligada; arquivos que a história não leu: 2"), "{lines:?}");
+        assert!(lines[2].ends_with("conferencia=ligada"), "{lines:?}");
+    }
+
+    /// Sem a conta dos arquivos que a história não leu, ou com ela que não se
+    /// lê, a prova recusa: ficaria em branco o que o número esconde do mapa.
+    #[test]
+    fn a_proof_without_the_count_of_unread_files_or_with_a_count_that_does_not_read_is_refused() {
+        let dir = tempdir().unwrap();
+        let exe = exe_abc(dir.path());
+        let no_count = |name: &str| match name {
+            COMMIT_VAR => Some("0123456789ab".to_string()),
+            DIRTY_VAR => Some("0".to_string()),
+            HOOK_VAR => Some("10d66039a5b1".to_string()),
+            _ => None,
+        };
+        let error = MeasureProof::from_vars(&no_count, &exe).unwrap_err().to_string();
+        assert!(error.contains("rode pelo comando de medida") && error.contains("a história não leu"), "{error}");
+        for bad in ["[]", "{\"/m\":\"dois\"}", "{\"/m\":-1}", "não é json", "3"] {
+            let refused = MeasureProof::from_vars(&vars_with_unread("0123456789ab", "0", "", "10d66039a5b1", bad), &exe).unwrap_err().to_string();
+            assert!(refused.contains(UNREAD_VAR), "{bad}: {refused}");
         }
     }
 

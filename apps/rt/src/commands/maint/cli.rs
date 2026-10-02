@@ -82,7 +82,8 @@ pub enum MaintCmd {
     ///
     /// Imprime ao fim as linhas `PROVA`, uma linha `PECAS` por mapa que a
     /// régua abriu (o estado de cada peça da busca nele, ligada ou ainda não
-    /// ligada) e o caminho do resultado (`--out`, ou `<pasta>/<teste>.json`,
+    /// ligada, e quantos arquivos a leitura da história não leu, que a régua
+    /// recebe do comando e grava também no resultado, em cada mapa) e o caminho do resultado (`--out`, ou `<pasta>/<teste>.json`,
     /// que a régua lê em `MUSTARD_MEASURE_OUT`). Ao terminar, só as três
     /// pastas de medida usadas por último ficam. Só mede
     /// o código-fonte do Mustard: em outro projeto recusa (exit 1).

@@ -298,6 +298,15 @@ fn is_agent_file(path: &Path) -> bool {
         && path.is_file()
 }
 
+/// O título de uma mensagem: a primeira linha dela, sem o espaço do fim. É por
+/// ele que [`wave_agent_file`] acha o agente da onda, e quem reconhece o
+/// pedido de uma onda no despacho o lê pela mesma regra, para o título que o
+/// despacho leva ser o que o arquivo do agente vai ter.
+#[must_use]
+pub fn heading_of(text: &str) -> &str {
+    text.lines().next().unwrap_or_default().trim_end()
+}
+
 /// A primeira linha da primeira mensagem do agente e o primeiro carimbo do
 /// arquivo. Lê só o começo: as duas coisas vêm nas primeiras linhas.
 fn opening(path: &Path) -> Option<(String, DateTime<Utc>)> {
@@ -314,7 +323,7 @@ fn opening(path: &Path) -> Option<(String, DateTime<Utc>)> {
             && let Some(message) = &line.message
         {
             let first = message.content.as_ref().and_then(Content::text).unwrap_or_default();
-            heading = Some(first.lines().next().unwrap_or_default().trim_end().to_string());
+            heading = Some(heading_of(first).to_string());
         }
         if let (Some(heading), Some(started)) = (&heading, started) {
             return Some((heading.clone(), started));
@@ -552,5 +561,34 @@ mod tests {
     fn lines_without_usage_or_json_add_nothing() {
         let usage = usage_of(["", "{", "{\"message\":{\"id\":\"x\"}}", "[\"usage\"]"]);
         assert_eq!(usage, Usage::default());
+    }
+
+    /// O título de uma mensagem é a primeira linha dela, sem o espaço do fim, e
+    /// o agente que abre com outra coisa na frente do título não é achado por
+    /// ele: o título fica na terceira linha da mensagem, e a primeira é a que
+    /// vale.
+    #[test]
+    fn the_heading_is_the_first_line_and_a_line_before_the_title_hides_the_agent() {
+        assert_eq!(heading_of("# obra — onda 3  \n\ncorpo"), "# obra — onda 3");
+        assert_eq!(heading_of("# obra — onda 3"), "# obra — onda 3");
+        assert_eq!(heading_of("\n# obra — onda 3"), "", "an empty first line is the heading");
+        assert_eq!(heading_of(""), "");
+
+        let config = tempfile::tempdir().unwrap();
+        let session = config.path().join("projects").join("-obra").join("sessao");
+        let agents = session.join("subagents");
+        let title = "# obra — onda 3";
+        write(
+            &agents.join("agent-direto.jsonl"),
+            &[request("2026-01-10T21:54:28.200Z", &format!("{title}\n\nLeia o pedido."))],
+        );
+        write(
+            &agents.join("agent-com-linha-antes.jsonl"),
+            &[request("2026-01-10T21:54:28.300Z", &format!("Idiomas deste projeto.\n\n{title}\n\nLeia o pedido."))],
+        );
+        let sent = "2026-01-10T18:54:28-03:00";
+        assert_eq!(wave_agent_file(&session, title, sent), Some(agents.join("agent-direto.jsonl")));
+        std::fs::remove_file(agents.join("agent-direto.jsonl")).unwrap();
+        assert_eq!(wave_agent_file(&session, title, sent), None, "the agent with a line before the title is not found");
     }
 }

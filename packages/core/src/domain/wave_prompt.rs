@@ -67,6 +67,34 @@ pub fn language_line(language: &Language) -> String {
         .replace("{code}", language.code_or_default().as_str())
 }
 
+/// O título do pedido de uma onda, a primeira linha dele: `# ` e a spec com o
+/// número da onda, no idioma do texto. É por ele que a medida acha, depois, o
+/// agente que recebeu a onda; só esta função o monta, e [`is_wave_title`] o
+/// reconhece pelo mesmo molde.
+#[must_use]
+pub fn wave_title(spec: &str, wave: u64, lang: Locale) -> String {
+    format!("# {}", translate("prompt.title", lang).replace("{spec}", spec).replace("{n}", &wave.to_string()))
+}
+
+/// Se `heading` é o título do pedido de uma onda — de qualquer spec e de
+/// qualquer onda —, no idioma do texto: o que [`wave_title`] monta, lido pelo
+/// mesmo molde da tradução, com a spec sem espaço e o número maior que zero.
+#[must_use]
+pub fn is_wave_title(heading: &str, lang: Locale) -> bool {
+    let template = translate("prompt.title", lang);
+    let Some((before, rest)) = template.split_once("{spec}") else { return false };
+    let Some((between, after)) = rest.split_once("{n}") else { return false };
+    let Some(inner) = heading.strip_prefix("# ").and_then(|text| text.strip_prefix(before)).and_then(|text| text.strip_suffix(after)) else {
+        return false;
+    };
+    inner.rsplit_once(between).is_some_and(|(spec, wave)| {
+        !spec.is_empty()
+            && !spec.contains(char::is_whitespace)
+            && wave.bytes().all(|byte| byte.is_ascii_digit())
+            && wave.parse::<u64>().is_ok_and(|wave| wave > 0)
+    })
+}
+
 /// A skill que uma tarefa da onda nomeia, recomendada no pedido. O texto dela
 /// não entra: a skill mora num arquivo do projeto, e o agente da onda o lê.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3489,5 +3517,40 @@ mod tests {
         assert!(request.contains("exemplo: `create0` em `src/order0/order0.controller.ts`, linhas 10 a 40"), "{request}");
         assert!(!request.contains("exemplo: `create1`") && !request.contains("Receita do git"), "{request}");
         assert!(request.contains("regra: controller_of_area_05 importa service_of_area_05"), "{request}");
+    }
+
+    /// O título que o pedido da onda leva na primeira linha é o que
+    /// `wave_title` monta, e `is_wave_title` o reconhece nos dois idiomas, de
+    /// qualquer spec e de qualquer onda; o que não tem o molde do título não é
+    /// o título de uma onda.
+    #[test]
+    fn the_title_of_a_wave_request_is_recognized_by_the_same_template_that_builds_it() {
+        let log = log(&[("wave", json!({"n": 3, "text": "Onda", "criteria": [], "done_when": "a suíte passa"}))]);
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let request = write(&material(&log, 3), lang);
+            let first = request.lines().next().unwrap_or_default();
+            assert_eq!(first, wave_title("teste", 3, lang), "the request opens with the title");
+            assert!(is_wave_title(first, lang), "{first}");
+            assert!(is_wave_title(&wave_title("minha-obra", 128, lang), lang));
+        }
+        assert_eq!(wave_title("x", 7, Locale::PtBr), "# x — onda 7");
+        assert_eq!(wave_title("x", 7, Locale::EnUs), "# x — wave 7");
+
+        for not_a_title in [
+            "",
+            "x — onda 7",
+            "# x — onda 0",
+            "# x — onda",
+            "# x — onda dois",
+            "# x — onda 7 e mais",
+            "# — onda 7",
+            "# duas palavras — onda 7",
+            "# Conserte o teste da soma.",
+            "## x — onda 7",
+        ] {
+            assert!(!is_wave_title(not_a_title, Locale::PtBr), "{not_a_title:?}");
+        }
+        assert!(!is_wave_title("# x — wave 7", Locale::PtBr), "the title is read in the language of the text");
+        assert!(!is_wave_title("# x — onda 7", Locale::EnUs), "the title is read in the language of the text");
     }
 }

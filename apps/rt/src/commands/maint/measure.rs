@@ -20,7 +20,8 @@
 //!   leitura do mesmo mapa está fazendo a medida espera, e só recusa se outra
 //!   começar logo depois da espera); a linha `PECAS` diz se a história
 //!   chegou, e a linha de cada mapa refeito diz quantos arquivos o git não
-//!   deixou ler;
+//!   deixou ler; a régua recebe essa conta de cada mapa numa variável e a
+//!   grava no resultado e na linha `PECAS` do mapa que abriu;
 //! - a prova diz também qual versão do gancho as sessões do usuário rodam: o
 //!   commit que o `mustard-rt` do plugin instalado carimbou em si;
 //! - ao terminar, só as três pastas de medida usadas por último ficam.
@@ -36,6 +37,7 @@ use std::time::SystemTime;
 
 use mustard_core::domain::scan::Scan;
 use mustard_core::io::measure_proof::{HOOK_NOT_INSTALLED, HOOK_WITHOUT_COMMIT, OUT_VAR, built_commit, measure_vars, rebuild_map};
+use mustard_core::io::project_map::model_path;
 use mustard_core::io::tree_state::tree_state;
 use mustard_core::platform::git;
 use mustard_core::platform::harness::{home_dir, installed_plugin_rt, installed_plugin_rt_in};
@@ -299,12 +301,14 @@ fn build_env(code: &Code, target: &Path) -> Vec<(&'static str, Option<String>)> 
     ]
 }
 
-/// As variáveis da execução da régua: a prova (commit, sujo, resumo e a
-/// versão do gancho), o arquivo de resultado, as do usuário e a pasta do
-/// pacote.
-fn run_env(code: &Code, hook: &str, out: &Path, user: &[(String, String)], manifest_dir: &Path) -> Vec<(String, String)> {
-    let mut vars: Vec<(String, String)> =
-        measure_vars(&code.short(), code.dirty, &code.diff, hook).into_iter().map(|(name, value)| (name.to_string(), value)).collect();
+/// As variáveis da execução da régua: a prova (commit, sujo, resumo, a versão
+/// do gancho e quantos arquivos a história de cada mapa refeito não leu), o
+/// arquivo de resultado, as do usuário e a pasta do pacote.
+fn run_env(code: &Code, hook: &str, rebuilt: &RebuiltTrees, out: &Path, user: &[(String, String)], manifest_dir: &Path) -> Vec<(String, String)> {
+    let mut vars: Vec<(String, String)> = measure_vars(&code.short(), code.dirty, &code.diff, hook, &rebuilt.unread)
+        .into_iter()
+        .map(|(name, value)| (name.to_string(), value))
+        .collect();
     vars.push((OUT_VAR.to_string(), out.display().to_string()));
     vars.extend(user.iter().cloned());
     vars.push(("CARGO_MANIFEST_DIR".to_string(), manifest_dir.display().to_string()));
@@ -470,12 +474,23 @@ fn trees_folder(cwd: &Path, opts: &MeasureOpts, user: &mut Vec<(String, String)>
     Ok(Some(folder))
 }
 
+/// O que a medida refez nas árvores: a linha de cada mapa refeito, na ordem das
+/// pastas, e quantos arquivos a leitura da história não leu em cada um, para a
+/// régua, que roda noutro processo, gravá-lo no resultado.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct RebuiltTrees {
+    lines: Vec<String>,
+    /// O mapa (o banco) de cada árvore e quantos arquivos a história dele não
+    /// leu.
+    unread: Vec<(PathBuf, usize)>,
+}
+
 /// Refaz, com `scan`, o mapa de cada projeto da pasta de árvores: um projeto é
 /// cada pasta dentro dela, fora as escondidas. Recusa na primeira que o scan
 /// não refaz, e quando a pasta não tem projeto nenhum: a régua mediria sem
 /// mapa novo. Devolve a linha de cada mapa refeito, com quantos arquivos a
-/// leitura da história não leu, na ordem das pastas.
-fn rebuild_trees(trees: &Path, scan: &Scan) -> Result<Vec<String>, String> {
+/// leitura da história não leu, e essa conta de cada mapa.
+fn rebuild_trees(trees: &Path, scan: &Scan) -> Result<RebuiltTrees, String> {
     let entries = std::fs::read_dir(trees).map_err(|err| format!("não consegui ler a pasta de árvores {}: {err}", trees.display()))?;
     let mut projects: Vec<PathBuf> = entries
         .flatten()
@@ -486,14 +501,15 @@ fn rebuild_trees(trees: &Path, scan: &Scan) -> Result<Vec<String>, String> {
     if projects.is_empty() {
         return Err(format!("a pasta de árvores {} não tem projeto nenhum para refazer o mapa", trees.display()));
     }
-    let mut lines = Vec::with_capacity(projects.len());
+    let mut done = RebuiltTrees::default();
     for project in &projects {
         let rebuilt = rebuild_map(project, scan).map_err(|err| err.to_string())?;
         let line = rebuilt.line(project);
         eprintln!("{line}");
-        lines.push(line);
+        done.lines.push(line);
+        done.unread.push((model_path(project), rebuilt.unread));
     }
-    Ok(lines)
+    Ok(done)
 }
 
 /// O que a prova diz do gancho das sessões do usuário: o commit que o
@@ -633,9 +649,9 @@ fn compile_and_run(job: &Job<'_>) -> Result<Vec<String>, String> {
 
     // Cada mapa se refaz com esse mesmo scan antes da régua: nenhuma medida
     // abre o mapa que uma compilação velha deixou na árvore.
-    let mut lines = match trees {
+    let rebuilt = match trees {
         Some(trees) => rebuild_trees(trees, &compiled_scan(&target)?)?,
-        None => Vec::new(),
+        None => RebuiltTrees::default(),
     };
 
     let mut compile = cargo_in(host, source, code, &target)?;
@@ -652,7 +668,7 @@ fn compile_and_run(job: &Job<'_>) -> Result<Vec<String>, String> {
 
     let mut ruler = Command::new(&binary.executable);
     ruler.args([name.as_str(), "--exact", "--ignored", "--nocapture"]).current_dir(&binary.manifest_dir);
-    ruler.envs(run_env(code, &hook_version(host), out, user, &binary.manifest_dir));
+    ruler.envs(run_env(code, &hook_version(host), &rebuilt, out, user, &binary.manifest_dir));
     eprintln!("medindo `{name}` com {}", binary.executable.display());
     let (passed, proof) = run_ruler(ruler)?;
     if !passed {
@@ -661,6 +677,7 @@ fn compile_and_run(job: &Job<'_>) -> Result<Vec<String>, String> {
     if lacks_proof_line(&proof) {
         return Err(format!("a régua `{name}` terminou sem imprimir a linha `{}…`: ela não grava a versão que usou, e o número não vale", PROOF_PREFIX.trim()));
     }
+    let mut lines = rebuilt.lines;
     lines.extend(proof);
     Ok(lines)
 }
@@ -895,13 +912,15 @@ mod tests {
         let exe = std::env::current_exe().unwrap();
         for (diff, dirty) in [("abcdef012345", true), ("", false)] {
             let code = code("0123456789abcdef0123456789abcdef01234567", diff);
-            let vars = run_env(&code, "10d66039a5b1", Path::new("/o/saida.json"), &[("K".into(), "v".into())], Path::new("/w/apps/rt"));
+            let rebuilt = RebuiltTrees { lines: Vec::new(), unread: vec![(PathBuf::from("/t/p/.claude/grain.db"), 4)] };
+            let vars = run_env(&code, "10d66039a5b1", &rebuilt, Path::new("/o/saida.json"), &[("K".into(), "v".into())], Path::new("/w/apps/rt"));
             let read = |name: &str| vars.iter().find(|(key, _)| key == name).map(|(_, value)| value.clone());
             let proof = MeasureProof::from_vars(&read, &exe).unwrap();
             assert_eq!(proof.commit, "0123456789ab");
             assert_eq!(proof.dirty, dirty);
             assert_eq!(proof.diff, diff);
             assert_eq!(proof.hook, "10d66039a5b1");
+            assert_eq!(proof.unread, std::collections::BTreeMap::from([("/t/p/.claude/grain.db".to_string(), 4)]));
             assert_eq!(read("MUSTARD_MEASURE_OUT").as_deref(), Some("/o/saida.json"));
             assert_eq!(read("K").as_deref(), Some("v"));
             assert_eq!(read("CARGO_MANIFEST_DIR").as_deref(), Some("/w/apps/rt"));
@@ -1223,7 +1242,8 @@ mod tests {
         let rebuilt = rebuild_trees(&trees, &Scan::new(dir.path().join("scan").to_string_lossy())).unwrap();
 
         let told = |name: &str| format!("mapa refeito: {}; arquivos que a história não leu: 0", trees.join(name).display());
-        assert_eq!(rebuilt, vec![told("a"), told("b")]);
+        assert_eq!(rebuilt.lines, vec![told("a"), told("b")]);
+        assert_eq!(rebuilt.unread, vec![(model_path(&trees.join("a")), 0), (model_path(&trees.join("b")), 0)]);
         let calls = scan_calls(&log);
         let (a, b) = (trees.join("a").display().to_string(), trees.join("b").display().to_string());
         let of = |command: &str| {
@@ -1298,7 +1318,7 @@ mod tests {
         crate::executable::write_executable(
             &ruler,
             &format!(
-                "#!/bin/sh\ncase \"$1\" in\n--list) echo 'mod::measure_it: test' ;;\n*) echo ruler >> '{log}'\n   echo \"PROVA commit=$MUSTARD_MEASURE_COMMIT gancho=$MUSTARD_MEASURE_HOOK home=$HOME mapa=$(cat \"$SPEND_TREES/p/.claude/grain.db\")\" ;;\nesac\n",
+                "#!/bin/sh\ncase \"$1\" in\n--list) echo 'mod::measure_it: test' ;;\n*) echo ruler >> '{log}'\n   echo \"PROVA commit=$MUSTARD_MEASURE_COMMIT gancho=$MUSTARD_MEASURE_HOOK home=$HOME mapa=$(cat \"$SPEND_TREES/p/.claude/grain.db\") unread=$MUSTARD_MEASURE_UNREAD\" ;;\nesac\n",
                 log = log.display()
             ),
         );
@@ -1389,6 +1409,28 @@ mod tests {
         let tree = world.trees.join("p").display().to_string();
         let steps: Vec<String> = std::fs::read_to_string(&world.log).unwrap().lines().map(str::to_string).collect();
         assert_eq!(steps, ["cargo build".to_string(), format!("scan {tree}"), format!("history-all {tree}"), "history-finished".into(), "cargo test".into(), "ruler".into()]);
+    }
+
+    /// A régua, que roda noutro processo, recebe quantos arquivos a história de
+    /// cada mapa refeito não leu: a conta que a medida imprime na linha do mapa
+    /// refeito chega à régua pela variável da prova, com o caminho do mapa que
+    /// ela abre; sem árvores para refazer, a variável vai vazia.
+    #[cfg(unix)]
+    #[test]
+    fn the_ruler_receives_how_many_files_the_history_of_each_rebuilt_map_did_not_read() {
+        let world = world();
+        replace_history_reading(&world, "echo '{\"ok\":true,\"busy\":false,\"files\":5,\"failed\":2}'");
+        let mut asked = opts("measure_it");
+        asked.trees = Some(world.trees.clone());
+
+        let report = measure_in(&world.repo, &world.base, &asked, &world.host).expect("the measure goes on");
+
+        let map = model_path(&world.trees.join("p"));
+        let told = serde_json::json!({ map.display().to_string(): 2 });
+        assert!(report.contains(&format!("unread={told}")), "the ruler got the count of the map it opens: {report}");
+
+        let without_trees = measure_in(&world.repo, &world.base, &opts("measure_it"), &world.host).expect("a measure without trees goes on");
+        assert!(without_trees.contains("unread={}"), "no tree rebuilt, no count: {without_trees}");
     }
 
     /// O git que não lê a história de alguns arquivos deixa a medida seguir, e

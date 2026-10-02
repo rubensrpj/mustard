@@ -723,7 +723,8 @@ impl Round {
 /// preparo) e as cópias dos projetos, cada uma com o mapa e o `mustard.json` do
 /// projeto real, estão em `SPEND_TREES/<nome>`; `SPEND_OUT` (ou o `--out` do
 /// comando de medida) recebe uma linha por busca, cada uma com a prova de
-/// versão em `proof`. Só as buscas do `Bash` e do `Grep` entram nas contas; as
+/// versão em `proof`, que diz de cada mapa a marca, as peças e quantos arquivos a
+/// leitura da história não leu. Só as buscas do `Bash` e do `Grep` entram nas contas; as
 /// vencidas (o texto já não casa com o arquivo certo na cópia) ficam de fora.
 /// Roda pelo comando de medida, que compila o código certo em `--release`,
 /// para o tempo ser o do gancho de verdade, e refaz o mapa de cada cópia com o
@@ -1422,6 +1423,7 @@ mod tests {
             binary_path: "programa".to_string(),
             hook: "10d66039a5b1".to_string(),
             maps: Vec::new(),
+            unread: std::collections::BTreeMap::new(),
         }
     }
 
@@ -1443,6 +1445,34 @@ mod tests {
         assert_eq!(maps.len(), 1, "one entry per opened map");
         assert_eq!(maps[0].pieces.len(), 6, "the map carries the state of every piece of the search");
         assert_eq!((maps[0].path.as_str(), maps[0].mark.as_str()), (same.to_str().expect("a path"), "scan 1"));
+    }
+
+    /// O resultado que a régua grava leva, em cada linha, a prova com quantos
+    /// arquivos a história de cada mapa não leu, como o comando de medida
+    /// contou: o mapa que ele refez sai com o número, e o que ele não refez, com
+    /// `null`.
+    #[test]
+    fn every_result_line_carries_how_many_files_the_history_of_each_map_did_not_read() {
+        let (_dir, root) = fixture::repo("{}");
+        let (_one, rebuilt) = map_marked("scan 1");
+        let (_two, untouched) = map_marked("scan 1");
+        let mut proof = proof_of_the_measure();
+        proof.unread.insert(rebuilt.display().to_string(), 3);
+        let gate = MeasureGate::with(proof, "scan 1".to_string(), None).expect("the gate opens");
+        let gate = check_maps(gate, &[rebuilt.clone(), untouched.clone()]).expect("both maps pass");
+
+        let judge = Judge::sure_of(&[("calcular_frete", 0.9)]);
+        let rows = [bash_row("grep -rn calcular_frete src", &["src/frete.rs"]), bash_row("grep -rn imposto src", &["src/frete.rs"])];
+        let round = judge.installed(|| Round::measure(&rows, |_| root.clone(), &gate.proof().to_json()));
+
+        assert_eq!(round.lines.len(), 2);
+        for line in &round.lines {
+            let result: Value = serde_json::from_str(line).expect("a result line is JSON");
+            let maps = &result["proof"]["maps"];
+            assert_eq!(maps[0]["path"], json!(rebuilt.display().to_string()));
+            assert_eq!(maps[0]["unread"], json!(3), "{result}");
+            assert!(maps[1]["unread"].is_null(), "{result}");
+        }
     }
 
     /// Rodar a régua direto, sem o comando de medida, recusa com a frase que

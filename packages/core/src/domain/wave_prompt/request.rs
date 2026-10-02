@@ -10,7 +10,7 @@ use std::fmt::Write as _;
 
 use serde_json::Value;
 
-use super::{code_of, language_line, lowered, pattern_block_in_step, Material, Writer, STEP_INDENT};
+use super::{code_of, language_line, lowered, pattern_block_in_step, wave_title, Material, Writer, STEP_INDENT};
 use crate::domain::spec_events::SpecEvent;
 
 /// Uma tarefa da onda, com o que ela atende.
@@ -117,11 +117,7 @@ impl Writer<'_> {
         let m = self.material;
         let listing = Listing::of(m);
         let mut out = String::new();
-        let _ = writeln!(
-            out,
-            "# {}\n",
-            self.t("prompt.title").replace("{spec}", &m.spec).replace("{n}", &m.wave.to_string())
-        );
+        let _ = writeln!(out, "{}\n", wave_title(&m.spec, m.wave, self.lang));
         let _ = writeln!(
             out,
             "{}\n",
