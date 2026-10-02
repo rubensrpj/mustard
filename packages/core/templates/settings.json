@@ -27,7 +27,8 @@
       "Bash",
       "Bash(mustard-rt run read:*)",
       "Bash(mustard-rt run close:*)",
-      "Bash(mustard-rt run pr-merge:*)"
+      "Bash(mustard-rt run pr-merge:*)",
+      "Bash(mustard-rt run spend:*)"
     ],
     "deny": [
       "Bash(rm -rf:*)",

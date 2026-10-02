@@ -12,19 +12,27 @@
 //! de cache e saída —, contando cada resposta uma vez; passos é o número de usos
 //! de ferramenta.
 //!
+//! O gasto de cada dia ([`SpendTally`]) usa a mesma conta, mas guarda cada
+//! resposta pelo `message.id` em qualquer arquivo e separa os usos de
+//! ferramenta por coluna — procura de código, leitura de arquivo e busca do
+//! Mustard —, no dia (fuso -03:00) e no projeto da linha.
+//!
 //! As partes puras, [`usage_of`] e a escolha do agente da onda entre os
 //! achados, não tocam o disco; as outras acham os arquivos e entregam a elas
 //! as linhas e os começos de cada agente. Linha que não é JSON, ou sem `usage`, é pulada: o
 //! arquivo é da plataforma, e uma linha que este leitor não entende não pode
 //! derrubar a medida inteira.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
+use serde_json::Value;
+
+use crate::domain::spend::{classify_tool, day_of_stamp, DayRow, Range};
 
 /// O consumo medido num conjunto de linhas de conversa.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -52,6 +60,9 @@ struct Line {
     is_sidechain: Option<bool>,
     #[serde(default, rename = "gitBranch")]
     git_branch: Option<String>,
+    /// A pasta em que a conversa estava quando a linha foi gravada.
+    #[serde(default)]
+    cwd: Option<String>,
     #[serde(default)]
     message: Option<Message>,
 }
@@ -106,6 +117,13 @@ struct Block {
     id: Option<String>,
     #[serde(default)]
     text: Option<String>,
+    /// O nome da ferramenta, num bloco de uso de ferramenta.
+    #[serde(default)]
+    name: Option<String>,
+    /// Os argumentos da ferramenta, como vieram: o gasto lê só o `command`
+    /// do `Bash` e o `subagent_type` do `Agent`.
+    #[serde(default)]
+    input: Option<Value>,
 }
 
 impl Content {
@@ -170,6 +188,113 @@ impl Tally {
                 .saturating_add(self.unnamed_tools),
             tokens: named.saturating_add(self.unnamed_tokens),
         }
+    }
+}
+
+/// A chave de uma linha do gasto: o dia e o projeto.
+type SpendKey = (String, String);
+
+/// O gasto em andamento, por dia e por projeto, das linhas de várias
+/// conversas.
+///
+/// Cada resposta é guardada pelo `message.id`, e a linha seguinte da mesma
+/// resposta, em qualquer arquivo, troca o valor em vez de somar: os tokens da
+/// resposta contam uma vez, os da última linha dela, no dia e no projeto dessa
+/// linha. Cada uso de ferramenta conta uma vez, pelo próprio id, na primeira
+/// linha em que aparece. A resposta e o uso de ferramenta sem id contam em
+/// cada linha.
+#[derive(Default)]
+pub struct SpendTally {
+    responses: HashMap<String, (SpendKey, u64)>,
+    tools: HashSet<String>,
+    rows: BTreeMap<SpendKey, DayRow>,
+    map_searches: Vec<MapSearch>,
+}
+
+/// O uso de `Bash` que rodou a busca do Mustard por comando: quando a resposta
+/// do modelo foi gravada e a linha do dia e do projeto onde ele foi contado.
+/// A conta das buscas junta cada uso à chamada `word search` que a mesma busca
+/// gravou na spec, para a busca contar uma vez só.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MapSearch {
+    pub at: DateTime<Utc>,
+    pub day: String,
+    pub project: String,
+}
+
+/// O que o gasto de várias conversas deu: a linha de cada dia e projeto e os
+/// usos de `Bash` que rodaram a busca do Mustard.
+#[derive(Debug, Default)]
+pub struct Spent {
+    pub rows: BTreeMap<(String, String), DayRow>,
+    pub map_searches: Vec<MapSearch>,
+}
+
+impl SpendTally {
+    /// Soma a linha `text` do arquivo de uma conversa. A linha sem uso, que não
+    /// é JSON, sem carimbo, de um dia fora de `range` ou de uma pasta que
+    /// `project_of` não reconhece como projeto fica de fora. `project_of`
+    /// recebe o `cwd` da linha, quando ela traz um, e devolve o nome do
+    /// projeto.
+    pub fn add_line(&mut self, text: &str, range: &Range, project_of: &mut dyn FnMut(Option<&str>) -> Option<String>) {
+        let Some(line) = usage_line(text) else { return };
+        let Some(message) = line.message else { return };
+        let Some(tokens) = message.usage else { return };
+        let Some(day) = line.timestamp.as_deref().and_then(day_of_stamp).filter(|day| range.contains(day)) else {
+            return;
+        };
+        let Some(project) = project_of(line.cwd.as_deref()) else { return };
+        let key = (day, project);
+        let total = tokens.total();
+        match message.id {
+            Some(id) => {
+                self.responses.insert(id, (key.clone(), total));
+            }
+            None => {
+                let row = self.row(&key);
+                row.tokens = row.tokens.saturating_add(total);
+            }
+        }
+        let Some(Content::Blocks(blocks)) = message.content else { return };
+        let stamp = line.timestamp.as_deref().and_then(utc);
+        for block in blocks.into_iter().filter(|block| block.kind.as_deref() == Some("tool_use")) {
+            if block.id.is_some_and(|id| !self.tools.insert(id)) {
+                continue;
+            }
+            let input = block.input.as_ref();
+            let command = input.and_then(|input| input.get("command")).and_then(Value::as_str);
+            let subagent = input.and_then(|input| input.get("subagent_type")).and_then(Value::as_str);
+            let tool = classify_tool(block.name.as_deref().unwrap_or_default(), command, subagent);
+            let row = self.row(&key);
+            row.actions = row.actions.saturating_add(1);
+            row.code_searches = row.code_searches.saturating_add(u64::from(tool.code_search));
+            row.file_reads = row.file_reads.saturating_add(u64::from(tool.file_read));
+            row.mustard_searches = row.mustard_searches.saturating_add(u64::from(tool.mustard_search));
+            if let Some(at) = stamp.filter(|_| tool.mustard_search) {
+                self.map_searches.push(MapSearch { at, day: key.0.clone(), project: key.1.clone() });
+            }
+        }
+    }
+
+    /// A linha do dia e do projeto de `key`, criada vazia quando falta.
+    fn row(&mut self, key: &SpendKey) -> &mut DayRow {
+        self.rows
+            .entry(key.clone())
+            .or_insert_with(|| DayRow { day: key.0.clone(), project: key.1.clone(), ..DayRow::default() })
+    }
+
+    /// As linhas, uma por dia e projeto, com os tokens de cada resposta já
+    /// somados, em ordem de dia e de projeto, e os usos de `Bash` que rodaram
+    /// a busca do Mustard. A linha sem nenhuma ação e sem nenhum token fica
+    /// de fora.
+    #[must_use]
+    pub fn finish(mut self) -> Spent {
+        for (key, tokens) in std::mem::take(&mut self.responses).into_values() {
+            let row = self.row(&key);
+            row.tokens = row.tokens.saturating_add(tokens);
+        }
+        self.rows.retain(|_, row| row.actions > 0 || row.tokens > 0);
+        Spent { rows: self.rows, map_searches: self.map_searches }
     }
 }
 

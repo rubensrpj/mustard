@@ -48,6 +48,11 @@
 //! conversa fica para quando o gancho não avisar que gravou, e é a única da
 //! página do projeto.
 //!
+//! A página do gasto da máquina ([`super::spend`]) usa os mesmos passos de
+//! preparação — o documento em arquivo, o lote de até [`BATCH_MAX`] escritas e
+//! o caminho absoluto —, pelas funções que recebem a pasta onde gravar
+//! ([`set_in`] e [`batches_in`]), em vez da pasta de uma spec.
+//!
 //! ## A versão de cada documento
 //!
 //! O banco recusa trocar um documento que já existe sem a versão dele
@@ -532,7 +537,7 @@ fn versions_of(event: &SpecEvent) -> Map<String, Value> {
 /// deste endereço. Devolve os de `existing`, os que já existem no banco, sem
 /// versão guardada, na mesma ordem: os únicos que a ordem ainda nomeia para
 /// ler.
-fn pin(writes: &mut [Value], existing: Vec<String>, stored: impl Fn(&str) -> Option<Value>) -> Vec<String> {
+pub(crate) fn pin(writes: &mut [Value], existing: Vec<String>, stored: impl Fn(&str) -> Option<Value>) -> Vec<String> {
     for write in writes.iter_mut() {
         if let Some(version) = stored(&doc_name(write)) {
             write["if_version"] = version;
@@ -542,7 +547,7 @@ fn pin(writes: &mut [Value], existing: Vec<String>, stored: impl Fn(&str) -> Opt
 }
 
 /// O nome `coleção/doc_id` do documento de uma escrita do lote.
-fn doc_name(write: &Value) -> String {
+pub(crate) fn doc_name(write: &Value) -> String {
     format!("{}/{}", write["collection"].as_str().unwrap_or_default(), write["doc_id"].as_str().unwrap_or_default())
 }
 
@@ -1124,22 +1129,47 @@ fn row_body(row: &ProjectRow) -> Value {
 /// com a marca da preparação no nome (`<doc_id>@<marca>.json`), e devolve a
 /// escrita que o manda para o banco pelo arquivo.
 fn set(place: &Place, collection: &str, doc_id: &str, body: &Value) -> Result<Value, Refusal> {
-    let path = place.folder.join(collection).join(format!("{doc_id}@{}.json", place.mark));
+    set_in(place.root, &place.folder, place.mark, collection, doc_id, body)
+}
+
+/// [`set`] sem a spec: o documento vai para `folder`, e o `file_path` da
+/// escrita sai relativo a `root`. A página do gasto, que mora na máquina e não
+/// num projeto, prepara os documentos dela por aqui.
+pub(crate) fn set_in(
+    root: &Path,
+    folder: &Path,
+    mark: u64,
+    collection: &str,
+    doc_id: &str,
+    body: &Value,
+) -> Result<Value, Refusal> {
+    let path = folder.join(collection).join(format!("{doc_id}@{mark}.json"));
     write(&path, &body.to_string())?;
-    Ok(json!({ "op": "set", "collection": collection, "doc_id": doc_id, "file_path": relative(place.root, &path) }))
+    Ok(json!({ "op": "set", "collection": collection, "doc_id": doc_id, "file_path": relative(root, &path) }))
 }
 
 /// Grava as escritas em lotes de até [`BATCH_MAX`], `<nome>-1.json`,
 /// `<nome>-2.json`…, uma escrita por linha, e devolve os caminhos e as
 /// escritas de cada lote, como foram gravadas.
 fn batches(place: &Place, name: &str, writes: &[Value]) -> Result<(Vec<String>, Vec<Vec<Value>>), Refusal> {
+    batches_in(place.root, &place.folder, name, writes)
+}
+
+/// [`batches`] sem a spec: os lotes vão para `folder`, e o caminho de cada um
+/// sai relativo a `root`.
+pub(crate) fn batches_in(
+    root: &Path,
+    folder: &Path,
+    name: &str,
+    writes: &[Value],
+) -> Result<(Vec<String>, Vec<Vec<Value>>), Refusal> {
     let mut files = Vec::new();
     let mut sent = Vec::new();
     for (n, chunk) in writes.chunks(BATCH_MAX).enumerate() {
-        let path = place.folder.join(format!("{name}-{}.json", n + 1));
+        let path = folder.join(format!("{name}-{}.json", n + 1));
         let lines: Vec<String> = chunk.iter().map(Value::to_string).collect();
         write(&path, &format!("[\n{}\n]\n", lines.join(",\n")))?;
-        files.push(relative(place.root, &path));
+        files.push(relative(root, &path));
         sent.push(chunk.to_vec());
     }
     Ok((files, sent))
@@ -1149,7 +1179,7 @@ fn batches(place: &Place, name: &str, writes: &[Value]) -> Result<(Vec<String>, 
 /// `file_path` de cada uma, relativo ao projeto `root` no disco, vira o
 /// caminho absoluto, que a ferramenta do banco lê sem saber onde o projeto
 /// está.
-fn absolute(root: &Path, sent: Vec<Vec<Value>>) -> Vec<Vec<Value>> {
+pub(crate) fn absolute(root: &Path, sent: Vec<Vec<Value>>) -> Vec<Vec<Value>> {
     sent.into_iter()
         .map(|batch| {
             batch
@@ -1185,7 +1215,7 @@ pub(crate) fn write_mark(write: &Value) -> String {
 }
 
 /// Apaga a cópia anterior: os lotes dela não valem mais.
-fn clear(folder: &Path) -> Result<(), Refusal> {
+pub(crate) fn clear(folder: &Path) -> Result<(), Refusal> {
     if !folder.exists() {
         return Ok(());
     }
@@ -1200,7 +1230,7 @@ fn clear(folder: &Path) -> Result<(), Refusal> {
 /// ([`template_stamp`]) — não é o de `built`. O modelo velho ficaria lendo uma
 /// coleção que a cópia de agora não escreve mais, ou sem o que a versão nova
 /// mostra, e a página abriria sem dizer por quê.
-fn ensure_template(root: &Path, template: &str, built: &str) -> Result<(), Refusal> {
+pub(crate) fn ensure_template(root: &Path, template: &str, built: &str) -> Result<(), Refusal> {
     let path = root.join(template);
     if let Ok(existing) = std::fs::read_to_string(&path)
         && template_stamp(&existing).is_some()
@@ -1211,7 +1241,7 @@ fn ensure_template(root: &Path, template: &str, built: &str) -> Result<(), Refus
     write(&path, built)
 }
 
-fn write(path: &Path, text: &str) -> Result<(), Refusal> {
+pub(crate) fn write(path: &Path, text: &str) -> Result<(), Refusal> {
     mustard_core::io::fs::write_atomic(path, text.as_bytes()).map_err(|e| Refusal::Io { detail: e.to_string() })
 }
 

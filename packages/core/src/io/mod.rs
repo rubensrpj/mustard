@@ -33,3 +33,4 @@ mod map_words;
 pub mod map_specs;
 pub mod wave_prompt;
 pub mod transcript;
+pub mod spend;

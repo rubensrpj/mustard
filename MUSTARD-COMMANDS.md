@@ -54,7 +54,7 @@ Não há comando de entrada: um pedido que muda arquivo, dito na conversa, abre 
 
 | Gancho | Quando | O que faz |
 |---|---|---|
-| `session_start_inject` | início da sessão | Coloca o mapa, a linha de retomada e os avisos, até 3 kB. Num projeto sem a página do projeto publicada, manda publicar o template dela e gravar o endereço. |
+| `session_start_inject` | início da sessão | Coloca o mapa, a linha de retomada e os avisos, até 3 kB. Num projeto sem a página do projeto publicada, manda publicar o template dela e gravar o endereço. Em todo início de sessão (menos depois da compactação), com ou sem spec aberta, manda rodar `mustard-rt run spend`, que conta o dia aberto de novo. |
 | `statusline_heal_observer` | início da sessão | Conserta a barra de status. |
 | `prompt_entry` | cada mensagem | Grava a mensagem na spec atual; depois de uma resposta com erro de escrita, coloca a linha curta com o erro, uma vez. |
 | `write_gate` | antes de escrever | Recusa escrita sem spec aprovada, numa base, em arquivo de segredo e nos `spec.*`. |
@@ -88,6 +88,7 @@ Quase todos aceitam `--root <pasta>`, que diz de que pasta o repositório é lid
 | `pr-review` | Sem número, lista os pull requests abertos da base; `--pr <n>` mostra o pedido de revisão. Não grava veredito: `--verdict` recusa na entrada, porque o veredito de cada onda é gravado pela rodada. |
 | `upsert` | Instala ou atualiza. Na mesma chamada, tira as sobras do Mustard antigo nos `CLAUDE.md` e no `settings.json` da equipe, com as regras das Guards indo antes para um item só da lista de pendências, e diz o que saiu; o arquivo sem marca só aparece na lista. Enquanto o `mustard.json` não tem `localFiles`, responde `localFilesFound`, os arquivos que o git ignora fora das pastas ignoradas; `--local-files <a,b>` grava a lista confirmada e `--prepare <comando>` o comando que prepara cada cópia, e o valor vazio grava que não há. |
 | `doctor` | Diagnóstico só de leitura. `--check <nome>` roda uma conferência; `--residue` procura também referências mortas; `--format json` ou `--json` responde em JSON. |
+| `spend` | O gasto de cada dia, contado pelas conversas da máquina (tokens, ações, procuras de código, leituras de arquivo e buscas do Mustard, por dia e por projeto com `mustard.json`) e mostrado numa página só da máquina, com o resumo no topo (hoje até agora, ontem, médias de 3 e 7 dias e do mês, e a previsão do Jev no mês). Funciona sem spec aberta. Sem argumento, conta os dias fechados que faltam, guarda as linhas num arquivo da máquina (um dia fechado é contado uma vez; apagar o arquivo refaz a conta), conta hoje de novo, que vai à página como parcial e nunca ao arquivo dos fechados, e prepara o template, os lotes e a ordem de copiar. `--republish` prepara a publicação nova e a cópia de todos os dias, para quem perdeu o link; `--url <endereço>` grava o endereço que a publicação devolveu; `--copied` grava a cópia preparada como feita. |
 | `statusline` | A barra de status, chamada pelo Claude Code. `--preview` mostra cada tema numa linha. |
 
 ---

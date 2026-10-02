@@ -13,8 +13,15 @@
 //! 3. **A página do projeto** — num projeto em que ela ainda não foi
 //!    publicada, a ordem de publicar o template dela e gravar o endereço, que
 //!    vira o link da barra de status. Com a página publicada, nada.
-//! 4. **As pendências** — uma linha só, com a contagem.
-//! 5. **O pull request da spec atual** — com a spec atual em "pull request
+//! 4. **O gasto** — em todo início de sessão, em qualquer projeto com
+//!    `mustard.json`, com ou sem spec aberta, a ordem de rodar
+//!    `mustard-rt run spend` e seguir a resposta dele: o comando conta os dias
+//!    fechados que faltam, conta hoje de novo (o dia aberto, que vai à página
+//!    como parcial) e prepara a cópia para a página do gasto. A compactação
+//!    não é um início de sessão: a sessão é a mesma, e a ordem não volta. O
+//!    gancho não conta nem lê nada do gasto: quem conta é o comando.
+//! 5. **As pendências** — uma linha só, com a contagem.
+//! 6. **O pull request da spec atual** — com a spec atual em "pull request
 //!    aberto", o provedor é perguntado só pelo pull request dela; se ele
 //!    entrou pelas mãos de outra pessoa, o mesmo caminho do merge do Mustard
 //!    roda antes de qualquer aviso (a spec gravada como entregue, a base
@@ -24,16 +31,16 @@
 //!    e a spec mexendo em submódulo, os pull requests dos submódulos são
 //!    conferidos: o que entrou leva o ponteiro ao principal, e o aviso diz
 //!    qual falta ou que o principal ficou pronto.
-//! 6. **As branches mergeadas** — as outras branches cujo trabalho já entrou
+//! 7. **As branches mergeadas** — as outras branches cujo trabalho já entrou
 //!    na base e que seguem vivas, só pelo git local, sem pergunta nenhuma ao
 //!    provedor.
-//! 7. **O disco** — as cópias descartáveis antigas acima de 5 GB.
-//! 8. **O gancho velho** — só no código-fonte do Mustard: o programa que roda
+//! 8. **O disco** — as cópias descartáveis antigas acima de 5 GB.
+//! 9. **O gancho velho** — só no código-fonte do Mustard: o programa que roda
 //!    os ganchos é de um commit anterior ao da base, e a base mudou código
 //!    depois dele.
-//! 9. **A versão velha do Mustard** — a gravada no projeto, a do plugin
+//! 10. **A versão velha do Mustard** — a gravada no projeto, a do plugin
 //!    carregado ou a do plugin instalado, quando uma delas ficou para trás.
-//! 10. **Os processos presos** — o que um agente deixou rodando (um laço de
+//! 11. **Os processos presos** — o que um agente deixou rodando (um laço de
 //!     espera, ou um comando na cópia de uma onda já apagada) é encerrado
 //!     aqui também, não só a cada rodada e no fechamento, e o aviso diz qual.
 //!
@@ -42,8 +49,8 @@
 //! Tudo junto cabe em [`MAX_BYTES`]. Quando o todo passa do teto, os avisos
 //! cedem o lugar um a um, na vez de cada um, com uma linha no stderr dizendo
 //! qual saiu: os processos presos primeiro, depois a versão, o gancho velho,
-//! o disco, as branches mergeadas, a contagem das pendências e a página do
-//! projeto, e só então os textos declarados.
+//! o disco, o gasto, as branches mergeadas, a contagem das pendências e a
+//! página do projeto, e só então os textos declarados.
 //! Entre os textos declarados está o mapa do início da sessão, que substitui
 //! as regras antigas: ele é o último a sair. A retomada e o relato do pull
 //! request da spec atual nunca cedem: um diz onde a spec está, o outro conta
@@ -57,9 +64,10 @@
 //!
 //! ## As leituras da máquina são argumento
 //!
-//! O registro de plugins do Claude Code e o diretório temporário moram fora
-//! do projeto, e o carimbo de versão é o do programa que roda, não o do
-//! projeto. O [`Check`] os lê uma vez e os entrega a [`session_start_core`],
+//! O registro de plugins do Claude Code, o diretório temporário e o arquivo
+//! do gasto moram fora do projeto, e o carimbo de versão é o do programa que
+//! roda, não o do projeto. O [`Check`] os lê uma vez e os entrega a
+//! [`session_start_core`],
 //! que decide: um teste que monta um projeto temporário entrega "nada", e a
 //! máquina de quem roda a suíte nunca entra num veredito.
 //!
@@ -111,6 +119,9 @@ struct Probe<'a> {
     /// O carimbo de versão do programa que roda o gancho, quando a máquina o
     /// deu: `<versão> (build N, g<commit>[-dirty] <data>)`.
     hook_stamp: Option<&'a str>,
+    /// A máquina tem onde guardar o gasto: o comando do gasto não recusa por
+    /// falta de pasta pessoal.
+    spend: bool,
 }
 
 /// Um aviso do início da sessão: o nome, o texto — que só existe quando a
@@ -126,12 +137,13 @@ struct Notice {
 /// item. Os textos declarados, onde mora o mapa do início da sessão, são os
 /// últimos a ceder.
 const NOTICES: &[Notice] = &[
-    Notice { name: "declared", text: declared_notice, cedes: Some(7) },
+    Notice { name: "declared", text: declared_notice, cedes: Some(8) },
     Notice { name: "resume", text: resume_notice, cedes: None },
-    Notice { name: "project_page", text: project_page_notice, cedes: Some(6) },
-    Notice { name: "pending", text: pending_notice_of, cedes: Some(5) },
+    Notice { name: "project_page", text: project_page_notice, cedes: Some(7) },
+    Notice { name: "spend", text: spend_notice, cedes: Some(4) },
+    Notice { name: "pending", text: pending_notice_of, cedes: Some(6) },
     Notice { name: "landed", text: landed_notice, cedes: None },
-    Notice { name: "merged", text: merged_notice, cedes: Some(4) },
+    Notice { name: "merged", text: merged_notice, cedes: Some(5) },
     Notice { name: "disk", text: disk_notice, cedes: Some(3) },
     Notice { name: "old_hook", text: old_hook_notice, cedes: Some(2) },
     Notice { name: "version", text: version_notice, cedes: Some(1) },
@@ -139,9 +151,9 @@ const NOTICES: &[Notice] = &[
 ];
 
 impl Check for SessionStartInject {
-    /// Lê a máquina — o registro de plugins, o diretório temporário e o
-    /// carimbo deste programa — e entrega a leitura a [`session_start_core`],
-    /// que decide.
+    /// Lê a máquina — o registro de plugins, o diretório temporário, o carimbo
+    /// deste programa e a pasta do gasto — e entrega a leitura a
+    /// [`session_start_core`], que decide.
     fn evaluate(&self, input: &HookInput, ctx: &Ctx) -> Result<Verdict, Error> {
         let scratch = ScratchProbe::from_env(input);
         session_start_core(
@@ -150,21 +162,24 @@ impl Check for SessionStartInject {
             mustard_core::installed_harness_version().as_deref(),
             Some(&scratch),
             Some(env!("MUSTARD_VERSION_FULL")),
+            mustard_core::io::spend::machine_dir().is_some(),
         )
     }
 }
 
 /// A metade que decide, com as leituras da máquina recebidas: `installed` é
 /// a versão que o registro de plugins dá como instalada, `scratch` a
-/// varredura das cópias descartáveis e `hook_stamp` o carimbo do programa que
-/// roda o gancho. `None` nas três — o que todo teste que não fala delas
-/// entrega — cala os avisos que dependem delas.
+/// varredura das cópias descartáveis, `hook_stamp` o carimbo do programa que
+/// roda o gancho e `spend` se a máquina tem onde guardar o gasto. `None` nas
+/// três primeiras e `false` na última — o que todo teste que não fala delas
+/// entrega — calam os avisos que dependem delas.
 fn session_start_core(
     input: &HookInput,
     ctx: &Ctx,
     installed: Option<&str>,
     scratch: Option<&ScratchProbe>,
     hook_stamp: Option<&str>,
+    spend: bool,
 ) -> Result<Verdict, Error> {
     if ctx.trigger != Some(Trigger::SessionStart) {
         return Ok(Verdict::Allow);
@@ -193,15 +208,17 @@ fn session_start_core(
         landing: landing.as_ref(),
         declared: declared.as_deref(),
         hook_stamp,
+        spend,
     };
-    let texts = within_cap(NOTICES.iter().filter_map(|notice| (notice.text)(&probe).map(|text| (notice, text))).collect());
+    let shown = within_cap(NOTICES.iter().filter_map(|notice| (notice.text)(&probe).map(|text| (notice, text))).collect());
+    let texts: Vec<String> = shown.into_iter().map(|(_, text)| text).collect();
     Ok(if texts.is_empty() { Verdict::Allow } else { Verdict::Inject { context: texts.join("\n\n") } })
 }
 
-/// Os textos que cabem no teto, na ordem da lista: enquanto o todo passa de
-/// [`MAX_BYTES`], sai o aviso cuja vez de ceder vem primeiro, com uma linha no
-/// stderr.
-fn within_cap(mut shown: Vec<(&Notice, String)>) -> Vec<String> {
+/// Os avisos que cabem no teto, com os textos, na ordem da lista: enquanto o
+/// todo passa de [`MAX_BYTES`], sai o aviso cuja vez de ceder vem primeiro,
+/// com uma linha no stderr.
+fn within_cap(mut shown: Vec<(&Notice, String)>) -> Vec<(&Notice, String)> {
     let size = |shown: &[(&Notice, String)]| {
         shown.iter().map(|(_, text)| text.len()).sum::<usize>() + SEPARATOR_BYTES * shown.len().saturating_sub(1)
     };
@@ -221,7 +238,7 @@ fn within_cap(mut shown: Vec<(&Notice, String)>) -> Vec<String> {
             text.len()
         );
     }
-    shown.into_iter().map(|(_, text)| text).collect()
+    shown
 }
 
 /// O id da sessão, quando o harness o mandou.
@@ -295,6 +312,21 @@ fn project_page_notice(probe: &Probe<'_>) -> Option<String> {
             .replace("{template}", &template)
             .replace("{capabilities}", mustard_core::platform::page_templates::PROJECT_CAPABILITIES),
     )
+}
+
+/// O gasto. Num projeto com o Mustard, em todo início de sessão, a ordem de
+/// rodar `mustard-rt run spend` e seguir a resposta dele: é o comando que
+/// conta os dias fechados que faltam, conta hoje de novo, prepara os lotes e
+/// diz como copiá-los. Vale com ou sem spec aberta. O gancho não lê nem conta
+/// nada do gasto.
+///
+/// `None` num projeto sem `mustard.json`, sem pasta pessoal para guardar o
+/// gasto e depois da compactação, que não é início de sessão.
+fn spend_notice(probe: &Probe<'_>) -> Option<String> {
+    if !probe.spend || probe.compacted || !mustard_core::ProjectConfig::exists(probe.root) {
+        return None;
+    }
+    Some(translate("session.spend", probe.lang).to_string())
 }
 
 /// A contagem das pendências abertas.
@@ -608,7 +640,7 @@ pub(crate) fn started_after_clear(root: &Path, session: &str) -> String {
         ..HookInput::default()
     };
     let ctx = Ctx::for_test(root.to_string_lossy().into_owned(), Some(Trigger::SessionStart));
-    match session_start_core(&input, &ctx, None, None, None) {
+    match session_start_core(&input, &ctx, None, None, None, false) {
         Ok(Verdict::Inject { context }) => context,
         _ => String::new(),
     }
@@ -630,6 +662,10 @@ mod tests {
     /// O carimbo do programa do gancho que um teste entrega: nenhum.
     const NO_STAMP: Option<&str> = None;
 
+    /// A máquina sem onde guardar o gasto, o que todo teste que não fala dele
+    /// entrega: o aviso do gasto cala por construção, em qualquer máquina.
+    const NO_SPEND: bool = false;
+
     fn ctx(dir: &Path) -> Ctx {
         Ctx::for_test(dir.to_string_lossy().into_owned(), Some(Trigger::SessionStart))
     }
@@ -644,7 +680,7 @@ mod tests {
     }
 
     fn context_of(root: &Path, input: &HookInput, installed: Option<&str>, scratch: Option<&ScratchProbe>) -> String {
-        match session_start_core(input, &ctx(root), installed, scratch, NO_STAMP).unwrap() {
+        match session_start_core(input, &ctx(root), installed, scratch, NO_STAMP, NO_SPEND).unwrap() {
             Verdict::Inject { context } => context,
             _ => String::new(),
         }
@@ -669,12 +705,18 @@ mod tests {
         let names: Vec<&str> = NOTICES.iter().map(|n| n.name).collect();
         assert_eq!(
             names,
-            ["declared", "resume", "project_page", "pending", "landed", "merged", "disk", "old_hook", "version", "stuck"]
+            [
+                "declared", "resume", "project_page", "spend", "pending", "landed", "merged", "disk", "old_hook",
+                "version", "stuck"
+            ]
         );
         let mut ceding: Vec<(u8, &str)> = NOTICES.iter().filter_map(|n| n.cedes.map(|turn| (turn, n.name))).collect();
         ceding.sort_unstable();
         let order: Vec<&str> = ceding.into_iter().map(|(_, name)| name).collect();
-        assert_eq!(order, ["stuck", "version", "old_hook", "disk", "merged", "pending", "project_page", "declared"]);
+        assert_eq!(
+            order,
+            ["stuck", "version", "old_hook", "disk", "spend", "merged", "pending", "project_page", "declared"]
+        );
         let kept: Vec<&str> = NOTICES.iter().filter(|n| n.cedes.is_none()).map(|n| n.name).collect();
         assert_eq!(kept, ["resume", "landed"]);
     }
@@ -724,8 +766,89 @@ mod tests {
         let dir = tempdir().unwrap();
         let other = Ctx::for_test(dir.path().to_string_lossy().into_owned(), Some(Trigger::PreToolUse));
         assert_eq!(SessionStartInject.evaluate(&session_input("s", "startup"), &other).unwrap(), Verdict::Allow);
-        let verdict = session_start_core(&session_input("s", "startup"), &ctx(dir.path()), NO_REGISTRY, NO_SCRATCH, NO_STAMP);
+        let verdict = session_start_core(
+            &session_input("s", "startup"),
+            &ctx(dir.path()),
+            NO_REGISTRY,
+            NO_SCRATCH,
+            NO_STAMP,
+            NO_SPEND,
+        );
         assert_eq!(verdict.unwrap(), Verdict::Allow);
+    }
+
+    /// O início da sessão de `root` numa máquina com onde guardar o gasto,
+    /// vindo de `source` (`startup`, `resume`, `clear`, `compact`).
+    fn context_with_spend(root: &Path, source: &str) -> String {
+        let verdict = session_start_core(&session_input("s-gasto", source), &ctx(root), NO_REGISTRY, NO_SCRATCH, NO_STAMP, true);
+        match verdict.unwrap() {
+            Verdict::Inject { context } => context,
+            _ => String::new(),
+        }
+    }
+
+    /// A ordem do gasto sai em todo início de sessão, quantas vezes ela
+    /// começar no mesmo dia, com ou sem spec aberta e no idioma do projeto;
+    /// não sai depois da compactação, que não é início de sessão, nem num
+    /// projeto sem `mustard.json`, nem numa máquina sem onde guardar o gasto.
+    #[test]
+    fn the_spend_order_comes_at_every_session_start_in_the_project_language() {
+        for (lang, locale) in [("pt-BR", Locale::PtBr), ("en-US", Locale::EnUs)] {
+            let project = tempdir().unwrap();
+            let root = project.path();
+            std::fs::write(root.join("mustard.json"), format!(r#"{{"language":{{"text":"{lang}"}}}}"#)).unwrap();
+            let order = translate("session.spend", locale);
+
+            for source in ["startup", "startup", "resume", "clear"] {
+                assert!(context_with_spend(root, source).contains(order), "{lang}: {source} asks for the spend, every time");
+            }
+            assert!(!context_with_spend(root, "compact").contains(order), "{lang}: a compaction is the same session");
+
+            let silent = session_start_core(&session_input("s-gasto", "startup"), &ctx(root), NO_REGISTRY, NO_SCRATCH, NO_STAMP, false);
+            assert!(!matches!(silent.unwrap(), Verdict::Inject { context } if context.contains(order)), "{lang}: no machine folder, no order");
+
+            let loose = tempdir().unwrap();
+            assert!(!context_with_spend(loose.path(), "startup").contains(order), "{lang}: no config, no order");
+        }
+    }
+
+    /// Com uma spec aberta e sem ela a ordem é a mesma: o gancho não depende
+    /// de spec.
+    #[test]
+    fn the_spend_order_does_not_depend_on_an_open_spec() {
+        let project = tempdir().unwrap();
+        let root = project.path();
+        std::fs::write(root.join("mustard.json"), "{}").unwrap();
+        let order = translate("session.spend", Locale::PtBr);
+        assert!(!root.join(".claude/spec").exists());
+        assert!(context_with_spend(root, "startup").contains(order), "without a spec");
+        std::fs::create_dir_all(root.join(".claude/spec/uma-spec")).unwrap();
+        std::fs::write(root.join(".claude/spec/uma-spec/spec.ndjson"), "").unwrap();
+        assert!(context_with_spend(root, "startup").contains(order), "with a spec folder");
+    }
+
+    /// A ordem que o corte do teto deixou de fora sai de verdade: o todo cabe
+    /// no teto, e o texto declarado grande fica no lugar dela.
+    #[test]
+    fn a_spend_order_cut_by_the_cap_gives_way_to_the_declared_text() {
+        let project = tempdir().unwrap();
+        let root = project.path();
+        std::fs::write(
+            root.join("mustard.json"),
+            r#"{"inject":[{"on":"sessionStart","file":".claude/mustard/grande.md","once":true}]}"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join(".claude/mustard")).unwrap();
+        std::fs::write(root.join(".claude/mustard/grande.md"), "d".repeat(MAX_BYTES - 40)).unwrap();
+
+        let context = context_with_spend(root, "startup");
+        assert!(!context.contains(translate("session.spend", Locale::PtBr)), "the order gave way to the declared text");
+        assert!(context.len() <= MAX_BYTES, "{}", context.len());
+    }
+
+    /// Só os textos que o corte do teto deixa, na ordem da lista.
+    fn texts_within_cap(shown: Vec<(&Notice, String)>) -> Vec<String> {
+        within_cap(shown).into_iter().map(|(_, text)| text).collect()
     }
 
     /// O aviso da lista `NOTICES` pelo nome: o teste não depende da posição.
@@ -767,7 +890,7 @@ mod tests {
             pending.clone(),
             (notice("landed"), landed.clone()),
         ];
-        let kept = within_cap(with_landing);
+        let kept = texts_within_cap(with_landing);
         assert!(kept.contains(&map) && kept.contains(&landed), "the landing report fits beside the real map: {kept:?}");
 
         let too_big = vec![
@@ -778,7 +901,7 @@ mod tests {
             disk,
             version,
         ];
-        let kept = within_cap(too_big);
+        let kept = texts_within_cap(too_big);
         assert_eq!(kept, vec![resume.1], "every ceding notice went, the declared text last, and the resume stays");
     }
 
@@ -882,6 +1005,7 @@ mod tests {
                 compacted: false,
                 installed: NO_REGISTRY,
                 scratch: Some(&scratch),
+                spend: NO_SPEND,
                 landing: None,
                 declared: declared.as_deref(),
                 hook_stamp: NO_STAMP,
@@ -1012,7 +1136,7 @@ mod tests {
         let ctx = ctx(root);
         let input = session_input("s-stale-map", "startup");
         assert!(
-            session_start_core(&input, &ctx, NO_REGISTRY, NO_SCRATCH, NO_STAMP).is_ok(),
+            session_start_core(&input, &ctx, NO_REGISTRY, NO_SCRATCH, NO_STAMP, NO_SPEND).is_ok(),
             "a sessão não trava com o mapa velho"
         );
     }
@@ -1131,6 +1255,7 @@ mod tests {
             compacted: false,
             installed: NO_REGISTRY,
             scratch: NO_SCRATCH,
+            spend: NO_SPEND,
             landing: None,
             declared: None,
             hook_stamp: NO_STAMP,
@@ -1166,7 +1291,7 @@ mod tests {
     /// O início da sessão de `root` com `stamp` como carimbo do programa do
     /// gancho.
     fn context_with_stamp(root: &Path, source: &str, stamp: Option<&str>) -> String {
-        match session_start_core(&session_input("s-hook", source), &ctx(root), NO_REGISTRY, NO_SCRATCH, stamp).unwrap() {
+        match session_start_core(&session_input("s-hook", source), &ctx(root), NO_REGISTRY, NO_SCRATCH, stamp, NO_SPEND).unwrap() {
             Verdict::Inject { context } => context,
             _ => String::new(),
         }
@@ -1354,7 +1479,7 @@ mod tests {
         assert!(size(&[&old_hook.1]) < 400, "the notice fits the cap with room to spare");
 
         let tight = "d".repeat(MAX_BYTES - size(&[&resume.1, &disk.1]) - SEPARATOR_BYTES);
-        let kept = within_cap(vec![
+        let kept = texts_within_cap(vec![
             (notice("declared"), tight.clone()),
             resume.clone(),
             disk.clone(),
@@ -1365,7 +1490,7 @@ mod tests {
         assert_eq!(kept, vec![tight, resume.1.clone(), disk.1.clone()], "the processes, the version and the hook went, the disk stayed");
 
         let roomy = "d".repeat(MAX_BYTES - size(&[&resume.1, &disk.1, &old_hook.1]) - SEPARATOR_BYTES);
-        let kept = within_cap(vec![
+        let kept = texts_within_cap(vec![
             (notice("declared"), roomy.clone()),
             resume.clone(),
             disk.clone(),

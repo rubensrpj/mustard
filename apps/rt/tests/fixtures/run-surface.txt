@@ -19,6 +19,7 @@ reopen
 resume
 round
 scan
+spend
 statusline
 upsert
 write

@@ -434,6 +434,27 @@ function scrapeProject() {
     })),
   };
 }
+// A página do gasto: o estado, o texto de aviso, as barras do gráfico (uma por
+// dia, com a altura e o texto de cada uma) e a tabela (o cabeçalho e uma linha
+// por dia e por projeto, com o texto de cada célula).
+function scrapeSpend() {
+  const table = document.getElementById('days');
+  const chart = document.getElementById('chart');
+  return {
+    state: appEl.getAttribute('data-state'), status: text(document.getElementById('status')),
+    statusHidden: document.getElementById('status').hidden, title: text(one(appEl, (e) => e.tagName === 'H1')),
+    chartTitle: chart ? text(one(chart, (e) => e.tagName === 'H2')) : null,
+    bars: chart ? walk(chart, (e) => e.tagName === 'RECT').map((r) => ({ day: r.getAttribute('data-day'),
+      height: Number(r.getAttribute('height')), title: text(one(r, (e) => e.tagName === 'TITLE')) })) : [],
+    cards: walk(appEl, (e) => has(e, 'card')).map((c) => ({ id: c.getAttribute('data-card'), label: text(byClass(c, 'label')),
+      badge: text(byClass(c, 'badge')), value: text(byClass(c, 'value')), subs: walk(c, (e) => has(e, 'sub')).map(text) })),
+    summaryNote: text(one(appEl, (e) => e.tagName === 'P' && has(e, 'note'))),
+    head: table ? walk(table, (e) => e.tagName === 'TH').map((th) => th.textContent) : [],
+    rows: table ? walk(table, (e) => e.tagName === 'TR' && e.getAttribute('data-day') !== null).map((tr) => ({
+      day: tr.getAttribute('data-day'), project: tr.getAttribute('data-project'),
+      cells: tr.childNodes.map((td) => td.textContent) })) : [],
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Os passos
@@ -453,7 +474,7 @@ async function until(check) {
     if (step.do === 'wait') {
       if (!(await until(() => appEl.getAttribute('data-state') !== 'loading'))) errors.push('the page never left the loading state');
     } else if (step.do === 'scrape') {
-      results[step.as] = input.page === 'project' ? scrapeProject() : scrapeSpec();
+      results[step.as] = input.page === 'project' ? scrapeProject() : input.page === 'spend' ? scrapeSpend() : scrapeSpec();
     } else if (step.do === 'search') {
       const q = document.getElementById('q');
       q.value = step.value;

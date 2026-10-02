@@ -26,6 +26,7 @@
 //! de uma spec e a do projeto só existem como template mais banco de dados.
 
 pub(crate) mod copy;
+pub(crate) mod spend;
 
 use std::path::Path;
 

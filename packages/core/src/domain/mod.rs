@@ -26,3 +26,4 @@ pub mod map_filter;
 pub mod map_select;
 pub mod triage;
 pub mod wave_prompt;
+pub mod spend;

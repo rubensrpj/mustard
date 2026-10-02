@@ -11,8 +11,8 @@
 //!   unexpected argument` and exit 2. This walk turns both into a test failure.
 //! - **REVERSE** — every registered subcommand must have at least one static
 //!   product caller (prose instruction or spawned argv). Sem lista de
-//!   exceções: com 22 comandos, um comando que nenhum texto chama é superfície
-//!   escura — ele é entregue, apodrece, e nada percebe.
+//!   exceções: um comando que nenhum texto chama é superfície escura — ele é
+//!   entregue, apodrece, e nada percebe.
 //!
 //! - **GANCHOS** — o registro dos ganchos tem só os que ficam, nenhum que
 //!   saiu, e casa com os eventos do `plugin/hooks/hooks.json`: uma entrada que

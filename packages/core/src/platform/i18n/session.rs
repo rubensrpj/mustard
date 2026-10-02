@@ -83,6 +83,17 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              '{\"page\":\"project\",\"ok\":true,\"url\":\"…\"}'`. Never write the address in the \
              reply: it lives in the status line."
         }
+        // O gasto: o início de toda sessão manda contar o que falta, contar
+        // hoje de novo e copiar as linhas para a página do gasto, que o
+        // comando `spend` prepara.
+        ("session.spend", Locale::PtBr) => {
+            "[Mustard] O gasto de hoje e dos dias fechados vai para a página do gasto a cada início de sessão. \
+             Rode `mustard-rt run spend` e siga a resposta dele. Não escreva o endereço da página na resposta."
+        }
+        ("session.spend", Locale::EnUs) => {
+            "[Mustard] The spend of today and of the closed days goes to the spend page at the start of each \
+             session. Run `mustard-rt run spend` and follow its answer. Never write the page address in the reply."
+        }
         // O merge feito por outra pessoa: o pull request da spec atual entrou,
         // e o início da sessão rodou o mesmo caminho do merge do Mustard.
         ("session.landed", Locale::PtBr) => {
@@ -208,8 +219,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("session.rs"),
             super::PREFIXES,
-            22,
-            0xe50a_812c_01de_855f,
+            23,
+            0x994d_64eb_5e3d_a920,
         );
     }
 

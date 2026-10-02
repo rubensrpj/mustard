@@ -211,6 +211,147 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.name.spec", Locale::EnUs) => "spec page",
         ("page.name.project", Locale::PtBr) => "página do projeto",
         ("page.name.project", Locale::EnUs) => "project page",
+        ("page.name.spend", Locale::PtBr) => "página do gasto",
+        ("page.name.spend", Locale::EnUs) => "spend page",
+
+        // A cópia da página do gasto, dita pelo comando `spend`
+        // (`commands/spec_events/pages/spend.rs`): a página é uma só por
+        // máquina, e o endereço dela se grava pelo próprio comando.
+        ("page.copy.spend_publish", Locale::PtBr) => {
+            "A {page} ainda não foi publicada. Publique o arquivo `{template}` com a ferramenta `Artifact`, \
+             passando em `capabilities` o valor `{capabilities}`. Grave o endereço que a publicação devolver \
+             com `mustard-rt run spend --url <endereço>`."
+        }
+        ("page.copy.spend_publish", Locale::EnUs) => {
+            "The {page} is not published yet. Publish the file `{template}` with the `Artifact` tool, passing \
+             `{capabilities}` as `capabilities`. Record the address the publication returns with \
+             `mustard-rt run spend --url <address>`."
+        }
+        // A publicação nova pedida pelo usuário (`--republish`): a página antiga
+        // fica como está, e o endereço novo vale para a máquina inteira.
+        ("page.copy.spend_republish", Locale::PtBr) => {
+            "O usuário pediu para publicar a {page} de novo. Publique o arquivo `{template}` com a \
+             ferramenta `Artifact` como página nova, passando em `capabilities` o valor `{capabilities}`. A \
+             antiga fica como está. Grave o endereço que a publicação devolver com \
+             `mustard-rt run spend --url <endereço>`."
+        }
+        ("page.copy.spend_republish", Locale::EnUs) => {
+            "The user asked to publish the {page} again. Publish the file `{template}` with the `Artifact` \
+             tool as a new page, passing `{capabilities}` as `capabilities`. The old one stays as it is. \
+             Record the address the publication returns with `mustard-rt run spend --url <address>`."
+        }
+        // Depois do último lote: a cópia feita se grava pelo comando, sem
+        // `--json`.
+        ("page.copy.spend_record", Locale::PtBr) => {
+            "Depois de enviar todos os lotes, grave a cópia com `mustard-rt run spend --copied`."
+        }
+        ("page.copy.spend_record", Locale::EnUs) => {
+            "After sending every batch, record the copy with `mustard-rt run spend --copied`."
+        }
+
+        // A página do gasto (`platform::page_templates`): o que ela diz
+        // sobre cada dia e cada projeto.
+        ("page.spend.kind", Locale::PtBr) => "gasto",
+        ("page.spend.kind", Locale::EnUs) => "spend",
+        ("page.spend.title", Locale::PtBr) => "Gasto por dia",
+        ("page.spend.title", Locale::EnUs) => "Spend per day",
+        ("page.spend.chart_title", Locale::PtBr) => "Parte das ações que são procuras de código",
+        ("page.spend.chart_title", Locale::EnUs) => "Share of the actions that are code searches",
+        // `{day}` é o dia, `{percent}` a parte em porcentagem, `{searches}` as
+        // procuras de código e `{actions}` todas as ações do dia.
+        ("page.spend.chart_point", Locale::PtBr) => "{day}: {percent}% das ações ({searches} de {actions})",
+        ("page.spend.chart_point", Locale::EnUs) => "{day}: {percent}% of the actions ({searches} of {actions})",
+        ("page.spend.col.day", Locale::PtBr) => "Dia",
+        ("page.spend.col.day", Locale::EnUs) => "Day",
+        ("page.spend.col.project", Locale::PtBr) => "Projeto",
+        ("page.spend.col.project", Locale::EnUs) => "Project",
+        ("page.spend.col.tokens", _) => "Tokens",
+        ("page.spend.col.actions", Locale::PtBr) => "Ações",
+        ("page.spend.col.actions", Locale::EnUs) => "Actions",
+        ("page.spend.col.searches", Locale::PtBr) => "Procuras de código",
+        ("page.spend.col.searches", Locale::EnUs) => "Code searches",
+        ("page.spend.col.share", Locale::PtBr) => "Parte das ações",
+        ("page.spend.col.share", Locale::EnUs) => "Share of actions",
+        ("page.spend.col.reads", Locale::PtBr) => "Leituras de arquivo",
+        ("page.spend.col.reads", Locale::EnUs) => "File reads",
+        ("page.spend.col.mustard", Locale::PtBr) => "Buscas do Mustard",
+        ("page.spend.col.mustard", Locale::EnUs) => "Mustard searches",
+        ("page.spend.col.empty", Locale::PtBr) => "Respostas vazias",
+        ("page.spend.col.empty", Locale::EnUs) => "Empty answers",
+        ("page.spend.col.jev_cost", Locale::PtBr) => "Custo do Jev",
+        ("page.spend.col.jev_cost", Locale::EnUs) => "Jev cost",
+
+        // O resumo no topo da página do gasto: a máquina inteira, todos os
+        // projetos somados.
+        ("page.spend.summary.title", Locale::PtBr) => "Resumo da máquina",
+        ("page.spend.summary.title", Locale::EnUs) => "Machine summary",
+        ("page.spend.summary.today", Locale::PtBr) => "Hoje até agora",
+        ("page.spend.summary.today", Locale::EnUs) => "Today so far",
+        ("page.spend.summary.partial", Locale::PtBr) => "parcial",
+        ("page.spend.summary.partial", Locale::EnUs) => "partial",
+        ("page.spend.summary.yesterday", Locale::PtBr) => "Ontem",
+        ("page.spend.summary.yesterday", Locale::EnUs) => "Yesterday",
+        ("page.spend.summary.avg3", Locale::PtBr) => "Média dos últimos 3 dias",
+        ("page.spend.summary.avg3", Locale::EnUs) => "Average of the last 3 days",
+        ("page.spend.summary.avg7", Locale::PtBr) => "Média dos últimos 7 dias",
+        ("page.spend.summary.avg7", Locale::EnUs) => "Average of the last 7 days",
+        ("page.spend.summary.avg_month", Locale::PtBr) => "Média do mês",
+        ("page.spend.summary.avg_month", Locale::EnUs) => "Average of the month",
+        ("page.spend.summary.tokens", _) => "tokens",
+        // `{day}` é o dia e `{n}` as ações dele.
+        ("page.spend.summary.day_actions", Locale::PtBr) => "{day} · {n} ações",
+        ("page.spend.summary.day_actions", Locale::EnUs) => "{day} · {n} actions",
+        // `{n}` é quantos dias entraram na média.
+        ("page.spend.summary.days_used", Locale::PtBr) => "{n} dias contados",
+        ("page.spend.summary.days_used", Locale::EnUs) => "{n} days counted",
+        // `{min}` é o mínimo de ações de um dia para entrar numa média.
+        ("page.spend.summary.note", Locale::PtBr) => "Nas médias só entram dias fechados com pelo menos {min} ações.",
+        ("page.spend.summary.note", Locale::EnUs) => "Averages only count closed days with at least {min} actions.",
+        ("page.spend.summary.forecast", Locale::PtBr) => "Previsão do Jev no mês",
+        ("page.spend.summary.forecast", Locale::EnUs) => "Jev forecast for the month",
+        // `{spent}` é o já gasto no mês, `{daily}` a média por dia dos últimos
+        // dias com busca e `{left}` os dias que faltam no mês.
+        ("page.spend.summary.forecast_detail", Locale::PtBr) => {
+            "{spent} já gastos, mais {daily} por dia nos {left} dias que faltam"
+        }
+        ("page.spend.summary.forecast_detail", Locale::EnUs) => {
+            "{spent} spent so far, plus {daily} a day for the {left} days left"
+        }
+
+        // As recusas do comando `spend`, com as lacunas que ele troca.
+        ("page.spend.refusal.not_an_address", Locale::PtBr) => {
+            "O texto `{found}` não é o endereço de uma página publicada: ele começa com `https://`. Passe o \
+             endereço que a publicação devolveu."
+        }
+        ("page.spend.refusal.not_an_address", Locale::EnUs) => {
+            "The text `{found}` is not the address of a published page: it starts with `https://`. Pass the \
+             address the publication returned."
+        }
+        ("page.spend.refusal.nothing_prepared", Locale::PtBr) => {
+            "Nenhuma cópia do gasto foi preparada. Rode `mustard-rt run spend` antes de gravar a cópia como feita."
+        }
+        ("page.spend.refusal.nothing_prepared", Locale::EnUs) => {
+            "No copy of the spend was prepared. Run `mustard-rt run spend` before recording the copy as done."
+        }
+        ("page.spend.refusal.no_machine_folder", Locale::PtBr) => {
+            "Não achei a pasta pessoal da máquina para guardar o gasto. Defina `MUSTARD_SPEND_DIR` com a pasta \
+             onde guardar."
+        }
+        ("page.spend.refusal.no_machine_folder", Locale::EnUs) => {
+            "Could not find the machine's home folder to keep the spend. Set `MUSTARD_SPEND_DIR` to the folder \
+             where it goes."
+        }
+        ("page.spend.refusal.unreadable_ledger", Locale::PtBr) => {
+            "O arquivo do gasto {path} não se lê: {detail}. Apague o arquivo para contar tudo de novo pelas \
+             conversas. O endereço da página se perde, e `mustard-rt run spend --republish` publica outra."
+        }
+        ("page.spend.refusal.unreadable_ledger", Locale::EnUs) => {
+            "The spend file {path} cannot be read: {detail}. Delete the file to count everything again from \
+             the conversations. The page address is lost, and `mustard-rt run spend --republish` publishes \
+             another one."
+        }
+        ("page.spend.refusal.io", Locale::PtBr) => "Não consegui ler ou gravar o gasto: {detail}.",
+        ("page.spend.refusal.io", Locale::EnUs) => "Could not read or write the spend: {detail}.",
 
         // A moldura de toda página: o menu lateral, a busca e os botões de
         // abrir e fechar. `{n}` e `{total}` são preenchidos pelo script da
@@ -1036,8 +1177,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("page.rs"),
             super::PREFIXES,
-            390,
-            0x3890_61db_374c_3c0a,
+            426,
+            0xec06_ca28_0e68_e913,
         );
     }
 
