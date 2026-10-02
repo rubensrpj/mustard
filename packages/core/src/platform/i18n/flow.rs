@@ -868,6 +868,20 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Wave {wave} was not resent: the previous send's copy is also another wave's, and no copy \
              is free. Run the round again when a wave finishes."
         }
+        ("round.resend_gone", Locale::PtBr) => {
+            "A onda {wave} recomeça numa cópia nova: a do envio anterior, {copy}, não é mais uma cópia do projeto."
+        }
+        ("round.resend_gone", Locale::EnUs) => {
+            "Wave {wave} starts again in a new copy: the previous send's copy, {copy}, is no longer a copy of the project."
+        }
+        ("round.resend_gone_no_copy", Locale::PtBr) => {
+            "A onda {wave} não foi reenviada: a cópia do envio anterior, {copy}, não é mais uma cópia do projeto e outra \
+             não pôde ser preparada. Corrija o que o aviso da cópia diz e rode a rodada de novo."
+        }
+        ("round.resend_gone_no_copy", Locale::EnUs) => {
+            "Wave {wave} was not resent: the previous send's copy, {copy}, is no longer a copy of the project and another \
+             could not be prepared. Fix what the copy warning says and run the round again."
+        }
         ("round.code_kept", Locale::PtBr) => {
             "O código que a onda {wave} deixou sem commit na cópia {copy} ficou guardado na ref `{ref}`. \
              Para trazê-lo de volta, rode `git cherry-pick --no-commit {ref}` na cópia que continua o \
@@ -1751,8 +1765,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            210,
-            0xad57_7488_fc9a_ecc2,
+            212,
+            0x26c6_cbe2_b209_fc29,
         );
     }
 
@@ -1978,6 +1992,8 @@ mod tests {
             ("round.copy_not_cleaned", &["{wave}", "{detail}"][..]),
             ("round.resend_moved", &["{wave}", "{copy}"][..]),
             ("round.resend_no_copy", &["{wave}"][..]),
+            ("round.resend_gone", &["{wave}", "{copy}"][..]),
+            ("round.resend_gone_no_copy", &["{wave}", "{copy}"][..]),
             ("round.git_refused", &["{detail}"][..]),
             ("round.next", &[][..]),
             ("round.next.copy_file", &["{path}"][..]),

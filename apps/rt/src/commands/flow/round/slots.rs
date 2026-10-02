@@ -54,6 +54,18 @@ pub(super) fn sharing_copy(log: &SpecLog, waves: impl IntoIterator<Item = u64>) 
         .collect()
 }
 
+/// As ondas de `waves` cuja cópia gravada deixou de ser uma cópia viva
+/// ([`live_copy`]): a pasta foi apagada do disco, ou o git esqueceu o registro
+/// dela. A onda que sai de novo não volta a uma cópia assim: a rodada prepara
+/// outra antes de gravar o envio ([`open_copies`]), e o código que a pasta
+/// ainda tinha fica guardado ([`new_copy`]).
+pub(super) fn without_live_copy(log: &SpecLog, waves: impl IntoIterator<Item = u64>) -> BTreeSet<u64> {
+    waves
+        .into_iter()
+        .filter(|wave| recorded_copy(log, *wave).is_some_and(|copy| !live_copy(Path::new(&copy.path))))
+        .collect()
+}
+
 /// As vagas presas da spec `spec`, lida em `log`, cada uma pelo caminho como
 /// o envio a grava: a cópia de cada onda que a segura ([`copy_holders`]) — a
 /// do envio aberto, a órfã inclusive, e a da onda com volta ainda não
@@ -82,8 +94,10 @@ pub(crate) fn held_slots(root: &Path, spec: &str, log: &SpecLog) -> BTreeSet<Str
 ///
 /// A onda que sai de novo e cujo último envio, sem entrega depois, gravou uma
 /// vaga hoje livre — a replanejada — volta a essa vaga, e a cópia com
-/// mudança fica como está ([`ensure_copy`]). Toda outra vaga é zerada no
-/// commit atual ([`reset_slot`]). A vaga traz cada submódulo que as tarefas
+/// mudança fica como está ([`ensure_copy`]); a que sumiu do disco nasce de
+/// novo na mesma vaga, no commit atual ([`new_copy`]) — é o que a onda a
+/// reenviar com a cópia apagada pede ([`without_live_copy`]). Toda outra vaga
+/// é zerada no commit atual ([`reset_slot`]). A vaga traz cada submódulo que as tarefas
 /// da onda tocam. A onda cuja cópia não pôde ser preparada não sai, e o
 /// aviso diz por quê; a onda sem vaga livre também não sai, e fica para a
 /// rodada seguinte. Roda com a trava do passo do git que o despacho já
@@ -249,9 +263,15 @@ pub(crate) fn ensure_copy(root: &Path, path: &Path, head: &str, owner: &Keeping)
 /// nasce de novo ([`new_copy`]), guardando antes o que ela tinha de `owner`.
 /// Depois, os arquivos locais do projeto.
 pub(crate) fn reset_slot(root: &Path, path: &Path, head: &str, owner: &Keeping) -> Result<Prepared, String> {
-    let zeroed = zero_live_copy(root, path, || super::keep::reset_with_submodules(root, path, head, owner))?;
+    // O commit em que a vaga estava, lido antes de zerá-la: só a vaga que sai
+    // de novo o usa, para dizer o que mudou desde o último uso.
+    let mut before = String::new();
+    let zeroed = zero_live_copy(root, path, || {
+        before = git::run(path, &["rev-parse", "HEAD"]).out().unwrap_or_default();
+        super::keep::reset_with_submodules(root, path, head, owner)
+    })?;
     let Some(zeroed) = zeroed else { return new_copy(root, path, head, owner) };
-    Ok(Prepared { missing: zeroed.missing, reused: changed_since(root, &zeroed.before, head), kept: zeroed.value })
+    Ok(Prepared { missing: zeroed.missing, reused: changed_since(root, &before, head), kept: zeroed.value })
 }
 
 /// A vaga em `path`, cópia viva, de uma onda cujo código a rodada acabou de
@@ -264,19 +284,16 @@ pub(super) fn reset_committed_slot(root: &Path, path: &Path) -> Result<(), Strin
         .ok_or_else(|| format!("not a live copy: {}", shown(path)))
 }
 
-/// O que zerar uma cópia viva deixou: o commit em que ela estava antes, o que
-/// o zerar devolveu e os itens da lista de arquivos locais que não voltaram a
-/// ela.
+/// O que zerar uma cópia viva deixou: o que o zerar devolveu e os itens da
+/// lista de arquivos locais que não voltaram a ela.
 struct Zeroed<T> {
-    before: String,
     value: T,
     missing: Vec<String>,
 }
 
 /// A cópia viva em `path` zerada por `reset`, com os arquivos locais do
 /// projeto `root` de volta ([`copy_local_files`]): é o que toda volta de vaga
-/// ao commit faz, guardando antes ou não. O commit em que ela estava é lido
-/// antes de `reset` rodar. `None` na pasta que não é cópia viva
+/// ao commit faz, guardando antes ou não. `None` na pasta que não é cópia viva
 /// ([`live_copy`]), sem rodar `reset`; o `reset` que falha devolve o erro, e
 /// nenhum arquivo local é levado.
 fn zero_live_copy<T>(
@@ -287,9 +304,8 @@ fn zero_live_copy<T>(
     if !live_copy(path) {
         return Ok(None);
     }
-    let before = git::run(path, &["rev-parse", "HEAD"]).out().unwrap_or_default();
     let value = reset()?;
-    Ok(Some(Zeroed { before, value, missing: copy_local_files(root, path) }))
+    Ok(Some(Zeroed { value, missing: copy_local_files(root, path) }))
 }
 
 /// De quem é o que a vaga `path` da obra `spec` tem, para o que a limpeza

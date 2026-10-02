@@ -753,6 +753,57 @@ fn a_project_with_no_branch_to_read_gets_no_history_from_the_whole_reading() {
     assert!(stored_lineage(dir, "src/a.rs").is_none(), "there is no base to read the history from");
 }
 
+/// O vetor de sentido que o mapa do projeto guarda para a declaração `name`.
+fn stored_vector(dir: &Path, name: &str) -> Vec<i8> {
+    let conn = rusqlite::Connection::open(model::path_in(&dir.join(".claude"))).unwrap();
+    let blob: Vec<u8> =
+        conn.query_row("SELECT vector FROM decl_vectors WHERE name = ?1", [name], |row| row.get(0)).expect("the declaration has a vector");
+    blob.iter().map(|byte| i8::from_le_bytes([*byte])).collect()
+}
+
+/// O resumo de cada declaração junta os títulos dos commits que a mudaram, e
+/// essa história só chega com a leitura do projeto inteiro: ao fim dela, o
+/// vetor se refaz só nas declarações cujo texto mudou. A função movida de
+/// arquivo só tem o commit da mudança no arquivo novo; a história traz os
+/// dois commits de antes, e o vetor passa a se parecer com o título deles.
+/// A função cuja história já era a do arquivo não é refeita, e uma segunda
+/// leitura, sem nada novo, não refaz vetor nenhum.
+#[test]
+fn the_whole_reading_redoes_the_vector_of_the_declarations_whose_history_it_brought() {
+    use mustard_core::io::map_meaning::{cosine, quantized_vector};
+
+    let temp = project("scan-historia-vetor-");
+    let dir = temp.path();
+    declare_base(dir, "main");
+    let rest = "pub fn outra() -> u32 {\n    let a = 1;\n    let b = 2;\n    let c = 3;\n    a + b + c\n}\n";
+    let ler = |n: u32| format!("pub fn ler(x: u32) -> u32 {{\n    let lido = x + {n};\n    lido * 2\n}}\n");
+    commit(dir, "src/origem.rs", &format!("{}\n{rest}", ler(1)), "cria o ler");
+    commit(dir, "src/origem.rs", &format!("{}\n{rest}", ler(2)), "muda o ler");
+    write(dir, "src/origem.rs", rest);
+    commit(dir, "src/destino.rs", &ler(2), "move o ler");
+    scan(dir);
+    let (ler_before, alpha_before) = (stored_vector(dir, "ler"), stored_vector(dir, "alpha"));
+    let earlier = quantized_vector("cria o ler muda o ler").expect("the meaning model loads");
+
+    let report = history_all(dir, &[]);
+
+    assert_eq!(report["failed"], json!(0), "{report}");
+    assert_eq!(report["vectors"], json!(2), "only the function that moved and the one it left behind changed their history: {report}");
+    let ler_after = stored_vector(dir, "ler");
+    assert_ne!(ler_after, ler_before, "the vector of the moved function was redone");
+    assert!(
+        cosine(&earlier, &ler_after) > cosine(&earlier, &ler_before),
+        "the titles of the commits before the move entered the summary: {} against {}",
+        cosine(&earlier, &ler_after),
+        cosine(&earlier, &ler_before)
+    );
+    assert_eq!(stored_vector(dir, "alpha"), alpha_before, "the function whose history was the file's own keeps its vector");
+
+    let again = history_all(dir, &[]);
+    assert_eq!(again["vectors"], json!(0), "nothing new, nothing redone: {again}");
+    assert_eq!(stored_vector(dir, "ler"), ler_after);
+}
+
 #[test]
 fn the_whole_reading_does_not_read_again_a_file_whose_history_is_still_valid() {
     let temp = project("scan-historia-toda-marca-");

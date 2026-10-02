@@ -24,7 +24,7 @@ use super::queue::{
     Analysed,
 };
 use super::report::Taken;
-use super::slots::{open_copies, sharing_copy};
+use super::slots::{open_copies, sharing_copy, without_live_copy};
 use super::stops::{stopped_waves, waves_stuck};
 use super::usage::Caller;
 use super::{can_run, RoundOpts, DONE_STEP};
@@ -748,10 +748,15 @@ pub(super) fn run_entered_round(
     warnings.extend(ignored);
     // A onda a reenviar cuja cópia gravada outra onda também segura não volta
     // a ela: sai numa vaga livre, como a onda nova, e antes dela, porque já
-    // estava em andamento.
+    // estava em andamento. A cuja cópia gravada deixou de ser uma cópia viva —
+    // a pasta foi apagada entre o envio e o reenvio — também pede uma cópia
+    // preparada agora, na mesma vaga quando ela serve: o reenvio nunca grava
+    // uma pasta que o agente não acharia.
     let resends = resend_targets(&log, &paused);
-    let moved: Vec<u64> = sharing_copy(&log, resends.keys().copied()).into_iter().collect();
-    let wanted: Vec<u64> = moved.iter().chain(&go).copied().collect();
+    let moved = sharing_copy(&log, resends.keys().copied());
+    let gone = without_live_copy(&log, resends.keys().copied());
+    let renewed: BTreeSet<u64> = moved.union(&gone).copied().collect();
+    let wanted: Vec<u64> = renewed.iter().chain(&go).copied().collect();
     let (mut copies, not_copied) = open_copies(root, &spec, &log, &held_lock, &wanted, lang);
     // O código que a limpeza de uma cópia guardou vai também no que vem
     // depois: a resposta diz de que onda era e como trazê-lo de volta.
@@ -761,7 +766,8 @@ pub(super) fn run_entered_round(
         .filter_map(|warning| warning["hint"].as_str().map(str::to_string))
         .collect();
     warnings.extend(not_copied);
-    let mut moved_copies: BTreeMap<u64, WaveCopy> = moved.iter().filter_map(|w| copies.remove(w).map(|c| (*w, c))).collect();
+    let mut renewed_copies: BTreeMap<u64, WaveCopy> =
+        renewed.iter().filter_map(|w| copies.remove(w).map(|c| (*w, c))).collect();
     let next: Vec<u64> = go.into_iter().filter(|wave| copies.contains_key(wave)).collect();
     // O pedido de cada onda lista as outras em andamento, contando as órfãs,
     // que saem de novo nesta rodada, e as que saem junto com ela, e traz a
@@ -837,14 +843,21 @@ pub(super) fn run_entered_round(
     for (wave, previous) in resends {
         let Some(prior) = log.get(previous) else { continue };
         let Some(own) = recorded_copy(&log, wave) else { continue };
-        let copy = if moved.contains(&wave) {
-            let Some(fresh) = moved_copies.remove(&wave) else {
-                let hint = translate("round.resend_no_copy", lang).replace("{wave}", &wave.to_string());
-                warnings.push(json!({ "reason": "resend-no-copy", "wave": wave, "hint": hint }));
+        let copy = if renewed.contains(&wave) {
+            // A cópia que outra onda também segura tem a frase dela; a que
+            // sumiu, a sua. Quando nenhuma cópia nova saiu, o aviso da
+            // criação (`copy-not-created`) já disse por quê.
+            let (reason, kept, no_copy) = if moved.contains(&wave) {
+                ("resend-copy-moved", "round.resend_moved", "round.resend_no_copy")
+            } else {
+                ("resend-copy-gone", "round.resend_gone", "round.resend_gone_no_copy")
+            };
+            let said = |key: &str| translate(key, lang).replace("{wave}", &wave.to_string()).replace("{copy}", &own.path);
+            let Some(fresh) = renewed_copies.remove(&wave) else {
+                warnings.push(json!({ "reason": "resend-no-copy", "wave": wave, "hint": said(no_copy) }));
                 continue;
             };
-            let hint = translate("round.resend_moved", lang).replace("{wave}", &wave.to_string()).replace("{copy}", &own.path);
-            warnings.push(json!({ "reason": "resend-copy-moved", "wave": wave, "hint": hint }));
+            warnings.push(json!({ "reason": reason, "wave": wave, "hint": said(kept) }));
             fresh
         } else {
             own
@@ -1144,6 +1157,7 @@ mod tests {
     use crate::commands::spec_events::write::record_open;
 
     use super::*;
+    use crate::commands::flow::round::slots::live_copy;
     use crate::commands::flow::round::tests::*;
 
     /// A spec que ainda não foi aprovada não roda onda nenhuma.
@@ -1804,6 +1818,17 @@ mod tests {
         store::write_at(&path, "send", draft.as_object().cloned().unwrap(), &[], at).unwrap();
     }
 
+    /// O processo e a hora de início de um Claude Code que já fechou: um
+    /// processo nascido e já colhido nunca mais aparece com a mesma hora de
+    /// início. Só os testes de onda órfã usam, e eles só valem no Linux.
+    #[cfg(target_os = "linux")]
+    fn closed_sender() -> (u32, u64) {
+        let mut dead = std::process::Command::new("true").spawn().expect("spawn the fixture process");
+        let pid = dead.id();
+        dead.wait().expect("reap the fixture process");
+        (pid, 1)
+    }
+
     /// O passo que o agente grava pelo `run write step`; a onda pausada e a
     /// órfã, de um Claude Code que fechou, reenviam o pedido de antes,
     /// palavra por palavra, com os passos e o aviso, e o envio novo aponta o
@@ -1846,15 +1871,13 @@ mod tests {
 
         // A onda 2 é órfã: o Claude Code dela fechou — um processo nascido e
         // já colhido nunca mais aparece com a mesma hora de início.
-        let mut dead = std::process::Command::new("true").spawn().expect("spawn the fixture process");
-        let dead_pid = dead.id();
-        dead.wait().expect("reap the fixture process");
+        let (dead_pid, dead_started) = closed_sender();
         // O envio dela é de antes da vaga fixa: ainda grava a pasta de
         // compilação, o campo antigo que o envio novo não grava mais.
         let mut draft2 = draft2;
         let copy2 = draft2["copy"].clone();
         draft2["claude_pid"] = json!(dead_pid);
-        draft2["claude_started"] = json!(1);
+        draft2["claude_started"] = json!(dead_started);
         draft2["build_dir"] = json!("/antiga/target/copias/b");
         seed_send_at(root, draft2, &chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%:z").to_string());
 
@@ -1982,14 +2005,8 @@ mod tests {
         let shared = recorded_copy(&log, 2).map(|copy| copy.path).expect("a cópia da onda 2");
         let mut draft = resend_draft(sent_of(1));
         draft["copy"] = json!(shared);
-        let (claude_pid, claude_started) = if alive {
-            crate::commands::flow::stuck::sender_process()
-        } else {
-            let mut dead = std::process::Command::new("true").spawn().expect("spawn the fixture process");
-            let dead_pid = dead.id();
-            dead.wait().expect("reap the fixture process");
-            (dead_pid, 1)
-        };
+        let (claude_pid, claude_started) =
+            if alive { crate::commands::flow::stuck::sender_process() } else { closed_sender() };
         draft["claude_pid"] = json!(claude_pid);
         draft["claude_started"] = json!(claude_started);
         seed_send_at(root, draft, &chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%:z").to_string());
@@ -2044,6 +2061,103 @@ mod tests {
         assert_ne!(PathBuf::from(&resent), shared, "o reenvio sai em outra vaga: {out}");
     }
 
+    /// A onda 1 enviada, com a pasta da cópia dela apagada do disco antes de a
+    /// rodada reenviá-la — o que aconteceu quando uma limpeza de pastas passou
+    /// entre o envio e o reenvio. Devolve a cópia que o envio gravou.
+    fn wave_one_without_its_copy(root: &Path) -> PathBuf {
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1]);
+        let copy = PathBuf::from(recorded_copy(&log_of(root), 1).map(|copy| copy.path).expect("a cópia da onda 1"));
+        std::fs::remove_dir_all(&copy).unwrap();
+        assert!(!live_copy(&copy), "a cópia saiu do disco");
+        copy
+    }
+
+    /// Cada envio que a spec `x` tem, de qualquer onda.
+    fn sends_of(root: &Path) -> Vec<SpecEvent> {
+        log_of(root).visible().into_iter().filter(|e| e.event_type == "send").cloned().collect()
+    }
+
+    /// O reenvio de uma onda pausada cuja cópia foi apagada do disco prepara
+    /// outra antes de gravar o envio: ela nasce na mesma vaga, no commit atual,
+    /// o aviso diz que a cópia é nova, e o envio novo grava uma pasta que o
+    /// agente acha pronta.
+    #[test]
+    fn the_resend_of_a_paused_wave_whose_copy_was_deleted_prepares_a_new_copy_first() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let copy = wave_one_without_its_copy(root);
+
+        let out = round(root, "x", Some(&line("PAUSED", json!({"wave": 1}))));
+        assert_eq!(out["ok"], json!(true), "{out}");
+        assert_eq!(waves_in(&out, "dispatch"), vec![1], "a onda pausada é reenviada: {out}");
+
+        let resent = recorded_copy(&log_of(root), 1).map(|copy| copy.path).expect("a cópia do reenvio");
+        assert_eq!(PathBuf::from(&resent), copy, "o reenvio volta à mesma vaga: {out}");
+        assert!(live_copy(&copy) && copy.join("src/a.rs").is_file(), "a pasta do reenvio é uma cópia viva: {out}");
+        let renewed = warning_of(&out, "resend-copy-gone");
+        let said = translate("round.resend_gone", Locale::PtBr).replace("{wave}", "1").replace("{copy}", &resent);
+        assert_eq!((renewed["wave"].clone(), renewed["hint"].as_str().unwrap_or_default()), (json!(1), said.as_str()), "{out}");
+        assert!(out["warnings"].as_array().into_iter().flatten().all(|w| w["reason"] != json!("resend-copy-moved")), "{out}");
+    }
+
+    /// O reenvio da onda órfã cuja cópia foi apagada faz o mesmo: o Claude Code
+    /// que a mandou fechou, e a cópia que ela gravou já não está no disco.
+    /// Só roda no Linux: fora dele nenhum processo é dado como morto.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn the_resend_of_an_orphan_wave_whose_copy_was_deleted_prepares_a_new_copy_first() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let copy = wave_one_without_its_copy(root);
+        let mut draft = resend_draft(&sends_of(root)[0]);
+        let (pid, started) = closed_sender();
+        draft["claude_pid"] = json!(pid);
+        draft["claude_started"] = json!(started);
+        seed_send_at(root, draft, &chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%:z").to_string());
+
+        let out = round(root, "x", None);
+        assert_eq!(out["ok"], json!(true), "{out}");
+        assert_eq!(waves_in(&out, "dispatch"), vec![1], "a órfã é reenviada: {out}");
+        let resent = recorded_copy(&log_of(root), 1).map(|copy| copy.path).expect("a cópia do reenvio");
+        assert_eq!(PathBuf::from(&resent), copy, "{out}");
+        assert!(live_copy(&copy), "o reenvio grava uma cópia viva: {out}");
+        assert_eq!(warning_of(&out, "resend-copy-gone")["wave"], json!(1), "{out}");
+    }
+
+    /// A cópia apagada que a rodada não consegue preparar de novo segura o
+    /// reenvio: nenhum envio é gravado, e dois avisos dizem por quê — o da
+    /// criação, com o motivo do git, e o da onda que não saiu, com a cópia
+    /// que sumiu. Desfeito o impedimento, a rodada seguinte reenvia numa cópia
+    /// viva.
+    #[test]
+    fn a_resend_whose_copy_was_deleted_and_cannot_be_made_again_does_not_go_out_and_says_why() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let copy = wave_one_without_its_copy(root);
+        // Um arquivo no lugar da pasta: o git não cria a cópia por cima dele.
+        std::fs::write(&copy, b"no caminho da copia").unwrap();
+        let before = sends_of(root).len();
+
+        let out = round(root, "x", Some(&line("PAUSED", json!({"wave": 1}))));
+        assert_eq!(out["ok"], json!(true), "{out}");
+        assert_eq!(waves_in(&out, "dispatch"), Vec::<u64>::new(), "a onda não sai: {out}");
+        assert_eq!(sends_of(root).len(), before, "nenhum envio foi gravado: {out}");
+        assert_eq!(warning_of(&out, "copy-not-created")["wave"], json!(1), "{out}");
+        let held = warning_of(&out, "resend-no-copy");
+        let said = translate("round.resend_gone_no_copy", Locale::PtBr)
+            .replace("{wave}", "1")
+            .replace("{copy}", &mustard_core::io::wave_prompt::shown(&copy));
+        assert_eq!(held["hint"].as_str().unwrap_or_default(), said, "{out}");
+        assert!(held["hint"].as_str().unwrap_or_default().contains("não é mais uma cópia"), "{out}");
+
+        std::fs::remove_file(&copy).unwrap();
+        let again = round(root, "x", Some(&line("PAUSED", json!({"wave": 1}))));
+        assert_eq!(waves_in(&again, "dispatch"), vec![1], "{again}");
+        assert!(live_copy(&copy), "{again}");
+        assert_eq!(sends_of(root).len(), before + 1, "{again}");
+    }
+
     /// A pausa de uma onda que já voltou não a reenvia: a volta espera a
     /// rodada, e o reenvio poria a onda por cima da cópia que guarda o que ela
     /// entregou.
@@ -2094,12 +2208,10 @@ mod tests {
             let sent = log.visible().into_iter().find(|e| e.wave() == Some(1) && e.event_type == "send").unwrap();
             resend_draft(sent)
         };
-        let mut dead = std::process::Command::new("true").spawn().expect("spawn the fixture process");
-        let dead_pid = dead.id();
-        dead.wait().expect("reap the fixture process");
+        let (dead_pid, dead_started) = closed_sender();
         let mut draft1 = draft1;
         draft1["claude_pid"] = json!(dead_pid);
-        draft1["claude_started"] = json!(1);
+        draft1["claude_started"] = json!(dead_started);
         seed_send_at(root, draft1, &chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%:z").to_string());
 
         let second = round(root, "x", None);

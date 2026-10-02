@@ -18,9 +18,10 @@
 //!   ([`crate::domain::normalize`]), para achar as palavras que o projeto usa
 //!   perto de uma palavra que ele não usa.
 //!
-//! Quem grava é o scan, depois do mapa ([`fill_at`]). Mapa sem estas tabelas
-//! abre e se lê como sempre: quem lê os vetores ([`nearest_words`]) recebe
-//! uma lista vazia.
+//! Quem grava é o scan, depois do mapa e depois de cada leitura da história,
+//! que traz ao compilado os títulos dos commits de cada declaração
+//! ([`fill_at`]). Mapa sem estas tabelas abre e se lê como sempre: quem lê os
+//! vetores ([`nearest_words`]) recebe uma lista vazia.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;

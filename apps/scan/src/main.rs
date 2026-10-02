@@ -97,7 +97,9 @@ enum Command {
     /// transação: o índice de busca ganha só as linhas dos arquivos do lote, e
     /// quem busca no meio da leitura nunca espera por ela. Outra leitura do
     /// mesmo mapa em andamento faz esta sair sem ler nada. O arquivo cuja
-    /// história já vale não é lido de novo.
+    /// história já vale não é lido de novo. Ao fim da leitura, o vetor de
+    /// sentido de cada declaração cuja história mudou é refeito, com os
+    /// títulos dos commits dela.
     HistoryAll {
         path: PathBuf,
         #[arg(long, default_value = store::MAP_FILE_NAME)]
@@ -114,7 +116,8 @@ enum Command {
         /// novos; a que soma o que veio depois não tem limite.
         #[arg(long, default_value_t = history::NEWEST_COMMITS)]
         newest: usize,
-        /// Uma linha de JSON no lugar do resumo em texto.
+        /// Uma linha de JSON no lugar do resumo em texto; `vectors` diz quantos
+        /// vetores de declaração foram refeitos com a história nova.
         #[arg(long)]
         json: bool,
     },
@@ -143,6 +146,20 @@ fn lower_priority() {
 
 #[cfg(not(unix))]
 fn lower_priority() {}
+
+/// O sentido de cada declaração e de cada palavra do mapa em `out`, do projeto
+/// em `root`: o que o scan faz depois de gravar o mapa e o que a leitura da
+/// história faz depois de gravar a dela. O mapa vale sem os vetores, então a
+/// falha só avisa. Devolve quantos vetores de declaração foram calculados.
+fn fill_meaning(out: &Path, root: &Path) -> usize {
+    match mustard_core::io::map_meaning::fill_at(out, root) {
+        Ok(report) => report.computed,
+        Err(err) => {
+            eprintln!("The meaning vectors were not written: {err}");
+            0
+        }
+    }
+}
 
 /// Apaga o mapa de antes do banco, na pasta do banco em `out`, quando ele
 /// existe: o banco gravado o substitui.
@@ -181,10 +198,7 @@ fn main() -> Result<()> {
             };
             drop_legacy_map(&out)?;
             // O sentido de cada declaração e de cada palavra do mapa recém-gravado.
-            // O mapa vale sem os vetores, então a falha só avisa.
-            if let Err(err) = mustard_core::io::map_meaning::fill_at(&out, &path) {
-                eprintln!("The meaning vectors were not written: {err}");
-            }
+            fill_meaning(&out, &path);
             if json {
                 let report = serde_json::json!({
                     "ok": true,
@@ -248,10 +262,16 @@ fn main() -> Result<()> {
                 ProjectConfig::load(&path).history_moves().or(mustard_core::domain::project_map::MOVES_FOLLOWED)
             });
             let report = history::run_all(&path, &out, moves, batch, newest)?;
+            // O resumo de cada declaração junta os títulos dos commits que a
+            // mudaram, e a história acabou de chegar: o vetor se refaz só nas
+            // declarações cujo texto compilado mudou com ela. Quem leu no lugar
+            // desta passada, que saiu ocupada, é quem refaz.
+            let vectors = if report.busy { 0 } else { fill_meaning(&out, &path) };
             if json {
                 let line = serde_json::json!({
                     "ok": true,
                     "busy": report.busy,
+                    "vectors": vectors,
                     "files": report.files,
                     "commits": report.commits,
                     "declarations": report.declarations,

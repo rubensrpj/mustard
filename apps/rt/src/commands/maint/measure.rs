@@ -1181,17 +1181,11 @@ mod tests {
         );
     }
 
-    /// As linhas que `fake_scan` anotou em `log`, esperando até `count` delas.
+    /// As linhas que `fake_scan` anotou em `log`. A medida só volta depois de a
+    /// leitura da história terminar, então todas já estão lá: sem esperar.
     #[cfg(unix)]
-    fn scan_calls(log: &Path, count: usize) -> Vec<String> {
-        let read = || std::fs::read_to_string(log).unwrap_or_default().lines().map(str::to_string).collect::<Vec<_>>();
-        for _ in 0..200 {
-            if read().len() >= count {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        read()
+    fn scan_calls(log: &Path) -> Vec<String> {
+        std::fs::read_to_string(log).unwrap_or_default().lines().map(str::to_string).collect()
     }
 
     /// Uma pasta de árvores com os projetos `names`, cada um com o mapa velho.
@@ -1221,7 +1215,7 @@ mod tests {
         let rebuilt = rebuild_trees(&trees, &Scan::new(dir.path().join("scan").to_string_lossy())).unwrap();
 
         assert_eq!(rebuilt, vec![trees.join("a"), trees.join("b")]);
-        let calls = scan_calls(&log, 4);
+        let calls = scan_calls(&log);
         let (a, b) = (trees.join("a").display().to_string(), trees.join("b").display().to_string());
         let of = |command: &str| {
             let mut found: Vec<String> = calls.iter().filter(|call| call.starts_with(command)).cloned().collect();
@@ -1346,7 +1340,7 @@ mod tests {
         assert!(report.contains("mapa=novo") && !report.contains("velho"), "the ruler read the map the scan wrote: {report}");
         assert_eq!(logged(&world), ["cargo build", &format!("scan {}", world.trees.join("p").display()), "cargo test", "ruler"]);
         let reading = format!("history-all {}", world.trees.join("p").display());
-        assert!(scan_calls(&world.log, 5).contains(&reading), "the history of the rebuilt map is read, as in the sessions");
+        assert!(scan_calls(&world.log).contains(&reading), "the history of the rebuilt map is read, as in the sessions");
 
         // Sem plugin instalado a mesma medida diz que o gancho não está.
         let bare = tempdir().unwrap();

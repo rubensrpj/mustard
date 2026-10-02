@@ -74,9 +74,11 @@ pub enum MaintCmd {
     ///
     /// Com `--trees <pasta>` (ou `SPEND_TREES` em `--env`), o mapa de cada
     /// projeto da pasta é refeito antes da régua: o banco velho sai e o `scan`
-    /// compilado do mesmo código grava um novo; o scan que falha recusa a
-    /// medida. A linha `PROVA` traz também `gancho=<commit>`: o commit que o
-    /// `mustard-rt` do plugin instalado carimbou em si, ou `não instalado`.
+    /// compilado do mesmo código grava um novo, e a medida espera a leitura da
+    /// história de cada mapa terminar antes de rodar a régua; o scan que falha
+    /// recusa a medida. A linha `PROVA` traz também `gancho=<commit>`: o
+    /// commit que o `mustard-rt` do plugin instalado carimbou em si, ou `não
+    /// instalado`.
     ///
     /// Imprime ao fim as linhas `PROVA`, uma linha `PECAS` por mapa que a
     /// régua abriu (o estado de cada peça da busca nele, ligada ou ainda não
@@ -103,7 +105,8 @@ pub enum MaintCmd {
         out: Option<PathBuf>,
         /// A pasta com a árvore de cada projeto da régua (`SPEND_TREES`): o
         /// mapa de cada uma é refeito antes da medida, com o `scan` compilado
-        /// do mesmo código.
+        /// do mesmo código, e a medida espera a história de cada mapa terminar
+        /// antes da régua.
         #[arg(long, value_name = "pasta")]
         trees: Option<PathBuf>,
     },
