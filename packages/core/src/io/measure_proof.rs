@@ -559,7 +559,7 @@ mod tests {
         let names: Vec<&str> = proof.pieces.iter().map(|piece| piece.name).collect();
         assert_eq!(
             names,
-            ["compilado", "raiz-e-sinonimos", "sentido-pelo-vetor", "duas-linguas", "historico", "conferencia"],
+            ["compilado", "raiz-e-sinonimos", "sentido-pelo-vetor", "duas-linguas", "historico", "conferencia", "filtro-jev"],
             "the map is recorded with the state of every piece of the search"
         );
     }
@@ -580,7 +580,7 @@ mod tests {
         assert!(lines[0].starts_with("PROVA commit=0123456789ab"), "{lines:?}");
         for (line, model) in lines[1..].iter().zip([&first, &second]) {
             assert!(line.starts_with(&format!("PECAS {}: compilado=ainda-nao-ligada", model.display())), "{line}");
-            assert!(line.ends_with("conferencia=ligada"), "{line}");
+            assert!(line.contains(" conferencia=ligada filtro-jev="), "{line}");
         }
     }
 
@@ -637,8 +637,9 @@ mod tests {
         assert_eq!(json["maps"].as_array().unwrap().len(), 2, "one entry per opened map: {json}");
         assert_eq!(json["maps"][0]["path"], first.display().to_string());
         assert_eq!(json["maps"][1]["mark"], "scan 1");
-        assert_eq!(json["maps"][0]["pieces"].as_array().unwrap().len(), 6, "the pieces go in the result: {json}");
+        assert_eq!(json["maps"][0]["pieces"].as_array().unwrap().len(), 7, "the pieces go in the result: {json}");
         assert_eq!(json["maps"][0]["pieces"][5]["name"], "conferencia");
+        assert_eq!(json["maps"][0]["pieces"][6]["name"], "filtro-jev", "the Jev filter is listed with the other pieces");
         assert_eq!(json["maps"][0]["pieces"][0]["state"], "ainda não ligada", "a map without vectors has no compiled text: {json}");
         assert_eq!(json["dirty"], true);
         assert_eq!(json["binary_sha256"], ABC);
@@ -691,8 +692,8 @@ mod tests {
         assert_eq!(json["maps"][0]["unread"], json!(2), "{json}");
         assert!(json["maps"][1]["unread"].is_null(), "a map the command did not rebuild has no count: {json}");
         let lines = gate.proof().lines();
-        assert!(lines[1].ends_with("conferencia=ligada; arquivos que a história não leu: 2"), "{lines:?}");
-        assert!(lines[2].ends_with("conferencia=ligada"), "{lines:?}");
+        assert!(lines[1].contains(" conferencia=ligada filtro-jev=") && lines[1].ends_with("; arquivos que a história não leu: 2"), "{lines:?}");
+        assert!(lines[2].contains(" conferencia=ligada filtro-jev=") && !lines[2].contains("não leu"), "{lines:?}");
     }
 
     /// Sem a conta dos arquivos que a história não leu, ou com ela que não se

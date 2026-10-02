@@ -1,4 +1,5 @@
 pub mod fs;
+pub mod jev_gate;
 pub mod measure_proof;
 pub mod search_pieces;
 pub mod sha256;

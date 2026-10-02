@@ -1443,7 +1443,7 @@ mod tests {
         let gate = check_maps(gate, std::slice::from_ref(&same)).expect("the map of the same mark passes");
         let maps = &gate.proof().maps;
         assert_eq!(maps.len(), 1, "one entry per opened map");
-        assert_eq!(maps[0].pieces.len(), 6, "the map carries the state of every piece of the search");
+        assert_eq!(maps[0].pieces.len(), 7, "the map carries the state of every piece of the search");
         assert_eq!((maps[0].path.as_str(), maps[0].mark.as_str()), (same.to_str().expect("a path"), "scan 1"));
     }
 

@@ -35,8 +35,8 @@
 //! O modelo pedido é uma versão fixa, e o uso guarda o nome do modelo que a
 //! resposta diz ter respondido.
 //!
-//! A chave vem de [`KEY_ENV`] no ambiente ou, sem ela, de `jev.key` no
-//! `mustard.json` do projeto ([`load_key`]). O git não pode guardar esse
+//! A chave vem de [`jev_gate::KEY_ENV`] no ambiente ou, sem ela, de `jev.key` no
+//! `mustard.json` do projeto ([`key_in`]). O git não pode guardar esse
 //! arquivo: guardado, a chave dele não se usa, e a busca avisa. Nenhum
 //! comando a grava, e nenhum erro, aviso ou log a leva — nem o corpo da
 //! resposta do serviço.
@@ -51,6 +51,7 @@ use mustard_core::domain::map_filter::{
     FilterCandidate, FilterError, FilterRequest, FilterUsage, Filtered, MapFilter, Partial, Scored, Verdict, joined,
     judged,
 };
+use mustard_core::io::jev_gate;
 use mustard_core::ProjectConfig;
 use serde_json::{Map, Value, json};
 
@@ -70,9 +71,6 @@ pub const JEV_MODEL: &str = "jev-1.13.0";
 
 /// US$ por milhão de tokens de entrada; a saída não é cobrada.
 pub const PRICE_PER_MILLION_INPUT_TOKENS: f64 = 0.042;
-
-/// A variável de ambiente da chave; vence o `mustard.json`.
-pub const KEY_ENV: &str = "TYPESAFE_API_KEY";
 
 /// O maior pedido que o serviço aceita, em tokens: o estado e todas as
 /// perguntas juntos. Um pedido montado que ainda passa dele não sai.
@@ -177,42 +175,14 @@ pub struct LoadedKey {
     pub warning: Option<FilterError>,
 }
 
-/// A chave do projeto em `root`: [`KEY_ENV`] no ambiente; sem ela, `jev.key`
-/// do `mustard.json` que `config` leu. Sem nenhuma das duas,
-/// [`FilterError::MissingKey`]; com a do arquivo que o git guarda,
-/// [`FilterError::KeyInGit`].
-pub fn load_key(root: &Path, config: &ProjectConfig) -> Result<LoadedKey, FilterError> {
-    key_in(root, config, std::env::var(KEY_ENV).ok())
-}
-
-/// A chave do projeto como em [`load_key`], com `env` no lugar do valor de
-/// [`KEY_ENV`]: o teste não depende do ambiente de quem o roda.
+/// A chave do projeto em `root`: `env`, o valor de [`jev_gate::KEY_ENV`] que quem chama
+/// lê do ambiente; sem ela, `jev.key` do `mustard.json` que `config` leu.
+/// Sem nenhuma das duas, [`FilterError::MissingKey`]; com a do arquivo que o
+/// git guarda, [`FilterError::KeyInGit`]. A regra é a de
+/// [`mustard_core::io::jev_gate`], a mesma da prova da medida.
 pub fn key_in(root: &Path, config: &ProjectConfig, env: Option<String>) -> Result<LoadedKey, FilterError> {
-    key_from(env, config.jev_key(), || tracked_by_git(root))
-}
-
-/// A escolha da chave, sobre o valor do ambiente e o do `mustard.json`; o
-/// valor em branco vale como ausente. `tracked` diz se o git guarda o
-/// arquivo, e só se pergunta quando ele traz uma chave: a chave guardada no
-/// git não se usa, e o aviso sai mesmo quando a do ambiente vale.
-fn key_from(env: Option<String>, project: Option<&str>, tracked: impl FnOnce() -> bool) -> Result<LoadedKey, FilterError> {
-    let project = project.map(str::trim).filter(|key| !key.is_empty());
-    let in_git = project.is_some() && tracked();
-    let warning = in_git.then_some(FilterError::KeyInGit);
-    if let Some(key) = env.map(|value| value.trim().to_string()).filter(|value| !value.is_empty()) {
-        return Ok(LoadedKey { key: JevKey(key), warning });
-    }
-    if in_git {
-        return Err(FilterError::KeyInGit);
-    }
-    let key = project.ok_or(FilterError::MissingKey)?;
-    Ok(LoadedKey { key: JevKey(key.to_string()), warning: None })
-}
-
-/// O git guarda o `mustard.json` de `root`, no índice ou num commit. Sem git
-/// ou fora de um repositório, não guarda.
-fn tracked_by_git(root: &Path) -> bool {
-    mustard_core::platform::git::run(root, &["ls-files", "--error-unmatch", "--", "mustard.json"]).ok
+    let found = jev_gate::find_key(root, config, env)?;
+    Ok(LoadedKey { key: JevKey(found.value().to_string()), warning: found.warning().cloned() })
 }
 
 // ---------------------------------------------------------------------------
@@ -758,6 +728,7 @@ fn squash(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mustard_core::io::jev_gate::KEY_ENV;
     use mustard_core::domain::map_filter::{CutRule, EXISTS_FROM};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::io::{BufRead, BufReader, Read, Write};
@@ -1746,26 +1717,6 @@ mod tests {
         key_in(root, &ProjectConfig::load(root), env.map(str::to_string))
     }
 
-    #[test]
-    fn the_environment_key_comes_before_the_project_file() {
-        let loaded = key_from(Some(" from-env ".to_string()), Some("from-file"), || false).unwrap();
-        assert_eq!(loaded.key.0, "from-env");
-        let loaded = key_from(Some("  ".to_string()), Some(" from-file "), || false).unwrap();
-        assert_eq!(loaded.key.0, "from-file");
-        let loaded = key_from(None, Some("from-file"), || false).unwrap();
-        assert_eq!(loaded.key.0, "from-file");
-        assert!(loaded.warning.is_none());
-    }
-
-    #[test]
-    fn without_a_key_anywhere_the_filter_has_no_key() {
-        let never = || panic!("without a key in the file, git is not asked");
-        assert_eq!(key_from(None, None, never).unwrap_err(), FilterError::MissingKey);
-        assert_eq!(key_from(Some(" ".to_string()), Some("  "), never).unwrap_err(), FilterError::MissingKey);
-        let loaded = key_from(Some("from-env".to_string()), None, never).unwrap();
-        assert!(loaded.warning.is_none());
-    }
-
     /// A chave em `jev.key` do `mustard.json` vai ao serviço, no cabeçalho, e
     /// liga o corte: as notas voltam e o que passa fica.
     #[test]
@@ -1799,6 +1750,64 @@ mod tests {
         let with_env = project_key(project.path(), Some("from-env")).unwrap();
         assert_eq!(with_env.key.0, "from-env");
         assert_eq!(with_env.warning, Some(FilterError::KeyInGit));
+    }
+
+    /// A busca e a peça da prova dão o mesmo veredito: para cada projeto, o
+    /// filtro que a busca monta existe quando a peça do filtro diz ligada, e
+    /// não existe quando ela diz ainda não ligada. Os casos cobrem a chave só
+    /// no ambiente, só em `jev.key`, em branco, o `search.filter` em `none`, em
+    /// `jev` e inválido, e o `mustard.json` que o git guarda.
+    #[test]
+    fn the_search_and_the_filter_piece_give_the_same_verdict_for_the_same_projects() {
+        use mustard_core::domain::normalize::Languages;
+        use mustard_core::io::project_map::{model_path, save_at};
+        use mustard_core::io::search_pieces;
+        use mustard_core::platform::i18n::Locale;
+
+        // (nome, mustard.json, git guarda o arquivo, ambiente, ligado?)
+        let cases: Vec<(&str, Value, bool, Option<&str>, bool)> = vec![
+            ("no key anywhere", json!({}), false, None, false),
+            ("environment only", json!({}), false, Some("from-env"), true),
+            ("jev.key only", json!({"jev": {"key": "from-file"}}), false, None, true),
+            ("blank jev.key", json!({"jev": {"key": "  "}}), false, None, false),
+            ("blank environment with jev.key", json!({"jev": {"key": "from-file"}}), false, Some(" "), true),
+            ("none with jev.key", json!({"search": {"filter": "none"}, "jev": {"key": "from-file"}}), false, None, false),
+            ("none with the environment", json!({"search": {"filter": "none"}}), false, Some("from-env"), false),
+            ("jev with jev.key", json!({"search": {"filter": "jev"}, "jev": {"key": "from-file"}}), false, None, true),
+            ("invalid setting with jev.key", json!({"search": {"filter": "other"}, "jev": {"key": "from-file"}}), false, None, false),
+            ("jev.key in a file git tracks", json!({"jev": {"key": "from-file"}}), true, None, false),
+            ("jev.key in a file git tracks with the environment", json!({"jev": {"key": "from-file"}}), true, Some("from-env"), true),
+        ];
+        for (name, config, tracked, env, expected) in cases {
+            let root = tempfile::tempdir().unwrap();
+            let model = model_path(root.path());
+            let map = json!({"modules": [{"path": "src/a.rs", "declarations": [
+                {"kind": "function", "name": "a", "line": 1, "end_line": 3, "signature": "fn a()"}]}]});
+            save_at(&model, &map, "scan 1", &Languages::new(["en-US"])).unwrap();
+            std::fs::write(root.path().join("mustard.json"), config.to_string()).unwrap();
+            if tracked {
+                assert!(mustard_core::platform::git::run(root.path(), &["init", "-q"]).ok);
+                assert!(mustard_core::platform::git::run(root.path(), &["add", "mustard.json"]).ok);
+            }
+            let env = env.map(str::to_string);
+
+            let loaded = ProjectConfig::load(root.path());
+            let mut warnings = Vec::new();
+            let searched = crate::shared::search_door::chosen_filter(
+                root.path(),
+                None,
+                Locale::PtBr,
+                &loaded,
+                &|at, config| crate::shared::search_door::assembled(at, config, env.clone()),
+                &mut warnings,
+            );
+            let pieces = search_pieces::of_map_with_env(&model, env.clone()).unwrap();
+            let piece = pieces.iter().find(|piece| piece.name == "filtro-jev").expect("the list has the filter");
+
+            assert_eq!(searched.is_some(), expected, "the search: {name}");
+            assert_eq!(piece.on, expected, "the piece: {name}: {}", piece.why);
+            assert_eq!(searched.is_some(), piece.on, "the search and the piece agree: {name}");
+        }
     }
 
     // -- o serviço de verdade ----------------------------------------------------

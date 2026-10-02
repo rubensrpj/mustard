@@ -13,7 +13,8 @@
 //!   (`word_vectors`);
 //! - **o sentido pelo vetor**: a ordem dos vetores de todas as declarações. A
 //!   resposta ao Claude lê só as palavras, e essa ordem entra na lista que
-//!   vai ao filtro, que a medida sem filtro não tem;
+//!   vai ao filtro; por isso só está ligada com o filtro ligado e com os
+//!   vetores das funções no mapa;
 //! - **as duas línguas**: o índice foi feito em duas línguas, a do código e a
 //!   do texto;
 //! - **o histórico do git**: a história de cada declaração que o scan lê do
@@ -24,7 +25,13 @@
 //!   a das sessões não a tem enquanto a leitura não chega. A ordem por arquivo
 //!   mexido há pouco não é peça: ela não entra na busca;
 //! - **a conferência dos primeiros candidatos**: reordena os primeiros pela
-//!   cobertura das palavras raras da pergunta; a busca da resposta sempre a faz.
+//!   cobertura das palavras raras da pergunta; a busca da resposta sempre a faz;
+//! - **o filtro do Jev**: o serviço que julga os candidatos que o mapa achou.
+//!   Liga pela regra da própria busca ([`crate::io::jev_gate::filter_on`]): o
+//!   `mustard.json` do projeto do mapa não põe `search.filter` em `none` e há
+//!   chave válida, em [`KEY_ENV`] no ambiente de quem mede ou, sem ela, em
+//!   `jev.key`; a chave num `mustard.json` que o git guarda não vale. Sem
+//!   isso a busca responde sem ele.
 //!
 //! A lista vai na prova de cada medida ([`crate::io::measure_proof`]): quem
 //! mostra um número ao usuário a mostra junto, e cada peça aparece como ligada
@@ -35,9 +42,12 @@ use std::path::Path;
 use rusqlite::Connection;
 use serde_json::{json, Value};
 
+use crate::domain::config::ProjectConfig;
+use crate::io::jev_gate::{self, KEY_ENV};
+use crate::io::map_check::root_of;
 use crate::io::map_db::table_exists;
 use crate::io::project_map::open_existing;
-use crate::platform::error::Result;
+use crate::platform::error::{Error, Result};
 
 /// Uma peça da busca e o estado dela.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,19 +87,37 @@ pub fn line(label: &str, pieces: &[Piece]) -> String {
     format!("PECAS {label}: {}", states.join(" "))
 }
 
-/// As peças da busca e o estado de cada uma no mapa gravado em `model`.
+/// As peças da busca e o estado de cada uma no mapa gravado em `model`, com o
+/// filtro do Jev como a busca do projeto do mapa o liga: a chave em
+/// [`KEY_ENV`] no ambiente ou em `jev.key`, e `search.filter` fora de `none`.
 ///
 /// # Errors
-/// O mapa que não abre ou cuja leitura falha.
+/// O mapa que não abre, que não mora no lugar do mapa de um projeto ou cuja
+/// leitura falha.
 pub fn of_map(model: &Path) -> Result<Vec<Piece>> {
-    let db = open_existing(model).map_err(|refusal| {
-        crate::platform::error::Error::check_failed(format!("o mapa {} não abriu ({})", model.display(), refusal.reason()))
-    })?;
-    of_connection(db.conn())
+    of_map_with_env(model, std::env::var(KEY_ENV).ok())
 }
 
-/// As peças no banco aberto `conn`.
-fn of_connection(conn: &Connection) -> Result<Vec<Piece>> {
+/// As peças do mapa `model` como em [`of_map`], com `env` no lugar do valor de
+/// [`KEY_ENV`]: o teste não depende do ambiente de quem o roda.
+///
+/// # Errors
+/// Os de [`of_map`].
+pub fn of_map_with_env(model: &Path, env: Option<String>) -> Result<Vec<Piece>> {
+    let root = root_of(model).ok_or_else(|| {
+        Error::check_failed(format!(
+            "o mapa {} não mora no lugar do mapa de um projeto: sem o mustard.json dele, não há como dizer se o filtro vale",
+            model.display()
+        ))
+    })?;
+    let db = open_existing(model)
+        .map_err(|refusal| Error::check_failed(format!("o mapa {} não abriu ({})", model.display(), refusal.reason())))?;
+    let filter = jev_gate::filter_on(root, &ProjectConfig::load(root), env);
+    of_connection(db.conn(), filter)
+}
+
+/// As peças no banco aberto `conn`; `filter` diz se a busca chama o Jev.
+fn of_connection(conn: &Connection, filter: bool) -> Result<Vec<Piece>> {
     let filled = |table: &str| -> Result<bool> {
         if !table_exists(conn, table)? {
             return Ok(false);
@@ -119,8 +147,12 @@ fn of_connection(conn: &Connection) -> Result<Vec<Piece>> {
         ),
         Piece::new(
             "sentido-pelo-vetor",
-            false,
-            "a resposta lê só as palavras; a ordem dos vetores vai à lista do filtro, que a medida não tem",
+            filter && compiled,
+            match (filter, compiled) {
+                (true, true) => "a ordem dos vetores das declarações entra na lista que vai ao filtro",
+                (true, false) => "o filtro está ligado, mas o mapa não tem o vetor das funções: não há ordem pelo sentido para a lista",
+                (false, _) => "a resposta lê só as palavras; a ordem dos vetores vai à lista do filtro, e sem o filtro ela não entra",
+            },
         ),
         Piece::new(
             "duas-linguas",
@@ -138,6 +170,15 @@ fn of_connection(conn: &Connection) -> Result<Vec<Piece>> {
             },
         ),
         Piece::new("conferencia", true, "os primeiros candidatos passam pela conferência das palavras raras"),
+        Piece::new(
+            "filtro-jev",
+            filter,
+            if filter {
+                "a chave do Jev está no ambiente: os candidatos passam pelo filtro"
+            } else {
+                "sem a chave do Jev no ambiente a busca responde sem o filtro"
+            },
+        ),
     ])
 }
 
@@ -162,13 +203,13 @@ mod tests {
         pieces.iter().map(|piece| (piece.name, piece.on)).collect()
     }
 
-    /// Um mapa sem vetores, sem commits e feito numa língua só tem ligadas
-    /// só a raiz e a conferência: o resto aparece como ainda não ligado, e o
-    /// sentido pelo vetor, que a resposta não lê, nunca aparece ligado.
+    /// Um mapa sem vetores, sem commits e feito numa língua só, medido sem a
+    /// chave do Jev, tem ligada só a conferência: o resto aparece como ainda
+    /// não ligado, o sentido pelo vetor e o filtro inclusive.
     #[test]
-    fn a_map_without_vectors_commits_or_a_second_language_shows_only_the_check_as_on() {
+    fn a_map_without_vectors_commits_a_second_language_or_the_key_shows_only_the_check_as_on() {
         let (_dir, model) = saved(&["en-US"]);
-        let got = of_connection(open_existing(&model).unwrap().conn()).unwrap();
+        let got = of_connection(open_existing(&model).unwrap().conn(), false).unwrap();
         assert_eq!(
             states(&got),
             [
@@ -178,6 +219,7 @@ mod tests {
                 ("duas-linguas", false),
                 ("historico", false),
                 ("conferencia", true),
+                ("filtro-jev", false),
             ]
         );
     }
@@ -204,7 +246,7 @@ mod tests {
             params![],
         )
         .unwrap();
-        let got = of_connection(conn).unwrap();
+        let got = of_connection(conn, false).unwrap();
         assert_eq!(
             states(&got),
             [
@@ -214,6 +256,7 @@ mod tests {
                 ("duas-linguas", true),
                 ("historico", false),
                 ("conferencia", true),
+                ("filtro-jev", false),
             ],
             "the commits of the files alone do not turn the history on"
         );
@@ -223,7 +266,7 @@ mod tests {
              INSERT INTO lineage_decls(path, name, nth, commits, comments) VALUES ('src/a.rs', 'a', 0, '[]', NULL);",
         )
         .unwrap();
-        let read = of_connection(conn).unwrap();
+        let read = of_connection(conn, false).unwrap();
         assert!(read[4].on && read[4].why.contains("de cada declaração") && !read[4].why.contains("não foi lida"), "{}", read[4].why);
     }
 
@@ -239,7 +282,7 @@ mod tests {
         let db = open_existing(&model).unwrap();
         let conn = db.conn();
         let history = |conn: &Connection| {
-            let pieces = of_connection(conn).unwrap();
+            let pieces = of_connection(conn, false).unwrap();
             (line("m", &pieces), pieces[4].on, pieces[4].why.clone())
         };
 
@@ -280,10 +323,112 @@ mod tests {
         let got = of_map(&model).unwrap();
         let line = line("mapa", &got);
         assert!(line.starts_with("PECAS mapa: compilado=ainda-nao-ligada raiz-e-sinonimos=ainda-nao-ligada"), "{line}");
-        assert!(line.ends_with("conferencia=ligada"), "{line}");
+        assert!(line.contains(" conferencia=ligada"), "{line}");
         let json = got[0].to_json();
         assert_eq!((json["name"].as_str(), json["state"].as_str(), json["on"].as_bool()), (Some("compilado"), Some("ainda não ligada"), Some(false)));
         assert!(!json["why"].as_str().unwrap().is_empty());
+    }
+
+    /// A chave do Jev no ambiente liga o filtro, e o sentido pelo vetor segue o
+    /// filtro: sem a chave, as duas peças aparecem como ainda não ligadas, e a
+    /// linha da prova diz `filtro-jev=ainda-nao-ligada`; a chave em branco vale
+    /// como ausente. Com a chave e o mapa sem os vetores das funções, o filtro
+    /// liga e o sentido pelo vetor não, porque a ordem dele não existe.
+    #[test]
+    fn the_jev_filter_turns_on_with_the_key_and_the_meaning_order_follows_it() {
+        let (_dir, model) = saved(&["en-US"]);
+        let named = |pieces: &[Piece], name: &str| pieces.iter().find(|piece| piece.name == name).map(|piece| piece.on);
+
+        let no_vectors = of_map_with_env(&model, Some("key".to_string())).unwrap();
+        assert_eq!(named(&no_vectors, "filtro-jev"), Some(true), "the key turns the filter on");
+        assert_eq!(named(&no_vectors, "sentido-pelo-vetor"), Some(false), "no vectors, no order by meaning");
+        assert!(no_vectors[2].why.contains("não tem o vetor das funções"), "{}", no_vectors[2].why);
+
+        {
+            let db = open_existing(&model).unwrap();
+            db.conn()
+                .execute_batch(
+                    "CREATE TABLE decl_vectors(file TEXT NOT NULL, name TEXT NOT NULL, nth INTEGER NOT NULL, hash INTEGER NOT NULL, vector BLOB NOT NULL);
+                     INSERT INTO decl_vectors(file, name, nth, hash, vector) VALUES ('src/a.rs', 'a', 0, 1, x'00');",
+                )
+                .unwrap();
+        }
+        let with = of_map_with_env(&model, Some("key".to_string())).unwrap();
+        assert_eq!((named(&with, "filtro-jev"), named(&with, "sentido-pelo-vetor")), (Some(true), Some(true)));
+        assert!(line("m", &with).contains("sentido-pelo-vetor=ligada") && line("m", &with).ends_with("filtro-jev=ligada"), "{}", line("m", &with));
+
+        for absent in [None, Some(""), Some("  ")] {
+            let without = of_map_with_env(&model, absent.map(str::to_string)).unwrap();
+            assert_eq!((named(&without, "filtro-jev"), named(&without, "sentido-pelo-vetor")), (Some(false), Some(false)), "{absent:?}");
+            assert!(line("m", &without).ends_with("filtro-jev=ainda-nao-ligada"), "{}", line("m", &without));
+        }
+    }
+
+    /// A peça do filtro lê a chave do ambiente do processo, pela variável que
+    /// o Jev lê: o estado dela é o de a variável ter valor.
+    #[test]
+    fn the_filter_piece_of_a_map_reads_the_key_variable_of_the_process() {
+        let (_dir, model) = saved(&["en-US"]);
+        let in_environment = std::env::var(KEY_ENV).is_ok_and(|value| !value.trim().is_empty());
+        let got = of_map(&model).unwrap();
+        let filter = got.iter().find(|piece| piece.name == "filtro-jev").expect("the list has the filter");
+        assert_eq!(filter.on, in_environment, "{}", filter.why);
+    }
+
+    /// Escreve o `mustard.json` do projeto do mapa `dir`.
+    fn write_config(dir: &TempDir, config: &Value) {
+        std::fs::write(dir.path().join("mustard.json"), config.to_string()).unwrap();
+    }
+
+    /// O estado da peça do filtro no mapa `model`, com `env` no lugar da
+    /// variável de ambiente.
+    fn filter_state(model: &Path, env: Option<&str>) -> bool {
+        let pieces = of_map_with_env(model, env.map(str::to_string)).unwrap();
+        pieces.iter().find(|piece| piece.name == "filtro-jev").expect("the list has the filter").on
+    }
+
+    /// A peça do filtro liga pela regra da busca, com o `mustard.json` do
+    /// projeto do mapa: a chave só em `jev.key` liga; `search.filter` igual a
+    /// `none` desliga mesmo com a chave, do arquivo ou do ambiente; sem chave
+    /// em lugar nenhum, desligada; a chave do arquivo que o git guarda não
+    /// vale, e a do ambiente vale do mesmo jeito.
+    #[test]
+    fn the_filter_piece_follows_the_rule_of_the_search_with_the_project_file() {
+        let (dir, model) = saved(&["en-US"]);
+        assert!(!filter_state(&model, None), "no key anywhere");
+
+        write_config(&dir, &json!({"jev": {"key": "from-file"}}));
+        assert!(filter_state(&model, None), "the key only in jev.key turns the piece on");
+        let pieces = of_map_with_env(&model, None).unwrap();
+        assert!(line("m", &pieces).ends_with("filtro-jev=ligada"), "{}", line("m", &pieces));
+
+        write_config(&dir, &json!({"search": {"filter": "none"}, "jev": {"key": "from-file"}}));
+        assert!(!filter_state(&model, None), "none turns the piece off with the key of the file");
+        assert!(!filter_state(&model, Some("from-env")), "none turns the piece off with the key of the environment");
+        let pieces = of_map_with_env(&model, Some("from-env".to_string())).unwrap();
+        assert!(line("m", &pieces).ends_with("filtro-jev=ainda-nao-ligada"), "{}", line("m", &pieces));
+
+        write_config(&dir, &json!({"search": {"filter": "jev"}, "jev": {"key": "  "}}));
+        assert!(!filter_state(&model, None), "a blank key is no key");
+        assert!(filter_state(&model, Some("from-env")), "the key of the environment turns it on");
+
+        assert!(crate::platform::git::run(dir.path(), &["init", "-q"]).ok);
+        write_config(&dir, &json!({"jev": {"key": "from-file"}}));
+        assert!(filter_state(&model, None), "out of git, the key of the file counts");
+        assert!(crate::platform::git::run(dir.path(), &["add", "mustard.json"]).ok);
+        assert!(!filter_state(&model, None), "git tracks the file: its key does not turn the piece on");
+        assert!(filter_state(&model, Some("from-env")), "the key of the environment still turns it on");
+    }
+
+    /// Um mapa fora do lugar do mapa de um projeto não diz o estado do filtro:
+    /// sem o `mustard.json` dele, a peça recusa em vez de adivinhar.
+    #[test]
+    fn a_map_outside_the_place_of_a_project_map_is_refused() {
+        let (dir, model) = saved(&["en-US"]);
+        let moved = dir.path().join("elsewhere.db");
+        std::fs::copy(&model, &moved).unwrap();
+        let error = of_map_with_env(&moved, Some("key".to_string())).unwrap_err().to_string();
+        assert!(error.contains("não mora no lugar do mapa de um projeto"), "{error}");
     }
 
     /// Um mapa que falta recusa em vez de listar peças que não conferiu.

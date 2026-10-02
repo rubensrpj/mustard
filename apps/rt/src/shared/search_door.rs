@@ -34,6 +34,7 @@ use mustard_core::domain::map_filter::{
 use mustard_core::domain::map_select::{select, Source};
 use mustard_core::domain::normalize::Languages;
 use mustard_core::domain::project_map::{self, MapRefusal};
+use mustard_core::io::jev_gate::{self, KEY_ENV};
 use mustard_core::io::map_search;
 use mustard_core::domain::triage::Mark;
 use mustard_core::io::map_triage::Triaged;
@@ -209,7 +210,13 @@ pub(crate) type Assemble<'a> = dyn Fn(&Path, &ProjectConfig) -> Result<Assembled
 /// A montagem de verdade: o Jev, com a chave do ambiente ou do
 /// `mustard.json` do projeto.
 pub(crate) fn jev(root: &Path, config: &ProjectConfig) -> Result<Assembled, FilterError> {
-    let loaded = crate::shared::jev::load_key(root, config)?;
+    assembled(root, config, std::env::var(KEY_ENV).ok())
+}
+
+/// A montagem do Jev como em [`jev`], com `env` no lugar do valor de
+/// [`KEY_ENV`]: o teste não depende do ambiente de quem o roda.
+pub(crate) fn assembled(root: &Path, config: &ProjectConfig, env: Option<String>) -> Result<Assembled, FilterError> {
+    let loaded = crate::shared::jev::key_in(root, config, env)?;
     Ok(Assembled {
         name: "jev",
         filter: Box::new(crate::shared::jev::JevFilter::new(loaded.key)),
@@ -251,21 +258,20 @@ pub(crate) fn chosen_filter(
     assemble: &Assemble<'_>,
     warnings: &mut Vec<String>,
 ) -> Option<Assembled> {
-    let assembled = match config.search_filter() {
-        FilterSetting::Off => None,
-        FilterSetting::Invalid => {
-            if first_warning(root, session, "search.filter") {
-                warnings.push(translate("map.search.bad_filter", lang).to_string());
-            }
-            None
-        }
-        FilterSetting::Absent | FilterSetting::Jev => match assemble(root, config) {
+    let setting = config.search_filter();
+    if setting == FilterSetting::Invalid && first_warning(root, session, "search.filter") {
+        warnings.push(translate("map.search.bad_filter", lang).to_string());
+    }
+    let assembled = if jev_gate::setting_allows(setting) {
+        match assemble(root, config) {
             Ok(assembled) => Some(assembled),
             Err(error) => {
                 key_warning(root, session, &error, lang, warnings);
                 None
             }
-        },
+        }
+    } else {
+        None
     };
     if let Some(error) = assembled.as_ref().and_then(|assembled| assembled.warning.as_ref()) {
         key_warning(root, session, error, lang, warnings);
