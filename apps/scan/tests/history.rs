@@ -91,7 +91,7 @@ fn titled(list: &[(&str, Option<u64>)]) -> Vec<(String, Option<u64>)> {
 
 #[test]
 fn a_commit_only_on_the_work_branch_stays_out_until_the_merge_brings_it_with_the_number() {
-    let temp = project("scan-historia-merge-");
+    let temp = project("scan-history-merge-");
     let dir = temp.path();
     declare_base(dir, "main");
     git(dir, &["checkout", "-q", "-b", "trabalho"]);
@@ -119,7 +119,7 @@ fn a_commit_only_on_the_work_branch_stays_out_until_the_merge_brings_it_with_the
 
 #[test]
 fn the_star_of_the_flow_picks_the_branch_the_history_comes_from() {
-    let temp = project("scan-historia-flow-");
+    let temp = project("scan-history-flow-");
     let dir = temp.path();
     git(dir, &["checkout", "-q", "-b", "develop"]);
     commit(dir, "src/b.rs", "pub fn beta() {}\n", "só no develop");
@@ -136,7 +136,7 @@ fn the_star_of_the_flow_picks_the_branch_the_history_comes_from() {
 
 #[test]
 fn the_history_comes_from_the_server_tip_the_clone_has_before_the_local_branch() {
-    let temp = project("scan-historia-origin-");
+    let temp = project("scan-history-origin-");
     let dir = temp.path();
     declare_base(dir, "main");
     git(dir, &["checkout", "-q", "-b", "trabalho"]);
@@ -167,7 +167,7 @@ fn the_history_comes_from_the_server_tip_the_clone_has_before_the_local_branch()
 
 #[test]
 fn a_rewritten_base_reads_the_window_again() {
-    let temp = project("scan-historia-reescrita-");
+    let temp = project("scan-history-rewrite-");
     let dir = temp.path();
     declare_base(dir, "main");
     commit(dir, "src/b.rs", "pub fn beta() {}\n", "vai sumir");
@@ -179,7 +179,7 @@ fn a_rewritten_base_reads_the_window_again() {
 
 #[test]
 fn a_squash_title_ending_in_the_number_keeps_it() {
-    let temp = project("scan-historia-squash-");
+    let temp = project("scan-history-squash-");
     let dir = temp.path();
     declare_base(dir, "main");
     commit(dir, "src/b.rs", "pub fn beta() {}\n", "junta a busca (#12)");
@@ -192,7 +192,7 @@ fn a_squash_title_ending_in_the_number_keeps_it() {
 
 #[test]
 fn a_project_without_a_flow_takes_the_branch_the_checkout_is_on() {
-    let temp = project("scan-historia-sem-fluxo-");
+    let temp = project("scan-history-no-flow-");
     let dir = temp.path();
     commit(dir, "src/b.rs", "pub fn beta() {}\n", "segundo");
     let map = scan(dir);
@@ -204,7 +204,7 @@ fn a_project_without_a_flow_takes_the_branch_the_checkout_is_on() {
 
 #[test]
 fn a_project_without_a_flow_takes_the_default_branch_of_the_server_before_the_checkout() {
-    let temp = project("scan-historia-servidor-");
+    let temp = project("scan-history-server-");
     let dir = temp.path();
     git(dir, &["checkout", "-q", "-b", "develop"]);
     commit(dir, "src/b.rs", "pub fn beta() {}\n", "entrou no develop");
@@ -226,7 +226,7 @@ fn a_project_without_a_flow_takes_the_default_branch_of_the_server_before_the_ch
 
 #[test]
 fn a_project_with_no_branch_to_read_scans_and_says_there_is_no_base() {
-    let temp = project("scan-historia-sem-base-");
+    let temp = project("scan-history-no-base-");
     let dir = temp.path();
     commit(dir, "src/b.rs", "pub fn beta() {}\n", "segundo");
     // O checkout solto de branch, sem servidor: nenhuma branch a ler.
@@ -320,7 +320,7 @@ fn changes_at(lineage: &FileLineage, name: &str, nth: u32) -> Vec<(String, bool)
 
 #[test]
 fn a_function_changed_twice_lists_both_newest_first_and_the_one_below_keeps_its_own() {
-    let temp = project("scan-linhagem-duas-");
+    let temp = project("scan-lineage-two-");
     let dir = temp.path();
     declare_base(dir, "main");
     let two = |top: u32| format!("pub fn top() -> u32 {{\n    {top}\n}}\n\npub fn bottom() -> u32 {{\n    10\n}}\n");
@@ -339,7 +339,7 @@ fn a_function_changed_twice_lists_both_newest_first_and_the_one_below_keeps_its_
 /// igual acima dele não perde o próprio passado, e o novo não herda o do outro.
 #[test]
 fn a_declaration_keeps_its_own_history_when_another_of_the_same_name_is_added_above_it() {
-    let temp = project("scan-linhagem-mesmo-nome-acima-");
+    let temp = project("scan-lineage-same-name-above-");
     let dir = temp.path();
     declare_base(dir, "main");
     let old = |width: &str| format!("pub struct Old {{\n    pub id: {width},\n}}\n");
@@ -364,7 +364,7 @@ fn a_declaration_keeps_its_own_history_when_another_of_the_same_name_is_added_ab
 /// saiu nem o commit que a tirou.
 #[test]
 fn a_declaration_keeps_its_own_history_when_another_of_the_same_name_above_it_is_removed() {
-    let temp = project("scan-linhagem-mesmo-nome-tirado-");
+    let temp = project("scan-lineage-same-name-removed-");
     let dir = temp.path();
     declare_base(dir, "main");
     let old = "pub struct Old {\n    pub id: u32,\n}\n";
@@ -383,7 +383,7 @@ fn a_declaration_keeps_its_own_history_when_another_of_the_same_name_above_it_is
 /// tipo, que junta as linhas dos dois commits, lista os dois.
 #[test]
 fn a_declaration_made_of_a_line_the_diff_calls_unchanged_keeps_the_commit_that_wrote_the_line() {
-    let temp = project("scan-linhagem-nasce-de-linha-igual-");
+    let temp = project("scan-lineage-born-of-unchanged-line-");
     let dir = temp.path();
     declare_base(dir, "main");
     commit(dir, "src/pedido.rs", "pub fn one(\n    root: &str,\n    lang: u32,\n) -> u32 {\n    lang\n}\n", "a função recebe os dois");
@@ -403,7 +403,7 @@ fn a_declaration_made_of_a_line_the_diff_calls_unchanged_keeps_the_commit_that_w
 
 #[test]
 fn a_function_moved_to_another_file_keeps_the_commit_from_before_the_move() {
-    let temp = project("scan-linhagem-movida-");
+    let temp = project("scan-lineage-moved-");
     let dir = temp.path();
     declare_base(dir, "main");
     let rest = "pub fn outra() -> u32 {\n    let a = 1;\n    let b = 2;\n    let c = 3;\n    a + b + c\n}\n";
@@ -427,7 +427,7 @@ fn a_function_moved_to_another_file_keeps_the_commit_from_before_the_move() {
 /// última, e a lista guarda o número que seguiu.
 #[test]
 fn the_moves_number_limits_how_many_file_moves_the_history_follows() {
-    let temp = project("scan-linhagem-mudancas-");
+    let temp = project("scan-lineage-moves-");
     let dir = temp.path();
     declare_base(dir, "main");
     let rest = "pub fn outra() -> u32 {\n    let a = 1;\n    let b = 2;\n    let c = 3;\n    a + b + c\n}\n";
@@ -453,7 +453,7 @@ fn the_moves_number_limits_how_many_file_moves_the_history_follows() {
 
 #[test]
 fn a_function_renamed_in_the_same_file_with_half_its_lines_keeps_the_history() {
-    let temp = project("scan-linhagem-renomeada-");
+    let temp = project("scan-lineage-renamed-");
     let dir = temp.path();
     declare_base(dir, "main");
     commit(
@@ -476,7 +476,7 @@ fn a_function_renamed_in_the_same_file_with_half_its_lines_keeps_the_history() {
 
 #[test]
 fn a_renamed_file_takes_its_functions_along() {
-    let temp = project("scan-linhagem-arquivo-");
+    let temp = project("scan-lineage-file-");
     let dir = temp.path();
     declare_base(dir, "main");
     let join_source = |n: u32| format!("pub fn junta(a: u32, b: u32) -> u32 {{\n    let soma = a + b;\n    soma + {n}\n}}\n");
@@ -492,7 +492,7 @@ fn a_renamed_file_takes_its_functions_along() {
 
 #[test]
 fn a_whitespace_commit_and_an_ignored_commit_are_marked_format_only() {
-    let temp = project("scan-linhagem-forma-");
+    let temp = project("scan-lineage-format-");
     let dir = temp.path();
     declare_base(dir, "main");
     commit(dir, "src/forma.rs", "pub fn calcula(x: u32) -> u32 {\n    x + 1\n}\n", "cria o calcula");
@@ -517,7 +517,7 @@ fn a_whitespace_commit_and_an_ignored_commit_are_marked_format_only() {
 
 #[test]
 fn a_file_older_than_the_window_gets_its_old_history_with_the_number_and_the_others_stay() {
-    let temp = tempfile::Builder::new().prefix("scan-linhagem-antiga-").tempdir().unwrap();
+    let temp = tempfile::Builder::new().prefix("scan-lineage-old-").tempdir().unwrap();
     let dir = temp.path();
     git(dir, &["init", "-q", "-b", "main"]);
     let exclude = mustard_core::footprint_rules().join("\n") + "\n";
@@ -568,7 +568,7 @@ fn a_file_older_than_the_window_gets_its_old_history_with_the_number_and_the_oth
 fn each_commit_of_a_file_history_keeps_the_files_it_created_and_changed() {
     use mustard_core::domain::project_map::CommitFiles;
 
-    let temp = project("scan-linhagem-arquivos-");
+    let temp = project("scan-lineage-files-");
     let dir = temp.path();
     declare_base(dir, "main");
     write(dir, "src/registro.rs", "pub mod pagar;\n");
@@ -597,7 +597,7 @@ fn each_commit_of_a_file_history_keeps_the_files_it_created_and_changed() {
 
 #[test]
 fn a_change_in_the_comment_right_above_a_function_belongs_to_it() {
-    let temp = project("scan-linhagem-comentario-");
+    let temp = project("scan-lineage-comment-");
     let dir = temp.path();
     declare_base(dir, "main");
     let body = |doc: &str| format!("pub fn antes() {{}}\n\n/// {doc}\npub fn sum() -> u32 {{\n    2\n}}\n");
@@ -622,7 +622,7 @@ fn a_change_in_the_comment_right_above_a_function_belongs_to_it() {
 /// linha da variante.
 #[test]
 fn every_declaration_written_on_the_same_line_gets_the_commit_that_touched_the_line() {
-    let temp = project("scan-linhagem-mesma-linha-");
+    let temp = project("scan-lineage-same-line-");
     let dir = temp.path();
     declare_base(dir, "main");
     let body = |reason: &str| {
@@ -663,7 +663,7 @@ fn every_declaration_written_on_the_same_line_gets_the_commit_that_touched_the_l
 fn a_review_comment_joins_the_function_that_held_its_line_in_the_commented_commit() {
     use mustard_core::domain::project_map::{PullComment, PullText};
 
-    let temp = project("scan-linhagem-revisao-");
+    let temp = project("scan-lineage-review-");
     let dir = temp.path();
     declare_base(dir, "main");
     let two = "pub fn top() -> u32 {\n    1\n}\n\npub fn bottom() -> u32 {\n    10\n}\n";
@@ -722,7 +722,7 @@ fn stored_lineage(dir: &Path, file: &str) -> Option<FileLineage> {
 
 #[test]
 fn a_project_without_a_declared_base_gets_the_history_of_each_function() {
-    let temp = project("scan-historia-toda-sem-base-");
+    let temp = project("scan-history-whole-no-base-");
     let dir = temp.path();
     commit(dir, "src/b.rs", "pub fn beta() {}\n", "cria o beta");
     commit(dir, "src/b.rs", "pub fn beta() { 1 }\n", "muda o beta");
@@ -743,7 +743,7 @@ fn a_project_without_a_declared_base_gets_the_history_of_each_function() {
 
 #[test]
 fn a_project_with_no_branch_to_read_gets_no_history_from_the_whole_reading() {
-    let temp = project("scan-historia-toda-solta-");
+    let temp = project("scan-history-whole-loose-");
     let dir = temp.path();
     git(dir, &["checkout", "-q", "--detach"]);
     scan(dir);
@@ -772,7 +772,7 @@ fn stored_vector(dir: &Path, name: &str) -> Vec<i8> {
 fn the_whole_reading_redoes_the_vector_of_the_declarations_whose_history_it_brought() {
     use mustard_core::io::map_meaning::{cosine, quantized_vector};
 
-    let temp = project("scan-historia-vetor-");
+    let temp = project("scan-history-vector-");
     let dir = temp.path();
     declare_base(dir, "main");
     let rest = "pub fn outra() -> u32 {\n    let a = 1;\n    let b = 2;\n    let c = 3;\n    a + b + c\n}\n";
@@ -806,7 +806,7 @@ fn the_whole_reading_redoes_the_vector_of_the_declarations_whose_history_it_brou
 
 #[test]
 fn the_whole_reading_does_not_read_again_a_file_whose_history_is_still_valid() {
-    let temp = project("scan-historia-toda-marca-");
+    let temp = project("scan-history-whole-mark-");
     let dir = temp.path();
     commit(dir, "src/b.rs", "pub fn beta() {}\n", "cria o beta");
     commit(dir, "src/c.rs", "pub fn gama() {}\n", "cria o gama");
@@ -839,7 +839,7 @@ fn the_whole_reading_does_not_read_again_a_file_whose_history_is_still_valid() {
 /// começo da história daria.
 #[test]
 fn the_second_reading_reads_only_the_commits_that_came_after_the_first() {
-    let temp = project("scan-historia-toda-incremental-");
+    let temp = project("scan-history-whole-incremental-");
     let dir = temp.path();
     commit(dir, "src/b.rs", "pub fn beta() {}\n", "cria o beta");
     commit(dir, "src/c.rs", "pub fn gama(a: u32) -> u32 {\n    a + 1\n}\n", "cria o gama");
@@ -870,7 +870,7 @@ fn the_second_reading_reads_only_the_commits_that_came_after_the_first() {
 /// soma o que veio depois da sua, e nenhum lê o projeto desde o começo.
 #[test]
 fn files_read_at_different_moments_are_each_brought_up_to_date_from_their_own_point() {
-    let temp = project("scan-historia-toda-pontas-");
+    let temp = project("scan-history-whole-tips-");
     let dir = temp.path();
     commit(dir, "src/b.rs", "pub fn beta() {}\n", "cria o beta");
     commit(dir, "src/c.rs", "pub fn gama() {}\n", "cria o gama");
@@ -900,7 +900,7 @@ fn files_read_at_different_moments_are_each_brought_up_to_date_from_their_own_po
 /// diz que parou neles; a que cabe inteira no limite não diz.
 #[test]
 fn a_first_reading_of_a_long_history_stops_at_the_newest_commits_and_says_so() {
-    let temp = project("scan-historia-toda-limite-");
+    let temp = project("scan-history-whole-limit-");
     let dir = temp.path();
     commit(dir, "src/b.rs", "pub fn beta() {}\n", "cria o beta");
     commit(dir, "src/b.rs", "pub fn beta() { 2 }\n", "muda o beta");
@@ -928,7 +928,7 @@ fn a_first_reading_of_a_long_history_stops_at_the_newest_commits_and_says_so() {
 /// está mais nela: soma-se nada ao que ficou, lê-se a história de novo.
 #[test]
 fn a_base_rewritten_after_the_first_reading_is_read_from_its_first_commit_again() {
-    let temp = project("scan-historia-toda-reescrita-");
+    let temp = project("scan-history-whole-rewrite-");
     let dir = temp.path();
     commit(dir, "src/b.rs", "pub fn beta() {}\n", "cria o beta");
     commit(dir, "src/c.rs", "pub fn gama() {}\n", "cria o gama");
@@ -952,7 +952,7 @@ fn a_base_rewritten_after_the_first_reading_is_read_from_its_first_commit_again(
 /// leitura do começo vê.
 #[test]
 fn a_file_that_existed_before_the_last_reading_and_has_no_history_is_read_from_the_first_commit() {
-    let temp = project("scan-historia-toda-arquivo-antigo-");
+    let temp = project("scan-history-whole-old-file-");
     let dir = temp.path();
     commit(dir, "src/b.rs", "pub fn beta() {}\n", "cria o beta");
     commit(dir, "src/c.rs", "pub fn gama() {}\n", "cria o gama");
@@ -980,7 +980,7 @@ fn a_file_that_existed_before_the_last_reading_and_has_no_history_is_read_from_t
 /// inteiro: as declarações levam o commit em que nasceram no nome velho.
 #[test]
 fn a_file_renamed_and_edited_in_one_commit_keeps_the_birth_of_its_declarations_in_the_whole_reading() {
-    let temp = project("scan-historia-toda-renomeia-");
+    let temp = project("scan-history-whole-renames-");
     let dir = temp.path();
     declare_base(dir, "main");
     let join_source = |n: u32| {
@@ -1003,7 +1003,7 @@ fn a_file_renamed_and_edited_in_one_commit_keeps_the_birth_of_its_declarations_i
 /// escrevendo o que nenhum dos lados tinha — é do commit da junção.
 #[test]
 fn a_declaration_written_only_in_the_merge_gets_the_merge_commit() {
-    let temp = project("scan-historia-junta-");
+    let temp = project("scan-history-merge-only-");
     let dir = temp.path();
     declare_base(dir, "main");
     let choose_source = |n: u32| format!("pub fn escolhe() -> u32 {{\n    {n}\n}}\n");
@@ -1043,7 +1043,7 @@ fn a_declaration_written_only_in_the_merge_gets_the_merge_commit() {
 /// que sai no mesmo commit herdaria o commit da que saiu.
 #[test]
 fn a_closing_line_repeated_elsewhere_does_not_give_a_declaration_the_commit_of_another() {
-    let temp = project("scan-linhagem-linha-banal-");
+    let temp = project("scan-lineage-trivial-line-");
     let dir = temp.path();
     declare_base(dir, "main");
     let branches = |name: &str, arg: &str, case: u32| {
@@ -1066,7 +1066,7 @@ fn a_closing_line_repeated_elsewhere_does_not_give_a_declaration_the_commit_of_a
 /// mesmo quando nenhuma palavra casa, e por isso não conta a leitura.
 #[test]
 fn a_search_made_while_the_history_is_being_read_answers_with_what_is_stored() {
-    let temp = project("scan-historia-toda-busca-");
+    let temp = project("scan-history-whole-search-");
     let dir = temp.path();
     let total = 60;
     for at in 0..total {
@@ -1106,7 +1106,7 @@ fn a_search_made_while_the_history_is_being_read_answers_with_what_is_stored() {
 /// que cabe a história toda não diz.
 #[test]
 fn the_history_of_one_file_reads_only_the_newest_commits_and_says_so() {
-    let temp = project("scan-historia-arquivo-limite-");
+    let temp = project("scan-history-file-limit-");
     let dir = temp.path();
     commit(dir, "src/b.rs", "pub fn beta() {}\n", "cria o beta");
     commit(dir, "src/b.rs", "pub fn beta() { 2 }\n", "muda o beta");
@@ -1132,7 +1132,7 @@ fn the_history_of_one_file_reads_only_the_newest_commits_and_says_so() {
 /// mesma lista que a leitura do começo.
 #[test]
 fn a_file_with_a_stored_history_reads_only_the_commits_after_the_tip_it_was_read_at() {
-    let temp = project("scan-historia-arquivo-ponta-");
+    let temp = project("scan-history-file-tip-");
     let dir = temp.path();
     commit(dir, "src/b.rs", "pub fn beta() {}\n", "cria o beta");
     scan(dir);
@@ -1188,7 +1188,7 @@ fn stored_lineages(out: &Path) -> Vec<FileLineage> {
 /// volta a zero.
 #[test]
 fn fifty_commits_of_short_readings_bring_the_next_reading_back_to_the_start_and_the_history_becomes_exact() {
-    let temp = read_project_with_a_line_to_lose("scan-historia-releitura-");
+    let temp = read_project_with_a_line_to_lose("scan-history-rereading-");
     let dir = temp.path();
     let out = dir.join(".claude");
     commit(dir, "src/f.rs", F_SHORT, "remove a linha");
@@ -1222,7 +1222,7 @@ fn fifty_commits_of_short_readings_bring_the_next_reading_back_to_the_start_and_
 /// lista de todos os arquivos fica a de uma leitura feita do zero.
 #[test]
 fn the_whole_reading_drops_the_history_of_a_file_that_left_the_map_and_the_short_ones_keep_it() {
-    let temp = read_project_with_a_line_to_lose("scan-historia-saiu-do-mapa-");
+    let temp = read_project_with_a_line_to_lose("scan-history-left-the-map-");
     let dir = temp.path();
     let out = dir.join(".claude");
     commit(dir, "src/gone.rs", "pub fn gone() {}\n", "cria o gone");
@@ -1256,7 +1256,7 @@ fn the_whole_reading_drops_the_history_of_a_file_that_left_the_map_and_the_short
 /// commits novos e só os arquivos que mudaram.
 #[test]
 fn below_fifty_commits_of_short_readings_the_next_one_stays_short_and_reads_only_the_new_commits() {
-    let temp = read_project_with_a_line_to_lose("scan-historia-releitura-abaixo-");
+    let temp = read_project_with_a_line_to_lose("scan-history-rereading-below-");
     let dir = temp.path();
     commit(dir, "src/f.rs", F_SHORT, "remove a linha");
     for (round, commits) in [8, 10, 10, 10, 10].into_iter().enumerate() {
@@ -1287,7 +1287,7 @@ fn the_reading_in_the_background_runs_at_a_lower_priority_and_so_does_the_git_it
         let out = Command::new("ps").args(["-o", "ni=", "-p", pid]).output().expect("run ps");
         String::from_utf8_lossy(&out.stdout).trim().parse().expect("ps says the priority")
     };
-    let temp = project("scan-historia-prioridade-");
+    let temp = project("scan-history-priority-");
     let dir = temp.path();
     scan(dir);
 

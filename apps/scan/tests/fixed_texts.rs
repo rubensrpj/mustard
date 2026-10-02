@@ -90,7 +90,7 @@ fn git(dir: &Path, args: &[&str]) {
 
 /// Um projeto no git com os arquivos, já no primeiro commit.
 fn project() -> tempfile::TempDir {
-    let temp = tempfile::Builder::new().prefix("scan-textos-").tempdir().unwrap();
+    let temp = tempfile::Builder::new().prefix("scan-texts-").tempdir().unwrap();
     let dir = temp.path();
     git(dir, &["init", "-q"]);
     let exclude = mustard_core::footprint_rules().join("\n") + "\n";
@@ -319,7 +319,7 @@ fn the_search_for_a_screen_text_finds_the_screen_its_line_and_its_function() {
 
 /// Um projeto no git com só os arquivos dados, já no primeiro commit.
 fn project_with(files: &[(&str, &str)]) -> tempfile::TempDir {
-    let temp = tempfile::Builder::new().prefix("scan-textos-repasse-").tempdir().unwrap();
+    let temp = tempfile::Builder::new().prefix("scan-texts-pass-through-").tempdir().unwrap();
     let dir = temp.path();
     git(dir, &["init", "-q"]);
     let exclude = mustard_core::footprint_rules().join("\n") + "\n";

@@ -248,7 +248,7 @@ fn line_of(body: &str, text: &str) -> usize {
 
 #[test]
 fn a_use_only_links_to_what_is_called_and_to_what_the_file_sees() {
-    let temp = project_dir("uso-em-toda-linguagem");
+    let temp = project_dir("use-in-every-language");
     let dir = temp.path().to_path_buf();
     let every = languages();
     for l in &every {
@@ -333,7 +333,7 @@ const BOX: &str = "pub fn pagar() -> u32 {\n    crate::preco::total(1, 2)\n}\n";
 
 #[test]
 fn a_constant_and_a_type_that_are_mentioned_gain_their_users() {
-    let temp = project_dir("citacao-em-toda-linguagem");
+    let temp = project_dir("mention-in-every-language");
     let dir = temp.path().to_path_buf();
     let every = languages();
     for l in &every {
@@ -443,7 +443,7 @@ fn project_in_sight() -> Vec<(&'static str, &'static str)> {
 
 #[test]
 fn each_file_sees_what_the_language_puts_in_sight() {
-    let temp = project_dir("o-que-a-linguagem-poe-a-vista");
+    let temp = project_dir("what-the-language-puts-in-sight");
     let dir = temp.path().to_path_buf();
     let files = project_in_sight();
     for (rel, body) in &files {
@@ -590,7 +590,7 @@ fn end_of_body(body: &str, header: &str) -> usize {
 
 #[test]
 fn dart_ends_each_declaration_at_the_end_of_the_body_and_the_part_sees_the_owner() {
-    let temp = project_dir("dart-fim-do-corpo");
+    let temp = project_dir("dart-end-of-body");
     let dir = temp.path().to_path_buf();
     write(&dir, "lib/caixa.dart", BOX_DART);
     write(&dir, "lib/caixa_parte.dart", BOX_PART_DART);
@@ -737,7 +737,7 @@ fn scan_with_bytes(dir: &Path, extra: &[&str]) -> (Value, Vec<u8>, bool) {
 
 #[test]
 fn a_mention_links_by_what_the_project_declares_and_not_by_the_letter() {
-    let temp = project_dir("citacao-que-liga");
+    let temp = project_dir("mention-that-links");
     let dir = temp.path().to_path_buf();
     let project = mention_project();
     for (rel, body) in &project {
@@ -993,7 +993,7 @@ const REACH: &[(&str, &str)] = &[
 fn reach_map() -> &'static Value {
     static MAP: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
     MAP.get_or_init(|| {
-        let temp = project_dir("alcance-do-nome");
+        let temp = project_dir("name-reach");
         for (rel, body) in REACH {
             write(temp.path(), rel, body);
         }
@@ -1145,7 +1145,7 @@ fn uses_of(map: &Value, file: &str, name: &str) -> Uses {
 /// `run` importada: sem saber o tipo da variável, ela pode ser outro método.
 #[test]
 fn each_link_says_whether_it_is_proven_or_suspect() {
-    let temp = project_dir("ligacao-provada-ou-suspeita");
+    let temp = project_dir("link-proven-or-suspect");
     let dir = temp.path().to_path_buf();
     let every = links();
     for l in &every {
@@ -1214,7 +1214,7 @@ fn the_object_itself_and_a_named_type_narrow_the_link() {
     const DOOR: &str = "pub struct Porta;\n\nimpl Porta {\n    pub fn fechar(&self) -> u32 {\n        2\n    }\n\n    \
                          pub fn new() -> Porta {\n        Porta\n    }\n}\n";
     const USER: &str = "use crate::caixa::Caixa;\n\npub fn usa() -> Vec<u32> {\n    let _ = Caixa::new();\n    Vec::new()\n}\n";
-    let temp = project_dir("ligacao-pelo-tipo");
+    let temp = project_dir("link-by-type");
     let dir = temp.path().to_path_buf();
     write(&dir, "src/caixa.rs", BOX);
     write(&dir, "src/porta.rs", DOOR);
@@ -1248,7 +1248,7 @@ fn a_bare_name_reaches_a_member_only_where_the_language_calls_it_without_the_obj
                        let trancar = || 2;\n    Ok(trancar())\n}\n";
     const BOX_CS: &str = "namespace Loja;\n\npublic class Caixa\n{\n    public int Trancar()\n    {\n        return 1;\n    }\n\n    \
                             public int Abrir()\n    {\n        return Trancar();\n    }\n}\n";
-    let temp = project_dir("nome-sozinho-e-membro");
+    let temp = project_dir("bare-name-and-member");
     let dir = temp.path().to_path_buf();
     write(&dir, "rs/src/estado.rs", STATE);
     write(&dir, "rs/src/caixa.rs", BOX_RS);
@@ -1279,7 +1279,7 @@ fn a_bare_name_reaches_a_member_only_where_the_language_calls_it_without_the_obj
 /// o uso.
 #[test]
 fn a_name_above_the_ceiling_is_only_counted() {
-    let temp = project_dir("nome-comum-so-se-conta");
+    let temp = project_dir("common-name-only-counted");
     let dir = temp.path().to_path_buf();
     let owners: Vec<String> = (1..=9).map(|n| format!("src/m{n}.rs")).collect();
     for (n, owner) in owners.iter().enumerate() {
@@ -1302,7 +1302,7 @@ fn a_name_above_the_ceiling_is_only_counted() {
 /// suspeita, a cada uma delas, com as nove como candidatas.
 #[test]
 fn the_project_ceiling_links_a_name_the_default_only_counts() {
-    let temp = project_dir("teto-do-projeto");
+    let temp = project_dir("project-ceiling");
     let dir = temp.path().to_path_buf();
     let owners: Vec<String> = (1..=9).map(|n| format!("src/m{n}.rs")).collect();
     for (n, owner) in owners.iter().enumerate() {
@@ -1381,7 +1381,7 @@ fn own_name_project() -> Vec<(&'static str, &'static str)> {
 /// pelo nome ou por `*` do arquivo que o declara.
 #[test]
 fn a_name_the_code_binds_itself_wins_over_the_project_declaration() {
-    let temp = project_dir("nome-proprio");
+    let temp = project_dir("own-name");
     let dir = temp.path().to_path_buf();
     let project = own_name_project();
     for (rel, body) in &project {
@@ -1447,7 +1447,7 @@ fn library_path_project() -> Vec<(&'static str, &'static str)> {
 /// Quem usa a `read_to_string` do projeto, lida no mapa do projeto do caminho
 /// da biblioteca.
 fn uses_through_library_path() -> (tempfile::TempDir, Uses) {
-    let temp = project_dir("caminho-da-biblioteca");
+    let temp = project_dir("library-path");
     for (rel, body) in library_path_project() {
         write(temp.path(), rel, body);
     }
@@ -1627,7 +1627,7 @@ fn a_require_imports_like_an_import_in_javascript_and_typescript() {
 /// ligando.
 #[test]
 fn a_call_opened_by_a_name_that_is_not_of_the_project_does_not_link() {
-    let temp = project_dir("biblioteca-cs");
+    let temp = project_dir("cs-library");
     for (rel, body) in library_project() {
         write(temp.path(), rel, body);
     }
@@ -1664,7 +1664,7 @@ fn a_call_opened_by_a_name_that_is_not_of_the_project_does_not_link() {
 /// exceção pega.
 #[test]
 fn a_call_opened_by_a_name_the_function_binds_keeps_linking() {
-    let temp = project_dir("formas");
+    let temp = project_dir("shapes");
     for (rel, body) in library_project() {
         write(temp.path(), rel, body);
     }
@@ -1689,7 +1689,7 @@ fn a_call_opened_by_a_name_the_function_binds_keeps_linking() {
 /// segue sendo da biblioteca.
 #[test]
 fn a_comment_that_ends_in_a_period_does_not_qualify_the_call_after_it() {
-    let temp = project_dir("comentario");
+    let temp = project_dir("comment");
     for (rel, body) in library_project() {
         write(temp.path(), rel, body);
     }
@@ -1724,7 +1724,7 @@ fn text_files(dir: &Path, found: &mut Vec<(std::path::PathBuf, String)>) {
 fn the_test_project_dir_vanishes_even_when_the_test_fails() {
     let (sender, receiver) = std::sync::mpsc::channel();
     let crashing = std::thread::spawn(move || {
-        let temp = project_dir("quebra-no-meio");
+        let temp = project_dir("crash-midway");
         let dir = temp.path().to_path_buf();
         write(&dir, "src/lib.rs", "pub fn total() -> u32 {\n    1\n}\n");
         let map = scan(&dir);
@@ -1754,7 +1754,7 @@ fn the_test_project_dir_vanishes_even_when_the_test_fails() {
 /// do `novo` declarado lá.
 #[test]
 fn a_call_through_a_name_the_root_file_passes_on_is_a_proven_use() {
-    let temp = project_dir("repasse");
+    let temp = project_dir("pass-through");
     for (rel, body) in [
         ("Cargo.toml", "[workspace]\nmembers = [\"core\", \"app\"]\n"),
         ("core/Cargo.toml", "[package]\nname = \"demo-core\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"),

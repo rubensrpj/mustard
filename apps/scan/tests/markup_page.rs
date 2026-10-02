@@ -39,7 +39,7 @@ fn git(dir: &Path, args: &[&str]) {
 /// O servidor de pedidos em `Api/` e a tela Blazor em `Web/`, com as páginas
 /// `pages`, no git, lidos pelo scan; devolve o mapa.
 fn scanned(pages: &[(&str, &str)]) -> Value {
-    let temp = tempfile::Builder::new().prefix("scan-pagina-").tempdir().unwrap();
+    let temp = tempfile::Builder::new().prefix("scan-page-").tempdir().unwrap();
     let dir = temp.path();
     git(dir, &["init", "-q"]);
     std::fs::create_dir_all(dir.join(".git").join("info")).unwrap();
@@ -159,7 +159,7 @@ fn the_markup_of_a_page_is_not_read_as_code() {
 /// da página, e a classe da página tem o nome do arquivo em cada versão.
 #[test]
 fn the_history_of_a_page_goes_to_the_method_its_commit_changed() {
-    let temp = tempfile::Builder::new().prefix("scan-pagina-historia-").tempdir().unwrap();
+    let temp = tempfile::Builder::new().prefix("scan-page-history-").tempdir().unwrap();
     let dir = temp.path();
     git(dir, &["init", "-q", "-b", "main"]);
     std::fs::write(dir.join(".git").join("info").join("exclude"), mustard_core::footprint_rules().join("\n") + "\n").unwrap();
@@ -267,7 +267,7 @@ fn a_razor_page_maps_its_body_block_as_a_method_and_reaches_the_csharp_of_the_pr
 /// que a passada inteira.
 #[test]
 fn a_global_using_of_the_project_reaches_the_page_also_in_the_pass_that_reads_only_what_changed() {
-    let temp = tempfile::Builder::new().prefix("scan-pagina-global-").tempdir().unwrap();
+    let temp = tempfile::Builder::new().prefix("scan-page-global-").tempdir().unwrap();
     let dir = temp.path();
     git(dir, &["init", "-q"]);
     std::fs::write(dir.join(".git").join("info").join("exclude"), mustard_core::footprint_rules().join("\n") + "\n").unwrap();
@@ -442,7 +442,7 @@ fn the_inherits_and_implements_of_a_page_are_the_bases_of_its_class() {
 /// igual.
 #[test]
 fn the_using_of_the_folder_imports_file_reaches_the_pages_of_the_folder_and_below() {
-    let temp = tempfile::Builder::new().prefix("scan-pagina-imports-").tempdir().unwrap();
+    let temp = tempfile::Builder::new().prefix("scan-page-imports-").tempdir().unwrap();
     let dir = temp.path();
     git(dir, &["init", "-q"]);
     std::fs::write(dir.join(".git").join("info").join("exclude"), mustard_core::footprint_rules().join("\n") + "\n").unwrap();
@@ -596,7 +596,7 @@ fn the_markup_inside_a_body_block_is_not_read_as_code() {
 /// de o `@inject` nascer no arquivo da pasta, relê as páginas e liga igual.
 #[test]
 fn the_inject_inherits_and_namespace_of_the_folder_imports_file_reach_the_pages_below() {
-    let temp = tempfile::Builder::new().prefix("scan-pagina-pasta-").tempdir().unwrap();
+    let temp = tempfile::Builder::new().prefix("scan-page-folder-").tempdir().unwrap();
     let dir = temp.path();
     git(dir, &["init", "-q"]);
     std::fs::write(dir.join(".git").join("info").join("exclude"), mustard_core::footprint_rules().join("\n") + "\n").unwrap();
