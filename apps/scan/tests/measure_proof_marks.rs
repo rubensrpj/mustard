@@ -15,7 +15,9 @@ use mustard_core::domain::config::ProjectConfig;
 use mustard_core::domain::normalize::Languages;
 use mustard_core::domain::project_map::FileLineage;
 use mustard_core::domain::scan::Scan;
-use mustard_core::io::measure_proof::{check_map, rebuild_map};
+use mustard_core::io::fs::lock::LockedFile;
+use mustard_core::io::map_lineage::reading_lock_path;
+use mustard_core::io::measure_proof::{check_map, rebuild_map, rebuild_map_telling};
 use mustard_core::io::project_map as store;
 
 fn write(dir: &Path, rel: &str, body: &str) {
@@ -82,9 +84,9 @@ fn a_tree_with_the_map_of_another_scan_is_rebuilt_and_then_passes_the_check() {
     let refusal = check_map(&map, &expected).unwrap_err().to_string();
     assert!(refusal.contains(old), "o mapa velho é recusado: {refusal}");
 
-    let report = rebuild_map(temp.path(), &Scan::new(env!("CARGO_BIN_EXE_scan"))).unwrap_or_else(|e| panic!("o scan não refez a árvore: {e}"));
+    let rebuilt = rebuild_map(temp.path(), &Scan::new(env!("CARGO_BIN_EXE_scan"))).unwrap_or_else(|e| panic!("o scan não refez a árvore: {e}"));
 
-    assert!(report.full, "o mapa foi lido do zero: {report:?}");
+    assert!(rebuilt.scan.full, "o mapa foi lido do zero: {rebuilt:?}");
     let proof = check_map(&map, &expected).unwrap_or_else(|refusal| panic!("a árvore refeita é recusada: {refusal}"));
     assert_eq!(proof.mark, expected);
     let marks = store::read_marks_at(&map).unwrap();
@@ -107,6 +109,25 @@ fn lineage_of(map: &Path, file: &str) -> Option<FileLineage> {
     store::read_at(map).ok()?.lineage.into_iter().find(|lineage| lineage.path == file)
 }
 
+/// Um repositório com dois commits sobre a função `alpha` de `src/a.rs`.
+fn repo_with_two_commits(dir: &Path) {
+    git(dir, &["init", "-q", "-b", "main"]);
+    write(dir, "Cargo.toml", "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n");
+    write(dir, "src/lib.rs", "pub mod a;\n");
+    write(dir, "src/a.rs", "pub fn alpha(x: u32) -> u32 {\n    x + 1\n}\n");
+    git(dir, &["add", "-A"]);
+    git(dir, &["commit", "-q", "-m", "cria o alpha"]);
+    write(dir, "src/a.rs", "pub fn alpha(x: u32) -> u32 {\n    x + 2\n}\n");
+    git(dir, &["add", "-A"]);
+    git(dir, &["commit", "-q", "-m", "muda o alpha"]);
+}
+
+/// Quantas linhas de `lineage_decls` o banco em `map` tem.
+fn lineage_rows(map: &Path) -> i64 {
+    let conn = rusqlite::Connection::open(map).unwrap();
+    conn.query_row("SELECT COUNT(*) FROM lineage_decls", [], |row| row.get(0)).unwrap()
+}
+
 /// O mapa refeito para a medida tem o scan e, depois dele, a leitura da
 /// história de cada declaração, esperada até o fim: num repositório com dois
 /// commits sobre uma função, a conta de `lineage_decls` feita logo na volta de
@@ -117,22 +138,12 @@ fn lineage_of(map: &Path, file: &str) -> Option<FileLineage> {
 fn a_map_rebuilt_for_a_measure_has_the_history_of_each_declaration_the_moment_the_call_returns() {
     let temp = tempfile::Builder::new().prefix("scan-measure-history-").tempdir().unwrap();
     let dir = temp.path();
-    git(dir, &["init", "-q", "-b", "main"]);
-    write(dir, "Cargo.toml", "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n");
-    write(dir, "src/lib.rs", "pub mod a;\n");
-    write(dir, "src/a.rs", "pub fn alpha(x: u32) -> u32 {\n    x + 1\n}\n");
-    git(dir, &["add", "-A"]);
-    git(dir, &["commit", "-q", "-m", "cria o alpha"]);
-    write(dir, "src/a.rs", "pub fn alpha(x: u32) -> u32 {\n    x + 2\n}\n");
-    git(dir, &["add", "-A"]);
-    git(dir, &["commit", "-q", "-m", "muda o alpha"]);
+    repo_with_two_commits(dir);
     let map = model::path_in(&dir.join(".claude"));
 
     rebuild_map(dir, &Scan::new(env!("CARGO_BIN_EXE_scan"))).unwrap_or_else(|e| panic!("o scan não refez a árvore: {e}"));
 
-    let conn = rusqlite::Connection::open(&map).unwrap();
-    let rows: i64 = conn.query_row("SELECT COUNT(*) FROM lineage_decls", [], |row| row.get(0)).unwrap();
-    assert!(rows > 0, "o banco refeito volta com a história de cada declaração, sem esperar por ela");
+    assert!(lineage_rows(&map) > 0, "o banco refeito volta com a história de cada declaração, sem esperar por ela");
     let lineage = lineage_of(&map, "src/a.rs").expect("a história do arquivo chegou antes da volta");
     let alpha = lineage.declarations.iter().find(|decl| decl.name == "alpha").expect("a história do alpha chegou");
     let titles: Vec<String> =
@@ -142,4 +153,40 @@ fn a_map_rebuilt_for_a_measure_has_the_history_of_each_declaration_the_moment_th
     let proof = check_map(&map, &model::scan_format()).unwrap_or_else(|refusal| panic!("o mapa refeito é recusado: {refusal}"));
     let line = proof.pieces_line();
     assert!(line.contains("historico=ligada"), "a linha de peças diz que o histórico chegou: {line}");
+}
+
+/// Uma sessão aberta no projeto já está lendo a história do mapa (quem lê
+/// segura a trava da leitura) quando a medida chega, e solta um segundo depois
+/// de a medida dizer que está lendo a história: a medida espera a outra
+/// leitura acabar em vez de recusar, e volta, só depois da soltura, com a
+/// história de cada declaração, sem arquivo que o git não leu.
+#[test]
+fn a_map_rebuilt_while_another_reading_holds_the_history_waits_for_it_and_comes_back_with_the_history() {
+    let temp = tempfile::Builder::new().prefix("scan-measure-waits-").tempdir().unwrap();
+    let dir = temp.path();
+    repo_with_two_commits(dir);
+    let map = model::path_in(&dir.join(".claude"));
+    let other_reading = LockedFile::exclusive(&reading_lock_path(&map)).unwrap();
+    let (said, hears) = std::sync::mpsc::channel::<()>();
+    let releasing = std::thread::spawn(move || {
+        // A trava só solta um segundo depois de a medida chegar à leitura da
+        // história: ela está presa quando o scan é pedido, por mais lenta que
+        // seja a máquina.
+        hears.recv().unwrap();
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        let released_at = std::time::Instant::now();
+        drop(other_reading);
+        released_at
+    });
+
+    let rebuilt = rebuild_map_telling(dir, &Scan::new(env!("CARGO_BIN_EXE_scan")), &|_| {
+        let _ = said.send(());
+    })
+    .unwrap_or_else(|e| panic!("a medida recusou em vez de esperar: {e}"));
+    let back_at = std::time::Instant::now();
+    let released_at = releasing.join().unwrap();
+
+    assert!(back_at >= released_at, "a medida voltou antes de a outra leitura soltar a trava");
+    assert_eq!(rebuilt.unread, 0, "{rebuilt:?}");
+    assert!(lineage_rows(&map) > 0, "o mapa refeito volta com a história de cada declaração");
 }

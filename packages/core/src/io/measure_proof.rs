@@ -28,6 +28,10 @@
 //! declaração lida do git até o fim antes de a medida começar (nas sessões
 //! ela chega em segundo plano), de modo que nenhuma medida lê o mapa de uma
 //! compilação que ficou na máquina nem um mapa com a história pela metade.
+//! Se outra leitura da história do mesmo mapa já está em andamento, a medida
+//! espera ela terminar e diz na tela que está lendo; e a linha do mapa
+//! refeito diz quantos arquivos o git não deixou ler ([`Rebuilt::line`]), para
+//! o número nunca esconder um mapa com parte da história faltando.
 
 use std::io::Read;
 use std::path::Path;
@@ -243,30 +247,78 @@ fn sha256_of_file(path: &Path) -> std::io::Result<String> {
     Ok(hasher.hex_digest())
 }
 
+/// O mapa refeito de uma árvore: o relato do scan e quantos arquivos a leitura
+/// da história não leu.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Rebuilt {
+    /// O relato da passada do scan que gravou o mapa.
+    pub scan: ScanReport,
+    /// Quantos arquivos o git não deixou ler na história: o mapa segue sem a
+    /// lista deles, e a medida diz quantos são.
+    pub unread: usize,
+}
+
+impl Rebuilt {
+    /// A linha que a medida imprime por árvore refeita, com a árvore e quantos
+    /// arquivos a leitura da história não leu (zero quando leu todos).
+    #[must_use]
+    pub fn line(&self, tree: &Path) -> String {
+        format!("mapa refeito: {}; arquivos que a história não leu: {}", tree.display(), self.unread)
+    }
+}
+
+/// O que uma recusa diz, sem o rótulo do tipo dela: o que embrulha o erro de
+/// dentro põe o rótulo uma vez, na frente de tudo.
+fn reason(error: &Error) -> String {
+    match error {
+        Error::CheckFailed(reason) => reason.clone(),
+        other => other.to_string(),
+    }
+}
+
+/// Refaz o mapa da árvore `tree` do zero, dizendo o que faz na saída de erro:
+/// [`rebuild_map_telling`] com a saída de erro como `tell`.
+///
+/// # Errors
+/// Os de [`rebuild_map_telling`].
+pub fn rebuild_map(tree: &Path, scan: &Scan) -> Result<Rebuilt> {
+    rebuild_map_telling(tree, scan, &|line| eprintln!("{line}"))
+}
+
 /// Refaz o mapa da árvore `tree` do zero: apaga o banco velho e o que o
 /// SQLite deixa ao lado dele ([`project_map::remove`]) e roda, sobre a árvore,
 /// os mesmos dois passos que o mapa das sessões roda: o scan e, depois dele, a
 /// leitura da história de cada declaração. Nas sessões a história chega em
 /// segundo plano; aqui a medida espera ela terminar ([`Scan::read_history`]),
 /// porque a régua que busca com a história pela metade dá um número diferente
-/// a cada rodada. Assim o mapa que a régua abre é sempre o que o `scan`
-/// compilado com o código medido grava, nunca o de uma compilação que ficou na
-/// pasta, e traz a história inteira que a busca das sessões também lê.
+/// a cada rodada. Se uma sessão aberta ou outro comando já está lendo a
+/// história do mesmo mapa, a medida espera essa leitura acabar antes de pedir
+/// a sua, e antes de esperar diz por `tell` que está lendo a história daquela
+/// árvore, porque a leitura leva minutos. Assim o mapa que a régua
+/// abre é sempre o que o `scan` compilado com o código medido grava, nunca o
+/// de uma compilação que ficou na pasta, e traz a história inteira que a busca
+/// das sessões também lê, menos os arquivos que o git não deixou ler, contados
+/// em [`Rebuilt::unread`].
 ///
 /// # Errors
 /// O arquivo velho que não se apaga; o scan que não roda ou falha; a leitura
-/// da história que falha ou que outra leitura do mesmo mapa impede: sem mapa
-/// novo e completo, a medida não segue.
-pub fn rebuild_map(tree: &Path, scan: &Scan) -> Result<ScanReport> {
+/// da história que falha ou que outra leitura do mesmo mapa, começada depois
+/// da espera, impede: sem mapa novo e completo, a medida não segue.
+pub fn rebuild_map_telling(tree: &Path, scan: &Scan, tell: &dyn Fn(&str)) -> Result<Rebuilt> {
     let model = project_map::model_path(tree);
     project_map::remove(&model)
         .map_err(|e| Error::check_failed(format!("não consegui apagar o mapa velho de {}: {e}", tree.display())))?;
     let report = scan
         .scan(tree, &model)
-        .map_err(|e| Error::check_failed(format!("o scan não refez o mapa de {}: {e}", tree.display())))?;
-    scan.read_history(tree, &model)
-        .map_err(|e| Error::check_failed(format!("o scan não leu a história do mapa de {}: {e}", tree.display())))?;
-    Ok(report)
+        .map_err(|e| Error::check_failed(format!("o scan não refez o mapa de {}: {}", tree.display(), reason(&e))))?;
+    tell(&format!(
+        "lendo a história do mapa de {}; se outra leitura dele já estiver em andamento, espero ela terminar antes",
+        tree.display()
+    ));
+    let unread = scan
+        .read_history(tree, &model)
+        .map_err(|e| Error::check_failed(format!("o scan não leu a história do mapa de {}: {}", tree.display(), reason(&e))))?;
+    Ok(Rebuilt { scan: report, unread })
 }
 
 /// Confere que todo bloco do mapa em `db` traz a marca `expected`, a que o
@@ -407,10 +459,15 @@ impl MeasureGate {
 mod tests {
     use super::*;
     use crate::domain::normalize::Languages;
-    use crate::io::project_map::{
-        FILES, MAP_FILE_NAME, MAP_JOURNAL_FILE_NAME, MAP_SHARED_FILE_NAME, MAP_WAL_FILE_NAME, model_path, save_at, save_block_at,
-    };
+    use crate::io::project_map::{FILES, model_path, save_at, save_block_at};
     use tempfile::{TempDir, tempdir};
+
+    #[cfg(unix)]
+    use crate::domain::scan::tests::{logged, script_scan};
+    #[cfg(unix)]
+    use crate::io::fs::lock::LockedFile;
+    #[cfg(unix)]
+    use crate::io::map_lineage::reading_lock_path;
 
     /// Um mapa pequeno gravado como o scan grava, com `mark` em cada bloco.
     fn saved_with(mark: &str) -> (TempDir, std::path::PathBuf) {
@@ -605,7 +662,9 @@ mod tests {
 
     /// Escreve na pasta `.claude` da árvore o banco velho e o que o SQLite
     /// deixa ao lado dele.
+    #[cfg(unix)]
     fn stale_map(tree: &Path) -> Vec<std::path::PathBuf> {
+        use crate::io::project_map::{MAP_FILE_NAME, MAP_JOURNAL_FILE_NAME, MAP_SHARED_FILE_NAME, MAP_WAL_FILE_NAME};
         let model = model_path(tree);
         std::fs::create_dir_all(model.parent().unwrap()).unwrap();
         [MAP_FILE_NAME, MAP_JOURNAL_FILE_NAME, MAP_WAL_FILE_NAME, MAP_SHARED_FILE_NAME]
@@ -648,6 +707,7 @@ mod tests {
 
         assert!(error.contains("o scan não refez o mapa") && error.contains(&tree.path().display().to_string()), "{error}");
         assert!(old.iter().all(|file| !file.exists()));
+        assert_eq!(error.matches("check failed").count(), 1, "the label of the kind of error shows once: {error}");
         let missing = rebuild_map(tree.path(), &Scan::new("/nao/existe/scan")).unwrap_err().to_string();
         assert!(missing.contains("o scan não refez o mapa"), "{missing}");
     }
@@ -657,7 +717,7 @@ mod tests {
     /// roda `history`, depois de anotar o pedido.
     #[cfg(unix)]
     fn recording_scan(dir: &Path, log: &Path, history: &str) -> Scan {
-        crate::domain::scan::tests::script_scan(
+        script_scan(
             dir,
             "recording",
             &format!(
@@ -667,10 +727,6 @@ mod tests {
                 log = log.display()
             ),
         )
-    }
-
-    fn logged(log: &Path) -> Vec<String> {
-        std::fs::read_to_string(log).unwrap_or_default().lines().map(str::to_string).collect()
     }
 
     /// A medida só começa com a história lida até o fim: o mapa refeito volta
@@ -683,9 +739,9 @@ mod tests {
         let log = work.path().join("log");
         let scan = recording_scan(work.path(), &log, &format!("sleep 1; echo history-finished >> '{}'", log.display()));
 
-        let report = rebuild_map(tree.path(), &scan).expect("the scan and the reading pass");
+        let rebuilt = rebuild_map(tree.path(), &scan).expect("the scan and the reading pass");
 
-        assert!(report.full, "{report:?}");
+        assert!(rebuilt.scan.full, "{rebuilt:?}");
         assert_eq!(logged(&log), ["scan", "history-all", "history-finished"], "the call came back before the reading ended");
         assert_eq!(std::fs::read_to_string(model_path(tree.path())).unwrap(), "novo");
     }
@@ -703,14 +759,70 @@ mod tests {
         let fails = recording_scan(work.path(), &log, "echo 'git quebrou' >&2; exit 3");
         let error = rebuild_map(tree.path(), &fails).unwrap_err().to_string();
         assert!(error.contains("o scan não leu a história do mapa") && error.contains(&tree_name) && error.contains("git quebrou"), "{error}");
+        assert_eq!(error.matches("check failed").count(), 1, "the label of the kind of error shows once: {error}");
         assert_eq!(logged(&log), ["scan", "history-all"], "the scan ran first and the reading was asked");
 
         let busy = recording_scan(work.path(), &log, "echo '{\"ok\":true,\"busy\":true,\"files\":0}'");
         let error = rebuild_map(tree.path(), &busy).unwrap_err().to_string();
-        assert!(error.contains("o scan não leu a história do mapa") && error.contains("outra leitura"), "{error}");
+        assert!(error.contains("o scan não leu a história do mapa") && error.contains("outra leitura") && error.contains("rode de novo"), "{error}");
+        assert_eq!(error.matches("check failed").count(), 1, "the label of the kind of error shows once: {error}");
 
         let reads = recording_scan(work.path(), &log, "echo '{\"ok\":true,\"busy\":false,\"files\":1}'");
         rebuild_map(tree.path(), &reads).expect("a reading that read passes");
+    }
+
+    /// Outra leitura da história do mesmo mapa segura a trava por um segundo
+    /// (a de uma sessão aberta): a medida diz na tela que está lendo a história
+    /// daquela árvore antes de esperar, não pede a leitura enquanto a outra a
+    /// segura, e termina com o mapa refeito quando ela solta.
+    #[cfg(unix)]
+    #[test]
+    fn a_rebuild_waits_for_another_reading_of_the_history_and_says_it_is_reading_before_it_waits() {
+        let (work, tree) = (tempdir().unwrap(), tempdir().unwrap());
+        let log = work.path().join("log");
+        let scan = recording_scan(work.path(), &log, "echo '{\"ok\":true,\"busy\":false,\"files\":1}'");
+        let other_reading = LockedFile::exclusive(&reading_lock_path(&model_path(tree.path()))).unwrap();
+        let told = std::sync::Mutex::new(Vec::<String>::new());
+
+        let (said, asked, finished, outcome) = std::thread::scope(|scope| {
+            let rebuilding = scope.spawn(|| rebuild_map_telling(tree.path(), &scan, &|line| told.lock().unwrap().push(line.to_string())));
+            let limit = std::time::Instant::now() + std::time::Duration::from_secs(60);
+            while told.lock().unwrap().is_empty() && std::time::Instant::now() < limit {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            let (said, asked, finished) = (told.lock().unwrap().clone(), logged(&log), rebuilding.is_finished());
+            drop(other_reading);
+            (said, asked, finished, rebuilding.join().unwrap())
+        });
+
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert!(said[0].contains(&format!("lendo a história do mapa de {}", tree.path().display())) && said[0].contains("espero ela terminar"), "{said:?}");
+        assert_eq!(asked, ["scan"], "the history was asked while the other reading still held the map");
+        assert!(!finished, "the rebuild came back before the other reading let go");
+        let rebuilt = outcome.expect("the rebuild passes once the other reading let go");
+        assert_eq!(rebuilt.unread, 0);
+        assert_eq!(logged(&log), ["scan", "history-all"]);
+    }
+
+    /// O git que não lê a história de alguns arquivos deixa a medida seguir, e
+    /// a linha do mapa refeito diz quantos: o número do relato do scan em
+    /// `failed`, com zero quando ele leu todos.
+    #[cfg(unix)]
+    #[test]
+    fn the_rebuilt_map_line_says_how_many_files_the_history_did_not_read() {
+        let (work, tree) = (tempdir().unwrap(), tempdir().unwrap());
+        let log = work.path().join("log");
+        let name = tree.path().display().to_string();
+
+        let partial = recording_scan(work.path(), &log, "echo '{\"ok\":true,\"busy\":false,\"files\":5,\"failed\":2}'");
+        let rebuilt = rebuild_map(tree.path(), &partial).expect("a reading with files left out still rebuilds");
+        assert_eq!(rebuilt.unread, 2);
+        assert_eq!(rebuilt.line(tree.path()), format!("mapa refeito: {name}; arquivos que a história não leu: 2"));
+
+        let whole = recording_scan(work.path(), &log, "echo '{\"ok\":true,\"busy\":false,\"files\":5,\"failed\":0}'");
+        let rebuilt = rebuild_map(tree.path(), &whole).unwrap();
+        assert_eq!(rebuilt.line(tree.path()), format!("mapa refeito: {name}; arquivos que a história não leu: 0"));
     }
 
     #[test]

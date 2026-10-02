@@ -16,9 +16,11 @@
 //!   em `--env`) é refeito a cada medida, com esse `scan`, no mesmo passo do
 //!   mapa das sessões: o banco velho sai antes, o scan que falha recusa a
 //!   medida, e a leitura da história de cada declaração roda depois dele e
-//!   acaba antes de a régua começar (a que falha, ou que outra leitura do
-//!   mesmo mapa impede, recusa a medida); a linha `PECAS` diz se a história
-//!   chegou;
+//!   acaba antes de a régua começar (a que falha recusa a medida; a que outra
+//!   leitura do mesmo mapa está fazendo a medida espera, e só recusa se outra
+//!   começar logo depois da espera); a linha `PECAS` diz se a história
+//!   chegou, e a linha de cada mapa refeito diz quantos arquivos o git não
+//!   deixou ler;
 //! - a prova diz também qual versão do gancho as sessões do usuário rodam: o
 //!   commit que o `mustard-rt` do plugin instalado carimbou em si;
 //! - ao terminar, só as três pastas de medida usadas por último ficam.
@@ -325,8 +327,8 @@ fn is_pieces_line(line: &str) -> bool {
     line.trim_start().starts_with(PIECES_PREFIX)
 }
 
-/// O que o comando imprime ao fim: as linhas de prova, o caminho do resultado
-/// e as pastas que apagou.
+/// O que o comando imprime ao fim: a linha de cada mapa refeito, as linhas de
+/// prova, o caminho do resultado e as pastas que apagou.
 fn summary(proof: &[String], out: &Path, written: bool, removed: &[PathBuf]) -> String {
     let state = if written { "gravado" } else { "a régua não gravou o arquivo" };
     let mut lines: Vec<String> = proof.iter().map(|line| line.trim().to_string()).collect();
@@ -471,8 +473,9 @@ fn trees_folder(cwd: &Path, opts: &MeasureOpts, user: &mut Vec<(String, String)>
 /// Refaz, com `scan`, o mapa de cada projeto da pasta de árvores: um projeto é
 /// cada pasta dentro dela, fora as escondidas. Recusa na primeira que o scan
 /// não refaz, e quando a pasta não tem projeto nenhum: a régua mediria sem
-/// mapa novo.
-fn rebuild_trees(trees: &Path, scan: &Scan) -> Result<Vec<PathBuf>, String> {
+/// mapa novo. Devolve a linha de cada mapa refeito, com quantos arquivos a
+/// leitura da história não leu, na ordem das pastas.
+fn rebuild_trees(trees: &Path, scan: &Scan) -> Result<Vec<String>, String> {
     let entries = std::fs::read_dir(trees).map_err(|err| format!("não consegui ler a pasta de árvores {}: {err}", trees.display()))?;
     let mut projects: Vec<PathBuf> = entries
         .flatten()
@@ -483,11 +486,14 @@ fn rebuild_trees(trees: &Path, scan: &Scan) -> Result<Vec<PathBuf>, String> {
     if projects.is_empty() {
         return Err(format!("a pasta de árvores {} não tem projeto nenhum para refazer o mapa", trees.display()));
     }
+    let mut lines = Vec::with_capacity(projects.len());
     for project in &projects {
-        rebuild_map(project, scan).map_err(|err| err.to_string())?;
-        eprintln!("mapa refeito: {}", project.display());
+        let rebuilt = rebuild_map(project, scan).map_err(|err| err.to_string())?;
+        let line = rebuilt.line(project);
+        eprintln!("{line}");
+        lines.push(line);
     }
-    Ok(projects)
+    Ok(lines)
 }
 
 /// O que a prova diz do gancho das sessões do usuário: o commit que o
@@ -613,8 +619,8 @@ fn compiled_scan(target: &Path) -> Result<Scan, String> {
     }
 }
 
-/// Compila o código, refaz o mapa de cada árvore e roda a régua; devolve as
-/// linhas de prova.
+/// Compila o código, refaz o mapa de cada árvore e roda a régua; devolve a linha
+/// de cada mapa refeito e as linhas de prova.
 fn compile_and_run(job: &Job<'_>) -> Result<Vec<String>, String> {
     let Job { opts, host, source, code, folder, package, out, user, trees } = job;
     let target = folder.join("target");
@@ -627,9 +633,10 @@ fn compile_and_run(job: &Job<'_>) -> Result<Vec<String>, String> {
 
     // Cada mapa se refaz com esse mesmo scan antes da régua: nenhuma medida
     // abre o mapa que uma compilação velha deixou na árvore.
-    if let Some(trees) = trees {
-        rebuild_trees(trees, &compiled_scan(&target)?)?;
-    }
+    let mut lines = match trees {
+        Some(trees) => rebuild_trees(trees, &compiled_scan(&target)?)?,
+        None => Vec::new(),
+    };
 
     let mut compile = cargo_in(host, source, code, &target)?;
     compile.args(["test", "--release", "--locked", "--no-run", "--lib", "--message-format=json", "-p", package]);
@@ -654,7 +661,8 @@ fn compile_and_run(job: &Job<'_>) -> Result<Vec<String>, String> {
     if lacks_proof_line(&proof) {
         return Err(format!("a régua `{name}` terminou sem imprimir a linha `{}…`: ela não grava a versão que usou, e o número não vale", PROOF_PREFIX.trim()));
     }
-    Ok(proof)
+    lines.extend(proof);
+    Ok(lines)
 }
 
 /// O pedido inteiro, a partir de uma pasta: confere, compila, mede e apaga as
@@ -1214,7 +1222,8 @@ mod tests {
 
         let rebuilt = rebuild_trees(&trees, &Scan::new(dir.path().join("scan").to_string_lossy())).unwrap();
 
-        assert_eq!(rebuilt, vec![trees.join("a"), trees.join("b")]);
+        let told = |name: &str| format!("mapa refeito: {}; arquivos que a história não leu: 0", trees.join(name).display());
+        assert_eq!(rebuilt, vec![told("a"), told("b")]);
         let calls = scan_calls(&log);
         let (a, b) = (trees.join("a").display().to_string(), trees.join("b").display().to_string());
         let of = |command: &str| {
@@ -1338,6 +1347,7 @@ mod tests {
 
         assert!(report.contains("gancho=10d66039a5b1") && report.contains("home=/pasta/vazia"), "{report}");
         assert!(report.contains("mapa=novo") && !report.contains("velho"), "the ruler read the map the scan wrote: {report}");
+        assert!(report.contains(&format!("mapa refeito: {}; arquivos que a história não leu: 0", world.trees.join("p").display())), "{report}");
         assert_eq!(logged(&world), ["cargo build", &format!("scan {}", world.trees.join("p").display()), "cargo test", "ruler"]);
         let reading = format!("history-all {}", world.trees.join("p").display());
         assert!(scan_calls(&world.log).contains(&reading), "the history of the rebuilt map is read, as in the sessions");
@@ -1379,6 +1389,25 @@ mod tests {
         let tree = world.trees.join("p").display().to_string();
         let steps: Vec<String> = std::fs::read_to_string(&world.log).unwrap().lines().map(str::to_string).collect();
         assert_eq!(steps, ["cargo build".to_string(), format!("scan {tree}"), format!("history-all {tree}"), "history-finished".into(), "cargo test".into(), "ruler".into()]);
+    }
+
+    /// O git que não lê a história de alguns arquivos deixa a medida seguir, e
+    /// o que ela imprime ao fim traz, antes da prova, a linha do mapa refeito
+    /// com quantos arquivos ficaram sem história.
+    #[cfg(unix)]
+    #[test]
+    fn the_measure_says_how_many_files_the_history_of_each_map_did_not_read() {
+        let world = world();
+        replace_history_reading(&world, "echo '{\"ok\":true,\"busy\":false,\"files\":5,\"failed\":2}'");
+        let mut asked = opts("measure_it");
+        asked.trees = Some(world.trees.clone());
+
+        let report = measure_in(&world.repo, &world.base, &asked, &world.host).expect("a history with files left out does not refuse the measure");
+
+        let line = format!("mapa refeito: {}; arquivos que a história não leu: 2", world.trees.join("p").display());
+        let lines: Vec<&str> = report.lines().collect();
+        assert_eq!(lines.iter().position(|printed| *printed == line), Some(0), "the line of the rebuilt map opens the report: {report}");
+        assert!(lines.iter().any(|printed| printed.starts_with("PROVA ")), "the ruler ran after it: {report}");
     }
 
     /// A leitura da história que falha recusa a medida, dizendo a árvore e o
