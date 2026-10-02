@@ -1386,10 +1386,10 @@ mod tests {
         assert!(body.lines().all(|line| line.ends_with(&"a".repeat(44))), "o corpo traz o resumo inteiro: {body}");
     }
 
-    /// O caso que gerou o defeito: as ondas 263 e 269 voltam na mesma rodada
-    /// e o resumo da primeira, com o escopo das duas, passa de 60. O título
-    /// cita as duas ondas e corta o resumo numa palavra inteira; antes ele
-    /// caía para a 263 só e o histórico do git escondia a 269.
+    /// O caso que gerou o defeito: duas ondas voltam na mesma rodada e o
+    /// resumo da primeira, com o escopo das duas, passa de 60 caracteres. O
+    /// título cita as duas ondas e corta o resumo numa palavra inteira; antes
+    /// ele caía para a primeira só e o histórico do git escondia a segunda.
     #[test]
     fn a_long_summary_never_drops_a_wave_from_the_scope() {
         let report = |wave: u64, summary: &str| WaveReport {
@@ -1407,15 +1407,15 @@ mod tests {
             usage: Default::default(),
         };
         let waves = [
-            report(263, "Pilha lida só nos arquivos da linguagem dela"),
-            report(269, "Autor da rodada e envio da branch"),
+            report(101, "Cadastro lido só nos itens da tabela de loja"),
+            report(107, "Aviso da rodada e envio do resumo"),
         ];
         let (title, body) = commit_message(&waves, Locale::PtBr).unwrap_or_else(|_| panic!("fits")).expect("a message");
-        assert_eq!(title, "feat(ondas-263-269): Pilha lida só nos arquivos da linguagem", "{title}");
+        assert_eq!(title, "feat(ondas-101-107): Cadastro lido só nos itens da tabela de", "{title}");
         assert!(title.chars().count() <= MESSAGE_TITLE_MAX, "{title}");
         assert_eq!(
             body,
-            "- onda 263: Pilha lida só nos arquivos da linguagem dela\n- onda 269: Autor da rodada e envio da branch"
+            "- onda 101: Cadastro lido só nos itens da tabela de loja\n- onda 107: Aviso da rodada e envio do resumo"
         );
     }
 
@@ -1429,7 +1429,7 @@ mod tests {
             wave,
             delivered: "A onda saiu.".into(),
             files: vec![format!("src/{wave}.rs")],
-            commit: Some("Leitura por código conferida na entrega".into()),
+            commit: Some("Relatório do mês gerado na hora certa".into()),
             proofs: Vec::new(),
             fixes: Vec::new(),
             replan: None,
@@ -1439,17 +1439,17 @@ mod tests {
             returns: Vec::new(),
             usage: Default::default(),
         };
-        let waves: Vec<WaveReport> = (263..275).map(report).collect();
+        let waves: Vec<WaveReport> = (101..113).map(report).collect();
         let (title, body) = commit_message(&waves, Locale::PtBr)
             .unwrap_or_else(|_| panic!("twelve waves in one commit must not refuse the round"))
             .expect("a message");
         assert!(title.chars().count() <= MESSAGE_TITLE_MAX, "{title}");
-        assert_eq!(title, "feat(ondas-263-264-265-266-267-268+6): Leitura por código", "{title}");
+        assert_eq!(title, "feat(ondas-101-102-103-104-105-106+6): Relatório do mês", "{title}");
         assert_eq!(body.lines().count(), 12, "o corpo traz uma linha por onda: {body}");
-        assert!(body.contains("onda 274:") && body.contains("onda 263:"), "{body}");
+        assert!(body.contains("onda 112:") && body.contains("onda 101:"), "{body}");
 
         let (title, _) = commit_message(&waves, Locale::EnUs).unwrap_or_else(|_| panic!("fits")).expect("a message");
-        assert!(title.starts_with("feat(waves-263-") && title.contains('+'), "{title}");
+        assert!(title.starts_with("feat(waves-101-") && title.contains('+'), "{title}");
         assert!(title.chars().count() <= MESSAGE_TITLE_MAX && !title.ends_with(": "), "{title}");
     }
 
@@ -1465,15 +1465,15 @@ mod tests {
         let copy = |wave: u64| mustard_core::io::wave_prompt::slot_path(root, "x", usize::try_from(wave).unwrap() - 1);
         std::fs::write(copy(1).join("src/a.rs"), "fn um() {}\nfn a() {}\n").unwrap();
         std::fs::write(copy(2).join("src/b.rs"), "fn um() {}\nfn b() {}\n").unwrap();
-        let first = "Pilha lida só nos arquivos da linguagem dela";
+        let first = "Cadastro lido só nos itens da tabela de loja";
         let one = json!({"wave": 1, "text": "Saiu.", "files": ["src/a.rs"], "commit": first});
-        let two = json!({"wave": 2, "text": "Saiu.", "files": ["src/b.rs"], "commit": "Autor da rodada e envio"});
+        let two = json!({"wave": 2, "text": "Saiu.", "files": ["src/b.rs"], "commit": "Aviso da rodada e envio"});
         assert_eq!(returned(root, one)["ok"], json!(true));
         assert_eq!(returned(root, two)["ok"], json!(true));
         let out = round(root, "x", None);
         assert_eq!(out["ok"], json!(true), "{out}");
 
-        let expected = "feat(ondas-1-2): Pilha lida só nos arquivos da linguagem";
+        let expected = "feat(ondas-1-2): Cadastro lido só nos itens da tabela de";
         assert_eq!(out["commit"]["title"], json!(expected), "{out}");
         let path = store::spec_file(root, "x").unwrap();
         let log = store::read(&path).unwrap().unwrap();
