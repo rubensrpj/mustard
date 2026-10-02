@@ -32,13 +32,20 @@ pub fn program_file(program: &str, windows: bool, path_env: &str) -> Option<Path
     if program.contains('/') || (windows && program.contains('\\')) {
         return Some(PathBuf::from(program));
     }
+    let sep = if windows { ';' } else { ':' };
+    program_file_in(program, windows, path_env.split(sep))
+}
+
+/// O arquivo de `program` na primeira das pastas `dirs` que tem um dos nomes
+/// dele ([`program_file_names`]). É a busca de [`program_file`] sem o corte do
+/// `PATH`: a pasta que traz o próprio separador do `PATH` no caminho — o `C:`
+/// de uma unidade do Windows, sob o separador `:` — não se parte em duas.
+fn program_file_in<'a>(program: &str, windows: bool, dirs: impl IntoIterator<Item = &'a str>) -> Option<PathBuf> {
     if program.is_empty() {
         return None;
     }
-    let sep = if windows { ';' } else { ':' };
     let names = program_file_names(program, windows);
-    path_env
-        .split(sep)
+    dirs.into_iter()
         .filter(|dir| !dir.is_empty())
         .find_map(|dir| names.iter().map(|name| Path::new(dir).join(name)).find(|file| file.is_file()))
 }
@@ -78,12 +85,39 @@ mod tests {
         assert_eq!(program_file("npm", true, &text(&dir)), Some(dir.path().join("npm.cmd")));
     }
 
+    /// A pasta é dada inteira, sem passar pelo corte do `PATH`: o caminho de
+    /// uma pasta temporária do Windows traz o `C:`, que o separador `:` de
+    /// fora do Windows cortaria ao meio, e o teste vale nos três sistemas.
     #[test]
     fn off_windows_only_the_bare_name_counts() {
         let bare = folder_with(&["npm"]);
-        assert_eq!(program_file("npm", false, &text(&bare)), Some(bare.path().join("npm")));
+        assert_eq!(program_file_in("npm", false, [text(&bare).as_str()]), Some(bare.path().join("npm")));
         let cmd_only = folder_with(&["npm.cmd"]);
+        assert_eq!(program_file_in("npm", false, [text(&cmd_only).as_str()]), None);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn off_windows_the_path_splits_on_colons_and_the_first_folder_wins() {
+        let first = folder_with(&["npm"]);
+        let second = folder_with(&["npm"]);
+        let cmd_only = folder_with(&["npm.cmd"]);
+        let path_env = format!("{}:{}:{}", text(&cmd_only), text(&first), text(&second));
+        assert_eq!(program_file("npm", false, &path_env), Some(first.path().join("npm")));
         assert_eq!(program_file("npm", false, &text(&cmd_only)), None);
+    }
+
+    /// O que o servidor do Windows mostrou: o caminho da pasta com `C:` não
+    /// cabe numa lista separada por `:`. Num sistema que aceita `:` no nome da
+    /// pasta, a mesma pasta fica inteira quando dada à busca e é cortada ao
+    /// meio quando vai dentro do `PATH`.
+    #[cfg(not(windows))]
+    #[test]
+    fn a_folder_with_a_colon_in_its_path_is_searched_whole_and_cut_in_a_path_list() {
+        let dir = tempfile::Builder::new().prefix("C:").tempdir().unwrap();
+        std::fs::write(dir.path().join("npm"), "").unwrap();
+        assert_eq!(program_file_in("npm", false, [text(&dir).as_str()]), Some(dir.path().join("npm")));
+        assert_eq!(program_file("npm", false, &text(&dir)), None);
     }
 
     #[test]

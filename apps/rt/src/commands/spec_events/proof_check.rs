@@ -121,13 +121,13 @@ fn env_assignment(word: &str) -> bool {
 
 /// `true` quando o primeiro termo do comando roda: é um caminho, uma
 /// construção do shell, uma expansão que só o shell resolve, ou um programa
-/// que o executor das provas acha.
-fn runs(program: &str) -> bool {
+/// que `finds` acha.
+fn runs(program: &str, finds: &impl Fn(&str) -> bool) -> bool {
     program.contains('/')
         || program.contains('\\')
         || program.starts_with(['(', '$'])
         || SHELL_WORDS.contains(&program)
-        || resolves(program)
+        || finds(program)
 }
 
 /// `true` quando os argumentos de uma busca a deixam silenciosa: com `-q`, só
@@ -157,6 +157,13 @@ fn git_subcommand<'a>(args: &[&'a str]) -> Option<&'a str> {
 /// branco fica para a conferência do campo obrigatório.
 #[must_use]
 pub(crate) fn proof_defect(proof: &str) -> Option<Refusal> {
+    proof_defect_finding(proof, resolves)
+}
+
+/// O mesmo que [`proof_defect`], com `finds` dizendo quais programas existem:
+/// a conferência não olha a máquina de quem a roda, e o teste dela escolhe os
+/// programas que existem em vez de depender dos que estão instalados.
+fn proof_defect_finding(proof: &str, finds: impl Fn(&str) -> bool) -> Option<Refusal> {
     let proof = proof.trim();
     if proof.is_empty() {
         return None;
@@ -175,7 +182,7 @@ pub(crate) fn proof_defect(proof: &str) -> Option<Refusal> {
         at += 1;
     }
     let program = first.get(at).copied().unwrap_or_default();
-    if !runs(program) {
+    if !runs(program, &finds) {
         let term = if program.is_empty() { proof } else { program };
         return Some(Refusal::ProofProgramUnknown { term: term.to_string() });
     }
@@ -198,8 +205,12 @@ pub(crate) fn proof_defect(proof: &str) -> Option<Refusal> {
 mod tests {
     use super::*;
 
+    /// Os programas que estes testes dão como instalados: a resposta não
+    /// depende do que a máquina tem, como o `rg`, que o servidor não traz.
+    const INSTALLED: [&str; 7] = ["cargo", "git", "grep", "rg", "node", "find", "echo"];
+
     fn reason(proof: &str) -> Option<&'static str> {
-        proof_defect(proof).map(|refusal| refusal.reason())
+        proof_defect_finding(proof, |program| INSTALLED.contains(&program)).map(|refusal| refusal.reason())
     }
 
     /// A prova escrita em prosa, ou com o nome solto de um teste, não tem
@@ -213,6 +224,11 @@ mod tests {
         assert_eq!(reason("! sai vazio"), Some("proof-program-unknown"));
         let named = proof_defect("sai vazio").unwrap().message(mustard_core::platform::i18n::Locale::PtBr);
         assert!(named.contains("sai"), "a recusa diz o termo que falhou: {named}");
+        // A conferência de verdade acha o programa pelo executor das provas: o
+        // que a máquina tem passa, e o que ela não tem é recusado.
+        let shell = if cfg!(windows) { "cmd /c ver" } else { "sh -c true" };
+        assert!(proof_defect(shell).is_none(), "{shell}");
+        assert!(proof_defect("mustard-definitely-not-a-real-program-xyz --help").is_some());
         for fine in [
             "cargo test",
             "git --version",

@@ -1736,7 +1736,10 @@ mod tests {
     /// A onda desenhada à mão, com o pedido aberto e o Claude Code fechado
     /// sem gravar a entrega, não tem lote para cortar: a linha de consumo dela
     /// não some. A rodada avisa que a onda terminou sem gravar a entrega, não
-    /// grava entrega nenhuma e a tarefa fica na onda.
+    /// grava entrega nenhuma e a tarefa fica na onda. Só roda no Linux: fora
+    /// dele nenhum processo é dado como morto, e o pedido sem o par de
+    /// processo conta como de Claude Code aberto.
+    #[cfg(target_os = "linux")]
     #[test]
     fn the_usage_line_of_a_hand_drawn_wave_whose_claude_closed_is_reported_and_not_dropped() {
         let dir = tempdir().unwrap();

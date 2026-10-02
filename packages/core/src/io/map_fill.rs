@@ -227,6 +227,20 @@ mod tests {
         assert_eq!(found.declared("gravar_pedido"), [("src/pedido.rs".to_string(), 1)]);
     }
 
+    /// `true` quando este processo mantém aberto o arquivo do mapa em `model`,
+    /// ou um dos que andam ao lado dele (o diário e o registro de gravações).
+    /// O Windows não deixa apagar nem trocar arquivo aberto; o Linux deixa, e
+    /// é pela lista de arquivos abertos dele que a alça esquecida aparece. Onde
+    /// essa lista não existe, não há o que ver.
+    fn holds_open(model: &Path) -> bool {
+        let Ok(open) = std::fs::read_dir("/proc/self/fd") else { return false };
+        let model = std::fs::canonicalize(model).unwrap_or_else(|_| model.to_path_buf());
+        let model = model.to_string_lossy().into_owned();
+        open.flatten()
+            .filter_map(|fd| std::fs::read_link(fd.path()).ok())
+            .any(|target| target.to_string_lossy().starts_with(&model))
+    }
+
     fn unfilled_in(root: &Path) -> Vec<&'static str> {
         unfilled(&open_existing(&model_path(root)).unwrap(), &BLOCKS).unwrap()
     }
@@ -248,10 +262,14 @@ mod tests {
         assert_eq!(unfilled(&db, SEARCHED).unwrap(), ["decls"], "the search reads the declarations");
         let rows: i64 = db.conn().query_row("SELECT count(*) FROM decls", [], |row| row.get(0)).unwrap();
         assert_eq!(rows, 0, "the block came back empty");
+        drop(db);
 
         project_map::save_at(&model_path(root), &map, "scan 1", &languages()).unwrap();
         assert!(unfilled_in(root).is_empty(), "the next pass fills it again");
 
+        // Escrever o mapa à mão apaga o arquivo do banco: nenhuma conexão pode
+        // seguir aberta, ou o Windows recusa com arquivo em uso.
+        assert!(!holds_open(&model_path(root)), "the map is closed before it is written by hand");
         project_map::write_text(root, &map.to_string()).unwrap();
         opened_by_an_older_scan(root);
         assert!(unfilled_in(root).is_empty(), "a hand-written map has no mark to lose");
