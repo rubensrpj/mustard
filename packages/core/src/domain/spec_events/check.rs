@@ -416,7 +416,7 @@ mod tests {
     /// toda remoção sai com ela, mesmo quando quem grava manda outro valor, e
     /// num evento de outro tipo ela não entra.
     #[test]
-    fn a_marca_da_remocao_e_posta_pelo_binario() {
+    fn the_removal_mark_is_set_by_the_binary() {
         let draft = |v: Value| v.as_object().cloned().expect("um objeto");
         for sent in [json!({"targets": [3], "reason": "r"}), json!({"targets": [3], "reason": "r", "gives_back": false})] {
             let removal = normalize(draft(sent.clone()), "remove");

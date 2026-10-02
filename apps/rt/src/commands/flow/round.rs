@@ -278,7 +278,7 @@ mod tests {
             for file in *files {
                 let path = root.join(file);
                 std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-                std::fs::write(&path, "fn um() {}\n").unwrap();
+                std::fs::write(&path, "fn one() {}\n").unwrap();
             }
         }
         git_at(root, &["init", "-q"]);
@@ -340,7 +340,7 @@ mod tests {
         std::fs::create_dir_all(root).unwrap();
         git_at(servers, &["init", "-q", "--bare", "-b", "main", "sub.git"]);
         git_at(&seed, &["init", "-q", "-b", "main"]);
-        std::fs::write(seed.join("lib.txt"), "fn um() {}\n").unwrap();
+        std::fs::write(seed.join("lib.txt"), "fn one() {}\n").unwrap();
         git_at(&seed, &["add", "-A"]);
         git_at(&seed, &["commit", "-q", "-m", "biblioteca"]);
         git_at(&seed, &["push", "-q", &server.to_string_lossy(), "main"]);

@@ -1363,14 +1363,14 @@ mod tests {
     fn the_thermometer_gives_the_place_among_the_shown_files_and_the_cause_of_each_miss() {
         let (_dir, root) = fixture::repo("{}");
 
-        let pedido = bash_row("grep -rn fechar_pedido src", &["src/pedido.rs"]);
-        assert_eq!(fate_after_hearing(&root, &pedido, &["src/frete.rs", "src/pedido.rs"]), Fate::At(2));
-        assert_eq!(fate_of(&root, &pedido, (&Outcome::Pass, &Shown::default())), Fate::Passed);
-        assert_eq!(fate_of(&root, &pedido, (&Outcome::Note("n".to_string()), &Shown::default())), Fate::Passed);
+        let order = bash_row("grep -rn fechar_pedido src", &["src/pedido.rs"]);
+        assert_eq!(fate_after_hearing(&root, &order, &["src/frete.rs", "src/pedido.rs"]), Fate::At(2));
+        assert_eq!(fate_of(&root, &order, (&Outcome::Pass, &Shown::default())), Fate::Passed);
+        assert_eq!(fate_of(&root, &order, (&Outcome::Note("n".to_string()), &Shown::default())), Fate::Passed);
         let other = Shown { files: vec!["src/frete.rs".to_string()], ranges: vec![] };
-        assert_eq!(fate_of(&root, &pedido, (&Outcome::Note("n".to_string()), &other)), Fate::Passed);
+        assert_eq!(fate_of(&root, &order, (&Outcome::Note("n".to_string()), &other)), Fate::Passed);
         let with_file = Shown { files: vec!["src/frete.rs".to_string(), "src/pedido.rs".to_string()], ranges: vec![] };
-        assert_eq!(fate_of(&root, &pedido, (&Outcome::Note("n".to_string()), &with_file)), Fate::At(2));
+        assert_eq!(fate_of(&root, &order, (&Outcome::Note("n".to_string()), &with_file)), Fate::At(2));
 
         let note = bash_row("grep -rn imposto docs", &["docs/notas.md"]);
         assert_eq!(fate_after_hearing(&root, &note, &["src/frete.rs"]), Fate::OutsideMap);
@@ -1378,8 +1378,8 @@ mod tests {
         let unknown = bash_row("grep -rn zzxqkw src", &["src/frete.rs"]);
         assert_eq!(fate_after_hearing(&root, &unknown, &["src/pedido.rs"]), Fate::NoWord);
 
-        let frete = bash_row("grep -rn calcular_frete src", &["src/frete.rs"]);
-        assert_eq!(fate_after_hearing(&root, &frete, &["src/pedido.rs"]), Fate::NoLine);
+        let freight = bash_row("grep -rn calcular_frete src", &["src/frete.rs"]);
+        assert_eq!(fate_after_hearing(&root, &freight, &["src/pedido.rs"]), Fate::NoLine);
     }
 
     /// O arquivo que o mapa tem abaixo do quinto, depois de cinco que casam
@@ -1394,9 +1394,9 @@ mod tests {
             modules.push(json!({ "path": path, "language": "rust", "loc": 1, "declarations": [
                 { "kind": "function", "name": name, "line": 1, "end_line": 1 }] }));
         }
-        files.push(("src/outro.rs".to_string(), "pub fn sem_relacao() {}\n".to_string()));
+        files.push(("src/outro.rs".to_string(), "pub fn no_relation() {}\n".to_string()));
         modules.push(json!({ "path": "src/outro.rs", "language": "rust", "loc": 1, "declarations": [
-            { "kind": "function", "name": "sem_relacao", "line": 1, "end_line": 1, "body_comment": "calcular frete" }] }));
+            { "kind": "function", "name": "no_relation", "line": 1, "end_line": 1, "body_comment": "calcular frete" }] }));
         let refs: Vec<(&str, &str)> = files.iter().map(|(p, t)| (p.as_str(), t.as_str())).collect();
         let (_dir, root) = fixture::repo_with("{}", &refs, json!({ "modules": modules }));
         let row = bash_row("grep -rn calcular_frete src", &["src/outro.rs"]);

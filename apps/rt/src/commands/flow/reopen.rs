@@ -1177,7 +1177,7 @@ mod tests {
     /// Sem o vermelho não há porta: com as verificações verdes o `--fix` é
     /// recusado, e nada é gravado nem empurrado.
     #[test]
-    fn o_pull_request_reprovado_tem_porta_de_conserto() {
+    fn rejected_pull_request_has_a_fix_door() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         spec_in(root, "epico", "pr_open");

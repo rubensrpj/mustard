@@ -280,7 +280,7 @@ mod tests {
     /// mensagem só diz que gravou, e todo o detalhe do trabalho vai no campo
     /// de texto da entrega. Ele não ensina mais a linha colada.
     #[test]
-    fn o_molde_da_onda_grava_a_entrega_sem_relatorio_pelo_tamanho() {
+    fn the_wave_template_records_the_delivery_without_a_report_by_size() {
         for (text, size_report, recorded, last_message) in [
             (Locale::PtBr, "entre mil e dois mil tokens", "`run write delivered --json", "a última mensagem só diz que gravou"),
             (Locale::EnUs, "between one and two thousand tokens", "`run write delivered --json", "the last message only says it did"),

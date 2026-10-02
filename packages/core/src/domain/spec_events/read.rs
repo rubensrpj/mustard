@@ -881,7 +881,7 @@ mod tests {
     /// combinada à mão sem tarefa fica. O número mais alto conta a onda que
     /// saiu, para a onda nova não repetir o número dela.
     #[test]
-    fn a_onda_do_binario_sem_tarefa_sai_do_plano_mas_guarda_o_numero() {
+    fn a_binary_wave_without_a_task_leaves_the_plan_but_keeps_its_number() {
         let content = "{\"v\":1,\"id\":1,\"at\":\"t\",\"type\":\"wave\",\"n\":1,\"text\":\"Uma.\",\"author\":\"assistant\"}\n\
                        {\"v\":1,\"id\":2,\"at\":\"t\",\"type\":\"wave\",\"n\":2,\"text\":\"Duas.\",\"author\":\"binary\"}\n\
                        {\"v\":1,\"id\":3,\"at\":\"t\",\"type\":\"wave\",\"n\":3,\"text\":\"Três.\",\"author\":\"binary\"}\n\
@@ -901,7 +901,7 @@ mod tests {
     /// tarefa nenhuma ficam de fora, e a entregue sem tarefa fica. A onda que
     /// só tem entrega gravada em nome de um número fora do plano não entra.
     #[test]
-    fn as_ondas_que_contam_sao_a_entregue_e_a_que_alguma_tarefa_ainda_aponta() {
+    fn the_waves_that_count_are_the_delivered_one_and_the_one_a_task_still_points_to() {
         let waves: Vec<serde_json::Value> = (1..=8)
             .map(|n| {
                 serde_json::json!({"v":1,"id":n,"at":"t","type":"wave","n":n,"text":"Onda.","author":
@@ -1010,7 +1010,7 @@ mod tests {
     /// sem o motivo de volta, que é o que a rodada lê como espera, e o leitor
     /// de voltas não a devolve.
     #[test]
-    fn a_volta_assumida_nao_volta_a_esperar_quando_a_entrega_oficial_sai() {
+    fn an_assumed_return_does_not_wait_again_when_the_official_delivery_comes_out() {
         use serde_json::json;
         for removal in [
             json!({"v":1,"id":4,"at":"t","type":"remove","targets":[3],"reason":"engano","gives_back":true}),
@@ -1036,7 +1036,7 @@ mod tests {
     /// com o mesmo código; a versão do meio removida sai da cadeia, e o item
     /// segue pela mais nova, sem trazer a antiga de volta.
     #[test]
-    fn remover_uma_versao_pelo_numero_tira_so_ela() {
+    fn removing_a_version_by_its_number_removes_only_that_one() {
         use serde_json::json;
         let versions = [
             json!({"v":1,"id":1,"at":"t","type":"note","text":"Primeira.","keys":["k"]}),

@@ -121,7 +121,7 @@ mod tests {
     /// papel dele, e a spec antiga, que tem o envio e a nota desse agente,
     /// continua lida inteira, sem linha pulada.
     #[test]
-    fn a_spec_antiga_com_o_agente_de_skill_continua_lida_e_a_gravacao_nova_o_recusa() {
+    fn an_old_spec_with_the_skill_agent_is_still_read_and_the_new_write_refuses_it() {
         let send = |role: &str| {
             json!({"author": "binary", "wave": 1, "role": role, "text": "pedido", "lines": 1, "chars": 6, "mustard": "0.2.0"})
         };
@@ -149,7 +149,7 @@ mod tests {
     /// modelo, um e-mail ou um caminho da máquina é recusado apontando o
     /// trecho.
     #[test]
-    fn a_mensagem_do_pull_request_cabe_nos_limites_e_recusa_dado_de_usuario() {
+    fn the_pull_request_message_fits_the_limits_and_refuses_user_data() {
         let mut lines: Vec<String> = Vec::new();
         let mut id = 0u64;
         let mut push = |fields: Value| {
@@ -190,7 +190,7 @@ mod tests {
             "exit": 1,
             "ms": 12,
         }));
-        let resumo = push(json!({"type": "pr_summary", "text": "O portão lê o estado."}));
+        let summary = push(json!({"type": "pr_summary", "text": "O portão lê o estado."}));
 
         let log = parse_log(&lines.join("\n"));
         let (title, body) = pr_message(&log).expect("a spec tem objetivo e resumo");
@@ -207,33 +207,33 @@ mod tests {
         assert!(body.contains("1 com falha"), "e a falha é nomeada: {body}");
 
         // Um título maior é recusado com a mensagem do limite.
-        let longo = "x".repeat(MESSAGE_TITLE_MAX + 1);
-        let refusal = check_message(&longo, "corpo", MESSAGE_TITLE_MAX, MESSAGE_BODY_MAX)
+        let long_title = "x".repeat(MESSAGE_TITLE_MAX + 1);
+        let refusal = check_message(&long_title, "corpo", MESSAGE_TITLE_MAX, MESSAGE_BODY_MAX)
             .expect_err("um título acima do teto é recusado");
         assert_eq!(refusal.reason(), "message-too-long");
         let said = refusal.message(Locale::PtBr);
         assert!(said.contains(&MESSAGE_TITLE_MAX.to_string()), "a recusa diz o limite: {said}");
 
         // Cada dado de usuário é recusado apontando o trecho.
-        for (resumo_ruim, esperado) in [
+        for (bad_summary, expected) in [
             ("Veja https://claude.ai/code/x para o resto.", "claude.ai"),
             ("Escrito com a ajuda do Claude.", "Claude"),
             ("Dúvidas com fulano@empresa.com.br.", "fulano@empresa.com.br"),
             ("O arquivo está em /home/fulano/projetos/x.rs.", "/home/"),
         ] {
-            let mut com_dado = lines.clone();
-            let mut map = obj(json!({"type": "pr_summary", "text": resumo_ruim}));
+            let mut with_data = lines.clone();
+            let mut map = obj(json!({"type": "pr_summary", "text": bad_summary}));
             map.insert("v".into(), json!(1));
-            map.insert("id".into(), json!(resumo + 1));
+            map.insert("id".into(), json!(summary + 1));
             map.insert("at".into(), json!("2026-09-16T11:00:00-03:00"));
             map.insert("author".into(), json!("assistant"));
-            com_dado.push(render_line(&map));
-            let refusal = pr_message(&parse_log(&com_dado.join("\n")))
-                .expect_err(&format!("o resumo com `{esperado}` é recusado"));
-            assert_eq!(refusal.reason(), "message-forbidden-text", "{esperado}");
+            with_data.push(render_line(&map));
+            let refusal = pr_message(&parse_log(&with_data.join("\n")))
+                .expect_err(&format!("o resumo com `{expected}` é recusado"));
+            assert_eq!(refusal.reason(), "message-forbidden-text", "{expected}");
             let said = refusal.message(Locale::PtBr);
             assert!(
-                said.to_lowercase().contains(&esperado.to_lowercase()),
+                said.to_lowercase().contains(&expected.to_lowercase()),
                 "a recusa diz o que achou: {said}",
             );
             assert!(said.contains('"'), "e mostra o trecho em que achou: {said}");

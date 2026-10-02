@@ -65,7 +65,7 @@ fn repo_files(root: &Path) -> Vec<PathBuf> {
                 .any(|c| SKIPPED_DIRS.contains(&c.as_os_str().to_string_lossy().as_ref()))
         })
         .filter(|path| !SKIPPED_PREFIXES.iter().any(|prefix| path.starts_with(prefix)))
-        .filter(|path| !path.ends_with("apps/rt/tests/vocabulario.rs"))
+        .filter(|path| !path.ends_with("apps/rt/tests/vocabulary.rs"))
         .collect();
     files.sort();
     files.dedup();
@@ -112,7 +112,7 @@ fn hits(file: &Path, text: &str, banned: &[String]) -> Vec<String> {
 /// `packages/`, inteira ou dentro de um nome do código; a falha diz o
 /// arquivo e a linha de cada vez que ela aparece.
 #[test]
-fn nenhum_arquivo_do_mustard_diz_cesta() {
+fn no_mustard_file_says_basket() {
     let root = repo_root();
     let banned = old_words();
     let files = repo_files(&root);
@@ -143,7 +143,7 @@ fn nenhum_arquivo_do_mustard_diz_cesta() {
 /// O vocabulário do modelo de vetores, arquivo de terceiros, não entra na
 /// lista dos arquivos lidos.
 #[test]
-fn o_vocabulario_do_modelo_de_vetores_fica_fora_da_lista() {
+fn vector_model_vocabulary_stays_out_of_the_list() {
     let files = repo_files(&repo_root());
     assert!(
         !files
@@ -157,7 +157,7 @@ fn o_vocabulario_do_modelo_de_vetores_fica_fora_da_lista() {
 /// em qualquer caixa, e não acha quando ela só aparece colada no meio de
 /// outra palavra, como em `replaceState`.
 #[test]
-fn a_leitura_acha_a_palavra_dentro_de_um_nome_do_codigo() {
+fn reading_finds_the_word_inside_a_code_name() {
     let banned = old_words();
     let [pt, _, en, _] = &banned;
     let upper = |w: &str| format!("{}{}", w[..1].to_uppercase(), &w[1..]);

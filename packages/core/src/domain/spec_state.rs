@@ -1232,40 +1232,40 @@ mod tests {
     /// e o objetivo comprido cuja PRIMEIRA frase cabe passa — é a frase que
     /// vira título, não o texto inteiro.
     #[test]
-    fn o_objetivo_com_primeira_frase_longa_e_recusado_na_gravacao() {
+    fn a_goal_with_a_long_first_sentence_is_refused_on_write() {
         use crate::domain::spec_events::{MessageRefusal, MESSAGE_TITLE_MAX};
         use crate::platform::i18n::Locale;
 
         let lines = surveyed_with(&[user("Trave o merge enquanto houver pendência aberta.")]);
         let said = 2;
 
-        let longa = "Travar o merge com pendência aberta em qualquer spec do projeto.";
-        assert_eq!(longa.chars().count(), 64, "a frase da recusa tem 64 caracteres");
+        let too_long = "Travar o merge com pendência aberta em qualquer spec do projeto.";
+        assert_eq!(too_long.chars().count(), 64, "a frase da recusa tem 64 caracteres");
         assert_eq!(MESSAGE_TITLE_MAX, 60, "o teto do título do pull request");
         assert_eq!(
-            goal_with(&lines, longa, said),
+            goal_with(&lines, too_long, said),
             Err(Refusal::GoalTitleTooLong { chars: 64, max: 60 }),
             "a gravação recusa a primeira frase acima do teto",
         );
 
         // A mesma frase que a abertura do pull request mostraria, palavra por
         // palavra: é o mesmo limite, dito uma vez só.
-        let recusa = Refusal::GoalTitleTooLong { chars: 64, max: 60 };
-        let abertura = MessageRefusal::TooLong { part: "title", chars: 64, max: 60 };
+        let goal_refusal = Refusal::GoalTitleTooLong { chars: 64, max: 60 };
+        let message_refusal = MessageRefusal::TooLong { part: "title", chars: 64, max: 60 };
         for lang in [Locale::PtBr, Locale::EnUs] {
-            assert_eq!(recusa.message(lang), abertura.message(lang), "{lang:?}");
+            assert_eq!(goal_refusal.message(lang), message_refusal.message(lang), "{lang:?}");
         }
 
-        let no_teto = "Travar o merge com pendência aberta em toda spec do projeto.";
-        assert_eq!(no_teto.chars().count(), 60, "a frase que cabe tem 60 caracteres, o teto");
-        assert_eq!(goal_with(&lines, no_teto, said), Ok(()), "o teto ainda passa");
+        let at_the_cap = "Travar o merge com pendência aberta em toda spec do projeto.";
+        assert_eq!(at_the_cap.chars().count(), 60, "a frase que cabe tem 60 caracteres, o teto");
+        assert_eq!(goal_with(&lines, at_the_cap, said), Ok(()), "o teto ainda passa");
 
-        let com_cauda = format!(
-            "{no_teto} Depois dele vem toda a prosa que o objetivo quiser ter, porque o título              sai só da primeira frase e o resto nunca chega ao pull request."
+        let with_tail = format!(
+            "{at_the_cap} Depois dele vem toda a prosa que o objetivo quiser ter, porque o título              sai só da primeira frase e o resto nunca chega ao pull request."
         );
-        assert!(com_cauda.chars().count() > 60, "o texto inteiro passa do teto");
+        assert!(with_tail.chars().count() > 60, "o texto inteiro passa do teto");
         assert_eq!(
-            goal_with(&lines, &com_cauda, said),
+            goal_with(&lines, &with_tail, said),
             Ok(()),
             "o que se mede é a primeira frase, a que vira título",
         );

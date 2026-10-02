@@ -1110,7 +1110,7 @@ mod tests {
     /// scripts.
     #[test]
     #[cfg(unix)]
-    fn a_atualizacao_com_o_comando_parado_devolve_o_aviso_de_prazo_e_termina() {
+    fn update_with_a_stalled_command_returns_the_deadline_warning_and_finishes() {
         let dir = tempfile::tempdir().expect("temp dir");
         let root = dir.path();
         std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"x\"\n").expect("write Cargo.toml");
@@ -1313,7 +1313,7 @@ mod tests {
     /// runs. Both warnings reach the report the command prints, and the rest
     /// of the report — the files and the plugin refresh — is still there.
     #[test]
-    fn a_atualizacao_roda_a_etapa_das_ferramentas_de_codigo() {
+    fn update_runs_the_code_tools_step() {
         let dir = tempfile::tempdir().expect("temp dir");
         let root = dir.path();
         std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"x\"\n").expect("write Cargo.toml");
@@ -1371,7 +1371,7 @@ mod tests {
     /// and no code-tool command runs at all.
     #[test]
     #[cfg(unix)]
-    fn a_atualizacao_roda_a_etapa_das_ferramentas_de_codigo_so_depois_dos_arquivos() {
+    fn update_runs_the_code_tools_step_only_after_the_files() {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = tempfile::tempdir().expect("temp dir");
@@ -1431,7 +1431,7 @@ mod tests {
     /// item só da lista de pendências do projeto, com o texto dela e o
     /// arquivo de onde saiu. Nenhuma vai ao banco de lições.
     #[test]
-    fn as_regras_do_bloco_vao_a_um_item_da_lista_de_pendencias_e_nao_ao_banco() {
+    fn block_rules_go_to_a_pending_list_item_and_not_to_the_database() {
         let dir = tempfile::tempdir().expect("temp dir");
         let root = dir.path();
         lay_out_rules(root);
@@ -1469,7 +1469,7 @@ mod tests {
     /// Sem conseguir gravar a lista de pendências, nenhum arquivo muda: a
     /// regra nunca sai do arquivo sem ficar escrita em algum lugar.
     #[test]
-    fn sem_gravar_a_lista_de_pendencias_nenhum_arquivo_muda() {
+    fn without_writing_the_pending_list_no_file_changes() {
         let dir = tempfile::tempdir().expect("temp dir");
         let root = dir.path();
         let (team, only_ours) = lay_out_rules(root);

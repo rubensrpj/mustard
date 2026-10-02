@@ -1053,7 +1053,7 @@ const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 /// A base de onde ler o que a obra mudou em `file`: o pai do commit mais
 /// velho, entre os que esta spec gravou, que tocou `file` — ou a árvore
 /// vazia, quando esse commit não tem pai (o arquivo nasceu nele).
-fn obra_base(root: &Path, log: &SpecLog, file: &str) -> Option<String> {
+fn diff_base_for_file(root: &Path, log: &SpecLog, file: &str) -> Option<String> {
     let sha = log
         .block(BlockQuery::Block(Block::Progress))
         .into_iter()
@@ -1146,7 +1146,7 @@ fn test_spans(content: &str) -> Vec<(String, usize, usize)> {
 /// no texto de hoje e cujo trecho — do `#[test]` à última chave do corpo —
 /// tem alguma linha que o `git diff` desde a base da obra marca como mudada.
 fn changed_test_names(root: &Path, log: &SpecLog, file: &str) -> Vec<String> {
-    let Some(base) = obra_base(root, log, file) else { return Vec::new() };
+    let Some(base) = diff_base_for_file(root, log, file) else { return Vec::new() };
     let Ok(content) = std::fs::read_to_string(root.join(file)) else { return Vec::new() };
     let changed = changed_lines(root, &base, file);
     if changed.is_empty() {
@@ -1266,7 +1266,7 @@ mod tests {
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::write(root.join("mustard.json"), b"{}").unwrap();
         for n in 1..=waves {
-            std::fs::write(root.join(wave_file(n)), "fn um() {}\n").unwrap();
+            std::fs::write(root.join(wave_file(n)), "fn one() {}\n").unwrap();
         }
         git_at(root, &["init", "-q"]);
         git_at(root, &["add", "-A"]);
@@ -1313,7 +1313,7 @@ mod tests {
         assert_eq!(dispatch["ok"], json!(true), "{dispatch}");
         let mut delivered = false;
         for n in (1..=waves).filter(|n| !checked.contains(n)) {
-            std::fs::write(root.join(wave_file(n)), "fn um() {}\nfn dois() {}\n").unwrap();
+            std::fs::write(root.join(wave_file(n)), "fn one() {}\nfn dois() {}\n").unwrap();
             returned(root, spec, json!({"wave": n, "text": "Saiu.", "files": [wave_file(n)], "commit": "a soma sai"}));
             delivered = true;
         }
@@ -1387,7 +1387,7 @@ mod tests {
     /// papel de revisão, o modelo e o esforço — pela mesma porta que já grava o pedido
     /// de cada onda, sem onda dona nenhuma.
     #[test]
-    fn o_pedido_da_revisao_vira_evento_de_envio() {
+    fn review_request_becomes_a_send_event() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         ready_to_close(root, "x", &["git --version"]);
@@ -1530,7 +1530,7 @@ mod tests {
     /// resposta manda o revisor gravar o dele. Gravado o veredito, o
     /// fechamento grava o oficial, com `replaces` para a volta, e fecha.
     #[test]
-    fn o_fechamento_assume_o_veredito_gravado_pelo_revisor() {
+    fn closing_takes_the_verdict_written_by_the_reviewer() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         ready_to_close(root, "x", &["git --version"]);
@@ -1661,13 +1661,13 @@ mod tests {
     /// fecha do mesmo jeito —, mas a resposta traz um aviso de teste sem
     /// dono com o nome do teste e o arquivo.
     #[test]
-    fn o_fechamento_aponta_o_teste_sem_dono() {
+    fn closing_points_at_the_test_without_an_owner() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let spec = "x";
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::write(root.join("mustard.json"), b"{}").unwrap();
-        std::fs::write(root.join("src/w1.rs"), "fn um() {}\n").unwrap();
+        std::fs::write(root.join("src/w1.rs"), "fn one() {}\n").unwrap();
         git_at(root, &["init", "-q"]);
         git_at(root, &["add", "-A"]);
         git_at(root, &["commit", "-q", "-m", "semente"]);
@@ -1710,7 +1710,7 @@ mod tests {
 
         std::fs::write(
             root.join("src/w1.rs"),
-            "#[cfg(test)]\nmod tests {\n    #[test]\n    fn soma_um_mais_um() { assert_eq!(1 + 1, 2); }\n}\n",
+            "#[cfg(test)]\nmod tests {\n    #[test]\n    fn one_plus_one() { assert_eq!(1 + 1, 2); }\n}\n",
         )
         .unwrap();
         returned(root, spec, json!({"wave": 1, "text": "Saiu.", "files": ["src/w1.rs"], "commit": "soma o teste novo"}));
@@ -1727,7 +1727,7 @@ mod tests {
             .unwrap_or_else(|| panic!("nenhum aviso de teste sem dono: {closed}"));
         let hint = found["hint"].as_str().unwrap_or_default();
         assert!(
-            hint.contains("soma_um_mais_um") && hint.contains("src/w1.rs"),
+            hint.contains("one_plus_one") && hint.contains("src/w1.rs"),
             "o aviso traz o nome do teste e o arquivo: {hint}"
         );
     }
@@ -1788,7 +1788,7 @@ mod tests {
     /// vermelha, o aviso de que o binário instalado continua o de antes é a
     /// prova de que ela rodou.
     #[test]
-    fn a_troca_do_binario_acontece_uma_vez_so_no_fechamento_depois_da_aprovacao_final() {
+    fn binary_swap_happens_only_once_at_closing_after_the_final_approval() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         ready_to_close(root, "x", &["git --version"]);
@@ -1834,7 +1834,7 @@ mod tests {
     /// fechamento seguinte, nomeando o arquivo; desfeito o corte, o
     /// fechamento volta a pedir a revisão sobre a mesma cópia.
     #[test]
-    fn a_copia_do_revisor_e_criada_e_apagada_pelo_binario() {
+    fn reviewer_copy_is_created_and_deleted_by_the_binary() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         ready_to_close(root, "x", &["git --version"]);
@@ -1844,7 +1844,7 @@ mod tests {
         let wave_copy = mustard_core::io::wave_prompt::recorded_copy(&log, 1).expect("the wave's copy").path;
         assert_eq!(shown, wave_copy, "o revisor usa a vaga da última onda");
         assert!(copy.join(".git").is_file(), "a vaga da onda ficou depois do commit dela");
-        std::fs::write(copy.join(wave_file(1)), "fn sobra_da_onda() {}\n").unwrap();
+        std::fs::write(copy.join(wave_file(1)), "fn wave_leftover() {}\n").unwrap();
         std::fs::write(copy.join("sobra.txt"), "sobra").unwrap();
         let ask = |report: Option<String>| {
             close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report, ..Default::default() }, None)
@@ -2174,7 +2174,7 @@ mod tests {
     fn project_with_build(root: &Path, config: &str) -> PathBuf {
         git_at(root, &["init", "-q"]);
         std::fs::create_dir_all(root.join("src")).unwrap();
-        std::fs::write(root.join("src/lib.rs"), "fn um() {}\n").unwrap();
+        std::fs::write(root.join("src/lib.rs"), "fn one() {}\n").unwrap();
         std::fs::write(root.join(".gitignore"), "target/\n").unwrap();
         git_at(root, &["add", "-A"]);
         git_at(root, &["commit", "-q", "-m", "semente"]);
@@ -2468,7 +2468,7 @@ exit "${2:-0}"
     /// suíte; a suíte que falha recusa também, antes de critério nenhum; os
     /// dois verdes deixam a máquina seguir para o revisor.
     #[test]
-    fn o_fechamento_roda_os_comandos_do_servidor_em_ambiente_limpo() {
+    fn closing_runs_the_server_commands_in_a_clean_environment() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         ready_to_close(root, "x", &["git --version"]);
@@ -2517,7 +2517,7 @@ exit "${2:-0}"
     /// O projeto que não declara um dos dois comandos do servidor fecha do
     /// mesmo jeito: o que falta não roda, e a resposta avisa qual chave falta.
     #[test]
-    fn o_fechamento_roda_os_comandos_do_servidor_em_ambiente_limpo_e_avisa_o_que_falta() {
+    fn closing_runs_the_server_commands_in_a_clean_environment_and_warns_what_is_missing() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         ready_to_close(root, "x", &["git --version"]);
@@ -2547,7 +2547,7 @@ exit "${2:-0}"
     /// pela porta do critério ela seria cortada e o fechamento recusaria com
     /// a suíte vermelha.
     #[test]
-    fn a_suite_do_fechamento_nao_usa_o_teto_do_criterio() {
+    fn closing_suite_does_not_use_the_criterion_cap() {
         use crate::commands::review::qa_run::{ceiling_secs, with_timeout_variable, Ceiling};
         let hour = 60 * 60;
         for command in ["pnpm test", "pnpm lint"] {
@@ -2778,7 +2778,7 @@ exit "${2:-0}"
         let root = dir.path();
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::write(root.join("mustard.json"), b"{}").unwrap();
-        std::fs::write(root.join(wave_file(1)), "fn um() {}\n").unwrap();
+        std::fs::write(root.join(wave_file(1)), "fn one() {}\n").unwrap();
         git_at(root, &["init", "-q"]);
         git_at(root, &["add", "-A"]);
         git_at(root, &["commit", "-q", "-m", "semente"]);
@@ -2820,7 +2820,7 @@ exit "${2:-0}"
         let dispatched = round(Some(format!("<ANALYSIS>{analysis}</ANALYSIS>")));
         assert_eq!(dispatched["ok"], json!(true), "{dispatched}");
 
-        std::fs::write(root.join(wave_file(1)), "fn um() {}\nfn dois() {}\n").unwrap();
+        std::fs::write(root.join(wave_file(1)), "fn one() {}\nfn dois() {}\n").unwrap();
         // A entrega responde pela decisão que o pedido da onda levou.
         returned(root, "x", json!({"wave": 1, "text": "Saiu.", "files": [wave_file(1)], "commit": "a soma sai",
             "agreed": [{"item": "MSTD-DEC-0001", "met": true}]}));
@@ -2859,12 +2859,12 @@ exit "${2:-0}"
     /// atendido sem arquivo nenhum na resposta fica com o campo vazio — a
     /// tabela não inventa um.
     #[test]
-    fn a_aceitacao_grava_a_tabela_de_rastreabilidade() {
+    fn acceptance_writes_the_traceability_table() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::write(root.join("mustard.json"), b"{}").unwrap();
-        std::fs::write(root.join(wave_file(1)), "fn um() {}\n").unwrap();
+        std::fs::write(root.join(wave_file(1)), "fn one() {}\n").unwrap();
         git_at(root, &["init", "-q"]);
         git_at(root, &["add", "-A"]);
         git_at(root, &["commit", "-q", "-m", "semente"]);
@@ -2897,7 +2897,7 @@ exit "${2:-0}"
         let analysis = json!({"wave": 1, "removed": [], "added": []});
         let dispatched = round(Some(format!("<ANALYSIS>{analysis}</ANALYSIS>")));
         assert_eq!(dispatched["ok"], json!(true), "{dispatched}");
-        std::fs::write(root.join(wave_file(1)), "fn um() {}\nfn dois() {}\n").unwrap();
+        std::fs::write(root.join(wave_file(1)), "fn one() {}\nfn dois() {}\n").unwrap();
         returned(root, "x", json!({"wave": 1, "text": "Saiu.", "files": [wave_file(1)], "commit": "a soma sai"}));
         let back = round(None);
         assert_eq!(back["ok"], json!(true), "{back}");
@@ -3018,7 +3018,7 @@ exit "${2:-0}"
         let fix = round(None);
         let sent: Vec<u64> = fix["dispatch"].as_array().unwrap().iter().filter_map(|d| d["wave"].as_u64()).collect();
         assert_eq!(sent, vec![2], "{fix}");
-        std::fs::write(root.join(wave_file(2)), "fn um() {}\nfn tres() {}\n").unwrap();
+        std::fs::write(root.join(wave_file(2)), "fn one() {}\nfn tres() {}\n").unwrap();
         let line = json!({"wave": 2, "text": "Sem repetir a 1.", "files": [wave_file(2)], "commit": "a onda 2 sem repetição"});
         returned(root, "x", line);
         let back = round(None);
@@ -3115,7 +3115,7 @@ exit "${2:-0}"
         let fix = round(None);
         assert_eq!(waves_in(&fix, "dispatch"), vec![2], "{fix}");
         assert!(fix.get("reviews").is_none(), "{fix}");
-        std::fs::write(root.join(wave_file(2)), "fn um() {}\nfn tres() {}\n").unwrap();
+        std::fs::write(root.join(wave_file(2)), "fn one() {}\nfn tres() {}\n").unwrap();
         let line = json!({"wave": 2, "text": "Consertou.", "files": [wave_file(2)], "commit": "conserta a onda 2"});
         returned(root, "x", line);
         let back = round(None);
@@ -3136,7 +3136,7 @@ exit "${2:-0}"
         assert_eq!(refused_again["reason"], json!("wave-rejected"), "{refused_again}");
         let fix_again = round(None);
         assert_eq!(waves_in(&fix_again, "dispatch"), vec![2], "{fix_again}");
-        std::fs::write(root.join(wave_file(2)), "fn um() {}\nfn quatro() {}\n").unwrap();
+        std::fs::write(root.join(wave_file(2)), "fn one() {}\nfn quatro() {}\n").unwrap();
         let line = json!({"wave": 2, "text": "Consertou de novo.", "files": [wave_file(2)], "commit": "conserta de novo"});
         returned(root, "x", line);
         assert_eq!(round(None)["ok"], json!(true));
@@ -3188,7 +3188,7 @@ exit "${2:-0}"
 
         // A onda 1 entrega o conserto, com um código diferente do que já
         // estava no disco.
-        std::fs::write(root.join(wave_file(1)), "fn um() {}\nfn tres() {}\n").unwrap();
+        std::fs::write(root.join(wave_file(1)), "fn one() {}\nfn tres() {}\n").unwrap();
         let line = json!({"wave": 1, "text": "Sem faltar o teste.", "files": [wave_file(1)], "commit": "conserta a onda 1"});
         returned(root, "x", line);
         let back = round(None);
@@ -3257,7 +3257,7 @@ exit "${2:-0}"
         let reject = json!({"final": true, "wave": 2, "result": "rejected", "text": "A onda 2 repete a 1."});
         assert_eq!(close(verdict_written(root, "x", reject))["reason"], json!("wave-rejected"));
         assert_eq!(round(None)["ok"], json!(true));
-        std::fs::write(root.join(wave_file(2)), "fn um() {}\nfn tres() {}\n").unwrap();
+        std::fs::write(root.join(wave_file(2)), "fn one() {}\nfn tres() {}\n").unwrap();
         returned(root, "x", json!({"wave": 2, "text": "Sem repetir a 1.", "files": [wave_file(2)], "commit": "a onda 2 sem repetir"}));
         assert_eq!(round(None)["ok"], json!(true));
 
@@ -3591,7 +3591,7 @@ exit "${2:-0}"
     /// O fechamento com tarefa no backlog recusa com a razão própria e nomeia a
     /// tarefa; tirada a tarefa da spec, o mesmo fechamento passa.
     #[test]
-    fn o_fechamento_recusa_com_tarefa_no_backlog() {
+    fn closing_refuses_with_a_task_in_the_backlog() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         ready_to_close(root, "x", &["git --version"]);
@@ -3668,14 +3668,14 @@ exit "${2:-0}"
         .unwrap();
         std::fs::write(
             root.join("src/lib.rs"),
-            "pub fn soma(a: u32, b: u32) -> u32 { a + b }\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn soma_de_dois() { assert_eq!(super::soma(1, 1), 2); }\n}\n",
+            "pub fn sum(a: u32, b: u32) -> u32 { a + b }\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn sum_of_two() { assert_eq!(super::sum(1, 1), 2); }\n}\n",
         )
         .unwrap();
         std::fs::write(root.join(".gitignore"), "target/\n").unwrap();
         ready_to_close(
             root,
             "x",
-            &["cargo test --lib -- tests::soma_de_dois --exact", "cargo test --lib -- tests::soma --exact"],
+            &["cargo test --lib -- tests::sum_of_two --exact", "cargo test --lib -- tests::sum --exact"],
         );
 
         let refused = close(root, "x");
@@ -3683,7 +3683,7 @@ exit "${2:-0}"
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let codes = log.codes();
         let criteria: Vec<u64> = log.visible().into_iter().filter(|e| e.event_type == "criterion").map(|e| e.id).collect();
-        let wrong_name = "cargo test --lib -- tests::soma --exact";
+        let wrong_name = "cargo test --lib -- tests::sum --exact";
         let expected = translate("close.criterion_ran_no_test", Locale::PtBr)
             .replace("{code}", &codes[&criteria[1]])
             .replace("{command}", wrong_name)
@@ -3716,10 +3716,10 @@ exit "${2:-0}"
         let dir = tempdir().unwrap();
         let root = dir.path();
         std::fs::create_dir_all(root.join("src")).unwrap();
-        std::fs::write(root.join("src/lib.rs"), "#[test]\nfn soma_de_dois() {}\n#[test]\nfn soma_de_tres() {}\n")
+        std::fs::write(root.join("src/lib.rs"), "#[test]\nfn sum_of_two() {}\n#[test]\nfn sum_of_three() {}\n")
             .unwrap();
-        let absent = "echo soma_de_dois soma_de_quatro";
-        ready_to_close(root, "x", &["echo Tests: 3 total", "echo soma_de_dois soma_de_tres", absent]);
+        let absent = "echo sum_of_two sum_of_four";
+        ready_to_close(root, "x", &["echo Tests: 3 total", "echo sum_of_two sum_of_three", absent]);
 
         let refused = close(root, "x");
         assert_eq!(refused["reason"], json!("criterion-missing-test"), "{refused}");
@@ -3728,11 +3728,11 @@ exit "${2:-0}"
         let criteria: Vec<u64> = log.visible().into_iter().filter(|e| e.event_type == "criterion").map(|e| e.id).collect();
         let expected = translate("close.criterion_missing_test", Locale::PtBr)
             .replace("{code}", &codes[&criteria[2]])
-            .replace("{name}", "soma_de_quatro");
+            .replace("{name}", "sum_of_four");
         assert_eq!(refused["hint"], json!(expected), "{refused}");
         let hint = refused["hint"].as_str().unwrap_or_default();
-        assert!(hint.contains(&codes[&criteria[2]]) && hint.contains("soma_de_quatro"), "{hint}");
-        assert!(!hint.contains("soma_de_dois"), "a recusa não acusa o nome que existe: {hint}");
+        assert!(hint.contains(&codes[&criteria[2]]) && hint.contains("sum_of_four"), "{hint}");
+        assert!(!hint.contains("sum_of_two"), "a recusa não acusa o nome que existe: {hint}");
         let runs: Vec<(Option<u64>, Option<&str>)> = log
             .visible()
             .into_iter()

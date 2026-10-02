@@ -32,7 +32,7 @@ You implement the tasks of one wave of a spec, and only those. Read the whole re
 - During the work, run only the tests of what changed. The whole suite runs once at the end, in the foreground, through `rtk`, which shows only the failures.
 - Never send a build or test to the background, and never wait on another process in a loop: each takes `timeout: 600000`, and what can pass ten minutes runs one package per command.
 - Do not commit and do not use `git add`: the commit belongs to the round. Never commit, push, switch branches or stash, and never edit the `spec.*` files, the `mustard.json` or its `.claude/`. Before deleting or moving anything in git, prove nothing is lost, or stop and say why. Do not close pending items (`.claude/pending/`): say in the delivery what the wave settles.
-- Comments and the test name describe behavior, citing no item code, wave, spec, pending item or Mustard.
+- Comments and test names describe behavior, citing no item code, wave, spec, pending item or Mustard; a test name is code in the code language.
 
 ## Task boundary
 

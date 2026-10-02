@@ -351,7 +351,7 @@ mod tests {
     /// from probed facts leaves a stale declaration behind, and that
     /// declaration is what used to refuse real branches.
     #[test]
-    fn fora_do_modo_interativo_o_init_nao_inventa_base() {
+    fn outside_interactive_mode_init_does_not_invent_a_base() {
         let dir = tempdir().expect("tempdir");
         let root = dir.path();
 
@@ -395,7 +395,7 @@ mod tests {
     /// Quem responde aqui é uma lista escrita, no lugar do terminal que a
     /// instalação usa; as perguntas são as mesmas.
     #[test]
-    fn o_modo_interativo_volta_a_perguntar_as_bases() {
+    fn interactive_mode_asks_for_the_bases_again() {
         let dir = tempdir().expect("tempdir");
         let root = dir.path();
         let ask = |existing_dev: Option<&str>, existing_prod: Option<&str>, typed: &[&str]| {
@@ -441,7 +441,7 @@ mod tests {
     /// A resposta das bases vira `git.flow`, e é dela que a proteção passa a
     /// sair. Nenhum nome está escrito aqui: os dois vêm da resposta.
     #[test]
-    fn a_resposta_das_bases_vira_o_fluxo_gravado() {
+    fn the_answer_about_the_bases_becomes_the_saved_flow() {
         let dir = tempdir().expect("tempdir");
         let root = dir.path();
         let answered = Choices {

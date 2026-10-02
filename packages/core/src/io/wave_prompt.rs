@@ -1596,6 +1596,102 @@ mod tests {
         assert!(missing.is_empty(), "requests without the languages line in the header:\n{}", missing.join("\n\n"));
     }
 
+    /// As linhas de `body` que citam o nome de teste (`test_name`) junto de
+    /// um idioma do texto (`text_languages`), com a linha contada de 0.
+    fn lines_tying_a_test_name_to_the_text_language<'a>(
+        body: &'a str,
+        test_name: &str,
+        text_languages: [&str; 2],
+    ) -> Vec<(usize, &'a str)> {
+        body.lines()
+            .enumerate()
+            .filter(|(_, line)| {
+                let lower = line.to_lowercase();
+                lower.contains(test_name) && text_languages.iter().any(|language| lower.contains(language))
+            })
+            .collect()
+    }
+
+    /// O cabeçalho de todo pedido põe o nome de teste na lista do código, e a
+    /// lista vale mesmo quando o arquivo já traz nomes em outro idioma; a
+    /// parte do texto (comentários, entregas e commits) não o cita. E nenhum
+    /// molde de agente junta o nome de teste ao idioma do texto: o molde da
+    /// onda diz que ele é código e segue o idioma do código. Sem isso o
+    /// agente lê "comentário e nome de teste" como texto e escreve o teste
+    /// em português num projeto de código em inglês. Nos dois idiomas.
+    #[test]
+    fn the_header_lists_tests_with_the_code_and_no_template_ties_a_test_name_to_the_text_language() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let log = plan_log();
+        let old_pt = "- Comentários seguem o idioma do texto e, como o nome de teste, descrevem o comportamento.";
+        let old_en = "- Comments follow the text language and, like the test name, describe behavior.";
+        assert_eq!(
+            lines_tying_a_test_name_to_the_text_language(old_pt, "nome de teste", ["idioma do texto", "idioma do projeto"]),
+            vec![(0, old_pt)],
+            "the sentence that ties the test name to the text is not pointed out",
+        );
+        assert_eq!(
+            lines_tying_a_test_name_to_the_text_language(old_en, "test name", ["text language", "project's language"]),
+            vec![(0, old_en)],
+            "the English sentence that ties the test name to the text is not pointed out",
+        );
+        for (config, locale, code_marker, tests, other_names, test_name, code_language, text_languages) in [
+            (
+                r#"{"language":{"text":"pt-BR","code":"en-US"}}"#,
+                Locale::PtBr,
+                "O código sai em",
+                "testes",
+                "mesmo quando o arquivo já traz nomes em outro idioma",
+                "nome de teste",
+                "idioma do código",
+                ["idioma do texto", "idioma do projeto"],
+            ),
+            (
+                r#"{"language":{"text":"en-US","code":"pt-BR"}}"#,
+                Locale::EnUs,
+                "Code is written in",
+                "tests",
+                "even when the file already has names in another language",
+                "test name",
+                "code language",
+                ["text language", "project's language"],
+            ),
+        ] {
+            std::fs::write(root.join("mustard.json"), config).unwrap();
+            let wave = prompts(root, "teste", &log, locale, &Flight::default()).first().expect("the first wave's request").text.clone();
+            let last = final_review(root, "teste", &log, locale).text;
+            for (name, request) in [("wave", wave), ("final review", last)] {
+                let header = request
+                    .split("\n\n")
+                    .take(3)
+                    .find(|part| part.contains(code_marker))
+                    .unwrap_or_else(|| panic!("{locale:?}: the {name} request has no languages line:\n{request}"));
+                let (text_part, code_part) = header.split_once(code_marker).expect("the line holds the code marker");
+                assert!(!text_part.contains(tests), "{locale:?}: the {name} request puts tests with the text: {header}");
+                assert!(code_part.contains(tests), "{locale:?}: the {name} request leaves tests out of the code list: {header}");
+                assert!(code_part.contains(other_names), "{locale:?}: the {name} request does not say the list holds over the file's names: {header}");
+            }
+
+            let mut tied = Vec::new();
+            for (agent, body) in crate::platform::seeds::agent_texts(locale) {
+                if agent == "wave" {
+                    assert!(
+                        body.lines().any(|line| {
+                            let lower = line.to_lowercase();
+                            lower.contains(test_name) && lower.contains(code_language)
+                        }),
+                        "{locale:?}: the wave template does not say a test name follows the code language",
+                    );
+                }
+                for (index, line) in lines_tying_a_test_name_to_the_text_language(body, test_name, text_languages) {
+                    tied.push(format!("{locale:?} {agent}.md:{}: {line}", index + 1));
+                }
+            }
+            assert!(tied.is_empty(), "templates that tie a test name to the text language:\n{}", tied.join("\n"));
+        }
+    }
+
     /// O pedido da onda lista cada item numa linha — o tipo por extenso, o
     /// código e o título —, sem o texto nem a parte do agente: a tarefa é um
     /// passo de "O que fazer", com o que ela atende logo abaixo, e a regra e a
@@ -1878,10 +1974,10 @@ mod tests {
     /// de markdown, 7 pelo arquivo citado que a onda não toca — e nenhuma das
     /// mantidas se perde.
     #[test]
-    fn as_licoes_que_o_orquestrador_tirou_nao_chegam_e_as_mantidas_continuam() {
+    fn the_lessons_the_orchestrator_removed_do_not_arrive_and_the_kept_ones_continue() {
         let fixture: Value = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/licoes-por-onda.json"
+            "/tests/fixtures/lessons-by-wave.json"
         )))
         .unwrap();
         let ids = |value: &Value| -> BTreeSet<u64> {
@@ -2922,7 +3018,7 @@ mod tests {
         let root = dir.path();
         for lang in [Locale::PtBr, Locale::EnUs] {
             let t = |key: &str| crate::platform::i18n::translate(key, lang);
-            let recorte = match lang {
+            let scope_phrase = match lang {
                 Locale::PtBr => {
                     "Se ele reprovou uma onda, as partes das ondas e das entregas trazem só essa onda; senão, \
                      trazem todas as ondas."
@@ -2941,13 +3037,13 @@ mod tests {
 
             let log = two_waves_reviewed(&Reviewed::WaveRejected);
             let again = final_review(root, "teste", &log, lang).text;
-            assert!(again.contains(recorte), "{lang:?}: a revisão de volta diz o recorte: {again}");
-            assert_eq!(again.matches(recorte).count(), 1, "o recorte é dito uma vez só: {again}");
+            assert!(again.contains(scope_phrase), "{lang:?}: a revisão de volta diz o recorte: {again}");
+            assert_eq!(again.matches(scope_phrase).count(), 1, "o recorte é dito uma vez só: {again}");
             assert_eq!(wave_codes(&log, &again), [true, false], "só a onda reprovada: {again}");
 
             let log = two_waves_reviewed(&Reviewed::First);
             let first = final_review(root, "teste", &log, lang).text;
-            assert!(!first.contains(recorte), "{lang:?}: a primeira revisão não diz recorte: {first}");
+            assert!(!first.contains(scope_phrase), "{lang:?}: a primeira revisão não diz recorte: {first}");
             assert_eq!(wave_codes(&log, &first), [true, true], "{first}");
 
             let log = two_waves_reviewed(&Reviewed::WorkRejected);
@@ -2957,7 +3053,7 @@ mod tests {
 
             let log = two_waves_reviewed(&Reviewed::ApprovedAfter);
             let after = final_review(root, "teste", &log, lang).text;
-            assert!(after.contains(t("prompt.final.look")) && !after.contains(recorte), "{lang:?}: {after}");
+            assert!(after.contains(t("prompt.final.look")) && !after.contains(scope_phrase), "{lang:?}: {after}");
             assert_eq!(wave_codes(&log, &after), [true, true], "depois da aprovação, a obra inteira: {after}");
         }
     }

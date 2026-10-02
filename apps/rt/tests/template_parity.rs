@@ -410,43 +410,43 @@ fn forward_every_instructed_flag_is_declared() {
 /// a própria cópia e continuaria verde depois de a montagem mudar. Entram as
 /// fases da tabela e o fechamento, que a rodada devolve com tudo aprovado.
 #[test]
-fn o_campo_do_proximo_passo_passa_pela_mesma_catraca() {
+fn next_step_field_goes_through_the_same_gate() {
     let tree = run_command_tree();
     assert!(!NEXT_BY_PHASE.is_empty(), "a tabela do próximo passo está vazia");
 
-    let estado = State {
+    let state = State {
         branch: Some("feature/alguma-spec".to_string()),
         base: Some("dev".to_string()),
         ..State::default()
     };
-    let mut montadas: Vec<(String, Option<String>)> = NEXT_BY_PHASE
+    let mut assembled: Vec<(String, Option<String>)> = NEXT_BY_PHASE
         .iter()
-        .map(|(fase, _)| {
-            (format!("a fase `{fase}`"), next_command(fase, "alguma-spec", &estado).as_str().map(str::to_string))
+        .map(|(phase, _)| {
+            (format!("a fase `{phase}`"), next_command(phase, "alguma-spec", &state).as_str().map(str::to_string))
         })
         .collect();
-    montadas.push(("a rodada com tudo aprovado".to_string(), step_command(DONE_STEP, "alguma-spec", &estado)));
+    assembled.push(("a rodada com tudo aprovado".to_string(), step_command(DONE_STEP, "alguma-spec", &state)));
 
     let mut offenders = Vec::new();
-    for (quem, montado) in &montadas {
-        let Some(instrucao) = montado.as_deref() else {
-            offenders.push(format!("{quem} está na tabela e não monta comando nenhum"));
+    for (who, assembled_one) in &assembled {
+        let Some(instruction) = assembled_one.as_deref() else {
+            offenders.push(format!("{who} está na tabela e não monta comando nenhum"));
             continue;
         };
-        let mut invocacoes = extract_run_invocations(instrucao);
-        let Some(inv) = invocacoes.pop() else {
-            offenders.push(format!("{quem} monta `{instrucao}`, que não é uma chamada de `mustard-rt run`"));
+        let mut invocations = extract_run_invocations(instruction);
+        let Some(inv) = invocations.pop() else {
+            offenders.push(format!("{who} monta `{instruction}`, que não é uma chamada de `mustard-rt run`"));
             continue;
         };
         let Some(cmd) = tree.get_subcommands().find(|c| c.get_name() == inv.name) else {
-            offenders.push(format!("{quem} manda rodar `run {}`, que não é registrado", inv.name));
+            offenders.push(format!("{who} manda rodar `run {}`, que não é registrado", inv.name));
             continue;
         };
-        let declaradas = declared_long_flags(cmd);
+        let declared = declared_long_flags(cmd);
         for flag in inv.flags {
-            if !declaradas.contains(flag.as_str()) {
+            if !declared.contains(flag.as_str()) {
                 offenders.push(format!(
-                    "{quem} manda rodar `run {} --{flag}`, que esse comando não declara",
+                    "{who} manda rodar `run {} --{flag}`, que esse comando não declara",
                     inv.name
                 ));
             }
@@ -454,9 +454,9 @@ fn o_campo_do_proximo_passo_passa_pela_mesma_catraca() {
         // A linha inteira, como quem obedece a resposta a roda: o parser de
         // verdade cobra as opções obrigatórias que a conferência das opções
         // escritas não vê.
-        let argv: Vec<&str> = instrucao.split_whitespace().skip(1).collect();
-        if let Err(erro) = tree.clone().try_get_matches_from(argv) {
-            offenders.push(format!("{quem} monta `{instrucao}`, que o parser recusa: {erro}"));
+        let argv: Vec<&str> = instruction.split_whitespace().skip(1).collect();
+        if let Err(error) = tree.clone().try_get_matches_from(argv) {
+            offenders.push(format!("{who} monta `{instruction}`, que o parser recusa: {error}"));
         }
     }
     assert!(
@@ -940,7 +940,7 @@ fn the_sweep_finds_each_way_a_removed_name_reaches_the_reader() {
         "#[cfg(test)]\nconst C: &[&str] = &[\"`spec-doc`\"];\n",
         "const D: &str = \"fica\";\n",
         "#[cfg(test)]\nmod tests {\n    fn t() { let _ = \"{ `wave-done`\"; }\n}\n",
-        "fn e() { spawn(&[\"run\", \"orient\"]); }\n",
+        "fn f() { spawn(&[\"run\", \"orient\"]); }\n",
     );
     let texts = rust_texts(source);
     assert_eq!(texts, ["rode `mustard-rt run git-settle`", "um \"cru\" `emit-event`", "fica", "run", "orient", "run orient"]);

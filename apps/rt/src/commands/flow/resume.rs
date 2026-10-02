@@ -349,8 +349,8 @@ pub const NEXT_BY_PHASE: &[(&str, &str)] = &[
 pub fn next_command(phase: &str, spec: &str, state: &State) -> Value {
     NEXT_BY_PHASE
         .iter()
-        .find(|(fase, _)| *fase == phase)
-        .and_then(|(_, nome)| step_command(nome, spec, state))
+        .find(|(candidate_phase, _)| *candidate_phase == phase)
+        .and_then(|(_, command_name)| step_command(command_name, spec, state))
         .map_or(Value::Null, Value::from)
 }
 

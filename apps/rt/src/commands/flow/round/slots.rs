@@ -753,14 +753,14 @@ mod tests {
         assert_eq!(waves_in(&out, "dispatch"), vec![1], "{out}");
         let inside = PathBuf::from(sent_copy(root, 1)).join("libs/sub");
         assert!(inside.join(".git").is_file(), "the slot carries the copy of the submodule: {out}");
-        std::fs::write(inside.join("lib.txt"), "fn um() {}\n// onda 1\n").unwrap();
+        std::fs::write(inside.join("lib.txt"), "fn one() {}\n// onda 1\n").unwrap();
 
         let taken = deliver_and_commit(root, &["libs/sub/lib.txt"]);
 
         let kept = std::fs::read_to_string(root.join("libs/sub/lib.txt")).unwrap();
-        assert_eq!(kept, "fn um() {}\n// onda 1\n", "the code is in the submodule of the project: {taken}");
+        assert_eq!(kept, "fn one() {}\n// onda 1\n", "the code is in the submodule of the project: {taken}");
         assert_eq!(git_text(&inside, &["status", "--porcelain", "--untracked-files=all"]), "", "{taken}");
-        assert_eq!(std::fs::read_to_string(inside.join("lib.txt")).unwrap(), "fn um() {}\n", "{taken}");
+        assert_eq!(std::fs::read_to_string(inside.join("lib.txt")).unwrap(), "fn one() {}\n", "{taken}");
     }
 
     /// Depois do commit da onda, os arquivos locais do projeto voltam à cópia
@@ -779,7 +779,7 @@ mod tests {
         assert_eq!(waves_in(&out, "dispatch"), vec![1], "{out}");
         let copy = PathBuf::from(sent_copy(root, 1));
         assert_eq!(std::fs::read_to_string(copy.join(".env")).unwrap(), "SEGREDO=1\n", "{out}");
-        std::fs::write(copy.join("src/a.rs"), "fn um() {}\n// onda 1\n").unwrap();
+        std::fs::write(copy.join("src/a.rs"), "fn one() {}\n// onda 1\n").unwrap();
         std::fs::remove_file(copy.join(".env")).unwrap();
         std::fs::write(root.join(".env"), "SEGREDO=2\n").unwrap();
 
@@ -837,13 +837,13 @@ mod tests {
         bare_project(root);
         let slot = slot_path(root, "x", 0);
         std::fs::create_dir_all(slot.join("src")).unwrap();
-        std::fs::write(slot.join("src").join("lib.rs"), "fn um() {}\n").unwrap();
+        std::fs::write(slot.join("src").join("lib.rs"), "fn one() {}\n").unwrap();
 
         for spec in ["x/a", ".."] {
             let folder = shown(&spec_copies_dir(root, spec));
             let refused = remove_spec_copies(root, spec, None).left;
             assert_eq!(refused, vec![(folder.clone(), format!("not a copy folder: {folder}"))], "{spec}");
         }
-        assert_eq!(std::fs::read_to_string(slot.join("src").join("lib.rs")).unwrap(), "fn um() {}\n", "a vaga fica");
+        assert_eq!(std::fs::read_to_string(slot.join("src").join("lib.rs")).unwrap(), "fn one() {}\n", "a vaga fica");
     }
 }

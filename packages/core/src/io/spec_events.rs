@@ -1505,7 +1505,7 @@ mod tests {
     /// A sobra sem título ou sem detalhe é recusada sem gravar nada, e a que
     /// traz os dois passa.
     #[test]
-    fn a_volta_da_onda_fica_fora_da_leitura_ate_a_rodada_assumir() {
+    fn the_wave_return_stays_out_of_the_read_until_the_round_assumes_it() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("spec.ndjson");
         seed_message(&path);
@@ -1570,7 +1570,7 @@ mod tests {
     /// veredito oficial com `replaces` para ele, ele não espera mais, e a
     /// aprovação final é a oficial.
     #[test]
-    fn o_veredito_final_sem_onda_e_lido_como_volta() {
+    fn the_final_verdict_without_a_wave_is_read_as_a_return() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("spec.ndjson");
         seed_message(&path);

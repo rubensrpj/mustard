@@ -224,16 +224,16 @@ impl Scene {
     /// merge normal, ou um squash, que o git não reconhece como merge da
     /// branch.
     fn merged_by_someone_else(&self, squash: bool) {
-        let colega = self.dir.path().join("colega");
+        let colleague = self.dir.path().join("colega");
         let origin = self.dir.path().join("origin.git");
-        git(self.dir.path(), &["clone", "-q", "-b", "dev", origin.to_str().unwrap(), colega.to_str().unwrap()]);
+        git(self.dir.path(), &["clone", "-q", "-b", "dev", origin.to_str().unwrap(), colleague.to_str().unwrap()]);
         if squash {
-            git(&colega, &["merge", "-q", "--squash", &format!("origin/{BRANCH}")]);
-            git(&colega, &["commit", "-q", "-m", "A entrega (#7)"]);
+            git(&colleague, &["merge", "-q", "--squash", &format!("origin/{BRANCH}")]);
+            git(&colleague, &["commit", "-q", "-m", "A entrega (#7)"]);
         } else {
-            git(&colega, &["merge", "-q", "--no-ff", "-m", "Merge do PR #7", &format!("origin/{BRANCH}")]);
+            git(&colleague, &["merge", "-q", "--no-ff", "-m", "Merge do PR #7", &format!("origin/{BRANCH}")]);
         }
-        git(&colega, &["push", "-q", "origin", "dev"]);
+        git(&colleague, &["push", "-q", "origin", "dev"]);
     }
 
     /// A lista que o provedor dá da branch da spec depois do merge: o pull

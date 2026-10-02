@@ -1263,14 +1263,14 @@ pub(crate) mod fixture {
 
     /// O arquivo do frete: `calcular_frete` nas linhas 2 a 6 (a palavra
     /// `imposto` só aparece num comentário) e `desconto_frete` de 8 a 10.
-    pub(crate) const FRETE: &str = "// Frete do pedido.\npub fn calcular_frete(peso: u32) -> u32 {\n    // imposto embutido\n    let base = peso * 2;\n    base + 10\n}\n\npub fn desconto_frete(total: u32) -> u32 {\n    total / 10\n}\n";
+    pub(crate) const FREIGHT: &str = "// Frete do pedido.\npub fn calcular_frete(peso: u32) -> u32 {\n    // imposto embutido\n    let base = peso * 2;\n    base + 10\n}\n\npub fn desconto_frete(total: u32) -> u32 {\n    total / 10\n}\n";
 
     /// O arquivo do pedido: `fechar_pedido` nas linhas 1 a 4, que chama o
     /// frete na linha 2.
-    pub(crate) const PEDIDO: &str = "pub fn fechar_pedido(peso: u32) -> u32 {\n    let frete = calcular_frete(peso);\n    frete + 1\n}\n";
+    pub(crate) const ORDER: &str = "pub fn fechar_pedido(peso: u32) -> u32 {\n    let frete = calcular_frete(peso);\n    frete + 1\n}\n";
 
     /// A nota fora do mapa, com o nome e a palavra `imposto` na linha 1.
-    pub(crate) const NOTAS: &str = "O calcular_frete soma o imposto.\n";
+    pub(crate) const NOTES: &str = "O calcular_frete soma o imposto.\n";
 
     /// Roda o `git` em `dir` com identidade de teste e devolve a saída.
     pub(crate) fn git(dir: &Path, args: &[&str]) -> String {
@@ -1321,7 +1321,7 @@ pub(crate) mod fixture {
                 { "kind": "function", "name": "fechar_pedido", "line": 1, "end_line": 4 }
             ] }
         ] });
-        repo_with(config, &[("src/frete.rs", FRETE), ("src/pedido.rs", PEDIDO), ("docs/notas.md", NOTAS)], map)
+        repo_with(config, &[("src/frete.rs", FREIGHT), ("src/pedido.rs", ORDER), ("docs/notas.md", NOTES)], map)
     }
 
     /// A montagem do filtro que um teste põe no lugar do Jev.
@@ -1703,9 +1703,9 @@ mod tests {
         let text = answer(search_in(&root, &root, &["calcular_frete"], &["."]));
         assert!(text.starts_with("Cravado."), "{text}");
         assert!(text.contains(r#""calcular", "frete""#), "the words the map found: {text}");
-        let frete = text.find("src/frete.rs\n  2-6 calcular_frete (2)").unwrap_or_else(|| panic!("{text}"));
-        let pedido = text.find("src/pedido.rs\n  1-4 fechar_pedido (2)").unwrap_or_else(|| panic!("{text}"));
-        assert!(frete < pedido, "the map's first file comes first: {text}");
+        let freight = text.find("src/frete.rs\n  2-6 calcular_frete (2)").unwrap_or_else(|| panic!("{text}"));
+        let order = text.find("src/pedido.rs\n  1-4 fechar_pedido (2)").unwrap_or_else(|| panic!("{text}"));
+        assert!(freight < order, "the map's first file comes first: {text}");
         assert!(text.contains("docs/notas.md\n  1: O calcular_frete soma o imposto."), "a line outside any function comes loose: {text}");
         assert!(!text.contains("Fora do corte"), "nothing was cut: {text}");
     }
@@ -1922,7 +1922,7 @@ mod tests {
     #[test]
     fn a_file_changed_after_the_map_is_reread_and_flagged_with_its_new_lines() {
         let (_dir, root) = fixture::repo("{}");
-        std::fs::write(root.join("src/frete.rs"), format!("// a\n// b\n// c\n{}", fixture::FRETE)).expect("edit");
+        std::fs::write(root.join("src/frete.rs"), format!("// a\n// b\n// c\n{}", fixture::FREIGHT)).expect("edit");
         let text = answer(search_in(&root, &root, &["calcular_frete"], &["src"]));
         assert!(text.contains("src/frete.rs (mudado depois do mapa)\n  5-9 calcular_frete (5)"), "the lines moved by three: {text}");
         assert!(!text.contains("nesta onda"), "a project with no wave in progress never reads a wave: {text}");
@@ -1944,7 +1944,7 @@ mod tests {
         let copy = dir.path().parent().expect("parent").join(format!("copia-{}", std::process::id()));
         git(&root, &["worktree", "add", "-q", &copy.to_string_lossy(), "-b", "onda"]);
         let copy = std::fs::canonicalize(&copy).expect("copy");
-        std::fs::write(copy.join("src/frete.rs"), format!("// a\n// b\n{}", fixture::FRETE)).expect("edit");
+        std::fs::write(copy.join("src/frete.rs"), format!("// a\n// b\n{}", fixture::FREIGHT)).expect("edit");
         let text = text_of(search_in(&root, &copy, &["calcular_frete"], &["src"]));
         assert!(text.contains("src/frete.rs (mudado depois do mapa)\n  4-8 calcular_frete (4)"), "{text}");
         assert!(text.contains("src/pedido.rs\n  1-4 fechar_pedido (2)"), "{text}");
@@ -1970,7 +1970,7 @@ mod tests {
 
     /// Um projeto de um arquivo só, `src/<arquivo>.rs`, com as funções `names`:
     /// cada uma com `rows` linhas, a primeira com a assinatura e as outras
-    /// com o texto `calcular_passo(n)`; o mapa traz o começo e o fim de cada
+    /// com o texto `compute_step(n)`; o mapa traz o começo e o fim de cada
     /// uma. Devolve também, na ordem, onde cada função começa.
     fn repo_with_functions(file: &str, names: &[String], rows: usize) -> (tempfile::TempDir, PathBuf) {
         let mut text = String::new();
@@ -1979,7 +1979,7 @@ mod tests {
             let first = text.lines().count() as u64 + 1;
             text.push_str(&format!("pub fn {name}() {{\n"));
             for n in 1..rows - 1 {
-                text.push_str(&format!("    let a = calcular_passo({n});\n"));
+                text.push_str(&format!("    let a = compute_step({n});\n"));
             }
             text.push_str("}\n");
             declarations.push(serde_json::json!({ "kind": "function", "name": name, "line": first, "end_line": first + rows as u64 - 1 }));
@@ -1997,8 +1997,8 @@ mod tests {
     fn only_the_first_function_of_the_answer_and_of_the_partial_note_carries_the_numbered_code() {
         let (_dir, root) = fixture::repo("{}");
         let text = answer(search_in(&root, &root, &["calcular_frete"], &["."]));
-        let frete = "src/frete.rs\n  2-6 calcular_frete (2)\n    2 | pub fn calcular_frete(peso: u32) -> u32 {\n    3 |     // imposto embutido\n    4 |     let base = peso * 2;\n    5 |     base + 10\n    6 | }\n";
-        assert!(text.contains(frete), "{text}");
+        let freight = "src/frete.rs\n  2-6 calcular_frete (2)\n    2 | pub fn calcular_frete(peso: u32) -> u32 {\n    3 |     // imposto embutido\n    4 |     let base = peso * 2;\n    5 |     base + 10\n    6 | }\n";
+        assert!(text.contains(freight), "{text}");
         let rest = "docs/notas.md\n  1: O calcular_frete soma o imposto.\nsrc/pedido.rs\n  1-4 fechar_pedido (2)";
         assert!(text.contains(rest), "the function of the next file comes with its line only: {text}");
         assert!(!text.contains("| pub fn fechar_pedido"), "{text}");
@@ -2017,19 +2017,19 @@ mod tests {
     /// começo, o fim, o nome e as linhas achadas.
     #[test]
     fn the_next_functions_of_the_same_file_come_without_code_in_the_answer_and_in_the_note() {
-        let names: Vec<String> = ["um", "dois", "tres"].iter().map(|n| format!("calcular_etapa_{n}")).collect();
+        let names: Vec<String> = ["one", "two", "three"].iter().map(|n| format!("compute_stage_{n}")).collect();
         let (_dir, root) = repo_with_functions("etapas", &names, 5);
-        let pinned = answer(search_in(&root, &root, &["calcular_etapa"], &["src"]));
+        let pinned = answer(search_in(&root, &root, &["compute_stage"], &["src"]));
         assert!(pinned.starts_with("Cravado."), "{pinned}");
-        let partial = note(search_in(&root, &root, &["calcular_etapa_um|calcular_etapa_dois|calcular_etapa_tres"], &["src"]));
+        let partial = note(search_in(&root, &root, &["compute_stage_one|compute_stage_two|compute_stage_three"], &["src"]));
         assert!(partial.starts_with("Parcial."), "{partial}");
         for (kind, text) in [("pinned", pinned), ("partial", partial)] {
-            let first = "\n  1-5 calcular_etapa_um (";
+            let first = "\n  1-5 compute_stage_one (";
             let at = text.find(first).unwrap_or_else(|| panic!("{kind}: {text}"));
             let after = &text[at..];
-            assert!(after.contains("\n    1 | pub fn calcular_etapa_um() {\n    2 |     let a = calcular_passo(1);\n"), "{kind}: the first function carries its code: {text}");
-            assert!(after.contains("\n    5 | }\n  6-10 calcular_etapa_dois ("), "{kind}: the second comes with its line only: {text}");
-            assert!(after.contains("\n  11-15 calcular_etapa_tres ("), "{kind}: {text}");
+            assert!(after.contains("\n    1 | pub fn compute_stage_one() {\n    2 |     let a = compute_step(1);\n"), "{kind}: the first function carries its code: {text}");
+            assert!(after.contains("\n    5 | }\n  6-10 compute_stage_two ("), "{kind}: the second comes with its line only: {text}");
+            assert!(after.contains("\n  11-15 compute_stage_three ("), "{kind}: {text}");
             assert!(!text.contains("    6 |") && !text.contains("    11 |"), "{kind}: no code after the first function: {text}");
             assert_eq!(text.lines().filter(|line| line.starts_with("    ")).count(), 5, "{kind}: {text}");
         }
@@ -2040,14 +2040,14 @@ mod tests {
     /// inteira, sem contagem.
     #[test]
     fn a_function_longer_than_forty_lines_is_cut_with_the_count_of_the_rest() {
-        let (_dir, root) = repo_with_functions("longa", &["calcular_longa".to_string()], 61);
-        let text = text_of(search_in(&root, &root, &["calcular_longa"], &["src"]));
-        assert!(text.contains("\n    1 | pub fn calcular_longa() {\n    2 |     let a = calcular_passo(1);\n"), "{text}");
-        assert!(text.contains("\n    40 |     let a = calcular_passo(39);\n    … (+21 linhas)"), "the first forty lines, then the count: {text}");
+        let (_dir, root) = repo_with_functions("longa", &["compute_long".to_string()], 61);
+        let text = text_of(search_in(&root, &root, &["compute_long"], &["src"]));
+        assert!(text.contains("\n    1 | pub fn compute_long() {\n    2 |     let a = compute_step(1);\n"), "{text}");
+        assert!(text.contains("\n    40 |     let a = compute_step(39);\n    … (+21 linhas)"), "the first forty lines, then the count: {text}");
         assert!(!text.contains("    41 |"), "the forty-first line is left out: {text}");
 
-        let (_exact_dir, exact) = repo_with_functions("exata", &["calcular_exata".to_string()], 40);
-        let whole = text_of(search_in(&exact, &exact, &["calcular_exata"], &["src"]));
+        let (_exact_dir, exact) = repo_with_functions("exata", &["compute_exact".to_string()], 40);
+        let whole = text_of(search_in(&exact, &exact, &["compute_exact"], &["src"]));
         assert!(whole.contains("\n    40 | }"), "a function of forty lines comes whole: {whole}");
         assert!(!whole.contains("linhas)"), "and with no count: {whole}");
     }
@@ -2059,34 +2059,34 @@ mod tests {
     #[test]
     fn a_first_function_past_the_code_budget_comes_with_its_line_only_and_so_do_the_others() {
         let wide = |pad: usize| {
-            let mut text = String::from("pub fn calcular_larga() {\n");
+            let mut text = String::from("pub fn compute_wide() {\n");
             for n in 1..39 {
-                text.push_str(&format!("    let a = calcular_passo({n}); // {}\n", "x".repeat(pad)));
+                text.push_str(&format!("    let a = compute_step({n}); // {}\n", "x".repeat(pad)));
             }
             text.push_str("}\n");
             text
         };
         let searched = |first: &str| {
-            let text = format!("{first}pub fn calcular_curta() {{\n    calcular_passo(0);\n}}\n");
+            let text = format!("{first}pub fn compute_short() {{\n    compute_step(0);\n}}\n");
             let declarations = serde_json::json!([
-                { "kind": "function", "name": "calcular_larga", "line": 1, "end_line": 40 },
-                { "kind": "function", "name": "calcular_curta", "line": 41, "end_line": 43 },
+                { "kind": "function", "name": "compute_wide", "line": 1, "end_line": 40 },
+                { "kind": "function", "name": "compute_short", "line": 41, "end_line": 43 },
             ]);
             let map = serde_json::json!({ "modules": [{ "path": "src/larga.rs", "language": "rust", "loc": 43, "declarations": declarations }] });
             let (dir, root) = fixture::repo_with("{}", &[("src/larga.rs", text.as_str())], map);
-            (dir, text_of(search_in(&root, &root, &["calcular_larga|calcular_curta"], &["src"])))
+            (dir, text_of(search_in(&root, &root, &["compute_wide|compute_short"], &["src"])))
         };
         let past = wide(130);
         assert!(numbered_body(Locale::PtBr, &past, (1, 40)).chars().count() > SNIPPET_BUDGET);
         let (_past_dir, text) = searched(&past);
-        assert!(text.contains("\n  1-40 calcular_larga (1)\n  41-43 calcular_curta (41)"), "both come with their line only: {text}");
+        assert!(text.contains("\n  1-40 compute_wide (1)\n  41-43 compute_short (41)"), "both come with their line only: {text}");
         assert!(text.lines().all(|line| !line.starts_with("    ")), "{text}");
 
         let common = wide(10);
         assert!(numbered_body(Locale::PtBr, &common, (1, 40)).chars().count() <= SNIPPET_BUDGET);
         let (_common_dir, text) = searched(&common);
-        assert!(text.contains("\n  1-40 calcular_larga (1)\n    1 | pub fn calcular_larga() {\n"), "{text}");
-        assert!(text.contains("\n    40 | }\n  41-43 calcular_curta (41)"), "only the first function carries the code: {text}");
+        assert!(text.contains("\n  1-40 compute_wide (1)\n    1 | pub fn compute_wide() {\n"), "{text}");
+        assert!(text.contains("\n    40 | }\n  41-43 compute_short (41)"), "only the first function carries the code: {text}");
         assert!(!text.contains("    41 |"), "{text}");
     }
 

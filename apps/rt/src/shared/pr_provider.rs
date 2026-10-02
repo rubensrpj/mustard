@@ -1059,7 +1059,7 @@ mod tests {
     /// A leitura é pura, então se prova sem rede. As regras abaixo têm o
     /// formato que o endpoint devolve para um conjunto de regras.
     #[test]
-    fn no_github_qualquer_regra_protege_e_a_lista_vazia_deixa_aberta() {
+    fn on_github_any_rule_protects_and_an_empty_list_leaves_it_open() {
         assert!(!rules_protect(&json!([])), "sem regra nenhuma, a branch está aberta");
         assert!(
             rules_protect(&json!([{

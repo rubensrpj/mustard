@@ -1072,7 +1072,7 @@ mod tests {
     /// branch em que um envio direto passa — que é exatamente a frase que esta
     /// conferência existe para não dizer errado.
     #[test]
-    fn a_politica_da_branch_so_conta_quando_liga_e_bloqueia() {
+    fn branch_policy_only_counts_when_enabled_and_blocking() {
         let remote = remote();
         let url = format!(
             "{}?refName=refs/heads/master&api-version=7.1",
@@ -1100,9 +1100,9 @@ mod tests {
             "e uma que só avisa também não",
         );
 
-        let sem_value = FakeTransport::of(&[("GET", &url, json!({}))]);
+        let without_value = FakeTransport::of(&[("GET", &url, json!({}))]);
         assert!(
-            do_branch_policy(&remote, &sem_value, "a", "master").is_err(),
+            do_branch_policy(&remote, &without_value, "a", "master").is_err(),
             "resposta ilegível é erro, nunca uma branch aberta medida",
         );
     }

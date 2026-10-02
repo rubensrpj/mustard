@@ -210,7 +210,7 @@ fn seconds_of(log: &SpecLog, id: u64) -> i64 {
 /// pô-la na onda — faz a frase aparecer com o código dela: a versão que só
 /// muda a onda não conta. Nos dois idiomas.
 #[test]
-fn a_conferencia_das_tarefas_so_e_pedida_quando_o_arquivo_mudou_depois_da_tarefa() {
+fn task_check_is_asked_only_when_the_file_changed_after_the_task() {
     for (language, lang) in [("pt-BR", Locale::PtBr), ("en-US", Locale::EnUs)] {
         let project = Project::new(language);
         project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);

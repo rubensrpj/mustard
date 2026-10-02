@@ -217,7 +217,7 @@ pub(super) mod tests {
         session(config, "-tmp-outro", "alheia", &instant(sent, -1_000));
         agent(config, "-tmp-outro", "alheia/subagents/agent-onda.jsonl", &instant(sent, 100), &prompt, "o1", [6_000, 0, 0, 0]);
 
-        std::fs::write(root.join("src/a.rs"), "fn um() {}\n// A soma saiu.\n").unwrap();
+        std::fs::write(root.join("src/a.rs"), "fn one() {}\n// A soma saiu.\n").unwrap();
         let delivery = json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"], "commit": "a onda 1 saiu"});
         assert_eq!(returned(root, delivery)["ok"], json!(true));
         let opts = RoundOpts {

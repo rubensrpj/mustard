@@ -141,10 +141,10 @@ fn source(rel: &str) -> String {
 /// entrada `PreCompact` do manifesto tira junto a lista derivada dele, e o
 /// aviso de compactar some sem nenhum teste cair.
 #[test]
-fn as_sobras_da_economia_antiga_nao_existem_mais() {
+fn leftovers_of_the_old_economy_no_longer_exist() {
     // 1) Nenhum comentário descreve regra que já saiu do código. Cada frase
     // abaixo é a que o arquivo trazia: a volta de qualquer uma derruba aqui.
-    for (rel, frase) in [
+    for (rel, phrase) in [
         ("apps/rt/src/commands/flow/plan.rs", "acima do teto de linhas"),
         ("apps/rt/src/commands/flow/plan.rs", "mais de três tarefas ou mais de três provas"),
         ("apps/rt/src/hooks/observe/wave_alive_observer.rs", "pausa aos 200 mil"),
@@ -170,8 +170,8 @@ fn as_sobras_da_economia_antiga_nao_existem_mais() {
         ("packages/core/src/io/wave_prompt.rs", "passaria do teto de linhas"),
     ] {
         assert!(
-            !source(rel).contains(frase),
-            "{rel} ainda descreve uma regra que saiu do código: {frase:?}"
+            !source(rel).contains(phrase),
+            "{rel} ainda descreve uma regra que saiu do código: {phrase:?}"
         );
     }
 
@@ -183,7 +183,7 @@ fn as_sobras_da_economia_antiga_nao_existem_mais() {
             .contains("the_five_old_economy_caps_stay_out_of_the_real_paths"),
         "o teste composto das cinco réguas voltou ao módulo da página"
     );
-    for (rel, prova) in [
+    for (rel, proof) in [
         (
             "apps/rt/src/commands/spec_events/write.rs",
             "fn a_fourth_task_and_a_fourth_proof_are_recorded_like_the_third",
@@ -198,12 +198,12 @@ fn as_sobras_da_economia_antiga_nao_existem_mais() {
         ),
         (
             "apps/rt/src/hooks/session/conversation_size.rs",
-            "fn aviso_de_compactar_chega_no_gancho_e_ninguem_mais_e_barrado_por_tamanho",
+            "fn compaction_warning_arrives_in_the_hook_and_nobody_else_is_blocked_by_size",
         ),
     ] {
         assert!(
-            source(rel).contains(prova),
-            "{rel} perdeu a prova própria que substitui o teste composto: {prova:?}"
+            source(rel).contains(proof),
+            "{rel} perdeu a prova própria que substitui o teste composto: {proof:?}"
         );
     }
 

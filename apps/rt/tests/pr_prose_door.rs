@@ -92,7 +92,7 @@ fn files_under(dir: &Path, extension: &str, out: &mut Vec<PathBuf>) {
 /// obedecidas juntas, e quem obedecer a segunda escreve um corpo que a
 /// primeira reescreve por cima.
 #[test]
-fn a_prosa_nao_ensina_o_gancho_que_saiu_nem_manda_montar_o_corpo() {
+fn prose_neither_teaches_the_removed_hook_nor_says_to_build_the_body() {
     let root = repo_root();
 
     // --- 1. O gancho saiu do código, e nenhum texto o ensina ----------------

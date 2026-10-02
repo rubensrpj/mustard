@@ -790,7 +790,7 @@ mod tests {
     /// de 25 corta em 50 mil — abaixo de cem mil —, então o trecho vem com
     /// aviso vermelho mesmo tendo tokens de sobra até lá.
     #[test]
-    fn a_janela_pequena_demais_para_a_fatia_vira_aviso_vermelho() {
+    fn window_too_small_for_the_slice_becomes_a_red_warning() {
         let data = json!({
             "model": { "display_name": "Opus 4.7" },
             "context_window": { "total_input_tokens": 40_000, "total_output_tokens": 5_000 }

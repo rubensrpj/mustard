@@ -1567,7 +1567,7 @@ mod tests {
     /// segura o merge como sempre segurou. As contagens provam o efeito real,
     /// não o texto do relatório.
     #[test]
-    fn a_promocao_entre_bases_nao_pede_veredito() {
+    fn promotion_between_bases_does_not_ask_for_a_verdict() {
         let dir = tempdir().expect("tempdir");
         let root = dir.path();
         let bases = door_flow();
@@ -2150,7 +2150,7 @@ mod tests {
     ///
     /// A promoção de base não tem spec: não entrega e não arma.
     #[test]
-    fn o_merge_entrega_a_spec_e_arma_a_cobranca_pela_mesma_porta() {
+    fn merge_delivers_the_spec_and_arms_the_chase_through_the_same_door() {
         use crate::commands::event::pending::armed_charges;
         use crate::hooks::task::pending_gate::seed_spec;
         let dir = project_with_items(&["Humanize", "HTML padrao"]);

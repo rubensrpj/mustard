@@ -1658,7 +1658,7 @@ mod tests {
     /// aba dos removidos ganha a regra e a decisão, e a conversa, o registro
     /// da remoção.
     #[test]
-    fn remover_a_versao_nova_devolve_a_anterior_na_leitura_e_na_pagina() {
+    fn removing_the_new_version_returns_the_previous_one_in_the_read_and_on_the_page() {
         use crate::domain::spec_events::SpecLog;
         use crate::io::spec_events::write_at;
 
@@ -1776,7 +1776,7 @@ mod tests {
     /// leva a marca, devolve a versão anterior do item dela e deixa a leitura
     /// e a página como estavam antes da versão nova que ela tira.
     #[test]
-    fn uma_remocao_antiga_sem_a_marca_le_como_antes_na_leitura_e_na_pagina() {
+    fn an_old_removal_without_the_mark_reads_as_before_in_the_read_and_on_the_page() {
         use crate::domain::spec_events::{Hidden, SpecLog, TimeFilter};
         use crate::io::spec_events::write_at;
 
@@ -2621,7 +2621,7 @@ mod tests {
     /// vazio e nada rodando, a lista não tem grupo e faltam a revisão final
     /// e o fechamento; na spec fechada, nada falta.
     #[test]
-    fn a_lista_agora_mostra_o_que_roda_e_o_backlog() {
+    fn the_list_now_shows_what_runs_and_the_backlog() {
         let s90 = format!("Noventa {}.", "n".repeat(81));
         let s91 = format!("Noventa e um {}.", "u".repeat(77));
         assert_eq!((s90.chars().count(), s91.chars().count()), (90, 91));
@@ -2695,7 +2695,7 @@ mod tests {
     /// delas existir, a lista nunca diz que faltam só a revisão final e o
     /// fechamento, nem com o backlog vazio e nenhuma onda rodando.
     #[test]
-    fn a_lista_agora_mostra_a_onda_que_espera_e_a_reprovada() {
+    fn the_list_now_shows_the_waiting_wave_and_the_rejected_one() {
         let task = |id: u64, code: &str, wave: u64, title: &str| {
             board_task(id, code, Some(wave), Some(title), "O texto da tarefa.", json!([]))
         };
@@ -2836,7 +2836,7 @@ mod tests {
     /// `#waves-N` abre a onda N; as partes antigas não existem; o título de
     /// uma tarefa aparece uma vez só; e o `.md` baixado tem todo item.
     #[test]
-    fn a_pagina_da_spec_e_um_painel_sem_nada_repetido() {
+    fn the_spec_page_is_a_panel_with_nothing_repeated() {
         let lines = dashboard_lines();
         let content = lines.iter().map(Value::to_string).collect::<Vec<_>>().join("\n");
         let codes = parse_log(&content).codes();
@@ -3058,7 +3058,7 @@ mod tests {
     /// o número de barras, e a moldura rola de lado quando as barras não
     /// cabem. Nenhuma regra do celular devolve ao gráfico uma largura mínima.
     #[test]
-    fn a_pagina_da_spec_tem_coluna_de_1040_e_grafico_de_altura_fixa() {
+    fn the_spec_page_has_a_1040_column_and_a_fixed_height_chart() {
         // As declarações de cada regra do molde com exatamente esse seletor,
         // na ordem, contando também as de dentro de um @media, numa linha
         // própria ou na mesma linha dele. Um seletor mais longo que termina
@@ -3104,7 +3104,7 @@ mod tests {
     /// As cores do painel moram em variáveis, com o tema escuro pelo sistema
     /// e pela escolha da página, e o painel cabe na tela do celular.
     #[test]
-    fn o_painel_segue_o_tema_e_cabe_no_celular() {
+    fn the_panel_follows_the_theme_and_fits_on_the_phone() {
         let html = spec_page_template(Locale::PtBr);
         for piece in [
             ":root{",

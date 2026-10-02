@@ -1309,7 +1309,7 @@ mod tests {
     /// ponto novo.
     #[test]
     fn at_most_three_reminders_none_already_decided_each_inside_a_point_and_never_an_assistant_reply() {
-        let alfa = log_of(&[
+        let alpha = log_of(&[
             ev(1, "message", json!({"author": "user", "text": "O merge com pendência aberta passou sem aviso."})),
             ev(2, "message", json!({"author": "user", "text": "Travar o merge quando a pendência estiver aberta."})),
             ev(3, "decision", json!({"text": "Trava no merge.", "keys": ["merge"], "why": "w", "origin": 2})),
@@ -1322,13 +1322,13 @@ mod tests {
             ev(3, "message", json!({"author": "user", "text": "Merge travado por pendência aberta no dev."})),
             ev(4, "message", json!({"author": "user", "text": "Pendência aberta e merge: cobrar antes."})),
         ]);
-        let prior = vec![("alfa".to_string(), alfa), ("beta".to_string(), beta)];
+        let prior = vec![("alpha".to_string(), alpha), ("beta".to_string(), beta)];
         let list = build(&sources(&["feature"], None, &[], &prior));
         assert_eq!(list.len(), gaps(&["feature"]).len(), "no point is born for a reminder");
         let found = reminders_in(&list);
         assert_eq!(found.len(), MAX_REMINDERS, "{found:?}");
         let picked: BTreeSet<(&str, u64)> = found.iter().map(|r| (r.spec.as_str(), r.message)).collect();
-        assert_eq!(picked, BTreeSet::from([("alfa", 1), ("beta", 3), ("beta", 4)]));
+        assert_eq!(picked, BTreeSet::from([("alpha", 1), ("beta", 3), ("beta", 4)]));
         assert!(found.iter().all(|r| r.text != GOAL), "never an assistant reply");
     }
 
@@ -1506,7 +1506,7 @@ mod tests {
     /// o nome vem entre crases na parte do agente, e a lacuna de quem depende
     /// traz dele os mesmos fatos que traria do texto.
     #[test]
-    fn o_nome_citado_na_parte_do_agente_do_objetivo_traz_a_declaracao_e_quem_a_importa() {
+    fn the_name_cited_in_the_agent_part_of_the_goal_brings_its_declaration_and_who_imports_it() {
         let map: ProjectMap = serde_json::from_value(json!({
             "modules": [
                 {"path": "src/a.rs", "declarations": [{"kind": "function", "name": "record_birth", "line": 3}]},

@@ -143,25 +143,25 @@ fn run_command_tree() -> Command {
 
 /// A árvore do clap é igual ao retrato gravado, nome por nome.
 #[test]
-fn a_superficie_publicada_e_igual_ao_retrato() {
+fn published_surface_equals_the_snapshot() {
     let cmd = run_command_tree();
-    let mut atual: Vec<String> =
+    let mut current: Vec<String> =
         cmd.get_subcommands().map(|c| c.get_name().to_string()).collect();
-    atual.sort();
+    current.sort();
 
     assert_eq!(
-        atual,
+        current,
         snapshot_names(),
         "a superfície de `run` mudou. Se a mudança é a pretendida, regrave \
          {SURFACE_SNAPSHOT} com estes nomes, um por linha:\n{}",
-        atual.join("\n")
+        current.join("\n")
     );
 }
 
 /// Dois comandos no mesmo lugar da lista fariam o `run --help` embaralhar
 /// sozinho: o clap ordena por `(display_order, name)`.
 #[test]
-fn nenhum_comando_divide_o_lugar_de_outro_na_ajuda() {
+fn no_command_shares_the_place_of_another_in_the_help() {
     let cmd = run_command_tree();
     let mut slots: Vec<usize> = cmd
         .get_subcommands()
@@ -169,9 +169,9 @@ fn nenhum_comando_divide_o_lugar_de_outro_na_ajuda() {
         .map(clap::Command::get_display_order)
         .collect();
     slots.sort_unstable();
-    let mut unicos = slots.clone();
-    unicos.dedup();
-    assert_eq!(slots, unicos, "dois comandos declaram o mesmo `display_order`");
+    let mut unique = slots.clone();
+    unique.dedup();
+    assert_eq!(slots, unique, "dois comandos declaram o mesmo `display_order`");
 }
 
 /// Every `mustard-rt run <name>` a SHIPPED instruction surface tells the reader
@@ -186,7 +186,7 @@ fn nenhum_comando_divide_o_lugar_de_outro_na_ajuda() {
 #[test]
 fn every_documented_run_command_exists() {
     let root = repo_root();
-    let publicados = snapshot_names();
+    let published = snapshot_names();
     let mut offenders = Vec::new();
 
     for (rel, ext) in DOC_SURFACES {
@@ -207,7 +207,7 @@ fn every_documented_run_command_exists() {
                 continue;
             };
             for name in documented_run_tokens(&text) {
-                if !publicados.contains(&name) {
+                if !published.contains(&name) {
                     let shown = file.strip_prefix(&root).unwrap_or(&file);
                     offenders.push(format!("{} -> `mustard-rt run {name}`", shown.display()));
                 }
@@ -244,9 +244,9 @@ fn documented_run_tokens_catches_every_spelling_and_skips_placeholders() {
     );
     // Every name it caught here is real — the guard flags exactly the ones that
     // are not.
-    let publicados = snapshot_names();
+    let published = snapshot_names();
     for name in &found {
-        assert!(publicados.contains(name), "{name} should be a real command");
+        assert!(published.contains(name), "{name} should be a real command");
     }
     assert_eq!(
         documented_run_tokens("`mustard-rt run wave-scaffold` (the shipped defect)"),
@@ -254,7 +254,7 @@ fn documented_run_tokens_catches_every_spelling_and_skips_placeholders() {
         "the absorbed command must still be recognised as a name — that is what \
          makes the guard fail when a surface names it",
     );
-    assert!(!publicados.contains(&"wave-scaffold".to_string()));
+    assert!(!published.contains(&"wave-scaffold".to_string()));
 }
 
 /// Quem vai mexer numa função pergunta ao mapa quem a usa, pelo comando que a
@@ -263,7 +263,7 @@ fn documented_run_tokens_catches_every_spelling_and_skips_placeholders() {
 /// mapa não declara é recusado com o texto de declaração desconhecida, que
 /// diz que o mapa não a tem, sem citar arquivo.
 #[test]
-fn o_mapa_devolve_quem_usa_uma_declaracao_pelo_nome() {
+fn map_returns_who_uses_a_declaration_by_name() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     // O mapa como o scan o grava: `total` em src/preco.rs, usada duas vezes
@@ -328,17 +328,17 @@ fn the_users_answer_puts_proven_links_first_and_groups_the_suspect_ones() {
     // `usa`, em src/com.rs; a chamada de `outra`, em src/sem.rs, pode ser a
     // `run` de src/a.rs ou a de src/b.rs; e a `run` de src/c.rs só conta três
     // chamadas do nome comum.
-    let duas = r#"["src/a.rs:1:run", "src/b.rs:1:run"]"#;
+    let both = r#"["src/a.rs:1:run", "src/b.rs:1:run"]"#;
     mustard_core::io::project_map::write_text(
         root,
         &format!(
             r#"{{"modules": [
              {{"path": "src/a.rs", "loc": 3, "declarations": [
                {{"kind": "function", "name": "run", "line": 1, "end_line": 3,
-                "used_by": ["src/com.rs:4:usa", {{"at": "src/sem.rs:2:outra", "candidates": {duas}}}]}}]}},
+                "used_by": ["src/com.rs:4:usa", {{"at": "src/sem.rs:2:outra", "candidates": {both}}}]}}]}},
              {{"path": "src/b.rs", "loc": 3, "declarations": [
                {{"kind": "function", "name": "run", "line": 1, "end_line": 3,
-                "used_by": [{{"at": "src/sem.rs:2:outra", "candidates": {duas}}}]}}]}},
+                "used_by": [{{"at": "src/sem.rs:2:outra", "candidates": {both}}}]}}]}},
              {{"path": "src/c.rs", "loc": 3, "declarations": [
                {{"kind": "function", "name": "run", "line": 1, "end_line": 3, "common_calls": 3}}]}}
            ]}}"#
@@ -358,11 +358,11 @@ fn the_users_answer_puts_proven_links_first_and_groups_the_suspect_ones() {
     let files: Vec<&str> = declarations.iter().map(|d| d["file"].as_str().unwrap()).collect();
     assert_eq!(files, ["src/a.rs", "src/b.rs", "src/c.rs"], "{report}");
 
-    let grupo = serde_json::json!([{"candidates": ["src/a.rs:1:run", "src/b.rs:1:run"], "used_by": ["src/sem.rs:2:outra"]}]);
+    let group = serde_json::json!([{"candidates": ["src/a.rs:1:run", "src/b.rs:1:run"], "used_by": ["src/sem.rs:2:outra"]}]);
     assert_eq!(declarations[0]["used_by"], serde_json::json!(["src/com.rs:4:usa"]), "só a provada: {report}");
-    assert_eq!(declarations[0]["suspect"], grupo, "a suspeita com as duas candidatas: {report}");
+    assert_eq!(declarations[0]["suspect"], group, "a suspeita com as duas candidatas: {report}");
     assert_eq!(declarations[1]["used_by"], serde_json::json!([]), "nenhuma provada: {report}");
-    assert_eq!(declarations[1]["suspect"], grupo, "{report}");
+    assert_eq!(declarations[1]["suspect"], group, "{report}");
     assert!(declarations[1].get("note").is_none(), "quem tem uso suspeito não leva a nota de ninguém usa: {report}");
     let next = report["next"].as_str().unwrap_or_default();
     assert!(next.contains("goToDefinition") && next.contains("LSP"), "o próximo passo pelo servidor de linguagem: {report}");
@@ -428,7 +428,7 @@ fn ask_map(root: &Path, question: &str) -> (bool, serde_json::Value) {
 /// sem o que mora nos testes, e a linha em que os testes começam. O arquivo
 /// que o mapa não guarda é recusado; sem `--file`, volta o resumo do projeto.
 #[test]
-fn o_resumo_de_um_arquivo_traz_as_partes_e_onde_os_testes_comecam() {
+fn file_summary_brings_the_parts_and_where_the_tests_start() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     mustard_core::io::project_map::write_text(
@@ -480,7 +480,7 @@ fn o_resumo_de_um_arquivo_traz_as_partes_e_onde_os_testes_comecam() {
 /// Para depurar o mapa, `run map dump` mostra o banco tabela por tabela, numa
 /// ordem fixa: uma entrada por tabela, com as linhas dela.
 #[test]
-fn o_despejo_do_mapa_traz_uma_entrada_por_tabela() {
+fn map_dump_brings_one_entry_per_table() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     mustard_core::io::project_map::write_text(
@@ -629,7 +629,7 @@ impl PullRequestProject {
 /// o commit novo da base, visto pela pergunta ao mapa, traz o texto do pull
 /// request dele na mesma resposta.
 #[test]
-fn a_historia_traz_o_texto_do_pull_request_lido_uma_vez_depois_do_scan() {
+fn history_carries_the_pull_request_text_read_once_after_the_scan() {
     assert!(
         mustard_core::Scan::locate().is_compiled_alongside(),
         "o teste precisa do scan compilado junto com ele: rode `cargo build -p scan` antes de `cargo test -p mustard-rt`"
@@ -659,9 +659,9 @@ fn a_historia_traz_o_texto_do_pull_request_lido_uma_vez_depois_do_scan() {
     );
     let (ok, report) = project.run(&["map", "history", "--name", "ler", "--file", "src/a.rs", "--pr", "7"], &path);
     assert!(ok, "{report}");
-    let ler = &report["declarations"][0];
-    assert_eq!(ler["pulls"], serde_json::json!(["#7 Muda o ler"]), "{report}");
-    assert_eq!(ler["comments"], serde_json::json!(["#7 soma dois mesmo?"]), "{report}");
+    let read_result = &report["declarations"][0];
+    assert_eq!(read_result["pulls"], serde_json::json!(["#7 Muda o ler"]), "{report}");
+    assert_eq!(read_result["comments"], serde_json::json!(["#7 soma dois mesmo?"]), "{report}");
     assert_eq!(report["pull"]["description"], "O ler passa a somar dois.", "{report}");
 
     let (ok, again) = project.run(&["scan"], &path);
@@ -703,7 +703,7 @@ fn a_historia_traz_o_texto_do_pull_request_lido_uma_vez_depois_do_scan() {
 /// igual. Dentro do git a pergunta cria o mapa antes de responder (ver
 /// `map_created_when_missing.rs`); fora dele não há de onde ler o mapa.
 #[test]
-fn perguntar_ao_projeto_sem_mapa_recusa_e_nao_cria_o_arquivo() {
+fn asking_the_project_without_a_map_refuses_and_does_not_create_the_file() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     for question in ["summary", "dump", "summary"] {

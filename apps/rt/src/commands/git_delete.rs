@@ -452,7 +452,7 @@ mod tests {
     /// servidor contar como unidade de alguém: a lista dos pull requests
     /// recusava rodar de cima dela e a exclusão aceitava apagá-la.
     #[test]
-    fn a_branch_padrao_do_servidor_e_base_para_todas_as_portas() {
+    fn server_default_branch_is_the_base_for_every_door() {
         let dir = tempdir().expect("tempdir");
         let root = dir.path();
         git(root, &["init", "."]);

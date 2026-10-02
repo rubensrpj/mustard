@@ -863,8 +863,8 @@ mod tests {
                 { "kind": "class", "name": "UserRepository", "line": 1, "end_line": 3 }] }
         ] });
         let (_dir, root) = word_search::fixture::repo_with(config, &files, map);
-        let frete = refused(run_in(&root, "grep -rni frete src", Some("frete")), "frete finds getFrete");
-        assert!(frete.contains("src/frete.ts\n  1-3 getFrete (1)"), "{frete}");
+        let freight = refused(run_in(&root, "grep -rni frete src", Some("frete")), "frete finds getFrete");
+        assert!(freight.contains("src/frete.ts\n  1-3 getFrete (1)"), "{freight}");
         let users = refused(run_in(&root, "grep -rn users src", Some("users")), "users finds UserRepository");
         assert!(users.contains("`src/user.ts`"), "{users}");
     }
@@ -959,7 +959,7 @@ mod tests {
         ] });
         word_search::fixture::repo_with(
             "{}",
-            &[("src/frete.rs", word_search::fixture::FRETE), ("legacy/frete.rs", word_search::fixture::FRETE)],
+            &[("src/frete.rs", word_search::fixture::FREIGHT), ("legacy/frete.rs", word_search::fixture::FREIGHT)],
             map,
         )
     }
@@ -1360,7 +1360,7 @@ mod tests {
         let copy = dir.path().parent().expect("parent").join(format!("copia-bash-{}", std::process::id()));
         word_search::fixture::git(&root, &["worktree", "add", "-q", &copy.to_string_lossy(), "-b", "onda"]);
         let copy = std::fs::canonicalize(&copy).expect("copy");
-        std::fs::write(copy.join("src/frete.rs"), format!("// a\n// b\n{}", word_search::fixture::FRETE)).expect("edit");
+        std::fs::write(copy.join("src/frete.rs"), format!("// a\n// b\n{}", word_search::fixture::FREIGHT)).expect("edit");
         let reason = refused(run_in(&copy, "grep -rn calcular_frete src", Some("copia")), "a search in the working copy");
         assert!(reason.contains("src/frete.rs (mudado depois do mapa)\n  4-8 calcular_frete (4)"), "{reason}");
         assert!(reason.contains("src/pedido.rs\n  1-4 fechar_pedido (2)"), "{reason}");

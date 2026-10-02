@@ -1127,7 +1127,7 @@ mod tests {
     /// ligado — o de C# falha na instalação, vira aviso com o comando pronto,
     /// e a etapa segue para Rust e TypeScript.
     #[test]
-    fn a_etapa_das_ferramentas_instala_o_plugin_de_cada_linguagem() {
+    fn the_tools_step_installs_the_plugin_of_each_language() {
         let project = tempfile::tempdir().unwrap();
         std::fs::write(project.path().join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
         std::fs::write(
@@ -1186,7 +1186,7 @@ mod tests {
     /// o aviso, sem comando nenhum; programa instalado fora do `PATH` ganha o
     /// aviso de onde ele está, e o plugin segue sendo instalado.
     #[test]
-    fn a_etapa_avisa_sem_plugin_e_fora_do_path_e_segue() {
+    fn the_step_warns_without_a_plugin_and_off_the_path_and_goes_on() {
         let project = tempfile::tempdir().unwrap();
         std::fs::write(project.path().join("pubspec.yaml"), "name: app\n").unwrap();
         std::fs::write(project.path().join("go.mod"), "module x\n").unwrap();
@@ -1229,7 +1229,7 @@ mod tests {
     /// vai para a pasta dele; nenhum comando da tabela instala o `typescript`
     /// global, o que trocaria o `tsc` que a pessoa usa no próprio trabalho.
     #[test]
-    fn o_servidor_de_typescript_ausente_ganha_o_typescript_6_na_pasta_dele() {
+    fn a_missing_typescript_server_gets_typescript_6_in_its_own_folder() {
         let project = typescript_project();
         let model_path = crate::io::project_map::model_path(project.path());
         let mut runner = FakeRunner::new(&["npm", "node", "claude"]);
@@ -1265,7 +1265,7 @@ mod tests {
     /// instalação, e, com a conferência falhando de novo, avisa com o comando
     /// pronto. O plugin segue sendo instalado.
     #[test]
-    fn o_servidor_que_nao_responde_e_reinstalado_e_avisa() {
+    fn a_server_that_does_not_respond_is_reinstalled_and_warns() {
         let project = typescript_project();
         let model_path = crate::io::project_map::model_path(project.path());
         let mut runner = FakeRunner::new(&["npm", "node", "claude", "typescript-language-server"]);
@@ -1295,7 +1295,7 @@ mod tests {
     /// A linguagem sem conferência na tabela, como Rust, não roda conferência
     /// nenhuma: o programa no `PATH` basta, como sempre bastou.
     #[test]
-    fn a_linguagem_sem_conferencia_nao_roda_conferencia() {
+    fn a_language_without_a_check_runs_no_check() {
         let project = tempfile::tempdir().unwrap();
         std::fs::write(project.path().join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
         let model_path = crate::io::project_map::model_path(project.path());
@@ -1314,7 +1314,7 @@ mod tests {
     }
 
     #[test]
-    fn o_executor_da_maquina_procura_no_path_que_recebe() {
+    fn the_machine_runner_looks_in_the_path_it_receives() {
         let dir = tempfile::tempdir().unwrap();
         let name = if cfg!(windows) { "toolx.cmd" } else { "toolx" };
         std::fs::write(dir.path().join(name), "").unwrap();
@@ -1329,7 +1329,7 @@ mod tests {
     /// a extensão de executável; nos outros sistemas, pelo nome puro. Sem
     /// isso, no Windows ela sairia como ausente, com o comando de instalar.
     #[test]
-    fn o_executor_acha_fora_do_path_o_programa_pelo_nome_do_sistema() {
+    fn the_runner_finds_the_program_off_the_path_by_its_system_name() {
         let windows_home = tempfile::tempdir().unwrap();
         let windows_bin = windows_home.path().join(".cargo").join("bin");
         std::fs::create_dir_all(&windows_bin).unwrap();
@@ -1370,7 +1370,7 @@ mod tests {
     /// exatamente essa linha, depois de ler a listagem do dotnet e ver que o
     /// pacote não está nela.
     #[test]
-    fn o_servidor_de_csharp_e_instalado_na_versao_que_funciona() {
+    fn the_csharp_server_is_installed_in_the_version_that_works() {
         let project = csharp_project();
         let model_path = crate::io::project_map::model_path(project.path());
         let mut runner = FakeRunner::new(&["dotnet", "claude"]);
@@ -1396,7 +1396,7 @@ mod tests {
     /// pronto. Sem o programa instalado (nada a ajustar) e em outra
     /// linguagem, a frase não sai.
     #[test]
-    fn o_csharp_ls_instalado_fora_do_path_traz_o_dotnet_root_no_aviso() {
+    fn a_csharp_ls_installed_off_the_path_brings_the_dotnet_root_in_the_warning() {
         let project = csharp_project();
         let model_path = crate::io::project_map::model_path(project.path());
         let mut runner = FakeRunner::new(&["claude"]);
@@ -1432,7 +1432,7 @@ mod tests {
     /// ausente. Num comando de dois passos, o passo que estoura é o último:
     /// o seguinte não roda.
     #[test]
-    fn o_comando_de_instalacao_que_passa_do_prazo_vira_aviso() {
+    fn an_install_command_that_passes_its_deadline_becomes_a_warning() {
         let project = csharp_project();
         let model_path = crate::io::project_map::model_path(project.path());
         let mut runner = FakeRunner::new(&["dotnet", "claude"]).with_wide_budget();
@@ -1481,7 +1481,7 @@ mod tests {
     /// prazo viram o aviso de que passou, cada um com o próprio comando; o
     /// outro passo segue.
     #[test]
-    fn o_plugin_que_passa_do_prazo_vira_aviso() {
+    fn a_plugin_that_passes_its_deadline_becomes_a_warning() {
         let project = tempfile::tempdir().unwrap();
         std::fs::write(project.path().join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
         let model_path = crate::io::project_map::model_path(project.path());
@@ -1515,7 +1515,7 @@ mod tests {
     /// resultado de sempre.
     #[test]
     #[cfg(unix)]
-    fn o_executor_da_maquina_corta_o_comando_que_passa_do_prazo() {
+    fn the_machine_runner_cuts_the_command_that_passes_its_deadline() {
         let path = std::env::var("PATH").unwrap_or_default();
         let runner = MachineRunner::new(&path).with_deadline(Duration::from_millis(300));
 
@@ -1534,7 +1534,7 @@ mod tests {
     /// O executor que a instalação e a atualização criam já nasce com o
     /// prazo de 60 s por comando e o orçamento de 60 s para a etapa inteira.
     #[test]
-    fn o_executor_da_maquina_nasce_com_o_prazo_de_60_segundos() {
+    fn the_machine_runner_starts_with_a_60_second_deadline() {
         assert_eq!(COMMAND_DEADLINE, Duration::from_secs(60));
         assert_eq!(STEP_BUDGET, Duration::from_secs(60));
         let runner = MachineRunner::new("");
@@ -1559,7 +1559,7 @@ mod tests {
     /// da tabela. Com tempo de sobra, a mesma etapa roda as duas linguagens
     /// e não avisa nada.
     #[test]
-    fn a_etapa_inteira_tem_um_orcamento_e_a_linguagem_seguinte_vira_aviso_sem_rodar() {
+    fn the_whole_step_has_a_budget_and_the_next_language_becomes_a_warning_without_running() {
         let project = go_and_rust_project();
         let model_path = crate::io::project_map::model_path(project.path());
         let plugin = "gopls-lsp@claude-plugins-official";
@@ -1618,7 +1618,7 @@ mod tests {
     /// orçamento depois de o primeiro gastar 30 s; e, com o prazo maior que o
     /// orçamento, o primeiro recebe o orçamento inteiro.
     #[test]
-    fn cada_comando_roda_com_o_menor_entre_o_prazo_dele_e_o_que_resta() {
+    fn each_command_runs_with_the_smaller_of_its_deadline_and_what_is_left() {
         let project = tempfile::tempdir().unwrap();
         std::fs::write(project.path().join("go.mod"), "module x\n").unwrap();
         let model_path = crate::io::project_map::model_path(project.path());
@@ -1639,7 +1639,7 @@ mod tests {
     /// orçamento acabado antes dele, ele nem roda, e o servidor que ele
     /// conferiria vira o aviso de prazo com a linha de instalação.
     #[test]
-    fn a_conferencia_do_servidor_tambem_gasta_do_orcamento() {
+    fn the_server_check_also_spends_from_the_budget() {
         let project = typescript_project();
         let model_path = crate::io::project_map::model_path(project.path());
         let mut runner = FakeRunner::new(&["npm", "node", "claude", "typescript-language-server"]);
@@ -1656,7 +1656,7 @@ mod tests {
 
     /// O aviso diz o prazo em segundos inteiros, arredondado: 0,99 s é 1 s.
     #[test]
-    fn o_prazo_do_aviso_e_arredondado_para_o_segundo_mais_proximo() {
+    fn the_warning_deadline_is_rounded_to_the_nearest_second() {
         assert_eq!(whole_seconds(Duration::from_millis(59_990)), 60);
         assert_eq!(whole_seconds(Duration::from_millis(990)), 1);
         assert_eq!(whole_seconds(Duration::from_millis(1_499)), 1);
@@ -1672,7 +1672,7 @@ mod tests {
     /// e o texto solto do gerenciador não contam, e o nome se compara sem
     /// distinguir maiúsculas.
     #[test]
-    fn a_versao_instalada_sai_da_listagem_do_dotnet() {
+    fn the_installed_version_comes_from_the_dotnet_listing() {
         assert_eq!(installed_version(DOTNET_LISTING, "csharp-ls"), Some("0.18.0"));
         let with_banner = format!("Welcome to .NET 9.0!\n\n{DOTNET_LISTING}");
         assert_eq!(installed_version(&with_banner, "csharp-ls"), Some("0.18.0"));
@@ -1688,7 +1688,7 @@ mod tests {
     /// A linha de instalação e a de atualização do C# trazem a mesma versão
     /// que a conferência espera.
     #[test]
-    fn a_instalacao_e_a_atualizacao_do_csharp_trazem_a_versao_da_conferencia() {
+    fn the_csharp_install_and_update_carry_the_version_of_the_check() {
         let (_, tool) = CODE_TOOLS.iter().find(|(language, _)| *language == "csharp").unwrap();
         let pin = tool.pin.as_ref().expect("o C# fixa a versão");
         assert_eq!(pin.version, "0.18.0");
@@ -1703,7 +1703,7 @@ mod tests {
     /// O `csharp-ls` instalado numa versão que não a 0.18.0 volta para ela, pela
     /// linha da tabela; o plugin segue sendo instalado.
     #[test]
-    fn o_csharp_ls_em_outra_versao_roda_o_update_com_a_versao() {
+    fn csharp_ls_in_another_version_runs_the_update_with_the_version() {
         let project = csharp_project();
         let model_path = crate::io::project_map::model_path(project.path());
         let mut runner = FakeRunner::new(&["dotnet", "csharp-ls", "claude"]);
@@ -1727,7 +1727,7 @@ mod tests {
     /// traz (instalado por outro caminho) também não, e o dotnet que não
     /// está no `PATH` nem chega a listar: nada muda.
     #[test]
-    fn o_csharp_ls_na_versao_certa_ou_sem_dotnet_nao_roda_o_update() {
+    fn csharp_ls_in_the_right_version_or_without_dotnet_does_not_run_the_update() {
         let project = csharp_project();
         let model_path = crate::io::project_map::model_path(project.path());
         let plugin_commands = vec![
@@ -1754,7 +1754,7 @@ mod tests {
     /// O update que falha vira o aviso da versão errada, com a linha pronta;
     /// o que passa do prazo vira o aviso de prazo com a mesma linha.
     #[test]
-    fn o_update_do_csharp_que_falha_ou_passa_do_prazo_vira_aviso() {
+    fn a_csharp_update_that_fails_or_passes_its_deadline_becomes_a_warning() {
         let project = csharp_project();
         let model_path = crate::io::project_map::model_path(project.path());
 
@@ -1797,7 +1797,7 @@ mod tests {
     /// hora, sem texto, com o comando que passa do prazo.
     #[test]
     #[cfg(unix)]
-    fn o_executor_da_maquina_le_a_saida_do_comando() {
+    fn the_machine_runner_reads_the_command_output() {
         let path = std::env::var("PATH").unwrap_or_default();
         let runner = MachineRunner::new(&path);
         let limit = Duration::from_secs(20);
@@ -1823,7 +1823,7 @@ mod tests {
     /// o pacote à 0.18.0. Com o pacote já na versão certa, a instalação também
     /// não roda, e o aviso do `PATH` sai do mesmo jeito.
     #[test]
-    fn o_csharp_ls_fora_do_path_em_outra_versao_ganha_o_update_e_nao_a_instalacao() {
+    fn csharp_ls_off_the_path_in_another_version_gets_the_update_and_not_the_install() {
         let project = csharp_project();
         let model_path = crate::io::project_map::model_path(project.path());
         let plugin_commands = [
@@ -1871,7 +1871,7 @@ mod tests {
     /// linha do update, e a instalação não roda por cima de um gerenciador
     /// parado.
     #[test]
-    fn a_listagem_que_passa_do_prazo_vira_aviso_e_nao_instala() {
+    fn a_listing_that_passes_its_deadline_becomes_a_warning_and_does_not_install() {
         let project = csharp_project();
         let model_path = crate::io::project_map::model_path(project.path());
         let mut runner = FakeRunner::new(&["dotnet", "claude"]).with_wide_budget();
@@ -1898,7 +1898,7 @@ mod tests {
     /// o gerenciador ausente e a ferramenta que não fixa versão dão cada uma o
     /// seu estado, e nenhuma roda outro comando que não a listagem.
     #[test]
-    fn a_leitura_da_versao_fixada_so_le_e_da_um_estado_para_cada_caso() {
+    fn reading_the_pinned_version_only_reads_and_gives_a_state_for_each_case() {
         let (_, csharp) = CODE_TOOLS.iter().find(|(language, _)| *language == "csharp").unwrap();
         let (_, rust) = CODE_TOOLS.iter().find(|(language, _)| *language == "rust").unwrap();
 
@@ -1931,7 +1931,7 @@ mod tests {
     /// recebe 10 s e o segundo, os 4 s que sobram depois de o primeiro gastar
     /// 6; com o orçamento intacto, recebe o teto de 60 s.
     #[test]
-    fn a_etapa_dentro_de_um_orcamento_maior_gasta_o_menor_entre_o_teto_e_o_que_resta() {
+    fn a_step_inside_a_bigger_budget_spends_the_smaller_of_the_cap_and_what_is_left() {
         let project = tempfile::tempdir().unwrap();
         std::fs::write(project.path().join("go.mod"), "module x\n").unwrap();
         let model_path = crate::io::project_map::model_path(project.path());
@@ -1955,7 +1955,7 @@ mod tests {
     /// O orçamento devolve `None` sem rodar nada quando acabou, e a fatia dele
     /// nunca passa do que resta nem do teto.
     #[test]
-    fn o_orcamento_nao_roda_o_trabalho_quando_acaba_e_a_fatia_respeita_o_que_resta() {
+    fn the_budget_does_not_run_the_work_when_it_runs_out_and_the_slice_respects_what_is_left() {
         let runner = FakeRunner::new(&[]);
         let budget = Budget::start(&runner, Duration::from_secs(10));
         assert_eq!(budget.within(Duration::from_secs(45), |limit| limit), Some(Duration::from_secs(10)));

@@ -585,7 +585,7 @@ mod tests {
     /// corte; ele menos os tokens já usados (230 mil + 10 mil, do exemplo
     /// aprovado) dá quanto falta.
     #[test]
-    fn a_segunda_linha_mostra_o_ponto_de_corte_e_quanto_falta() {
+    fn second_line_shows_the_cut_point_and_how_much_is_left() {
         let version = mustard_core::harness_version();
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("loja");
@@ -602,7 +602,7 @@ mod tests {
     /// fica exatamente como era antes desta onda — nenhum ponto de corte
     /// inventado, e a barra não perde nem ganha nada além disso.
     #[test]
-    fn sem_a_fatia_na_maquina_a_segunda_linha_nao_muda() {
+    fn without_the_slice_on_the_machine_the_second_line_does_not_change() {
         let version = mustard_core::harness_version();
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("loja");

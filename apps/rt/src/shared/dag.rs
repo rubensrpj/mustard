@@ -588,7 +588,7 @@ mod tests {
     /// ele casa e não com o vizinho que só parece; dois padrões cruzam quando
     /// podem casar o mesmo arquivo; o `**` cruza com tudo.
     #[test]
-    fn a_tarefa_com_curinga_sai_sozinha_pelo_casamento_de_padrao() {
+    fn task_with_a_wildcard_goes_out_alone_by_the_pattern_match() {
         assert!(files_cross("src/**", "src/a.rs"));
         assert!(!files_cross("src/**", "srcx/a.rs"), "o trecho fixo é src/, não src");
         assert!(files_cross("src/**", "src/x/*.rs"));
@@ -603,7 +603,7 @@ mod tests {
     /// e as outras seguem empacotadas entre si. A tarefa que espera só pela
     /// do curinga não entra no lote dele: ele sai sozinho.
     #[test]
-    fn a_tarefa_com_curinga_sai_sozinha_no_empacotamento() {
+    fn task_with_a_wildcard_goes_out_alone_in_the_packing() {
         let tasks = [
             task(1, &[], &["a.rs"], false),
             task(2, &[], &["**"], false),
@@ -637,7 +637,7 @@ mod tests {
     /// com ela. Só a 1 está pronta, e o lote leva as três, cada dependente
     /// depois da dependência, mesmo com a 3 chegando antes da 2 na espera.
     #[test]
-    fn a_dependente_que_divide_arquivo_entra_no_lote_depois_da_dependencia() {
+    fn dependent_that_shares_a_file_joins_the_batch_after_its_dependency() {
         let tasks = [
             task(1, &[], &["a.rs"], false),
             task(2, &[1], &["a.rs", "b.rs"], false),
@@ -652,7 +652,7 @@ mod tests {
     /// com a 1, mas espera também a 7, ainda aberta e fora do lote. As duas
     /// ficam fora: o lote leva só a 1.
     #[test]
-    fn a_dependente_sem_arquivo_em_comum_ou_com_dependencia_aberta_fica_fora() {
+    fn dependent_without_a_shared_file_or_with_an_open_dependency_stays_out() {
         let tasks = [
             task(1, &[], &["a.rs"], false),
             task(2, &[1], &["z.rs"], false),
@@ -668,7 +668,7 @@ mod tests {
     /// `b1.rs`, do outro lote, e fica fora; a 4 toca `c.rs`, de uma onda
     /// aberta, e fica fora; a 5 entra.
     #[test]
-    fn a_dependente_que_cruza_outro_lote_ou_onda_aberta_fica_fora() {
+    fn dependent_that_crosses_another_batch_or_open_wave_stays_out() {
         let tasks = [
             task(1, &[], &["a1.rs", "a2.rs"], false),
             task(2, &[], &["b1.rs", "b2.rs"], false),
@@ -685,7 +685,7 @@ mod tests {
     /// ninguém: cabem juntas no teto, mas saem em dois lotes, porque a 2 não
     /// espera a onda aberta com a 1.
     #[test]
-    fn a_parte_presa_a_onda_aberta_nao_divide_lote_com_parte_livre() {
+    fn part_held_by_an_open_wave_does_not_share_a_batch_with_a_free_part() {
         let tasks = [task(1, &[], &["a.rs"], false), task(2, &[], &["b.rs"], false)];
         let busy = BTreeSet::from(["a.rs".to_string()]);
         let batches = pack_batches(&tasks, &[1, 2], &[], &busy, BATCH_CAP);
@@ -697,7 +697,7 @@ mod tests {
     /// saem num lote só, com 26 arquivos; a sexta, que ainda caberia em
     /// arquivos, fica pelo teto de tarefas.
     #[test]
-    fn cinco_tarefas_encadeadas_do_tamanho_das_do_mapa_saem_num_lote_so() {
+    fn five_chained_tasks_the_size_of_the_map_ones_go_out_in_a_single_batch() {
         let tasks: Vec<BacklogTask<u32>> = (1..=6u32)
             .map(|n| {
                 let deps: Vec<u32> = if n == 1 { Vec::new() } else { vec![n - 1] };
@@ -713,7 +713,7 @@ mod tests {
     /// 1 e traz dois arquivos novos: passaria de 32 e fica. A 3 espera a 1 e
     /// traz um novo: fecha o lote em 32.
     #[test]
-    fn o_teto_de_arquivos_fecha_o_lote() {
+    fn file_cap_closes_the_batch() {
         let tasks = [
             task_with(1, &[], &own_files("a", BATCH_CAP.files - 2)),
             task_with(2, &[1], &["shared.rs".to_string(), "b1.rs".to_string(), "b2.rs".to_string()]),

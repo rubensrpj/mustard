@@ -330,7 +330,7 @@ fn ready(project: &Project) -> Vec<Value> {
 /// item de fora — a prova corta a leitura para a de antes (`agreed_for`, por
 /// onda) e vê o código sumir do pedido.
 #[test]
-fn a_revisao_final_recebe_o_acordado_inteiro() {
+fn final_review_receives_the_whole_agreed_set() {
     let project = Project::new();
     let decisions = ready(&project);
 
@@ -352,7 +352,7 @@ fn a_revisao_final_recebe_o_acordado_inteiro() {
 /// veredito final sem checar o combinado: a prova corta essa conferência e vê
 /// os dois vereditos malformados gravados como se estivessem completos.
 #[test]
-fn o_fechamento_recusa_veredito_final_com_item_acordado_de_fora() {
+fn closing_refuses_a_final_verdict_with_an_agreed_item_left_out() {
     let project = Project::new();
     let decisions = ready(&project);
     let asked = project.run(&["close", "--spec", SPEC]);
@@ -404,7 +404,7 @@ fn o_fechamento_recusa_veredito_final_com_item_acordado_de_fora() {
 /// virava onda sozinha: a prova corta o laço que liga `dispatch_backlog` à
 /// rodada e vê a tarefa parada no backlog, sem onda, rodada após rodada.
 #[test]
-fn item_nao_atendido_vira_tarefa_no_backlog_e_a_revisao_final_roda_de_novo() {
+fn unmet_item_becomes_a_backlog_task_and_the_final_review_runs_again() {
     let project = Project::new();
     let decisions = ready(&project);
     let target = decisions.first().expect("at least one decision").clone();

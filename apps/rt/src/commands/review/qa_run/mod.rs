@@ -379,7 +379,7 @@ mod tests {
     /// diz zero teste rodado. É a peça, e não a conversa entre close.rs e
     /// runner.rs, que promete essa leitura.
     #[test]
-    fn a_verificacao_que_nao_roda_teste_nenhum_e_recusada() {
+    fn check_that_runs_no_test_is_refused() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         std::fs::write(
@@ -390,13 +390,13 @@ mod tests {
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::write(
             root.join("src/lib.rs"),
-            "#[cfg(test)]\nmod tests {\n    #[test]\n    fn soma() { assert_eq!(1 + 1, 2); }\n}\n",
+            "#[cfg(test)]\nmod tests {\n    #[test]\n    fn sum() { assert_eq!(1 + 1, 2); }\n}\n",
         )
         .unwrap();
 
         // Sanidade: o mesmo comando, com o nome certo, roda e passa — a
         // recusa abaixo é da leitura de zero testes, não de outro motivo.
-        let matching = run_proof("cargo test --lib -- tests::soma --exact", root);
+        let matching = run_proof("cargo test --lib -- tests::sum --exact", root);
         assert_eq!(matching.result, "pass", "a prova com o nome certo passa");
         assert_eq!(matching.ran_no_test, None);
 
@@ -437,8 +437,8 @@ mod tests {
             ["nome_presente"],
         );
         assert!(names("echo Tests: 3 total").is_empty());
-        assert_eq!(names("cargo test --lib -- tests::soma_de_dois --exact"), ["soma_de_dois"]);
-        assert!(names("cargo test --lib -- tests::soma --exact").is_empty(), "sem sublinhado não é nome");
+        assert_eq!(names("cargo test --lib -- tests::sum_of_two --exact"), ["sum_of_two"]);
+        assert!(names("cargo test --lib -- tests::sum --exact").is_empty(), "sem sublinhado não é nome");
         assert_eq!(names("cargo test -- um_teste um_teste outro_teste"), ["um_teste", "outro_teste"]);
         for refused_line in [
             "cargo test -- \"dois_nomes com_espaco\"",
@@ -472,11 +472,11 @@ mod tests {
             root,
             &[
                 ("src/lib.rs", "#[test]\nfn nome_presente() {}\n"),
-                ("tests/alvo_inteiro.rs", "#[test]\nfn um() {}\n"),
+                ("tests/alvo_inteiro.rs", "#[test]\nfn one() {}\n"),
                 (".gitignore", "target/\n"),
             ],
         );
-        std::fs::write(root.join("src/novo.rs"), "fn teste_novo() {}\n").unwrap();
+        std::fs::write(root.join("src/novo.rs"), "fn new_test() {}\n").unwrap();
         std::fs::create_dir_all(root.join("target")).unwrap();
         std::fs::write(root.join("target/velho.d"), "teste_velho\n").unwrap();
         std::fs::create_dir_all(root.join(".claude/spec/x")).unwrap();
@@ -488,7 +488,7 @@ mod tests {
         assert_eq!(missing.ran_no_test, None);
         assert_eq!(missing.exit, 0, "a execução guarda o código com que o comando saiu");
 
-        for present in ["echo nome_presente", "echo alvo_inteiro", "echo teste_novo", "echo Tests: 3 total"] {
+        for present in ["echo nome_presente", "echo alvo_inteiro", "echo new_test", "echo Tests: 3 total"] {
             let out = run_proof(present, root);
             assert_eq!((out.result, out.missing_test), ("pass", None), "{present}");
         }

@@ -293,7 +293,7 @@ mod tests {
     /// derruba nada: devolve uma corrida que não deu certo, e a leitura
     /// trimada vira "não medido".
     #[test]
-    fn um_lugar_sem_repositorio_devolve_corrida_sem_sucesso() {
+    fn a_place_without_a_repository_returns_an_unsuccessful_run() {
         let run = run(Path::new("/no/such/place/at/all"), &["status"]);
         assert!(!run.ok, "nem o diretório existe: {run:?}");
         assert_eq!(run.out(), None, "não medido nunca vira resposta vazia");
@@ -304,7 +304,7 @@ mod tests {
     /// interface. A resposta vazia de um comando que deu certo continua sendo
     /// uma resposta, e não "não medido".
     #[test]
-    fn um_repositorio_de_verdade_responde_e_o_vazio_continua_resposta() {
+    fn a_real_repository_answers_and_the_empty_one_stays_an_answer() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         if !run(root, &["init", "-q", "-b", "trunk", "."]).ok {
@@ -329,7 +329,7 @@ mod tests {
     /// Quando o git recusa, o texto da recusa não se perde: ele chega por
     /// `result`, que é o que um comando mostra ao operador.
     #[test]
-    fn a_recusa_do_git_chega_com_o_texto_dela() {
+    fn the_git_refusal_arrives_with_its_text() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         if !run(root, &["init", "-q", "."]).ok {
@@ -401,7 +401,7 @@ mod tests {
     /// pelo executor, imprime a marca, o valor que recebeu para o pedido de
     /// credencial por terminal e o que recebeu para as travas opcionais.
     #[test]
-    fn programa_falso() {
+    fn fake_program() {
         let prompt = std::env::var("GIT_TERMINAL_PROMPT").unwrap_or_default();
         let locks = std::env::var("GIT_OPTIONAL_LOCKS").unwrap_or_default();
         println!("{MARK} pedido-de-credencial={prompt} travas-opcionais={locks}");
@@ -424,12 +424,12 @@ mod tests {
     }
 
     /// Chama o executor com os argumentos que fazem o executável de testes
-    /// rodar só o [`programa_falso`]. Os nomes de teste não levam o nome do
+    /// rodar só o [`fake_program`]. Os nomes de teste não levam o nome do
     /// pacote, que vem na frente do caminho do módulo.
     fn run_fake(dir: &Path) -> GitRun {
         let module = module_path!();
         let module = module.split_once("::").map_or(module, |(_, rest)| rest);
-        let test = format!("{module}::programa_falso");
+        let test = format!("{module}::fake_program");
         run(dir, &[&test, "--exact", "--nocapture"])
     }
 
@@ -439,7 +439,7 @@ mod tests {
     /// O programa falso responde uma marca que o git nunca responderia, então
     /// esta asserção só passa se a configuração tiver sido lida de verdade.
     #[test]
-    fn o_programa_que_roda_e_o_que_o_mustard_json_nomeia() {
+    fn the_program_that_runs_is_the_one_mustard_json_names() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         declare_fake_program(root, true);
@@ -459,7 +459,7 @@ mod tests {
     /// sem a subida até a raiz, o programa seria o padrão e a marca não
     /// apareceria.
     #[test]
-    fn a_configuracao_lida_e_a_do_projeto_dono_da_pasta() {
+    fn the_config_read_is_the_one_of_the_project_that_owns_the_folder() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         declare_fake_program(root, true);
@@ -481,7 +481,7 @@ mod tests {
     /// lado — não escolhe o programa: sem projeto dono, vale o padrão, e a
     /// marca do programa falso não aparece.
     #[test]
-    fn um_mustard_json_fora_de_projeto_nao_escolhe_o_programa() {
+    fn a_mustard_json_outside_a_project_does_not_pick_the_program() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         declare_fake_program(root, false);
@@ -498,7 +498,7 @@ mod tests {
     /// terminal, e uma sondagem parada ali trava a chamada inteira sem
     /// ninguém para responder.
     #[test]
-    fn o_programa_chamado_nao_pede_credencial_no_terminal() {
+    fn the_called_program_does_not_ask_for_credentials_on_the_terminal() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         declare_fake_program(root, true);
@@ -515,7 +515,7 @@ mod tests {
     /// O programa chamado recebe desligadas as travas opcionais: uma leitura
     /// não pega a trava do índice só para guardar datas de arquivo mais novas.
     #[test]
-    fn o_programa_chamado_nao_pega_trava_opcional() {
+    fn the_called_program_does_not_take_the_optional_lock() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         declare_fake_program(root, true);
@@ -533,7 +533,7 @@ mod tests {
     /// trava para guardar a data nova do segundo arquivo, e o índice mudaria;
     /// cortado nesse meio, o processo deixaria o arquivo de trava.
     #[test]
-    fn ler_o_estado_nao_pega_a_trava_do_indice() {
+    fn reading_the_state_does_not_take_the_index_lock() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         if !run(root, &["init", "-q", "."]).ok {
@@ -569,7 +569,7 @@ mod tests {
     /// programa nenhum: um `init` que tivesse rodado deixaria um `.git` para
     /// trás, e é a ausência dele que prova que nada foi chamado.
     #[test]
-    fn o_projeto_que_dispensa_controle_de_versao_nao_chama_programa_nenhum() {
+    fn a_project_that_skips_version_control_calls_no_program() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         std::fs::write(root.join("mustard.json"), b"{\"vcs\": \"\"}\n").unwrap();

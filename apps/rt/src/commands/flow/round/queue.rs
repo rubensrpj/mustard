@@ -1255,7 +1255,7 @@ mod tests {
                 let expected = mustard_core::io::wave_prompt::slot_path(root, "x", at);
                 assert_eq!(copy, mustard_core::io::wave_prompt::shown(&expected), "{kind}: {out}");
                 assert!(expected.join(".git").is_file(), "the copy of wave {wave} is a linked checkout");
-                assert_eq!(std::fs::read_to_string(expected.join("src/a.rs")).unwrap(), "fn um() {}\n");
+                assert_eq!(std::fs::read_to_string(expected.join("src/a.rs")).unwrap(), "fn one() {}\n");
                 let copy_head = Command::new("git").args(["rev-parse", "HEAD"]).current_dir(&expected).output().unwrap();
                 assert_eq!(String::from_utf8_lossy(&copy_head.stdout).trim(), head, "the copy stands on the current commit");
                 let prompt = &request_at(&out, at);
@@ -1325,7 +1325,7 @@ mod tests {
         });
         store::write(&path, "send", draft.as_object().cloned().unwrap(), &[]).unwrap();
 
-        std::fs::write(root.join("src/a.rs"), "fn um() {}\n// mudou\n").unwrap();
+        std::fs::write(root.join("src/a.rs"), "fn one() {}\n// mudou\n").unwrap();
         let body = json!({"wave": 1, "text": "Saiu.", "files": [format!("{moved}/src/a.rs")], "commit": "a onda 1 saiu"});
         let wrote = returned(root, body);
         assert_eq!(wrote["ok"], json!(true), "{wrote}");
@@ -1340,7 +1340,7 @@ mod tests {
     /// Quatro ondas sem arquivo em comum saem juntas, até o novo teto de
     /// quatro; a quinta espera a vaga.
     #[test]
-    fn trava_por_arquivo_impede_ondas_com_arquivo_em_comum_e_libera_ate_quatro_sem_cruzar() {
+    fn file_lock_blocks_waves_with_a_shared_file_and_releases_up_to_four_without_crossing() {
         // Duas ondas com o mesmo arquivo: só a que já está em andamento sai,
         // mesmo com vaga livre para a outra.
         let dir = tempdir().unwrap();
@@ -1380,7 +1380,7 @@ mod tests {
     /// órfã segura a vaga dela: a onda que sai ao lado vai para outra.
     #[cfg(target_os = "linux")]
     #[test]
-    fn copia_orfa_volta_limpa_ao_commit_atual_sem_esperar_reenvio() {
+    fn orphan_copy_goes_back_clean_to_the_current_commit_without_waiting_for_a_resend() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[])]);
@@ -1690,8 +1690,8 @@ mod tests {
     fn broken_slot_with_code(slot: &Path) {
         std::fs::create_dir_all(slot.join("src")).unwrap();
         std::fs::create_dir_all(slot.join("lixo")).unwrap();
-        std::fs::write(slot.join("src/a.rs"), "fn um() {}\n// o meio do trabalho\n").unwrap();
-        std::fs::write(slot.join("src/b.rs"), "fn um() {}\n").unwrap();
+        std::fs::write(slot.join("src/a.rs"), "fn one() {}\n// o meio do trabalho\n").unwrap();
+        std::fs::write(slot.join("src/b.rs"), "fn one() {}\n").unwrap();
         std::fs::write(slot.join("src/novo.rs"), "fn novo() {}\n").unwrap();
         std::fs::write(slot.join("lixo/velho.txt"), "sobra\n").unwrap();
         std::fs::write(slot.join(".git"), "gitdir: /sumiu/.git/worktrees/a\n").unwrap();
@@ -1719,7 +1719,7 @@ mod tests {
         let show = |file: &str| git_text(root, &["show", &format!("{}:{file}", refs[0])]);
         assert_eq!(show("src/novo.rs"), "fn novo() {}");
         assert_eq!(show("lixo/velho.txt"), "sobra");
-        assert_eq!(show("src/a.rs"), "fn um() {}\n// o meio do trabalho");
+        assert_eq!(show("src/a.rs"), "fn one() {}\n// o meio do trabalho");
         let kept = warning_of(&out, "code-kept");
         assert_eq!(kept["ref"], json!(refs[0]), "{out}");
         assert_eq!(kept["files"], json!(["lixo/velho.txt", "src/a.rs", "src/novo.rs"]), "{out}");
@@ -2728,7 +2728,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         std::fs::create_dir_all(root.join("src")).unwrap();
-        std::fs::write(root.join("src/a.rs"), "fn antes() {}\n\nfn soma() {\n    1 + 1;\n}\n").unwrap();
+        std::fs::write(root.join("src/a.rs"), "fn before() {}\n\nfn sum() {\n    1 + 1;\n}\n").unwrap();
         approved_with(root, "x", &[], |said| {
             let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
             let crit = log.visible().into_iter().find(|e| e.event_type == "criterion").unwrap().id;
@@ -2914,7 +2914,7 @@ mod tests {
     /// mesma sequência através das rodadas — a prova atravessa `round`, o
     /// comando de verdade, não a função auxiliar que só ordena.
     #[test]
-    fn o_mesmo_conjunto_de_ondas_produz_sempre_a_mesma_ordem_de_despacho() {
+    fn same_set_of_waves_always_produces_the_same_dispatch_order() {
         let plan_a: [(u64, &[&str], &[u64]); 4] = [
             (10, &["src/a.rs"], &[]),
             (20, &["src/b.rs"], &[10]),
@@ -2956,7 +2956,7 @@ mod tests {
     /// fixture grava o ciclo direto, como um evento gravado à mão poderia —
     /// e a prova atravessa `round`, o comando de verdade.
     #[test]
-    fn conjunto_de_ondas_com_dependencia_em_circulo_e_recusado_pela_rodada_mostrando_o_ciclo() {
+    fn set_of_waves_with_a_circular_dependency_is_refused_by_the_round_showing_the_cycle() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(4, &["src/a.rs"], &[7]), (7, &["src/b.rs"], &[4])]);
@@ -2983,7 +2983,7 @@ mod tests {
     /// ondas do ciclo — a 1, entregue, fica fora dela. A prova atravessa
     /// `round`, o comando de verdade.
     #[test]
-    fn a_recusa_de_ciclo_devolve_o_que_a_rodada_gravou() {
+    fn cycle_refusal_returns_what_the_round_wrote() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
@@ -3044,7 +3044,7 @@ mod tests {
     /// vazar no pedido. A prova atravessa `round`, o comando de verdade,
     /// para exercitar o pedido como o agente o recebe.
     #[test]
-    fn o_pedido_da_onda_nao_cita_tarefa_retirada() {
+    fn wave_request_does_not_cite_a_withdrawn_task() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
@@ -3140,7 +3140,7 @@ mod tests {
     fn backlog_project_with(root: &Path, before: impl FnOnce(u64)) -> (u64, u64) {
         std::fs::create_dir_all(root.join("src")).unwrap();
         for name in ["a.rs", "b.rs"] {
-            std::fs::write(root.join("src").join(name), "fn um() {}\n").unwrap();
+            std::fs::write(root.join("src").join(name), "fn one() {}\n").unwrap();
         }
         approved_with(root, "x", &[], |said| {
             // O levantamento fechado, ponto a ponto, como o plano exige.
@@ -3218,7 +3218,7 @@ mod tests {
     /// tarefas que não dividem arquivo: o plano rodado depois não fala de
     /// ondas dividindo arquivo, nem de onda ou spec que podia sair dividida.
     #[test]
-    fn o_plano_nao_fala_de_onda_dividindo_arquivo() {
+    fn plan_does_not_talk_about_a_wave_sharing_a_file() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let (said, crit) = backlog_project(root);
@@ -3350,7 +3350,7 @@ mod tests {
     /// lote é a junção dos textos da versão velha. O plano rodado depois não
     /// trava, e nenhum aviso fala de tarefa na onda errada ou sem onda.
     #[test]
-    fn o_plano_nao_confere_o_texto_da_tarefa_contra_a_onda() {
+    fn plan_does_not_check_the_task_text_against_the_wave() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let (said, crit) = backlog_project(root);
@@ -3386,7 +3386,7 @@ mod tests {
     /// lote, nem a versão da primeira tarefa. A spec fica igual byte a byte.
     /// A prova atravessa `round`, o comando de verdade.
     #[test]
-    fn a_rodada_recusada_nao_deixa_onda_gravada() {
+    fn refused_round_leaves_no_wave_written() {
         let cases: [(&str, &str, &str); 2] = [
             ("campo novo", ",\"text\":", "unknown-field"),
             ("sem dependências", ",\"depends_on\":[]", "task-declaration-missing"),
@@ -3448,7 +3448,7 @@ mod tests {
     /// Com uma tarefa comum e uma limpeza prontas no backlog, a rodada solta
     /// só a comum: a limpeza segue no backlog, sem onda.
     #[test]
-    fn a_limpeza_fica_no_backlog_enquanto_ha_outra_tarefa_por_fazer() {
+    fn cleanup_stays_in_the_backlog_while_another_task_is_left_to_do() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let (said, crit) = backlog_project(root);
@@ -3466,7 +3466,7 @@ mod tests {
     /// manda rodar de novo; a seguinte solta a limpeza sozinha na onda 2, e
     /// entregue a 2 a rodada manda fechar.
     #[test]
-    fn entregue_a_tarefa_normal_a_limpeza_sai_na_rodada_seguinte() {
+    fn once_the_normal_task_is_delivered_the_cleanup_goes_out_in_the_next_round() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let (said, crit) = backlog_project(root);
@@ -3497,7 +3497,7 @@ mod tests {
     /// Uma limpeza a mais que o teto de tarefas do lote, cada uma num
     /// arquivo próprio: todas saem juntas numa onda só.
     #[test]
-    fn as_limpezas_saem_juntas_numa_onda_mesmo_passando_do_teto_do_lote() {
+    fn cleanups_go_out_together_in_one_wave_even_past_the_batch_cap() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let (said, crit) = backlog_project(root);
@@ -3512,7 +3512,7 @@ mod tests {
     /// Com a onda da tarefa comum entregue e a limpeza ainda no backlog, o
     /// fechamento recusa pelo backlog que não esvaziou.
     #[test]
-    fn o_fechamento_recusa_com_limpeza_por_fazer() {
+    fn closing_refuses_with_a_cleanup_to_do() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let (said, crit) = backlog_project(root);
@@ -3847,7 +3847,7 @@ mod tests {
     pub(crate) fn return_with_an_undone_task(root: &Path) -> UndoneReturn {
         std::fs::create_dir_all(root.join("src")).unwrap();
         for name in ["c.rs", "d.rs"] {
-            std::fs::write(root.join("src").join(name), "fn um() {}\n").unwrap();
+            std::fs::write(root.join("src").join(name), "fn one() {}\n").unwrap();
         }
         let decisions = std::cell::Cell::new((0, 0));
         let (said, crit) = backlog_project_with(root, |said| {
@@ -3881,7 +3881,7 @@ mod tests {
 
         let session = "s-tarefa-nao-feita";
         crate::shared::context::session::bind_session_spec(&root.to_string_lossy(), session, "x");
-        std::fs::write(root.join("src/a.rs"), "fn um() {}\n// A soma arredonda.\n").unwrap();
+        std::fs::write(root.join("src/a.rs"), "fn one() {}\n// A soma arredonda.\n").unwrap();
         let change = "B precisa de uma decisão sobre a lista vazia antes.";
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let agreed: Vec<Value> = super::super::agreed::request_agreed(&log, 1, &Languages::of_project(root))

@@ -602,7 +602,7 @@ mod tests {
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::write(root.join("mustard.json"), b"{}").unwrap();
         for name in ["a.rs", "b.rs"] {
-            std::fs::write(root.join("src").join(name), "fn um() {}\nfn dois() {}\n").unwrap();
+            std::fs::write(root.join("src").join(name), "fn one() {}\nfn dois() {}\n").unwrap();
         }
         git(root, &["init", "-q"]);
         git(root, &["add", "src"]);
@@ -1347,7 +1347,7 @@ mod tests {
     /// pergunta não cita a nota do Scrum: o plano segue só com o que o
     /// catálogo já dizia antes de a nota existir.
     #[test]
-    fn o_plano_nao_pede_nem_soma_nota() {
+    fn plan_neither_asks_for_nor_adds_a_note() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let said = surveyed(root, "x");
@@ -1373,7 +1373,7 @@ mod tests {
     /// pergunta, sem agente. Uma spec que uma versão antiga publicou inteira,
     /// ainda no plano, ganha o template num link novo na aprovação.
     #[test]
-    fn a_aprovacao_de_uma_spec_nova_manda_o_orquestrador_copiar_a_spec_inteira() {
+    fn approving_a_new_spec_tells_the_orchestrator_to_copy_the_whole_spec() {
         use crate::commands::spec_events::pages::copy::{batches_order, old_page_order};
         let lang = Locale::PtBr;
         for old in [false, true] {

@@ -278,7 +278,7 @@ fn copied_items(project: &Project) -> Vec<u64> {
 /// `--copy`, e só ela prepara a cópia, uma vez, com os lotes calculados na
 /// hora: eles levam o pedido e tudo o que ele gerou, a tarefa inclusive.
 #[test]
-fn a_ultima_gravacao_do_pedido_prepara_uma_copia_com_as_tarefas() {
+fn last_write_of_the_request_prepares_a_copy_with_the_tasks() {
     let project = Project::new();
     let opened = project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
     assert_eq!(opened["step"], json!("ask_goal"), "{opened}");
@@ -406,7 +406,7 @@ fn read_order(lang: Locale) -> String {
 /// leitura nenhuma. Em cada ordem, a gravação da cópia manda guardar essas
 /// versões.
 #[test]
-fn a_copia_seguinte_leva_a_versao_guardada_sem_pedir_leitura() {
+fn next_copy_carries_the_stored_version_without_asking_for_a_read() {
     for lang in [Locale::PtBr, Locale::EnUs] {
         let project = Project::in_language(lang);
         project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);

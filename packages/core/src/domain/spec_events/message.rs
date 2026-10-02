@@ -278,7 +278,7 @@ mod tests {
     /// segunda leitura escrita aqui devolveria o título em negrito inteiro no
     /// lugar da frase, e arrastaria a prosa que vem depois do `!`.
     #[test]
-    fn a_linha_da_onda_pula_o_titulo_e_fecha_a_frase_em_qualquer_ponto() {
+    fn the_wave_line_skips_the_title_and_closes_the_sentence_at_any_point() {
         let mut lines: Vec<String> = Vec::new();
         let mut id = 0u64;
         let mut push = |fields: Value| {
@@ -322,7 +322,7 @@ mod tests {
     /// frase de cada tarefa das ondas do plano; a tarefa de uma onda que não
     /// está no plano fica de fora, e a spec sem tarefa não ganha a linha.
     #[test]
-    fn o_corpo_diz_o_que_testar_a_mao_a_partir_das_tarefas() {
+    fn the_body_says_what_to_test_by_hand_from_the_tasks() {
         let events = |tasks: &[(u64, &str)]| {
             let mut lines = Vec::new();
             let mut fields = vec![

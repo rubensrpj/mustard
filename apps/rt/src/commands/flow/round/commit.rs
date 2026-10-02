@@ -1463,8 +1463,8 @@ mod tests {
         approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[])]);
         round(root, "x", None);
         let copy = |wave: u64| mustard_core::io::wave_prompt::slot_path(root, "x", usize::try_from(wave).unwrap() - 1);
-        std::fs::write(copy(1).join("src/a.rs"), "fn um() {}\nfn a() {}\n").unwrap();
-        std::fs::write(copy(2).join("src/b.rs"), "fn um() {}\nfn b() {}\n").unwrap();
+        std::fs::write(copy(1).join("src/a.rs"), "fn one() {}\nfn a() {}\n").unwrap();
+        std::fs::write(copy(2).join("src/b.rs"), "fn one() {}\nfn b() {}\n").unwrap();
         let first = "Cadastro lido só nos itens da tabela de loja";
         let one = json!({"wave": 1, "text": "Saiu.", "files": ["src/a.rs"], "commit": first});
         let two = json!({"wave": 2, "text": "Saiu.", "files": ["src/b.rs"], "commit": "Aviso da rodada e envio"});
@@ -1496,7 +1496,7 @@ mod tests {
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
         round(root, "x", None);
 
-        std::fs::write(root.join("src/a.rs"), "fn um() {}\nfn dois() {}\n").unwrap();
+        std::fs::write(root.join("src/a.rs"), "fn one() {}\nfn dois() {}\n").unwrap();
         let delivered =
             |summary: &str| json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"], "commit": summary});
         let refused = returned(root, delivered("pedido de fulano@empresa.com.br"));
@@ -1516,7 +1516,7 @@ mod tests {
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
         round(root, "x", None);
-        std::fs::write(root.join("src/a.rs"), "fn um() {}\nfn dois() {}\n").unwrap();
+        std::fs::write(root.join("src/a.rs"), "fn one() {}\nfn dois() {}\n").unwrap();
         git_at(root, &["config", "user.email", "t@t"]);
         git_at(root, &["config", "user.name", "t"]);
         git_at(root, &["config", "commit.gpgsign", "false"]);
@@ -1549,7 +1549,7 @@ mod tests {
 
         std::fs::remove_file(root.join("src/a.rs")).unwrap();
         git_at(root, &["rm", "-q", "src/b.rs"]);
-        std::fs::write(root.join("src/c.rs"), "fn um() {}\nfn tres() {}\n").unwrap();
+        std::fs::write(root.join("src/c.rs"), "fn one() {}\nfn tres() {}\n").unwrap();
 
         let files = ["src/a.rs", "src/b.rs", "src/c.rs"];
         let report = json!({"wave": 1, "text": "Dois arquivos saíram.", "files": files, "commit": "tira dois arquivos"});
@@ -1583,8 +1583,8 @@ mod tests {
         round(root, "x", None);
         let copy = |wave: u64| mustard_core::io::wave_prompt::slot_path(root, "x", usize::try_from(wave).unwrap() - 1);
         std::fs::remove_file(copy(1).join("src/a.rs")).unwrap();
-        std::fs::write(copy(1).join("src/b.rs"), "fn um() {}\nfn b() {}\n").unwrap();
-        std::fs::write(copy(2).join("src/c.rs"), "fn um() {}\nfn c() {}\n").unwrap();
+        std::fs::write(copy(1).join("src/b.rs"), "fn one() {}\nfn b() {}\n").unwrap();
+        std::fs::write(copy(2).join("src/c.rs"), "fn one() {}\nfn c() {}\n").unwrap();
         std::fs::write(copy(2).join("src/esquecido.rs"), "fn esquecido() {}\n").unwrap();
 
         let one = json!({"wave": 1, "text": "Saiu.", "files": ["src/a.rs", "src/b.rs"], "commit": "a sai"});
@@ -1594,7 +1594,7 @@ mod tests {
         let out = round(root, "x", None);
         assert_eq!(out["ok"], json!(true), "{out}");
         assert!(!root.join("src/a.rs").exists());
-        assert_eq!(std::fs::read_to_string(root.join("src/c.rs")).unwrap(), "fn um() {}\nfn c() {}\n");
+        assert_eq!(std::fs::read_to_string(root.join("src/c.rs")).unwrap(), "fn one() {}\nfn c() {}\n");
         assert_eq!(std::fs::read_to_string(root.join("src/esquecido.rs")).unwrap(), "fn esquecido() {}\n",
             "o arquivo fora da lista entra no commit mesmo assim");
         let shown = Command::new("git").args(["show", "--name-status", "--format=", "HEAD"]).current_dir(root).output();
@@ -1703,7 +1703,7 @@ mod tests {
         crate::executable::write_executable(&hook, "#!/bin/sh\necho 'o gancho recusou' >&2\nexit 1\n");
         git_at(root, &["config", "core.hooksPath", &hooks.to_string_lossy()]);
 
-        std::fs::write(root.join("src/a.rs"), "fn um() {}\n// Saiu.\n").unwrap();
+        std::fs::write(root.join("src/a.rs"), "fn one() {}\n// Saiu.\n").unwrap();
         let wrong = [listing(&["src/a.rs"])];
         refused_by_git_records_nothing(root, &wrong, || std::fs::remove_file(&hook).unwrap(), &["src/a.rs"]);
     }
@@ -1722,8 +1722,8 @@ mod tests {
         round(root, "x", None);
         let copy = mustard_core::io::wave_prompt::slot_path(root, "x", 0);
         assert!(copy.join("libs/sub/.git").is_file(), "the copy brings the submodule");
-        std::fs::write(copy.join("src/a.rs"), "fn um() {}\nfn dois() {}\n").unwrap();
-        std::fs::write(copy.join("libs/sub/lib.txt"), "fn um() {}\nfn sub() {}\n").unwrap();
+        std::fs::write(copy.join("src/a.rs"), "fn one() {}\nfn dois() {}\n").unwrap();
+        std::fs::write(copy.join("libs/sub/lib.txt"), "fn one() {}\nfn sub() {}\n").unwrap();
         let sub = root.join("libs/sub");
         assert_eq!(git_text(&sub, &["rev-parse", "--abbrev-ref", "HEAD"]), "feature/x", "the same branch name");
         let before = git_text(&sub, &["rev-parse", "HEAD"]);
@@ -1739,14 +1739,14 @@ mod tests {
         assert_eq!(refused["reason"], json!("git-refused"), "{refused}");
         assert_eq!(git_text(&sub, &["rev-parse", "HEAD"]), before, "the submodule commit was undone");
         assert_eq!(git_text(&sub, &["status", "--porcelain"]), "", "the submodule disk and index are back");
-        assert_eq!(std::fs::read_to_string(root.join("src/a.rs")).unwrap(), "fn um() {}\n");
+        assert_eq!(std::fs::read_to_string(root.join("src/a.rs")).unwrap(), "fn one() {}\n");
 
         std::fs::remove_file(&hook).unwrap();
         let went = round(root, "x", None);
         assert_eq!(went["ok"], json!(true), "{went}");
         assert_eq!(git_text(&sub, &["rev-list", "--count", &format!("{before}..HEAD")]), "1", "one submodule commit");
         assert_eq!(git_text(root, &["rev-parse", "HEAD:libs/sub"]), git_text(&sub, &["rev-parse", "HEAD"]));
-        assert_eq!(std::fs::read_to_string(sub.join("lib.txt")).unwrap(), "fn um() {}\nfn sub() {}\n");
+        assert_eq!(std::fs::read_to_string(sub.join("lib.txt")).unwrap(), "fn one() {}\nfn sub() {}\n");
         assert!(copy.join("libs/sub/.git").is_file(), "the copy stays, with the submodule copy inside it: {went}");
     }
 
@@ -1821,7 +1821,7 @@ mod tests {
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
         round(root, "x", None);
-        std::fs::write(root.join("src/a.rs"), "fn um() {}\n// A soma saiu.\n").unwrap();
+        std::fs::write(root.join("src/a.rs"), "fn one() {}\n// A soma saiu.\n").unwrap();
         let spec = store::spec_file(root, "x").unwrap();
         let (index, _) = mustard_core::io::spec_index::index_for(&spec).expect("the spec index");
         let body = json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"], "commit": "a soma sai"});
@@ -1909,7 +1909,7 @@ mod tests {
     /// nenhuma, e o commit do repositório principal saísse sem nada a
     /// comitar.
     #[test]
-    fn a_rodada_junta_a_copia_que_veio_comitada() {
+    fn round_merges_the_copy_that_came_committed() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
@@ -1918,7 +1918,7 @@ mod tests {
         let path = store::spec_file(root, "x").unwrap();
         let log = store::read(&path).unwrap().unwrap();
         let copy = copy_of(&log, 1).expect("a onda 1 ganhou cópia");
-        std::fs::write(copy.join("src/a.rs"), "fn um() {}\n// A soma saiu.\n").unwrap();
+        std::fs::write(copy.join("src/a.rs"), "fn one() {}\n// A soma saiu.\n").unwrap();
         git_at(&copy, &["add", "-A"]);
         git_at(&copy, &["commit", "-q", "-m", "o agente comitou dentro da cópia"]);
 

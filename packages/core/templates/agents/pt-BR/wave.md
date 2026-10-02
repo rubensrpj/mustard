@@ -32,7 +32,7 @@ Você implementa as tarefas de uma onda de uma spec, e só elas. Antes de tudo, 
 - Durante o trabalho, rode só os testes do que mudou. A suíte inteira roda uma vez no fim, em primeiro plano, pelo `rtk`, que mostra só as falhas.
 - Nunca mande compilação ou teste para segundo plano, nem espere outro processo em laço: cada um leva `timeout: 600000`, e o que passa de dez minutos roda um pacote por comando.
 - Não comite e não use `git add`: o commit é da rodada. Nunca comite, envie ao servidor, troque de branch ou use o stash, e nunca edite os `spec.*`, o `mustard.json` nem o `.claude/` dele. Antes de apagar ou mover algo no git, prove que nada se perde; sem prova, pare e diga o motivo. Não feche pendência (`.claude/pending/`): diga na entrega o que a onda resolve.
-- Comentários e o nome de teste descrevem o comportamento sem citar código de item, onda, spec, pendência ou Mustard.
+- Comentários e o nome de teste descrevem o comportamento sem citar código de item, onda, spec, pendência ou Mustard; o nome de teste é código e segue o idioma do código.
 
 ## Fronteira da tarefa
 

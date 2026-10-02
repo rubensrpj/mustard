@@ -2202,7 +2202,7 @@ mod tests {
     /// [`build`]/[`write`] que continuam saindo inteiros, sem linha cortada
     /// — quem decide despachar é que confere esta mensagem à parte.
     #[test]
-    fn o_pedido_acima_de_vinte_e_cinco_mil_tokens_e_recusado() {
+    fn a_request_above_twenty_five_thousand_tokens_is_refused() {
         let over = token_cap_message(3, 27_412, Locale::PtBr).expect("acima do teto: recusa");
         assert!(over.contains("27412"), "{over}");
         assert!(over.contains("25000"), "{over}");
@@ -2216,7 +2216,7 @@ mod tests {
     /// arredondada para cima: um texto que não é múltiplo de quatro não passa
     /// por baixo do teto real.
     #[test]
-    fn a_estimativa_de_tokens_conta_perto_de_um_a_cada_quatro_caracteres() {
+    fn the_token_estimate_counts_close_to_one_per_four_characters() {
         assert_eq!(estimate_tokens(""), 0);
         assert_eq!(estimate_tokens("abcd"), 1);
         assert_eq!(estimate_tokens("abcde"), 2, "cinco caracteres arredondam para cima");
@@ -2373,7 +2373,7 @@ mod tests {
     /// código entre os de texto devolve o item; a onda só em views Razor ou
     /// só na página HTML também o recebe.
     #[test]
-    fn onda_so_de_texto_nao_recebe_item_do_projeto_inteiro() {
+    fn a_text_only_wave_gets_no_item_of_the_whole_project() {
         let everywhere = json!({"files": ["**"]});
         let wave = |n: u64, files: &[&str], covers: &[u64]| -> [(&'static str, Value); 2] {
             let paths: Vec<Value> = files.iter().map(|path| json!({"path": path})).collect();
@@ -2411,7 +2411,7 @@ mod tests {
     /// palavra-chave pela metade não liga o item, e a pasta citada também
     /// não.
     #[test]
-    fn item_sem_dono_so_aparece_na_onda_a_que_serve() {
+    fn an_item_without_an_owner_only_appears_in_the_wave_it_serves() {
         let log = log(&[
             (
                 "rule",
@@ -2451,7 +2451,7 @@ mod tests {
     /// pasta solta também não. A leitura de uma skill continua só entre
     /// crases: o caminho solto não entra nela.
     #[test]
-    fn caminho_sem_crases_so_liga_o_item_a_onda_que_mexe_no_arquivo() {
+    fn a_path_without_backticks_only_links_the_item_to_the_wave_that_touches_the_file() {
         let log = log(&[
             (
                 "limit",
@@ -2482,10 +2482,10 @@ mod tests {
     /// tarefa, e ela não cita arquivo. Cada uma das outras ondas recebe
     /// menos que os 25.
     #[test]
-    fn os_itens_que_o_orquestrador_pos_na_onda_continuam_candidatos() {
+    fn the_items_the_orchestrator_put_in_the_wave_remain_candidates() {
         let fixture: Value = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/itens-sem-dono-por-onda.json"
+            "/tests/fixtures/items-without-owner-by-wave.json"
         )))
         .unwrap();
         let numbers = |value: &Value| -> BTreeSet<u64> {

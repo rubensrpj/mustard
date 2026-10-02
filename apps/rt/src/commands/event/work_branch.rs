@@ -1330,7 +1330,7 @@ mod tests {
     /// chama de padrão e por isso também é; `feature/x` não é nem uma coisa
     /// nem outra. Nenhum dos três nomes está escrito no código.
     #[test]
-    fn a_base_sai_da_declaracao_ou_do_proprio_remoto() {
+    fn base_comes_from_the_declaration_or_from_the_remote_itself() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         let git = |args: &[&str]| mustard_core::platform::git::run(root, args).ok;

@@ -650,7 +650,7 @@ fn a_test_spec_runs_end_to_end_one_call_per_step_and_leaves_three_files() {
 /// crua, com as versões antigas e as removidas — tem autor binário, e há ao
 /// menos uma, para a conferência não passar num arquivo sem onda.
 #[test]
-fn o_fluxo_inteiro_nao_grava_onda_pela_linha_de_comando() {
+fn whole_flow_does_not_write_a_wave_on_the_command_line() {
     let project = Project::new();
     project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
     survey(&project);
@@ -771,7 +771,7 @@ fn a_pr_open_sends_the_branch_first_and_a_refused_send_opens_nothing() {
 /// Um critério gravado sem declarar a forma dele é recusado, e a recusa lista
 /// as cinco formas do padrão pelo nome, em vez de um nome de campo cru.
 #[test]
-fn o_criterio_sem_forma_declarada_e_recusado() {
+fn criterion_without_a_declared_form_is_refused() {
     let project = Project::new();
     project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
     survey(&project);
@@ -790,14 +790,14 @@ fn o_criterio_sem_forma_declarada_e_recusado() {
     assert_eq!(refused["ok"], json!(false), "{refused}");
     assert_eq!(refused["reason"], json!("criterion-form-missing"), "{refused}");
     let hint = refused["hint"].as_str().unwrap_or_default();
-    for forma in [
+    for shape in [
         "vale sempre",
         "disparada por um acontecimento",
         "estado durar",
         "recurso existir",
         "acontecimento indesejado",
     ] {
-        assert!(hint.contains(forma), "a recusa lista a forma {forma:?} pelo nome: {hint}");
+        assert!(hint.contains(shape), "a recusa lista a forma {shape:?} pelo nome: {hint}");
     }
 
     // Com a forma declarada, a mesma gravação passa.
@@ -814,7 +814,7 @@ fn o_criterio_sem_forma_declarada_e_recusado() {
 /// forma, como as specs de antes da exigência têm, recebe a emenda dele
 /// também sem forma, e a gravação passa.
 #[test]
-fn a_emenda_de_criterio_antigo_nao_exige_forma() {
+fn amending_an_old_criterion_does_not_require_a_form() {
     let project = Project::new();
     project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
     survey(&project);
@@ -860,8 +860,8 @@ fn a_emenda_de_criterio_antigo_nao_exige_forma() {
 /// nome antigo no texto impresso, inclusive no pedido de verdade que o
 /// binário monta para o agente da onda.
 #[test]
-fn os_tres_termos_usam_o_nome_de_mercado() {
-    let esperado = [
+fn three_terms_use_the_market_name() {
+    let expected = [
         (Locale::PtBr, "page.block.agreed", "Requisitos acordados"),
         (Locale::EnUs, "page.block.agreed", "Agreed requirements"),
         (Locale::PtBr, "page.field.proof", "Verificação"),
@@ -871,8 +871,8 @@ fn os_tres_termos_usam_o_nome_de_mercado() {
         (Locale::PtBr, "prompt.part.agreed", "Requisitos acordados"),
         (Locale::EnUs, "prompt.part.agreed", "Agreed requirements"),
     ];
-    for (locale, key, texto) in esperado {
-        assert_eq!(translate(key, locale), texto, "{key} ({locale:?}) usa o nome de mercado");
+    for (locale, key, expected_text) in expected {
+        assert_eq!(translate(key, locale), expected_text, "{key} ({locale:?}) usa o nome de mercado");
     }
 
     let project = Project::new();

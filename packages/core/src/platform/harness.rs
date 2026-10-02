@@ -594,8 +594,8 @@ mod tests {
     fn an_empty_home_counts_as_absent_for_every_reader() {
         let temp = std::env::temp_dir().join("mustard").join("copias");
         let empty = read_homes("");
-        let casa = tempfile::tempdir().unwrap();
-        let home = casa.path().display().to_string();
+        let fake_home = tempfile::tempdir().unwrap();
+        let home = fake_home.path().display().to_string();
         let filled = read_homes(&home);
         let mut wrong: Vec<String> = Vec::new();
         let mut expect = |case: &str, answers: &std::collections::BTreeMap<String, String>, name: &str, ok: &dyn Fn(&str) -> bool| {
@@ -608,18 +608,18 @@ mod tests {
         expect("vazia", &empty, "config", &|answer| answer == "-");
         expect("vazia", &empty, "copies", &|answer| std::path::Path::new(answer).starts_with(&temp));
         expect("preenchida", &filled, "home", &|answer| answer == home);
-        let config = casa.path().join(".claude");
+        let config = fake_home.path().join(".claude");
         expect("preenchida", &filled, "config", &|answer| std::path::Path::new(answer) == config);
-        let copies = casa.path().join(".cache").join("mustard").join("copias");
+        let copies = fake_home.path().join(".cache").join("mustard").join("copias");
         expect("preenchida", &filled, "copies", &|answer| std::path::Path::new(answer).starts_with(&copies));
         let paths = |answer: &str| std::env::split_paths(answer).collect::<Vec<_>>();
         expect("vazia", &empty, "tools", &|answer| answer == "-");
         expect("vazia", &empty, "fonts", &|answer| answer != "-" && paths(answer).iter().all(|dir| dir.is_absolute()));
         expect("preenchida", &filled, "tools", &|answer| {
-            answer != "-" && paths(answer).iter().all(|dir| dir.starts_with(casa.path()))
+            answer != "-" && paths(answer).iter().all(|dir| dir.starts_with(fake_home.path()))
         });
         expect("preenchida", &filled, "fonts", &|answer| {
-            answer != "-" && (cfg!(windows) || paths(answer).iter().any(|dir| dir.starts_with(casa.path())))
+            answer != "-" && (cfg!(windows) || paths(answer).iter().any(|dir| dir.starts_with(fake_home.path())))
         });
         assert!(wrong.is_empty(), "cada leitora responde pela mesma pasta pessoal: {wrong:?}");
     }

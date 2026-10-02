@@ -1555,7 +1555,7 @@ mod tests {
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::write(root.join("mustard.json"), b"{}").unwrap();
         for file in files {
-            std::fs::write(root.join(file), "fn um() {}\n").unwrap();
+            std::fs::write(root.join(file), "fn one() {}\n").unwrap();
         }
         git(root, &["init", "-q"]);
         git(root, &["config", "core.autocrlf", "false"]);
@@ -1989,7 +1989,7 @@ mod tests {
     /// endereço novo não usa a versão guardada para o endereço antigo: o
     /// banco dele é outro.
     #[test]
-    fn a_copia_sem_versao_guardada_ainda_manda_ler() {
+    fn copy_without_a_stored_version_still_asks_for_a_read() {
         const NEW_URL: &str = "https://claude.ai/code/artifact/spec-x-2";
         let dir = approved_project();
         let root = dir.path();
@@ -2051,7 +2051,7 @@ mod tests {
     /// que já existem. A primeira cópia, para um endereço novo com o banco
     /// vazio, não nomeia nada.
     #[test]
-    fn a_linha_do_projeto_ja_copiada_pede_a_versao_antes_de_trocar() {
+    fn project_line_already_copied_asks_for_the_version_before_replacing() {
         let dir = approved_project();
         let root = dir.path();
         let lang = Locale::PtBr;
@@ -2079,7 +2079,7 @@ mod tests {
     /// todas as linhas do índice, a desta spec junto: a primeira cópia desta
     /// spec para esse endereço já acha a linha dela no banco e a nomeia.
     #[test]
-    fn a_linha_levada_pela_copia_de_outra_spec_tambem_pede_a_versao() {
+    fn line_carried_by_the_copy_of_another_spec_also_asks_for_the_version() {
         let dir = approved_project();
         let root = dir.path();
         let lang = Locale::PtBr;
@@ -2104,7 +2104,7 @@ mod tests {
     /// de novo para o mesmo endereço com essa versão em `if_version`, e a
     /// ordem não a nomeia para ler.
     #[test]
-    fn a_linha_do_projeto_com_versao_guardada_vai_com_ela_sem_leitura() {
+    fn project_line_with_a_stored_version_goes_with_it_without_a_read() {
         let dir = approved_project();
         let root = dir.path();
         let lang = Locale::PtBr;
@@ -2128,7 +2128,7 @@ mod tests {
     /// com a versão que o banco devolveu a cada uma, vai com essa versão na
     /// primeira cópia desta spec para o mesmo endereço, sem leitura.
     #[test]
-    fn a_linha_levada_com_versao_por_outra_spec_vai_com_ela() {
+    fn line_carried_with_a_version_by_another_spec_goes_with_it() {
         let dir = approved_project();
         let root = dir.path();
         let lang = Locale::PtBr;
@@ -2318,7 +2318,7 @@ mod tests {
     /// outra vez, no mesmo link e do mesmo jeito; gravada a cópia, a seguinte
     /// leva só o que veio depois.
     #[test]
-    fn a_primeira_copia_fica_com_o_orquestrador_sem_agente() {
+    fn first_copy_stays_with_the_orchestrator_without_an_agent() {
         let (dir, said, crit) = project_with(&["src/a.rs", "src/b.rs", "src/c.rs", "src/d.rs"]);
         let root = dir.path();
         let wave = |n: u64, depends: Option<u64>| {
@@ -3279,7 +3279,7 @@ mod tests {
     /// inteiro do pedaço, não só o algarismo 8 (que passaria com qualquer
     /// número que tivesse um oito, como os próprios 1000 tokens da onda).
     #[test]
-    fn a_linha_de_gasto_mostra_turnos_por_tarefa() {
+    fn spend_line_shows_turns_per_task() {
         let log = mustard_core::domain::spec_events::parse_log(
             "{\"v\":1,\"id\":1,\"at\":\"t\",\"type\":\"wave\",\"n\":1,\"text\":\"Onda 1.\"}\n\
              {\"v\":1,\"id\":2,\"at\":\"t\",\"type\":\"task\",\"wave\":1,\"text\":\"Tarefa 1.\"}\n\

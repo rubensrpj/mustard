@@ -995,7 +995,7 @@ mod tests {
             let dir = project(&cfg);
             let root = dir.path();
             std::fs::create_dir_all(root.join("src")).unwrap();
-            std::fs::write(root.join("src/a.rs"), "fn soma() {}\n\n#[cfg(test)]\nmod tests {}\n").unwrap();
+            std::fs::write(root.join("src/a.rs"), "fn sum() {}\n\n#[cfg(test)]\nmod tests {}\n").unwrap();
             let path = abs(root, "src/a.rs");
             match WriteGate.evaluate(&call(root, "Read", &path, None), &ctx(root)).expect("never errors") {
                 Verdict::Rewrite { tool_input, note } => {
@@ -1015,7 +1015,7 @@ mod tests {
         let dir = project("{}");
         let root = dir.path();
         std::fs::create_dir_all(root.join("src")).unwrap();
-        std::fs::write(root.join("src/a.rs"), "fn soma() {}\n\n#[cfg(test)]\nmod tests {}\n").unwrap();
+        std::fs::write(root.join("src/a.rs"), "fn sum() {}\n\n#[cfg(test)]\nmod tests {}\n").unwrap();
         let path = abs(root, "src/a.rs");
         for tool_input in [json!({ "file_path": path, "offset": 1 }), json!({ "file_path": path, "limit": 10 })] {
             let input = HookInput {
@@ -1036,7 +1036,7 @@ mod tests {
         let dir = project("{}");
         let root = dir.path();
         std::fs::create_dir_all(root.join("src")).unwrap();
-        std::fs::write(root.join("src/a.rs"), "fn soma() {}\n").unwrap();
+        std::fs::write(root.join("src/a.rs"), "fn sum() {}\n").unwrap();
         let path = abs(root, "src/a.rs");
         assert_eq!(gate(root, "Read", &path), Verdict::Allow);
     }
@@ -1721,7 +1721,7 @@ mod tests {
         let copy = dir.path().parent().expect("parent").join(format!("copia-grep-{}", std::process::id()));
         word_search::fixture::git(&root, &["worktree", "add", "-q", &copy.to_string_lossy(), "-b", "onda"]);
         let copy = std::fs::canonicalize(&copy).expect("copy");
-        std::fs::write(copy.join("src/frete.rs"), format!("// a\n// b\n// c\n{}", word_search::fixture::FRETE)).expect("edit");
+        std::fs::write(copy.join("src/frete.rs"), format!("// a\n// b\n// c\n{}", word_search::fixture::FREIGHT)).expect("edit");
         let tool_input = json!({ "pattern": "calcular_frete", "path": abs(&copy, "src"), "output_mode": "content" });
         let reason = refused(hook_in(&copy, "Grep", tool_input, Some("copia")), "a search in the working copy");
         assert!(reason.contains("src/frete.rs (mudado depois do mapa)\n  5-9 calcular_frete (5)"), "{reason}");

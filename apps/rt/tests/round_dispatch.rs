@@ -279,7 +279,7 @@ fn backlog_task(project: &Project, criterion: u64, said: u64, files: &[&str], de
 /// módulo do grafo (`apps/rt/src/shared/dag.rs`), agora conferido na saída
 /// de uma rodada de verdade.
 #[test]
-fn o_backlog_vira_sempre_os_mesmos_lotes() {
+fn backlog_always_becomes_the_same_batches() {
     let project = Project::new();
     project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
     let said = survey(&project);
@@ -332,7 +332,7 @@ fn o_backlog_vira_sempre_os_mesmos_lotes() {
 /// são a união do que elas cobrem e o pronta-quando tirado da prova dos dois
 /// critérios, ligadas por " && ".
 #[test]
-fn o_binario_grava_o_evento_de_onda_do_lote() {
+fn binary_writes_the_wave_event_of_the_batch() {
     let project = Project::new();
     project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
     let said = survey(&project);
@@ -383,7 +383,7 @@ fn o_binario_grava_o_evento_de_onda_do_lote() {
 /// volta ao backlog sem a nota e sem o número velho de onda, já no lote que o
 /// backlog formou. A versão antiga continua na história, com a nota.
 #[test]
-fn a_rodada_tira_a_nota_de_trabalho_da_tarefa_de_spec_antiga() {
+fn round_removes_the_work_note_from_the_task_of_an_old_spec() {
     let project = Project::new();
     project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
     let said = survey(&project);
@@ -435,7 +435,7 @@ fn a_rodada_tira_a_nota_de_trabalho_da_tarefa_de_spec_antiga() {
 /// tendo onda gravada, o número velho é ignorado, e ela é relotada com o
 /// próximo número livre, numa rodada seguinte de verdade.
 #[test]
-fn uma_spec_antiga_tem_as_tarefas_nao_entregues_relotadas() {
+fn old_spec_has_its_undelivered_tasks_rebatched() {
     let project = Project::new();
     project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
     let said = survey(&project);
@@ -614,7 +614,7 @@ fn wave_of(project: &Project, task: u64) -> Option<u64> {
 /// arquivos próprios: sai um lote só com ela, e as outras esperam. Com a
 /// onda dela em andamento, nada mais sai.
 #[test]
-fn a_tarefa_com_curinga_sai_sozinha() {
+fn task_with_a_wildcard_goes_out_alone() {
     let (project, _, _, tasks) = backlog_project(&[&["**"], &["a.rs"], &["b.rs"]]);
 
     let (asked, out) = dispatch_ready(&project);
@@ -637,7 +637,7 @@ fn a_tarefa_com_curinga_sai_sozinha() {
 /// O outro lado: com uma onda em andamento, a tarefa do curinga que chega ao
 /// backlog vira lote, mas não sai ao lado dela.
 #[test]
-fn a_tarefa_com_curinga_sai_sozinha_e_espera_a_onda_em_andamento() {
+fn task_with_a_wildcard_goes_out_alone_and_waits_for_the_wave_in_progress() {
     let (project, crit, said, tasks) = backlog_project(&[&["a.rs"]]);
     let (_, out) = dispatch_ready(&project);
     let first = wave_of(&project, tasks[0]).expect("a primeira tarefa vira onda");
@@ -654,7 +654,7 @@ fn a_tarefa_com_curinga_sai_sozinha_e_espera_a_onda_em_andamento() {
 /// vai para um lote só dela e espera, enquanto a de `docs/`, que caberia no
 /// mesmo lote, sai no seu.
 #[test]
-fn a_tarefa_com_curinga_sai_sozinha_e_o_padrao_junta_com_o_arquivo_que_casa() {
+fn task_with_a_wildcard_goes_out_alone_and_the_pattern_joins_the_file_it_matches() {
     let own = ["src/a.rs", "lib/1.rs", "lib/2.rs", "lib/3.rs", "lib/4.rs"];
     let (project, crit, said, tasks) = backlog_project(&[&own, &["src/**"]]);
     let (_, out) = dispatch_ready(&project);

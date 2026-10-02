@@ -286,7 +286,7 @@ mod tests {
     /// achada por "apagando a pasta" entre as 5 mais fortes, no meio de
     /// outras.
     #[test]
-    fn a_lesson_keyed_apagar_is_found_for_apagando_a_pasta() {
+    fn a_lesson_keyed_apagar_is_found_for_its_gerund_in_the_query() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("lessons.ndjson");
         put(&path, defect("O cargo não está no PATH.", &["cargo", "PATH"]));
@@ -325,13 +325,13 @@ mod tests {
         let bank = read(&path).unwrap().unwrap();
 
         let top = crate::domain::search::TOP;
-        let pasta = "pasta";
-        let with_pasta = bank
+        let folder_word = "pasta";
+        let with_folder_word = bank
             .visible()
             .iter()
-            .filter(|l| l.str_field("search").unwrap_or_default().split(' ').any(|w| w == pasta))
+            .filter(|l| l.str_field("search").unwrap_or_default().split(' ').any(|w| w == folder_word))
             .count();
-        assert!(with_pasta > top, "more lessons match than come back: {with_pasta}");
+        assert!(with_folder_word > top, "more lessons match than come back: {with_folder_word}");
 
         let hits = matching(&bank, "apagando a pasta", &languages());
         assert_eq!(hits.len(), top, "{hits:?}");

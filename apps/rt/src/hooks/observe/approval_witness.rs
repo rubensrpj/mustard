@@ -743,7 +743,7 @@ mod tests {
     /// testemunha com o código do cabeçalho ao lado da resposta. Sem código
     /// no cabeçalho nada é aceito, e a testemunha diz o que fazer.
     #[test]
-    fn o_gesto_e_reconhecido_na_pergunta_escrita_com_as_palavras_do_usuario() {
+    fn gesture_is_recognised_in_the_question_written_with_the_users_words() {
         if ambient_override() {
             return;
         }

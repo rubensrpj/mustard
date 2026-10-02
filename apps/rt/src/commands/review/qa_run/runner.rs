@@ -680,7 +680,7 @@ mod tests {
     fn every_runner_the_project_uses_says_how_many_tests_it_ran() {
         let none = "running 0 tests\n\ntest result: ok. 0 passed; 0 failed\n\n     Running tests/a.rs\n\nrunning 0 tests\n";
         assert_eq!(tests_run(none), Some(0));
-        assert_eq!(tests_run("running 0 tests\n\nrunning 1 test\ntest tests::soma ... ok\n"), Some(1));
+        assert_eq!(tests_run("running 0 tests\n\nrunning 1 test\ntest tests::sum ... ok\n"), Some(1));
         assert_eq!(tests_run("running 12 tests\n"), Some(12));
         assert_eq!(tests_run("Tests:       2 failed, 3 passed, 5 total\n"), Some(5));
         assert_eq!(tests_run("Tests:       0 total\n"), Some(0));

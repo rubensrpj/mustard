@@ -1004,7 +1004,7 @@ mod tests {
     /// (`xdomain/config.rs`, `config.rs.bak`) não é o citado. A lição sem
     /// arquivo citado continua indo a toda onda do lugar dela.
     #[test]
-    fn licao_que_cita_arquivo_so_vai_a_onda_que_mexe_nele() {
+    fn a_lesson_citing_a_file_only_goes_to_the_wave_that_touches_it() {
         let core = json!({"subproject": "packages/core"});
         let bank = parse_log(
             &[
@@ -1028,7 +1028,7 @@ mod tests {
     /// núcleo que não mexe nela, e a que cita um arquivo de dentro da mesma
     /// pasta não vai.
     #[test]
-    fn licao_que_cita_so_pasta_continua_indo_a_onda_do_subprojeto() {
+    fn a_lesson_citing_only_a_folder_still_goes_to_the_subproject_wave() {
         let core = json!({"subproject": "packages/core"});
         let bank = parse_log(
             &[
@@ -1048,7 +1048,7 @@ mod tests {
     /// em views Razor ou só na página HTML não é só de texto e recebe as
     /// lições como qualquer onda de código.
     #[test]
-    fn onda_so_de_texto_nao_recebe_licao_do_projeto_nem_do_subprojeto() {
+    fn a_text_only_wave_gets_no_lesson_from_the_project_or_the_subproject() {
         let bank = parse_log(
             &[
                 placed(1, "defect", "O teste tem de falhar quando o código está errado.", json!({"files": ["**"]})),

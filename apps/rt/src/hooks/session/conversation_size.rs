@@ -164,7 +164,7 @@ mod tests {
     /// máquina sem valor (a variável ausente ou vazia), o aviso recomenda o
     /// `15` e diz onde ajustá-lo. Nos dois idiomas.
     #[test]
-    fn o_aviso_respeita_o_valor_da_maquina_e_so_recomenda_quando_ela_nao_tem_um() {
+    fn warning_respects_the_machine_value_and_only_recommends_when_it_has_none() {
         for lang in [Locale::PtBr, Locale::EnUs] {
             let set = autocompact_line(Some("25"), lang);
             assert!(set.contains("25"), "{lang:?}: {set}");
@@ -188,7 +188,7 @@ mod tests {
     /// registro inteiro, com uma transcrição de 200 mil tokens (o antigo
     /// degrau), deixa passar um `PreToolUse` comum.
     #[test]
-    fn aviso_de_compactar_chega_no_gancho_e_ninguem_mais_e_barrado_por_tamanho() {
+    fn compaction_warning_arrives_in_the_hook_and_nobody_else_is_blocked_by_size() {
         let dir = open_project("x");
         let root = dir.path();
 
@@ -358,7 +358,7 @@ mod tests {
     /// bloco e não pede para colá-lo. Nos dois idiomas, e dentro do teto do
     /// início da sessão.
     #[test]
-    fn depois_da_compactacao_o_inicio_da_sessao_traz_o_bloco_da_obra() {
+    fn after_compaction_the_session_start_brings_the_work_block() {
         use crate::hooks::session::session_start_inject::MAX_BYTES;
         use serde_json::json;
 
@@ -428,7 +428,7 @@ mod tests {
     /// compactação e o aviso de compactar trazem o mesmo bloco curto. Nos dois
     /// idiomas.
     #[test]
-    fn o_bloco_da_obra_conta_as_ondas_entregues_em_vez_de_listar_cada_uma() {
+    fn work_block_counts_the_delivered_waves_instead_of_listing_each_one() {
         use serde_json::json;
 
         for lang in [Locale::PtBr, Locale::EnUs] {
@@ -456,7 +456,7 @@ mod tests {
     /// que cabem — um a mais já não caberia — e quantos ficaram de fora; o
     /// resto do bloco fica inteiro. Nos dois idiomas.
     #[test]
-    fn depois_da_compactacao_o_inicio_da_sessao_traz_o_bloco_da_obra_com_os_codigos_cortados_no_teto() {
+    fn after_compaction_the_session_start_brings_the_work_block_with_the_codes_cut_at_the_cap() {
         use serde_json::json;
 
         for lang in [Locale::PtBr, Locale::EnUs] {
@@ -484,7 +484,7 @@ mod tests {
     /// uma a mais já não caberia — e quantas ficaram de fora. A onda em
     /// andamento, que cede por último, fica inteira. Nos dois idiomas.
     #[test]
-    fn depois_da_compactacao_o_inicio_da_sessao_traz_o_bloco_da_obra_cortando_as_outras_partes_ate_caber() {
+    fn after_compaction_the_session_start_brings_the_work_block_cutting_the_other_parts_until_it_fits() {
         use serde_json::json;
 
         for lang in [Locale::PtBr, Locale::EnUs] {

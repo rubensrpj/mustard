@@ -476,7 +476,7 @@ mod tests {
     /// A lição gravada com a chave "apagar" é achada por "apagando a pasta",
     /// sozinha no banco e no meio de outras oito.
     #[test]
-    fn a_lesson_keyed_apagar_is_among_the_top_five_for_apagando_a_pasta() {
+    fn a_lesson_keyed_apagar_is_among_the_top_five_for_its_gerund_in_the_query() {
         let lesson = (7, doc("A trava de comandos confere o programa, nunca o texto entre aspas.", &["trava", "apagar"]));
         let alone = found(std::slice::from_ref(&lesson), "apagando a pasta");
         assert_eq!(ids(&alone), [7], "{alone:?}");

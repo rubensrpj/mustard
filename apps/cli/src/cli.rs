@@ -144,7 +144,7 @@ mod tests {
     /// lista não tem volta a responder, e ninguém percebe porque a compilação
     /// continua passando.
     #[test]
-    fn o_sugeridor_de_gramaticas_nao_e_mais_um_comando() {
+    fn the_grammar_suggester_is_no_longer_a_command() {
         for argv in [
             vec!["mustard", "install-grammars"],
             vec!["mustard", "install-grammars", "--project-root", "."],

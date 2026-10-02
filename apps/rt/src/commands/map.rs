@@ -1661,7 +1661,7 @@ mod tests {
     /// não abre o arquivo, e recebe as linhas da declaração, do começo ao fim,
     /// com o caminho e as linhas de onde saíram.
     #[test]
-    fn o_mapa_devolve_o_trecho_de_uma_declaracao() {
+    fn map_returns_the_snippet_of_a_declaration() {
         let dir = tempdir().unwrap();
         let file = "packages/core/src/pay.rs";
         std::fs::create_dir_all(dir.path().join("packages/core/src")).unwrap();
@@ -1705,9 +1705,9 @@ mod tests {
 
         // Sem o nome da declaração, e com um nome que o arquivo não declara,
         // a recusa diz qual é o caso.
-        let mut sem_nome = ask(dir.path(), Question::Slice);
-        sem_nome.file = Some(file.to_string());
-        let report = answered(&sem_nome);
+        let mut without_name = ask(dir.path(), Question::Slice);
+        without_name.file = Some(file.to_string());
+        let report = answered(&without_name);
         assert_eq!(report["reason"], json!("missing-argument"), "{report}");
         assert!(report["hint"].as_str().unwrap().contains("--name"), "{report}");
 
@@ -2517,19 +2517,19 @@ mod tests {
 .claude/
 ").unwrap();
         std::fs::write(root.join("mustard.json"), r#"{"git": {"flow": {"*": "main"}}}"#).unwrap();
-        let gravar = |n: u32| format!("pub fn gravar() -> u32 {{
+        let write_source = |n: u32| format!("pub fn gravar() -> u32 {{
     {n}
 }}
 ");
-        commit("src/a.rs", &gravar(1), "feat(a): cria o gravar");
+        commit("src/a.rs", &write_source(1), "feat(a): cria o gravar");
         commit("src/b.rs", "pub fn ler() -> u32 {
     1
 }
 ", "cria o ler");
         commit("src/c.rs", "pub fn gravar() {}
 ", "outro gravar");
-        commit("src/a.rs", &gravar(2), "fix(a): corrige o gravar (#5)");
-        commit("src/a.rs", &gravar(3), "muda o gravar de novo");
+        commit("src/a.rs", &write_source(2), "fix(a): corrige o gravar (#5)");
+        commit("src/a.rs", &write_source(3), "muda o gravar de novo");
         scan.scan(root, &store::model_path(root)).expect("the first pass writes the map");
         let (mines, traces) = (std::cell::Cell::new(0), std::cell::Cell::new(0));
         let mine = |root: &Path, out: &Path| {
@@ -2574,7 +2574,7 @@ mod tests {
         assert_eq!(traces.get(), 2);
         assert_eq!(mines.get(), 0, "nothing changed in the project");
 
-        commit("src/a.rs", &gravar(4), "muda o gravar pela quarta vez");
+        commit("src/a.rs", &write_source(4), "muda o gravar pela quarta vez");
         let report = map_at(&question(None, "ler"), &mine, &trace);
         assert_eq!(lines(&report).len(), 1, "{report}");
         assert_eq!(mines.get(), 1, "the new commit is summed by the pass that reads what changed");

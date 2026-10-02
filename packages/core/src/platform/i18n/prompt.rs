@@ -58,12 +58,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // código. Sem ela, o agente só adivinhava o idioma dos nomes.
         ("prompt.languages", Locale::PtBr) => {
             "Idiomas deste projeto. O texto sai em {text}: comentários, entregas e commits. O código \
-             sai em {code}: nomes de variáveis, funções, arquivos, comandos e tabelas do banco."
+             sai em {code}: nomes de variáveis, funções, testes, arquivos, comandos e tabelas do \
+             banco. Isso vale mesmo quando o arquivo já traz nomes em outro idioma."
         }
         ("prompt.languages", Locale::EnUs) => {
             "This project's languages. Text is written in {text}: comments, deliveries and commits. \
-             Code is written in {code}: names of variables, functions, files, commands and database \
-             tables."
+             Code is written in {code}: names of variables, functions, tests, files, commands and \
+             database tables. This holds even when the file already has names in another \
+             language."
         }
         // As seções do pedido da onda, sempre nesta ordem: o que ela entrega,
         // como ler cada item, o que fazer, o que obedecer, o que devolver e
@@ -526,7 +528,7 @@ mod tests {
             include_str!("prompt.rs"),
             super::PREFIXES,
             91,
-            0x7c4b_6191_643f_4121,
+            0xdbe6_d990_a943_861b,
         );
     }
 

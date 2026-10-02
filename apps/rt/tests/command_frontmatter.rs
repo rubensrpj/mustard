@@ -80,7 +80,7 @@ fn shipped_commands() -> Vec<String> {
 }
 
 #[test]
-fn as_portas_expostas_sao_exatamente_estas() {
+fn exposed_doors_are_exactly_these() {
     let mut exposed: Vec<String> = Vec::new();
     for name in shipped_commands() {
         if !frontmatter(&name).contains(NOT_A_DOOR) {

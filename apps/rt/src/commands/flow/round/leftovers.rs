@@ -244,7 +244,7 @@ mod tests {
         let root = dir.path();
         std::fs::create_dir_all(root.join("src")).unwrap();
         for file in ["src/commit.rs", "src/novo.rs"] {
-            std::fs::write(root.join(file), "fn um() {}\n").unwrap();
+            std::fs::write(root.join(file), "fn one() {}\n").unwrap();
         }
         let log = parse_log(
             &[

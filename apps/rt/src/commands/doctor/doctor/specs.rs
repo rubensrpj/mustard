@@ -220,7 +220,7 @@ mod tests {
     /// Uma spec cuja pasta existe e cujo arquivo de eventos não: nada diz o
     /// que ela é nem onde ela está, e o diagnóstico acusa isso pelo nome.
     #[test]
-    fn a_spec_sem_arquivo_de_eventos_vira_achado() {
+    fn spec_without_an_events_file_becomes_a_finding() {
         let dir = tempdir().unwrap();
         let claude_dir = dir.path().join(".claude");
         std::fs::create_dir_all(claude_dir.join("spec").join("trava")).unwrap();
@@ -239,7 +239,7 @@ mod tests {
     /// sem arquivo de eventos próprio, ela não é acusada. Uma spec de verdade
     /// sem o arquivo continua acusada ao lado dela.
     #[test]
-    fn a_pasta_das_descartadas_nao_e_spec() {
+    fn discarded_folder_is_not_a_spec() {
         let dir = tempdir().unwrap();
         let claude_dir = dir.path().join(".claude");
         let specs = claude_dir.join("spec");
@@ -258,7 +258,7 @@ mod tests {
     /// de estado, com o que quer que tenha sobrado dentro, também não: ela
     /// deixou de ser lida.
     #[test]
-    fn uma_spec_com_arquivo_de_eventos_esta_sa() {
+    fn spec_with_an_events_file_is_healthy() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let claude_dir = root.join(".claude");

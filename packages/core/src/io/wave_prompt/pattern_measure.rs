@@ -536,9 +536,9 @@ mod tests {
         );
         assert_eq!(wave.blocks_chars, in_request);
         assert_eq!(wave.chars_with - wave.chars_without, in_request);
-        // Em tokens: 587 com o padrão, 352 sem ele, 235 a mais; os dois
+        // Em tokens: 605 com o padrão, 370 sem ele, 235 a mais; os dois
         // blocos somam 122 e 113, e cada um arredonda para cima à parte.
-        assert_eq!((wave.tokens_with, wave.tokens_without), (587, 352));
+        assert_eq!((wave.tokens_with, wave.tokens_without), (605, 370));
         let blocks: Vec<u64> = wave.blocks.iter().map(|b| b.block_tokens).collect();
         assert_eq!(blocks, [122, 113]);
         assert!((wave.tokens_with - wave.tokens_without).abs_diff(blocks.iter().sum()) <= 1);

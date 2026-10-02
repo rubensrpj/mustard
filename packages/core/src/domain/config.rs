@@ -1674,7 +1674,7 @@ mod tests {
     /// As bases saem das chaves e dos valores do fluxo, e a chave `*` não é
     /// base nenhuma.
     #[test]
-    fn as_bases_declaradas_saem_do_fluxo() {
+    fn the_declared_bases_come_from_the_flow() {
         // Fluxo de dois degraus → {dev, main}.
         let mut cfg = ProjectConfig::default();
         cfg.git.flow.insert("*".into(), "dev".into());
@@ -1701,14 +1701,14 @@ mod tests {
     /// Um projeto que não declara fluxo não declara base nenhuma: a lista sai
     /// vazia, e não com dois nomes que este repositório pode nem ter.
     #[test]
-    fn sem_fluxo_o_projeto_nao_declara_base_nenhuma() {
+    fn without_a_flow_the_project_declares_no_base() {
         assert!(ProjectConfig::default().git.declared_bases().is_empty());
         assert_eq!(ProjectConfig::default().git.primary_base(), None);
     }
 
     /// A base do cursor é a do `*`; sem ela, a menor das declaradas.
     #[test]
-    fn a_base_do_cursor_vem_do_fluxo_e_nunca_de_um_nome_fixo() {
+    fn the_cursor_base_comes_from_the_flow_and_never_from_a_fixed_name() {
         let mut cfg = ProjectConfig::default();
         cfg.git.flow.insert("*".into(), "develop".into());
         cfg.git.flow.insert("develop".into(), "master".into());
@@ -1722,7 +1722,7 @@ mod tests {
     /// As duas chaves do projeto valem ligadas quando faltam; só o `false`
     /// escrito as desliga, e voltam ao arquivo como foram escritas.
     #[test]
-    fn as_chaves_do_mustard_e_do_rtk_so_desligam_com_false_escrito() {
+    fn the_mustard_and_rtk_keys_only_turn_off_with_an_explicit_false() {
         let dir = tempdir().unwrap();
         let absent = ProjectConfig::load(dir.path());
         assert!(absent.enabled() && absent.rtk());

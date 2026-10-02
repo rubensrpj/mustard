@@ -1095,7 +1095,7 @@ mod tests {
     /// arquivo da equipe (que ainda a reconhece como do molde); o valor que a
     /// pessoa mudou é dela e fica, nos dois arquivos.
     #[test]
-    fn toda_chave_aposentada_sai_da_instalacao_com_o_valor_do_molde() {
+    fn every_retired_key_leaves_the_install_with_the_template_value() {
         let seed = parse_json_object(SETTINGS_SEED);
         for (name, written) in RETIRED_WITH_SEED_VALUE {
             assert!(RETIRED_ENV.contains(&(name, written)), "{name} left the retired list");
@@ -1127,7 +1127,7 @@ mod tests {
     /// O molde de configuração e a instalação nova não plantam nenhuma
     /// variável aposentada, e sobra no molde a que ainda vale.
     #[test]
-    fn o_molde_de_configuracao_nao_planta_chave_aposentada() {
+    fn the_config_template_does_not_plant_a_retired_key() {
         let seed = parse_json_object(SETTINGS_SEED);
         let env = seed["env"].as_object().expect("the seed has an env");
         for (name, _) in RETIRED_WITH_SEED_VALUE {

@@ -235,7 +235,7 @@ fn two_processes_closing_a_wave_at_once_leave_both_items_in_the_copy() {
     git(&["init", "-q"]);
     std::fs::write(root.join(".git/info/exclude"), ".claude/\n").expect("exclude");
     for n in 1..=2 * rounds {
-        std::fs::write(root.join(format!("a{n}.rs")), "fn um() {}\n").expect("seed file");
+        std::fs::write(root.join(format!("a{n}.rs")), "fn one() {}\n").expect("seed file");
     }
     git(&["add", "-A"]);
     git(&["commit", "-q", "-m", "semente"]);
@@ -249,7 +249,7 @@ fn two_processes_closing_a_wave_at_once_leave_both_items_in_the_copy() {
         for (text, w) in texts.iter().zip(0u64..) {
             let wave = 2 * round + w + 1;
             let file = format!("a{wave}.rs");
-            std::fs::write(root.join(&file), format!("fn um() {{}}\n// {text}\n")).expect("the wave's change");
+            std::fs::write(root.join(&file), format!("fn one() {{}}\n// {text}\n")).expect("the wave's change");
             read_request(root, wave);
             write(root, "delivered", &json!({"wave": wave, "text": text, "files": [file], "commit": format!("a onda {wave} sai")}));
         }
@@ -302,7 +302,7 @@ fn the_copies_a_test_makes_leave_when_it_ends_even_when_it_fails() {
             };
             git(&["init", "-q"]);
             std::fs::write(root.join(".git/info/exclude"), ".claude/\n").expect("exclude");
-            std::fs::write(root.join("a1.rs"), "fn um() {}\n").expect("seed file");
+            std::fs::write(root.join("a1.rs"), "fn one() {}\n").expect("seed file");
             git(&["add", "-A"]);
             git(&["commit", "-q", "-m", "semente"]);
             let dispatch = rt(root, &["round", "--spec", "teste"]).output().expect("dispatch");
@@ -633,7 +633,7 @@ fn a_wave_that_still_builds_commits_the_undeclared_file_and_one_that_breaks_the_
         "witness": {"question": "Aprovar esta spec?", "answer": "Aprovar"}}));
 
     std::fs::write(root.join("mustard.json"), br#"{"buildCommand":"make"}"#).expect("mustard.json");
-    std::fs::write(root.join("a1.rs"), "fn um() {}\n").expect("a1.rs");
+    std::fs::write(root.join("a1.rs"), "fn one() {}\n").expect("a1.rs");
     std::fs::write(root.join("Makefile"), "default:\n\t@true\n").expect("Makefile");
     git(&["init", "-q"]);
     // Quem comita a rodada é o binário, não o `git` deste teste: sem
@@ -653,7 +653,7 @@ fn a_wave_that_still_builds_commits_the_undeclared_file_and_one_that_breaks_the_
 
     // Onda 1: muda o arquivo declarado e um outro que a entrega não cita; o
     // repositório continua compilando com o Makefile que já está lá.
-    std::fs::write(copy(1).join("a1.rs"), "fn um() {}\n// muda\n").expect("a1 muda");
+    std::fs::write(copy(1).join("a1.rs"), "fn one() {}\n// muda\n").expect("a1 muda");
     std::fs::write(copy(1).join("extra.rs"), "fn extra() {}\n").expect("extra");
     read_request(root, 1);
     write(root, "delivered", &json!({"wave": 1, "text": "Saiu.", "files": ["a1.rs"], "commit": "a1 sai"}));
@@ -766,7 +766,7 @@ fn write_out(root: &Path, event_type: &str, fields: &Value) -> (Option<i32>, Val
 /// dizer a onda: manda dar o dono pelos arquivos, e o dono pelos arquivos
 /// passa.
 #[test]
-fn gravar_onda_a_mao_e_recusado_e_manda_gravar_so_a_tarefa() {
+fn writing_a_wave_by_hand_is_refused_and_says_to_write_only_the_task() {
     use mustard_core::platform::i18n::{translate, Locale};
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
@@ -842,7 +842,7 @@ fn gravar_onda_a_mao_e_recusado_e_manda_gravar_so_a_tarefa() {
 /// letras acentuadas, que contam uma cada), a tarefa é gravada. A versão
 /// nova que o modelo grava sem título também é recusada.
 #[test]
-fn tarefa_sem_titulo_e_recusada_e_com_titulo_e_gravada() {
+fn task_without_a_title_is_refused_and_with_a_title_is_written() {
     use mustard_core::platform::i18n::{translate, Locale};
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
@@ -896,7 +896,7 @@ fn tarefa_sem_titulo_e_recusada_e_com_titulo_e_gravada() {
 /// da onda cuja tarefa toca um desses arquivos, sem passar pela análise antes
 /// do envio, e fica fora do pedido da onda que não toca.
 #[test]
-fn o_item_com_dono_pelos_arquivos_vai_no_pedido_da_onda_que_toca_neles() {
+fn item_owned_by_its_files_goes_in_the_request_of_the_wave_that_touches_them() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     approved_with_waves(root, 2);
@@ -916,7 +916,7 @@ fn o_item_com_dono_pelos_arquivos_vai_no_pedido_da_onda_que_toca_neles() {
         assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
     };
     std::fs::write(root.join("mustard.json"), b"{}").expect("mustard.json");
-    std::fs::write(root.join("a1.rs"), "fn um() {}\n").expect("a1.rs");
+    std::fs::write(root.join("a1.rs"), "fn one() {}\n").expect("a1.rs");
     std::fs::write(root.join("a2.rs"), "fn dois() {}\n").expect("a2.rs");
     git(&["init", "-q"]);
     git(&["config", "user.email", "t@t"]);

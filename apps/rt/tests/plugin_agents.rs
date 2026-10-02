@@ -238,7 +238,7 @@ fn frontmatter(body: &str) -> &str {
 /// quem cuida da onda parada é o sinal de vida da rodada. Ele não pede mais
 /// um relatório pelo tamanho: a entrega vai gravada na spec.
 #[test]
-fn o_molde_do_agente_de_onda_nao_traz_teto_de_idas_e_voltas() {
+fn wave_agent_template_has_no_cap_on_round_trips() {
     for (lang, tokens) in [("pt-BR", "mil e dois mil tokens"), ("en-US", "one and two thousand tokens")] {
         let dir = tempfile::tempdir().unwrap();
         let (root, _home) = installed(dir.path(), &format!(r#"{{"version":"1.0.0","language":{{"text":"{lang}"}}}}"#));
@@ -519,7 +519,7 @@ fn the_installed_agents_use_the_effort_of_the_project_config() {
 /// idiomas do texto e do código vêm no cabeçalho do pedido, sem o molde
 /// repeti-los. O molde manda seguir o código parecido que o pedido mostra.
 #[test]
-fn o_molde_de_onda_nao_manda_refazer_o_que_o_pedido_ja_traz() {
+fn wave_template_does_not_say_to_redo_what_the_request_already_carries() {
     for (lang, said, repeated) in [
         (
             "pt-BR",
@@ -621,7 +621,7 @@ fn wave_headers(lang: &str) -> (&'static str, &'static str) {
 /// feitas, com ou sem mudança de plano. A fronteira não manda mais parar
 /// porque falta arquivo na lista.
 #[test]
-fn o_molde_da_onda_poe_na_tarefa_o_arquivo_que_a_mudanca_exige() {
+fn wave_template_puts_in_the_task_the_file_the_change_requires() {
     for (lang, said, gone) in [
         ("pt-BR", ["entra no trabalho", "antes de explorar", "`files`", "`replan`", "`undone`"], "arquivo que falta"),
         ("en-US", ["is part of the work", "before exploring", "`files`", "`replan`", "`undone`"], "a missing file"),
@@ -645,7 +645,7 @@ fn o_molde_da_onda_poe_na_tarefa_o_arquivo_que_a_mudanca_exige() {
 /// sobra que só muda comentário, documentação ou texto de ajuda leva a marca
 /// de limpeza, que a rodada segura para o fim da obra.
 #[test]
-fn a_fronteira_manda_tirar_o_que_a_mudanca_deixou_sem_uso() {
+fn boundary_says_to_remove_what_the_change_left_unused() {
     for (lang, said) in [
         (
             "pt-BR",
@@ -691,7 +691,7 @@ fn a_fronteira_manda_tirar_o_que_a_mudanca_deixou_sem_uso() {
 /// compilam — onda e revisor —, nos dois idiomas, e o teto vago do comando
 /// saiu.
 #[test]
-fn os_moldes_mandam_o_teto_de_dez_minutos_em_compilacao_e_teste() {
+fn templates_say_the_ten_minute_cap_on_build_and_test() {
     for (lang, rule, said, vague) in [
         (
             "pt-BR",
@@ -722,7 +722,7 @@ fn os_moldes_mandam_o_teto_de_dez_minutos_em_compilacao_e_teste() {
 /// Mustard: o molde de onda manda isso na linha dos comentários, e o
 /// revisor confere nas linhas novas da obra, nos dois idiomas.
 #[test]
-fn os_moldes_proibem_codigo_da_spec_no_comentario() {
+fn templates_forbid_spec_codes_in_comments() {
     for (lang, comments, finding, review_check, cited) in [
         (
             "pt-BR",
@@ -761,7 +761,7 @@ fn os_moldes_proibem_codigo_da_spec_no_comentario() {
 /// gravar, o do levantamento e o da porta do pull request dizem que o texto
 /// volta sem gravar nada.
 #[test]
-fn o_molde_do_revisor_diz_os_dois_caminhos() {
+fn reviewer_template_states_the_two_paths() {
     for (lang, locale, header, said, survey_said) in [
         (
             "pt-BR",
@@ -804,7 +804,7 @@ fn o_molde_do_revisor_diz_os_dois_caminhos() {
 /// lição fora da linha de exemplo do veredito, que segue dizendo se uma
 /// lição do pedido se repetiu; a proposta de mudança na skill continua.
 #[test]
-fn o_revisor_propoe_o_conserto_com_teste_no_lugar_da_licao() {
+fn reviewer_proposes_the_fix_with_a_test_in_place_of_the_lesson() {
     for (lang, header, lesson_word, asked, skill) in [
         (
             "pt-BR",
@@ -1091,7 +1091,7 @@ fn the_wave_request_says_the_agent_never_commits_and_the_commit_field_is_the_tit
 /// agente não estiver na spec, o `next` manda o agente gravá-la de novo. Nos
 /// dois idiomas.
 #[test]
-fn o_pedido_manda_gravar_a_entrega_pela_ferramenta() {
+fn request_says_to_write_the_delivery_through_the_tool() {
     for (lang, text) in [("pt-BR", Locale::PtBr), ("en-US", Locale::EnUs)] {
         let dir = tempfile::tempdir().unwrap();
         let (root, home) =

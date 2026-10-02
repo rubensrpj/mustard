@@ -144,7 +144,7 @@ fn a_copy_of_a_submodule_project_finds_the_submodule_checkout() {
     let tmp = tempfile::tempdir().unwrap();
     let origin = tmp.path().join("origem");
     std::fs::create_dir_all(origin.join("src")).unwrap();
-    std::fs::write(origin.join("src").join("lib.rs"), b"fn um() {}\n").unwrap();
+    std::fs::write(origin.join("src").join("lib.rs"), b"fn one() {}\n").unwrap();
     git(&origin, &["init", "-q"]);
     git(&origin, &["config", "user.email", "t@t"]);
     git(&origin, &["config", "user.name", "t"]);

@@ -1650,7 +1650,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         std::fs::create_dir_all(root.join("src")).unwrap();
-        std::fs::write(root.join("src/real.rs"), "fn um() {}\nfn dois_passos() {}\n").unwrap();
+        std::fs::write(root.join("src/real.rs"), "fn one() {}\nfn dois_passos() {}\n").unwrap();
         mustard_core::io::project_map::write_text(
             root,
             r#"{"modules":[{"path":"src/real.rs","declarations":[{"kind":"function","name":"dois_passos","line":2}]}]}"#,
@@ -1743,13 +1743,13 @@ mod tests {
         assert_eq!(refused["reason"], json!("binary-only-type"), "{refused}");
         assert_eq!(lines(root), before, "nothing was written");
 
-        let fechamento = crate::commands::flow::close::close_at(&crate::commands::flow::close::CloseOpts {
+        let closing = crate::commands::flow::close::close_at(&crate::commands::flow::close::CloseOpts {
             spec: Some("teste".to_string()),
             report: None,
             root: root.to_path_buf(),
             ..Default::default()
         });
-        assert_eq!(fechamento["ok"], json!(false), "the close still refuses: {fechamento}");
+        assert_eq!(closing["ok"], json!(false), "the close still refuses: {closing}");
     }
 
     /// Um pedido de revisão aberto na spec `teste`, como o fechamento o grava.
@@ -1766,7 +1766,7 @@ mod tests {
     /// não fecha o pedido. O veredito oficial que a assume fecha: a gravação
     /// seguinte recusa outra vez.
     #[test]
-    fn o_revisor_so_grava_veredito_com_revisao_pedida() {
+    fn reviewer_only_writes_a_verdict_with_a_requested_review() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         message(root, "user", "revise a obra");
@@ -1808,7 +1808,7 @@ mod tests {
     /// nomeando o item e mandando o revisor gravar de novo; o que responde
     /// por todos entra, mesmo com um item não atendido.
     #[test]
-    fn o_veredito_final_sem_todo_o_combinado_e_recusado_na_gravacao() {
+    fn final_verdict_without_all_that_was_agreed_is_refused_on_write() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let said = message(root, "user", "revise a obra");
@@ -2216,7 +2216,7 @@ mod tests {
         let before = lines(root);
         for (proof, reason, said_in_hint) in [
             ("sai vazio", "proof-program-unknown", "sai"),
-            ("a_soma_sai_certa", "proof-program-unknown", "a_soma_sai_certa"),
+            ("sum_comes_out_right", "proof-program-unknown", "sum_comes_out_right"),
             ("git --version ; git --help", "proof-chained-by-semicolon", "&&"),
             ("git grep -n x", "proof-search-not-negated", "!"),
         ] {
@@ -2579,7 +2579,7 @@ mod tests {
     /// do ambiente e a preferência do usuário continuam entrando, e a
     /// retirada também.
     #[test]
-    fn a_licao_de_defeito_e_recusada_e_aponta_a_tarefa() {
+    fn defect_lesson_is_refused_and_points_to_the_task() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let bank = root.join(".claude").join("spec").join("lessons.ndjson");
@@ -2634,7 +2634,7 @@ mod tests {
     /// aberta, manda gravar a tarefa nela, pelo nome; sem spec aberta, não
     /// fala em spec. Nos dois idiomas.
     #[test]
-    fn a_licao_de_regra_do_projeto_e_recusada_e_vira_teste() {
+    fn project_rule_lesson_is_refused_and_becomes_a_test() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let bank = root.join(".claude").join("spec").join("lessons.ndjson");
@@ -2676,7 +2676,7 @@ mod tests {
     /// a busca por escopo que o pedido de cada onda usa a acha para um
     /// arquivo do subprojeto dela. A recusa de uma regra nova não apaga nada.
     #[test]
-    fn a_regra_do_projeto_ja_no_banco_segue_na_leitura() {
+    fn project_rule_already_in_the_database_stays_in_the_read() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let path = root.join(".claude").join("spec").join("lessons.ndjson");
@@ -3392,7 +3392,7 @@ mod tests {
     /// uma vez, com os lotes calculados na hora: eles levam tudo o que veio
     /// desde a publicação, o pedido e a tarefa dele juntos.
     #[test]
-    fn a_gravacao_que_muda_o_plano_nao_prepara_copia() {
+    fn write_that_changes_the_plan_does_not_prepare_a_copy() {
         use mustard_core::platform::i18n::Locale;
         use mustard_core::platform::page_templates::{spec_page_template, template_stamp};
         const URL: &str = "https://claude.ai/code/artifact/teste";
@@ -3536,7 +3536,7 @@ mod tests {
     /// vai pela mesma porta. Nada passa pela gravação do modelo: ela recusa o
     /// autor do programa, a onda e a tarefa que já traz o número da onda.
     #[test]
-    fn a_onda_semeada_pelos_testes_sai_com_autor_binario() {
+    fn wave_seeded_by_the_tests_comes_out_with_the_binary_as_author() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         born(root);
@@ -5067,7 +5067,7 @@ mod tests {
     /// o título da versão que ela substitui; a mesma versão pela porta do
     /// modelo é recusada sem gravar nada.
     #[test]
-    fn tarefa_sem_titulo_e_recusada_e_com_titulo_e_gravada_e_a_versao_do_programa_herda_o_titulo() {
+    fn task_without_a_title_is_refused_and_with_a_title_is_written_and_the_program_version_inherits_the_title() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let said = write(root, "message", r#"{"text":"o plano"}"#)["id"].as_u64().unwrap();

@@ -84,39 +84,39 @@ fn production_half(rel: &str) -> String {
 /// que a porta proíbe. Entregue e não prometido: a resposta manda rodar um
 /// comando que o leitor não foi ensinado a reconhecer.
 #[test]
-fn a_porta_promete_os_mesmos_comandos_que_o_proximo_passo_entrega() {
+fn door_promises_the_same_commands_the_next_step_delivers() {
     // --- 1. A prosa entregue: os nomes que a porta lista ------------------
-    let porta = read("plugin/commands/continue.md");
-    let linha = line_with(&porta, "The names it can hand you")
+    let door = read("plugin/commands/continue.md");
+    let line = line_with(&door, "The names it can hand you")
         .expect("a porta da retomada lista os comandos que o campo pode entregar");
-    let prometidos: BTreeSet<String> = linha
+    let promised: BTreeSet<String> = line
         .split("mustard-rt run ")
         .skip(1)
         .filter_map(|rest| {
-            let nome: String = rest
+            let name: String = rest
                 .chars()
                 .take_while(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '-')
                 .collect();
-            (!nome.is_empty()).then_some(nome)
+            (!name.is_empty()).then_some(name)
         })
         .collect();
-    assert!(!prometidos.is_empty(), "a porta não nomeia comando nenhum: {linha}");
+    assert!(!promised.is_empty(), "a porta não nomeia comando nenhum: {line}");
 
     // --- 2. O código: os nomes que a tabela do próximo passo entrega ------
-    let entregues: BTreeSet<String> =
-        NEXT_BY_PHASE.iter().map(|(_, comando)| (*comando).to_string()).collect();
-    assert!(!entregues.is_empty(), "a tabela do próximo passo está vazia");
+    let delivered: BTreeSet<String> =
+        NEXT_BY_PHASE.iter().map(|(_, command)| (*command).to_string()).collect();
+    assert!(!delivered.is_empty(), "a tabela do próximo passo está vazia");
 
-    let so_na_prosa: Vec<&String> = prometidos.difference(&entregues).collect();
+    let only_in_prose: Vec<&String> = promised.difference(&delivered).collect();
     assert!(
-        so_na_prosa.is_empty(),
-        "a porta promete passos que o campo nunca entrega: {so_na_prosa:?} - \
+        only_in_prose.is_empty(),
+        "a porta promete passos que o campo nunca entrega: {only_in_prose:?} - \
          quem obedecer a porta espera um comando que nenhuma fase manda rodar"
     );
-    let so_no_codigo: Vec<&String> = entregues.difference(&prometidos).collect();
+    let only_in_code: Vec<&String> = delivered.difference(&promised).collect();
     assert!(
-        so_no_codigo.is_empty(),
-        "o campo entrega passos que a porta não ensina: {so_no_codigo:?} - \
+        only_in_code.is_empty(),
+        "o campo entrega passos que a porta não ensina: {only_in_code:?} - \
          a resposta manda rodar um comando que o leitor não foi apresentado"
     );
 }

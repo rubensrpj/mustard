@@ -801,7 +801,7 @@ mod tests {
     /// unidade e relatava ter editado aquele número. A reescrita que a rodada
     /// faz passa pela mesma pergunta, pela mesma porta.
     #[test]
-    fn a_abertura_pergunta_pelo_pull_request_da_branch_que_vai_abrir() {
+    fn opening_asks_for_the_pull_request_of_the_branch_it_will_open() {
         let pr = to_open();
 
         // Sem pull request para essa branch, um novo nasce.
@@ -903,7 +903,7 @@ mod tests {
     /// fica. O título recusado pelo provedor não passa por feito.
     #[test]
     fn pr_open_rewrites_the_title_and_takes_the_draft_off() {
-        let novo = PrToOpen {
+        let new_pr = PrToOpen {
             title: "Ajusta o pedido ao otimizador".into(),
             body: "o corpo novo".into(),
             head: "feature/pi-kpis".into(),
@@ -912,7 +912,7 @@ mod tests {
         };
 
         let fake = FakePub::with_open_pr("github", "feature/pi-kpis", 57);
-        let report = open_or_edit(&fake, &novo);
+        let report = open_or_edit(&fake, &new_pr);
         assert!(report.ok, "{report:?}");
         assert_eq!((report.action, report.number), (ACTION_EDIT, Some(57)), "{report:?}");
         assert_eq!(
@@ -926,9 +926,9 @@ mod tests {
             "the same pull request, retitled, rewritten and out of the draft; nothing opened",
         );
 
-        let rascunho = PrToOpen { draft: true, ..novo.clone() };
+        let draft_pr = PrToOpen { draft: true, ..new_pr.clone() };
         let fake = FakePub::with_open_pr("github", "feature/pi-kpis", 57);
-        let report = open_or_edit(&fake, &rascunho);
+        let report = open_or_edit(&fake, &draft_pr);
         assert!(report.ok, "{report:?}");
         assert_eq!(
             fake.seen.borrow().as_slice(),
@@ -941,7 +941,7 @@ mod tests {
         );
 
         let fake = FakePub { title: Err("gh-failed".into()), ..FakePub::with_open_pr("github", "feature/pi-kpis", 57) };
-        let report = open_or_edit(&fake, &novo);
+        let report = open_or_edit(&fake, &new_pr);
         assert!(!report.ok, "a refused title is not reported as done: {report:?}");
         assert_eq!(report.error.as_deref(), Some("edit-title-failed: gh-failed"), "{report:?}");
         assert!(!fake.seen.borrow().iter().any(|call| call.starts_with("ready")), "{:?}", fake.seen.borrow());
@@ -1023,13 +1023,13 @@ mod tests {
     /// Uma spec sem arquivo de eventos não abre pull request nenhum — a porta
     /// não tem de onde tirar o texto e diz isso, em vez de inventar um corpo.
     #[test]
-    fn a_mensagem_sai_do_arquivo_de_eventos_da_spec() {
+    fn message_comes_from_the_spec_events_file() {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path();
         std::fs::write(root.join("mustard.json"), "{}").expect("cfg");
 
-        let sem_spec = message_of(root, "naoexiste").expect_err("nada a ler");
-        assert!(sem_spec.contains("spec-events-unreadable"), "{sem_spec}");
+        let without_spec = message_of(root, "naoexiste").expect_err("nada a ler");
+        assert!(without_spec.contains("spec-events-unreadable"), "{without_spec}");
 
         let path = mustard_core::io::spec_events::spec_file(root, "trava").expect("caminho");
         std::fs::create_dir_all(path.parent().expect("pasta")).expect("pasta da spec");

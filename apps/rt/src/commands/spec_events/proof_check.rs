@@ -208,7 +208,7 @@ mod tests {
     #[test]
     fn the_first_term_has_to_be_a_program_that_runs() {
         assert_eq!(reason("sai vazio"), Some("proof-program-unknown"));
-        assert_eq!(reason("a_soma_sai_certa"), Some("proof-program-unknown"));
+        assert_eq!(reason("sum_comes_out_right"), Some("proof-program-unknown"));
         assert_eq!(reason("PATH=x sai vazio"), Some("proof-program-unknown"));
         assert_eq!(reason("! sai vazio"), Some("proof-program-unknown"));
         let named = proof_defect("sai vazio").unwrap().message(mustard_core::platform::i18n::Locale::PtBr);

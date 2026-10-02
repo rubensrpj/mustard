@@ -1177,7 +1177,7 @@ mod tests {
     /// aberto. Sem onda de conserto aberta, a spec fechada continua sem
     /// rodada — a fresta é só essa.
     #[test]
-    fn o_pull_request_reprovado_tem_porta_de_conserto_despachada_pela_rodada() {
+    fn rejected_pull_request_has_a_fix_door_dispatched_by_the_round() {
         use crate::commands::flow::reopen::{reopen_with, ReopenOpts};
         use crate::commands::spec_events::write::{record, record_phase, record_pr_open};
         use mustard_core::domain::spec_state::PhaseWriter;
@@ -1551,7 +1551,7 @@ mod tests {
     fn approved_backlog(root: &Path) -> u64 {
         std::fs::create_dir_all(root.join("src")).unwrap();
         for name in ["a.rs", "b.rs"] {
-            std::fs::write(root.join("src").join(name), "fn um() {}\n").unwrap();
+            std::fs::write(root.join("src").join(name), "fn one() {}\n").unwrap();
         }
         approved(root, "x", &[]);
         let log = log_of(root);
@@ -1577,7 +1577,7 @@ mod tests {
     /// aprovação. A recusa é forçada na segunda tarefa, com um campo que esta
     /// versão não conhece, e a prova atravessa `round`, o comando de verdade.
     #[test]
-    fn a_primeira_rodada_com_o_lote_recusado_deixa_a_spec_aprovada() {
+    fn first_round_with_the_batch_refused_leaves_the_spec_approved() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let bad = approved_backlog(root);
@@ -1607,7 +1607,7 @@ mod tests {
     /// tarefas soltas, grava a onda dele com as duas tarefas e deixa a spec na
     /// execução, na resposta e no arquivo, como sempre.
     #[test]
-    fn a_primeira_rodada_forma_o_lote_e_leva_a_spec_para_a_execucao() {
+    fn first_round_forms_the_batch_and_takes_the_spec_to_execution() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved_backlog(root);
@@ -1701,7 +1701,7 @@ mod tests {
     /// e o painel mostram o envio sem o pedido, e só a leitura da onda o
     /// traz inteiro.
     #[test]
-    fn a_leitura_das_ondas_nao_repete_o_molde_nem_o_pedido() {
+    fn reading_the_waves_repeats_neither_the_template_nor_the_request() {
         use crate::commands::spec_events::read::{read_for, ReadOpts};
 
         let dir = tempdir().unwrap();
@@ -2011,7 +2011,7 @@ mod tests {
         draft["claude_started"] = json!(claude_started);
         seed_send_at(root, draft, &chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%:z").to_string());
         let copy = PathBuf::from(shared);
-        std::fs::write(copy.join("src/b.rs"), "fn um() {}\n// o trabalho da onda 2\n").unwrap();
+        std::fs::write(copy.join("src/b.rs"), "fn one() {}\n// o trabalho da onda 2\n").unwrap();
         copy
     }
 
@@ -2034,7 +2034,7 @@ mod tests {
         assert_ne!(PathBuf::from(&resent), shared, "o reenvio sai em outra vaga: {out}");
         assert_eq!(
             std::fs::read_to_string(shared.join("src/b.rs")).unwrap(),
-            "fn um() {}\n// o trabalho da onda 2\n",
+            "fn one() {}\n// o trabalho da onda 2\n",
             "a cópia da onda 2 fica como estava: {out}"
         );
     }
@@ -2052,7 +2052,7 @@ mod tests {
         assert_eq!(out["ok"], json!(true), "{out}");
         assert_eq!(
             std::fs::read_to_string(shared.join("src/b.rs")).unwrap(),
-            "fn um() {}\n// o trabalho da onda 2\n",
+            "fn one() {}\n// o trabalho da onda 2\n",
             "a limpeza da órfã não apaga o trabalho da onda viva: {out}"
         );
         assert_eq!(waves_in(&out, "dispatch"), vec![1], "a órfã é reenviada: {out}");
@@ -2171,7 +2171,7 @@ mod tests {
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
         assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1]);
         let copy = PathBuf::from(recorded_copy(&log_of(root), 1).map(|copy| copy.path).expect("a cópia"));
-        std::fs::write(copy.join("src/a.rs"), "fn um() {}\n// a onda 1 mudou\n").unwrap();
+        std::fs::write(copy.join("src/a.rs"), "fn one() {}\n// a onda 1 mudou\n").unwrap();
         let asks = json!({"wave": 1, "text": "Parei.", "files": ["src/a.rs"], "commit": "a onda 1 mudou",
             "replan": "A onda 1 precisa de outra tarefa antes.", "changes_decision": DECISION, "undone": []});
         assert_eq!(returned(root, asks)["ok"], json!(true));
@@ -2183,7 +2183,7 @@ mod tests {
         assert_eq!(waves_in(&out, "dispatch"), Vec::<u64>::new(), "{out}");
         assert_eq!(sends(root), before, "nenhum envio novo: {out}");
         assert_eq!(change_asked(&out)["wave"], json!(1), "a volta segue esperando o clique: {out}");
-        assert_eq!(std::fs::read_to_string(copy.join("src/a.rs")).unwrap(), "fn um() {}\n// a onda 1 mudou\n");
+        assert_eq!(std::fs::read_to_string(copy.join("src/a.rs")).unwrap(), "fn one() {}\n// a onda 1 mudou\n");
     }
 
     /// A onda órfã segue ocupando a vaga dela até o reenvio: com o teto de
@@ -2373,7 +2373,7 @@ mod tests {
     /// esperar o veredito, sem o comando de fechar. Só depois de o veredito
     /// aprovado ser gravado e assumido a rodada manda fechar.
     #[test]
-    fn a_rodada_espera_o_veredito_quando_a_revisao_final_esta_aberta() {
+    fn round_waits_for_the_verdict_while_the_final_review_is_open() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
@@ -2400,7 +2400,7 @@ mod tests {
     /// rodada manda fechar. Com tarefa presa — nenhuma pronta e nada em
     /// andamento — a resposta nomeia as tarefas presas e não manda fechar.
     #[test]
-    fn a_rodada_nao_manda_fechar_com_tarefa_no_backlog() {
+    fn round_does_not_say_to_close_with_a_task_in_the_backlog() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved_with(root, "x", &[(1, &["src/a.rs"], &[])], |said| {

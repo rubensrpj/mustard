@@ -35,16 +35,16 @@ mod tests {
     /// dependência voltar sem que nada a use: a compilação continua passando,
     /// só fica cara, e o motivo de ela existir some do texto.
     #[test]
-    fn o_pacote_nao_depende_mais_de_gramatica_nenhuma() {
-        let manifesto = std::fs::read_to_string(
+    fn the_package_no_longer_depends_on_any_grammar() {
+        let manifest = std::fs::read_to_string(
             crate::manifest_dir::manifest_dir().join("Cargo.toml"),
         )
         .expect("o Cargo.toml do próprio pacote precisa ser legível");
-        for linha in manifesto.lines() {
-            let declaracao = linha.trim();
+        for line in manifest.lines() {
+            let declaration = line.trim();
             assert!(
-                !declaracao.starts_with("tree-sitter"),
-                "o pacote voltou a declarar '{declaracao}', e nada aqui usa gramática",
+                !declaration.starts_with("tree-sitter"),
+                "o pacote voltou a declarar '{declaration}', e nada aqui usa gramática",
             );
         }
     }

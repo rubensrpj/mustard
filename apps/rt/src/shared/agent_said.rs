@@ -285,7 +285,7 @@ mod tests {
     }
 
     #[test]
-    fn a_fala_deeper_than_the_scan_limit_gives_no_said() {
+    fn a_said_deeper_than_the_scan_limit_gives_no_said() {
         let big = "x".repeat(1_000_000);
         let mut lines = vec![say("fala longe demais")];
         for _ in 0..5 {

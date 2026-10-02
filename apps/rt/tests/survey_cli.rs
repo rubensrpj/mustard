@@ -447,7 +447,7 @@ fn a_question_said_during_an_open_point_is_not_left_loose_at_the_end() {
 /// A tarefa gravada só com texto, arquivos e dependências, sem número de
 /// onda e sem nota, é aceita.
 #[test]
-fn uma_tarefa_sem_numero_de_onda_e_gravada() {
+fn task_without_a_wave_number_is_written() {
     let dir = repo();
     let root = dir.path();
     rt(root, &["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
@@ -467,7 +467,7 @@ fn uma_tarefa_sem_numero_de_onda_e_gravada() {
 /// recusadas nomeando o círculo inteiro, na ordem, com os códigos das
 /// tarefas; nada é gravado.
 #[test]
-fn o_circulo_entre_tarefas_e_recusado_nomeando_o_circulo() {
+fn cycle_between_tasks_is_refused_naming_the_cycle() {
     let dir = repo();
     let root = dir.path();
     rt(root, &["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
@@ -532,7 +532,7 @@ fn o_circulo_entre_tarefas_e_recusado_nomeando_o_circulo() {
 /// `replaces`, dá à declarante um código conhecido do teste — o mesmo jeito
 /// que o teste do círculo, logo acima, já usa para nomear os dois lados.
 #[test]
-fn a_dependencia_de_tarefa_inexistente_e_recusada() {
+fn dependency_on_a_missing_task_is_refused() {
     let dir = repo();
     let root = dir.path();
     rt(root, &["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);

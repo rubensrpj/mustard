@@ -528,7 +528,7 @@ mod tests {
     /// escrita com as palavras do usuário vale igual, o código de outra
     /// mudança não vale, e a pergunta sem código nenhum não destrava nada.
     #[test]
-    fn a_pergunta_vai_em_palavras_e_o_sim_e_reconhecido_pelo_codigo() {
+    fn question_goes_in_words_and_the_yes_is_recognised_by_the_code() {
         if std::env::var_os("MUSTARD_ACTIVE_SPEC").is_some() {
             return;
         }
@@ -598,7 +598,7 @@ mod tests {
             let root = dir.path();
             approved(root, "x", &[(1, &["src/a.rs"], &[])]);
             round(root, "x", None);
-            std::fs::write(copy_of(root, 1).join("src/a.rs"), "fn um() {}\n// a onda 1 mudou\n").unwrap();
+            std::fs::write(copy_of(root, 1).join("src/a.rs"), "fn one() {}\n// a onda 1 mudou\n").unwrap();
             let change = "Dividir a soma em duas funções.";
             let mut back = json!({"wave": 1, "text": "Parei.", "files": ["src/a.rs"], "commit": "a onda 1 mudou",
                 "replan": change, "undone": []});
@@ -698,8 +698,8 @@ mod tests {
         first.sort_unstable();
         assert_eq!(first, vec![1, 2], "a onda 3 divide o arquivo da 1");
         let (one, two) = (copy_of(root, 1), copy_of(root, 2));
-        std::fs::write(one.join("src/a.rs"), "fn um() {}\n// a onda 1 mudou\n").unwrap();
-        std::fs::write(two.join("src/b.rs"), "fn um() {}\n// a onda 2 mudou\n").unwrap();
+        std::fs::write(one.join("src/a.rs"), "fn one() {}\n// a onda 1 mudou\n").unwrap();
+        std::fs::write(two.join("src/b.rs"), "fn one() {}\n// a onda 2 mudou\n").unwrap();
         let change = "A onda 1 precisa de outra tarefa antes.";
         let code = replan_code(1, change);
         let asks = json!({"wave": 1, "text": "Parei.", "files": ["src/a.rs"], "commit": "a onda 1 mudou",
@@ -712,8 +712,8 @@ mod tests {
         assert_eq!(held["ok"], json!(true), "a mudança não segura a outra volta: {held}");
         assert_eq!(last_commit_files(root), "src/b.rs", "só a onda 2 entra no commit: {held}");
         assert_eq!(official_deliveries(root), BTreeSet::from([2]), "{held}");
-        assert_eq!(std::fs::read_to_string(root.join("src/a.rs")).unwrap(), "fn um() {}\n", "{held}");
-        assert_eq!(std::fs::read_to_string(one.join("src/a.rs")).unwrap(), "fn um() {}\n// a onda 1 mudou\n");
+        assert_eq!(std::fs::read_to_string(root.join("src/a.rs")).unwrap(), "fn one() {}\n", "{held}");
+        assert_eq!(std::fs::read_to_string(one.join("src/a.rs")).unwrap(), "fn one() {}\n// a onda 1 mudou\n");
         let asked = change_asked(&held);
         assert_eq!(asked["wave"], json!(1), "{held}");
         assert_eq!(asked["header"], json!(code), "{asked}");
@@ -732,7 +732,7 @@ mod tests {
         assert!(change_asked(&went).is_null(), "{went}");
         assert_eq!(last_commit_files(root), "src/a.rs", "a rodada seguinte comita a onda 1: {went}");
         assert_eq!(official_deliveries(root), BTreeSet::from([1, 2]), "{went}");
-        assert_eq!(std::fs::read_to_string(root.join("src/a.rs")).unwrap(), "fn um() {}\n// a onda 1 mudou\n");
+        assert_eq!(std::fs::read_to_string(root.join("src/a.rs")).unwrap(), "fn one() {}\n// a onda 1 mudou\n");
         let mut sent = waves_in(&went, "dispatch");
         sent.sort_unstable();
         assert_eq!(sent, vec![3, 5], "as ondas que ela segurava saem: {went}");
@@ -765,7 +765,7 @@ mod tests {
         store::write_at(&path, "send", draft, &[], &at).unwrap();
 
         let one = copy_of(root, 1);
-        std::fs::write(one.join("src/a.rs"), "fn um() {}\n// a onda 1 mudou\n").unwrap();
+        std::fs::write(one.join("src/a.rs"), "fn one() {}\n// a onda 1 mudou\n").unwrap();
         let change = "A onda 1 precisa de outra tarefa antes.";
         let asks = json!({"wave": 1, "text": "Parei.", "files": ["src/a.rs"], "commit": "a onda 1 mudou",
             "replan": change, "changes_decision": DECISION, "undone": []});
@@ -775,7 +775,7 @@ mod tests {
         assert_eq!(held["ok"], json!(true), "{held}");
         assert_eq!(change_asked(&held)["wave"], json!(1), "{held}");
         assert_eq!(waves_in(&held, "dispatch"), Vec::<u64>::new(), "nem reenvio, nem a onda do mesmo arquivo: {held}");
-        assert_eq!(std::fs::read_to_string(one.join("src/a.rs")).unwrap(), "fn um() {}\n// a onda 1 mudou\n");
+        assert_eq!(std::fs::read_to_string(one.join("src/a.rs")).unwrap(), "fn one() {}\n// a onda 1 mudou\n");
 
         let session = "s-copia-fica";
         crate::shared::context::session::bind_session_spec(&root.to_string_lossy(), session, "x");
@@ -783,7 +783,7 @@ mod tests {
         let went = round(root, "x", None);
         assert_eq!(went["ok"], json!(true), "{went}");
         assert_eq!(last_commit_files(root), "src/a.rs", "{went}");
-        assert_eq!(std::fs::read_to_string(root.join("src/a.rs")).unwrap(), "fn um() {}\n// a onda 1 mudou\n");
+        assert_eq!(std::fs::read_to_string(root.join("src/a.rs")).unwrap(), "fn one() {}\n// a onda 1 mudou\n");
     }
 
     /// O fechamento depende de todas as ondas: a que pede novo plano sem o
@@ -798,7 +798,7 @@ mod tests {
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[])]);
         round(root, "x", None);
-        std::fs::write(copy_of(root, 2).join("src/b.rs"), "fn um() {}\n// a onda 2 mudou\n").unwrap();
+        std::fs::write(copy_of(root, 2).join("src/b.rs"), "fn one() {}\n// a onda 2 mudou\n").unwrap();
         let change = "A onda 1 precisa de outra tarefa antes.";
         let asks = json!({"wave": 1, "text": "Parei.", "replan": change, "changes_decision": DECISION, "undone": []});
         assert_eq!(returned(root, asks)["ok"], json!(true));
@@ -1088,9 +1088,9 @@ mod tests {
         first.sort_unstable();
         assert_eq!(first, vec![1, 2], "a 3 e a 4 esperam as dependências");
         let (one, two) = (copy_of(root, 1), copy_of(root, 2));
-        let changed = "fn um() {}\n// a onda 1 mudou\n";
+        let changed = "fn one() {}\n// a onda 1 mudou\n";
         std::fs::write(one.join("src/a.rs"), changed).unwrap();
-        std::fs::write(two.join("src/b.rs"), "fn um() {}\n// a onda 2 mudou\n").unwrap();
+        std::fs::write(two.join("src/b.rs"), "fn one() {}\n// a onda 2 mudou\n").unwrap();
         assert_eq!(returned(root, json!({"wave": 1, "text": "Mexi e não contei."}))["ok"], json!(true));
         let done = json!({"wave": 2, "text": "Saiu.", "files": ["src/b.rs"], "commit": "a onda 2 saiu"});
         assert_eq!(returned(root, done)["ok"], json!(true));
@@ -1099,7 +1099,7 @@ mod tests {
         assert_eq!(held["ok"], json!(true), "a volta recusada não segura a outra: {held}");
         assert_eq!(last_commit_files(root), "src/b.rs", "só a onda 2 entra no commit: {held}");
         assert_eq!(official_deliveries(root), BTreeSet::from([2]), "{held}");
-        assert_eq!(std::fs::read_to_string(root.join("src/a.rs")).unwrap(), "fn um() {}\n", "{held}");
+        assert_eq!(std::fs::read_to_string(root.join("src/a.rs")).unwrap(), "fn one() {}\n", "{held}");
         assert_eq!(std::fs::read_to_string(one.join("src/a.rs")).unwrap(), changed, "a cópia fica como está");
         let warning = held_warning(&held, "round-return-needs-commit");
         assert_eq!(warning["wave"], json!(1), "{held}");
@@ -1196,7 +1196,7 @@ mod tests {
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[]), (3, &["src/c.rs"], &[2])]);
         round(root, "x", None);
-        std::fs::write(copy_of(root, 2).join("src/b.rs"), "fn um() {}\n// a onda 2 mudou\n").unwrap();
+        std::fs::write(copy_of(root, 2).join("src/b.rs"), "fn one() {}\n// a onda 2 mudou\n").unwrap();
         let asks = json!({"wave": 1, "text": "Parei.", "replan": "A onda 1 precisa de outra tarefa antes.",
             "changes_decision": DECISION, "undone": []});
         assert_eq!(returned(root, asks)["ok"], json!(true));
