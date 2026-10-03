@@ -16,6 +16,8 @@
 //! - o registro de plugins e o programa do plugin só são lidos: nenhuma linha
 //!   que os cita grava, copia, move ou apaga.
 //!
+//! O instalador do Windows (`install.ps1`) também não mexe na pasta do plugin.
+//!
 //! O que o código de dentro de um `#[cfg(test)]` faz não conta: um teste monta
 //! o plugin falso que quiser.
 
@@ -190,4 +192,15 @@ fn the_dependency_check_builds_its_tool_into_a_folder_it_removes() {
         assert!(line.contains("--root \"$work/"), "o `cargo install` grava fora da pasta temporária: {line}");
     }
     assert!(script.contains("trap 'rm -rf \"$work\"' EXIT"), "a pasta temporária não é apagada ao sair");
+}
+
+/// O instalador do Windows compila a branch e põe os programas na pasta pessoal
+/// do `cargo`; nenhuma linha dele copia, move ou apaga coisa na pasta do
+/// plugin, onde a sessão lê o programa do release.
+#[test]
+fn the_windows_installer_leaves_the_plugin_folder_alone() {
+    let script = std::fs::read_to_string(manifest_dir::manifest_dir().join("../../install.ps1")).unwrap();
+    let touching: Vec<&str> =
+        script.lines().filter(|line| !line.trim_start().starts_with('#') && line.to_lowercase().contains("plugin")).collect();
+    assert!(touching.is_empty(), "o instalador mexe na pasta do plugin: {touching:#?}");
 }

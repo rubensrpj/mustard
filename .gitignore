@@ -157,8 +157,6 @@ CLAUDE.local.md
 # ou o mustard-boot baixa dos assets do Release); nunca commitar. Os scripts
 # mustard-boot / mustard-boot.cmd SÃO commitados — não casar com eles aqui.
 plugin/bin/*.exe
-plugin/bin/*.old
-plugin/bin/*.old-*
 plugin/bin/mustard-rt
 plugin/bin/scan
 plugin/bin/mustard-mcp

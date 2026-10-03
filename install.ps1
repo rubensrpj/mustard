@@ -88,25 +88,6 @@ function Install-Bin([string]$BuiltExe, [string]$ExePath) {
     }
 }
 
-# Mirror a freshly installed binary into plugin/bin — the Claude Code plugin
-# resolves its hooks and statusline from
-# ${CLAUDE_PLUGIN_ROOT}/bin, NOT from PATH, so without this sync a dev install
-# would leave the plugin running the previous binary. Same park-by-rename dance
-# as Install-Bin: a mapped image can be renamed but not overwritten on Windows.
-function Sync-PluginBin([string]$SourceExe, [string]$PluginBinDir) {
-    if (-not (Test-Path $SourceExe)) { return }
-    if (-not (Test-Path $PluginBinDir)) { return }
-    $dest = Join-Path $PluginBinDir (Split-Path -Leaf $SourceExe)
-    Get-ChildItem -LiteralPath $PluginBinDir -Filter "$(Split-Path -Leaf $SourceExe).old*" -ErrorAction SilentlyContinue |
-        ForEach-Object { try { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction Stop } catch {} }
-    if (Test-Path $dest) {
-        $parked = "$dest.old-$([guid]::NewGuid().ToString('N').Substring(0,8))"
-        try { Move-Item -LiteralPath $dest -Destination $parked -Force -ErrorAction Stop }
-        catch { Write-Warning "plugin/bin: could not free $dest — the plugin keeps the previous binary until the next run."; return }
-    }
-    Copy-Item -LiteralPath $SourceExe -Destination $dest -Force
-}
-
 # Resolve the target project — the directory `mustard init` scaffolds .claude/
 # into. Defaults to the CWD; pass -Target to script it, or accept the prompt
 # when running interactively without -Target. The directory must already exist
@@ -163,12 +144,6 @@ if (-not $SkipBuild) {
     Install-Bin (Join-Path $BuiltDir 'scan.exe')       $ScanExe
     Install-Bin (Join-Path $BuiltDir 'mustard-rt.exe') $RtExe
     Install-Bin (Join-Path $BuiltDir 'mustard.exe')    $MustardExe
-    # Keep the Claude Code plugin's own bin/ in lockstep — the hooks and the
-    # statusline of a plugin-based session resolve there, not on PATH.
-    $PluginBin = Join-Path $Root 'plugin\bin'
-    Write-Host "==> Syncing plugin/bin (mustard-rt + scan) ..."
-    Sync-PluginBin $RtExe   $PluginBin
-    Sync-PluginBin $ScanExe $PluginBin
 }
 if (-not (Test-Path $MustardExe)) { $MustardExe = 'mustard' }  # fall back to PATH
 
