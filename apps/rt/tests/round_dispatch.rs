@@ -19,9 +19,11 @@
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
-use std::io::Write as _;
+use std::io::{BufRead, BufReader, Read, Write as _};
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::{Arc, Mutex};
 
 use mustard_core::domain::spec_events::SpecLog;
 use mustard_core::domain::spec_state::State;
@@ -46,6 +48,9 @@ struct Project {
     _dir: tempfile::TempDir,
     root: PathBuf,
     home: PathBuf,
+    /// O endereço do Jev de mentira que o binário acha, com uma chave de
+    /// mentira; sem ele o projeto não tem chave nenhuma.
+    jev: Option<String>,
 }
 
 impl Project {
@@ -73,7 +78,7 @@ impl Project {
         git(&root, &["commit", "-q", "-m", "init"]);
         git(&root, &["checkout", "-q", "-b", "dev"]);
         support::copies_leave_with_the_test(&root);
-        Self { _dir: dir, root, home }
+        Self { _dir: dir, root, home, jev: None }
     }
 
     fn command(&self, args: &[&str], stdin: &str) -> Output {
@@ -93,12 +98,15 @@ impl Project {
             .env_remove("CLAUDE_PLUGIN_ROOT")
             .env_remove("CARGO_TARGET_DIR")
             .env_remove("MUSTARD_ACTIVE_SPEC")
+            .env_remove("TYPESAFE_API_KEY")
+            .env_remove("MUSTARD_JEV_URL")
             .env_remove("MUSTARD_SESSION_ID")
             .env_remove("CLAUDE_SESSION_ID")
             .env_remove("CLAUDE_CODE_SESSION_ID")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
+            .envs(self.jev.iter().flat_map(|url| [("TYPESAFE_API_KEY", "fake-key"), ("MUSTARD_JEV_URL", url.as_str())]))
             .spawn()
             .expect("the binary runs");
         if let Some(mut pipe) = child.stdin.take() {
@@ -674,4 +682,244 @@ fn task_with_a_wildcard_goes_out_alone_and_the_pattern_joins_the_file_it_matches
     let outside_wave = wave_of(&project, outside).expect("docs vira onda");
     assert_eq!(wave_of(&project, inside), None, "src/b.rs, presa a src/** em andamento, espera no backlog");
     assert_eq!(out, vec![outside_wave], "docs, que src/** não casa, sai");
+}
+
+// ---------------------------------------------------------------------------
+// A montagem da onda pelo Jev, com um Jev de mentira
+// ---------------------------------------------------------------------------
+
+/// Um Jev de mentira: um serviço HTTP em 127.0.0.1 que guarda cada pedido e
+/// devolve a resposta fixa que `answer` monta a partir do corpo dele.
+struct FakeJev {
+    url: String,
+    received: Arc<Mutex<Vec<Value>>>,
+}
+
+impl FakeJev {
+    fn start(answer: impl Fn(&Value) -> (u16, Value) + Send + Sync + 'static) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("the fake service binds");
+        let url = format!("http://{}/v1/systemone", listener.local_addr().expect("address"));
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let log = Arc::clone(&received);
+        let answer = Arc::new(answer);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let (log, answer) = (Arc::clone(&log), Arc::clone(&answer));
+                std::thread::spawn(move || {
+                    let mut reader = BufReader::new(stream.try_clone().expect("stream"));
+                    let mut length = 0usize;
+                    loop {
+                        let mut line = String::new();
+                        if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                            return;
+                        }
+                        let line = line.trim_end().to_ascii_lowercase();
+                        if line.is_empty() {
+                            break;
+                        }
+                        if let Some(value) = line.strip_prefix("content-length:") {
+                            length = value.trim().parse().unwrap_or(0);
+                        }
+                    }
+                    let mut body = vec![0u8; length];
+                    if reader.read_exact(&mut body).is_err() {
+                        return;
+                    }
+                    let Ok(asked) = serde_json::from_slice::<Value>(&body) else { return };
+                    log.lock().unwrap().push(asked.clone());
+                    let (status, reply) = answer(&asked);
+                    let reply = reply.to_string();
+                    let head = format!(
+                        "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n",
+                        reply.len()
+                    );
+                    let _ = stream.write_all(head.as_bytes());
+                    let _ = stream.write_all(reply.as_bytes());
+                });
+            }
+        });
+        Self { url, received }
+    }
+
+    /// Um Jev que responde a cada pergunta de tipo com `kind_of(posição)` — o
+    /// tipo e a confiança — e a cada pergunta de bloqueio com
+    /// `clash_of(onda, posição)`, e conta 1.500 tokens de entrada. A posição é
+    /// a da tarefa entre as do pedido, da de número mais baixo para a mais
+    /// alta: o teste não depende dos números que a spec deu.
+    fn judging(
+        kind_of: impl Fn(usize) -> (&'static str, f64) + Send + Sync + 'static,
+        clash_of: impl Fn(u64, usize) -> f64 + Send + Sync + 'static,
+    ) -> Self {
+        Self::start(move |asked| {
+            let keys: Vec<&String> = asked["questions"].as_object().expect("the questions").keys().collect();
+            let mut tasks: Vec<u64> =
+                keys.iter().filter_map(|key| key.strip_prefix("tipo_t")?.parse().ok()).collect();
+            tasks.sort_unstable();
+            let position = |task: &str| tasks.iter().position(|id| id.to_string() == task).expect("a task of the request");
+            let mut answers = serde_json::Map::new();
+            for key in keys {
+                if let Some(task) = key.strip_prefix("tipo_t") {
+                    let (kind, confidence) = kind_of(position(task));
+                    answers.insert(key.clone(), json!({"type": "choice", "choice": kind, "confidence": confidence}));
+                } else if let Some((wave, task)) = key.strip_prefix("blk_w").and_then(|rest| rest.split_once("_t")) {
+                    let chance = clash_of(wave.parse().expect("a wave"), position(task));
+                    answers.insert(key.clone(), json!({"type": "noul", "noul": chance}));
+                }
+            }
+            (200, json!({"model": "jev-1.13.0", "answers": answers, "usage": {"input_tokens": 1500, "output_tokens": 0}}))
+        })
+    }
+
+    fn requests(&self) -> Vec<Value> {
+        self.received.lock().unwrap().clone()
+    }
+}
+
+/// As ondas de lote da spec, com a ordem de tarefas de cada uma.
+fn batch_orders(project: &Project) -> Vec<Vec<u64>> {
+    let log = project.log();
+    log.visible()
+        .into_iter()
+        .filter(|e| e.event_type == "wave" && e.str_field("author") == Some("binary"))
+        .map(|wave| wave.ints("order"))
+        .collect()
+}
+
+/// As chamadas `wave assembly` gravadas na spec.
+fn assembly_calls(project: &Project) -> Vec<serde_json::Map<String, Value>> {
+    let log = project.log();
+    log.visible()
+        .into_iter()
+        .filter(|e| e.event_type == "call" && e.str_field("command") == Some("wave assembly"))
+        .map(|call| call.fields.clone())
+        .collect()
+}
+
+/// As tarefas de `backlog_project` que o Jev de mentira julga, pelo número
+/// da tarefa: uma spec aprovada com uma tarefa por lista de arquivos e o
+/// Jev ligado.
+fn judged_project(files: &[&[&str]], jev: &FakeJev) -> (Project, u64, u64, Vec<u64>) {
+    let (mut project, crit, said, tasks) = backlog_project(files);
+    project.jev = Some(jev.url.clone());
+    (project, crit, said, tasks)
+}
+
+/// Três tarefas do mesmo tipo, cada uma num arquivo só dela, saem na mesma
+/// onda: o Jev junta o assunto, e o arquivo não. O Jev recebe o backlog
+/// inteiro numa chamada só, e a chamada fica gravada com os tokens, o custo e
+/// o modelo.
+#[test]
+fn tasks_of_one_kind_share_a_wave_without_a_file_in_common_and_the_call_is_recorded() {
+    let jev = FakeJev::judging(|_| ("feature", 0.9), |_, _| 0.0);
+    let (project, _, _, tasks) = judged_project(&[&["a.rs"], &["c.rs"], &["d.rs"]], &jev);
+
+    project.run(&["round", "--spec", SPEC]);
+
+    assert_eq!(batch_orders(&project), vec![tasks.clone()], "uma onda com as três do mesmo tipo");
+    let asked = jev.requests();
+    assert_eq!(asked.len(), 1, "o backlog inteiro vai numa chamada só");
+    assert_eq!(asked[0]["model"], json!("jev-1.13.0"));
+    assert_eq!(asked[0]["questions"].as_object().unwrap().len(), 3, "uma pergunta de tipo por tarefa: {}", asked[0]);
+    let calls = assembly_calls(&project);
+    assert_eq!(calls.len(), 1, "{calls:?}");
+    let call = &calls[0];
+    assert_eq!(
+        (call["filter"].clone(), call["tokens"].clone(), call["cost_micro_usd"].clone(), call["model"].clone()),
+        (json!("jev"), json!(1500), json!(63), json!("jev-1.13.0")),
+        "{call:?}"
+    );
+    assert_eq!((call["requests"].clone(), call["candidates"].clone(), call["returned"].clone()), (json!(1), json!(3), json!(3)));
+}
+
+/// Duas tarefas de tipos diferentes que dividem um arquivo nunca saem juntas,
+/// em ondas separadas ou na mesma: sai a do tipo que vem primeiro, e a outra
+/// espera no backlog, sem onda, ainda que haja vaga para as duas.
+#[test]
+fn kinds_with_a_file_in_common_never_run_together() {
+    let jev = FakeJev::judging(|at| if at == 0 { ("feature", 0.9) } else { ("defect", 0.9) }, |_, _| 0.0);
+    let (project, _, _, tasks) = judged_project(&[&["shared.rs"], &["shared.rs"]], &jev);
+    let (feature, defect) = (tasks[0].min(tasks[1]), tasks[0].max(tasks[1]));
+
+    project.run(&["round", "--spec", SPEC]);
+
+    assert_eq!(batch_orders(&project), vec![vec![defect]], "só o defeito sai");
+    assert_eq!(wave_of(&project, feature), None, "o recurso espera no backlog, sem onda");
+}
+
+/// O defeito sai antes da limpeza, ainda que a limpeza tenha o número mais
+/// baixo: com uma vaga só, é o defeito que a ocupa.
+#[test]
+fn a_defect_leaves_before_a_cleanup_even_with_the_lower_number() {
+    let jev = FakeJev::judging(|at| if at == 0 { ("test_cleanup", 0.9) } else { ("defect", 0.9) }, |_, _| 0.0);
+    let (project, _, _, tasks) = judged_project(&[&["a.rs"], &["c.rs"]], &jev);
+    std::fs::write(project.root.join("mustard.json"), json!({
+        "language": {"text": "pt-BR"}, "git": {"flow": {"*": "dev", "dev": "main"}, "provider": "github"},
+        "lintCommand": "git --version", "maxCompilingWaves": 1}).to_string()).expect("config");
+    let (cleanup, defect) = (tasks[0].min(tasks[1]), tasks[0].max(tasks[1]));
+
+    project.run(&["round", "--spec", SPEC]);
+
+    assert_eq!(batch_orders(&project), vec![vec![defect]], "o defeito ocupa a única vaga");
+    assert_eq!(wave_of(&project, cleanup), None, "a limpeza, de número mais baixo, espera");
+}
+
+/// A tarefa de tipo incerto — confiança abaixo de 0,5 — sai sozinha, na onda
+/// dela; as de tipo certo, do mesmo tipo, saem juntas.
+#[test]
+fn a_task_of_an_uncertain_kind_goes_alone() {
+    let jev = FakeJev::judging(|at| ("feature", if at == 0 { 0.4 } else { 0.9 }), |_, _| 0.0);
+    let (project, _, _, tasks) = judged_project(&[&["a.rs"], &["c.rs"], &["d.rs"]], &jev);
+    let mut by_number = tasks.clone();
+    by_number.sort_unstable();
+
+    project.run(&["round", "--spec", SPEC]);
+
+    let orders = batch_orders(&project);
+    assert_eq!(orders.len(), 2, "{orders:?}");
+    assert!(orders.contains(&vec![by_number[0]]), "a incerta sai sozinha: {orders:?}");
+    assert!(orders.contains(&vec![by_number[1], by_number[2]]), "as certas, juntas: {orders:?}");
+}
+
+/// Uma tarefa que não declara arquivo nenhum e que o Jev diz mudar o mesmo
+/// que a onda em andamento espera no backlog; com a chance baixa, sai.
+#[test]
+fn a_high_clash_with_the_wave_in_progress_holds_a_task_that_declares_no_file() {
+    let (mut project, crit, said, tasks) = backlog_project(&[&["a.rs"]]);
+    let (_, out) = dispatch_ready(&project);
+    assert_eq!(out, vec![wave_of(&project, tasks[0]).expect("a primeira onda")], "a onda de a.rs sai e fica no ar");
+    let held = seed_backlog_task(&project, crit, said, &[]);
+
+    let strict = FakeJev::judging(|_| ("feature", 0.9), |_, _| 0.8);
+    project.jev = Some(strict.url.clone());
+    project.run(&["round", "--spec", SPEC]);
+    assert_eq!(wave_of(&project, held), None, "o choque de 0,8 segura a tarefa sem arquivo");
+    assert_eq!(strict.requests()[0]["questions"].as_object().unwrap().len(), 2, "tipo e bloqueio da tarefa");
+
+    let loose = FakeJev::judging(|_| ("feature", 0.9), |_, _| 0.1);
+    project.jev = Some(loose.url.clone());
+    project.run(&["round", "--spec", SPEC]);
+    assert!(wave_of(&project, held).is_some(), "com o choque de 0,1 a tarefa sai");
+}
+
+/// Sem chave a montagem é a de hoje — por arquivo, nenhuma chamada —, e com
+/// o Jev recusando a chamada também: duas tarefas que dividem um arquivo saem
+/// juntas, a de outro arquivo sai na sua, e a chamada que falhou fica
+/// gravada com o motivo.
+#[test]
+fn without_a_key_or_with_a_refused_call_the_assembly_is_the_one_by_file() {
+    let files: [&[&str]; 3] = [&["a.rs"], &["a.rs", "b.rs"], &["c.rs"]];
+    let (project, _, _, tasks) = backlog_project(&files);
+    project.run(&["round", "--spec", SPEC]);
+    let by_file = vec![vec![tasks[0], tasks[1]], vec![tasks[2]]];
+    assert_eq!(batch_orders(&project), by_file, "sem chave");
+    assert!(assembly_calls(&project).is_empty(), "sem chave nada é perguntado");
+
+    let refusing = FakeJev::start(|_| (401, json!({})));
+    let (refused, _, _, tasks) = judged_project(&files, &refusing);
+    refused.run(&["round", "--spec", SPEC]);
+    assert_eq!(batch_orders(&refused), vec![vec![tasks[0], tasks[1]], vec![tasks[2]]], "chamada recusada");
+    let calls = assembly_calls(&refused);
+    assert_eq!(calls.len(), 1, "{calls:?}");
+    assert_eq!(calls[0]["filter"], json!("jev:key_refused"), "{calls:?}");
 }

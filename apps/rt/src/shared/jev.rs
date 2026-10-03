@@ -40,8 +40,19 @@
 //! arquivo: guardado, a chave dele não se usa, e a busca avisa. Nenhum
 //! comando a grava, e nenhum erro, aviso ou log a leva — nem o corpo da
 //! resposta do serviço.
+//!
+//! O mesmo serviço também julga o backlog da obra para a rodada montar a onda
+//! ([`JevFilter::judge_backlog`]): uma chamada só, com o backlog inteiro num
+//! estado e todas as perguntas juntas — o tipo de trabalho de cada tarefa e,
+//! para cada tarefa e cada onda em andamento, se as duas mudam a mesma
+//! coisa. O código da rodada decide o que fazer com o julgamento; sem chave
+//! ([`for_waves`]) ou com a chamada falhando, ela monta a onda como sempre.
+//!
+//! O endereço do serviço é o de [`JEV_URL`], e só a variável [`URL_ENV`] no
+//! ambiente de quem roda o programa o troca: o teste do programa inteiro
+//! aponta para um serviço de mentira.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::{self, Write as _};
 use std::io::ErrorKind;
 use std::path::{Component, Path};
@@ -55,6 +66,7 @@ use mustard_core::io::jev_gate;
 use mustard_core::ProjectConfig;
 use serde_json::{Map, Value, json};
 
+use crate::shared::dag::{Judgement, TaskKind};
 use crate::shared::paths::sensitive_pattern;
 use crate::shared::secret::without_secrets;
 
@@ -64,6 +76,10 @@ use crate::shared::secret::without_secrets;
 
 /// O endereço do serviço.
 pub const JEV_URL: &str = "https://api.typesafe.ai/v1/systemone";
+
+/// A variável de ambiente que troca o endereço do serviço; sem ela, vale
+/// [`JEV_URL`].
+pub const URL_ENV: &str = "MUSTARD_JEV_URL";
 
 /// O modelo pedido: uma versão fixa, a que a medida usou. A versão mais nova
 /// do serviço mudaria as notas sem aviso; a troca vem com medida nova.
@@ -205,10 +221,12 @@ pub struct JevFilter {
 }
 
 impl JevFilter {
-    /// O filtro com a chave do projeto, no endereço do serviço.
+    /// O filtro com a chave do projeto, no endereço do serviço: o de
+    /// [`JEV_URL`], ou o que [`URL_ENV`] diz.
     #[must_use]
     pub fn new(key: JevKey) -> Self {
-        Self::at(key, JEV_URL)
+        let url = std::env::var(URL_ENV).ok().map(|url| url.trim().to_string()).filter(|url| !url.is_empty());
+        Self::at(key, url.as_deref().unwrap_or(JEV_URL))
     }
 
     fn at(key: JevKey, endpoint: &str) -> Self {
@@ -723,6 +741,250 @@ fn read_source(root: &Path, path: &str) -> Option<String> {
 /// pontas somem.
 fn squash(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+// ---------------------------------------------------------------------------
+// O backlog julgado para a montagem da onda
+// ---------------------------------------------------------------------------
+
+/// O que é uma onda, para o Jev.
+const WAVE_DEFINITION: &str = "A wave is the package of tasks that one agent receives, and one wave holds a single kind of work. Two waves that change the same file never run at the same time.";
+
+/// Quando duas obras mudam a mesma coisa, para a pergunta de bloqueio.
+const SAME_CHANGE: &str = "Two works change the same thing when both change the same feature, behavior or text, so that doing them at the same time would conflict in meaning, even in different files.";
+
+/// Quantos caracteres da parte do agente de uma tarefa do backlog vão.
+const BACKLOG_AGENT_CHARS: usize = 600;
+
+/// Quantos caracteres da parte do agente de uma tarefa de onda em andamento
+/// vão.
+const RUNNING_AGENT_CHARS: usize = 300;
+
+/// O que cada tipo de trabalho quer dizer, na escolha de tipo e na definição
+/// do estado.
+fn kind_meaning(kind: TaskKind) -> &'static str {
+    match kind {
+        TaskKind::Defect => "Fixes behavior that is wrong for the user or breaks something",
+        TaskKind::Feature => "Adds or changes behavior the user will notice",
+        TaskKind::TextFix => "Fixes comments, names or wording",
+        TaskKind::RemoveUnused => "Removes code, keys or dependencies that nothing uses",
+        TaskKind::TestCleanup => "Makes tests faster, shorter or less repeated without changing the product",
+    }
+}
+
+/// Uma tarefa como o Jev a vê: o que a tarefa diz de si, sem o que a rodada
+/// já decide em código.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BoardTask {
+    /// O número da tarefa na spec, que identifica as respostas dela.
+    pub(crate) id: u64,
+    pub(crate) title: String,
+    pub(crate) text: String,
+    /// A parte da tarefa que é do agente.
+    pub(crate) agent: String,
+    pub(crate) files: Vec<String>,
+    /// Os títulos das tarefas de que ela depende.
+    pub(crate) depends_on: Vec<String>,
+}
+
+/// Uma onda em andamento, com as tarefas dela.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BoardWave {
+    pub(crate) n: u64,
+    pub(crate) tasks: Vec<BoardTask>,
+}
+
+/// O quadro de uma montagem: as ondas em andamento e o backlog pronto, na
+/// ordem em que a rodada o lê.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Board {
+    pub(crate) running: Vec<BoardWave>,
+    pub(crate) backlog: Vec<BoardTask>,
+}
+
+/// O que o Jev julgou do backlog de um quadro, com o que a chamada gastou.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Judged {
+    /// O julgamento de cada tarefa do backlog, pelo número dela.
+    pub(crate) tasks: BTreeMap<u64, Judgement>,
+    pub(crate) usage: FilterUsage,
+}
+
+/// A chave de uma tarefa no estado e nas perguntas.
+fn task_key(id: u64) -> String {
+    format!("t{id}")
+}
+
+/// A chave de uma onda em andamento no estado e nas perguntas.
+fn wave_key(n: u64) -> String {
+    format!("w{n}")
+}
+
+/// O Jev que julga o backlog para a montagem das ondas do projeto em `root`:
+/// o filtro, quando o `mustard.json` não desliga o Jev e o projeto tem chave
+/// (a mesma regra da busca, [`jev_gate`]). Sem um dos dois, `None`, e a rodada
+/// monta a onda como sempre. Os testes da biblioteca nunca chamam o serviço: o
+/// ambiente de quem os roda pode ter chave.
+#[must_use]
+pub fn for_waves(root: &Path) -> Option<JevFilter> {
+    if cfg!(test) {
+        return None;
+    }
+    waves_filter(root, &ProjectConfig::load(root), std::env::var(jev_gate::KEY_ENV).ok())
+}
+
+/// [`for_waves`] com `config` e com `env` no lugar do valor de
+/// [`jev_gate::KEY_ENV`]: o teste não depende do ambiente de quem o roda.
+fn waves_filter(root: &Path, config: &ProjectConfig, env: Option<String>) -> Option<JevFilter> {
+    if !jev_gate::setting_allows(config.search_filter()) {
+        return None;
+    }
+    key_in(root, config, env).ok().map(|loaded| JevFilter::new(loaded.key))
+}
+
+impl JevFilter {
+    /// Julga o backlog de `board` numa chamada só: o estado leva a definição, as
+    /// ondas em andamento e o backlog inteiro, e todas as perguntas vão
+    /// juntas — `tipo_<t>`, uma escolha de tipo de trabalho por tarefa, e
+    /// `blk_<w>_<t>`, um sim ou não por tarefa e onda em andamento: as duas
+    /// mudam a mesma coisa? Cada tipo vem com a confiança do Jev nele, e cada
+    /// tarefa com a maior chance de bloqueio entre as ondas. Falta de uma
+    /// resposta é resposta ilegível.
+    ///
+    /// # Errors
+    /// O quadro que passa do que o serviço aceita, a falha do serviço e a
+    /// resposta ilegível. Quem chama monta a onda como sempre.
+    pub(crate) fn judge_backlog(&self, board: &Board) -> Result<Judged, FilterError> {
+        let started = Instant::now();
+        let payload = board_payload(board)?;
+        let doc = self.send(&payload, started + self.timeouts.response)?;
+        let tasks = read_judgements(&doc, board)?;
+        let input_tokens = doc.pointer("/usage/input_tokens").and_then(Value::as_u64).unwrap_or(0);
+        Ok(Judged {
+            tasks,
+            usage: FilterUsage {
+                input_tokens,
+                millis: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                cost_micro_usd: cost_micro_usd(input_tokens),
+                requests: 1,
+                model: model_of(&doc),
+            },
+        })
+    }
+}
+
+/// O texto do pedido de um quadro: o modelo, o estado e as perguntas. O
+/// pedido que passa do que o serviço aceita não sai
+/// ([`FilterError::TooLarge`]): o estado e a maior pergunta têm o tamanho de
+/// um pedido da busca, e o pedido inteiro, o do serviço.
+fn board_payload(board: &Board) -> Result<String, FilterError> {
+    let (state, questions) = board_parts(board);
+    let state_chars = state.to_string().chars().count();
+    let longest = questions.values().map(|question| question.to_string().chars().count()).max().unwrap_or(0);
+    let body = json!({ "model": JEV_MODEL, "state": state, "questions": Value::Object(questions) });
+    let text = serde_json::to_string(&body)
+        .map_err(|_| FilterError::Unreadable("the request did not serialize".to_string()))?;
+    let estimated = estimated_tokens(&text);
+    if tokens_of(state_chars + longest) > REQUEST_TOKENS || estimated > MAX_REQUEST_TOKENS {
+        return Err(FilterError::TooLarge { estimated_tokens: estimated });
+    }
+    Ok(text)
+}
+
+/// O estado e as perguntas de um quadro. Todo texto sai sem os segredos.
+fn board_parts(board: &Board) -> (Value, Map<String, Value>) {
+    let clip = |text: &str, chars: usize| -> String { without_secrets(text).chars().take(chars).collect() };
+    let view = |task: &BoardTask, agent_chars: usize| {
+        json!({
+            "title": without_secrets(&task.title),
+            "text": without_secrets(&task.text),
+            "agent": clip(&task.agent, agent_chars),
+            "files": task.files,
+        })
+    };
+    let mut kinds = Map::new();
+    for kind in TaskKind::ALL {
+        kinds.insert(kind.key().to_string(), json!(kind_meaning(kind)));
+    }
+    let mut running = Map::new();
+    for wave in &board.running {
+        let tasks: Map<String, Value> =
+            wave.tasks.iter().map(|task| (task_key(task.id), view(task, RUNNING_AGENT_CHARS))).collect();
+        running.insert(wave_key(wave.n), Value::Object(tasks));
+    }
+    let mut backlog = Map::new();
+    for task in &board.backlog {
+        let mut shown = view(task, BACKLOG_AGENT_CHARS);
+        shown["depends_on"] = json!(task.depends_on.iter().map(|title| without_secrets(title)).collect::<Vec<_>>());
+        backlog.insert(task_key(task.id), shown);
+    }
+    let state = json!({
+        "definition": { "wave": WAVE_DEFINITION, "same_change": SAME_CHANGE, "kinds": kinds.clone() },
+        "running": running,
+        "backlog": backlog,
+    });
+    let mut questions = Map::new();
+    for task in &board.backlog {
+        let key = task_key(task.id);
+        questions.insert(
+            format!("tipo_{key}"),
+            json!({
+                "type": "choice",
+                "instructions": { "question": format!("What kind of work is `backlog.{key}`?") },
+                "criteria": Value::Object(kinds.clone()),
+            }),
+        );
+        for wave in &board.running {
+            let wave = wave_key(wave.n);
+            questions.insert(
+                format!("blk_{wave}_{key}"),
+                json!({
+                    "type": "noul",
+                    "instructions": format!(
+                        "Do `backlog.{key}` and `running.{wave}` change the same thing, as `definition.same_change` defines it?"
+                    ),
+                }),
+            );
+        }
+    }
+    (state, questions)
+}
+
+/// O julgamento de cada tarefa do backlog de `board`, lido do documento
+/// `doc`: o tipo e a confiança nele, e a maior chance de bloqueio entre as
+/// ondas em andamento. Falta de uma resposta, tipo que não existe ou número
+/// que não é número é resposta ilegível.
+fn read_judgements(doc: &Value, board: &Board) -> Result<BTreeMap<u64, Judgement>, FilterError> {
+    let answers = doc
+        .get("answers")
+        .and_then(Value::as_object)
+        .ok_or_else(|| FilterError::Unreadable("no answers".to_string()))?;
+    let missing = |what: String| FilterError::Unreadable(format!("no answer for {what}"));
+    let mut judged = BTreeMap::new();
+    for task in &board.backlog {
+        let key = task_key(task.id);
+        let asked = format!("tipo_{key}");
+        let kind = answers.get(&asked).ok_or_else(|| missing(asked.clone()))?;
+        let name = kind.get("choice").and_then(Value::as_str).unwrap_or_default();
+        let kind_of = TaskKind::from_key(name)
+            .ok_or_else(|| FilterError::Unreadable(format!("{asked} is not a kind of work")))?;
+        let confidence = kind
+            .get("confidence")
+            .and_then(Value::as_f64)
+            .ok_or_else(|| FilterError::Unreadable(format!("no confidence for {asked}")))?;
+        let mut clash = 0.0_f64;
+        for wave in &board.running {
+            let asked = format!("blk_{}_{key}", wave_key(wave.n));
+            let chance = answers
+                .get(&asked)
+                .and_then(|answer| answer.get("noul"))
+                .and_then(Value::as_f64)
+                .ok_or_else(|| missing(asked.clone()))?;
+            clash = clash.max(chance);
+        }
+        judged.insert(task.id, Judgement { kind: kind_of, confidence, clash });
+    }
+    Ok(judged)
 }
 
 #[cfg(test)]
@@ -1794,6 +2056,124 @@ mod tests {
             );
 
             assert_eq!(searched.is_some(), expected, "the search: {name}");
+            assert_eq!(waves_filter(root.path(), &loaded, env.clone()).is_some(), expected, "the wave assembly: {name}");
         }
+    }
+
+    // -- o backlog julgado para a montagem da onda ---------------------------------
+
+    fn board_task(id: u64, files: &[&str]) -> BoardTask {
+        BoardTask {
+            id,
+            title: format!("Task {id}"),
+            text: format!("Text of task {id}."),
+            agent: format!("- do {id}"),
+            files: files.iter().map(|file| file.to_string()).collect(),
+            depends_on: Vec::new(),
+        }
+    }
+
+    /// Duas tarefas no backlog e uma onda em andamento, com uma tarefa.
+    fn board() -> Board {
+        let mut second = board_task(12, &["b.rs"]);
+        second.depends_on = vec!["Task 5".to_string()];
+        Board {
+            running: vec![BoardWave { n: 7, tasks: vec![board_task(5, &["open.rs"])] }],
+            backlog: vec![board_task(11, &["a.rs"]), second],
+        }
+    }
+
+    /// A resposta do serviço ao quadro `board()`: a tarefa 11 é um defeito
+    /// certo e a 12 um recurso incerto que muda o mesmo que a onda 7.
+    fn judged_answer() -> Value {
+        json!({
+            "model": "jev-1.13.0",
+            "answers": {
+                "tipo_t11": {"type": "choice", "choice": "defect", "confidence": 0.9},
+                "tipo_t12": {"type": "choice", "choice": "feature", "confidence": 0.41},
+                "blk_w7_t11": {"type": "noul", "noul": 0.1},
+                "blk_w7_t12": {"type": "noul", "noul": 0.68},
+            },
+            "usage": {"input_tokens": 2000, "output_tokens": 0},
+        })
+    }
+
+    /// O backlog inteiro vai numa chamada só, com o modelo fixo, o estado
+    /// com a definição, a onda em andamento e o backlog, e as perguntas de
+    /// tipo e de bloqueio juntas; a resposta vira o julgamento de cada
+    /// tarefa, com os tokens, o custo e o modelo.
+    #[test]
+    fn the_whole_backlog_is_judged_in_one_request_with_every_question() {
+        let service = FakeService::start(|_, _| Reply::json(200, &judged_answer()));
+        let judged = service.filter().judge_backlog(&board()).unwrap();
+
+        let received = service.received();
+        assert_eq!(received.len(), 1, "one request for the whole backlog");
+        let body = &received[0].body;
+        assert_eq!(body["model"], json!(JEV_MODEL));
+        let mut asked: Vec<&str> = body["questions"].as_object().unwrap().keys().map(String::as_str).collect();
+        asked.sort_unstable();
+        assert_eq!(asked, vec!["blk_w7_t11", "blk_w7_t12", "tipo_t11", "tipo_t12"]);
+        let state = &body["state"];
+        assert!(state["definition"]["wave"].is_string() && state["definition"]["kinds"]["defect"].is_string());
+        assert_eq!(state["running"]["w7"]["t5"]["files"], json!(["open.rs"]));
+        assert_eq!(state["backlog"]["t12"]["depends_on"], json!(["Task 5"]));
+        assert_eq!(state["backlog"]["t11"]["text"], json!("Text of task 11."));
+        assert_eq!(body["questions"]["tipo_t11"]["criteria"].as_object().unwrap().len(), 5);
+
+        assert_eq!(judged.tasks[&11], Judgement { kind: TaskKind::Defect, confidence: 0.9, clash: 0.1 });
+        assert_eq!(judged.tasks[&12], Judgement { kind: TaskKind::Feature, confidence: 0.41, clash: 0.68 });
+        assert_eq!(
+            (judged.usage.input_tokens, judged.usage.cost_micro_usd, judged.usage.requests, judged.usage.model.as_str()),
+            (2000, 84, 1, "jev-1.13.0")
+        );
+    }
+
+    /// Sem onda em andamento não há pergunta de bloqueio, e a tarefa fica sem
+    /// choque; a falta de uma resposta, um tipo que não existe e a confiança
+    /// ausente são resposta ilegível, e o serviço que recusa é falha.
+    #[test]
+    fn an_answer_that_misses_a_question_or_a_kind_is_unreadable_and_a_refusal_is_a_failure() {
+        let no_wave = Board { running: Vec::new(), backlog: vec![board_task(11, &["a.rs"])] };
+        let service = FakeService::start(|_, _| {
+            Reply::json(200, &json!({"answers": {"tipo_t11": {"choice": "defect", "confidence": 0.8}}, "usage": {"input_tokens": 10}}))
+        });
+        let judged = service.filter().judge_backlog(&no_wave).unwrap();
+        assert_eq!(judged.tasks[&11].clash, 0.0);
+        assert_eq!(service.received()[0].body["questions"].as_object().unwrap().len(), 1);
+
+        for (name, answer) in [
+            ("a missing blk", json!({"tipo_t11": {"choice": "defect", "confidence": 0.9}, "tipo_t12": {"choice": "defect", "confidence": 0.9}, "blk_w7_t11": {"noul": 0.1}})),
+            ("an unknown kind", json!({"tipo_t11": {"choice": "chore", "confidence": 0.9}, "tipo_t12": {"choice": "defect", "confidence": 0.9}, "blk_w7_t11": {"noul": 0.1}, "blk_w7_t12": {"noul": 0.1}})),
+            ("no confidence", json!({"tipo_t11": {"choice": "defect"}, "tipo_t12": {"choice": "defect", "confidence": 0.9}, "blk_w7_t11": {"noul": 0.1}, "blk_w7_t12": {"noul": 0.1}})),
+        ] {
+            let service = FakeService::start(move |_, _| Reply::json(200, &json!({"answers": answer.clone()})));
+            let error = service.filter().judge_backlog(&board()).unwrap_err();
+            assert!(matches!(error, FilterError::Unreadable(_)), "{name}: {error:?}");
+        }
+
+        let refusing = FakeService::start(|_, _| Reply::json(401, &json!({})));
+        assert_eq!(refusing.filter().judge_backlog(&board()).unwrap_err(), FilterError::Refused { status: 401 });
+    }
+
+    /// O quadro que passa do tamanho de um pedido não sai, e nenhum segredo
+    /// das tarefas vai ao serviço.
+    #[test]
+    fn a_board_above_the_request_size_is_not_sent_and_secrets_stay_on_the_machine() {
+        let service = FakeService::start(|_, _| Reply::json(200, &judged_answer()));
+        let mut big = board();
+        big.backlog[0].text = "word ".repeat(30_000);
+        let error = service.filter().judge_backlog(&big).unwrap_err();
+        assert!(matches!(error, FilterError::TooLarge { .. }), "{error:?}");
+        assert!(service.received().is_empty(), "nothing is sent");
+
+        let key = format!("ghp_{}", "a1B2c3D4".repeat(5));
+        let mut secret = board();
+        secret.backlog[0].text = format!("Fix the login. DB_PASSWORD=S3nh4F0rte2024 {key}");
+        secret.backlog[1].title = format!("rotate {key}");
+        service.filter().judge_backlog(&secret).unwrap();
+        let sent = service.received()[0].body.to_string();
+        assert!(!sent.contains("S3nh4F0rte2024") && !sent.contains(&key[..12]), "secrets never leave: {sent}");
+        assert!(sent.contains("Fix the login."), "the rest of the text still goes");
     }
 }

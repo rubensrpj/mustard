@@ -1812,7 +1812,7 @@ mod tests {
                 "covers": [crit], "origin": said}),
         ));
         let log = store::read(&path).unwrap().unwrap();
-        let formed = dispatch_backlog(root, "x", &log, &log, max_parallel(root), &[]).expect("formou o lote");
+        let formed = dispatch_backlog(root, "x", &log, &log, max_parallel(root), &[], None).expect("formou o lote");
         assert_eq!(formed, vec![2], "a tarefa solta vira a onda de lote 2: {formed:?}");
 
         // Antes de o lote sair, a tarefa é regravada sem onda: volta ao

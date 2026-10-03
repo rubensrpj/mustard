@@ -17,7 +17,7 @@ use mustard_core::io::wave_prompt::{prompts, recorded_copy, Flight};
 use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Map, Value};
 
-use super::backlog::dispatch_backlog;
+use super::backlog::{dispatch_backlog, Judge};
 use super::commit::git_lock;
 use super::queue::{
     analyse, analysis_lines, backlog_left, backlog_ready, first_unfinished, max_parallel, next_waves,
@@ -30,6 +30,7 @@ use super::stops::{stopped_waves, waves_stuck};
 use super::usage::Caller;
 use super::{can_run, RoundOpts, DONE_STEP};
 use crate::commands::spec_events::write::record;
+use crate::shared::jev::Board;
 use crate::shared::spec_state::{checkout, DiskSpecState};
 
 /// Por que a rodada não correu.
@@ -689,7 +690,18 @@ pub(super) fn run_entered_round(
     let locked = store::read(&path)
         .map_err(RoundRefusal::Refused)?
         .ok_or_else(|| RoundRefusal::Refused(Refusal::NoSpecFile { spec: spec.clone() }))?;
-    dispatch_backlog(&opts.root, &spec, &log_on_entry, &locked, max_parallel(root), &given).map_err(RoundRefusal::Refused)?;
+    let jev = crate::shared::jev::for_waves(root);
+    let judge = jev.as_ref().map(|jev| move |board: &Board| jev.judge_backlog(board));
+    dispatch_backlog(
+        &opts.root,
+        &spec,
+        &log_on_entry,
+        &locked,
+        max_parallel(root),
+        &given,
+        judge.as_ref().map(|judge| judge as &Judge<'_>),
+    )
+    .map_err(RoundRefusal::Refused)?;
     // A primeira rodada leva a spec para a execução só depois de o lote
     // passar, ainda com a trava do git presa: o lote recusado deixa a spec
     // aprovada, como estava, e a rodada seguinte entra de novo por aqui. A

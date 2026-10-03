@@ -40,6 +40,12 @@
 //! mesmo peel de [`assign_levels`], só que sobre tarefas: nasce aqui para não
 //! virar um segundo motor ao lado.
 //!
+//! Com o julgamento do Jev sobre o backlog ([`Judgement`]), o assunto do lote
+//! é o tipo de trabalho ([`TaskKind`]) e não o arquivo: [`pack_by_kind`] junta
+//! as tarefas do mesmo tipo, mesmo sem arquivo em comum, e põe as ondas na
+//! ordem fixa dos tipos. O arquivo e a dependência seguem exatos, em código:
+//! quem decide que duas ondas com arquivo em comum não saem juntas é a rodada.
+//!
 //! Dois arquivos "se cruzam" ([`files_cross`]) quando são o mesmo caminho,
 //! ou quando um deles é padrão (tem `*`, `?` ou `[`) e casa o outro. O `**`
 //! cruza com tudo: a tarefa que o declara sai sozinha no lote dela, e a
@@ -319,6 +325,126 @@ pub(crate) fn pack_batches<N: Ord + Clone>(
         .partition(|g| touches_whole_tree(&g.files));
     groups.sort_by_key(|g| g.tasks.iter().map(&readiness).min());
     batches.extend(groups);
+    chain_dependents(tasks, &mut batches, waiting, busy);
+    batches
+}
+
+/// O tipo de trabalho de uma tarefa, como o Jev o diz. A ordem das variantes
+/// é a ordem em que as ondas saem: defeito primeiro, recurso novo, texto e, no
+/// fim, o que só tira ou enxuga.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum TaskKind {
+    /// Conserta o que está errado para o usuário ou quebra.
+    Defect,
+    /// Acrescenta ou muda o que o usuário vê.
+    Feature,
+    /// Conserta comentário, nome ou texto.
+    TextFix,
+    /// Tira o que nada mais usa.
+    RemoveUnused,
+    /// Enxuga teste sem mudar o produto.
+    TestCleanup,
+}
+
+impl TaskKind {
+    /// Todos os tipos, na ordem em que as ondas saem.
+    pub(crate) const ALL: [Self; 5] =
+        [Self::Defect, Self::Feature, Self::TextFix, Self::RemoveUnused, Self::TestCleanup];
+
+    /// O nome do tipo na conversa com o Jev.
+    pub(crate) fn key(self) -> &'static str {
+        match self {
+            Self::Defect => "defect",
+            Self::Feature => "feature",
+            Self::TextFix => "text_fix",
+            Self::RemoveUnused => "remove_unused",
+            Self::TestCleanup => "test_cleanup",
+        }
+    }
+
+    /// O tipo de nome `key`; `None` para o nome que não é de tipo nenhum.
+    pub(crate) fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| kind.key() == key)
+    }
+}
+
+/// A confiança no tipo a partir da qual a tarefa vai com as do mesmo tipo;
+/// abaixo dela, vai sozinha.
+pub(crate) const KIND_SURE_FROM: f64 = 0.5;
+
+/// A chance de a tarefa mudar o mesmo que uma onda em andamento a partir da
+/// qual ela espera, mesmo sem arquivo em comum com a onda.
+pub(crate) const CLASH_FROM: f64 = 0.5;
+
+/// O que o Jev julgou de uma tarefa do backlog.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Judgement {
+    pub(crate) kind: TaskKind,
+    /// A confiança no tipo, de 0 a 1.
+    pub(crate) confidence: f64,
+    /// A maior chance, entre as ondas em andamento, de a tarefa mudar o mesmo
+    /// que ela, de 0 a 1.
+    pub(crate) clash: f64,
+}
+
+/// O julgamento da tarefa que o Jev não julgou: tipo incerto, que vai sozinha.
+const UNJUDGED: Judgement = Judgement { kind: TaskKind::Feature, confidence: 0.0, clash: 0.0 };
+
+/// Agrupa `order` (a saída de [`ready_tasks`]) em lotes de despacho pelo tipo
+/// de trabalho que o Jev julgou (`judged`), um tipo por lote, na ordem em que
+/// as ondas saem:
+///
+/// 1. A tarefa com o curinga da árvore inteira vem antes de tudo, cada uma no
+///    seu lote, sem nenhuma outra dentro, como em [`pack_batches`].
+/// 2. As tarefas do mesmo tipo vão no mesmo lote, tenham ou não arquivo em
+///    comum, sem teto de tarefas. A de tipo incerto — confiança abaixo de
+///    [`KIND_SURE_FROM`] — vai sozinha, num lote dela. A que divide arquivo
+///    com uma onda aberta (`busy`) ou muda o mesmo que ela ([`CLASH_FROM`])
+///    fica fora de todo lote e espera no backlog.
+/// 3. Os lotes saem na ordem de [`TaskKind`] e, dentro do tipo, pelo número
+///    (`number`) da tarefa mais baixa; as tarefas de cada lote, pelo número.
+/// 4. Cada lote recebe, no fim, as tarefas de `waiting` que esperam só por
+///    ele ([`chain_dependents`]).
+///
+/// Dois lotes de tipos diferentes podem dividir arquivo: quem solta só deixa
+/// sair, juntos, os que não se cruzam.
+pub(crate) fn pack_by_kind<N: Ord + Clone>(
+    tasks: &[BacklogTask<N>],
+    order: &[N],
+    waiting: &[N],
+    busy: &BTreeSet<String>,
+    judged: &BTreeMap<N, Judgement>,
+    number: &dyn Fn(&N) -> u64,
+) -> Vec<Batch<N>> {
+    let by_id: BTreeMap<&N, &BacklogTask<N>> = tasks.iter().map(|t| (&t.id, t)).collect();
+    let mut batches: Vec<Batch<N>> = Vec::new();
+    let mut together: BTreeMap<TaskKind, Batch<N>> = BTreeMap::new();
+    let mut alone: Vec<(TaskKind, Batch<N>)> = Vec::new();
+    for id in order {
+        let Some(task) = by_id.get(id).copied() else { continue };
+        if touches_whole_tree(&task.files) {
+            batches.push(Batch { tasks: vec![id.clone()], files: task.files.clone() });
+            continue;
+        }
+        let verdict = judged.get(id).copied().unwrap_or(UNJUDGED);
+        if sets_cross(&task.files, busy) || verdict.clash >= CLASH_FROM {
+            continue;
+        }
+        let single = || Batch { tasks: vec![id.clone()], files: task.files.clone() };
+        if verdict.confidence < KIND_SURE_FROM {
+            alone.push((verdict.kind, single()));
+            continue;
+        }
+        let batch = together.entry(verdict.kind).or_insert_with(|| Batch { tasks: Vec::new(), files: BTreeSet::new() });
+        batch.tasks.push(id.clone());
+        batch.files.extend(task.files.iter().cloned());
+    }
+    let mut groups: Vec<(TaskKind, Batch<N>)> = together.into_iter().chain(alone).collect();
+    for (_, group) in &mut groups {
+        group.tasks.sort_by_key(|id| (number(id), id.clone()));
+    }
+    groups.sort_by_key(|(kind, group)| (*kind, group.tasks.iter().map(number).min()));
+    batches.extend(groups.into_iter().map(|(_, group)| group));
     chain_dependents(tasks, &mut batches, waiting, busy);
     batches
 }
@@ -691,6 +817,114 @@ mod tests {
         ];
         let batches = pack_batches(&tasks, &[2, 1, 4, 3], &[], &BTreeSet::new());
         assert_eq!(batch_tasks(&batches), vec![vec![2, 4], vec![1, 3]], "{batches:?}");
+    }
+
+    /// O julgamento do Jev de uma tarefa: o tipo, a confiança nele e a chance
+    /// de mudar o mesmo que uma onda em andamento.
+    fn judged_as(kind: TaskKind, confidence: f64, clash: f64) -> Judgement {
+        Judgement { kind, confidence, clash }
+    }
+
+    /// Os lotes por tipo de `tasks`, todas prontas, com o julgamento de cada
+    /// uma; o número da tarefa é o próprio id.
+    fn packed_by_kind(tasks: &[BacklogTask<u32>], judged: &[(u32, Judgement)], busy: &BTreeSet<String>) -> Vec<Vec<u32>> {
+        let order: Vec<u32> = tasks.iter().map(|t| t.id).collect();
+        let judged: BTreeMap<u32, Judgement> = judged.iter().copied().collect();
+        let batches = pack_by_kind(tasks, &order, &[], busy, &judged, &|id| u64::from(*id));
+        batch_tasks(&batches)
+    }
+
+    /// As tarefas do mesmo tipo vão juntas ainda que nenhum arquivo seja
+    /// comum a elas, e a de outro tipo, com arquivo em comum, vai no lote do
+    /// tipo dela: o assunto é o tipo, não o arquivo.
+    #[test]
+    fn tasks_of_one_kind_share_a_batch_without_a_file_in_common() {
+        let tasks = [
+            task(1, &[], &["a.rs"], false),
+            task(2, &[], &["b.rs"], false),
+            task(3, &[], &["a.rs"], false),
+            task(4, &[], &["c.rs"], false),
+        ];
+        let sure = |kind| judged_as(kind, 0.9, 0.0);
+        let judged = [
+            (1, sure(TaskKind::Feature)),
+            (2, sure(TaskKind::Feature)),
+            (3, sure(TaskKind::Defect)),
+            (4, sure(TaskKind::Feature)),
+        ];
+        assert_eq!(packed_by_kind(&tasks, &judged, &BTreeSet::new()), vec![vec![3], vec![1, 2, 4]]);
+    }
+
+    /// Os lotes saem na ordem fixa dos tipos, e não pelo número: o defeito
+    /// antes de tudo, a limpeza de teste no fim, ainda que ela tenha o
+    /// número mais baixo. Dentro do lote, as tarefas vão pelo número.
+    #[test]
+    fn batches_leave_in_the_fixed_order_of_the_kinds_and_tasks_by_number() {
+        let tasks: Vec<BacklogTask<u32>> = (1..=6).map(|n| task(n, &[], &[], false)).collect();
+        let sure = |kind| judged_as(kind, 0.9, 0.0);
+        let judged = [
+            (1, sure(TaskKind::TestCleanup)),
+            (2, sure(TaskKind::RemoveUnused)),
+            (3, sure(TaskKind::Feature)),
+            (4, sure(TaskKind::TextFix)),
+            (5, sure(TaskKind::Defect)),
+            (6, sure(TaskKind::Feature)),
+        ];
+        let mut order: Vec<u32> = (1..=6).collect();
+        order.reverse();
+        let judged_map: BTreeMap<u32, Judgement> = judged.iter().copied().collect();
+        let batches = pack_by_kind(&tasks, &order, &[], &BTreeSet::new(), &judged_map, &|id| u64::from(*id));
+        assert_eq!(batch_tasks(&batches), vec![vec![5], vec![3, 6], vec![4], vec![2], vec![1]], "{batches:?}");
+    }
+
+    /// A confiança no tipo abaixo de [`KIND_SURE_FROM`] manda a tarefa
+    /// sozinha para um lote dela; em cima da linha ela vai com as do tipo.
+    #[test]
+    fn a_kind_the_jev_is_unsure_of_goes_alone() {
+        let tasks = [task(1, &[], &[], false), task(2, &[], &[], false), task(3, &[], &[], false)];
+        let judged = [
+            (1, judged_as(TaskKind::Feature, 0.9, 0.0)),
+            (2, judged_as(TaskKind::Feature, 0.49, 0.0)),
+            (3, judged_as(TaskKind::Feature, 0.5, 0.0)),
+        ];
+        assert_eq!(packed_by_kind(&tasks, &judged, &BTreeSet::new()), vec![vec![1, 3], vec![2]]);
+    }
+
+    /// A chance de mudar o mesmo que uma onda em andamento, de [`CLASH_FROM`]
+    /// para cima, segura a tarefa que não declara arquivo nenhum; abaixo
+    /// disso ela sai. A que divide arquivo com a onda aberta espera ainda que
+    /// o Jev não veja choque.
+    #[test]
+    fn a_clash_with_an_open_wave_holds_a_task_that_declares_no_file() {
+        let tasks = [task(1, &[], &[], false), task(2, &[], &[], false), task(3, &[], &["open.rs"], false)];
+        let judged = [
+            (1, judged_as(TaskKind::Feature, 0.9, 0.5)),
+            (2, judged_as(TaskKind::Feature, 0.9, 0.49)),
+            (3, judged_as(TaskKind::Feature, 0.9, 0.0)),
+        ];
+        let busy = BTreeSet::from(["open.rs".to_string()]);
+        assert_eq!(packed_by_kind(&tasks, &judged, &busy), vec![vec![2]]);
+    }
+
+    /// O curinga da árvore inteira sai antes e sozinho, com o tipo que for, e
+    /// a tarefa que espera só por uma do lote e divide arquivo com ele entra
+    /// depois dela — salvo com o curinga no meio, que cruza com tudo.
+    #[test]
+    fn the_wildcard_goes_first_alone_and_a_dependent_joins_after_its_dependency() {
+        let tasks = [
+            task(1, &[], &["a.rs"], false),
+            task(2, &[], &["**"], false),
+            task(3, &[], &["b.rs"], false),
+            task(4, &[1], &["a.rs"], false),
+        ];
+        let sure = |kind| judged_as(kind, 0.9, 0.0);
+        let judged: BTreeMap<u32, Judgement> =
+            [(1, sure(TaskKind::Feature)), (2, sure(TaskKind::Defect)), (3, sure(TaskKind::Feature))].into_iter().collect();
+        let number = |id: &u32| u64::from(*id);
+        let with_wildcard = pack_by_kind(&tasks, &[1, 2, 3], &[4], &BTreeSet::new(), &judged, &number);
+        assert_eq!(batch_tasks(&with_wildcard), vec![vec![2], vec![1, 3]], "{with_wildcard:?}");
+        let without = pack_by_kind(&tasks, &[1, 3], &[4], &BTreeSet::new(), &judged, &number);
+        assert_eq!(batch_tasks(&without), vec![vec![1, 3, 4]], "{without:?}");
     }
 
     // O backlog inteiro, com dependência e arquivo compartilhado, despachada
