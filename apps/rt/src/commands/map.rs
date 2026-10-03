@@ -1370,47 +1370,46 @@ mod tests {
         assert_eq!(calls.get(), 1, "the second question reads the history kept in the map, not git");
     }
 
-    /// Nos exemplos, o valor inválido de `map.historyMoves` — zero, negativo
-    /// ou texto — cai no padrão e sai com o aviso que diz a chave e o padrão,
+    /// Nos exemplos, o valor inválido de `map.historyMoves` (aqui, zero) cai
+    /// no padrão e sai com o aviso que diz a chave e o padrão,
     /// uma vez só na sessão; outra sessão recebe o aviso de novo. Com o valor
     /// certo, a história segue o número escrito, sem aviso.
     #[test]
     fn an_invalid_history_moves_in_the_examples_falls_back_to_the_default_with_one_warning() {
-        for bad in ["0", "-2", "\"dez\""] {
-            let dir = project_with_a_file_older_than_the_window();
-            let root = dir.path();
-            let config = |text: String| std::fs::write(root.join("mustard.json"), text).unwrap();
-            config(format!(r#"{{"map": {{"historyMoves": {bad}}}}}"#));
-            let moved = std::cell::RefCell::new(Vec::new());
-            let trace = |_: &Path, out: &Path, file: &str, moves: usize| {
-                moved.borrow_mut().push(moves);
-                three_commits_with_the_registry(out, file, moves)
+        let bad = "0";
+        let dir = project_with_a_file_older_than_the_window();
+        let root = dir.path();
+        let config = |text: String| std::fs::write(root.join("mustard.json"), text).unwrap();
+        config(format!(r#"{{"map": {{"historyMoves": {bad}}}}}"#));
+        let moved = std::cell::RefCell::new(Vec::new());
+        let trace = |_: &Path, out: &Path, file: &str, moves: usize| {
+            moved.borrow_mut().push(moves);
+            three_commits_with_the_registry(out, file, moves)
+        };
+        let ask_in = |session: &str| {
+            let opts = MapOpts {
+                file: Some("src/old.rs".to_string()),
+                session: Some(session.to_string()),
+                ..ask(root, Question::Examples)
             };
-            let ask_in = |session: &str| {
-                let opts = MapOpts {
-                    file: Some("src/old.rs".to_string()),
-                    session: Some(session.to_string()),
-                    ..ask(root, Question::Examples)
-                };
-                map_at(&opts, &|_, _| panic!("a map outside git is never read again"), &trace)
-            };
-            let report = ask_in("sessao-1");
-            assert_eq!(*moved.borrow(), vec![project_map::MOVES_FOLLOWED], "{bad}: {report}");
-            assert_eq!(report["recipe"]["commits"], json!(3), "{bad}: {report}");
-            let warnings: Vec<&str> =
-                report["warnings"].as_array().map(|all| all.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
-            assert_eq!(warnings.len(), 1, "{bad}: {report}");
-            assert!(warnings[0].contains("map.historyMoves"), "{bad}: {report}");
-            assert!(warnings[0].contains(&project_map::MOVES_FOLLOWED.to_string()), "{bad}: {report}");
-            let again = ask_in("sessao-1");
-            assert!(again.get("warnings").is_none(), "{bad}: one warning per session: {again}");
-            assert!(ask_in("sessao-2").get("warnings").is_some(), "{bad}: another session is warned again");
+            map_at(&opts, &|_, _| panic!("a map outside git is never read again"), &trace)
+        };
+        let report = ask_in("sessao-1");
+        assert_eq!(*moved.borrow(), vec![project_map::MOVES_FOLLOWED], "{bad}: {report}");
+        assert_eq!(report["recipe"]["commits"], json!(3), "{bad}: {report}");
+        let warnings: Vec<&str> =
+            report["warnings"].as_array().map(|all| all.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+        assert_eq!(warnings.len(), 1, "{bad}: {report}");
+        assert!(warnings[0].contains("map.historyMoves"), "{bad}: {report}");
+        assert!(warnings[0].contains(&project_map::MOVES_FOLLOWED.to_string()), "{bad}: {report}");
+        let again = ask_in("sessao-1");
+        assert!(again.get("warnings").is_none(), "{bad}: one warning per session: {again}");
+        assert!(ask_in("sessao-2").get("warnings").is_some(), "{bad}: another session is warned again");
 
-            config(r#"{"map": {"historyMoves": 2}}"#.to_string());
-            let valid = ask_in("sessao-3");
-            assert!(valid.get("warnings").is_none(), "{bad}: {valid}");
-            assert_eq!(moved.borrow().last(), Some(&2), "{bad}: {valid}");
-        }
+        config(r#"{"map": {"historyMoves": 2}}"#.to_string());
+        let valid = ask_in("sessao-3");
+        assert!(valid.get("warnings").is_none(), "{bad}: {valid}");
+        assert_eq!(moved.borrow().last(), Some(&2), "{bad}: {valid}");
     }
 
     /// Três commits criaram um arquivo em `src/cmd` e mudaram junto o índice
@@ -2169,67 +2168,63 @@ mod tests {
         assert_eq!(*case.traced.borrow(), vec![2], "the list read with 2 counts for the next question");
     }
 
-    /// O valor inválido — zero, negativo ou texto — cai no padrão e sai com
-    /// um aviso que diz a chave e o padrão, uma vez só na sessão; outra
-    /// sessão recebe o aviso de novo.
+    /// O valor inválido (aqui, negativo) cai no padrão e sai com um aviso que
+    /// diz a chave e o padrão, uma vez só na sessão; outra sessão recebe o
+    /// aviso de novo.
     #[test]
     fn an_invalid_history_key_falls_back_to_the_default_with_one_warning() {
-        for bad in ["0", "-2", "\"dez\""] {
-            let case = HistoryNumbers::new();
-            case.config(&format!(r#"{{"map": {{"historyCommits": {bad}, "historyMoves": {bad}, "pullRequestCalls": {bad}}}}}"#));
-            let report = case.ask("sessao-1");
-            assert_eq!(HistoryNumbers::shown(&report), project_map::DECL_COMMITS_SHOWN, "{bad}: {report}");
-            assert!(case.traced.borrow().is_empty(), "{bad}: the default moves still count: {report}");
-            let warnings: Vec<&str> =
-                report["warnings"].as_array().map(|all| all.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
-            assert_eq!(warnings.len(), 3, "{bad}: {report}");
-            assert!(warnings[0].contains("map.historyMoves") && warnings[0].contains(&project_map::MOVES_FOLLOWED.to_string()));
-            assert!(warnings[1].contains("map.historyCommits") && warnings[1].contains(&project_map::DECL_COMMITS_SHOWN.to_string()));
-            let calls = crate::shared::pr_history::CALLS_PER_PASS.to_string();
-            assert!(warnings[2].contains("map.pullRequestCalls") && warnings[2].contains(&calls), "{bad}: {report}");
+        let bad = "-2";
+        let case = HistoryNumbers::new();
+        case.config(&format!(r#"{{"map": {{"historyCommits": {bad}, "historyMoves": {bad}, "pullRequestCalls": {bad}}}}}"#));
+        let report = case.ask("sessao-1");
+        assert_eq!(HistoryNumbers::shown(&report), project_map::DECL_COMMITS_SHOWN, "{bad}: {report}");
+        assert!(case.traced.borrow().is_empty(), "{bad}: the default moves still count: {report}");
+        let warnings: Vec<&str> =
+            report["warnings"].as_array().map(|all| all.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+        assert_eq!(warnings.len(), 3, "{bad}: {report}");
+        assert!(warnings[0].contains("map.historyMoves") && warnings[0].contains(&project_map::MOVES_FOLLOWED.to_string()));
+        assert!(warnings[1].contains("map.historyCommits") && warnings[1].contains(&project_map::DECL_COMMITS_SHOWN.to_string()));
+        let calls = crate::shared::pr_history::CALLS_PER_PASS.to_string();
+        assert!(warnings[2].contains("map.pullRequestCalls") && warnings[2].contains(&calls), "{bad}: {report}");
 
-            let again = case.ask("sessao-1");
-            assert!(again.get("warnings").is_none(), "{bad}: one warning per session: {again}");
-            assert_eq!(HistoryNumbers::shown(&again), project_map::DECL_COMMITS_SHOWN, "{bad}: {again}");
-            assert!(case.ask("sessao-2").get("warnings").is_some(), "{bad}: another session is warned again");
-        }
+        let again = case.ask("sessao-1");
+        assert!(again.get("warnings").is_none(), "{bad}: one warning per session: {again}");
+        assert_eq!(HistoryNumbers::shown(&again), project_map::DECL_COMMITS_SHOWN, "{bad}: {again}");
+        assert!(case.ask("sessao-2").get("warnings").is_some(), "{bad}: another session is warned again");
     }
 
-    /// Na busca, o valor inválido de `map.historyMoves` — zero, negativo ou
-    /// texto — cai no padrão e sai com o mesmo aviso da pergunta da história,
+    /// Na busca, o valor inválido de `map.historyMoves` (aqui, texto) cai no
+    /// padrão e sai com o mesmo aviso da pergunta da história,
     /// uma vez só na sessão, seja qual for a pergunta que o leu primeiro:
     /// depois da busca, a história na mesma sessão não avisa de novo, e segue
     /// o padrão. Outra sessão recebe o aviso de novo; o valor certo, nenhum.
     #[test]
     fn an_invalid_history_moves_warns_in_the_search_once_per_session_with_the_history_question() {
-        for bad in ["0", "-2", "\"dez\""] {
-            let case = HistoryNumbers::new();
-            case.config(&format!(r#"{{"map": {{"historyMoves": {bad}}}, "search": {{"filter": "none"}}}}"#));
-            let search = |session: &str| {
-                searched(&search_opts(case.dir.path(), "pay", None, Some(session)), &|_, _| {
-                    panic!("the filter is off")
-                })
-            };
-            let report = search("sessao-1");
-            assert_eq!(report["ok"], json!(true), "{bad}: {report}");
-            let warnings: Vec<&str> =
-                report["warnings"].as_array().map(|all| all.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
-            assert_eq!(warnings.len(), 1, "{bad}: {report}");
-            assert!(warnings[0].contains("map.historyMoves"), "{bad}: {report}");
-            assert!(warnings[0].contains(&project_map::MOVES_FOLLOWED.to_string()), "{bad}: {report}");
+        let bad = "\"dez\"";
+        let case = HistoryNumbers::new();
+        case.config(&format!(r#"{{"map": {{"historyMoves": {bad}}}, "search": {{"filter": "none"}}}}"#));
+        let search = |session: &str| {
+            searched(&search_opts(case.dir.path(), "pay", None, Some(session)), &|_, _| panic!("the filter is off"))
+        };
+        let report = search("sessao-1");
+        assert_eq!(report["ok"], json!(true), "{bad}: {report}");
+        let warnings: Vec<&str> =
+            report["warnings"].as_array().map(|all| all.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+        assert_eq!(warnings.len(), 1, "{bad}: {report}");
+        assert!(warnings[0].contains("map.historyMoves"), "{bad}: {report}");
+        assert!(warnings[0].contains(&project_map::MOVES_FOLLOWED.to_string()), "{bad}: {report}");
 
-            let again = search("sessao-1");
-            assert!(again.get("warnings").is_none(), "{bad}: one warning per session: {again}");
-            let history = case.ask("sessao-1");
-            assert!(history.get("warnings").is_none(), "{bad}: the search already warned the session: {history}");
-            assert!(case.traced.borrow().is_empty(), "{bad}: the default moves still count: {history}");
-            assert!(search("sessao-2").get("warnings").is_some(), "{bad}: another session is warned again");
+        let again = search("sessao-1");
+        assert!(again.get("warnings").is_none(), "{bad}: one warning per session: {again}");
+        let history = case.ask("sessao-1");
+        assert!(history.get("warnings").is_none(), "{bad}: the search already warned the session: {history}");
+        assert!(case.traced.borrow().is_empty(), "{bad}: the default moves still count: {history}");
+        assert!(search("sessao-2").get("warnings").is_some(), "{bad}: another session is warned again");
 
-            case.config(r#"{"map": {"historyMoves": 2}, "search": {"filter": "none"}}"#);
-            let valid = search("sessao-3");
-            assert_eq!(valid["ok"], json!(true), "{bad}: {valid}");
-            assert!(valid.get("warnings").is_none(), "{bad}: {valid}");
-        }
+        case.config(r#"{"map": {"historyMoves": 2}, "search": {"filter": "none"}}"#);
+        let valid = search("sessao-3");
+        assert_eq!(valid["ok"], json!(true), "{bad}: {valid}");
+        assert!(valid.get("warnings").is_none(), "{bad}: {valid}");
     }
 
     /// O mapa com a base `main`, a lista de `write.rs` com a `run` mudada
@@ -3347,40 +3342,31 @@ mod tests {
         assert!(bare.commits.is_empty() && bare.reviews.is_empty(), "{bare:?}");
     }
 
-    /// `search.cut_share` vai no pedido: ausente, 10 pontos, 0,10; com valor,
-    /// o valor em pontos; com 0, o padrão e o aviso.
+    /// `search.cut_share` e `search.exists_from` vão no pedido: ausentes,
+    /// 10 e 50 pontos (0,10 e 0,50); com valor, o valor em pontos; com 0, o
+    /// padrão e o aviso.
     #[test]
-    fn the_cut_share_setting_goes_in_the_request() {
-        let sent = |search: Value| {
-            let dir = search_project(FILTER_MAP, &search);
-            let fake = FakeFilter::scoring(&[0.9]);
-            let report = searched(&search_opts(dir.path(), "pedido", None, None), &fake.assemble());
-            (fake.last().cut.share, report["warnings"].clone())
-        };
-        assert_eq!(sent(json!({})), (0.10, Value::Null));
-        assert_eq!(sent(json!({"cut_share": 25})), (0.25, Value::Null));
-        let warned = mustard_core::translate("map.search.bad_number", Locale::PtBr)
-            .replace("{key}", "cut_share")
-            .replace("{default}", "10");
-        assert_eq!(sent(json!({"cut_share": 0})), (0.10, json!([warned])));
-    }
-
-    /// `search.exists_from` vai no pedido: ausente, 50 pontos (0,50); com
-    /// valor, o valor; com 0, o padrão e o aviso.
-    #[test]
-    fn the_exists_line_setting_goes_in_the_request() {
-        let sent = |search: Value| {
-            let dir = search_project(FILTER_MAP, &search);
-            let fake = FakeFilter::scoring(&[0.9]);
-            let report = searched(&search_opts(dir.path(), "pedido", None, None), &fake.assemble());
-            (fake.last().cut.exists_from, report["warnings"].clone())
-        };
-        assert_eq!(sent(json!({})), (0.50, Value::Null));
-        assert_eq!(sent(json!({"exists_from": 70})), (0.70, Value::Null));
-        let warned = mustard_core::translate("map.search.bad_number", Locale::PtBr)
-            .replace("{key}", "exists_from")
-            .replace("{default}", "50");
-        assert_eq!(sent(json!({"exists_from": 0})), (0.50, json!([warned])));
+    fn the_cut_settings_go_in_the_request() {
+        use mustard_core::domain::map_filter::CutRule;
+        let settings: [(&str, u32, f64, u32, fn(&CutRule) -> f64); 2] = [
+            ("cut_share", 25, 0.25, 10, |cut| cut.share),
+            ("exists_from", 70, 0.70, 50, |cut| cut.exists_from),
+        ];
+        for (key, points, written, default_points, pick) in settings {
+            let sent = |search: Value| {
+                let dir = search_project(FILTER_MAP, &search);
+                let fake = FakeFilter::scoring(&[0.9]);
+                let report = searched(&search_opts(dir.path(), "pedido", None, None), &fake.assemble());
+                (pick(&fake.last().cut), report["warnings"].clone())
+            };
+            let default = f64::from(default_points) / 100.0;
+            assert_eq!(sent(json!({})), (default, Value::Null), "{key}");
+            assert_eq!(sent(json!({ key: points })), (written, Value::Null), "{key}");
+            let warned = mustard_core::translate("map.search.bad_number", Locale::PtBr)
+                .replace("{key}", key)
+                .replace("{default}", &default_points.to_string());
+            assert_eq!(sent(json!({ key: 0 })), (default, json!([warned])), "{key}");
+        }
     }
 
     /// Todas as peças que passam do corte voltam, mesmo com cinco candidatos

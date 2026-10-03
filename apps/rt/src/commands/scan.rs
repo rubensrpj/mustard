@@ -373,32 +373,31 @@ mod tests {
     /// apagado, aponta as duas parecidas como um grupo a juntar e a outra como
     /// candidata a sair, e o passo seguinte manda juntar e retirar pelo
     /// comando de gravar lição. O banco fica com os mesmos bytes.
-    /// O teto do nome comum escrito errado no `mustard.json` (zero, negativo
-    /// ou texto) sai em `warning` na primeira passada da sessão, com a chave,
+    /// O teto do nome comum escrito errado no `mustard.json` (aqui, texto;
+    /// zero e negativo têm a prova própria na leitura da configuração) sai em `warning` na primeira passada da sessão, com a chave,
     /// o valor lido e o padrão que valeu; a segunda passada da mesma sessão
     /// não o repete, a de outra sessão o traz de novo, e sem sessão ele sai
     /// toda vez. O teto válido não avisa.
     #[test]
     fn an_invalid_common_name_ceiling_warns_once_per_session() {
-        for (bad, shown) in [("0", "0"), ("-3", "-3"), ("\"dois\"", "\"dois\"")] {
-            let dir = tempfile::tempdir().expect("tempdir");
-            let root = dir.path();
-            write(&root.join("src/lib.rs"), "pub fn run() {}\n");
-            write(&root.join("mustard.json"), &format!(r#"{{"scan": {{"max_same_name": {bad}}}}}"#));
+        let bad = "\"dois\"";
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        write(&root.join("src/lib.rs"), "pub fn run() {}\n");
+        write(&root.join("mustard.json"), &format!(r#"{{"scan": {{"max_same_name": {bad}}}}}"#));
 
-            let first = scan_at(root, None, false, Some("sessao-a"), mine_disk);
-            let warning = first["warning"].as_str().unwrap_or_else(|| panic!("{bad}: sem aviso: {first}"));
-            for part in ["scan.max_same_name", shown, "8"] {
-                assert!(warning.contains(part), "{bad}: o aviso cita {part}: {warning}");
-            }
-            let again = scan_at(root, None, false, Some("sessao-a"), mine_disk);
-            assert!(again.get("warning").is_none(), "{bad}: um aviso por sessão: {again}");
-            let other = scan_at(root, None, false, Some("sessao-b"), mine_disk);
-            assert!(other.get("warning").is_some(), "{bad}: outra sessão avisa: {other}");
-            for _ in 0..2 {
-                let unknown = scan_at(root, None, false, None, mine_disk);
-                assert!(unknown.get("warning").is_some(), "{bad}: sem sessão, avisa sempre: {unknown}");
-            }
+        let first = scan_at(root, None, false, Some("sessao-a"), mine_disk);
+        let warning = first["warning"].as_str().unwrap_or_else(|| panic!("{bad}: sem aviso: {first}"));
+        for part in ["scan.max_same_name", bad, "8"] {
+            assert!(warning.contains(part), "{bad}: o aviso cita {part}: {warning}");
+        }
+        let again = scan_at(root, None, false, Some("sessao-a"), mine_disk);
+        assert!(again.get("warning").is_none(), "{bad}: um aviso por sessão: {again}");
+        let other = scan_at(root, None, false, Some("sessao-b"), mine_disk);
+        assert!(other.get("warning").is_some(), "{bad}: outra sessão avisa: {other}");
+        for _ in 0..2 {
+            let unknown = scan_at(root, None, false, None, mine_disk);
+            assert!(unknown.get("warning").is_some(), "{bad}: sem sessão, avisa sempre: {unknown}");
         }
 
         let dir = tempfile::tempdir().expect("tempdir");
