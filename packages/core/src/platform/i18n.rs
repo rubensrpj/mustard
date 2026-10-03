@@ -179,7 +179,7 @@ type Part = (&'static [&'static str], fn(&str, Locale) -> Option<&'static str>);
 /// - `events` — o arquivo de eventos da spec;
 /// - `page` — as páginas;
 /// - `install` — o diagnóstico da instalação;
-/// - `spec_text` — o rótulo da onda e o motivo da onda desenhada à mão.
+/// - `spec_text` — o rótulo da onda.
 const PARTS: [Part; 11] = [
     (flow::PREFIXES, flow::text),
     (survey::PREFIXES, survey::text),

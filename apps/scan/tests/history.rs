@@ -770,7 +770,14 @@ fn stored_vector(dir: &Path, name: &str) -> Vec<i8> {
 /// leitura, sem nada novo, não refaz vetor nenhum.
 #[test]
 fn the_whole_reading_redoes_the_vector_of_the_declarations_whose_history_it_brought() {
-    use mustard_core::io::map_meaning::{cosine, quantized_vector};
+    use mustard_core::io::map_meaning::quantized_vector;
+
+    /// O cosseno de dois vetores em int8: 1 para o mesmo sentido, 0 para nenhuma relação.
+    fn cosine(a: &[i8], b: &[i8]) -> f32 {
+        let dot: i32 = a.iter().zip(b).map(|(x, y)| i32::from(*x) * i32::from(*y)).sum();
+        let norm = |v: &[i8]| f64::from(v.iter().map(|x| i32::from(*x) * i32::from(*x)).sum::<i32>()).sqrt();
+        (f64::from(dot) / (norm(a) * norm(b))) as f32
+    }
 
     let temp = project("scan-history-vector-");
     let dir = temp.path();

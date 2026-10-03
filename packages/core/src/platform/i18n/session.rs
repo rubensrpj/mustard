@@ -40,11 +40,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // chama, já arredondado.
         ("statusline.rtk", Locale::PtBr) => "rtk poupou {pct}%",
         ("statusline.rtk", Locale::EnUs) => "rtk saved {pct}%",
-        // O ponto de corte da compactação automática e quanto falta até
-        // ele, na segunda linha da barra: `{point}` e `{distance}` vêm de
-        // quem chama, já em milhares e arredondados.
-        ("statusline.compact", Locale::PtBr) => "compacta em {point}k - faltam {distance}k",
-        ("statusline.compact", Locale::EnUs) => "compacts at {point}k - {distance}k left",
         // O indicador do consumo, na segunda linha da barra: `{change}` vem de
         // quem chama, já com sinal e com o `%` (`−25%`). Compara o último dia
         // de trabalho fechado com a média dos sete dias de trabalho anteriores
@@ -245,8 +240,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("session.rs"),
             super::PREFIXES,
-            28,
-            0xe01c_2fbb_ce37_638e,
+            27,
+            0x36b3_38a2_6b26_490c,
         );
     }
 

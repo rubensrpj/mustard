@@ -25,15 +25,10 @@
 //!
 //! ```text
 //! <root>/
-//! ├── CLAUDE.md
 //! ├── settings.json
 //! ├── mustard.json
 //! ├── grain.db
-//! ├── pipeline-config.md
 //! ├── .cache/
-//! │   ├── detect.json
-//! │   ├── scan-dispatch.json
-//! │   └── knowledge-seen.json
 //! ├── .harness/
 //! ├── .metrics/
 //! ├── .agent-state/
@@ -51,20 +46,7 @@
 //!         ├── spec.ndjson
 //!         ├── spec.md
 //!         ├── spec.html
-//!         ├── meta.json
-//!         ├── wave-plan.md
-//!         ├── qa-report.json
-//!         ├── qa-report.html
-//!         ├── adr/
-//!         ├── .events/
-//!         ├── .blobs/
-//!         └── wave-N-{role}/
-//!             ├── spec.md
-//!             ├── meta.json
-//!             ├── diff.md
-//!             ├── prompt.md
-//!             ├── warnings.txt
-//!             └── qa-report.json
+//!         └── meta.json
 //! ```
 //!
 //! ## Inviolable safety contract
@@ -78,9 +60,6 @@
 //! - **Validated names.** [`ClaudePaths::for_spec`] rejects empty spec names,
 //!   `/` separators, and `..` traversal so a malformed user input cannot
 //!   escape the spec sub-tree.
-//! - **Validated wave slugs.** [`SpecPaths::for_wave`] enforces the
-//!   `wave-<digits>(-<lowercase-role>)?` shape so wave directories stay
-//!   uniform across the registry, the dashboard, and the QA gate.
 //! - **Idempotent.** Every accessor recomputes from the stored root each
 //!   call; identical inputs yield identical [`PathBuf`] outputs.
 
@@ -106,10 +85,6 @@ pub enum ClaudePathsError {
     /// A spec name contained `..` — traversal is forbidden.
     #[error("spec name contains traversal segment '..': {0:?}")]
     SpecNameTraversal(String),
-
-    /// A wave slug did not match `wave-<digits>(-<lowercase-role>)?`.
-    #[error("wave slug does not match wave-<n>[-role]: {0:?}")]
-    InvalidWaveSlug(String),
 }
 
 /// The canonical handle on a project's `.claude/` tree.
@@ -127,34 +102,18 @@ pub struct ClaudePaths {
 /// [`ClaudePaths::for_spec`].
 #[derive(Debug, Clone)]
 pub struct SpecPaths {
-    /// The owning [`ClaudePaths`] root, kept for nested constructors.
-    root: PathBuf,
     /// The spec directory itself (`<root>/.claude/spec/<name>/`).
     spec_dir: PathBuf,
-    /// The spec slug (`<name>`).
-    spec_name: String,
-}
-
-/// A handle on `<root>/.claude/spec/<name>/<wave-slug>/`. Build via
-/// [`SpecPaths::for_wave`].
-#[derive(Debug, Clone)]
-pub struct WavePaths {
-    /// The owning [`SpecPaths`], for chained accessors.
-    spec: SpecPaths,
-    /// The wave directory itself.
-    wave_dir: PathBuf,
-    /// The wave slug (`wave-1-rt` / `wave-2` / …).
-    wave_slug: String,
 }
 
 /// Top-level directory names under `<root>/.claude/`. A lista mora num lugar
 /// só para o semeador do projeto derivar dela as regras de exclusão da
 /// instalação privada, em vez de manter uma cópia à mão.
 ///
-/// `.pipeline-states` entra porque [`ClaudePaths::pipeline_states_dir`] a
-/// expõe como acessador de primeira classe: toda pasta alcançável por um
-/// método `&self` de `ClaudePaths` PRECISA aparecer aqui, ou o que a Mustard
-/// escreve nela fica visível no `git status` do cliente.
+/// Toda pasta alcançável por um método `&self` de `ClaudePaths` PRECISA
+/// aparecer aqui, ou o que a Mustard escreve nela fica visível no
+/// `git status` do cliente. `.pipeline-states` entra porque projetos
+/// antigos ainda a têm.
 const DOCUMENTED_DIRS: &[&str] = &[
     ".cache",
     ".harness",
@@ -252,12 +211,6 @@ impl ClaudePaths {
         }
     }
 
-    /// The project root that was passed to [`Self::for_project`].
-    #[must_use]
-    pub fn root(&self) -> &Path {
-        &self.root
-    }
-
     /// `<root>/.claude/` — the parent of every other accessor below.
     #[must_use]
     pub fn claude_dir(&self) -> PathBuf {
@@ -265,48 +218,6 @@ impl ClaudePaths {
     }
 
     // -- top-level directories -------------------------------------------
-
-    /// `<root>/.claude/.cache/` — Mustard-owned scratch JSON.
-    #[must_use]
-    pub fn cache_dir(&self) -> PathBuf {
-        self.claude_dir().join(".cache")
-    }
-
-    /// `<root>/.claude/.harness/` — harness event-bus working state.
-    #[must_use]
-    pub fn harness_dir(&self) -> PathBuf {
-        self.claude_dir().join(".harness")
-    }
-
-    /// `<root>/.claude/.metrics/` — telemetry rollups.
-    #[must_use]
-    pub fn metrics_dir(&self) -> PathBuf {
-        self.claude_dir().join(".metrics")
-    }
-
-    /// `<root>/.claude/.agent-state/` — per-agent durable state.
-    #[must_use]
-    pub fn agent_state_dir(&self) -> PathBuf {
-        self.claude_dir().join(".agent-state")
-    }
-
-    /// `<root>/.claude/commands/` — namespaced slash commands.
-    #[must_use]
-    pub fn commands_dir(&self) -> PathBuf {
-        self.claude_dir().join("commands")
-    }
-
-    /// `<root>/.claude/skills/` — foundation skills.
-    #[must_use]
-    pub fn skills_dir(&self) -> PathBuf {
-        self.claude_dir().join("skills")
-    }
-
-    /// `<root>/.claude/agent-memory/` — persistent agent memory files.
-    #[must_use]
-    pub fn agent_memory_dir(&self) -> PathBuf {
-        self.claude_dir().join("agent-memory")
-    }
 
     /// `<root>/.claude/spec/` — the parent of every per-spec directory.
     #[must_use]
@@ -342,56 +253,7 @@ impl ClaudePaths {
         self.pending_dir().join("ledger.json")
     }
 
-    /// `<root>/.claude/graph/` — graph artifacts (entity registry follow-up).
-    #[must_use]
-    pub fn graph_dir(&self) -> PathBuf {
-        self.claude_dir().join("graph")
-    }
-
-    /// `<root>/.claude/capabilities/` — durable capability docs
-    /// (`cap.{slug}.md`). Parent of every `.claude/capabilities/{slug}.md`
-    /// authored by `mustard-rt run capability create`.
-    #[must_use]
-    pub fn capabilities_dir(&self) -> PathBuf {
-        self.claude_dir().join("capabilities")
-    }
-
-    /// `<root>/.claude/.pipeline-states/` — legacy pipeline-state JSON
-    /// directory.
-    ///
-    /// **Note:** the per-wave / per-spec artefacts (`diff.md`, `prompt.md`,
-    /// `warnings.txt`, `qa-report.{json,html}`) have
-    /// moved into the per-spec / per-wave directories under [`Self::spec_dir`].
-    /// This accessor remains for the *pipeline-state JSON files themselves*
-    /// (`{spec}.json` markers).
-    /// Active pipeline-state tracking writes here today; future work may move
-    /// these to a per-spec destination.
-    #[must_use]
-    pub fn pipeline_states_dir(&self) -> PathBuf {
-        self.claude_dir().join(".pipeline-states")
-    }
-
-    /// `<root>/.claude/.pipeline-states/{spec}.json` — per-spec pipeline-state
-    /// marker file.
-    ///
-    /// See [`Self::pipeline_states_dir`] for the legacy-vs-future tradeoff.
-    #[must_use]
-    pub fn pipeline_state_file(&self, spec: &str) -> PathBuf {
-        self.pipeline_states_dir().join(format!("{spec}.json"))
-    }
-
     // -- root-level files ------------------------------------------------
-
-    /// `<root>/.claude/CLAUDE.md` — the project's own orchestrator file, when
-    /// it has one. **No longer seeded by `mustard init`**: the orchestrator
-    /// rules now live in `.claude/mustard/*.md` and are *injected* per the
-    /// `mustard.json#inject` declarations, so this file — if present — is
-    /// entirely the user's. The accessor stays because consumers still need
-    /// the canonical location (migration in `init`, prune keep-list, doctor).
-    #[must_use]
-    pub fn claude_md_path(&self) -> PathBuf {
-        self.claude_dir().join("CLAUDE.md")
-    }
 
     /// `<root>/.claude/settings.json` — hook wiring + permissions.
     #[must_use]
@@ -428,28 +290,6 @@ impl ClaudePaths {
         self.root.join("mustard.json")
     }
 
-    /// `<root>/.claude/pipeline-config.md` — long-form pipeline rules.
-    #[must_use]
-    pub fn pipeline_config_md_path(&self) -> PathBuf {
-        self.claude_dir().join("pipeline-config.md")
-    }
-
-    // -- cache files -----------------------------------------------------
-
-    /// `<root>/.claude/.cache/detect.json` — subproject-detection cache.
-    #[must_use]
-    #[cfg(test)]
-    pub(crate) fn detect_cache_path(&self) -> PathBuf {
-        self.cache_dir().join("detect.json")
-    }
-
-    /// `<root>/.claude/.cache/knowledge-seen.json` — knowledge ingestion
-    /// dedupe marker.
-    #[must_use]
-    pub fn knowledge_seen_path(&self) -> PathBuf {
-        self.cache_dir().join("knowledge-seen.json")
-    }
-
     // -- catalogs --------------------------------------------------------
 
     /// List of every top-level directory under `<root>/.claude/` that
@@ -481,54 +321,15 @@ impl ClaudePaths {
             return Err(ClaudePathsError::SpecNameTraversal(name.to_string()));
         }
         let spec_dir = self.spec_dir().join(name);
-        Ok(SpecPaths {
-            root: self.root.clone(),
-            spec_dir,
-            spec_name: name.to_string(),
-        })
-    }
-
-    /// Resolve `<root>/.claude/spec/<spec>/` through [`Self::for_project`] +
-    /// [`Self::for_spec`], falling back to [`Self::compose_unchecked`] when the
-    /// `.claude/.claude/` guard rejects `project` or `spec` fails slug validation.
-    ///
-    /// This folds the fail-open spec-dir resolution that the pipeline / event /
-    /// spec command families each open-coded — the
-    /// `for_project(..).and_then(for_spec).map(dir)
-    /// .unwrap_or_else(compose_unchecked.spec_dir().join(spec))` shape. Callers
-    /// that want the per-spec `.events/` directory append `.join(".events")`
-    /// (equivalently [`SpecPaths::events_dir`] on the happy path).
-    ///
-    /// **Fail-open callers only** — the fallback bypasses the guard exactly
-    /// as [`Self::compose_unchecked`] documents; production paths that must
-    /// surface a guard violation should call [`Self::for_project`] directly.
-    #[must_use]
-    pub fn spec_dir_or_unchecked(project: impl AsRef<Path>, spec: &str) -> PathBuf {
-        let project = project.as_ref();
-        Self::for_project(project)
-            .and_then(|p| p.for_spec(spec))
-            .map(|sp| sp.dir().to_path_buf())
-            .unwrap_or_else(|_| Self::compose_unchecked(project).spec_dir().join(spec))
+        Ok(SpecPaths { spec_dir })
     }
 }
 
 impl SpecPaths {
-    /// The owning project root.
-    #[must_use]
-    pub fn project_root(&self) -> &Path {
-        &self.root
-    }
-
     /// The spec directory itself.
     #[must_use]
     pub fn dir(&self) -> &Path {
         &self.spec_dir
-    }
-
-    /// The spec slug.
-    #[must_use]
-    pub fn name(&self) -> &str {
-        &self.spec_name
     }
 
     /// `<spec>/spec.ndjson` — the spec's event file, one event per line,
@@ -556,95 +357,6 @@ impl SpecPaths {
     pub fn meta_json_path(&self) -> PathBuf {
         self.spec_dir.join("meta.json")
     }
-
-    /// `<spec>/wave-plan.md` — top-level wave plan (when this spec is a
-    /// multi-wave epic).
-    #[must_use]
-    pub fn wave_plan_md_path(&self) -> PathBuf {
-        self.spec_dir.join("wave-plan.md")
-    }
-
-    /// `<spec>/.events/` — the per-spec NDJSON event log of the old format,
-    /// read until every spec lives in [`Self::spec_ndjson_path`].
-    #[must_use]
-    pub fn events_dir(&self) -> PathBuf {
-        self.spec_dir.join(".events")
-    }
-
-    /// `<spec>/qa-report.json` — aggregate (per-spec) QA report.
-    #[must_use]
-    pub fn qa_report_json_path(&self) -> PathBuf {
-        self.spec_dir.join("qa-report.json")
-    }
-
-    /// `<spec>/qa-report.html` — aggregate (per-spec) QA report rendered.
-    #[must_use]
-    pub fn qa_report_html_path(&self) -> PathBuf {
-        self.spec_dir.join("qa-report.html")
-    }
-
-    /// Build a [`WavePaths`] for `<spec>/<wave-slug>/`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ClaudePathsError::InvalidWaveSlug`] when `wave_slug` does
-    /// not match `wave-<digits>(-<lowercase-role>)?`.
-    pub fn for_wave(&self, wave_slug: &str) -> Result<WavePaths, ClaudePathsError> {
-        if !is_valid_wave_slug(wave_slug) {
-            return Err(ClaudePathsError::InvalidWaveSlug(wave_slug.to_string()));
-        }
-        let wave_dir = self.spec_dir.join(wave_slug);
-        Ok(WavePaths {
-            spec: self.clone(),
-            wave_dir,
-            wave_slug: wave_slug.to_string(),
-        })
-    }
-}
-
-impl WavePaths {
-    /// The owning [`SpecPaths`].
-    #[must_use]
-    pub fn spec(&self) -> &SpecPaths {
-        &self.spec
-    }
-
-    /// The wave directory itself.
-    #[must_use]
-    pub fn dir(&self) -> &Path {
-        &self.wave_dir
-    }
-
-    /// The wave slug.
-    #[must_use]
-    pub fn slug(&self) -> &str {
-        &self.wave_slug
-    }
-
-    /// `<wave>/spec.md` — per-wave spec narrative.
-    #[must_use]
-    pub fn spec_md_path(&self) -> PathBuf {
-        self.wave_dir.join("spec.md")
-    }
-
-    /// `<wave>/meta.json` — per-wave lifecycle metadata.
-    #[must_use]
-    pub fn meta_json_path(&self) -> PathBuf {
-        self.wave_dir.join("meta.json")
-    }
-
-    /// `<wave>/diff.md` — captured diff for this wave's edits.
-    #[must_use]
-    pub fn diff_md_path(&self) -> PathBuf {
-        self.wave_dir.join("diff.md")
-    }
-
-    /// `<wave>/qa-report.json` — per-wave QA report (distinct from the
-    /// per-spec aggregate at [`SpecPaths::qa_report_json_path`]).
-    #[must_use]
-    pub fn qa_report_json_path(&self) -> PathBuf {
-        self.wave_dir.join("qa-report.json")
-    }
 }
 
 // -- helpers ------------------------------------------------------------
@@ -663,39 +375,10 @@ fn violates_dot_claude_guard(path: &Path) -> bool {
     as_string.contains(".claude/.claude/") || as_string.ends_with(".claude/.claude")
 }
 
-/// Wave slugs are `wave-<digits>(-<lowercase-role>)?`. Examples:
-/// `wave-1`, `wave-2-rt`, `wave-12-mixed`.
-fn is_valid_wave_slug(slug: &str) -> bool {
-    // Hand-rolled to avoid pulling in `regex`.
-    let Some(rest) = slug.strip_prefix("wave-") else {
-        return false;
-    };
-    let (digits, tail) = rest
-        .find('-')
-        .map_or((rest, ""), |idx| (&rest[..idx], &rest[idx + 1..]));
-    if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit()) {
-        return false;
-    }
-    if tail.is_empty() {
-        // `wave-N` — fine, with no role.
-        return slug == format!("wave-{digits}");
-    }
-    // `tail` must be ASCII-lowercase + digits, no further hyphens.
-    tail.chars()
-        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::tempdir;
-
-    #[test]
-    fn for_project_sets_root() {
-        let dir = tempdir().unwrap();
-        let cp = ClaudePaths::for_project(dir.path()).unwrap();
-        assert_eq!(cp.root(), dir.path());
-    }
 
     #[test]
     fn compose_unchecked_skips_the_nested_claude_guard() {
@@ -708,9 +391,8 @@ mod tests {
         // the (already-nested) root — the consumer's job is to recognise
         // they are in the fallback branch.
         let cp = ClaudePaths::compose_unchecked(&bad);
-        assert_eq!(cp.root(), bad.as_path());
-        // Cache accessor still produces a deterministic shape.
-        assert_eq!(cp.cache_dir(), bad.join(".claude").join(".cache"));
+        // Spec accessor still produces a deterministic shape.
+        assert_eq!(cp.spec_dir(), bad.join(".claude").join("spec"));
     }
 
     #[test]
@@ -733,17 +415,6 @@ mod tests {
             err,
             ClaudePathsError::ForbiddenDotClaudeDotClaude(_)
         ));
-    }
-
-    #[test]
-    fn cache_dir_under_root_dot_cache() {
-        let dir = tempdir().unwrap();
-        let cp = ClaudePaths::for_project(dir.path()).unwrap();
-        assert_eq!(cp.cache_dir(), dir.path().join(".claude").join(".cache"));
-        assert_eq!(
-            cp.detect_cache_path(),
-            dir.path().join(".claude").join(".cache").join("detect.json")
-        );
     }
 
     #[test]
@@ -770,37 +441,6 @@ mod tests {
         // embedded `..`
         let err = cp.for_spec("foo..bar").unwrap_err();
         assert!(matches!(err, ClaudePathsError::SpecNameTraversal(_)));
-    }
-
-    #[test]
-    fn for_wave_rejects_malformed_slug() {
-        let dir = tempdir().unwrap();
-        let cp = ClaudePaths::for_project(dir.path()).unwrap();
-        let sp = cp.for_spec("my-spec").unwrap();
-        // missing `wave-` prefix
-        assert!(matches!(
-            sp.for_wave("1-rt"),
-            Err(ClaudePathsError::InvalidWaveSlug(_))
-        ));
-        // missing digits
-        assert!(matches!(
-            sp.for_wave("wave-"),
-            Err(ClaudePathsError::InvalidWaveSlug(_))
-        ));
-        // non-digit number
-        assert!(matches!(
-            sp.for_wave("wave-X-rt"),
-            Err(ClaudePathsError::InvalidWaveSlug(_))
-        ));
-        // uppercase role
-        assert!(matches!(
-            sp.for_wave("wave-1-RT"),
-            Err(ClaudePathsError::InvalidWaveSlug(_))
-        ));
-        // valid cases — must succeed
-        assert!(sp.for_wave("wave-1").is_ok());
-        assert!(sp.for_wave("wave-2-rt").is_ok());
-        assert!(sp.for_wave("wave-12-mixed").is_ok());
     }
 
     #[test]
@@ -842,19 +482,7 @@ mod tests {
     }
 
     #[test]
-    fn paths_are_idempotent() {
-        let dir = tempdir().unwrap();
-        let cp = ClaudePaths::for_project(dir.path()).unwrap();
-        assert_eq!(cp.cache_dir(), cp.cache_dir());
-        assert_eq!(cp.claude_md_path(), cp.claude_md_path());
-        let sp = cp.for_spec("my-spec").unwrap();
-        assert_eq!(sp.spec_md_path(), sp.spec_md_path());
-        let wp = sp.for_wave("wave-1-rt").unwrap();
-        assert_eq!(wp.diff_md_path(), wp.diff_md_path());
-    }
-
-    #[test]
-    fn spec_and_wave_paths_use_canonical_layout() {
+    fn spec_paths_use_canonical_layout() {
         let dir = tempdir().unwrap();
         let cp = ClaudePaths::for_project(dir.path()).unwrap();
         let sp = cp.for_spec("2026-05-26-claude-paths").unwrap();
@@ -865,45 +493,5 @@ mod tests {
         assert_eq!(sp.dir(), dir.path().join(".claude").join("spec").join("2026-05-26-claude-paths"));
         assert!(sp.spec_md_path().ends_with("spec.md"));
         assert!(sp.meta_json_path().ends_with("meta.json"));
-        assert!(sp.wave_plan_md_path().ends_with("wave-plan.md"));
-        assert!(sp.events_dir().ends_with(".events"));
-        let wp = sp.for_wave("wave-1-rt").unwrap();
-        assert!(wp.diff_md_path().ends_with("diff.md"));
-        assert!(wp.qa_report_json_path().ends_with("qa-report.json"));
-    }
-
-    #[test]
-    fn spec_dir_or_unchecked_matches_the_happy_path() {
-        let dir = tempdir().unwrap();
-        // A valid root + slug resolves to exactly `for_spec(..).dir()`.
-        let cp = ClaudePaths::for_project(dir.path()).unwrap();
-        let want = cp.for_spec("2026-05-26-x").unwrap().dir().to_path_buf();
-        assert_eq!(
-            ClaudePaths::spec_dir_or_unchecked(dir.path(), "2026-05-26-x"),
-            want
-        );
-        // The `.events/` composition the event/spec callers use.
-        assert_eq!(
-            ClaudePaths::spec_dir_or_unchecked(dir.path(), "2026-05-26-x").join(".events"),
-            cp.for_spec("2026-05-26-x").unwrap().events_dir()
-        );
-    }
-
-    #[test]
-    fn spec_dir_or_unchecked_falls_back_when_guard_rejects() {
-        let dir = tempdir().unwrap();
-        // A `.claude`-terminal root fails the `.claude/.claude/` guard, so the resolver falls
-        // back to the unchecked composition rather than panicking or erroring.
-        let bad = dir.path().join(".claude");
-        assert_eq!(
-            ClaudePaths::spec_dir_or_unchecked(&bad, "some-spec"),
-            ClaudePaths::compose_unchecked(&bad).spec_dir().join("some-spec")
-        );
-        // A slug that fails `for_spec` validation (`..` traversal) also folds to
-        // the fallback branch — no error surfaces to the fail-open caller.
-        assert_eq!(
-            ClaudePaths::spec_dir_or_unchecked(dir.path(), ".."),
-            ClaudePaths::compose_unchecked(dir.path()).spec_dir().join("..")
-        );
     }
 }

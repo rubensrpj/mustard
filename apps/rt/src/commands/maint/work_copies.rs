@@ -557,7 +557,8 @@ mod tests {
         let old = root.join(".claude").join("worktrees").join("mustard-velha-7");
         for path in [&slot, &old] {
             copy(root, path);
-            std::fs::write(path.join("depois.txt"), format!("código de {}", path.display())).unwrap();
+            std::fs::write(path.join("depois.txt"), format!("código de {}", crate::shared::paths::canonical(&path.to_string_lossy())))
+                .unwrap();
         }
 
         let applied = clean(root, true).expect("um projeto git");
@@ -567,7 +568,7 @@ mod tests {
         for kept in &applied.code_kept {
             assert_eq!(kept.files, vec!["depois.txt".to_string()], "{kept:?}");
             assert_eq!(kept.restore, format!("git cherry-pick --no-commit {}", kept.refname), "{kept:?}");
-            let shown_copy = kept.copy.clone();
+            let shown_copy = crate::shared::paths::canonical(&kept.copy);
             let out = std::process::Command::new("git")
                 .args(["show", &format!("{}:depois.txt", kept.refname)])
                 .current_dir(root)

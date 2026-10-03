@@ -203,8 +203,7 @@ fn is_pattern(path: &str) -> bool {
     path.contains(['*', '?', '['])
 }
 
-/// `true` quando `path` é o curinga da árvore inteira — só estrelas, como o
-/// `**` que a conversão da spec antiga grava na tarefa sem arquivo conhecido.
+/// `true` quando `path` é o curinga da árvore inteira — só estrelas, como `**`.
 /// É a mesma leitura do "vale para todo arquivo" do `applies_to`.
 pub(crate) fn is_whole_tree(path: &str) -> bool {
     !path.is_empty() && path.chars().all(|c| c == '*')

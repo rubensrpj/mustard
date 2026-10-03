@@ -299,8 +299,8 @@ mod tests {
 
     #[test]
     fn a_qualified_or_called_name_is_checked_by_its_last_segment() {
-        assert_eq!(cited_names("`io::citation::check_at` e `run()` e `Finding::NoMap()`"), vec![
-            "check_at", "run", "NoMap"
+        assert_eq!(cited_names("`io::citation::citation_roots` e `run()` e `Finding::NoMap()`"), vec![
+            "citation_roots", "run", "NoMap"
         ]);
         assert_eq!(check(&world(), "src/b.rs:7", "chama `commands::run()`"), Vec::new());
         assert_eq!(check(&world(), "src/b.rs:7", "chama `a::SpecLog`"), vec![Finding::NameElsewhere {

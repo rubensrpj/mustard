@@ -113,8 +113,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("map.missing_argument", Locale::PtBr) => "A pergunta `{question}` precisa de `{flag}`.",
         ("map.missing_argument", Locale::EnUs) => "The `{question}` question needs `{flag}`.",
-        ("map.skill_unreadable", Locale::PtBr) => "A skill `{path}` não pôde ser lida ({detail}).",
-        ("map.skill_unreadable", Locale::EnUs) => "The skill `{path}` could not be read ({detail}).",
         ("map.skill_missing_path", Locale::PtBr) => {
             "A skill cita caminhos que não existem: {paths}. Corrija o caminho ou tire a citação."
         }
@@ -459,8 +457,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("map.rs"),
             super::PREFIXES,
-            80,
-            0xa6a8_7e20_fdc1_8247,
+            79,
+            0xad88_f456_ff2e_dc6e,
         );
     }
 
@@ -712,7 +710,6 @@ mod tests {
             ("map.changed_in_copy", &["{name}", "{file}", "{line}"][..]),
             ("map.changed_in_copy_range", &["{name}", "{file}", "{first}", "{last}"][..]),
             ("map.missing_argument", &["{question}", "{flag}"][..]),
-            ("map.skill_unreadable", &["{path}", "{detail}"][..]),
             ("map.skill_missing_path", &["{paths}"][..]),
             ("map.skill_too_long", &["{lines}", "{max}"][..]),
             ("map.no_target", &[][..]),

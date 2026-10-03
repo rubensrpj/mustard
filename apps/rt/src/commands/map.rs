@@ -870,15 +870,6 @@ fn examples(
     Ok(report)
 }
 
-/// Os arquivos que o mapa sugere para uma tarefa descrita em palavras, do
-/// mais forte para o menos forte, pelo índice de busca do mapa. Vazio quando
-/// não há mapa gravado ou quando nada casa: quem pergunta decide o que fazer
-/// com a lista, porque o mapa não preenche a tarefa sozinho. A busca corta as
-/// palavras nas línguas `languages`.
-pub(crate) fn suggested_files(root: &Path, task: &str, limit: usize, languages: &Languages) -> Vec<String> {
-    map_search::search(root, task, languages, limit).unwrap_or_default().into_iter().map(|found| found.path).collect()
-}
-
 /// A história de cada declaração de `--name` na branch de partida (só a do
 /// arquivo de `--file`, quando ele vem): o arquivo e a linha, quantas
 /// mudanças a base tem dela fora as só de forma e os commits mais novos, do
@@ -1251,15 +1242,6 @@ mod tests {
         let report = answered(&opts);
         assert_eq!(report["ok"], json!(true), "{report}");
         assert_eq!(report["pieces"][0]["path"], json!("src/pedido.rs"), "{report}");
-    }
-
-    #[test]
-    fn suggested_files_come_from_a_map_with_a_column_they_do_not_read_in_the_wrong_type() {
-        let dir = tempdir().unwrap();
-        store::write_text(dir.path(), WRONG_TYPE).unwrap();
-        assert!(store::read(dir.path()).is_err(), "the whole map does not read");
-        let languages = Languages::new(["pt-BR", "en-US"]);
-        assert_eq!(suggested_files(dir.path(), "buscar pedido", 3, &languages), ["src/pedido.rs"]);
     }
 
     #[test]
@@ -3264,7 +3246,7 @@ mod tests {
     }
 
     /// Só a busca por assunto monta o filtro: nenhuma outra pergunta do mapa
-    /// o pede, e os arquivos sugeridos à rodada e ao plano vêm do banco.
+    /// o pede.
     #[test]
     fn only_the_search_question_assembles_the_filter() {
         let dir = tempdir().unwrap();
@@ -3280,11 +3262,6 @@ mod tests {
         }
         searched(&search_opts(dir.path(), "pay", None, None), &counting);
         assert_eq!(assembled.get(), 1);
-
-        let languages = crate::commands::spec_events::project(dir.path()).languages;
-        let bank: Vec<String> =
-            map_search::search(dir.path(), "gravar pagamento", &languages, 3).unwrap().into_iter().map(|f| f.path).collect();
-        assert_eq!(suggested_files(dir.path(), "gravar pagamento", 3, &languages), bank);
     }
 
     /// A lista inteira do banco vai ao filtro, sem teto: 120 funções que casam

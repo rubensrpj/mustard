@@ -162,7 +162,8 @@ impl MapDb {
     }
 
     /// A versão com que o bloco `name` está gravado; `None` quando ele falta.
-    pub fn version(&self, name: &str) -> Result<Option<u32>> {
+    #[cfg(test)]
+    pub(crate) fn version(&self, name: &str) -> Result<Option<u32>> {
         stored_version(&self.conn, name)
     }
 

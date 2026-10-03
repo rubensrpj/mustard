@@ -1,8 +1,7 @@
 //! A busca da skill que serve para o texto de uma tarefa. Um lugar só: o
-//! plano usa para achar a skill que já existe e serve (`best_skill`), e a
-//! rodada usa, antes do envio, para sugerir ao orquestrador todas as que
-//! casam (`matching_skills`) e para mostrar o "quando usar" de todas as
-//! skills da área da tarefa (`skills_on_disk`).
+//! plano usa para achar a skill que já existe e serve (`best_skill`, pelas
+//! que casam, `matching_skills`) sobre o "quando usar" das skills da área das
+//! tarefas (`skills_on_disk`).
 //!
 //! Sem disco nenhum aqui além da leitura das próprias skills: a regra da
 //! busca por palavras mora em `domain::search`.
@@ -14,10 +13,6 @@ use mustard_core::domain::search;
 use mustard_core::domain::spec_events::{search_field, SpecEvent};
 
 use super::plan::declared_files;
-
-/// Quantos arquivos parecidos o mapa sugere, para a recusa da tarefa sem
-/// arquivo e para a escolha antes do envio.
-pub(crate) const MAP_SUGGESTIONS: usize = 3;
 
 /// As skills que existem no disco, pelo nome e pelo "quando usar" delas, tal
 /// como a descrição escreve — pronto para mostrar ao orquestrador e para a

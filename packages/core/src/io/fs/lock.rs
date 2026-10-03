@@ -96,7 +96,7 @@ impl LockedFile {
     ///
     /// [`Error::Io`] quando a escrita falha.
     pub fn append_line(&mut self, line: &str) -> Result<()> {
-        Ok(append_or_rollback(&mut self.file, line, true)?)
+        Ok(append_or_rollback(&mut self.file, line)?)
     }
 
     /// Troca o conteúdo inteiro por `contents`, pelo mesmo manipulador. Não é
@@ -125,7 +125,7 @@ impl Drop for LockedFile {
 /// O que a gravação de uma linha pede do destino: escrever, medir o fim,
 /// cortar até um tamanho e confirmar no disco. O arquivo de verdade cumpre
 /// tudo; o teste põe no lugar um destino que enche de propósito.
-pub(super) trait Appendable: Write + Seek {
+trait Appendable: Write + Seek {
     /// Corta o destino em `len` bytes.
     fn shrink_to(&mut self, len: u64) -> std::io::Result<()>;
 
@@ -144,15 +144,15 @@ impl Appendable for File {
 }
 
 /// Acrescenta `line` e um `\n` ao fim de `target`, num só bloco, e deixa o
-/// arquivo como estava se a escrita (ou a confirmação, com `durable`) falha:
-/// o disco cheio no meio da linha não deixa meia linha para trás. O erro que
-/// volta é o da escrita; se o corte também falha, ele não o esconde.
-pub(super) fn append_or_rollback<T: Appendable>(target: &mut T, line: &str, durable: bool) -> std::io::Result<()> {
+/// arquivo como estava se a escrita ou a confirmação falha: o disco cheio no
+/// meio da linha não deixa meia linha para trás. O erro que volta é o da
+/// escrita; se o corte também falha, ele não o esconde.
+fn append_or_rollback<T: Appendable>(target: &mut T, line: &str) -> std::io::Result<()> {
     let start = target.seek(SeekFrom::End(0))?;
     let mut bytes = Vec::with_capacity(line.len() + 1);
     bytes.extend_from_slice(line.as_bytes());
     bytes.push(b'\n');
-    let written = target.write_all(&bytes).and_then(|()| if durable { target.sync() } else { Ok(()) });
+    let written = target.write_all(&bytes).and_then(|()| target.sync());
     if let Err(err) = written {
         let _ = target.shrink_to(start);
         return Err(err);
@@ -315,7 +315,7 @@ mod tests {
     #[test]
     fn a_line_cut_by_a_full_disk_leaves_the_file_as_it_was() {
         let mut target = Full::new("um\ndois\n", 5);
-        let err = append_or_rollback(&mut target, "tres-quatro", true).unwrap_err();
+        let err = append_or_rollback(&mut target, "tres-quatro").unwrap_err();
         assert_eq!(err.kind(), ErrorKind::StorageFull);
         assert_eq!(target.writes, [5], "five bytes went in before the disk filled");
         assert_eq!(target.data.len(), 8);
@@ -328,14 +328,9 @@ mod tests {
     fn a_failed_confirmation_takes_the_written_line_back() {
         let mut target = Full::new("um\n", 100);
         target.sync_fails = true;
-        let err = append_or_rollback(&mut target, "dois", true).unwrap_err();
+        let err = append_or_rollback(&mut target, "dois").unwrap_err();
         assert_eq!(err.kind(), ErrorKind::StorageFull);
         assert_eq!(target.text(), "um\n");
-        // Sem pedir a confirmação, o mesmo destino grava a linha e não volta atrás.
-        let mut loose = Full::new("um\n", 100);
-        loose.sync_fails = true;
-        append_or_rollback(&mut loose, "dois", false).unwrap();
-        assert_eq!(loose.text(), "um\ndois\n");
     }
 
     /// Se o corte também falha, o erro que volta continua sendo o da escrita.
@@ -343,7 +338,7 @@ mod tests {
     fn a_failed_cut_does_not_hide_the_write_error() {
         let mut target = Full::new("um\n", 2);
         target.shrink_fails = true;
-        let err = append_or_rollback(&mut target, "dois", true).unwrap_err();
+        let err = append_or_rollback(&mut target, "dois").unwrap_err();
         assert_eq!(err.kind(), ErrorKind::StorageFull, "not the cut's PermissionDenied");
     }
 
@@ -351,7 +346,7 @@ mod tests {
     #[test]
     fn the_line_and_its_newline_go_out_in_one_write() {
         let mut target = Full::new("", 100);
-        append_or_rollback(&mut target, "abcdef", false).unwrap();
+        append_or_rollback(&mut target, "abcdef").unwrap();
         assert_eq!(target.writes, [7]);
         assert_eq!(target.text(), "abcdef\n");
     }
@@ -367,5 +362,38 @@ mod tests {
             Err(Error::Io(e)) => assert_eq!(e.kind(), ErrorKind::StorageFull),
             other => panic!("expected the disk error, got {other:?}"),
         }
+    }
+
+    /// Uma gravação pela trava que esbarra no limite de tamanho de arquivo do
+    /// processo (o `ulimit -f`) grava os 40 bytes que cabem e falha: o arquivo
+    /// tem que terminar com o tamanho e o conteúdo de antes. O limite vale para
+    /// o processo inteiro, então o teste roda a si mesmo num filho com ele.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_locked_append_cut_by_the_size_limit_leaves_the_file_as_it_was() {
+        const FILE: &str = "MUSTARD_APPEND_LIMIT_FILE";
+        if let Ok(path) = std::env::var(FILE) {
+            let mut file = LockedFile::exclusive(Path::new(&path)).unwrap();
+            let err = file.append_line(&"x".repeat(100)).unwrap_err();
+            assert!(matches!(err, Error::Io(_)), "{err:?}");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.jsonl");
+        // 64 KiB de limite; o arquivo já tem 40 bytes a menos que isso.
+        let before = format!("{}\n", "a".repeat(64 * 1024 - 41));
+        std::fs::write(&path, &before).unwrap();
+        let test = "a_locked_append_cut_by_the_size_limit_leaves_the_file_as_it_was";
+        let out = std::process::Command::new("bash")
+            .args(["-c", "trap '' XFSZ; ulimit -f 64 && exec \"$0\" \"$@\""])
+            .arg(std::env::current_exe().unwrap())
+            .args([test, "--test-threads=1"])
+            .env(FILE, &path)
+            .output()
+            .expect("bash runs the test binary under the size limit");
+        assert!(out.status.success(), "the child failed: {}", String::from_utf8_lossy(&out.stdout));
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(after.len(), 64 * 1024 - 40, "same size as before");
+        assert_eq!(after, before, "same content as before");
     }
 }

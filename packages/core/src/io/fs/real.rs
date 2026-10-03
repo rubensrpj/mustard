@@ -4,14 +4,13 @@
 //! This is the **only** module in `mustard-core` that calls `std::fs`
 //! directly. Every other call site routes through the [`fs`](super) free
 //! functions or a `&dyn Fs`, so the cross-cutting policy (fail-open `NotFound`
-//! mapping, atomic writes) lives in exactly one place. The atomic-write and
-//! append primitives were lifted verbatim from the former `store::fs` module,
-//! which now re-exports them from here.
+//! mapping, atomic writes) lives in exactly one place. The atomic-write
+//! primitive was lifted verbatim from the former `store::fs` module, which now
+//! re-exports it from here.
 
-use super::lock::append_or_rollback;
 use super::{DirEntry, Fs};
 use crate::platform::error::{Error, Result};
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -19,16 +18,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// The real, `std::fs`-backed filesystem. Zero-sized and stateless.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RealFs;
-
-/// Abre `path` para acrescentar linhas, criando o arquivo quando falta, com o
-/// direito de escrever dados em qualquer posição. Abrir só com `append` tira
-/// esse direito no Windows, e o corte de volta (`set_len`) de uma linha que
-/// falhou no meio deixaria de funcionar. O fim do arquivo vem do `seek` de
-/// quem grava; a posição atômica de fim entre processos não existe aqui, e
-/// quem precisa de exclusão entre processos usa o `LockedFile`.
-fn open_for_append(path: &Path) -> std::io::Result<File> {
-    OpenOptions::new().create(true).write(true).truncate(false).open(path)
-}
 
 /// Map a raw [`std::io::Error`] to the crate error, keeping `NotFound` distinct
 /// so callers can fail open on absence without swallowing real failures.
@@ -108,14 +97,6 @@ impl Fs for RealFs {
         Ok(())
     }
 
-    fn append_line(&self, path: &Path, line: &str) -> Result<()> {
-        ensure_parent_dir(path)?;
-        let mut file = open_for_append(path)?;
-        // A linha e o `\n` saem num bloco só; se o disco enche no meio, o
-        // arquivo volta ao tamanho de antes em vez de ficar com meia linha.
-        Ok(append_or_rollback(&mut file, line, false)?)
-    }
-
     fn exists(&self, path: &Path) -> bool {
         path.exists()
     }
@@ -150,10 +131,6 @@ impl Fs for RealFs {
         meta.modified().map_err(Error::from)
     }
 
-    fn rename(&self, from: &Path, to: &Path) -> Result<()> {
-        fs::rename(from, to).map_err(|e| map_io(from, e))
-    }
-
     fn remove_dir_all(&self, path: &Path) -> Result<()> {
         match fs::remove_dir_all(path) {
             Ok(()) => Ok(()),
@@ -164,10 +141,6 @@ impl Fs for RealFs {
 
     fn remove_dir(&self, path: &Path) -> Result<()> {
         fs::remove_dir(path).map_err(|e| map_io(path, e))
-    }
-
-    fn canonicalize(&self, path: &Path) -> Result<PathBuf> {
-        fs::canonicalize(path).map_err(|e| map_io(path, e))
     }
 }
 
@@ -216,31 +189,6 @@ mod tests {
         assert_eq!(entries[0].file_name, "state.json");
     }
 
-    #[test]
-    fn append_line_adds_trailing_newline() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("events.jsonl");
-        fs().append_line(&path, "{\"a\":1}").unwrap();
-        fs().append_line(&path, "{\"a\":2}").unwrap();
-        assert_eq!(fs().read_to_string(&path).unwrap(), "{\"a\":1}\n{\"a\":2}\n");
-    }
-
-    /// O manipulador de `append_line` grava em qualquer posição, não só no fim:
-    /// é o direito de escrever dados que o corte de volta (`set_len`) exige, e
-    /// no Windows um arquivo aberto só para acrescentar não o tem.
-    #[test]
-    fn the_append_handle_can_write_over_existing_bytes() {
-        use std::io::{Seek, SeekFrom};
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("events.jsonl");
-        std::fs::write(&path, "abc\n").unwrap();
-        let mut file = open_for_append(&path).unwrap();
-        file.seek(SeekFrom::Start(0)).unwrap();
-        file.write_all(b"Z").unwrap();
-        drop(file);
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "Zbc\n");
-    }
-
     /// Sem a posição atômica de fim, quem grava de vários lados no mesmo arquivo
     /// se exclui pela trava do `LockedFile`: com ela, nenhuma linha se perde
     /// nem se mistura com a do vizinho.
@@ -268,38 +216,6 @@ mod tests {
         lines.sort_unstable();
         lines.dedup();
         assert_eq!(lines.len(), THREADS * LINES, "no line was overwritten by another");
-    }
-
-    /// Um `append_line` que esbarra no limite de tamanho de arquivo do
-    /// processo (o `ulimit -f`) grava os 40 bytes que cabem e falha: o arquivo
-    /// tem que terminar com o tamanho e o conteúdo de antes. O limite vale para
-    /// o processo inteiro, então o teste roda a si mesmo num filho com ele.
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn a_real_append_cut_by_the_size_limit_leaves_the_file_as_it_was() {
-        const FILE: &str = "MUSTARD_APPEND_LIMIT_FILE";
-        if let Ok(path) = std::env::var(FILE) {
-            let err = fs().append_line(Path::new(&path), &"x".repeat(100)).unwrap_err();
-            assert!(matches!(err, Error::Io(_)), "{err:?}");
-            return;
-        }
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("events.jsonl");
-        // 64 KiB de limite; o arquivo já tem 40 bytes a menos que isso.
-        let before = format!("{}\n", "a".repeat(64 * 1024 - 41));
-        std::fs::write(&path, &before).unwrap();
-        let test = "a_real_append_cut_by_the_size_limit_leaves_the_file_as_it_was";
-        let out = std::process::Command::new("bash")
-            .args(["-c", "trap '' XFSZ; ulimit -f 64 && exec \"$0\" \"$@\""])
-            .arg(std::env::current_exe().unwrap())
-            .args([test, "--test-threads=1"])
-            .env(FILE, &path)
-            .output()
-            .expect("bash runs the test binary under the size limit");
-        assert!(out.status.success(), "the child failed: {}", String::from_utf8_lossy(&out.stdout));
-        let after = std::fs::read_to_string(&path).unwrap();
-        assert_eq!(after.len(), 64 * 1024 - 40, "same size as before");
-        assert_eq!(after, before, "same content as before");
     }
 
     #[test]
@@ -357,28 +273,6 @@ mod tests {
     }
 
     #[test]
-    fn rename_moves_file() {
-        let dir = tempdir().unwrap();
-        let src = dir.path().join("src.txt");
-        let dst = dir.path().join("dst.txt");
-        fs().write_atomic(&src, b"payload").unwrap();
-        fs().rename(&src, &dst).unwrap();
-        assert!(!fs().exists(&src));
-        assert_eq!(fs().read_to_string(&dst).unwrap(), "payload");
-    }
-
-    #[test]
-    fn rename_missing_is_not_found() {
-        let dir = tempdir().unwrap();
-        let src = dir.path().join("ghost.txt");
-        let dst = dir.path().join("nowhere.txt");
-        match fs().rename(&src, &dst) {
-            Err(Error::NotFound(_)) => {}
-            other => panic!("expected NotFound, got {other:?}"),
-        }
-    }
-
-    #[test]
     fn remove_dir_all_removes_tree() {
         let dir = tempdir().unwrap();
         let root = dir.path().join("tree");
@@ -408,24 +302,6 @@ mod tests {
     fn remove_dir_missing_is_not_found() {
         let dir = tempdir().unwrap();
         match fs().remove_dir(&dir.path().join("ghost")) {
-            Err(Error::NotFound(_)) => {}
-            other => panic!("expected NotFound, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn canonicalize_resolves_existing_path() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("canon.txt");
-        fs().write_atomic(&path, b"c").unwrap();
-        let canon = fs().canonicalize(&path).unwrap();
-        assert!(canon.is_absolute());
-    }
-
-    #[test]
-    fn canonicalize_missing_is_not_found() {
-        let dir = tempdir().unwrap();
-        match fs().canonicalize(&dir.path().join("absent")) {
             Err(Error::NotFound(_)) => {}
             other => panic!("expected NotFound, got {other:?}"),
         }

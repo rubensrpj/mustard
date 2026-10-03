@@ -495,7 +495,7 @@ pub(super) fn run_round_with_mine(
     caller: Caller<'_>,
     mine: &dyn Fn(&Path, &Path) -> mustard_core::platform::error::Result<mustard_core::domain::scan::ScanReport>,
 ) -> Result<Value, RoundRefusal> {
-    let entry = enter_round(opts, root, lang, caller.session)?;
+    let entry = enter_round(opts, root, caller.session)?;
     run_entered_round(opts, root, lang, caller, mine, entry)
 }
 
@@ -510,11 +510,11 @@ pub(super) struct Entry {
 }
 
 /// A entrada da rodada: acha a spec, lê o arquivo dela, recusa a spec que
-/// não pode rodar e passa ao backlog as ondas desenhadas à mão. A leitura que
+/// não pode rodar. A leitura que
 /// sai daqui é a de entrada, que o resto da rodada ([`run_entered_round`])
 /// compara com a feita já com a trava presa. A sessão (`session`) acha a spec
 /// atual quando o pedido não diz qual.
-pub(super) fn enter_round(opts: &RoundOpts, root: &Path, lang: Locale, session: Option<&str>) -> Result<Entry, RoundRefusal> {
+pub(super) fn enter_round(opts: &RoundOpts, root: &Path, session: Option<&str>) -> Result<Entry, RoundRefusal> {
     let refuse = RoundRefusal::Refused;
     let spec = match opts.spec.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         Some(spec) => spec.to_string(),
@@ -555,20 +555,6 @@ pub(super) fn enter_round(opts: &RoundOpts, root: &Path, lang: Locale, session: 
         });
     }
 
-    // A spec antiga passa para o backlog antes de qualquer leitura das ondas:
-    // a onda desenhada à mão que nunca saiu sai da leitura, e as tarefas dela
-    // entram no backlog. Numa spec já convertida nada é gravado, e a leitura
-    // segue a mesma.
-    let log = if super::convert::convert_hand_waves(&opts.root, root, &spec, lang)
-        .map_err(RoundRefusal::Refused)?
-        .is_empty()
-    {
-        log
-    } else {
-        store::read(&path)
-            .map_err(RoundRefusal::Refused)?
-            .ok_or_else(|| RoundRefusal::Refused(Refusal::NoSpecFile { spec: spec.clone() }))?
-    };
     Ok(Entry { spec, path, log, phase })
 }
 

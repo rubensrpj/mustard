@@ -950,10 +950,7 @@ struct CheckedReport {
 /// a onda enviada antes de a pasta mudar volta da cópia onde nasceu.
 pub(super) fn own_copy_relative(log: &SpecLog, wave: u64, file: &str) -> String {
     let Some(copy) = wave_prompt::recorded_copy(log, wave) else { return file.to_string() };
-    file.strip_prefix(copy.path.as_str())
-        .filter(|rest| rest.is_empty() || rest.starts_with('/'))
-        .map(|rest| rest.trim_start_matches('/').to_string())
-        .unwrap_or_else(|| file.to_string())
+    crate::shared::paths::below(&copy.path, file).unwrap_or_else(|| file.to_string())
 }
 
 /// Monta o que voltou e passa cada gravação que virá — cada veredito, cada
@@ -1227,6 +1224,7 @@ mod tests {
     use crate::commands::flow::round::leftovers::leftover_task;
     use crate::commands::flow::round::queue::{return_with_an_undone_task, task_now, UndoneReturn};
     use crate::commands::flow::round::backlog::dispatch_backlog;
+    use crate::shared::paths::same_place;
     use crate::commands::flow::round::queue::{max_parallel, waves_to_redo};
     use crate::commands::flow::round::usage::tests::{answer_line, instant, platform_file, request_line, MODEL};
 
@@ -5065,12 +5063,33 @@ mod tests {
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let copy_of = |wave: u64| mustard_core::io::wave_prompt::recorded_copy(&log, wave).map(|copy| copy.path);
         assert_ne!(copy_of(3), copy_of(2), "a onda nova não recebe a cópia da entrega em conflito");
-        assert_eq!(copy_of(3), Some(slot_of(root, 1).to_string_lossy().to_string()), "sai na vaga livre: {out}");
+        assert!(copy_of(3).is_some_and(|copy| same_place(&copy, &slot_of(root, 1).to_string_lossy())), "sai na vaga livre: {out}");
         let held = super::super::held_slots(root, "x", &log);
         assert!(
             held.contains(&mustard_core::io::wave_prompt::shown(&slot_of(root, 2))),
             "a vaga da entrega em conflito segue presa: {held:?}"
         );
+    }
+
+    /// A cópia gravada no envio e o caminho que a onda entrega valem pelo lugar
+    /// que nomeiam, escritos como o Windows os escreve: a entrega por dentro da
+    /// cópia vira o caminho do repositório, e duas ondas que gravaram a mesma
+    /// pasta de jeitos diferentes seguram a mesma cópia.
+    #[test]
+    fn a_copy_and_a_delivered_path_are_the_same_place_written_the_way_windows_writes_them() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[])]);
+        seed_send_with_copy(root, 1, "C:/Users/runner/copias/x/a");
+        seed_send_with_copy(root, 2, r"\\?\c:\users\Runner\copias\x\a\");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        for file in [r"C:\Users\runner\copias\x\a\src\a.rs", "c:/users/RUNNER/copias/x/./a/src/a.rs"] {
+            assert_eq!(own_copy_relative(&log, 1, file), "src/a.rs", "{file}");
+        }
+        assert_eq!(own_copy_relative(&log, 1, "C:/Users/runner/copias/x/ab/src/a.rs"), "C:/Users/runner/copias/x/ab/src/a.rs");
+        assert_eq!(own_copy_relative(&log, 1, "src/a.rs"), "src/a.rs");
+        let sharing = super::super::slots::sharing_copy(&log, [1, 2]);
+        assert_eq!(sharing, std::collections::BTreeSet::from([1, 2]), "a mesma pasta, escrita de dois jeitos");
     }
 
     /// A onda que voltou, e cujo plano mudou depois, segue com a cópia e a
@@ -5152,7 +5171,7 @@ mod tests {
         assert_eq!(sent, vec![1, 3], "{again}");
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let copy_of = |wave: u64| mustard_core::io::wave_prompt::recorded_copy(&log, wave).map(|copy| copy.path);
-        assert_eq!(copy_of(1), Some(slot_of(root, 1).to_string_lossy().to_string()), "a onda 1 volta à cópia dela: {again}");
+        assert!(copy_of(1).is_some_and(|copy| same_place(&copy, &slot_of(root, 1).to_string_lossy())), "a onda 1 volta à cópia dela: {again}");
         assert_ne!(copy_of(3), copy_of(1), "{again}");
         assert_eq!(std::fs::read_to_string(slot_of(root, 1).join("src/a.rs")).unwrap(), work, "{again}");
         assert!(kept_refs(root).is_empty(), "nada foi limpo: {again}");
@@ -5197,7 +5216,7 @@ mod tests {
         assert_eq!(waves_in(&out, "dispatch"), vec![2], "só a onda 2 sai, na vaga que já é dela: {out}");
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let copy_of = |wave: u64| mustard_core::io::wave_prompt::recorded_copy(&log, wave).map(|copy| copy.path);
-        assert_eq!(copy_of(2), Some(slot_of(root, 2).to_string_lossy().to_string()), "{out}");
+        assert!(copy_of(2).is_some_and(|copy| same_place(&copy, &slot_of(root, 2).to_string_lossy())), "{out}");
         assert_eq!(copy_of(3), None, "a onda 3 não recebe cópia nenhuma: {out}");
         assert_eq!(std::fs::read_to_string(slot_of(root, 2).join("src/b.rs")).unwrap(), work, "{out}");
         assert!(kept_refs(root).is_empty(), "nada foi limpo: {out}");

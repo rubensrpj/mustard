@@ -168,8 +168,15 @@ pub(crate) fn swept(folders: &[PathBuf], root: &Path, walk: Walk, filters: &[Nam
             own.into_iter().chain(root_file.clone()).find(|file| file.starts_with(&folder) && holds_key(file))
         },
     )?;
-    let inside = root.and_then(|root| file.strip_prefix(root).ok().map(Path::to_path_buf));
-    Some(inside.unwrap_or(file).to_string_lossy().into_owned())
+    Some(file_text(&file, root.as_deref()))
+}
+
+/// O arquivo `file` como a recusa o mostra: relativo à raiz `root` quando mora
+/// nela, senão inteiro, sempre com barras normais e sem o prefixo que o
+/// Windows põe no caminho resolvido ([`crate::shared::paths::canonical`]).
+fn file_text(file: &Path, root: Option<&Path>) -> String {
+    let file = crate::shared::paths::canonical(&file.to_string_lossy());
+    root.and_then(|root| crate::shared::paths::below(&root.to_string_lossy(), &file)).unwrap_or(file)
 }
 
 /// `true` quando o arquivo em `file` guarda a chave com valor.
@@ -404,6 +411,25 @@ mod tests {
 
         std::fs::write(root.join(CONFIG_FILE), "{}").expect("config without the key");
         assert_eq!(grep(root.clone(), &[]), None);
+    }
+
+    /// O arquivo da recusa sai sempre da mesma forma: relativo à raiz quando
+    /// mora nela, senão inteiro, com barras normais e sem o prefixo do caminho
+    /// resolvido do Windows, escrito como for a raiz.
+    #[test]
+    fn the_refused_file_is_shown_in_one_form_however_the_path_is_written() {
+        let root = Path::new(r"\\?\C:\Users\runner\proj");
+        for (file, shown) in [
+            (r"\\?\C:\Users\runner\proj\mustard.json", "mustard.json"),
+            (r"\\?\C:\Users\runner\proj\sub\mustard.json", "sub/mustard.json"),
+            (r"\\?\c:\users\Runner\proj\mustard.json", "mustard.json"),
+            (r"\\?\C:\Users\runner\other\mustard.json", "C:/Users/runner/other/mustard.json"),
+            (r"\\?\C:\Users\runner\project\mustard.json", "C:/Users/runner/project/mustard.json"),
+        ] {
+            assert_eq!(file_text(Path::new(file), Some(root)), shown, "{file}");
+        }
+        assert_eq!(file_text(Path::new("/o/other/mustard.json"), Some(Path::new("/o/proj"))), "/o/other/mustard.json");
+        assert_eq!(file_text(Path::new("/o/proj/src/mustard.json"), None), "/o/proj/src/mustard.json");
     }
 
     /// A palavra do terminal alcança o arquivo pelo nome, ou por um curinga

@@ -420,9 +420,8 @@ pub(crate) mod fixture {
     /// como a do despachante.
     pub(crate) fn project(config: &str, mapped: bool) -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::tempdir().expect("tempdir");
-        let resolved = std::fs::canonicalize(dir.path()).expect("resolved tempdir");
-        // No Windows o caminho resolvido volta com o prefixo `\\?\`.
-        let root = PathBuf::from(resolved.to_string_lossy().trim_start_matches(r"\\?\").to_string());
+        // O caminho resolvido, sem o prefixo que o Windows põe nele.
+        let root = PathBuf::from(crate::shared::paths::on_disk(dir.path()));
         std::fs::write(root.join("mustard.json"), config).expect("config");
         write_files(&root);
         if mapped {

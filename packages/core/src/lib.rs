@@ -105,7 +105,7 @@ pub use platform::i18n::{translate, wave_label, I18n, LocaleError, SupportedLoca
 // Canonical `.claude/` path catalog — every consumer in `apps/rt` builds a
 // `ClaudePaths` once and then asks for a typed accessor instead of joining
 // strings inline. See `claude_paths.rs`.
-pub use io::claude_paths::{ClaudePaths, ClaudePathsError, SpecPaths, WavePaths};
+pub use io::claude_paths::{ClaudePaths, ClaudePathsError, SpecPaths};
 
 // Canonical workspace-root resolver — single source of truth for "the
 // directory that contains `mustard.json` + `.claude/`". See `workspace.rs`.

@@ -16,7 +16,8 @@
 //! não existe e não está marcado como novo; critério cuja prova não é um
 //! comando de verdade (programa que não roda, comandos ligados por `;`, busca
 //! sozinha que devia sair vazia); e tarefa que mexe em código sem dizer em
-//! que arquivo, que volta com os arquivos que o mapa sugere.
+//! que arquivo, que volta pedindo para nomeá-lo: o plano nunca adivinha o
+//! arquivo pelo texto da tarefa.
 //!
 //! O item combinado sem dono — nenhuma tarefa de uma onda do plano o cobre,
 //! ele não diz as ondas dele nem vale no projeto todo — não trava nem avisa:
@@ -68,7 +69,7 @@ use mustard_core::io::wave_prompt::{prompts, Flight, WavePrompt};
 use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Map, Value};
 
-use crate::commands::flow::skill_search::{best_skill, skills_on_disk, MAP_SUGGESTIONS};
+use crate::commands::flow::skill_search::{best_skill, skills_on_disk};
 use crate::commands::spec_events::{self, write::record};
 use crate::shared::spec_state::{checkout, session_from_env, DiskSpecState};
 
@@ -96,9 +97,8 @@ enum PlanFinding {
     ItemWithoutTask { code: String },
     /// Um contrato que nenhum critério cita.
     ContractWithoutCriterion { code: String },
-    /// Uma tarefa que mexe em código e não diz em que arquivo mexe, com os
-    /// arquivos que o mapa sugere para ela.
-    TaskWithoutFile { task: String, files: String },
+    /// Uma tarefa que mexe em código e não diz em que arquivo mexe.
+    TaskWithoutFile { task: String },
     /// Uma tarefa sem skill para a qual já existe uma skill que serve.
     TaskCouldNameASkill { task: String, skill: String },
     /// O comando de compilar ou de testar que o projeto ainda não declarou
@@ -173,14 +173,7 @@ impl PlanFinding {
             Self::ContractWithoutCriterion { code } => {
                 fill("plan.contract_without_criterion", &[("{code}", code.clone())])
             }
-            Self::TaskWithoutFile { task, files } => {
-                let suggested = if files.is_empty() {
-                    translate("plan.no_suggestion", lang).to_string()
-                } else {
-                    files.clone()
-                };
-                fill("plan.task_without_file", &[("{task}", task.clone()), ("{files}", suggested)])
-            }
+            Self::TaskWithoutFile { task } => fill("plan.task_without_file", &[("{task}", task.clone())]),
             Self::TaskCouldNameASkill { task, skill } => {
                 fill("plan.task_could_name_a_skill", &[("{task}", task.clone()), ("{skill}", skill.clone())])
             }
@@ -411,10 +404,7 @@ fn check(
         let files = declared_files(task);
         let text = task.str_field("text").unwrap_or_default();
         if files.is_empty() && !says_it_touches_no_file(text) {
-            out.push(PlanFinding::TaskWithoutFile {
-                task: code.clone(),
-                files: crate::commands::map::suggested_files(root, text, MAP_SUGGESTIONS, &languages).join(", "),
-            });
+            out.push(PlanFinding::TaskWithoutFile { task: code.clone() });
         }
         for (path, new) in &files {
             if !new && world.file_lines(path).is_none() {
@@ -1132,10 +1122,11 @@ mod tests {
     }
 
     /// A tarefa que mexe em código e não nomeia arquivo trava o plano, e a
-    /// recusa traz, na mesma resposta, os arquivos que o mapa sugere para ela.
-    /// A que declara no texto que não mexe em arquivo passa sem o campo.
+    /// recusa pede para nomear o arquivo, sem sugerir nenhum: o texto da
+    /// tarefa nunca vira busca no mapa. A que declara no texto que não mexe em
+    /// arquivo passa sem o campo.
     #[test]
-    fn a_code_task_without_a_file_blocks_the_plan_and_comes_back_with_what_the_map_suggests() {
+    fn a_code_task_without_a_file_blocks_the_plan_and_asks_for_the_file_without_suggesting_one() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let said = surveyed(root, "x");
@@ -1151,7 +1142,8 @@ mod tests {
         assert_eq!(refused.len(), 1, "só a tarefa de código é recusada: {report}");
         let hint = refused[0]["hint"].as_str().unwrap_or_default();
         assert!(hint.contains("MSTD-TASK-0001"), "{hint}");
-        assert!(hint.contains(translate("plan.no_suggestion", Locale::PtBr)), "o mapa vazio se anuncia: {hint}");
+        assert!(hint.contains("Nomeie o arquivo na tarefa"), "a recusa pede o arquivo: {hint}");
+        assert!(!hint.contains("sugere"), "a recusa não sugere arquivo: {hint}");
     }
 
     /// Cada achado da conferência é gravado como anotação quando o `plan`

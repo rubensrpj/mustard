@@ -149,9 +149,11 @@ mod tests {
     use crate::io::map_db::MapDb;
     use crate::io::map_meaning::{fill_at, ranked_declarations};
     use crate::io::map_notes_fresh::fresh;
-    use crate::io::map_search::{any_path, candidates_at, forget, search_at};
+    use crate::io::map_lists::ranked_files_near;
+    use crate::io::map_search::{any_path, candidates_at, forget, indexed};
+    use crate::io::map_sense::Near;
     use crate::io::map_triage::triage_at;
-    use crate::io::project_map::{model_path, save_at};
+    use crate::io::project_map::{model_path, save_at, SEARCHED};
     use serde_json::{json, Value};
     use tempfile::TempDir;
 
@@ -207,9 +209,14 @@ mod tests {
         write(&model_path(dir.path()), dir.path(), &note_of(file, name, text)).unwrap()
     }
 
-    /// Os caminhos da busca de arquivos por palavras.
+    /// Os caminhos da busca de arquivos por palavras, na ordem da nota.
     fn searched(dir: &TempDir, query: &str) -> Vec<String> {
-        search_at(&model_path(dir.path()), query, &languages(), TOP).unwrap().into_iter().map(|found| found.path).collect()
+        let db = indexed(&model_path(dir.path()), &languages(), &SEARCHED).unwrap();
+        ranked_files_near(db.conn(), query, &languages(), TOP, &Near::none())
+            .unwrap()
+            .into_iter()
+            .map(|found| found.path)
+            .collect()
     }
 
     /// Os caminhos da triagem, a busca que o comando e o gancho respondem.
@@ -383,14 +390,14 @@ mod tests {
         let dir = saved("ids-1");
         write_note(&dir, "src/ids.rs", "", NOTE);
         write_note(&dir, "src/ids.rs", "check_digits", "Confere os dígitos do documento.");
-        let refreshed = search_at(&model_path(dir.path()), ASK, &languages(), TOP).unwrap();
+        let refreshed = searched(&dir, ASK);
         let candidates = candidates_at(&model_path(dir.path()), ASK, "", &languages(), any_path).unwrap();
         assert!(!refreshed.is_empty());
 
         let mut db = opened(&dir);
         db.write(|tx| forget(tx)).unwrap();
         drop(db);
-        assert_eq!(search_at(&model_path(dir.path()), ASK, &languages(), TOP).unwrap(), refreshed);
+        assert_eq!(searched(&dir, ASK), refreshed);
         assert_eq!(candidates_at(&model_path(dir.path()), ASK, "", &languages(), any_path).unwrap(), candidates);
     }
 

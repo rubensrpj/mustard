@@ -519,6 +519,54 @@ fn map_dump_brings_one_entry_per_table() {
     assert_eq!(rows("fan_in")[0]["degree"], 1, "{report}");
 }
 
+/// O `gh` falso do unix: anota cada chamada e responde o texto e os
+/// comentários do pull request. Um script de shell não roda no Windows: lá o
+/// falso é o [`FAKE_GH_CMD`], que o sistema acha pelo `.cmd`.
+const FAKE_GH_SH: &str = "#!/bin/sh\n\
+     echo \"$*\" >> \"$FAKE_DIR/log\"\n\
+     case \"$*\" in\n\
+     \"api -i repos/{owner}/{repo}/pulls/\"*) n=${3#*pulls/} ;\n\
+       [ -f \"$FAKE_DIR/pull$n.json\" ] || { echo 'gh: Not Found (HTTP 404)' >&2 ; exit 1 ; } ;\n\
+       printf 'HTTP/2.0 200 OK\\r\\nEtag: W/\"e\"\\r\\n\\r\\n' ; cat \"$FAKE_DIR/pull$n.json\" ;;\n\
+     \"api repos/{owner}/{repo}/pulls/\"*\"/comments?per_page=100\") n=${2#*pulls/} ; n=${n%%/*} ;\n\
+       cat \"$FAKE_DIR/comments$n.json\" 2>/dev/null || echo '[]' ;;\n\
+     \"api repos/{owner}/{repo}/commits/\"*\"/pulls\") echo '[]' ;;\n\
+     *) echo 'gh: Not Found (HTTP 404)' >&2 ; exit 1 ;;\n\
+     esac\n";
+
+/// O mesmo `gh` falso para o Windows, em lote: a mesma anotação, as mesmas
+/// respostas. A anotação vai com o redirecionamento na frente, para a linha
+/// não ganhar espaço no fim nem tomar o último número por descritor.
+const FAKE_GH_CMD: &str = "@echo off\r\n\
+     setlocal EnableDelayedExpansion\r\n\
+     >> \"%FAKE_DIR%\\log\" echo %*\r\n\
+     set \"A=%*\"\r\n\
+     echo !A!| findstr /b /c:\"api -i repos/{owner}/{repo}/pulls/\" >nul && goto pull\r\n\
+     echo !A!| findstr /b /c:\"api repos/{owner}/{repo}/pulls/\" >nul && goto comments\r\n\
+     echo !A!| findstr /b /c:\"api repos/{owner}/{repo}/commits/\" >nul && goto commits\r\n\
+     goto missing\r\n\
+     :pull\r\n\
+     set \"N=!A:*pulls/=!\"\r\n\
+     if not exist \"%FAKE_DIR%\\pull!N!.json\" goto missing\r\n\
+     echo HTTP/2.0 200 OK\r\n\
+     echo Etag: W/\"e\"\r\n\
+     echo.\r\n\
+     type \"%FAKE_DIR%\\pull!N!.json\"\r\n\
+     exit /b 0\r\n\
+     :comments\r\n\
+     set \"N=!A:*pulls/=!\"\r\n\
+     for /f \"delims=/\" %%n in (\"!N!\") do set \"N=%%n\"\r\n\
+     if not exist \"%FAKE_DIR%\\comments!N!.json\" goto empty\r\n\
+     type \"%FAKE_DIR%\\comments!N!.json\"\r\n\
+     exit /b 0\r\n\
+     :commits\r\n\
+     :empty\r\n\
+     echo []\r\n\
+     exit /b 0\r\n\
+     :missing\r\n\
+     echo gh: Not Found (HTTP 404) 1>&2\r\n\
+     exit /b 1\r\n";
+
 /// Um projeto no git, na branch `main` declarada como base, com o remoto do
 /// GitHub e um `gh` falso no caminho, que anota cada chamada e responde o
 /// texto e os comentários do pull request 7.
@@ -535,21 +583,8 @@ impl PullRequestProject {
         project.git(&["remote", "add", "origin", "https://github.com/dono/loja.git"]);
         fs::write(root.join(".git/info/exclude"), mustard_core::footprint_rules().join("\n") + "\n").unwrap();
         project.config(true);
-        let gh = project.fake.path().join("gh");
-        executable::write_executable(
-            &gh,
-            "#!/bin/sh\n\
-             echo \"$*\" >> \"$FAKE_DIR/log\"\n\
-             case \"$*\" in\n\
-             \"api -i repos/{owner}/{repo}/pulls/\"*) n=${3#*pulls/} ;\n\
-               [ -f \"$FAKE_DIR/pull$n.json\" ] || { echo 'gh: Not Found (HTTP 404)' >&2 ; exit 1 ; } ;\n\
-               printf 'HTTP/2.0 200 OK\\r\\nEtag: W/\"e\"\\r\\n\\r\\n' ; cat \"$FAKE_DIR/pull$n.json\" ;;\n\
-             \"api repos/{owner}/{repo}/pulls/\"*\"/comments?per_page=100\") n=${2#*pulls/} ; n=${n%%/*} ;\n\
-               cat \"$FAKE_DIR/comments$n.json\" 2>/dev/null || echo '[]' ;;\n\
-             \"api repos/{owner}/{repo}/commits/\"*\"/pulls\") echo '[]' ;;\n\
-             *) echo 'gh: Not Found (HTTP 404)' >&2 ; exit 1 ;;\n\
-             esac\n",
-        );
+        let (name, script) = if cfg!(windows) { ("gh.cmd", FAKE_GH_CMD) } else { ("gh", FAKE_GH_SH) };
+        executable::write_executable(&project.fake.path().join(name), script);
         fs::write(
             project.fake.path().join("pull7.json"),
             r#"{"number": 7, "title": "Muda o ler", "body": "O ler passa a somar dois.\n\nDetalhes que não aparecem."}"#,
@@ -611,12 +646,34 @@ impl PullRequestProject {
 
     /// O caminho dos programas com o `gh` falso na frente.
     fn with_fake_gh(&self) -> String {
-        format!("{}:{}", self.fake.path().display(), std::env::var("PATH").unwrap_or_default())
+        let mut folders = vec![self.fake.path().to_path_buf()];
+        folders.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()));
+        std::env::join_paths(folders).unwrap().to_string_lossy().into_owned()
     }
 
     /// As chamadas que o `gh` falso recebeu.
     fn calls(&self) -> Vec<String> {
         fs::read_to_string(self.fake.path().join("log")).unwrap_or_default().lines().map(str::to_string).collect()
+    }
+}
+
+/// O caminho dos programas só com o `git`, sem o `gh`: no unix, uma pasta com
+/// um atalho para o `git`; no Windows, o `git.exe` não se copia sozinho
+/// (ele precisa das pastas ao lado), e vale a pasta em que o `PATH` o acha,
+/// que não traz o `gh`.
+fn path_with_git_only(folder: &Path) -> String {
+    #[cfg(unix)]
+    {
+        let git = std::process::Command::new("sh").args(["-c", "command -v git"]).output().unwrap();
+        std::os::unix::fs::symlink(String::from_utf8_lossy(&git.stdout).trim(), folder.join("git")).unwrap();
+        folder.display().to_string()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = folder;
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        let found = std::env::split_paths(&path).find(|dir| dir.join("git.exe").is_file() && !dir.join("gh.exe").exists());
+        found.expect("uma pasta do PATH com o git e sem o gh").display().to_string()
     }
 }
 
@@ -676,12 +733,7 @@ fn history_carries_the_pull_request_text_read_once_after_the_scan() {
 
     project.config(true);
     let only_git = tempfile::tempdir().unwrap();
-    #[cfg(unix)]
-    {
-        let git = std::process::Command::new("sh").args(["-c", "command -v git"]).output().unwrap();
-        std::os::unix::fs::symlink(String::from_utf8_lossy(&git.stdout).trim(), only_git.path().join("git")).unwrap();
-    }
-    let without_gh = only_git.path().display().to_string();
+    let without_gh = path_with_git_only(only_git.path());
     let (ok, scanned) = project.run(&["scan"], &without_gh);
     assert!(ok, "{scanned}");
     let (ok, report) = project.run(&["map", "history", "--name", "ler", "--file", "src/a.rs"], &without_gh);

@@ -1446,9 +1446,7 @@ pub(crate) fn old_page_order(page: &str, lang: Locale) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
-    use std::process::Command;
-    use std::sync::{Mutex, PoisonError};
+    use std::path::Path;
 
     use mustard_core::domain::model::contract::{HookInput, Outcome, Trigger, Verdict};
     use mustard_core::domain::spec_state::SpecState as _;
@@ -1462,16 +1460,6 @@ mod tests {
 
     const SPEC_URL: &str = "https://claude.ai/code/artifact/spec-x";
     const PROJECT_URL: &str = "https://claude.ai/code/artifact/projeto";
-
-    fn git(root: &Path, args: &[&str]) {
-        let out = Command::new("git")
-            .args(["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"])
-            .args(args)
-            .current_dir(root)
-            .output()
-            .expect("git");
-        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
-    }
 
     /// Grava pelo `run write`, o comando que a conversa usa; a fala do
     /// usuário, que só um gancho grava, vai pela mesma gravação dos ganchos.
@@ -1547,44 +1535,15 @@ mod tests {
         std::fs::read_to_string(&file).map_or(next.clone(), |order| format!("{order} {next}"))
     }
 
-    /// O repositório semente dos arquivos `files`: o projeto no git, com os
-    /// arquivos e a branch `feature/x`, antes de qualquer registro da spec.
-    /// Cada lista de arquivos o monta uma vez por processo, e cada teste leva a
-    /// cópia da pasta com o `.git`: o repositório não tem remoto nem árvore
-    /// extra, e por isso nenhum caminho absoluto fica gravado nele.
-    fn seed_repo(files: &[&str]) -> PathBuf {
-        static SEEDS: Mutex<Vec<(Vec<String>, tempfile::TempDir)>> = Mutex::new(Vec::new());
-        let key: Vec<String> = files.iter().map(|file| (*file).to_string()).collect();
-        let mut seeds = SEEDS.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some((_, dir)) = seeds.iter().find(|(known, _)| *known == key) {
-            return dir.path().to_path_buf();
-        }
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        std::fs::create_dir_all(root.join("src")).unwrap();
-        std::fs::write(root.join("mustard.json"), b"{}").unwrap();
-        for file in files {
-            std::fs::write(root.join(file), "fn one() {}\n").unwrap();
-        }
-        git(root, &["init", "-q"]);
-        git(root, &["config", "core.autocrlf", "false"]);
-        git(root, &["add", "-A"]);
-        git(root, &["commit", "-q", "-m", "semente"]);
-        for (key, value) in [("user.email", "t@t"), ("user.name", "t"), ("commit.gpgsign", "false")] {
-            git(root, &["config", key, value]);
-        }
-        git(root, &["checkout", "-q", "-b", "feature/x"]);
-        let path = root.to_path_buf();
-        seeds.push((key, dir));
-        path
-    }
-
     /// Um projeto no git, com os arquivos `files`, na branch da spec `x`
     /// aberta, com a fala do usuário e um critério gravados: devolve os
     /// números dos dois.
     fn project_with(files: &[&str]) -> (tempfile::TempDir, u64, u64) {
-        let dir = crate::shared::test_fixture::clone_of(&seed_repo(files));
+        let dir = tempdir().unwrap();
         let root = dir.path();
+        let seed: Vec<(&str, &str)> =
+            std::iter::once(("mustard.json", "{}")).chain(files.iter().map(|file| (*file, "fn one() {}\n"))).collect();
+        crate::shared::test_fixture::seeded_repo_on(root, "feature/x", &seed);
         assert_eq!(record_open(root, "x", "feature/x", "dev"), Ok(true));
         crate::commands::flow::round::copies_leave_with_the_test(root);
         let said = id_of(&write(root, "message", json!({"author": "user", "text": "o objetivo"})));

@@ -1091,8 +1091,6 @@ pub enum MapRefusal {
     UnknownFile { file: String },
     /// A pergunta precisa de uma opção que não veio.
     MissingArgument { question: String, flag: String },
-    /// A skill não pôde ser lida.
-    SkillUnreadable { path: String, detail: String },
     /// A skill cita caminhos que não existem.
     SkillMissingPaths { paths: Vec<String> },
     /// A skill passa do limite de linhas.
@@ -1122,7 +1120,6 @@ impl MapRefusal {
             Self::MapUnfilled { .. } => "map-unfilled",
             Self::UnknownFile { .. } => "unknown-file",
             Self::MissingArgument { .. } => "missing-argument",
-            Self::SkillUnreadable { .. } => "skill-unreadable",
             Self::SkillMissingPaths { .. } => "skill-missing-path",
             Self::SkillTooLong { .. } => "skill-too-long",
             Self::UnknownDeclaration { .. } => "unknown-declaration",
@@ -1148,9 +1145,6 @@ impl MapRefusal {
             Self::UnknownFile { file } => fill("map.unknown_file", &[("{file}", file.clone())]),
             Self::MissingArgument { question, flag } => {
                 fill("map.missing_argument", &[("{question}", question.clone()), ("{flag}", flag.clone())])
-            }
-            Self::SkillUnreadable { path, detail } => {
-                fill("map.skill_unreadable", &[("{path}", path.clone()), ("{detail}", detail.clone())])
             }
             Self::SkillMissingPaths { paths } => fill("map.skill_missing_path", &[("{paths}", paths.join(", "))]),
             Self::SkillTooLong { lines } => fill(

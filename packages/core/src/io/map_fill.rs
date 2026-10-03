@@ -86,7 +86,7 @@ mod tests {
     use crate::domain::normalize::Languages;
     use crate::domain::project_map::MapRefusal;
     use crate::io::map_db::{Block, Kind};
-    use crate::io::map_search;
+    use crate::io::{map_search, map_triage};
     use crate::io::project_map::{self, model_path, open_existing, DECLS, SEARCHED};
 
     fn languages() -> Languages {
@@ -275,7 +275,7 @@ mod tests {
     /// `root`, cada uma escrita para comparar e com os blocos que lê.
     fn searched_in(root: &Path) -> [(std::result::Result<String, MapRefusal>, &'static [&'static MapBlock]); 2] {
         [
-            (map_search::search(root, "pedido", &languages(), 5).map(|found| format!("{found:?}")), &SEARCHED),
+            (map_triage::triage(root, ("pedido", ""), &languages(), 5).map(|triaged| format!("{triaged:?}")), &SEARCHED),
             (
                 map_search::candidates(root, "pedido", "", &languages(), map_search::any_path).map(|found| format!("{found:?}")),
                 &READ_BY_CANDIDATES,

@@ -21,7 +21,7 @@
 //! Quem grava é o scan, depois do mapa e depois de cada leitura da história,
 //! que traz ao compilado os títulos dos commits de cada declaração
 //! ([`fill_at`]). Mapa sem estas tabelas abre e se lê como sempre: quem lê os
-//! vetores ([`nearest_words`]) recebe uma lista vazia.
+//! vetores ([`ranked_declarations`]) recebe uma lista vazia.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -43,9 +43,6 @@ pub const BLOCK_NAME: &str = "meaning";
 /// quando o texto compilado muda de forma: o bloco refeito volta vazio, e o
 /// scan seguinte calcula todos os vetores de novo.
 const BLOCK_VERSION: u32 = 1;
-
-/// Quantos números tem cada vetor.
-pub const DIMENSIONS: usize = 256;
 
 /// Quantos textos o modelo lê por vez.
 const BATCH: usize = 512;
@@ -112,25 +109,6 @@ fn to_blob(vector: &[i8]) -> Vec<u8> {
     vector.iter().map(|value| value.to_le_bytes()[0]).collect()
 }
 
-/// O vetor lido dos bytes da tabela.
-fn from_blob(blob: &[u8]) -> Vec<i8> {
-    blob.iter().map(|byte| i8::from_le_bytes([*byte])).collect()
-}
-
-/// O cosseno de dois vetores em int8: 1 para o mesmo sentido, 0 para nenhuma
-/// relação, e 0 também quando um deles é nulo ou os tamanhos diferem.
-#[must_use]
-pub fn cosine(a: &[i8], b: &[i8]) -> f32 {
-    if a.len() != b.len() {
-        return 0.0;
-    }
-    let (dot, norm_a, norm_b) = products(a.iter().zip(b).map(|(x, y)| (*x, *y)));
-    if norm_a == 0 || norm_b == 0 {
-        return 0.0;
-    }
-    (f64::from(dot) / ((f64::from(norm_a)).sqrt() * (f64::from(norm_b)).sqrt())) as f32
-}
-
 /// O produto escalar e as somas dos quadrados de duas listas de números em
 /// int8. Cada vetor tem 256 números de no máximo 127, então as somas cabem
 /// em `i32`, que o compilador lê em blocos.
@@ -154,36 +132,6 @@ pub struct Neighbor {
     pub forms: String,
     /// O cosseno com a palavra perguntada.
     pub cosine: f32,
-}
-
-/// As até `k` palavras do projeto mais perto de `word`, da mais perto para a
-/// mais longe, só com cosseno de pelo menos `min_cosine`. A própria palavra
-/// não entra. Sem a tabela de palavras — mapa sem vetores —, a lista é vazia.
-pub fn nearest_words(conn: &Connection, word: &str, k: usize, min_cosine: f32) -> Result<Vec<Neighbor>> {
-    if k == 0 || !table_exists(conn, "word_vectors")? {
-        return Ok(Vec::new());
-    }
-    let word = word.trim().to_lowercase();
-    let Some(asked) = text_vector(&word) else { return Ok(Vec::new()) };
-    let asked = quantize(&asked);
-    let mut statement = conn.prepare("SELECT word, forms, vector FROM word_vectors")?;
-    let rows = statement.query_map([], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, Vec<u8>>(2)?))
-    })?;
-    let mut found = Vec::new();
-    for row in rows {
-        let (candidate, forms, blob) = row?;
-        if candidate == word {
-            continue;
-        }
-        let cosine = cosine(&asked, &from_blob(&blob));
-        if cosine >= min_cosine {
-            found.push(Neighbor { word: candidate, forms, cosine });
-        }
-    }
-    found.sort_by(|a, b| b.cosine.total_cmp(&a.cosine).then_with(|| a.word.cmp(&b.word)));
-    found.truncate(k);
-    Ok(found)
 }
 
 /// O vetor em int8 de um texto, como as tabelas do bloco o guardam. `None`
@@ -768,18 +716,13 @@ mod tests {
         opened(dir).conn().query_row(&format!("SELECT count(*) FROM {table}"), [], |row| row.get(0)).unwrap()
     }
 
-    /// O modelo embutido carrega sem rede e lê um texto: o vetor tem 256
-    /// números e comprimento 1, e o texto sem relação fica mais longe do que o
-    /// de mesmo sentido em outra língua.
+    /// O modelo embutido carrega sem rede e lê um texto: o vetor tem
+    /// comprimento 1.
     #[test]
     fn the_embedded_model_loads_offline_and_reads_a_text() {
         let vector = text_vector("delete the file").expect("the embedded model loads");
-        assert_eq!(vector.len(), DIMENSIONS);
         let length = vector.iter().map(|v| v * v).sum::<f32>().sqrt();
         assert!((length - 1.0).abs() < 1e-3, "unit length: {length}");
-        let near = cosine(&quantize(&vector), &quantize(&text_vector("apagar o arquivo").unwrap()));
-        let far = cosine(&quantize(&vector), &quantize(&text_vector("cobrar a fatura do cliente").unwrap()));
-        assert!(near > far + 0.1, "the same sense in another language is closer: {near} against {far}");
     }
 
     /// Os arquivos do modelo cabem no teto de 30 MB do binário.
@@ -789,13 +732,13 @@ mod tests {
     }
 
     /// O mapa sem vetores continua abrindo e lendo como sempre, e quem pergunta
-    /// as palavras perto de outra recebe uma lista vazia.
+    /// pelas declarações perto de um texto recebe uma lista vazia.
     #[test]
     fn a_map_without_vectors_opens_and_reads_as_before() {
         let dir = two_files();
         let db = opened(&dir);
         assert!(!table_exists(db.conn(), "decl_vectors").unwrap() && !table_exists(db.conn(), "word_vectors").unwrap());
-        assert!(nearest_words(db.conn(), "apagar", 5, 0.1).unwrap().is_empty());
+        assert!(ranked_declarations(db.conn(), "apagar").unwrap().is_empty());
         assert!(project_map::read(dir.path()).is_ok());
     }
 
@@ -809,27 +752,8 @@ mod tests {
         assert!(report.words > 10, "{report:?}");
         assert_eq!(count(&dir, "decl_vectors"), 3);
         let lengths = numbers(&dir, "SELECT length(vector) FROM decl_vectors");
-        assert_eq!(lengths, vec![DIMENSIONS as i64; 3]);
+        assert_eq!(lengths, vec![256; 3]);
         assert!(project_map::read(dir.path()).is_ok(), "the map still reads");
-    }
-
-    /// Num projeto que escreve `remove` e `delete`, as palavras do projeto
-    /// mais perto de "apagar" trazem `remove` e `delete`, com cosseno mínimo, e
-    /// não trazem a palavra de outro assunto.
-    #[test]
-    fn the_project_words_nearest_to_apagar_bring_remove_and_delete() {
-        let dir = two_files();
-        fill_at(&map_of(&dir), dir.path()).unwrap();
-        let db = opened(&dir);
-        let near = nearest_words(db.conn(), "apagar", 8, 0.2).unwrap();
-        let words: Vec<&str> = near.iter().map(|n| n.word.as_str()).collect();
-        assert!(words.contains(&"remove"), "{near:?}");
-        assert!(words.contains(&"delete"), "{near:?}");
-        assert!(!words.contains(&"invoice"), "{near:?}");
-        assert!(near.windows(2).all(|pair| pair[0].cosine >= pair[1].cosine), "closest first: {near:?}");
-        assert!(near.iter().all(|n| n.cosine >= 0.2 && n.word != "apagar"), "{near:?}");
-        assert!(nearest_words(db.conn(), "apagar", 2, 0.2).unwrap().len() <= 2);
-        assert!(nearest_words(db.conn(), "apagar", 8, 0.999).unwrap().is_empty(), "a high minimum leaves none");
     }
 
     /// A tabela de palavras guarda, de cada palavra, as formas que o índice de

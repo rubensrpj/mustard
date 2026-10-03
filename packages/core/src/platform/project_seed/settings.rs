@@ -118,9 +118,19 @@ const OUTPUT_STYLE_KEY: &str = "outputStyle";
 /// nome com que o Claude Code o chamava.
 const RETIRED_OUTPUT_STYLE: &str = "mustard-didactic";
 
+/// A chave das configurações do Claude Code com o idioma em que ele responde.
+/// Preenchida, o Claude Code manda responder nesse idioma, mais forte que o
+/// estilo de resposta.
+const RESPONSE_LANGUAGE_KEY: &str = "language";
+
 /// A variável do `env` que faz o Claude Code repassar os links da barra quando
 /// não reconhece o terminal, como numa conexão remota. O valor mora na semente.
 const FORCE_HYPERLINK_KEY: &str = "FORCE_HYPERLINK";
+
+/// A variável do `env` que desliga só a compactação automática do Claude Code.
+/// A compactação pedida à mão (`/compact`) continua: a variável que desliga as
+/// duas é outra, e fica fora.
+const DISABLE_AUTO_COMPACT_KEY: &str = "DISABLE_AUTO_COMPACT";
 
 /// Seed the harness settings from the compiled-in [`SETTINGS_SEED`].
 ///
@@ -146,8 +156,10 @@ const FORCE_HYPERLINK_KEY: &str = "FORCE_HYPERLINK";
 /// [`backfill_own_permission_rules`] and [`retire_old_rules`] — and through the
 /// two switches this file holds: in the local layer, the rtk hook follows `rtk`
 /// ([`apply_rtk_hook`]), the response style follows `text`
-/// ([`apply_output_style`]) and the seed's link variable reaches an `env` that
-/// lacks it ([`backfill_force_hyperlink`]); and Claude Code's own signature is kept off
+/// ([`apply_output_style`]), the response language follows it too
+/// ([`apply_response_language`]), the automatic compaction is switched off
+/// ([`turn_auto_compact_off`]) and the seed's link variable reaches an `env`
+/// that lacks it ([`backfill_force_hyperlink`]); and Claude Code's own signature is kept off
 /// ([`turn_signature_off`]). These are the only writes that reach INSIDE a key
 /// the merge preserves. Each one is narrow by construction: the top-level merge
 /// refuses to guess what an absent sub-key means, so anything that must reach an
@@ -216,6 +228,8 @@ fn seed_dest(
     if mode.is_private() {
         apply_rtk_hook(&mut settings, rtk);
         apply_output_style(&mut settings, text);
+        apply_response_language(&mut settings, text);
+        turn_auto_compact_off(&mut settings);
         backfill_force_hyperlink(&mut settings, &seed);
         allow_copies_dir(&mut settings, copies);
     }
@@ -530,6 +544,43 @@ pub fn apply_output_style(settings: &mut Map<String, Value>, text: Locale) {
     }
 }
 
+/// O idioma em que o Claude Code responde, para o idioma `text`, pelo nome
+/// que a chave `language` das configurações dele espera: `português do Brasil`
+/// ou `English`.
+#[must_use]
+pub fn response_language_for(text: Locale) -> &'static str {
+    match text {
+        Locale::PtBr => "português do Brasil",
+        Locale::EnUs => "English",
+    }
+}
+
+/// Preenche o idioma de resposta do Claude Code nas configurações locais.
+///
+/// Sem a chave, o Claude Code responde em inglês, mesmo com o estilo do
+/// Mustard em português. A chave ausente, ou com o valor de um dos dois
+/// idiomas do Mustard, recebe o do idioma `text`: trocar o `language.text` e
+/// instalar de novo troca o valor. Qualquer outro valor é da pessoa e fica
+/// como está.
+pub fn apply_response_language(settings: &mut Map<String, Value>, text: Locale) {
+    let chosen_by_person = settings.get(RESPONSE_LANGUAGE_KEY).is_some_and(|value| {
+        value.as_str().is_none_or(|value| {
+            ![Locale::PtBr, Locale::EnUs].into_iter().any(|own| value == response_language_for(own))
+        })
+    });
+    if !chosen_by_person {
+        settings.insert(RESPONSE_LANGUAGE_KEY.to_string(), Value::String(response_language_for(text).to_string()));
+    }
+}
+
+/// Desliga a compactação automática do Claude Code só neste projeto, pela
+/// variável [`DISABLE_AUTO_COMPACT_KEY`] do `env` das configurações locais: as
+/// conversas dos outros projetos da pessoa seguem como estão. O valor que a
+/// pessoa já pôs nela fica.
+fn turn_auto_compact_off(settings: &mut Map<String, Value>) {
+    backfill_env_variable(settings, DISABLE_AUTO_COMPACT_KEY, &Value::String("1".to_string()));
+}
+
 /// Leva ao `env` das configurações locais o valor que a semente dá à variável
 /// dos links ([`FORCE_HYPERLINK_KEY`]), para o Ctrl+clique na barra funcionar
 /// por conexão remota sem a pessoa digitar nada.
@@ -543,10 +594,17 @@ fn backfill_force_hyperlink(settings: &mut Map<String, Value>, seed: &Map<String
     let Some(value) = seed.get("env").and_then(|env| env.get(FORCE_HYPERLINK_KEY)) else {
         return;
     };
+    backfill_env_variable(settings, FORCE_HYPERLINK_KEY, value);
+}
+
+/// Põe `key` com `value` no `env` das configurações, quando a variável falta:
+/// a que já existe fica com o valor dela, e as outras variáveis do `env` não
+/// mudam. Um `env` que não é objeto fica como está.
+fn backfill_env_variable(settings: &mut Map<String, Value>, key: &str, value: &Value) {
     let Some(env) = settings.get_mut("env").and_then(Value::as_object_mut) else {
         return;
     };
-    env.entry(FORCE_HYPERLINK_KEY.to_string()).or_insert_with(|| value.clone());
+    env.entry(key.to_string()).or_insert_with(|| value.clone());
 }
 
 /// Keep the signature Claude Code adds to commits and pull requests off: both
@@ -568,7 +626,7 @@ pub fn signature_on(settings: &Map<String, Value>) -> bool {
 }
 
 /// Parse a JSON object fail-open: anything that is not a JSON object yields
-/// an empty map (mirrors the CLI's historical `read_json_object` semantics).
+/// an empty map.
 pub(super) fn parse_json_object(raw: &str) -> Map<String, Value> {
     serde_json::from_str::<Value>(raw)
         .ok()
@@ -1199,6 +1257,92 @@ mod tests {
         }
     }
 
+    /// O idioma de resposta do Claude Code segue o idioma do texto: a
+    /// instalação local grava `português do Brasil` ou `English`, troca quando o
+    /// idioma troca, e deixa o valor que a pessoa escolheu. O arquivo da equipe
+    /// nunca recebe a chave.
+    #[test]
+    fn the_response_language_follows_the_text_language() {
+        assert_eq!(response_language_for(Locale::PtBr), "português do Brasil");
+        assert_eq!(response_language_for(Locale::EnUs), "English");
+
+        let dir = tempdir().unwrap();
+        let claude = dir.path().join(".claude");
+        std_fs::create_dir_all(&claude).unwrap();
+        let language = || -> Value { local_settings(dir.path())["language"].clone() };
+
+        seed_settings(&claude, false, InstallMode::Private, true, Locale::PtBr).unwrap();
+        assert_eq!(language(), json!("português do Brasil"));
+        seed_settings(&claude, false, InstallMode::Private, true, Locale::EnUs).unwrap();
+        assert_eq!(language(), json!("English"), "a language change swaps the value");
+        seed_settings(&claude, false, InstallMode::Private, true, Locale::PtBr).unwrap();
+        assert_eq!(language(), json!("português do Brasil"), "and swaps it back");
+
+        // O valor da pessoa fica, pelo upsert inteiro e pela regra sozinha.
+        std_fs::write(claude.join("settings.local.json"), r#"{"language":"japanese"}"#).unwrap();
+        seed_settings(&claude, false, InstallMode::Private, true, Locale::EnUs).unwrap();
+        assert_eq!(language(), json!("japanese"), "the person's own language stays");
+        for own in [json!("japanese"), json!(""), json!(3)] {
+            let mut settings = Map::new();
+            settings.insert("language".to_string(), own.clone());
+            apply_response_language(&mut settings, Locale::EnUs);
+            assert_eq!(settings["language"], own, "the person's own value stays");
+        }
+        let mut absent = Map::new();
+        apply_response_language(&mut absent, Locale::PtBr);
+        assert_eq!(absent["language"], json!("português do Brasil"));
+
+        let shared = dir.path().join("shared/.claude");
+        std_fs::create_dir_all(&shared).unwrap();
+        seed_settings(&shared, false, InstallMode::Shared, true, Locale::EnUs).unwrap();
+        let team: Value = serde_json::from_str(&std_fs::read_to_string(shared.join("settings.json")).unwrap()).unwrap();
+        assert!(team.get("language").is_none(), "the team's file never gets the response language");
+    }
+
+    /// A instalação local desliga só a compactação automática, pela variável
+    /// `DISABLE_AUTO_COMPACT` do `env`: o valor da pessoa fica, o resto do `env`
+    /// fica, instalar de novo não muda nada, e o arquivo da equipe nunca recebe
+    /// a variável. A que desliga também o `/compact` manual fica fora.
+    #[test]
+    fn the_install_turns_off_the_automatic_compaction_in_the_local_settings_only() {
+        let dir = tempdir().unwrap();
+        let claude = dir.path().join(".claude");
+        std_fs::create_dir_all(&claude).unwrap();
+        let env = || local_settings(dir.path())["env"].clone();
+
+        seed_settings(&claude, false, InstallMode::Private, true, Locale::PtBr).unwrap();
+        assert_eq!(env()["DISABLE_AUTO_COMPACT"], json!("1"), "a fresh install");
+        assert!(env().get("DISABLE_COMPACT").is_none(), "the manual compaction is not switched off: {}", env());
+
+        // Instalar de novo não muda nada, e o resto do `env` da pessoa fica.
+        std_fs::write(
+            claude.join("settings.local.json"),
+            r#"{"env":{"MY_OWN":"1","FORCE_HYPERLINK":"0"}}"#,
+        )
+        .unwrap();
+        seed_settings(&claude, false, InstallMode::Private, true, Locale::PtBr).unwrap();
+        let first = std_fs::read_to_string(claude.join("settings.local.json")).unwrap();
+        let again = seed_settings(&claude, false, InstallMode::Private, true, Locale::PtBr).unwrap();
+        assert_eq!(again[0].1, SeedOutcome::Preserved, "a second install changes nothing");
+        assert_eq!(std_fs::read_to_string(claude.join("settings.local.json")).unwrap(), first);
+        let kept = env();
+        assert_eq!(kept["DISABLE_AUTO_COMPACT"], json!("1"));
+        assert_eq!(kept["MY_OWN"], json!("1"), "the rest of the env stays: {kept}");
+        assert_eq!(kept["FORCE_HYPERLINK"], json!("0"), "the rest of the env stays: {kept}");
+
+        // O valor que a pessoa já pôs fica.
+        std_fs::write(claude.join("settings.local.json"), r#"{"env":{"DISABLE_AUTO_COMPACT":"0"}}"#).unwrap();
+        seed_settings(&claude, false, InstallMode::Private, true, Locale::PtBr).unwrap();
+        assert_eq!(env()["DISABLE_AUTO_COMPACT"], json!("0"), "the person's own value stays");
+
+        // O arquivo da equipe nunca recebe a variável.
+        let shared = dir.path().join("shared/.claude");
+        std_fs::create_dir_all(&shared).unwrap();
+        seed_settings(&shared, false, InstallMode::Shared, true, Locale::PtBr).unwrap();
+        let team = std_fs::read_to_string(shared.join("settings.json")).unwrap();
+        assert!(!team.contains("DISABLE_AUTO_COMPACT"), "the team's file got the variable: {team}");
+    }
+
     // --- a variável dos links da barra ------------------------------------------
 
     /// O `env` das configurações locais depois do upsert do projeto em `root`,
@@ -1229,7 +1373,8 @@ mod tests {
         assert_eq!(env.get(FORCE_HYPERLINK_KEY), Some(&json!("1")), "an installed project: {env:?}");
         assert_eq!(env["MY_MODE"], json!("strict"), "the person's value stays");
         assert_eq!(env["MY_OWN"], json!("1"));
-        assert_eq!(env.len(), 3, "only the link variable arrives: {env:?}");
+        assert_eq!(env.get(DISABLE_AUTO_COMPACT_KEY), Some(&json!("1")), "and the compaction switch: {env:?}");
+        assert_eq!(env.len(), 4, "only the two variables the install owns arrive: {env:?}");
     }
 
     // --- a pasta das cópias -------------------------------------------------

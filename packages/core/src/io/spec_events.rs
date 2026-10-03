@@ -1146,7 +1146,7 @@ mod tests {
         let before = std::fs::read(&path).unwrap();
         let write =
             |source: Option<&str>, text: &str| write_at(&path, "point", one_fact_point("tamanho", source, text), &roots, &at("10:00"));
-        let plan = |source: &str, text: &str| crate::io::citation::check_at(&roots, &root, source, text);
+        let plan = |source: &str, text: &str| citation::check(&DiskWorld::new(roots.clone(), Some(&root)), source, text);
 
         let without = write(None, "o pedido não tem teto").unwrap_err();
         assert_eq!(without, Refusal::FactWithoutSource { fact: 1 });
@@ -1191,7 +1191,7 @@ mod tests {
         for (i, source) in sources.into_iter().enumerate() {
             let gap = format!("lacuna {i}");
             let shared: Vec<Finding> =
-                crate::io::citation::check_at(&roots, &root, source, "").into_iter().filter(Finding::is_refusal).collect();
+                citation::check(&DiskWorld::new(roots.clone(), Some(&root)), source, "").into_iter().filter(Finding::is_refusal).collect();
             let door = match write_at(&path, "point", one_fact_point(&gap, Some(source), "t"), &roots, &at("10:00")) {
                 Ok(_) => Vec::new(),
                 Err(Refusal::CitedFileMissing { path, .. }) => vec![Finding::MissingFile { path }],

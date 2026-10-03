@@ -114,30 +114,6 @@ impl Project {
         child.wait_with_output().expect("the binary finishes")
     }
 
-    /// O agente lê, de dentro da cópia e pelo comando que o pedido ensina,
-    /// cada item que o envio da onda `wave` manda ler (`read_items`): sem
-    /// isso a entrega é recusada.
-    fn read_request(&self, wave: u64) {
-        let log = self.log();
-        let sent = log
-            .visible()
-            .into_iter()
-            .rfind(|e| e.event_type == "send" && e.wave() == Some(wave))
-            .unwrap_or_else(|| panic!("nenhum envio gravado para a onda {wave}"));
-        let copy = PathBuf::from(sent.str_field("copy").expect("the copy"));
-        let root = self.root.display().to_string();
-        let listed = sent.fields.get("read_items").and_then(Value::as_array).cloned().unwrap_or_default();
-        for item in listed.iter().filter_map(Value::as_str) {
-            let block = format!("item-{item}");
-            let lesson = item.strip_prefix("lesson-");
-            let mut args = vec!["run", "read", lesson.map_or(block.as_str(), |_| "lessons")];
-            args.extend(lesson.into_iter().flat_map(|n| ["--term", n]));
-            args.extend(["--root", &root, "--spec", SPEC]);
-            let out = self.command_in(&copy, &args, "");
-            assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stdout));
-        }
-    }
-
     /// Um comando `run`, que precisa responder `ok`.
     fn run(&self, args: &[&str]) -> Value {
         let report = self.answer(args);
@@ -176,23 +152,6 @@ impl Project {
     fn seed(&self, event_type: &str, fields: &Value) -> u64 {
         let path = store::spec_file(&self.root, SPEC).expect("spec file");
         store::write(&path, event_type, fields.as_object().cloned().expect("an object"), &[]).expect(event_type).id
-    }
-
-    /// Uma linha escrita direto no arquivo da spec, como a versão antiga do
-    /// programa a deixava: a gravação de hoje recusa um campo que já saiu, e
-    /// é assim que a tarefa com ele chega à rodada. Devolve o `id` da linha.
-    fn seed_old_line(&self, event_type: &str, fields: &Value) -> u64 {
-        let path = store::spec_file(&self.root, SPEC).expect("spec file");
-        let id = self.log().max_id() + 1;
-        let mut line = json!({"v": 1, "id": id, "at": "2026-09-18T10:00:00-03:00", "type": event_type});
-        for (key, value) in fields.as_object().expect("an object") {
-            line[key] = value.clone();
-        }
-        let mut text = std::fs::read_to_string(&path).expect("the spec file");
-        text.push_str(&line.to_string());
-        text.push('\n');
-        std::fs::write(&path, text).expect("the spec file is written");
-        id
     }
 }
 
@@ -388,135 +347,6 @@ fn binary_writes_the_wave_event_of_the_batch() {
     }
 }
 
-/// A tarefa de uma spec antiga que traz a nota de trabalho (o campo `points`,
-/// que a gravação de hoje recusa), dentro de uma onda desenhada à mão que
-/// nunca saiu: a rodada de verdade converte a onda, e a versão nova da tarefa
-/// volta ao backlog sem a nota e sem o número velho de onda, já no lote que o
-/// backlog formou. A versão antiga continua na história, com a nota.
-#[test]
-fn round_removes_the_work_note_from_the_task_of_an_old_spec() {
-    let project = Project::new();
-    project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
-    let said = survey(&project);
-    let criterion = project.write(
-        "criterion",
-        &json!({"title": "Combinar o item", "when": "o programa roda", "then": "a saudação nova aparece", "proof": "git --version",
-            "form": "ubiquitous", "origin": said}),
-    );
-    let crit_id = criterion["id"].as_u64().expect("the criterion has an id");
-
-    // A onda 1, desenhada à mão por quem não é o programa, com a tarefa que
-    // traz a nota: semeada crua, como a spec antiga a deixou.
-    project.seed(
-        "wave",
-        &json!({"author": "assistant", "n": 1, "text": "Onda 1, à mão.", "criteria": [crit_id],
-            "done_when": "git --version", "origin": said}),
-    );
-    let old = project.seed_old_line(
-        "task",
-        &json!({"title": "Entregar a tarefa", "agent": "- conferir pelo teste", "author": "assistant", "wave": 1,
-            "text": "Tarefa da onda 1.", "files": [{"path": "src/b.rs", "new": true}], "depends_on": [],
-            "covers": [crit_id], "points": 3, "origin": said}),
-    );
-
-    project.run(&["plan", "--spec", SPEC]);
-    approve(&project);
-    project.run(&["round", "--spec", SPEC]);
-
-    let after = project.log();
-    let now = after.current(old).expect("the task");
-    assert!(!now.fields.contains_key("points"), "a nota some da versão nova: {:?}", now.fields);
-    assert_ne!(now.id, old, "a tarefa ganhou versão nova");
-    let batch = after
-        .visible()
-        .into_iter()
-        .find(|e| e.event_type == "wave" && e.str_field("author") == Some("binary"))
-        .expect("o lote que o backlog formou");
-    let in_batch = batch.ints("order").into_iter().filter_map(|id| after.current(id)).any(|task| task.id == now.id);
-    assert!(in_batch, "a tarefa vigente é a do lote: {:?}", batch.fields);
-    assert_eq!(now.wave(), batch.wave(), "a tarefa está no lote: {:?}", now.fields);
-    let history = after.events.iter().find(|e| e.id == old).expect("a versão antiga fica na história");
-    assert!(history.fields.contains_key("points"), "a versão antiga guarda a nota: {:?}", history.fields);
-}
-
-/// Uma spec antiga, com a onda 1 numerada à mão e já entregue de ponta a
-/// ponta, pelo binário de verdade: ela vira história, sem mexer nela. Uma
-/// tarefa carrega o número de onda 7, que nunca virou evento de onda nenhum e
-/// por isso nunca pôde ser despachada — essa tarefa volta para o backlog mesmo
-/// tendo onda gravada, o número velho é ignorado, e ela é relotada com o
-/// próximo número livre, numa rodada seguinte de verdade.
-#[test]
-fn old_spec_has_its_undelivered_tasks_rebatched() {
-    let project = Project::new();
-    project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
-    let said = survey(&project);
-    let criterion = project.write(
-        "criterion",
-        &json!({"title": "Combinar o item", "when": "o programa roda", "then": "a saudação nova aparece", "proof": "git --version",
-            "form": "ubiquitous", "origin": said}),
-    );
-    let crit_id = criterion["id"].as_u64().expect("the criterion has an id");
-
-    // A onda 1, numerada, como uma spec antiga a trazia gravada antes desta
-    // obra: semeada crua no arquivo, com autor binário, e nunca pela linha de
-    // comando. O plano é de uma tarefa só, no arquivo que já existe.
-    project.seed(
-        "wave",
-        &json!({"author": "binary", "n": 1, "text": "Onda 1.", "criteria": [crit_id], "done_when": "git --version",
-            "origin": said}),
-    );
-    project.seed(
-        "task",
-        &json!({"title": "Entregar a tarefa", "agent": "- conferir pelo teste", "author": "assistant", "wave": 1, "text": "Tarefa da onda 1.", "files": [{"path": "src/main.rs"}],
-            "depends_on": [], "covers": [crit_id], "origin": said}),
-    );
-
-    project.run(&["plan", "--spec", SPEC]);
-    approve(&project);
-
-    // A onda 1 sai na primeira rodada e entrega de verdade, pela entrega que
-    // ela grava na spec.
-    let sent_out = project.run(&["round", "--spec", SPEC]);
-    assert_eq!(waves_in(&sent_out, "dispatch"), vec![1], "{sent_out}");
-    let log = project.log();
-    let sent =
-        log.visible().into_iter().rfind(|e| e.event_type == "send" && e.wave() == Some(1)).expect("o envio da onda 1");
-    let copy = PathBuf::from(sent.str_field("copy").expect("a cópia da onda 1"));
-    std::fs::write(copy.join("src/main.rs"), "fn main() {\n    println!(\"olá\");\n}\n").expect("a mudança");
-    // A entrega responde pelas decisões do levantamento, que o pedido leva.
-    let agreed: Vec<Value> = mustard_core::domain::wave_prompt::all_agreed(&log)
-        .iter()
-        .map(|item| json!({"item": item.id, "met": true}))
-        .collect();
-    let delivered = json!({"wave": 1, "text": "A onda 1 saiu.", "files": ["src/main.rs"], "commit": "a onda 1 saiu",
-        "agreed": agreed});
-    project.read_request(1);
-    project.run(&["write", "delivered", "--spec", SPEC, "--json", &delivered.to_string()]);
-    project.run(&["round", "--spec", SPEC]);
-
-    // Uma tarefa de spec antiga: carrega o número 7, que nunca virou onda,
-    // semeada crua como a spec antiga a traz.
-    let old = project.seed(
-        "task",
-        &json!({"title": "Entregar a tarefa", "agent": "- conferir pelo teste", "author": "assistant", "wave": 7, "text": "Tarefa de spec antiga.",
-            "files": [{"path": "src/b.rs", "new": true}], "depends_on": [], "covers": [crit_id], "origin": said}),
-    );
-
-    project.run(&["round", "--spec", SPEC]);
-
-    let after = project.log();
-    let task_now = after.current(old).expect("the task");
-    assert_eq!(
-        task_now.wave(),
-        Some(2),
-        "a tarefa não entregue volta para o backlog e é relotada: {:?}",
-        task_now.fields
-    );
-
-    let wave1 = after.visible().into_iter().find(|e| e.event_type == "wave" && e.wave() == Some(1)).expect("wave 1");
-    assert_eq!(wave1.str_field("text"), Some("Onda 1."), "a onda já entregue fica como história, sem versão nova");
-}
-
 /// As ondas de uma resposta da rodada numa das listas dela (`dispatch`,
 /// `analysis`), pelo número.
 fn waves_in(out: &Value, key: &str) -> Vec<u64> {
@@ -592,8 +422,8 @@ fn backlog_project(files: &[&[&str]]) -> (Project, u64, u64, Vec<u64>) {
     (project, crit_id, said, tasks)
 }
 
-/// Uma tarefa semeada no backlog depois da aprovação, sem onda, como a
-/// conversão da spec antiga ou o conserto a deixam. Devolve o `id` gravado.
+/// Uma tarefa semeada no backlog depois da aprovação, sem onda, como o
+/// conserto a deixa. Devolve o `id` gravado.
 fn seed_backlog_task(project: &Project, criterion: u64, said: u64, files: &[&str]) -> u64 {
     let files: Vec<Value> = files.iter().map(|f| json!({"path": f, "new": true})).collect();
     project.seed(

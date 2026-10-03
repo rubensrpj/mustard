@@ -12,7 +12,7 @@ use std::process::Command;
 
 use mustard_core::domain::config::ProjectConfig;
 use mustard_core::domain::normalize::Languages;
-use mustard_core::io::map_search;
+use mustard_core::io::{map_search, map_triage};
 use serde_json::{json, Value};
 
 const RUST: &str = r#"pub fn carregar(id: u32) -> Result<u32, String> {
@@ -210,7 +210,7 @@ fn the_search_for_the_message_finds_the_file_with_the_text_its_line_and_its_func
     scan(temp.path());
     let languages = Languages::of(&ProjectConfig::default());
     let map = model::path_in(&temp.path().join(".claude"));
-    let found = map_search::search_at(&map, "pedido não encontrado", &languages, 10).expect("a busca lê o mapa");
+    let found = map_triage::triage_at(&map, ("pedido não encontrado", ""), &languages, 10).expect("a busca lê o mapa").files;
     let first = found.first().expect("a busca acha o arquivo");
     assert_eq!(first.path, "src/consulta.rs", "{found:?}");
     let text = first.text.as_ref().expect("o texto que casou");
@@ -229,7 +229,7 @@ fn the_search_for_a_one_word_text_finds_the_file_its_line_and_its_function() {
     scan(temp.path());
     let languages = Languages::of(&ProjectConfig::default());
     let map = model::path_in(&temp.path().join(".claude"));
-    let found = map_search::search_at(&map, "palavra", &languages, 10).expect("a busca lê o mapa");
+    let found = map_triage::triage_at(&map, ("palavra", ""), &languages, 10).expect("a busca lê o mapa").files;
     let first = found.first().expect("a busca acha o arquivo");
     assert_eq!(first.path, "src/consulta.rs", "{found:?}");
     let text = first.text.as_ref().expect("o texto que casou");
@@ -307,7 +307,7 @@ fn the_search_for_a_screen_text_finds_the_screen_its_line_and_its_function() {
     scan(temp.path());
     let languages = Languages::of(&ProjectConfig::default());
     let map = model::path_in(&temp.path().join(".claude"));
-    let found = map_search::search_at(&map, "carrinho está vazio", &languages, 10).expect("a busca lê o mapa");
+    let found = map_triage::triage_at(&map, ("carrinho está vazio", ""), &languages, 10).expect("a busca lê o mapa").files;
     let first = found.first().expect("a busca acha o arquivo");
     assert_eq!(first.path, "web/carrinho.tsx", "{found:?}");
     let text = first.text.as_ref().expect("o texto que casou");

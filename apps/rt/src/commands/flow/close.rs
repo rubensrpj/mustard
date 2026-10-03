@@ -292,10 +292,6 @@ fn run_close(
     }
     let recorded: Vec<Value> = taken.recorded;
 
-    // A spec antiga passa para o backlog antes de ler as ondas: a onda
-    // desenhada à mão que nunca saiu não recusa o fechamento, porque a versão
-    // nova a ignora.
-    crate::commands::flow::round::convert_hand_waves(&opts.root, root, &spec, lang).map_err(CloseRefusal::Refused)?;
     let log = read(&path)?;
     finished(&log)?;
     // O pedido de revisão só fecha com o veredito que o revisor grava e que a

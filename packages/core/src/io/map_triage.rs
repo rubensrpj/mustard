@@ -153,7 +153,9 @@ impl Triaged {
 }
 
 /// A busca dos arquivos do mapa do projeto em `root`, triada: as recusas são
-/// as de [`crate::io::map_search::search`]. Os arquivos saem na ordem única
+/// as de todo leitor do mapa — sem o arquivo, `MapRefusal::MapMissing`, e com
+/// um bloco que a busca lê ainda vazio, `MapRefusal::MapUnfilled`. Os
+/// arquivos saem na ordem única
 /// das palavras de `query` e da frase de `intent` ([`crate::io::map_order`]),
 /// a mesma da lista de candidatos do filtro.
 pub fn triage(

@@ -109,14 +109,18 @@ fn git(dir: &Path, args: &[&str]) {
 }
 
 /// Escreve `files` (caminho e texto) em `root`, inicia o repositório com o
-/// [`SEED_CONFIG`] e comita tudo como `semente`.
-fn build_in_place(root: &Path, files: &[(&str, &str)]) {
+/// [`SEED_CONFIG`] e comita tudo como `semente`. Com `branch`, o repositório
+/// nasce nela; sem, vale a branch que a configuração do git manda.
+fn build_in_place(root: &Path, branch: Option<&str>, files: &[(&str, &str)]) {
     for (path, text) in files {
         let at = root.join(path);
         std::fs::create_dir_all(at.parent().expect("a file inside the repository")).expect("create parent");
         std::fs::write(&at, text).expect("write seed file");
     }
-    git(root, &["init", "-q"]);
+    match branch {
+        Some(branch) => git(root, &["init", "-q", "-b", branch]),
+        None => git(root, &["init", "-q"]),
+    }
     append_to_config(root, SEED_CONFIG);
     git(root, &["add", "-A"]);
     git(root, &["commit", "-q", "-m", "semente"]);
@@ -129,10 +133,22 @@ fn build_in_place(root: &Path, files: &[(&str, &str)]) {
 /// O repositório nasce de uma cópia (ver [`repo_from_template`]); o conjunto de
 /// arquivos é a chave do modelo.
 pub(crate) fn seeded_repo(root: &Path, files: &[(&str, &str)]) {
+    seeded(root, None, files);
+}
+
+/// O mesmo repositório de [`seeded_repo`], parado em `branch`: o que o teste
+/// de uma spec precisa quando o checkout tem de estar na branch dela.
+pub(crate) fn seeded_repo_on(root: &Path, branch: &str, files: &[(&str, &str)]) {
+    seeded(root, Some(branch), files);
+}
+
+/// A montagem das duas portas: a branch e o conjunto de arquivos são a chave
+/// do modelo.
+fn seeded(root: &Path, branch: Option<&str>, files: &[(&str, &str)]) {
     let key: BTreeMap<&str, &str> = files.iter().copied().collect();
-    repo_from_template(root, &format!("seeded:{key:?}"), |dir| {
+    repo_from_template(root, &format!("seeded:{branch:?}:{key:?}"), |dir| {
         let files: Vec<(&str, &str)> = key.iter().map(|(path, text)| (*path, *text)).collect();
-        build_in_place(dir, &files);
+        build_in_place(dir, branch, &files);
     });
 }
 
@@ -205,6 +221,22 @@ mod tests {
         assert_eq!(git_text(second.path(), &["rev-parse", "HEAD"]), seed, "the second kept its seed");
         assert_eq!(git_text(second.path(), &["config", "user.name"]), "t", "the second kept its identity");
         assert!(!second.path().join("b.txt").exists());
+    }
+
+    /// O repositório parado numa branch nasce nela, na primeira chamada e na
+    /// cópia; o mesmo conjunto de arquivos em outra branch tem o modelo próprio
+    /// e não herda a do primeiro.
+    #[test]
+    fn a_seeded_repo_on_a_branch_stands_on_it_and_another_branch_gets_its_own_template() {
+        let files = [("a.txt", "a\n")];
+        let (first, copy, other) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        seeded_repo_on(first.path(), "feature/x", &files);
+        seeded_repo_on(copy.path(), "feature/x", &files);
+        seeded_repo_on(other.path(), "dev", &files);
+        for (case, dir, branch) in [("the first", &first, "feature/x"), ("the copy", &copy, "feature/x"), ("another branch", &other, "dev")] {
+            assert_eq!(git_text(dir.path(), &["symbolic-ref", "--short", "HEAD"]), branch, "{case}");
+            assert_eq!(git_text(dir.path(), &["log", "--format=%s"]), "semente", "{case}");
+        }
     }
 
     /// O modelo de cada `key` se monta uma vez; a segunda pasta vazia só ganha

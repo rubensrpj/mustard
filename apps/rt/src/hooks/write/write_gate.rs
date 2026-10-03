@@ -1152,13 +1152,10 @@ mod tests {
     fn an_edit_inside_a_linked_worktree_is_judged_by_the_worktree_branch() {
         let tmp = tempfile::tempdir().expect("tempdir");
         // No macOS a pasta temporária é um atalho (`/var` aponta para
-        // `/private/var`), e o portão compara caminhos já resolvidos.
-        // No Windows o caminho resolvido volta com o prefixo `\\?\`, que o
-        // classificador não usa; tirá-lo deixa a comparação igual nos dois.
-        let tmp_root = std::fs::canonicalize(tmp.path()).expect("tempdir resolvida");
-        let tmp_root = std::path::PathBuf::from(
-            tmp_root.to_string_lossy().trim_start_matches(r"\\?\").to_string(),
-        );
+        // `/private/var`) e no Windows o caminho resolvido traz o prefixo
+        // `\\?\`: a pasta vem na forma que o sistema dá, e o portão a compara
+        // com a mesma conta de todo caminho.
+        let tmp_root = std::path::PathBuf::from(crate::shared::paths::on_disk(tmp.path()));
         let main = tmp_root.join("repo");
         std::fs::create_dir_all(&main).expect("main");
         std::fs::write(main.join("mustard.json"), DEV_MAIN).expect("config");
@@ -1436,8 +1433,7 @@ mod tests {
     #[test]
     fn the_whole_read_inside_a_working_copy_is_refused_with_the_copy_lines() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let tmp_root = std::fs::canonicalize(tmp.path()).expect("tempdir resolvida");
-        let tmp_root = std::path::PathBuf::from(tmp_root.to_string_lossy().trim_start_matches(r"\\?\").to_string());
+        let tmp_root = std::path::PathBuf::from(crate::shared::paths::on_disk(tmp.path()));
         let main = tmp_root.join("repo");
         std::fs::create_dir_all(&main).expect("main");
         repo_on(&main, "dev");

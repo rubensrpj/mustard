@@ -24,12 +24,12 @@ path = "src/lib.rs"
 # source of truth (root Cargo.toml).
 [dependencies]
 mustard-core = { path = "../../packages/core" }
-serde_json = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
 dialoguer = { workspace = true }
 
 [dev-dependencies]
+serde_json = { workspace = true }
 tempfile = { workspace = true }
 
 # Inherit the workspace lint table (pedantic = warn, unwrap_used = deny,

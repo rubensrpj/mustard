@@ -348,6 +348,10 @@ mod tests {
         init_with_scan(project_path, options, &|_, _| Ok(ScanReport::default()))
     }
 
+    /// O objeto JSON que o arquivo guarda.
+    fn json_object(path: &Path) -> serde_json::Map<String, serde_json::Value> {
+        serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap()
+    }
 
     #[test]
     fn init_seeds_harness_and_enables_plugin() {
@@ -403,7 +407,7 @@ mod tests {
         // that choice lives at user scope, never planted into the project.
         // Content now comes from the compiled-in core seed, so assert on a
         // stable key the real seed carries.
-        let settings = crate::fs_ops::read_json_object(&claude.join("settings.local.json"));
+        let settings = json_object(&claude.join("settings.local.json"));
         assert_eq!(
             settings
                 .get("env")
@@ -438,7 +442,7 @@ mod tests {
         // stamp and runtime, and NO language: the install ran without asking,
         // so none was chosen and none is written. There is NO
         // .claude/mustard.json.
-        let cfg = crate::fs_ops::read_json_object(&project.join("mustard.json"));
+        let cfg = json_object(&project.join("mustard.json"));
         assert_eq!(
             cfg.get("version").and_then(|v| v.as_str()),
             Some(mustard_core::harness_version().as_str()),
@@ -511,7 +515,7 @@ mod tests {
         )
         .unwrap();
 
-        let cfg = crate::fs_ops::read_json_object(&project.join("mustard.json"));
+        let cfg = json_object(&project.join("mustard.json"));
         assert_eq!(
             cfg.get("version").and_then(|v| v.as_str()),
             Some(mustard_core::harness_version().as_str()),
@@ -596,7 +600,7 @@ mod tests {
             "merge backfills a missing seed"
         );
         // …and no plugin enablement is planted on the merge path either.
-        let settings = crate::fs_ops::read_json_object(&claude.join("settings.local.json"));
+        let settings = json_object(&claude.join("settings.local.json"));
         assert!(
             settings
                 .get("enabledPlugins")
@@ -709,7 +713,7 @@ mod tests {
         let carried = |project: &Path, key: &str| (header_of(project, "wave", key), header_of(project, "review", key));
         let both = |value: &str| (value.to_string(), value.to_string());
         let agents = |project: &Path| {
-            crate::fs_ops::read_json_object(&project.join("mustard.json")).get("agents").cloned().unwrap_or_default()
+            json_object(&project.join("mustard.json")).get("agents").cloned().unwrap_or_default()
         };
 
         let work = tempdir().unwrap();
@@ -720,7 +724,7 @@ mod tests {
         assert_eq!(carried(&project, "model"), both("sonnet"));
         assert_eq!(carried(&project, "effort"), both("xhigh"));
 
-        let mut config = crate::fs_ops::read_json_object(&project.join("mustard.json"));
+        let mut config = json_object(&project.join("mustard.json"));
         config.insert("agents".into(), serde_json::json!({"model": "opus", "effort": "medium"}));
         fs::write(project.join("mustard.json"), serde_json::to_string(&config).unwrap()).unwrap();
         init(&project, &InitOptions { yes: true, ..InitOptions::default() }).unwrap();
@@ -732,7 +736,7 @@ mod tests {
         assert_eq!(carried(&project, "model"), both("opus"));
         assert_eq!(carried(&project, "effort"), both("medium"));
 
-        let mut config = crate::fs_ops::read_json_object(&project.join("mustard.json"));
+        let mut config = json_object(&project.join("mustard.json"));
         config.insert("agents".into(), serde_json::json!({"model": "opus", "effort": "ultra"}));
         fs::write(project.join("mustard.json"), serde_json::to_string(&config).unwrap()).unwrap();
         init(&project, &InitOptions { yes: true, ..InitOptions::default() }).unwrap();
@@ -740,13 +744,13 @@ mod tests {
         assert_eq!(carried(&project, "effort"), both("xhigh"), "an effort Claude Code does not accept falls back");
         assert_eq!(carried(&project, "model"), both("opus"));
 
-        let mut config = crate::fs_ops::read_json_object(&project.join("mustard.json"));
+        let mut config = json_object(&project.join("mustard.json"));
         config.remove("agents");
         config.insert("acronyms".into(), serde_json::json!(["PI"]));
         fs::write(project.join("mustard.json"), serde_json::to_string(&config).unwrap()).unwrap();
         init(&project, &InitOptions { yes: true, ..InitOptions::default() }).unwrap();
         assert_eq!(agents(&project), serde_json::json!({"model": "sonnet", "effort": "xhigh"}), "the missing fields came back");
-        assert_eq!(crate::fs_ops::read_json_object(&project.join("mustard.json"))["acronyms"], serde_json::json!(["PI"]));
+        assert_eq!(json_object(&project.join("mustard.json"))["acronyms"], serde_json::json!(["PI"]));
         assert_eq!(carried(&project, "model"), both("sonnet"));
         assert_eq!(carried(&project, "effort"), both("xhigh"));
     }
@@ -828,7 +832,7 @@ mod tests {
         )
         .unwrap();
 
-        let cfg = crate::fs_ops::read_json_object(&project.join("mustard.json"));
+        let cfg = json_object(&project.join("mustard.json"));
         let inject = cfg.get("inject").and_then(|v| v.as_array()).expect("inject present");
         assert_eq!(inject.len(), 1, "the curated list is preserved, not replaced: {inject:?}");
         assert_eq!(

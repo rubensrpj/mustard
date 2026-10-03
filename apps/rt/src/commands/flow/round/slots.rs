@@ -22,6 +22,13 @@ use super::keep::{Kept, Keeping};
 use super::queue::{max_parallel, open_review, orphaned_waves, unanswered_sends};
 use crate::commands::git_settle::{enter_unit_branch, submodule_holding, submodules_of};
 use crate::commands::wave::wave_overlap_check::wave_graph;
+use crate::shared::paths::{place_key, same_place};
+
+/// As cópias seguradas, cada uma achada pelo lugar que o caminho nomeia
+/// ([`place_key`]) e não pelo texto, com o texto do primeiro envio e as ondas
+/// que a seguram: duas ondas que gravaram a mesma pasta
+/// escrita de jeitos diferentes seguram a mesma cópia.
+type Holders = BTreeMap<String, (String, BTreeSet<u64>)>;
 
 /// Cada cópia gravada por uma onda que ainda a segura, com as ondas que a
 /// seguram: a do envio sem volta oficial ([`unanswered_sends`]) — a órfã
@@ -29,14 +36,24 @@ use crate::commands::wave::wave_overlap_check::wave_graph;
 /// depois do pedido e a da onda que voltou e espera a rodada, cuja entrega
 /// ainda não é oficial e guarda o código até o commit. A cópia é a gravada no
 /// último envio de cada onda, como o envio a grava.
-fn copy_holders(log: &SpecLog) -> BTreeMap<String, BTreeSet<u64>> {
-    let mut holders: BTreeMap<String, BTreeSet<u64>> = BTreeMap::new();
+fn copy_holders(log: &SpecLog) -> Holders {
+    let mut holders: Holders = BTreeMap::new();
     for wave in unanswered_sends(log).into_keys() {
         if let Some(copy) = recorded_copy(log, wave) {
-            holders.entry(copy.path).or_default().insert(wave);
+            holders.entry(place_key(&copy.path)).or_insert_with(|| (copy.path, BTreeSet::new())).1.insert(wave);
         }
     }
     holders
+}
+
+/// As ondas que seguram a cópia `copy`, escrita como for ([`copy_holders`]).
+fn waves_holding<'a>(holders: &'a Holders, copy: &str) -> Option<&'a BTreeSet<u64>> {
+    holders.get(&place_key(copy)).map(|(_, waves)| waves)
+}
+
+/// `true` quando `places` tem a pasta `path`, escrita como for.
+fn has_place(places: &BTreeSet<String>, path: &str) -> bool {
+    places.iter().any(|place| same_place(place, path))
 }
 
 /// As ondas de `waves` cuja cópia gravada é também a de outra onda que a
@@ -48,7 +65,7 @@ pub(super) fn sharing_copy(log: &SpecLog, waves: impl IntoIterator<Item = u64>) 
         .into_iter()
         .filter(|wave| {
             recorded_copy(log, *wave)
-                .and_then(|copy| holders.get(&copy.path).cloned())
+                .and_then(|copy| waves_holding(&holders, &copy.path))
                 .is_some_and(|by| by.iter().any(|other| other != wave))
         })
         .collect()
@@ -78,7 +95,7 @@ pub(super) fn without_live_copy(log: &SpecLog, waves: impl IntoIterator<Item = u
 /// encerra o que roda nelas.
 pub(crate) fn held_slots(root: &Path, spec: &str, log: &SpecLog) -> BTreeSet<String> {
     let mut held: BTreeSet<String> =
-        copy_holders(log).into_keys().filter(|copy| is_slot_of(root, spec, copy)).collect();
+        copy_holders(log).into_values().map(|(copy, _)| copy).filter(|copy| is_slot_of(root, spec, copy)).collect();
     if let Some(review) = open_review(log) {
         let recorded = log.get(review).and_then(|sent| sent.str_field("copy")).map(str::to_string);
         held.insert(recorded.unwrap_or_else(|| shown(&final_copy_path(root, spec, log))));
@@ -138,12 +155,12 @@ pub(super) fn open_copies(
     let own: BTreeSet<String> = waves
         .iter()
         .filter_map(|wave| recorded_copy(log, *wave).map(|copy| (*wave, copy.path)))
-        .filter(|(wave, path)| holders.get(path).is_some_and(|by| by.iter().all(|other| other == wave)))
+        .filter(|(wave, path)| waves_holding(&holders, path).is_some_and(|by| by.iter().all(|other| other == wave)))
         .map(|(_, path)| path)
         .collect();
     let mut free: Vec<PathBuf> = (0..max_parallel(root))
         .map(|slot| slot_path(root, spec, slot))
-        .filter(|slot| !held.contains(&shown(slot)) || own.contains(&shown(slot)))
+        .filter(|slot| !has_place(&held, &shown(slot)) || has_place(&own, &shown(slot)))
         .collect();
 
     // A onda que volta à vaga que o último envio dela gravou pega essa vaga
@@ -157,7 +174,7 @@ pub(super) fn open_copies(
             continue;
         }
         let Some(copy) = recorded_copy(log, *wave).map(|copy| copy.path) else { continue };
-        if let Some(at) = free.iter().position(|slot| shown(slot) == copy) {
+        if let Some(at) = free.iter().position(|slot| same_place(&shown(slot), &copy)) {
             chosen.insert(*wave, (free.remove(at), true));
         }
     }
@@ -317,7 +334,7 @@ pub(crate) fn slot_owner(spec: &str, log: &SpecLog, path: &Path) -> Keeping {
     let owner = log
         .visible()
         .into_iter()
-        .filter(|sent| sent.event_type == "send" && sent.str_field("copy") == Some(slot.as_str()))
+        .filter(|sent| sent.event_type == "send" && sent.str_field("copy").is_some_and(|copy| same_place(copy, &slot)))
         .filter_map(|sent| sent.wave().map(|wave| (wave, sent.id)))
         .max_by_key(|(_, id)| *id);
     match owner {
@@ -440,7 +457,7 @@ pub(crate) fn remove_copy(root: &Path, path: &Path) -> Result<(), String> {
     for sub in submodules_of(root) {
         let _ = git::run(&root.join(&sub), &["worktree", "prune"]);
     }
-    if path.exists() || registered_copies(root).contains(&shown(path)) {
+    if path.exists() || has_place(&registered_copies(root), &shown(path)) {
         return Err(if detail.is_empty() { shown(path) } else { detail });
     }
     Ok(())

@@ -22,9 +22,8 @@
 //! cada declaração de fora, que ele guarda uma vez só, nela, e os títulos dos
 //! commits mais novos que mudaram o arquivo. A busca dos arquivos da triagem e
 //! a lista de todos os campos leem todas as colunas, cada uma com o peso do
-//! nível; a busca de [`search`], sem triagem, lê só os campos da lista de
-//! base, para que um arquivo só apareça se uma palavra da pergunta está no
-//! nome, no caminho, na documentação ou nos textos fixos dele.
+//! nível; a lista de base da busca com filtro lê só os campos de base: o
+//! nome, o caminho, a documentação e os textos fixos.
 //!
 //! Cada texto passa pela normalização de toda busca (`domain::normalize`),
 //! nas línguas do projeto, antes de entrar: o nome colado entra quebrado
@@ -98,7 +97,7 @@ use crate::io::map_notes_fresh;
 use crate::io::map_check;
 use crate::io::map_order;
 use crate::io::map_sense::Near;
-use crate::io::project_map::{model_path, open_existing, unreadable, MapBlock, SEARCHED};
+use crate::io::project_map::{model_path, open_existing, unreadable, MapBlock};
 use crate::platform::error::Result;
 
 mod refresh;
@@ -671,30 +670,6 @@ fn write_meta(conn: &Connection, level: &Level, count: u64, total: &[u64]) -> Re
     Ok(())
 }
 
-/// Os arquivos que mais casam com a pergunta `query` no mapa do projeto em
-/// `root`, até `limit`, com as palavras cortadas nas línguas `languages`:
-/// primeiro os que o pedaço do nome acha, depois os das palavras, da nota
-/// mais alta para a mais baixa. As palavras contam só no nome, no caminho, na
-/// documentação e nos textos fixos do arquivo: o comentário e o título de
-/// commit dele não o fazem aparecer. As recusas são as de todo leitor do mapa —
-/// sem o arquivo, [`MapRefusal::MapMissing`] — e, com um bloco de que o
-/// índice lê ainda vazio depois de uma troca de formato,
-/// [`MapRefusal::MapUnfilled`].
-pub fn search(root: &Path, query: &str, languages: &Languages, limit: usize) -> std::result::Result<Vec<Found>, MapRefusal> {
-    search_at(&model_path(root), query, languages, limit)
-}
-
-/// A busca de [`search`] no mapa gravado em `model`.
-pub fn search_at(
-    model: &Path,
-    query: &str,
-    languages: &Languages,
-    limit: usize,
-) -> std::result::Result<Vec<Found>, MapRefusal> {
-    let db = indexed(model, languages, &SEARCHED)?;
-    found_in(db.conn(), query, languages, limit, FILE_LEVEL.fields).map_err(unreadable)
-}
-
 /// O banco em `model`, com o índice feito nas línguas `languages`: o feito
 /// em outras se refaz antes da busca. O bloco de `read`, os que a busca lê,
 /// que o scan ainda não encheu depois de uma troca de formato recusa a
@@ -717,7 +692,10 @@ fn made_in(conn: &Connection, languages: &Languages) -> Result<bool> {
     Ok(stored.is_some_and(|stored| stored == languages.codes().join(",")))
 }
 
-/// A busca dos arquivos contando só as colunas `columns` do nível.
+/// A busca dos arquivos contando só as colunas `columns` do nível. Sem
+/// chamador desde que a busca por arquivo saiu; sai na limpeza dos restos
+/// dela.
+#[allow(dead_code)]
 fn found_in(
     conn: &Connection,
     query: &str,
@@ -852,7 +830,9 @@ fn reindex_specs(conn: &Connection, languages: &Languages) -> Result<()> {
 /// projeto em `root`, até `limit`, da nota mais alta para a mais baixa, cada
 /// um com a spec, o código, o título, a linha da parte do usuário que mais
 /// casa e até `limit` lugares ligados a ele. Lê só o mapa: nenhum arquivo de
-/// spec se abre. As recusas são as de [`search`].
+/// spec se abre. As recusas são as de todo leitor do mapa — sem o arquivo,
+/// [`MapRefusal::MapMissing`] — e, com um bloco de que o índice lê ainda vazio
+/// depois de uma troca de formato, [`MapRefusal::MapUnfilled`].
 pub fn search_specs(root: &Path, query: &str, languages: &Languages, limit: usize) -> std::result::Result<Vec<FoundItem>, MapRefusal> {
     search_specs_at(&model_path(root), query, languages, limit)
 }
@@ -958,9 +938,11 @@ pub fn any_path(_: &str) -> bool {
 /// `languages`, todos os que a busca achou, só de arquivos que `admit` deixa
 /// entrar. `admit` recebe o caminho do arquivo, relativo à raiz, e quem
 /// chama o monta com a pasta e os tipos de arquivo que a busca pediu
-/// ([`any_path`] quando não pediu nenhum). As recusas são as de [`search`] e,
-/// como o índice usa os títulos dos commits do arquivo, também a da história
-/// da base ainda vazia depois de uma troca de formato
+/// ([`any_path`] quando não pediu nenhum). As recusas são as de todo leitor do
+/// mapa — sem o arquivo, [`MapRefusal::MapMissing`] — e, com um bloco de que o
+/// índice lê ainda vazio depois de uma troca de formato,
+/// [`MapRefusal::MapUnfilled`]; como o índice usa os títulos dos commits do
+/// arquivo, também a da história da base ainda vazia
 /// ([`map_fill::READ_BY_CANDIDATES`]).
 pub fn candidates(
     root: &Path,
@@ -1248,7 +1230,7 @@ pub(crate) mod tests {
     use crate::io::map_glossary;
     use crate::io::map_index::TOKENIZER;
     use crate::io::map_lists::{base_list, name_hits, ranked_files_near, sources_near};
-    use crate::io::project_map as store;
+    use crate::io::project_map::{self as store, SEARCHED};
     use serde_json::{json, Value};
     use tempfile::{tempdir, TempDir};
 
@@ -1284,9 +1266,15 @@ pub(crate) mod tests {
         dir
     }
 
-    /// Os caminhos que a busca devolve.
+    /// Os caminhos que a busca dos arquivos por palavras devolve, na ordem da
+    /// nota, antes de a ordem única juntá-los à lista das declarações.
     fn paths(dir: &Path, query: &str) -> Vec<String> {
-        search(dir, query, &languages(), TOP).unwrap().into_iter().map(|found| found.path).collect()
+        let db = indexed(&model_path(dir), &languages(), &SEARCHED).unwrap();
+        ranked_files_near(db.conn(), query, &languages(), TOP, &Near::none())
+            .unwrap()
+            .into_iter()
+            .map(|found| found.path)
+            .collect()
     }
 
     /// Os caminhos que só as palavras acham, com a nota, na ordem da nota.
@@ -1303,11 +1291,10 @@ pub(crate) mod tests {
             .collect()
     }
 
-    /// O arquivo que só o comentário dele cita não entra na busca de
-    /// [`search`], que lê os campos da lista de base, mas a busca da triagem,
-    /// que lê todas as colunas, o acha.
+    /// O arquivo que só o comentário dele cita é achado pela busca da triagem,
+    /// que lê todas as colunas.
     #[test]
-    fn a_file_only_its_comment_names_is_left_out_of_the_plain_search_and_found_by_the_triage_one() {
+    fn a_file_only_its_comment_names_is_found_by_the_triage_search() {
         let dir = tempdir().unwrap();
         let map = json!({ "modules": [
             { "path": "src/a.rs", "file_comment": "grava o estorno do pagamento", "declarations": [] },
@@ -1316,10 +1303,7 @@ pub(crate) mod tests {
             ] },
         ] });
         store::save_at(&model_path(dir.path()), &map, "scan 1", &languages()).unwrap();
-        assert_eq!(paths(dir.path(), "estorno"), ["src/b.rs"]);
-        let db = open_existing(&model_path(dir.path())).unwrap();
-        let mut triage: Vec<String> =
-            ranked_files_near(db.conn(), "estorno", &languages(), TOP, &Near::none()).unwrap().into_iter().map(|found| found.path).collect();
+        let mut triage = paths(dir.path(), "estorno");
         triage.sort();
         assert_eq!(triage, ["src/a.rs", "src/b.rs"]);
     }

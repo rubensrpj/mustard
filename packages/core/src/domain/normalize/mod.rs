@@ -568,7 +568,7 @@ mod tests {
 
         use crate::domain::project_map::{MapDecl, MapModule, ProjectMap};
         use crate::domain::search::TOP;
-        use crate::io::{map_search, project_map as store};
+        use crate::io::{map_triage, project_map as store};
         use crate::domain::spec_events::{found_by, normalize, parse_log, render_line, search_field, stamp};
 
         let languages = Languages::new(["pt-BR", "en-US"]);
@@ -611,7 +611,7 @@ mod tests {
         ] {
             let spec = found_by(log.events.iter().collect(), question, &BTreeMap::new(), &languages);
             let spec = sorted(spec.iter().map(|e| e.id).collect());
-            let from_map = map_search::search(project.path(), question, &languages, TOP).unwrap();
+            let from_map = map_triage::triage(project.path(), (question, ""), &languages, TOP).unwrap().files;
             let from_map = sorted(from_map.iter().map(|f| f.path.trim_end_matches(".rs").parse().unwrap()).collect());
             let lessons = crate::domain::lessons::matching_among(&log.events.iter().collect::<Vec<_>>(), question, &languages);
             let lessons = sorted(lessons.iter().map(|hit| hit.id).collect());
@@ -634,7 +634,7 @@ mod tests {
     #[test]
     fn the_same_question_in_portuguese_and_english_finds_the_same_target() {
         use crate::domain::project_map::{MapDecl, MapModule, ProjectMap};
-        use crate::io::{map_search, project_map as store};
+        use crate::io::{map_triage, project_map as store};
 
         let languages = Languages::new(["pt-BR", "en-US"]);
         let mut normalizer = Normalizer::new(&languages);
@@ -662,7 +662,7 @@ mod tests {
         let project = tempfile::tempdir().unwrap();
         store::write(project.path(), &map).unwrap();
         let first = |question: &str| {
-            let found = map_search::search(project.path(), question, &languages, 5).unwrap();
+            let found = map_triage::triage(project.path(), (question, ""), &languages, 5).unwrap().files;
             found.first().map(|file| file.path.clone()).unwrap_or_default()
         };
         let portuguese = first("Onde é que cada pedido é validado antes de ser salvo?");

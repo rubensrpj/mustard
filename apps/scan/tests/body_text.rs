@@ -13,7 +13,7 @@ use std::process::Command;
 use mustard_core::domain::config::ProjectConfig;
 use mustard_core::domain::normalize::Languages;
 use mustard_core::domain::project_map::file_history;
-use mustard_core::io::{map_search, project_map as store};
+use mustard_core::io::{map_triage, project_map as store};
 use serde_json::{json, Value};
 
 const RUST: &str = r#"//! Pedidos da loja: criar, conferir e cancelar.
@@ -288,7 +288,7 @@ fn trace(dir: &Path, file: &str) {
 /// estiver desfeito.
 fn search(dir: &Path, query: &str) {
     let languages = Languages::of(&ProjectConfig::default());
-    map_search::search_at(&model::path_in(&dir.join(".claude")), query, &languages, 10)
+    map_triage::triage_at(&model::path_in(&dir.join(".claude")), (query, ""), &languages, 10)
         .expect("a busca lê o mapa");
 }
 
@@ -419,28 +419,6 @@ fn a_pass_that_does_not_read_the_file_again_keeps_its_texts_and_titles() {
     let map = store::read(dir).expect("o mapa foi gravado");
     assert_eq!(file_history(&map.history, "src/pedido.rs").unwrap().titles, ["primeiro"]);
     assert_eq!(file_history(&map.history, "src/outro.rs").unwrap().titles, ["segundo"]);
-}
-
-/// A busca sem filtro lista os mesmos arquivos, na mesma ordem, de antes de o
-/// índice guardar os comentários, os títulos de commit e o resto do texto de
-/// dentro das peças; a nota é a dos pesos de cada campo, e a palavra que só um
-/// desses campos novos tem não faz o arquivo aparecer.
-#[test]
-fn the_unfiltered_search_lists_the_same_files_as_before_with_the_weight_of_each_field() {
-    let temp = project();
-    scan(temp.path());
-    let languages = Languages::of(&ProjectConfig::default());
-    let map = model::path_in(&temp.path().join(".claude"));
-    let got = |query: &str| -> Vec<(String, u64)> {
-        let found = map_search::search_at(&map, query, &languages, 10).expect("a busca lê o mapa");
-        found.into_iter().map(|f| (f.path, f.score)).collect()
-    };
-    let list = |pairs: &[(&str, u64)]| -> Vec<(String, u64)> { pairs.iter().map(|(p, s)| (p.to_string(), *s)).collect() };
-    assert_eq!(got("conferir pedido"), list(&[("src/pedido.rs", 2465), ("Loja/Estoque.cs", 345)]));
-    assert_eq!(got("armazém central"), list(&[]));
-    assert_eq!(got("cupom frete"), list(&[("web/carrinho.service.ts", 1930)]));
-    assert_eq!(got("reserva trinta minutos"), list(&[("Loja/Estoque.cs", 1859)]));
-    assert_eq!(got("regra7 regra8"), list(&[("web/carrinho.service.ts", 399)]));
 }
 
 /// Um arquivo com comentário em todo lugar: o do começo escrito na primeira

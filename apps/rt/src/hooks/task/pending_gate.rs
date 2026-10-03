@@ -303,14 +303,20 @@ mod tests {
         assert!(ok, "git {args:?} failed in {}", dir.display());
     }
 
-    /// Um repositório com um commit, parado na branch `branch`.
+    /// Um repositório com um commit, parado na branch `branch`. O commit nasce
+    /// na `dev` uma vez por processo e a pasta vem por cópia; a branch pedida
+    /// sai dela.
     fn repo_on(dir: &Path, branch: &str) {
-        git(dir, &["init", "-q"]);
-        git(dir, &["checkout", "-q", "-b", branch]);
-        git(
-            dir,
-            &["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "root"],
-        );
+        crate::shared::test_fixture::repo_from_template(dir, "pending_gate.repo_on", |root| {
+            git(root, &["init", "-q", "-b", "dev"]);
+            git(
+                root,
+                &["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "root"],
+            );
+        });
+        if branch != "dev" {
+            git(dir, &["checkout", "-q", "-b", branch]);
+        }
     }
 
     /// O turno depois do fechamento cuja mensagem final omite uma pendência
@@ -513,13 +519,15 @@ mod tests {
     fn a_merge_that_switches_back_to_the_base_is_still_charged() {
         let dir = tempdir().expect("tempdir");
         let root = dir.path();
+        repo_on(root, "feature/trava");
         std::fs::write(root.join("mustard.json"), r#"{"language":{"text":"pt-BR"},"git":{"flow":{"*":"dev","dev":"main"}}}"#)
             .expect("cfg");
-        repo_on(root, "feature/trava");
         add_items(root, &["Humanize"]);
         seed_spec(root, SPEC, &[1], "");
         assert!(record_phase(root, SPEC, "delivered", None), "the merge is recorded");
-        git(root, &["checkout", "-q", "-b", "dev"]);
+        let on_the_branch = crate::shared::spec_state::active_spec(&root.to_string_lossy(), Some("s-nova"));
+        assert_eq!(on_the_branch.as_deref(), Some(SPEC), "while on the spec's branch the ladder finds the spec");
+        git(root, &["checkout", "-q", "dev"]);
         assert_eq!(crate::shared::spec_state::active_spec(&root.to_string_lossy(), Some("s-nova")), None);
 
         match verdict(root, &stop("s-nova", "PR mergeado, voltei para a dev.")) {

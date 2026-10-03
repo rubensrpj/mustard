@@ -103,11 +103,11 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "No criterion cites contract {code}: nothing proves it was met."
         }
         ("plan.task_without_file", Locale::PtBr) => {
-            "A tarefa {task} mexe em código e não diz em que arquivo. O mapa sugere: {files}. \
+            "A tarefa {task} mexe em código e não diz em que arquivo. Nomeie o arquivo na tarefa. \
              A tarefa que não mexe em arquivo nenhum diz isso no texto dela."
         }
         ("plan.task_without_file", Locale::EnUs) => {
-            "Task {task} changes code and does not say which file. The map suggests: {files}. \
+            "Task {task} changes code and does not say which file. Name the file in the task. \
              A task that changes no file says so in its own text."
         }
         ("plan.task_could_name_a_skill", Locale::PtBr) => {
@@ -116,8 +116,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("plan.task_could_name_a_skill", Locale::EnUs) => {
             "Task {task} names no skill, and skill {skill} fits it. Name it in the task."
         }
-        ("plan.no_suggestion", Locale::PtBr) => "nada — o mapa não achou arquivo para esta tarefa",
-        ("plan.no_suggestion", Locale::EnUs) => "nothing — the map found no file for this task",
         ("plan.command_not_declared", Locale::PtBr) => {
             "O projeto não declara `{field}` no mustard.json: preencha esse campo com o comando de \
              verdade. Até lá, o pedido de cada onda sai sem essa linha."
@@ -1704,8 +1702,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            207,
-            0x7bab_2783_5d0d_0967,
+            206,
+            0x4701_233f_299f_a5c6,
         );
     }
 
@@ -1792,9 +1790,8 @@ mod tests {
             ("plan.item_without_task", &["{code}"][..]),
             ("plan.owner_missing", &["{type}"][..]),
             ("plan.contract_without_criterion", &["{code}"][..]),
-            ("plan.task_without_file", &["{task}", "{files}"][..]),
+            ("plan.task_without_file", &["{task}"][..]),
             ("plan.task_could_name_a_skill", &["{task}", "{skill}"][..]),
-            ("plan.no_suggestion", &[][..]),
             ("plan.finding.label", &[][..]),
             ("discard.preview", &["{spec}", "{branch}", "{remote}", "{what}", "{token}"][..]),
             ("discard.archive", &[][..]),

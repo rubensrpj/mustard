@@ -1406,7 +1406,12 @@ mod tests {
     fn a_recursive_search_through_the_config_file_with_the_key_is_refused() {
         let config = format!(r#"{{"jev": {{"key": "{}"}}}}"#, fixture::FAKE_KEY);
         let (_dir, root) = fixture::project(&config, true);
-        let above = format!("grep -rn jev {}", root.parent().expect("a folder above the project").display());
+        // O terminal come a barra invertida de uma palavra sem aspas: a pasta
+        // de cima entra na linha com barras normais, como a pessoa a escreve.
+        let above = format!(
+            "grep -rn jev {}",
+            crate::shared::paths::canonical(&root.parent().expect("a folder above the project").to_string_lossy()),
+        );
         let (grep, rg) = ("`--exclude=mustard.json`", "`-g '!mustard.json'`");
         for (command, fix) in [
             ("grep -r jev .", grep),

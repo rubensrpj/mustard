@@ -5,8 +5,6 @@
 //!   install overwrites; a merge skips existing files so user edits survive)
 //!   and a *top-level skip* list (`.github` lives at project root, not under
 //!   `.claude/`).
-//! - [`read_json_object`] — fail-open read of a JSON object, behind the
-//!   `settings.json` mergers in `init`/`add`.
 //!
 //! The project config (`mustard.json`) is no longer merged here — it has a
 //! single typed owner, [`mustard_core::ProjectConfig`].
@@ -15,7 +13,6 @@ use std::fs;
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use serde_json::{Map, Value};
 
 /// Recursively copy `src` into `dest`, creating `dest` if absent.
 ///
@@ -66,21 +63,6 @@ pub fn copy_dir(
     }
 
     Ok(count)
-}
-
-/// Read `path` as a JSON object. An absent file, an I/O failure, malformed
-/// JSON, or a non-object top-level value all collapse to an empty map — the
-/// caller never has to distinguish them. The fail-open read behind the
-/// `settings.json` mergers in `init`/`add`.
-pub fn read_json_object(path: &Path) -> Map<String, Value> {
-    fs::read_to_string(path)
-        .ok()
-        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
-        .and_then(|value| match value {
-            Value::Object(map) => Some(map),
-            _ => None,
-        })
-        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -137,14 +119,5 @@ mod tests {
 
         assert!(!dest.join(".github").exists());
         assert!(dest.join("inner/.github/ci.yml").exists());
-    }
-
-    #[test]
-    fn read_json_object_recovers_from_malformed_input() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("bad.json");
-        write(&path, "{ not valid");
-
-        assert!(read_json_object(&path).is_empty());
     }
 }

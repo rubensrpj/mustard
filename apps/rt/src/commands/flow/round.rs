@@ -10,11 +10,6 @@
 //! repositório principal os arquivos que cada cópia entregou e comita; a
 //! cópia fica, para a próxima onda — e só então despacha a rodada seguinte.
 //!
-//! **A spec antiga passa para o backlog.** Antes de tudo, a rodada converte a
-//! spec uma vez, no módulo `convert`: a onda desenhada à mão que nunca saiu deixa de
-//! valer, e as tarefas dela voltam para o backlog. A entregue ou aprovada fica
-//! como história; a que já saiu termina como saiu.
-//!
 //! **A onda nasce quando sai.** Só existe a onda que está rodando; as outras
 //! tarefas ficam no backlog, sem número de onda. A cada rodada, a montagem
 //! (`backlog`) forma no máximo uma onda por vaga livre, cada uma com as
@@ -123,7 +118,6 @@ mod agreed;
 mod answer;
 mod backlog;
 mod commit;
-mod convert;
 mod copy_check;
 mod imports_check;
 pub(crate) mod item_choice;
@@ -153,7 +147,6 @@ use crate::commands::spec_events;
 use crate::shared::spec_state::session_from_env;
 
 pub(crate) use answer::{read_command, RoundRefusal};
-pub(crate) use convert::convert_hand_waves;
 pub(crate) use queue::{backlog_left, open_review, open_sends, tasks_left, wave_states, waves_in_progress, waves_pending_fix};
 #[cfg(test)]
 pub(crate) use slots::copies_leave_with_the_test;
@@ -371,7 +364,7 @@ mod tests {
     /// qualquer volta e de pegar a trava do passo do git.
     pub(super) fn round_entry(root: &Path, report: Option<&str>) -> Result<answer::Entry, RoundRefusal> {
         let project = spec_events::project(root);
-        answer::enter_round(&round_opts(root, report), &project.root, project.lang, None)
+        answer::enter_round(&round_opts(root, report), &project.root, None)
     }
 
     /// O resto da rodada da spec `x`, com o relatório `report`, a partir da

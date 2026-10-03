@@ -2,6 +2,12 @@
 # que os testes criam nascem dentro de target/, nunca na pasta de cache de
 # verdade do usuário. O caminho é relativo à raiz do
 # repositório; uma variável já definida no ambiente continua valendo.
+#
+# O git dos testes ignora a configuração do sistema: o `core.autocrlf` que o
+# git do Windows traz nela troca o fim de linha dos arquivos que o teste
+# compara, e o resultado passaria a depender da máquina. Nada é escrito em
+# `.git/config`, e a identidade vem de cada teste.
 [env]
 MUSTARD_COPIES_DIR = { value = "target/testes-copias", relative = true }
 MUSTARD_BUILD_DIR = { value = "target/testes-build", relative = true }
+GIT_CONFIG_NOSYSTEM = "1"
