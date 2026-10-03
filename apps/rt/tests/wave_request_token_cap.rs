@@ -262,10 +262,7 @@ fn a_round_refuses_a_wave_whose_request_passes_the_token_cap() {
     project.run(&["plan", "--spec", SPEC]);
     approve(&project);
 
-    let asked = project.run(&["round", "--spec", SPEC]);
-    assert_eq!(asked["dispatch"], json!([]), "{asked}");
-    let answer = json!({"wave": 1, "removed": [], "added": []});
-    let refused = project.answer(&["round", "--spec", SPEC, "--report", &format!("<ANALYSIS>{answer}</ANALYSIS>")]);
+    let refused = project.answer(&["round", "--spec", SPEC]);
 
     assert_eq!(refused["ok"], json!(false), "{refused}");
     assert_eq!(refused["reason"], json!("wave-token-cap"), "{refused}");
@@ -322,11 +319,7 @@ fn request_sent_for_a_new_controller(with_pattern: bool) -> String {
     project.run(&["plan", "--spec", SPEC]);
     approve(&project);
 
-    let first = project.run(&["round", "--spec", SPEC]);
-    if first["dispatch"].as_array().is_some_and(Vec::is_empty) {
-        let answer = json!({"wave": 1, "removed": [], "added": []});
-        project.run(&["round", "--spec", SPEC, "--report", &format!("<ANALYSIS>{answer}</ANALYSIS>")]);
-    }
+    project.run(&["round", "--spec", SPEC]);
     let log = project.log();
     let sent = log.visible().into_iter().find(|e| e.event_type == "send").expect("the round recorded the send");
     sent.str_field("text").expect("the request text").to_string()

@@ -259,25 +259,15 @@ fn approve(project: &Project) {
     );
 }
 
-/// A rodada dispara a onda `wave`: quando ela precisa da escolha antes do
-/// envio — o item do projeto todo, aqui sempre, pede o orquestrador —, a
-/// linha da escolha, sem mudança, solta a onda na rodada seguinte. Devolve a
-/// resposta que traz a onda no despacho.
+/// A rodada dispara a onda `wave`, na mesma chamada: o item do projeto todo
+/// não pede escolha de ninguém. Devolve a resposta que traz a onda no
+/// despacho.
 fn dispatch_wave(project: &Project, wave: u64) -> Value {
-    let dispatched_here = |report: &Value| {
-        report["dispatch"].as_array().is_some_and(|d| d.iter().any(|entry| entry["wave"] == json!(wave)))
-    };
-    let asked = project.run(&["round", "--spec", SPEC]);
-    if dispatched_here(&asked) {
-        return asked;
-    }
+    let dispatched = project.run(&["round", "--spec", SPEC]);
     assert!(
-        asked["analysis"].as_array().is_some_and(|a| a.iter().any(|e| e["wave"] == json!(wave))),
-        "a rodada não ofereceu a escolha antes do envio da onda {wave}: {asked}"
+        dispatched["dispatch"].as_array().is_some_and(|d| d.iter().any(|entry| entry["wave"] == json!(wave))),
+        "a rodada não despachou a onda {wave}: {dispatched}"
     );
-    let answer = json!({"wave": wave, "removed": [], "added": []});
-    let dispatched = project.run(&["round", "--spec", SPEC, "--report", &format!("<ANALYSIS>{answer}</ANALYSIS>")]);
-    assert!(dispatched_here(&dispatched), "a rodada não despachou a onda {wave}: {dispatched}");
     dispatched
 }
 

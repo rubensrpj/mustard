@@ -111,9 +111,8 @@ pub enum FlowCmd {
         /// é recusada. Quem despacha escreve, para cada onda cujo agente
         /// terminou, a linha `<USAGE>{"wave":1}</USAGE>`, só com a onda — o
         /// consumo a rodada mede nos arquivos de conversa que a plataforma
-        /// grava, nunca digitado pelo agente nem por quem despacha —, a
-        /// `<PAUSED>` e a `<ANALYSIS>{…}</ANALYSIS>` da escolha antes do
-        /// envio.
+        /// grava, nunca digitado pelo agente nem por quem despacha — e a
+        /// `<PAUSED>`.
         #[arg(long)]
         report: Option<String>,
         /// Qualquer pasta dentro do repositório. Por padrão, a pasta atual.

@@ -30,7 +30,7 @@ use super::copy_check::check_against_copies;
 use super::agreed::{covered_codes, removed_by_analysis, request_agreed, settle_agreed};
 use super::leftovers::{leftover_tasks, leftovers_of, Leftover};
 use super::read_check::{request_name, unread_items};
-use super::queue::{backlog_wave, open_review, open_sends, waves_in_progress, ANALYSIS_LINE};
+use super::queue::{backlog_wave, open_review, open_sends, waves_in_progress};
 use super::stops::{hold_waiting_changes, plan_changed_alone, tasks_returned, undone_of, undone_returns, HeldReturn};
 use super::usage::{measure_usage, Caller, Usage};
 use crate::commands::review::qa_run::ProofFault;
@@ -601,7 +601,7 @@ pub(crate) fn check_return(
     // A entrega presta conta de cada item combinado que o pedido levou, como
     // o veredito final presta de todo o combinado: faltar algum recusa, com
     // os códigos. O pedido sem item combinado não exige o campo.
-    let expected = request_agreed(&log, wave, &project.languages);
+    let expected = request_agreed(&log, wave);
     let (_, missing) =
         settle_agreed(&log, &mut draft.clone(), &expected, "wave", &mut BTreeSet::new(), &BTreeSet::new())
             .map_err(RoundRefusal::Refused)?;
@@ -779,8 +779,7 @@ fn line_object(body: &str, line: &'static str) -> Result<(Option<u64>, Map<Strin
 }
 
 /// As linhas do relatório que o orquestrador passa: a marca de que a onda
-/// terminou (`USAGE`) e a pausa (`PAUSED`), como vieram; a escolha antes do
-/// envio (`ANALYSIS`) é lida à parte, no despacho. A entrega e o veredito não
+/// terminou (`USAGE`) e a pausa (`PAUSED`), como vieram. A entrega e o veredito não
 /// vêm aqui: moram na spec, e a linha `DELIVERED` ou `VERDICT` colada no
 /// relatório é recusada. O texto sem nenhuma dessas linhas não se entende. O
 /// resto do texto não é lido.
@@ -791,7 +790,7 @@ pub(crate) fn parse_report(raw: &str) -> Result<Report, RoundRefusal> {
     let usage_bodies = tagged(raw, USAGE_LINE);
     let paused_bodies = tagged(raw, PAUSED_LINE);
     let unmarked = usage_bodies.is_empty() && paused_bodies.is_empty();
-    if unmarked && !raw.trim().is_empty() && tagged(raw, ANALYSIS_LINE).is_empty() {
+    if unmarked && !raw.trim().is_empty() {
         let shown: String = raw.trim().chars().take(80).collect();
         return Err(RoundRefusal::BadReport { detail: shown });
     }
@@ -1054,8 +1053,7 @@ fn check_reports(
                 let mut covered = covered_codes(check.log(), &returning);
                 covered.extend(covered_now.iter().cloned());
                 let known = covered.clone();
-                let languages = crate::commands::spec_events::project(start).languages;
-                let removed = removed_by_analysis(check.log(), wave, &languages);
+                let removed = removed_by_analysis(check.log(), wave);
                 let (tasks, _) = settle_agreed(check.log(), &mut draft, &[], "wave", &mut covered, &removed)?;
                 covered_now.extend(covered.difference(&known).cloned());
                 wave_tasks.extend(tasks.into_iter().map(|task| (wave, task)));
@@ -1812,7 +1810,7 @@ mod tests {
                 "covers": [crit], "origin": said}),
         ));
         let log = store::read(&path).unwrap().unwrap();
-        let formed = dispatch_backlog(root, "x", &log, &log, max_parallel(root), &[], None).expect("formou o lote");
+        let formed = dispatch_backlog(root, "x", &log, &log, max_parallel(root), None).expect("formou o lote");
         assert_eq!(formed, vec![2], "a tarefa solta vira a onda de lote 2: {formed:?}");
 
         // Antes de o lote sair, a tarefa é regravada sem onda: volta ao
@@ -2913,8 +2911,7 @@ mod tests {
                 crate::commands::flow::round::seed_read(root, "x", "request-1", item);
             }
         });
-        let choice = line("ANALYSIS", json!({"wave": 1, "removed": [], "added": []}));
-        let sent = round(root, "x", Some(&choice));
+        let sent = round(root, "x", None);
         assert_eq!(waves_in(&sent, "dispatch"), vec![1, 2], "{sent}");
         let listed = read_items_of(root, 1);
         let lesson = listed.iter().find(|item| item.starts_with("lesson-")).unwrap_or_else(|| panic!("no lesson in {listed:?}")).clone();
@@ -3125,9 +3122,9 @@ mod tests {
     }
 
     /// A spec `x` com a onda 1 sobre `src/a.rs` e duas regras do projeto
-    /// todo, a primeira e a segunda que a spec grava. A rodada pede a escolha
-    /// da onda; ela vem tirando a segunda regra do pedido quando
-    /// `drop_second` é verdadeiro, e a onda sai. Devolve a resposta do envio.
+    /// todo, a primeira e a segunda que a spec grava. O Jev tira a segunda
+    /// regra do pedido quando `drop_second` é verdadeiro, e a onda sai.
+    /// Devolve a resposta do envio.
     fn sent_with_two_project_rules(root: &Path, drop_second: bool) -> Value {
         approved_with(root, "x", &[(1, &["src/a.rs"], &[])], |said| {
             for text in ["Vale sempre: a tabela nova tem chave.", "Vale sempre: a spec vira um PR só."] {
@@ -3136,14 +3133,12 @@ mod tests {
                 assert_eq!(write(root, "x", "rule", rule)["ok"], json!(true));
             }
         });
-        let asked = round(root, "x", None);
-        assert_eq!(waves_in(&asked, "analysis"), vec![1], "the round asks for the choice first: {asked}");
-        let removed = if drop_second {
-            json!([{"item": "MSTD-RULE-0002", "why": "Fala da entrega, e não da tabela."}])
-        } else {
-            json!([])
-        };
-        let sent = round(root, "x", Some(&line("ANALYSIS", json!({"wave": 1, "removed": removed, "added": []}))));
+        let second = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap().codes().into_iter()
+            .find(|(_, code)| code == "MSTD-RULE-0002").map(|(id, _)| id).expect("the second rule");
+        let _jev = crate::commands::flow::round::item_choice::fake::answering(move |board| {
+            board.items.iter().map(|item| (item.id, if drop_second && item.id == second { 0.0 } else { 1.0 })).collect()
+        });
+        let sent = round(root, "x", None);
         assert_eq!(waves_in(&sent, "dispatch"), vec![1], "{sent}");
         let prompt = request_at(&sent, 0);
         assert!(prompt.contains("MSTD-RULE-0001"), "the request carries the first rule: {prompt}");
@@ -4376,6 +4371,28 @@ mod tests {
         assert_eq!(revised.replaced(), vec![sent.id], "a versão nova aponta o envio anterior: {:?}", revised.fields);
     }
 
+    /// A linha `ANALYSIS`, que o orquestrador devolvia antes de a onda sair,
+    /// não existe mais: sozinha no relatório ela não se entende e é recusada,
+    /// sem gravar nada nem comitar; junto de uma linha que existe, o resto do
+    /// relatório segue lido.
+    #[test]
+    fn the_analysis_line_is_not_a_report_line_anymore() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        round(root, "x", None);
+        let (head, before) = (git_text(root, &["rev-parse", "HEAD"]), spec_lines(root));
+
+        let analysis = line("ANALYSIS", json!({"wave": 1, "removed": [], "added": []}));
+        let refused = round(root, "x", Some(&analysis));
+
+        assert_eq!(refused["ok"], json!(false), "{refused}");
+        assert_eq!(refused["reason"], json!("round-bad-report"), "{refused}");
+        assert_eq!((git_text(root, &["rev-parse", "HEAD"]), spec_lines(root)), (head, before), "{refused}");
+        let with_usage = round(root, "x", Some(&format!("{analysis}\n{}", line("PAUSED", json!({"wave": 1})))));
+        assert_eq!(with_usage["ok"], json!(true), "{with_usage}");
+    }
+
     /// A linha da entrega colada no relatório é recusada com o texto
     /// combinado, junto de qualquer outra linha, e nada é gravado nem
     /// comitado: a entrega mora na spec.
@@ -4396,7 +4413,7 @@ mod tests {
         assert_eq!(
             refused["hint"],
             json!("A entrega e o veredito moram na spec: o agente os grava com mustard-rt run write. O relatório \
-                   leva só as linhas `USAGE`, `PAUSED` e `ANALYSIS`."),
+                   leva só as linhas `USAGE` e `PAUSED`."),
             "{refused}"
         );
         assert_eq!((git_text(root, &["rev-parse", "HEAD"]), spec_lines(root)), (head, before), "{refused}");
@@ -4419,7 +4436,7 @@ mod tests {
         let pasted = line("VERDICT", json!({"final": true, "result": "approved", "text": "Sem achados."}));
         let usage = line("USAGE", json!({"wave": 1}));
         let expected = json!("A entrega e o veredito moram na spec: o agente os grava com mustard-rt run write. O \
-                              relatório leva só as linhas `USAGE`, `PAUSED` e `ANALYSIS`.");
+                              relatório leva só as linhas `USAGE` e `PAUSED`.");
         let refused = round(root, "x", Some(&format!("{pasted}\n{usage}")));
         assert_eq!(refused["reason"], json!("round-return-line"), "{refused}");
         assert_eq!(refused["hint"], expected, "{refused}");
@@ -4681,11 +4698,7 @@ mod tests {
 
         let next = round(root, "x", None);
         assert_eq!(next["ok"], json!(true), "a onda do conserto se forma sem recusa: {next}");
-        assert_eq!(waves_in(&next, "analysis"), vec![2], "{next}");
-        let chosen = line("ANALYSIS", json!({"wave": 2, "removed": [], "added": []}));
-        let sent = round(root, "x", Some(&chosen));
-        assert_eq!(sent["ok"], json!(true), "a onda do conserto sai sem recusa: {sent}");
-        assert_eq!(waves_in(&sent, "dispatch"), vec![2], "a onda do conserto é despachada: {sent}");
+        assert_eq!(waves_in(&next, "dispatch"), vec![2], "a onda do conserto é despachada: {next}");
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let fix = log
             .visible()

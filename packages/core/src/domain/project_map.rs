@@ -1982,25 +1982,6 @@ pub fn cited_paths(text: &str) -> Vec<String> {
     out.into_iter().collect()
 }
 
-/// Os caminhos que um texto cita entre crases ([`cited_paths`]) e também os
-/// soltos no texto: cada palavra, sem os parênteses, as aspas e a pontuação
-/// em volta, passa pela mesma conferência. É a leitura do texto de um item
-/// da spec, que costuma citar o arquivo solto e com a linha
-/// (`types.rs:269`); a skill continua lida só entre crases.
-#[must_use]
-pub fn written_paths(text: &str) -> Vec<String> {
-    let mut out: BTreeSet<String> = cited_paths(text).into_iter().collect();
-    for word in text.split_whitespace() {
-        let word = word
-            .trim_start_matches(['(', '[', '"', '\'', '`'])
-            .trim_end_matches([')', ']', '"', '\'', '`', ',', ';', '.', ':', '!', '?']);
-        if let Some(path) = span_path(word) {
-            out.insert(path.to_string());
-        }
-    }
-    out.into_iter().collect()
-}
-
 /// O caminho que um trecho sem espaço cita, pela regra de [`cited_paths`]:
 /// sem o `:linha` do fim e sem a pontuação final; `None` quando o trecho
 /// não é caminho de arquivo nem de pasta.

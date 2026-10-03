@@ -595,20 +595,15 @@ fn plan_files(project: &Project, files: &[&str]) {
     assert_eq!(State::from_log(&project.log()).phase, Some("plan"), "{planned}");
 }
 
-/// A primeira rodada, com a escolha antes do envio: as respostas do
-/// levantamento valem para o projeto todo, então a rodada entrega ao
-/// orquestrador os candidatos da onda, cada um com o título, sem pedir
-/// agente nenhum, e não solta a onda; a linha da escolha, sem mudança, solta
-/// a onda. Devolve a resposta da rodada que a soltou.
+/// A primeira rodada: as respostas do levantamento valem para o projeto todo
+/// e vão no pedido por padrão, sem Jev, e a rodada solta a onda na mesma
+/// chamada, sem pedir escolha a quem conduz nem agente nenhum. Devolve a
+/// resposta da rodada.
 fn first_round(project: &Project) -> Value {
-    let asked = project.run(&["round", "--spec", SPEC]);
-    assert_eq!(asked["dispatch"], json!([]), "{asked}");
-    let candidates = asked["analysis"][0]["project"].as_array().cloned().unwrap_or_default();
-    assert!(!candidates.is_empty(), "{asked}");
-    assert!(candidates.iter().all(|c| c["title"].as_str().is_some_and(|t| !t.is_empty())), "{asked}");
-    assert!(asked["analysis"][0].get("model").is_none(), "{asked}");
-    let answer = json!({"wave": 1, "removed": [], "added": []});
-    project.run(&["round", "--spec", SPEC, "--report", &format!("<ANALYSIS>{answer}</ANALYSIS>")])
+    let sent = project.run(&["round", "--spec", SPEC]);
+    assert_eq!(sent["dispatch"][0]["wave"], json!(1), "{sent}");
+    assert!(sent.get("analysis").is_none(), "{sent}");
+    sent
 }
 
 /// O clique em "Aprovar" na pergunta da aprovação, pelo gancho da testemunha.
@@ -710,7 +705,7 @@ fn a_test_spec_runs_end_to_end_one_call_per_step_and_leaves_three_files() {
     assert_eq!(state.phase, Some("pr_open"), "{pr}");
 
     let expected: BTreeMap<String, usize> =
-        [("open", 1), ("grill", 1), ("plan", 1), ("round", 3), ("close", 2), ("pr-open", 1)]
+        [("open", 1), ("grill", 1), ("plan", 1), ("round", 2), ("close", 2), ("pr-open", 1)]
             .into_iter()
             .map(|(command, count)| (command.to_string(), count))
             .collect();

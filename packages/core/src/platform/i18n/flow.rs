@@ -1051,81 +1051,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("round.fix_limit.question", Locale::EnUs) => {
             "Wave {wave} was rejected again after {max} fix rounds. Revise its plan or take it out of the plan?"
         }
-        // A escolha do pedido antes do envio, que o orquestrador faz: o
-        // próximo passo, com a linha que devolve a escolha, e os avisos.
-        ("round.analysis", Locale::PtBr) => {
-            "Antes de soltar as ondas {waves}, escolha os itens do pedido de cada uma. O pedido é a \
-             lista dos itens da spec que o agente da onda lê; os itens que as tarefas da onda fazem \
-             vão sempre. Em `analysis`, cada onda traz os candidatos, cada um com o título. As \
-             regras do projeto todo (`project`) e as lições (`lessons`) vão, a menos que você tire. \
-             Os itens sem dono (`unowned`) ficam fora, a menos que você ponha. Tire o que não ajuda \
-             a onda, como uma regra da entrega numa onda que só cria uma tabela. Ponha o item sem \
-             dono que ajuda. Rode a rodada de novo com uma linha por onda no `--report '…'`, só com \
-             o que muda e o motivo de cada um numa frase: \
-             `<ANALYSIS>{\"wave\":<n>,\"removed\":[{\"item\":\"<código>\",\"why\":\"<o \
-             motivo>\"},{\"lesson\":<número>,\"why\":\"<o motivo>\"}],\"added\":[{\"item\":\"<código>\
-             \",\"why\":\"<o motivo>\"}]}</ANALYSIS>`. Sem mudança, as duas listas vão vazias. Sem \
-             essa linha, a onda não sai."
-        }
-        ("round.analysis", Locale::EnUs) => {
-            "Before sending out waves {waves}, choose the items of each one's request. The request \
-             is the list of spec items the wave agent reads; the items the wave's tasks do always \
-             go. In `analysis`, each wave brings its candidates, each with its title. The \
-             whole-project rules (`project`) and the lessons (`lessons`) go unless you take them \
-             out. The items without an owner (`unowned`) stay out unless you put them in. Take out \
-             what does not help the wave, such as a rule about the delivery in a wave that only \
-             creates a table. Put in the item without an owner that helps. Run the round again \
-             with one line per wave in the `--report '…'`, with only what changes and each one's \
-             reason in one sentence: \
-             `<ANALYSIS>{\"wave\":<n>,\"removed\":[{\"item\":\"<item code>\",\"why\":\"<the \
-             reason>\"},{\"lesson\":<number>,\"why\":\"<the reason>\"}],\"added\":[{\"item\":\"<item \
-             code>\",\"why\":\"<the reason>\"}]}</ANALYSIS>`. With no change, both lists go empty. \
-             Without that line, the wave does not go out."
-        }
-        ("round.analysis_check", Locale::PtBr) => {
-            concat!(
-                "Um commit mudou arquivo das tarefas {tasks} depois que o texto delas foi escrito. Mande \
-                 a conferência delas no código a um agente separado. Ele acha se o que cada uma pede já \
-                 está feito ou ainda falta, e devolve só a tarefa ajustada para ser gravada. Ele acha e \
-                 lê o código pelo mapa: ",
-                map_commands_pt!(),
-                ". Você não lê arquivo inteiro nem saída longa para isso."
-            )
-        }
-        ("round.analysis_check", Locale::EnUs) => {
-            concat!(
-                "A commit changed a file of tasks {tasks} after their text was written. Hand the check \
-                 of them against the code to a separate agent. It finds whether what each one asks is \
-                 already done or still missing, and returns only the adjusted task to record. It finds \
-                 and reads the code through the map: ",
-                map_commands_en!(),
-                ". You do not read a whole file nor long output for this."
-            )
-        }
-        ("round.analysis_ignored", Locale::PtBr) => {
-            "Na escolha da onda {wave}, o item {item} ficou como estava. Ele não está entre os \
-             candidatos dela, a lição só sai e não entra, ou ele veio sem motivo."
-        }
-        ("round.analysis_ignored", Locale::EnUs) => {
-            "In the choice for wave {wave}, item {item} stayed as it was. It is not among the \
-             wave's candidates, a lesson can only go out and not in, or it came without a reason."
-        }
-        ("round.analysis_ignored_lesson", Locale::PtBr) => {
-            "Na escolha da onda {wave}, a lição {item} ficou como estava. Ela não está entre as \
-             lições dela, a lição só sai e não entra, ou ela veio sem motivo."
-        }
-        ("round.analysis_ignored_lesson", Locale::EnUs) => {
-            "In the choice for wave {wave}, lesson {item} stayed as it was. It is not among the \
-             wave's lessons, a lesson can only go out and not in, or it came without a reason."
-        }
-        ("round.analysis_unreadable", Locale::PtBr) => {
-            "Uma linha `<ANALYSIS>` não se leu e ficou de fora ({detail}): a onda dela pede a \
-             escolha de novo."
-        }
-        ("round.analysis_unreadable", Locale::EnUs) => {
-            "An `<ANALYSIS>` line could not be read and was left out ({detail}): its wave asks for \
-             the choice again."
-        }
         // A retomada: a onda pausada ou órfã sai de novo com o pedido
         // anterior, mais os passos gravados e o aviso de ver o que mudou na
         // cópia; e a onda viva sem sinal por 40 minutos vira aviso.
@@ -1779,8 +1704,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            212,
-            0x0656_69f5_167d_2dda,
+            207,
+            0x7bab_2783_5d0d_0967,
         );
     }
 
@@ -2020,11 +1945,6 @@ mod tests {
             ("round.backlog_stuck", &["{tasks}"][..]),
             ("round.fix_limit", &["{wave}", "{count}", "{max}", "{verdicts}"][..]),
             ("round.fix_limit.question", &["{wave}", "{max}"][..]),
-            ("round.analysis", &["{waves}"][..]),
-            ("round.analysis_check", &["{tasks}"][..]),
-            ("round.analysis_ignored", &["{wave}", "{item}"][..]),
-            ("round.analysis_ignored_lesson", &["{wave}", "{item}"][..]),
-            ("round.analysis_unreadable", &["{detail}"][..]),
             ("round.resume.steps", &[][..]),
             ("round.resume.notice", &[][..]),
             ("round.resume.silent", &["{wave}"][..]),
@@ -2081,42 +2001,6 @@ mod tests {
             for slot in slots {
                 assert!(pt.contains(slot) && en.contains(slot), "{key} lost {slot}");
             }
-        }
-    }
-
-    /// O aviso da entrada que ficou como estava chama de lição o que é lição,
-    /// não de item: o número ignorado é de uma lição do banco, e a frase, nos
-    /// dois idiomas, diz "lição" (`lesson` em inglês), nunca "item" seguido
-    /// do número.
-    #[test]
-    fn the_ignored_choice_hint_says_lesson_when_the_number_is_a_lesson() {
-        for (lang, lesson_word, item_word) in [(Locale::PtBr, "lição", "item"), (Locale::EnUs, "lesson", "item")] {
-            let hint = translate("round.analysis_ignored_lesson", lang).replace("{wave}", "7").replace("{item}", "96");
-            assert!(hint.contains(lesson_word), "{lang:?}: não diz lição: {hint}");
-            assert!(!hint.contains(&format!("{item_word} 96")), "{lang:?}: chamou a lição de item: {hint}");
-        }
-    }
-
-    /// O texto que a rodada acrescenta à escolha do pedido quando um commit
-    /// mudou arquivo de uma tarefa depois do texto dela nomeia as tarefas e
-    /// manda a conferência delas no código para um agente separado, que
-    /// devolve só a tarefa ajustada para ser gravada, e diz que o
-    /// orquestrador não lê arquivo inteiro nem saída longa para isso; a dica
-    /// da escolha em si não fala mais dessa conferência — nos dois idiomas.
-    #[test]
-    fn the_analysis_hint_sends_the_reading_to_an_agent() {
-        for (lang, agent_word, whole_file, long_output) in [
-            (Locale::PtBr, "agente separado", "arquivo inteiro", "saída longa"),
-            (Locale::EnUs, "separate agent", "whole file", "long output"),
-        ] {
-            let choice = translate("round.analysis", lang).replace("{waves}", "1");
-            assert!(!choice.contains(agent_word), "{lang:?}: a escolha ainda manda conferir as tarefas: {choice}");
-            let hint = translate("round.analysis_check", lang).replace("{tasks}", "TASK-7");
-            assert!(hint.contains("TASK-7"), "{lang:?}: sem as tarefas nomeadas: {hint}");
-            assert!(hint.contains(agent_word), "{lang:?}: sem o agente separado: {hint}");
-            assert!(hint.contains("tarefa ajustada") || hint.contains("adjusted task"), "{lang:?}: sem a tarefa ajustada: {hint}");
-            assert!(hint.contains(whole_file), "{lang:?}: não proíbe ler arquivo inteiro: {hint}");
-            assert!(hint.contains(long_output), "{lang:?}: não proíbe ler saída longa: {hint}");
         }
     }
 

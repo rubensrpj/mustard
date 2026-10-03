@@ -354,6 +354,10 @@ const APPLIES_TO: Field = opt("applies_to", Kind::TextOrObject);
 /// cobrem. O item do projeto diz, em vez disso, que vale no projeto todo
 /// (`applies_to` com os arquivos `["**"]`).
 const WAVES: Field = opt("waves", Kind::Ints);
+/// A marca do item combinado que vale para toda onda: ele vai no pedido de
+/// qualquer onda, sem passar pela escolha dos itens, mesmo que diga outros
+/// arquivos ou nenhum. Ausente, o item segue o dono que tem.
+const EVERY_WAVE: Field = opt("every_wave", Kind::Bool);
 /// O item combinado que não vira código: o valor é o motivo. Quem o traz sai
 /// do aviso dos itens sem tarefa, porque não há tarefa que o implemente.
 const NO_CODE: Field = opt("no_code", Kind::Text);
@@ -537,31 +541,31 @@ pub const TYPES: &[TypeSpec] = &[
     // projeto todo).
     ty(
         "rule", "RULE", Block::Agreed, true,
-        &[TEXT, KEYS, req("example", Kind::Text), APPLIES_TO, WAVES, NO_CODE, TITLE, AGENT],
+        &[TEXT, KEYS, req("example", Kind::Text), APPLIES_TO, WAVES, EVERY_WAVE, NO_CODE, TITLE, AGENT],
     ),
     ty(
         "limit", "LIMIT", Block::Agreed, true,
-        &[TEXT, KEYS, req("value", Kind::Text), APPLIES_TO, WAVES, NO_CODE, TITLE, AGENT],
+        &[TEXT, KEYS, req("value", Kind::Text), APPLIES_TO, WAVES, EVERY_WAVE, NO_CODE, TITLE, AGENT],
     ),
     ty(
         "contract", "CONTR", Block::Agreed, true,
-        &[TEXT, KEYS, req("example", Kind::Text), APPLIES_TO, WAVES, NO_CODE, TITLE, AGENT],
+        &[TEXT, KEYS, req("example", Kind::Text), APPLIES_TO, WAVES, EVERY_WAVE, NO_CODE, TITLE, AGENT],
     ),
     ty(
         "error", "ERR", Block::Agreed, true,
-        &[TEXT, KEYS, req("message", Kind::Text), APPLIES_TO, WAVES, NO_CODE, TITLE, AGENT],
+        &[TEXT, KEYS, req("message", Kind::Text), APPLIES_TO, WAVES, EVERY_WAVE, NO_CODE, TITLE, AGENT],
     ),
     ty(
         "edge_case", "EDGE", Block::Agreed, true,
-        &[TEXT, KEYS, req("expected", Kind::Text), APPLIES_TO, WAVES, NO_CODE, TITLE, AGENT],
+        &[TEXT, KEYS, req("expected", Kind::Text), APPLIES_TO, WAVES, EVERY_WAVE, NO_CODE, TITLE, AGENT],
     ),
     ty(
         "out_of_scope", "SCOPE", Block::Agreed, true,
-        &[TEXT, KEYS, opt("reason", Kind::Text), APPLIES_TO, WAVES, NO_CODE, TITLE, AGENT],
+        &[TEXT, KEYS, opt("reason", Kind::Text), APPLIES_TO, WAVES, EVERY_WAVE, NO_CODE, TITLE, AGENT],
     ),
     ty(
         "decision", "DEC", Block::Agreed, true,
-        &[TEXT, KEYS, req("why", Kind::Text), APPLIES_TO, WAVES, NO_CODE, TITLE, AGENT],
+        &[TEXT, KEYS, req("why", Kind::Text), APPLIES_TO, WAVES, EVERY_WAVE, NO_CODE, TITLE, AGENT],
     ),
     // Especificação.
     ty("context", "CTX", Block::Specification, true, &[TEXT, TITLE, AGENT]),

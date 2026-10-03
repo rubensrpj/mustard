@@ -38,8 +38,7 @@ use std::fmt::Write as _;
 use serde_json::Value;
 
 use crate::domain::config::Language;
-use crate::domain::lessons::{applies_to, text_only, tied_to_wave, Scope};
-use crate::domain::normalize::Languages;
+use crate::domain::lessons::{applies_to, text_only, Scope};
 use crate::domain::pattern::{Direction, Pattern};
 use crate::domain::project_map::{Recipe, RecipeOf, QUALITY_TOP_PERCENT};
 use crate::domain::spec_events::{Block, BlockQuery, Refusal, SpecEvent, SpecLog, Step, TASK_TITLE_MAX};
@@ -494,7 +493,8 @@ pub fn write_final_review(material: &Material, lang: Locale) -> String {
 /// negrito do começo ou a primeira frase do texto —, cortado em
 /// [`TASK_TITLE_MAX`] caracteres. `None` sem título nem texto, como o
 /// critério antigo, que só tem `when` e `then`.
-fn item_title(item: &SpecEvent) -> Option<String> {
+#[must_use]
+pub fn item_title(item: &SpecEvent) -> Option<String> {
     let own = item.str_field("title").map(str::trim).filter(|title| !title.is_empty());
     let title = own.map(str::to_string).or_else(|| title_of(item))?;
     Some(cut(title.trim(), TASK_TITLE_MAX))
@@ -603,7 +603,13 @@ pub fn count_lines(text: &str) -> usize {
 /// De quem é um item combinado.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Owner {
-    /// Do projeto: a regra que vale sempre, e vai para todo pedido.
+    /// De toda onda: o item marcado com `every_wave`. Vai no pedido de
+    /// qualquer onda, a de só texto inclusive, sem passar pela escolha dos
+    /// itens, diga ele os arquivos que disser.
+    EveryWave,
+    /// Do projeto: a regra que vale sempre, e vai para todo pedido, a menos
+    /// que a escolha dos itens ([`Choice`]) o tire de uma onda a que ele não
+    /// serve.
     Project,
     /// Das ondas do plano que o têm: as das tarefas que o cobrem e as que ele
     /// diz no campo `waves`.
@@ -619,10 +625,11 @@ pub enum Owner {
 /// do plano em `waves`, não diz arquivos em `applies_to` e não vale no
 /// projeto todo.
 ///
-/// O item do projeto é o que diz, em `applies_to`, que vale no projeto todo:
-/// a mesma leitura que acha a lição do projeto todo. O que diz arquivos, sem
-/// o curinga, e não tem onda dona, é dos arquivos. A busca por palavras não
-/// decide dono nenhum.
+/// O item de toda onda é o que traz a marca `every_wave`: ela vale antes de
+/// qualquer outro dono. O item do projeto é o que diz, em `applies_to`, que
+/// vale no projeto todo: a mesma leitura que acha a lição do projeto todo. O
+/// que diz arquivos, sem o curinga, e não tem onda dona, é dos arquivos. A
+/// busca por palavras não decide dono nenhum.
 #[must_use]
 pub fn owners(log: &SpecLog) -> BTreeMap<u64, Owner> {
     let planned = log.planned_waves();
@@ -649,6 +656,10 @@ pub fn owners(log: &SpecLog) -> BTreeMap<u64, Owner> {
     let whole_project = Scope::default();
     let mut out: BTreeMap<u64, Owner> = BTreeMap::new();
     for item in items {
+        if holds_for_every_wave(item) {
+            out.insert(item.id, Owner::EveryWave);
+            continue;
+        }
         if applies_to(item, &whole_project) {
             out.insert(item.id, Owner::Project);
             continue;
@@ -667,6 +678,11 @@ pub fn owners(log: &SpecLog) -> BTreeMap<u64, Owner> {
     out
 }
 
+/// `true` quando o item traz a marca `every_wave`: vale para toda onda.
+fn holds_for_every_wave(item: &SpecEvent) -> bool {
+    item.fields.get("every_wave").and_then(Value::as_bool) == Some(true)
+}
+
 /// Os padrões de arquivo que um item diz em `applies_to`, sem os vazios.
 fn applies_to_files(item: &SpecEvent) -> Vec<String> {
     item.fields
@@ -680,13 +696,14 @@ fn applies_to_files(item: &SpecEvent) -> Vec<String> {
 }
 
 /// Os itens combinados que vão no pedido da onda `wave`, como a montagem os
-/// escolhe antes da análise: os de que ela é dona, os dos arquivos que as
-/// tarefas dela tocam e os do projeto. O item dos arquivos casa pela mesma
-/// leitura de `applies_to` que acha a lição. O item sem dono não entra aqui;
-/// só a análise antes do envio ([`dispatch_items`]) pode pô-lo num pedido.
-/// A onda só de texto ([`text_only`]) não leva o item do projeto, pela mesma
-/// leitura que tira dela a lição do projeto todo; o item do projeto que as
-/// tarefas dela fazem vai mesmo assim, porque é o trabalho dela.
+/// escolhe antes da escolha dos itens: os de toda onda, os de que ela é dona,
+/// os dos arquivos que as tarefas dela tocam e os do projeto. O item dos
+/// arquivos casa pela mesma leitura de `applies_to` que acha a lição. O item
+/// sem ligação com a onda não entra aqui; só a escolha dos itens
+/// ([`dispatch_items`]) pode pô-lo num pedido. A onda só de texto
+/// ([`text_only`]) não leva o item do projeto, pela mesma leitura que tira
+/// dela a lição do projeto todo; o item do projeto que as tarefas dela fazem
+/// vai mesmo assim, porque é o trabalho dela.
 #[must_use]
 pub fn agreed_for(log: &SpecLog, wave: u64) -> Vec<&SpecEvent> {
     let owners = owners(log);
@@ -697,6 +714,7 @@ pub fn agreed_for(log: &SpecLog, wave: u64) -> Vec<&SpecEvent> {
     agreed_items(log)
         .into_iter()
         .filter(|item| match owners.get(&item.id) {
+            Some(Owner::EveryWave) => true,
             Some(Owner::Project) => !text || done.contains(&item.id),
             Some(Owner::Waves(waves)) => waves.contains(&wave),
             Some(Owner::Files(_)) => applies_to(item, &touched),
@@ -705,8 +723,9 @@ pub fn agreed_for(log: &SpecLog, wave: u64) -> Vec<&SpecEvent> {
         .collect()
 }
 
-/// Os itens combinados sem dono, em ordem de número. A análise antes do
-/// envio julga, para cada onda, só os que servem a ela ([`candidates`]).
+/// Os itens combinados sem dono, em ordem de número. Eles não vão em pedido
+/// nenhum por conta própria: a escolha dos itens ([`candidates`]) julga, para
+/// cada onda, os que servem a ela.
 #[must_use]
 pub fn unowned(log: &SpecLog) -> Vec<&SpecEvent> {
     let owners = owners(log);
@@ -722,72 +741,71 @@ pub fn all_agreed(log: &SpecLog) -> Vec<&SpecEvent> {
 }
 
 // ---------------------------------------------------------------------------
-// A escolha do pedido antes do envio
+// A escolha dos itens do pedido
 // ---------------------------------------------------------------------------
 
-/// Os candidatos que o orquestrador julga antes de uma onda sair: os itens
-/// combinados do projeto todo, que o pedido leva, os sem dono, que ele não
-/// leva, e as lições do banco que casam com a onda, que ele leva. Os itens
-/// que as tarefas da onda fazem ficam fora dos grupos: vão sempre, sem
-/// escolha.
+/// A chance de sim, dada pelo Jev à pergunta "este item governa algo que a
+/// tarefa muda ou testa?", até a qual o item do projeto todo sai do pedido: só
+/// quando o Jev tem quase certeza de que ele não serve.
+pub const PROJECT_LEAVES_AT_OR_BELOW: f64 = 0.05;
+
+/// A chance de sim, na mesma pergunta, a partir da qual o item sem ligação
+/// com a onda entra no pedido: só quando o Jev tem boa certeza de que ele
+/// serve.
+pub const UNLINKED_ENTERS_AT_OR_ABOVE: f64 = 0.7;
+
+/// Os candidatos que o Jev julga antes de uma onda sair. Ficam fora dos dois
+/// grupos, porque vão sempre e sem escolha: os itens que as tarefas da onda
+/// fazem, os de toda onda (`every_wave`), os de que a onda é dona e os dos
+/// arquivos que as tarefas dela tocam. As lições também vão sempre.
 #[derive(Debug, Default)]
 pub struct Candidates<'a> {
-    /// Os do projeto todo que as tarefas da onda não fazem; vazio na onda
-    /// só de texto.
+    /// Os do projeto todo, sem a marca de toda onda, que o pedido leva por
+    /// padrão e o Jev pode tirar; vazio na onda só de texto.
     pub project: Vec<&'a SpecEvent>,
-    /// Os sem dono que servem à onda, pelas palavras-chave ou pelo arquivo
-    /// citado.
-    pub unowned: Vec<&'a SpecEvent>,
-    /// As lições do banco que casam com a onda. Elas vêm do banco, fora da
-    /// spec, e o número de cada uma é o do banco, não o de um item.
-    pub lessons: Vec<&'a SpecEvent>,
+    /// Os sem ligação com a onda — sem dono, ou de outra onda, ou de outros
+    /// arquivos — que o pedido não leva por padrão e o Jev pode pôr.
+    pub unlinked: Vec<&'a SpecEvent>,
 }
 
 impl Candidates<'_> {
-    /// `true` quando não há nada a julgar: a onda sai sem escolha.
+    /// `true` quando não há nada a julgar: a onda sai sem consultar o Jev.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.project.is_empty() && self.unowned.is_empty() && self.lessons.is_empty()
+        self.project.is_empty() && self.unlinked.is_empty()
     }
 
     /// Os números dos itens da spec dos dois grupos.
     #[must_use]
     pub fn ids(&self) -> BTreeSet<u64> {
-        self.project.iter().chain(&self.unowned).map(|item| item.id).collect()
-    }
-
-    /// Os números das lições, no banco.
-    #[must_use]
-    pub fn lesson_ids(&self) -> BTreeSet<u64> {
-        self.lessons.iter().map(|lesson| lesson.id).collect()
+        self.project.iter().chain(&self.unlinked).map(|item| item.id).collect()
     }
 }
 
-/// Os dois grupos de itens da spec que o orquestrador julga para a onda
-/// `wave`; as lições, que moram no banco, quem lê o banco põe à parte. A
-/// onda só de texto ([`text_only`]) não tem o grupo do projeto: o pedido
-/// dela não leva item do projeto, e não há o que julgar. Do grupo sem dono
-/// fica só o item que serve à onda, pela escolha que as lições usam
-/// ([`tied_to_wave`]): as palavras-chave dele casam com o texto das tarefas
-/// dela, ou o texto dele cita um arquivo que ela mexe. O que não serve a
-/// onda nenhuma não é candidato de nenhuma, e continua na lista da revisão
-/// final ([`all_agreed`]). As palavras são cortadas nas línguas `languages`.
+/// Os dois grupos de itens da spec que o Jev julga para a onda `wave`. A onda
+/// só de texto ([`text_only`]) não tem o grupo do projeto: o pedido dela não
+/// leva item do projeto, e não há o que julgar. Todo item que o pedido não
+/// leva por conta própria é do grupo sem ligação: o que não serve a onda
+/// nenhuma não passa da chance que o Jev lhe dá, e continua na lista da
+/// revisão final ([`all_agreed`]).
 #[must_use]
-pub fn candidates<'a>(log: &'a SpecLog, wave: u64, languages: &Languages) -> Candidates<'a> {
+pub fn candidates(log: &SpecLog, wave: u64) -> Candidates<'_> {
     let owners = owners(log);
     let done = done_by(log, wave);
     let files = wave_files(log, wave);
     let text = text_only(&files);
+    let touched = Scope { files, ..Scope::default() };
     let mut out = Candidates::default();
-    let mut unowned: Vec<&SpecEvent> = Vec::new();
     for item in agreed_items(log).into_iter().filter(|item| !done.contains(&item.id)) {
         match owners.get(&item.id) {
+            Some(Owner::EveryWave) => {}
             Some(Owner::Project) if !text => out.project.push(item),
-            None => unowned.push(item),
-            Some(Owner::Project | Owner::Waves(_) | Owner::Files(_)) => {}
+            Some(Owner::Project) => {}
+            Some(Owner::Waves(waves)) if waves.contains(&wave) => {}
+            Some(Owner::Files(_)) if applies_to(item, &touched) => {}
+            Some(Owner::Waves(_) | Owner::Files(_)) | None => out.unlinked.push(item),
         }
     }
-    out.unowned = tied_to_wave(unowned, &tasks_text(log, wave), &files, languages);
     out
 }
 
@@ -801,60 +819,68 @@ fn done_by(log: &SpecLog, wave: u64) -> BTreeSet<u64> {
         .collect()
 }
 
-/// A escolha do orquestrador antes do envio de uma onda, como o envio a grava
-/// no campo `analysis`: os itens julgados, os do projeto todo que saíram, os
-/// sem dono que entraram e, à parte, as lições julgadas e as que saíram, cada
-/// uma com o motivo numa frase.
+/// A escolha dos itens antes do envio de uma onda, como o envio a grava no
+/// campo `analysis`: os itens julgados, os do projeto todo que saíram e os
+/// sem ligação que entraram, cada um com o motivo numa frase. As lições vão
+/// sempre e não passam pela escolha; os dois campos delas só vêm no envio
+/// gravado quando quem conduzia a obra as julgava, e valem do mesmo jeito.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Choice {
     /// Os itens dos dois grupos que a escolha julgou.
     pub judged: BTreeSet<u64>,
     /// Os itens do projeto todo que saíram do pedido, com o motivo.
     pub removed: Vec<(u64, String)>,
-    /// Os itens sem dono que entraram no pedido, com o motivo.
+    /// Os itens sem ligação com a onda que entraram no pedido, com o motivo.
     pub added: Vec<(u64, String)>,
     /// As lições que a escolha julgou, pelo número no banco.
     pub judged_lessons: BTreeSet<u64>,
     /// As lições que saíram do pedido, com o motivo.
     pub removed_lessons: Vec<(u64, String)>,
-    /// A escolha da skill e dos arquivos parecidos, por tarefa.
-    pub tasks: Vec<TaskChoice>,
-}
-
-/// O que o orquestrador decidiu, para uma tarefa, entre a skill e os arquivos
-/// parecidos que a rodada sugeriu antes do envio: as skills que ele confirmou
-/// ou trocou e os arquivos que ele manteve como leitura.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct TaskChoice {
-    /// O número da tarefa, na spec.
-    pub task: u64,
-    /// As skills confirmadas; a tarefa pode apontar mais de uma.
-    pub skills: Vec<String>,
-    /// Os arquivos de leitura confirmados, além dos que a tarefa já cita.
-    pub files: Vec<String>,
 }
 
 impl Choice {
+    /// A escolha pelas chances de sim que o Jev deu a cada candidato
+    /// (`chances`, pelo número do item): o item do projeto todo sai com a
+    /// chance até [`PROJECT_LEAVES_AT_OR_BELOW`], e o sem ligação entra com a
+    /// chance a partir de [`UNLINKED_ENTERS_AT_OR_ABOVE`]; o motivo de cada um
+    /// é a chance. O candidato sem chance não foi julgado e fica como estava.
+    #[must_use]
+    pub fn by_chances(found: &Candidates, chances: &BTreeMap<u64, f64>) -> Self {
+        let why = |chance: f64| format!("Jev p={chance:.2}");
+        let judged = found.ids().into_iter().filter(|id| chances.contains_key(id)).collect();
+        let removed = found
+            .project
+            .iter()
+            .filter_map(|item| {
+                let chance = *chances.get(&item.id)?;
+                (chance <= PROJECT_LEAVES_AT_OR_BELOW).then(|| (item.id, why(chance)))
+            })
+            .collect();
+        let added = found
+            .unlinked
+            .iter()
+            .filter_map(|item| {
+                let chance = *chances.get(&item.id)?;
+                (chance >= UNLINKED_ENTERS_AT_OR_ABOVE).then(|| (item.id, why(chance)))
+            })
+            .collect();
+        Self { judged, removed, added, ..Self::default() }
+    }
+
     /// A escolha reduzida aos candidatos de agora: sai só o que ainda é do
-    /// projeto todo ou lição da onda, entra só o que ainda está sem dono, e o
-    /// julgado é o que está entre os candidatos.
+    /// projeto todo, entra só o que ainda está sem ligação com a onda, e o
+    /// julgado é o que está entre os candidatos. As lições ficam como a
+    /// escolha as gravou.
     #[must_use]
     pub fn within(&self, found: &Candidates) -> Self {
         let has = |group: &[&SpecEvent], id: u64| group.iter().any(|item| item.id == id);
         Self {
-            judged: found.ids(),
+            judged: self.judged.intersection(&found.ids()).copied().collect(),
             removed: self.removed.iter().filter(|(id, _)| has(&found.project, *id)).cloned().collect(),
-            added: self.added.iter().filter(|(id, _)| has(&found.unowned, *id)).cloned().collect(),
-            judged_lessons: found.lesson_ids(),
-            removed_lessons: self.removed_lessons.iter().filter(|(id, _)| has(&found.lessons, *id)).cloned().collect(),
-            tasks: self.tasks.clone(),
+            added: self.added.iter().filter(|(id, _)| has(&found.unlinked, *id)).cloned().collect(),
+            judged_lessons: self.judged_lessons.clone(),
+            removed_lessons: self.removed_lessons.clone(),
         }
-    }
-
-    /// `true` quando a escolha julgou cada candidato de agora.
-    #[must_use]
-    pub fn covers(&self, found: &Candidates) -> bool {
-        found.ids().is_subset(&self.judged) && found.lesson_ids().is_subset(&self.judged_lessons)
     }
 
     /// `true` quando a escolha tirou do pedido a lição `id`.
@@ -869,26 +895,18 @@ impl Choice {
         let listed = |key: &str, items: &[(u64, String)]| -> Vec<Value> {
             items.iter().map(|(n, why)| serde_json::json!({ key: n, "why": why })).collect()
         };
-        let tasks: Vec<Value> = self
-            .tasks
-            .iter()
-            .map(|t| serde_json::json!({ "task": t.task, "skills": t.skills, "files": t.files }))
-            .collect();
         serde_json::json!({
             "judged": self.judged,
             "removed": listed("item", &self.removed),
             "added": listed("item", &self.added),
             "judged_lessons": self.judged_lessons,
             "removed_lessons": listed("lesson", &self.removed_lessons),
-            "tasks": tasks,
         })
     }
 
     /// A escolha gravada num envio; `None` quando o campo não tem a forma
     /// de [`Choice::to_value`]. O envio gravado antes de as lições entrarem
-    /// na escolha não traz os dois campos delas, e vale sem lição julgada; o
-    /// gravado antes da escolha por tarefa não traz `tasks`, e vale sem
-    /// nenhuma tarefa julgada.
+    /// na escolha não traz os dois campos delas, e vale sem lição julgada.
     #[must_use]
     pub fn from_value(value: &Value) -> Option<Self> {
         let listed = |key: &str, id: &str| -> Option<Vec<(u64, String)>> {
@@ -900,31 +918,12 @@ impl Choice {
             value.get(key)?.as_array()?.iter().map(Value::as_u64).collect()
         };
         let lessons = value.get("judged_lessons").is_some() || value.get("removed_lessons").is_some();
-        let strings = |entry: &Value, key: &str| -> Vec<String> {
-            entry.get(key).and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default()
-                .iter().filter_map(Value::as_str).map(str::to_string).collect()
-        };
-        let tasks: Vec<TaskChoice> = value
-            .get("tasks")
-            .and_then(Value::as_array)
-            .map(Vec::as_slice)
-            .unwrap_or_default()
-            .iter()
-            .filter_map(|entry| {
-                Some(TaskChoice {
-                    task: entry.get("task")?.as_u64()?,
-                    skills: strings(entry, "skills"),
-                    files: strings(entry, "files"),
-                })
-            })
-            .collect();
         Some(Self {
             judged: numbers("judged")?,
             removed: listed("removed", "item")?,
             added: listed("added", "item")?,
             judged_lessons: if lessons { numbers("judged_lessons")? } else { BTreeSet::new() },
             removed_lessons: if lessons { listed("removed_lessons", "lesson")? } else { Vec::new() },
-            tasks,
         })
     }
 }
@@ -945,19 +944,14 @@ pub fn choice_for(log: &SpecLog, wave: u64, fresh: Option<&Choice>) -> Option<Ch
 
 /// O que o pedido da onda `wave` lê: o que a montagem escolhe
 /// ([`Step::Dispatch`]), sem os itens do projeto todo que a escolha tirou e
-/// com os sem dono que ela pôs. A escolha é a de [`choice_for`], e vale só
+/// com os sem ligação que ela pôs. A escolha é a de [`choice_for`], e vale só
 /// dentro dos grupos de agora: o item que as tarefas da onda passaram a fazer
-/// vai sempre. As palavras são cortadas nas línguas `languages`.
+/// vai sempre.
 #[must_use]
-pub fn dispatch_items<'a>(
-    log: &'a SpecLog,
-    wave: u64,
-    fresh: Option<&Choice>,
-    languages: &Languages,
-) -> Vec<&'a SpecEvent> {
+pub fn dispatch_items<'a>(log: &'a SpecLog, wave: u64, fresh: Option<&Choice>) -> Vec<&'a SpecEvent> {
     let base = log.step(&Step::Dispatch { wave });
     let Some(choice) = choice_for(log, wave, fresh) else { return base };
-    let choice = choice.within(&candidates(log, wave, languages));
+    let choice = choice.within(&candidates(log, wave));
     let removed: BTreeSet<u64> = choice.removed.iter().map(|(id, _)| *id).collect();
     let mut out: Vec<&SpecEvent> = base.into_iter().filter(|item| !removed.contains(&item.id)).collect();
     for (id, _) in &choice.added {
@@ -1131,8 +1125,7 @@ pub fn attended(log: &SpecLog, wave: u64) -> BTreeMap<u64, &SpecEvent> {
 }
 
 /// O texto das tarefas de uma onda, uma por linha: a consulta que escolhe as
-/// lições que o pedido da onda e o da revisão levam, e os itens sem dono que
-/// a onda julga antes do envio ([`candidates`]).
+/// lições que o pedido da onda e o da revisão levam.
 #[must_use]
 pub fn tasks_text(log: &SpecLog, wave: u64) -> String {
     log.block(BlockQuery::Wave(wave))
@@ -1380,7 +1373,6 @@ impl Writer<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::project_map::cited_paths;
     use crate::domain::spec_events::{parse_log, render_line, stamp, BlockQuery, SpecLog, Step};
     use serde_json::{json, Value};
 
@@ -1429,24 +1421,6 @@ mod tests {
         assert_eq!(choice.added, vec![(3, "Vale para esta onda.".to_string())], "{choice:?}");
         assert!(choice.judged_lessons.is_empty(), "sem o campo, nenhuma lição julgada: {choice:?}");
         assert!(choice.removed_lessons.is_empty(), "sem o campo, nenhuma lição tirada: {choice:?}");
-        assert!(choice.tasks.is_empty(), "{choice:?}");
-    }
-
-    /// O envio gravado quando a escolha por tarefa ainda marcava a skill a
-    /// nascer continua lido: a tarefa sai com as skills e os arquivos dela, e
-    /// a escolha gravada de novo não leva mais a marca.
-    #[test]
-    fn from_value_reads_an_old_send_that_marked_a_skill_to_be_born() {
-        let old = json!({
-            "judged": [], "removed": [], "added": [],
-            "tasks": [{"task": 7, "skills": ["somar"], "files": ["src/a.rs"], "new_skill": true}],
-        });
-        let choice = Choice::from_value(&old).expect("o envio antigo se lê");
-        assert_eq!(
-            choice.tasks,
-            vec![TaskChoice { task: 7, skills: vec!["somar".to_string()], files: vec!["src/a.rs".to_string()] }],
-        );
-        assert_eq!(choice.to_value()["tasks"], json!([{"task": 7, "skills": ["somar"], "files": ["src/a.rs"]}]));
     }
 
     /// Cada item do pedido ocupa uma linha só — o tipo por extenso, o código e o
@@ -2113,7 +2087,7 @@ mod tests {
     }
 
     /// A onda só de texto não recebe o item do projeto todo: nem no pedido,
-    /// nem entre os candidatos que o orquestrador julga. O item do projeto
+    /// nem entre os candidatos que o Jev julga. O item do projeto
     /// que a tarefa dela faz vai mesmo assim. Na divisa, um arquivo de
     /// código entre os de texto devolve o item; a onda só em views Razor ou
     /// só na página HTML também o recebe.
@@ -2141,158 +2115,131 @@ mod tests {
         assert_eq!(ids(&agreed_for(&log, 1)), [2], "só o item que a tarefa da onda faz");
         let dispatched = ids(&log.step(&Step::Dispatch { wave: 1 }));
         assert!(!dispatched.contains(&1) && dispatched.contains(&2), "{dispatched:?}");
-        assert!(candidates(&log, 1, &crate::domain::normalize::Languages::new(["pt-BR", "en-US"])).project.is_empty(), "{:?}", ids(&candidates(&log, 1, &crate::domain::normalize::Languages::new(["pt-BR", "en-US"])).project));
+        assert!(candidates(&log, 1).project.is_empty(), "{:?}", ids(&candidates(&log, 1).project));
         for n in 2..=4 {
             assert!(ids(&agreed_for(&log, n)).contains(&1), "a onda {n} recebe o item do projeto");
-            assert_eq!(ids(&candidates(&log, n, &crate::domain::normalize::Languages::new(["pt-BR", "en-US"])).project), [1, 2], "a onda {n} julga os itens do projeto");
+            assert_eq!(ids(&candidates(&log, n).project), [1, 2], "a onda {n} julga os itens do projeto");
         }
     }
 
-    /// Cada onda julga só o item sem dono que serve a ela: o que tem a
-    /// palavra-chave inteira no texto das tarefas dela, ou o que cita um
-    /// arquivo que ela mexe. O item que cita um arquivo de nenhuma onda e
-    /// cuja palavra-chave nenhuma tarefa diz não é candidato de onda nenhuma,
-    /// e continua sem dono na lista da revisão final. Na divisa, a
-    /// palavra-chave pela metade não liga o item, e a pasta citada também
-    /// não.
+    /// O item que o pedido não leva por conta própria é candidato do Jev em
+    /// toda onda: o sem dono, o de outra onda e o de outros arquivos, no
+    /// grupo sem ligação. O que a onda é dona, o que as tarefas dela fazem e o
+    /// dos arquivos que ela mexe nunca são candidatos, porque vão sempre; o
+    /// do projeto todo é candidato do outro grupo, o que o Jev pode tirar.
     #[test]
-    fn an_item_without_an_owner_only_appears_in_the_wave_it_serves() {
+    fn what_the_request_does_not_carry_by_itself_is_a_candidate_of_the_jev() {
         let log = log(&[
-            (
-                "rule",
-                json!({"text": "A barra de status mostra o link da página", "keys": ["barra de status"], "example": "e"}),
-            ),
-            (
-                "rule",
-                json!({"text": "A gravação recusa o evento sem título (`src/gravar.rs`).", "keys": ["recusa sem título"], "example": "e"}),
-            ),
-            (
-                "rule",
-                json!({"text": "O texto em inglês segue o molde de `docs/molde.md` e a pasta `src/`.", "keys": ["idioma do molde"], "example": "e"}),
-            ),
-            (
-                "rule",
-                json!({"text": "A barra de rolagem some no celular", "keys": ["barra de rolagem"], "example": "e"}),
-            ),
-            ("wave", json!({"n": 1, "text": "Barra", "criteria": [], "done_when": "pronto"})),
-            (
-                "task",
-                json!({"wave": 1, "text": "A barra de status deixa de mostrar a contagem de linhas",
-                       "files": [{"path": "src/status.rs"}]}),
-            ),
-            ("wave", json!({"n": 2, "text": "Limite", "criteria": [], "done_when": "pronto"})),
-            ("task", json!({"wave": 2, "text": "O limite do texto passa a valer", "files": [{"path": "src/gravar.rs"}]})),
+            ("rule", json!({"text": "Sem dono nenhum", "keys": ["a"], "example": "e"})),
+            ("rule", json!({"text": "Dono é a onda 2", "keys": ["b"], "example": "e", "waves": [2]})),
+            ("rule", json!({"text": "Dos arquivos de b", "keys": ["c"], "example": "e", "applies_to": {"files": ["src/b.rs"]}})),
+            ("rule", json!({"text": "Do projeto todo", "keys": ["d"], "example": "e", "applies_to": {"files": ["**"]}})),
+            ("rule", json!({"text": "Feito pela tarefa da onda 1", "keys": ["e"], "example": "e", "waves": [2]})),
+            ("wave", json!({"n": 1, "text": "Um", "criteria": [], "done_when": "pronto"})),
+            ("task", json!({"wave": 1, "text": "Mexer em a", "files": [{"path": "src/a.rs"}], "covers": [5]})),
+            ("wave", json!({"n": 2, "text": "Dois", "criteria": [], "done_when": "pronto"})),
+            ("task", json!({"wave": 2, "text": "Mexer em b", "files": [{"path": "src/b.rs"}]})),
         ]);
-        assert_eq!(ids(&unowned(&log)), [1, 2, 3, 4], "os quatro continuam sem dono");
 
-        assert_eq!(ids(&candidates(&log, 1, &crate::domain::normalize::Languages::new(["pt-BR", "en-US"])).unowned), [1], "a onda 1 casa a palavra-chave do primeiro");
-        assert_eq!(ids(&candidates(&log, 2, &crate::domain::normalize::Languages::new(["pt-BR", "en-US"])).unowned), [2], "a onda 2 mexe no arquivo que o segundo cita");
-        assert!(ids(&all_agreed(&log)).contains(&3), "o que não serve continua na revisão final");
+        let one = candidates(&log, 1);
+        assert_eq!(ids(&one.project), [4], "o do projeto todo é o que o Jev pode tirar");
+        assert_eq!(ids(&one.unlinked), [1, 2, 3], "sem dono, da onda 2 e dos arquivos de b não servem à onda 1 por conta própria");
+        let two = candidates(&log, 2);
+        assert_eq!(ids(&two.project), [4]);
+        assert_eq!(ids(&two.unlinked), [1], "a onda 2 é dona do segundo e do quinto e mexe nos arquivos do terceiro");
+        assert!(ids(&all_agreed(&log)).contains(&1), "o que o Jev não pôs continua na revisão final");
     }
 
-    /// O item também cita o arquivo solto no texto, sem crases e com a
-    /// linha, e isso o liga à onda que mexe nesse arquivo. Na divisa, o
-    /// caminho solto de um arquivo que a onda não mexe não liga o item, e a
-    /// pasta solta também não. A leitura de uma skill continua só entre
-    /// crases: o caminho solto não entra nela.
+    /// O item marcado `every_wave` vai no pedido de toda onda, a de só texto
+    /// inclusive, ainda que diga outros arquivos ou nenhum, e nunca é
+    /// candidato do Jev: nem para tirar, nem para pôr.
     #[test]
-    fn a_path_without_backticks_only_links_the_item_to_the_wave_that_touches_the_file() {
+    fn an_every_wave_item_goes_in_every_request_and_is_never_judged() {
         let log = log(&[
+            ("rule", json!({"text": "Vale para toda onda, sem dono", "keys": ["a"], "example": "e", "every_wave": true})),
             (
-                "limit",
-                json!({"text": "O texto da entrega tem o limite de hoje (TETO, src/gravar.rs:269).", "keys": ["teto"], "value": "8000"}),
+                "rule",
+                json!({"text": "Vale para toda onda e diz outro arquivo", "keys": ["b"], "example": "e",
+                       "every_wave": true, "applies_to": {"files": ["src/outro.rs"]}}),
             ),
             (
-                "limit",
-                json!({"text": "O título tem o limite de hoje (TITULO, src/titulo.rs:12).", "keys": ["teto"], "value": "60"}),
+                "rule",
+                json!({"text": "Vale no projeto todo e para toda onda", "keys": ["c"], "example": "e",
+                       "every_wave": true, "applies_to": {"files": ["**"]}}),
             ),
-            ("limit", json!({"text": "Tudo em src/ tem o mesmo teto.", "keys": ["teto"], "value": "1"})),
-            ("wave", json!({"n": 1, "text": "Limite", "criteria": [], "done_when": "pronto"})),
-            ("task", json!({"wave": 1, "text": "O limite do texto passa a valer", "files": [{"path": "src/gravar.rs"}]})),
+            ("rule", json!({"text": "Sem a marca", "keys": ["d"], "example": "e", "every_wave": false})),
+            ("wave", json!({"n": 1, "text": "Código", "criteria": [], "done_when": "pronto"})),
+            ("task", json!({"wave": 1, "text": "Mexer", "files": [{"path": "src/a.rs"}]})),
+            ("wave", json!({"n": 2, "text": "Texto", "criteria": [], "done_when": "pronto"})),
+            ("task", json!({"wave": 2, "text": "Documentar", "files": [{"path": "docs/guia.md"}]})),
         ]);
-        assert_eq!(ids(&unowned(&log)), [1, 2, 3], "os três continuam sem dono");
-        assert_eq!(ids(&candidates(&log, 1, &crate::domain::normalize::Languages::new(["pt-BR", "en-US"])).unowned), [1], "só o que cita solto o arquivo da onda");
-        assert!(cited_paths("O texto da entrega tem o limite de hoje (TETO, src/gravar.rs:269).").is_empty());
+        for n in 1..=2 {
+            assert_eq!(ids(&agreed_for(&log, n)), [1, 2, 3], "a onda {n} leva os três com a marca");
+            let found = candidates(&log, n);
+            assert!(found.project.is_empty(), "a onda {n}: {:?}", ids(&found.project));
+            assert_eq!(ids(&found.unlinked), [4], "a onda {n}: só o sem a marca é candidato");
+        }
+        for id in 1..=3 {
+            assert_eq!(owners(&log).get(&id), Some(&Owner::EveryWave), "item {id}");
+        }
+        assert_eq!(owners(&log).get(&4), None, "a marca falsa não dá dono");
     }
 
-    /// A primeira rodada de uma obra real: as ondas 1 a 4 saíram juntas, e
-    /// a rodada mostrou os mesmos 25 itens sem dono a cada uma. Só a onda 3
-    /// usou algum: o orquestrador pôs seis no pedido dela, e as outras três
-    /// não pegaram nenhum. Remontada cada onda com o texto e os arquivos reais
-    /// da tarefa dela, cinco dos seis continuam candidatos da onda 3, e a
-    /// escolha gravada no envio dela continua pondo os cinco; o limite do
-    /// texto da entrega entra porque cita, sem crases, um arquivo que a onda
-    /// mexe. Fica de fora só a entrega gravada duas vezes antes de a rodada
-    /// assumir: nenhuma palavra-chave dela aparece inteira no texto da
-    /// tarefa, e ela não cita arquivo. Cada uma das outras ondas recebe
-    /// menos que os 25.
+    /// O Jev tira do pedido o item do projeto todo só com a chance de sim até
+    /// 0,05, e põe o item sem ligação só com a chance a partir de 0,7; entre
+    /// os dois limites, e sem resposta, o pedido segue o padrão. O motivo de
+    /// cada mudança é a chance.
     #[test]
-    fn the_items_the_orchestrator_put_in_the_wave_remain_candidates() {
-        let fixture: Value = serde_json::from_str(include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/items-without-owner-by-wave.json"
-        )))
-        .unwrap();
-        let numbers = |value: &Value| -> BTreeSet<u64> {
-            value.as_array().unwrap().iter().map(|id| id.as_u64().unwrap()).collect()
-        };
-        let mut content = String::new();
-        let mut line = |id: u64, event_type: &str, body: Value| {
-            let mut map = crate::domain::spec_events::normalize(body.as_object().cloned().unwrap_or_default(), event_type);
-            map.insert("type".into(), json!(event_type));
-            content.push_str(&render_line(&stamp(map, id, None, "2026-09-23T19:30:00-03:00")));
-            content.push('\n');
-        };
-        let items = fixture["items"].as_array().unwrap();
-        for item in items {
-            let body = json!({"text": item["text"], "keys": item["keys"]});
-            line(item["id"].as_u64().unwrap(), item["type"].as_str().unwrap(), body);
-        }
-        let waves = fixture["waves"].as_array().unwrap();
-        for (i, wave) in waves.iter().enumerate() {
-            let n = wave["n"].as_u64().unwrap();
-            let paths: Vec<Value> = wave["files"].as_array().unwrap().iter().map(|path| json!({"path": path})).collect();
-            line(1000 + 2 * i as u64, "wave", json!({"n": n, "text": "A onda", "criteria": [], "done_when": "passa"}));
-            line(1001 + 2 * i as u64, "task", json!({"wave": n, "text": wave["text"], "files": paths}));
-        }
-        let log = parse_log(&content);
-        let all: BTreeSet<u64> = items.iter().map(|item| item["id"].as_u64().unwrap()).collect();
-        assert_eq!(all.len(), 25);
-        assert_eq!(unowned(&log).iter().map(|e| e.id).collect::<BTreeSet<_>>(), all, "os 25 continuam sem dono");
+    fn the_chances_of_the_jev_take_a_project_item_out_only_at_005_and_put_an_unlinked_one_in_only_at_07() {
+        let log = log(&[
+            ("rule", json!({"text": "Projeto 1", "keys": ["a"], "example": "e", "applies_to": {"files": ["**"]}})),
+            ("rule", json!({"text": "Projeto 2", "keys": ["b"], "example": "e", "applies_to": {"files": ["**"]}})),
+            ("rule", json!({"text": "Projeto 3", "keys": ["c"], "example": "e", "applies_to": {"files": ["**"]}})),
+            ("rule", json!({"text": "Projeto 4", "keys": ["d"], "example": "e", "applies_to": {"files": ["**"]}})),
+            ("rule", json!({"text": "Sem ligação 5", "keys": ["e"], "example": "e"})),
+            ("rule", json!({"text": "Sem ligação 6", "keys": ["f"], "example": "e"})),
+            ("rule", json!({"text": "Sem ligação 7", "keys": ["g"], "example": "e"})),
+            ("wave", json!({"n": 1, "text": "Código", "criteria": [], "done_when": "pronto"})),
+            ("task", json!({"wave": 1, "text": "Mexer", "files": [{"path": "src/a.rs"}]})),
+        ]);
+        let found = candidates(&log, 1);
+        let chances = BTreeMap::from([(1, 0.05), (2, 0.06), (3, 0.0), (5, 0.7), (6, 0.69)]);
 
-        let twice: BTreeSet<u64> = items
-            .iter()
-            .filter(|item| item["text"] == json!("A onda grava a entrega duas vezes antes de a rodada assumir."))
-            .map(|item| item["id"].as_u64().unwrap())
-            .collect();
-        assert_eq!(twice.len(), 1, "a amostra tem a entrega gravada duas vezes");
+        let choice = Choice::by_chances(&found, &chances);
 
-        let mut shortfalls: Vec<String> = Vec::new();
-        for wave in waves {
-            let n = wave["n"].as_u64().unwrap();
-            let (judged, added) = (numbers(&wave["judged"]), numbers(&wave["added"]));
-            assert_eq!(judged, all, "onda {n}: a rodada mostrou os 25");
-            let found = candidates(&log, n, &crate::domain::normalize::Languages::new(["pt-BR", "en-US"]));
-            let got: BTreeSet<u64> = found.unowned.iter().map(|e| e.id).collect();
-            let lost: BTreeSet<u64> = added.difference(&got).copied().collect();
-            if n == 3 {
-                assert_eq!(added.len(), 6, "o orquestrador pôs seis na onda 3");
-                if lost != twice {
-                    shortfalls.push(format!("onda 3 perdeu {lost:?}, e não só {twice:?}; recebe {got:?}"));
-                }
-                let recorded = Choice { added: added.iter().map(|id| (*id, "motivo".to_string())).collect(), ..Choice::default() };
-                let kept = recorded.within(&found).added.len();
-                if kept != 5 {
-                    shortfalls.push(format!("a escolha gravada da onda 3 põe {kept} dos seis, e não cinco"));
-                }
-            } else {
-                assert!(added.is_empty() && lost.is_empty(), "onda {n}: o orquestrador não pôs nenhum");
-                if got.len() >= judged.len() {
-                    shortfalls.push(format!("onda {n} recebe {} de {}", got.len(), judged.len()));
-                }
-            }
-        }
-        assert!(shortfalls.is_empty(), "{shortfalls:#?}");
+        assert_eq!(choice.removed, vec![(1, "Jev p=0.05".to_string()), (3, "Jev p=0.00".to_string())]);
+        assert_eq!(choice.added, vec![(5, "Jev p=0.70".to_string())]);
+        assert_eq!(choice.judged, BTreeSet::from([1, 2, 3, 5, 6]), "o item sem resposta (4 e 7) não foi julgado");
+        assert!(choice.judged_lessons.is_empty() && choice.removed_lessons.is_empty(), "as lições vão sempre");
+        let carried: Vec<u64> =
+            dispatch_items(&log, 1, Some(&choice)).iter().map(|e| e.id).filter(|id| *id <= 7).collect();
+        assert_eq!(carried, [2, 4, 5], "o pedido leva o que o Jev não tirou e o que ele pôs, em ordem");
+        let again = Choice::from_value(&choice.to_value()).expect("o campo gravado se lê");
+        assert_eq!(again, choice);
+    }
+
+    /// O item de toda onda é dono de si: a gravação de um item combinado novo
+    /// depois da aprovação, sem onda nem arquivo, passa com a marca e é
+    /// recusada sem ela.
+    #[test]
+    fn an_every_wave_item_has_an_owner_for_the_write_after_the_approval() {
+        let approved = |item: Value| {
+            let before = log(&[
+                ("work_type", json!({"kinds": ["feature"]})),
+                ("state", json!({"phase": "approved"})),
+            ]);
+            let after = log(&[
+                ("work_type", json!({"kinds": ["feature"]})),
+                ("state", json!({"phase": "approved"})),
+                ("rule", item),
+            ]);
+            owner_rule(&before, &after)
+        };
+        let item = json!({"text": "Sem dono", "keys": ["a"], "example": "e"});
+        assert!(approved(item.clone()).is_err(), "sem dono nem marca, recusa");
+        let mut marked = item;
+        marked["every_wave"] = json!(true);
+        assert_eq!(approved(marked), Ok(()), "com a marca, passa");
     }
 
     /// A busca por palavras não decide quem recebe o item: a regra que fala

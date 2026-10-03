@@ -8,8 +8,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use mustard_core::domain::normalize::Languages;
-use mustard_core::domain::spec_events::{Block, BlockQuery, Refusal, SpecEvent, SpecLog};
+use mustard_core::domain::spec_events::{Block, BlockQuery, Refusal, SpecLog};
 use mustard_core::domain::spec_state::{not_closed_yet, returns_to_running, PhaseWriter, SpecState, State};
 use mustard_core::domain::wave_prompt::{estimate_tokens, token_cap_message, wave_files, WaveCopy};
 use mustard_core::io::spec_events as store;
@@ -19,10 +18,10 @@ use serde_json::{json, Map, Value};
 
 use super::backlog::{dispatch_backlog, Judge};
 use super::commit::git_lock;
+use super::item_choice::choose_items;
 use super::queue::{
-    analyse, analysis_lines, backlog_left, backlog_ready, first_unfinished, max_parallel, next_waves,
-    open_review, open_sends, orphaned_waves, sent_items, silent_minutes, task_files, waves_in_progress, waves_returned,
-    Analysed,
+    backlog_left, backlog_ready, first_unfinished, max_parallel, next_waves, open_review, open_sends, orphaned_waves,
+    sent_items, silent_minutes, waves_in_progress, waves_returned,
 };
 use super::report::Taken;
 use super::slots::{open_copies, sharing_copy, without_live_copy};
@@ -357,54 +356,6 @@ fn minutes_since(log: &SpecLog, at: u64) -> Option<i64> {
     Some((now - at).num_minutes())
 }
 
-/// As tarefas das ondas `waves` que pedem conferência no código, pelo
-/// código: as que têm arquivo declarado mudado num commit da branch
-/// posterior à última versão delas que mudou o texto, os arquivos ou a parte
-/// do agente ([`changed_after_text`]). Sem git, sem arquivo declarado ou sem
-/// hora legível, a tarefa fica fora.
-fn tasks_to_check(root: &Path, log: &SpecLog, waves: &BTreeSet<u64>, codes: &BTreeMap<u64, String>) -> Vec<String> {
-    log.visible()
-        .into_iter()
-        .filter(|e| e.event_type == "task" && e.wave().is_some_and(|wave| waves.contains(&wave)))
-        .filter(|task| changed_after_text(root, log, task))
-        .map(|task| codes.get(&task.id).cloned().unwrap_or_else(|| task.id.to_string()))
-        .collect()
-}
-
-/// `true` quando o último commit que toca um arquivo declarado da tarefa é
-/// posterior ao texto vigente dela: o instante da última versão que mudou o
-/// texto, os arquivos ou a parte do agente. A conferência no código pode
-/// devolver a tarefa com só a parte do agente reescrita; essa versão já leva
-/// em conta o código daquele instante, e o aviso cala até um commit novo. A
-/// versão que só põe a tarefa numa onda — que a rodada grava antes de
-/// mostrar a escolha — herda o instante da anterior; contada, ela esconderia
-/// todo commit anterior à própria rodada.
-fn changed_after_text(root: &Path, log: &SpecLog, task: &SpecEvent) -> bool {
-    let files = task_files(task);
-    if files.is_empty() {
-        return false;
-    }
-    let mut written = task;
-    while let Some(previous) = written.replaced().first().and_then(|id| log.get(*id)) {
-        if previous.fields.get("text") != written.fields.get("text")
-            || task_files(previous) != files
-            || previous.fields.get("agent") != written.fields.get("agent")
-        {
-            break;
-        }
-        written = previous;
-    }
-    let Ok(at) = chrono::DateTime::parse_from_rfc3339(written.at().trim()) else {
-        return false;
-    };
-    let mut args = vec!["log", "-1", "--format=%ct", "HEAD", "--"];
-    args.extend(files.iter().map(String::as_str));
-    mustard_core::platform::git::run(root, &args)
-        .out()
-        .and_then(|seconds| seconds.parse::<i64>().ok())
-        .is_some_and(|commit| commit > at.timestamp())
-}
-
 /// Os arquivos mudados na cópia da onda `wave`, pelo `git status` curto dela.
 /// `None` sem cópia gravada, ou sem git.
 ///
@@ -649,8 +600,6 @@ pub(super) fn run_entered_round(
     let raw = opts.report.as_deref().map(str::trim).filter(|r| !r.is_empty());
     let Taken { mut recorded, formatted, mut warnings, commit, paused, waiting: held } =
         super::report::take_report_with_mine(&opts.root, root, &spec, raw, &log, lang, caller, mine)?;
-    let (given, unread) = analysis_lines(raw, lang);
-    warnings.extend(unread);
 
     // O despacho — a entrada na execução, a leitura da spec, a escolha das
     // ondas, a criação das cópias e a gravação dos envios — roda inteiro com a
@@ -678,8 +627,7 @@ pub(super) fn run_entered_round(
     // (`log_on_entry`) e a feita agora, já com a trava presa. A onda leva
     // também, depois delas, a tarefa do backlog nas duas leituras que espera
     // só por tarefas dela e divide arquivo com ela. A onda de lote que ficou
-    // montada e sem sair se desfaz, menos a que a linha `ANALYSIS` deste
-    // relatório (`given`) respondeu. O binário grava a onda e as tarefas
+    // montada e sem sair se desfaz. O binário grava a onda e as tarefas
     // dela, com autor próprio, e só depois a rodada lê as ondas que existem —
     // as novas e as já entregues. A tarefa que o corte de uma onda de lote
     // acabou de devolver solta, no relatório desta mesma chamada, não estava
@@ -698,7 +646,6 @@ pub(super) fn run_entered_round(
         &log_on_entry,
         &locked,
         max_parallel(root),
-        &given,
         judge.as_ref().map(|judge| judge as &Judge<'_>),
     )
     .map_err(RoundRefusal::Refused)?;
@@ -754,14 +701,12 @@ pub(super) fn run_entered_round(
             return Err(RoundRefusal::WaveLoop { cycle, answered });
         }
     };
-    // A escolha antes do envio, antes da cópia: a onda com item do projeto
-    // todo, item sem dono ou lição a julgar só sai com a escolha do
-    // orquestrador; sem ela, a resposta traz os candidatos dela, e a onda fica
-    // para a rodada que trouxer a escolha. As buscas da escolha e do pedido
-    // cortam as palavras nas mesmas línguas do projeto.
-    let languages = Languages::of_project(root);
-    let Analysed { go, choices, asked, warnings: ignored } = analyse(root, &log, &ready, &given, lang, &languages);
-    warnings.extend(ignored);
+    // A escolha dos itens do pedido, antes da cópia: o Jev julga, uma chamada
+    // por onda, o item do projeto todo e o sem ligação com ela, e a onda sai
+    // nesta mesma rodada, sem esperar quem conduz. Sem Jev, ou com a chamada
+    // falhando, o pedido leva o padrão.
+    let choices = choose_items(&opts.root, &spec, &log, &ready, jev.as_ref());
+    let go = ready;
     // A onda a reenviar cuja cópia gravada outra onda também segura não volta
     // a ela: sai numa vaga livre, como a onda nova, e antes dela, porque já
     // estava em andamento. A cuja cópia gravada deixou de ser uma cópia viva —
@@ -830,7 +775,7 @@ pub(super) fn run_entered_round(
         draft.insert("chars".into(), json!(prompt.text.chars().count()));
         // Os itens que ficaram, e à parte a escolha do orquestrador: o que
         // saiu e o que entrou, cada um com o motivo.
-        draft.insert("items".into(), json!(sent_items(&log, *wave, flight.choices.get(wave), &languages)));
+        draft.insert("items".into(), json!(sent_items(&log, *wave, flight.choices.get(wave))));
         // O que o pedido manda ler, item a item: a mesma lista que imprimiu
         // as linhas dele, e contra ela a entrega confere o que foi lido.
         draft.insert("read_items".into(), json!(prompt.listed));
@@ -962,8 +907,6 @@ pub(super) fn run_entered_round(
     let mut command: Option<String> = None;
     let then = if !dispatched.is_empty() {
         format!("{} {report_back}", translate("round.next", lang))
-    } else if !asked.is_empty() {
-        String::new()
     } else if !running.is_empty() {
         let waves: Vec<String> = running.keys().map(u64::to_string).collect();
         format!("{} {report_back}", translate("round.waiting", lang).replace("{waves}", &waves.join(", ")))
@@ -1014,27 +957,12 @@ pub(super) fn run_entered_round(
         text
     };
     // A pergunta da onda parada vem antes do resto, que segue sem ela; a da
-    // mudança de plano de cada onda que espera o clique vem em seguida, e o
-    // pedido da escolha logo depois.
+    // mudança de plano de cada onda que espera o clique vem em seguida.
     let (stopped, question) = stopped_waves(&stuck, &codes, lang);
-    let waiting: Vec<String> = asked.iter().filter_map(|a| a["wave"].as_u64()).map(|n| n.to_string()).collect();
-    // A conferência das tarefas no código só entra quando um commit mudou
-    // arquivo de alguma delas depois do texto; sem nenhuma, a frase não sai.
-    let analysis = (!asked.is_empty()).then(|| {
-        let choice = translate("round.analysis", lang).replace("{waves}", &waiting.join(", "));
-        let waves: BTreeSet<u64> = asked.iter().filter_map(|a| a["wave"].as_u64()).collect();
-        let tasks = tasks_to_check(root, &log, &waves, &codes);
-        if tasks.is_empty() {
-            choice
-        } else {
-            format!("{choice} {}", translate("round.analysis_check", lang).replace("{tasks}", &tasks.join(", ")))
-        }
-    });
     let then = question
         .into_iter()
         .chain(held.iter().map(|one| one.next_line(lang)))
         .chain(kept_lines)
-        .chain(analysis)
         .chain(Some(then).filter(|t| !t.is_empty()))
         .collect::<Vec<_>>()
         .join(" ");
@@ -1056,9 +984,6 @@ pub(super) fn run_entered_round(
     }
     if !stopped.is_empty() {
         out["stopped"] = json!(stopped);
-    }
-    if !asked.is_empty() {
-        out["analysis"] = json!(asked);
     }
     if let Some(commit) = commit {
         out["commit"] = commit;
@@ -2696,9 +2621,8 @@ mod tests {
     /// A outra, sobre `src/b.rs`, teve o texto escrito duas horas atrás, e um
     /// commit mudou o arquivo dela uma hora atrás; com `wave`, ela nasce
     /// nessa onda, e sem, no backlog, de onde a rodada a põe numa onda. Uma
-    /// regra do projeto todo faz a rodada pedir a escolha antes do envio, que
-    /// é onde a conferência aparece. Devolve o número e o código dessa
-    /// tarefa.
+    /// regra do projeto todo entra no pedido por padrão. Devolve o número e o
+    /// código dessa tarefa.
     fn task_changed_after_its_text(root: &Path, wave: Option<u64>) -> (u64, String) {
         let (text_at, _) = hours_from_now(-2);
         let mut written = None;
@@ -2725,92 +2649,24 @@ mod tests {
         (written.id, written.code.expect("a task has a code"))
     }
 
-    /// A versão nova da tarefa `id`: os campos dela, com os de `changed` por
-    /// cima, apontando a anterior.
-    fn revision_of(log: &SpecLog, id: u64, changed: Value) -> Map<String, Value> {
-        let mut draft: Map<String, Value> = log
-            .get(id)
-            .expect("the task")
-            .fields
-            .iter()
-            .filter(|(key, _)| !["v", "id", "code", "at", "type", "search"].contains(&key.as_str()))
-            .map(|(key, value)| (key.clone(), value.clone()))
-            .collect();
-        draft.insert("replaces".into(), json!(id));
-        draft.extend(changed.as_object().cloned().unwrap_or_default());
-        draft
-    }
-
-    /// O começo da frase que pede a conferência das tarefas no código, antes
-    /// dos códigos delas.
-    fn check_opening() -> String {
-        let phrase = translate("round.analysis_check", Locale::PtBr);
-        phrase.split("{tasks}").next().unwrap_or_default().to_string()
-    }
-
-    /// A frase que pede a conferência no código só da tarefa `code`.
-    fn check_of(code: &str) -> String {
-        translate("round.analysis_check", Locale::PtBr).replace("{tasks}", code)
-    }
-
-    /// A tarefa com arquivo mudado num commit depois do texto dela entra na
-    /// conferência no código que a rodada pede junto com a escolha da onda;
-    /// a tarefa escrita depois do último commit no arquivo dela fica fora.
+    /// A tarefa com arquivo mudado num commit depois do texto dela sai na
+    /// mesma rodada, como qualquer outra: a rodada não para a onda nem pede a
+    /// conferência da tarefa no código a quem conduz, porque a espera em que
+    /// o pedido aparecia não existe mais.
     #[test]
-    fn a_commit_after_the_task_text_asks_to_check_the_task_against_the_code() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let (_, code) = task_changed_after_its_text(root, Some(1));
-
-        let out = round(root, "x", None);
-        assert_eq!(out["ok"], json!(true), "{out}");
-        assert_eq!(out["analysis"][0]["wave"], json!(1), "{out}");
-        assert!(out["next"].as_str().unwrap_or_default().contains(&check_of(&code)), "{out}");
-    }
-
-    /// A conferência que devolve a tarefa com só a parte do agente reescrita,
-    /// gravada depois do commit, cala o aviso: a tarefa já foi conferida
-    /// contra o código daquele commit. A escolha da onda continua pedida. Um
-    /// commit novo no arquivo, depois dessa versão, traz o aviso de volta.
-    #[test]
-    fn a_rewrite_of_only_the_agent_part_after_the_commit_silences_the_check() {
+    fn a_task_whose_file_changed_after_its_text_leaves_in_the_same_round_without_a_check() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let (id, code) = task_changed_after_its_text(root, Some(1));
-        let revised = revision_of(&log_of(root), id, json!({"agent": "- a saudação já está curta; conferir pelo teste"}));
-        store::write(&store::spec_file(root, "x").unwrap(), "task", revised, &[]).expect("the new version");
 
         let out = round(root, "x", None);
+
         assert_eq!(out["ok"], json!(true), "{out}");
-        assert_eq!(out["analysis"][0]["wave"], json!(1), "{out}");
+        assert_eq!(out["dispatch"][0]["wave"], json!(1), "{out}");
+        assert!(out.get("analysis").is_none(), "{out}");
         let next = out["next"].as_str().unwrap_or_default();
-        assert!(next.contains(&translate("round.analysis", Locale::PtBr).replace("{waves}", "1")), "{out}");
-        assert!(!next.contains(&check_opening()), "{out}");
-
-        let (_, later) = hours_from_now(1);
-        commit_at(root, "src/b.rs", "fn saudacao_curta() {}\n", later);
-        let again = round(root, "x", None);
-        assert!(again["next"].as_str().unwrap_or_default().contains(&check_of(&code)), "{again}");
-    }
-
-    /// A versão que só põe a tarefa numa onda — a rodada a grava ao formar o
-    /// lote, depois do commit — herda o instante do texto: o commit que mudou
-    /// o arquivo depois do texto continua pedindo a conferência.
-    #[test]
-    fn the_version_that_only_sets_the_wave_still_asks_for_the_check() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let (id, code) = task_changed_after_its_text(root, None);
-
-        let out = round(root, "x", None);
-        assert_eq!(out["ok"], json!(true), "{out}");
-        let log = log_of(root);
-        let current = log.current(id).expect("the task is still there");
-        assert_eq!(current.replaced(), vec![id], "the round wrote the version that sets the wave: {out}");
-        let wave = current.wave().expect("the round put the task in a wave");
-        let asked = out["analysis"].as_array().cloned().unwrap_or_default();
-        assert!(asked.iter().any(|a| a["wave"] == json!(wave)), "{out}");
-        assert!(out["next"].as_str().unwrap_or_default().contains(&check_of(&code)), "{out}");
+        assert!(!next.contains(&code) && !next.contains("agente separado"), "{out}");
+        assert_eq!(log_of(root).current(id).and_then(|task| task.wave()), Some(1), "the task stays in its wave");
     }
 
     /// A mudança que a onda manda terminada em ponto aparece no aviso da

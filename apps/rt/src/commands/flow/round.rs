@@ -18,23 +18,22 @@
 //! **A onda nasce quando sai.** Só existe a onda que está rodando; as outras
 //! tarefas ficam no backlog, sem número de onda. A cada rodada, a montagem
 //! (`backlog`) forma no máximo uma onda por vaga livre, cada uma com as
-//! tarefas que dividem arquivo e nada mais. A onda montada que não saiu se
-//! desfaz, e as tarefas dela voltam ao backlog e entram na conta, menos a que
-//! a linha `<ANALYSIS>` deste relatório respondeu.
+//! tarefas do mesmo tipo de trabalho, que o Jev julga numa chamada só sobre o
+//! backlog inteiro, ou que dividem arquivo quando não há Jev. A onda montada
+//! que não saiu se desfaz, e as tarefas dela voltam ao backlog e entram na
+//! conta.
 //!
-//! **A escolha antes do envio.** Antes de criar a cópia de uma onda pronta,
-//! a rodada olha os candidatos dela: os itens combinados do projeto todo, os
-//! sem dono e as lições do banco que casam com ela. Com algum, a onda só sai
-//! com a escolha do orquestrador, a conversa principal, e nenhum agente é
-//! aberto para isso: a resposta traz em `analysis` os candidatos de cada onda,
-//! cada um com o título, e o orquestrador devolve a linha
-//! `<ANALYSIS>{…}</ANALYSIS>` no `--report` seguinte, sozinha ou junto das
-//! outras. O envio gravado leva os itens que ficaram e, à parte, no campo
-//! `analysis`, o que saiu e o que entrou, cada um com o motivo. Os itens que
-//! as tarefas da onda fazem vão sempre, sem escolha. A mesma onda que sai de
-//! novo sem plano novo usa a escolha do envio anterior, quando ela julgou cada
-//! candidato de agora. Sem escolha, a onda não sai; nada é recusado. Sem a linha
-//! dela no relatório seguinte, a onda se desfaz e a montagem refaz o pacote.
+//! **A escolha dos itens do pedido.** Antes de criar a cópia de uma onda
+//! pronta, a rodada olha os itens combinados que o pedido dela não leva nem
+//! tira por conta própria (`item_choice`): os do projeto todo, sem a marca de
+//! toda onda, e os sem ligação com ela. Com algum, uma chamada ao Jev por onda
+//! diz, por item, se ele governa algo que as tarefas dela mudam ou testam; a
+//! onda sai na mesma rodada, sem parada de quem conduz. Os itens que as tarefas
+//! da onda fazem, os de toda onda (`every_wave`), os de que a onda é dona e as
+//! lições vão sempre, sem chamada. O envio gravado leva os itens que ficaram e,
+//! à parte, no campo `analysis`, o que saiu e o que entrou, cada um com a
+//! chance que o Jev deu. Sem chave, ou com a chamada falhando, o pedido leva o
+//! padrão: o projeto todo vai, e o sem ligação fica fora.
 //!
 //! **A entrega mora na spec, e a rodada a assume.** O agente de onda grava a
 //! própria entrega com `mustard-rt run write delivered`, e só com o envio da
@@ -52,7 +51,7 @@
 //! mensagem montada do resumo e grava cada sobra como tarefa da spec, no
 //! backlog. O `--report` leva só o que o orquestrador
 //! escreve: a linha `<USAGE>{"wave":1}</USAGE>`, que marca que o agente da
-//! onda terminou, a `<PAUSED>` e a `<ANALYSIS>{…}</ANALYSIS>`. O consumo de
+//! onda terminou e a `<PAUSED>`. O consumo de
 //! cada onda assumida — o modelo, os passos e os tokens do agente dela — e o
 //! da conversa principal no ramo da spec a rodada mede nos arquivos de
 //! conversa que a plataforma grava, na pasta de configuração dela e na sessão
@@ -127,6 +126,7 @@ mod commit;
 mod convert;
 mod copy_check;
 mod imports_check;
+pub(crate) mod item_choice;
 mod keep;
 mod leftovers;
 mod queue;
@@ -501,7 +501,7 @@ mod tests {
         let mut body = json!({"wave": wave, "text": text, "files": files, "commit": format!("a onda {wave} saiu")});
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let agreed: Vec<Value> =
-            agreed::request_agreed(&log, wave, &mustard_core::domain::normalize::Languages::of_project(root)).iter().map(|item| json!({"item": item.id, "met": true})).collect();
+            agreed::request_agreed(&log, wave).iter().map(|item| json!({"item": item.id, "met": true})).collect();
         if !agreed.is_empty() {
             body["agreed"] = json!(agreed);
         }

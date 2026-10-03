@@ -18,11 +18,10 @@ use std::process::Command;
 
 use mustard_core::platform::i18n::{translate, Locale};
 
-/// As chaves do catálogo que citam os comandos do mapa: a conferência das
-/// tarefas, a citação que a onda deixou, a sobra juntada a uma tarefa aberta
-/// e os dois textos que mandam gravar as tarefas de um pedido.
-const CATALOG_KEYS: [&str; 5] = [
-    "round.analysis_check",
+/// As chaves do catálogo que citam os comandos do mapa: a citação que a onda
+/// deixou, a sobra juntada a uma tarefa aberta e os dois textos que mandam
+/// gravar as tarefas de um pedido.
+const CATALOG_KEYS: [&str; 4] = [
     "round.after_wave.leftover",
     "round.leftover_joined",
     "request.new_waves",

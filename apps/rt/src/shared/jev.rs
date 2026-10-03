@@ -52,7 +52,7 @@
 //! ambiente de quem roda o programa o troca: o teste do programa inteiro
 //! aponta para um serviço de mentira.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::{self, Write as _};
 use std::io::ErrorKind;
 use std::path::{Component, Path};
@@ -62,6 +62,7 @@ use mustard_core::domain::map_filter::{
     FilterCandidate, FilterError, FilterRequest, FilterUsage, Filtered, MapFilter, Partial, Scored, Verdict, joined,
     judged,
 };
+use mustard_core::domain::spec_events::SpecEvent;
 use mustard_core::io::jev_gate;
 use mustard_core::ProjectConfig;
 use serde_json::{Map, Value, json};
@@ -787,6 +788,33 @@ pub(crate) struct BoardTask {
     pub(crate) depends_on: Vec<String>,
 }
 
+impl BoardTask {
+    /// A tarefa `task` como o Jev a vê: o que ela diz de si, os arquivos que
+    /// declara — cada item de `files`, como texto solto ou como `{"path": …}`,
+    /// com barras normais — e os títulos das tarefas de que depende
+    /// (`depends_on`).
+    pub(crate) fn of(task: &SpecEvent, depends_on: Vec<String>) -> Self {
+        let files: BTreeSet<String> = task
+            .fields
+            .get("files")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|file| file.as_str().or_else(|| file.get("path").and_then(Value::as_str)))
+            .map(|path| path.trim().replace('\\', "/"))
+            .filter(|path| !path.is_empty())
+            .collect();
+        Self {
+            id: task.id,
+            title: task.str_field("title").unwrap_or_default().to_string(),
+            text: task.str_field("text").unwrap_or_default().to_string(),
+            agent: task.str_field("agent").unwrap_or_default().to_string(),
+            files: files.into_iter().collect(),
+            depends_on,
+        }
+    }
+}
+
 /// Uma onda em andamento, com as tarefas dela.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BoardWave {
@@ -985,6 +1013,200 @@ fn read_judgements(doc: &Value, board: &Board) -> Result<BTreeMap<u64, Judgement
         judged.insert(task.id, Judgement { kind: kind_of, confidence, clash });
     }
     Ok(judged)
+}
+
+// ---------------------------------------------------------------------------
+// Os itens do pedido julgados para uma onda
+// ---------------------------------------------------------------------------
+
+/// Quantos caracteres da parte do agente de cada tarefa da onda vão ao julgar
+/// os itens do pedido.
+const ITEMS_AGENT_CHARS: usize = 1_400;
+
+/// Quantos caracteres do texto de cada item vão ao julgar os itens do pedido.
+const ITEM_TEXT_CHARS: usize = 300;
+
+/// Os caracteres que cada entrada do estado e de cada pergunta pesa além do
+/// que ela diz: os dois pontos, as aspas e a vírgula, com folga.
+const ENTRY_OVERHEAD_CHARS: usize = 8;
+
+/// Um item combinado como o Jev o vê: o número, o título e o começo do texto.
+/// Nenhum arquivo, onda ou tarefa que o liga: a estrutura que a rodada já usa
+/// fica fora do estado.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BoardItem {
+    pub(crate) id: u64,
+    pub(crate) title: String,
+    pub(crate) text: String,
+}
+
+/// O quadro dos itens de uma onda: as tarefas dela e os itens a julgar.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ItemsBoard {
+    pub(crate) tasks: Vec<BoardTask>,
+    pub(crate) items: Vec<BoardItem>,
+}
+
+/// O que o Jev julgou dos itens de uma onda, com o que a chamada gastou.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ItemsJudged {
+    /// A chance de sim que o Jev deu a cada item, pelo número dele: o item
+    /// governa algo que as tarefas da onda mudam ou testam.
+    pub(crate) chances: BTreeMap<u64, f64>,
+    pub(crate) usage: FilterUsage,
+}
+
+/// A chave de um item no estado e nas perguntas.
+fn item_key(id: u64) -> String {
+    format!("i{id}")
+}
+
+impl JevFilter {
+    /// Julga os itens de `board` para a onda das tarefas dele: o estado leva
+    /// as tarefas (`task`) e os itens (`items`), e há uma pergunta de sim ou
+    /// não por item — ele governa algo que as tarefas mudam ou testam? O
+    /// estado que passa do que o serviço aceita sai em partes, todas com as
+    /// mesmas tarefas, e as partes vão ao mesmo tempo. Falta de uma resposta
+    /// ou uma chance que não é número entre 0 e 1 é resposta ilegível.
+    ///
+    /// # Errors
+    /// A parte que passa do que o serviço aceita mesmo sozinha, a falha do
+    /// serviço e a resposta ilegível. Quem chama deixa o pedido como é por
+    /// padrão.
+    pub(crate) fn judge_items(&self, board: &ItemsBoard) -> Result<ItemsJudged, FilterError> {
+        let started = Instant::now();
+        let parts = items_payloads(board)?;
+        let payloads: Vec<String> = parts.iter().map(|(payload, _)| payload.clone()).collect();
+        let docs = self.send_all(&payloads, started + self.timeouts.response)?;
+        let mut chances = BTreeMap::new();
+        let mut input_tokens = 0;
+        let mut model = String::new();
+        for ((_, ids), doc) in parts.iter().zip(&docs) {
+            read_item_chances(doc, ids, &mut chances)?;
+            input_tokens += doc.pointer("/usage/input_tokens").and_then(Value::as_u64).unwrap_or(0);
+            if model.is_empty() {
+                model = model_of(doc);
+            }
+        }
+        Ok(ItemsJudged {
+            chances,
+            usage: FilterUsage {
+                input_tokens,
+                millis: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                cost_micro_usd: cost_micro_usd(input_tokens),
+                requests: parts.len() as u64,
+                model,
+            },
+        })
+    }
+}
+
+/// Os pedidos de um quadro de itens, cada um com os números dos itens que
+/// pergunta. Os itens se repartem na ordem em que vêm, enquanto o estado e a
+/// maior pergunta cabem num pedido e o pedido inteiro cabe no que o serviço
+/// aceita; as tarefas vão em todas as partes. Quadro sem item não pede nada.
+fn items_payloads(board: &ItemsBoard) -> Result<Vec<(String, Vec<u64>)>, FilterError> {
+    let clip = |text: &str, chars: usize| -> String { without_secrets(text).chars().take(chars).collect() };
+    let task: Map<String, Value> = board
+        .tasks
+        .iter()
+        .map(|task| {
+            let view = json!({
+                "title": without_secrets(&task.title),
+                "text": without_secrets(&task.text),
+                "agent": clip(&task.agent, ITEMS_AGENT_CHARS),
+                "files": task.files,
+            });
+            (task_key(task.id), view)
+        })
+        .collect();
+    let task_chars = Value::Object(task.clone()).to_string().chars().count();
+    let criteria = json!({
+        "true": { "what": "The item describes a rule or decision about the part of the product or process that the task edits" },
+        "false": { "what": "The item is about another part of the product or another kind of work" },
+    });
+    let entries: Vec<(u64, Value, Value)> = board
+        .items
+        .iter()
+        .map(|item| {
+            let key = item_key(item.id);
+            let shown = json!({ "title": without_secrets(&item.title), "text": clip(&item.text, ITEM_TEXT_CHARS) });
+            let question = json!({
+                "type": "noul",
+                "instructions": {
+                    "question": format!("Does `items.{key}` govern something that `task` changes or tests?"),
+                    "focus": "Answer only for what the task changes or tests. Items about other parts of the product or other kinds of work are false.",
+                },
+                "criteria": criteria.clone(),
+            });
+            (item.id, shown, question)
+        })
+        .collect();
+    let mut parts: Vec<Vec<usize>> = Vec::new();
+    let (mut state, mut questions, mut longest) = (task_chars, 0, 0);
+    for (at, (_, shown, question)) in entries.iter().enumerate() {
+        // Cada entrada leva também a chave e as vírgulas, e o pedido inteiro
+        // ainda tem o modelo e as chaves de fora: a conta deixa uma folga.
+        let overhead = item_key(entries[at].0).chars().count() + ENTRY_OVERHEAD_CHARS;
+        let (shown_chars, question_chars) =
+            (shown.to_string().chars().count() + overhead, question.to_string().chars().count() + overhead);
+        let too_big = |state: usize, questions: usize, longest: usize| {
+            tokens_of(state + longest) > REQUEST_TOKENS || tokens_of(state + questions) > MAX_REQUEST_TOKENS / 10 * 9
+        };
+        let alone = parts.last().is_none_or(Vec::is_empty);
+        if !alone && too_big(state + shown_chars, questions + question_chars, longest.max(question_chars)) {
+            parts.push(Vec::new());
+            (state, questions, longest) = (task_chars, 0, 0);
+        } else if alone && parts.is_empty() {
+            parts.push(Vec::new());
+        }
+        state += shown_chars;
+        questions += question_chars;
+        longest = longest.max(question_chars);
+        if let Some(part) = parts.last_mut() {
+            part.push(at);
+        }
+    }
+    let mut out = Vec::with_capacity(parts.len());
+    for part in parts {
+        let items: Map<String, Value> = part.iter().map(|at| (item_key(entries[*at].0), entries[*at].1.clone())).collect();
+        let questions: Map<String, Value> =
+            part.iter().map(|at| (item_key(entries[*at].0), entries[*at].2.clone())).collect();
+        let body = json!({
+            "model": JEV_MODEL,
+            "state": { "task": task.clone(), "items": items },
+            "questions": questions,
+        });
+        let text = serde_json::to_string(&body)
+            .map_err(|_| FilterError::Unreadable("the request did not serialize".to_string()))?;
+        let estimated = estimated_tokens(&text);
+        if estimated > MAX_REQUEST_TOKENS || tokens_of(task_chars) > REQUEST_TOKENS {
+            return Err(FilterError::TooLarge { estimated_tokens: estimated });
+        }
+        out.push((text, part.iter().map(|at| entries[*at].0).collect()));
+    }
+    Ok(out)
+}
+
+/// A chance de sim de cada item de `ids`, lida do documento `doc` e posta em
+/// `into`. Falta de `answers`, de uma resposta ou uma chance que não é número
+/// entre 0 e 1 é resposta ilegível.
+fn read_item_chances(doc: &Value, ids: &[u64], into: &mut BTreeMap<u64, f64>) -> Result<(), FilterError> {
+    let answers = doc
+        .get("answers")
+        .and_then(Value::as_object)
+        .ok_or_else(|| FilterError::Unreadable("no answers".to_string()))?;
+    for id in ids {
+        let key = item_key(*id);
+        let chance = answers
+            .get(&key)
+            .and_then(|answer| answer.get("noul"))
+            .and_then(Value::as_f64)
+            .filter(|chance| (0.0..=1.0).contains(chance))
+            .ok_or_else(|| FilterError::Unreadable(format!("no chance for {key}")))?;
+        into.insert(*id, chance);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -2172,6 +2394,118 @@ mod tests {
         secret.backlog[0].text = format!("Fix the login. DB_PASSWORD=S3nh4F0rte2024 {key}");
         secret.backlog[1].title = format!("rotate {key}");
         service.filter().judge_backlog(&secret).unwrap();
+        let sent = service.received()[0].body.to_string();
+        assert!(!sent.contains("S3nh4F0rte2024") && !sent.contains(&key[..12]), "secrets never leave: {sent}");
+        assert!(sent.contains("Fix the login."), "the rest of the text still goes");
+    }
+
+    // -- os itens do pedido julgados para uma onda ------------------------------
+
+    fn board_item(id: u64) -> BoardItem {
+        BoardItem { id, title: format!("Item {id}"), text: format!("Text of item {id}.") }
+    }
+
+    /// A resposta do serviço que dá `chance_of(id)` a cada pergunta de item
+    /// do pedido.
+    fn chances_answer(body: &Value, chance_of: impl Fn(u64) -> f64) -> Reply {
+        let answers: serde_json::Map<String, Value> = body["questions"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(|key| (key.clone(), json!({"type": "noul", "noul": chance_of(key[1..].parse().unwrap())})))
+            .collect();
+        Reply::json(200, &json!({"model": "jev-1.13.0", "answers": answers, "usage": {"input_tokens": 700}}))
+    }
+
+    /// Os itens de uma onda vão numa chamada só, com o modelo fixo, o estado
+    /// com as tarefas dela e os itens — o título e o começo do texto, nada da
+    /// estrutura — e uma pergunta de sim ou não por item; a resposta vira a
+    /// chance de cada item, com os tokens, o custo e o modelo.
+    #[test]
+    fn the_items_of_a_wave_are_judged_in_one_request_with_a_question_per_item() {
+        let service = FakeService::start(|_, body| chances_answer(body, |id| id as f64 / 100.0));
+        let board = ItemsBoard { tasks: vec![board_task(5, &["a.rs"]), board_task(6, &["b.rs"])], items: vec![board_item(11), board_item(12)] };
+
+        let judged = service.filter().judge_items(&board).unwrap();
+
+        let received = service.received();
+        assert_eq!(received.len(), 1, "one request for the wave");
+        let body = &received[0].body;
+        assert_eq!(body["model"], json!(JEV_MODEL));
+        let mut asked: Vec<&str> = body["questions"].as_object().unwrap().keys().map(String::as_str).collect();
+        asked.sort_unstable();
+        assert_eq!(asked, vec!["i11", "i12"]);
+        assert_eq!(body["questions"]["i11"]["type"], json!("noul"));
+        assert!(body["questions"]["i11"]["instructions"]["question"].as_str().unwrap().contains("items.i11"));
+        let state = &body["state"];
+        assert_eq!(state["task"]["t5"]["files"], json!(["a.rs"]));
+        assert_eq!(state["task"]["t6"]["text"], json!("Text of task 6."));
+        assert_eq!(state["items"]["i12"], json!({"title": "Item 12", "text": "Text of item 12."}));
+        assert_eq!(judged.chances, BTreeMap::from([(11, 0.11), (12, 0.12)]));
+        assert_eq!(
+            (judged.usage.input_tokens, judged.usage.cost_micro_usd, judged.usage.requests, judged.usage.model.as_str()),
+            (700, 29, 1, "jev-1.13.0")
+        );
+    }
+
+    /// O estado que passa do tamanho de um pedido sai em partes, todas com as
+    /// mesmas tarefas e juntas ao mesmo tempo, e cada item é perguntado uma
+    /// vez só; os tokens e as chances das partes se somam.
+    #[test]
+    fn a_state_above_the_request_size_goes_in_parts_with_the_same_task_in_each() {
+        let service = FakeService::start(|_, body| chances_answer(body, |_| 0.5));
+        let long = "word ".repeat(300);
+        let items: Vec<BoardItem> = (1..=700).map(|id| BoardItem { id, title: format!("Item {id}"), text: long.clone() }).collect();
+        let board = ItemsBoard { tasks: vec![board_task(5, &["a.rs"])], items };
+
+        let judged = service.filter().judge_items(&board).unwrap();
+
+        let received = service.received();
+        assert!(received.len() > 1, "{} requests", received.len());
+        let mut seen: Vec<String> = Vec::new();
+        for request in &received {
+            assert_eq!(request.body["state"]["task"], received[0].body["state"]["task"], "the same task in every part");
+            let keys: Vec<String> = request.body["questions"].as_object().unwrap().keys().cloned().collect();
+            let state_keys: Vec<String> = request.body["state"]["items"].as_object().unwrap().keys().cloned().collect();
+            assert_eq!(keys.iter().collect::<std::collections::BTreeSet<_>>(), state_keys.iter().collect::<std::collections::BTreeSet<_>>(), "a part asks about what it shows");
+            seen.extend(keys);
+        }
+        assert_eq!(seen.len(), 700, "every item asked once");
+        assert_eq!(judged.chances.len(), 700);
+        assert_eq!(judged.usage.requests, received.len() as u64);
+        assert_eq!(judged.usage.input_tokens, 700 * received.len() as u64, "the tokens of the parts add up");
+    }
+
+    /// A falta de uma resposta e a chance que não é número entre 0 e 1 são
+    /// resposta ilegível, a recusa do serviço é falha, o quadro sem item não
+    /// pergunta nada, e nenhum segredo das tarefas vai ao serviço.
+    #[test]
+    fn an_unreadable_answer_a_refusal_an_empty_board_and_secrets_for_the_items() {
+        for (name, answers) in [
+            ("a missing answer", json!({"i11": {"noul": 0.5}})),
+            ("a chance above 1", json!({"i11": {"noul": 0.5}, "i12": {"noul": 1.5}})),
+            ("a chance that is not a number", json!({"i11": {"noul": 0.5}, "i12": {"noul": "high"}})),
+        ] {
+            let service = FakeService::start(move |_, _| Reply::json(200, &json!({"answers": answers.clone()})));
+            let board = ItemsBoard { tasks: vec![board_task(5, &["a.rs"])], items: vec![board_item(11), board_item(12)] };
+            let error = service.filter().judge_items(&board).unwrap_err();
+            assert!(matches!(error, FilterError::Unreadable(_)), "{name}: {error:?}");
+        }
+
+        let refusing = FakeService::start(|_, _| Reply::json(401, &json!({})));
+        let board = ItemsBoard { tasks: vec![board_task(5, &[])], items: vec![board_item(11)] };
+        assert_eq!(refusing.filter().judge_items(&board).unwrap_err(), FilterError::Refused { status: 401 });
+
+        let service = FakeService::start(|_, body| chances_answer(body, |_| 0.5));
+        let empty = ItemsBoard { tasks: vec![board_task(5, &[])], items: Vec::new() };
+        assert!(service.filter().judge_items(&empty).unwrap().chances.is_empty());
+        assert!(service.received().is_empty(), "nothing to ask, nothing sent");
+
+        let key = format!("ghp_{}", "a1B2c3D4".repeat(5));
+        let mut secret = ItemsBoard { tasks: vec![board_task(5, &[])], items: vec![board_item(11)] };
+        secret.tasks[0].text = format!("Fix the login. DB_PASSWORD=S3nh4F0rte2024 {key}");
+        secret.items[0].text = format!("Rotate {key}");
+        service.filter().judge_items(&secret).unwrap();
         let sent = service.received()[0].body.to_string();
         assert!(!sent.contains("S3nh4F0rte2024") && !sent.contains(&key[..12]), "secrets never leave: {sent}");
         assert!(sent.contains("Fix the login."), "the rest of the text still goes");

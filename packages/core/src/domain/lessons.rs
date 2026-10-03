@@ -35,9 +35,7 @@
 //! palavra comum com qualquer tarefa. Delas, ficam só as que servem à onda
 //! ([`serving_wave`]): a que cita um arquivo vai só à onda que mexe nele, e a
 //! onda só de texto ([`text_only`]) não recebe lição do projeto todo nem do
-//! subprojeto. O item combinado sem dono é escolhido para a onda pelas mesmas
-//! duas leituras ([`tied_to_wave`]): as palavras-chave dele ligadas às
-//! tarefas, ou o arquivo que ele cita e a onda mexe.
+//! subprojeto.
 //! Quem mostra uma lição mostra o texto original, nunca o `search`.
 //!
 //! Uma lição nunca entra repetida: a que tem o mesmo texto de outra já
@@ -69,7 +67,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use crate::domain::config::glob_matches;
 use crate::domain::normalize::{Languages, Normalizer};
-use crate::domain::project_map::{cited_paths, written_paths};
+use crate::domain::project_map::cited_paths;
 use crate::domain::search::{self, Hit, SearchIndex};
 use crate::domain::text::fold;
 use crate::domain::spec_events::{
@@ -462,8 +460,8 @@ pub fn matching_among(lessons: &[&SpecEvent], words: &str, languages: &Languages
 /// palavras-chave de cada lição ([`by_keys`]), e não sobre o texto dela. A lição sem
 /// palavra-chave em comum com as tarefas fica fora, seja qual for a classe,
 /// mesmo que o texto dela divida palavras com elas. Em ordem de número. A
-/// mesma escolha serve ao item combinado sem dono ([`tied_to_wave`]), que diz
-/// as palavras-chave do mesmo jeito; a classe dele é o tipo do item.
+/// mesma escolha serve a qualquer evento que diga palavras-chave do mesmo
+/// jeito; a classe dele é o tipo do evento.
 #[must_use]
 pub fn related_to_tasks<'a>(found: Vec<&'a SpecEvent>, words: &str, languages: &Languages) -> Vec<&'a SpecEvent> {
     let mut by_class: BTreeMap<&str, Vec<&SpecEvent>> = BTreeMap::new();
@@ -544,35 +542,6 @@ fn files_only(paths: Vec<String>) -> Vec<String> {
 /// Algum dos arquivos citados em `cited` é um dos `files` ([`same_file`]).
 fn cites_one_of(cited: &[String], files: &[String]) -> bool {
     cited.iter().any(|path| files.iter().any(|file| same_file(path, file)))
-}
-
-/// Os eventos de `found` que servem à onda pelo que dizem, na mesma ordem:
-/// os que as palavras-chave ligam ao texto das tarefas (`words`), pela
-/// escolha de [`related_to_tasks`], e os que citam no texto um arquivo que a
-/// onda mexe (`files`), pela mesma comparação com que [`serving_wave`]
-/// segura a lição que cita arquivo. Basta uma das duas ligações. O item cita
-/// o arquivo entre crases ou solto no texto, com a linha
-/// ([`written_paths`]). É a escolha do item
-/// combinado sem dono que uma onda julga antes do envio: o item diz as
-/// palavras-chave e o texto como a lição, e o que não se liga à onda por
-/// nenhuma das duas não é candidato dela.
-#[must_use]
-pub fn tied_to_wave<'a>(
-    found: Vec<&'a SpecEvent>,
-    words: &str,
-    files: &[String],
-    languages: &Languages,
-) -> Vec<&'a SpecEvent> {
-    let files: Vec<String> = files.iter().map(|f| clean_path(f)).filter(|f| !f.is_empty()).collect();
-    let related: BTreeSet<u64> =
-        related_to_tasks(found.clone(), words, languages).into_iter().map(|event| event.id).collect();
-    found
-        .into_iter()
-        .filter(|event| {
-            related.contains(&event.id)
-                || cites_one_of(&files_only(written_paths(event.str_field("text").unwrap_or_default())), &files)
-        })
-        .collect()
 }
 
 /// A lição casa um arquivo de `files` por um padrão dos arquivos dela que

@@ -588,7 +588,7 @@ pub fn request_items<'a>(
     let choice = wave_prompt::choice_for(log, wave, fresh);
     let fix: BTreeSet<u64> = wave_prompt::fix_lines(log, wave).iter().map(|e| e.id).collect();
     let attended = wave_prompt::attended(log, wave);
-    let mut items: Vec<&SpecEvent> = wave_prompt::dispatch_items(log, wave, choice.as_ref(), languages)
+    let mut items: Vec<&SpecEvent> = wave_prompt::dispatch_items(log, wave, choice.as_ref())
         .into_iter()
         .filter(|e| match e.event_type.as_str() {
             "send" | "step" => false,
@@ -792,22 +792,13 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
         .collect();
 
     let files = wave_files(log, wave);
-    let choice = wave_prompt::choice_for(log, wave, fresh);
-    // As skills que as tarefas nomeiam de saída e as que a escolha antes do
-    // envio confirmou, juntas, sem repetir.
+    // As skills que as tarefas nomeiam.
     let mut named = skills_named(log, wave);
-    for chosen in choice.as_ref().into_iter().flat_map(|c| c.tasks.iter()).flat_map(|t| t.skills.iter()) {
-        if !named.contains(chosen) {
-            named.push(chosen.clone());
-        }
-    }
     named.sort();
-    // Os arquivos de leitura de cada tarefa: os que ela já declara em
-    // `must_read` — obrigatórios, sem passar pela escolha do orquestrador,
-    // como os itens que a onda já faz — e os que a escolha antes do envio
-    // confirmou. Um caminho que não existe no projeto (a parte antes do `#`,
-    // quando ele aponta uma função) fica de fora; a tarefa sem nenhum arquivo
-    // não entra.
+    // Os arquivos de leitura de cada tarefa: os que ela declara em
+    // `must_read`. Um caminho que não existe no projeto (a parte antes do
+    // `#`, quando ele aponta uma função) fica de fora; a tarefa sem nenhum
+    // arquivo não entra.
     let codes = log.codes();
     let mut task_reads: BTreeMap<u64, Vec<String>> = BTreeMap::new();
     for task in of_type("task") {
@@ -821,9 +812,6 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
             .filter_map(Value::as_str)
             .filter(|file| cited_exists(root, map, file));
         task_reads.entry(task.id).or_default().extend(must_read.map(str::to_string));
-    }
-    for chosen in choice.as_ref().into_iter().flat_map(|c| c.tasks.iter()).filter(|t| !t.files.is_empty()) {
-        task_reads.entry(chosen.task).or_default().extend(chosen.files.iter().cloned());
     }
     let task_reads: Vec<(String, Vec<String>)> = task_reads
         .into_iter()

@@ -911,6 +911,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.field.title", Locale::EnUs) => "Title",
         ("page.field.waves", Locale::PtBr) => "Ondas",
         ("page.field.waves", Locale::EnUs) => "Waves",
+        ("page.field.every_wave", Locale::PtBr) => "Vale para toda onda",
+        ("page.field.every_wave", Locale::EnUs) => "Holds for every wave",
         ("page.field.repo", Locale::PtBr) => "Repositório",
         ("page.field.repo", Locale::EnUs) => "Repository",
         ("page.field.effect", Locale::PtBr) => "Efeito",
@@ -1157,8 +1159,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("page.rs"),
             super::PREFIXES,
-            419,
-            0x187c_93b7_c9ad_9eb5,
+            420,
+            0x1268_2f20_6b1c_758f,
         );
     }
 

@@ -18,7 +18,7 @@ use serde_json::{json, Map, Value};
 use super::leftovers::is_cleanup;
 use super::queue::{
     backlog_left, backlog_left_without, backlog_population, backlog_ready, backlog_ready_without, open_sends, outgoing,
-    task_files, task_revision, waves_done, waves_in_progress, AnalysisLine,
+    task_revision, waves_done, waves_in_progress,
 };
 use super::report::backlog_return;
 use super::stops::waves_stuck;
@@ -60,12 +60,10 @@ pub(crate) type Judge<'a> = dyn Fn(&Board) -> Result<Judged, FilterError> + 'a;
 /// em andamento.
 ///
 /// Só existe a onda que está rodando. A onda de lote montada e não enviada de
-/// uma rodada anterior — a que ficou esperando a escolha do orquestrador, por
-/// exemplo — é desfeita: cada tarefa dela volta ao backlog ([`backlog_return`])
-/// e entra na montagem junto das outras, e a que cai num assunto montado agora
-/// ganha uma versão só, com o número da onda nova. A exceção é a onda que a
-/// linha `ANALYSIS` desta rodada (`given`) respondeu: essa é mantida, ocupa
-/// uma vaga e sai com a escolha que a linha trouxe.
+/// uma rodada anterior — a que não ganhou cópia para sair, por exemplo — é
+/// desfeita: cada tarefa dela volta ao backlog ([`backlog_return`]) e entra na
+/// montagem junto das outras, e a que cai num assunto montado agora ganha uma
+/// versão só, com o número da onda nova.
 ///
 /// Cada onda grava o evento de onda, com autor binário: os critérios são a
 /// união do que as tarefas dela cobrem (`covers`), o pronta-quando é a prova
@@ -78,13 +76,7 @@ pub(crate) type Judge<'a> = dyn Fn(&Board) -> Result<Judged, FilterError> + 'a;
 /// nunca volta para cá. O número da onda segue o maior já gravado, com a onda
 /// desfeita incluída: o número dela não volta a nascer.
 ///
-/// Na mesma chamada, [`stale_batch_revisions`] atualiza a onda mantida que
-/// perdeu alguma tarefa para um evento de remoção depois de gravada — sem
-/// isso o pedido dela abriria pelo `done_when` congelado na formação, citando
-/// texto de tarefa que já não existe.
-///
-/// Grava tudo junto ou nada: as versões das ondas mantidas, cada onda nova, a
-/// versão de cada tarefa e o retorno de cada tarefa desfeita são montados
+/// Grava tudo junto ou nada: cada onda nova, a versão de cada tarefa e o retorno de cada tarefa desfeita são montados
 /// primeiro e conferidos em sequência pela mesma conferência da gravação
 /// ([`RecordCheck`]), sobre o arquivo como as anteriores o deixariam; só
 /// então vão ao arquivo. Uma recusa na conferência não deixa onda gravada sem
@@ -129,7 +121,6 @@ pub(crate) fn dispatch_backlog(
     on_entry: &SpecLog,
     locked: &SpecLog,
     limit: usize,
-    given: &[AnalysisLine],
     judge: Option<&Judge<'_>>,
 ) -> Result<Vec<u64>, mustard_core::domain::spec_events::Refusal> {
     use crate::shared::dag::{pack_batches, Batch};
@@ -140,11 +131,8 @@ pub(crate) fn dispatch_backlog(
     let by_id: BTreeMap<u64, &SpecEvent> =
         log.visible().into_iter().filter(|e| e.event_type == "task").map(|t| (t.id, t)).collect();
     let codes = log.codes();
-    // A onda de lote montada e não enviada só segue de pé quando a linha
-    // `ANALYSIS` desta rodada a respondeu; as outras se desfazem.
-    let unsent = unsent_batch_waves(log);
-    let kept: BTreeSet<u64> = unsent.iter().copied().filter(|n| given.iter().any(|line| line.wave == *n)).collect();
-    let undone: BTreeSet<u64> = unsent.difference(&kept).copied().collect();
+    // A onda de lote montada e não enviada se desfaz: só existe a que roda.
+    let undone = unsent_batch_waves(log);
     let in_undone = |id: &u64| by_id.get(id).and_then(|task| task.wave()).is_some_and(|wave| undone.contains(&wave));
     let cleanup = |id: &u64| by_id.get(id).is_some_and(|task| is_cleanup(task));
     let population = backlog_population(log, &done_waves);
@@ -224,8 +212,7 @@ pub(crate) fn dispatch_backlog(
         record_assembly(start, spec, (*asked, returned), *called, answer);
     }
 
-    let mut writes: Vec<(&str, Map<String, Value>)> =
-        stale_batch_revisions(log, &kept).into_iter().map(|revised| ("wave", revised)).collect();
+    let mut writes: Vec<(&str, Map<String, Value>)> = Vec::new();
     // O número segue o maior já gravado, com a onda que ficou vazia incluída:
     // ela saiu do plano, mas o número dela não volta a nascer.
     let mut next_n = log.last_wave_number();
@@ -286,14 +273,7 @@ fn board_of(
     ready: &[u64],
     open_waves: &[u64],
 ) -> Board {
-    let seen = |task: &SpecEvent, depends_on: Vec<String>| BoardTask {
-        id: task.id,
-        title: task.str_field("title").unwrap_or_default().to_string(),
-        text: task.str_field("text").unwrap_or_default().to_string(),
-        agent: task.str_field("agent").unwrap_or_default().to_string(),
-        files: task_files(task).into_iter().collect(),
-        depends_on,
-    };
+    let seen = BoardTask::of;
     let running = open_waves
         .iter()
         .map(|n| BoardWave {
@@ -366,8 +346,7 @@ fn record_assembly(
 /// fechou: montadas pelo backlog e não enviadas. É de lote a onda que
 /// [`dispatch_backlog`] grava, com a ordem das tarefas no campo `order` e
 /// autor binário; a onda combinada à mão no plano, sem ordem, segue como está
-/// até a rodada despachá-la. É a onda de lote que a rodada desfaz quando a
-/// escolha do orquestrador não a respondeu.
+/// até a rodada despachá-la. É a onda de lote que a rodada desfaz.
 fn unsent_batch_waves(log: &SpecLog) -> BTreeSet<u64> {
     let sent: BTreeSet<u64> = log
         .block(BlockQuery::Block(Block::Waves))
@@ -384,52 +363,3 @@ fn unsent_batch_waves(log: &SpecLog) -> BTreeSet<u64> {
         .collect();
     log.planned_waves().into_iter().filter(|n| formed.contains(n) && !sent.contains(n) && !delivered.contains(n)).collect()
 }
-
-/// A versão nova do registro de cada onda de lote mantida (`kept`: autor
-/// `binary`, ainda não enviada e respondida pela linha `ANALYSIS` desta
-/// rodada), quando uma tarefa dela saiu do backlog por evento de remoção
-/// depois de o lote ter sido formado: sem isso o pedido abriria pelo
-/// `done_when` congelado na formação, que pode citar o texto de uma tarefa
-/// que não existe mais, mesmo com a lista de tarefas do pedido já saindo
-/// certa. Recalcula critério, texto e pronto-quando
-/// ([`mustard_core::domain::wave_prompt::backlog_fields`]) a partir das
-/// tarefas que a leitura de agora mostra visíveis naquela onda — o mesmo
-/// conjunto que alimenta a lista de tarefas do pedido — e monta uma versão
-/// nova só quando a ordem gravada perdeu alguma tarefa; quem grava é
-/// [`dispatch_backlog`], junto dos lotes novos. A onda já enviada
-/// fica intocada: o pedido dela já foi montado, e mudar o registro não muda
-/// o que o agente já recebeu. A onda que perdeu todas as tarefas fica de
-/// fora: sem tarefa nenhuma ela saiu do plano
-/// ([`SpecLog::planned_waves`]), e não há o que recalcular.
-fn stale_batch_revisions(log: &SpecLog, kept: &BTreeSet<u64>) -> Vec<Map<String, Value>> {
-    let mut revisions = Vec::new();
-    for n in kept.iter().copied() {
-        let items = log.block(BlockQuery::Wave(n));
-        let Some(wave_event) = items.iter().copied().find(|e| e.event_type == "wave") else { continue };
-        let tasks: Vec<&SpecEvent> = items.iter().copied().filter(|e| e.event_type == "task").collect();
-        if tasks.is_empty() {
-            continue;
-        }
-        // A ordem gravada aponta os números de antes da tarefa ganhar a
-        // versão nova com o `wave` (`task_revision`, acima): segue a cadeia
-        // de substituição até a versão vigente de cada uma, e só conta como
-        // viva a que ainda está entre as tarefas visíveis desta onda.
-        let recorded_order = wave_event.ints("order");
-        let live_ids: BTreeSet<u64> = tasks.iter().map(|t| t.id).collect();
-        let live_order: Vec<u64> =
-            recorded_order.iter().filter_map(|id| log.current(*id)).map(|t| t.id).filter(|id| live_ids.contains(id)).collect();
-        if live_order.len() == recorded_order.len() {
-            continue;
-        }
-        let fields = mustard_core::domain::wave_prompt::backlog_fields(log, &tasks);
-        let extra = Map::from_iter([
-            ("text".to_string(), json!(fields.text)),
-            ("criteria".to_string(), json!(fields.criteria)),
-            ("done_when".to_string(), json!(fields.done_when)),
-            ("order".to_string(), json!(live_order)),
-        ]);
-        revisions.extend(task_revision(log, wave_event.id, extra));
-    }
-    revisions
-}
-

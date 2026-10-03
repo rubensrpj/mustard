@@ -1133,3 +1133,33 @@ fn reading_from_inside_the_copy_of_an_open_request_shows_the_message_and_records
     assert_eq!(outside["events"][0]["text"], message["events"][0]["text"], "{outside}");
     assert_eq!(reads_recorded(root).len(), 2, "a leitura de fora da cópia não é do pedido");
 }
+
+/// O campo `every_wave` é aceito na gravação de uma regra e aparece na leitura
+/// do item, pelo código; o valor que não é verdadeiro ou falso é recusado sem
+/// gravar nada, e o item com a marca tem dono sem onda nem arquivo, mesmo numa
+/// spec já aprovada.
+#[test]
+fn the_every_wave_mark_is_accepted_on_write_and_shown_on_read() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    approved_with_waves(root, 1);
+    let msg = seed_binary(root, "message", &json!({"author": "user", "text": "vale para toda onda"}));
+    let rule = |extra: Value| {
+        let mut body = json!({"title": "Vale em toda onda", "agent": "- conferir pelo teste", "text": "A regra vale em toda onda.",
+            "keys": ["onda"], "example": "um exemplo", "origin": msg});
+        body.as_object_mut().expect("an object").extend(extra.as_object().cloned().unwrap_or_default());
+        body
+    };
+
+    let (code, refused) = write_out(root, "rule", &rule(json!({"every_wave": "sim"})));
+    assert_ne!(code, Some(0), "{refused}");
+    assert_eq!(refused["ok"], json!(false), "{refused}");
+
+    let (code, plain) = write_out(root, "rule", &rule(json!({})));
+    assert_ne!(code, Some(0), "sem dono nem marca, a regra é recusada: {plain}");
+
+    let (code, written) = write_out(root, "rule", &rule(json!({"every_wave": true})));
+    assert_eq!((code, &written["ok"]), (Some(0), &json!(true)), "{written}");
+    let item = read(root, &format!("item-{}", written["code"].as_str().expect("the rule code")));
+    assert_eq!(item["events"][0]["every_wave"], json!(true), "{item}");
+}

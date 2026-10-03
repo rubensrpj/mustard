@@ -18,7 +18,6 @@
 #![cfg(unix)]
 
 use std::collections::BTreeSet;
-use std::fmt::Write as _;
 use std::io::{BufRead, BufReader, Read, Write as _};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -475,13 +474,10 @@ fn old_spec_has_its_undelivered_tasks_rebatched() {
     project.run(&["plan", "--spec", SPEC]);
     approve(&project);
 
-    // A onda 1 sai e entrega de verdade, pela entrega que ela grava na spec:
-    // a escolha antes do envio primeiro, porque as decisões do levantamento são
-    // itens do projeto todo e pedem a escolha do orquestrador antes da cópia.
-    let asked = project.run(&["round", "--spec", SPEC]);
-    assert_eq!(asked["dispatch"], json!([]), "{asked}");
-    let analysis = json!({"wave": 1, "removed": [], "added": []});
-    project.run(&["round", "--spec", SPEC, "--report", &format!("<ANALYSIS>{analysis}</ANALYSIS>")]);
+    // A onda 1 sai na primeira rodada e entrega de verdade, pela entrega que
+    // ela grava na spec.
+    let sent_out = project.run(&["round", "--spec", SPEC]);
+    assert_eq!(waves_in(&sent_out, "dispatch"), vec![1], "{sent_out}");
     let log = project.log();
     let sent =
         log.visible().into_iter().rfind(|e| e.event_type == "send" && e.wave() == Some(1)).expect("o envio da onda 1");
@@ -564,26 +560,16 @@ fn keep_sent(project: &Project, waves: &[u64]) {
     }
 }
 
-/// Uma rodada que solta o que estiver pronto, como quem conduz a obra faz: a
-/// primeira chamada pede a escolha antes do envio das ondas prontas, e a
-/// segunda a devolve, sem tirar nem pôr nada, para cada uma. Devolve as ondas
-/// que pediram a escolha e as que saíram; as que saíram ficam em andamento
-/// pelo processo do teste ([`keep_sent`]).
+/// Uma rodada que solta o que estiver pronto, como quem conduz a obra faz: as
+/// ondas prontas saem na mesma rodada, sem escolha de quem conduz. Devolve as
+/// ondas que pediram a escolha — nenhuma, a rodada não pede mais — e as que
+/// saíram; as que saíram ficam em andamento pelo processo do teste
+/// ([`keep_sent`]).
 fn dispatch_ready(project: &Project) -> (Vec<u64>, Vec<u64>) {
     let first = project.run(&["round", "--spec", SPEC]);
     let asked = waves_in(&first, "analysis");
-    let mut out = waves_in(&first, "dispatch");
+    let out = waves_in(&first, "dispatch");
     keep_sent(project, &out);
-    if !asked.is_empty() {
-        let mut report = String::new();
-        for wave in &asked {
-            let _ = write!(report, "<ANALYSIS>{}</ANALYSIS>", json!({"wave": wave, "removed": [], "added": []}));
-        }
-        let second = project.run(&["round", "--spec", SPEC, "--report", &report]);
-        let sent = waves_in(&second, "dispatch");
-        keep_sent(project, &sent);
-        out.extend(sent);
-    }
     (asked, out)
 }
 
@@ -631,7 +617,7 @@ fn task_with_a_wildcard_goes_out_alone() {
 
     let (asked, out) = dispatch_ready(&project);
     let star = wave_of(&project, tasks[0]).expect("a tarefa do curinga vira onda");
-    assert_eq!(asked, vec![star], "só a onda do curinga fica pronta para sair");
+    assert!(asked.is_empty(), "a rodada não pede escolha a quem conduz: {asked:?}");
     assert_eq!(out, vec![star], "só a onda do curinga sai");
     let log = project.log();
     let star_wave =
@@ -765,13 +751,22 @@ impl FakeJev {
                 } else if let Some((wave, task)) = key.strip_prefix("blk_w").and_then(|rest| rest.split_once("_t")) {
                     let chance = clash_of(wave.parse().expect("a wave"), position(task));
                     answers.insert(key.clone(), json!({"type": "noul", "noul": chance}));
+                } else if key.starts_with('i') {
+                    answers.insert(key.clone(), json!({"type": "noul", "noul": 0.5}));
                 }
             }
             (200, json!({"model": "jev-1.13.0", "answers": answers, "usage": {"input_tokens": 1500, "output_tokens": 0}}))
         })
     }
 
+    /// Os pedidos da montagem da onda: os que perguntam o tipo das tarefas.
     fn requests(&self) -> Vec<Value> {
+        self.all_requests().into_iter().filter(|asked| asked["questions"].as_object().is_some_and(|q| q.keys().any(|key| key.starts_with("tipo_")))).collect()
+    }
+
+    /// Todos os pedidos que o serviço recebeu, os dos itens do pedido da onda
+    /// inclusive.
+    fn all_requests(&self) -> Vec<Value> {
         self.received.lock().unwrap().clone()
     }
 }
@@ -922,4 +917,122 @@ fn without_a_key_or_with_a_refused_call_the_assembly_is_the_one_by_file() {
     let calls = assembly_calls(&refused);
     assert_eq!(calls.len(), 1, "{calls:?}");
     assert_eq!(calls[0]["filter"], json!("jev:key_refused"), "{calls:?}");
+}
+
+// ---------------------------------------------------------------------------
+// Os itens do pedido pelo Jev, de ponta a ponta
+// ---------------------------------------------------------------------------
+
+/// Um Jev de mentira que responde ao tipo de cada tarefa (um recurso certo) e
+/// à pergunta de cada item pela chance que `chance_of` dá ao título dele.
+fn judging_items(chance_of: impl Fn(&str) -> f64 + Send + Sync + 'static) -> FakeJev {
+    FakeJev::start(move |asked| {
+        let questions = asked["questions"].as_object().expect("the questions");
+        let mut answers = serde_json::Map::new();
+        for key in questions.keys() {
+            if key.starts_with("tipo_") {
+                answers.insert(key.clone(), json!({"type": "choice", "choice": "feature", "confidence": 0.9}));
+            } else {
+                let title = asked["state"]["items"][key]["title"].as_str().unwrap_or_default();
+                answers.insert(key.clone(), json!({"type": "noul", "noul": chance_of(title)}));
+            }
+        }
+        (200, json!({"model": "jev-1.13.0", "answers": answers, "usage": {"input_tokens": 1500, "output_tokens": 0}}))
+    })
+}
+
+/// As chamadas `wave items` gravadas na spec.
+fn item_calls(project: &Project) -> Vec<serde_json::Map<String, Value>> {
+    project
+        .log()
+        .visible()
+        .into_iter()
+        .filter(|e| e.event_type == "call" && e.str_field("command") == Some("wave items"))
+        .map(|call| call.fields.clone())
+        .collect()
+}
+
+/// A regra do projeto todo com o título `title`, gravada depois da aprovação,
+/// e a de outros arquivos; devolve o código de cada uma.
+fn two_rules(project: &Project, said: u64) -> (String, String) {
+    let write_rule = |title: &str, applies_to: Value| {
+        let written = project.write(
+            "rule",
+            &json!({"title": title, "text": format!("{title} Vale como está escrito."), "agent": "- vale no que a tarefa muda",
+                "example": "e", "keys": ["k"], "applies_to": applies_to, "origin": said}),
+        );
+        assert_eq!(written["ok"], json!(true), "{written}");
+        let id = written["id"].as_u64().expect("the rule id");
+        project.log().codes().get(&id).cloned().expect("the rule code")
+    };
+    (
+        write_rule("Regra sem relação com a onda", json!({"files": ["**"]})),
+        write_rule("Regra de outro arquivo", json!({"files": ["outro.rs"]})),
+    )
+}
+
+/// A rodada pergunta ao Jev, numa chamada por onda e na mesma rodada em que a
+/// onda sai, o que o pedido não leva nem tira sozinho: o item do projeto todo
+/// sai com a chance de 0,03 e o de outros arquivos entra com a de 0,9. Nada
+/// disso pede o orquestrador, e o envio grava o que saiu e o que entrou, cada
+/// um com a chance, e a chamada, com os tokens, o custo e o modelo.
+#[test]
+fn the_jev_judges_the_items_of_the_request_and_the_wave_leaves_in_the_same_round() {
+    let jev = judging_items(|title| match title {
+        "Regra sem relação com a onda" => 0.03,
+        "Regra de outro arquivo" => 0.9,
+        _ => 0.5,
+    });
+    let (mut project, _, said, _) = backlog_project(&[&["a.rs"]]);
+    project.jev = Some(jev.url.clone());
+    let (out_code, in_code) = two_rules(&project, said);
+
+    let out = project.run(&["round", "--spec", SPEC]);
+
+    assert_eq!(waves_in(&out, "dispatch"), vec![1], "{out}");
+    assert!(out.get("analysis").is_none(), "{out}");
+    let items: Vec<Value> = jev
+        .all_requests()
+        .into_iter()
+        .filter(|asked| asked["questions"].as_object().is_some_and(|q| q.keys().all(|key| key.starts_with('i'))))
+        .collect();
+    assert_eq!(items.len(), 1, "one call about the items of the wave: {items:?}");
+    assert!(items[0]["state"]["task"].as_object().is_some_and(|task| !task.is_empty()), "{}", items[0]);
+    let log = project.log();
+    let codes = log.codes();
+    let id_of_code = |code: &str| codes.iter().find(|(_, c)| c.as_str() == code).map(|(id, _)| *id).expect("the item");
+    let (out_id, in_id) = (id_of_code(&out_code), id_of_code(&in_code));
+    let sent = log.visible().into_iter().find(|e| e.event_type == "send" && e.wave() == Some(1)).expect("the send");
+    let analysis = &sent.fields["analysis"];
+    assert_eq!(analysis["removed"], json!([{"item": out_id, "why": "Jev p=0.03"}]), "{analysis}");
+    assert_eq!(analysis["added"], json!([{"item": in_id, "why": "Jev p=0.90"}]), "{analysis}");
+    let prompt = sent.str_field("text").expect("the request");
+    assert!(prompt.contains(&in_code) && !prompt.contains(&out_code), "{prompt}");
+    let calls = item_calls(&project);
+    assert_eq!(calls.len(), 1, "{calls:?}");
+    assert_eq!(
+        (calls[0]["filter"].clone(), calls[0]["tokens"].clone(), calls[0]["cost_micro_usd"].clone(), calls[0]["model"].clone()),
+        (json!("jev"), json!(1500), json!(63), json!("jev-1.13.0")),
+        "{calls:?}"
+    );
+}
+
+/// Sem chave a onda sai na mesma rodada com o pedido padrão — o item do
+/// projeto todo vai, o de outros arquivos fica fora —, nenhuma chamada se faz
+/// e o envio não grava escolha.
+#[test]
+fn without_a_key_the_wave_leaves_in_the_same_round_with_the_default_items() {
+    let (project, _, said, _) = backlog_project(&[&["a.rs"]]);
+    let (project_code, other_code) = two_rules(&project, said);
+
+    let out = project.run(&["round", "--spec", SPEC]);
+
+    assert_eq!(waves_in(&out, "dispatch"), vec![1], "{out}");
+    assert!(out.get("analysis").is_none(), "{out}");
+    let log = project.log();
+    let sent = log.visible().into_iter().find(|e| e.event_type == "send" && e.wave() == Some(1)).expect("the send");
+    let prompt = sent.str_field("text").expect("the request");
+    assert!(prompt.contains(&project_code) && !prompt.contains(&other_code), "{prompt}");
+    assert!(sent.fields.get("analysis").is_none(), "{:?}", sent.fields);
+    assert!(item_calls(&project).is_empty(), "no key, no call");
 }

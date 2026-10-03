@@ -6,7 +6,6 @@
 
 use std::collections::BTreeSet;
 
-use mustard_core::domain::normalize::Languages;
 use mustard_core::domain::spec_events::{Refusal, SpecEvent, SpecLog};
 use mustard_core::domain::wave_prompt as agreed_prompt;
 use serde_json::{json, Map, Value};
@@ -30,11 +29,11 @@ pub(super) type SettledAgreed = (Vec<Map<String, Value>>, Vec<String>);
 /// gravado entre o envio e a volta não é cobrado, porque o pedido não o
 /// levou. O que o pedido levou e ganhou versão nova depois é cobrado pela
 /// versão de agora, pelo mesmo código; o que saiu da spec depois, não.
-pub(super) fn request_agreed<'a>(log: &'a SpecLog, wave: u64, languages: &Languages) -> Vec<&'a SpecEvent> {
+pub(super) fn request_agreed(log: &SpecLog, wave: u64) -> Vec<&SpecEvent> {
     let then = as_dispatched(log, wave);
     let then_codes = then.codes();
     let carried: Vec<&String> =
-        agreed_prompt::dispatch_items(&then, wave, None, languages).iter().filter_map(|item| then_codes.get(&item.id)).collect();
+        agreed_prompt::dispatch_items(&then, wave, None).iter().filter_map(|item| then_codes.get(&item.id)).collect();
     let codes = log.codes();
     let agreed = agreed_prompt::all_agreed(log);
     carried
@@ -69,11 +68,11 @@ pub(super) fn covered_codes(log: &SpecLog, returning: &BTreeSet<u64>) -> BTreeSe
 /// a mesma que monta o pedido ([`agreed_prompt::dispatch_items`]). O pedido
 /// não levou esses itens: a entrega não é cobrada por eles, e a resposta que
 /// der a algum deles não cria tarefa.
-pub(super) fn removed_by_analysis(log: &SpecLog, wave: u64, languages: &Languages) -> BTreeSet<String> {
+pub(super) fn removed_by_analysis(log: &SpecLog, wave: u64) -> BTreeSet<String> {
     let then = as_dispatched(log, wave);
     let Some(choice) = agreed_prompt::recorded_choice(&then, wave) else { return BTreeSet::new() };
     let codes = then.codes();
-    let choice = choice.within(&agreed_prompt::candidates(&then, wave, languages));
+    let choice = choice.within(&agreed_prompt::candidates(&then, wave));
     choice.removed.iter().filter_map(|(id, _)| codes.get(id).cloned()).collect()
 }
 

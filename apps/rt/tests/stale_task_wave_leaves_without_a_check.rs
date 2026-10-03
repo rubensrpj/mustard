@@ -3,11 +3,10 @@
 // `src/main.rs` so test panics on `.unwrap()` remain valid assertions.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-//! A escolha do pedido só manda conferir as tarefas no código quando um
-//! commit mudou arquivo delas depois do texto vigente: a tarefa escrita
-//! depois do último commit não é nomeada, e a versão que a rodada grava só
-//! para pôr a tarefa na onda não conta. Prova pelo binário de verdade, num
-//! repositório temporário, nos dois idiomas.
+//! A onda cuja tarefa teve o arquivo mudado por um commit depois do texto
+//! sai na mesma rodada, como qualquer outra: a rodada não para a onda nem
+//! pede a quem conduz a conferência da tarefa no código. Prova pelo binário de
+//! verdade, num repositório temporário, nos dois idiomas.
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -203,14 +202,12 @@ fn seconds_of(log: &SpecLog, id: u64) -> i64 {
     chrono::DateTime::parse_from_rfc3339(at.trim()).expect("a readable time").timestamp()
 }
 
-/// Numa spec aprovada, a tarefa escrita depois do último commit não é
-/// nomeada e a escolha do pedido não manda conferir nada no código. Um
-/// commit que toca o arquivo dela depois do texto — datado de um segundo
-/// depois da tarefa, e ainda assim antes da versão que a rodada gravou para
-/// pô-la na onda — faz a frase aparecer com o código dela: a versão que só
-/// muda a onda não conta. Nos dois idiomas.
+/// Numa spec aprovada, a tarefa com o arquivo tocado por um commit um segundo
+/// depois do texto sai na primeira rodada, na onda 1, sem a escolha de quem
+/// conduz e sem a frase que mandava conferir a tarefa no código. Nos dois
+/// idiomas.
 #[test]
-fn task_check_is_asked_only_when_the_file_changed_after_the_task() {
+fn a_task_whose_file_changed_after_its_text_leaves_in_the_first_round_without_a_check() {
     for (language, lang) in [("pt-BR", Locale::PtBr), ("en-US", Locale::EnUs)] {
         let project = Project::new(language);
         project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
@@ -220,41 +217,23 @@ fn task_check_is_asked_only_when_the_file_changed_after_the_task() {
         let code = project.log().codes().get(&task).cloned().expect("the task code");
         let written = seconds_of(&project.log(), task);
 
-        // A rodada só roda no segundo seguinte ao da tarefa: a versão que ela
-        // grava para pôr a tarefa na onda fica com instante posterior ao texto.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-        while chrono::Utc::now().timestamp() <= written && std::time::Instant::now() < deadline {
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
-
-        let check = translate("round.analysis_check", lang);
-        let lead = check.split("{tasks}").next().expect("the text before the tasks").to_string();
-        let asked = project.run(&["round", "--spec", SPEC]);
-        assert_eq!(asked["analysis"][0]["wave"], json!(1), "{language}: {asked}");
-        let next = asked["next"].as_str().unwrap_or_default();
-        assert!(!next.contains(&lead), "{language}: a tarefa escrita depois do último commit pediu conferência: {next}");
-        assert!(!next.contains(&code), "{language}: a tarefa escrita depois do último commit foi nomeada: {next}");
-
-        // A rodada pôs a tarefa na onda numa versão nova, só com a onda.
-        let log = project.log();
-        let placed = log.visible().into_iter().find(|e| e.event_type == "task").expect("the task").clone();
-        assert_eq!(placed.wave(), Some(1), "{language}: {placed:?}");
-        assert_eq!(placed.replaced(), vec![task], "{language}: {placed:?}");
-        assert_eq!(placed.str_field("text"), log.get(task).and_then(|e| e.str_field("text")), "{language}");
-        assert!(seconds_of(&log, placed.id) > written, "{language}: a versão da onda saiu no mesmo segundo da tarefa");
-
         // O commit que toca o arquivo da tarefa, um segundo depois do texto.
         std::fs::write(project.root.join("src/main.rs"), "fn main() {\n    println!(\"{}\", 2 + 2);\n}\n").expect("the change");
         git(&project.root, &["add", "src/main.rs"], None);
         let date = format!("@{} +0000", written + 1);
         git(&project.root, &["commit", "-q", "-m", "a soma muda"], Some(&date));
 
-        // A onda 1 ficou sem a linha da escolha: ela se desfaz, e a tarefa sai
-        // na onda 2, que pede a escolha de novo.
-        let again = project.run(&["round", "--spec", SPEC]);
-        assert_eq!(again["analysis"][0]["wave"], json!(2), "{language}: {again}");
-        let next = again["next"].as_str().unwrap_or_default();
-        let named = check.replace("{tasks}", &code);
-        assert!(next.contains(&named), "{language}: a frase não nomeou a tarefa com arquivo mudado: {next}");
+        let out = project.run(&["round", "--spec", SPEC]);
+
+        assert_eq!(out["dispatch"][0]["wave"], json!(1), "{language}: {out}");
+        assert!(out.get("analysis").is_none(), "{language}: {out}");
+        let next = out["next"].as_str().unwrap_or_default();
+        assert!(!next.contains(&code), "{language}: a tarefa foi nomeada para conferência: {next}");
+        for agent_word in ["agente separado", "separate agent"] {
+            assert!(!next.contains(agent_word), "{language}: a frase da conferência voltou: {next}");
+        }
+        let log = project.log();
+        let placed = log.visible().into_iter().find(|e| e.event_type == "task").expect("the task").clone();
+        assert_eq!(placed.wave(), Some(1), "{language}: {placed:?}");
     }
 }

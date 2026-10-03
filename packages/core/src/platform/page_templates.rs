@@ -128,11 +128,11 @@ pub const SPEND_CAPABILITIES: &str = PROJECT_CAPABILITIES;
 /// desenho da página já publicada mudou; a página só é publicada de novo
 /// quando ele pede. A trava dos testes falha quando o molde muda sem ela
 /// subir.
-pub const SPEC_LAYOUT_VERSION: u32 = 14;
+pub const SPEC_LAYOUT_VERSION: u32 = 15;
 
 /// A versão do layout da página do projeto, com a mesma regra de
 /// [`SPEC_LAYOUT_VERSION`].
-pub const PROJECT_LAYOUT_VERSION: u32 = 4;
+pub const PROJECT_LAYOUT_VERSION: u32 = 5;
 
 /// A versão do layout da página do gasto, com a mesma regra de
 /// [`SPEC_LAYOUT_VERSION`].
@@ -414,10 +414,10 @@ mod tests {
     /// sobe a versão do layout dele e grava aqui a impressão nova que a falha
     /// mostra.
     const LAYOUT_TABLE: &[(&str, Locale, u32, &str)] = &[
-        ("spec", Locale::PtBr, 14, "66084342222d88e4"),
-        ("spec", Locale::EnUs, 14, "4f223a40cfef922d"),
-        ("project", Locale::PtBr, 4, "5ce19b21c8d05b39"),
-        ("project", Locale::EnUs, 4, "2bc07fa8f52ae1bc"),
+        ("spec", Locale::PtBr, 15, "e22b0f7aa5fbfa26"),
+        ("spec", Locale::EnUs, 15, "9a6af7125210b6bc"),
+        ("project", Locale::PtBr, 5, "0be0b4ffd4c47743"),
+        ("project", Locale::EnUs, 5, "6f326bb05232c397"),
         ("spend", Locale::PtBr, 2, "bab718d405877ab9"),
         ("spend", Locale::EnUs, 2, "c050630fedb4abdb"),
     ];

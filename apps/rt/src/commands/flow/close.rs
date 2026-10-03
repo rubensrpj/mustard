@@ -2724,16 +2724,15 @@ exit "${2:-0}"
         let round = |report: Option<String>| {
             round_for(&RoundOpts { root: root.to_path_buf(), spec: Some("x".to_string()), report }, None)
         };
-        // Sem escolha, a onda espera: ela tem item sem dono para julgar.
-        let asked = round(None);
-        assert_eq!(asked["ok"], json!(true), "{asked}");
-        assert!(asked.get("dispatch").is_none() || asked["dispatch"].as_array().is_some_and(Vec::is_empty), "{asked}");
-
-        // A escolha do orquestrador leva só a primeira decisão sem dono.
-        let added = json!([{"item": "MSTD-DEC-0001", "why": "Ela entra na onda um."}]);
-        let analysis = json!({"wave": 1, "removed": [], "added": added});
-        let dispatched = round(Some(format!("<ANALYSIS>{analysis}</ANALYSIS>")));
+        // O Jev põe na onda só a primeira decisão sem dono.
+        let first = crate::shared::spec_state::DiskSpecState::new(root).log("x").expect("the spec").codes().into_iter()
+            .find(|(_, code)| code == "MSTD-DEC-0001").map(|(id, _)| id).expect("the first decision");
+        let _jev = crate::commands::flow::round::item_choice::fake::answering(move |board| {
+            board.items.iter().map(|item| (item.id, if item.id == first { 0.9 } else { 0.0 })).collect()
+        });
+        let dispatched = round(None);
         assert_eq!(dispatched["ok"], json!(true), "{dispatched}");
+        assert!(dispatched["dispatch"].as_array().is_some_and(|sent| !sent.is_empty()), "{dispatched}");
 
         std::fs::write(root.join(wave_file(1)), "fn one() {}\nfn dois() {}\n").unwrap();
         // A entrega responde pela decisão que o pedido da onda levou.
@@ -2798,11 +2797,8 @@ exit "${2:-0}"
         let round = |report: Option<String>| {
             round_for(&RoundOpts { root: root.to_path_buf(), spec: Some("x".to_string()), report }, None)
         };
-        // Com a regra e a decisão sem dono, a onda espera a escolha do
-        // orquestrador; sem item a acrescentar, ela sai como está.
-        round(None);
-        let analysis = json!({"wave": 1, "removed": [], "added": []});
-        let dispatched = round(Some(format!("<ANALYSIS>{analysis}</ANALYSIS>")));
+        // Com a regra e a decisão sem dono, a onda sai na mesma rodada, como está.
+        let dispatched = round(None);
         assert_eq!(dispatched["ok"], json!(true), "{dispatched}");
         std::fs::write(root.join(wave_file(1)), "fn one() {}\nfn dois() {}\n").unwrap();
         returned(root, "x", json!({"wave": 1, "text": "Saiu.", "files": [wave_file(1)], "commit": "a soma sai"}));

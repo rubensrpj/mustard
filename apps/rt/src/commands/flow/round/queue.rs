@@ -1,6 +1,5 @@
-//! A fila da rodada e as ondas em andamento: quais ondas saem agora, a
-//! escolha do pedido antes do envio, a vaga fixa de cada uma, quais estão em
-//! andamento, quais já estão entregues e
+//! A fila da rodada e as ondas em andamento: quais ondas saem agora, a vaga
+//! fixa de cada uma, quais estão em andamento, quais já estão entregues e
 //! aprovadas, e o estado de cada uma que a página mostra. A rodada não pede
 //! revisão de onda nenhuma: quem confere o trabalho, uma vez por obra, é o
 //! agente de teste dedicado que o fechamento pede.
@@ -8,18 +7,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use mustard_core::domain::normalize::Languages;
 use mustard_core::domain::spec_events::{Block, BlockQuery, EventRef, SpecEvent, SpecLog};
-use mustard_core::domain::spec_index::title_of;
-use mustard_core::domain::wave_prompt::{candidates, dispatch_items, recorded_choice, Candidates, Choice, TaskChoice};
-use mustard_core::io::wave_prompt::{lesson_bank, wave_lessons};
-use mustard_core::platform::i18n::{translate, Locale};
+use mustard_core::domain::wave_prompt::{dispatch_items, Choice};
 use serde_json::{json, Map, Value};
 
 use super::leftovers::is_cleanup;
-use super::report::tagged;
 use super::stops::waves_replanned;
-use crate::commands::flow::skill_search::{self, MAP_SUGGESTIONS};
 use crate::commands::wave::wave_overlap_check::{wave_graph, WaveGraph};
 use crate::shared::dag::{sets_cross, touches_whole_tree};
 
@@ -180,302 +173,6 @@ pub(super) fn outgoing(
     }
     let free = if whole_tree_out { 0 } else { slots.saturating_sub(fresh) };
     Ok(Outgoing { go, free, alone: !busy })
-}
-
-// ---------------------------------------------------------------------------
-// A escolha do pedido antes do envio
-// ---------------------------------------------------------------------------
-
-/// A linha em que o orquestrador devolve a escolha de uma onda.
-pub(super) const ANALYSIS_LINE: &str = "ANALYSIS";
-
-/// O que a linha `ANALYSIS` de uma onda trouxe: cada entrada que sai e cada
-/// uma que entra, como veio — o item pelo código ou pelo número em `item`, a
-/// lição pelo número do banco em `lesson` —, com o motivo.
-pub(super) struct AnalysisLine {
-    pub(super) wave: u64,
-    removed: Vec<(Value, String)>,
-    added: Vec<(Value, String)>,
-    /// A escolha da skill e dos arquivos de leitura, por tarefa, como a
-    /// linha trouxe: cada entrada crua, ainda por validar contra as tarefas
-    /// desta onda.
-    tasks: Vec<Value>,
-}
-
-/// As linhas `ANALYSIS` do relatório `raw`. A que não se lê fica de fora com
-/// um aviso, e a onda dela pede a escolha de novo: nada é recusado.
-pub(super) fn analysis_lines(raw: Option<&str>, lang: Locale) -> (Vec<AnalysisLine>, Vec<Value>) {
-    let mut lines = Vec::new();
-    let mut warnings = Vec::new();
-    for body in raw.map(|raw| tagged(raw, ANALYSIS_LINE)).unwrap_or_default() {
-        let parsed = serde_json::from_str::<Value>(body).map_err(|e| e.to_string());
-        match parsed.as_ref().ok().and_then(|fields| Some((fields, fields.get("wave")?.as_u64()?))) {
-            Some((fields, wave)) => {
-                let entries = |key: &str| -> Vec<(Value, String)> {
-                    let listed = fields.get(key).and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
-                    listed
-                        .iter()
-                        .map(|entry| {
-                            let why = entry.get("why").and_then(Value::as_str).map(str::trim).unwrap_or_default();
-                            (entry.clone(), why.to_string())
-                        })
-                        .collect()
-                };
-                let tasks = fields.get("tasks").and_then(Value::as_array).cloned().unwrap_or_default();
-                lines.push(AnalysisLine { wave, removed: entries("removed"), added: entries("added"), tasks });
-            }
-            None => {
-                let detail = parsed.err().unwrap_or_else(|| body.to_string());
-                let hint = translate("round.analysis_unreadable", lang).replace("{detail}", &detail);
-                warnings.push(json!({ "reason": "analysis-unreadable", "hint": hint }));
-            }
-        }
-    }
-    (lines, warnings)
-}
-
-/// O que a escolha antes do envio decidiu para as ondas prontas.
-pub(super) struct Analysed {
-    /// As ondas que saem agora, na ordem da fila.
-    pub go: Vec<u64>,
-    /// A escolha de cada onda que sai com uma.
-    pub choices: BTreeMap<u64, Choice>,
-    /// Os candidatos de cada onda que espera a escolha do orquestrador.
-    pub asked: Vec<Value>,
-    /// As entradas da linha da escolha que ficaram como estavam.
-    pub warnings: Vec<Value>,
-}
-
-/// A sugestão da rodada para uma tarefa, antes do envio: as skills que casam
-/// com o texto dela pela busca, o "quando usar" de todas as skills da área
-/// dela — mesmo as que a busca não achou — e até três arquivos parecidos do
-/// mapa. A tarefa que já nomeia uma skill não pede sugestão de skill: ela já
-/// está decidida, e só os arquivos continuam valendo.
-struct TaskHint {
-    task: u64,
-    matched: Vec<String>,
-    area: Vec<(String, String)>,
-    files: Vec<String>,
-}
-
-impl TaskHint {
-    /// `true` quando não há nada a sugerir para esta tarefa: nenhuma skill
-    /// casou e nenhum arquivo parecido apareceu. O "quando usar" da área
-    /// só é mostrado junto de uma das duas, nunca sozinho — quase todo
-    /// projeto tem alguma skill na raiz, e mostrá-la sem motivo pediria a
-    /// escolha do orquestrador em toda onda.
-    fn is_empty(&self) -> bool {
-        self.matched.is_empty() && self.files.is_empty()
-    }
-}
-
-/// As sugestões de skill e de arquivos parecidos, por tarefa da onda `wave`,
-/// que a rodada mostra ao orquestrador antes do envio: a mesma busca que o
-/// plano usa na conferência ([`skill_search`]), e o mapa que o scan mantém em
-/// dia depois de cada commit, nas línguas `languages`.
-fn task_hints(root: &Path, log: &SpecLog, wave: u64, languages: &Languages) -> Vec<TaskHint> {
-    log.block(BlockQuery::Wave(wave))
-        .into_iter()
-        .filter(|e| e.event_type == "task")
-        .map(|task| {
-            let text = task.str_field("text").unwrap_or_default();
-            let named = task.str_field("skill").is_some_and(|s| !s.trim().is_empty());
-            let on_disk = skill_search::skills_on_disk(root, std::slice::from_ref(&task));
-            let matched = if named { Vec::new() } else { skill_search::matching_skills(&on_disk, text, languages) };
-            let area = if named { Vec::new() } else { on_disk };
-            let files = crate::commands::map::suggested_files(root, text, MAP_SUGGESTIONS, languages);
-            TaskHint { task: task.id, matched, area, files }
-        })
-        .collect()
-}
-
-/// A escolha antes do envio de cada onda pronta (`ready`), antes de a cópia
-/// dela ser criada. Os candidatos de cada onda são os itens do projeto todo,
-/// os sem dono e as lições do banco que casam com ela, e a sugestão de skill
-/// e de arquivos parecidos de cada tarefa dela; a onda sem nada disso sai
-/// como hoje. A que tem sai com a escolha que a linha `ANALYSIS` do relatório
-/// trouxe (`given`) ou, quando a mesma onda sai de novo sem plano novo, com a
-/// escolha gravada no envio anterior dela, se essa escolha julgou cada
-/// candidato de agora. Sem escolha, a onda não sai, e a resposta traz os
-/// candidatos e as sugestões dela ao orquestrador, cada um com o título. Nada
-/// é recusado, e nenhum agente é aberto para isso. As buscas cortam as
-/// palavras nas línguas `languages`.
-pub(super) fn analyse(
-    root: &Path,
-    log: &SpecLog,
-    ready: &[u64],
-    given: &[AnalysisLine],
-    lang: Locale,
-    languages: &Languages,
-) -> Analysed {
-    let replanned = waves_replanned(log);
-    let codes = log.codes();
-    let bank = lesson_bank(root);
-    let mut out = Analysed { go: Vec::new(), choices: BTreeMap::new(), asked: Vec::new(), warnings: Vec::new() };
-    for wave in ready.iter().copied() {
-        let mut found = candidates(log, wave, languages);
-        found.lessons = bank.as_ref().map(|bank| wave_lessons(bank, log, wave, languages)).unwrap_or_default();
-        let hints = task_hints(root, log, wave, languages);
-        if found.is_empty() && hints.iter().all(TaskHint::is_empty) {
-            out.go.push(wave);
-            continue;
-        }
-        let choice = match given.iter().rfind(|line| line.wave == wave) {
-            Some(line) => Some(chosen(log, &codes, line, &found, lang, &mut out.warnings)),
-            None => recorded_choice(log, wave)
-                .filter(|choice| !replanned.contains(&wave) && choice.covers(&found))
-                .map(|choice| choice.within(&found)),
-        };
-        match choice {
-            Some(choice) => {
-                out.choices.insert(wave, choice);
-                out.go.push(wave);
-            }
-            None => out.asked.push(shown_candidates(log, &codes, wave, &found, &hints)),
-        }
-    }
-    out
-}
-
-/// A escolha que a linha da onda traz, dentro dos candidatos de agora
-/// (`found`): sai só o item do projeto todo ou a lição, entra só o item sem
-/// dono, e cada um com o motivo. A entrada fora dos candidatos, ou sem
-/// motivo, fica como estava, e um aviso diz qual.
-fn chosen(
-    log: &SpecLog,
-    codes: &BTreeMap<u64, String>,
-    line: &AnalysisLine,
-    found: &Candidates,
-    lang: Locale,
-    warnings: &mut Vec<Value>,
-) -> Choice {
-    // A entrada aponta um item da spec em `item` ou uma lição do banco em
-    // `lesson`: os números dos dois não se misturam.
-    let find = |group: &[&SpecEvent], entry: &Value, lesson: bool| -> Option<u64> {
-        let id = if lesson {
-            entry.get("lesson")?.as_u64()?
-        } else {
-            match EventRef::from_value(entry.get("item")?)? {
-                EventRef::Id(n) => log.current(n)?.id,
-                EventRef::Code(code) => group.iter().find(|e| codes.get(&e.id) == Some(&code))?.id,
-            }
-        };
-        group.iter().any(|e| e.id == id).then_some(id)
-    };
-    let mut pick = |group: &[&SpecEvent], entries: &[(Value, String)], lesson: bool| -> Vec<(u64, String)> {
-        let mut out: Vec<(u64, String)> = Vec::new();
-        for (entry, why) in entries.iter().filter(|(entry, _)| entry.get("lesson").is_some() == lesson) {
-            match find(group, entry, lesson).filter(|_| !why.is_empty()) {
-                Some(id) => {
-                    if !out.iter().any(|(had, _)| *had == id) {
-                        out.push((id, why.clone()));
-                    }
-                }
-                None => warnings.push(ignored(line.wave, entry, lang)),
-            }
-        }
-        out
-    };
-    let removed = pick(&found.project, &line.removed, false);
-    let removed_lessons = pick(&found.lessons, &line.removed, true);
-    let added = pick(&found.unowned, &line.added, false);
-    // Lição não entra por escolha: as que casam com a onda já vão, e a lição
-    // em `added` fica como estava.
-    for (entry, _) in line.added.iter().filter(|(entry, _)| entry.get("lesson").is_some()) {
-        warnings.push(ignored(line.wave, entry, lang));
-    }
-    // A escolha da skill e dos arquivos, por tarefa: a entrada aponta uma
-    // tarefa desta onda, pelo código ou pelo número em `task`. A que não
-    // aponta nenhuma fica de fora, com um aviso.
-    let wave_tasks: Vec<&SpecEvent> =
-        log.block(BlockQuery::Wave(line.wave)).into_iter().filter(|e| e.event_type == "task").collect();
-    let mut tasks: Vec<TaskChoice> = Vec::new();
-    for entry in &line.tasks {
-        let task_id = entry
-            .get("task")
-            .and_then(EventRef::from_value)
-            .and_then(|found| match found {
-                EventRef::Id(n) => log.current(n).map(|e| e.id),
-                EventRef::Code(code) => wave_tasks.iter().find(|e| codes.get(&e.id) == Some(&code)).map(|e| e.id),
-            })
-            .filter(|id| wave_tasks.iter().any(|e| e.id == *id));
-        let Some(task_id) = task_id else {
-            warnings.push(ignored(line.wave, entry, lang));
-            continue;
-        };
-        let strings = |key: &str| -> Vec<String> {
-            entry
-                .get(key)
-                .and_then(Value::as_array)
-                .map(Vec::as_slice)
-                .unwrap_or_default()
-                .iter()
-                .filter_map(Value::as_str)
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(str::to_string)
-                .collect()
-        };
-        tasks.push(TaskChoice {
-            task: task_id,
-            skills: strings("skills"),
-            files: strings("files"),
-        });
-    }
-    Choice { judged: found.ids(), removed, added, judged_lessons: found.lesson_ids(), removed_lessons, tasks }
-}
-
-/// O aviso da entrada da linha da escolha que ficou como estava: a frase diz
-/// lição quando o número ignorado é de uma lição do banco, não de um item da
-/// spec.
-fn ignored(wave: u64, entry: &Value, lang: Locale) -> Value {
-    let lesson = entry.get("lesson").is_some();
-    let said = entry.get("item").or_else(|| entry.get("lesson")).or_else(|| entry.get("task")).unwrap_or(entry);
-    let shown = said.as_str().map_or_else(|| said.to_string(), str::to_string);
-    let key = if lesson { "round.analysis_ignored_lesson" } else { "round.analysis_ignored" };
-    let hint = translate(key, lang).replace("{wave}", &wave.to_string()).replace("{item}", &shown);
-    json!({ "reason": "analysis-item-ignored", "wave": wave, "hint": hint })
-}
-
-/// Os candidatos da onda `wave`, como a resposta da rodada os entrega ao
-/// orquestrador: o título da onda, em cada grupo, cada candidato com o título
-/// dele — o item pelo código, a lição pelo número do banco — e, por tarefa
-/// que tem alguma sugestão, a skill que casa, o "quando usar" das skills da
-/// área dela e os arquivos parecidos. O texto inteiro se lê pelo código.
-fn shown_candidates(
-    log: &SpecLog,
-    codes: &BTreeMap<u64, String>,
-    wave: u64,
-    found: &Candidates,
-    hints: &[TaskHint],
-) -> Value {
-    let title = |e: &SpecEvent| title_of(e).unwrap_or_default();
-    let items = |group: &[&SpecEvent]| -> Vec<Value> {
-        let code = |e: &SpecEvent| codes.get(&e.id).cloned().unwrap_or_else(|| e.id.to_string());
-        group.iter().map(|e| json!({ "item": code(e), "title": title(e) })).collect()
-    };
-    let named = log.block(BlockQuery::Wave(wave)).into_iter().find(|e| e.event_type == "wave").map(title);
-    let tasks: Vec<Value> = hints
-        .iter()
-        .filter(|hint| !hint.is_empty())
-        .map(|hint| {
-            let code = codes.get(&hint.task).cloned().unwrap_or_else(|| hint.task.to_string());
-            let area: Vec<Value> =
-                hint.area.iter().map(|(name, when)| json!({ "name": name, "when": when })).collect();
-            json!({ "task": code, "matched_skills": hint.matched, "area_skills": area, "files": hint.files })
-        })
-        .collect();
-    let mut out = json!({
-        "wave": wave,
-        "title": named.unwrap_or_default(),
-        "project": items(&found.project),
-        "unowned": items(&found.unowned),
-        "lessons": found.lessons.iter().map(|e| json!({ "lesson": e.id, "title": title(e) })).collect::<Vec<_>>(),
-    });
-    if !tasks.is_empty() {
-        out["tasks"] = json!(tasks);
-    }
-    out
 }
 
 /// As ondas com pedido aberto, cada uma com o número do pedido dela: a onda
@@ -767,10 +464,9 @@ fn ready_in_order(
 }
 
 /// Os itens que o pedido de uma onda leva: os números de tudo que entrou
-/// nele, com a escolha do orquestrador antes do envio (`choice`), nas
-/// línguas `languages`.
-pub(super) fn sent_items(log: &SpecLog, wave: u64, choice: Option<&Choice>, languages: &Languages) -> Vec<u64> {
-    dispatch_items(log, wave, choice, languages).into_iter().map(|e| e.id).collect()
+/// nele, com a escolha dos itens antes do envio (`choice`).
+pub(super) fn sent_items(log: &SpecLog, wave: u64, choice: Option<&Choice>) -> Vec<u64> {
+    dispatch_items(log, wave, choice).into_iter().map(|e| e.id).collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -1062,6 +758,7 @@ mod tests {
     use mustard_core::domain::spec_state::PhaseWriter;
     use mustard_core::io::spec_events as store;
     use mustard_core::io::wave_prompt::{shown, slot_path};
+    use mustard_core::platform::i18n::{translate, Locale};
     use tempfile::tempdir;
 
     use super::*;
@@ -2081,21 +1778,20 @@ mod tests {
         assert_eq!(waves_in(&out, "running"), vec![2], "a 3 ainda espera a 2 aprovada: {out}");
     }
 
-    /// As linhas dos itens combinados que a escolha da onda 1 deixa no
-    /// pedido: o que a tarefa atende sai sob ela, e o resto sai em "O que
+    /// As linhas dos itens combinados que o pedido da onda 1 leva por padrão,
+    /// sem Jev: o que a tarefa atende sai sob ela, e o resto sai em "O que
     /// obedecer", cada um em uma linha só, com o tipo, o código e o título.
-    const CHOSEN_ITEMS: &str = "- Regra MSTD-RULE-0001 — Vale sempre: a tabela nova tem chave.\n\
-        - Decisão MSTD-DEC-0001 — Sem dono: a tabela nasce vazia.\n\
+    const CHOSEN_ITEMS_BY_DEFAULT: &str = "- Regra MSTD-RULE-0001 — Vale sempre: a tabela nova tem chave.\n\
+        - Regra MSTD-RULE-0002 — Vale sempre: a spec vira um PR só.\n\
         - Decisão MSTD-DEC-0003 — Da onda um: a coluna é texto.\n";
 
     /// A linha da tarefa da onda 1 que atende uma das regras do projeto todo.
     const ATTENDED_ITEM: &str = "   - Atende: regra MSTD-RULE-0003 — Vale sempre: a tabela nova tem índice.";
 
-    /// A spec aprovada da análise antes do envio: uma onda, com a tarefa que
-    /// faz uma das regras do projeto todo, duas regras do projeto todo que
-    /// ela não faz, dois itens sem dono, que a palavra-chave liga à tarefa, e
-    /// uma decisão da onda. Devolve o
-    /// número de cada item, pelo código.
+    /// A spec aprovada da escolha dos itens: uma onda, com a tarefa que faz
+    /// uma das regras do projeto todo, duas regras do projeto todo que ela não
+    /// faz, dois itens sem dono e uma decisão da onda. Devolve o número de
+    /// cada item, pelo código.
     fn with_items_to_judge(root: &Path) -> BTreeMap<String, u64> {
         approved_with(root, "x", &[(1, &["src/a.rs"], &[])], |said| {
             let rule = |text: &str| {
@@ -2119,442 +1815,172 @@ mod tests {
         log.codes().into_iter().map(|(id, code)| (code, id)).collect()
     }
 
-    /// O veredito final reprovado, com o combinado inteiro vigente
-    /// atendido, gravado como o revisor o grava, com o pedido de revisão
-    /// aberto antes: os testes daqui provam o mecanismo da escolha
-    /// (`ANALYSIS`), não o do combinado — sem a lista `agreed` cobrindo todo
-    /// mundo, a revisão final seria recusada por faltar item, antes de chegar
-    /// à escolha que o teste quer provar. Devolve o relatório do revisor,
-    /// vazio.
-    fn verdict_with_agreed(root: &Path, wave: u64, result: &str, text: &str, agreed: &[&str]) -> String {
-        let agreed: Vec<Value> = agreed.iter().map(|item| json!({"item": item, "met": true})).collect();
-        seed_review(root);
-        let wrote = judged(root, json!({"wave": wave, "result": result, "final": true, "text": text,
-            "criteria": [{"criterion": "MSTD-CRIT-0001", "tests_rule": true}], "agreed": agreed}));
-        assert_eq!(wrote["ok"], json!(true), "{wrote}");
-        String::new()
-    }
-
-    /// A linha da escolha da onda 1: o que sai e o que entra, com o motivo.
-    fn analysis(removed: Value, added: Value) -> String {
-        line("ANALYSIS", json!({"wave": 1, "removed": removed, "added": added}))
-    }
-
-    /// Os códigos de um grupo de candidatos que a rodada entregou.
-    fn codes_in(asked: &Value, group: &str) -> Vec<String> {
-        let listed = asked[group].as_array().map(Vec::as_slice).unwrap_or_default();
-        listed.iter().filter_map(|c| c["item"].as_str()).map(str::to_string).collect()
-    }
-
-    /// A rodada que vai soltar uma onda com regras do projeto todo, itens sem
-    /// dono e lições que casam com ela entrega esses candidatos ao
-    /// orquestrador, cada um com o título, e nenhum agente é pedido: a
-    /// resposta não traz modelo nem pedido pronto, e o próximo passo não fala
-    /// de Sonnet. A lição que não casa com a onda não é candidata. A escolha
-    /// volta na linha que a rodada lê e fica gravada no envio com o motivo, a
-    /// da lição inclusive: o pedido leva a lição que ficou e não a que saiu.
+    /// A rodada que vai soltar uma onda com regras do projeto todo e itens sem
+    /// ligação com ela não espera ninguém: a onda sai na mesma rodada, sem
+    /// relatório, sem pedir a escolha ao orquestrador e sem agente nenhum. Sem
+    /// Jev, o pedido leva o padrão: o item do projeto todo vai, o item sem
+    /// ligação com a onda fica fora, e o de que a onda é dona vai. O envio não
+    /// grava escolha nenhuma, porque ninguém julgou, e o gancho monta o mesmo
+    /// pedido.
     #[test]
-    fn the_round_hands_the_candidates_to_the_orchestrator() {
+    fn a_wave_with_items_to_judge_leaves_in_the_same_round_with_the_default_request() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let ids = with_items_to_judge(root);
-        let lesson = |text: &str, key: &str| {
-            id_of(&write(root, "x", "lesson", json!({"class": "environment_trap", "text": text, "keys": [key],
-                "applies_to": {"files": ["**"]}})))
-        };
-        let kept = lesson("A tabela nova precisa de migração.", "tabela");
-        let dropped = lesson("O índice novo deixa a busca lenta.", "índice");
-        let far = lesson("O terminal do Windows troca a barra.", "terminal");
 
-        let asked = round(root, "x", None);
-        assert_eq!(asked["ok"], json!(true), "{asked}");
-        assert_eq!(waves_in(&asked, "dispatch"), Vec::<u64>::new(), "{asked}");
-        let title = |code: &str, title: &str| json!({"item": code, "title": title});
-        assert_eq!(
-            asked["analysis"],
-            json!([{
-                "wave": 1,
-                "title": "Onda 1.",
-                "project": [title("MSTD-RULE-0001", "Vale sempre: a tabela nova tem chave."),
-                    title("MSTD-RULE-0002", "Vale sempre: a spec vira um PR só.")],
-                "unowned": [title("MSTD-DEC-0001", "Sem dono: a tabela nasce vazia."),
-                    title("MSTD-DEC-0002", "Sem dono: o download não muda.")],
-                "lessons": [{"lesson": kept, "title": "A tabela nova precisa de migração."},
-                    {"lesson": dropped, "title": "O índice novo deixa a busca lenta."}],
-            }]),
-            "the lesson {far} does not fit the wave: {asked}"
-        );
-        let next = asked["next"].as_str().unwrap_or_default();
-        assert!(!next.to_lowercase().contains("sonnet") && !next.contains("model"), "{next}");
-        assert!(next.contains("<ANALYSIS>"), "the next step teaches the line: {next}");
+        let out = round(root, "x", None);
 
-        let removed = json!([{"item": "MSTD-RULE-0002", "why": "Fala da entrega, e não da tabela."},
-            {"lesson": dropped, "why": "A busca não muda nesta onda."}]);
-        let added = json!([{"item": "MSTD-DEC-0001", "why": "A tabela nova nasce vazia."}]);
-        let out = round(root, "x", Some(&analysis(removed, added)));
-        assert_eq!(waves_in(&out, "dispatch"), vec![1], "{out}");
-        assert!(out.get("warnings").is_none(), "{out}");
-        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-        let sent: Vec<&SpecEvent> = log.visible().into_iter().filter(|e| e.event_type == "send").collect();
-        assert_eq!(sent.len(), 1, "{out}");
-        let judged: Vec<u64> = ["MSTD-RULE-0001", "MSTD-RULE-0002", "MSTD-DEC-0001", "MSTD-DEC-0002"].map(|c| ids[c]).to_vec();
-        let recorded = json!({"judged": judged,
-            "removed": [{"item": ids["MSTD-RULE-0002"], "why": "Fala da entrega, e não da tabela."}],
-            "added": [{"item": ids["MSTD-DEC-0001"], "why": "A tabela nova nasce vazia."}],
-            "judged_lessons": [kept, dropped],
-            "removed_lessons": [{"lesson": dropped, "why": "A busca não muda nesta onda."}],
-            "tasks": []});
-        assert_eq!(sent[0].fields.get("analysis"), Some(&recorded), "the send records the choice: {out}");
-        let prompt = &request_at(&out, 0);
-        // A lição vai em uma linha, pelo número e pelo título, sem o texto dela.
-        assert!(prompt.lines().any(|l| l == format!("- Lição {kept} — A tabela nova precisa de migração.")), "{prompt}");
-        for out_of_it in [dropped, far] {
-            assert!(!prompt.contains(&format!("Lição {out_of_it} ")), "{out_of_it}: {prompt}");
-        }
-        for out_of_it in ["O índice novo deixa a busca lenta.", "O terminal do Windows troca a barra."] {
-            assert!(!prompt.contains(out_of_it), "{out_of_it}: {prompt}");
-        }
-        assert!(prompt.contains(CHOSEN_ITEMS), "{prompt}");
-        assert!(prompt.lines().any(|l| l == ATTENDED_ITEM), "{prompt}");
-    }
-
-    /// A rodada que vai soltar uma onda com itens do projeto todo e itens sem
-    /// dono entrega os candidatos ao orquestrador: nada sai, nenhum envio é
-    /// gravado e nenhuma cópia é criada; sem a escolha, entrega de novo. Com
-    /// a linha da escolha, a onda sai: o pedido e o envio levam o que ficou,
-    /// sem o que saiu e com o que entrou, e o envio grava à parte o que saiu
-    /// e o que entrou, com o motivo. O item que as tarefas da onda fazem vai
-    /// sempre: ele não é candidato, e a linha que tenta tirá-lo fica sem
-    /// efeito, como a que vem sem motivo. O gancho que monta o pedido no
-    /// despacho chega ao mesmo texto. Na divisa do conserto: com os mesmos
-    /// candidatos, o conserto sai com a escolha gravada; com uma regra nova do
-    /// projeto todo, a rodada pede a escolha de novo.
-    #[test]
-    fn the_round_records_the_analysis_before_sending() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let ids = with_items_to_judge(root);
-        let sends = || {
-            let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-            let sent = log.visible().into_iter().filter(|e| e.event_type == "send" && e.wave().is_some());
-            sent.map(|e| e.fields.clone()).collect::<Vec<_>>()
-        };
-
-        // Sem a escolha, a onda não sai.
-        for _ in 0..2 {
-            let asked = round(root, "x", None);
-            assert_eq!(asked["ok"], json!(true), "{asked}");
-            assert_eq!(waves_in(&asked, "dispatch"), Vec::<u64>::new(), "{asked}");
-            assert!(sends().is_empty(), "no send before the analysis: {asked}");
-            assert!(!slot_path(root, "x", 0).exists(), "no copy before the analysis");
-            let request = &asked["analysis"][0];
-            assert_eq!(request["wave"], json!(1), "{asked}");
-            assert_eq!(codes_in(request, "project"), ["MSTD-RULE-0001", "MSTD-RULE-0002"], "the rule the task does is not judged");
-            assert_eq!(codes_in(request, "unowned"), ["MSTD-DEC-0001", "MSTD-DEC-0002"], "{asked}");
-            assert_eq!(request["lessons"], json!([]), "{asked}");
-            let next = translate("round.analysis", Locale::PtBr).replace("{waves}", "1");
-            assert!(asked["next"].as_str().unwrap_or_default().contains(&next), "{asked}");
-        }
-
-        // Com a escolha, a onda sai com ela.
-        let removed = json!([{"item": "MSTD-RULE-0002", "why": "Fala da entrega, e não da tabela."},
-            {"item": "MSTD-RULE-0003", "why": "Tentou tirar a que a tarefa faz."}]);
-        let added = json!([{"item": "MSTD-DEC-0001", "why": "A tabela nova nasce vazia."},
-            {"item": "MSTD-DEC-0002", "why": ""}]);
-        let out = round(root, "x", Some(&analysis(removed, added)));
         assert_eq!(out["ok"], json!(true), "{out}");
         assert_eq!(waves_in(&out, "dispatch"), vec![1], "{out}");
-        assert!(out.get("analysis").is_none(), "{out}");
+        assert!(out.get("analysis").is_none(), "no choice is asked of the conductor: {out}");
+        assert!(!out["next"].as_str().unwrap_or_default().contains("ANALYSIS"), "{out}");
         let prompt = request_at(&out, 0);
-        assert!(prompt.contains(CHOSEN_ITEMS), "{prompt}");
+        assert!(prompt.contains(CHOSEN_ITEMS_BY_DEFAULT), "{prompt}");
         assert!(prompt.lines().any(|l| l == ATTENDED_ITEM), "{prompt}");
-        let ignored: Vec<&str> = out["warnings"]
-            .as_array()
-            .map(Vec::as_slice)
-            .unwrap_or_default()
-            .iter()
-            .filter(|w| w["reason"] == json!("analysis-item-ignored"))
-            .filter_map(|w| w["hint"].as_str())
-            .collect();
-        assert_eq!(ignored.len(), 2, "{out}");
-        assert!(ignored[0].contains("MSTD-RULE-0003") && ignored[1].contains("MSTD-DEC-0002"), "{ignored:?}");
-        let sent = sends();
-        assert_eq!(sent.len(), 1, "{out}");
-        assert_eq!(sent[0]["text"], json!(prompt));
-        let kept: Vec<u64> = ["MSTD-RULE-0001", "MSTD-RULE-0003", "MSTD-DEC-0001", "MSTD-DEC-0003"].map(|c| ids[c]).to_vec();
-        let items: Vec<u64> = sent[0]["items"].as_array().unwrap().iter().filter_map(Value::as_u64).collect();
-        for code in ["MSTD-RULE-0002", "MSTD-DEC-0002"] {
-            assert!(!items.contains(&ids[code]), "{code} stayed out: {items:?}");
+        for code in ["MSTD-DEC-0001", "MSTD-DEC-0002"] {
+            assert!(!prompt.contains(code), "{code} has no link to the wave and stays out: {prompt}");
         }
-        assert!(kept.iter().all(|id| items.contains(id)), "{items:?}");
-        let judged: Vec<u64> = ["MSTD-RULE-0001", "MSTD-RULE-0002", "MSTD-DEC-0001", "MSTD-DEC-0002"].map(|c| ids[c]).to_vec();
-        assert_eq!(sent[0]["analysis"], json!({"judged": judged,
-            "removed": [{"item": ids["MSTD-RULE-0002"], "why": "Fala da entrega, e não da tabela."}],
-            "added": [{"item": ids["MSTD-DEC-0001"], "why": "A tabela nova nasce vazia."}],
-            "judged_lessons": [], "removed_lessons": [], "tasks": []}));
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let sent: Vec<_> = log.visible().into_iter().filter(|e| e.event_type == "send" && e.wave().is_some()).collect();
+        assert_eq!(sent.len(), 1, "{out}");
+        assert_eq!(sent[0].str_field("text"), Some(prompt.as_str()));
+        assert!(sent[0].fields.get("analysis").is_none(), "nobody judged: {:?}", sent[0].fields);
+        let items: Vec<u64> = sent[0].fields["items"].as_array().unwrap().iter().filter_map(Value::as_u64).collect();
+        for code in ["MSTD-RULE-0001", "MSTD-RULE-0002", "MSTD-RULE-0003", "MSTD-DEC-0003"] {
+            assert!(items.contains(&ids[code]), "{code}: {items:?}");
+        }
         let running = waves_in_progress(&log).into_keys().collect();
         let flight = mustard_core::io::wave_prompt::Flight { running, ..Default::default() };
         let hooked = mustard_core::io::wave_prompt::prompts(root, "x", &log, Locale::PtBr, &flight);
         assert_eq!(hooked.iter().find(|p| p.wave == 1).map(|p| p.text.as_str()), Some(prompt.as_str()), "the hook builds the same request");
-
-        // O conserto, com os mesmos itens a julgar, sai com a escolha gravada.
-        round(root, "x", Some(&delivered(root, 1, "A tabela saiu.", &["src/a.rs"])));
-        let vigent_before = ["MSTD-RULE-0001", "MSTD-RULE-0002", "MSTD-RULE-0003",
-            "MSTD-DEC-0001", "MSTD-DEC-0002", "MSTD-DEC-0003"];
-        let fix = round(root, "x", Some(&verdict_with_agreed(root, 1, "rejected", "faltou o índice", &vigent_before)));
-        assert_eq!(waves_in(&fix, "dispatch"), vec![1], "{fix}");
-        let sent = sends();
-        assert_eq!(sent.len(), 2, "{fix}");
-        assert_eq!(sent[1]["analysis"], sent[0]["analysis"], "{fix}");
-
-        // Com uma regra nova do projeto todo, o conserto seguinte pede a
-        // análise de novo, e sai com a escolha nova.
-        round(root, "x", Some(&delivered(root, 1, "O índice entrou.", &["src/a.rs"])));
-        let said = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap()
-            .visible().into_iter().find(|e| e.event_type == "message").map(|e| e.id).unwrap();
-        let newer = id_of(&write(root, "x", "rule", json!({"text": "Vale sempre: o nome é curto.", "example": "e",
-            "keys": ["k"], "applies_to": {"files": ["**"]}, "origin": said})));
-        let vigent_with_newer = ["MSTD-RULE-0001", "MSTD-RULE-0002", "MSTD-RULE-0003", "MSTD-RULE-0004",
-            "MSTD-DEC-0001", "MSTD-DEC-0002", "MSTD-DEC-0003"];
-        let again = round(root, "x", Some(&verdict_with_agreed(root, 1, "rejected", "faltou o nome", &vigent_with_newer)));
-        assert_eq!(waves_in(&again, "dispatch"), Vec::<u64>::new(), "{again}");
-        assert_eq!(codes_in(&again["analysis"][0], "project"), ["MSTD-RULE-0001", "MSTD-RULE-0002", "MSTD-RULE-0004"], "{again}");
-        assert_eq!(sends().len(), 2, "{again}");
-        let out = round(root, "x", Some(&analysis(json!([]), json!([]))));
-        assert_eq!(waves_in(&out, "dispatch"), vec![1], "{out}");
-        let sent = sends();
-        assert!(sent[2]["analysis"]["judged"].as_array().unwrap().contains(&json!(newer)), "{out}");
-        assert_eq!(sent[2]["analysis"]["removed"], json!([]), "{out}");
     }
 
-    /// A lição nova, sozinha, faz o conserto pedir a escolha de novo: com os
-    /// mesmos itens do projeto todo e sem dono, o conserto reusa a escolha
-    /// gravada; mas uma lição do banco que passa a casar com a onda — sem
-    /// nenhum item novo do projeto — já basta para a escolha gravada não
-    /// cobrir mais os candidatos, e o conserto volta a perguntar antes de
-    /// sair.
-    #[test]
-    fn a_new_lesson_alone_makes_the_fix_ask_for_the_choice_again() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        with_items_to_judge(root);
-        let kept = id_of(&write(root, "x", "lesson", json!({"class": "environment_trap",
-            "text": "A tabela nova precisa de migração.", "keys": ["tabela"], "applies_to": {"files": ["**"]}})));
-        let sends = || {
-            let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-            let sent = log.visible().into_iter().filter(|e| e.event_type == "send" && e.wave().is_some());
-            sent.map(|e| e.fields.clone()).collect::<Vec<_>>()
-        };
-
-        // A primeira rodada pede a escolha; com ela, a onda sai.
-        let asked = round(root, "x", None);
-        assert_eq!(waves_in(&asked, "dispatch"), Vec::<u64>::new(), "{asked}");
-        assert_eq!(asked["analysis"][0]["lessons"], json!([{"lesson": kept, "title": "A tabela nova precisa de migração."}]), "{asked}");
-        let out = round(root, "x", Some(&analysis(json!([]), json!([]))));
-        assert_eq!(waves_in(&out, "dispatch"), vec![1], "{out}");
-        assert_eq!(sends().len(), 1, "{out}");
-
-        // O conserto, com os mesmos candidatos — a mesma lição, nenhuma nova
-        // —, reusa a escolha gravada, sem perguntar de novo.
-        round(root, "x", Some(&delivered(root, 1, "A tabela saiu.", &["src/a.rs"])));
-        let vigent = ["MSTD-RULE-0001", "MSTD-RULE-0002", "MSTD-RULE-0003",
-            "MSTD-DEC-0001", "MSTD-DEC-0002", "MSTD-DEC-0003"];
-        let fix = round(root, "x", Some(&verdict_with_agreed(root, 1, "rejected", "faltou algo", &vigent)));
-        assert_eq!(waves_in(&fix, "dispatch"), vec![1], "o conserto com os mesmos candidatos reusa a escolha: {fix}");
-        let sent = sends();
-        assert_eq!(sent.len(), 2, "{fix}");
-        assert_eq!(sent[1]["analysis"], sent[0]["analysis"], "{fix}");
-
-        // Uma lição nova passa a casar com a onda — nenhum item do projeto
-        // mudou. O conserto seguinte não reusa a escolha: ele pergunta de
-        // novo, com a lição nova entre os candidatos.
-        let newer = id_of(&write(root, "x", "lesson", json!({"class": "environment_trap",
-            "text": "O índice novo evita busca lenta.", "keys": ["índice"], "applies_to": {"files": ["**"]}})));
-        round(root, "x", Some(&delivered(root, 1, "O índice entrou.", &["src/a.rs"])));
-        let again = round(root, "x", Some(&verdict_with_agreed(root, 1, "rejected", "faltou o nome", &vigent)));
-        assert_eq!(waves_in(&again, "dispatch"), Vec::<u64>::new(), "a lição nova pede a escolha de novo: {again}");
-        let lessons: Vec<u64> = again["analysis"][0]["lessons"].as_array().unwrap_or(&Vec::new())
-            .iter().filter_map(|l| l["lesson"].as_u64()).collect();
-        assert!(lessons.contains(&kept) && lessons.contains(&newer), "{again}");
-        assert_eq!(sends().len(), 2, "sem escolha, nenhum envio novo sai: {again}");
+    /// As chamadas `wave items` gravadas na spec `x`.
+    fn item_calls(root: &Path) -> Vec<Map<String, Value>> {
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        log.visible()
+            .into_iter()
+            .filter(|e| e.event_type == "call" && e.str_field("command") == Some("wave items"))
+            .map(|call| call.fields.clone())
+            .collect()
     }
 
-    /// A lição posta em `added` na linha da escolha vira aviso e nunca entra
-    /// no pedido por essa via: a lição que casa com a onda já vai por conta
-    /// própria, e pedir para "acrescentar" ela não a soma de novo nem some
-    /// nenhum item sem dono que a mesma linha acrescente de verdade: o item
-    /// entra no pedido, e a lição sai só como aviso.
+    /// O Jev, numa chamada por onda, tira do pedido a regra do projeto todo
+    /// só com a chance até 0,05 e põe o item sem ligação só com a chance a
+    /// partir de 0,7, e a onda sai na mesma rodada. A chamada leva as tarefas
+    /// da onda e só os itens que o pedido não leva nem tira por conta própria:
+    /// nem o que a tarefa faz, nem o de que a onda é dona. O envio grava o
+    /// que entrou e o que saiu, cada um com a chance, e a chamada fica gravada
+    /// com os tokens, o custo e o modelo.
     #[test]
-    fn a_lesson_put_in_added_becomes_a_warning() {
+    fn the_jev_judges_the_items_in_one_call_per_wave_and_the_send_records_what_came_in_and_went_out() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let ids = with_items_to_judge(root);
-        let kept = id_of(&write(root, "x", "lesson", json!({"class": "environment_trap",
-            "text": "A tabela nova precisa de migração.", "keys": ["tabela"], "applies_to": {"files": ["**"]}})));
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let spy = std::sync::Arc::clone(&seen);
+        let by_id = ids.clone();
+        let _jev = crate::commands::flow::round::item_choice::fake::answering(move |board| {
+            spy.lock().unwrap().push(board.clone());
+            let chance = |code: &str| by_id[code];
+            BTreeMap::from([
+                (chance("MSTD-RULE-0001"), 0.5),
+                (chance("MSTD-RULE-0002"), 0.04),
+                (chance("MSTD-DEC-0001"), 0.9),
+                (chance("MSTD-DEC-0002"), 0.6),
+            ])
+        });
 
-        let removed = json!([]);
-        let added = json!([{"item": "MSTD-DEC-0001", "why": "A tabela nova nasce vazia."}, {"lesson": kept, "why": "Vale para esta onda também."}]);
-        let out = round(root, "x", Some(&analysis(removed, added)));
+        let out = round(root, "x", None);
+
         assert_eq!(waves_in(&out, "dispatch"), vec![1], "{out}");
-        let ignored: Vec<&str> = out["warnings"]
-            .as_array()
-            .map(Vec::as_slice)
-            .unwrap_or_default()
-            .iter()
-            .filter(|w| w["reason"] == json!("analysis-item-ignored"))
-            .filter_map(|w| w["hint"].as_str())
-            .collect();
-        assert_eq!(ignored.len(), 1, "só a lição em `added` vira aviso: {out}");
-        assert!(ignored[0].contains(&kept.to_string()) && ignored[0].contains("lição"), "{ignored:?}");
-
+        assert!(out.get("analysis").is_none(), "{out}");
+        let boards = seen.lock().unwrap().clone();
+        assert_eq!(boards.len(), 1, "one call for the wave");
+        let asked: Vec<u64> = boards[0].items.iter().map(|item| item.id).collect();
+        let mut candidates = vec![ids["MSTD-RULE-0001"], ids["MSTD-RULE-0002"], ids["MSTD-DEC-0001"], ids["MSTD-DEC-0002"]];
+        candidates.sort_unstable();
+        assert_eq!(asked, candidates, "only what the request neither carries nor drops by itself");
+        assert!(boards[0].tasks.iter().any(|task| task.text == "Criar o índice da tabela."), "the tasks of the wave go in the state");
+        let prompt = request_at(&out, 0);
+        assert!(prompt.contains("MSTD-RULE-0001") && prompt.contains("MSTD-DEC-0001") && prompt.contains("MSTD-DEC-0003"), "{prompt}");
+        for code in ["MSTD-RULE-0002", "MSTD-DEC-0002"] {
+            assert!(!prompt.contains(code), "{code}: {prompt}");
+        }
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-        let sent = log.visible().into_iter().find(|e| e.event_type == "send").unwrap();
-        let analysis_field = sent.fields.get("analysis").cloned().unwrap_or_default();
-        // O item sem dono, de verdade acrescentado, entra; a lição, que só
-        // vai pelo caminho automático, não aparece em `added`.
-        assert_eq!(analysis_field["added"], json!([{"item": ids["MSTD-DEC-0001"], "why": "A tabela nova nasce vazia."}]),
-            "a lição não entra por `added`: {analysis_field}");
-        // Ela segue candidata, e vai pelo caminho automático — não por ter
-        // sido posta em `added`.
-        assert_eq!(analysis_field["judged_lessons"], json!([kept]), "{analysis_field}");
-        let prompt = &request_at(&out, 0);
-        assert!(prompt.lines().any(|l| l == format!("- Lição {kept} — A tabela nova precisa de migração.")), "{prompt}");
+        let sent = log.visible().into_iter().find(|e| e.event_type == "send" && e.wave() == Some(1)).unwrap();
+        assert_eq!(sent.fields["analysis"], json!({
+            "judged": candidates,
+            "removed": [{"item": ids["MSTD-RULE-0002"], "why": "Jev p=0.04"}],
+            "added": [{"item": ids["MSTD-DEC-0001"], "why": "Jev p=0.90"}],
+            "judged_lessons": [], "removed_lessons": [],
+        }));
+        let calls = item_calls(root);
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        let call = &calls[0];
+        assert_eq!(
+            (call["filter"].clone(), call["tokens"].clone(), call["cost_micro_usd"].clone(), call["model"].clone()),
+            (json!("jev"), json!(1000), json!(42), json!("jev-1.13.0")),
+            "{call:?}"
+        );
+        assert_eq!((call["candidates"].clone(), call["returned"].clone()), (json!(4), json!(2)), "{call:?}");
     }
 
-    /// Duas rodadas ao mesmo tempo, com a mesma linha da análise, leem a spec
-    /// antes de qualquer uma pegar a trava. Uma solta a onda com a escolha, e
-    /// a outra lê a spec, com a trava presa, depois do envio dela e não a
-    /// solta de novo: a onda tem um envio só, com a escolha.
+    /// O item de toda onda vai no pedido ainda que o Jev dê a ele a chance
+    /// mais baixa, e nem entra na pergunta; o do projeto todo sem a marca, com
+    /// a mesma chance, sai.
     #[test]
-    fn two_rounds_with_the_same_analysis_send_the_wave_once() {
+    fn an_every_wave_item_goes_even_when_the_jev_would_take_it_out() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved_with(root, "x", &[(1, &["src/a.rs"], &[])], |said| {
+            let rule = |text: &str, extra: Value| {
+                let mut body = json!({"title": text, "text": text, "example": "e", "keys": ["k"],
+                    "applies_to": {"files": ["**"]}, "origin": said});
+                body.as_object_mut().unwrap().extend(extra.as_object().cloned().unwrap_or_default());
+                write(root, "x", "rule", body);
+            };
+            rule("Vale sempre: a tabela nova tem chave.", json!({"every_wave": true}));
+            rule("Vale sempre: a spec vira um PR só.", json!({}));
+        });
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let spy = std::sync::Arc::clone(&seen);
+        let _jev = crate::commands::flow::round::item_choice::fake::answering(move |board| {
+            spy.lock().unwrap().extend(board.items.iter().map(|item| item.id));
+            board.items.iter().map(|item| (item.id, 0.0)).collect()
+        });
+
+        let out = round(root, "x", None);
+
+        let prompt = request_at(&out, 0);
+        assert!(prompt.contains("MSTD-RULE-0001"), "the every-wave item stays: {prompt}");
+        assert!(!prompt.contains("MSTD-RULE-0002"), "the project item without the mark leaves with a chance of 0: {prompt}");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let second = log.visible().into_iter().find(|e| e.str_field("text") == Some("Vale sempre: a spec vira um PR só.")).unwrap().id;
+        assert_eq!(*seen.lock().unwrap(), vec![second], "the Jev is asked only about the unmarked one");
+    }
+
+    /// Com o Jev recusando a chamada, a onda sai na mesma rodada com o pedido
+    /// padrão — o projeto todo vai, o sem ligação fica fora —, o envio não
+    /// grava escolha, e a chamada fica gravada com o motivo.
+    #[test]
+    fn a_refused_call_leaves_the_default_request_and_is_recorded_with_its_reason() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         with_items_to_judge(root);
-        assert_eq!(waves_in(&round(root, "x", None), "dispatch"), Vec::<u64>::new());
-        let report = analysis(json!([{"item": "MSTD-RULE-0002", "why": "Fala da entrega."}]), json!([]));
+        let _jev = crate::commands::flow::round::item_choice::fake::refusing();
 
-        let outs = two_rounds_at_once(root, Some(&report));
-        let dispatched: Vec<u64> = outs.iter().flat_map(|out| waves_in(out, "dispatch")).collect();
-        assert_eq!(dispatched, vec![1], "only one round sends the wave out: {outs:?}");
+        let out = round(root, "x", None);
+
+        assert_eq!(waves_in(&out, "dispatch"), vec![1], "{out}");
+        let prompt = request_at(&out, 0);
+        assert!(prompt.contains(CHOSEN_ITEMS_BY_DEFAULT), "{prompt}");
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-        let sent: Vec<&SpecEvent> = log.visible().into_iter().filter(|e| e.event_type == "send").collect();
-        assert_eq!(sent.len(), 1, "{outs:?}");
-        assert_eq!(sent[0].fields["analysis"]["removed"][0]["why"], json!("Fala da entrega."), "{outs:?}");
-        for out in &outs {
-            assert!(out.get("analysis").is_none(), "neither round asks again: {out}");
-        }
-    }
-
-    /// A ferramenta do scan de mentira: relê o disco inteiro, fora `.claude`
-    /// e `.git`, e grava o mapa no formato que a leitura de verdade espera.
-    /// Como o mapa relê depois de cada commit da rodada, o arquivo que um
-    /// commit acabou de apagar nunca aparece nele.
-    fn rescan_disk(root: &Path, model: &Path) -> mustard_core::platform::error::Result<mustard_core::domain::scan::ScanReport> {
-        fn walk(root: &Path, dir: &Path, out: &mut Vec<Value>) {
-            let Ok(entries) = std::fs::read_dir(dir) else { return };
-            let mut entries: Vec<PathBuf> = entries.filter_map(|e| e.ok().map(|e| e.path())).collect();
-            entries.sort();
-            for path in entries {
-                if path.file_name().is_some_and(|name| name == ".claude" || name == ".git") {
-                    continue;
-                }
-                if path.is_dir() {
-                    walk(root, &path, out);
-                } else if let Ok(rel) = path.strip_prefix(root) {
-                    out.push(json!({ "path": rel.to_string_lossy().replace('\\', "/") }));
-                }
-            }
-        }
-        let mut modules = Vec::new();
-        walk(root, root, &mut modules);
-        mustard_core::io::project_map::write_text_at(model, &json!({ "modules": modules }).to_string()).unwrap();
-        Ok(mustard_core::domain::scan::ScanReport { full: true, files: modules.len(), ..Default::default() })
-    }
-
-    /// A rodada vai soltar a onda 2, cuja tarefa casa com a skill `calculadora`
-    /// do projeto e tem um arquivo parecido no mapa, logo depois de um commit
-    /// que apagou outro arquivo parecido: a resposta mostra ao orquestrador,
-    /// por tarefa, a skill sugerida e até três arquivos parecidos, nenhum
-    /// deles apagado; a escolha dele vai gravada no envio, e o pedido leva a
-    /// skill e os arquivos de leitura.
-    #[test]
-    fn the_round_suggests_skills_and_examples_per_task() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        approved_with(root, "x", &[(1, &["src/calculadora_velha.rs"], &[])], |said| {
-            let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-            let crit = log.visible().into_iter().find(|e| e.event_type == "criterion").unwrap().id;
-            write(
-                root,
-                "x",
-                "wave",
-                json!({"n": 2, "text": "Onda 2.", "criteria": [crit], "done_when": "A suíte passa.",
-                    "depends_on": [1], "origin": said}),
-            );
-            write(
-                root,
-                "x",
-                "task",
-                json!({"wave": 2, "text": "Montar uma calculadora nova.",
-                    "files": [{"path": "src/calculadora_nova.rs"}], "depends_on": [], "origin": said}),
-            );
-        });
-        std::fs::write(root.join("src/calculadora_nova.rs"), "fn nova() {}\n").unwrap();
-        let skill = root.join(".claude/skills/calculadora");
-        std::fs::create_dir_all(&skill).unwrap();
-        std::fs::write(
-            skill.join("SKILL.md"),
-            "---\nname: calculadora\ndescription: Use quando for preciso montar uma calculadora.\n---\n\nMonte.\n",
-        )
-        .unwrap();
-
-        // A onda 1 sai; a 2 depende dela e ainda não está pronta.
-        let first = round_with_mine(root, "x", None, &rescan_disk);
-        assert_eq!(waves_in(&first, "dispatch"), vec![1], "{first}");
-
-        // A onda 1 entrega apagando o arquivo parecido antigo: o mapa relê
-        // antes de a onda 2 pedir a escolha, na mesma volta.
-        std::fs::remove_file(root.join("src/calculadora_velha.rs")).unwrap();
-        let back = json!({"wave": 1, "text": "Saiu.", "files": ["src/calculadora_velha.rs"],
-            "commit": "tira a calculadora velha"});
-        assert_eq!(returned(root, back)["ok"], json!(true));
-        let asked = round_with_mine(root, "x", None, &rescan_disk);
-        assert_eq!(asked["ok"], json!(true), "{asked}");
-        assert_eq!(waves_in(&asked, "dispatch"), Vec::<u64>::new(), "{asked}");
-        let tasks = asked["analysis"][0]["tasks"].as_array().cloned().unwrap_or_default();
-        assert_eq!(tasks.len(), 1, "{asked}");
-        assert_eq!(tasks[0]["matched_skills"], json!(["calculadora"]), "{asked}");
-        let files: Vec<String> =
-            tasks[0]["files"].as_array().unwrap().iter().filter_map(|f| f.as_str()).map(str::to_string).collect();
-        assert!(files.iter().any(|f| f.contains("calculadora_nova.rs")), "{files:?}");
-        assert!(
-            !files.iter().any(|f| f.contains("calculadora_velha.rs")),
-            "the deleted file is never suggested: {files:?}"
-        );
-        let task_code = tasks[0]["task"].as_str().unwrap_or_default().to_string();
-
-        // O orquestrador confirma a skill e o arquivo: a escolha vai gravada
-        // no envio, e o pedido leva os dois.
-        let chosen = line(
-            "ANALYSIS",
-            json!({"wave": 2, "removed": [], "added": [],
-                "tasks": [{"task": task_code, "skills": ["calculadora"], "files": ["src/calculadora_nova.rs"]}]}),
-        );
-        let out = round_with_mine(root, "x", Some(&chosen), &rescan_disk);
-        assert_eq!(waves_in(&out, "dispatch"), vec![2], "{out}");
-        let prompt = &request_at(&out, 0);
-        assert!(prompt.contains("**calculadora**"), "{prompt}");
-        assert!(prompt.contains("src/calculadora_nova.rs"), "{prompt}");
-        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-        let sent = log.visible().into_iter().rfind(|e| e.event_type == "send" && e.wave() == Some(2)).unwrap();
-        let codes = log.codes();
-        let task_id = codes.iter().find(|(_, code)| **code == task_code).map(|(id, _)| *id).unwrap();
-        assert_eq!(
-            sent.fields["analysis"]["tasks"],
-            json!([{"task": task_id, "skills": ["calculadora"], "files": ["src/calculadora_nova.rs"]}]),
-            "the choice is recorded on the send"
-        );
+        let sent = log.visible().into_iter().find(|e| e.event_type == "send" && e.wave() == Some(1)).unwrap();
+        assert!(sent.fields.get("analysis").is_none(), "{:?}", sent.fields);
+        let calls = item_calls(root);
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        assert_eq!(calls[0]["filter"], json!("jev:refused"), "{calls:?}");
     }
 
     /// O mapa do projeto acompanha o commit atual antes de montar o pedido:
@@ -2636,17 +2062,10 @@ mod tests {
         // mapa desatualizado explica a releitura a seguir.
         std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":1}"#).unwrap();
 
-        // Com a busca casando "somar" a um item da spec, a rodada pede a
-        // escolha antes de soltar a onda: nada despacha ainda.
+        // A onda sai na mesma rodada, e o pedido segue o mapa do commit atual.
         let second = round_with_mine(root, "x", None, &mine_refreshed);
-        assert_eq!(waves_in(&second, "dispatch"), Vec::<u64>::new(), "{second}");
-        assert!(second.get("analysis").is_some(), "{second}");
-
-        // Com a linha da escolha, a onda sai, e o pedido segue o mapa do
-        // commit atual.
-        let third = round_with_mine(root, "x", Some(&analysis(json!([]), json!([]))), &mine_refreshed);
-        assert_eq!(waves_in(&third, "dispatch"), vec![1], "{third}");
-        let prompt = &request_at(&third, 0);
+        assert_eq!(waves_in(&second, "dispatch"), vec![1], "{second}");
+        let prompt = &request_at(&second, 0);
         assert!(
             prompt.contains("leia só as linhas 13-15 de `soma` em `src/a.rs`"),
             "o pedido segue o commit atual: {prompt}"
@@ -2880,8 +2299,8 @@ mod tests {
     }
 
     /// A tarefa que sai de uma onda de duas por evento de remoção, depois de a
-    /// onda já ter sido formada e mantida pela linha da escolha do
-    /// orquestrador, não deixa rastro no pedido dela: nem na lista de
+    /// onda já ter sido formada e não enviada — a rodada a desfaz e monta de
+    /// novo só com as tarefas visíveis —, não deixa rastro no pedido dela: nem na lista de
     /// tarefas, nem no parágrafo de abertura que abre pelo `done_when` — que,
     /// sem critério com prova (o caso do item combinado sem dono, que não tem
     /// prova), é o texto das próprias tarefas unido por espaço, o caminho
@@ -2932,7 +2351,7 @@ mod tests {
         ));
 
         let log = store::read(&path).unwrap().unwrap();
-        let formed = dispatch_backlog(root, "x", &log, &log, max_parallel(root), &[], None).expect("formou o lote");
+        let formed = dispatch_backlog(root, "x", &log, &log, max_parallel(root), None).expect("formou o lote");
         assert_eq!(formed, vec![2], "as duas tarefas do mesmo arquivo viram uma onda só: {formed:?}");
 
         // A tarefa 1 sai do backlog por remoção, depois de o lote já ter sido
@@ -2944,11 +2363,11 @@ mod tests {
         let t1_code = log.codes().get(&t1).cloned().expect("a tarefa 1 tem código");
         write(root, "x", "remove", json!({"targets": [t1_code], "reason": "o trabalho ja foi feito fora da onda"}));
 
-        let kept = line(ANALYSIS_LINE, json!({"wave": 2}));
-        let out = round(root, "x", Some(&kept));
-        assert_eq!(waves_in(&out, "dispatch"), vec![1, 2], "{out}");
-        let prompt = &request_of(&out, 2);
-        assert!(!prompt.is_empty(), "wave 2: {out}");
+        let out = round(root, "x", None);
+        let waves = waves_in(&out, "dispatch");
+        assert_eq!(waves.len(), 2, "{out}");
+        let prompt = &request_of(&out, waves[1]);
+        assert!(!prompt.is_empty(), "the batch wave: {out}");
         assert!(
             !prompt.contains("Gravar a versao nova de uma decisao"),
             "o texto da tarefa retirada nao pode aparecer no pedido: {prompt}"
@@ -3077,7 +2496,7 @@ mod tests {
         let other = backlog_task(root, said, crit, "Mexer no código de dois.", "src/b.rs");
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         assert_eq!(
-            dispatch_backlog(root, "x", &log, &log, max_parallel(root), &[], None),
+            dispatch_backlog(root, "x", &log, &log, max_parallel(root), None),
             Ok(vec![2, 3]),
             "cada tarefa nova vira a onda do seu assunto"
         );
@@ -3149,12 +2568,12 @@ mod tests {
 
         // A outra rodada, que entrou antes da tarefa dois, forma a onda 1 com a
         // tarefa um e solta a trava.
-        assert_eq!(dispatch_backlog(root, "x", &first_entry, &first_entry, max_parallel(root), &[], None), Ok(vec![1]));
+        assert_eq!(dispatch_backlog(root, "x", &first_entry, &first_entry, max_parallel(root), None), Ok(vec![1]));
         seed_send(root, 1);
         let three = backlog_task(root, said, crit, "Mexer de novo no código de dois.", "src/b.rs");
 
         let locked = store::read(&path).unwrap().unwrap();
-        assert_eq!(dispatch_backlog(root, "x", &second_entry, &locked, max_parallel(root), &[], None), Ok(vec![2]), "a onda nova é a 2");
+        assert_eq!(dispatch_backlog(root, "x", &second_entry, &locked, max_parallel(root), None), Ok(vec![2]), "a onda nova é a 2");
 
         let log = store::read(&path).unwrap().unwrap();
         let order = |n: u64| {
@@ -3343,7 +2762,7 @@ mod tests {
         let second = cleanup_task(root, said, crit, "Acertar o comentário 2.", "src/a.rs");
         let apart = cleanup_task(root, said, crit, "Acertar o comentário 3.", "src/b.rs");
         let log = spec_now(root);
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), &[], None), Ok(vec![1, 2]), "um assunto por onda");
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None), Ok(vec![1, 2]), "um assunto por onda");
         assert_eq!(wave_order(root, 1), vec![first, second], "as duas do mesmo arquivo saem juntas");
         assert_eq!(wave_order(root, 2), vec![apart], "a de outro arquivo sai na sua");
     }
@@ -3418,7 +2837,7 @@ mod tests {
         let apart = backlog_task_on(root, said, crit, "Mexer em outro assunto.", &["src/c.rs"]);
 
         let log = spec_now(root);
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), &[], None), Ok(vec![1, 2]));
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None), Ok(vec![1, 2]));
         assert_eq!(wave_order(root, 1), vec![first, second, third], "a corrente é um assunto só");
         assert_eq!(wave_order(root, 2), vec![apart], "o outro assunto sai à parte");
     }
@@ -3435,7 +2854,7 @@ mod tests {
             .collect();
 
         let log = spec_now(root);
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), &[], None), Ok(vec![1]), "uma onda só");
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None), Ok(vec![1]), "uma onda só");
         assert_eq!(wave_order(root, 1), tasks, "a onda 1 leva as sete tarefas");
     }
 
@@ -3450,38 +2869,12 @@ mod tests {
         let wide = backlog_task(root, said, crit, "Mexer em todo o código.", "**");
 
         let log = spec_now(root);
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), &[], None), Ok(vec![1]));
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None), Ok(vec![1]));
         assert_eq!(wave_order(root, 1), vec![wide], "o curinga sai sozinho, antes dos outros");
         seed_send(root, 1);
         let log = spec_now(root);
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), &[], None), Ok(vec![]), "o resto espera");
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None), Ok(vec![]), "o resto espera");
         assert_eq!(spec_now(root).current(narrow).and_then(SpecEvent::wave), None, "e segue no backlog");
-    }
-
-    /// A onda de lote montada e não enviada é desfeita na rodada seguinte: a
-    /// tarefa dela volta ao backlog sem onda, e a onda sai do plano. A onda
-    /// que a linha da escolha do orquestrador respondeu é mantida, com a
-    /// tarefa e o número que tinha, e fica com a única vaga.
-    #[test]
-    fn an_unsent_wave_is_undone_and_the_one_the_analysis_answered_is_kept() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let (said, crit) = backlog_project(root);
-        let one = backlog_task(root, said, crit, "Mexer no código de um.", "src/a.rs");
-        let two = backlog_task(root, said, crit, "Mexer no código de dois.", "src/b.rs");
-        let log = spec_now(root);
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, 2, &[], None), Ok(vec![1, 2]), "duas ondas montadas e não enviadas");
-
-        let (answered, _) = analysis_lines(Some(&line(ANALYSIS_LINE, json!({"wave": 2}))), Locale::PtBr);
-        let log = spec_now(root);
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, 1, &answered, None), Ok(vec![]), "a vaga é da onda mantida");
-
-        let log = spec_now(root);
-        assert_eq!(log.planned_waves().into_iter().collect::<Vec<_>>(), vec![2], "só a respondida segue no plano");
-        assert_eq!(log.current(one).and_then(SpecEvent::wave), None, "a tarefa da onda desfeita voltou ao backlog");
-        assert!(backlog_left(&log).contains(&log.current(one).unwrap().id));
-        assert_eq!(log.current(two).and_then(SpecEvent::wave), Some(2), "a tarefa da mantida segue nela");
-        assert_eq!(wave_order(root, 2), vec![two], "com a ordem de antes");
     }
 
     /// A tarefa de uma onda desfeita que cai num assunto montado na mesma
@@ -3494,11 +2887,11 @@ mod tests {
         let (said, crit) = backlog_project(root);
         let task = backlog_task(root, said, crit, "Mexer no código de um.", "src/a.rs");
         let log = spec_now(root);
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, 2, &[], None), Ok(vec![1]));
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, 2, None), Ok(vec![1]));
         let in_wave_one = spec_now(root).current(task).unwrap().id;
 
         let log = spec_now(root);
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, 2, &[], None), Ok(vec![2]), "a onda 1 se desfaz e a 2 a refaz");
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, 2, None), Ok(vec![2]), "a onda 1 se desfaz e a 2 a refaz");
 
         let log = spec_now(root);
         assert_eq!(log.planned_waves().into_iter().collect::<Vec<_>>(), vec![2], "a onda 1 saiu do plano");
@@ -3544,7 +2937,7 @@ mod tests {
     /// que a rodada gravou com o número da onda.
     fn batched(root: &Path, task: u64) -> u64 {
         let log = spec_now(root);
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), &[], None), Ok(vec![1]), "a tarefa sai na onda 1");
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None), Ok(vec![1]), "a tarefa sai na onda 1");
         let log = spec_now(root);
         let version = log.current(task).expect("a tarefa segue viva");
         assert_eq!(version.wave(), Some(1), "a rodada gravou a versão com a onda");
@@ -3569,7 +2962,7 @@ mod tests {
         let log = spec_now(root);
         assert_eq!(shown_task_versions(&log, &code), Vec::<u64>::new(), "nenhuma versão da tarefa fica na leitura");
         assert!(!log.planned_waves().contains(&1), "a onda sem tarefa sai do plano");
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), &[], None), Ok(vec![]), "nada volta ao backlog");
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None), Ok(vec![]), "nada volta ao backlog");
     }
 
     /// A tarefa tem três versões: a sem onda, a da rodada e a do agente, com
@@ -3592,7 +2985,7 @@ mod tests {
 
         let log = spec_now(root);
         assert_eq!(shown_task_versions(&log, &code), Vec::<u64>::new(), "as três versões saem");
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), &[], None), Ok(vec![]), "nada volta ao backlog");
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None), Ok(vec![]), "nada volta ao backlog");
     }
 
     /// A rodada monta a versão nova de uma tarefa com a onda 2, e antes de
@@ -3618,7 +3011,7 @@ mod tests {
         assert_eq!(refusal.reason(), "replaces-removed", "{refusal:?}");
         let log = spec_now(root);
         assert_eq!(shown_task_versions(&log, &code), Vec::<u64>::new(), "a tarefa segue fora");
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), &[], None), Ok(vec![]), "nada volta ao backlog");
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None), Ok(vec![]), "nada volta ao backlog");
     }
 
     /// A rodada monta a versão nova de uma tarefa, e antes de ela gravar,
@@ -3660,7 +3053,7 @@ mod tests {
         let before = spec_now(root);
         let codes = before.codes();
         let newest = |code: &str| before.events.iter().filter(|e| codes.get(&e.id).map(String::as_str) == Some(code)).map(|e| e.id).max();
-        assert_eq!(dispatch_backlog(root, "x", &before, &before, max_parallel(root), &[], None), Ok(vec![2]), "a outra tarefa sai na onda 2");
+        assert_eq!(dispatch_backlog(root, "x", &before, &before, max_parallel(root), None), Ok(vec![2]), "a outra tarefa sai na onda 2");
 
         let after = spec_now(root);
         let written: Vec<&SpecEvent> =
@@ -3741,7 +3134,7 @@ mod tests {
         let log = spec_now(root);
         assert_eq!(log.current(task).map(|e| e.id), Some(task), "a leitura antiga devolve a versão sem onda");
         assert_eq!(
-            dispatch_backlog(root, "x", &log, &log, max_parallel(root), &[], None),
+            dispatch_backlog(root, "x", &log, &log, max_parallel(root), None),
             Err(mustard_core::domain::spec_events::Refusal::ReplacesRemoved { id: with_wave, by }),
             "a rodada não solta a tarefa removida"
         );
@@ -3800,7 +3193,7 @@ mod tests {
         let third = after(second, "Testar o código de um.");
 
         let log = spec_now(root);
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), &[], None), Ok(vec![1]), "a cadeia vira um lote só");
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None), Ok(vec![1]), "a cadeia vira um lote só");
         assert_eq!(wave_order(root, 1), vec![first, second, third], "na ordem da cadeia");
         let log = spec_now(root);
         for task in [first, second, third] {
@@ -3884,7 +3277,7 @@ mod tests {
         std::fs::write(root.join("src/a.rs"), "fn one() {}\n// A soma arredonda.\n").unwrap();
         let change = "B precisa de uma decisão sobre a lista vazia antes.";
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-        let agreed: Vec<Value> = super::super::agreed::request_agreed(&log, 1, &Languages::of_project(root))
+        let agreed: Vec<Value> = super::super::agreed::request_agreed(&log, 1)
             .iter()
             .map(|item| {
                 let code = log.codes()[&item.id].clone();

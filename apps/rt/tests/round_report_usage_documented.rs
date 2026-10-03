@@ -3,7 +3,7 @@
 //! Ela precisa dizer que existe a linha `USAGE`, que o orquestrador escreve
 //! quando o agente de onda termina, e que o consumo vem dos arquivos de
 //! conversa da plataforma — nunca de um número digitado pelo agente —, ao
-//! lado de `PAUSED` e `ANALYSIS`; a entrega e o
+//! lado de `PAUSED`; a entrega e o
 //! veredito não vêm no relatório, porque cada agente grava a própria volta
 //! com `run write delivered` ou `run write verdict`. Sem essa frase, o
 //! marcador funciona mas ninguém descobre que ele existe.
@@ -28,4 +28,13 @@ fn round_help_documents_the_usage_line() {
         help.contains("nunca digitado pelo agente") || help.contains("never a number the agent typed"),
         "the help never says the agent's own number does not count as usage: {help}"
     );
+}
+
+/// A ajuda do `--report` não ensina mais a linha `ANALYSIS`: a onda sai sem a
+/// escolha de quem conduz, e a linha sozinha é recusada.
+#[test]
+fn round_help_no_longer_teaches_the_analysis_line() {
+    let help = round_help();
+    assert!(!help.contains("ANALYSIS"), "the help still teaches the ANALYSIS line: {help}");
+    assert!(help.contains("PAUSED"), "{help}");
 }

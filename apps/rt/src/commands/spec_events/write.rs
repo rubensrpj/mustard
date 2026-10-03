@@ -690,7 +690,15 @@ fn uncovered_items(log: &SpecLog) -> Vec<String> {
         .into_iter()
         .filter(|e| COVERABLE.contains(&e.event_type.as_str()))
         .filter(|e| !covered.contains(&e.id) && e.str_field("no_code").is_none())
-        .filter(|e| !matches!(owners.get(&e.id), Some(mustard_core::domain::wave_prompt::Owner::Project)))
+        .filter(|e| {
+            !matches!(
+                owners.get(&e.id),
+                Some(
+                    mustard_core::domain::wave_prompt::Owner::EveryWave
+                        | mustard_core::domain::wave_prompt::Owner::Project
+                )
+            )
+        })
         .map(|e| codes.get(&e.id).map_or_else(|| e.id.to_string(), |code| format!("{} ({code})", e.id)))
         .collect()
 }

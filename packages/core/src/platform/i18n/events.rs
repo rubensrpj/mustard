@@ -418,11 +418,11 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("spec_events.report_carries_return_line", Locale::PtBr) => {
             "A entrega e o veredito moram na spec: o agente os grava com mustard-rt run write. O \
-             relatório leva só as linhas `USAGE`, `PAUSED` e `ANALYSIS`."
+             relatório leva só as linhas `USAGE` e `PAUSED`."
         }
         ("spec_events.report_carries_return_line", Locale::EnUs) => {
             "The delivery and the verdict live in the spec: the agent writes them with mustard-rt \
-             run write. The report carries only the `USAGE`, `PAUSED` and `ANALYSIS` lines."
+             run write. The report carries only the `USAGE` and `PAUSED` lines."
         }
         ("spec_events.return_missing", Locale::PtBr) => {
             "A onda {wave} terminou sem gravar a entrega: peça ao agente que a grave com `mustard-rt \
@@ -937,7 +937,7 @@ mod tests {
             include_str!("events.rs"),
             super::PREFIXES,
             121,
-            0x57d0_6593_4b9c_600e,
+            0x191f_f282_7de1_35ce,
         );
     }
 
