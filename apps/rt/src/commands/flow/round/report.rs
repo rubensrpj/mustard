@@ -1228,7 +1228,8 @@ mod tests {
     use crate::commands::event::pending::{pending_at, PendingOpts};
     use crate::commands::flow::round::leftovers::leftover_task;
     use crate::commands::flow::round::queue::{return_with_an_undone_task, task_now, UndoneReturn};
-    use crate::commands::flow::round::queue::{dispatch_backlog, waves_to_redo};
+    use crate::commands::flow::round::backlog::dispatch_backlog;
+    use crate::commands::flow::round::queue::{max_parallel, waves_to_redo};
     use crate::commands::flow::round::usage::tests::{answer_line, instant, platform_file, request_line, MODEL};
 
     use super::*;
@@ -1642,24 +1643,24 @@ mod tests {
             root,
             "x",
             "task",
-            json!({"text": "Tarefa dois.", "files": [{"path": "src/c.rs"}], "depends_on": [],
+            json!({"text": "Tarefa dois.", "files": [{"path": "src/b.rs"}], "depends_on": [],
                 "covers": [crit], "origin": said}),
         );
         let t3 = write(
             root,
             "x",
             "task",
-            json!({"text": "Tarefa três.", "files": [{"path": "src/d.rs"}], "depends_on": [],
+            json!({"text": "Tarefa três.", "files": [{"path": "src/b.rs"}], "depends_on": [],
                 "covers": [crit], "origin": said}),
         );
         let (id1, id2, id3) = (id_of(&t1), id_of(&t2), id_of(&t3));
 
-        let log = store::read(&path).unwrap().unwrap();
-        let formed = dispatch_backlog(root, "x", &log, &log).expect("formou o lote");
-        assert_eq!(formed, vec![2], "as três tarefas soltas viram junto a mesma onda de lote: {formed:?}");
-
         let out = round(root, "x", None);
         assert!(waves_in(&out, "dispatch").contains(&2), "a onda de lote sai como qualquer outra: {out}");
+        let formed = store::read(&path).unwrap().unwrap();
+        for id in [id1, id2, id3] {
+            assert_eq!(formed.current(id).unwrap().wave(), Some(2), "as três tarefas do mesmo arquivo saem na mesma onda");
+        }
 
         // O Claude Code que a levou fecha no meio do trabalho: o pedido
         // continua aberto, mas o processo por trás dele já morreu.
@@ -1811,7 +1812,7 @@ mod tests {
                 "covers": [crit], "origin": said}),
         ));
         let log = store::read(&path).unwrap().unwrap();
-        let formed = dispatch_backlog(root, "x", &log, &log).expect("formou o lote");
+        let formed = dispatch_backlog(root, "x", &log, &log, max_parallel(root), &[]).expect("formou o lote");
         assert_eq!(formed, vec![2], "a tarefa solta vira a onda de lote 2: {formed:?}");
 
         // Antes de o lote sair, a tarefa é regravada sem onda: volta ao
@@ -1869,10 +1870,6 @@ mod tests {
             json!({"text": "Tarefa solta.", "files": [{"path": "src/b.rs"}], "depends_on": [],
                 "covers": [crit], "origin": said}),
         ));
-        let log = store::read(&path).unwrap().unwrap();
-        let formed = dispatch_backlog(root, "x", &log, &log).expect("formou o lote");
-        assert_eq!(formed, vec![2], "o lote do backlog virou a onda 2: {formed:?}");
-
         let out = round(root, "x", None);
         assert!(waves_in(&out, "dispatch").contains(&2), "a onda de lote sai como qualquer outra: {out}");
 

@@ -249,8 +249,10 @@ fn task_check_is_asked_only_when_the_file_changed_after_the_task() {
         let date = format!("@{} +0000", written + 1);
         git(&project.root, &["commit", "-q", "-m", "a soma muda"], Some(&date));
 
+        // A onda 1 ficou sem a linha da escolha: ela se desfaz, e a tarefa sai
+        // na onda 2, que pede a escolha de novo.
         let again = project.run(&["round", "--spec", SPEC]);
-        assert_eq!(again["analysis"][0]["wave"], json!(1), "{language}: {again}");
+        assert_eq!(again["analysis"][0]["wave"], json!(2), "{language}: {again}");
         let next = again["next"].as_str().unwrap_or_default();
         let named = check.replace("{tasks}", &code);
         assert!(next.contains(&named), "{language}: a frase não nomeou a tarefa com arquivo mudado: {next}");

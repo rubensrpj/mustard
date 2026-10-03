@@ -17,9 +17,10 @@ use mustard_core::io::wave_prompt::{prompts, recorded_copy, Flight};
 use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Map, Value};
 
+use super::backlog::dispatch_backlog;
 use super::commit::git_lock;
 use super::queue::{
-    analyse, analysis_lines, backlog_left, backlog_ready, dispatch_backlog, first_unfinished, max_parallel, next_waves,
+    analyse, analysis_lines, backlog_left, backlog_ready, first_unfinished, max_parallel, next_waves,
     open_review, open_sends, orphaned_waves, sent_items, silent_minutes, task_files, waves_in_progress, waves_returned,
     Analysed,
 };
@@ -671,21 +672,24 @@ pub(super) fn run_entered_round(
     // sugestão da onda seguinte apontaria linhas velhas.
     super::commit::refresh_map_if_stale(root, mine);
 
-    // O backlog forma os lotes das tarefas prontas nas duas leituras: a de
-    // entrada (`log_on_entry`) e a feita agora, já com a trava presa. O lote
-    // leva também, depois delas, a tarefa do backlog nas duas leituras que
-    // espera só por tarefas dele e divide arquivo com ele. O
-    // binário grava a onda e as tarefas dela, com autor próprio, e só depois
-    // a rodada lê as ondas que existem — as novas e as já entregues. A
-    // tarefa que o corte de uma onda de lote acabou de devolver solta, no
-    // relatório desta mesma chamada, não estava pronta na entrada e fica
-    // solta até a rodada seguinte. A que outra rodada, chegada ao mesmo
-    // tempo, empacotou enquanto esta esperava a trava já tem onda na leitura
-    // de agora, e não sai de novo; o número da onda nova também sai dela.
+    // O backlog monta as ondas que saem agora, uma por vaga livre e um assunto
+    // em cada, com as tarefas prontas nas duas leituras: a de entrada
+    // (`log_on_entry`) e a feita agora, já com a trava presa. A onda leva
+    // também, depois delas, a tarefa do backlog nas duas leituras que espera
+    // só por tarefas dela e divide arquivo com ela. A onda de lote que ficou
+    // montada e sem sair se desfaz, menos a que a linha `ANALYSIS` deste
+    // relatório (`given`) respondeu. O binário grava a onda e as tarefas
+    // dela, com autor próprio, e só depois a rodada lê as ondas que existem —
+    // as novas e as já entregues. A tarefa que o corte de uma onda de lote
+    // acabou de devolver solta, no relatório desta mesma chamada, não estava
+    // pronta na entrada e fica solta até a rodada seguinte. A que outra
+    // rodada, chegada ao mesmo tempo, empacotou enquanto esta esperava a
+    // trava já tem onda na leitura de agora, e não sai de novo; o número da
+    // onda nova também sai dela.
     let locked = store::read(&path)
         .map_err(RoundRefusal::Refused)?
         .ok_or_else(|| RoundRefusal::Refused(Refusal::NoSpecFile { spec: spec.clone() }))?;
-    dispatch_backlog(&opts.root, &spec, &log_on_entry, &locked).map_err(RoundRefusal::Refused)?;
+    dispatch_backlog(&opts.root, &spec, &log_on_entry, &locked, max_parallel(root), &given).map_err(RoundRefusal::Refused)?;
     // A primeira rodada leva a spec para a execução só depois de o lote
     // passar, ainda com a trava do git presa: o lote recusado deixa a spec
     // aprovada, como estava, e a rodada seguinte entra de novo por aqui. A
@@ -1536,7 +1540,7 @@ mod tests {
 
     /// Uma spec aprovada sem onda nenhuma, com `src/a.rs` e `src/b.rs` no
     /// git e duas tarefas soltas no backlog, uma em cada arquivo, que a
-    /// primeira rodada empacota num lote só. Devolve o número da segunda.
+    /// primeira rodada monta em duas ondas. Devolve o número da segunda.
     fn approved_backlog(root: &Path) -> u64 {
         std::fs::create_dir_all(root.join("src")).unwrap();
         for name in ["a.rs", "b.rs"] {
@@ -1592,11 +1596,12 @@ mod tests {
         assert!(log_of(root).visible().iter().all(|e| e.event_type != "wave"), "nenhuma onda gravada");
     }
 
-    /// Sem recusa, a primeira rodada de uma spec aprovada forma o lote das
-    /// tarefas soltas, grava a onda dele com as duas tarefas e deixa a spec na
-    /// execução, na resposta e no arquivo, como sempre.
+    /// Sem recusa, a primeira rodada de uma spec aprovada forma uma onda por
+    /// assunto das tarefas soltas — cada uma com a sua, porque não dividem
+    /// arquivo —, grava as duas ondas e deixa a spec na execução, na resposta
+    /// e no arquivo, como sempre.
     #[test]
-    fn first_round_forms_the_batch_and_takes_the_spec_to_execution() {
+    fn first_round_forms_one_wave_per_subject_and_takes_the_spec_to_execution() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved_backlog(root);
@@ -1608,13 +1613,16 @@ mod tests {
         assert_eq!(phase_of(root), "running", "{out}");
         let log = log_of(root);
         let waves: Vec<&SpecEvent> = log.visible().into_iter().filter(|e| e.event_type == "wave").collect();
-        assert_eq!(waves.len(), 1, "um lote só: {out}");
-        assert_eq!(waves[0].str_field("author"), Some("binary"), "{out}");
-        let n = waves[0].fields.get("n").cloned();
-        let in_batch = log.visible().into_iter().filter(|e| e.event_type == "task" && e.fields.get("wave").cloned() == n).count();
-        assert_eq!(in_batch, 2, "as duas tarefas entram no lote: {out}");
+        assert_eq!(waves.len(), 2, "uma onda por assunto: {out}");
+        assert!(waves.iter().all(|wave| wave.str_field("author") == Some("binary")), "{out}");
+        for wave in &waves {
+            let n = wave.fields.get("n").cloned();
+            let in_wave =
+                log.visible().into_iter().filter(|e| e.event_type == "task" && e.fields.get("wave").cloned() == n).count();
+            assert_eq!(in_wave, 1, "cada onda leva a tarefa do seu assunto: {out}");
+        }
         let dispatched = out["dispatch"].as_array().cloned().unwrap_or_default();
-        assert_eq!(dispatched.len(), 1, "o lote sai despachado: {out}");
+        assert_eq!(dispatched.len(), 2, "as duas ondas saem despachadas: {out}");
     }
 
     /// Toda onda vai ao agente `wave`. A de uma tarefa só grava o `wave` no

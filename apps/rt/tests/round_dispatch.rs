@@ -4,12 +4,12 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 //! O backlog despachado pelo binário de verdade, numa pasta temporária: seis
-//! tarefas com dependência e arquivo compartilhado, e os lotes que a rodada
-//! grava, como onda de autor `binary`, sempre saem os mesmos — quem
-//! compartilha arquivo cai junto, ninguém divide arquivo entre lotes, a
-//! tarefa que espera só por tarefas do lote e divide arquivo com ele entra
-//! depois delas, e o teto de trabalho do lote, em tarefas e em arquivos,
-//! fecha o lote.
+//! tarefas com dependência e arquivo compartilhado, e as ondas que a rodada
+//! grava, como onda de autor `binary`, sempre saem as mesmas — quem
+//! compartilha arquivo cai junto, ninguém divide arquivo entre ondas, a
+//! tarefa que espera só por tarefas da onda e divide arquivo com ela entra
+//! depois delas, e cada onda leva um assunto só, sem teto de tarefas nem de
+//! arquivos.
 //!
 //! Move a prova que antes vivia só como teste de unidade do módulo do grafo
 //! (`apps/rt/src/shared/dag.rs`): o critério fala em despacho pelo binário,
@@ -274,10 +274,10 @@ fn backlog_task(project: &Project, criterion: u64, said: u64, files: &[&str], de
 
 /// O backlog inteiro, numa spec de seis tarefas com dependências e arquivos
 /// declarados, despachada pelo binário de verdade: o nível topológico, a
-/// prontidão com desempate e o empacotamento sempre devolvem os mesmos
-/// lotes — o mesmo grafo do teste que antes vivia só como unidade pura do
-/// módulo do grafo (`apps/rt/src/shared/dag.rs`), agora conferido na saída
-/// de uma rodada de verdade.
+/// prontidão com desempate e o agrupamento sempre devolvem as mesmas ondas,
+/// uma por assunto — o mesmo grafo do teste que antes vivia só como unidade
+/// pura do módulo do grafo (`apps/rt/src/shared/dag.rs`), agora conferido na
+/// saída de uma rodada de verdade.
 #[test]
 fn backlog_always_becomes_the_same_batches() {
     let project = Project::new();
@@ -292,7 +292,7 @@ fn backlog_always_becomes_the_same_batches() {
 
     // 1 e 5 dividem `b.rs`; 4 é a maior parte, sozinha; 2 não compartilha
     // arquivo com ninguém; 3 espera 1 e divide `b.rs` com ela; 6 espera 4,
-    // mas não divide arquivo com o lote.
+    // mas não divide arquivo com a onda dela.
     let t1 = backlog_task(&project, crit_id, said, &["a.rs", "b.rs"], &[]);
     let t2 = backlog_task(&project, crit_id, said, &["c.rs"], &[]);
     let t3 = backlog_task(&project, crit_id, said, &["b.rs", "d.rs"], &[t1]);
@@ -311,26 +311,30 @@ fn backlog_always_becomes_the_same_batches() {
     let after = project.log();
     let waves: Vec<_> =
         after.visible().into_iter().filter(|e| e.event_type == "wave" && e.str_field("author") == Some("binary")).collect();
-    assert_eq!(waves.len(), 1, "as cinco cabem no teto de um lote só: {waves:?}");
+    assert_eq!(waves.len(), 3, "três assuntos, uma onda para cada: {waves:?}");
 
+    // O assunto de `b.rs`: 1 e 5 prontas, e 3, que espera só a 1 e divide
+    // `b.rs` com ela. Sem teto de tarefas, as três saem na mesma onda.
     let order = waves[0].ints("order");
     assert_eq!(
         order.iter().copied().collect::<BTreeSet<u64>>(),
-        BTreeSet::from([t1, t2, t3, t4, t5]),
-        "1, 2, 4 e 5 prontas, e 3, que espera só a 1 e divide `b.rs` com ela: {order:?}"
+        BTreeSet::from([t1, t3, t5]),
+        "1 e 5 prontas, e 3, que espera só a 1 e divide `b.rs` com ela: {order:?}"
     );
-    let at = |task: u64| order.iter().position(|id| *id == task).expect("a tarefa está no lote");
+    let at = |task: u64| order.iter().position(|id| *id == task).expect("a tarefa está na onda");
     assert!(at(t1) < at(t3), "a 3 entra depois da 1, de que depende: {order:?}");
+    assert_eq!(waves[1].ints("order"), vec![t2], "a 2 não divide arquivo com ninguém: onda dela");
+    assert_eq!(waves[2].ints("order"), vec![t4], "a 4 sai sozinha, com os três arquivos dela");
 
-    // A 6 espera a 4, que está no lote, mas não divide arquivo com ele.
+    // A 6 espera a 4, que está numa onda, mas não divide arquivo com ela.
     assert_eq!(after.current(t6).and_then(|t| t.wave()), None, "a 6 fica no backlog, sem onda");
 }
 
-/// Duas tarefas soltas no backlog, cada uma com um critério, cabem no mesmo
-/// lote: o binário, despachado pela rodada de verdade, grava o evento de onda
-/// com o autor binário, as duas tarefas na ordem de despacho, os critérios que
-/// são a união do que elas cobrem e o pronta-quando tirado da prova dos dois
-/// critérios, ligadas por " && ".
+/// Duas tarefas soltas no backlog que dividem um arquivo, cada uma com um
+/// critério, saem na mesma onda: o binário, despachado pela rodada de
+/// verdade, grava o evento de onda com o autor binário, as duas tarefas na
+/// ordem de despacho, os critérios que são a união do que elas cobrem e o
+/// pronta-quando tirado da prova dos dois critérios, ligadas por " && ".
 #[test]
 fn binary_writes_the_wave_event_of_the_batch() {
     let project = Project::new();
@@ -350,7 +354,7 @@ fn binary_writes_the_wave_event_of_the_batch() {
     let other_id = other["id"].as_u64().expect("the second criterion has an id");
 
     let t1 = backlog_task(&project, crit_id, said, &["src/b.rs"], &[]);
-    let t2 = backlog_task(&project, other_id, said, &["src/c.rs"], &[]);
+    let t2 = backlog_task(&project, other_id, said, &["src/b.rs"], &[]);
 
     project.run(&["plan", "--spec", SPEC]);
     approve(&project);
@@ -373,7 +377,7 @@ fn binary_writes_the_wave_event_of_the_batch() {
 
     for task in [t1, t2] {
         let task_now = after.current(task).expect("the task");
-        assert_eq!(task_now.wave(), Some(1), "a tarefa ganha a onda do lote que a levou");
+        assert_eq!(task_now.wave(), Some(1), "a tarefa ganha a onda que a levou");
     }
 }
 
@@ -635,7 +639,8 @@ fn task_with_a_wildcard_goes_out_alone() {
 }
 
 /// O outro lado: com uma onda em andamento, a tarefa do curinga que chega ao
-/// backlog vira lote, mas não sai ao lado dela.
+/// backlog não vira onda e não sai ao lado dela: fica no backlog, sem onda,
+/// até a vaga ficar sozinha.
 #[test]
 fn task_with_a_wildcard_goes_out_alone_and_waits_for_the_wave_in_progress() {
     let (project, crit, said, tasks) = backlog_project(&[&["a.rs"]]);
@@ -645,14 +650,14 @@ fn task_with_a_wildcard_goes_out_alone_and_waits_for_the_wave_in_progress() {
 
     let star = seed_backlog_task(&project, crit, said, &["**"]);
     let (asked, out) = dispatch_ready(&project);
-    assert!(wave_of(&project, star).is_some(), "a tarefa do curinga vira lote");
+    assert_eq!(wave_of(&project, star), None, "a tarefa do curinga espera no backlog, sem onda");
     assert!(asked.is_empty() && out.is_empty(), "o curinga não sai ao lado de a.rs em andamento: {asked:?} {out:?}");
 }
 
 /// Um padrão cruza com todo arquivo que ele casa: `src/**` e `src/a.rs`
-/// caem no mesmo lote, e com `src/**` em andamento a tarefa de `src/b.rs`
-/// vai para um lote só dela e espera, enquanto a de `docs/`, que caberia no
-/// mesmo lote, sai no seu.
+/// caem na mesma onda, e com `src/**` em andamento a tarefa de `src/b.rs`
+/// espera no backlog, sem onda, enquanto a de `docs/`, que não cruza com ele,
+/// sai na sua.
 #[test]
 fn task_with_a_wildcard_goes_out_alone_and_the_pattern_joins_the_file_it_matches() {
     let own = ["src/a.rs", "lib/1.rs", "lib/2.rs", "lib/3.rs", "lib/4.rs"];
@@ -666,8 +671,7 @@ fn task_with_a_wildcard_goes_out_alone_and_the_pattern_joins_the_file_it_matches
     let docs = ["docs/1.md", "docs/2.md", "docs/3.md", "docs/4.md", "docs/5.md"];
     let outside = seed_backlog_task(&project, crit, said, &docs);
     let (_, out) = dispatch_ready(&project);
-    let inside_wave = wave_of(&project, inside).expect("src/b.rs vira lote");
-    let outside_wave = wave_of(&project, outside).expect("docs vira lote");
-    assert_ne!(inside_wave, outside_wave, "src/b.rs, presa a src/** em andamento, não leva docs junto");
-    assert_eq!(out, vec![outside_wave], "src/b.rs espera src/** em andamento; docs, que ele não casa, sai");
+    let outside_wave = wave_of(&project, outside).expect("docs vira onda");
+    assert_eq!(wave_of(&project, inside), None, "src/b.rs, presa a src/** em andamento, espera no backlog");
+    assert_eq!(out, vec![outside_wave], "docs, que src/** não casa, sai");
 }

@@ -424,8 +424,8 @@ mod tests {
     /// A spec no formato da pi-kpis-plantio: a onda 1 saiu, entregou e foi
     /// comitada; as ondas 2, 3 e 4 foram desenhadas à mão e nunca saíram; a 2
     /// e a 3 dependem da 1, a 4 depende da 2 e da 3; a 3 e a 4 listam o mesmo
-    /// critério; uma tarefa da 3 não declara arquivo e a da 2 traz a nota do
-    /// Scrum.
+    /// critério, e a 3 lista também um critério só dela; uma tarefa da 3 não
+    /// declara arquivo e a da 2 traz a nota do Scrum.
     fn old_spec(root: &Path) -> Old {
         for file in ["src/um.rs", "src/dois.rs", "src/tres.rs", "src/quatro_a.rs", "src/quatro_b.rs"] {
             std::fs::create_dir_all(root.join("src")).unwrap();
@@ -436,13 +436,14 @@ mod tests {
             let one = criterion(root, said, "a primeira parte passa");
             let two = criterion(root, said, "a segunda parte passa");
             old.shared = criterion(root, said, "as duas partes de cima conversam");
+            let three = criterion(root, said, "a terceira parte passa");
             old.wave.insert(1, hand_wave(root, said, 1, &[one], &[]));
             old.task.insert("um", hand_task(root, said, 1, "Fazer a parte um.", Some("src/um.rs"), &[one]));
             old.wave.insert(2, hand_wave(root, said, 2, &[two], &[1]));
             let second = old_line(root, "task", json!({"wave": 2, "text": "Fazer a parte dois.", "origin": said,
                 "files": [{"path": "src/dois.rs"}], "covers": [two], "points": 3}));
             old.task.insert("dois", second);
-            old.wave.insert(3, hand_wave(root, said, 3, &[old.shared], &[1]));
+            old.wave.insert(3, hand_wave(root, said, 3, &[old.shared, three], &[1]));
             old.task.insert("tres_a", hand_task(root, said, 3, "Fazer a parte três.", Some("src/tres.rs"), &[old.shared]));
             old.task.insert("tres_b", hand_task(root, said, 3, "Documentar a parte três.", None, &[]));
             old.wave.insert(4, hand_wave(root, said, 4, &[old.shared], &[2, 3]));
@@ -524,7 +525,7 @@ mod tests {
         let row = |name: &str| got[now(&log, old.task[name]).str_field("text").unwrap()].clone();
         assert_eq!(row("dois").1, set(&["um"]));
         assert_eq!(row("tres_a").1, set(&["um"]));
-        assert_eq!(row("tres_b").1, set(&["um"]));
+        assert_eq!(row("tres_b").1, set(&["um", "tres_a"]), "quem guarda o critério só da onda 3 espera a outra tarefa dela");
         assert_eq!(row("quatro_a").1, set(&["dois", "tres_a", "tres_b"]));
         assert_eq!(row("quatro_b").1, set(&["dois", "tres_a", "tres_b", "quatro_a"]));
         let holders: Vec<&str> = ["dois", "tres_a", "tres_b", "quatro_a", "quatro_b"]
@@ -542,15 +543,17 @@ mod tests {
     /// como história, as ondas desenhadas à mão que nunca saíram saem da
     /// leitura com o motivo, as tarefas delas voltam para o backlog com a
     /// dependência entre ondas virada dependência entre tarefas, o critério
-    /// comum fica numa tarefa só, e o primeiro lote sai com o número 2, sem
-    /// número de onda repetido.
+    /// comum fica numa tarefa só, e as ondas novas saem com os números 2 e 3,
+    /// uma por assunto, sem número de onda repetido.
     #[test]
-    fn first_batch_after_wave_1_delivered_is_wave_2() {
+    fn first_waves_after_wave_1_delivered_are_waves_2_and_3() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let old = old_spec(root);
 
-        let out = round(root, "x", None);
+        // Sem mapa e sem passada do scan: com o mapa, as tarefas ganham
+        // arquivos parecidos e a rodada pede a análise por eles.
+        let out = round_with_mine(root, "x", None, &|_, _| Ok(ScanReport::default()));
         assert_ne!(out["ok"], json!(false), "{out}");
         assert_converted(root, &old);
 
@@ -560,21 +563,16 @@ mod tests {
         numbers.sort_unstable();
         let unique: BTreeSet<u64> = numbers.iter().copied().collect();
         assert_eq!(numbers.len(), unique.len(), "nenhum número de onda se repete: {numbers:?}");
-        assert_eq!(unique, BTreeSet::from([1, 2]), "a onda 1 e o primeiro lote: {numbers:?}");
-        let lot = log
-            .visible()
-            .into_iter()
-            .find(|e| e.event_type == "wave" && e.wave() == Some(2))
-            .expect("o primeiro lote");
-        assert_eq!(lot.str_field("author"), Some("binary"), "o lote 2 é do programa");
-        let in_lot: BTreeSet<u64> = log
-            .visible()
-            .into_iter()
-            .filter(|e| e.event_type == "task" && e.wave() == Some(2))
-            .map(|t| t.id)
-            .collect();
-        let expected: BTreeSet<u64> = ["dois", "tres_a", "tres_b"].iter().map(|n| now(&log, old.task[n]).id).collect();
-        assert_eq!(in_lot, expected, "o primeiro lote leva só as tarefas prontas: {out}");
+        assert_eq!(unique, BTreeSet::from([1, 2, 3]), "a onda 1 e as duas ondas novas: {numbers:?}");
+        let in_wave = |n: u64| -> BTreeSet<u64> {
+            let wave = log.visible().into_iter().find(|e| e.event_type == "wave" && e.wave() == Some(n));
+            assert_eq!(wave.and_then(|w| w.str_field("author")), Some("binary"), "a onda {n} é do programa");
+            log.visible().into_iter().filter(|e| e.event_type == "task" && e.wave() == Some(n)).map(|t| t.id).collect()
+        };
+        let ids = |names: &[&str]| -> BTreeSet<u64> { names.iter().map(|n| now(&log, old.task[n]).id).collect() };
+        assert_eq!(in_wave(2), ids(&["dois"]), "a onda 2 leva o assunto da parte dois: {out}");
+        assert_eq!(in_wave(3), ids(&["tres_a", "tres_b"]), "a onda 3 leva o assunto da parte três: {out}");
+        assert_eq!(waves_in(&out, "dispatch"), vec![2, 3], "as duas saem: {out}");
     }
 
     /// Numa spec já convertida, a conversão não grava nada; numa em que ela
@@ -590,9 +588,14 @@ mod tests {
         assert_converted(root, &old);
         let whole = summary(&log_of(root));
 
+        // A rodada seguinte desfaz e remonta as ondas que ficaram sem sair, e
+        // cada tarefa remontada ganha uma versão com o número da onda nova: só
+        // as versões sem onda e as remoções são o que a conversão grava.
         let count = |root: &Path| {
             let log = log_of(root);
-            ["remove", "task"].map(|t| log.events.iter().filter(|e| e.event_type == t).count())
+            let removed = log.events.iter().filter(|e| e.event_type == "remove").count();
+            let loose = log.events.iter().filter(|e| e.event_type == "task" && !e.fields.contains_key("wave")).count();
+            [removed, loose]
         };
         let before = count(root);
         let lang = crate::commands::spec_events::project(root).lang;
@@ -704,8 +707,8 @@ mod tests {
 
     /// A regra que diz em `waves` uma onda que a conversão remove ganha a
     /// versão nova sem `waves`, com o dono pelos arquivos das tarefas daquela
-    /// onda; a rodada segue sem pedir a análise, e a regra vai no pedido do
-    /// lote que toca esses arquivos.
+    /// onda; a rodada segue sem pedir a análise, e a regra vai no pedido da
+    /// onda que toca esses arquivos.
     #[test]
     fn item_owned_by_its_files_goes_in_the_request_of_the_wave_that_touches_them_after_the_conversion() {
         let dir = tempdir().unwrap();
@@ -729,8 +732,9 @@ mod tests {
 
         assert!(out.get("analysis").is_none(), "a regra com dono não pede a análise: {out}");
         let code = log.codes().get(&version.id).cloned().expect("o código da regra");
-        assert!(waves_in(&out, "dispatch").contains(&2), "o lote 2 sai: {out}");
-        let prompt = request_of(&out, 2);
-        assert!(prompt.contains(&code), "o lote que toca src/tres.rs leva a regra: {prompt}");
+        assert!(waves_in(&out, "dispatch").contains(&3), "a onda 3 sai: {out}");
+        let prompt = request_of(&out, 3);
+        assert!(prompt.contains(&code), "a onda que toca src/tres.rs leva a regra: {prompt}");
+        assert!(!request_of(&out, 2).contains(&code), "a onda 2 não toca src/tres.rs e não leva a regra");
     }
 }

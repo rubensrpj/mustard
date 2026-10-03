@@ -15,6 +15,13 @@
 //! valer, e as tarefas dela voltam para o backlog. A entregue ou aprovada fica
 //! como história; a que já saiu termina como saiu.
 //!
+//! **A onda nasce quando sai.** Só existe a onda que está rodando; as outras
+//! tarefas ficam no backlog, sem número de onda. A cada rodada, a montagem
+//! (`backlog`) forma no máximo uma onda por vaga livre, cada uma com as
+//! tarefas que dividem arquivo e nada mais. A onda montada que não saiu se
+//! desfaz, e as tarefas dela voltam ao backlog e entram na conta, menos a que
+//! a linha `<ANALYSIS>` deste relatório respondeu.
+//!
 //! **A escolha antes do envio.** Antes de criar a cópia de uma onda pronta,
 //! a rodada olha os candidatos dela: os itens combinados do projeto todo, os
 //! sem dono e as lições do banco que casam com ela. Com algum, a onda só sai
@@ -26,7 +33,8 @@
 //! `analysis`, o que saiu e o que entrou, cada um com o motivo. Os itens que
 //! as tarefas da onda fazem vão sempre, sem escolha. A mesma onda que sai de
 //! novo sem plano novo usa a escolha do envio anterior, quando ela julgou cada
-//! candidato de agora. Sem escolha, a onda espera; nada é recusado.
+//! candidato de agora. Sem escolha, a onda não sai; nada é recusado. Sem a linha
+//! dela no relatório seguinte, a onda se desfaz e a montagem refaz o pacote.
 //!
 //! **A entrega mora na spec, e a rodada a assume.** O agente de onda grava a
 //! própria entrega com `mustard-rt run write delivered`, e só com o envio da
@@ -114,6 +122,7 @@
 
 mod agreed;
 mod answer;
+mod backlog;
 mod commit;
 mod convert;
 mod copy_check;
