@@ -3298,7 +3298,8 @@ mod tests {
     #[test]
     fn the_cut_settings_go_in_the_request() {
         use mustard_core::domain::map_filter::CutRule;
-        let settings: [(&str, u32, f64, u32, fn(&CutRule) -> f64); 2] = [
+        type CutSetting = (&'static str, u32, f64, u32, fn(&CutRule) -> f64);
+        let settings: [CutSetting; 2] = [
             ("cut_share", 25, 0.25, 10, |cut| cut.share),
             ("exists_from", 70, 0.70, 50, |cut| cut.exists_from),
         ];

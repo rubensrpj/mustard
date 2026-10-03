@@ -1524,7 +1524,8 @@ fn an_include_of_a_list_gives_its_routes_under_the_include_prefix() {
                  urlpatterns = [\n    path('api/', include((extra, 'loja'))),\n    \
                  path('v1/', include(([path('pedidos/<int:id>/', views.ler)], 'loja'))),\n]\n";
     let no_files: &[(&str, &str)] = &[];
-    let cases: [(&str, &str, &[(&str, &str)], &str, &[&str]); 4] = [
+    type Case<'a> = (&'static str, &'static str, &'a [(&'static str, &'static str)], &'static str, &'a [&'static str]);
+    let cases: [Case; 4] = [
         ("a list written inside an include", inside, no_files, "loja/urls.py", &["* api/pedidos/{} -> ler"]),
         ("a list kept in a name and included by it", kept, no_files, "loja/urls.py", &["* api/pedidos -> listar"]),
         (
@@ -1590,7 +1591,8 @@ fn an_include_reaches_the_app_routes_in_every_way_the_module_can_be_named() {
     let imported = "from django.urls import include, path\n\nfrom loja import urls as loja_urls\n\n\
                     urlpatterns = [\n    path('api/', include(loja_urls)),\n]\n";
     let no_files: &[(&str, &str)] = &[];
-    let cases: [(&str, &str, &[(&str, &str)], &str); 6] = [
+    type Case<'a> = (&'static str, &'static str, &'a [(&'static str, &'static str)], &'static str);
+    let cases: [Case; 6] = [
         ("an include inside another include adds both prefixes", nested, no_files, "* api/v1/pedidos/{} -> ler"),
         (
             "a list kept in a name that includes another file carries the outer prefix",

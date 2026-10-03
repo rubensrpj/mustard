@@ -2309,7 +2309,8 @@ mod tests {
     #[test]
     fn the_wave_assembly_flags_a_key_only_the_file_git_tracks_holds() {
         // (nome, mustard.json, git guarda o arquivo, ambiente, filtro, aviso)
-        let cases: Vec<(&str, Value, bool, Option<&str>, bool, bool)> = vec![
+        type Case = (&'static str, Value, bool, Option<&'static str>, bool, bool);
+        let cases: Vec<Case> = vec![
             ("key in a tracked file", json!({"jev": {"key": "from-file"}}), true, None, false, true),
             ("key in a tracked file with a blank environment", json!({"jev": {"key": "from-file"}}), true, Some(" "), false, true),
             ("key in a tracked file with the environment", json!({"jev": {"key": "from-file"}}), true, Some("from-env"), true, false),

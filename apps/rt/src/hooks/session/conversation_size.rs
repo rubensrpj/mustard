@@ -184,10 +184,10 @@ fn conductor_text(input: &HookInput, root: &Path) -> Option<String> {
     let step = tokens / CONDUCTOR_STEP;
     let mark = mark_path(root, input.session_id.as_deref(), "size-step");
     let warned = mark.as_deref().and_then(read_mark).unwrap_or(0);
-    if step < warned {
-        if let Some(mark) = &mark {
-            write_mark(mark, step);
-        }
+    if step < warned
+        && let Some(mark) = &mark
+    {
+        write_mark(mark, step);
     }
     if step == 0 || step <= warned {
         return None;
@@ -397,7 +397,7 @@ mod tests {
                 "input_tokens": tokens, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0,
             }}
         });
-        std::fs::write(transcript, format!("{}\n", line)).unwrap();
+        std::fs::write(transcript, format!("{line}\n")).unwrap();
     }
 
     /// A chamada de ferramenta de quem conduz, depois que ela rodou.
