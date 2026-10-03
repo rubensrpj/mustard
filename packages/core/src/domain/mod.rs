@@ -3,7 +3,6 @@ pub mod command_detect;
 pub mod scan;
 pub mod source_lang;
 pub mod vocabulary;
-pub mod spec;
 pub mod skill;
 pub mod model;
 pub mod ast;

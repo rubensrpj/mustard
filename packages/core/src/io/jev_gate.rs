@@ -4,10 +4,9 @@
 //! desliga o filtro (`search.filter` diferente de `none` e de um valor que
 //! não existe) e o projeto tem uma chave válida. A chave vem de [`KEY_ENV`] no
 //! ambiente ou, sem ela, de `jev.key` no `mustard.json`; o git não pode
-//! guardar esse arquivo: guardado, a chave dele não se usa. A busca, que monta
-//! o filtro com a chave, e a prova da medida, que diz se o filtro estava
-//! ligado ([`crate::io::search_pieces`]), chamam as mesmas funções daqui, e por
-//! isso o número da medida não diz "desligado" com o filtro valendo.
+//! guardar esse arquivo: guardado, a chave dele não se usa. A busca monta o
+//! filtro com a chave chamando as funções daqui, e nenhuma outra regra liga o
+//! filtro.
 //!
 //! Nenhum erro, aviso ou texto de depuração leva a chave.
 
@@ -68,14 +67,6 @@ pub fn find_key(root: &Path, config: &ProjectConfig, env: Option<String>) -> Res
     key_from(env, config.jev_key(), || tracked_by_git(root))
 }
 
-/// Se a busca no projeto em `root` chama o Jev: a configuração deixa e há
-/// chave válida em `env` ou em `jev.key`, com a mesma recusa da chave num
-/// `mustard.json` que o git acompanha.
-#[must_use]
-pub fn filter_on(root: &Path, config: &ProjectConfig, env: Option<String>) -> bool {
-    setting_allows(config.search_filter()) && find_key(root, config, env).is_ok()
-}
-
 /// A escolha da chave, sobre o valor do ambiente e o do `mustard.json`; o
 /// valor em branco vale como ausente. `tracked` diz se o git guarda o
 /// arquivo, e só se pergunta quando ele traz uma chave: a chave guardada no
@@ -104,18 +95,6 @@ fn tracked_by_git(root: &Path) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
-    use tempfile::{TempDir, tempdir};
-
-    /// Um projeto numa pasta nova com o `mustard.json` que o teste escreve;
-    /// com `git`, a pasta é um repositório, ainda sem o arquivo.
-    fn project(config: &serde_json::Value, git: bool) -> TempDir {
-        let dir = tempdir().unwrap();
-        if git {
-            assert!(crate::platform::git::run(dir.path(), &["init", "-q"]).ok);
-        }
-        std::fs::write(dir.path().join("mustard.json"), config.to_string()).unwrap();
-        dir
-    }
 
     #[test]
     fn the_environment_key_comes_before_the_project_file() {
@@ -146,43 +125,6 @@ mod tests {
         assert!(!allows(json!("none")));
         assert!(!allows(json!("another")));
         assert!(!allows(json!(3)));
-    }
-
-    /// A chave só em `jev.key` liga o filtro; `search.filter` igual a `none`
-    /// o desliga mesmo com a chave; sem chave em lugar nenhum, desligado.
-    #[test]
-    fn the_filter_is_on_with_the_key_of_the_project_file_unless_the_setting_turns_it_off() {
-        let keyed = project(&json!({"jev": {"key": "from-file"}}), false);
-        let config = ProjectConfig::load(keyed.path());
-        assert!(filter_on(keyed.path(), &config, None), "the key of the file alone turns it on");
-        assert!(filter_on(keyed.path(), &config, Some("from-env".to_string())));
-
-        let off = project(&json!({"search": {"filter": "none"}, "jev": {"key": "from-file"}}), false);
-        let config = ProjectConfig::load(off.path());
-        assert!(!filter_on(off.path(), &config, None), "none turns it off with the key of the file");
-        assert!(!filter_on(off.path(), &config, Some("from-env".to_string())), "none turns it off with the key of the environment");
-
-        let bare = project(&json!({}), false);
-        let config = ProjectConfig::load(bare.path());
-        assert!(!filter_on(bare.path(), &config, None));
-        assert!(filter_on(bare.path(), &config, Some("from-env".to_string())), "the key of the environment alone turns it on");
-    }
-
-    /// O `mustard.json` que o git guarda não entrega a chave: sem a do
-    /// ambiente o filtro fica desligado; com ela, vale a do ambiente, com o
-    /// aviso.
-    #[test]
-    fn a_key_in_a_file_that_git_tracks_does_not_turn_the_filter_on() {
-        let tracked = project(&json!({"jev": {"key": "from-file"}}), true);
-        let config = ProjectConfig::load(tracked.path());
-        assert!(filter_on(tracked.path(), &config, None), "out of git, the key counts");
-
-        assert!(crate::platform::git::run(tracked.path(), &["add", "mustard.json"]).ok);
-        assert!(!filter_on(tracked.path(), &config, None), "git tracks the file: its key is not used");
-        assert_eq!(find_key(tracked.path(), &config, None).unwrap_err(), FilterError::KeyInGit);
-        assert!(filter_on(tracked.path(), &config, Some("from-env".to_string())), "the key of the environment still counts");
-        let found = find_key(tracked.path(), &config, Some("from-env".to_string())).unwrap();
-        assert_eq!((found.value(), found.warning()), ("from-env", Some(&FilterError::KeyInGit)));
     }
 
     #[test]

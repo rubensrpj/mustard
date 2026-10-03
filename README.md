@@ -79,7 +79,8 @@ Isso cria o `mustard.json` (configuração única) e a pasta `.claude/` (hooks, 
 ### Para desenvolvedores deste repositório
 
 ```powershell
-# Compila os binários em release, instala e roda `mustard init` no alvo:
+# Compila os três binários em release numa chamada só (`cargo build --release --locked`),
+# copia para ~/.cargo/bin e roda `mustard init` no alvo:
 .\install.ps1                  # alvo = diretório atual (com prompt)
 .\install.ps1 -Target ..\app   # outro projeto (sem prompt)
 ```

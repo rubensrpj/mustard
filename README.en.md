@@ -79,7 +79,8 @@ This creates `mustard.json` (the single configuration) and the `.claude/` folder
 ### For developers of this repository
 
 ```powershell
-# Builds the binaries in release, installs them, and runs `mustard init` on the target:
+# Builds the three binaries in release in a single call (`cargo build --release --locked`),
+# copies them to ~/.cargo/bin, and runs `mustard init` on the target:
 .\install.ps1                  # target = current directory (with prompt)
 .\install.ps1 -Target ..\app   # another project (no prompt)
 ```

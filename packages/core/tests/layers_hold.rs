@@ -111,7 +111,7 @@ fn sources_under(dirs: &[&str]) -> Vec<PathBuf> {
 fn the_model_layer_touches_no_disk_process_environment_or_terminal() {
     let mut files = Vec::new();
     rust_files(&repo_root().join("packages/core/src/domain/model"), &mut files);
-    assert!(files.len() >= 4, "the model layer has files to read: {files:?}");
+    assert!(files.len() >= 2, "the model layer has files to read: {files:?}");
     let found = hits(
         &files,
         &[

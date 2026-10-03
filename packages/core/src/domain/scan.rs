@@ -23,8 +23,6 @@ use std::process::{Command, Stdio};
 use serde::Deserialize;
 
 use crate::domain::vocabulary::stacks::StackDetection;
-use crate::io::fs::lock::LockedFile;
-use crate::io::map_lineage;
 use crate::platform::error::{Error, Result};
 
 /// Default tool name — resolved on `PATH`. A project can point at a pinned
@@ -110,12 +108,6 @@ pub fn mark_own_git_roots(repo_root: &Path, projects: &mut [Project]) {
 }
 
 impl Scan {
-    /// A client for the grain binary at `binary` (a name on `PATH` or a path).
-    #[must_use]
-    pub fn new(binary: impl Into<String>) -> Self {
-        Self { binary: binary.into() }
-    }
-
     /// Locate the bundled grain binary — built as a sibling of the running
     /// executable in the same workspace `target/` dir — falling back to
     /// [`DEFAULT_BINARY`] on `PATH`. Fail-open: any probe error → the fallback.
@@ -127,9 +119,7 @@ impl Scan {
     /// [`Self::locate`] for the executable at `exe`. A test binary runs from
     /// `deps/`, one folder below the programs of the same build: there the
     /// folder above is searched too, before `PATH`, so a test never runs the
-    /// installed scan in place of the one compiled with it. Also how a caller
-    /// finds the scan of ANOTHER build than its own: the one beside the
-    /// program that build left at `exe` (which need not exist).
+    /// installed scan in place of the one compiled with it.
     #[must_use]
     pub fn located_from(exe: Option<&Path>) -> Self {
         let name = if cfg!(windows) { "scan.exe" } else { "scan" };
@@ -180,37 +170,6 @@ impl Scan {
         let report = self.scan(root, out)?;
         let _ = self.read_history_in_background(root, out);
         Ok(report)
-    }
-
-    /// Lê a história de todo arquivo do mapa em `out` que ainda não a tem
-    /// (`grain history-all`) e só volta quando a leitura acaba: quem pergunta
-    /// ao mapa depois lê a história inteira, não a que já chegou. É o pedido
-    /// de [`Self::read_history_in_background`], esperado em vez de solto.
-    ///
-    /// Só uma leitura roda por mapa de cada vez, e uma sessão aberta, o
-    /// `mustard init` ou o `run scan` podem estar com ela. Antes de pedir a
-    /// sua, espera essa outra acabar (a trava de [`map_lineage::reading_lock_path`])
-    /// e só então a pede: ela lê só o que a outra não leu. Devolve quantos
-    /// arquivos o git não deixou ler; a leitura segue sem eles.
-    ///
-    /// # Errors
-    /// [`Error::Io`] if the tool cannot be spawned or the lock cannot be
-    /// taken, [`Error::CheckFailed`] on a non-zero exit, ou quando outra
-    /// leitura do mesmo mapa começou logo depois da espera: o scan sai sem ler
-    /// nada, e a história fica pela metade.
-    pub fn read_history(&self, root: &Path, out: &Path) -> Result<usize> {
-        // O scan segura a trava só enquanto lê. Esta a pega e a solta logo, para
-        // a leitura pedida em seguida a encontrar livre.
-        drop(LockedFile::exclusive(&map_lineage::reading_lock_path(out))?);
-        let stdout = self.run(&history_all_args(root, out))?;
-        let report: ReadingReport = serde_json::from_str(last_line(&stdout)).unwrap_or_default();
-        if report.busy {
-            return Err(Error::check_failed(format!(
-                "scan history-all: outra leitura da história de {} começou logo depois da espera e esta não leu nada; rode de novo quando ela acabar",
-                out.display()
-            )));
-        }
-        Ok(report.failed)
     }
 
     /// Começa, em outro processo que segue depois deste, a leitura da história
@@ -337,16 +296,6 @@ pub struct ScanReport {
     pub dictionary: bool,
 }
 
-/// What `scan history-all --json` reports on its last stdout line that this
-/// side reads: whether another reading of the same map was running, so this
-/// one read nothing, and how many files git did not let it read.
-#[derive(Debug, Default, Deserialize)]
-#[serde(default)]
-struct ReadingReport {
-    busy: bool,
-    failed: usize,
-}
-
 /// The last non-empty line of what a `--json` run printed, where the report
 /// is; `{}` when it printed nothing.
 fn last_line(stdout: &str) -> &str {
@@ -359,7 +308,7 @@ fn parse_scan_report(stdout: &str) -> Result<ScanReport> {
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use super::*;
     use std::path::PathBuf;
 
@@ -386,7 +335,7 @@ pub(crate) mod tests {
     /// processo, e o arquivo que este processo mantém aberto para escrita o
     /// Linux recusa rodar ("Text file busy").
     #[cfg(unix)]
-    pub(crate) fn script_scan(dir: &Path, name: &str, body: &str) -> Scan {
+    fn script_scan(dir: &Path, name: &str, body: &str) -> Scan {
         let path = dir.join(name);
         let written = Command::new("/bin/sh")
             .args(["-c", "printf '%s' \"$2\" > \"$1\" && chmod 755 \"$1\"", "sh"])
@@ -395,7 +344,7 @@ pub(crate) mod tests {
             .status()
             .unwrap();
         assert!(written.success());
-        Scan::new(path.to_string_lossy())
+        Scan { binary: path.to_string_lossy().into_owned() }
     }
 
     /// Espera até um minuto por `done`, olhando a cada 20 ms; `false` se ele não veio.
@@ -413,7 +362,7 @@ pub(crate) mod tests {
 
     /// Os pedidos que o scan de mentira anotou em `log`, um por linha.
     #[cfg(unix)]
-    pub(crate) fn logged(log: &Path) -> Vec<String> {
+    fn logged(log: &Path) -> Vec<String> {
         std::fs::read_to_string(log).unwrap_or_default().lines().map(str::to_string).collect()
     }
 
@@ -477,106 +426,10 @@ pub(crate) mod tests {
         assert_eq!(logged(&log)[2..], ["scan", "history-all"], "the scan that passed starts the reading after itself");
     }
 
-    /// A leitura esperada só volta com o processo acabado: o scan de mentira
-    /// demora para terminar e anota o fim, e a chamada, ao voltar, já o
-    /// encontra no registro, sem esperar por ele.
-    #[cfg(unix)]
-    #[test]
-    fn reading_the_history_returns_only_when_the_process_has_finished() {
-        let dir = tempfile::tempdir().unwrap();
-        let log = dir.path().join("log");
-        let scan = script_scan(
-            dir.path(),
-            "slow",
-            &format!("echo \"$1\" >> '{log}'\nsleep 1\necho finished >> '{log}'\necho '{{\"ok\":true,\"busy\":false}}'", log = log.display()),
-        );
-
-        scan.read_history(dir.path(), &dir.path().join("m.db")).expect("the reading finishes");
-
-        assert_eq!(logged(&log), ["history-all", "finished"], "the call came back before the process finished");
-    }
-
-    /// O scan que falha na leitura devolve o erro, com o que ele disse; o que
-    /// não existe também.
-    #[cfg(unix)]
-    #[test]
-    fn reading_the_history_with_a_scan_that_fails_is_an_error() {
-        let dir = tempfile::tempdir().unwrap();
-        let scan = script_scan(dir.path(), "fails", "echo 'git quebrou' >&2\nexit 3");
-        let error = scan.read_history(dir.path(), &dir.path().join("m.db")).unwrap_err().to_string();
-        assert!(error.contains("history-all") && error.contains("git quebrou"), "{error}");
-        assert!(Scan::new(dir.path().join("no-such-scan").to_string_lossy()).read_history(dir.path(), &dir.path().join("m.db")).is_err());
-    }
-
-    /// Outra leitura que começa logo depois da espera faz o scan sair com
-    /// sucesso sem ler nada, e a história segue pela metade: isso é erro, e a
-    /// frase diz o que fazer. A leitura que leu, ou que não disse nada, passa.
-    #[cfg(unix)]
-    #[test]
-    fn reading_the_history_while_another_reading_holds_the_map_is_an_error_that_says_what_to_do() {
-        let dir = tempfile::tempdir().unwrap();
-        let out = dir.path().join("m.db");
-        let busy = script_scan(dir.path(), "busy", "echo '{\"ok\":true,\"busy\":true,\"files\":0}'");
-        let error = busy.read_history(dir.path(), &out).unwrap_err().to_string();
-        assert!(error.contains("outra leitura") && error.contains("não leu nada") && error.contains("rode de novo"), "{error}");
-        assert_eq!(error.matches("check failed").count(), 1, "the label of the kind of error shows once: {error}");
-        let read = script_scan(dir.path(), "read", "echo '{\"ok\":true,\"busy\":false,\"files\":4}'");
-        read.read_history(dir.path(), &out).expect("a reading that read is not an error");
-        let silent = script_scan(dir.path(), "silent", "true");
-        silent.read_history(dir.path(), &out).expect("a scan that says nothing and exits clean is not an error");
-    }
-
-    /// Outra leitura do mesmo mapa segura a trava por um segundo: o pedido ao
-    /// scan só sai depois de ela soltar, nunca durante, e a leitura volta sem
-    /// erro. O scan de mentira anota o pedido; a trava é segura pelo teste.
-    #[cfg(unix)]
-    #[test]
-    fn reading_the_history_waits_for_another_reading_to_let_go_before_asking_for_it() {
-        let dir = tempfile::tempdir().unwrap();
-        let (log, out) = (dir.path().join("log"), dir.path().join("m.db"));
-        let scan = script_scan(
-            dir.path(),
-            "reads",
-            &format!("echo \"$1\" >> '{log}'\necho '{{\"ok\":true,\"busy\":false,\"files\":3,\"failed\":0}}'", log = log.display()),
-        );
-        let other_reading = LockedFile::exclusive(&map_lineage::reading_lock_path(&out)).unwrap();
-
-        let asked = std::thread::scope(|scope| {
-            let reading = scope.spawn(|| scan.read_history(dir.path(), &out));
-            std::thread::sleep(std::time::Duration::from_secs(1));
-            let asked_while_held = logged(&log);
-            let finished_while_held = reading.is_finished();
-            drop(other_reading);
-            let outcome = reading.join().unwrap();
-            (asked_while_held, finished_while_held, outcome)
-        });
-
-        assert_eq!(asked.0, Vec::<String>::new(), "the reading was asked while the other still held the map");
-        assert!(!asked.1, "the call came back before the other reading let go");
-        assert_eq!(asked.2.expect("the reading passes once the other let go"), 0);
-        assert_eq!(logged(&log), ["history-all"], "the reading is asked once, after the wait");
-    }
-
-    /// A leitura que o git não deixou fazer em alguns arquivos segue: quantos
-    /// ficaram sem história é o que o relato do scan diz em `failed`; sem o
-    /// campo, ou sem relato, são zero.
-    #[cfg(unix)]
-    #[test]
-    fn reading_the_history_says_how_many_files_git_did_not_let_it_read() {
-        let dir = tempfile::tempdir().unwrap();
-        let out = dir.path().join("m.db");
-        let two = script_scan(dir.path(), "two", "echo '{\"ok\":true,\"busy\":false,\"files\":5,\"failed\":2}'");
-        assert_eq!(two.read_history(dir.path(), &out).expect("a reading with files left out still passes"), 2);
-        let none = script_scan(dir.path(), "none", "echo '{\"ok\":true,\"busy\":false,\"files\":5}'");
-        assert_eq!(none.read_history(dir.path(), &out).unwrap(), 0);
-        let silent = script_scan(dir.path(), "silent", "true");
-        assert_eq!(silent.read_history(dir.path(), &out).unwrap(), 0);
-    }
-
     #[test]
     fn a_scan_that_cannot_be_run_has_no_format() {
         let dir = tempfile::tempdir().unwrap();
-        assert_eq!(Scan::new(dir.path().join("no-such-scan").to_string_lossy()).format(), None);
+        assert_eq!(Scan { binary: dir.path().join("no-such-scan").to_string_lossy().into_owned() }.format(), None);
     }
 
     /// A marca é a linha que o comando `format` do scan imprime, sem a

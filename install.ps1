@@ -2,18 +2,20 @@
 # install.ps1 — Build + install Mustard and scaffold .claude/ into a project.
 #
 # Dogfooding installer: it builds the binaries (scan, mustard-rt, and mustard)
-# in release, installs them to ~/.cargo/bin (so the hooks in .claude/settings.json
-# — which invoke `mustard-rt` from PATH — resolve at runtime, and `mustard-rt`
-# finds the `scan` miner as a ~/.cargo/bin sibling), then runs `mustard init`
-# in the target project. Everything init lays down is compiled into the
-# binary, so it needs no folder beside it.
+# in release with ONE `cargo build --release --locked` call (the locked
+# dependency versions, like the session build), copies them to ~/.cargo/bin (so
+# the hooks in .claude/settings.json — which invoke `mustard-rt` from PATH —
+# resolve at runtime, and `mustard-rt` finds the `scan` miner as a
+# ~/.cargo/bin sibling), then runs `mustard init` in the target project.
+# Everything init lays down is compiled into the binary, so it needs no folder
+# beside it.
 #
 # Usage:
 #   .\install.ps1                  # prompt for the target (default CWD), then `mustard init`
 #   .\install.ps1 -Target ..\app   # scaffold (new) OR refresh (existing); `mustard init` is idempotent
 #   .\install.ps1 -Force           # overwrite an existing .claude/ (no backup)
 #   .\install.ps1 -DryRun          # show init actions without writing
-#   .\install.ps1 -SkipBuild       # skip cargo install (binaries already installed)
+#   .\install.ps1 -SkipBuild       # skip the build and the copy (binaries already installed)
 [CmdletBinding()]
 param(
     [string]$Target = (Get-Location).Path,
@@ -27,6 +29,7 @@ $CargoBin     = Join-Path $env:USERPROFILE '.cargo\bin'
 $MustardExe   = Join-Path $CargoBin 'mustard.exe'
 $RtExe        = Join-Path $CargoBin 'mustard-rt.exe'
 $ScanExe      = Join-Path $CargoBin 'scan.exe'
+$BuiltDir     = Join-Path $Root 'target\install\release'
 $BuildNumFile = Join-Path $Root '.mustard-build-number'
 
 # Native commands don't throw on a non-zero exit under $ErrorActionPreference;
@@ -50,16 +53,16 @@ function Step-BuildNumber([string]$Path) {
     return $next
 }
 
-# Build a crate and replace its installed binary, tolerating the Windows lock on
-# a running .exe. Any live hook holds ~/.cargo/bin/mustard-rt.exe open for the
-# whole Claude Code session, so
-# `cargo install --force` fails its final move with "Access is denied (os error
-# 5)" — it cannot overwrite a binary that is mapped into a running process.
-# Windows DOES allow *renaming* that binary, though: the running image keeps its
-# handle on the renamed file while the original name is freed for cargo to write
-# the fresh build. So park the in-use binary aside first; the old image stays
+# Replace an installed binary with the freshly built one, tolerating the Windows
+# lock on a running .exe. Any live hook holds ~/.cargo/bin/mustard-rt.exe open
+# for the whole Claude Code session, so overwriting it fails with "Access is
+# denied (os error 5)" — a binary mapped into a running process cannot be
+# overwritten. Windows DOES allow *renaming* that binary, though: the running
+# image keeps its handle on the renamed file while the original name is freed
+# for the fresh copy. So park the in-use binary aside first; the old image stays
 # valid for the holding processes until they exit (next Claude Code restart).
-function Install-Bin([string]$ExePath, [string]$CratePath, [string]$BinName) {
+function Install-Bin([string]$BuiltExe, [string]$ExePath) {
+    if (-not (Test-Path -LiteralPath $BuiltExe)) { throw "The build did not produce $BuiltExe." }
     $parked = $null
     if (Test-Path $ExePath) {
         # Best-effort sweep of stale parks from earlier installs whose holders
@@ -74,14 +77,14 @@ function Install-Bin([string]$ExePath, [string]$CratePath, [string]$BinName) {
         try { Move-Item -LiteralPath $ExePath -Destination $parked -Force -ErrorAction Stop }
         catch { throw "Could not free $ExePath for replacement: $($_.Exception.Message). Close running mustard-rt processes (hooks) and re-run." }
     }
-    cargo install --path $CratePath --bin $BinName --force
-    if ($LASTEXITCODE -ne 0) {
-        # Build failed: restore the previous binary so the install isn't left
-        # without one (cargo only writes the new exe after a successful build).
+    try { Copy-Item -LiteralPath $BuiltExe -Destination $ExePath -Force -ErrorAction Stop }
+    catch {
+        # Copy failed: restore the previous binary so the install isn't left
+        # without one.
         if ($parked -and (Test-Path $parked) -and -not (Test-Path $ExePath)) {
             Move-Item -LiteralPath $parked -Destination $ExePath -Force -ErrorAction SilentlyContinue
         }
-        throw "cargo install $BinName failed (exit $LASTEXITCODE)."
+        throw "Could not copy $BuiltExe to ${ExePath}: $($_.Exception.Message)"
     }
 }
 
@@ -125,35 +128,41 @@ if (-not $SkipBuild) {
     }
     # Bump the per-build counter and feed it to the cargo build as
     # MUSTARD_BUILD_NUMBER (the build.rs in apps/rt + apps/cli stamps it into
-    # `--version`). Scope the env var to the two build invocations and restore
-    # it afterwards, so the script stays safe to dot-source.
+    # `--version`). Scope the env var to the build invocation and restore it
+    # afterwards, so the script stays safe to dot-source.
     $buildNumber       = Step-BuildNumber $BuildNumFile
     $prevBuildNumber   = $env:MUSTARD_BUILD_NUMBER
     $env:MUSTARD_BUILD_NUMBER = $buildNumber
-    # Share ONE build cache across the five `cargo install` invocations — and
-    # across re-runs. Without CARGO_TARGET_DIR, `cargo install` builds each
-    # crate in an isolated temporary directory: five cold release builds of the
-    # whole dependency graph, every single run. With it, the first run pays the
-    # cold build once and every later run only recompiles what changed — plus
-    # apps/rt and apps/cli, whose build.rs re-stamps the bumped build number
+    # Keep ONE build cache across re-runs: the first run pays the cold build
+    # once and every later run only recompiles what changed — plus apps/rt and
+    # apps/cli, whose build.rs re-stamps the bumped build number
     # (`rerun-if-env-changed=MUSTARD_BUILD_NUMBER`); that residual is the price
     # of a truthful `--version` and is seconds, not minutes. `target\install`
-    # keeps the release-install cache apart from the workspace's own dev
-    # `target\`, and lives under the already-gitignored target/ tree.
+    # keeps the release cache apart from the workspace's own dev `target\`, and
+    # lives under the already-gitignored target/ tree.
     $prevTargetDir     = $env:CARGO_TARGET_DIR
     $env:CARGO_TARGET_DIR = Join-Path $Root 'target\install'
-    Write-Host "==> Installing scan + mustard-rt + mustard (release) to ~/.cargo/bin ...  (build #$buildNumber)"
+    Write-Host "==> Building scan + mustard-rt + mustard (release, locked)  (build #$buildNumber)"
     Write-Host "    CARGO_TARGET_DIR=$env:CARGO_TARGET_DIR (shared cache — later runs are incremental)"
     try {
-        # scan first: mustard-rt resolves it as a ~/.cargo/bin sibling at runtime
-        # (Scan::locate), and the facts projection depends on it.
-        Install-Bin $ScanExe      (Join-Path $Root 'apps\scan')      'scan'
-        Install-Bin $RtExe        (Join-Path $Root 'apps\rt')        'mustard-rt'
-        Install-Bin $MustardExe   (Join-Path $Root 'apps\cli')       'mustard'
+        Push-Location $Root
+        try {
+            cargo build --release --locked -p scan -p mustard-rt -p mustard-cli
+            Assert-LastExit 'cargo build'
+        } finally {
+            Pop-Location
+        }
     } finally {
         $env:MUSTARD_BUILD_NUMBER = $prevBuildNumber
         $env:CARGO_TARGET_DIR     = $prevTargetDir
     }
+    Write-Host "==> Copying the binaries to $CargoBin ..."
+    if (-not (Test-Path $CargoBin)) { New-Item -ItemType Directory -Path $CargoBin -Force | Out-Null }
+    # scan first: mustard-rt resolves it as a ~/.cargo/bin sibling at runtime
+    # (Scan::locate), and the facts projection depends on it.
+    Install-Bin (Join-Path $BuiltDir 'scan.exe')       $ScanExe
+    Install-Bin (Join-Path $BuiltDir 'mustard-rt.exe') $RtExe
+    Install-Bin (Join-Path $BuiltDir 'mustard.exe')    $MustardExe
     # Keep the Claude Code plugin's own bin/ in lockstep — the hooks and the
     # statusline of a plugin-based session resolve there, not on PATH.
     $PluginBin = Join-Path $Root 'plugin\bin'

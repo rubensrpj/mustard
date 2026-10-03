@@ -63,15 +63,18 @@ use chrono::DateTime;
 
 use mustard_core::domain::model::contract::{HookInput, Trigger, Verdict};
 use mustard_core::io::map_triage::Triaged;
-use mustard_core::io::measure_proof::{BuiltStamp, MeasureGate};
 use mustard_core::io::project_map::{self as store, Need};
 use mustard_core::platform::error::Result as CoreResult;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use self::gate::MeasureGate;
 use self::jev::{JevSum, JevUse};
 use super::{FileHits, SHOWN_FILES};
 use crate::shared::agent_said;
+
+/// A prova de versão do número e a conferência dos mapas que a régua abre.
+mod gate;
 
 /// O que o filtro fez em cada busca, e a soma dele.
 pub(crate) mod jev;
@@ -566,12 +569,6 @@ fn fate_name(fate: Fate) -> String {
     }
 }
 
-/// O carimbo que a compilação deste programa deixou nele: a versão e o resumo
-/// do que estava por comitar.
-fn built_stamp() -> BuiltStamp<'static> {
-    BuiltStamp { version: env!("MUSTARD_VERSION_FULL"), diff: env!("MUSTARD_GIT_DIFF") }
-}
-
 /// Confere cada mapa de `maps` na porta `gate`, na ordem; o primeiro de
 /// marca diferente da que o scan compilado diz recusa, e nenhum número sai.
 fn check_maps(mut gate: MeasureGate, maps: &[PathBuf]) -> CoreResult<MeasureGate> {
@@ -582,14 +579,11 @@ fn check_maps(mut gate: MeasureGate, maps: &[PathBuf]) -> CoreResult<MeasureGate
 }
 
 /// A porta comum das réguas do rt: a prova de versão deste programa e a
-/// conferência dos mapas que a régua vai abrir, antes de ela medir. Sem o
-/// comando de medida (`mustard-rt run measure`), com o programa compilado de
-/// outro código que o da medida ou com um mapa de outra compilação do scan, a
-/// régua para aqui, dizendo por quê.
+/// conferência dos mapas que a régua vai abrir, antes de ela medir. Com o
+/// programa sem o commit no carimbo, sem o `scan` compilado ao lado ou com um
+/// mapa de outra compilação do `scan`, a régua para aqui, dizendo por quê.
 pub(super) fn measure_gate(maps: &[PathBuf]) -> MeasureGate {
-    MeasureGate::open(Some(&built_stamp()))
-        .and_then(|gate| check_maps(gate, maps))
-        .unwrap_or_else(|refusal| panic!("a régua não mede: {refusal}"))
+    MeasureGate::open().and_then(|gate| check_maps(gate, maps)).unwrap_or_else(|refusal| panic!("a régua não mede: {refusal}"))
 }
 
 /// O que a régua tira de uma busca: o que o gancho respondeu, o que ele
@@ -721,28 +715,33 @@ impl Round {
 
 /// A régua do gasto. A entrada é `SPEND_INPUT` (o arquivo de buscas do
 /// preparo) e as cópias dos projetos, cada uma com o mapa e o `mustard.json` do
-/// projeto real, estão em `SPEND_TREES/<nome>`; `SPEND_OUT` (ou o `--out` do
-/// comando de medida) recebe uma linha por busca, cada uma com a prova de
-/// versão em `proof`, que diz de cada mapa a marca, as peças e quantos arquivos a
-/// leitura da história não leu. Só as buscas do `Bash` e do `Grep` entram nas contas; as
-/// vencidas (o texto já não casa com o arquivo certo na cópia) ficam de fora.
-/// Roda pelo comando de medida, que compila o código certo em `--release`,
-/// para o tempo ser o do gancho de verdade, e refaz o mapa de cada cópia com o
-/// `scan` desse código. A busca roda como a do produto, com o Jev: a chave vai
-/// em `TYPESAFE_API_KEY` no ambiente, nunca tirada dele. Rode
-/// `mustard-rt run measure measure_the_spend_of_the_search --trees
-/// $HOME/.cache/mustard-medida/regua-gasto/src --env
-/// SPEND_INPUT=$HOME/.cache/mustard-medida/regua-gasto/entrada.json --env
-/// HOME=$HOME/.cache/mustard-medida/regua-gasto/home`: o `HOME` falso vai só à
-/// régua, por `--env`, e `$HOME` (nunca `~`, que depois do `=` o terminal não
-/// troca) abre os caminhos. Posto no comando de medida, o `HOME` falso
-/// esconderia o plugin instalado, e a prova sairia `gancho=não instalado`.
+/// projeto real, estão em `SPEND_TREES/<nome>`; `SPEND_OUT` recebe uma linha
+/// por busca, cada uma com a prova de versão em `proof`, que diz o commit de
+/// que o programa foi compilado, o que faltava comitar, o hash do programa e a
+/// marca de cada mapa aberto. Só as buscas do `Bash` e do `Grep` entram nas
+/// contas; as vencidas (o texto já não casa com o arquivo certo na cópia) ficam
+/// de fora.
+///
+/// Roda em `--release`, para o tempo ser o do gancho de verdade, com o `scan`
+/// do mesmo build ao lado (`cargo build --release -p scan`) e com o mapa de
+/// cada cópia feito por ele: a régua recusa o mapa de outra marca. A busca roda
+/// como a do produto, com o Jev: a chave vai em `TYPESAFE_API_KEY` no ambiente,
+/// nunca tirada dele. O programa de teste é o que o cargo diz ao compilar
+/// (`cargo test --release -p mustard-rt --lib --no-run`), nunca o mais novo da
+/// pasta. Roda com `HOME` numa pasta vazia, para a busca não ler a pasta do
+/// usuário, e com `$HOME` (nunca `~`, que depois do `=` o terminal não troca)
+/// abrindo os caminhos:
+/// `SPEND_INPUT=$HOME/.cache/mustard-medida/regua-gasto/entrada.json
+/// SPEND_TREES=$HOME/.cache/mustard-medida/regua-gasto/src
+/// SPEND_OUT=$HOME/.cache/mustard-medida/regua-gasto/saida.json
+/// HOME=$HOME/.cache/mustard-medida/regua-gasto/home <programa de teste>
+/// measure_the_spend_of_the_search --ignored --nocapture`.
 #[test]
 #[ignore = "mede com as cópias dos projetos de prova e as conversas reais"]
 fn measure_the_spend_of_the_search() {
     let input = std::env::var("SPEND_INPUT").expect("SPEND_INPUT points to the searches file");
     let trees = PathBuf::from(std::env::var("SPEND_TREES").expect("SPEND_TREES points to the folder of the project copies"));
-    let out = mustard_core::io::measure_proof::result_path("SPEND_OUT").expect("SPEND_OUT points to the file to write");
+    let out = std::env::var("SPEND_OUT").expect("SPEND_OUT points to the file to write");
     let rows: Vec<Row> = serde_json::from_str(&std::fs::read_to_string(input).expect("the searches file reads")).expect("the searches file parses");
     // Os mapas das cópias que entram nas contas, conferidos antes da primeira busca.
     let mut names: Vec<&str> = rows
@@ -759,9 +758,7 @@ fn measure_the_spend_of_the_search() {
     for line in round.report() {
         eprintln!("{line}");
     }
-    for line in gate.proof().lines() {
-        eprintln!("{line}");
-    }
+    eprintln!("{}", gate.proof().line());
 }
 
 #[cfg(test)]
@@ -1413,17 +1410,15 @@ mod tests {
         (dir, model)
     }
 
-    /// A prova de um programa de mentira, com o commit e o resumo que a medida diz.
-    fn proof_of_the_measure() -> mustard_core::io::measure_proof::MeasureProof {
-        mustard_core::io::measure_proof::MeasureProof {
+    /// A prova de um programa de mentira, com o commit e o resumo dele.
+    fn proof_of_the_measure() -> gate::MeasureProof {
+        gate::MeasureProof {
             commit: "0123456789ab".to_string(),
             dirty: false,
             diff: String::new(),
             binary_sha256: "0".repeat(64),
             binary_path: "programa".to_string(),
-            hook: "10d66039a5b1".to_string(),
             maps: Vec::new(),
-            unread: std::collections::BTreeMap::new(),
         }
     }
 
@@ -1435,31 +1430,29 @@ mod tests {
         let (_one, same) = map_marked("scan 1");
         let (_two, other) = map_marked("scan 2");
 
-        let gate = MeasureGate::with(proof_of_the_measure(), "scan 1".to_string(), None).expect("the gate opens");
+        let gate = MeasureGate::with(proof_of_the_measure(), "scan 1".to_string());
         let refused = check_maps(gate, &[same.clone(), other]).expect_err("the map of another mark stops the ruler").to_string();
         assert!(refused.contains("marca do mapa scan 2, o código compilado produz scan 1"), "{refused}");
 
-        let gate = MeasureGate::with(proof_of_the_measure(), "scan 1".to_string(), None).expect("the gate opens");
+        let gate = MeasureGate::with(proof_of_the_measure(), "scan 1".to_string());
         let gate = check_maps(gate, std::slice::from_ref(&same)).expect("the map of the same mark passes");
         let maps = &gate.proof().maps;
         assert_eq!(maps.len(), 1, "one entry per opened map");
-        assert_eq!(maps[0].pieces.len(), 7, "the map carries the state of every piece of the search");
         assert_eq!((maps[0].path.as_str(), maps[0].mark.as_str()), (same.to_str().expect("a path"), "scan 1"));
     }
 
-    /// O resultado que a régua grava leva, em cada linha, a prova com quantos
-    /// arquivos a história de cada mapa não leu, como o comando de medida
-    /// contou: o mapa que ele refez sai com o número, e o que ele não refez, com
-    /// `null`.
+    /// O resultado que a régua grava leva, em cada linha, a prova de versão: o
+    /// commit, o resumo do que faltava comitar e a marca de cada mapa aberto.
     #[test]
-    fn every_result_line_carries_how_many_files_the_history_of_each_map_did_not_read() {
+    fn every_result_line_carries_the_version_proof_and_the_mark_of_each_map() {
         let (_dir, root) = fixture::repo("{}");
-        let (_one, rebuilt) = map_marked("scan 1");
-        let (_two, untouched) = map_marked("scan 1");
+        let (_one, first) = map_marked("scan 1");
+        let (_two, second) = map_marked("scan 1");
         let mut proof = proof_of_the_measure();
-        proof.unread.insert(rebuilt.display().to_string(), 3);
-        let gate = MeasureGate::with(proof, "scan 1".to_string(), None).expect("the gate opens");
-        let gate = check_maps(gate, &[rebuilt.clone(), untouched.clone()]).expect("both maps pass");
+        proof.dirty = true;
+        proof.diff = "feedc0ffee12".to_string();
+        let gate = MeasureGate::with(proof, "scan 1".to_string());
+        let gate = check_maps(gate, &[first.clone(), second]).expect("both maps pass");
 
         let judge = Judge::sure_of(&[("calcular_frete", 0.9)]);
         let rows = [bash_row("grep -rn calcular_frete src", &["src/frete.rs"]), bash_row("grep -rn imposto src", &["src/frete.rs"])];
@@ -1468,30 +1461,11 @@ mod tests {
         assert_eq!(round.lines.len(), 2);
         for line in &round.lines {
             let result: Value = serde_json::from_str(line).expect("a result line is JSON");
-            let maps = &result["proof"]["maps"];
-            assert_eq!(maps[0]["path"], json!(rebuilt.display().to_string()));
-            assert_eq!(maps[0]["unread"], json!(3), "{result}");
-            assert!(maps[1]["unread"].is_null(), "{result}");
+            let proof = &result["proof"];
+            assert_eq!((proof["commit"].as_str(), proof["dirty"].as_bool(), proof["diff"].as_str()), (Some("0123456789ab"), Some(true), Some("feedc0ffee12")), "{result}");
+            assert_eq!(proof["maps"].as_array().map(Vec::len), Some(2), "{result}");
+            assert_eq!(proof["maps"][0]["path"], json!(first.display().to_string()));
+            assert_eq!(proof["maps"][1]["mark"], json!("scan 1"), "{result}");
         }
-    }
-
-    /// Rodar a régua direto, sem o comando de medida, recusa com a frase que
-    /// diz o caminho: a prova não pode ficar em branco.
-    #[test]
-    #[should_panic(expected = "rode pelo comando de medida")]
-    fn measure_gate_refuses_to_run_without_the_measure_command() {
-        let _ = measure_gate(&[]);
-    }
-
-    /// O programa compilado de um commit que não é o da medida não passa na
-    /// porta: o número seria de outro código.
-    #[test]
-    fn measure_gate_refuses_a_program_built_from_another_commit_than_the_measurement_says() {
-        let mut claims_another = proof_of_the_measure();
-        claims_another.commit = "ffffffffffff".to_string();
-        let refused = MeasureGate::with(claims_another, "scan 1".to_string(), Some(&built_stamp()))
-            .expect_err("the program was not built from that commit")
-            .to_string();
-        assert!(refused.contains("compilado"), "{refused}");
     }
 }

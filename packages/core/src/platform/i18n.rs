@@ -179,7 +179,7 @@ type Part = (&'static [&'static str], fn(&str, Locale) -> Option<&'static str>);
 /// - `events` — o arquivo de eventos da spec;
 /// - `page` — as páginas;
 /// - `install` — o diagnóstico da instalação;
-/// - `spec_text` — o texto da spec em markdown.
+/// - `spec_text` — o rótulo da onda e o motivo da onda desenhada à mão.
 const PARTS: [Part; 11] = [
     (flow::PREFIXES, flow::text),
     (survey::PREFIXES, survey::text),
@@ -225,88 +225,11 @@ fn key_as_static(_key: &str) -> &'static str {
     "<missing-key>"
 }
 
-// ---------------------------------------------------------------------------
-// Type aliases — `SupportedLocale` (catalogue) + `UserLocale` (open BCP-47)
-// ---------------------------------------------------------------------------
-
 /// Catalogue-backed locale — the closed set Mustard ships translations for.
 ///
 /// `SupportedLocale` is a type alias for the original [`Locale`] enum, so each
 /// callsite could move to the new name without breaking every consumer at once.
 pub type SupportedLocale = Locale;
-
-/// User-declared BCP-47 locale, as a spec records it.
-///
-/// Unlike [`SupportedLocale`] (closed, two variants), `UserLocale` accepts any
-/// syntactically valid BCP-47 code so users can write specs in `fr-FR`, `de-DE`,
-/// etc. Parse the raw tag into a [`SupportedLocale`] when a banner needs to
-/// render, falling back to the default when the locale is not in the catalogue.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UserLocale {
-    /// The raw BCP-47 tag as supplied by the user.
-    pub raw: String,
-}
-
-impl UserLocale {
-    /// Construct a `UserLocale` from a BCP-47 string.  No validation is
-    /// performed — any non-empty string is accepted so fail-open callers never
-    /// have to handle an error for syntactically arbitrary user input.
-    #[must_use]
-    pub fn new(raw: impl Into<String>) -> Self {
-        Self { raw: raw.into() }
-    }
-}
-
-impl fmt::Display for UserLocale {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.raw)
-    }
-}
-
-impl FromStr for UserLocale {
-    type Err = UserLocaleError;
-
-    /// Parse a BCP-47 string into a `UserLocale`. Rejects empty strings and
-    /// shapes that are not `<lang>-<REGION>` (2-3 lowercase letters, hyphen,
-    /// 2 uppercase letters). Short forms like `pt`/`en` and unhyphenated
-    /// blobs like `ptbr` are rejected so callers can rely on a canonical tag.
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let trimmed = s.trim();
-        if trimmed.is_empty() {
-            return Err(UserLocaleError::Empty);
-        }
-        let (lang, region) = trimmed
-            .split_once('-')
-            .ok_or_else(|| UserLocaleError::Malformed(trimmed.to_string()))?;
-        let lang_ok = (2..=3).contains(&lang.len())
-            && lang.chars().all(|c| c.is_ascii_lowercase());
-        let region_ok = region.len() == 2 && region.chars().all(|c| c.is_ascii_uppercase());
-        if !lang_ok || !region_ok {
-            return Err(UserLocaleError::Malformed(trimmed.to_string()));
-        }
-        Ok(Self { raw: trimmed.to_string() })
-    }
-}
-
-/// Errors returned by [`UserLocale::from_str`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum UserLocaleError {
-    /// Empty or whitespace-only input.
-    Empty,
-    /// Input does not match the `<lang>-<REGION>` shape.
-    Malformed(String),
-}
-
-impl fmt::Display for UserLocaleError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Empty => f.write_str("locale string is empty"),
-            Self::Malformed(raw) => write!(f, "locale `{raw}` is not BCP-47 `<lang>-<REGION>`"),
-        }
-    }
-}
-
-impl std::error::Error for UserLocaleError {}
 
 /// Render a wave label given a locale + 1-based wave index.
 ///

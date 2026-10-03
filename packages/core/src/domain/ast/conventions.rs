@@ -319,7 +319,6 @@ mod tests {
         assert!(is_test_path("spec/models/user_spec.rb"), "project-root spec/ is test terrain");
         assert!(is_test_path("apps/api/spec/thing.rb"), "one level of monorepo nesting still is");
         assert!(!is_test_path("apps/rt/src/commands/spec/cli.rs"), "inside the source tree it is a domain folder");
-        assert!(!is_test_path("packages/core/src/domain/spec/contract.rs"));
         // Unambiguous names need no such qualification — nobody calls a domain
         // folder `__tests__`, so depth never rescues one.
         assert!(is_test_path("apps/rt/src/deep/nested/__tests__/x.ts"));

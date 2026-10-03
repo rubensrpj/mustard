@@ -734,28 +734,6 @@ fn the_pending_help_shows_the_item_id_as_p_n() {
     assert!(spelled.iter().all(|id| *id == "P-N"), "every id is spelled P-N: {spelled:?}\n{help}");
 }
 
-/// A ajuda do `run measure`, como o usuário a pede, diz que a medida espera a
-/// história de cada mapa refeito terminar antes de rodar a régua, tanto no
-/// texto do comando quanto na linha da opção `--trees`.
-#[test]
-fn the_measure_help_says_it_waits_for_the_history_before_the_ruler() {
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
-        .args(["run", "measure", "--help"])
-        .output()
-        .expect("mustard-rt run measure --help");
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    let help = String::from_utf8_lossy(&out.stdout).split_whitespace().collect::<Vec<_>>().join(" ");
-
-    assert!(
-        help.contains("a medida espera a leitura da história de cada mapa terminar antes de rodar a régua"),
-        "the command text names the wait: {help}"
-    );
-    assert!(
-        help.contains("e a medida espera a história de cada mapa terminar antes da régua"),
-        "the --trees option names the wait: {help}"
-    );
-}
-
 /// A ajuda do `run map`, como o usuário a pede, descreve o `summary` como o
 /// resumo do mapa do projeto, até 3 kB: o início da sessão não o coloca mais,
 /// e a ajuda não pode mandar o leitor procurá-lo lá.

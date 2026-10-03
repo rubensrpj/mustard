@@ -45,8 +45,9 @@
 //!   absoluto (`/bin/mkdir`) passam por fora do PATH e nao sao registrados.
 //! - Vigia so o `$HOME`. Escrita em `temp_dir()`, `/etc` ou nos diretorios XDG
 //!   (que o filho herda do operador real) passa.
-//! - O filho nunca recebe um TERMINAL. Ato escondido atras de
-//!   `stdin().is_terminal()` e invisivel aqui e dispara para todo operador.
+//! - O filho nunca recebe um TERMINAL. Ato escondido atras da checagem de
+//!   terminal da entrada padrao (`IsTerminal`) e invisivel aqui e dispara
+//!   para todo operador.
 //! - Nenhum teste dirige `--force` nem um projeto que nao seja repositorio git:
 //!   ato preso a esses caminhos passa.
 //! - Ato ADIADO (thread, Drop, atexit) passa: o filho termina antes.

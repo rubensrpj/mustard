@@ -13,16 +13,16 @@
 //!
 //! Layers:
 //!
-//! - [`model`] — pure `serde` data types with zero side effects: the hook
-//!   contract and the SDD `ViewModels` under [`model::view`].
-//! - [`fs`] — the single canonical filesystem seam: the [`fs::Fs`] port,
-//!   [`fs::real::RealFs`], and module-level
-//!   free functions that are the drop-in replacement for `std::fs`. Every other
-//!   `std::fs` call in the workspace migrates onto this.
-//! - [`events`] — NDJSON event primitives ([`Event`] / [`EventReader`]) plus
-//!   the per-spec workspace walker; the canonical event store. Layered on
-//!   [`fs`].
-//! - [`error`] — the crate's typed error.
+//! - [`io`] — the ports to the outside world: the filesystem seam
+//!   ([`io::fs`]), the NDJSON spec event store, the project map database and
+//!   the other readers and writers of files.
+//! - [`domain`] — the pure rules and data types: the hook contract
+//!   ([`domain::model`]), the spec event log, config, search and the wave
+//!   request.
+//! - [`platform`] — the pieces tied to the machine and the harness: git, the
+//!   installed plugin, the project seed, the text catalogue ([`platform::i18n`])
+//!   and the typed error.
+//! - [`view`] — the spec page document.
 
 // Root re-exports — consumers can write `use mustard_core::…` without
 // remembering which sub-module owns each name.
@@ -72,17 +72,6 @@ pub use platform::seeds::{
     agent_texts, session_map, AGENT_NAMES, CLAUDE_GITIGNORE, SESSION_MAP_NAME, SETTINGS_SEED,
 };
 
-pub use domain::model::view::{
-    Flags, Outcome, Phase, Scope, SpecChild, SpecState, SpecSummary, SpecView, Stage, StateError,
-};
-// Spec-document I/O — the single canonical owner of parsing / serializing /
-// rewriting the lifecycle header of a spec `.md` file. See `spec/mod.rs`.
-// Layered on top of the canonical filesystem seam `crate::io::fs`.
-pub use domain::spec::{
-    flags_label, header_field, header_region_lines, outcome_label, parse_state, read_state,
-    rewrite_header, serialize_header, stage_label, status_word, write_state,
-};
-
 // Project config — the single source of truth for `<root>/mustard.json`
 // (schema + IO + accessors). Replaces the scattered ad-hoc parsers
 // (`mustard_config`, `git_flow::MustardConfig`, `read_mustard_tone`, …). See
@@ -105,20 +94,13 @@ pub use domain::scan::{read_projects, Project, Scan};
 
 // i18n — central language module for Mustard banners. See `i18n.rs`.
 //
-// Two locale types live here, doing two different jobs:
-// - `SupportedLocale` — the closed catalogue Mustard ships translations for
-//   (`pt-BR` / `en-US`). Drives `translate` / `I18n`. Short forms (`pt` /
-//   `en`) are rejected with `LocaleError::ShortForm` per
-//   `project_locale_codes`.
-// - `UserLocale` — the open locale a spec records. Accepts any BCP-47-shaped
-//   code (`fr-FR`, `de-DE`, `en-GB`, ...). Parsed into a `SupportedLocale`
-//   when a banner needs to render.
+// `SupportedLocale` is the closed catalogue Mustard ships translations for
+// (`pt-BR` / `en-US`). It drives `translate` / `I18n`. Short forms (`pt` /
+// `en`) are rejected with `LocaleError::ShortForm` per `project_locale_codes`.
 //
 // The project's own language is not read here: `ProjectConfig::language` is
 // its one reader.
-pub use platform::i18n::{
-    translate, wave_label, I18n, LocaleError, SupportedLocale, UserLocale, UserLocaleError,
-};
+pub use platform::i18n::{translate, wave_label, I18n, LocaleError, SupportedLocale};
 
 // Canonical `.claude/` path catalog — every consumer in `apps/rt` builds a
 // `ClaudePaths` once and then asks for a typed accessor instead of joining

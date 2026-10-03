@@ -79,7 +79,7 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Consolidation blocked: child {child} returned a red verdict — {message}"
         }
 
-        // Work-branch REFUSAL — the checkout holds another unit's branch with
+        // Work-branch refusal — the checkout holds another unit's branch with
         // uncommitted files, so cutting the second unit here would carry them
         // off. Said by the drafting cut, in the project's language.
         // `{current}`/`{target}`/`{paths}`/`{more}` are interpolated by

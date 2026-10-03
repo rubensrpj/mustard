@@ -179,7 +179,7 @@ pub struct LoadedKey {
 /// lê do ambiente; sem ela, `jev.key` do `mustard.json` que `config` leu.
 /// Sem nenhuma das duas, [`FilterError::MissingKey`]; com a do arquivo que o
 /// git guarda, [`FilterError::KeyInGit`]. A regra é a de
-/// [`mustard_core::io::jev_gate`], a mesma da prova da medida.
+/// [`mustard_core::io::jev_gate`].
 pub fn key_in(root: &Path, config: &ProjectConfig, env: Option<String>) -> Result<LoadedKey, FilterError> {
     let found = jev_gate::find_key(root, config, env)?;
     Ok(LoadedKey { key: JevKey(found.value().to_string()), warning: found.warning().cloned() })
@@ -1751,16 +1751,12 @@ mod tests {
         assert_eq!(with_env.warning, Some(FilterError::KeyInGit));
     }
 
-    /// A busca e a peça da prova dão o mesmo veredito: para cada projeto, o
-    /// filtro que a busca monta existe quando a peça do filtro diz ligada, e
-    /// não existe quando ela diz ainda não ligada. Os casos cobrem a chave só
-    /// no ambiente, só em `jev.key`, em branco, o `search.filter` em `none`, em
-    /// `jev` e inválido, e o `mustard.json` que o git guarda.
+    /// A busca monta o filtro só quando o `mustard.json` deixa e há chave
+    /// válida. Os casos cobrem a chave só no ambiente, só em `jev.key`, em
+    /// branco, o `search.filter` em `none`, em `jev` e inválido, e o
+    /// `mustard.json` que o git guarda.
     #[test]
-    fn the_search_and_the_filter_piece_give_the_same_verdict_for_the_same_projects() {
-        use mustard_core::domain::normalize::Languages;
-        use mustard_core::io::project_map::{model_path, save_at};
-        use mustard_core::io::search_pieces;
+    fn the_search_builds_the_filter_only_with_the_setting_on_and_a_valid_key() {
         use mustard_core::platform::i18n::Locale;
 
         // (nome, mustard.json, git guarda o arquivo, ambiente, ligado?)
@@ -1779,10 +1775,6 @@ mod tests {
         ];
         for (name, config, tracked, env, expected) in cases {
             let root = tempfile::tempdir().unwrap();
-            let model = model_path(root.path());
-            let map = json!({"modules": [{"path": "src/a.rs", "declarations": [
-                {"kind": "function", "name": "a", "line": 1, "end_line": 3, "signature": "fn a()"}]}]});
-            save_at(&model, &map, "scan 1", &Languages::new(["en-US"])).unwrap();
             std::fs::write(root.path().join("mustard.json"), config.to_string()).unwrap();
             if tracked {
                 assert!(mustard_core::platform::git::run(root.path(), &["init", "-q"]).ok);
@@ -1800,12 +1792,8 @@ mod tests {
                 &|at, config| crate::shared::search_door::assembled(at, config, env.clone()),
                 &mut warnings,
             );
-            let pieces = search_pieces::of_map_with_env(&model, env.clone()).unwrap();
-            let piece = pieces.iter().find(|piece| piece.name == "filtro-jev").expect("the list has the filter");
 
             assert_eq!(searched.is_some(), expected, "the search: {name}");
-            assert_eq!(piece.on, expected, "the piece: {name}: {}", piece.why);
-            assert_eq!(searched.is_some(), piece.on, "the search and the piece agree: {name}");
         }
     }
 }

@@ -15,9 +15,7 @@
 /// Index 0 is the canonical EN display name; the last entry is the canonical
 /// PT display name.
 ///
-/// The keys here are the language-agnostic canonical identifiers used by
-/// [`mustard_core::domain::spec::contract::PRD_SECTIONS`] /
-/// [`PLAN_SECTIONS`](mustard_core::domain::spec::contract::PLAN_SECTIONS) and
+/// The keys here are the language-agnostic canonical identifiers used
 /// throughout the rt parsers. They are matched case-insensitively, and both
 /// the kebab (`acceptance-criteria`, `non-goals`) and the legacy camelCase
 /// (`acceptanceCriteria`, `nonGoals`) spellings resolve to the same variants

@@ -2744,10 +2744,10 @@ mod tests {
     /// A medida do tamanho da resposta contra o da busca comum, sobre buscas
     /// de verdade (`WORD_SEARCH_SEARCHES`: uma por linha, com o padrão, as
     /// pastas e o programa), numa árvore com mapa (`WORD_SEARCH_TREE`, um
-    /// repositório git com `.claude/grain.db`). Grava em `WORD_SEARCH_OUT`
-    /// (ou no `--out` do comando de medida) uma linha por busca, cada uma com
-    /// a prova de versão em `proof`. Só roda pelo comando de medida: sem ele,
-    /// ou com o mapa de outra compilação do scan, recusa antes de medir.
+    /// repositório git com `.claude/grain.db`). Grava em `WORD_SEARCH_OUT` uma
+    /// linha por busca, cada uma com a prova de versão em `proof`. Com o mapa de
+    /// outra compilação do scan, ou sem o scan do mesmo build ao lado, recusa
+    /// antes de medir.
     #[test]
     #[ignore = "measurement: reads WORD_SEARCH_SEARCHES, WORD_SEARCH_TREE and WORD_SEARCH_OUT"]
     fn measure_the_answer_size() {
@@ -2758,7 +2758,7 @@ mod tests {
         let gate = ruler::measure_gate(std::slice::from_ref(&model));
         let proof = gate.proof().to_json();
         let searches = std::fs::read_to_string(read("WORD_SEARCH_SEARCHES")).expect("searches");
-        let out_path = mustard_core::io::measure_proof::result_path("WORD_SEARCH_OUT").expect("WORD_SEARCH_OUT is set");
+        let out_path = read("WORD_SEARCH_OUT");
         let mut out = std::fs::File::create(out_path).expect("out");
         let root = tree.to_string_lossy().into_owned();
         let languages = Languages::new(["pt-BR", "en-US"]);
@@ -2849,6 +2849,6 @@ mod tests {
             }
             writeln!(out, "{row}").expect("write");
         }
-        gate.proof().lines().iter().for_each(|line| eprintln!("{line}"));
+        eprintln!("{}", gate.proof().line());
     }
 }
