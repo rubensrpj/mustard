@@ -24,8 +24,6 @@
 //! unix, because the shims are shell scripts. Closing that means shims the
 //! Windows shell can run — its own unit, not a line here.
 
-#[path = "support/manifest_dir.rs"]
-mod manifest_dir;
 #[path = "support/executable.rs"]
 mod executable;
 
@@ -139,6 +137,13 @@ fn a_missing_rtk_refuses_the_install_and_writes_nothing() {
 /// ripgrep installer, which moved to the dispatch arm together with the gate —
 /// and nothing of rtk's own configuration is written: its hook lives in the
 /// project's local settings, never under `~/.claude/`.
+///
+/// The install never writes under `~/.claude/` either, not even for an operator
+/// who still carries the variable that used to ask for the global permissions:
+/// the run carries it. The permissions live only in the project's
+/// `.claude/settings.local.json`; the global write and its opt-in left the
+/// product. The project half is asserted too, so a run that wrote nothing at
+/// all cannot pass.
 #[test]
 #[cfg_attr(not(unix), ignore = "the shims are shell scripts")]
 fn the_binary_still_runs_the_tool_installers_after_a_successful_install() {
@@ -149,13 +154,29 @@ fn the_binary_still_runs_the_tool_installers_after_a_successful_install() {
     let home = tmp.path().join("home");
     fs::create_dir_all(&home).expect("mkdir home");
 
-    let out = run_init(&project, &bin, &home);
+    let out = Command::new(env!("CARGO_BIN_EXE_mustard"))
+        .args(["init", "--yes"])
+        .current_dir(&project)
+        .env_clear()
+        .env("PATH", &bin)
+        .env("HOME", &home)
+        .env("USERPROFILE", &home)
+        .env("MUSTARD_GLOBAL_PERMISSIONS", "1")
+        .output()
+        .expect("the mustard binary runs");
 
-    assert!(out.status.success(), "a present rtk must let the install run");
+    assert!(
+        out.status.success(),
+        "a present rtk must let the install run: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     assert!(
         project.join(".claude").exists() && project.join("mustard.json").exists(),
         "the install must have written the project"
     );
+    let local = fs::read_to_string(project.join(".claude").join("settings.local.json"))
+        .expect("the permissions land in the project's local settings");
+    assert!(local.contains("\"permissions\""), "{local}");
     let spawned = fs::read_to_string(&log).unwrap_or_default();
     // `rg --version`, the probe only `ensure_ripgrep` issues: deleting the call
     // from dispatch makes this line disappear.
@@ -167,7 +188,12 @@ fn the_binary_still_runs_the_tool_installers_after_a_successful_install() {
         !spawned.lines().any(|l| l.starts_with("rtk init")),
         "the install ran `rtk init`, which writes rtk's configuration under ~/.claude; log was:\n{spawned}"
     );
-    assert_eq!(home_entries(&home), Vec::<String>::new(), "the install wrote into $HOME");
+    assert_eq!(
+        home_entries(&home),
+        Vec::<String>::new(),
+        "the install wrote into $HOME; stdout was:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
 }
 
 /// The end-to-end proof for the code-tool install: a Rust project driven
@@ -175,9 +201,7 @@ fn the_binary_still_runs_the_tool_installers_after_a_successful_install() {
 /// rest of `shim_dir`. The step is `mustard_core::platform::code_tools::ensure_code_tools`,
 /// reached through `init::ensure_code_tools(...)` in `cli::dispatch`. Deleting
 /// that call — or the wrapper's call into the core — makes every one of these
-/// log lines vanish, the same cuts `the_library_half_of_init_calls_no_environment_installer`
-/// pins by source; unlike that structural test, this one drives the actual
-/// command that goes out.
+/// log lines vanish: this drives the actual command that goes out.
 #[test]
 #[cfg_attr(not(unix), ignore = "the shims are shell scripts")]
 fn the_binary_installs_the_code_tool_of_a_detected_language() {
@@ -361,77 +385,14 @@ fn a_dry_run_changes_neither_the_project_nor_the_machine() {
     );
     assert_eq!(home_entries(&home), Vec::<String>::new(), "a dry run wrote into $HOME");
     let spawned = fs::read_to_string(&log).unwrap_or_default();
+    // `rg --version` is the probe only `ensure_ripgrep` issues, and that call runs
+    // only for a run that installed: a dry run reaching it means the arm is no
+    // longer gated on what the run DID.
     assert!(
-        !spawned.lines().any(|l| l.starts_with("rtk init") || l.starts_with("scoop ")),
+        !spawned
+            .lines()
+            .any(|l| l.starts_with("rtk init") || l.starts_with("scoop ") || l.starts_with("rg ")),
         "a dry run ran a tool installer; log was:\n{spawned}"
-    );
-}
-
-/// The library must not take environment acts. This reads the source rather than
-/// running anything, because the regression it guards is a CALL coming back —
-/// and a behavioural test cannot see that from inside the same process.
-///
-/// It is the WEAKER of the two guards on that invariant and is kept only as a
-/// fast, readable signpost: `library_is_pure.rs` is the one that actually holds,
-/// because it measures the acts instead of matching their spelling.
-///
-/// Why a ratchet at all: review measured that restoring the installer calls
-/// into the library `init` left the entire suite green,
-/// including this file's other two tests. A revert of the fix was invisible.
-#[test]
-fn the_library_half_of_init_calls_no_environment_installer() {
-    let dir = manifest_dir::manifest_dir().join("src/commands/init");
-    // The library half is every part of `init` except the tools it defines.
-    let mut source = String::new();
-    for part in ["mod.rs", "questions.rs", "seeding.rs", "project_config.rs"] {
-        source.push_str(&fs::read_to_string(dir.join(part)).expect("the init part is readable"));
-    }
-
-    // `ensure_code_tools(` also catches the core step called straight from
-    // here (`code_tools::ensure_code_tools(...)`): the name is the same on
-    // purpose.
-    for call in ["ensure_ripgrep();", "probe_rtk();", "ensure_code_tools("] {
-        assert!(
-            !source.contains(call),
-            "`{call}` is back inside the library half of init. These belong to \
-             `cli::dispatch`: from the library they act on the machine for any caller, \
-             which is how an integration test in another crate came to spawn an installer \
-             twice on CI."
-        );
-    }
-
-    // And the call site that IS allowed must still exist, so this test cannot
-    // pass by the installer having disappeared altogether.
-    let dispatch = fs::read_to_string(
-        manifest_dir::manifest_dir().join("src/cli.rs"),
-    )
-    .expect("cli.rs is readable");
-    for call in ["init::ensure_ripgrep();", "init::probe_rtk();", "init::ensure_code_tools("] {
-        assert!(
-            dispatch.contains(call),
-            "`{call}` vanished from cli::dispatch — the terminal user lost the tooling"
-        );
-    }
-
-    // The code-tool step is ONE, in the core, shared with the project update.
-    // The wrapper dispatch calls must hand it the machine rather than carry a
-    // copy of its own that the update would not run.
-    let tools = fs::read_to_string(dir.join("tools.rs")).expect("tools.rs is readable");
-    assert!(
-        tools.contains("code_tools::ensure_code_tools("),
-        "the code-tool wrapper no longer calls the core step — `mustard init` and the \
-         project update would install different things"
-    );
-
-    // And the installer must be gated on what the run actually DID, never on
-    // "no error". `Ok` covers the operator answering Cancel to an existing
-    // `.claude/`, and on that path this arm once took a machine-wide act after
-    // an explicit refusal. Measured through a pty in review.
-    assert!(
-        dispatch.contains("outcome == init::InitOutcome::Installed"),
-        "the installer must be gated on InitOutcome::Installed; `is_ok()` also \
-         means the operator cancelled, and acting on a refusal is the defect this \
-         whole exercise is about"
     );
 }
 
@@ -491,46 +452,13 @@ fn answering_cancel_leaves_the_machine_untouched() {
 
     assert_eq!(home_entries(&home), Vec::<String>::new(), "a cancelled run wrote into $HOME");
     let spawned = fs::read_to_string(&log).unwrap_or_default();
+    // The installer is gated on what the run DID, never on "no error": `Ok` also
+    // covers Cancel, and `rg --version` — the probe only `ensure_ripgrep` issues —
+    // is what an arm that acted on the refusal leaves in the log.
     assert!(
-        !spawned.lines().any(|l| l.starts_with("rtk init") || l.starts_with("scoop ")),
+        !spawned
+            .lines()
+            .any(|l| l.starts_with("rtk init") || l.starts_with("scoop ") || l.starts_with("rg ")),
         "a cancelled run ran a tool installer; log was:\n{spawned}"
-    );
-}
-
-/// The install never writes under `~/.claude/`, not even for an operator who
-/// still carries the variable that used to ask for the global permissions.
-///
-/// The permissions live only in the project's `.claude/settings.local.json`;
-/// the global write and its opt-in left the product. The project half is
-/// asserted too, so a run that wrote nothing at all cannot pass.
-#[test]
-#[cfg_attr(not(unix), ignore = "the shims are shell scripts")]
-fn the_binary_never_writes_under_the_home_claude_dir() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let log = tmp.path().join("spawn.log");
-    let home = tmp.path().join("home");
-    fs::create_dir_all(&home).expect("mkdir home");
-    let bin = shim_dir(&log, true);
-    let project = fresh_repo(tmp.path());
-
-    let out = Command::new(env!("CARGO_BIN_EXE_mustard"))
-        .args(["init", "--yes"])
-        .current_dir(&project)
-        .env_clear()
-        .env("PATH", &bin)
-        .env("HOME", &home)
-        .env("USERPROFILE", &home)
-        .env("MUSTARD_GLOBAL_PERMISSIONS", "1")
-        .output()
-        .expect("the mustard binary runs");
-
-    assert!(out.status.success(), "the install must succeed");
-    let local = fs::read_to_string(project.join(".claude").join("settings.local.json"))
-        .expect("the permissions land in the project's local settings");
-    assert!(local.contains("\"permissions\""), "{local}");
-    assert!(
-        !home.join(".claude").exists(),
-        "the install wrote under ~/.claude; stdout was:\n{}",
-        String::from_utf8_lossy(&out.stdout)
     );
 }

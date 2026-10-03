@@ -89,24 +89,6 @@ fn fan_in_modules(v: &serde_json::Value) -> Vec<String> {
 }
 
 #[test]
-fn graph_resolution_csharp() {
-    let v = scan_fixture("graph_csharp");
-    assert!(edges(&v) > 0, "C# `using Demo.Models;` must resolve to an internal edge: {}", v["graph"]);
-}
-
-#[test]
-fn graph_resolution_typescript() {
-    let v = scan_fixture("graph_typescript");
-    assert!(edges(&v) > 0, "TS relative import `./user` must resolve to an internal edge: {}", v["graph"]);
-}
-
-#[test]
-fn graph_resolution_go() {
-    let v = scan_fixture("graph_go");
-    assert!(edges(&v) > 0, "Go module-prefixed import must resolve to an internal edge: {}", v["graph"]);
-}
-
-#[test]
 fn graph_resolution_python() {
     let v = scan_fixture("graph_python");
     assert!(edges(&v) > 0, "Python `from mypkg.models import X` must resolve to an internal edge: {}", v["graph"]);
@@ -134,12 +116,6 @@ fn graph_resolution_rust_external_std_no_false_edge() {
         "external `std::collections::HashMap` must not edge to src/collections.rs: {}",
         v["graph"]
     );
-}
-
-#[test]
-fn graph_resolution_php() {
-    let v = scan_fixture("graph_php");
-    assert!(edges(&v) > 0, "PHP `use App\\Models\\User;` must resolve to an internal edge: {}", v["graph"]);
 }
 
 /// Non-regression: the languages that already resolved BEFORE the fix (see the
@@ -197,40 +173,52 @@ fn deps_of(v: &serde_json::Value, path: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Um import sem extensão cujo nome tem ponto (`./pedido.service`) liga ao
-/// arquivo com esse nome inteiro, e não ao arquivo que só tem o começo dele
-/// (`pedido.ts`, ao lado): o ponto do meio é parte do nome.
-#[test]
-fn a_dotted_import_links_to_the_file_with_the_whole_name() {
-    let v = scan_fixture_labeled("dotted", "graph_typescript_aliases");
-    assert_eq!(deps_of(&v, "src/app/checkout.ts"), vec!["src/app/pedido.service.ts".to_string()]);
+/// Confere, para cada caso `(nome, módulo, esperado)`, os arquivos do projeto
+/// que o módulo importa; a mensagem diz qual caso falhou.
+fn assert_deps_of(v: &serde_json::Value, cases: &[(&str, &str, &[&str])]) {
+    for (case, path, want) in cases {
+        let want: Vec<String> = want.iter().map(|d| d.to_string()).collect();
+        assert_eq!(deps_of(v, path), want, "{case}");
+    }
 }
 
-/// O import que escreve a extensão de saída no lugar da do arquivo
-/// (`./pedido.service.js` para `pedido.service.ts`) segue ligando ao arquivo
-/// certo.
+/// Os apelidos e os nomes de arquivo do TypeScript numa pasta lida uma vez:
+///   * um import sem extensão cujo nome tem ponto (`./pedido.service`) liga ao
+///     arquivo com esse nome inteiro, e não ao `pedido.ts` ao lado: o ponto do
+///     meio é parte do nome;
+///   * o import que escreve a extensão de saída no lugar da do arquivo
+///     (`./pedido.service.js` para `pedido.service.ts`) segue ligando ao
+///     arquivo certo;
+///   * o apelido de pasta declarado numa configuração herdada pela da raiz
+///     (`@app/*` para `src/app/*`, com comentário e vírgula sobrando no
+///     arquivo) liga `@app/pedido` a `src/app/pedido.ts`;
+///   * a configuração mais próxima de quem importa vence a da raiz: em `pkg/`,
+///     `@app/pedido` é `pkg/lib/pedido.ts`, e não o `src/app/pedido.ts` que a
+///     raiz daria.
 #[test]
-fn an_import_written_with_the_output_extension_still_links() {
-    let v = scan_fixture_labeled("output-ext", "graph_typescript_aliases");
-    assert_eq!(deps_of(&v, "src/app/esm.ts"), vec!["src/app/pedido.service.ts".to_string()]);
-}
-
-/// O apelido de pasta declarado numa configuração herdada pela da raiz
-/// (`@app/*` para `src/app/*`, com comentário e vírgula sobrando no arquivo)
-/// liga `@app/pedido` a `src/app/pedido.ts`.
-#[test]
-fn a_folder_alias_inherited_through_extends_links_to_the_right_file() {
-    let v = scan_fixture_labeled("alias", "graph_typescript_aliases");
-    assert_eq!(deps_of(&v, "src/usa_apelido.ts"), vec!["src/app/pedido.ts".to_string()]);
-}
-
-/// A configuração mais próxima de quem importa vence a da raiz: em `pkg/`,
-/// `@app/pedido` é `pkg/lib/pedido.ts`, e não o `src/app/pedido.ts` que a
-/// raiz daria.
-#[test]
-fn the_nearest_configuration_wins_over_the_root_one() {
-    let v = scan_fixture_labeled("nearest", "graph_typescript_aliases");
-    assert_eq!(deps_of(&v, "pkg/usa.ts"), vec!["pkg/lib/pedido.ts".to_string()]);
+fn graph_typescript_aliases() {
+    let v = scan_fixture_labeled("aliases", "graph_typescript_aliases");
+    assert_deps_of(
+        &v,
+        &[
+            (
+                "a dotted import links to the file with the whole name",
+                "src/app/checkout.ts",
+                &["src/app/pedido.service.ts"],
+            ),
+            (
+                "an import written with the output extension still links",
+                "src/app/esm.ts",
+                &["src/app/pedido.service.ts"],
+            ),
+            (
+                "a folder alias inherited through extends links to the right file",
+                "src/usa_apelido.ts",
+                &["src/app/pedido.ts"],
+            ),
+            ("the nearest configuration wins over the root one", "pkg/usa.ts", &["pkg/lib/pedido.ts"]),
+        ],
+    );
 }
 
 /// A configuração de apelidos de pasta do projeto só de JavaScript: `@/*` para
@@ -306,78 +294,73 @@ fn a_nearer_javascript_configuration_wins_over_a_typescript_one_above() {
     assert_eq!(deps_of(&v, "web/usa.js"), vec!["web/lib/x.js".to_string()]);
 }
 
-/// Um ponto na frente é a pasta de quem importa: `from .models import Pedido`
-/// em `pkg/views.py` liga a `pkg/models.py`, ao lado.
+/// Os imports relativos do Python numa pasta lida uma vez:
+///   * um ponto na frente é a pasta de quem importa: `from .models import
+///     Pedido` em `pkg/views.py` liga a `pkg/models.py`, ao lado;
+///   * dois pontos sobem uma pasta, e o resto, cortado nos pontos, é o caminho
+///     dentro dela: `from ..core.regras import LIMITE` em
+///     `pkg/api/handlers.py` liga a `pkg/core/regras.py`;
+///   * `from . import models` traz um arquivo da própria pasta: liga a
+///     `pkg/models.py`, e não à pasta nem ao `__init__.py` dela;
+///   * o import relativo que nomeia uma pasta de pacote liga ao `__init__.py`
+///     dela: `from .servicos import cobrar` liga a
+///     `pkg/servicos/__init__.py`;
+///   * o import sem ponto segue lido a partir da raiz, e não da pasta de quem
+///     importa: `from pkg.models import Pedido` em `pkg/api/absoluto.py` liga
+///     a `pkg/models.py`.
 #[test]
-fn a_one_dot_relative_import_links_to_the_file_beside() {
-    let v = scan_fixture_labeled("py-one-dot", "graph_python_relative");
-    assert_eq!(deps_of(&v, "pkg/views.py"), vec!["pkg/models.py".to_string()]);
+fn graph_python_relative() {
+    let v = scan_fixture_labeled("py-relative", "graph_python_relative");
+    assert_deps_of(
+        &v,
+        &[
+            ("a one-dot relative import links to the file beside", "pkg/views.py", &["pkg/models.py"]),
+            ("a two-dot relative import climbs one folder", "pkg/api/handlers.py", &["pkg/core/regras.py"]),
+            ("a from-dot import links to the named file of the folder", "pkg/admin.py", &["pkg/models.py"]),
+            (
+                "a relative import of a package links to its init file",
+                "pkg/usa_pacote.py",
+                &["pkg/servicos/__init__.py"],
+            ),
+            ("an absolute import is still read from the root", "pkg/api/absoluto.py", &["pkg/models.py"]),
+        ],
+    );
 }
 
-/// Dois pontos sobem uma pasta, e o resto, cortado nos pontos, é o caminho
-/// dentro dela: `from ..core.regras import LIMITE` em `pkg/api/handlers.py`
-/// liga a `pkg/core/regras.py`.
+/// Os imports de namespace do C# numa pasta lida uma vez, com três arquivos no
+/// mesmo namespace:
+///   * quem importa o namespace e usa só um tipo dele liga só ao arquivo desse
+///     tipo;
+///   * quem importa o namespace e não usa nada dele não liga a nenhum arquivo;
+///   * o nome qualificado completo de um tipo segue ligando ao arquivo que leva
+///     o nome dele, use o arquivo o tipo ou não;
+///   * o nome qualificado de um tipo que nenhum arquivo leva no nome liga só ao
+///     arquivo do namespace que declara o que quem importa usa, e não ao
+///     namespace inteiro: `Aplicar`, de `Desconto`, mora em `Produto.cs`.
 #[test]
-fn a_two_dot_relative_import_climbs_one_folder() {
-    let v = scan_fixture_labeled("py-two-dots", "graph_python_relative");
-    assert_eq!(deps_of(&v, "pkg/api/handlers.py"), vec!["pkg/core/regras.py".to_string()]);
-}
-
-/// `from . import models` traz um arquivo da própria pasta: liga a
-/// `pkg/models.py`, e não à pasta nem ao `__init__.py` dela.
-#[test]
-fn a_from_dot_import_links_to_the_named_file_of_the_folder() {
-    let v = scan_fixture_labeled("py-from-dot", "graph_python_relative");
-    assert_eq!(deps_of(&v, "pkg/admin.py"), vec!["pkg/models.py".to_string()]);
-}
-
-/// O import relativo que nomeia uma pasta de pacote liga ao `__init__.py`
-/// dela: `from .servicos import cobrar` liga a `pkg/servicos/__init__.py`.
-#[test]
-fn a_relative_import_of_a_package_links_to_its_init_file() {
-    let v = scan_fixture_labeled("py-package", "graph_python_relative");
-    assert_eq!(deps_of(&v, "pkg/usa_pacote.py"), vec!["pkg/servicos/__init__.py".to_string()]);
-}
-
-/// O import sem ponto segue lido a partir da raiz, e não da pasta de quem
-/// importa: `from pkg.models import Pedido` em `pkg/api/absoluto.py` liga a
-/// `pkg/models.py`.
-#[test]
-fn an_absolute_import_is_still_read_from_the_root() {
-    let v = scan_fixture_labeled("py-absolute", "graph_python_relative");
-    assert_eq!(deps_of(&v, "pkg/api/absoluto.py"), vec!["pkg/models.py".to_string()]);
-}
-
-/// Três arquivos no mesmo namespace; quem importa o namespace e usa só um tipo
-/// dele liga só ao arquivo desse tipo.
-#[test]
-fn a_namespace_import_links_only_to_the_file_of_the_type_it_uses() {
-    let v = scan_fixture_labeled("ns-used", "graph_csharp_namespace");
-    assert_eq!(deps_of(&v, "src/Services/PedidoService.cs"), vec!["src/Models/Pedido.cs".to_string()]);
-}
-
-/// Quem importa o namespace e não usa nada dele não liga a nenhum arquivo.
-#[test]
-fn a_namespace_import_with_nothing_used_links_to_nothing() {
-    let v = scan_fixture_labeled("ns-unused", "graph_csharp_namespace");
-    assert_eq!(deps_of(&v, "src/Services/SemUso.cs"), Vec::<String>::new());
-}
-
-/// O nome qualificado completo de um tipo segue ligando ao arquivo que leva o
-/// nome dele, use o arquivo o tipo ou não.
-#[test]
-fn a_fully_qualified_import_still_links_to_the_file_of_the_type() {
-    let v = scan_fixture_labeled("ns-qualified", "graph_csharp_namespace");
-    assert_eq!(deps_of(&v, "src/Services/Qualificado.cs"), vec!["src/Models/Cliente.cs".to_string()]);
-}
-
-/// O nome qualificado de um tipo que nenhum arquivo leva no nome liga só ao
-/// arquivo do namespace que declara o que quem importa usa, e não ao
-/// namespace inteiro: `Aplicar`, de `Desconto`, mora em `Produto.cs`.
-#[test]
-fn a_qualified_type_without_its_own_file_links_only_to_what_is_used() {
-    let v = scan_fixture_labeled("ns-no-file", "graph_csharp_namespace");
-    assert_eq!(deps_of(&v, "src/Services/SemArquivo.cs"), vec!["src/Models/Produto.cs".to_string()]);
+fn graph_csharp_namespace() {
+    let v = scan_fixture_labeled("ns", "graph_csharp_namespace");
+    assert_deps_of(
+        &v,
+        &[
+            (
+                "a namespace import links only to the file of the type it uses",
+                "src/Services/PedidoService.cs",
+                &["src/Models/Pedido.cs"],
+            ),
+            ("a namespace import with nothing used links to nothing", "src/Services/SemUso.cs", &[]),
+            (
+                "a fully qualified import still links to the file of the type",
+                "src/Services/Qualificado.cs",
+                &["src/Models/Cliente.cs"],
+            ),
+            (
+                "a qualified type without its own file links only to what is used",
+                "src/Services/SemArquivo.cs",
+                &["src/Models/Produto.cs"],
+            ),
+        ],
+    );
 }
 
 /// Os imports que o mapa grava para um módulo, como foram escritos.
@@ -394,88 +377,67 @@ fn imports_of(v: &serde_json::Value, path: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// A chamada escrita pelo caminho completo no corpo, sem `use`
-/// (`crate::a::b::f()` em `src/main.rs`), liga o arquivo ao que o caminho
-/// nomeia: `src/a/b.rs`.
+/// As chamadas do Rust escritas pelo caminho completo no corpo, sem `use`,
+/// numa pasta lida uma vez:
+///   * `crate::a::b::f()` em `src/main.rs` liga o arquivo ao que o caminho
+///     nomeia: `src/a/b.rs`;
+///   * o caminho que começa em `super` é lido a partir da pasta de quem chama:
+///     `super::x::f()` em `src/a/b.rs` liga a `src/a/x.rs`;
+///   * o caminho que não começa no próprio projeto (`std::fs::read()`,
+///     `Vec::new()`) não vira import, e o nome chamado segue lido como uso, com
+///     o qualificador de antes: dos três caminhos de `src/main.rs`, só
+///     `crate::a::b` é import;
+///   * cada `super` a mais sobe uma pasta: `super::super::x::f()` em
+///     `src/a/c/d.rs` liga a `src/a/x.rs`;
+///   * o `super` seguido só do item liga ao arquivo que responde pela pasta de
+///     cima: `super::sum()` em `src/a/y.rs` liga a `src/a.rs`;
+///   * os argumentos de tipo saem do caminho: `crate::a::Boxed::<u8>::new()`
+///     vira o import `crate::a::Boxed` e liga a `src/a.rs`, onde `Boxed` mora;
+///   * o caminho que passa por um módulo escrito dentro do arquivo, e termina
+///     em tipo, perde do fim quantas partes for preciso até achar arquivo:
+///     `crate::a::inside::Jar::new()` liga a `src/a.rs`;
+///   * o arquivo que responde pela própria pasta já é o módulo dela, e o
+///     `super` dele sobe a partir da pasta de cima: `super::a::x::f()` em
+///     `src/k/mod.rs` liga a `src/a/x.rs`;
+///   * o caminho que não nomeia nada do projeto não liga a um arquivo de outro
+///     lugar só porque o caminho dele termina igual: `crate::nothing::f()` em
+///     `src/no_target.rs` não liga a `src/a/nothing.rs`.
 #[test]
-fn a_call_by_the_full_path_from_the_crate_links_to_the_file() {
-    let v = scan_fixture_labeled("rs-crate-path", "graph_rust_qualified");
-    assert_eq!(deps_of(&v, "src/main.rs"), vec!["src/a/b.rs".to_string()]);
-}
+fn graph_rust_qualified() {
+    let v = scan_fixture_labeled("rs-qualified", "graph_rust_qualified");
+    assert_deps_of(
+        &v,
+        &[
+            ("a call by the full path from the crate links to the file", "src/main.rs", &["src/a/b.rs"]),
+            ("a call by the full path from super links to the file beside", "src/a/b.rs", &["src/a/x.rs"]),
+            ("the file beside the super call links to nothing", "src/a/x.rs", &[]),
+            ("a call that climbs two folders links to the file there", "src/a/c/d.rs", &["src/a/x.rs"]),
+            ("a call by super and the item links to the file of the folder above", "src/a/y.rs", &["src/a.rs"]),
+            ("a call with type arguments in the path links to the file", "src/generic.rs", &["src/a.rs"]),
+            ("a path through a module inside the file links to the file", "src/inner.rs", &["src/a.rs"]),
+            ("the file that answers for its folder climbs from the folder above", "src/k/mod.rs", &["src/a/x.rs"]),
+            ("a crate path that names nothing does not link by the end of another path", "src/no_target.rs", &[]),
+        ],
+    );
 
-/// O caminho completo que começa em `super` é lido a partir da pasta de quem
-/// chama: `super::x::f()` em `src/a/b.rs` liga a `src/a/x.rs`.
-#[test]
-fn a_call_by_the_full_path_from_super_links_to_the_file_beside() {
-    let v = scan_fixture_labeled("rs-super-path", "graph_rust_qualified");
-    assert_eq!(deps_of(&v, "src/a/b.rs"), vec!["src/a/x.rs".to_string()]);
-    assert_eq!(deps_of(&v, "src/a/x.rs"), Vec::<String>::new());
-}
-
-/// O caminho que não começa no próprio projeto (`std::fs::read()`,
-/// `Vec::new()`) não vira import, e o nome chamado segue lido como uso, com o
-/// qualificador de antes: dos três caminhos de `src/main.rs`, só
-/// `crate::a::b` é import.
-#[test]
-fn a_call_by_a_path_outside_the_project_is_not_an_import() {
-    let v = scan_fixture_labeled("rs-outside-path", "graph_rust_qualified");
-    assert_eq!(imports_of(&v, "src/main.rs"), vec!["crate::a::b".to_string()]);
+    assert_eq!(
+        imports_of(&v, "src/main.rs"),
+        vec!["crate::a::b".to_string()],
+        "a call by a path outside the project is not an import"
+    );
     let module = v["modules"].as_array().unwrap().iter().find(|m| m["path"] == "src/main.rs").unwrap();
     let calls: Vec<&str> = module["calls"].as_array().unwrap().iter().map(|c| c.as_str().unwrap()).collect();
     assert!(calls.contains(&"fs.read:3"), "a chamada de fora segue como uso: {calls:?}");
-}
-
-/// Cada `super` a mais sobe uma pasta: `super::super::x::f()` em
-/// `src/a/c/d.rs` liga a `src/a/x.rs`.
-#[test]
-fn a_call_that_climbs_two_folders_links_to_the_file_there() {
-    let v = scan_fixture_labeled("rs-super-super", "graph_rust_qualified");
-    assert_eq!(deps_of(&v, "src/a/c/d.rs"), vec!["src/a/x.rs".to_string()]);
-}
-
-/// O `super` seguido só do item liga ao arquivo que responde pela pasta de
-/// cima: `super::sum()` em `src/a/y.rs` liga a `src/a.rs`.
-#[test]
-fn a_call_by_super_and_the_item_links_to_the_file_of_the_folder_above() {
-    let v = scan_fixture_labeled("rs-super-item", "graph_rust_qualified");
-    assert_eq!(deps_of(&v, "src/a/y.rs"), vec!["src/a.rs".to_string()]);
-}
-
-/// Os argumentos de tipo saem do caminho: `crate::a::Boxed::<u8>::new()` vira
-/// o import `crate::a::Boxed` e liga a `src/a.rs`, onde `Boxed` mora.
-#[test]
-fn a_call_with_type_arguments_in_the_path_links_to_the_file() {
-    let v = scan_fixture_labeled("rs-type-args", "graph_rust_qualified");
-    assert_eq!(imports_of(&v, "src/generic.rs"), vec!["crate::a::Boxed".to_string()]);
-    assert_eq!(deps_of(&v, "src/generic.rs"), vec!["src/a.rs".to_string()]);
-}
-
-/// O caminho que passa por um módulo escrito dentro do arquivo, e termina em
-/// tipo, perde do fim quantas partes for preciso até achar arquivo:
-/// `crate::a::inside::Jar::new()` liga a `src/a.rs`.
-#[test]
-fn a_path_through_a_module_inside_the_file_links_to_the_file() {
-    let v = scan_fixture_labeled("rs-inner-module", "graph_rust_qualified");
-    assert_eq!(deps_of(&v, "src/inner.rs"), vec!["src/a.rs".to_string()]);
-}
-
-/// O arquivo que responde pela própria pasta já é o módulo dela, e o `super`
-/// dele sobe a partir da pasta de cima: `super::a::x::f()` em `src/k/mod.rs`
-/// liga a `src/a/x.rs`.
-#[test]
-fn the_file_that_answers_for_its_folder_climbs_from_the_folder_above() {
-    let v = scan_fixture_labeled("rs-index-super", "graph_rust_qualified");
-    assert_eq!(deps_of(&v, "src/k/mod.rs"), vec!["src/a/x.rs".to_string()]);
-}
-
-/// O caminho que não nomeia nada do projeto não liga a um arquivo de outro
-/// lugar só porque o caminho dele termina igual: `crate::nothing::f()` em
-/// `src/no_target.rs` não liga a `src/a/nothing.rs`.
-#[test]
-fn a_crate_path_that_names_nothing_does_not_link_by_the_end_of_another_path() {
-    let v = scan_fixture_labeled("rs-no-target", "graph_rust_qualified");
-    assert_eq!(imports_of(&v, "src/no_target.rs"), vec!["crate::nothing".to_string()]);
-    assert_eq!(deps_of(&v, "src/no_target.rs"), Vec::<String>::new());
+    assert_eq!(
+        imports_of(&v, "src/generic.rs"),
+        vec!["crate::a::Boxed".to_string()],
+        "a call with type arguments in the path drops them from the import"
+    );
+    assert_eq!(
+        imports_of(&v, "src/no_target.rs"),
+        vec!["crate::nothing".to_string()],
+        "a crate path that names nothing is still written as an import"
+    );
 }
 
 /// O que o mapa grava em `key` para o arquivo `path`, como lista de textos.
@@ -517,40 +479,39 @@ fn used_by_of(v: &serde_json::Value, path: &str, name: &str) -> Vec<String> {
 /// é o `value` de `src/a.rs`, e não o `value` homônimo de `src/main.rs`, onde o
 /// caminho cairia se subisse pasta direto.
 fn assert_super_inside_a_module_stays_in_the_file(v: &serde_json::Value) {
-    assert_eq!(used_by_of(v, "src/a.rs", "value"), vec!["src/a.rs:7:near".to_string()]);
-    assert_eq!(used_by_of(v, "src/main.rs", "value"), Vec::<String>::new());
-    assert!(!deps_of(v, "src/a.rs").contains(&"src/main.rs".to_string()), "{:?}", deps_of(v, "src/a.rs"));
+    let case = "super inside a module of the file links to the file itself";
+    assert_eq!(used_by_of(v, "src/a.rs", "value"), vec!["src/a.rs:7:near".to_string()], "{case}");
+    assert_eq!(used_by_of(v, "src/main.rs", "value"), Vec::<String>::new(), "{case}");
+    assert!(!deps_of(v, "src/a.rs").contains(&"src/main.rs".to_string()), "{case}: {:?}", deps_of(v, "src/a.rs"));
 }
 
 /// O segundo `super` escrito dentro do mesmo módulo é o que sobe pasta:
 /// `super::super::x::double()` liga `src/a.rs` a `src/x.rs`.
 fn assert_second_super_inside_a_module_climbs_one_folder(v: &serde_json::Value) {
-    assert_eq!(deps_of(v, "src/a.rs"), vec!["src/x.rs".to_string()]);
+    assert_eq!(
+        deps_of(v, "src/a.rs"),
+        vec!["src/x.rs".to_string()],
+        "super super inside a module of the file climbs one folder"
+    );
 }
 
 /// O `use super::*` do trecho de teste é o próprio arquivo: não vira arquivo
 /// coberto pelo teste, e o arquivo de cima não ganha o teste.
 fn assert_super_of_the_test_block_stays_in_the_file(v: &serde_json::Value) {
-    assert_eq!(list_of(v, "src/a.rs", "test_imports"), vec!["super::*".to_string()]);
-    assert_eq!(list_of(v, "src/a.rs", "test_deps"), Vec::<String>::new());
-    assert_eq!(list_of(v, "src/main.rs", "tests"), Vec::<String>::new());
+    let case = "super of the test block stays in the file";
+    assert_eq!(list_of(v, "src/a.rs", "test_imports"), vec!["super::*".to_string()], "{case}");
+    assert_eq!(list_of(v, "src/a.rs", "test_deps"), Vec::<String>::new(), "{case}");
+    assert_eq!(list_of(v, "src/main.rs", "tests"), Vec::<String>::new(), "{case}");
 }
 
+/// O `super` dentro de um módulo do arquivo e do trecho de teste, numa pasta
+/// lida uma vez: o primeiro fica no arquivo, o segundo sobe pasta e o do
+/// trecho de teste é o próprio arquivo.
 #[test]
-fn super_inside_a_module_of_the_file_links_to_the_file_itself() {
-    let v = scan_fixture_labeled("rs-inner-super", "graph_rust_inner_module");
+fn graph_rust_inner_module() {
+    let v = scan_fixture_labeled("rs-inner", "graph_rust_inner_module");
     assert_super_inside_a_module_stays_in_the_file(&v);
-}
-
-#[test]
-fn super_super_inside_a_module_of_the_file_climbs_one_folder() {
-    let v = scan_fixture_labeled("rs-inner-super-super", "graph_rust_inner_module");
     assert_second_super_inside_a_module_climbs_one_folder(&v);
-}
-
-#[test]
-fn super_of_the_test_block_stays_in_the_file() {
-    let v = scan_fixture_labeled("rs-inner-test-block", "graph_rust_inner_module");
     assert_super_of_the_test_block_stays_in_the_file(&v);
 }
 
@@ -654,14 +615,22 @@ fn holders_of(v: &serde_json::Value, name: &str, site: &str) -> Vec<String> {
 /// declarações dele: `super::super::x::value()`, na linha 15 de `src/a.rs`, é
 /// o `value` de `src/x.rs`, e não o `value` homônimo do próprio arquivo.
 fn assert_a_call_by_a_path_links_only_to_the_file_it_names(v: &serde_json::Value) {
-    assert_eq!(holders_of(v, "value", "src/a.rs:15:far"), vec!["src/x.rs".to_string()]);
+    assert_eq!(
+        holders_of(v, "value", "src/a.rs:15:far"),
+        vec!["src/x.rs".to_string()],
+        "a call by a path links only to the file it names"
+    );
 }
 
 /// O próprio arquivo só entra quando o caminho o nomeia: `super::value()`
 /// dentro de `mod inner`, na linha 11 de `src/a.rs`, é o `value` de
 /// `src/a.rs`, e não o de `src/x.rs`, que o arquivo também importa.
 fn assert_a_path_to_the_file_itself_links_only_to_the_file(v: &serde_json::Value) {
-    assert_eq!(holders_of(v, "value", "src/a.rs:11:near"), vec!["src/a.rs".to_string()]);
+    assert_eq!(
+        holders_of(v, "value", "src/a.rs:11:near"),
+        vec!["src/a.rs".to_string()],
+        "a path to the file itself links only to the file"
+    );
 }
 
 /// Os arquivos cuja declaração `name` tem `site` entre os usos suspeitos, em
@@ -684,25 +653,19 @@ fn suspect_holders_of(v: &serde_json::Value, name: &str, site: &str) -> Vec<(Str
 /// do próprio arquivo, provado, e não o de `src/x.rs`, que o arquivo também
 /// importa pelo caminho da linha 15.
 fn assert_a_call_without_a_path_links_to_the_file_own_declaration(v: &serde_json::Value) {
-    assert_eq!(holders_of(v, "value", "src/a.rs:6:sum"), vec!["src/a.rs".to_string()]);
-    assert!(suspect_holders_of(v, "value", "src/a.rs:6:sum").is_empty(), "nenhuma suspeita");
+    let case = "a call without a path links to the file own declaration";
+    assert_eq!(holders_of(v, "value", "src/a.rs:6:sum"), vec!["src/a.rs".to_string()], "{case}");
+    assert!(suspect_holders_of(v, "value", "src/a.rs:6:sum").is_empty(), "{case}: nenhuma suspeita");
 }
 
+/// As chamadas de `src/a.rs` por caminho, numa pasta lida uma vez: a por
+/// caminho liga só ao arquivo que nomeia, a que nomeia o próprio arquivo liga só
+/// a ele e a sem caminho é a declaração do próprio arquivo.
 #[test]
-fn a_call_by_a_path_links_only_to_the_file_it_names() {
-    let v = scan_fixture_labeled("rs-path-only", "graph_rust_call_path");
+fn graph_rust_call_path() {
+    let v = scan_fixture_labeled("rs-call-path", "graph_rust_call_path");
     assert_a_call_by_a_path_links_only_to_the_file_it_names(&v);
-}
-
-#[test]
-fn a_path_to_the_file_itself_links_only_to_the_file() {
-    let v = scan_fixture_labeled("rs-path-itself", "graph_rust_call_path");
     assert_a_path_to_the_file_itself_links_only_to_the_file(&v);
-}
-
-#[test]
-fn a_call_without_a_path_links_to_the_file_own_declaration() {
-    let v = scan_fixture_labeled("rs-no-path", "graph_rust_call_path");
     assert_a_call_without_a_path_links_to_the_file_own_declaration(&v);
 }
 

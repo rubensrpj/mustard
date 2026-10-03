@@ -1446,8 +1446,9 @@ pub(crate) fn old_page_order(page: &str, lang: Locale) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::process::Command;
+    use std::sync::{Mutex, PoisonError};
 
     use mustard_core::domain::model::contract::{HookInput, Outcome, Trigger, Verdict};
     use mustard_core::domain::spec_state::SpecState as _;
@@ -1546,10 +1547,18 @@ mod tests {
         std::fs::read_to_string(&file).map_or(next.clone(), |order| format!("{order} {next}"))
     }
 
-    /// Um projeto no git, com os arquivos `files`, na branch da spec `x`
-    /// aberta, com a fala do usuário e um critério gravados: devolve os
-    /// números dos dois.
-    fn project_with(files: &[&str]) -> (tempfile::TempDir, u64, u64) {
+    /// O repositório semente dos arquivos `files`: o projeto no git, com os
+    /// arquivos e a branch `feature/x`, antes de qualquer registro da spec.
+    /// Cada lista de arquivos o monta uma vez por processo, e cada teste leva a
+    /// cópia da pasta com o `.git`: o repositório não tem remoto nem árvore
+    /// extra, e por isso nenhum caminho absoluto fica gravado nele.
+    fn seed_repo(files: &[&str]) -> PathBuf {
+        static SEEDS: Mutex<Vec<(Vec<String>, tempfile::TempDir)>> = Mutex::new(Vec::new());
+        let key: Vec<String> = files.iter().map(|file| (*file).to_string()).collect();
+        let mut seeds = SEEDS.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some((_, dir)) = seeds.iter().find(|(known, _)| *known == key) {
+            return dir.path().to_path_buf();
+        }
         let dir = tempdir().unwrap();
         let root = dir.path();
         std::fs::create_dir_all(root.join("src")).unwrap();
@@ -1565,6 +1574,17 @@ mod tests {
             git(root, &["config", key, value]);
         }
         git(root, &["checkout", "-q", "-b", "feature/x"]);
+        let path = root.to_path_buf();
+        seeds.push((key, dir));
+        path
+    }
+
+    /// Um projeto no git, com os arquivos `files`, na branch da spec `x`
+    /// aberta, com a fala do usuário e um critério gravados: devolve os
+    /// números dos dois.
+    fn project_with(files: &[&str]) -> (tempfile::TempDir, u64, u64) {
+        let dir = crate::shared::test_fixture::clone_of(&seed_repo(files));
+        let root = dir.path();
         assert_eq!(record_open(root, "x", "feature/x", "dev"), Ok(true));
         crate::commands::flow::round::copies_leave_with_the_test(root);
         let said = id_of(&write(root, "message", json!({"author": "user", "text": "o objetivo"})));
@@ -1826,7 +1846,11 @@ mod tests {
     /// Um expurgo gravado depois da última cópia troca de novo a faixa que
     /// ele tocou: a versão limpa do item substitui a do banco, dentro da
     /// faixa reenviada. O item que ainda guarda um trecho com cara de segredo
-    /// depois do expurgo some da lista de itens da faixa.
+    /// depois do expurgo some da lista de itens da faixa. A cópia que só tira
+    /// um item do meio (sem onda, pedido nem rtk mudando) muda mesmo assim o
+    /// `last` do documento calculado: é por ele que a página aberta nota que
+    /// há algo novo, mesmo sem item novo nem mudança de onda para a escuta
+    /// pegar.
     #[test]
     fn a_purge_after_the_copy_sends_the_clean_item_again_or_takes_it_out() {
         let dir = approved_project();
@@ -1841,6 +1865,7 @@ mod tests {
         let copied = sent_items(root, &first);
         assert!(copied.contains(&clean) && !copied.contains(&held), "{copied:?}");
         follow(root, &first);
+        let first_last = first["copy"]["spec"]["record"]["last"].as_u64().expect("the first last");
         let purge =
             json!({"targets": [clean, held], "reason": "client_data", "excerpt": "azul-marinho-42", "origin": said});
         write(root, "purge", purge);
@@ -1854,31 +1879,6 @@ mod tests {
         assert_eq!(again["text"], json!("O código do cofre é …."), "{again}");
         assert!(!items.iter().any(|i| i["id"].as_u64() == Some(held)), "the item with a secret left leaves the range");
         assert!(!writes.iter().any(|w| w.to_string().contains("azul-marinho")), "{writes:?}");
-    }
-
-    /// Uma cópia que só tira um item do meio (um expurgo, sem onda, pedido
-    /// nem rtk mudando) muda mesmo assim o `last` do documento calculado: é
-    /// por ele que a página aberta nota que há algo novo, mesmo sem item novo
-    /// nem mudança de onda para a escuta pegar.
-    #[test]
-    fn a_middle_only_purge_still_moves_the_last_copied_item() {
-        let dir = approved_project();
-        let root = dir.path();
-        let said = log(root).visible().into_iter().find(|e| e.event_type == "message").map(|e| e.id);
-        let clean = id_of(&write(root, "note",
-            json!({"text": "O código do cofre é azul-marinho-42.", "keys": ["cofre"], "origin": said})));
-        let held = id_of(&write(root, "note",
-            json!({"text": "Cofre azul-marinho-42, e a senha: S3nh4F0rte2024.", "keys": ["cofre"], "origin": said})));
-
-        let first = round(root);
-        follow(root, &first);
-        let first_last = first["copy"]["spec"]["record"]["last"].as_u64().expect("the first last");
-
-        write(root, "purge", json!({"targets": [clean, held], "reason": "client_data",
-            "excerpt": "azul-marinho-42", "origin": said}));
-
-        let second = round(root);
-        let writes = sent(root, &second, "spec");
         let computed = writes.iter().find(|w| w["collection"] == json!("computed")).expect("the computed item");
         let second_last = computed["body"]["last"].as_u64().expect("the last copied item");
         assert!(second_last > first_last, "a copy with only a purge still moves `last`: {first_last} -> {second_last}");
@@ -2049,103 +2049,88 @@ mod tests {
     /// banco daquele endereço, e o banco recusa trocá-la sem a versão: a
     /// cópia seguinte para o mesmo endereço nomeia o documento dela entre os
     /// que já existem. A primeira cópia, para um endereço novo com o banco
-    /// vazio, não nomeia nada.
+    /// vazio, não nomeia nada. Copiada com a versão que o banco devolveu, a
+    /// linha vai de novo para o mesmo endereço com essa versão em
+    /// `if_version`, e a ordem não a nomeia para ler.
     #[test]
-    fn project_line_already_copied_asks_for_the_version_before_replacing() {
-        let dir = approved_project();
-        let root = dir.path();
-        let lang = Locale::PtBr;
-        let named = translate("page.copy.existing", lang).replace("{docs}", &format!("`{SPECS}/x`"));
+    fn project_line_already_copied_asks_for_the_version_or_goes_with_the_stored_one() {
+        for stored in [None, Some(4)] {
+            let dir = approved_project();
+            let root = dir.path();
+            let lang = Locale::PtBr;
+            let named = translate("page.copy.existing", lang).replace("{docs}", &format!("`{SPECS}/x`"));
+            let read = read_order(lang);
 
-        // O marco da aprovação publica a página do projeto num endereço novo
-        // e copia a linha da spec na fase de então.
-        let approval = prepare(root, "x", lang).expect("the approval copy");
-        let project = approval.project.as_ref().expect("the project row goes");
-        assert!(project.url.is_none() && project.existing.is_empty(), "a new address has nothing yet");
-        let first = approval.order("x", Some("approval"), lang).join(" ");
-        assert!(!first.contains(&named), "the first copy names nothing: {first}");
-        write(root, "publish", json!({"page": "project", "milestone": "approval", "ok": true, "template": true,
-            "stamp": stamp_of("project"), "url": PROJECT_URL}));
-        write(root, "copy", project.record.clone());
+            // O marco da aprovação publica a página do projeto num endereço novo
+            // e copia a linha da spec na fase de então.
+            let approval = prepare(root, "x", lang).expect("the approval copy");
+            let project = approval.project.as_ref().expect("the project row goes");
+            assert!(project.url.is_none() && project.existing.is_empty(), "a new address has nothing yet");
+            let first = approval.order("x", Some("approval"), lang).join(" ");
+            assert!(!first.contains(&named), "the first copy names nothing: {first}");
+            write(root, "publish", json!({"page": "project", "milestone": "approval", "ok": true, "template": true,
+                "stamp": stamp_of("project"), "url": PROJECT_URL}));
+            let mut record = project.record.clone();
+            if let Some(version) = stored {
+                record["versions"] = json!({"specs/x": version});
+            }
+            write(root, "copy", record);
 
-        // A rodada muda a fase, e a linha vai de novo para o mesmo endereço.
-        let second = round(root);
-        assert_eq!(second["copy"]["project"]["record"], json!({"page": "project", "phase": "running"}), "{second}");
-        let next = full_next(root, &second);
-        assert!(next.contains(PROJECT_URL) && next.contains(&named), "the row already there is named: {next}");
+            // A rodada muda a fase, e a linha vai de novo para o mesmo endereço.
+            let second = round(root);
+            assert_eq!(second["copy"]["project"]["record"], json!({"page": "project", "phase": "running"}), "{second}");
+            let next = full_next(root, &second);
+            match stored {
+                None => assert!(next.contains(PROJECT_URL) && next.contains(&named), "the row already there is named: {next}"),
+                Some(version) => {
+                    assert_eq!(pinned(root, &second, "project", "specs/x"), json!(version), "{second}");
+                    assert!(next.contains(PROJECT_URL) && !next.contains(&read), "nothing is named to be read: {next}");
+                }
+            }
+        }
     }
 
     /// Outra spec publica a página do projeto num endereço novo e copia
     /// todas as linhas do índice, a desta spec junto: a primeira cópia desta
-    /// spec para esse endereço já acha a linha dela no banco e a nomeia.
+    /// spec para esse endereço já acha a linha dela no banco e a nomeia. Se a
+    /// outra spec guardou a versão que o banco devolveu a cada linha, a linha
+    /// desta spec vai com essa versão na primeira cópia, sem leitura.
     #[test]
-    fn line_carried_by_the_copy_of_another_spec_also_asks_for_the_version() {
-        let dir = approved_project();
-        let root = dir.path();
-        let lang = Locale::PtBr;
-        let named = translate("page.copy.existing", lang).replace("{docs}", &format!("`{SPECS}/x`"));
-        let other = root.join(".claude/spec/y/spec.ndjson");
-        let put = |event_type: &str, fields: Value| {
-            store::write(&other, event_type, fields.as_object().cloned().unwrap(), &[]).unwrap();
-        };
-        put("state", json!({"phase": "survey"}));
-        put("publish", json!({"page": "project", "milestone": "round", "ok": true, "template": true,
-            "stamp": stamp_of(PROJECT_PAGE), "url": PROJECT_URL}));
-        put("copy", json!({"page": "project", "phase": "survey"}));
+    fn line_carried_by_the_copy_of_another_spec_asks_for_the_version_or_goes_with_the_stored_one() {
+        for stored in [None, Some(9)] {
+            let dir = approved_project();
+            let root = dir.path();
+            let lang = Locale::PtBr;
+            let named = translate("page.copy.existing", lang).replace("{docs}", &format!("`{SPECS}/x`"));
+            let read = read_order(lang);
+            let other = root.join(".claude/spec/y/spec.ndjson");
+            let put = |event_type: &str, fields: Value| {
+                store::write(&other, event_type, fields.as_object().cloned().unwrap(), &[]).unwrap();
+            };
+            put("state", json!({"phase": "survey"}));
+            put("publish", json!({"page": "project", "milestone": "round", "ok": true, "template": true,
+                "stamp": stamp_of(PROJECT_PAGE), "url": PROJECT_URL}));
+            let mut carried = json!({"page": "project", "phase": "survey"});
+            if let Some(version) = stored {
+                carried["versions"] = json!({"specs/x": version, "specs/y": version});
+            }
+            put("copy", carried);
 
-        let first = round(root);
-        assert!(!first["publish"].as_array().is_some_and(|p| p.contains(&json!("project"))), "{first}");
-        assert_eq!(first["copy"]["project"]["record"], json!({"page": "project", "phase": "running"}), "{first}");
-        let next = full_next(root, &first);
-        assert!(next.contains(PROJECT_URL) && next.contains(&named), "the row the other spec carried is named: {next}");
-    }
-
-    /// A linha da spec copiada antes com a versão que o banco devolveu vai
-    /// de novo para o mesmo endereço com essa versão em `if_version`, e a
-    /// ordem não a nomeia para ler.
-    #[test]
-    fn project_line_with_a_stored_version_goes_with_it_without_a_read() {
-        let dir = approved_project();
-        let root = dir.path();
-        let lang = Locale::PtBr;
-        let read = read_order(lang);
-        let approval = prepare(root, "x", lang).expect("the approval copy");
-        let project = approval.project.as_ref().expect("the project row goes");
-        write(root, "publish", json!({"page": "project", "milestone": "approval", "ok": true, "template": true,
-            "stamp": stamp_of("project"), "url": PROJECT_URL}));
-        let mut record = project.record.clone();
-        record["versions"] = json!({"specs/x": 4});
-        write(root, "copy", record);
-
-        // A rodada muda a fase, e a linha vai de novo para o mesmo endereço.
-        let second = round(root);
-        assert_eq!(pinned(root, &second, "project", "specs/x"), json!(4), "{second}");
-        let next = full_next(root, &second);
-        assert!(next.contains(PROJECT_URL) && !next.contains(&read), "nothing is named to be read: {next}");
-    }
-
-    /// A linha desta spec que outra spec levou, na cópia de todas as linhas,
-    /// com a versão que o banco devolveu a cada uma, vai com essa versão na
-    /// primeira cópia desta spec para o mesmo endereço, sem leitura.
-    #[test]
-    fn line_carried_with_a_version_by_another_spec_goes_with_it() {
-        let dir = approved_project();
-        let root = dir.path();
-        let lang = Locale::PtBr;
-        let read = read_order(lang);
-        let other = root.join(".claude/spec/y/spec.ndjson");
-        let put = |event_type: &str, fields: Value| {
-            store::write(&other, event_type, fields.as_object().cloned().unwrap(), &[]).unwrap();
-        };
-        put("state", json!({"phase": "survey"}));
-        put("publish", json!({"page": "project", "milestone": "round", "ok": true, "template": true,
-            "stamp": stamp_of(PROJECT_PAGE), "url": PROJECT_URL}));
-        put("copy", json!({"page": "project", "phase": "survey", "versions": {"specs/x": 9, "specs/y": 9}}));
-
-        let first = round(root);
-        assert_eq!(pinned(root, &first, "project", "specs/x"), json!(9), "{first}");
-        let next = full_next(root, &first);
-        assert!(next.contains(PROJECT_URL) && !next.contains(&read), "nothing is named to be read: {next}");
+            let first = round(root);
+            assert!(!first["publish"].as_array().is_some_and(|p| p.contains(&json!("project"))), "{first}");
+            assert_eq!(first["copy"]["project"]["record"], json!({"page": "project", "phase": "running"}), "{first}");
+            let next = full_next(root, &first);
+            match stored {
+                None => assert!(
+                    next.contains(PROJECT_URL) && next.contains(&named),
+                    "the row the other spec carried is named: {next}"
+                ),
+                Some(version) => {
+                    assert_eq!(pinned(root, &first, "project", "specs/x"), json!(version), "{first}");
+                    assert!(next.contains(PROJECT_URL) && !next.contains(&read), "nothing is named to be read: {next}");
+                }
+            }
+        }
     }
 
     /// Uma faixa já copiada ganha itens longos até se partir em dois
@@ -2210,28 +2195,6 @@ mod tests {
         assert_eq!(pinned(root, &first, "project", "specs/x"), Value::Null, "this spec's row is new there");
         let next = full_next(root, &first);
         assert!(next.contains(PROJECT_URL) && !next.contains(&read), "nothing is named to be read: {next}");
-    }
-
-    /// A cópia de uma spec longa vai em lotes de até 50 escritas, na ordem
-    /// das faixas, e o documento das coisas calculadas vai no último; ver
-    /// [`a_long_spec_fits_the_page_database`], que já precisa de uma spec
-    /// grande o bastante para tocar mais de 50 faixas.
-    #[test]
-    fn a_long_copy_goes_in_batches_of_fifty() {
-        let dir = approved_project();
-        let root = dir.path();
-        let said = log(root).visible().into_iter().find(|e| e.event_type == "message").map(|e| e.id);
-        for n in 0..60 {
-            write(root, "note", json!({"text": format!("Nota {n}."), "keys": ["nota"], "origin": said}));
-        }
-        let first = round(root);
-        // 60 notas cabem numa faixa só: um lote, com a faixa e o documento
-        // das coisas calculadas.
-        let batches = first["copy"]["spec"]["batches"].as_array().cloned().unwrap_or_default();
-        assert_eq!(batches, [json!(".claude/spec/x/copy/spec-1.json")], "{batches:?}");
-        let writes = sent(root, &first, "spec");
-        assert_eq!(writes.len(), 2, "the range and the computed document: {writes:?}");
-        assert_eq!(writes.last().map(|w| w["collection"].clone()), Some(json!("computed")));
     }
 
     const OLD_URL: &str = "https://claude.ai/code/artifact/pagina-antiga";
@@ -2949,7 +2912,10 @@ mod tests {
     /// arquivo. O resultado do lote mandado ao endereço da página da spec
     /// grava a cópia sozinho, com o número até onde ela foi e a versão que o
     /// banco devolveu a cada documento, e a conversa ouve que não precisa
-    /// gravar; a cópia seguinte já troca cada documento com essa versão.
+    /// gravar; o mesmo resultado lido duas vezes grava uma cópia só: gravada a
+    /// cópia, o registro sai, e o segundo passa calado. A cópia seguinte já
+    /// troca cada documento com essa versão. Uma cópia curta vai num lote só,
+    /// com a faixa e o documento das coisas calculadas, que vai por último.
     #[test]
     fn the_batch_result_records_the_copy_with_its_versions() {
         let dir = approved_project();
@@ -2957,6 +2923,9 @@ mod tests {
         let first = published_round(root);
         let batches = first["copy"]["spec"]["writes"].as_array().cloned().unwrap_or_default();
         assert_eq!(batches.len(), 1, "{first}");
+        let writes = batches[0].as_array().cloned().unwrap_or_default();
+        assert_eq!(writes.len(), 2, "the range and the computed document: {writes:?}");
+        assert_eq!(writes.last().map(|w| w["collection"].clone()), Some(json!("computed")));
         for write in batches[0].as_array().into_iter().flatten().filter(|w| w.get("file_path").is_some()) {
             let file = write["file_path"].as_str().unwrap_or_default();
             assert!(Path::new(file).is_absolute(), "{file}");
@@ -2973,14 +2942,19 @@ mod tests {
         assert_eq!(versions.get("ranges/0"), Some(&json!(7)), "{versions:?}");
         assert_eq!(versions.get(COMPUTED), Some(&json!(7)), "{versions:?}");
 
+        let again = batch_sent(root, SPEC_URL, &batches[0], json!(committed(&batches[0], 7)));
+        assert_eq!(again.verdict, Verdict::Allow, "the same result twice");
+        assert_eq!(witnessed(root).len(), 1, "one copy");
+
         let second = round(root);
         assert_eq!(pinned(root, &second, SPEC_PAGE, COMPUTED), json!(7), "the next copy uses the version");
     }
 
     /// O lote de outro endereço, outra ação da ferramenta e o lote que falhou
     /// não gravam nada, e o gancho não diz nada: a ordem continua com a
-    /// gravação à mão. O registro da cópia fica onde estava, e o resultado
-    /// certo, depois, grava.
+    /// gravação à mão. O objeto com `committed` falso, ou sem a versão de um
+    /// documento mandado, também não grava nada. O registro da cópia fica onde
+    /// estava, e o resultado certo, em texto, depois, grava.
     #[test]
     fn a_batch_elsewhere_or_a_failed_one_records_nothing() {
         let dir = approved_project();
@@ -2999,11 +2973,21 @@ mod tests {
         let failed = batch_sent(root, SPEC_URL, &batch,
             json!([{"type": "text", "text": "Error: version conflict on \"ranges\"/\"0\"; nothing was written"}]));
         assert_eq!(failed.verdict, Verdict::Allow, "the failed batch");
+        let refused = batch_sent(root, SPEC_URL, &batch, written(&batch, 5, false));
+        assert_eq!(refused.verdict, Verdict::Allow, "committed false");
+        let mut short = written(&batch, 5, true);
+        let results = short["db_write"]["results"].as_array_mut().unwrap();
+        let set = results.iter().position(|r| r["op"] == json!("set")).unwrap();
+        results.remove(set);
+        let incomplete = batch_sent(root, SPEC_URL, &batch, short);
+        assert_eq!(incomplete.verdict, Verdict::Allow, "one version missing");
         assert!(witnessed(root).is_empty(), "nothing recorded");
 
         let blocks = json!([{"type": "text", "text": committed(&batch, 9)}]);
         assert_eq!(batch_sent(root, SPEC_URL, &batch, blocks).verdict, Verdict::Inject { context: recorded_line() });
-        assert_eq!(witnessed(root).len(), 1);
+        let copies = witnessed(root);
+        assert_eq!(copies.len(), 1);
+        assert_eq!(versions_of(&copies[0]).get(COMPUTED), Some(&json!(9)), "{:?}", copies[0]);
     }
 
     /// O resultado do lote como a ferramenta do banco o entrega, em objeto:
@@ -3043,47 +3027,6 @@ mod tests {
         let versions = versions_of(&copies[0]);
         assert_eq!(versions.get("ranges/0"), Some(&json!(5)), "{versions:?}");
         assert_eq!(versions.get(COMPUTED), Some(&json!(5)), "{versions:?}");
-    }
-
-    /// O objeto com `committed` falso, ou sem a versão de um documento
-    /// mandado, não grava nada; o resultado em texto, depois, continua
-    /// gravando a cópia.
-    #[test]
-    fn an_uncommitted_or_incomplete_object_records_nothing_and_the_text_still_records() {
-        let dir = approved_project();
-        let root = dir.path();
-        let first = published_round(root);
-        let batch = first["copy"]["spec"]["writes"][0].clone();
-
-        let refused = batch_sent(root, SPEC_URL, &batch, written(&batch, 5, false));
-        assert_eq!(refused.verdict, Verdict::Allow, "committed false");
-        let mut short = written(&batch, 5, true);
-        let results = short["db_write"]["results"].as_array_mut().unwrap();
-        let set = results.iter().position(|r| r["op"] == json!("set")).unwrap();
-        results.remove(set);
-        let incomplete = batch_sent(root, SPEC_URL, &batch, short);
-        assert_eq!(incomplete.verdict, Verdict::Allow, "one version missing");
-        assert!(witnessed(root).is_empty(), "nothing recorded");
-
-        let text = batch_sent(root, SPEC_URL, &batch, json!(committed(&batch, 6)));
-        assert_eq!(text.verdict, Verdict::Inject { context: recorded_line() }, "{text:?}");
-        let copies = witnessed(root);
-        assert_eq!(copies.len(), 1);
-        assert_eq!(versions_of(&copies[0]).get(COMPUTED), Some(&json!(6)), "{:?}", copies[0]);
-    }
-
-    /// O mesmo resultado lido duas vezes grava uma cópia só: gravada a
-    /// cópia, o registro sai, e o segundo passa calado.
-    #[test]
-    fn the_same_result_twice_records_once() {
-        let dir = approved_project();
-        let root = dir.path();
-        let first = published_round(root);
-        let batch = first["copy"]["spec"]["writes"][0].clone();
-        let result = json!(committed(&batch, 4));
-        assert_eq!(batch_sent(root, SPEC_URL, &batch, result.clone()).verdict, Verdict::Inject { context: recorded_line() });
-        assert_eq!(batch_sent(root, SPEC_URL, &batch, result).verdict, Verdict::Allow);
-        assert_eq!(witnessed(root).len(), 1, "one copy");
     }
 
     /// Numa cópia de dois lotes, o primeiro que volta só guarda as versões
@@ -3323,31 +3266,12 @@ mod tests {
         assert_eq!(spend_line(&log, Locale::PtBr), None);
     }
 
-    /// O marco de verdade também leva a linha do gasto: depois do envio da
-    /// onda (com o consumo dela) e da entrega (com o arquivo tocado), o
-    /// documento das coisas calculadas que a cópia grava traz `spend`
-    /// preenchida, pelo mesmo caminho que a página lê.
-    #[test]
-    fn a_real_round_carries_the_spend_line_to_the_computed_document() {
-        let dir = approved_project();
-        let root = dir.path();
-        crate::shared::spec_state::seed_event(root, "x", "send", json!({"wave": 1, "role": "wave", "text": "t",
-            "lines": 1, "chars": 1, "items": [1], "mustard": "0.2.1", "tokens": 1_000_000, "caller_tokens": 200_000}));
-        crate::shared::spec_state::seed_event(root, "x", "delivered", json!({"wave": 1, "text": "d", "files": ["src/a.rs"]}));
-
-        let report = round(root);
-        let bodies = sent(root, &report, "spec");
-        let computed = bodies.iter().find(|w| w["collection"] == json!("computed")).expect("the computed item");
-        let spend = computed["body"]["spend"].as_str().unwrap_or_default();
-        assert!(spend.contains("1000000"), "{spend}");
-        assert!(spend.contains("200000"), "{spend}");
-        assert!(spend.contains("1200000"), "{spend}");
-    }
-
-    /// O documento das coisas calculadas leva também os números do gasto,
-    /// cada um no seu campo, pelo mesmo caminho que a página lê: os tokens
-    /// das ondas, os de quem despachou, o total e os turnos por tarefa — os
-    /// mesmos da frase. Sem nenhum token, o campo vem vazio.
+    /// O marco de verdade leva o gasto ao documento das coisas calculadas
+    /// que a cópia grava, depois do envio da onda (com o consumo dela) e da
+    /// entrega (com o arquivo tocado), pelo mesmo caminho que a página lê:
+    /// cada número no seu campo — os tokens das ondas, os de quem despachou,
+    /// o total e os turnos por tarefa — e a linha do gasto com os mesmos
+    /// números. Sem nenhum token, o campo vem vazio.
     #[test]
     fn a_real_round_carries_the_spend_numbers_to_the_computed_document() {
         let dir = approved_project();
@@ -3370,5 +3294,8 @@ mod tests {
         assert!(turns > 0, "{body}");
         let line = body["spend"].as_str().unwrap_or_default();
         assert!(line.contains(&turns.to_string()), "the same turns as the spend line: {line} / {tokens}");
+        for number in ["900000", "300000", "1200000"] {
+            assert!(line.contains(number), "the spend line carries {number}: {line}");
+        }
     }
 }

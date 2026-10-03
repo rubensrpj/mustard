@@ -150,9 +150,9 @@ fn project_with(files: &[(&str, &str)]) -> tempfile::TempDir {
     temp
 }
 
-/// O projeto de cada framework, com os arquivos que não ligam nenhum.
-fn project() -> tempfile::TempDir {
-    project_with(&[
+/// Os arquivos do projeto de cada framework, com os que não ligam nenhum.
+fn project_files() -> Vec<(&'static str, &'static str)> {
+    vec![
         ("Loja/Controllers/PedidosController.cs", CONTROLLER),
         ("Loja/Program.cs", MINIMAL_API),
         ("api/pedidos.controller.ts", NEST),
@@ -161,7 +161,12 @@ fn project() -> tempfile::TempDir {
         ("web/app.ts", EXPRESS_APP),
         ("web/cache.ts", NO_FRAMEWORK),
         ("web/leitor.ts", OTHER_PACKAGE),
-    ])
+    ]
+}
+
+/// O projeto de cada framework, com os arquivos que não ligam nenhum.
+fn project() -> tempfile::TempDir {
+    project_with(&project_files())
 }
 
 /// Roda o scan sobre o projeto, com o mapa dentro dele, e devolve o mapa e o
@@ -293,12 +298,45 @@ fn a_router_mounted_with_use_takes_the_prefix_of_the_mount() {
     assert_eq!(keys(&map, "web/app.ts"), ["GET api/pedidos/{} -> ler:8"]);
 }
 
+/// O arquivo que não importa o framework não tem rota, qualquer que seja a
+/// linguagem: num projeto só, com o arquivo de cada uma, uma leitura confere
+/// todos.
 #[test]
 fn a_file_that_imports_no_framework_has_no_route() {
-    let temp = project();
+    // As listas incluídas, escritas ali ou guardadas num nome, num arquivo que
+    // não importa o Django.
+    let urls = "from . import views\n\nextra = [\n    path('pedidos/', views.listar),\n]\n\n\
+                urlpatterns = [\n    path('api/', include(extra)),\n    \
+                path('v1/', include([path('pedidos/<int:id>/', views.ler)])),\n]\n";
+    // O decorador e a lista com a forma de rota, num arquivo que não importa o
+    // framework, ou que importa um pacote cujo nome começa pelo dele.
+    let cache = "from cache import app\n\n\n@app.get(\"/x\")\ndef ler():\n    return 1\n\n\n\
+                 urlpatterns = [\n    path('pedidos/', ler),\n]\n";
+    let other = "from flask_caching import app\n\n\n@app.route(\"/x\")\ndef ler():\n    return 1\n";
+    let php = "<?php\n\nRoute::get('/pedidos/{id}', [PedidoController::class, 'show']);\nRoute::apiResource('fotos', F::class);\n";
+
+    let mut files = project_files();
+    files.extend(django_list_app(urls));
+    files.extend([
+        ("loja/cache.py", cache),
+        ("loja/outro.py", other),
+        ("go.mod", "module loja\n\ngo 1.22\n"),
+        ("util/rotas.go", GO_NO_FRAMEWORK),
+        ("routes/api.php", php),
+    ]);
+    let temp = project_with(&files);
     let (map, _) = scan(temp.path());
-    assert_eq!(routes(&map, "web/cache.ts"), json!([]));
-    assert_eq!(routes(&map, "web/leitor.ts"), json!([]), "a package whose name starts with the framework's is another one");
+    for (file, case) in [
+        ("web/cache.ts", "a function named like a route"),
+        ("web/leitor.ts", "a package whose name starts with the framework's is another one"),
+        ("loja/urls.py", "an included list of paths in a file that imports no django"),
+        ("loja/cache.py", "a decorated file that imports no framework"),
+        ("loja/outro.py", "a package whose name starts with the framework's is another one"),
+        ("util/rotas.go", "a go file that imports no framework"),
+        ("routes/api.php", "a php file that imports no framework"),
+    ] {
+        assert_eq!(routes(&map, file), json!([]), "{file}: {case}");
+    }
 }
 
 #[test]
@@ -1435,21 +1473,17 @@ fn django_app() -> [(&'static str, &'static str); 3] {
     [("loja/__init__.py", ""), ("loja/urls.py", DJANGO_URLS), ("loja/views.py", DJANGO_VIEWS)]
 }
 
+/// Um caminho da lista é rota de qualquer método, atendida pela visão ou pela
+/// classe dela; o caminho de expressão regular perde as âncoras e lê o grupo
+/// nomeado como parâmetro.
 #[test]
 fn a_path_in_the_list_is_a_route_of_any_method_served_by_the_view_or_its_class() {
     let temp = project_with(&django_app());
     let (map, _) = scan(temp.path());
     let served = served(&map, "loja/urls.py");
-    assert!(served.contains(&"* pedidos/{} -> ler_pedido".to_string()), "{served:?}");
-    assert!(served.contains(&"* classe -> PedidoView".to_string()), "{served:?}");
-}
-
-#[test]
-fn a_regular_expression_path_drops_its_anchors_and_reads_the_named_group_as_a_parameter() {
-    let temp = project_with(&django_app());
-    let (map, _) = scan(temp.path());
-    let served = served(&map, "loja/urls.py");
-    assert!(served.contains(&"* aves/{} -> ave".to_string()), "{served:?}");
+    for route in ["* pedidos/{} -> ler_pedido", "* classe -> PedidoView", "* aves/{} -> ave"] {
+        assert!(served.contains(&route.to_string()), "{route}: {served:?}");
+    }
 }
 
 #[test]
@@ -1470,47 +1504,54 @@ fn django_list_app(urls: &'static str) -> Vec<(&'static str, &'static str)> {
     vec![("loja/__init__.py", ""), ("loja/views.py", DJANGO_LIST_VIEWS), ("loja/urls.py", urls)]
 }
 
+/// O include de uma lista de caminhos dá as rotas dela sob o prefixo do
+/// include, e só sob ele: a lista escrita dentro do include, a guardada num
+/// nome, a trazida de outro arquivo e a incluída com o nome do app numa tupla.
+/// Cada linha é um caso: a lista de caminhos do app, os outros arquivos do
+/// projeto, o arquivo que atende as rotas e as rotas dele.
 #[test]
-fn a_list_written_inside_an_include_gives_its_routes_under_the_include_prefix() {
-    let urls = "from django.urls import include, path\n\nfrom . import views\n\n\
-                urlpatterns = [\n    path('api/', include([path('pedidos/<int:id>/', views.ler)])),\n]\n";
-    let temp = project_with(&django_list_app(urls));
-    let (map, _) = scan(temp.path());
-    assert_eq!(served(&map, "loja/urls.py"), ["* api/pedidos/{} -> ler"]);
-}
-
-#[test]
-fn a_list_kept_in_a_name_and_included_by_it_gives_its_routes_only_under_the_include_prefix() {
-    let urls = "from django.urls import include, path\n\nfrom . import views\n\n\
+fn an_include_of_a_list_gives_its_routes_under_the_include_prefix() {
+    let inside = "from django.urls import include, path\n\nfrom . import views\n\n\
+                  urlpatterns = [\n    path('api/', include([path('pedidos/<int:id>/', views.ler)])),\n]\n";
+    let kept = "from django.urls import include, path\n\nfrom . import views\n\n\
                 extra = [\n    path('pedidos/', views.listar),\n]\n\n\
                 urlpatterns = [\n    path('api/', include(extra)),\n]\n";
-    let temp = project_with(&django_list_app(urls));
-    let (map, _) = scan(temp.path());
-    assert_eq!(served(&map, "loja/urls.py"), ["* api/pedidos -> listar"]);
-}
-
-#[test]
-fn a_list_brought_from_another_file_gives_its_routes_under_the_include_prefix_where_it_is_written() {
     let api = "from django.urls import path\n\nfrom . import views\n\nextra = [\n    path('pedidos/', views.listar),\n]\n";
-    let urls = "from django.urls import include, path\n\nfrom .api import extra\n\n\
-                urlpatterns = [\n    path('api/', include(extra)),\n]\n";
-    let mut files = django_list_app(urls);
-    files.push(("loja/api.py", api));
-    let temp = project_with(&files);
-    let (map, _) = scan(temp.path());
-    assert_eq!(served(&map, "loja/api.py"), ["* api/pedidos -> listar"]);
-    assert_eq!(routes(&map, "loja/urls.py"), json!([]), "the include is not a route");
-}
-
-#[test]
-fn a_list_included_with_the_app_name_in_a_tuple_takes_the_same_prefix() {
-    let urls = "from django.urls import include, path\n\nfrom . import views\n\n\
-                extra = [\n    path('pedidos/', views.listar),\n]\n\n\
-                urlpatterns = [\n    path('api/', include((extra, 'loja'))),\n    \
-                path('v1/', include(([path('pedidos/<int:id>/', views.ler)], 'loja'))),\n]\n";
-    let temp = project_with(&django_list_app(urls));
-    let (map, _) = scan(temp.path());
-    assert_eq!(served(&map, "loja/urls.py"), ["* api/pedidos -> listar", "* v1/pedidos/{} -> ler"]);
+    let brought = "from django.urls import include, path\n\nfrom .api import extra\n\n\
+                   urlpatterns = [\n    path('api/', include(extra)),\n]\n";
+    let tuple = "from django.urls import include, path\n\nfrom . import views\n\n\
+                 extra = [\n    path('pedidos/', views.listar),\n]\n\n\
+                 urlpatterns = [\n    path('api/', include((extra, 'loja'))),\n    \
+                 path('v1/', include(([path('pedidos/<int:id>/', views.ler)], 'loja'))),\n]\n";
+    let no_files: &[(&str, &str)] = &[];
+    let cases: [(&str, &str, &[(&str, &str)], &str, &[&str]); 4] = [
+        ("a list written inside an include", inside, no_files, "loja/urls.py", &["* api/pedidos/{} -> ler"]),
+        ("a list kept in a name and included by it", kept, no_files, "loja/urls.py", &["* api/pedidos -> listar"]),
+        (
+            "a list brought from another file takes the prefix where it is written",
+            brought,
+            &[("loja/api.py", api)],
+            "loja/api.py",
+            &["* api/pedidos -> listar"],
+        ),
+        (
+            "a list included with the app name in a tuple",
+            tuple,
+            no_files,
+            "loja/urls.py",
+            &["* api/pedidos -> listar", "* v1/pedidos/{} -> ler"],
+        ),
+    ];
+    for (case, urls, more, file, expected) in cases {
+        let mut files = django_list_app(urls);
+        files.extend_from_slice(more);
+        let temp = project_with(&files);
+        let (map, _) = scan(temp.path());
+        assert_eq!(served(&map, file), expected, "{case}");
+        if file != "loja/urls.py" {
+            assert_eq!(routes(&map, "loja/urls.py"), json!([]), "{case}: the include is not a route");
+        }
+    }
 }
 
 /// A lista de caminhos do app `loja`, com a rota de `read_route`.
@@ -1526,81 +1567,58 @@ fn django_root_app(root: &'static str, more: &[(&'static str, &'static str)]) ->
     files
 }
 
-/// O include dentro de outro include soma os prefixos dos dois, o de fora
-/// primeiro, às rotas do arquivo que o módulo nomeia.
+/// O include soma o prefixo às rotas do arquivo que o módulo nomeia, também
+/// por dentro de outro include, de uma lista guardada num nome (escrita ali ou
+/// trazida de outro arquivo), da tupla com o texto do módulo, de um arquivo
+/// incluído que inclui outro e do módulo trazido pelo import com outro nome;
+/// os prefixos vêm de fora para dentro. Cada linha é um caso: a lista de
+/// caminhos do projeto, os outros arquivos dele e as rotas do app.
 #[test]
-fn an_include_inside_another_include_adds_both_prefixes_to_the_file_the_module_names() {
-    let root = "from django.urls import include, path\n\n\
-                urlpatterns = [\n    path('api/', include([path('v1/', include('loja.urls'))])),\n]\n";
-    let temp = project_with(&django_root_app(root, &[]));
-    let (map, _) = scan(temp.path());
-    assert_eq!(served(&map, "loja/urls.py"), ["* api/v1/pedidos/{} -> ler"]);
-    assert_eq!(routes(&map, "projeto/urls.py"), json!([]), "the include is not a route");
-}
-
-/// A lista guardada num nome que monta o arquivo de outro módulo leva o
-/// prefixo do include que a inclui, escrita no mesmo arquivo ou trazida de
-/// outro.
-#[test]
-fn a_list_kept_in_a_name_that_includes_another_file_carries_the_outer_prefix() {
-    let root = "from django.urls import include, path\n\n\
+fn an_include_reaches_the_app_routes_in_every_way_the_module_can_be_named() {
+    let nested = "from django.urls import include, path\n\n\
+                  urlpatterns = [\n    path('api/', include([path('v1/', include('loja.urls'))])),\n]\n";
+    let kept = "from django.urls import include, path\n\n\
                 v1 = [\n    path('v1/', include('loja.urls')),\n]\n\n\
                 urlpatterns = [\n    path('api/', include(v1)),\n]\n";
-    let temp = project_with(&django_root_app(root, &[]));
-    let (map, _) = scan(temp.path());
-    assert_eq!(served(&map, "loja/urls.py"), ["* api/v1/pedidos/{} -> ler"]);
-
-    let versions = "from django.urls import include, path\n\nv1 = [\n    path('v1/', include('loja.urls')),\n]\n";
-    let root = "from django.urls import include, path\n\nfrom .versoes import v1\n\n\
-                urlpatterns = [\n    path('api/', include(v1)),\n]\n";
-    let temp = project_with(&django_root_app(root, &[("projeto/versoes.py", versions)]));
-    let (map, _) = scan(temp.path());
-    assert_eq!(served(&map, "loja/urls.py"), ["* api/v1/pedidos/{} -> ler"]);
-}
-
-/// O include com a tupla do texto do módulo e do nome do app soma o prefixo
-/// como o include com o texto só.
-#[test]
-fn an_include_with_the_module_text_in_a_tuple_adds_its_prefix() {
-    let root = "from django.urls import include, path\n\n\
-                urlpatterns = [\n    path('api/', include(('loja.urls', 'loja'))),\n]\n";
-    let temp = project_with(&django_root_app(root, &[]));
-    let (map, _) = scan(temp.path());
-    assert_eq!(served(&map, "loja/urls.py"), ["* api/pedidos/{} -> ler"]);
-}
-
-/// O arquivo incluído que inclui outro leva o prefixo de fora ao outro: os
-/// dois prefixos, o de fora primeiro.
-#[test]
-fn an_included_file_that_includes_another_carries_the_outer_prefix_to_it() {
-    let root = "from django.urls import include, path\n\nurlpatterns = [\n    path('api/', include('projeto.versoes')),\n]\n";
+    let versions_list = "from django.urls import include, path\n\nv1 = [\n    path('v1/', include('loja.urls')),\n]\n";
+    let brought = "from django.urls import include, path\n\nfrom .versoes import v1\n\n\
+                   urlpatterns = [\n    path('api/', include(v1)),\n]\n";
+    let tuple = "from django.urls import include, path\n\n\
+                 urlpatterns = [\n    path('api/', include(('loja.urls', 'loja'))),\n]\n";
+    let chained = "from django.urls import include, path\n\nurlpatterns = [\n    path('api/', include('projeto.versoes')),\n]\n";
     let versions = "from django.urls import include, path\n\nurlpatterns = [\n    path('v1/', include('loja.urls')),\n]\n";
-    let temp = project_with(&django_root_app(root, &[("projeto/versoes.py", versions)]));
-    let (map, _) = scan(temp.path());
-    assert_eq!(served(&map, "loja/urls.py"), ["* api/v1/pedidos/{} -> ler"]);
-}
-
-/// O include do módulo trazido pelo import, com outro nome, soma o prefixo
-/// às rotas do arquivo que o import traz.
-#[test]
-fn an_include_of_a_module_brought_by_the_import_adds_its_prefix() {
-    let root = "from django.urls import include, path\n\nfrom loja import urls as loja_urls\n\n\
-                urlpatterns = [\n    path('api/', include(loja_urls)),\n]\n";
-    let temp = project_with(&django_root_app(root, &[]));
-    let (map, _) = scan(temp.path());
-    assert_eq!(served(&map, "loja/urls.py"), ["* api/pedidos/{} -> ler"]);
-}
-
-/// As listas incluídas, escritas ali ou guardadas num nome, num arquivo que
-/// não importa o Django.
-#[test]
-fn an_included_list_of_paths_in_a_file_that_imports_no_django_has_no_route() {
-    let urls = "from . import views\n\nextra = [\n    path('pedidos/', views.listar),\n]\n\n\
-                urlpatterns = [\n    path('api/', include(extra)),\n    \
-                path('v1/', include([path('pedidos/<int:id>/', views.ler)])),\n]\n";
-    let temp = project_with(&django_list_app(urls));
-    let (map, _) = scan(temp.path());
-    assert_eq!(routes(&map, "loja/urls.py"), json!([]));
+    let imported = "from django.urls import include, path\n\nfrom loja import urls as loja_urls\n\n\
+                    urlpatterns = [\n    path('api/', include(loja_urls)),\n]\n";
+    let no_files: &[(&str, &str)] = &[];
+    let cases: [(&str, &str, &[(&str, &str)], &str); 6] = [
+        ("an include inside another include adds both prefixes", nested, no_files, "* api/v1/pedidos/{} -> ler"),
+        (
+            "a list kept in a name that includes another file carries the outer prefix",
+            kept,
+            no_files,
+            "* api/v1/pedidos/{} -> ler",
+        ),
+        (
+            "a list brought from another file that includes the app carries the outer prefix",
+            brought,
+            &[("projeto/versoes.py", versions_list)],
+            "* api/v1/pedidos/{} -> ler",
+        ),
+        ("an include with the module text in a tuple adds its prefix", tuple, no_files, "* api/pedidos/{} -> ler"),
+        (
+            "an included file that includes another carries the outer prefix to it",
+            chained,
+            &[("projeto/versoes.py", versions)],
+            "* api/v1/pedidos/{} -> ler",
+        ),
+        ("an include of a module brought by the import adds its prefix", imported, no_files, "* api/pedidos/{} -> ler"),
+    ];
+    for (case, root, more, expected) in cases {
+        let temp = project_with(&django_root_app(root, more));
+        let (map, _) = scan(temp.path());
+        assert_eq!(served(&map, "loja/urls.py"), [expected], "{case}");
+        assert_eq!(routes(&map, "projeto/urls.py"), json!([]), "{case}: the include is not a route");
+    }
 }
 
 /// O projeto Django dos testes de pilha: a rota da lista `urlpatterns`.
@@ -1614,19 +1632,6 @@ fn the_django_fixture_keeps_the_route_of_its_list() {
     ]);
     let (map, _) = scan(temp.path());
     assert_eq!(served(&map, "mysite/urls.py"), ["*  -> index"]);
-}
-
-/// O decorador e a lista com a forma de rota, num arquivo que não importa o
-/// framework, ou que importa um pacote cujo nome começa pelo dele.
-#[test]
-fn a_decorated_file_that_imports_no_framework_has_no_route() {
-    let cache = "from cache import app\n\n\n@app.get(\"/x\")\ndef ler():\n    return 1\n\n\n\
-                 urlpatterns = [\n    path('pedidos/', ler),\n]\n";
-    let other = "from flask_caching import app\n\n\n@app.route(\"/x\")\ndef ler():\n    return 1\n";
-    let temp = project_with(&[("loja/cache.py", cache), ("loja/outro.py", other)]);
-    let (map, _) = scan(temp.path());
-    assert_eq!(routes(&map, "loja/cache.py"), json!([]));
-    assert_eq!(routes(&map, "loja/outro.py"), json!([]), "a package whose name starts with the framework's is another one");
 }
 
 /// O roteador trazido pelo nome leva o prefixo só às rotas dele: o outro
@@ -1725,13 +1730,6 @@ fn a_route_of_a_group_kept_in_a_variable_joins_every_group_it_was_made_from() {
     assert_eq!(served(&map, "main.go"), ["* todos -> lerAve", "GET api/aves/{} -> lerAve", "GET api/v1/x -> lerAve"]);
 }
 
-#[test]
-fn a_go_file_that_imports_no_framework_has_no_route() {
-    let temp = project_with(&[("go.mod", "module loja\n\ngo 1.22\n"), ("util/rotas.go", GO_NO_FRAMEWORK)]);
-    let (map, _) = scan(temp.path());
-    assert_eq!(routes(&map, "util/rotas.go"), json!([]));
-}
-
 /// As rotas pelo atributo e pela chamada, montadas num escopo pelo
 /// `service` e pelo `configure`.
 const ACTIX: &str = r#"use actix_web::{get, route, web, App, HttpServer};
@@ -1771,25 +1769,24 @@ async fn main() -> std::io::Result<()> {
 
 const ACTIX_CARGO: &str = "[package]\nname = \"loja\"\nversion = \"0.1.0\"\n\n[dependencies]\nactix-web = \"4\"\n";
 
+/// A rota do atributo é atendida pela função dela e o `service` de um escopo
+/// soma o prefixo; a rota do recurso é atendida pela função do `to`, e o
+/// `configure` soma o escopo.
 #[test]
-fn an_attribute_route_is_served_by_its_function_and_a_scope_service_adds_its_prefix() {
+fn an_attribute_or_resource_route_is_served_by_its_function_and_a_scope_adds_its_prefix() {
     let temp = project_with(&[("Cargo.toml", ACTIX_CARGO), ("src/main.rs", ACTIX)]);
     let (map, _) = scan(temp.path());
     let served = served(&map, "src/main.rs");
-    for route in ["GET api/aves/{} -> ler", "GET multi -> multi", "POST multi -> multi"] {
+    for route in [
+        "GET api/aves/{} -> ler",
+        "GET multi -> multi",
+        "POST multi -> multi",
+        "POST cfg/x -> criar",
+        "GET cfg/y -> criar",
+    ] {
         assert!(served.contains(&route.to_string()), "{route}: {served:?}");
     }
     assert!(!served.contains(&"GET aves/{} -> ler".to_string()), "{served:?}");
-}
-
-#[test]
-fn a_resource_route_is_served_by_the_function_of_its_to_and_configure_adds_the_scope() {
-    let temp = project_with(&[("Cargo.toml", ACTIX_CARGO), ("src/main.rs", ACTIX)]);
-    let (map, _) = scan(temp.path());
-    let served = served(&map, "src/main.rs");
-    for route in ["POST cfg/x -> criar", "GET cfg/y -> criar"] {
-        assert!(served.contains(&route.to_string()), "{route}: {served:?}");
-    }
     assert_eq!(served.len(), 5, "{served:?}");
 }
 
@@ -1828,41 +1825,63 @@ fn actix_served(app: &str, handler: &str) -> Vec<String> {
     served(&map, "src/main.rs").into_iter().filter(|route| route.ends_with(&by)).collect()
 }
 
-/// O escopo escrito dentro do `service` de outro escopo soma os dois
-/// prefixos, o de fora primeiro.
+/// O escopo do Actix soma o prefixo de cada escopo em volta, de fora para
+/// dentro, às rotas que monta: o escopo dentro de outro, três escopos, o
+/// recurso dentro de um escopo, o `configure` num escopo dentro de outro, o
+/// escopo direto no `App::new()` (só o prefixo dele, porque o objeto que não é
+/// grupo não soma nada) e o escopo guardado numa variável, montado pelo nome
+/// dentro de outro escopo (os dois prefixos) ou direto no `App::new()` (só o
+/// dele). Cada linha é um caso: a montagem, a função que atende e as rotas
+/// dela.
 #[test]
-fn a_scope_inside_another_scope_adds_both_prefixes() {
-    let served =
-        actix_served("App::new().service(web::scope(\"/api\").service(web::scope(\"/pedidos\").service(ler)))", "ler");
-    assert_eq!(served, ["GET api/pedidos/{} -> ler"]);
-}
-
-/// Três escopos, um dentro do outro: os três prefixos, de fora para dentro.
-#[test]
-fn three_nested_scopes_add_all_their_prefixes_from_the_outside_in() {
-    let served = actix_served(
-        "App::new().service(web::scope(\"/api\").service(web::scope(\"/v1\").service(web::scope(\"/pedidos\").service(ler))))",
-        "ler",
-    );
-    assert_eq!(served, ["GET api/v1/pedidos/{} -> ler"]);
-}
-
-/// O recurso escrito dentro de um escopo soma o prefixo do escopo ao dele.
-#[test]
-fn a_resource_inside_a_scope_adds_the_scope_prefix() {
-    let served = actix_served(
-        "App::new().service(web::scope(\"/api\").service(web::resource(\"/fotos\").route(web::get().to(listar))))",
-        "listar",
-    );
-    assert_eq!(served, ["GET api/fotos -> listar"]);
-}
-
-/// O `configure` num escopo dentro de outro leva os dois prefixos às rotas
-/// da função que ele nomeia.
-#[test]
-fn a_configure_in_a_scope_inside_another_adds_both_prefixes() {
-    let served = actix_served("App::new().service(web::scope(\"/api\").service(web::scope(\"/v1\").configure(config)))", "criar");
-    assert_eq!(served, ["GET api/v1/y -> criar", "POST api/v1/x -> criar"]);
+fn a_scope_adds_its_prefix_to_the_routes_it_mounts() {
+    let cases: [(&str, &str, &str, &[&str]); 7] = [
+        (
+            "a scope inside another scope adds both prefixes",
+            "App::new().service(web::scope(\"/api\").service(web::scope(\"/pedidos\").service(ler)))",
+            "ler",
+            &["GET api/pedidos/{} -> ler"],
+        ),
+        (
+            "three nested scopes add all their prefixes from the outside in",
+            "App::new().service(web::scope(\"/api\").service(web::scope(\"/v1\").service(web::scope(\"/pedidos\").service(ler))))",
+            "ler",
+            &["GET api/v1/pedidos/{} -> ler"],
+        ),
+        (
+            "a resource inside a scope adds the scope prefix",
+            "App::new().service(web::scope(\"/api\").service(web::resource(\"/fotos\").route(web::get().to(listar))))",
+            "listar",
+            &["GET api/fotos -> listar"],
+        ),
+        (
+            "a configure in a scope inside another adds both prefixes",
+            "App::new().service(web::scope(\"/api\").service(web::scope(\"/v1\").configure(config)))",
+            "criar",
+            &["GET api/v1/y -> criar", "POST api/v1/x -> criar"],
+        ),
+        (
+            "a scope right on the app takes only its own prefix",
+            "App::new().service(web::scope(\"/pedidos\").service(ler))",
+            "ler",
+            &["GET pedidos/{} -> ler"],
+        ),
+        (
+            "a scope kept in a variable and mounted in another scope adds both prefixes",
+            "let v1 = web::scope(\"/v1\").service(ler);\n    App::new().service(web::scope(\"/api\").service(v1))",
+            "ler",
+            &["GET api/v1/{} -> ler"],
+        ),
+        (
+            "a scope kept in a variable and mounted right on the app takes only its own prefix",
+            "let v1 = web::scope(\"/v1\").service(ler);\n    App::new().service(v1)",
+            "ler",
+            &["GET v1/{} -> ler"],
+        ),
+    ];
+    for (case, app, handler, expected) in cases {
+        assert_eq!(actix_served(app, handler), expected, "{case}");
+    }
 }
 
 /// A função de outro arquivo montada num escopo dentro de outro leva os dois
@@ -1875,29 +1894,6 @@ fn a_scope_inside_another_adds_both_prefixes_to_the_function_of_another_file() {
     let temp = project_with(&[("Cargo.toml", ACTIX_CARGO), ("src/handlers.rs", handlers), ("src/main.rs", main)]);
     let (map, _) = scan(temp.path());
     assert_eq!(served(&map, "src/handlers.rs"), ["GET api/pedidos/{} -> ler"]);
-}
-
-/// O escopo escrito direto no `App::new()` leva só o prefixo dele: o objeto
-/// que não é grupo não soma nada.
-#[test]
-fn a_scope_right_on_the_app_takes_only_its_own_prefix() {
-    let served = actix_served("App::new().service(web::scope(\"/pedidos\").service(ler))", "ler");
-    assert_eq!(served, ["GET pedidos/{} -> ler"]);
-}
-
-/// O escopo guardado numa variável e montado pelo nome dentro de outro
-/// escopo soma os dois prefixos; montado direto no `App::new()`, leva só o
-/// dele.
-#[test]
-fn a_scope_kept_in_a_variable_and_mounted_in_another_scope_adds_both_prefixes() {
-    let served = actix_served(
-        "let v1 = web::scope(\"/v1\").service(ler);\n    App::new().service(web::scope(\"/api\").service(v1))",
-        "ler",
-    );
-    assert_eq!(served, ["GET api/v1/{} -> ler"]);
-
-    let served = actix_served("let v1 = web::scope(\"/v1\").service(ler);\n    App::new().service(v1)", "ler");
-    assert_eq!(served, ["GET v1/{} -> ler"]);
 }
 
 /// O escopo escrito na função que o `configure` de outro escopo nomeia soma
@@ -2167,14 +2163,6 @@ fn an_api_resource_gives_each_route_of_the_resource_with_its_action() {
             "PUT api/fotos/{} -> update",
         ]
     );
-}
-
-#[test]
-fn a_php_file_that_imports_no_framework_has_no_route() {
-    let file = "<?php\n\nRoute::get('/pedidos/{id}', [PedidoController::class, 'show']);\nRoute::apiResource('fotos', F::class);\n";
-    let temp = project_with(&[("routes/api.php", file)]);
-    let (map, _) = scan(temp.path());
-    assert_eq!(routes(&map, "routes/api.php"), json!([]));
 }
 
 const SYMFONY: &str = r#"<?php
