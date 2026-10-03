@@ -24,14 +24,10 @@ path = "src/lib.rs"
 # source of truth (root Cargo.toml).
 [dependencies]
 mustard-core = { path = "../../packages/core" }
-serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
 dialoguer = { workspace = true }
-ureq = { workspace = true }
-tar = { workspace = true }
-flate2 = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

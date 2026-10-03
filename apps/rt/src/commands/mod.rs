@@ -108,10 +108,17 @@ pub fn dispatch(cmd: RunCmd) {
     }
 }
 
+/// A regra das palavras em maiúsculas nas frases do programa, a mesma do
+/// catálogo e dos outros dois programas.
+#[cfg(test)]
+#[path = "../../../../packages/core/tests/support/shouting_words.rs"]
+mod shouting_words;
+
 #[cfg(test)]
 mod tests {
     use clap::{Command, CommandFactory};
-    use mustard_core::platform::i18n::uppercase_words;
+
+    use super::shouting_words::uppercase_words;
 
     /// A árvore inteira de `mustard-rt`, a mesma que o programa lê: o texto
     /// do programa, a porta `on` e cada comando de `run`.

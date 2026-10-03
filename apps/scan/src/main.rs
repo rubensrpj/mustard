@@ -918,6 +918,12 @@ fn print_summary(model: &ProjectModel) {
     }
 }
 
+/// A regra das palavras em maiúsculas nas frases do programa, a mesma do
+/// catálogo e dos outros dois programas.
+#[cfg(test)]
+#[path = "../../../packages/core/tests/support/shouting_words.rs"]
+mod shouting_words;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -968,7 +974,7 @@ mod tests {
     fn push_defects(place: &str, texts: &[String], out: &mut Vec<String>) {
         let mut seen: Vec<&str> = Vec::new();
         for text in texts {
-            for word in mustard_core::platform::i18n::uppercase_words(text) {
+            for word in shouting_words::uppercase_words(text) {
                 if !seen.contains(&word) {
                     seen.push(word);
                     out.push(format!("{place}: uppercase word {word} outside backticks"));

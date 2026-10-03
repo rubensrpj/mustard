@@ -6,12 +6,18 @@
 # we use; pruning removes what we do not. The previous wave did the first and
 # none of the second, so this criterion measures only the second.
 #
-# The tool installs itself. None of `cargo-machete`, `cargo-udeps` or
-# `cargo-shear` was on the machine when this was written — a criterion that
-# assumes a manual install fails with "command not found" (exit 127) instead of
-# with a finding, which is the opposite of what a criterion is for.
-# `cargo-shear` is the one chosen: it parses `src/` with `syn` (not regex, like
-# cargo-machete) and needs no nightly toolchain (unlike cargo-udeps).
+# A ferramenta se providencia, só para esta execução. Nenhuma entre
+# `cargo-machete`, `cargo-udeps` e `cargo-shear` estava na máquina quando isto
+# foi escrito — um critério que supõe instalação manual cai com "command not
+# found" (saída 127) em vez de cair com um achado, o contrário do que um
+# critério é para fazer. O `cargo-shear` é o escolhido: lê `src/` com `syn` (e
+# não com regex, como o cargo-machete) e não pede toolchain nightly (como o
+# cargo-udeps pede).
+#
+# Sem o `cargo-shear` na máquina, o script o compila numa pasta temporária dele
+# (`--root "$work/tools"`), que sai junto com o script: nada vai para
+# `~/.cargo/bin` e a máquina fica como estava. Com ele já instalado pelo
+# usuário, o script usa esse e não compila nada.
 #
 # FALSE POSITIVES ARE NEVER SILENCED BY MUTING A TOOL. A dependency reached only
 # through generated code or a macro is recorded one by one, with its reason, in
@@ -44,9 +50,10 @@ failed=0
 # Pinned to the 1.x line so a future major's new heuristics cannot flip this
 # criterion without anyone changing a dependency.
 if ! command -v cargo-shear > /dev/null 2>&1; then
-  echo "installing cargo-shear (not present on this machine)..."
-  cargo install cargo-shear --locked --version '^1.13' \
-    || { echo "FAIL: could not install cargo-shear"; exit 1; }
+  echo "building cargo-shear into a throwaway folder (not present on this machine)..."
+  cargo install cargo-shear --locked --version '^1.13' --root "$work/tools" \
+    || { echo "FAIL: could not build cargo-shear"; exit 1; }
+  export PATH="$work/tools/bin:$PATH"
 fi
 echo "cargo-shear $(cargo shear --version 2>&1 | tr -d '\n')"
 

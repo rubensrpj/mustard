@@ -48,12 +48,6 @@ jobs:
       # second build. Same setting, opposite verdicts, for a stated reason —
       # see docs/2026-08-14-build-cycle-measurements.md §5.
       CARGO_INCREMENTAL: 0
-      # Stated because the toolchain action below exports 0 when nothing sets
-      # this, which would quietly override the `debug = 1` that Cargo.toml picks
-      # deliberately — line-table debuginfo is what keeps a panic backtrace from
-      # a failing test readable. The runner keeps the same value the tree asks
-      # for; the action only gets to fill in what we have no opinion about.
-      CARGO_PROFILE_DEV_DEBUG: 1
     strategy:
       # One OS failing should not cancel the others — we want the full
       # cross-platform picture on every run.
@@ -166,10 +160,23 @@ jobs:
       # test code: `.unwrap()` calls inside `#[cfg(test)]` modules and `tests/`
       # are never compiled by the default target set, so without this flag the
       # lint would report a pass nobody earned.
+      #
+      # O Clippy não roda no macOS. O lint compila o projeto inteiro mais uma
+      # vez, em modo de verificação (medido no Linux: 50 s de parede e 151 s de
+      # CPU, porque as dependências e os crates são verificados de novo), e o
+      # veredito é o mesmo nos três sistemas, salvo no código atrás de `cfg`:
+      # o Linux verifica o ramo dele e o Windows verifica o do Windows, onde
+      # há mais de vinte pontos com `cfg(windows)` nos crates (o shell, a
+      # morte de processo, o disparo separado). No macOS são três pontos com
+      # `target_os = "macos"`, e ele é o que menos paga o passo. O limite de
+      # tempo do job não sobe para caber a lentidão: a causa é que se corta.
       - name: Clippy
+        if: runner.os != 'macOS'
         run: cargo clippy --locked --all-targets -p mustard-core -p mustard-cli -p mustard-rt -p scan -- -D warnings
 
       # A válvula de escape do passo acima é desligar o lint. Isto garante que
-      # ela nunca seja usada em silêncio.
+      # ela nunca seja usada em silêncio. É um script Python que lê arquivos:
+      # o resultado é o mesmo nos três sistemas, e por isso roda só no Linux.
       - name: Lint allows carry a reason
+        if: runner.os == 'Linux'
         run: python3 scripts/ac/lint-allows-have-reasons.py

@@ -13,9 +13,8 @@
 //!
 //! Layers:
 //!
-//! - [`model`] — pure `serde` data types with zero side effects: the harness
-//!   event schema, the hook contract, pipeline-state, and the SDD `ViewModels`
-//!   under [`model::view`].
+//! - [`model`] — pure `serde` data types with zero side effects: the hook
+//!   contract and the SDD `ViewModels` under [`model::view`].
 //! - [`fs`] — the single canonical filesystem seam: the [`fs::Fs`] port,
 //!   [`fs::real::RealFs`], and module-level
 //!   free functions that are the drop-in replacement for `std::fs`. Every other
@@ -23,13 +22,7 @@
 //! - [`events`] — NDJSON event primitives ([`Event`] / [`EventReader`]) plus
 //!   the per-spec workspace walker; the canonical event store. Layered on
 //!   [`fs`].
-//! - [`projection`] — pure folds over `&[HarnessEvent]`: one function per
-//!   `ViewModel`. No IO, no side effects — deterministic and testable in
-//!   isolation. Production callers in `apps/rt` and `apps/dashboard` feed the
-//!   slice from [`projection::read_workspace_events`] (NDJSON walker).
-//! - [`error`] — the crate's typed error plus fail-open helpers.
-//! - cross-cutting foundation — [`config`] (enforcement modes), [`env`] (the
-//!   `hook-env.js` port), and [`metrics`] (the `metrics-emit.js` port).
+//! - [`error`] — the crate's typed error.
 
 // Root re-exports — consumers can write `use mustard_core::…` without
 // remembering which sub-module owns each name.
@@ -141,11 +134,6 @@ pub use io::claude_paths::{ClaudePaths, ClaudePathsError, SpecPaths, WavePaths};
 // Canonical workspace-root resolver — single source of truth for "the
 // directory that contains `mustard.json` + `.claude/`". See `workspace.rs`.
 pub use io::workspace::{mustard_checkout, workspace_root, WorkspaceError};
-
-// Summary document — the versionable `.summary.json` artefact committed to
-// git alongside each spec. Re-exported at root so consumers can write
-// `mustard_core::SpecSummaryDoc` without knowing the sub-module path.
-pub use view::summary::SpecSummaryDoc;
 
 // Vocabulary matcher — the four-layer term scanner used by the regression
 // gate. Layers are EN identifiers per the hard rule

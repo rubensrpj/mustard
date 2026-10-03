@@ -321,99 +321,11 @@ pub fn wave_label(n: u32, lang: Locale) -> String {
     }
 }
 
-// ---------------------------------------------------------------------------
-// File-operation markers (`## Files` bullet annotations)
-// ---------------------------------------------------------------------------
-
-/// Every catalogue locale, EN canonical first — the iteration order of
-/// [`file_marker_synonyms`], so the EN spelling is always `synonyms[0]`.
-const CATALOGUE_LOCALES: &[Locale] = &[Locale::EnUs, Locale::PtBr];
-
-/// A file-operation marker recognised in a spec's `## Files` bullet lines —
-/// e.g. ``- `src/Payable.cs` (create)``. `Create` declares a net-new file
-/// (validators must not flag it as missing); `Edit` declares a change to an
-/// existing file.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum FileMarker {
-    /// Net-new file — `(create)` / `(new)` / `(novo)` / `(criar)`.
-    Create,
-    /// Existing file to change — `(edit)` / `(editar)`.
-    Edit,
-}
-
-impl FileMarker {
-    /// Catalogue key carrying this marker's per-locale synonyms.
-    fn catalogue_key(self) -> &'static str {
-        match self {
-            Self::Create => "marker.create",
-            Self::Edit => "marker.edit",
-        }
-    }
-}
-
-/// Every accepted spelling of `marker`, across ALL catalogue locales, deduped,
-/// EN canonical first (`(create)` for [`FileMarker::Create`]). The synonyms
-/// are data in the [`translate`] catalogue (`marker.*` keys, `|`-separated per
-/// locale) — the SINGLE origin shared by the drafter and every validator
-/// (the validation analysis, the scope classifier), so a localized marker like the
-/// pt-BR `(novo)` can never drift out of recognition.
-///
-/// Spellings are lowercase literals including the surrounding parentheses;
-/// match with [`line_has_file_marker`] (case-insensitive `contains`).
-#[must_use]
-pub fn file_marker_synonyms(marker: FileMarker) -> Vec<&'static str> {
-    let mut out: Vec<&'static str> = Vec::new();
-    for lang in CATALOGUE_LOCALES {
-        for syn in translate(marker.catalogue_key(), *lang).split('|') {
-            let syn = syn.trim();
-            if !syn.is_empty() && !out.contains(&syn) {
-                out.push(syn);
-            }
-        }
-    }
-    out
-}
-
-/// Whether `line` carries `marker` in ANY of its accepted spellings
-/// (case-insensitive substring, like the historical `(create)` check).
-/// Fail-open helper for `## Files` bullet validation: a line such as
-/// ``- `src/Payable.cs` (novo)`` matches [`FileMarker::Create`].
-#[must_use]
-pub fn line_has_file_marker(line: &str, marker: FileMarker) -> bool {
-    let lower = line.to_lowercase();
-    file_marker_synonyms(marker).iter().any(|syn| lower.contains(syn))
-}
-
-// ---------------------------------------------------------------------------
-// Palavras em maiúsculas nas frases do programa
-// ---------------------------------------------------------------------------
-
-/// As palavras em maiúsculas que podem ficar fora de crase numa frase do
-/// programa: siglas e unidades de uso comum. Uma sigla nova só passa se
-/// alguém a puser aqui de propósito.
-pub const CAPS_ALLOWED: [&str; 4] = ["JSON", "UTF", "MB", "GB"];
-
-/// Cada palavra de duas letras ou mais, toda em maiúsculas e fora de crase,
-/// uma vez só, na ordem em que aparece, salvo as de [`CAPS_ALLOWED`].
-///
-/// É a regra única das frases fixas do programa, as do catálogo e as da
-/// ajuda dos comandos: elas são escritas por nós, então a conferência não
-/// adivinha se a palavra é grito ou sigla, e o nome de código vai entre
-/// crases. Lista vazia quer dizer que o texto segue a regra.
-#[must_use]
-pub fn uppercase_words(text: &str) -> Vec<&str> {
-    let mut found = Vec::new();
-    for outside in text.split('`').step_by(2) {
-        for word in outside.split(|c: char| !(c.is_alphanumeric() || c == '_')) {
-            let letters = word.chars().filter(|c| c.is_alphabetic()).count();
-            let upper = letters >= 2 && !word.chars().any(char::is_lowercase);
-            if upper && !CAPS_ALLOWED.contains(&word) && !found.contains(&word) {
-                found.push(word);
-            }
-        }
-    }
-    found
-}
+/// A regra das palavras em maiúsculas nas frases do programa, que os testes
+/// dos quatro pacotes conferem pelo mesmo arquivo.
+#[cfg(test)]
+#[path = "../../tests/support/shouting_words.rs"]
+mod shouting_words;
 
 #[cfg(test)]
 mod tests {
@@ -523,7 +435,7 @@ mod tests {
         let report = crate::domain::clarity::measure(&text, &[], Some(lang));
         let mut defects: Vec<String> =
             report.defects(lang).into_iter().map(|defect| format!("{key} ({lang}): {defect}")).collect();
-        for word in uppercase_words(&text) {
+        for word in shouting_words::uppercase_words(&text) {
             defects.push(format!("{key} ({lang}): uppercase word {word} outside backticks"));
         }
         defects
@@ -757,36 +669,5 @@ mod tests {
     fn wave_label_formats_per_locale() {
         assert_eq!(wave_label(3, Locale::PtBr), "Onda 3");
         assert_eq!(wave_label(3, Locale::EnUs), "W3");
-    }
-
-    #[test]
-    fn file_marker_synonyms_merge_locales_en_canonical_first() {
-        let create = file_marker_synonyms(FileMarker::Create);
-        assert_eq!(create[0], "(create)", "EN canonical leads: {create:?}");
-        for syn in ["(create)", "(new)", "(novo)", "(criar)"] {
-            assert!(create.contains(&syn), "{syn} accepted: {create:?}");
-        }
-        let edit = file_marker_synonyms(FileMarker::Edit);
-        assert_eq!(edit[0], "(edit)");
-        assert!(edit.contains(&"(editar)"));
-        // Deduped — no spelling twice.
-        let mut sorted = create.clone();
-        sorted.sort_unstable();
-        sorted.dedup();
-        assert_eq!(sorted.len(), create.len(), "no duplicates: {create:?}");
-    }
-
-    #[test]
-    fn line_has_file_marker_matches_localized_and_case_insensitive() {
-        assert!(line_has_file_marker("- `a.rs` (create)", FileMarker::Create));
-        assert!(line_has_file_marker("- `a.rs` (novo)", FileMarker::Create));
-        assert!(line_has_file_marker("- `a.rs` (criar)", FileMarker::Create));
-        assert!(line_has_file_marker("- `a.rs` (NOVO)", FileMarker::Create));
-        assert!(line_has_file_marker("- `a.rs` (editar)", FileMarker::Edit));
-        // No marker / wrong marker → no match.
-        assert!(!line_has_file_marker("- `a.rs`", FileMarker::Create));
-        assert!(!line_has_file_marker("- `a.rs` (editar)", FileMarker::Create));
-        // A prose parenthetical is not a marker.
-        assert!(!line_has_file_marker("- `a.rs` (new format)", FileMarker::Create));
     }
 }

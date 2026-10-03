@@ -9,6 +9,13 @@
 //! rodada), e em segundo plano, com uma trava de arquivo, quando não espera
 //! (o início da sessão, [`start_in_background`]).
 //!
+//! Os dois comandos valem em qualquer shell em que o Mustard roda: o `sh` do
+//! Unix, o `bash.exe` do git no Windows e o `cmd.exe` que sobra quando a
+//! máquina não tem o primeiro. Por isso só usam o que os três leem do mesmo
+//! jeito — `>`, `2>&1`, `&&`, `||` e `echo` —, e a palavra com espaço leva
+//! as aspas do shell da plataforma ([`quote`]). Nada de `;`, de `rm` ou de
+//! aspa simples no Windows.
+//!
 //! Nada aqui instala nada: o programa fica na pasta de compilação e a
 //! passagem da chamada a ele é de `mustard_core::development_rt`.
 
@@ -29,10 +36,21 @@ const BUILD_VALIDITY: Duration = Duration::from_secs(60 * 60);
 /// "não abre".
 const VERSION_DEADLINE: Duration = Duration::from_secs(5);
 
-/// A palavra entre aspas simples para o shell, com a aspa que ela mesma tenha
-/// escapada.
-fn single_quoted(text: &str) -> String {
-    format!("'{}'", text.replace('\'', "'\\''"))
+/// A palavra como o shell a lê inteira: entre aspas simples, com a aspa que
+/// ela mesma tenha escapada, no Unix; entre aspas duplas no Windows, onde o
+/// `cmd.exe` não tem aspa simples e o `bash.exe` do git lê a barra invertida
+/// de um caminho como ela é.
+fn quote(text: &str, windows: bool) -> String {
+    if windows {
+        format!("\"{text}\"")
+    } else {
+        format!("'{}'", text.replace('\'', "'\\''"))
+    }
+}
+
+/// [`quote`] no shell da plataforma em que o programa roda.
+fn quoted(text: &str) -> String {
+    quote(text, cfg!(windows))
 }
 
 /// O comando que compila os três programas da branch na pasta `target`, a
@@ -40,7 +58,7 @@ fn single_quoted(text: &str) -> String {
 #[must_use]
 pub(crate) fn build_command(target: &Path) -> String {
     let packages: Vec<String> = PACKAGES.iter().map(|package| format!("-p {package}")).collect();
-    format!("cargo build --release --locked {} --target-dir {}", packages.join(" "), single_quoted(&target.display().to_string()))
+    format!("cargo build --release --locked {} --target-dir {}", packages.join(" "), quoted(&target.display().to_string()))
 }
 
 /// O programa compilado da pasta `target`, esteja ele em disco ou não.
@@ -167,14 +185,11 @@ fn start_in_background_with(
         Ok(false) => return Launch::Running,
         Err(_) => return Launch::Failed,
     }
-    // O shell compila e, de qualquer jeito que ela termine, solta a trava; a
-    // saída fica no arquivo ao lado, para quem quiser ver por que falhou.
-    let command = format!(
-        "{} > {} 2>&1; rm -f {}",
-        build_command(target),
-        single_quoted(&log.display().to_string()),
-        single_quoted(&marker.display().to_string())
-    );
+    // O shell compila e, de qualquer jeito que ela termine, escreve na trava
+    // o que houve — `built` ou `failed` —, o que a solta ([`claim`]); a saída
+    // fica no arquivo ao lado, para quem quiser ver por que falhou.
+    let (log_word, marker_word) = (quoted(&log.display().to_string()), quoted(&marker.display().to_string()));
+    let command = format!("{} > {log_word} 2>&1 && echo built > {marker_word} || echo failed > {marker_word}", build_command(target));
     if spawn(&command, main).is_err() {
         let _ = std::fs::remove_file(&marker);
         return Launch::Failed;
@@ -182,9 +197,10 @@ fn start_in_background_with(
     Launch::Started
 }
 
-/// Toma a trava `marker`: um arquivo que só nasce se não existe. `Ok(false)`
-/// quando outra compilação a tem e ela ainda vale; a mais velha que `validity`
-/// é de uma compilação que morreu e é refeita.
+/// Toma a trava `marker`: um arquivo que só nasce se não existe e fica vazio
+/// enquanto a compilação roda. `Ok(false)` quando outra compilação a tem e ela
+/// ainda vale; a trava em que a compilação já escreveu que terminou, e a mais
+/// velha que `validity`, que é de uma compilação que morreu, são refeitas.
 fn claim(marker: &Path, validity: Duration) -> std::io::Result<bool> {
     if let Some(folder) = marker.parent() {
         std::fs::create_dir_all(folder)?;
@@ -193,7 +209,8 @@ fn claim(marker: &Path, validity: Duration) -> std::io::Result<bool> {
         match std::fs::OpenOptions::new().write(true).create_new(true).open(marker) {
             Ok(_) => return Ok(true),
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
-                let age = std::fs::metadata(marker).and_then(|meta| meta.modified()).ok().and_then(|at| at.elapsed().ok());
+                let running = std::fs::metadata(marker).ok().filter(|meta| meta.len() == 0);
+                let age = running.and_then(|meta| meta.modified().ok()).and_then(|at| at.elapsed().ok());
                 if age.is_some_and(|age| age < validity) {
                     return Ok(false);
                 }
@@ -210,15 +227,23 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
 
-    /// O comando é o combinado, com a pasta como uma palavra só mesmo com
-    /// espaço e aspa no caminho.
+    /// O comando é o combinado, com a pasta como uma palavra só do shell da
+    /// plataforma mesmo com espaço no caminho.
     #[test]
     fn the_build_command_builds_the_three_programs_into_the_folder() {
-        assert_eq!(
-            build_command(Path::new("/cache/build/mustard-1")),
-            "cargo build --release --locked -p mustard-rt -p scan -p mustard-cli --target-dir '/cache/build/mustard-1'"
-        );
-        assert!(build_command(Path::new("/o dono's/build")).ends_with("--target-dir '/o dono'\\''s/build'"));
+        let program = "cargo build --release --locked -p mustard-rt -p scan -p mustard-cli --target-dir ";
+        assert_eq!(build_command(Path::new("/cache/build/mustard-1")), format!("{program}{}", quoted("/cache/build/mustard-1")));
+        assert!(build_command(Path::new("/o dono/build")).ends_with(&quoted("/o dono/build")));
+    }
+
+    /// A palavra com espaço chega inteira a cada shell: entre aspas simples
+    /// no Unix, com a aspa do próprio caminho escapada; entre aspas duplas no
+    /// Windows, onde o `cmd.exe` trata a aspa simples como letra e a barra
+    /// invertida do caminho segue como está.
+    #[test]
+    fn a_path_is_one_word_in_the_shell_of_each_system() {
+        assert_eq!(quote("/o dono's/build", false), "'/o dono'\\''s/build'");
+        assert_eq!(quote(r"C:\Users\o dono\build", true), r#""C:\Users\o dono\build""#);
     }
 
     /// O commit sai do carimbo com ou sem `-dirty`, e o carimbo de uma
@@ -252,7 +277,16 @@ mod tests {
             assert_eq!(calls.len(), 1);
             assert_eq!(calls[0].1, main, "compila no checkout principal");
             assert!(calls[0].0.starts_with(&build_command(&target)), "{}", calls[0].0);
-            assert!(calls[0].0.contains("rm -f "), "a trava sai quando a compilação termina: {}", calls[0].0);
+            assert!(
+                calls[0].0.contains("echo built") && calls[0].0.contains("echo failed"),
+                "a trava diz como a compilação terminou: {}",
+                calls[0].0
+            );
+            assert!(
+                !calls[0].0.contains(';') && !calls[0].0.contains("rm "),
+                "só o que o sh, o bash.exe e o cmd.exe leem do mesmo jeito: {}",
+                calls[0].0
+            );
         }
         let marker = place.path().join("build").join("mustard-1.building");
         assert!(marker.is_file());
@@ -260,15 +294,59 @@ mod tests {
         assert_eq!(start_in_background_with(&main, &target, &fake), Launch::Running, "a trava vale");
         assert_eq!(calls.borrow().len(), 1, "a segunda compilação não é solta");
 
+        std::fs::write(&marker, "built\n").unwrap();
+        assert_eq!(start_in_background_with(&main, &target, &fake), Launch::Started, "a trava em que a compilação escreveu que terminou não vale");
+        assert_eq!(calls.borrow().len(), 2);
+        assert_eq!(std::fs::metadata(&marker).unwrap().len(), 0, "a compilação nova toma a trava vazia");
+
         let long_ago = std::time::SystemTime::now() - BUILD_VALIDITY - Duration::from_secs(60);
         std::fs::File::options().write(true).open(&marker).unwrap().set_modified(long_ago).unwrap();
         assert_eq!(start_in_background_with(&main, &target, &fake), Launch::Started, "a trava de uma compilação morta é refeita");
-        assert_eq!(calls.borrow().len(), 2);
+        assert_eq!(calls.borrow().len(), 3);
 
         std::fs::remove_file(&marker).unwrap();
         let broken = |_: &str, _: &Path| -> std::io::Result<()> { Err(std::io::Error::other("sem shell")) };
         assert_eq!(start_in_background_with(&main, &target, &broken), Launch::Failed);
         assert!(!marker.exists(), "o disparo que falhou não deixa a trava");
+    }
+
+    #[cfg(unix)]
+    mod against_a_shell {
+        use super::*;
+
+        /// O comando que a compilação em segundo plano roda, rodado de verdade
+        /// pelo shell da plataforma contra um `cargo` de mentira que sai com a
+        /// saída pedida: ao terminar, verde ou vermelha, a trava diz o que
+        /// houve e deixa de valer, e o que o `cargo` escreveu fica no
+        /// registro.
+        #[test]
+        fn the_background_command_ends_by_writing_what_happened_into_the_lock() {
+            for (code, said) in [(0, "built"), (3, "failed")] {
+                let place = tempfile::tempdir().unwrap();
+                let bin = place.path().join("bin");
+                std::fs::create_dir_all(&bin).unwrap();
+                crate::executable::write_executable(&bin.join("cargo"), &format!("#!/bin/sh\necho \"compilando $*\"\necho erro >&2\nexit {code}\n"));
+                let (main, target) = (place.path().join("projeto"), place.path().join("build").join("mustard-1"));
+                std::fs::create_dir_all(&main).unwrap();
+                let command = RefCell::new(String::new());
+                let capture = |text: &str, _: &Path| -> std::io::Result<()> {
+                    *command.borrow_mut() = text.to_string();
+                    Ok(())
+                };
+
+                assert_eq!(start_in_background_with(&main, &target, &capture), Launch::Started);
+                let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
+                let status =
+                    crate::util::platform::build_shell_command(&command.borrow()).current_dir(&main).env("PATH", path).status().unwrap();
+                assert!(status.success(), "o shell termina sem erro mesmo com a compilação vermelha: {status}");
+
+                let marker = place.path().join("build").join("mustard-1.building");
+                assert_eq!(std::fs::read_to_string(&marker).unwrap().trim(), said, "código {code}");
+                let log = std::fs::read_to_string(place.path().join("build").join("mustard-1.log")).unwrap();
+                assert!(log.contains("compilando build --release --locked") && log.contains("erro"), "o registro traz as duas saídas: {log}");
+                assert_eq!(start_in_background_with(&main, &target, &capture), Launch::Started, "a trava que terminou não segura a próxima");
+            }
+        }
     }
 
     #[cfg(unix)]

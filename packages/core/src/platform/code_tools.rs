@@ -821,10 +821,8 @@ const OUTPUT_GRACE: Duration = Duration::from_millis(500);
 /// o do processo, na instalação de verdade; uma pasta de programas falsos, no
 /// teste do binário. As pastas de ferramenta do usuário saem da pasta pessoal
 /// real, lida por [`home_dir`] como no resto do programa: `HOME`, ou
-/// `USERPROFILE` no Windows. Cada comando tem o prazo `deadline`
-/// ([`COMMAND_DEADLINE`], salvo o que [`MachineRunner::with_deadline`] troca),
-/// e a etapa inteira, o orçamento `budget` ([`STEP_BUDGET`], salvo o que
-/// [`MachineRunner::with_budget`] troca).
+/// `USERPROFILE` no Windows. Cada comando tem o prazo [`COMMAND_DEADLINE`], e
+/// a etapa inteira, o orçamento [`STEP_BUDGET`].
 pub struct MachineRunner {
     path_env: String,
     home: Option<PathBuf>,
@@ -832,10 +830,6 @@ pub struct MachineRunner {
     /// que o programa aparece numa pasta. Vem da compilação; o teste o troca
     /// para conferir o Windows fora dele.
     windows: bool,
-    /// O tempo que cada comando tem para acabar antes de ser cortado.
-    deadline: Duration,
-    /// O tempo que a etapa inteira tem, somando todos os comandos.
-    budget: Duration,
 }
 
 impl MachineRunner {
@@ -846,23 +840,7 @@ impl MachineRunner {
             path_env: path_env.to_string(),
             home: home_dir(),
             windows: cfg!(windows),
-            deadline: COMMAND_DEADLINE,
-            budget: STEP_BUDGET,
         }
-    }
-
-    /// O mesmo executor com outro prazo por comando.
-    #[must_use]
-    pub fn with_deadline(mut self, deadline: Duration) -> Self {
-        self.deadline = deadline;
-        self
-    }
-
-    /// O mesmo executor com outro orçamento para a etapa inteira.
-    #[must_use]
-    pub fn with_budget(mut self, budget: Duration) -> Self {
-        self.budget = budget;
-        self
     }
 
     /// As pastas de ferramenta do usuário, sob a pasta pessoal; nenhuma
@@ -931,7 +909,7 @@ impl ToolRunner for MachineRunner {
     }
 
     fn run(&self, program: &str, args: &[&str]) -> bool {
-        self.run_outcome(program, args, self.deadline) == RunOutcome::Succeeded
+        self.run_outcome(program, args, COMMAND_DEADLINE) == RunOutcome::Succeeded
     }
 
     fn run_outcome(&self, program: &str, args: &[&str], limit: Duration) -> RunOutcome {
@@ -948,14 +926,6 @@ impl ToolRunner for MachineRunner {
             .into_iter()
             .flat_map(|dir| names.iter().map(move |n| dir.join(n)))
             .find(|p| p.is_file())
-    }
-
-    fn budget(&self) -> Duration {
-        self.budget
-    }
-
-    fn command_deadline(&self) -> Duration {
-        self.deadline
     }
 }
 
@@ -1338,8 +1308,6 @@ mod tests {
             path_env: String::new(),
             home: Some(windows_home.path().to_path_buf()),
             windows: true,
-            deadline: COMMAND_DEADLINE,
-            budget: STEP_BUDGET,
         };
         assert_eq!(windows.found_off_path("rg"), Some(windows_bin.join("rg.exe")));
         assert!(!windows.on_path("rg"));
@@ -1352,8 +1320,6 @@ mod tests {
             path_env: String::new(),
             home: Some(linux_home.path().to_path_buf()),
             windows: false,
-            deadline: COMMAND_DEADLINE,
-            budget: STEP_BUDGET,
         };
         assert_eq!(linux.found_off_path("rg"), Some(linux_bin.join("rg")));
     }
@@ -1517,14 +1483,13 @@ mod tests {
     #[cfg(unix)]
     fn the_machine_runner_cuts_the_command_that_passes_its_deadline() {
         let path = std::env::var("PATH").unwrap_or_default();
-        let runner = MachineRunner::new(&path).with_deadline(Duration::from_millis(300));
+        let runner = MachineRunner::new(&path);
 
-        let limit = runner.command_deadline();
+        let limit = Duration::from_millis(300);
         let started = Instant::now();
         let outcome = runner.run_outcome("sh", &["-c", "sleep 8"], limit);
         assert_eq!(outcome, RunOutcome::TimedOut { after: Duration::from_millis(300) });
         assert!(started.elapsed() < Duration::from_secs(4), "voltou depois de {:?}", started.elapsed());
-        assert!(!runner.run("sh", &["-c", "sleep 8"]), "passar do prazo não é dar certo");
 
         assert_eq!(runner.run_outcome("sh", &["-c", "exit 0"], limit), RunOutcome::Succeeded);
         assert_eq!(runner.run_outcome("sh", &["-c", "exit 3"], limit), RunOutcome::Failed);
@@ -1538,10 +1503,8 @@ mod tests {
         assert_eq!(COMMAND_DEADLINE, Duration::from_secs(60));
         assert_eq!(STEP_BUDGET, Duration::from_secs(60));
         let runner = MachineRunner::new("");
-        assert_eq!(runner.deadline, COMMAND_DEADLINE);
         assert_eq!(runner.command_deadline(), COMMAND_DEADLINE);
         assert_eq!(runner.budget(), STEP_BUDGET);
-        assert_eq!(runner.with_budget(Duration::from_secs(7)).budget(), Duration::from_secs(7));
     }
 
     /// Um projeto em Go e Rust, sem mapa ainda: `go` vem antes de `rust` na

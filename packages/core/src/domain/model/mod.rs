@@ -6,25 +6,18 @@
 //!
 //! Submodules:
 //!
-//! - [`event`] — the harness event schema (stored in `mustard.db`).
 //! - [`contract`] — the hook contract: [`contract::HookInput`],
 //!   [`contract::Verdict`], [`contract::Outcome`], [`contract::Trigger`], and
 //!   the [`contract::Check`] / [`contract::Observer`] traits. **Frozen**: every
 //!   hook module depends on it.
-//! - [`pipeline`] — `pipeline-state` types ([`pipeline::PipelineState`],
-//!   [`pipeline::Phase`], [`pipeline::Scope`]).
 //! - [`view`] — typed `ViewModels` for the SDD domain layer: `SpecView`,
 //!   `WaveView`, `QualityRollup`, `WorkspaceSummary`, and the `SpecReader`
 //!   filter/window types.
 
 pub mod contract;
-pub mod event;
-pub mod pipeline;
 pub mod view;
 
 
 // Re-export view types for consumers that import from `mustard_core::domain::model`
-// directly. Consumers that need the SDD Phase/Scope should import from
-// `mustard_core::domain::model::view::{Phase, Scope}` to avoid ambiguity with
-// `mustard_core::domain::model::pipeline::{Phase, Scope}`.
+// directly.
 pub use view::{Flags, Outcome, SpecState, SpecSummary, SpecView, Stage, StateError};

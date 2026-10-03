@@ -1061,9 +1061,15 @@ mod tests {
         }
     }
 
-    /// O executor da máquina por dentro, anotando quanto tempo os comandos da
-    /// etapa levaram, somados: o que a etapa espera, sem o tempo que a
-    /// atualização gasta gravando os arquivos, que a carga da máquina estica.
+    /// O orçamento curto que o teste dá à etapa inteira, no lugar dos 60 s de
+    /// verdade.
+    #[cfg(unix)]
+    const SHORT_BUDGET: Duration = Duration::from_secs(1);
+
+    /// O executor da máquina por dentro, com o orçamento curto da etapa,
+    /// anotando quanto tempo os comandos da etapa levaram, somados: o que a
+    /// etapa espera, sem o tempo que a atualização gasta gravando os
+    /// arquivos, que a carga da máquina estica.
     #[cfg(unix)]
     struct Timed<'a> {
         inner: &'a MachineRunner,
@@ -1092,7 +1098,7 @@ mod tests {
         }
 
         fn budget(&self) -> Duration {
-            self.inner.budget()
+            SHORT_BUDGET
         }
 
         fn command_deadline(&self) -> Duration {
@@ -1121,7 +1127,7 @@ mod tests {
             &bin.path().join("claude"),
             &format!("#!/bin/sh\necho \"$*\" >> \"{}\"\nexec /bin/sleep 8\n", ran.display()),
         );
-        let machine = MachineRunner::new(&bin.path().display().to_string()).with_budget(Duration::from_secs(1));
+        let machine = MachineRunner::new(&bin.path().display().to_string());
         let runner = Timed { inner: &machine, in_commands: std::cell::Cell::new(Duration::ZERO) };
 
         let outcome = upsert(root, &UpsertOpts::default(), &runner, |_, _| skipped(None, "no registry in a test".to_string()))

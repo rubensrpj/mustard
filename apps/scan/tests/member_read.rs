@@ -506,12 +506,16 @@ fn a_member_read_or_a_call_after_optional_access_is_a_use_like_after_the_plain_o
 /// depois dele ganham o mesmo uso que ganham depois de `pedido.`, no C#, no
 /// TypeScript e no Dart: suspeito sem tipo escrito, provado com ele. O que
 /// vem antes da marca só é o objeto quando é um nome: a chamada
-/// (`criar()!.Troco`) segue sendo um valor e não liga. Aqui o C#, com a marca
-/// também afastada do ponto por espaço (`pedido ! .Calcular()`).
+/// (`criar()!.Troco`) segue sendo um valor e não liga. O C# também com a marca
+/// afastada do ponto por espaço (`pedido ! .Calcular()`).
+///
+/// As três linguagens vão num projeto só, com a mesma classe `Pedido` em cada
+/// uma, e cada lista de usos é conferida inteira: o mapa de uma linguagem não
+/// ganha nem perde uso por causa dos arquivos das outras.
 #[test]
-fn a_member_read_or_a_call_after_null_forgiving_access_is_a_use_like_after_the_plain_one_in_csharp() {
-    let csharp = scanned(
-        "afirmado-csharp",
+fn a_member_read_or_a_call_after_null_forgiving_access_is_a_use_like_after_the_plain_one() {
+    let map = scanned(
+        "afirmado",
         &[
             (
                 "Loja/Pedido.cs",
@@ -523,40 +527,12 @@ fn a_member_read_or_a_call_after_null_forgiving_access_is_a_use_like_after_the_p
                 "namespace Loja;\n\npublic class Caixa\n{\n    public Pedido Criar() => new Pedido();\n\n    \
                  public int Fechar(Pedido? pedido)\n    {\n        return pedido!.Total + pedido ! .Calcular() + Criar()!.Troco;\n    }\n}\n",
             ),
-        ],
-    );
-    assert_eq!(suspect_uses(&csharp, "Loja/Pedido.cs", "Total"), ["Loja/Caixa.cs:9:Fechar"]);
-    assert_eq!(suspect_uses(&csharp, "Loja/Pedido.cs", "Calcular"), ["Loja/Caixa.cs:9:Fechar"]);
-    assert_eq!(every_use(&csharp, "Loja/Pedido.cs", "Troco"), Vec::<String>::new(), "a property read from a call");
-}
-
-/// O mesmo no TypeScript: `pedido!.total` e `pedido!.calcular()` leem o membro
-/// do objeto, e `criar()!.troco`, que vem de uma chamada, não liga.
-#[test]
-fn a_member_read_or_a_call_after_null_forgiving_access_is_a_use_like_after_the_plain_one_in_typescript() {
-    let typescript = scanned(
-        "afirmado-typescript",
-        &[
             ("src/pedido.ts", "export class Pedido {\n  total = 0;\n  troco = 0;\n\n  calcular() {\n    return 1;\n  }\n}\n"),
             (
                 "src/caixa.ts",
                 "import { Pedido } from './pedido';\n\nexport function criar(): Pedido | undefined {\n  return undefined;\n}\n\n\
                  export function fechar(pedido?: Pedido) {\n  return pedido!.total + pedido!.calcular() + criar()!.troco;\n}\n",
             ),
-        ],
-    );
-    assert_eq!(proven_uses(&typescript, "src/pedido.ts", "total"), ["src/caixa.ts:8:fechar"]);
-    assert_eq!(proven_uses(&typescript, "src/pedido.ts", "calcular"), ["src/caixa.ts:8:fechar"]);
-    assert_eq!(every_use(&typescript, "src/pedido.ts", "troco"), Vec::<String>::new(), "a property read from a call");
-}
-
-/// O mesmo no Dart: `pedido!.total` e `pedido!.calcular()` leem o membro do
-/// objeto, e `criar()!.troco`, que vem de uma chamada, não liga.
-#[test]
-fn a_member_read_or_a_call_after_null_forgiving_access_is_a_use_like_after_the_plain_one_in_dart() {
-    let dart = scanned(
-        "afirmado-dart",
-        &[
             ("pubspec.yaml", "name: loja\n"),
             ("lib/pedido.dart", "class Pedido {\n  int total = 0;\n  int troco = 0;\n\n  int calcular() => 1;\n}\n"),
             (
@@ -566,9 +542,17 @@ fn a_member_read_or_a_call_after_null_forgiving_access_is_a_use_like_after_the_p
             ),
         ],
     );
-    assert_eq!(suspect_uses(&dart, "lib/pedido.dart", "total"), ["lib/caixa.dart:5:fechar"]);
-    assert_eq!(suspect_uses(&dart, "lib/pedido.dart", "calcular"), ["lib/caixa.dart:7:somar"]);
-    assert_eq!(every_use(&dart, "lib/pedido.dart", "troco"), Vec::<String>::new(), "a property read from a call");
+    assert_eq!(suspect_uses(&map, "Loja/Pedido.cs", "Total"), ["Loja/Caixa.cs:9:Fechar"]);
+    assert_eq!(suspect_uses(&map, "Loja/Pedido.cs", "Calcular"), ["Loja/Caixa.cs:9:Fechar"]);
+    assert_eq!(every_use(&map, "Loja/Pedido.cs", "Troco"), Vec::<String>::new(), "a csharp property read from a call");
+
+    assert_eq!(proven_uses(&map, "src/pedido.ts", "total"), ["src/caixa.ts:8:fechar"]);
+    assert_eq!(proven_uses(&map, "src/pedido.ts", "calcular"), ["src/caixa.ts:8:fechar"]);
+    assert_eq!(every_use(&map, "src/pedido.ts", "troco"), Vec::<String>::new(), "a typescript property read from a call");
+
+    assert_eq!(suspect_uses(&map, "lib/pedido.dart", "total"), ["lib/caixa.dart:5:fechar"]);
+    assert_eq!(suspect_uses(&map, "lib/pedido.dart", "calcular"), ["lib/caixa.dart:7:somar"]);
+    assert_eq!(every_use(&map, "lib/pedido.dart", "troco"), Vec::<String>::new(), "a dart property read from a call");
 }
 
 /// O nome de uma letra antes do separador é um nome como o de duas: o

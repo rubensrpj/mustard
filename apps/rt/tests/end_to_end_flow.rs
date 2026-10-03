@@ -1533,15 +1533,16 @@ fn build_notice_head(project: &Project, key: &str, compiled: &str, progress: &st
     text.split("{running}").next().unwrap_or_default().to_string()
 }
 
-/// Espera a compilação em segundo plano acabar: a trava dela sai com ela.
+/// Espera a compilação em segundo plano acabar: a trava dela passa a dizer
+/// como terminou (`built` ou `failed`).
 fn wait_for_the_background_build(project: &Project) {
     for _ in 0..200 {
-        if !project.build_marker().exists() {
+        if std::fs::read_to_string(project.build_marker()).is_ok_and(|said| !said.trim().is_empty()) {
             return;
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
-    panic!("a compilação em segundo plano nunca soltou a trava");
+    panic!("a compilação em segundo plano nunca escreveu na trava como terminou");
 }
 
 /// No repositório do Mustard sem o programa compilado, o início da sessão

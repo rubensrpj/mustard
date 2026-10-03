@@ -10,6 +10,5 @@ pub mod page_templates;
 pub mod i18n;
 pub mod process;
 pub mod project_seed;
-pub mod config;
 pub mod seeds;
 pub mod time;

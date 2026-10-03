@@ -66,180 +66,162 @@ fn expect(pairs: &[(&str, &str)]) -> BTreeSet<(String, String)> {
 /// Report the difference in both directions — a bare `assert_eq!` on two large
 /// sets is unreadable, and the two directions mean different defects: MISSING
 /// is a construct the queries stopped seeing, EXTRA is one they started
-/// mis-filing.
-fn assert_pairs(fixture_dir: &str, expected: &[(&str, &str)]) {
+/// mis-filing. `None` when the fixture produced exactly the expected pairs.
+fn drift(fixture_dir: &str, expected: &[(&str, &str)]) -> Option<String> {
     let got = pairs_for(fixture_dir);
     let want = expect(expected);
     let missing: Vec<_> = want.difference(&got).collect();
     let extra: Vec<_> = got.difference(&want).collect();
-    assert!(
-        missing.is_empty() && extra.is_empty(),
-        "{fixture_dir}: declaration content drifted\n  MISSING (expected, not produced): {missing:?}\n  EXTRA   (produced, not expected): {extra:?}"
-    );
+    (!missing.is_empty() || !extra.is_empty()).then(|| {
+        format!("{fixture_dir}: declaration content drifted\n  MISSING (expected, not produced): {missing:?}\n  EXTRA   (produced, not expected): {extra:?}")
+    })
 }
 
+/// One table, one row per fixture folder: the folder and the exact pairs its
+/// own source spells out. Every row is read before the test fails, so one run
+/// shows every folder that drifted, not only the first.
 #[test]
-fn rust_files_a_free_fn_as_unit_and_an_impl_or_trait_fn_as_member() {
-    // `main`/`helper` are module-level (units); `area` lives in an impl block
-    // and `draw` is a trait signature — both members. `draw` is the regression
-    // guard: it was captured by nothing until the function line was drawn.
-    assert_pairs(
-        "graph_rust",
-        &[
-            ("main", "function"),
-            ("helper", "function"),
-            ("Widget", "struct"),
-            ("width", "field"),
-            ("area", "method"),
-            ("Mode", "enum"),
-            ("Fast", "enum_member"),
-            ("Slow", "enum_member"),
-            ("Render", "trait"),
-            ("draw", "method"),
-            ("Count", "type"),
-            ("MAX_WIDTH", "constant"),
-            ("DEFAULT_MODE", "constant"),
-        ],
-    );
-}
-
-#[test]
-fn python_files_a_module_level_def_as_unit_and_a_class_def_as_member() {
-    assert_pairs(
-        "graph_python",
-        &[
-            ("User", "class"),
-            ("name", "field"),
-            ("rename", "method"),
-            ("load", "function"),
-            // A name given a value at the top of the module is a constant.
-            ("DEFAULT_NAME", "const"),
-        ],
-    );
-}
-
-#[test]
-fn dart_files_a_library_function_as_unit_and_a_body_member_as_member() {
-    // `summarize` is declared at library level — a unit. `describe` (class),
-    // `touch` (mixin, abstract) and `shout` (extension) are members, and the
-    // three of them reach the engine through two different wrappers. Os
-    // campos da classe, o `get` e os itens do enum são membros também, cada
-    // um com o seu tipo.
-    assert_pairs(
-        "graph_dart",
-        &[
-            ("Role", "enum"),
-            ("admin", "enum_member"),
-            ("member", "enum_member"),
-            ("Account", "class"),
-            ("id", "field"),
-            ("visits", "field"),
-            ("label", "property"),
-            // The constructor is a member of its class, like a method.
-            ("Account", "method"),
-            ("describe", "method"),
-            ("Auditable", "mixin"),
-            ("touch", "method"),
-            ("AccountFormatting", "extension"),
-            ("shout", "method"),
-            ("summarize", "function"),
-            ("defaultRole", "const"),
-        ],
-    );
-}
-
-#[test]
-fn go_files_a_top_level_func_as_unit_and_a_receiver_method_as_member() {
-    assert_pairs(
-        "graph_go",
-        &[
-            ("User", "struct"),
-            ("Name", "field"),
-            ("Display", "method"),
-            ("Storer", "interface"),
-            // The interface method is a member, like a receiver method.
-            ("Load", "method"),
-            ("ID", "type"),
-            ("Load", "function"),
-            ("MaxNameLength", "const"),
-        ],
-    );
-}
-
-#[test]
-fn typescript_files_a_top_level_function_as_unit_and_a_class_member_as_member() {
-    assert_pairs(
-        "graph_typescript",
-        &[
-            ("Shape", "interface"),
-            ("kind", "property"),
-            ("area", "method"),
-            ("ShapeId", "type"),
-            ("Color", "enum"),
-            ("Red", "enum_member"),
-            ("Green", "enum_member"),
-            ("DEFAULT_COLOR", "const"),
-            ("describe", "function"),
-            ("UserService", "class"),
-            ("load", "method"),
-            ("User", "class"),
-            ("name", "field"),
-        ],
-    );
-}
-
-#[test]
-fn php_files_a_top_level_function_as_unit_and_a_class_member_as_member() {
-    assert_pairs(
-        "graph_php",
-        &[
-            ("User", "class"),
-            ("name", "property"),
-            ("UserService", "class"),
-            ("load", "method"),
-            ("Identifiable", "interface"),
-            ("id", "method"),
-            ("HasLabel", "trait"),
-            // The trait declares BOTH a `$label` property and a `label()`
-            // accessor — one identifier, two kinds, and the pair set keeps them
-            // apart where a name-only inventory would collapse them.
-            ("label", "property"),
-            ("label", "method"),
-            ("Status", "enum"),
-            ("Active", "enum_member"),
-            ("Inactive", "enum_member"),
-            ("helper", "function"),
-            ("DEFAULT_LABEL", "const"),
-        ],
-    );
-}
-
-#[test]
-fn csharp_files_every_member_as_member_because_it_has_no_free_function() {
-    // The language has no top-level function, so its whole declaration surface
-    // is types + members. This is the shape the other dialects are normalised
-    // AGAINST: it needed no fix, and the test records that as a fact.
-    assert_pairs(
-        "graph_csharp",
-        &[
-            ("IShape", "interface"),
-            ("Area", "method"),
-            ("Point", "record"),
-            ("Size", "struct"),
-            // A `const` is a constant, not a field, though the grammar writes
-            // both with the same node.
-            ("MaxWidth", "const"),
-            ("Width", "field"),
-            ("Status", "enum"),
-            ("Active", "enum_member"),
-            ("Inactive", "enum_member"),
-            ("User", "class"),
-            ("Name", "property"),
-            ("UserService", "class"),
-            // O parâmetro escrito no cabeçalho do tipo é parâmetro, e não
-            // campo: a assinatura do tipo já o traz.
-            ("prefix", "parameter"),
-            ("Load", "method"),
-        ],
-    );
+fn every_language_files_a_free_function_as_unit_and_a_type_member_as_member() {
+    let table: &[(&str, &[(&str, &str)])] = &[
+        // `main`/`helper` are module-level (units); `area` lives in an impl block
+        // and `draw` is a trait signature — both members. `draw` is the regression
+        // guard: it was captured by nothing until the function line was drawn.
+        (
+            "graph_rust",
+            &[
+                ("main", "function"),
+                ("helper", "function"),
+                ("Widget", "struct"),
+                ("width", "field"),
+                ("area", "method"),
+                ("Mode", "enum"),
+                ("Fast", "enum_member"),
+                ("Slow", "enum_member"),
+                ("Render", "trait"),
+                ("draw", "method"),
+                ("Count", "type"),
+                ("MAX_WIDTH", "constant"),
+                ("DEFAULT_MODE", "constant"),
+            ],
+        ),
+        (
+            "graph_python",
+            &[
+                ("User", "class"),
+                ("name", "field"),
+                ("rename", "method"),
+                ("load", "function"),
+                // A name given a value at the top of the module is a constant.
+                ("DEFAULT_NAME", "const"),
+            ],
+        ),
+        // `summarize` is declared at library level — a unit. `describe` (class),
+        // `touch` (mixin, abstract) and `shout` (extension) are members, and the
+        // three of them reach the engine through two different wrappers. Os
+        // campos da classe, o `get` e os itens do enum são membros também, cada
+        // um com o seu tipo.
+        (
+            "graph_dart",
+            &[
+                ("Role", "enum"),
+                ("admin", "enum_member"),
+                ("member", "enum_member"),
+                ("Account", "class"),
+                ("id", "field"),
+                ("visits", "field"),
+                ("label", "property"),
+                // The constructor is a member of its class, like a method.
+                ("Account", "method"),
+                ("describe", "method"),
+                ("Auditable", "mixin"),
+                ("touch", "method"),
+                ("AccountFormatting", "extension"),
+                ("shout", "method"),
+                ("summarize", "function"),
+                ("defaultRole", "const"),
+            ],
+        ),
+        (
+            "graph_go",
+            &[
+                ("User", "struct"),
+                ("Name", "field"),
+                ("Display", "method"),
+                ("Storer", "interface"),
+                // The interface method is a member, like a receiver method.
+                ("Load", "method"),
+                ("ID", "type"),
+                ("Load", "function"),
+                ("MaxNameLength", "const"),
+            ],
+        ),
+        (
+            "graph_typescript",
+            &[
+                ("Shape", "interface"),
+                ("kind", "property"),
+                ("area", "method"),
+                ("ShapeId", "type"),
+                ("Color", "enum"),
+                ("Red", "enum_member"),
+                ("Green", "enum_member"),
+                ("DEFAULT_COLOR", "const"),
+                ("describe", "function"),
+                ("UserService", "class"),
+                ("load", "method"),
+                ("User", "class"),
+                ("name", "field"),
+            ],
+        ),
+        (
+            "graph_php",
+            &[
+                ("User", "class"),
+                ("name", "property"),
+                ("UserService", "class"),
+                ("load", "method"),
+                ("Identifiable", "interface"),
+                ("id", "method"),
+                ("HasLabel", "trait"),
+                // The trait declares BOTH a `$label` property and a `label()`
+                // accessor — one identifier, two kinds, and the pair set keeps them
+                // apart where a name-only inventory would collapse them.
+                ("label", "property"),
+                ("label", "method"),
+                ("Status", "enum"),
+                ("Active", "enum_member"),
+                ("Inactive", "enum_member"),
+                ("helper", "function"),
+                ("DEFAULT_LABEL", "const"),
+            ],
+        ),
+        // The language has no top-level function, so its whole declaration surface
+        // is types + members. This is the shape the other dialects are normalised
+        // AGAINST: it needed no fix, and the test records that as a fact.
+        (
+            "graph_csharp",
+            &[
+                ("IShape", "interface"),
+                ("Area", "method"),
+                ("Point", "record"),
+                ("Size", "struct"),
+                // A `const` is a constant, not a field, though the grammar writes
+                // both with the same node.
+                ("MaxWidth", "const"),
+                ("Width", "field"),
+                ("Status", "enum"),
+                ("Active", "enum_member"),
+                ("Inactive", "enum_member"),
+                ("User", "class"),
+                ("Name", "property"),
+                ("UserService", "class"),
+                // O parâmetro escrito no cabeçalho do tipo é parâmetro, e não
+                // campo: a assinatura do tipo já o traz.
+                ("prefix", "parameter"),
+                ("Load", "method"),
+            ],
+        ),
+    ];
+    let drifted: Vec<String> = table.iter().filter_map(|(fixture_dir, pairs)| drift(fixture_dir, pairs)).collect();
+    assert!(drifted.is_empty(), "{}", drifted.join("\n"));
 }

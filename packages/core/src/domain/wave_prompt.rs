@@ -38,11 +38,10 @@ use std::fmt::Write as _;
 use serde_json::Value;
 
 use crate::domain::config::Language;
-use crate::domain::lessons::{applies_to, same_file, text_only, tied_to_wave, Scope};
+use crate::domain::lessons::{applies_to, text_only, tied_to_wave, Scope};
 use crate::domain::normalize::Languages;
-use crate::domain::mustard_id;
 use crate::domain::pattern::{Direction, Pattern};
-use crate::domain::project_map::{cited_paths, Recipe, RecipeOf, QUALITY_TOP_PERCENT};
+use crate::domain::project_map::{Recipe, RecipeOf, QUALITY_TOP_PERCENT};
 use crate::domain::spec_events::{Block, BlockQuery, Refusal, SpecEvent, SpecLog, Step, TASK_TITLE_MAX};
 use crate::domain::spec_index::{cut, title_of};
 use crate::domain::spec_state::State;
@@ -422,18 +421,9 @@ pub fn recipe_lines(recipe: &Recipe, lang: Locale) -> String {
     out
 }
 
-/// O pedido montado e o tamanho dele.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Prompt {
-    /// O texto inteiro do pedido.
-    pub text: String,
-    /// Quantas linhas ele tem.
-    pub lines: usize,
-}
-
 /// O teto de tokens do pedido de uma onda: acima dele, quem despacha recusa
 /// e diz o tamanho medido e o teto, para dividir o lote em dois. O teto é
-/// de despachar, não de montar — [`build`] e [`write`] continuam escrevendo
+/// de despachar, não de montar — [`write`] continua escrevendo
 /// o pedido inteiro, do tamanho que for, porque é esse texto que a página
 /// mostra antes da aprovação; ninguém corta linha para caber.
 pub const WAVE_REQUEST_TOKEN_CAP: u64 = 25_000;
@@ -465,19 +455,11 @@ pub fn token_cap_message(wave: u64, tokens: u64, lang: Locale) -> Option<String>
     )
 }
 
-/// Monta o pedido da onda a partir do material já lido. Sem teto de linhas:
-/// o pedido sai inteiro, do tamanho que a onda pedir. O teto de tokens
-/// ([`token_cap_message`]) é conferido à parte, por quem decide despachar,
-/// depois de medir este texto.
-#[must_use]
-pub fn build(material: &Material, lang: Locale) -> Prompt {
-    let text = write(material, lang);
-    let lines = count_lines(&text);
-    Prompt { text, lines }
-}
-
 /// O texto do pedido, sem medir nem recusar: a página mostra mesmo o pedido
 /// grande demais, que é justamente o que precisa ser visto antes da aprovação.
+/// Sem teto de linhas: o pedido sai inteiro, do tamanho que a onda pedir. O
+/// teto de tokens ([`token_cap_message`]) é conferido à parte, por quem decide
+/// despachar, depois de medir este texto.
 #[must_use]
 pub fn write(material: &Material, lang: Locale) -> String {
     Writer { material, lang }.text()
@@ -1162,242 +1144,6 @@ pub fn tasks_text(log: &SpecLog, wave: u64) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// A lista dos itens sem dono, para conferir antes de gravar
-// ---------------------------------------------------------------------------
-
-/// De onde veio o dono de um item na lista para conferir.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum OwnerFrom {
-    /// As tarefas das ondas do plano que apontam o item, pelo número: as que
-    /// nasceram dele e as que citam o código dele no texto.
-    Tasks(Vec<u64>),
-    /// O texto do item cita as ondas.
-    Cited,
-    /// As tarefas das ondas mexem nos arquivos que o item cita no texto ou
-    /// diz em `applies_to`; aqui, esses arquivos.
-    Files(Vec<String>),
-    /// O orquestrador deu o dono, com o motivo.
-    Orchestrator(String),
-    /// Nenhuma regra achou dono.
-    Nothing,
-}
-
-/// Um item sem dono na lista para conferir.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OwnerLine {
-    /// O número do item.
-    pub item: u64,
-    /// O dono que ele recebe; `None` enquanto nenhuma regra nem o
-    /// orquestrador o deu.
-    pub owner: Option<Owner>,
-    pub from: OwnerFrom,
-}
-
-/// O dono que o orquestrador dá a um item sem dono, pelo código do item.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GivenOwner {
-    pub code: String,
-    pub owner: Owner,
-    /// Por que esse é o dono: vai para a página, ao lado do item.
-    pub why: String,
-}
-
-/// A proposta de dono de cada item sem dono, na ordem dos números. Três
-/// regras, nesta ordem, e vale a primeira que acha onda do plano:
-///
-/// 1. as tarefas que apontam o item — a que nasceu dele (`origin` numa versão
-///    dele) e a que cita o código dele no texto, como as tarefas citavam o
-///    que cobriam antes de existir `covers`;
-/// 2. as ondas que o texto do item cita, pelo número (como em "onda 14" ou
-///    "ondas 14, 15 e 17") ou pelo código da onda;
-/// 3. as ondas cujas tarefas mexem nos arquivos que o item cita no texto ou
-///    diz em `applies_to`.
-///
-/// O item que nenhuma regra resolve fica sem dono, para o orquestrador
-/// classificar. A proposta nunca dá o projeto: isso é escolha de quem
-/// classifica.
-#[must_use]
-pub fn propose_owners(log: &SpecLog) -> Vec<OwnerLine> {
-    let planned = log.planned_waves();
-    let codes = log.codes();
-    let tasks: Vec<&SpecEvent> = log
-        .block(BlockQuery::Block(Block::Waves))
-        .into_iter()
-        .filter(|e| e.event_type == "task" && e.wave().is_some_and(|n| planned.contains(&n)))
-        .collect();
-    let wave_codes: BTreeMap<&str, u64> = log
-        .block(BlockQuery::Block(Block::Waves))
-        .into_iter()
-        .filter(|e| e.event_type == "wave")
-        .filter_map(|e| Some((codes.get(&e.id)?.as_str(), e.wave()?)))
-        .collect();
-    let files: BTreeMap<u64, Vec<String>> = planned.iter().map(|n| (*n, wave_files(log, *n))).collect();
-    unowned(log)
-        .into_iter()
-        .map(|item| {
-            let proposed = by_tasks(log, item, &tasks, codes.get(&item.id))
-                .or_else(|| by_cited(item, &wave_codes, &planned))
-                .or_else(|| by_files(item, &files));
-            match proposed {
-                Some((waves, from)) => OwnerLine { item: item.id, owner: Some(Owner::Waves(waves)), from },
-                None => OwnerLine { item: item.id, owner: None, from: OwnerFrom::Nothing },
-            }
-        })
-        .collect()
-}
-
-/// A lista para conferir: a proposta de cada item sem dono, com o dono que o
-/// orquestrador deu no lugar dela quando deu um.
-///
-/// # Errors
-///
-/// O código da primeira linha dada que não serve: não é de um item sem dono,
-/// o dono é uma onda fora do plano (ou nenhuma), ou falta o motivo.
-pub fn owner_list(log: &SpecLog, given: &[GivenOwner]) -> Result<Vec<OwnerLine>, String> {
-    let mut lines = propose_owners(log);
-    let codes = log.codes();
-    let planned = log.planned_waves();
-    for entry in given {
-        let valid = !entry.why.trim().is_empty()
-            && match &entry.owner {
-                Owner::Project => true,
-                Owner::Waves(waves) => !waves.is_empty() && waves.is_subset(&planned),
-                Owner::Files(files) => files.iter().any(|f| !f.trim().is_empty()),
-            };
-        let line = lines.iter_mut().find(|line| codes.get(&line.item) == Some(&entry.code));
-        match line {
-            Some(line) if valid => {
-                line.owner = Some(entry.owner.clone());
-                line.from = OwnerFrom::Orchestrator(entry.why.trim().to_string());
-            }
-            _ => return Err(entry.code.clone()),
-        }
-    }
-    Ok(lines)
-}
-
-/// A primeira regra: as ondas das tarefas que nasceram do item ou citam o
-/// código dele.
-fn by_tasks(
-    log: &SpecLog,
-    item: &SpecEvent,
-    tasks: &[&SpecEvent],
-    code: Option<&String>,
-) -> Option<(BTreeSet<u64>, OwnerFrom)> {
-    let mut versions: BTreeSet<u64> = BTreeSet::from([item.id]);
-    let mut at = item;
-    while let Some(old) = at.int("replaces").and_then(|id| log.get(id)) {
-        if !versions.insert(old.id) {
-            break;
-        }
-        at = old;
-    }
-    let cites = |task: &SpecEvent| {
-        let text = task.str_field("text").unwrap_or_default();
-        code.is_some_and(|code| mustard_id::find(text).into_iter().any(|(start, end)| &text[start..end] == code))
-    };
-    let hits: Vec<&SpecEvent> = tasks
-        .iter()
-        .copied()
-        .filter(|task| task.int("origin").is_some_and(|origin| versions.contains(&origin)) || cites(task))
-        .collect();
-    let waves: BTreeSet<u64> = hits.iter().filter_map(|task| task.wave()).collect();
-    (!waves.is_empty()).then(|| (waves, OwnerFrom::Tasks(hits.iter().map(|task| task.id).collect())))
-}
-
-/// A segunda regra: as ondas do plano que o texto, o rótulo ou as
-/// palavras-chave do item citam.
-fn by_cited(
-    item: &SpecEvent,
-    wave_codes: &BTreeMap<&str, u64>,
-    planned: &BTreeSet<u64>,
-) -> Option<(BTreeSet<u64>, OwnerFrom)> {
-    let mut texts: Vec<&str> = [item.str_field("text"), item.str_field("label")].into_iter().flatten().collect();
-    if let Some(keys) = item.fields.get("keys").and_then(Value::as_array) {
-        texts.extend(keys.iter().filter_map(Value::as_str));
-    }
-    let waves: BTreeSet<u64> =
-        texts.into_iter().flat_map(|text| cited_waves(text, wave_codes)).filter(|n| planned.contains(n)).collect();
-    (!waves.is_empty()).then_some((waves, OwnerFrom::Cited))
-}
-
-/// As ondas que um texto cita: o número logo depois da palavra "onda" (ou
-/// "wave"), os números da lista logo depois de "ondas" ("ondas 14, 15 e 17")
-/// e o código de uma onda. O número separado da palavra por pontuação
-/// ("ondas. (4") e o código de outro item não contam.
-fn cited_waves(text: &str, wave_codes: &BTreeMap<&str, u64>) -> BTreeSet<u64> {
-    let mut out = BTreeSet::new();
-    let mut plain = String::with_capacity(text.len());
-    let mut from = 0;
-    for (start, end) in mustard_id::find(text) {
-        plain.push_str(&text[from..start]);
-        plain.push(' ');
-        out.extend(wave_codes.get(&text[start..end]));
-        from = end;
-    }
-    plain.push_str(&text[from..]);
-    let singular: Vec<String> =
-        [Locale::PtBr, Locale::EnUs].iter().map(|lang| translate("page.type.wave", *lang).to_lowercase()).collect();
-    let words: Vec<String> = plain.split_whitespace().map(str::to_lowercase).collect();
-    for (i, word) in words.iter().enumerate() {
-        let bare = word.trim_start_matches(|c: char| !c.is_alphanumeric());
-        let one = singular.iter().any(|s| s == bare);
-        let many = singular.iter().any(|s| bare.strip_suffix('s') == Some(s.as_str()));
-        if !one && !many {
-            continue;
-        }
-        for next in &words[i + 1..] {
-            let digits: String = next.chars().take_while(char::is_ascii_digit).collect();
-            let Ok(n) = digits.parse::<u64>() else {
-                if many && matches!(next.as_str(), "e" | "and") {
-                    continue;
-                }
-                break;
-            };
-            out.insert(n);
-            let rest = &next[digits.len()..];
-            if one || !(rest.is_empty() || rest == ",") {
-                break;
-            }
-        }
-    }
-    out
-}
-
-/// A terceira regra: as ondas cujas tarefas mexem nos arquivos que o item
-/// cita no texto ou diz em `applies_to`. A pasta citada no texto não casa
-/// com arquivo nenhum: uma pasta como `.claude/` casaria com quase toda onda.
-fn by_files(item: &SpecEvent, files: &BTreeMap<u64, Vec<String>>) -> Option<(BTreeSet<u64>, OwnerFrom)> {
-    let cited = cited_paths(item.str_field("text").unwrap_or_default());
-    let declared: Vec<String> = item
-        .fields
-        .get("applies_to")
-        .and_then(|at| at.get("files"))
-        .and_then(Value::as_array)
-        .map(|list| list.iter().filter_map(Value::as_str).map(str::to_string).collect())
-        .unwrap_or_default();
-    let mut waves = BTreeSet::new();
-    let mut shared: BTreeSet<String> = BTreeSet::new();
-    for (n, wave) in files {
-        let mut hit = false;
-        for path in &cited {
-            if wave.iter().any(|file| same_file(path, file)) {
-                shared.insert(path.clone());
-                hit = true;
-            }
-        }
-        if applies_to(item, &Scope { files: wave.clone(), ..Scope::default() }) {
-            shared.extend(declared.iter().cloned());
-            hit = true;
-        }
-        if hit {
-            waves.insert(*n);
-        }
-    }
-    (!waves.is_empty()).then(|| (waves, OwnerFrom::Files(shared.into_iter().collect())))
-}
-
-// ---------------------------------------------------------------------------
 // O conserto
 // ---------------------------------------------------------------------------
 
@@ -1634,6 +1380,7 @@ impl Writer<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::project_map::cited_paths;
     use crate::domain::spec_events::{parse_log, render_line, stamp, BlockQuery, SpecLog, Step};
     use serde_json::{json, Value};
 
@@ -1760,7 +1507,7 @@ mod tests {
             ),
         ];
         for (lang, steps) in expected {
-            let prompt = build(&material(&log, 1), lang);
+            let prompt = write(&material(&log, 1), lang);
             for text in [
                 "Ela abre o motor",
                 "Hoje não há motor",
@@ -1771,21 +1518,20 @@ mod tests {
                 "`soma`",
                 "Ela mostra a soma",
             ] {
-                assert!(!prompt.text.contains(text), "{text:?} foi copiado: {}", prompt.text);
+                assert!(!prompt.contains(text), "{text:?} foi copiado: {prompt}");
             }
-            assert!(prompt.text.contains("a onda termina"), "o done_when abre o pedido: {}", prompt.text);
-            assert_eq!(section(&prompt.text, translate("prompt.part.do", lang)).lines().collect::<Vec<_>>(), steps, "{}", prompt.text);
+            assert!(prompt.contains("a onda termina"), "o done_when abre o pedido: {prompt}");
+            assert_eq!(section(&prompt, translate("prompt.part.do", lang)).lines().collect::<Vec<_>>(), steps, "{prompt}");
             let example = translate("prompt.read.wave", lang).replace("{root}", "").replace("{spec}", "teste");
-            assert!(prompt.text.contains(&example), "{}", prompt.text);
+            assert!(prompt.contains(&example), "{}", prompt);
             // O comando que lê um item pelo código e o que lê uma lição, os
             // dois só na seção de como ler.
-            assert_eq!(prompt.text.matches("mustard-rt run read").count(), 2, "{}", prompt.text);
-            assert_eq!(prompt.text.matches("--term").count(), 1, "{}", prompt.text);
+            assert_eq!(prompt.matches("mustard-rt run read").count(), 2, "{prompt}");
+            assert_eq!(prompt.matches("--term").count(), 1, "{prompt}");
             for code in ["MSTD-TASK-0001", "MSTD-TASK-0002", "MSTD-CRIT-0001"] {
-                assert_eq!(prompt.text.matches(code).count(), 1, "{code}: {}", prompt.text);
+                assert_eq!(prompt.matches(code).count(), 1, "{code}: {prompt}");
             }
-            assert!(!prompt.text.contains("MSTD-WAVE-0001"), "a onda não é item do pedido: {}", prompt.text);
-            assert!(prompt.lines > 0 && prompt.lines == prompt.text.lines().count());
+            assert!(!prompt.contains("MSTD-WAVE-0001"), "a onda não é item do pedido: {prompt}");
         }
     }
 
@@ -1804,13 +1550,13 @@ mod tests {
         for lang in [Locale::PtBr, Locale::EnUs] {
             let mut m = with_agreed(&log, 1);
             m.execution = with_copy();
-            let full = build(&m, lang).text;
+            let full = write(&m, lang);
             let headings: Vec<&str> = full.lines().filter_map(|line| line.strip_prefix("## ")).collect();
             let expected: Vec<&str> =
                 ["delivers", "read", "do", "obey", "return", "work"].iter().map(|part| translate(&format!("prompt.part.{part}"), lang)).collect();
             assert_eq!(headings, expected, "{full}");
 
-            let bare = build(&material(&log, 1), lang).text;
+            let bare = write(&material(&log, 1), lang);
             let headings: Vec<&str> = bare.lines().filter_map(|line| line.strip_prefix("## ")).collect();
             assert_eq!(headings, &expected[..5], "sem copia nem comando, não há Como trabalhar: {bare}");
         }
@@ -1844,7 +1590,7 @@ mod tests {
                 "Read the whole task and the message",
             ),
         ] {
-            let prompt = build(&material(&log, 1), lang).text;
+            let prompt = write(&material(&log, 1), lang);
             let steps: Vec<&str> = section(&prompt, translate("prompt.part.do", lang)).lines().collect();
             assert_eq!(&steps[1..5], [said, attends[0], attends[1], read], "{prompt}");
             assert!(!prompt.contains(other), "{prompt}");
@@ -1868,8 +1614,8 @@ mod tests {
             ("task", json!({"wave": 1, "title": "Liberar espaço", "text": "Liberar.", "origin": 1, "files": [{"path": "src/a.rs"}]})),
             ("task", json!({"wave": 1, "title": "Conferir", "text": "Conferir.", "covers": [1, 3], "files": [{"path": "src/b.rs"}]})),
         ]);
-        let prompt = build(&material(&log, 1), Locale::PtBr);
-        let steps: Vec<&str> = section(&prompt.text, translate("prompt.part.do", Locale::PtBr)).lines().collect();
+        let prompt = write(&material(&log, 1), Locale::PtBr);
+        let steps: Vec<&str> = section(&prompt, translate("prompt.part.do", Locale::PtBr)).lines().collect();
         assert_eq!(
             &steps[..8],
             [
@@ -1882,12 +1628,11 @@ mod tests {
                 "   - Atende: mensagem do usuário MSTD-MSG-0003 — \"Só isto, curto.\"",
                 "   - Leia a tarefa e a mensagem inteiras antes de mexer.",
             ],
-            "{}",
-            prompt.text
+            "{prompt}"
         );
-        assert_eq!(prompt.text.matches("MSTD-MSG-0001").count(), 1, "{}", prompt.text);
-        assert!(!prompt.text.contains("MSTD-MSG-0002") && !prompt.text.contains("Ninguém atende"), "{}", prompt.text);
-        assert!(!prompt.text.contains("mais coisas aqui agora"), "{}", prompt.text);
+        assert_eq!(prompt.matches("MSTD-MSG-0001").count(), 1, "{prompt}");
+        assert!(!prompt.contains("MSTD-MSG-0002") && !prompt.contains("Ninguém atende"), "{}", prompt);
+        assert!(!prompt.contains("mais coisas aqui agora"), "{}", prompt);
         let words = long.split_whitespace().take(MESSAGE_WORDS).count();
         assert_eq!(words, 12);
         let read = listed(&material(&log, 1));
@@ -1907,10 +1652,10 @@ mod tests {
             ("task", json!({"wave": 1, "title": "Fazer", "text": "Fazer.", "files": [{"path": "src/a.rs"}]})),
         ]);
         for lang in [Locale::PtBr, Locale::EnUs] {
-            let prompt = build(&with_agreed(&log, 1), lang);
-            assert!(prompt.text.contains("Decisão nova que vale."), "{}", prompt.text);
-            assert!(!prompt.text.contains("Decisão antiga"), "{}", prompt.text);
-            assert!(!prompt.text.contains("Pedido antigo") && !prompt.text.contains("MSTD-MSG"), "{}", prompt.text);
+            let prompt = write(&with_agreed(&log, 1), lang);
+            assert!(prompt.contains("Decisão nova que vale."), "{}", prompt);
+            assert!(!prompt.contains("Decisão antiga"), "{}", prompt);
+            assert!(!prompt.contains("Pedido antigo") && !prompt.contains("MSTD-MSG"), "{}", prompt);
         }
     }
 
@@ -1931,7 +1676,7 @@ mod tests {
             test: Some("make check".into()),
             ..Execution::default()
         };
-        let text = build(&m, Locale::PtBr).text;
+        let text = write(&m, Locale::PtBr);
         let steps: Vec<String> = section(&text, "O que fazer")
             .lines()
             .filter(|line| line.chars().next().is_some_and(|c| c.is_ascii_digit()))
@@ -1952,7 +1697,7 @@ mod tests {
         assert_eq!(text.matches("make check").count(), 1, "{text}");
 
         m.execution = Execution { build: Some("make build".into()), ..Execution::default() };
-        let text = build(&m, Locale::PtBr).text;
+        let text = write(&m, Locale::PtBr);
         assert!(!text.contains("Rode a suíte"), "{text}");
     }
 
@@ -1969,7 +1714,7 @@ mod tests {
         for lang in [Locale::PtBr, Locale::EnUs] {
             let mut m = material(&log, 1);
             m.execution = Execution { copy: Some(WaveCopy { path: "/copia".into(), reused: None }), ..Execution::default() };
-            let request = build(&m, lang).text;
+            let request = write(&m, lang);
             let agent = crate::platform::seeds::agent_texts(lang)[0].1;
             for (name, text) in [("pedido", request.as_str()), ("agente", agent)] {
                 for command in ["cargo ", "npm ", "pnpm ", "yarn ", "dotnet ", "pytest", "go test", "mvn ", "gradle ", "make "] {
@@ -2038,8 +1783,8 @@ mod tests {
             copy: Some(WaveCopy { path: "/copia".into(), reused: None }),
             ..Execution::default()
         };
-        let prompt = build(&m, Locale::PtBr);
-        let text = &prompt.text;
+        let prompt = write(&m, Locale::PtBr);
+        let text = &prompt;
 
         // Abre pelo que a onda entrega, antes das tarefas.
         let delivers_at = text.find("a suíte passa").expect("o done_when abre o pedido");
@@ -2098,7 +1843,7 @@ mod tests {
             let mut m = material(&log, 1);
             m.execution = Execution { model: model.into(), effort: effort.into(), ..Execution::default() };
             for (lang, said) in [(Locale::PtBr, said_pt), (Locale::EnUs, said_en)] {
-                let text = build(&m, lang).text;
+                let text = write(&m, lang);
                 assert!(text.contains(said), "`{model}` `{effort}` em {lang:?}: {text}");
                 assert!(!text.contains("Opus"), "o pedido ainda fixa o Opus: {text}");
             }
@@ -2120,10 +1865,10 @@ mod tests {
             log(&events)
         };
         let (one, many) = (wave(1), wave(MANY));
-        let small = build(&material(&one, 1), Locale::PtBr);
-        let big = build(&material(&many, 1), Locale::PtBr);
-        assert!(big.lines > small.lines, "cada tarefa soma linha: {}", big.text);
-        assert!(big.text.contains(&format!("MSTD-TASK-{MANY:04}")), "{}", big.text);
+        let small = write(&material(&one, 1), Locale::PtBr);
+        let big = write(&material(&many, 1), Locale::PtBr);
+        assert!(count_lines(&big) > count_lines(&small), "cada tarefa soma linha: {big}");
+        assert!(big.contains(&format!("MSTD-TASK-{MANY:04}")), "{}", big);
     }
 
     /// A lista que a entrega confere é a que o pedido imprime: os itens da
@@ -2143,7 +1888,7 @@ mod tests {
         let mut m = with_agreed(&log, 1);
         m.lessons = bank.visible();
         let lesson = m.lessons[0].id;
-        let printed = build(&m, Locale::PtBr).text;
+        let printed = write(&m, Locale::PtBr);
         let mut in_text: Vec<String> = Vec::new();
         for line in printed.lines() {
             let Some(at) = line.find("MSTD-") else { continue };
@@ -2167,8 +1912,8 @@ mod tests {
     #[test]
     fn the_same_material_always_gives_the_same_bytes() {
         let log = log(&[("wave", json!({"n": 1, "text": "Onda", "criteria": [], "done_when": "pronto"}))]);
-        let first = build(&material(&log, 1), Locale::PtBr);
-        let again = build(&material(&log, 1), Locale::PtBr);
+        let first = write(&material(&log, 1), Locale::PtBr);
+        let again = write(&material(&log, 1), Locale::PtBr);
         assert_eq!(first, again);
     }
 
@@ -2189,17 +1934,17 @@ mod tests {
         let bank = lesson_bank(600);
         let mut m = material(&log, 1);
         m.lessons = bank.visible();
-        let prompt = build(&m, Locale::PtBr);
-        assert!(prompt.lines > 600, "{}", prompt.text);
+        let prompt = write(&m, Locale::PtBr);
+        assert!(count_lines(&prompt) > 600, "{prompt}");
         let last_id = bank.visible().last().expect("banco com lição").id;
-        assert!(prompt.text.contains(&format!("- Lição {last_id} — Lição 600 do banco")), "{}", prompt.text);
+        assert!(prompt.contains(&format!("- Lição {last_id} — Lição 600 do banco")), "{}", prompt);
         assert_eq!(listed(&m).len(), 600);
     }
 
     /// O pedido da onda 3, medido em 27.412 tokens, passa do teto de 25.000:
     /// a recusa diz os dois números. No teto exato (25.000) ele ainda cabe;
-    /// um token a mais (25.001) já passa. O teto não mexe na montagem: é
-    /// [`build`]/[`write`] que continuam saindo inteiros, sem linha cortada
+    /// um token a mais (25.001) já passa. O teto não mexe na montagem: o
+    /// [`write`] continua saindo inteiro, sem linha cortada
     /// — quem decide despachar é que confere esta mensagem à parte.
     #[test]
     fn a_request_above_twenty_five_thousand_tokens_is_refused() {
@@ -2244,17 +1989,17 @@ mod tests {
                 stale: true,
             },
         ];
-        let prompt = build(&m, Locale::PtBr);
+        let prompt = write(&m, Locale::PtBr);
         assert!(
-            prompt.text.contains("`/home/ana/loja/apps/rt/.claude/skills/add-run-command/SKILL.md`"),
+            prompt.contains("`/home/ana/loja/apps/rt/.claude/skills/add-run-command/SKILL.md`"),
             "{}",
-            prompt.text
+            prompt
         );
-        assert!(prompt.text.contains("acrescentar um comando run"), "{}", prompt.text);
-        assert!(prompt.text.contains(translate("prompt.skill.read", Locale::PtBr)), "{}", prompt.text);
+        assert!(prompt.contains("acrescentar um comando run"), "{}", prompt);
+        assert!(prompt.contains(translate("prompt.skill.read", Locale::PtBr)), "{}", prompt);
         let stale = translate("prompt.skill.stale", Locale::PtBr);
-        assert!(prompt.text.contains(&format!("**add-hook-rule** ({stale})")), "{}", prompt.text);
-        assert!(!prompt.text.contains(&format!("**add-run-command** ({stale})")), "{}", prompt.text);
+        assert!(prompt.contains(&format!("**add-hook-rule** ({stale})")), "{}", prompt);
+        assert!(!prompt.contains(&format!("**add-run-command** ({stale})")), "{}", prompt);
     }
 
     /// A lição entra como os outros itens — "Lição", o número dela no banco e o
@@ -2271,13 +2016,13 @@ mod tests {
         let mut m = material(&log, 1);
         let lesson = bank.visible()[0];
         m.lessons = vec![lesson];
-        let prompt = build(&m, Locale::PtBr);
-        assert!(!prompt.text.contains("Confira antes de apagar"), "{}", prompt.text);
+        let prompt = write(&m, Locale::PtBr);
+        assert!(!prompt.contains("Confira antes de apagar"), "{}", prompt);
         let search = lesson.str_field("search").unwrap_or_default().to_string();
         assert!(!search.is_empty(), "a linha da lição guarda o campo de busca");
-        assert!(!prompt.text.contains(&search), "{}", prompt.text);
-        let obey = section(&prompt.text, "O que obedecer");
-        assert_eq!(obey.lines().collect::<Vec<_>>(), ["", &format!("- Lição {} — Apagar a pasta quebra o cache.", lesson.id)], "{}", prompt.text);
+        assert!(!prompt.contains(&search), "{}", prompt);
+        let obey = section(&prompt, "O que obedecer");
+        assert_eq!(obey.lines().collect::<Vec<_>>(), ["", &format!("- Lição {} — Apagar a pasta quebra o cache.", lesson.id)], "{prompt}");
         assert_eq!(listed(&m), [format!("lesson-{}", lesson.id)]);
     }
 
@@ -2341,8 +2086,8 @@ mod tests {
         let unowned: Vec<u64> = unowned(&plan).iter().map(|e| e.id).collect();
         assert_eq!(unowned, [2]);
         for wave in [1, 2] {
-            let prompt = build(&with_agreed(&plan, wave), Locale::PtBr);
-            assert!(!prompt.text.contains("MSTD-RULE-0002"), "onda {wave}: {}", prompt.text);
+            let prompt = write(&with_agreed(&plan, wave), Locale::PtBr);
+            assert!(!prompt.contains("MSTD-RULE-0002"), "onda {wave}: {prompt}");
         }
     }
 
@@ -2625,104 +2370,6 @@ mod tests {
         assert!(owner_rule(&before, &rule).is_err(), "vale para todo item combinado");
     }
 
-    /// Um plano de duas ondas com itens sem dono, um para cada caso da
-    /// proposta: a tarefa que nasceu da versão velha, a tarefa que cita o
-    /// código, a onda citada de três jeitos, o que não conta como citação, os
-    /// arquivos citados, o `applies_to` e a ordem entre as regras.
-    fn unowned_plan() -> SpecLog {
-        let rule = |text: &str| ("rule", json!({"text": text, "keys": ["r"], "example": "e"}));
-        let decision = |text: &str| ("decision", json!({"text": text, "keys": ["d"], "why": "w"}));
-        log(&[
-            decision("Versão velha"),
-            ("wave", json!({"n": 1, "text": "Leitura", "criteria": [], "done_when": "lê"})),
-            (
-                "task",
-                json!({"wave": 1, "text": "Escrever o leitor", "files": [{"path": "src/leitor.rs"}], "origin": 1}),
-            ),
-            ("wave", json!({"n": 2, "text": "Página", "criteria": [], "done_when": "sai"})),
-            (
-                "task",
-                json!({"wave": 2, "text": "Gravar a página (MSTD-DEC-0002)",
-                       "files": [{"path": "apps/rt/src/pagina.rs"}]}),
-            ),
-            ("decision", json!({"text": "Versão nova", "keys": ["d"], "why": "w", "replaces": 1})),
-            decision("A página nova sai na onda 1"),
-            rule("O conserto da onda 2."),
-            rule("Entre as ondas 1 e 2, nada muda."),
-            rule("Não contam: as ondas. (1) nem a onda: 2 nem a MSTD-DEC-0001 nem a onda 9; nem a pasta `apps/rt/`."),
-            decision("Como diz a MSTD-WAVE-0002."),
-            rule("O leitor de `rt/src/pagina.rs` muda."),
-            ("rule", json!({"text": "Vale para as fontes.", "keys": ["r"], "example": "e",
-                            "applies_to": {"files": ["src/**"]}})),
-            rule("Da onda 1, e cita `rt/src/pagina.rs`."),
-            ("rule", json!({"text": "Do projeto", "keys": ["r"], "example": "e", "applies_to": {"files": ["**"]}})),
-            ("rule", json!({"text": "Já tem dono", "keys": ["r"], "example": "e", "waves": [2]})),
-        ])
-    }
-
-    fn waves(list: &[u64]) -> Option<Owner> {
-        Some(Owner::Waves(list.iter().copied().collect()))
-    }
-
-    /// A proposta dá a cada item sem dono as ondas da primeira regra que
-    /// acha onda do plano — as tarefas que nasceram dele ou citam o código,
-    /// a onda que o texto cita, os arquivos em comum —, e deixa sem dono o
-    /// que nenhuma resolve. O item do projeto, o que já tem dono e o que diz
-    /// arquivos em `applies_to`, que é dono deles, ficam fora.
-    #[test]
-    fn the_proposal_gives_each_unowned_item_the_waves_of_the_first_rule_that_finds_one() {
-        let log = unowned_plan();
-        let got: Vec<(u64, Option<Owner>, OwnerFrom)> =
-            propose_owners(&log).into_iter().map(|line| (line.item, line.owner, line.from)).collect();
-        assert_eq!(
-            got,
-            [
-                (6, waves(&[1]), OwnerFrom::Tasks(vec![3])),
-                (7, waves(&[2]), OwnerFrom::Tasks(vec![5])),
-                (8, waves(&[2]), OwnerFrom::Cited),
-                (9, waves(&[1, 2]), OwnerFrom::Cited),
-                (10, None, OwnerFrom::Nothing),
-                (11, waves(&[2]), OwnerFrom::Cited),
-                (12, waves(&[2]), OwnerFrom::Files(vec!["rt/src/pagina.rs".into()])),
-                (14, waves(&[1]), OwnerFrom::Cited),
-            ]
-        );
-    }
-
-    /// O orquestrador dá o dono do item que a proposta não resolve, ou troca
-    /// o dela, sempre com o motivo; a linha que não serve é recusada pelo
-    /// código: o item que já tem dono, o código que não existe, a onda fora
-    /// do plano, nenhuma onda e o motivo em branco.
-    #[test]
-    fn the_orchestrator_gives_or_replaces_an_owner_and_a_line_that_does_not_fit_is_refused() {
-        let log = unowned_plan();
-        let given = |code: &str, owner: Owner, why: &str| GivenOwner { code: code.into(), owner, why: why.into() };
-        let lines = owner_list(
-            &log,
-            &[
-                given("MSTD-RULE-0003", Owner::Project, " vale para todo pedido "),
-                given("MSTD-RULE-0001", Owner::Waves(BTreeSet::from([1])), "a 1 é que conserta"),
-            ],
-        )
-        .unwrap();
-        let of = |id: u64| lines.iter().find(|line| line.item == id).cloned().unwrap();
-        assert_eq!(of(10).owner, Some(Owner::Project));
-        assert_eq!(of(10).from, OwnerFrom::Orchestrator("vale para todo pedido".into()));
-        assert_eq!(of(8).owner, waves(&[1]));
-        assert_eq!(of(8).from, OwnerFrom::Orchestrator("a 1 é que conserta".into()));
-        assert_eq!(of(9).from, OwnerFrom::Cited, "a proposta do resto fica");
-
-        for (code, owner, why) in [
-            ("MSTD-RULE-0008", Owner::Project, "já tem dono"),
-            ("MSTD-RULE-0099", Owner::Project, "não existe"),
-            ("MSTD-RULE-0003", Owner::Waves(BTreeSet::from([9])), "fora do plano"),
-            ("MSTD-RULE-0003", Owner::Waves(BTreeSet::new()), "nenhuma onda"),
-            ("MSTD-RULE-0003", Owner::Project, "  "),
-        ] {
-            assert_eq!(owner_list(&log, &[given(code, owner, why)]), Err(code.to_string()), "{why}");
-        }
-    }
-
     /// O material de uma onda com os itens combinados escolhidos para ela.
     fn with_agreed(log: &SpecLog, wave: u64) -> Material<'_> {
         let mut m = material(log, wave);
@@ -2752,20 +2399,19 @@ mod tests {
             ("wave", json!({"n": 1, "text": "Leitura", "criteria": [], "done_when": "lê"})),
             ("task", json!({"wave": 1, "text": "Escrever o leitor", "files": [{"path": "src/a.rs"}]})),
         ]);
-        let prompt = build(&with_agreed(&log, 1), Locale::PtBr);
+        let prompt = write(&with_agreed(&log, 1), Locale::PtBr);
         for text in ["um link só", "O agente lê o pedido", "Depois ele começa", "um pedido curto", "conferir no teste", "Ela cabe"] {
-            assert!(!prompt.text.contains(text), "{text:?} foi copiado: {}", prompt.text);
+            assert!(!prompt.contains(text), "{text:?} foi copiado: {prompt}");
         }
         assert_eq!(
-            section(&prompt.text, translate("prompt.part.obey", Locale::PtBr)).lines().collect::<Vec<_>>(),
+            section(&prompt, translate("prompt.part.obey", Locale::PtBr)).lines().collect::<Vec<_>>(),
             [
                 "",
                 "- Regra MSTD-RULE-0001 — A barra de status mostra o link.",
                 "- Regra MSTD-RULE-0002 — O pedido cabe numa leitura",
                 "- Lições: nenhuma vale para os arquivos desta onda.",
             ],
-            "{}",
-            prompt.text
+            "{prompt}"
         );
     }
 
@@ -2786,10 +2432,10 @@ mod tests {
             ("task", json!({"wave": 2, "text": "Gravar a página", "files": [{"path": "src/b.rs"}]})),
         ]);
         for wave in [1, 2] {
-            let prompt = build(&with_agreed(&log, wave), Locale::PtBr);
-            let obey = bullets(&prompt.text, translate("prompt.part.obey", Locale::PtBr));
-            assert!(obey.contains(&"- Regra MSTD-RULE-0001 — Suíte verde para fechar"), "onda {wave}: {}", prompt.text);
-            assert!(!prompt.text.contains("suíte vermelha"), "onda {wave}: {}", prompt.text);
+            let prompt = write(&with_agreed(&log, wave), Locale::PtBr);
+            let obey = bullets(&prompt, translate("prompt.part.obey", Locale::PtBr));
+            assert!(obey.contains(&"- Regra MSTD-RULE-0001 — Suíte verde para fechar"), "onda {wave}: {prompt}");
+            assert!(!prompt.contains("suíte vermelha"), "onda {wave}: {prompt}");
         }
     }
 
@@ -2816,13 +2462,13 @@ mod tests {
         };
 
         let declared = log(&events(json!([4, 2])));
-        let prompt = build(&material(&declared, 1), Locale::PtBr);
-        assert_eq!(codes_in_order(&prompt.text), ["0003", "0001", "0002"], "{}", prompt.text);
+        let prompt = write(&material(&declared, 1), Locale::PtBr);
+        assert_eq!(codes_in_order(&prompt), ["0003", "0001", "0002"], "{prompt}");
         assert_eq!(listed(&material(&declared, 1)), ["MSTD-TASK-0003", "MSTD-TASK-0001", "MSTD-TASK-0002"]);
 
         let plain = log(&events(json!([])));
-        let prompt = build(&material(&plain, 1), Locale::PtBr);
-        assert_eq!(codes_in_order(&prompt.text), ["0001", "0002", "0003"], "{}", prompt.text);
+        let prompt = write(&material(&plain, 1), Locale::PtBr);
+        assert_eq!(codes_in_order(&prompt), ["0001", "0002", "0003"], "{prompt}");
     }
 
     /// Regra, tarefa e uma lista grande de lições juntas: nada no pedido
@@ -2838,11 +2484,11 @@ mod tests {
         let bank = lesson_bank(600);
         let mut m = with_agreed(&log, 1);
         m.lessons = bank.visible();
-        let prompt = build(&m, Locale::PtBr);
-        assert!(prompt.text.contains("MSTD-TASK-0001"), "{}", prompt.text);
-        assert!(prompt.text.contains("MSTD-RULE-0001"), "{}", prompt.text);
+        let prompt = write(&m, Locale::PtBr);
+        assert!(prompt.contains("MSTD-TASK-0001"), "{}", prompt);
+        assert!(prompt.contains("MSTD-RULE-0001"), "{}", prompt);
         let last_id = bank.visible().last().expect("banco com lição").id;
-        assert!(prompt.text.contains(&format!("- Lição {last_id} — ")), "{}", prompt.text);
+        assert!(prompt.contains(&format!("- Lição {last_id} — ")), "{}", prompt);
     }
 
     /// O que o agente devolve é o mesmo em todo pedido, no idioma do projeto: a
@@ -2852,17 +2498,16 @@ mod tests {
     fn every_request_carries_the_same_return_rules() {
         let log = log(&[("wave", json!({"n": 1, "text": "Onda", "criteria": [], "done_when": "pronto"}))]);
         for lang in [Locale::PtBr, Locale::EnUs] {
-            let prompt = build(&material(&log, 1), lang);
+            let prompt = write(&material(&log, 1), lang);
             assert_eq!(
-                section(&prompt.text, translate("prompt.part.return", lang)).lines().collect::<Vec<_>>(),
+                section(&prompt, translate("prompt.part.return", lang)).lines().collect::<Vec<_>>(),
                 [
                     String::new(),
                     format!("- {}", translate("prompt.execution.report_lines", lang)),
                     format!("- {}", translate("prompt.execution.commit_field", lang)),
                     format!("- {}", translate("prompt.return.loose", lang)),
                 ],
-                "{lang:?}: {}",
-                prompt.text
+                "{lang:?}: {prompt}"
             );
         }
     }
@@ -2896,7 +2541,7 @@ mod tests {
             ),
         ] {
             let (_, agent) = crate::platform::seeds::agent_texts(lang)[0];
-            let request = build(&material(&log, 1), lang).text;
+            let request = write(&material(&log, 1), lang);
             for sentence in said {
                 assert!(agent.contains(sentence), "{sentence}: {agent}");
                 assert!(!request.contains(sentence), "{sentence}: {request}");
@@ -3291,7 +2936,7 @@ mod tests {
             ),
         ] {
             let agents = crate::platform::seeds::agent_texts(lang);
-            let request = build(&material(&log, 1), lang).text;
+            let request = write(&material(&log, 1), lang);
             let pairs = wave
                 .iter()
                 .map(|said| (said, agents[0].1, request.as_str()))

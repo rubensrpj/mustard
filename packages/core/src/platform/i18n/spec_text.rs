@@ -1,5 +1,5 @@
 //! O texto da spec em markdown: os títulos das seções, as lacunas a preencher,
-//! os moldes dos critérios, os marcadores e o diagnóstico da seção de arquivos,
+//! os moldes dos critérios e o diagnóstico da seção de arquivos,
 //! os títulos do resumo e do contexto da onda, a nota de memória e os rótulos
 //! curtos da onda e do critério.
 //!
@@ -11,7 +11,7 @@ use super::Locale;
 
 /// Os começos de chave (o trecho antes do primeiro ponto) que esta parte
 /// responde. Nenhum deles é de outra parte.
-pub(super) const PREFIXES: &[&str] = &["heading", "placeholder", "checklist", "ac", "marker", "memory", "wave"];
+pub(super) const PREFIXES: &[&str] = &["heading", "placeholder", "checklist", "ac", "memory", "wave"];
 
 /// O texto de `key` em `lang`, ou `None` quando a chave não está aqui.
 pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
@@ -128,8 +128,7 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // EARS acceptance-criteria SKELETONS seeded by `spec_draft::build_input`.
         // The `<…>` angle-bracket markers are deliberate placeholders the
         // orchestrator MUST replace with the concrete behaviour — a draft is born
-        // demanding specificity, never a lone `cargo build` rubber stamp. The
-        // `when`/`then` glue is added by `capability::scenario_statement`.
+        // demanding specificity, never a lone `cargo build` rubber stamp.
         ("ac.skeleton.when_primary", Locale::PtBr) => "<o novo comportamento é acionado>",
         ("ac.skeleton.when_primary", Locale::EnUs) => "<the new behaviour is invoked>",
         ("ac.skeleton.then_primary", Locale::PtBr) => "<o resultado observável esperado se mantém>",
@@ -151,17 +150,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // catch. A spec that wants the suite says so in a criterion of its own.
         ("ac.safety.build_green", Locale::PtBr) => "o build do projeto passa verde",
         ("ac.safety.build_green", Locale::EnUs) => "the project build passes green",
-
-        // File-operation markers accepted in a spec's `## Files` bullet lines
-        // (e.g. "- `src/Payable.cs` (create)"). Synonyms for one locale are
-        // `|`-separated DATA, merged across locales by
-        // [`file_marker_synonyms`] — the single origin both the emitting
-        // drafter prose and every validator share, so a pt-BR draft saying
-        // `(novo)` is recognised exactly like the EN canonical `(create)`.
-        ("marker.create", Locale::PtBr) => "(novo)|(criar)",
-        ("marker.create", Locale::EnUs) => "(create)|(new)",
-        ("marker.edit", Locale::PtBr) => "(editar)",
-        ("marker.edit", Locale::EnUs) => "(edit)",
 
         // Wave `_summary.md` section headings.
         ("heading.summary.objective", Locale::PtBr) => "Objetivo",
@@ -207,8 +195,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("spec_text.rs"),
             super::PREFIXES,
-            54,
-            0x6426_2a56_bb24_5223,
+            52,
+            0x154e_794b_f663_21f7,
         );
     }
 

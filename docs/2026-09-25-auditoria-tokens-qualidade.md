@@ -86,7 +86,7 @@ Foram três passadas.
 - **O README descreve `spec.md`, `wave-plan.md` e `wave-N-{role}/spec.md`.**
   - Hoje a spec é um arquivo de eventos, `.claude/spec/<nome>/spec.ndjson`, com 36 tipos de evento (`packages/core/src/domain/spec_events/types.rs:301`).
   - Esse arquivo só é gravado por `mustard-rt run write`.
-- **O README cita "≥2 camadas/subprojetos ou entidade nova"** como critério do fluxo completo. Esse critério só existe no enum `Scope` (`Light`, `Medium`, `Full`, em `packages/core/src/domain/model/pipeline.rs:51-57`), que é código morto no fluxo atual.
+- **O README cita "≥2 camadas/subprojetos ou entidade nova"** como critério do fluxo completo. Esse critério só existia num tipo do fluxo antigo, que era código morto no fluxo atual.
 - **O `CLAUDE.md` da raiz cita o portão da base como mecanismo ativo.** O portão estava desligado, sem nenhum chamador, e seguia no repositório por decisão do usuário de 17/09. Resolvido em 01/10: o portão saiu do código, e a regra passou a citar o avanço da base depois do merge (`apps/rt/src/commands/git_settle.rs`).
 - **O README diz que o porteiro de base minera o repositório.** Hoje o scan roda ao abrir uma spec (`apps/rt/src/commands/flow/open.rs:432`) e depois de cada commit de rodada.
 - **As fases reais não são as 6 do checklist.** São `survey, plan, approved, running, closed, pr_open, delivered, discarded` (`types.rs:277-278`). O mapeamento usado neste documento:
@@ -115,7 +115,7 @@ Foram três passadas.
   - **Os números são informados pelo próprio modelo** no bloco `<USAGE>…</USAGE>` (`packages/core/src/platform/i18n/flow.rs:612-619`). O parser está em `apps/rt/src/commands/flow/round/report.rs:752-768`, e o bloco só é aceito para ondas (`report.rs:711`).
   - **Não há divisão entre entrada, saída e cache.**
   - **Por fase existe só o tempo** ("Time per phase", `packages/core/src/platform/i18n/page.rs:885-886`).
-  - **O struct `TelemetrySummaryEntry` é código morto** (`packages/core/src/view/summary/mod.rs:191-203`).
+  - **O resumo de telemetria do documento de resumo da spec era código morto.**
   - **O tamanho de cada injeção de gancho é registrado**, estimado como caracteres ÷ 4 (`apps/rt/src/dispatch.rs:125-137`; `page.rs:899-900`).
 - **Fonte externa (documentação `prompt-caching` e `costs`) [ALTA]:** o Claude Code já entrega os números que faltam, e o Mustard não usa nenhuma destas vias.
   - **Status line:** recebe a cada turno o objeto `current_usage`, com `cache_creation_input_tokens` e `cache_read_input_tokens`, e o objeto `prompt_cache`. O Mustard tem status line própria (`apps/rt/src/commands/statusline/`), mas não grava nada.
@@ -732,7 +732,7 @@ Foram três passadas.
 1. **Documentação desatualizada:** o README, o `README.en.md` e o `CLAUDE.md` da raiz (ver o achado transversal) [ALTA].
 2. **Código morto e sobras** [ALTA]:
    - `Scope`;
-   - `TelemetrySummaryEntry`;
+   - o resumo de telemetria do documento de resumo da spec;
    - o portão da base, desligado por decisão sua (saiu do código em 01/10);
    - o modo solo (`round.next.solo`);
    - as fixtures `dependency_precheck`;

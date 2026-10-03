@@ -176,3 +176,18 @@ fn the_plugin_registry_and_the_plugin_program_are_only_read() {
         .collect();
     assert!(found.is_empty(), "o programa escreve na pasta do plugin: {found:#?}");
 }
+
+/// A conferência de dependências (`scripts/ac/deps-no-unused.sh`) compila o
+/// `cargo-shear` quando a máquina não o tem, mas numa pasta temporária que o
+/// próprio script apaga ao sair: nenhum `cargo install` dela grava na pasta
+/// pessoal do `cargo`, onde o usuário guarda os programas dele.
+#[test]
+fn the_dependency_check_builds_its_tool_into_a_folder_it_removes() {
+    let script = std::fs::read_to_string(manifest_dir::manifest_dir().join("../../scripts/ac/deps-no-unused.sh")).unwrap();
+    let installs: Vec<&str> = script.lines().filter(|line| !line.trim_start().starts_with('#') && runs_cargo_install(line)).collect();
+    assert!(!installs.is_empty(), "o script deixou de compilar a ferramenta que falta");
+    for line in &installs {
+        assert!(line.contains("--root \"$work/"), "o `cargo install` grava fora da pasta temporária: {line}");
+    }
+    assert!(script.contains("trap 'rm -rf \"$work\"' EXIT"), "a pasta temporária não é apagada ao sair");
+}

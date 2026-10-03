@@ -1164,9 +1164,6 @@ fn modified_at(path: &Path) -> Option<i64> {
 }
 
 #[cfg(test)]
-mod pattern_measure;
-
-#[cfg(test)]
 mod tests {
     use super::*;
     use crate::domain::spec_events::{parse_log, render_line, stamp};
@@ -1174,7 +1171,7 @@ mod tests {
     use serde_json::json;
     use tempfile::tempdir;
 
-    pub(super) fn log_of(events: &[(&str, Value)]) -> SpecLog {
+    fn log_of(events: &[(&str, Value)]) -> SpecLog {
         let mut content = String::new();
         for (i, (event_type, body)) in events.iter().enumerate() {
             let mut map = crate::domain::spec_events::normalize(
@@ -1205,7 +1202,7 @@ mod tests {
     }
 
     /// O mapa de teste, gravado pela porta do mapa, como o scan o grava.
-    pub(super) fn write_map(root: &Path, model: &Value) {
+    fn write_map(root: &Path, model: &Value) {
         crate::io::project_map::write_text(root, &model.to_string()).unwrap();
     }
 
@@ -2237,7 +2234,7 @@ mod tests {
     /// importa entity em todas as 25. Cada arquivo declara a classe com o
     /// nome dele, com as linhas, e o código dele está no disco. A onda tem
     /// uma tarefa que cria um controller e outra que cria um service.
-    pub(super) fn project_with_a_pattern() -> (tempfile::TempDir, SpecLog) {
+    fn project_with_a_pattern() -> (tempfile::TempDir, SpecLog) {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let named = |role: &str, n: usize| format!("src/{role}/{role}{n}.{role}.ts");
@@ -2286,7 +2283,7 @@ mod tests {
 
     /// As linhas de uma tarefa no pedido: o passo dela e as de baixo, até o
     /// próximo passo.
-    pub(super) fn task_lines<'t>(text: &'t str, title: &str) -> Vec<&'t str> {
+    fn task_lines<'t>(text: &'t str, title: &str) -> Vec<&'t str> {
         let mut lines = text.lines().skip_while(|line| !line.contains(title));
         let first = lines.next().into_iter();
         first.chain(lines.take_while(|line| !line.starts_with(|c: char| c.is_ascii_digit()) && !line.is_empty())).collect()
@@ -2944,64 +2941,6 @@ mod tests {
         }
     }
 
-    /// Quando o veredito final reprova uma onda e o conserto dela já foi
-    /// entregue, a revisão de volta cita esse veredito uma vez só, na parte do
-    /// que mudou. Nenhuma outra parte repete o veredito nem manda conferir o
-    /// conserto à parte: o pedido tem as mesmas partes da revisão de volta de
-    /// uma obra inteira. As ondas e as entregas continuam restritas à onda
-    /// reprovada. Nos dois idiomas.
-    #[test]
-    fn a_review_after_a_rejected_wave_names_the_verdict_once_in_what_changed() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let commit = |sha: &str, waves: Value| ("commit", json!({"sha": sha, "title": "t", "waves": waves, "files": ["src/a.rs"]}));
-        let log = log_of(&[
-            ("rule", json!({"text": "Do projeto", "keys": ["a"], "example": "e", "applies_to": {"files": ["**"]}})),
-            ("criterion", json!({"when": "a onda roda", "then": "passa", "proof": "true"})),
-            ("wave", json!({"n": 1, "text": "A onda", "criteria": [2], "done_when": "passa"})),
-            ("task", json!({"wave": 1, "text": "Somar", "files": [{"path": "src/a.rs"}]})),
-            ("wave", json!({"n": 2, "text": "A outra", "criteria": [2], "done_when": "passa"})),
-            ("task", json!({"wave": 2, "text": "Subtrair", "files": [{"path": "src/b.rs"}]})),
-            ("delivered", json!({"wave": 1, "text": "Feito", "files": ["src/a.rs"]})),
-            ("delivered", json!({"wave": 2, "text": "Feita", "files": ["src/b.rs"]})),
-            commit("aaa1111", json!([1, 2])),
-            (
-                "verdict",
-                json!({"final": true, "wave": 1, "result": "rejected", "text": "Falta o teste",
-                       "agreed": [{"item": 1, "met": false, "text": "falta"}]}),
-            ),
-            ("delivered", json!({"wave": 1, "text": "Consertado", "files": ["src/a.rs"]})),
-            commit("bbb2222", json!([1])),
-        ]);
-        let codes = log.codes();
-        let code = |id: u64| codes[&id].clone();
-        for lang in [Locale::PtBr, Locale::EnUs] {
-            let t = |key: &str| crate::platform::i18n::translate(key, lang);
-            let last = final_review(root, "teste", &log, lang).text;
-            let since = t("prompt.part.since_verdict");
-            assert_eq!(last.matches(code(10).as_str()).count(), 1, "o veredito aparece uma vez só: {last}");
-            assert_eq!(line_codes(part_lines(&last, since)).first(), Some(&code(10)), "{lang:?}: {last}");
-            let headings: Vec<&str> = last.lines().filter_map(|line| line.strip_prefix("## ")).collect();
-            let expected: Vec<&str> = [
-                "prompt.part.read",
-                "prompt.part.since_verdict",
-                "prompt.part.waves",
-                "prompt.part.agreed",
-                "prompt.part.each_delivered",
-                "prompt.part.criteria",
-                "prompt.part.branch_changes",
-                "prompt.part.execution",
-            ]
-            .into_iter()
-            .map(t)
-            .collect();
-            assert_eq!(headings, expected, "nenhuma parte de conserto à parte: {last}");
-            assert!(last.contains(t("prompt.final.look_again")), "{lang:?}: {last}");
-            assert_eq!(line_codes(part_lines(&last, t("prompt.part.waves"))), [code(3), code(4)], "{last}");
-            assert_eq!(line_codes(part_lines(&last, t("prompt.part.each_delivered"))), [code(11)], "{last}");
-        }
-    }
-
     /// Até onde vai a obra de duas ondas de [`two_waves_reviewed`].
     enum Reviewed {
         /// Nenhum veredito final ainda.
@@ -3048,10 +2987,13 @@ mod tests {
         log_of(&events)
     }
 
-    /// A revisão de volta de um veredito que reprovou uma onda diz, no
-    /// parágrafo do que olhar, que as ondas e as entregas do pedido trazem só
-    /// essa onda, e as partes trazem só ela. A primeira revisão não diz o
-    /// recorte e traz as duas ondas. O veredito que reprovou a obra sem
+    /// A revisão de volta de um veredito que reprovou uma onda cita esse
+    /// veredito uma vez só, na parte do que mudou, e nenhuma outra parte o
+    /// repete nem manda conferir o conserto à parte: o pedido tem as mesmas
+    /// partes da revisão de volta de uma obra inteira. Ela diz, no parágrafo
+    /// do que olhar, que as ondas e as entregas do pedido trazem só essa onda,
+    /// e as partes trazem só ela, com a entrega do conserto. A primeira
+    /// revisão não diz o recorte e traz as duas ondas. O veredito que reprovou a obra sem
     /// apontar onda traz as duas ondas na revisão de volta. Um veredito final
     /// que aprovou depois da reprovação de uma onda faz a revisão seguinte
     /// conferir a obra inteira, sem recorte e sem a frase dele. Nos dois
@@ -3084,6 +3026,28 @@ mod tests {
             assert!(again.contains(scope_phrase), "{lang:?}: a revisão de volta diz o recorte: {again}");
             assert_eq!(again.matches(scope_phrase).count(), 1, "o recorte é dito uma vez só: {again}");
             assert_eq!(wave_codes(&log, &again), [true, false], "só a onda reprovada: {again}");
+            let codes = log.codes();
+            let code = |id: u64| codes[&id].clone();
+            assert_eq!(again.matches(code(10).as_str()).count(), 1, "o veredito aparece uma vez só: {again}");
+            assert_eq!(line_codes(part_lines(&again, t("prompt.part.since_verdict"))).first(), Some(&code(10)), "{again}");
+            let headings: Vec<&str> = again.lines().filter_map(|line| line.strip_prefix("## ")).collect();
+            let expected: Vec<&str> = [
+                "prompt.part.read",
+                "prompt.part.since_verdict",
+                "prompt.part.waves",
+                "prompt.part.agreed",
+                "prompt.part.each_delivered",
+                "prompt.part.criteria",
+                "prompt.part.branch_changes",
+                "prompt.part.execution",
+            ]
+            .into_iter()
+            .map(t)
+            .collect();
+            assert_eq!(headings, expected, "nenhuma parte de conserto à parte: {again}");
+            assert!(again.contains(t("prompt.final.look_again")), "{lang:?}: {again}");
+            assert_eq!(line_codes(part_lines(&again, t("prompt.part.waves"))), [code(3), code(4)], "{again}");
+            assert_eq!(line_codes(part_lines(&again, t("prompt.part.each_delivered"))), [code(11)], "{again}");
 
             let log = two_waves_reviewed(&Reviewed::First);
             let first = final_review(root, "teste", &log, lang).text;
@@ -3203,46 +3167,5 @@ mod tests {
         assert_eq!(built[0].bad_skills.len(), 1);
         assert_eq!(built[0].bad_skills[0].1.reason(), "skill-missing-path");
         assert!(built[0].bad_skills[0].1.message(Locale::PtBr).contains("somar"));
-    }
-
-    /// Com a spec real desta obra: nenhum item combinado fica sem dono, e o
-    /// pedido de cada onda, montado como a rodada o monta, só cita item
-    /// combinado dela ou do projeto. A spec fica fora do git, então o teste
-    /// roda à mão (`--ignored`); `MUSTARD_SPEC_FILE` aponta outra cópia dela.
-    #[test]
-    #[ignore = "lê a spec real, que fica fora do git"]
-    fn with_the_real_spec_every_agreed_item_has_an_owner_and_each_request_cites_only_its_own() {
-        use crate::domain::mustard_id;
-        use crate::domain::wave_prompt::Owner;
-        let root = crate::manifest_dir::manifest_dir().join("../..");
-        let file = std::env::var_os("MUSTARD_SPEC_FILE")
-            .map_or_else(|| root.join(".claude/spec/mustard-enxuto/spec.ndjson"), PathBuf::from);
-        let log = crate::io::spec_events::read(&file).expect("a spec se lê").expect("a spec existe");
-        let spec = file.parent().and_then(Path::file_name).map(|n| n.to_string_lossy().to_string()).unwrap();
-        let codes = log.codes();
-        let unowned: Vec<&String> = wave_prompt::unowned(&log).iter().filter_map(|e| codes.get(&e.id)).collect();
-        assert!(unowned.is_empty(), "{} itens combinados sem dono: {unowned:?}", unowned.len());
-
-        let owners = wave_prompt::owners(&log);
-        let by_code: std::collections::BTreeMap<&str, u64> =
-            codes.iter().map(|(id, code)| (code.as_str(), *id)).collect();
-        let built = prompts(&root, &spec, &log, Locale::PtBr, &Flight::default());
-        assert_eq!(built.len(), log.planned_waves().len());
-        for prompt in &built {
-            for (start, end) in mustard_id::find(&prompt.text) {
-                let code = &prompt.text[start..end];
-                let Some(item) = by_code.get(code).and_then(|id| log.get(*id)) else { continue };
-                if item.block() != Some(Block::Agreed) {
-                    continue;
-                }
-                match owners.get(&item.id) {
-                    Some(Owner::Project) => {}
-                    Some(Owner::Waves(waves)) if waves.contains(&prompt.wave) => {}
-                    Some(Owner::Files(_))
-                        if wave_prompt::agreed_for(&log, prompt.wave).iter().any(|e| e.id == item.id) => {}
-                    other => panic!("o pedido da onda {} cita {code}, que é de {other:?}", prompt.wave),
-                }
-            }
-        }
     }
 }

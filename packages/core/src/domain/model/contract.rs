@@ -569,9 +569,9 @@ pub trait Check {
     /// # Errors
     ///
     /// Returns an [`Error`] only when the check could not reach a decision —
-    /// e.g. the input was malformed ([`Error::InvalidInput`]) or the check's
-    /// own logic failed ([`Error::CheckFailed`]). Implementations fail open:
-    /// prefer `Ok(Verdict::Allow)` over an `Err` whenever the input is usable.
+    /// e.g. the check's own logic failed ([`Error::CheckFailed`]).
+    /// Implementations fail open: prefer `Ok(Verdict::Allow)` over an `Err`
+    /// whenever the input is usable.
     fn evaluate(&self, input: &HookInput, ctx: &Ctx) -> Result<Verdict, Error>;
 }
 

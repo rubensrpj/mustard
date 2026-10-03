@@ -728,7 +728,6 @@ fn squash(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mustard_core::io::jev_gate::KEY_ENV;
     use mustard_core::domain::map_filter::{CutRule, EXISTS_FROM};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::io::{BufRead, BufReader, Read, Write};
@@ -1808,43 +1807,5 @@ mod tests {
             assert_eq!(piece.on, expected, "the piece: {name}: {}", piece.why);
             assert_eq!(searched.is_some(), piece.on, "the search and the piece agree: {name}");
         }
-    }
-
-    // -- o serviço de verdade ----------------------------------------------------
-
-    /// Manda um pedido real de 2 candidatos, com o código lido de um arquivo
-    /// do projeto, e a chave do ambiente, e confere a nota e os tokens. Custa
-    /// uma fração de centavo; roda só à mão, com `--ignored` e a chave no
-    /// ambiente.
-    #[test]
-    #[ignore = "calls the paid service with the key from the environment"]
-    fn the_real_service_scores_two_candidates() {
-        let key = std::env::var(KEY_ENV).expect("the key in the environment");
-        let project = project_with(&[
-            (
-                "src/words.rs",
-                "/// Splits an identifier into its words at case changes and separators.\npub fn split_identifier(name: &str) -> String {\n    name.to_string()\n}\n"
-                    .to_string(),
-            ),
-            (
-                "src/git.rs",
-                "pub fn open_pull_request(title: &str) -> Result<u64, String> {\n    Err(title.to_string())\n}\n".to_string(),
-            ),
-        ]);
-        let mut target = candidate_at(1, "src/words.rs", 2, 4);
-        target.documentation = "Splits an identifier into its words at case changes and separators.".to_string();
-        let other = candidate_at(2, "src/git.rs", 1, 3);
-        let asked = FilterRequest {
-            words: vec!["split_identifier".to_string()],
-            phrase: "The function that splits an identifier into words.".to_string(),
-            root: project.path().to_path_buf(),
-            candidates: vec![target, other],
-            ..FilterRequest::default()
-        };
-        let got = JevFilter::new(JevKey(key)).filter(&asked).unwrap();
-        assert!(got.usage.input_tokens > 0);
-        assert_eq!(got.verdict, Verdict::Found);
-        assert_eq!(got.kept.first().map(|s| s.id), Some(1));
-        assert!(got.kept.iter().all(|s| (0.0..=1.0).contains(&s.score)));
     }
 }

@@ -2,7 +2,6 @@ pub mod config;
 pub mod command_detect;
 pub mod scan;
 pub mod source_lang;
-pub mod capability;
 pub mod vocabulary;
 pub mod spec;
 pub mod skill;

@@ -163,49 +163,10 @@ mod tests {
         Need::Pull(12),
     ];
 
-    /// Com cada bloco que o scan grava vazio numa troca de formato, a
-    /// pergunta que o lê — quem usa, o trecho, os exemplos, quem importa, o
-    /// resumo e as outras — recusa com o nome dele em vez de responder
-    /// vazio, e só ela: a que não o lê responde o mesmo que no mapa inteiro.
-    /// Lado a lado, a leitura sem a conferência mostra que os blocos de cada
-    /// pergunta são os que mudam a resposta dela.
-    #[test]
-    fn a_question_on_a_block_emptied_by_a_format_change_is_refused_and_the_others_answer_as_before() {
-        for block in &BLOCKS {
-            let dir = tempdir().unwrap();
-            let root = dir.path();
-            let model = model_path(root);
-            project_map::save_at(&model, &map_of_every_block(), "scan 1", &languages()).unwrap();
-            let whole = open_existing(&model).unwrap();
-            let before: Vec<String> =
-                QUESTIONS.iter().map(|&need| format!("{:?}", project_map::part_of(&whole, need).unwrap())).collect();
-            drop(whole);
-
-            emptied_by_an_older_scan(root, block);
-            let db = open_existing(&model).unwrap();
-            for (&need, before) in QUESTIONS.iter().zip(&before) {
-                let name = block.name();
-                let reads = read_by(need).iter().any(|read| read.name() == name);
-                let unchecked = format!("{:?}", project_map::part_of(&db, need).unwrap());
-                assert_eq!(&unchecked != before, reads, "{need:?} with the block {name} emptied");
-                match project_map::read_for(root, need) {
-                    Ok(answer) => {
-                        assert!(!reads, "{need:?} answered with the block {name} emptied");
-                        assert_eq!(&format!("{answer:?}"), before, "{need:?} with the block {name} emptied");
-                    }
-                    Err(refusal) => {
-                        assert!(reads, "{need:?} refused with the block {name} emptied: {refusal:?}");
-                        assert_eq!(refusal, MapRefusal::MapUnfilled { blocks: vec![name.to_string()] });
-                    }
-                }
-            }
-        }
-    }
-
     /// O mapa escrito à mão, sem marca em bloco nenhum, responde toda
     /// pergunta mesmo depois da troca de formato que esvazia as declarações;
     /// no mapa da passada, quem usa recusa até a passada seguinte gravar as
-    /// declarações de novo.
+    /// declarações de novo, e a busca volta a responder junto com ela.
     #[test]
     fn a_hand_written_map_answers_every_question_and_a_map_written_again_answers_again() {
         let dir = tempdir().unwrap();
@@ -225,6 +186,8 @@ mod tests {
         project_map::save_at(&model_path(root), &map_of_every_block(), "scan 1", &languages()).unwrap();
         let found = project_map::read_for(root, users).unwrap();
         assert_eq!(found.declared("gravar_pedido"), [("src/pedido.rs".to_string(), 1)]);
+        let found = map_search::candidates(root, "pedido", "", &languages(), map_search::any_path).unwrap();
+        assert!(found.candidates.iter().any(|c| c.name == "gravar_pedido"), "the search answers again too");
     }
 
     /// `true` quando este processo mantém aberto o arquivo do mapa em `model`,
@@ -308,25 +271,6 @@ mod tests {
         assert!(!project_map::is_behind(root, &|| None));
     }
 
-    /// A busca num mapa cujas declarações voltaram vazias recusa, com o nome
-    /// do bloco, em vez de responder vazio; o mapa escrito de novo pela
-    /// passada volta a responder.
-    #[test]
-    fn a_search_on_emptied_declarations_is_refused_instead_of_answering_nothing() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let map = map_with(json!({}));
-        project_map::save_at(&model_path(root), &map, "scan 1", &languages()).unwrap();
-        opened_by_an_older_scan(root);
-        let refused = MapRefusal::MapUnfilled { blocks: vec!["decls".to_string()] };
-        assert_eq!(map_search::search(root, "pedido", &languages(), 5).unwrap_err(), refused);
-        assert_eq!(map_search::candidates(root, "pedido", "", &languages(), map_search::any_path).unwrap_err(), refused);
-
-        project_map::save_at(&model_path(root), &map, "scan 1", &languages()).unwrap();
-        let found = map_search::candidates(root, "pedido", "", &languages(), map_search::any_path).unwrap();
-        assert_eq!(found.candidates.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["gravar_pedido"]);
-    }
-
     /// A busca por "pedido" e a lista de candidatos do filtro no mapa em
     /// `root`, cada uma escrita para comparar e com os blocos que lê.
     fn searched_in(root: &Path) -> [(std::result::Result<String, MapRefusal>, &'static [&'static MapBlock]); 2] {
@@ -339,37 +283,59 @@ mod tests {
         ]
     }
 
-    /// Com cada bloco que o scan grava vazio numa troca de formato, a busca
-    /// e a lista de candidatos do filtro recusam só quando leem dele — a
-    /// busca, os arquivos, as declarações e as ligações; a lista, também a
-    /// história, de onde vêm os títulos dos commits de cada candidato —, e
-    /// com a mesma recusa de cada pergunta que lê o mesmo bloco; com os
-    /// outros, respondem o mesmo que no mapa inteiro. Com dois blocos vazios,
-    /// a recusa dá os dois nomes na mesma ordem da pergunta que lê os dois.
+    /// Com cada bloco que o scan grava vazio numa troca de formato, cada
+    /// pergunta que o lê — quem usa, o trecho, os exemplos, quem importa, o
+    /// resumo e as outras — e a busca e a lista de candidatos do filtro que o
+    /// leem recusam com o nome dele em vez de responder vazio, e só elas: o
+    /// que não o lê responde o mesmo que no mapa inteiro. A busca lê os
+    /// arquivos, as declarações e as ligações; a lista, também a história, de
+    /// onde vêm os títulos dos commits de cada candidato. A recusa da busca é
+    /// a mesma da pergunta que lê o mesmo bloco. Lado a lado, a leitura sem a
+    /// conferência mostra que os blocos de cada pergunta são os que mudam a
+    /// resposta dela. Com dois blocos vazios, a recusa dá os dois nomes na
+    /// mesma ordem da pergunta que lê os dois.
     #[test]
-    fn a_search_on_a_block_it_reads_emptied_by_a_format_change_is_refused_like_the_other_questions() {
+    fn a_block_emptied_by_a_format_change_is_refused_by_every_question_and_search_that_reads_it() {
         for block in &BLOCKS {
             let dir = tempdir().unwrap();
             let root = dir.path();
-            project_map::save_at(&model_path(root), &map_of_every_block(), "scan 1", &languages()).unwrap();
-            let before = searched_in(root);
-            assert!(before.iter().all(|(answer, _)| answer.as_ref().is_ok_and(|text| text.contains("src/pedido.rs"))));
+            let model = model_path(root);
+            project_map::save_at(&model, &map_of_every_block(), "scan 1", &languages()).unwrap();
+            let whole = open_existing(&model).unwrap();
+            let before: Vec<String> =
+                QUESTIONS.iter().map(|&need| format!("{:?}", project_map::part_of(&whole, need).unwrap())).collect();
+            drop(whole);
+            let searched_before = searched_in(root);
+            assert!(searched_before.iter().all(|(answer, _)| answer.as_ref().is_ok_and(|text| text.contains("src/pedido.rs"))));
 
             emptied_by_an_older_scan(root, block);
             let name = block.name();
-            for ((answer, read), (before, _)) in searched_in(root).into_iter().zip(&before) {
+            let refused = MapRefusal::MapUnfilled { blocks: vec![name.to_string()] };
+            let db = open_existing(&model).unwrap();
+            let mut refusing = 0;
+            for (&need, before) in QUESTIONS.iter().zip(&before) {
+                let reads = read_by(need).iter().any(|read| read.name() == name);
+                let unchecked = format!("{:?}", project_map::part_of(&db, need).unwrap());
+                assert_eq!(&unchecked != before, reads, "{need:?} with the block {name} emptied");
+                match project_map::read_for(root, need) {
+                    Ok(answer) => {
+                        assert!(!reads, "{need:?} answered with the block {name} emptied");
+                        assert_eq!(&format!("{answer:?}"), before, "{need:?} with the block {name} emptied");
+                    }
+                    Err(refusal) => {
+                        assert!(reads, "{need:?} refused with the block {name} emptied: {refusal:?}");
+                        assert_eq!(refusal, refused);
+                        refusing += 1;
+                    }
+                }
+            }
+            for ((answer, read), (before, _)) in searched_in(root).into_iter().zip(&searched_before) {
                 if !read.iter().any(|read| read.name() == name) {
                     assert_eq!(&answer, before, "a search that does not read the block {name} emptied");
                     continue;
                 }
-                let refusal = answer.unwrap_err();
-                assert_eq!(refusal, MapRefusal::MapUnfilled { blocks: vec![name.to_string()] });
-                let alike: Vec<Need<'_>> =
-                    QUESTIONS.into_iter().filter(|&need| read_by(need).iter().any(|read| read.name() == name)).collect();
-                assert!(!alike.is_empty(), "some question reads the block {name}");
-                for need in alike {
-                    assert_eq!(project_map::read_for(root, need).unwrap_err(), refusal, "{need:?} and the search");
-                }
+                assert_eq!(answer.unwrap_err(), refused, "the search and the questions with the block {name} emptied");
+                assert!(refusing > 0, "some question reads the block {name}");
             }
         }
 
