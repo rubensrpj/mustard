@@ -4,23 +4,37 @@
 //!
 //! - Resto pelo nome: o nome tirado, como palavra inteira, nos arquivos que
 //!   o git rastreia e nos que a onda criou (código, comentário, teste,
-//!   documento, molde), com o arquivo e a linha. O nome que continua
+//!   documento, molde, script), com o arquivo e a linha. O nome que continua
 //!   declarado noutro lugar não conta pelo texto: ali o texto pode citar a
-//!   outra declaração, e o mapa de depois já liga cada chamada a ela. A
-//!   linha de código de um arquivo que está no mapa da base, e que nesse
-//!   mapa não usava a declaração tirada (nenhum uso dela aponta para o
-//!   arquivo), também não conta: o mesmo nome ali é outra coisa, como uma
-//!   variável local, que o mapa não guarda, e um uso de verdade o mapa da
-//!   base teria ligado. A linha de comentário conta quando o nome nela não é
-//!   palavra da prosa ([`prose_comment`]): entre crases, ligado a caminho
-//!   (`Modo::nome`, `modo.nome`) ou com grafia de identificador (`snake_case`,
-//!   `camelCase`, com dígito); o nome todo em maiúsculas de até quatro letras
-//!   (`OFF`, `ALL`), que a prosa usa como palavra, só conta entre crases. O
-//!   arquivo fora do mapa da base (documento, molde, arquivo que a onda
-//!   criou) conta pelo texto, sem o desconto da linha de código. A spec
+//!   outra declaração, e o mapa de depois já liga cada chamada a ela. A spec
 //!   (`.claude/spec/`), o registro de mudanças do projeto e o histórico do
 //!   git ficam de fora: são registro do que aconteceu. Só se procura o nome
-//!   que não se confunde com uma palavra da prosa ([`distinctive`]).
+//!   que não se confunde com uma palavra da prosa ([`distinctive`]). O nome de
+//!   um arquivo tirado, que não tem declaração, conta pelo texto em qualquer
+//!   lugar, com o desconto da prosa só no comentário. O mesmo nome de uma
+//!   declaração pode ser outra coisa, e cada lugar pede uma leitura
+//!   ([`other_thing`]):
+//!   - O arquivo do mapa da base que nesse mapa não usava a declaração tirada
+//!     (nenhum uso dela aponta para o arquivo): a linha de código não conta,
+//!     porque o nome ali é outra coisa, como uma variável local que o mapa
+//!     não guarda, e um uso de verdade o mapa da base teria ligado; a linha de
+//!     comentário só conta com a citação qualificada (`modulo::nome`,
+//!     `modulo.nome`), nunca com o nome sozinho, ainda que entre crases.
+//!   - O arquivo que usava a declaração, ou que a onda criou e está no mapa de
+//!     depois: a linha de código conta; a de comentário conta quando o nome
+//!     nela não é palavra da prosa ([`prose_comment`]): entre crases, ligado a
+//!     caminho (`Modo::nome`, `modo.nome`) ou com grafia de identificador
+//!     (`snake_case`, `camelCase`, com dígito); o nome todo em maiúsculas de
+//!     até quatro letras (`OFF`, `ALL`), que a prosa usa como palavra, só
+//!     conta entre crases.
+//!   - O documento e o molde (`.md`, `.txt`, `.rst`, `.adoc`, a pasta de
+//!     moldes), que o mapa não tem: o mesmo teste da prosa, sem a exigência de
+//!     ser comentário ([`prose_document`]); a palavra solta, mesmo toda em
+//!     maiúsculas, não conta.
+//!   - O outro arquivo que o mapa não tem (script de instalação, fluxo de
+//!     integração, configuração, instalador): só conta a citação qualificada
+//!     por `::` (`mustard_cli::NOME`, `Tipo::nome`), porque ali a palavra é
+//!     variável do próprio arquivo (`$NOME`).
 //! - Órfão: a declaração que tinha uso fora de teste no mapa da base, e cujo
 //!   último uso a onda tirou, e ficou sem nenhum. A de antes é a de mesmo
 //!   nome, tipo e dono ([`same_piece`]): o campo de mesmo nome de outro tipo
@@ -72,9 +86,12 @@ use super::commit::{AfterWave, Finding};
 /// de mudanças de um projeto.
 const CHANGE_LOGS: &[&str] = &["changelog", "changes", "history", "news", "releases", "release_notes", "release-notes"];
 
-/// As extensões de texto que o registro de mudanças usa; sem extensão
-/// também vale.
-const CHANGE_LOG_EXTENSIONS: &[&str] = &["md", "txt", "rst", "adoc"];
+/// As extensões de documento de texto, as mesmas que o registro de mudanças
+/// usa (sem extensão também vale para ele).
+const DOCUMENT_EXTENSIONS: &[&str] = &["md", "txt", "rst", "adoc"];
+
+/// A pasta que guarda os moldes de um projeto.
+const MOLD_FOLDER: &str = "templates";
 
 /// Os achados dos restos, dos órfãos e do código novo sem uso de cada onda de
 /// `maps`, procurando o texto em `root`, já com a junção no disco.
@@ -102,7 +119,7 @@ pub(super) fn findings(root: &Path, maps: &AfterWave, lang: Locale) -> Vec<Findi
             for name in gone.into_iter().filter(|name| searched.insert((*name).to_string())) {
                 let removed: Vec<&MapDecl> = before.declarations.iter().filter(|d| d.name == name).collect();
                 for (site, line, text) in cited(root, name, &created) {
-                    if prose_comment(name, &text) || unrelated_code_line(maps, &removed, &site, &text) {
+                    if other_thing(maps, &removed, name, &site, &text) {
                         continue;
                     }
                     let text = translate("round.after_wave.leftover", lang)
@@ -377,18 +394,61 @@ fn in_test_lines(module: &MapModule, line: u64) -> bool {
     module.test_lines.iter().any(|&(first, last)| (first..=last).contains(&line))
 }
 
-/// A linha `text` de `file` cita o nome de uma declaração tirada e não é um
-/// uso dela: é linha de código (não de comentário) de um arquivo que está no
-/// mapa da base e que, nesse mapa, não usava nenhuma das declarações
-/// `removed` de antes. O mesmo nome ali é outra coisa, como uma variável
-/// local, que o mapa não guarda; um uso de verdade o mapa da base teria
-/// ligado. Sem declaração de antes (o nome de um arquivo tirado), o arquivo
-/// fora do mapa da base e a linha de comentário, a citação conta.
-fn unrelated_code_line(maps: &AfterWave, removed: &[&MapDecl], file: &str, text: &str) -> bool {
-    !removed.is_empty()
-        && maps.base.module(file).is_some()
-        && !is_comment_line(text)
-        && !removed.iter().any(|decl| decl.used_by.iter().any(|site| site.file == file))
+/// A linha `text` de `file` cita o nome `name` de uma declaração tirada
+/// (`removed`, as de antes) e não é um uso dela: o mesmo nome é outra coisa, e
+/// a citação não conta como resto. Cada lugar pede uma leitura:
+///
+/// - O arquivo que o mapa não tem, nem o de antes nem o de depois: o documento
+///   e o molde seguem a prosa ([`prose_document`]); o script, o fluxo de
+///   integração e a configuração só contam com a citação qualificada por `::`,
+///   porque ali o nome é variável do próprio arquivo.
+/// - O arquivo do mapa da base que nele não usava nenhuma das declarações
+///   tiradas: a linha de código é outra coisa, como uma variável local que o
+///   mapa não guarda (um uso de verdade o mapa da base teria ligado), e a de
+///   comentário só conta com a citação qualificada, além do teste da prosa.
+/// - O arquivo que usava a declaração, ou que a onda criou e o mapa de depois
+///   tem: a linha de código conta, e a de comentário passa pelo teste da
+///   prosa ([`prose_comment`]).
+///
+/// Sem declaração de antes (o nome de um arquivo tirado) só vale o teste da
+/// prosa, que só olha comentário.
+fn other_thing(maps: &AfterWave, removed: &[&MapDecl], name: &str, file: &str, text: &str) -> bool {
+    if removed.is_empty() {
+        return prose_comment(name, text);
+    }
+    let in_base = maps.base.module(file).is_some();
+    if !in_base && maps.after.module(file).is_none() {
+        return if is_document(file) { prose_document(name, text) } else { !linked_by(name, text, scoped) };
+    }
+    let used = removed.iter().any(|decl| decl.used_by.iter().any(|site| site.file == file));
+    if in_base && !used {
+        return !is_comment_line(text) || prose_comment(name, text) || !linked_by(name, text, path_linked);
+    }
+    prose_comment(name, text)
+}
+
+/// `path` é documento de texto ou molde: a extensão é de documento
+/// ([`DOCUMENT_EXTENSIONS`]) ou o arquivo mora na pasta de moldes
+/// ([`MOLD_FOLDER`]), em qualquer profundidade.
+fn is_document(path: &str) -> bool {
+    let lower = path.to_lowercase();
+    let (folders, name) = lower.rsplit_once('/').unwrap_or(("", lower.as_str()));
+    let extension = name.rsplit_once('.').map_or("", |(_, extension)| extension);
+    DOCUMENT_EXTENSIONS.contains(&extension) || folders.split('/').any(|folder| folder == MOLD_FOLDER)
+}
+
+/// `link` aprova alguma ocorrência de `name` em `text`, que o recebe com o
+/// que vem antes do nome na linha e o que vem depois.
+fn linked_by(name: &str, text: &str, link: impl Fn(&str, &str) -> bool) -> bool {
+    word_starts(text, name).any(|at| link(&text[..at], &text[at + name.len()..]))
+}
+
+/// O nome, com `before` antes dele na linha e `after` depois, está qualificado
+/// por `::`: `modulo::nome`, `Tipo::nome`, `nome::novo`. Fora da linguagem que
+/// escreve assim, o `.` não serve: num script ele separa a extensão
+/// (`$NOME.tar.gz`) ou o campo (`env.NOME`).
+fn scoped(before: &str, after: &str) -> bool {
+    before.ends_with("::") || after.starts_with("::")
 }
 
 /// O nome de `decl`, declarada em `module`, aparece como palavra inteira
@@ -424,9 +484,17 @@ fn distinctive(name: &str) -> bool {
 /// O nome tem grafia que a palavra comum não tem: `_`, `.`, `-`, dígito ou
 /// maiúscula depois da primeira letra.
 fn unusual_spelling(name: &str) -> bool {
+    identifier_spelling(name) || name.chars().skip(1).any(char::is_uppercase)
+}
+
+/// O nome tem grafia de identificador, que a palavra da prosa não tem, nem
+/// escrita toda em maiúsculas: `_`, `.`, `-`, dígito, ou maiúscula depois da
+/// primeira letra num nome que também tem minúscula (`camelCase`,
+/// `PascalCase` de duas partes). `VERSION` é palavra; `MAX_SIZE` não.
+fn identifier_spelling(name: &str) -> bool {
     name.contains(['_', '.', '-'])
         || name.chars().any(|c| c.is_ascii_digit())
-        || name.chars().skip(1).any(char::is_uppercase)
+        || (name.chars().any(char::is_lowercase) && name.chars().skip(1).any(char::is_uppercase))
 }
 
 /// O nome todo em maiúsculas, de até quatro letras (`OFF`, `ALL`, `NONE`): a
@@ -446,9 +514,27 @@ fn prose_comment(name: &str, text: &str) -> bool {
     is_comment_line(text)
         && !word_starts(text, name).any(|at| {
             let (before, after) = (&text[..at], &text[at + name.len()..]);
-            let in_ticks = before.matches('`').count() % 2 == 1;
-            in_ticks || (!shout_word(name) && (unusual_spelling(name) || path_linked(before, after)))
+            in_ticks(before) || (!shout_word(name) && (unusual_spelling(name) || path_linked(before, after)))
         })
+}
+
+/// A linha `text` de um documento ou de um molde só tem `name` como palavra
+/// da prosa: o mesmo teste de [`prose_comment`], sem a exigência de ser
+/// comentário (todo o texto do documento é prosa) e com a grafia de
+/// identificador ([`identifier_spelling`]) no lugar da grafia incomum: a
+/// palavra solta toda em maiúsculas (`VERSION`) é palavra da prosa, e só conta
+/// entre crases ou ligada a caminho.
+fn prose_document(name: &str, text: &str) -> bool {
+    !word_starts(text, name).any(|at| {
+        let (before, after) = (&text[..at], &text[at + name.len()..]);
+        in_ticks(before) || (!shout_word(name) && (identifier_spelling(name) || path_linked(before, after)))
+    })
+}
+
+/// O que vem antes do nome na linha, `before`, deixa uma crase aberta: o nome
+/// está escrito como código.
+fn in_ticks(before: &str) -> bool {
+    before.matches('`').count() % 2 == 1
 }
 
 /// O nome, com `before` antes dele na linha e `after` depois, está ligado a
@@ -503,7 +589,7 @@ fn cited(root: &Path, name: &str, created: &[String]) -> Vec<(String, usize, Str
 fn is_change_log(path: &str) -> bool {
     let name = file_name(path).to_lowercase();
     let (stem, extension) = name.rsplit_once('.').unwrap_or((name.as_str(), ""));
-    CHANGE_LOGS.contains(&stem) && (extension.is_empty() || CHANGE_LOG_EXTENSIONS.contains(&extension))
+    CHANGE_LOGS.contains(&stem) && (extension.is_empty() || DOCUMENT_EXTENSIONS.contains(&extension))
 }
 
 #[cfg(test)]
@@ -585,7 +671,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let files = [("src/b.rs", "fn outra() {}\n// soma pelo old_total antes de gravar\n")];
-        let base = json!({"modules": [module("src/a.rs", &[("old_total", 1, &[]), ("keep_sum", 5, &[])]), module("src/b.rs", &[("outra", 1, &[])])]});
+        let base = json!({"modules": [module("src/a.rs", &[("old_total", 1, &["src/b.rs:1:outra"]), ("keep_sum", 5, &[])]), module("src/b.rs", &[("outra", 1, &[])])]});
         project(root, &files, &base);
         let head = git_text(root, &["rev-parse", "HEAD"]);
         let after = json!({"modules": [module("src/a.rs", &[("keep_sum", 1, &[])]), module("src/b.rs", &[("outra", 1, &[])])]});
@@ -637,11 +723,11 @@ mod tests {
     }
 
     #[test]
-    fn a_code_line_of_a_file_outside_the_base_map_still_counts_by_its_text() {
+    fn a_code_line_of_a_file_the_wave_created_still_counts_by_its_text() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        // O documento e o arquivo `src/d.rs`, que o mapa da base não tem,
-        // seguem valendo pelo texto.
+        // `src/d.rs` o mapa da base não tem, e o de depois tem: o arquivo que a
+        // onda criou segue valendo pelo texto, como o documento.
         let files = [
             ("src/b.rs", "fn outra() {}\n"),
             ("src/c.rs", "fn caller() {}\n"),
@@ -649,11 +735,167 @@ mod tests {
             ("docs/guide.md", "Chame old_total(x) para somar.\n"),
         ];
         project(root, &files, &base_with_old_total());
-        let out = back_without_old_total(root);
+        let after = json!({"modules": [
+            module("src/a.rs", &[("keep_sum", 1, &[])]),
+            module("src/b.rs", &[("outra", 1, &[])]),
+            module("src/c.rs", &[("caller", 1, &[])]),
+            module("src/d.rs", &[("late", 1, &[])]),
+        ]});
+        let out = back(root, after);
         assert_eq!(out["reason"], json!("round-after-wave"), "{out}");
         let hint = out["hint"].as_str().unwrap_or_default();
         assert!(hint.contains("`src/d.rs` linha 2 ainda cita `old_total`, que a onda tirou de `src/a.rs`"), "{hint}");
         assert!(hint.contains("`docs/guide.md` linha 1 ainda cita `old_total`, que a onda tirou de `src/a.rs`"), "{hint}");
+    }
+
+    /// O texto de conserto da volta da onda que tira o nome `name` de
+    /// `src/a.rs`, com `files` no projeto e `uses` como as chamadas que o mapa
+    /// da base guarda; vazio quando a volta passa sem achado.
+    fn leftovers_after_removing(name: &str, uses: &[&str], files: &[(&str, &str)]) -> String {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        project(root, files, &base_with(name, uses));
+        let out = back_without_old_total(root);
+        if out["ok"] == json!(true) {
+            return String::new();
+        }
+        assert_eq!(out["reason"], json!("round-after-wave"), "{out}");
+        out["hint"].as_str().unwrap_or_default().to_string()
+    }
+
+    #[test]
+    fn a_script_or_config_that_has_the_removed_name_as_its_own_variable_is_not_a_leftover() {
+        let files = [
+            ("src/b.rs", "fn outra() {}\n"),
+            ("src/c.rs", "fn caller() {}\n"),
+            ("packaging/install.sh", "#!/bin/sh\nVERSION=\"${1:-latest}\"\necho \"v$VERSION\"\n"),
+            ("packaging/build.ps1", "$VERSION = '1.0'\nWrite-Host $VERSION\n"),
+            ("packaging/mustard.nsi", "!define VERSION \"1.0\"\n"),
+            (".github/workflows/release.yml", "env:\n  VERSION: ${{ github.ref_name }}\n"),
+        ];
+        assert_eq!(leftovers_after_removing("VERSION", &[], &files), "");
+    }
+
+    #[test]
+    fn a_script_or_config_that_qualifies_the_removed_name_by_its_path_is_a_leftover() {
+        let files = [
+            ("src/b.rs", "fn outra() {}\n"),
+            ("src/c.rs", "fn caller() {}\n"),
+            ("packaging/install.sh", "#!/bin/sh\necho \"v$VERSION\"\n"),
+            (".github/workflows/release.yml", "steps:\n  - run: cargo run -- mustard_cli::VERSION\n"),
+        ];
+        let hint = leftovers_after_removing("VERSION", &[], &files);
+        assert!(hint.contains("`.github/workflows/release.yml` linha 2 ainda cita `VERSION`, que a onda tirou de `src/a.rs`"), "{hint}");
+        assert!(!hint.contains("packaging/install.sh"), "{hint}");
+    }
+
+    #[test]
+    fn a_script_that_names_the_removed_file_is_still_a_leftover() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let files = [("src/b.rs", "fn outra() {}\n"), ("src/c.rs", "fn caller() {}\n"), ("packaging/build.sh", "cp src/a.rs out/\n")];
+        project(root, &files, &base_with_old_total());
+        // A onda tirou o arquivo `src/a.rs` inteiro.
+        let after = json!({"modules": [module("src/b.rs", &[("outra", 1, &[])]), module("src/c.rs", &[("caller", 1, &[])])]});
+        let out = back(root, after);
+        assert_eq!(out["reason"], json!("round-after-wave"), "{out}");
+        let hint = out["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains("`packaging/build.sh` linha 1 ainda cita `a.rs`, que a onda tirou de `src/a.rs`"), "{hint}");
+    }
+
+    #[test]
+    fn a_comment_of_a_file_that_never_used_the_removed_name_counts_only_when_qualified() {
+        // Os dois arquivos estão no mapa da base e nenhum usava `remove_dir`;
+        // o comentário do primeiro fala do nome como exemplo, o do segundo
+        // aponta o módulo dele.
+        let files = [
+            ("src/b.rs", "fn outra() {}\n// the example of the test builds `remove_dir` by hand\n"),
+            ("src/c.rs", "fn caller() {}\n// the example of the test calls fs::remove_dir by hand\n"),
+        ];
+        let hint = leftovers_after_removing("remove_dir", &[], &files);
+        assert!(hint.contains("`src/c.rs` linha 2 ainda cita `remove_dir`, que a onda tirou de `src/a.rs`"), "{hint}");
+        assert!(!hint.contains("`src/b.rs`"), "{hint}");
+    }
+
+    #[test]
+    fn a_comment_of_a_file_that_used_the_removed_name_still_counts_between_backticks() {
+        let files = [
+            ("src/b.rs", "fn outra() {}\n// the example of the test builds `remove_dir` by hand\n"),
+            ("src/c.rs", "fn caller() {}\n"),
+        ];
+        let hint = leftovers_after_removing("remove_dir", &["src/b.rs:1:outra"], &files);
+        assert!(hint.contains("`src/b.rs` linha 2 ainda cita `remove_dir`, que a onda tirou de `src/a.rs`"), "{hint}");
+    }
+
+    #[test]
+    fn a_document_counts_the_removed_name_between_backticks_and_not_as_a_loose_word() {
+        let files = [
+            ("src/b.rs", "fn outra() {}\n"),
+            ("src/c.rs", "fn caller() {}\n"),
+            ("docs/loose.md", "Bump the VERSION before the release.\n"),
+            ("docs/coded.md", "Bump the `VERSION` before the release.\n"),
+        ];
+        let hint = leftovers_after_removing("VERSION", &[], &files);
+        assert!(hint.contains("`docs/coded.md` linha 1 ainda cita `VERSION`, que a onda tirou de `src/a.rs`"), "{hint}");
+        assert!(!hint.contains("docs/loose.md"), "{hint}");
+    }
+
+    #[test]
+    fn a_document_or_mold_counts_a_removed_name_written_as_code_and_a_plain_file_does_not() {
+        let files = [
+            ("src/b.rs", "fn outra() {}\n"),
+            ("src/c.rs", "fn caller() {}\n"),
+            ("docs/guide.md", "Call `remove_dir` to clean up.\n"),
+            ("packages/core/templates/pages/spec.html", "<p>Call `remove_dir` to clean up.</p>\n"),
+            ("assets/page.html", "<p>Call `remove_dir` to clean up.</p>\n"),
+        ];
+        let hint = leftovers_after_removing("remove_dir", &[], &files);
+        assert!(hint.contains("`docs/guide.md` linha 1 ainda cita `remove_dir`"), "{hint}");
+        assert!(hint.contains("`packages/core/templates/pages/spec.html` linha 1 ainda cita `remove_dir`"), "{hint}");
+        assert!(!hint.contains("assets/page.html"), "{hint}");
+    }
+
+    #[test]
+    fn a_document_line_counts_only_when_the_name_is_not_a_word_of_the_prose() {
+        // (nome, linha, a linha só tem a palavra da prosa)
+        let cases = [
+            ("VERSION", "Bump the VERSION first", true),
+            ("VERSION", "Bump the VERSION.", true),
+            ("VERSION", "Bump `VERSION` first", false),
+            ("VERSION", "Bump the mustard_cli::VERSION const", false),
+            ("VERSION", "Read the VERSION.txt file", false),
+            ("OFF", "The Mode::OFF state", true),
+            ("OFF", "The `OFF` state", false),
+            ("old_total", "Call old_total(x) to sum", false),
+            ("oldTotal", "Call oldTotal to sum", false),
+            ("Api2", "Uses Api2 here", false),
+            ("Dockerfile", "See the Dockerfile", true),
+        ];
+        for (name, text, prose) in cases {
+            assert_eq!(prose_document(name, text), prose, "{name} em {text:?}");
+        }
+    }
+
+    #[test]
+    fn only_a_text_document_or_a_file_of_the_mold_folder_is_a_document() {
+        let cases = [
+            ("README.md", true),
+            ("docs/guide.TXT", true),
+            ("docs/a.rst", true),
+            ("docs/b.adoc", true),
+            ("packages/core/templates/agents/wave.md", true),
+            ("templates/pages/spec.html", true),
+            ("Templates/settings.json", true),
+            ("packaging/install.sh", false),
+            (".github/workflows/release.yml", false),
+            ("packaging/mustard.nsi", false),
+            ("Makefile", false),
+            ("src/templates.rs", false),
+            ("assets/page.html", false),
+        ];
+        for (path, document) in cases {
+            assert_eq!(is_document(path), document, "{path}");
+        }
     }
 
     #[test]
@@ -673,7 +915,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let files = [("src/b.rs", "fn outra() {}\n// the plugin is switched `OFF` when idle\n"), ("src/c.rs", "fn caller() {}\n")];
-        project(root, &files, &base_with("OFF", &[]));
+        project(root, &files, &base_with("OFF", &["src/b.rs:1:outra"]));
         let head = git_text(root, &["rev-parse", "HEAD"]);
         let out = back_without_old_total(root);
         assert_eq!(out["reason"], json!("round-after-wave"), "{out}");
