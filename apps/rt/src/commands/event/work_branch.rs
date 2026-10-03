@@ -15,10 +15,10 @@
 //!
 //! Both halves live here because two callers must agree about them and a
 //! second spelling is how they stop agreeing:
-//! [`crate::commands::spec::spec_draft`] (the draft, which cuts the branch so
+//! [`crate::commands::flow::open`] (the explicit open, which cuts the branch so
 //! the spec is written INSIDE the unit rather than on the base) and
-//! [`super::emit_pipeline`] (which pre-computes the name into the pending
-//! marker). The base set itself is never re-derived here — it comes from
+//! [`super::census_settlement`] (which settles what the checkout holds before
+//! any cut). The base set itself is never re-derived here — it comes from
 //! [`mustard_core::domain::config::GitConfig`], the single owner.
 
 use std::path::Path;
@@ -30,7 +30,7 @@ use crate::shared::work_kind::{BaseFlow, CUT_BASE_FILE};
 use crate::shared::work_kind::UnitBase;
 
 // ---------------------------------------------------------------------------
-// The cut — git primitives shared by the hook gate and the draft
+// The cut — git primitives shared by the hook gate and the explicit open
 // ---------------------------------------------------------------------------
 
 /// `true` when a local branch `refs/heads/<branch>` exists.
@@ -533,7 +533,7 @@ pub(crate) fn base_for(
 /// marker that carried the name from the gate is consumed and deleted by the
 /// first checkout ([`cut_pending_work_branch`]), so after that moment the
 /// branch itself is the only thing that still remembers what the unit is
-/// called — which is what lets the drafting cut consume the gate's name instead of
+/// called — which is what lets the cut consume the gate's name instead of
 /// deriving a second one.
 ///
 /// `None` when the name carries neither a kind prefix nor a declared `{base}_`
@@ -1063,7 +1063,7 @@ pub(crate) fn name_dirty_paths(dirty: &[String]) -> (String, String) {
 /// working here on a branch it never asked for.
 ///
 /// The measured facts, kept apart from the sentence built out of them, so the
-/// gate and the draft REPORT the same refusal in their own shapes.
+/// gate and the explicit open REPORT the same refusal in their own shapes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BusyCheckout {
     /// The branch the checkout is on — another unit's, a protected base, or
@@ -1160,7 +1160,7 @@ impl BusyCheckout {
 /// git untouched and mean opposite things to the caller.
 ///
 /// No serde derive — the JSON shape belongs to whichever command reports it
-/// (the drafting cut folds it into its own document).
+/// (the explicit open folds it into its own document).
 #[derive(Debug, Clone, PartialEq, Eq)]
 // Sem chamador na produção desde a refatoração que enxugou o runtime: o que
 // ainda exercita o corte da branch pendente são os testes do portão de base,
@@ -1212,12 +1212,11 @@ pub(crate) enum CutOutcome {
 /// Consume this session's `pending-work-branch` marker and check that branch
 /// out in `project`, creating it off its base.
 ///
-/// The only cut: no hook cuts a branch on a file mutation. the drafting step calls
-/// it because the spec
-/// must be written INSIDE the unit: the draft is the first thing the work
-/// produces, and it used to land on the integration base (a `.claude/spec/`
-/// carve-out existed precisely to let it). Cutting here moves the draft, the
-/// wave layout and the negative proof onto the branch, in that one call.
+/// The only cut: no hook cuts a branch on a file mutation. The spec must be
+/// written INSIDE the unit: it is the first thing the work produces, and it
+/// used to land on the integration base (a `.claude/spec/` carve-out existed
+/// precisely to let it). Cutting here moves the spec, the wave layout and the
+/// negative proof onto the branch, in that one call.
 ///
 /// Idempotent by construction: the marker is cleared on every outcome that
 /// leaves the tree on the target branch, so a second call answers `NoPending`.
@@ -1225,8 +1224,8 @@ pub(crate) enum CutOutcome {
 /// retry, exactly as the hook gate keeps it.
 ///
 /// The refusal is the point the review found missing: this door opens FIRST
-/// (the drafting step calls it at approval, before any `Write` reaches the hook
-/// gate), so a guard living only in the gate never ran. The decision is
+/// (at approval, before any `Write` reaches the hook gate), so a guard living
+/// only in the gate never ran. The decision is
 /// [`crate::commands::event::census_settlement::settle`], the same one the gate
 /// takes — one question, one answer, and the base refresh happens inside it
 /// rather than in either door.
@@ -1300,7 +1299,7 @@ pub(crate) fn cut_pending_work_branch(project: &Path, session: &str) -> CutOutco
             // The marker that carried the operator's answer is about to be
             // consumed, so this is the LAST moment the answer exists. Write it
             // into the unit's own directory first, as the HARNESS STATE the
-            // draft folds into `meta.json#base` — a no-op wherever the flow can
+            // base reader recovers it from — a no-op wherever the flow can
             // still re-derive it (see `BaseFlow::record_cut_base`).
             BaseFlow::of_at(&config.git, project).record_cut_base(&target, &base);
             crate::shared::context::pending_branch::clear_pending_branch(&root, session);
@@ -1991,10 +1990,9 @@ mod tests {
     ///
     /// This test deliberately drives [`super::cut_pending_work_branch`] and NOT
     /// the old write-hook gate: the previous round's tests all went through
-    /// that gate and passed while the real defect sat here. The drafting step calls
-    /// this function at APPROVAL — before any `Write` exists for a PreToolUse
-    /// hook to see — so a guard living only in the gate was a guard on the door
-    /// that opens second.
+    /// that gate and passed while the real defect sat here. The cut happens at
+    /// APPROVAL — before any `Write` exists for a PreToolUse hook to see — so a
+    /// guard living only in the gate was a guard on the door that opens second.
     ///
     /// The work at risk is the shape the FIELD has: the first unit's own
     /// `.claude/spec/…`, tracked and modified. A source file made this pass
@@ -2008,7 +2006,7 @@ mod tests {
         seed_repo(root);
         a_first_unit_holds_the_checkout(root);
 
-        // A SECOND unit is signalled — this is what the drafting cut consumes.
+        // A SECOND unit is signalled — this is what the cut consumes.
         let sid = "sess-cut-refuses";
         crate::shared::context::pending_branch::set_pending_branch(&root_s, sid, "dev_second", None);
 

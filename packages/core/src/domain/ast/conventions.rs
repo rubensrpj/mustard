@@ -306,7 +306,7 @@ mod tests {
         // suffixes (`widget-spec.rb`, `bar.spec.js`), both asserted above,
         // while `spec_*` names modules about specifications.
         assert!(!is_test_path("src/spec_views.rs"), "a module about specs is not a test");
-        assert!(!is_test_path("src/commands/spec_draft.rs"));
+        assert!(!is_test_path("src/commands/spec_doc.rs"));
         // `test_` stays: it is the established convention.
         assert!(is_test_path("test_runner.rb"));
     }

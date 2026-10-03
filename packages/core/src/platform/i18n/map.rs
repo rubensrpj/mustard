@@ -438,6 +438,18 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "The key in jev.key does not count, because git tracks mustard.json. Take the file out of git and \
              change the key, because anyone who reads the repository may have seen it."
         }
+        // O aviso da rodada: a chave em jev.key do mustard.json que o git
+        // guarda não vale, e a rodada monta as ondas sem o Jev.
+        ("map.round.key_in_git", Locale::PtBr) => {
+            "O git guarda o mustard.json, então a chave em jev.key não vale. A rodada monta as ondas pelos arquivos \
+             de cada tarefa, sem o Jev. Tire o arquivo do git e troque a chave, porque quem lê o repositório pode \
+             tê-la visto."
+        }
+        ("map.round.key_in_git", Locale::EnUs) => {
+            "Git tracks mustard.json, so the key in jev.key does not count. The round builds the waves from the \
+             files of each task, without Jev. Take the file out of git and change the key, because anyone who \
+             reads the repository may have seen it."
+        }
         ("map.history_unreadable", Locale::PtBr) => "A história de `{file}` não pôde ser lida do git ({detail}).",
         ("map.history_unreadable", Locale::EnUs) => "The history of `{file}` could not be read from git ({detail}).",
         _ => return None,
@@ -457,8 +469,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("map.rs"),
             super::PREFIXES,
-            79,
-            0xad88_f456_ff2e_dc6e,
+            80,
+            0x1125_3d7f_13ab_e155,
         );
     }
 
@@ -515,6 +527,7 @@ mod tests {
                 "map.search.bad_filter",
                 "map.search.missing_key",
                 "map.search.key_in_git",
+                "map.round.key_in_git",
                 "scan.bad_max_same_name",
             ] {
                 let text = translate(key, lang)
@@ -777,6 +790,7 @@ mod tests {
             ("map.search.bad_filter", &[][..]),
             ("map.search.missing_key", &[][..]),
             ("map.search.key_in_git", &[][..]),
+            ("map.round.key_in_git", &[][..]),
             ("scan.bad_max_same_name", &["scan.max_same_name", "{value}", "{default}"][..]),
             ("doctor.scan_output.visible", &["{paths}"][..]),
         ] {

@@ -87,7 +87,7 @@ camel_suffixes = [
 
 # Prefixos do nome do arquivo. Só `test_`: as convenções de especificação em
 # uso são sufixos (`foo_spec.rb`, `foo.spec.ts`), já cobertos acima, e não
-# existe convenção de teste `spec_foo`, enquanto `spec_views` e `spec_draft`
+# existe convenção de teste `spec_foo`, enquanto `spec_views` e `spec_doc`
 # são nomes comuns de módulos que tratam de especificações. O prefixo
 # `spec_` escondia quatro desses módulos de produção, um deles o maior
 # arquivo do seu subprojeto.

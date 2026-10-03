@@ -25,10 +25,9 @@
 //! **Where the answer the flow cannot derive is kept.** An emergency in a
 //! project declaring several candidate bases is a CHOICE, and the name no longer
 //! carries it. The cut writes it into the unit's own directory as harness state
-//! ([`CUT_BASE_FILE`]) and the draft folds it into `meta.json#base`; both are
-//! read back here, in that order. It is deliberately NOT written into
-//! `meta.json` by the cut: the cut runs first, and a sidecar in that directory
-//! is exactly what makes the draft refuse it as already drafted.
+//! ([`CUT_BASE_FILE`]) and it is read back here. It is deliberately NOT written
+//! into `meta.json`: that sidecar belongs to the old spec format, which the
+//! spec's event file replaced.
 //!
 //! **Why this lives in `shared`.** Both faces ask these questions — the hook
 //! gate cutting the branch and the commands settling, deleting, reporting and
@@ -76,25 +75,17 @@ fn ref_carries(project: &Path, rev: &str, path: &str) -> bool {
 
 /// The cut's OWN record of the base, inside the unit's directory.
 ///
-/// **Why a file of its own, and why this name.** The answer's durable home is
-/// `meta.json#base` — the sidecar that already holds every machine-parseable
-/// fact about a unit — but the CUT cannot write it there: the cut runs BEFORE
-/// the draft, and the drafting step refuses to draft into a directory that already
-/// holds anything but harness state ([`crate::commands::spec::spec_draft`]'s
-/// `holds_only_harness_state`, whose allowlist names the entries written by the
-/// steps BEFORE the draft — the dot-prefixed spill and the material channel's
-/// `spec-material.json` alike — and whose whole reason for existing is that a
-/// `meta.json` there IS a drafted spec). Writing the base into `meta.json` at cut time therefore made step one
-/// block step two: the unit was cut and got no spec at all.
-///
-/// So the cut writes HERE, and the draft folds it into `meta.json#base` when it
-/// writes the sidecar ([`crate::commands::spec::spec_scaffold::write_meta_json`])
-/// and retires the file. This name is harness state, not authored work, on every
-/// term the rest of the per-spec spill is (`.events`, `.dispatch`, `.blobs`,
-/// `.memory-approved`): nobody authors it, it holds one machine token the
-/// harness wrote to itself, it is derivable again for every unit whose flow can
-/// answer, and it never reaches the merge — the unit's authored work is
-/// `spec.md`, the waves, the proof, the change log and the review verdicts.
+/// **Why a file of its own, and why this name.** The base the flow cannot
+/// derive must outlive the marker that carried it, and the unit's own
+/// directory is where the facts about the unit live. It is not written into
+/// the `meta.json` sidecar, which belongs to the old spec format the event file
+/// replaced, so the cut writes HERE. This name is harness state, not authored
+/// work, on every term the rest of the per-spec spill is (`.events`,
+/// `.dispatch`, `.blobs`, `.memory-approved`): nobody authors it, it holds one
+/// machine token the harness wrote to itself, it is derivable again for every
+/// unit whose flow can answer, and it never reaches the merge — the unit's
+/// authored work is `spec.md`, the waves, the proof, the change log and the
+/// review verdicts.
 pub(crate) const CUT_BASE_FILE: &str = ".cut-base";
 
 /// The base recorded in `dir`'s cut record, `None` when there is none (or it is
@@ -599,12 +590,8 @@ impl BaseFlow {
     /// this model has no project to consult, or when what was recorded is a
     /// branch the remote no longer has.
     ///
-    /// TWO places, one answer, in the order the answer travels: the sidecar
-    /// (`meta.json#base`, its durable home once the draft has folded it) and
-    /// then the cut's own record ([`CUT_BASE_FILE`], where the cut writes it
-    /// because at cut time the draft does not exist yet). A unit that was cut
-    /// and never drafted still answers, and one that was drafted answers from
-    /// the single file every other machine-parseable fact about it lives in.
+    /// The answer is read from the cut's own record ([`CUT_BASE_FILE`]), where
+    /// the cut writes it, so a unit that was cut answers from its own directory.
     ///
     /// The check on the way out matters, and WHAT it checks matters more: the
     /// repository may have moved on since the cut, and answering with a branch
@@ -627,19 +614,16 @@ impl BaseFlow {
     /// Write down the base a unit was ACTUALLY cut from, in the cut's own record
     /// ([`CUT_BASE_FILE`]) inside the unit's directory.
     ///
-    /// NOT `meta.json`, and that is the whole point: the cut runs before the
-    /// draft, and a `meta.json` sitting in the directory is precisely what makes
-    /// the drafting step refuse the directory as already drafted — so recording the
-    /// base there cut the unit and then denied it a spec. The file this writes is
-    /// harness state the draft's guard tolerates by category, and the draft folds
-    /// it into `meta.json#base` on its way past (see [`CUT_BASE_FILE`]).
+    /// NOT `meta.json`, which belongs to the old spec format. The file this
+    /// writes is harness state: the checkout probe counts it as scratch, never
+    /// as the unit's work (see [`CUT_BASE_FILE`]).
     ///
     /// A no-op unless [`base_must_be_recorded`](Self::base_must_be_recorded):
     /// freezing a derivable answer would make the record the thing that goes
     /// stale when `git.flow` changes, and it would leave a file in the directory
     /// of every unit for a question the flow already answers. A no-op too once
-    /// the answer is already on disk — the folded sidecar is not resurrected
-    /// into a second copy by a later checkout of the same branch.
+    /// the answer is already on disk — a later checkout of the same branch
+    /// writes no second copy.
     ///
     /// Fail-open at every step (no project, no slug, an unwritable directory):
     /// this runs inside a HOOK that has already cut the branch, and a record
@@ -1044,7 +1028,7 @@ mod tests {
     /// integration line and the pull-request list would refuse to run from it,
     /// which is exactly the damage `is_declared_base` prevents, arriving
     /// through the other door. Both kinds of real unit still resolve —
-    /// the one this harness already cut and drafted, and the one that does not
+    /// the one this harness already cut, and the one that does not
     /// exist on the remote yet because it is about to be cut.
     #[test]
     fn an_underscored_base_is_not_mistaken_for_a_legacy_unit() {

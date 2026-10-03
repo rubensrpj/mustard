@@ -37,9 +37,9 @@
 //!
 //! A chave vem de [`jev_gate::KEY_ENV`] no ambiente ou, sem ela, de `jev.key` no
 //! `mustard.json` do projeto ([`key_in`]). O git não pode guardar esse
-//! arquivo: guardado, a chave dele não se usa, e a busca avisa. Nenhum
-//! comando a grava, e nenhum erro, aviso ou log a leva — nem o corpo da
-//! resposta do serviço.
+//! arquivo: guardado, a chave dele não se usa, e a busca e a rodada avisam.
+//! Nenhum comando a grava, e nenhum erro, aviso ou log a leva — nem o corpo
+//! da resposta do serviço.
 //!
 //! O mesmo serviço também julga o backlog da obra para a rodada montar a onda
 //! ([`JevFilter::judge_backlog`]): uma chamada só, com o backlog inteiro num
@@ -848,26 +848,45 @@ fn wave_key(n: u64) -> String {
     format!("w{n}")
 }
 
+/// O Jev da montagem das ondas e o que a rodada deve avisar sobre a chave dele.
+#[derive(Debug, Clone, Default)]
+pub struct WavesJev {
+    /// O filtro, quando o `mustard.json` não desliga o Jev e o projeto tem
+    /// chave. Sem ele, a rodada monta a onda como sempre.
+    pub filter: Option<JevFilter>,
+    /// A única chave do projeto está no `mustard.json` que o git guarda: ela
+    /// não vale, o Jev não entra e a rodada monta a onda pelos arquivos. Com
+    /// a chave do ambiente, o Jev entra e não há o que avisar aqui.
+    pub key_in_git: bool,
+}
+
 /// O Jev que julga o backlog para a montagem das ondas do projeto em `root`:
 /// o filtro, quando o `mustard.json` não desliga o Jev e o projeto tem chave
-/// (a mesma regra da busca, [`jev_gate`]). Sem um dos dois, `None`, e a rodada
-/// monta a onda como sempre. Os testes da biblioteca nunca chamam o serviço: o
-/// ambiente de quem os roda pode ter chave.
+/// (a mesma regra da busca, [`jev_gate`]). Sem um dos dois, sem filtro, e a
+/// rodada monta a onda como sempre; quando a chave que faltou é a do
+/// `mustard.json` guardado pelo git, [`WavesJev::key_in_git`] diz, para a
+/// rodada avisar. Os testes da biblioteca nunca chamam o serviço: o ambiente
+/// de quem os roda pode ter chave, então o teste lê só o `mustard.json`, sem
+/// a chave do ambiente, e nunca devolve o filtro.
 #[must_use]
-pub fn for_waves(root: &Path) -> Option<JevFilter> {
+pub fn for_waves(root: &Path) -> WavesJev {
+    let config = ProjectConfig::load(root);
     if cfg!(test) {
-        return None;
+        return WavesJev { filter: None, ..waves_filter(root, &config, None) };
     }
-    waves_filter(root, &ProjectConfig::load(root), std::env::var(jev_gate::KEY_ENV).ok())
+    waves_filter(root, &config, std::env::var(jev_gate::KEY_ENV).ok())
 }
 
 /// [`for_waves`] com `config` e com `env` no lugar do valor de
 /// [`jev_gate::KEY_ENV`]: o teste não depende do ambiente de quem o roda.
-fn waves_filter(root: &Path, config: &ProjectConfig, env: Option<String>) -> Option<JevFilter> {
+fn waves_filter(root: &Path, config: &ProjectConfig, env: Option<String>) -> WavesJev {
     if !jev_gate::setting_allows(config.search_filter()) {
-        return None;
+        return WavesJev::default();
     }
-    key_in(root, config, env).ok().map(|loaded| JevFilter::new(loaded.key))
+    match key_in(root, config, env) {
+        Ok(loaded) => WavesJev { filter: Some(JevFilter::new(loaded.key)), key_in_git: false },
+        Err(error) => WavesJev { filter: None, key_in_git: error == FilterError::KeyInGit },
+    }
 }
 
 impl JevFilter {
@@ -2278,7 +2297,38 @@ mod tests {
             );
 
             assert_eq!(searched.is_some(), expected, "the search: {name}");
-            assert_eq!(waves_filter(root.path(), &loaded, env.clone()).is_some(), expected, "the wave assembly: {name}");
+            assert_eq!(waves_filter(root.path(), &loaded, env.clone()).filter.is_some(), expected, "the wave assembly: {name}");
+        }
+    }
+
+    /// A montagem das ondas diz que a chave não valeu por causa do git só
+    /// quando o `mustard.json` que o git guarda traz a única chave e o Jev
+    /// está ligado: com a chave do ambiente o Jev entra, e com o filtro
+    /// desligado, em branco, sem chave ou com a chave fora do git não há o que
+    /// avisar.
+    #[test]
+    fn the_wave_assembly_flags_a_key_only_the_file_git_tracks_holds() {
+        // (nome, mustard.json, git guarda o arquivo, ambiente, filtro, aviso)
+        let cases: Vec<(&str, Value, bool, Option<&str>, bool, bool)> = vec![
+            ("key in a tracked file", json!({"jev": {"key": "from-file"}}), true, None, false, true),
+            ("key in a tracked file with a blank environment", json!({"jev": {"key": "from-file"}}), true, Some(" "), false, true),
+            ("key in a tracked file with the environment", json!({"jev": {"key": "from-file"}}), true, Some("from-env"), true, false),
+            ("key in an untracked file", json!({"jev": {"key": "from-file"}}), false, None, true, false),
+            ("tracked file with the filter off", json!({"search": {"filter": "none"}, "jev": {"key": "from-file"}}), true, None, false, false),
+            ("tracked file with an invalid filter", json!({"search": {"filter": "other"}, "jev": {"key": "from-file"}}), true, None, false, false),
+            ("tracked file with a blank key", json!({"jev": {"key": "  "}}), true, None, false, false),
+            ("tracked file without a key", json!({}), true, None, false, false),
+        ];
+        for (name, config, tracked, env, filter, flagged) in cases {
+            let root = tempfile::tempdir().unwrap();
+            std::fs::write(root.path().join("mustard.json"), config.to_string()).unwrap();
+            if tracked {
+                assert!(mustard_core::platform::git::run(root.path(), &["init", "-q"]).ok);
+                assert!(mustard_core::platform::git::run(root.path(), &["add", "mustard.json"]).ok);
+            }
+            let waves = waves_filter(root.path(), &ProjectConfig::load(root.path()), env.map(str::to_string));
+            assert_eq!(waves.filter.is_some(), filter, "the filter: {name}");
+            assert_eq!(waves.key_in_git, flagged, "the git flag: {name}");
         }
     }
 

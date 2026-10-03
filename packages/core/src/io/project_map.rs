@@ -595,13 +595,6 @@ fn stored_part(model: &Path, pick: Pick) -> std::result::Result<StoredMap, MapRe
     Ok(StoredMap { json, marks: block_marks(&db)? })
 }
 
-/// A marca de cada bloco do mapa gravado em `model`, pelo nome do bloco, sem
-/// ler o mapa: quem só confere de que compilação do scan o mapa saiu não
-/// paga a leitura das linhas. Com as mesmas recusas de [`read`].
-pub fn read_marks_at(model: &Path) -> std::result::Result<BTreeMap<String, String>, MapRefusal> {
-    block_marks(&open_existing(model)?)
-}
-
 /// A marca de cada bloco que tem linha no banco aberto `db`.
 fn block_marks(db: &MapDb) -> std::result::Result<BTreeMap<String, String>, MapRefusal> {
     let mut marks = BTreeMap::new();

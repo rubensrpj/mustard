@@ -73,8 +73,8 @@ pub use platform::seeds::{
 };
 
 // Project config — the single source of truth for `<root>/mustard.json`
-// (schema + IO + accessors). Replaces the scattered ad-hoc parsers
-// (`mustard_config`, `git_flow::MustardConfig`, `read_mustard_tone`, …). See
+// (schema + IO + accessors). Replaces the scattered ad-hoc parsers (the
+// runtime accessors, the CLI writer, one reader per feature). See
 // `domain/config.rs`.
 pub use domain::config::{
     glob_matches, Amend, Commands, GitConfig, Injectable, Language, LanguageConfig,

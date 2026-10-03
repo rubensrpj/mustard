@@ -1292,7 +1292,7 @@ mod tests {
         assert_eq!(dispatch["ok"], json!(true), "{dispatch}");
         let mut delivered = false;
         for n in (1..=waves).filter(|n| !checked.contains(n)) {
-            std::fs::write(root.join(wave_file(n)), "fn one() {}\nfn dois() {}\n").unwrap();
+            std::fs::write(root.join(wave_file(n)), "fn one() { dois(); }\nfn dois() {}\n").unwrap();
             returned(root, spec, json!({"wave": n, "text": "Saiu.", "files": [wave_file(n)], "commit": "a soma sai"}));
             delivered = true;
         }
@@ -2730,7 +2730,7 @@ exit "${2:-0}"
         assert_eq!(dispatched["ok"], json!(true), "{dispatched}");
         assert!(dispatched["dispatch"].as_array().is_some_and(|sent| !sent.is_empty()), "{dispatched}");
 
-        std::fs::write(root.join(wave_file(1)), "fn one() {}\nfn dois() {}\n").unwrap();
+        std::fs::write(root.join(wave_file(1)), "fn one() { dois(); }\nfn dois() {}\n").unwrap();
         // A entrega responde pela decisão que o pedido da onda levou.
         returned(root, "x", json!({"wave": 1, "text": "Saiu.", "files": [wave_file(1)], "commit": "a soma sai",
             "agreed": [{"item": "MSTD-DEC-0001", "met": true}]}));
@@ -2796,7 +2796,7 @@ exit "${2:-0}"
         // Com a regra e a decisão sem dono, a onda sai na mesma rodada, como está.
         let dispatched = round(None);
         assert_eq!(dispatched["ok"], json!(true), "{dispatched}");
-        std::fs::write(root.join(wave_file(1)), "fn one() {}\nfn dois() {}\n").unwrap();
+        std::fs::write(root.join(wave_file(1)), "fn one() { dois(); }\nfn dois() {}\n").unwrap();
         returned(root, "x", json!({"wave": 1, "text": "Saiu.", "files": [wave_file(1)], "commit": "a soma sai"}));
         let back = round(None);
         assert_eq!(back["ok"], json!(true), "{back}");
@@ -2917,7 +2917,7 @@ exit "${2:-0}"
         let fix = round(None);
         let sent: Vec<u64> = fix["dispatch"].as_array().unwrap().iter().filter_map(|d| d["wave"].as_u64()).collect();
         assert_eq!(sent, vec![2], "{fix}");
-        std::fs::write(root.join(wave_file(2)), "fn one() {}\nfn tres() {}\n").unwrap();
+        std::fs::write(root.join(wave_file(2)), "fn one() { tres(); }\nfn tres() {}\n").unwrap();
         let line = json!({"wave": 2, "text": "Sem repetir a 1.", "files": [wave_file(2)], "commit": "a onda 2 sem repetição"});
         returned(root, "x", line);
         let back = round(None);
@@ -3014,7 +3014,7 @@ exit "${2:-0}"
         let fix = round(None);
         assert_eq!(waves_in(&fix, "dispatch"), vec![2], "{fix}");
         assert!(fix.get("reviews").is_none(), "{fix}");
-        std::fs::write(root.join(wave_file(2)), "fn one() {}\nfn tres() {}\n").unwrap();
+        std::fs::write(root.join(wave_file(2)), "fn one() { tres(); }\nfn tres() {}\n").unwrap();
         let line = json!({"wave": 2, "text": "Consertou.", "files": [wave_file(2)], "commit": "conserta a onda 2"});
         returned(root, "x", line);
         let back = round(None);
@@ -3035,7 +3035,7 @@ exit "${2:-0}"
         assert_eq!(refused_again["reason"], json!("wave-rejected"), "{refused_again}");
         let fix_again = round(None);
         assert_eq!(waves_in(&fix_again, "dispatch"), vec![2], "{fix_again}");
-        std::fs::write(root.join(wave_file(2)), "fn one() {}\nfn quatro() {}\n").unwrap();
+        std::fs::write(root.join(wave_file(2)), "fn one() { quatro(); }\nfn quatro() {}\n").unwrap();
         let line = json!({"wave": 2, "text": "Consertou de novo.", "files": [wave_file(2)], "commit": "conserta de novo"});
         returned(root, "x", line);
         assert_eq!(round(None)["ok"], json!(true));
@@ -3087,7 +3087,7 @@ exit "${2:-0}"
 
         // A onda 1 entrega o conserto, com um código diferente do que já
         // estava no disco.
-        std::fs::write(root.join(wave_file(1)), "fn one() {}\nfn tres() {}\n").unwrap();
+        std::fs::write(root.join(wave_file(1)), "fn one() { tres(); }\nfn tres() {}\n").unwrap();
         let line = json!({"wave": 1, "text": "Sem faltar o teste.", "files": [wave_file(1)], "commit": "conserta a onda 1"});
         returned(root, "x", line);
         let back = round(None);
@@ -3156,7 +3156,7 @@ exit "${2:-0}"
         let reject = json!({"final": true, "wave": 2, "result": "rejected", "text": "A onda 2 repete a 1."});
         assert_eq!(close(verdict_written(root, "x", reject))["reason"], json!("wave-rejected"));
         assert_eq!(round(None)["ok"], json!(true));
-        std::fs::write(root.join(wave_file(2)), "fn one() {}\nfn tres() {}\n").unwrap();
+        std::fs::write(root.join(wave_file(2)), "fn one() { tres(); }\nfn tres() {}\n").unwrap();
         returned(root, "x", json!({"wave": 2, "text": "Sem repetir a 1.", "files": [wave_file(2)], "commit": "a onda 2 sem repetir"}));
         assert_eq!(round(None)["ok"], json!(true));
 

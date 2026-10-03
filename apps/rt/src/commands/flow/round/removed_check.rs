@@ -40,7 +40,24 @@
 //!   inteira fora de teste e fora das linhas dele, pela mesma busca do resto
 //!   pelo nome, vai só como aviso: o texto pode ser um uso que o mapa não
 //!   ligou.
+//! - Posto sem uso: a declaração que está no mapa de depois e não está no de
+//!   antes (de mesmo nome, tipo e dono, no mesmo arquivo; o arquivo que o mapa
+//!   da base não tem é todo novo), no arquivo de uma onda, e que nenhum
+//!   trecho do programa usa. Teste chamando não conta como uso, como no
+//!   órfão, e vale o mesmo ponto de entrada livre, com o tipo que tem um
+//!   método de rota, o método que cumpre um contrato (a implementação de um
+//!   traço, ainda que o traço seja de fora do projeto) e o campo que o texto
+//!   ainda lê. A declaração já sem uso na base, que continua no mesmo
+//!   arquivo, fica de fora: não foi a onda que a pôs. O achado recusa quando
+//!   o nome não está escrito noutro lugar fora de teste e só avisa quando
+//!   está, pela mesma busca do órfão. O teste, de arquivo de teste ou do
+//!   trecho de teste de um arquivo do programa, cujo texto não cita nenhuma
+//!   outra declaração chamável do programa sai na mesma mensagem como teste
+//!   sem uso, quando o achado dela recusa: o teste só existe por ela. A
+//!   declaração com atributo ou decorador de teste em cima ([`test_gated`]) é
+//!   do teste e não entra.
 
+use std::cell::LazyCell;
 use std::collections::BTreeSet;
 use std::path::Path;
 
@@ -59,8 +76,8 @@ const CHANGE_LOGS: &[&str] = &["changelog", "changes", "history", "news", "relea
 /// também vale.
 const CHANGE_LOG_EXTENSIONS: &[&str] = &["md", "txt", "rst", "adoc"];
 
-/// Os achados dos restos e dos órfãos de cada onda de `maps`, procurando o
-/// texto em `root`, já com a junção no disco.
+/// Os achados dos restos, dos órfãos e do código novo sem uso de cada onda de
+/// `maps`, procurando o texto em `root`, já com a junção no disco.
 pub(super) fn findings(root: &Path, maps: &AfterWave, lang: Locale) -> Vec<Finding> {
     let declared: BTreeSet<&str> =
         maps.after.modules.iter().flat_map(|m| &m.declarations).map(|d| d.name.as_str()).collect();
@@ -98,41 +115,181 @@ pub(super) fn findings(root: &Path, maps: &AfterWave, lang: Locale) -> Vec<Findi
             }
         }
     }
-    out.extend(orphans(root, maps, &created, lang));
+    out.extend(dead_code(root, maps, &created, lang));
     out
 }
 
-/// As declarações que ficaram sem uso fora de teste porque uma onda tirou o
-/// último, cada uma com a onda que tirou. A que ainda tem o nome escrito
-/// fora de teste ([`cited_outside_tests`]) vai só como aviso: o texto pode
-/// ser um uso que o mapa não ligou.
-fn orphans(root: &Path, maps: &AfterWave, created: &[String], lang: Locale) -> Vec<Finding> {
+/// As declarações sem uso fora de teste que a onda deixou: a que perdeu o
+/// último uso porque a onda o tirou (órfã, com a onda que o tirou) e a que a
+/// onda pôs e nada usa (posta, com a onda dona do arquivo). A que ainda tem
+/// o nome escrito fora de teste ([`cited_outside_tests`]) vai só como aviso:
+/// o texto pode ser um uso que o mapa não ligou.
+fn dead_code(root: &Path, maps: &AfterWave, created: &[String], lang: Locale) -> Vec<Finding> {
+    let called = LazyCell::new(|| called_names(maps));
     let mut out = Vec::new();
     for module in maps.after.modules.iter().filter(|m| !is_test_path(&m.path) && !is_entry_file(&m.path, &m.language)) {
-        let Some(before) = maps.base.module(&module.path) else { continue };
+        let before = maps.base.module(&module.path);
         for decl in module.declarations.iter().filter(|decl| !in_test_lines(module, decl.line)) {
-            let routed = module.routes.iter().chain(&before.routes).any(|route| route.handler == decl.name);
-            let entry = decl.name == "main" || routed || !decl.implements.is_empty();
-            if entry || decl.used_by.iter().any(|site| from_program(&maps.after, site)) {
+            if entry_point(module, before, decl) || decl.used_by.iter().any(|site| from_program(&maps.after, site)) {
                 continue;
             }
-            let Some(old) = before.declarations.iter().find(|d| same_piece(d, decl)) else { continue };
-            let callers: Vec<&str> =
-                old.used_by.iter().filter(|site| from_program(&maps.base, site)).map(|site| site.file.as_str()).collect();
-            let wave = maps.changed.iter().find(|(_, files)| files.iter().any(|f| callers.contains(&f.as_str())));
-            let Some((wave, _)) = wave else { continue };
-            if member_read_remains(root, maps, module, decl, &callers) {
-                continue;
+            match before.and_then(|b| b.declarations.iter().find(|d| same_piece(d, decl))) {
+                Some(old) => out.extend(lost_last_use(root, maps, created, lang, (module, decl, old))),
+                None => out.extend(never_used(root, maps, created, lang, (module, decl), &called)),
             }
-            let text = translate("round.after_wave.orphan", lang)
-                .replace("{name}", &decl.name)
-                .replace("{file}", &module.path)
-                .replace("{line}", &decl.line.to_string());
-            let refuses = !cited_outside_tests(root, maps, created, module, decl);
-            out.push(Finding { wave: *wave, refuses, text });
         }
     }
     out
+}
+
+/// O ponto de entrada nunca é código sem uso: a função principal, a que
+/// atende uma rota do mapa, a que cumpre um contrato (a implementação de um
+/// traço ou de uma interface, chamada por quem registra o tipo) e o tipo que
+/// tem um método de rota, que o servidor instancia sozinho.
+fn entry_point(module: &MapModule, before: Option<&MapModule>, decl: &MapDecl) -> bool {
+    let routed = |d: &MapDecl| {
+        module.routes.iter().chain(before.into_iter().flat_map(|b| &b.routes)).any(|route| route.handler == d.name)
+    };
+    let owns_route = decl.members.iter().filter(|at| at.file == module.path).any(|at| {
+        module.declarations.iter().any(|d| d.name == at.name && u64::try_from(at.line) == Ok(d.line) && routed(d))
+    });
+    decl.name == "main" || routed(decl) || !decl.implements.is_empty() || !decl.contract.is_empty() || owns_route
+}
+
+/// O achado da declaração `decl` de `module` (a de antes é `old`) que perdeu
+/// o último uso fora de teste, com a onda que o tirou: a dona de um arquivo
+/// que a usava na base.
+fn lost_last_use(
+    root: &Path,
+    maps: &AfterWave,
+    created: &[String],
+    lang: Locale,
+    (module, decl, old): (&MapModule, &MapDecl, &MapDecl),
+) -> Option<Finding> {
+    let callers: Vec<&str> =
+        old.used_by.iter().filter(|site| from_program(&maps.base, site)).map(|site| site.file.as_str()).collect();
+    let wave = maps.changed.iter().find(|(_, files)| files.iter().any(|f| callers.contains(&f.as_str())))?.0;
+    if member_read_remains(root, maps, module, decl, &callers) {
+        return None;
+    }
+    let text = translate("round.after_wave.orphan", lang)
+        .replace("{name}", &decl.name)
+        .replace("{file}", &module.path)
+        .replace("{line}", &decl.line.to_string());
+    let refuses = !cited_outside_tests(maps, module, decl, &cited(root, &decl.name, created));
+    Some(Finding { wave, refuses, text })
+}
+
+/// Os achados da declaração `decl` de `module` que a onda pôs e nenhum
+/// trecho do programa usa: o dela e o de cada teste que só existe por ela
+/// ([`tests_only_for`]), todos do mesmo peso. A onda é a dona do arquivo; o
+/// arquivo que nenhuma onda mudou não é dela, e o campo que o texto ainda lê
+/// não conta ([`member_read_remains`]).
+fn never_used(
+    root: &Path,
+    maps: &AfterWave,
+    created: &[String],
+    lang: Locale,
+    (module, decl): (&MapModule, &MapDecl),
+    called: &BTreeSet<&str>,
+) -> Vec<Finding> {
+    let Some((wave, _)) = maps.changed.iter().find(|(_, files)| files.contains(&module.path)) else { return Vec::new() };
+    if test_gated(root, module, decl) || member_read_remains(root, maps, module, decl, &[]) {
+        return Vec::new();
+    }
+    let cites = cited(root, &decl.name, created);
+    let refuses = !cited_outside_tests(maps, module, decl, &cites);
+    let says = |key: &str, file: &str, line: u64| Finding {
+        wave: *wave,
+        refuses,
+        text: translate(key, lang)
+            .replace("{name}", &decl.name)
+            .replace("{file}", file)
+            .replace("{line}", &line.to_string()),
+    };
+    let tests = if refuses { tests_only_for(root, maps, decl, &cites, called) } else { BTreeSet::new() };
+    let mut out = vec![says("round.after_wave.unused", &module.path, decl.line)];
+    out.extend(tests.iter().map(|(file, line)| says("round.after_wave.unused_test", file, *line)));
+    out
+}
+
+/// Os tipos de declaração que um teste chama pelo nome: o que o mapa liga
+/// por chamada ou por construção.
+const CALLED_KINDS: &[&str] = &["function", "method", "class", "struct", "record", "enum_member", "constant", "const"];
+
+/// Os nomes das declarações chamáveis do programa no mapa de depois: as de
+/// fora de arquivo de teste e de fora dos trechos de teste.
+fn called_names(maps: &AfterWave) -> BTreeSet<&str> {
+    let program = maps.after.modules.iter().filter(|module| !is_test_path(&module.path));
+    program
+        .flat_map(|module| module.declarations.iter().filter(move |decl| !in_test_lines(module, decl.line)))
+        .filter(|decl| CALLED_KINDS.contains(&decl.kind.as_str()))
+        .map(|decl| decl.name.as_str())
+        .collect()
+}
+
+/// Os testes que só existem por `decl`: cada função de teste, de arquivo de
+/// teste ou de trecho de teste, que escreve o nome dela (`cites`) e não
+/// escreve o de nenhuma outra declaração chamável do programa (`called`),
+/// com o arquivo e a linha em que começa. O mapa não guarda a chamada escrita
+/// em trecho de teste, e por isso a leitura é pelo texto da função. O teste
+/// que também chama outra peça do programa não é só dela e fica de fora.
+fn tests_only_for(
+    root: &Path,
+    maps: &AfterWave,
+    decl: &MapDecl,
+    cites: &[(String, usize, String)],
+    called: &BTreeSet<&str>,
+) -> BTreeSet<(String, u64)> {
+    let mut tests = BTreeSet::new();
+    for (file, line, _) in cites {
+        let line = u64::try_from(*line).unwrap_or(u64::MAX);
+        let in_test = is_test_path(file) || maps.after.module(file).is_some_and(|module| in_test_lines(module, line));
+        if !in_test {
+            continue;
+        }
+        let Some((first, last)) = span_around(maps, file, line) else { continue };
+        let Ok(text) = std::fs::read_to_string(root.join(file)) else { continue };
+        let skip = usize::try_from(first.saturating_sub(1)).unwrap_or(usize::MAX);
+        let take = usize::try_from(last - first + 1).unwrap_or(usize::MAX);
+        let others = text.lines().skip(skip).take(take).any(|text| {
+            text.split(|c: char| !is_word_char(c)).any(|word| !word.is_empty() && word != decl.name && called.contains(word))
+        });
+        if !others {
+            tests.insert((file.clone(), first));
+        }
+    }
+    tests
+}
+
+/// As linhas da função ou do método de `file` que guarda a linha `line`, a
+/// mais interna; `None` quando nenhuma a guarda, e então não há teste a nomear.
+fn span_around(maps: &AfterWave, file: &str, line: u64) -> Option<(u64, u64)> {
+    let module = maps.after.module(file)?;
+    let around = module
+        .declarations
+        .iter()
+        .filter(|d| matches!(d.kind.as_str(), "function" | "method") && d.line <= line && line <= d.end_line.max(d.line))
+        .min_by_key(|d| d.end_line.max(d.line) - d.line)?;
+    Some((around.line, around.end_line.max(around.line)))
+}
+
+/// A declaração `decl` de `module` é código só do teste, ainda que o mapa a
+/// guarde como do programa: um atributo ou um decorador colado em cima dela
+/// cita teste (`#[cfg(test)]`, `#[cfg(all(test, unix))]`, `#[test]`,
+/// `[TestMethod]`, `@Test`). O scan só reconhece como trecho de teste o módulo
+/// com o atributo `#[cfg(test)]` exato, e a função de apoio ou o teste escrito
+/// fora dele chegaria aqui como código novo sem uso.
+fn test_gated(root: &Path, module: &MapModule, decl: &MapDecl) -> bool {
+    let Ok(text) = std::fs::read_to_string(root.join(&module.path)) else { return false };
+    let above = usize::try_from(decl.line.saturating_sub(1)).unwrap_or(0);
+    let lines: Vec<&str> = text.lines().take(above).collect();
+    lines
+        .iter()
+        .rev()
+        .map(|line| line.trim_start())
+        .take_while(|line| ["#[", "#![", "@", "[", "//"].iter().any(|start| line.starts_with(start)))
+        .any(|line| !line.starts_with("//") && line.to_lowercase().contains("test"))
 }
 
 /// Os tipos de declaração que se leem depois do objeto, sem chamada:
@@ -235,12 +392,12 @@ fn unrelated_code_line(maps: &AfterWave, removed: &[&MapDecl], file: &str, text:
 }
 
 /// O nome de `decl`, declarada em `module`, aparece como palavra inteira
-/// num arquivo que o git rastreia ou que a onda criou ([`cited`]), fora de
-/// arquivo de teste, fora dos trechos de teste de cada arquivo no mapa de
-/// depois e fora das linhas da própria declaração.
-fn cited_outside_tests(root: &Path, maps: &AfterWave, created: &[String], module: &MapModule, decl: &MapDecl) -> bool {
+/// num arquivo que o git rastreia ou que a onda criou (`cites`, de
+/// [`cited`]), fora de arquivo de teste, fora dos trechos de teste de cada
+/// arquivo no mapa de depois e fora das linhas da própria declaração.
+fn cited_outside_tests(maps: &AfterWave, module: &MapModule, decl: &MapDecl, cites: &[(String, usize, String)]) -> bool {
     let own = decl.line..=decl.end_line.max(decl.line);
-    cited(root, &decl.name, created).iter().any(|(file, line, _)| {
+    cites.iter().any(|(file, line, _)| {
         let line = u64::try_from(*line).unwrap_or(u64::MAX);
         let own_lines = *file == module.path && own.contains(&line);
         let test_block = maps.after.module(file).is_some_and(|site| in_test_lines(site, line));
@@ -597,12 +754,14 @@ mod tests {
     }
 
     #[test]
-    fn a_new_field_named_like_a_used_field_of_another_type_of_the_file_is_not_an_orphan() {
+    fn a_new_field_named_like_a_used_field_of_another_type_of_the_file_is_new_code_and_not_an_orphan() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         // Antes, só `Keeping` e `Finding` existem, com leitor; a onda mexe em
         // quem os lê. Depois, `Kept` nasce com campos de mesmo nome e sem
         // leitor no mapa, e a lista de tarefas ganha o `files` de outro tipo.
+        // Os campos novos são código novo sem uso, e nenhum deles é órfão do
+        // campo de mesmo nome que tinha leitor.
         let base = json!({"modules": [fields_module(
             "src/a.rs",
             &[
@@ -625,7 +784,14 @@ mod tests {
                 ("LeftTask", "files", 15, &[]),
             ],
         )]});
-        silent(&back(root, after));
+        let out = back(root, after);
+        assert_eq!(out["reason"], json!("round-after-wave"), "{out}");
+        let hint = out["hint"].as_str().unwrap_or_default();
+        for line in ["`wave` em `src/a.rs` linha 3", "`copy` em `src/a.rs` linha 4", "`files` em `src/a.rs` linha 15"] {
+            assert!(hint.contains(&format!("{line} é código novo sem uso fora de teste")), "{line}: {hint}");
+        }
+        assert!(!hint.contains("quem a chamava"), "no field is an orphan: {hint}");
+        assert!(!hint.contains("linha 5 ") && !hint.contains("linha 12 "), "the fields that kept their readers stay out: {hint}");
     }
 
     #[test]
@@ -671,15 +837,15 @@ mod tests {
     }
 
     #[test]
-    fn a_function_already_unused_before_the_wave_is_not_listed() {
+    fn a_function_unused_before_the_wave_still_stays_out() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        let map = json!({"modules": [
-            module("src/a.rs", &[("run_sum", 1, &[])]),
-            module("src/lib_sum.rs", &[("never_called", 5, &["tests/lib_sum_test.rs:3:checks"])]),
-        ]});
-        project(root, &[("src/lib_sum.rs", "fn never_called() {}\n")], &map);
-        silent(&back(root, map));
+        // A onda mexe em `src/lib_sum.rs`, e `never_called` já não tinha uso
+        // fora de teste antes dela: mudou de linha, e não foi a onda que a pôs.
+        let base = json!({"modules": [module("src/lib_sum.rs", &[("never_called", 5, &["tests/lib_sum_test.rs:3:checks"])])]});
+        project_at(root, "src/lib_sum.rs", &[("src/lib_sum.rs", "fn never_called() {}\n")], &base);
+        let after = json!({"modules": [module("src/lib_sum.rs", &[("never_called", 9, &["tests/lib_sum_test.rs:3:checks"])])]});
+        silent(&back_at(root, "src/lib_sum.rs", after));
     }
 
     #[test]
@@ -902,6 +1068,202 @@ mod tests {
             let hint = warned.iter().find(|w| w["reason"] == json!("round-after-wave-warnings")).map(|w| w["hint"].to_string());
             let hint = hint.unwrap_or_else(|| panic!("{language}: the warning: {out}"));
             assert!(hint.contains(&format!("`{name}` em `{file}` linha 1 ficou sem uso fora de teste")), "{language}: {hint}");
+        }
+    }
+
+    /// O texto de `src/a.rs` nos testes do código novo: `run_sum` na linha 1,
+    /// `compute_total` nas linhas 5 a 7 e o trecho de teste nas linhas 10 a
+    /// 30, com `checks_total` (linha 15) que só chama `compute_total` e
+    /// `checks_both` (linha 19) que chama também `run_sum`.
+    fn new_total_text() -> String {
+        let mut lines = vec![""; 30];
+        lines[0] = "fn run_sum() {}";
+        lines[4] = "fn compute_total() {";
+        lines[6] = "}";
+        lines[9] = "#[cfg(test)]";
+        lines[10] = "mod tests {";
+        lines[14] = "    fn checks_total() { assert_eq!(super::compute_total(), 3); }";
+        lines[18] = "    fn checks_both() { assert_eq!(super::compute_total(), run_sum()); }";
+        lines[29] = "}";
+        lines.join("\n") + "\n"
+    }
+
+    /// O mapa de `src/a.rs` com `compute_total` já posta pela onda (a base
+    /// só tem `run_sum`) e o trecho de teste nas linhas 10 a 30; `used` são
+    /// os usos de `compute_total` no mapa.
+    fn with_new_total(used: &[&str]) -> Value {
+        let mut file = module("src/a.rs", &[
+            ("run_sum", 1, &[]),
+            ("compute_total", 5, used),
+            ("checks_total", 15, &[]),
+            ("checks_both", 19, &[]),
+        ]);
+        file["test_lines"] = json!([[10, 30]]);
+        json!({"modules": [file]})
+    }
+
+    fn base_with_run_sum_only() -> Value {
+        json!({"modules": [module("src/a.rs", &[("run_sum", 1, &[])])]})
+    }
+
+    #[test]
+    fn a_new_function_only_a_test_calls_is_refused() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let text = new_total_text();
+        project(root, &[("src/a.rs", text.as_str())], &base_with_run_sum_only());
+        let head = git_text(root, &["rev-parse", "HEAD"]);
+        let out = back(root, with_new_total(&[]));
+        assert_eq!(out["ok"], json!(false), "{out}");
+        assert_eq!(out["reason"], json!("round-after-wave"), "{out}");
+        let hint = out["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains("`compute_total` em `src/a.rs` linha 5 é código novo sem uso fora de teste"), "{hint}");
+        assert!(!hint.contains("quem a chamava"), "it is new code, not an orphan: {hint}");
+        assert!(!hint.contains("`run_sum` em"), "the function that was already there stays out: {hint}");
+        assert_eq!(git_text(root, &["rev-parse", "HEAD"]), head, "nothing committed: {out}");
+    }
+
+    #[test]
+    fn a_test_that_only_calls_a_new_unused_function_is_listed_with_it() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let text = new_total_text();
+        project(root, &[("src/a.rs", text.as_str())], &base_with_run_sum_only());
+        let out = back(root, with_new_total(&[]));
+        let hint = out["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains("`src/a.rs` linha 15 é um teste que só chama `compute_total`"), "{hint}");
+        assert!(!hint.contains("linha 19"), "the test that also calls `run_sum` is not only for it: {hint}");
+    }
+
+    #[test]
+    fn a_test_file_that_only_calls_a_new_unused_function_is_listed_with_it() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let files = [("src/a.rs", "fn run_sum() {}\n\n\n\nfn compute_total() {}\n"), ("tests/total_test.rs", "fn checks() { compute_total(); }\n")];
+        let tested = module("tests/total_test.rs", &[("checks", 1, &[])]);
+        let after = |used: &[&str]| json!({"modules": [module("src/a.rs", &[("run_sum", 1, &[]), ("compute_total", 5, used)]), tested]});
+        project(root, &files, &base_with_run_sum_only());
+        let out = back(root, after(&["tests/total_test.rs:1:checks"]));
+        assert_eq!(out["reason"], json!("round-after-wave"), "{out}");
+        let hint = out["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains("`compute_total` em `src/a.rs` linha 5 é código novo sem uso fora de teste"), "{hint}");
+        assert!(hint.contains("`tests/total_test.rs` linha 1 é um teste que só chama `compute_total`"), "{hint}");
+    }
+
+    #[test]
+    fn a_new_function_with_a_program_caller_passes() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let text = new_total_text();
+        project(root, &[("src/a.rs", text.as_str())], &base_with_run_sum_only());
+        silent(&back(root, with_new_total(&["src/a.rs:2:run_sum"])));
+    }
+
+    #[test]
+    fn a_new_function_in_a_new_file_only_a_test_calls_is_refused() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        // O arquivo da onda não está no mapa da base: o que ele declara é novo.
+        let files = [("src/a.rs", "fn run_sum() {}\n"), ("src/lib_sum.rs", "\n\n\n\nfn compute_total() {}\n")];
+        project_at(root, "src/lib_sum.rs", &files, &base_with_run_sum_only());
+        let after = json!({"modules": [
+            module("src/a.rs", &[("run_sum", 1, &[])]),
+            module("src/lib_sum.rs", &[("compute_total", 5, &["tests/lib_sum_test.rs:3:checks"])]),
+        ]});
+        let out = back_at(root, "src/lib_sum.rs", after);
+        assert_eq!(out["reason"], json!("round-after-wave"), "{out}");
+        let hint = out["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains("`compute_total` em `src/lib_sum.rs` linha 5 é código novo sem uso fora de teste"), "{hint}");
+    }
+
+    #[test]
+    fn a_new_function_still_cited_outside_tests_only_warns() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        // A função entregue como valor a outra, sem ser chamada ali, é uso que o
+        // mapa não liga.
+        let go = "use crate::a as calc;\n\nfn go() -> Vec<u32> {\n    [1, 2].into_iter().map(calc::compute_total).collect()\n}\n";
+        let text = new_total_text();
+        project(root, &[("src/a.rs", text.as_str()), ("src/b.rs", go)], &base_with_run_sum_only());
+        let out = back(root, with_new_total(&[]));
+        assert_eq!(out["ok"], json!(true), "{out}");
+        let warned = out["warnings"].as_array().cloned().unwrap_or_default();
+        let hint = warned.iter().find(|w| w["reason"] == json!("round-after-wave-warnings")).map(|w| w["hint"].to_string());
+        let hint = hint.unwrap_or_else(|| panic!("the warning: {out}"));
+        assert!(hint.contains("`compute_total` em `src/a.rs` linha 5 é código novo sem uso fora de teste"), "{hint}");
+        assert!(!hint.contains("é um teste que só chama"), "the name may be a use, so no test is called useless: {hint}");
+    }
+
+    #[test]
+    fn a_new_helper_or_test_gated_to_tests_is_not_unused() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        // O scan só guarda como trecho de teste o módulo com `#[cfg(test)]`
+        // exato: o apoio e o teste com o atributo em cima chegam como código.
+        let text = "fn run_sum() {}\n#[cfg(test)]\nfn seed_value() {}\n/// Um teste.\n#[test]\nfn sums_it() {}\n";
+        let after = json!({"modules": [module("src/a.rs", &[("run_sum", 1, &[]), ("seed_value", 3, &[]), ("sums_it", 6, &[])])]});
+        project(root, &[("src/a.rs", text)], &base_with_run_sum_only());
+        silent(&back(root, after));
+    }
+
+    #[test]
+    fn a_new_entry_point_or_route_handler_is_not_unused() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        // Cada declaração nova do arquivo não tem uso nenhum e é ponto de
+        // entrada: a função principal, o método de rota, o tipo que o tem, o
+        // método que cumpre um contrato e a implementação de um traço de fora.
+        let decl = |kind: &str, name: &str, line: u64| json!({"kind": kind, "name": name, "line": line, "end_line": line + 1});
+        let mut controller = decl("class", "OrdersController", 3);
+        controller["members"] = json!(["src/routes.rs:4:list_orders"]);
+        let mut handler = decl("method", "list_orders", 4);
+        handler["owner"] = json!(["OrdersController"]);
+        let mut fulfils = decl("method", "handle", 7);
+        fulfils["implements"] = json!(["src/ports.rs:2:handle"]);
+        let mut shows = decl("method", "fmt", 10);
+        shows["contract"] = json!(["Display"]);
+        let mut routes = json!({"path": "src/routes.rs", "language": "rust", "declarations": [
+            decl("function", "main", 1), controller, handler, fulfils, shows,
+        ]});
+        routes["routes"] = json!([{"method": "GET", "path": "/orders", "handler": "list_orders", "line": 4, "called_by": []}]);
+        project_at(root, "src/routes.rs", &[("src/routes.rs", "fn main() {}\n")], &base_with_run_sum_only());
+        silent(&back_at(root, "src/routes.rs", json!({"modules": [routes]})));
+    }
+
+    #[test]
+    fn a_new_field_read_by_text_is_not_unused() {
+        // O campo novo `comments`, lido em `walked.comments` depois de uma
+        // variável de tipo inferido, que o mapa de depois não liga a ele.
+        for (language, file, _, kind, name) in MEMBERS {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            let text = format!(
+                "struct Walked {{}}\n\nfn walk() {{\n    let walked = Walked::of(root);\n    let n = walked.{name}.len();\n}}\n"
+            );
+            let walked = json!({"kind": "struct", "name": "Walked", "line": 1, "end_line": 1});
+            let before = json!({"modules": [{"path": file, "language": language, "declarations": [walked.clone()]}]});
+            project_at(root, file, &[(file, text.as_str())], &before);
+            let member = json!({"kind": kind, "name": name, "line": 2, "end_line": 2, "owner": ["Walked"]});
+            let after = json!({"modules": [{"path": file, "language": language, "declarations": [walked, member]}]});
+            silent(&back_at(root, file, after));
+        }
+    }
+
+    #[test]
+    fn a_new_field_no_text_reads_is_unused() {
+        for (language, file, _, kind, name) in MEMBERS {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            let text = format!("struct Walked {{}}\n\nfn walk() {{\n    let n = walked.{name}_total + x{name};\n}}\n");
+            let walked = json!({"kind": "struct", "name": "Walked", "line": 1, "end_line": 1});
+            let before = json!({"modules": [{"path": file, "language": language, "declarations": [walked.clone()]}]});
+            project_at(root, file, &[(file, text.as_str())], &before);
+            let member = json!({"kind": kind, "name": name, "line": 2, "end_line": 2, "owner": ["Walked"]});
+            let after = json!({"modules": [{"path": file, "language": language, "declarations": [walked, member]}]});
+            let out = back_at(root, file, after);
+            assert_eq!(out["reason"], json!("round-after-wave"), "{language}: {out}");
+            let hint = out["hint"].as_str().unwrap_or_default();
+            assert!(hint.contains(&format!("`{name}` em `{file}` linha 2 é código novo sem uso fora de teste")), "{language}: {hint}");
         }
     }
 }

@@ -29,7 +29,8 @@ use super::stops::{stopped_waves, waves_stuck};
 use super::usage::Caller;
 use super::{can_run, RoundOpts, DONE_STEP};
 use crate::commands::spec_events::write::record;
-use crate::shared::jev::Board;
+use crate::shared::jev::{Board, WavesJev};
+use crate::shared::search_door::first_warning;
 use crate::shared::spec_state::{checkout, DiskSpecState};
 
 /// Por que a rodada não correu.
@@ -624,7 +625,10 @@ pub(super) fn run_entered_round(
     let locked = store::read(&path)
         .map_err(RoundRefusal::Refused)?
         .ok_or_else(|| RoundRefusal::Refused(Refusal::NoSpecFile { spec: spec.clone() }))?;
-    let jev = crate::shared::jev::for_waves(root);
+    let WavesJev { filter: jev, key_in_git } = crate::shared::jev::for_waves(root);
+    if key_in_git && first_warning(root, session, "round.key_in_git") {
+        warnings.push(json!({ "reason": "key-in-git", "hint": translate("map.round.key_in_git", lang) }));
+    }
     let judge = jev.as_ref().map(|jev| move |board: &Board| jev.judge_backlog(board));
     dispatch_backlog(
         &opts.root,
@@ -1458,6 +1462,73 @@ mod tests {
             let out = round_in_session(root, Some("sessao-3"));
             assert_eq!(out["dispatch"].as_array().map(Vec::len), Some(1), "{config}: {out}");
             assert!(bad_setting_warnings(&out).is_empty(), "{config}: {out}");
+        }
+    }
+
+    /// Os avisos da chave do `mustard.json` que o git guarda, na resposta da
+    /// rodada.
+    fn key_in_git_warnings(out: &Value) -> Vec<Value> {
+        let all = out["warnings"].as_array().cloned().unwrap_or_default();
+        all.into_iter().filter(|w| w["reason"] == json!("key-in-git")).collect()
+    }
+
+    /// Uma obra aprovada em que o `mustard.json` traz `config`, com o git
+    /// guardando o arquivo, como o repositório de teste o guarda.
+    fn work_with_the_project_file(root: &Path, config: &str) {
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        std::fs::write(root.join("mustard.json"), config).unwrap();
+    }
+
+    /// A única chave do Jev está no `mustard.json` que o git guarda: ela não
+    /// vale, a rodada monta as ondas pelos arquivos e avisa, uma vez só na
+    /// sessão, com o texto no idioma do projeto e sem a chave. Sem sessão
+    /// conhecida, avisa sempre. Sem chave, com a chave fora do git ou com o
+    /// Jev desligado em `search.filter`, nenhum aviso.
+    #[test]
+    fn the_round_warns_once_per_session_when_the_only_jev_key_is_in_the_file_git_tracks() {
+        const SECRET: &str = "sk-secret-value";
+        for (language, lang) in [("pt-BR", Locale::PtBr), ("en-US", Locale::EnUs)] {
+            let config = format!(r#"{{"language": {{"text": "{language}"}}, "jev": {{"key": "{SECRET}"}}}}"#);
+
+            // A primeira rodada da sessão avisa e deixa a marca; a segunda, na
+            // mesma sessão, cala.
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            work_with_the_project_file(root, &config);
+            let out = round_in_session(root, Some("sessao-1"));
+            assert_eq!(out["ok"], json!(true), "{language}: {out}");
+            let warned = key_in_git_warnings(&out);
+            assert_eq!(warned.len(), 1, "{language}: {out}");
+            let hint = warned[0]["hint"].as_str().unwrap_or_default();
+            assert_eq!(hint, translate("map.round.key_in_git", lang), "{language}");
+            assert!(!out.to_string().contains(SECRET), "{language}: the key never reaches the answer");
+            assert!(root.join(".claude/.session/sessao-1/warned-map-round.key_in_git").is_file(), "{language}: the mark");
+            let again = round_in_session(root, Some("sessao-1"));
+            assert!(key_in_git_warnings(&again).is_empty(), "{language}: one warning per session: {again}");
+            let other = round_in_session(root, Some("sessao-2"));
+            assert_eq!(key_in_git_warnings(&other).len(), 1, "{language}: another session warns: {other}");
+
+            // Sem sessão conhecida, avisa: calar a chave que não vale é pior.
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            work_with_the_project_file(root, &config);
+            assert_eq!(key_in_git_warnings(&round_in_session(root, None)).len(), 1, "{language}");
+        }
+
+        // Nada a avisar: sem chave, com a chave num arquivo que o git não
+        // guarda e com o Jev desligado.
+        let tracked = format!(r#"{{"jev": {{"key": "{SECRET}"}}}}"#);
+        let off = format!(r#"{{"search": {{"filter": "none"}}, "jev": {{"key": "{SECRET}"}}}}"#);
+        for (name, config, untracked) in [("no key", "{}", false), ("key outside git", &*tracked, true), ("filter off", &*off, false)] {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            work_with_the_project_file(root, config);
+            if untracked {
+                git_at(root, &["rm", "--cached", "-q", "mustard.json"]);
+            }
+            let out = round_in_session(root, Some("sessao-3"));
+            assert_eq!(out["ok"], json!(true), "{name}: {out}");
+            assert!(key_in_git_warnings(&out).is_empty(), "{name}: {out}");
         }
     }
 

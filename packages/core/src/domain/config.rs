@@ -3,11 +3,10 @@
 //! ## Why this module exists
 //!
 //! Before it, the project config was read and written through a scatter of
-//! ad-hoc parsers: `apps/rt/src/util/mustard_config.rs` (accessors, camelCase,
-//! root), `apps/cli/.../git_flow.rs::MustardConfig` (the *writer*, snake_case,
-//! partial), `spec_draft::read_mustard_tone`, `close_gate::read_mustard_commands`,
-//! `i18n::project_locale` (reading `.claude/` hard-coded), plus a dozen inline
-//! `serde_json::Value` peeks. Three failures followed: a **divergent schema**
+//! ad-hoc parsers: an accessor module in the runtime (camelCase, root), a
+//! partial writer in the CLI (snake_case), one reader per feature (the tone of
+//! the spec, the gate commands), a locale reader with `.claude/` hard-coded,
+//! plus a dozen inline `serde_json::Value` peeks. Three failures followed: a **divergent schema**
 //! (writer snake_case vs readers camelCase), a **split location** (`.claude/`
 //! vs root), and **no single owner** of the file.
 //!
@@ -27,7 +26,7 @@
 //! missing, unreadable, or malformed file yields [`ProjectConfig::default`] —
 //! the gates then stand on their agnostic fallbacks rather than being blocked
 //! by a config typo. Accessors normalise (trim, dotted-extension, lowercase)
-//! exactly as the legacy `mustard_config` helpers did, so gate behaviour is
+//! exactly as the legacy accessors did, so gate behaviour is
 //! preserved.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -1054,7 +1053,7 @@ fn non_blank(raw: Option<&str>) -> Option<String> {
 
 /// Test whether `pattern` (lowercased) matches `haystack` (lowercased). `*` is a
 /// wildcard for "any run of characters"; a pattern with no `*` is a plain
-/// substring test. Moved here from `mustard_config` — it is pure domain logic.
+/// substring test. Moved here from the legacy accessors — it is pure domain logic.
 #[must_use]
 pub fn glob_matches(pattern: &str, haystack: &str) -> bool {
     if !pattern.contains('*') {

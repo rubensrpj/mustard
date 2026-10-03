@@ -654,7 +654,7 @@ fn a_wave_that_still_builds_commits_the_undeclared_file_and_one_that_breaks_the_
     // Onda 1: muda o arquivo declarado e um outro que a entrega não cita; o
     // repositório continua compilando com o Makefile que já está lá.
     std::fs::write(copy(1).join("a1.rs"), "fn one() {}\n// muda\n").expect("a1 muda");
-    std::fs::write(copy(1).join("extra.rs"), "fn extra() {}\n").expect("extra");
+    std::fs::write(copy(1).join("extra.rs"), "fn main() {}\n").expect("extra");
     read_request(root, 1);
     write(root, "delivered", &json!({"wave": 1, "text": "Saiu.", "files": ["a1.rs"], "commit": "a1 sai"}));
     let out = rt(root, &["round", "--spec", "teste"]).output().expect("round 1");
@@ -664,7 +664,7 @@ fn a_wave_that_still_builds_commits_the_undeclared_file_and_one_that_breaks_the_
     assert!(body["commit"]["sha"].as_str().is_some(), "{body}");
     assert_eq!(
         std::fs::read_to_string(root.join("extra.rs")).expect("o arquivo nao citado"),
-        "fn extra() {}\n",
+        "fn main() {}\n",
         "o arquivo que a onda não citou entra no commit quando o repositório compila"
     );
     let hint = mustard_core::platform::i18n::translate("round.files_diverged", mustard_core::platform::i18n::Locale::PtBr)

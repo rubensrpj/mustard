@@ -666,6 +666,22 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "`{name}` in `{file}` line {line} lost its last use outside tests, because the wave removed its \
              caller. Remove the declaration and the tests that only cover it."
         }
+        ("round.after_wave.unused", Locale::PtBr) => {
+            "`{name}` em `{file}` linha {line} é código novo sem uso fora de teste. Dê a ele um uso no \
+             programa, ou tire a declaração e o teste só dela."
+        }
+        ("round.after_wave.unused", Locale::EnUs) => {
+            "`{name}` in `{file}` line {line} is new code with no use outside tests. Give it a use in the \
+             program, or remove the declaration and the tests that only cover it."
+        }
+        ("round.after_wave.unused_test", Locale::PtBr) => {
+            "`{file}` linha {line} é um teste que só chama `{name}`, código novo sem uso fora de teste. \
+             Tire o teste junto com ela."
+        }
+        ("round.after_wave.unused_test", Locale::EnUs) => {
+            "`{file}` line {line} is a test that only calls `{name}`, new code with no use outside tests. \
+             Remove the test along with it."
+        }
         ("round.criterion_proof_failed", Locale::PtBr) => {
             "A verificação do critério {code} não executou ou não passou, e a rodada não comitou nada: \
              `{command}` — {output}"
@@ -1702,8 +1718,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            206,
-            0x4701_233f_299f_a5c6,
+            208,
+            0xa622_b321_e985_901e,
         );
     }
 
@@ -1897,6 +1913,8 @@ mod tests {
             ("round.after_wave.cycle", &["{file}", "{line}", "{target}"][..]),
             ("round.after_wave.leftover", &["{file}", "{line}", "{name}", "{from}"][..]),
             ("round.after_wave.orphan", &["{file}", "{line}", "{name}"][..]),
+            ("round.after_wave.unused", &["{file}", "{line}", "{name}"][..]),
+            ("round.after_wave.unused_test", &["{file}", "{line}", "{name}"][..]),
             ("round.criterion_proof_failed", &["{code}", "{command}", "{output}"][..]),
             ("round.criterion_ran_no_test", &["{code}", "{command}", "{count}"][..]),
             ("round.criterion_missing_test", &["{code}", "{name}"][..]),
@@ -2142,6 +2160,8 @@ mod tests {
             "round.after_wave.cycle",
             "round.after_wave.leftover",
             "round.after_wave.orphan",
+            "round.after_wave.unused",
+            "round.after_wave.unused_test",
         ];
         let words = [
             ("{waves}", "3"),

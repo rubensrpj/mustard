@@ -54,12 +54,12 @@ const FLAG_WHITELIST: &[(&str, &str, &str)] = &[
     (
         "map",
         "intent",
-        "hidden alias of the search measurement (the ruler and the install lab script); the search teaches the text of Grep",
+        "hidden alias of the search measurement (the ruler); the search teaches the text of Grep",
     ),
     (
         "map",
         "query",
-        "hidden alias of the search measurement (the ruler and the install lab script); the search teaches the text of Grep",
+        "hidden alias of the search measurement (the ruler); the search teaches the text of Grep",
     ),
     (
         "map",

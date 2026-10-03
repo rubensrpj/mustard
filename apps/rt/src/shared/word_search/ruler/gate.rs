@@ -146,8 +146,9 @@ fn check_map(db: &Path, expected: &str) -> Result<MapProof> {
     if expected.trim().is_empty() {
         return Err(Error::check_failed("o scan compilado não disse a marca esperada: não há com que conferir o mapa"));
     }
-    let marks = project_map::read_marks_at(db)
-        .map_err(|refusal| Error::check_failed(format!("o mapa {} não abriu ({})", db.display(), refusal.reason())))?;
+    let marks = project_map::read_state_at(db)
+        .map_err(|refusal| Error::check_failed(format!("o mapa {} não abriu ({})", db.display(), refusal.reason())))?
+        .marks;
     for block in &BLOCKS {
         let name = block.name();
         match marks.get(name).map(String::as_str) {

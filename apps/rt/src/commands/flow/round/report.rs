@@ -1327,7 +1327,8 @@ mod tests {
         // Caminho absoluto dentro da própria cópia da onda: vira caminho
         // relativo ao repositório, e o conteúdo dela entra no principal.
         let copy = slot_of(root, 2);
-        std::fs::write(copy.join("src/b.rs"), "fn dois() {}\n// A dobra saiu.\n").unwrap();
+        std::fs::write(copy.join("src/b.rs"), "fn main() {}
+// A dobra saiu.\n").unwrap();
         let abs = copy.join("src/b.rs").to_string_lossy().replace('\\', "/");
         let two = json!({"wave": 2, "text": "A dobra saiu.", "files": [abs], "commit": "a onda 2 saiu"});
         assert_eq!(returned(root, two)["ok"], json!(true));
@@ -1424,7 +1425,7 @@ mod tests {
         // commit, mesmo sem citar arquivo nenhum na entrega: a volta fica de
         // fora, com o aviso, e segura só a onda dela.
         let copy = slot_of(root, 2);
-        std::fs::write(copy.join("src/b.rs"), "fn one() {}\nfn dois() {}\n").unwrap();
+        std::fs::write(copy.join("src/b.rs"), "fn one() { dois(); }\nfn dois() {}\n").unwrap();
         let hidden = json!({"wave": 2, "text": "Mexi no arquivo e não contei."});
         assert_eq!(returned(root, hidden)["ok"], json!(true));
         let held = round(root, "x", None);
@@ -1433,7 +1434,7 @@ mod tests {
         assert_eq!(warned.map(|w| w["reason"].clone()), Some(json!("round-return-needs-commit")), "{held}");
         assert_eq!(delivered_count(root), 1, "nada dela foi gravado: {held}");
         assert_eq!(git_text(root, &["rev-parse", "HEAD"]), head_before, "nada foi comitado: {held}");
-        assert_eq!(std::fs::read_to_string(copy.join("src/b.rs")).unwrap(), "fn one() {}\nfn dois() {}\n", "a cópia fica");
+        assert_eq!(std::fs::read_to_string(copy.join("src/b.rs")).unwrap(), "fn one() { dois(); }\nfn dois() {}\n", "a cópia fica");
     }
 
     /// Uma onda que volta com pedido de replanejamento e sem arquivo nenhum
@@ -1528,7 +1529,7 @@ mod tests {
             }
             assert!(!taught.contains("<DELIVERED>") && !taught.contains("<VERDICT>"), "{taught}");
 
-            std::fs::write(root.join("src/a.rs"), "fn one() {}\nfn sum() {}\n").unwrap();
+            std::fs::write(root.join("src/a.rs"), "fn one() { sum(); }\nfn sum() {}\n").unwrap();
             let (wave_text, review_text) = mustard_core::agent_texts(lang)
                 .iter()
                 .fold((String::new(), String::new()), |(w, r), (name, body)| match *name {
@@ -1799,7 +1800,8 @@ mod tests {
         let log = store::read(&path).unwrap().unwrap();
         let crit = log.visible().into_iter().find(|e| e.event_type == "criterion").unwrap().id;
         let said = log.visible().into_iter().find(|e| e.event_type == "message").unwrap().id;
-        std::fs::write(root.join("src/b.rs"), "fn dois() {}\n").unwrap();
+        std::fs::write(root.join("src/b.rs"), "fn main() {}
+").unwrap();
         let loose = id_of(&write(
             root,
             "x",
@@ -1984,7 +1986,7 @@ mod tests {
 
         // Cada agente trabalha na sua cópia.
         std::fs::write(copy(1).join("src/a.rs"), "fn one() {}\n// onda 1\n").unwrap();
-        std::fs::write(copy(1).join("src/novo.rs"), "fn novo() {}\n").unwrap();
+        std::fs::write(copy(1).join("src/novo.rs"), "fn main() {}\n").unwrap();
         std::fs::write(copy(2).join("src/a.rs"), "fn one() {}\n// onda 2\n").unwrap();
         let spec_lines = || std::fs::read_to_string(store::spec_file(root, "x").unwrap()).unwrap().lines().count();
         let commits_of = |wave: u64| {
@@ -1998,7 +2000,7 @@ mod tests {
         let went = round(root, "x", None);
         assert_eq!(went["ok"], json!(true), "{went}");
         assert_eq!(std::fs::read_to_string(root.join("src/a.rs")).unwrap(), "fn one() {}\n// onda 1\n");
-        assert_eq!(std::fs::read_to_string(root.join("src/novo.rs")).unwrap(), "fn novo() {}\n");
+        assert_eq!(std::fs::read_to_string(root.join("src/novo.rs")).unwrap(), "fn main() {}\n");
         assert_eq!(last_commit(root).0, "feat(onda-1): a onda 1 sai");
         let shown_files = Command::new("git").args(["show", "--name-only", "--format=", "HEAD"]).current_dir(root).output();
         let shown_files = String::from_utf8_lossy(&shown_files.unwrap().stdout).to_string();
@@ -2324,7 +2326,7 @@ mod tests {
         assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1, 2]);
         let copy = |wave: u64| slot_of(root, wave);
         std::fs::write(copy(1).join("src/a.rs"), "fn one() {}\n// onda 1\n").unwrap();
-        std::fs::write(copy(1).join("src/novo.rs"), "fn novo() {}\n").unwrap();
+        std::fs::write(copy(1).join("src/novo.rs"), "fn main() {}\n").unwrap();
         std::fs::write(copy(2).join("src/b.rs"), "fn one() {}\n// onda 2\n").unwrap();
 
         // A cada commit, o gancho anota que rodou e o que está preparado no
@@ -2406,7 +2408,7 @@ mod tests {
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         assert!(waves_to_redo(&log).contains(&1), "the rejected wave waits in the queue");
 
-        std::fs::write(root.join("src/b.rs"), "fn one() {}\nfn conserto() {}\n").unwrap();
+        std::fs::write(root.join("src/b.rs"), "fn one() { conserto(); }\nfn conserto() {}\n").unwrap();
         let fix = json!({"wave": 2, "text": "Consertei a onda 1.", "files": ["src/b.rs"],
             "commit": "o commit sai do resumo", "fixes": [1]});
         assert_eq!(returned(root, fix)["ok"], json!(true));
@@ -3655,7 +3657,10 @@ mod tests {
         // As mesmas duas provas escritas como comando passam, e o critério
         // fica com uma linha de comando só. O comando junto roda antes do
         // commit, e por isso cita testes que o projeto tem.
-        std::fs::write(root.join("src/a.rs"), "fn sum_comes_out_right() {}\nfn double_comes_out_right() {}\n").unwrap();
+        std::fs::write(root.join("src/a.rs"), "fn sum_comes_out_right() {}
+fn double_comes_out_right() {}
+fn main() { sum_comes_out_right(); double_comes_out_right(); }
+").unwrap();
         let commands = body(json!([
             {"criterion": "MSTD-CRIT-0001", "proof": "echo running 1 test sum_comes_out_right"},
             {"criterion": "MSTD-CRIT-0001", "proof": "echo running 1 test double_comes_out_right"},
@@ -3814,7 +3819,9 @@ mod tests {
 
         // O teste passa a ter o nome novo: o antigo não existe mais em
         // arquivo nenhum do projeto.
-        std::fs::write(root.join("src/a.rs"), "fn sum_by_the_new_name() {}\n").unwrap();
+        std::fs::write(root.join("src/a.rs"), "fn sum_by_the_new_name() {}
+fn main() { sum_by_the_new_name(); }
+").unwrap();
         let renamed = "echo running 1 test sum_by_the_new_name";
         let body = json!({"wave": 1, "text": "O teste mudou de nome.", "files": ["src/a.rs"],
             "commit": "o teste muda de nome", "proofs": [{"criterion": code, "proof": renamed}]});
@@ -4468,8 +4475,10 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         std::fs::create_dir_all(root.join("src")).unwrap();
-        std::fs::write(root.join("src/commit.rs"), "fn tres() {}\n").unwrap();
-        std::fs::write(root.join("src/c.rs"), "fn quatro() {}\n").unwrap();
+        std::fs::write(root.join("src/commit.rs"), "fn main() {}
+").unwrap();
+        std::fs::write(root.join("src/c.rs"), "fn main() {}
+").unwrap();
         approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[])]);
         git_at(root, &["checkout", "-q", "-b", "feature/x"]);
         assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1, 2]);
@@ -4547,7 +4556,8 @@ mod tests {
 
         // A onda 2 volta na rodada seguinte com a mesma sobra em
         // `src/commit.rs`, uma que cita também `src/c.rs` e uma sem arquivo.
-        std::fs::write(root.join("src/b.rs"), "fn dois() {}\n").unwrap();
+        std::fs::write(root.join("src/b.rs"), "fn main() {}
+").unwrap();
         let wider = "Sem o índice, `src/commit.rs` e `src/c.rs` param.";
         let wrote = returned(root, json!({"wave": 2, "text": "O dois saiu.", "files": ["src/b.rs"],
             "commit": "o dois sai", "leftovers": [
@@ -4668,7 +4678,8 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         std::fs::create_dir_all(root.join("src")).unwrap();
-        std::fs::write(root.join("src/c.rs"), "fn tres() {}\n").unwrap();
+        std::fs::write(root.join("src/c.rs"), "fn main() {}
+").unwrap();
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
         git_at(root, &["checkout", "-q", "-b", "feature/x"]);
         round(root, "x", None);
@@ -5322,7 +5333,7 @@ mod tests {
         std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":1}"#).unwrap();
         assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1]);
         std::fs::write(slot_of(root, 1).join("src/a.rs"), "fn one() {}\n// a onda 1 mudou\n").unwrap();
-        std::fs::write(slot_of(root, 1).join("src/novo.rs"), "fn novo() {}\n").unwrap();
+        std::fs::write(slot_of(root, 1).join("src/novo.rs"), "fn main() {}\n").unwrap();
         let done = json!({"wave": 1, "text": "Saiu.", "files": ["src/a.rs", "src/novo.rs"], "commit": "a onda 1 saiu"});
         assert_eq!(returned(root, done)["ok"], json!(true));
         let taken = round(root, "x", None);
@@ -5347,7 +5358,7 @@ mod tests {
         assert_eq!(git_text(&slot, &["rev-parse", "HEAD"]), git_text(root, &["rev-parse", "HEAD~1"]), "onde nasceu");
         assert_eq!(std::fs::read_to_string(slot.join("src/a.rs")).unwrap(), "fn one() {}\n");
         assert!(!slot.join("src/novo.rs").exists(), "o arquivo novo, que o commit já tem, não fica solto");
-        assert_eq!(std::fs::read_to_string(root.join("src/novo.rs")).unwrap(), "fn novo() {}\n");
+        assert_eq!(std::fs::read_to_string(root.join("src/novo.rs")).unwrap(), "fn main() {}\n");
         assert!(kept_refs(root).is_empty(), "o código está no commit: nada a guardar");
     }
 
@@ -5500,7 +5511,7 @@ mod tests {
         assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1]);
         orphan_the_send(root, 1);
         std::fs::write(slot_of(root, 1).join("src/a.rs"), "fn one() {}\n// o que sobrou\n").unwrap();
-        std::fs::write(slot_of(root, 1).join("src/novo.rs"), "fn novo() {}\n").unwrap();
+        std::fs::write(slot_of(root, 1).join("src/novo.rs"), "fn main() {}\n").unwrap();
 
         let out = round(root, "x", None);
         assert_eq!(out["ok"], json!(true), "{out}");
@@ -5510,7 +5521,7 @@ mod tests {
         let kept = warning_of(&out, "code-kept");
         assert_eq!((&kept["wave"], &kept["files"]), (&json!(1), &json!(["src/a.rs", "src/novo.rs"])), "{out}");
         assert_eq!(git_text(root, &["show", &format!("{}:src/a.rs", refs[0])]), "fn one() {}\n// o que sobrou");
-        assert_eq!(git_text(root, &["show", &format!("{}:src/novo.rs", refs[0])]), "fn novo() {}");
+        assert_eq!(git_text(root, &["show", &format!("{}:src/novo.rs", refs[0])]), "fn main() {}");
         assert_eq!(git_text(&slot_of(root, 1), &["status", "--porcelain"]), "", "a cópia voltou ao commit: {out}");
     }
 
@@ -5524,7 +5535,7 @@ mod tests {
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
         assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1]);
         orphan_the_send(root, 1);
-        std::fs::write(slot_of(root, 1).join("src/novo.rs"), "fn novo() {}\n").unwrap();
+        std::fs::write(slot_of(root, 1).join("src/novo.rs"), "fn main() {}\n").unwrap();
         let head = git_text(root, &["rev-parse", "HEAD"]);
         git_at(root, &["update-ref", "refs/mustard/kept/x", &head]);
 
@@ -5534,7 +5545,7 @@ mod tests {
         assert_eq!(not_cleaned["wave"], json!(1), "{out}");
         assert_eq!(
             std::fs::read_to_string(slot_of(root, 1).join("src/novo.rs")).unwrap(),
-            "fn novo() {}\n",
+            "fn main() {}\n",
             "o código que não pôde ser guardado segue na cópia: {out}"
         );
     }
