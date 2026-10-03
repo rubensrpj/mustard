@@ -2357,20 +2357,22 @@ mod tests {
     /// Um repositório em `root`, com o fluxo `dev` → `main`, no checkout
     /// `branch`.
     fn repo_on(root: &std::path::Path, branch: &str) {
-        std::fs::write(root.join("mustard.json"), r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#).unwrap();
-        let git = |args: &[&str]| {
-            assert!(git::run(root, args).ok, "git {args:?} failed");
-        };
-        git(&["init", "-q"]);
-        git(&["config", "user.email", "t@example.com"]);
-        git(&["config", "user.name", "t"]);
-        git(&["checkout", "-q", "-b", "dev"]);
-        std::fs::write(root.join("README.md"), "oi\n").unwrap();
-        git(&["add", "-A"]);
-        git(&["commit", "-q", "-m", "init"]);
-        if branch != "dev" {
-            git(&["checkout", "-q", "-b", branch]);
-        }
+        crate::shared::test_fixture::repo_from_template(root, &format!("write.repo_on:{branch}"), |root| {
+            std::fs::write(root.join("mustard.json"), r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#).unwrap();
+            let git = |args: &[&str]| {
+                assert!(git::run(root, args).ok, "git {args:?} failed");
+            };
+            git(&["init", "-q"]);
+            git(&["config", "user.email", "t@example.com"]);
+            git(&["config", "user.name", "t"]);
+            git(&["checkout", "-q", "-b", "dev"]);
+            std::fs::write(root.join("README.md"), "oi\n").unwrap();
+            git(&["add", "-A"]);
+            git(&["commit", "-q", "-m", "init"]);
+            if branch != "dev" {
+                git(&["checkout", "-q", "-b", branch]);
+            }
+        });
     }
 
     /// Um `state` gravado direto no arquivo da spec, sem regra nenhuma.

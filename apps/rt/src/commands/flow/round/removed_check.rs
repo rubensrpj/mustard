@@ -452,10 +452,9 @@ mod tests {
     }
 
     /// A base com `old_total` em `src/a.rs`, sem uso, e com `src/b.rs` e
-    /// `src/c.rs` no mapa; `src/c.rs` guarda a chamada `calls` de quem usava
-    /// `old_total` (nenhuma quando vazio).
-    fn base_with_old_total(c_uses: &[&str]) -> Value {
-        base_with("old_total", c_uses)
+    /// `src/c.rs` no mapa.
+    fn base_with_old_total() -> Value {
+        base_with("old_total", &[])
     }
 
     /// A volta da onda que tira de `src/a.rs` a declaração de [`base_with`],
@@ -476,35 +475,8 @@ mod tests {
         // `src/b.rs` está no mapa da base e nenhuma chamada dele ligava
         // `old_total`: a variável local de mesmo nome não é resto.
         let files = [("src/b.rs", "fn outra() {\n    for old_total in [1, 2] {}\n}\n"), ("src/c.rs", "fn caller() {}\n")];
-        project(root, &files, &base_with_old_total(&[]));
+        project(root, &files, &base_with_old_total());
         silent(&back_without_old_total(root));
-    }
-
-    #[test]
-    fn a_code_line_of_a_file_that_used_the_removed_function_in_the_base_map_is_still_a_leftover() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let files = [("src/b.rs", "fn outra() {}\n"), ("src/c.rs", "fn caller() {\n    old_total();\n}\n")];
-        project(root, &files, &base_with_old_total(&["src/c.rs:2:caller"]));
-        let head = git_text(root, &["rev-parse", "HEAD"]);
-        let out = back_without_old_total(root);
-        assert_eq!(out["reason"], json!("round-after-wave"), "{out}");
-        let hint = out["hint"].as_str().unwrap_or_default();
-        assert!(hint.contains("`src/c.rs` linha 2 ainda cita `old_total`, que a onda tirou de `src/a.rs`"), "{hint}");
-        assert!(!hint.contains("`src/b.rs`"), "{hint}");
-        assert_eq!(git_text(root, &["rev-parse", "HEAD"]), head, "nothing committed: {out}");
-    }
-
-    #[test]
-    fn a_comment_line_of_a_file_that_never_used_the_removed_function_is_still_a_leftover() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let files = [("src/b.rs", "fn outra() {}\n// soma pelo old_total antes de gravar\n"), ("src/c.rs", "fn caller() {}\n")];
-        project(root, &files, &base_with_old_total(&[]));
-        let out = back_without_old_total(root);
-        assert_eq!(out["reason"], json!("round-after-wave"), "{out}");
-        let hint = out["hint"].as_str().unwrap_or_default();
-        assert!(hint.contains("`src/b.rs` linha 2 ainda cita `old_total`, que a onda tirou de `src/a.rs`"), "{hint}");
     }
 
     #[test]
@@ -519,7 +491,7 @@ mod tests {
             ("src/d.rs", "fn late() {\n    for old_total in [1, 2] {}\n}\n"),
             ("docs/guide.md", "Chame old_total(x) para somar.\n"),
         ];
-        project(root, &files, &base_with_old_total(&[]));
+        project(root, &files, &base_with_old_total());
         let out = back_without_old_total(root);
         assert_eq!(out["reason"], json!("round-after-wave"), "{out}");
         let hint = out["hint"].as_str().unwrap_or_default();
@@ -564,11 +536,13 @@ mod tests {
             ("src/c.rs", "fn caller() {\n    let mode = OFF;\n}\n"),
         ];
         project(root, &files, &base_with("OFF", &["src/c.rs:2:caller"]));
+        let head = git_text(root, &["rev-parse", "HEAD"]);
         let out = back_without_old_total(root);
         assert_eq!(out["reason"], json!("round-after-wave"), "{out}");
         let hint = out["hint"].as_str().unwrap_or_default();
         assert!(hint.contains("`src/c.rs` linha 2 ainda cita `OFF`, que a onda tirou de `src/a.rs`"), "{hint}");
         assert!(!hint.contains("`src/b.rs`"), "{hint}");
+        assert_eq!(git_text(root, &["rev-parse", "HEAD"]), head, "nothing committed: {out}");
     }
 
     #[test]

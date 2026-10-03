@@ -168,8 +168,10 @@ pub(crate) struct BatchCap {
 /// conserto — 5 tarefas e 32 arquivos, em 74 minutos, com todo item atendido
 /// na primeira volta. O tempo de uma onda segue o tamanho das tarefas, não o
 /// número de arquivos: o teto em tarefas segura o agente da onda, e o de
-/// arquivos, o lote que junta tarefas grandes. A tarefa que sozinha passa do
-/// teto sai sozinha, acima dele, porque o teto nunca impede o despacho.
+/// arquivos, o lote que junta tarefas grandes. A parte com mais tarefas que o
+/// teto sai em pedaços de até 5, um depois do outro; a tarefa que sozinha passa
+/// do teto de arquivos sai sozinha, acima dele, porque o teto nunca impede o
+/// despacho.
 pub(crate) const BATCH_CAP: BatchCap = BatchCap { tasks: 5, files: 32 };
 
 /// Uma tarefa do backlog: o que ela depende, os arquivos que declara e se o
@@ -302,6 +304,26 @@ fn clustered_by_file<N: Ord + Clone>(tasks: &[BacklogTask<N>], order: &[N]) -> V
     groups
 }
 
+/// A parte com mais tarefas que o teto de tarefas sai só com as primeiras,
+/// na ordem de prontidão de `order`, e com os arquivos delas. As outras
+/// seguem no backlog, prontas: na rodada seguinte cruzam o arquivo da onda
+/// que esta abrir e esperam por ela. A parte dentro do teto sai como está.
+fn first_in_order<N: Ord + Clone>(
+    group: Batch<N>,
+    tasks: &[BacklogTask<N>],
+    order: &[N],
+    cap: BatchCap,
+) -> Batch<N> {
+    if group.tasks.len() <= cap.tasks {
+        return group;
+    }
+    let mut kept = group.tasks;
+    kept.sort_by_key(|id| order.iter().position(|ready| ready == id));
+    kept.truncate(cap.tasks);
+    let files = tasks.iter().filter(|t| kept.contains(&t.id)).flat_map(|t| t.files.iter().cloned()).collect();
+    Batch { tasks: kept, files }
+}
+
 /// Empacota `order` (a saída de [`ready_tasks`]) em lotes de despacho, dentro
 /// do teto de trabalho `cap`:
 ///
@@ -310,14 +332,15 @@ fn clustered_by_file<N: Ord + Clone>(tasks: &[BacklogTask<N>], order: &[N]) -> V
 ///    mais baixo da leva, e a rodada, que solta pela ordem do número, a solta
 ///    primeiro e segura as outras até ela entregar. As demais seguem em
 ///    partes: a tarefa e todas as que o arquivo compartilhado prendeu a ela
-///    ([`clustered_by_file`]).
+///    ([`clustered_by_file`]). A parte com mais tarefas que o teto de tarefas
+///    sai só com as primeiras, na ordem de prontidão ([`first_in_order`]).
 /// 2. A parte que cruza arquivo de uma onda ainda aberta (`busy`) vai para um
 ///    lote só dela, sem outra parte dentro: ela espera a onda aberta
 ///    entregar, e a parte que entrasse junto esperaria também.
 /// 3. As outras, da maior para a menor, no primeiro lote que não é de
 ///    curinga nem de parte presa, onde a soma ainda cabe no teto, em tarefas
-///    e em arquivos. A parte que sozinha já passa do teto sai sozinha, acima
-///    dele: o teto nunca impede o despacho.
+///    e em arquivos. A parte que sozinha já passa do teto de arquivos sai
+///    sozinha, acima dele: o teto nunca impede o despacho.
 /// 4. Cada lote recebe, no fim, as tarefas de `waiting` que esperam só por
 ///    ele ([`chain_dependents`]).
 pub(crate) fn pack_batches<N: Ord + Clone>(
@@ -327,8 +350,10 @@ pub(crate) fn pack_batches<N: Ord + Clone>(
     busy: &BTreeSet<String>,
     cap: BatchCap,
 ) -> Vec<Batch<N>> {
-    let (mut batches, mut groups): (Vec<Batch<N>>, Vec<Batch<N>>) =
-        clustered_by_file(tasks, order).into_iter().partition(|g| touches_whole_tree(&g.files));
+    let (mut batches, mut groups): (Vec<Batch<N>>, Vec<Batch<N>>) = clustered_by_file(tasks, order)
+        .into_iter()
+        .map(|group| first_in_order(group, tasks, order, cap))
+        .partition(|g| touches_whole_tree(&g.files));
     // O lote que não recebe outra parte: o do curinga e o da parte presa a
     // uma onda aberta.
     let mut shut: Vec<bool> = vec![true; batches.len()];
@@ -722,6 +747,30 @@ mod tests {
         let batches = pack_batches(&tasks, &[1], &[2, 3], &BTreeSet::new(), BATCH_CAP);
         assert_eq!(batch_tasks(&batches), vec![vec![1, 3]], "{batches:?}");
         assert_eq!(batches[0].files.len(), BATCH_CAP.files);
+    }
+
+    /// Dezessete tarefas prontas, todas com `shared.rs`, mais um arquivo
+    /// próprio cada. A ordem de prontidão põe a 17 antes das outras. A primeira
+    /// passada leva só as cinco primeiras da ordem, com os arquivos delas; as
+    /// doze seguintes ficam fora. Na passada seguinte, com os arquivos do lote
+    /// aberto ocupados, as doze cruzam `shared.rs` e saem em outro lote de
+    /// cinco, que espera o primeiro.
+    #[test]
+    fn a_cluster_above_the_task_cap_sends_only_the_first_five_and_the_rest_waits() {
+        let tasks: Vec<BacklogTask<u32>> =
+            (1..=17u32).map(|n| task_with(n, &[], &own_files(&format!("t{n}_"), 1))).collect();
+        let order: Vec<u32> = std::iter::once(17).chain(1..=16).collect();
+
+        let first = pack_batches(&tasks, &order, &[], &BTreeSet::new(), BATCH_CAP);
+        assert_eq!(batch_tasks(&first), vec![vec![17, 1, 2, 3, 4]], "{first:?}");
+        let expected: BTreeSet<String> =
+            ["shared.rs", "t17_1.rs", "t1_1.rs", "t2_1.rs", "t3_1.rs", "t4_1.rs"].map(String::from).into();
+        assert_eq!(first[0].files, expected, "só os arquivos das cinco que saem");
+
+        let left: Vec<BacklogTask<u32>> = tasks.into_iter().filter(|t| !first[0].tasks.contains(&t.id)).collect();
+        let left_order: Vec<u32> = order.into_iter().filter(|id| !first[0].tasks.contains(id)).collect();
+        let second = pack_batches(&left, &left_order, &[], &first[0].files, BATCH_CAP);
+        assert_eq!(batch_tasks(&second), vec![vec![5, 6, 7, 8, 9]], "{second:?}");
     }
 
     // O backlog inteiro, com dependência e arquivo compartilhado, despachada

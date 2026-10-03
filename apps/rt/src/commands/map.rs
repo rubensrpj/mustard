@@ -36,8 +36,6 @@
 //!   partes do arquivo — cada declaração fora dos testes, com o tipo, o nome
 //!   e as linhas, e a linha em que os testes começam; perguntado de dentro de
 //!   uma cópia de trabalho do projeto, com as linhas do arquivo da cópia;
-//! - `skill --path <SKILL.md>`: confere os caminhos que a skill cita e o
-//!   tamanho dela;
 //! - `dump`: o banco do mapa tabela por tabela, em ordem fixa, para depurar;
 //! - `note "<frase>" --file <arquivo> [--name <declaração>]`: grava a nota de
 //!   sentido do arquivo, ou da declaração, em palavras de negócio, para a
@@ -48,7 +46,7 @@
 //! A regra mora em `mustard_core::domain::project_map`, e a leitura do banco
 //! na porta `mustard_core::io::project_map`; a busca lê o índice de palavras
 //! do mapa, por `mustard_core::io::map_search`, sem o mapa inteiro. Aqui só
-//! se leem o mapa, a skill e o arquivo de onde sai o trecho, e se imprime o
+//! se leem o mapa e o arquivo de onde sai o trecho, e se imprime o
 //! JSON.
 
 use std::collections::BTreeMap;
@@ -87,7 +85,6 @@ pub enum Question {
     Tests,
     Search,
     Summary,
-    Skill,
     Slice,
     Users,
     History,
@@ -103,7 +100,6 @@ impl Question {
             Self::Tests => "tests",
             Self::Search => "search",
             Self::Summary => "summary",
-            Self::Skill => "skill",
             Self::Slice => "slice",
             Self::Users => "users",
             Self::History => "history",
@@ -147,7 +143,6 @@ pub struct MapOpts {
     /// A última fala do agente antes da busca, que só o filtro lê; o gancho
     /// do terminal a preenche sozinho.
     pub said: Option<String>,
-    pub path: Option<PathBuf>,
     pub name: Option<String>,
     /// O pull request cuja descrição a história mostra.
     pub pr: Option<u32>,
@@ -332,7 +327,6 @@ fn answer_from(
         Question::Users => users(opts, root, lang, read),
         Question::History => history(opts, root, lang, read, trace),
         Question::Examples => examples(opts, root, lang, languages, read, trace),
-        Question::Skill => skill(opts, root, read),
         Question::Dump => dump(root),
         Question::Note => note(opts, root, read),
     }
@@ -885,39 +879,6 @@ pub(crate) fn suggested_files(root: &Path, task: &str, limit: usize, languages: 
     map_search::search(root, task, languages, limit).unwrap_or_default().into_iter().map(|found| found.path).collect()
 }
 
-/// A pasta que a skill descreve: a de cima do `.claude` onde ela mora.
-fn skill_owner(path: &Path) -> Option<PathBuf> {
-    path.ancestors().find(|a| a.file_name().is_some_and(|n| n == ".claude")).and_then(Path::parent).map(Path::to_path_buf)
-}
-
-/// Confere a skill de `--path`: cada caminho citado existe (na raiz do
-/// projeto, na pasta da skill ou no mapa) e o texto cabe no limite.
-fn skill(opts: &MapOpts, root: &Path, read: &Reader<'_>) -> Result<Value, MapRefusal> {
-    let given = opts.path.as_deref().ok_or_else(|| MapRefusal::MissingArgument {
-        question: "skill".to_string(),
-        flag: "--path".to_string(),
-    })?;
-    let path = std::path::absolute(given).unwrap_or_else(|_| given.to_path_buf());
-    let shown = given.to_string_lossy().replace('\\', "/");
-    let text = std::fs::read_to_string(&path)
-        .map_err(|e| MapRefusal::SkillUnreadable { path: shown.clone(), detail: e.to_string() })?;
-    let map = read(Need::Paths).ok();
-    let owner = skill_owner(&path);
-    let exists = |cited: &str| {
-        root.join(cited).exists()
-            || owner.as_ref().is_some_and(|o| o.join(cited).exists())
-            || map.as_ref().is_some_and(|m| project_map::map_knows(m, cited))
-    };
-    project_map::check_skill(&text, exists)?;
-    Ok(json!({
-        "ok": true,
-        "question": "skill",
-        "path": shown,
-        "lines": text.lines().count(),
-        "cited": project_map::cited_paths(&text),
-    }))
-}
-
 /// A história de cada declaração de `--name` na branch de partida (só a do
 /// arquivo de `--file`, quando ele vem): o arquivo e a linha, quantas
 /// mudanças a base tem dela fora as só de forma e os commits mais novos, do
@@ -1182,7 +1143,6 @@ mod tests {
             intent: None,
             described: None,
             said: None,
-            path: None,
             name: None,
             pr: None,
             session: None,
@@ -1951,15 +1911,13 @@ mod tests {
 
     /// Cada pergunta, com as opções dela: as que acham, as que não acham e
     /// as que faltam.
-    fn every_question(root: &Path, skill: &Path) -> Vec<MapOpts> {
+    fn every_question(root: &Path) -> Vec<MapOpts> {
         let with = |question: Question, file: Option<&str>, name: Option<&str>, task: Option<&str>| MapOpts {
             file: file.map(str::to_string),
             name: name.map(str::to_string),
             task: task.map(str::to_string),
             ..ask(root, question)
         };
-        let mut skill_opts = ask(root, Question::Skill);
-        skill_opts.path = Some(skill.to_path_buf());
         vec![
             ask(root, Question::Summary),
             with(Question::Importers, Some("packages/core/src/pay.rs"), None, None),
@@ -1996,7 +1954,6 @@ mod tests {
             with(Question::Examples, None, None, Some("adicionar um comando run")),
             with(Question::Examples, None, None, Some("nada casa com isto")),
             with(Question::Examples, None, None, None),
-            skill_opts,
         ]
     }
 
@@ -2019,13 +1976,9 @@ mod tests {
         let file = dir.path().join("apps/rt/src/commands/pay/write.rs");
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
         std::fs::write(&file, "// topo\npub fn run() {\n    gravar();\n}\n\nfn run() {}\n").unwrap();
-        let skill_dir = dir.path().join("apps/rt/.claude/skills/add-pay");
-        std::fs::create_dir_all(&skill_dir).unwrap();
-        let skill = skill_dir.join("SKILL.md");
-        std::fs::write(&skill, "Veja `pay/index.rs`, `commands/pay/` e `apps/rt/src/commands/pay/sumiu.rs`.\n").unwrap();
 
         let mut found = 0;
-        for opts in every_question(dir.path(), &skill) {
+        for opts in every_question(dir.path()) {
             let now = answered(&opts);
             assert_eq!(now, answered_from_the_whole_map(&opts), "{:?} {:?} {:?} {:?}", opts.question, opts.file, opts.name, opts.task);
             found += usize::from(now["ok"] == json!(true));
@@ -2033,7 +1986,7 @@ mod tests {
         assert!(found >= 12, "the questions that find something must answer: {found}");
 
         let empty = tempdir().unwrap();
-        for opts in every_question(empty.path(), &skill) {
+        for opts in every_question(empty.path()) {
             let now = answered(&opts);
             assert_eq!(now, answered_from_the_whole_map(&opts), "{:?} {:?} {:?}", opts.question, opts.file, opts.name);
         }
@@ -2583,24 +2536,6 @@ mod tests {
         let report = map_at(&question(Some("src/a.rs"), "gravar"), &mine, &trace);
         assert_eq!(traces.get(), 3, "the commit touched the file of `gravar`");
         assert!(lines(&report)[0].ends_with(" muda o gravar pela quarta vez"), "{report}");
-    }
-
-    #[test]
-    fn a_skill_citing_a_path_that_does_not_exist_is_refused() {
-        let dir = project_with_map();
-        let skill_dir = dir.path().join("apps").join("rt").join(".claude").join("skills").join("add-pay");
-        std::fs::create_dir_all(&skill_dir).unwrap();
-        let skill_path = skill_dir.join("SKILL.md");
-        std::fs::write(&skill_path, "Veja `pay/write.rs` e `apps/rt/src/commands/pay/sumiu.rs`.\n").unwrap();
-        let mut opts = ask(dir.path(), Question::Skill);
-        opts.path = Some(skill_path.clone());
-        let report = answered(&opts);
-        assert_eq!(report["reason"], json!("skill-missing-path"), "{report}");
-        assert!(report["hint"].as_str().unwrap().contains("apps/rt/src/commands/pay/sumiu.rs"));
-
-        std::fs::write(&skill_path, "Veja `pay/write.rs` e `commands/pay/index.rs`.\n").unwrap();
-        let report = answered(&opts);
-        assert_eq!(report["ok"], json!(true), "{report}");
     }
 
     /// O mapa com a base, a lista de `write.rs` e a spec `obra`: a decisão
@@ -3339,16 +3274,12 @@ mod tests {
     fn only_the_search_question_assembles_the_filter() {
         let dir = tempdir().unwrap();
         store::write_text(dir.path(), EVERY_PART).unwrap();
-        let skill_dir = dir.path().join("apps/rt/.claude/skills/add-pay");
-        std::fs::create_dir_all(&skill_dir).unwrap();
-        let skill = skill_dir.join("SKILL.md");
-        std::fs::write(&skill, "Veja `pay/index.rs`.\n").unwrap();
         let assembled = std::cell::Cell::new(0);
         let counting = |_: &Path, _: &mustard_core::ProjectConfig| {
             assembled.set(assembled.get() + 1);
             Err(FilterError::MissingKey)
         };
-        for opts in every_question(dir.path(), &skill) {
+        for opts in every_question(dir.path()) {
             searched(&opts, &counting);
             assert_eq!(assembled.get(), 0, "{:?} assembled the filter", opts.question);
         }
@@ -3829,25 +3760,27 @@ mod tests {
     fn scanned_repo_with(map: &str, files: &[(&str, &str)]) -> (tempfile::TempDir, Value) {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        for (path, text) in files {
-            let at = root.join(path);
-            std::fs::create_dir_all(at.parent().unwrap()).unwrap();
-            std::fs::write(at, text).unwrap();
-        }
-        let git = |args: &[&str]| {
-            let out = std::process::Command::new("git")
-                .args(["-c", "user.email=t@example.com", "-c", "user.name=t", "-c", "commit.gpgsign=false"])
-                .args(args)
-                .current_dir(root)
-                .output()
+        crate::shared::test_fixture::repo_from_template(root, &format!("map.scanned_repo:{files:?}"), |root| {
+            for (path, text) in files {
+                let at = root.join(path);
+                std::fs::create_dir_all(at.parent().unwrap()).unwrap();
+                std::fs::write(at, text).unwrap();
+            }
+            let git = |args: &[&str]| {
+                let out = std::process::Command::new("git")
+                    .args(["-c", "user.email=t@example.com", "-c", "user.name=t", "-c", "commit.gpgsign=false"])
+                    .args(args)
+                    .current_dir(root)
+                    .output()
+                    .unwrap();
+                assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            };
+            std::fs::write(root.join("mustard.json"), json!({"language": {"text": "pt-BR", "code": "pt-BR"}}).to_string())
                 .unwrap();
-            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
-        };
-        std::fs::write(root.join("mustard.json"), json!({"language": {"text": "pt-BR", "code": "pt-BR"}}).to_string())
-            .unwrap();
-        git(&["init", "-q"]);
-        git(&["add", "-A"]);
-        git(&["commit", "-q", "-m", "semente"]);
+            git(&["init", "-q"]);
+            git(&["add", "-A"]);
+            git(&["commit", "-q", "-m", "semente"]);
+        });
         let now = store::listing(root).unwrap();
         let mut map: Value = serde_json::from_str(map).unwrap();
         map["state"] = json!({"head": now.head, "listing": now.digest(), "base": now.base.name, "base_tip": now.base.tip});

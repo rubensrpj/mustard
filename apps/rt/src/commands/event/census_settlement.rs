@@ -379,15 +379,17 @@ mod tests {
     /// confined to `#[cfg(test)]` by the root `CLAUDE.md` guard; this is that
     /// carve-out, not an exception to it.
     fn init_repo_on(root: &Path, base: &str) {
-        git(root, &["init"]);
-        git(root, &["config", "core.autocrlf", "false"]);
-        git(root, &["config", "core.eol", "lf"]);
-        git(root, &["config", "user.email", "t@example.com"]);
-        git(root, &["config", "user.name", "t"]);
-        git(root, &["checkout", "-b", base]);
-        std::fs::write(root.join("f.txt"), "hi").unwrap();
-        git(root, &["add", "."]);
-        git(root, &["commit", "-m", "init"]);
+        crate::shared::test_fixture::repo_from_template(root, &format!("census.init_repo_on:{base}"), |root| {
+            git(root, &["init"]);
+            git(root, &["config", "core.autocrlf", "false"]);
+            git(root, &["config", "core.eol", "lf"]);
+            git(root, &["config", "user.email", "t@example.com"]);
+            git(root, &["config", "user.name", "t"]);
+            git(root, &["checkout", "-b", base]);
+            std::fs::write(root.join("f.txt"), "hi").unwrap();
+            git(root, &["add", "."]);
+            git(root, &["commit", "-m", "init"]);
+        });
     }
 
     /// `git status --porcelain` for `root` — the tree as the NEXT command's

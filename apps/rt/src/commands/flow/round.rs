@@ -272,26 +272,10 @@ mod tests {
     /// recebe o número da mensagem de origem: é antes dela que o levantamento
     /// grava os itens combinados, inclusive os sem dono.
     pub(super) fn approved_with(root: &Path, spec: &str, plan: &[(u64, &[&str], &[u64])], before: impl FnOnce(u64)) {
+        let mut files = vec![("mustard.json", "{}")];
+        files.extend(plan.iter().flat_map(|(_, planned, _)| planned.iter().map(|file| (*file, "fn one() {}\n"))));
+        crate::shared::test_fixture::seeded_repo(root, &files);
         std::fs::create_dir_all(root.join("src")).unwrap();
-        std::fs::write(root.join("mustard.json"), b"{}").unwrap();
-        for (_, files, _) in plan {
-            for file in *files {
-                let path = root.join(file);
-                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-                std::fs::write(&path, "fn one() {}\n").unwrap();
-            }
-        }
-        git_at(root, &["init", "-q"]);
-        // O fim de linha do repositório de teste é fixo: no Windows o git
-        // converteria os arquivos ao criar a cópia da onda, e a junção
-        // devolveria CRLF onde o teste espera LF.
-        git_at(root, &["config", "core.autocrlf", "false"]);
-        git_at(root, &["config", "core.eol", "lf"]);
-        git_at(root, &["add", "-A"]);
-        git_at(root, &["commit", "-q", "-m", "semente"]);
-        git_at(root, &["config", "user.email", "t@t"]);
-        git_at(root, &["config", "user.name", "t"]);
-        git_at(root, &["config", "commit.gpgsign", "false"]);
 
         assert_eq!(record_open(root, spec, &format!("feature/{spec}"), "dev"), Ok(true));
         let said = id_of(&write(root, spec, "message", json!({"author": "user", "text": "o objetivo"})));

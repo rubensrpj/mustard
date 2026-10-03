@@ -702,13 +702,15 @@ mod tests {
 
     /// Um repositório com um commit, parado em `branch`.
     fn repo_on(root: &Path, branch: &str) {
-        git(root, &["init", "-q"]);
-        git(root, &["config", "user.email", "t@example.com"]);
-        git(root, &["config", "user.name", "t"]);
-        git(root, &["checkout", "-q", "-b", branch]);
-        std::fs::write(root.join("f.txt"), "hi").expect("file");
-        git(root, &["add", "-A"]);
-        git(root, &["commit", "-q", "-m", "init"]);
+        crate::shared::test_fixture::repo_from_template(root, &format!("write_gate.repo_on:{branch}"), |root| {
+            git(root, &["init", "-q"]);
+            git(root, &["config", "user.email", "t@example.com"]);
+            git(root, &["config", "user.name", "t"]);
+            git(root, &["checkout", "-q", "-b", branch]);
+            std::fs::write(root.join("f.txt"), "hi").expect("file");
+            git(root, &["add", "-A"]);
+            git(root, &["commit", "-q", "-m", "init"]);
+        });
     }
 
     fn kind(verdict: &Verdict) -> &'static str {

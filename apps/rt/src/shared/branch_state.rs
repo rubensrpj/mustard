@@ -947,14 +947,16 @@ mod tests {
     fn scratch_repo() -> (tempfile::TempDir, std::path::PathBuf) {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path().to_path_buf();
-        run(&root, &["init", "."]);
-        run(&root, &["config", "user.email", "t@t"]);
-        run(&root, &["config", "user.name", "t"]);
-        run(&root, &["config", "commit.gpgsign", "false"]);
-        run(&root, &["checkout", "-b", "dev"]);
-        std::fs::write(root.join("seed.txt"), "seed").expect("seed file");
-        run(&root, &["add", "-A"]);
-        run(&root, &["commit", "-m", "seed"]);
+        crate::shared::test_fixture::repo_from_template(&root, "branch_state.scratch_repo", |root| {
+            run(root, &["init", "."]);
+            run(root, &["config", "user.email", "t@t"]);
+            run(root, &["config", "user.name", "t"]);
+            run(root, &["config", "commit.gpgsign", "false"]);
+            run(root, &["checkout", "-b", "dev"]);
+            std::fs::write(root.join("seed.txt"), "seed").expect("seed file");
+            run(root, &["add", "-A"]);
+            run(root, &["commit", "-m", "seed"]);
+        });
         (dir, root)
     }
 

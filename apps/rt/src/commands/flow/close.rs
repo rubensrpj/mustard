@@ -1253,17 +1253,10 @@ mod tests {
     /// conferindo: sem arquivo mudado, cada uma sozinha numa rodada depois
     /// das outras, e por isso sem commit.
     fn ready_with_checked(root: &Path, spec: &str, proofs: &[&str], waves: u64, checked: &[u64]) {
-        std::fs::create_dir_all(root.join("src")).unwrap();
-        std::fs::write(root.join("mustard.json"), b"{}").unwrap();
-        for n in 1..=waves {
-            std::fs::write(root.join(wave_file(n)), "fn one() {}\n").unwrap();
-        }
-        git_at(root, &["init", "-q"]);
-        git_at(root, &["add", "-A"]);
-        git_at(root, &["commit", "-q", "-m", "semente"]);
-        git_at(root, &["config", "user.email", "t@t"]);
-        git_at(root, &["config", "user.name", "t"]);
-        git_at(root, &["config", "commit.gpgsign", "false"]);
+        let waves_files: Vec<String> = (1..=waves).map(wave_file).collect();
+        let mut files = vec![("mustard.json", "{}")];
+        files.extend(waves_files.iter().map(|file| (file.as_str(), "fn one() {}\n")));
+        crate::shared::test_fixture::seeded_repo(root, &files);
 
         assert_eq!(record_open(root, spec, &format!("feature/{spec}"), "dev"), Ok(true));
         let said = id_of(&write(root, spec, "message", json!({"author": "user", "text": "o objetivo"})));
@@ -1375,9 +1368,15 @@ mod tests {
     /// O pedido do agente de revisão final vira evento de envio no
     /// spec.ndjson antes de sair para quem despacha: o texto inteiro, o
     /// papel de revisão, o modelo e o esforço — pela mesma porta que já grava o pedido
-    /// de cada onda, sem onda dona nenhuma.
+    /// de cada onda, sem onda dona nenhuma. O envio grava a lista dos itens
+    /// que o pedido lista, a mesma que o texto imprime, e o veredito só grava
+    /// depois de o revisor ler cada um de dentro da cópia dele: a leitura
+    /// feita do repositório principal não conta, e a recusa nomeia o item que
+    /// falta.
     #[test]
-    fn review_request_becomes_a_send_event() {
+    fn review_request_becomes_a_send_event_and_the_verdict_waits_for_the_reading() {
+        use crate::commands::spec_events::read::{read_for, ReadOpts};
+
         let dir = tempdir().unwrap();
         let root = dir.path();
         ready_to_close(root, "x", &["git --version"]);
@@ -1415,26 +1414,7 @@ mod tests {
         assert_eq!(sent.str_field("model"), Some("sonnet"), "o modelo pedido vai junto, o padrão da instalação: {sent:?}");
         assert_eq!(sent.str_field("effort"), Some("xhigh"), "o esforço pedido vai junto, o padrão da instalação: {sent:?}");
         assert!(sent.wave().is_none(), "a revisão final não é dona de onda nenhuma: {sent:?}");
-    }
 
-    /// O envio do pedido da revisão grava a lista dos itens que o pedido
-    /// lista, a mesma que o texto imprime, e o veredito só grava depois de o
-    /// revisor ler cada um de dentro da cópia dele: a leitura feita do
-    /// repositório principal não conta, e a recusa nomeia o item que falta.
-    #[test]
-    fn the_review_send_records_what_it_lists_and_the_verdict_waits_for_the_reading() {
-        use crate::commands::spec_events::read::{read_for, ReadOpts};
-
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        ready_to_close(root, "x", &["git --version"]);
-        let asked =
-            close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None, ..Default::default() }, None);
-        assert_eq!(asked["review"]["final"], json!(true), "{asked}");
-        let prompt = review_prompt(&asked);
-
-        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-        let sent = log.visible().into_iter().rfind(|e| e.event_type == "send").expect("the review send");
         let recorded: Vec<String> = sent
             .fields
             .get("read_items")
@@ -1655,15 +1635,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let spec = "x";
-        std::fs::create_dir_all(root.join("src")).unwrap();
-        std::fs::write(root.join("mustard.json"), b"{}").unwrap();
-        std::fs::write(root.join("src/w1.rs"), "fn one() {}\n").unwrap();
-        git_at(root, &["init", "-q"]);
-        git_at(root, &["add", "-A"]);
-        git_at(root, &["commit", "-q", "-m", "semente"]);
-        git_at(root, &["config", "user.email", "t@t"]);
-        git_at(root, &["config", "user.name", "t"]);
-        git_at(root, &["config", "commit.gpgsign", "false"]);
+        crate::shared::test_fixture::seeded_repo(root, &[("mustard.json", "{}"), ("src/w1.rs", "fn one() {}\n")]);
 
         assert_eq!(record_open(root, spec, &format!("feature/{spec}"), "dev"), Ok(true));
         let said = id_of(&write(root, spec, "message", json!({"author": "user", "text": "o objetivo"})));
@@ -1725,7 +1697,8 @@ mod tests {
     /// O fechamento roda cada critério uma vez — os dois critérios da spec
     /// aparecem, cada um com uma execução —, grava cada execução, pede o
     /// agente de teste dedicado mesmo com uma onda só, e, aprovado ele, grava
-    /// a fase fechada e deixa a pasta da spec com exatamente três arquivos.
+    /// a fase fechada e deixa a pasta da spec com exatamente três arquivos. A
+    /// resposta do fechamento traz a linha inteira do pull request.
     #[test]
     fn closing_runs_each_criterion_once_and_leaves_three_files_in_the_folder() {
         let dir = tempdir().unwrap();
@@ -1744,6 +1717,12 @@ mod tests {
         assert_eq!(out["ok"], json!(true), "{out}");
         assert_eq!(out["phase"], json!("closed"), "{out}");
         assert!(out.get("review").is_none(), "{out}");
+        // A linha inteira do pull request, com a base e a branch da spec: o
+        // binário a aceita, e o próximo passo em palavras a traz.
+        let line = "mustard-rt run pr-open --base dev --head feature/x --spec x";
+        assert_eq!(out["command"], json!(line), "{out}");
+        crate::commands::flow::resume::assert_parses(line);
+        assert!(out["next"].as_str().unwrap_or_default().ends_with(&then_of(&out, "close.next")), "{out}");
 
         let path = store::spec_file(root, "x").unwrap();
         let log = store::read(&path).unwrap().unwrap();
@@ -1910,52 +1889,42 @@ mod tests {
     }
 
     /// A vaga da última onda, zerada para o revisor, guarda antes o que a
-    /// onda deixou nela além do commit, e a resposta que pede a revisão
-    /// nomeia a onda, a ref e o comando para trazer o código de volta.
-    #[test]
-    fn the_close_names_the_code_it_kept_when_it_cleans_the_review_copy() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        ready_to_close(root, "x", &["git --version"]);
-        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-        let copy = mustard_core::io::wave_prompt::final_copy_path(root, "x", &log);
-        std::fs::write(copy.join("sobra.txt"), "o que a onda deixou").unwrap();
-
-        let asked =
-            close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), ..Default::default() }, None);
-        assert_eq!(asked["review"]["final"], json!(true), "{asked}");
-        let refs = kept_refs(root);
-        assert_eq!(refs.len(), 1, "{refs:?}");
-        assert_eq!(kept_content(root, &refs[0], "sobra.txt"), "o que a onda deixou", "{refs:?}");
-        let hints = hints_of(&asked, "code-kept");
-        assert_eq!(hints.len(), 1, "{asked}");
-        let shown = mustard_core::io::wave_prompt::shown(&copy);
-        assert!(hints[0].contains(&refs[0]) && hints[0].contains("onda 1") && hints[0].contains(&shown), "{}", hints[0]);
-        assert!(hints[0].contains(&format!("git cherry-pick --no-commit {}", refs[0])), "{}", hints[0]);
-    }
-
-    /// O código guardado ao zerar a cópia do revisor é nomeado também quando
-    /// o fechamento recusa logo depois (a suíte vermelha): a ref existe, e a
+    /// onda deixou nela além do commit, e a resposta nomeia a onda, a ref e o
+    /// comando para trazer o código de volta: a que pede a revisão e também a
+    /// que recusa logo depois (a suíte vermelha), porque a ref existe e a
     /// chamada seguinte acharia a cópia já limpa e nada diria dele.
     #[test]
-    fn the_close_names_the_code_it_kept_even_when_it_refuses_right_after() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        ready_to_close(root, "x", &["git --version"]);
-        std::fs::write(root.join("mustard.json"), json!({ "testCommand": "false" }).to_string()).unwrap();
-        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-        let copy = mustard_core::io::wave_prompt::final_copy_path(root, "x", &log);
-        std::fs::write(copy.join("sobra.txt"), "o que a onda deixou").unwrap();
+    fn the_close_names_the_code_it_kept_when_it_cleans_the_review_copy() {
+        for (case, test_command) in [("the review is asked", None), ("the close refuses right after", Some("false"))] {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            ready_to_close(root, "x", &["git --version"]);
+            if let Some(command) = test_command {
+                std::fs::write(root.join("mustard.json"), json!({ "testCommand": command }).to_string()).unwrap();
+            }
+            let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+            let copy = mustard_core::io::wave_prompt::final_copy_path(root, "x", &log);
+            std::fs::write(copy.join("sobra.txt"), "o que a onda deixou").unwrap();
 
-        let refused =
-            close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), ..Default::default() }, None);
-        assert_eq!(refused["reason"], json!("suite-failed"), "{refused}");
-        let refs = kept_refs(root);
-        assert_eq!(refs.len(), 1, "{refs:?}");
-        assert_eq!(kept_content(root, &refs[0], "sobra.txt"), "o que a onda deixou", "{refs:?}");
-        let hints = hints_of(&refused, "code-kept");
-        assert_eq!(hints.len(), 1, "{refused}");
-        assert!(hints[0].contains(&format!("git cherry-pick --no-commit {}", refs[0])), "{}", hints[0]);
+            let asked =
+                close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), ..Default::default() }, None);
+            match test_command {
+                None => assert_eq!(asked["review"]["final"], json!(true), "{case}: {asked}"),
+                Some(_) => assert_eq!(asked["reason"], json!("suite-failed"), "{case}: {asked}"),
+            }
+            let refs = kept_refs(root);
+            assert_eq!(refs.len(), 1, "{case}: {refs:?}");
+            assert_eq!(kept_content(root, &refs[0], "sobra.txt"), "o que a onda deixou", "{case}: {refs:?}");
+            let hints = hints_of(&asked, "code-kept");
+            assert_eq!(hints.len(), 1, "{case}: {asked}");
+            let shown = mustard_core::io::wave_prompt::shown(&copy);
+            assert!(
+                hints[0].contains(&refs[0]) && hints[0].contains("onda 1") && hints[0].contains(&shown),
+                "{case}: {}",
+                hints[0]
+            );
+            assert!(hints[0].contains(&format!("git cherry-pick --no-commit {}", refs[0])), "{case}: {}", hints[0]);
+        }
     }
 
     /// Uma vaga a mais da obra, com um arquivo dentro que o git do projeto
@@ -2151,12 +2120,7 @@ mod tests {
     /// Um projeto git com uma pasta de compilação `target` que o git ignora,
     /// com um arquivo dentro, e o `mustard.json` com a declaração `config`.
     fn project_with_build(root: &Path, config: &str) -> PathBuf {
-        git_at(root, &["init", "-q"]);
-        std::fs::create_dir_all(root.join("src")).unwrap();
-        std::fs::write(root.join("src/lib.rs"), "fn one() {}\n").unwrap();
-        std::fs::write(root.join(".gitignore"), "target/\n").unwrap();
-        git_at(root, &["add", "-A"]);
-        git_at(root, &["commit", "-q", "-m", "semente"]);
+        crate::shared::test_fixture::seeded_repo(root, &[("src/lib.rs", "fn one() {}\n"), (".gitignore", "target/\n")]);
         std::fs::write(root.join("mustard.json"), config).unwrap();
         std::fs::create_dir_all(root.join("target").join("debug")).unwrap();
         let built = root.join("target").join("debug").join("programa");
@@ -2552,27 +2516,6 @@ exit "${2:-0}"
         assert_eq!(asked["review"]["final"], json!(true), "{asked}");
     }
 
-    /// O fechamento roda a prova de cada critério por `run_proof` uma vez, e
-    /// a execução grava `pass`.
-    #[test]
-    fn closing_runs_each_proof_once_and_records_pass() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        ready_to_close(root, "x", &["echo running 1 test"]);
-
-        let asked =
-            close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None, ..Default::default() }, None);
-        assert_eq!(asked["ok"], json!(true), "{asked}");
-
-        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-        let runs: Vec<&SpecEvent> =
-            log.visible().into_iter().filter(|e| e.event_type == "criterion_run").collect();
-        // A prova de `proofs`, mais a do critério que cobre a onda na cópia
-        // de teste — sempre verde, para a rodada não travar a entrega.
-        assert_eq!(runs.len(), 2, "{runs:?}");
-        assert!(runs.iter().all(|r| r.str_field("result") == Some("pass")), "{runs:?}");
-    }
-
     /// A pendência aberta que nasceu na spec fechada aparece na resposta do
     /// fechamento, com a pergunta de destino — a mesma linha que a gravação
     /// da pendência devolveria; é aviso, não recusa: o fechamento segue
@@ -2756,15 +2699,7 @@ exit "${2:-0}"
     fn an_unowned_item_no_send_carried_is_reported_at_close() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        std::fs::create_dir_all(root.join("src")).unwrap();
-        std::fs::write(root.join("mustard.json"), b"{}").unwrap();
-        std::fs::write(root.join(wave_file(1)), "fn one() {}\n").unwrap();
-        git_at(root, &["init", "-q"]);
-        git_at(root, &["add", "-A"]);
-        git_at(root, &["commit", "-q", "-m", "semente"]);
-        git_at(root, &["config", "user.email", "t@t"]);
-        git_at(root, &["config", "user.name", "t"]);
-        git_at(root, &["config", "commit.gpgsign", "false"]);
+        crate::shared::test_fixture::seeded_repo(root, &[("mustard.json", "{}"), (&wave_file(1), "fn one() {}\n")]);
 
         assert_eq!(record_open(root, "x", "feature/x", "dev"), Ok(true));
         let said = id_of(&write(root, "x", "message", json!({"author": "user", "text": "o objetivo"})));
@@ -2842,15 +2777,7 @@ exit "${2:-0}"
     fn acceptance_writes_the_traceability_table() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        std::fs::create_dir_all(root.join("src")).unwrap();
-        std::fs::write(root.join("mustard.json"), b"{}").unwrap();
-        std::fs::write(root.join(wave_file(1)), "fn one() {}\n").unwrap();
-        git_at(root, &["init", "-q"]);
-        git_at(root, &["add", "-A"]);
-        git_at(root, &["commit", "-q", "-m", "semente"]);
-        git_at(root, &["config", "user.email", "t@t"]);
-        git_at(root, &["config", "user.name", "t"]);
-        git_at(root, &["config", "commit.gpgsign", "false"]);
+        crate::shared::test_fixture::seeded_repo(root, &[("mustard.json", "{}"), (&wave_file(1), "fn one() {}\n")]);
 
         assert_eq!(record_open(root, "x", "feature/x", "dev"), Ok(true));
         let said = id_of(&write(root, "x", "message", json!({"author": "user", "text": "o objetivo"})));
@@ -3453,23 +3380,6 @@ exit "${2:-0}"
         }
     }
 
-    /// O fechamento devolve a linha inteira do pull request, com a base e a
-    /// branch da spec, o binário a aceita, e o próximo passo em palavras a
-    /// traz.
-    #[test]
-    fn closing_answers_the_whole_pull_request_line() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        ready_to_close(root, "x", &["git --version"]);
-
-        let out = close(root, "x");
-        assert_eq!(out["ok"], json!(true), "{out}");
-        let line = "mustard-rt run pr-open --base dev --head feature/x --spec x";
-        assert_eq!(out["command"], json!(line), "{out}");
-        crate::commands::flow::resume::assert_parses(line);
-        assert!(out["next"].as_str().unwrap_or_default().ends_with(&then_of(&out, "close.next")), "{out}");
-    }
-
     /// Ao gravar a fase fechada, o fechamento arma a cobrança das pendências
     /// pela mesma porta que grava a fase.
     #[test]
@@ -3733,85 +3643,53 @@ exit "${2:-0}"
         assert_eq!(State::from_log(&log).phase, Some("running"), "a spec não fechou");
     }
 
-    /// A leitura do número de testes não é só do cargo: a prova que roda outro
-    /// executor e sai verde dizendo zero teste trava o fechamento do mesmo
-    /// jeito, com o comando e o número na recusa; a que roda pelo menos um
-    /// teste passa.
-    #[test]
-    fn a_proof_that_ran_zero_tests_outside_cargo_blocks_the_close_too() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let zero = "echo Tests: 0 total";
-        ready_to_close(root, "x", &["echo Tests: 3 total", zero]);
-
-        let refused = close(root, "x");
-        assert_eq!(refused["reason"], json!("criterion-ran-no-test"), "{refused}");
-        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-        let codes = log.codes();
-        let criteria: Vec<u64> = log.visible().into_iter().filter(|e| e.event_type == "criterion").map(|e| e.id).collect();
-        let expected = translate("close.criterion_ran_no_test", Locale::PtBr)
-            .replace("{code}", &codes[&criteria[1]])
-            .replace("{command}", zero)
-            .replace("{count}", "0");
-        assert_eq!(refused["hint"], json!(expected), "{refused}");
-        let runs: Vec<(Option<u64>, Option<&str>)> = log
-            .visible()
-            .into_iter()
-            .filter(|e| e.event_type == "criterion_run")
-            .map(|e| (e.int("criterion"), e.str_field("result")))
-            .collect();
-        // O terceiro é o critério que cobre a onda na cópia de teste — sempre
-        // verde, para a rodada não travar a entrega.
-        assert_eq!(
-            runs,
-            vec![(Some(criteria[0]), Some("pass")), (Some(criteria[1]), Some("fail")), (Some(criteria[2]), Some("pass"))]
-        );
-        assert_eq!(State::from_log(&log).phase, Some("running"), "a spec não fechou");
-    }
-
-    /// Os dois executores que dizem zero sem escrever número são lidos pela
-    /// linha de resumo de cada um, e não por uma frase qualquer. O vitest sai
-    /// com código 0 quando o filtro por nome não casa teste nenhum e escreve
-    /// `Tests  no tests`: essa prova é recusada. O go escreve a marca dele por
-    /// pacote, então a prova em que um pacote não rodou teste ao lado de outro
-    /// que rodou passa — a corrida rodou teste. E a execução recusada guarda o
-    /// que o executor escreveu, e não uma frase montada sobre ela.
+    /// Os executores que dizem zero sem escrever número são lidos pela linha
+    /// de resumo de cada um, e não por uma frase qualquer, e a prova que roda
+    /// outro executor que não o cargo e sai verde dizendo zero teste trava o
+    /// fechamento do mesmo jeito, com o comando e o número na recusa. O vitest
+    /// sai com código 0 quando o filtro por nome não casa teste nenhum e
+    /// escreve `Tests  no tests`: essa prova é recusada. O go escreve a marca
+    /// dele por pacote, então a prova em que um pacote não rodou teste ao lado
+    /// de outro que rodou passa — a corrida rodou teste. A que roda pelo menos
+    /// um teste passa. E a execução recusada guarda o que o executor escreveu,
+    /// e não uma frase montada sobre ela.
     #[test]
     fn a_proof_that_ran_zero_tests_is_read_by_the_summary_line_of_each_runner() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
         let go_mixed = "echo ok x/pkg 0.002s [no tests to run] && echo ok x/outro 0.02s";
-        let vitest_zero = "echo Tests no tests";
-        ready_to_close(root, "x", &[go_mixed, vitest_zero]);
+        let cases = [
+            ("go and vitest", go_mixed, "echo Tests no tests", "Tests no tests"),
+            ("a total outside cargo", "echo Tests: 3 total", "echo Tests: 0 total", "Tests: 0 total"),
+        ];
+        for (case, ran, zero, written) in cases {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            ready_to_close(root, "x", &[ran, zero]);
 
-        let refused = close(root, "x");
-        assert_eq!(refused["reason"], json!("criterion-ran-no-test"), "{refused}");
-        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-        let codes = log.codes();
-        let criteria: Vec<u64> = log.visible().into_iter().filter(|e| e.event_type == "criterion").map(|e| e.id).collect();
-        let expected = translate("close.criterion_ran_no_test", Locale::PtBr)
-            .replace("{code}", &codes[&criteria[1]])
-            .replace("{command}", vitest_zero)
-            .replace("{count}", "0");
-        assert_eq!(refused["hint"], json!(expected), "{refused}");
-        let runs: Vec<(Option<&str>, Option<&str>)> = log
-            .visible()
-            .into_iter()
-            .filter(|e| e.event_type == "criterion_run")
-            .map(|e| (e.str_field("result"), e.str_field("output")))
-            .collect();
-        // O terceiro é o critério que cobre a onda na cópia de teste —
-        // sempre verde, para a rodada não travar a entrega.
-        assert_eq!(runs.len(), 3, "os dois critérios de `proofs` e o da onda rodaram: {runs:?}");
-        assert_eq!(runs[0], (Some("pass"), None), "o go com um pacote sem teste e outro com teste passa");
-        assert_eq!(runs[1].0, Some("fail"));
-        assert_eq!(
-            runs[1].1,
-            Some("Tests no tests"),
-            "a execução recusada guarda o que o executor escreveu: {runs:?}"
-        );
-        assert_eq!(runs[2].0, Some("pass"), "{runs:?}");
-        assert_eq!(State::from_log(&log).phase, Some("running"), "a spec não fechou");
+            let refused = close(root, "x");
+            assert_eq!(refused["reason"], json!("criterion-ran-no-test"), "{case}: {refused}");
+            let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+            let codes = log.codes();
+            let criteria: Vec<u64> =
+                log.visible().into_iter().filter(|e| e.event_type == "criterion").map(|e| e.id).collect();
+            let expected = translate("close.criterion_ran_no_test", Locale::PtBr)
+                .replace("{code}", &codes[&criteria[1]])
+                .replace("{command}", zero)
+                .replace("{count}", "0");
+            assert_eq!(refused["hint"], json!(expected), "{case}: {refused}");
+            let runs: Vec<(Option<&str>, Option<&str>)> = log
+                .visible()
+                .into_iter()
+                .filter(|e| e.event_type == "criterion_run")
+                .map(|e| (e.str_field("result"), e.str_field("output")))
+                .collect();
+            // O terceiro é o critério que cobre a onda na cópia de teste —
+            // sempre verde, para a rodada não travar a entrega.
+            assert_eq!(runs.len(), 3, "{case}: os dois critérios de `proofs` e o da onda rodaram: {runs:?}");
+            assert_eq!(runs[0], (Some("pass"), None), "{case}: a prova que rodou teste passa");
+            assert_eq!(runs[1], (Some("fail"), Some(written)), "{case}: a execução recusada guarda o que o executor escreveu");
+            assert_eq!(runs[2].0, Some("pass"), "{case}: {runs:?}");
+            assert_eq!(State::from_log(&log).phase, Some("running"), "{case}: a spec não fechou");
+        }
     }
 
     /// A leitura de quantos testes o comando rodou vale só na prova de um

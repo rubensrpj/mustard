@@ -52,8 +52,7 @@ pub enum ScanCmd {
     /// `--type`; the answer is the one Mustard gives to that search), `summary` (the
     /// summary of the project map, up to 3 kB; with `--file`, the parts of that
     /// file: each declaration with its kind, name and lines, and the line
-    /// where its tests start), `skill --path <SKILL.md>` (every cited path exists and the
-    /// skill stays under 500 lines), `dump` (the map database table by
+    /// where its tests start), `dump` (the map database table by
     /// table, in a fixed order, for debugging) or `note "<sentence>" --file
     /// <file> [--name <declaration>]` (writes the one-sentence meaning of that
     /// file, or declaration, in business words, so the search finds it by
@@ -116,9 +115,6 @@ pub enum ScanCmd {
         /// measurements of the search, hidden from the help.
         #[arg(long, hide = true)]
         said: Option<String>,
-        /// The skill to check (`skill`).
-        #[arg(long)]
-        path: Option<PathBuf>,
         /// The declaration the question is about (`slice`, `users`,
         /// `history`, `note`).
         #[arg(long)]
@@ -160,7 +156,6 @@ fn map_opts(cmd: ScanCmd) -> crate::commands::map::MapOpts {
         intent,
         described,
         said,
-        path,
         name,
         pr,
         root,
@@ -187,7 +182,6 @@ fn map_opts(cmd: ScanCmd) -> crate::commands::map::MapOpts {
         intent,
         described,
         said,
-        path,
         name,
         pr,
         session: crate::shared::spec_state::session_from_env(),

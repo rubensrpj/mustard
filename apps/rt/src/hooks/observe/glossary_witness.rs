@@ -161,7 +161,6 @@ mod tests {
             intent: None,
             described: None,
             said: None,
-            path: None,
             name: None,
             pr: None,
             session: Some(SESSION.to_string()),

@@ -1009,7 +1009,10 @@ pub(crate) fn backlog_ready(log: &SpecLog) -> Vec<u64> {
 /// (`waiting`): a que espera só por tarefas do mesmo lote, ou já entregues, e
 /// divide arquivo com ele entra no lote, depois delas. E recebe os arquivos
 /// das ondas do plano ainda abertas (`busy`): a parte que cruza um deles vai
-/// para um lote só dela, que espera a onda aberta sem segurar outra parte.
+/// para um lote só dela, que espera a onda aberta sem segurar outra parte. A
+/// parte com mais tarefas que o teto do lote leva só as primeiras da ordem de
+/// prontidão; as outras seguem no backlog, prontas, e na rodada seguinte
+/// esperam a onda que esta abriu.
 /// `Ok(vec![])` sem tarefa pronta no backlog.
 ///
 /// A limpeza ([`is_cleanup`]) nunca entra num lote comum: sai da ordem e da
@@ -3445,23 +3448,8 @@ mod tests {
         wave.map(|w| w.ints("order")).unwrap_or_default()
     }
 
-    /// Com uma tarefa comum e uma limpeza prontas no backlog, a rodada solta
-    /// só a comum: a limpeza segue no backlog, sem onda.
-    #[test]
-    fn cleanup_stays_in_the_backlog_while_another_task_is_left_to_do() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let (said, crit) = backlog_project(root);
-        let normal = backlog_task(root, said, crit, "Mexer no código de um.", "src/a.rs");
-        let tidy = cleanup_task(root, said, crit, "Acertar o comentário de dois.", "src/b.rs");
-
-        let out = round(root, "x", None);
-        assert_eq!(waves_in(&out, "dispatch"), vec![1], "{out}");
-        assert_eq!(wave_order(root, 1), vec![normal], "a onda 1 leva só a tarefa comum");
-        assert_eq!(spec_now(root).current(tidy).and_then(SpecEvent::wave), None, "a limpeza segue sem onda");
-    }
-
-    /// A limpeza espera a onda da tarefa comum terminar. Com a onda 1 no ar,
+    /// A limpeza espera a onda da tarefa comum terminar. A primeira rodada
+    /// solta só a tarefa comum, e a limpeza segue sem onda. Com a onda 1 no ar,
     /// a rodada não forma onda; a que assume a entrega da 1 não solta nada e
     /// manda rodar de novo; a seguinte solta a limpeza sozinha na onda 2, e
     /// entregue a 2 a rodada manda fechar.
@@ -3475,6 +3463,7 @@ mod tests {
         let first = round(root, "x", None);
         assert_eq!(waves_in(&first, "dispatch"), vec![1], "{first}");
         assert_eq!(wave_order(root, 1), vec![normal], "{first}");
+        assert_eq!(spec_now(root).current(tidy).and_then(SpecEvent::wave), None, "a limpeza segue sem onda");
 
         let idle = round(root, "x", None);
         assert_eq!(idle["ok"], json!(true), "{idle}");

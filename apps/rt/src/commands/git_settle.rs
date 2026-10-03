@@ -1460,6 +1460,7 @@ mod tests {
         let template = TEMPLATE.get_or_init(|| {
             let d = tempdir().expect("template tempdir");
             build_fixture(d.path());
+            crate::shared::test_fixture::quiet_maintenance(&d.path().join("repo"));
             d
         });
         let dir = crate::shared::test_fixture::clone_of(template.path());
@@ -1951,39 +1952,37 @@ mod tests {
         );
     }
 
-    #[test]
-    fn parse_submodule_paths_keeps_initialized_entries_sorted() {
-        let status = " 1111111 packages/one (heads/dev)\n\
-                      +2222222 apps/two (v1.0-2-g2222222)\n\
-                      -3333333 not/initialized\n\
-                      U4444444 conflicted/three\n";
-        assert_eq!(
-            parse_submodule_paths(status),
-            vec!["apps/two", "conflicted/three", "packages/one"],
-            "the `-` entry has no checkout to inspect and is skipped"
-        );
-        assert!(parse_submodule_paths("").is_empty(), "a repo with no submodules yields none");
-    }
-
-    /// The shape the ONLY caller can actually deliver. `git_out` trims the whole
-    /// stdout, so a CLEAN submodule — marked by a leading SPACE — arrives with
-    /// that marker already gone from the FIRST line. The previous test fed a
-    /// leading space the parser never sees in production and stayed green while
-    /// a clean single-submodule monorepo reported no submodule at all.
+    /// Every shape goes through the trim its ONLY caller applies: `git_out`
+    /// trims the whole stdout, so a CLEAN submodule — marked by a leading
+    /// SPACE — arrives with that marker already gone from the FIRST line. An
+    /// input with a leading space the parser never sees in production would
+    /// stay green while a clean single-submodule monorepo reported no
+    /// submodule at all. Entries come back sorted; the `-` marker is not
+    /// whitespace, so it still survives and still means "no checkout to
+    /// inspect"; a repo with no submodules yields none.
     #[test]
     fn parse_submodule_paths_survives_the_trim_its_caller_applies() {
-        let raw = " 1111111 sub (heads/dev)\n";
-        assert_eq!(
-            parse_submodule_paths(raw.trim()),
-            vec!["sub"],
-            "a clean lone submodule must survive the caller's trim",
-        );
-        // Two clean entries: the first loses its marker, the second keeps it.
-        let two = " aaaaaaa first (heads/dev)\n aaaaaaa second (heads/dev)\n";
-        assert_eq!(parse_submodule_paths(two.trim()), vec!["first", "second"]);
-        // The `-` marker is not whitespace, so it still survives and still means
-        // "no checkout to inspect".
-        assert!(parse_submodule_paths("-3333333 not/initialized".trim()).is_empty());
+        let cases: [(&str, &str, Vec<&str>); 5] = [
+            ("a clean lone submodule", " 1111111 sub (heads/dev)\n", vec!["sub"]),
+            (
+                "two clean entries: the first loses its marker, the second keeps it",
+                " aaaaaaa first (heads/dev)\n aaaaaaa second (heads/dev)\n",
+                vec!["first", "second"],
+            ),
+            ("an uninitialized entry", "-3333333 not/initialized", vec![]),
+            (
+                "the four markers, sorted, with the uninitialized one skipped",
+                " 1111111 packages/one (heads/dev)\n\
+                 +2222222 apps/two (v1.0-2-g2222222)\n\
+                 -3333333 not/initialized\n\
+                 U4444444 conflicted/three\n",
+                vec!["apps/two", "conflicted/three", "packages/one"],
+            ),
+            ("a repo with no submodules", "", vec![]),
+        ];
+        for (case, raw, expected) in cases {
+            assert_eq!(parse_submodule_paths(raw.trim()), expected, "{case}");
+        }
     }
 
     /// A submodule carries no `mustard.json` of its own, so the bases of a unit

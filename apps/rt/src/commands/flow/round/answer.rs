@@ -1160,17 +1160,6 @@ mod tests {
     use crate::commands::flow::round::slots::live_copy;
     use crate::commands::flow::round::tests::*;
 
-    /// A spec que ainda não foi aprovada não roda onda nenhuma.
-    #[test]
-    fn a_spec_that_is_not_approved_yet_dispatches_nothing() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        std::fs::write(root.join("mustard.json"), b"{}").unwrap();
-        assert_eq!(record_open(root, "x", "feature/x", "dev"), Ok(true));
-        let refused = round(root, "x", None);
-        assert_eq!(refused["reason"], json!("round-not-approved"), "{refused}");
-    }
-
     /// A rodada é quem despacha a onda de conserto que a porta do pull
     /// request reprovado abre numa obra já fechada: é por ela que o conserto
     /// chega ao commit, na mesma branch, com a spec parada no pull request

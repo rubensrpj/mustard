@@ -359,82 +359,89 @@ pub(super) mod tests {
             assert!(!text.contains(said), "{said}: {out}");
         }
     }
-    /// O filho ganha o `use super::` que o liga ao pai que já o declarava
-    /// (`mod carried;`): o pai chega ao filho e o filho volta ao pai, e isso
-    /// não é ciclo.
+
+    /// O pai e o filho que ele declara (`mod carried;`) chegam um ao outro e
+    /// isso não é ciclo: o filho ganha o `use super::` do pai que já o
+    /// declarava; o pai ganha o `mod carried;` de um filho que já o usava; a
+    /// onda traz de uma vez a porta que importa o filho, o filho que usa o pai
+    /// e o pai que o declara.
     #[test]
-    fn a_child_module_that_uses_its_declaring_parent_closes_no_cycle() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        project_of(root, &[CARRIED], None, &small_map("rust", &[(PENDING, &[CARRIED]), (CARRIED, &[])]));
-        let out = back_of(root, &[CARRIED], small_map("rust", &[(PENDING, &[CARRIED]), (CARRIED, &[PENDING])]));
-        assert_eq!(out["ok"], json!(true), "{out}");
-        assert!(!warned(&out).contains(CYCLE), "{out}");
+    fn a_parent_and_the_child_it_declares_reaching_each_other_close_no_cycle() {
+        let door = [PR_DOOR, CARRIED, PENDING];
+        let cases: [(&str, &[&str], Value, Value); 3] = [
+            (
+                "the child uses its declaring parent",
+                &[CARRIED],
+                small_map("rust", &[(PENDING, &[CARRIED]), (CARRIED, &[])]),
+                small_map("rust", &[(PENDING, &[CARRIED]), (CARRIED, &[PENDING])]),
+            ),
+            (
+                "the parent declares a child that already used it",
+                &[PENDING],
+                small_map("rust", &[(PENDING, &[]), (CARRIED, &[PENDING])]),
+                small_map("rust", &[(PENDING, &[CARRIED]), (CARRIED, &[PENDING])]),
+            ),
+            (
+                "a door, a child and its parent come together",
+                &door,
+                small_map("rust", &[(PR_DOOR, &[PENDING]), (PENDING, &[]), (CARRIED, &[])]),
+                small_map("rust", &[(PR_DOOR, &[PENDING, CARRIED]), (PENDING, &[CARRIED]), (CARRIED, &[PENDING])]),
+            ),
+        ];
+        for (case, files, base, after) in cases {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            project_of(root, files, None, &base);
+            let out = back_of(root, files, after);
+            assert_eq!(out["ok"], json!(true), "{case}: {out}");
+            assert!(!warned(&out).contains(CYCLE), "{case}: {out}");
+        }
     }
 
-    /// O pai ganha o `mod carried;` de um filho que já usava o pai.
+    /// Dois arquivos que passam a se importar fecham um ciclo de verdade, e o
+    /// aviso continua: dois irmãos filhos do mesmo pai (com a linha do arquivo
+    /// no aviso); um pai que não declara o filho, que é só um arquivo que
+    /// importa outro; no TypeScript, o `index` que reexporta o `./x` de onde o
+    /// `./x` importa o `index`.
     #[test]
-    fn a_parent_that_declares_a_child_already_using_it_closes_no_cycle() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        project_of(root, &[PENDING], None, &small_map("rust", &[(PENDING, &[]), (CARRIED, &[PENDING])]));
-        let out = back_of(root, &[PENDING], small_map("rust", &[(PENDING, &[CARRIED]), (CARRIED, &[PENDING])]));
-        assert_eq!(out["ok"], json!(true), "{out}");
-        assert!(!warned(&out).contains(CYCLE), "{out}");
-    }
-
-    /// A onda nova traz de uma vez a porta que importa o filho, o filho que
-    /// usa o pai e o pai que o declara: nenhum dos três arquivos fecha ciclo.
-    #[test]
-    fn a_door_a_child_and_its_parent_together_close_no_cycle() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let files = [PR_DOOR, CARRIED, PENDING];
-        project_of(root, &files, None, &small_map("rust", &[(PR_DOOR, &[PENDING]), (PENDING, &[]), (CARRIED, &[])]));
-        let after = small_map("rust", &[(PR_DOOR, &[PENDING, CARRIED]), (PENDING, &[CARRIED]), (CARRIED, &[PENDING])]);
-        let out = back_of(root, &files, after);
-        assert_eq!(out["ok"], json!(true), "{out}");
-        assert!(!warned(&out).contains(CYCLE), "{out}");
-    }
-
-    /// Dois irmãos, filhos do mesmo pai, que passam a se importar fecham um
-    /// ciclo de verdade: o aviso continua.
-    #[test]
-    fn two_sibling_modules_that_import_each_other_still_close_a_cycle() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
+    fn two_files_that_start_importing_each_other_still_close_a_cycle() {
         let other = "src/comandos/evento/pending/other.rs";
-        let base = small_map("rust", &[(PENDING, &[CARRIED, other]), (CARRIED, &[other]), (other, &[])]);
-        project_of(root, &[other], None, &base);
-        let after = small_map("rust", &[(PENDING, &[CARRIED, other]), (CARRIED, &[other]), (other, &[CARRIED])]);
-        let out = back_of(root, &[other], after);
-        assert_eq!(out["ok"], json!(true), "{out}");
-        assert!(warned(&out).contains(CYCLE), "{out}");
-        assert!(warned(&out).contains(&format!("`{other}` linha")), "{out}");
-    }
-
-    /// Um pai que não declara o filho é só um arquivo que importa outro: se
-    /// os dois se importam, é ciclo.
-    #[test]
-    fn two_files_that_import_each_other_close_a_cycle_when_neither_declares_the_other() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
         let (one, two) = ("src/comandos/evento/um.rs", "src/comandos/evento/dois.rs");
-        project_of(root, &[two], None, &small_map("rust", &[(one, &[two]), (two, &[])]));
-        let out = back_of(root, &[two], small_map("rust", &[(one, &[two]), (two, &[one])]));
-        assert!(warned(&out).contains(CYCLE), "{out}");
-    }
-
-    /// No TypeScript a pasta é importada pelo `index`, e o `index` que
-    /// reexporta o `./x` de onde o `./x` importa o `index` é um ciclo de
-    /// verdade: o aviso continua.
-    #[test]
-    fn an_index_and_the_file_it_reexports_still_close_a_cycle_in_typescript() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
         let (index, x) = ("src/pasta/index.ts", "src/pasta/x.ts");
-        project_of(root, &[x], None, &small_map("typescript", &[(index, &[x]), (x, &[])]));
-        let out = back_of(root, &[x], small_map("typescript", &[(index, &[x]), (x, &[index])]));
-        assert!(warned(&out).contains(CYCLE), "{out}");
+        type Case<'a> = (&'a str, &'a [&'a str], Value, Value, Option<&'a str>);
+        let cases: [Case; 3] = [
+            (
+                "two siblings of the same parent",
+                &[other],
+                small_map("rust", &[(PENDING, &[CARRIED, other]), (CARRIED, &[other]), (other, &[])]),
+                small_map("rust", &[(PENDING, &[CARRIED, other]), (CARRIED, &[other]), (other, &[CARRIED])]),
+                Some(other),
+            ),
+            (
+                "a parent that does not declare the other",
+                &[two],
+                small_map("rust", &[(one, &[two]), (two, &[])]),
+                small_map("rust", &[(one, &[two]), (two, &[one])]),
+                None,
+            ),
+            (
+                "an index and the file it reexports in typescript",
+                &[x],
+                small_map("typescript", &[(index, &[x]), (x, &[])]),
+                small_map("typescript", &[(index, &[x]), (x, &[index])]),
+                None,
+            ),
+        ];
+        for (case, files, base, after, named) in cases {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            project_of(root, files, None, &base);
+            let out = back_of(root, files, after);
+            assert_eq!(out["ok"], json!(true), "{case}: {out}");
+            assert!(warned(&out).contains(CYCLE), "{case}: {out}");
+            if let Some(file) = named {
+                assert!(warned(&out).contains(&format!("`{file}` linha")), "{case}: {out}");
+            }
+        }
     }
 }

@@ -1302,15 +1302,16 @@ mod tests {
     /// Um repositório parado na base de integração `dev` — nenhuma unidade aberta.
     fn repo() -> tempfile::TempDir {
         let dir = tempdir().expect("tempdir");
-        let root = dir.path();
-        git(root, &["init", "."]);
-        git(root, &["config", "user.email", "t@t"]);
-        git(root, &["config", "user.name", "t"]);
-        git(root, &["checkout", "-b", "dev"]);
-        std::fs::write(root.join("mustard.json"), r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#)
-            .expect("cfg");
-        git(root, &["add", "-A"]);
-        git(root, &["commit", "-m", "seed"]);
+        crate::shared::test_fixture::repo_from_template(dir.path(), "pending.repo", |root| {
+            git(root, &["init", "."]);
+            git(root, &["config", "user.email", "t@t"]);
+            git(root, &["config", "user.name", "t"]);
+            git(root, &["checkout", "-b", "dev"]);
+            std::fs::write(root.join("mustard.json"), r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#)
+                .expect("cfg");
+            git(root, &["add", "-A"]);
+            git(root, &["commit", "-m", "seed"]);
+        });
         dir
     }
 

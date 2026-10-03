@@ -1292,15 +1292,18 @@ pub(crate) mod fixture {
         let dir = tempfile::tempdir().expect("tempdir");
         let resolved = std::fs::canonicalize(dir.path()).expect("resolved tempdir");
         let root = PathBuf::from(resolved.to_string_lossy().trim_start_matches(r"\\?\").to_string());
-        std::fs::write(root.join("mustard.json"), config).expect("config");
-        for (rel, text) in files {
-            let path = root.join(rel);
-            std::fs::create_dir_all(path.parent().expect("parent")).expect("folder");
-            std::fs::write(path, text).expect("file");
-        }
-        git(&root, &["init", "-q", "-b", "dev"]);
-        git(&root, &["add", "-A"]);
-        git(&root, &["commit", "-q", "-m", "semente"]);
+        let key = format!("word_search.repo_with:{config}:{files:?}");
+        crate::shared::test_fixture::repo_from_template(&root, &key, |root| {
+            std::fs::write(root.join("mustard.json"), config).expect("config");
+            for (rel, text) in files {
+                let path = root.join(rel);
+                std::fs::create_dir_all(path.parent().expect("parent")).expect("folder");
+                std::fs::write(path, text).expect("file");
+            }
+            git(root, &["init", "-q", "-b", "dev"]);
+            git(root, &["add", "-A"]);
+            git(root, &["commit", "-q", "-m", "semente"]);
+        });
         for module in map["modules"].as_array_mut().expect("modules") {
             let rel = module["path"].as_str().expect("path").to_string();
             module["blob"] = serde_json::json!(git(&root, &["hash-object", "--", &rel]));

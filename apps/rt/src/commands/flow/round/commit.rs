@@ -1180,19 +1180,7 @@ mod tests {
     fn a_project_in_git_without_a_map_has_it_created_and_again_after_it_is_deleted() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        let git = |args: &[&str]| {
-            let out = std::process::Command::new("git")
-                .args(["-c", "user.email=t@example.com", "-c", "user.name=t", "-c", "commit.gpgsign=false"])
-                .args(args)
-                .current_dir(root)
-                .output()
-                .expect("git");
-            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
-        };
-        git(&["init", "-q"]);
-        std::fs::write(root.join("a.txt"), "x").unwrap();
-        git(&["add", "a.txt"]);
-        git(&["commit", "-q", "-m", "semente"]);
+        crate::shared::test_fixture::seeded_repo(root, &[("a.txt", "x")]);
         let calls = std::cell::Cell::new(0);
         let model = project_map::model_path(root);
 
@@ -1240,19 +1228,7 @@ mod tests {
     fn a_map_of_another_scan_build_is_read_again_even_with_the_project_parked() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        let git = |args: &[&str]| {
-            let out = std::process::Command::new("git")
-                .args(["-c", "user.email=t@example.com", "-c", "user.name=t", "-c", "commit.gpgsign=false"])
-                .args(args)
-                .current_dir(root)
-                .output()
-                .expect("git");
-            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
-        };
-        git(&["init", "-q"]);
-        std::fs::write(root.join("a.txt"), "x").unwrap();
-        git(&["add", "a.txt"]);
-        git(&["commit", "-q", "-m", "semente"]);
+        crate::shared::test_fixture::seeded_repo(root, &[("a.txt", "x")]);
         let now = project_map::listing(root).expect("dentro do git");
         let map = serde_json::json!({
             "state": {"head": now.head, "listing": now.digest(), "base": now.base.name, "base_tip": now.base.tip},
@@ -1503,9 +1479,6 @@ mod tests {
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
         round(root, "x", None);
         std::fs::write(root.join("src/a.rs"), "fn one() {}\nfn dois() {}\n").unwrap();
-        git_at(root, &["config", "user.email", "t@t"]);
-        git_at(root, &["config", "user.name", "t"]);
-        git_at(root, &["config", "commit.gpgsign", "false"]);
 
         let report = json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"], "commit": "a soma sai"});
         assert_eq!(returned(root, report)["ok"], json!(true));
@@ -1529,9 +1502,6 @@ mod tests {
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs", "src/b.rs", "src/c.rs"], &[])]);
         round(root, "x", None);
-        git_at(root, &["config", "user.email", "t@t"]);
-        git_at(root, &["config", "user.name", "t"]);
-        git_at(root, &["config", "commit.gpgsign", "false"]);
 
         std::fs::remove_file(root.join("src/a.rs")).unwrap();
         git_at(root, &["rm", "-q", "src/b.rs"]);
@@ -1636,9 +1606,10 @@ mod tests {
         assert_eq!(delivered_count(root), 1, "the corrected call records the delivery once");
     }
 
-    /// O caminho que existe fora do repositório, absoluto ou com `../`, é
-    /// recusado pelo git sem gravar nada. A chamada corrigida leva ao commit
-    /// um arquivo novo, que ainda não estava no git.
+    /// O caminho que existe fora do repositório, absoluto ou com `../`, e o
+    /// que o `.gitignore` ignora são recusados pelo git sem gravar nada. A
+    /// chamada corrigida leva ao commit um arquivo novo, que ainda não estava
+    /// no git, e deixa de fora o ignorado.
     #[test]
     fn a_path_outside_the_repository_is_refused_by_git_and_records_nothing() {
         let dir = tempdir().unwrap();
@@ -1650,28 +1621,18 @@ mod tests {
 
         let name = outside.path().file_name().unwrap().to_string_lossy().to_string();
         let absolute = outside.path().join("fora.rs").to_string_lossy().to_string();
-        let wrong: Vec<Value> =
-            [absolute, format!("../{name}/fora.rs")].iter().map(|path| listing(&["src/a.rs", path.as_str()])).collect();
+        std::fs::write(root.join(".gitignore"), "src/gerado.rs\n").unwrap();
+        std::fs::write(root.join("src/gerado.rs"), "fn gerado() {}\n").unwrap();
+        let wrong: Vec<Value> = [absolute, format!("../{name}/fora.rs"), "src/gerado.rs".to_string()]
+            .iter()
+            .map(|path| listing(&["src/a.rs", path.as_str()]))
+            .collect();
         std::fs::write(root.join("src/novo.rs"), "fn novo() {}\n").unwrap();
         refused_by_git_records_nothing(root, &wrong, || {}, &["src/a.rs", "src/novo.rs"]);
         let shown = Command::new("git").args(["show", "--name-only", "--format=", "HEAD"]).current_dir(root).output();
         let shown = String::from_utf8_lossy(&shown.unwrap().stdout).to_string();
         assert!(shown.lines().any(|line| line == "src/novo.rs"), "the new file went into the commit: {shown}");
-    }
-
-    /// O caminho que o `.gitignore` ignora é recusado pelo git sem gravar
-    /// nada, e a chamada sem ele grava a entrega uma vez só.
-    #[test]
-    fn an_ignored_path_is_refused_by_git_and_records_nothing() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
-        round(root, "x", None);
-        std::fs::write(root.join(".gitignore"), "src/gerado.rs\n").unwrap();
-        std::fs::write(root.join("src/gerado.rs"), "fn gerado() {}\n").unwrap();
-
-        let wrong = [listing(&["src/a.rs", "src/gerado.rs"])];
-        refused_by_git_records_nothing(root, &wrong, || {}, &["src/a.rs"]);
+        assert!(!shown.contains("gerado"), "the ignored file stayed out of the commit: {shown}");
     }
 
     /// O gancho do commit que recusa não deixa nada gravado, e a chamada

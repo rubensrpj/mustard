@@ -555,7 +555,6 @@ mod tests {
     use crate::commands::flow::grill::{grill_for, GrillOpts};
     use crate::commands::spec_events::pages::copy::{sent, sent_items};
     use crate::commands::spec_events::write::{record_open, seed_at, WriteOpts};
-    use std::process::Command;
     use tempfile::tempdir;
 
     const GOAL: &str = "Travar o merge enquanto houver pendência aberta.";
@@ -586,27 +585,11 @@ mod tests {
         report["id"].as_u64().unwrap_or_else(|| panic!("não gravou: {report}"))
     }
 
-    fn git(root: &Path, args: &[&str]) {
-        let out = Command::new("git")
-            .args(["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"])
-            .args(args)
-            .current_dir(root)
-            .output()
-            .expect("git");
-        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
-    }
-
     /// Um projeto com dois arquivos no git e uma spec cujo levantamento
     /// terminou: todos os pontos fechados, pronta para o plano.
     fn surveyed(root: &Path, spec: &str) -> u64 {
-        std::fs::create_dir_all(root.join("src")).unwrap();
-        std::fs::write(root.join("mustard.json"), b"{}").unwrap();
-        for name in ["a.rs", "b.rs"] {
-            std::fs::write(root.join("src").join(name), "fn one() {}\nfn dois() {}\n").unwrap();
-        }
-        git(root, &["init", "-q"]);
-        git(root, &["add", "src"]);
-        git(root, &["commit", "-q", "-m", "semente"]);
+        let source = "fn one() {}\nfn dois() {}\n";
+        crate::shared::test_fixture::seeded_repo(root, &[("mustard.json", "{}"), ("src/a.rs", source), ("src/b.rs", source)]);
 
         assert_eq!(record_open(root, spec, &format!("feature/{spec}"), "dev"), Ok(true));
         let said = id_of(&write(root, Some(spec), "message", json!({"author": "user", "text": GOAL})));

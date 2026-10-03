@@ -1849,31 +1849,33 @@ mod tests {
     /// `flow` is written verbatim as `git.flow`; `None` writes a `mustard.json`
     /// with no `git` key at all, which is what the current installer leaves.
     fn seed_repo_declaring(root: &std::path::Path, flow: Option<&str>) {
-        let cfg = match flow {
-            Some(flow) => format!(r#"{{"git":{{"flow":{flow}}}}}"#),
-            None => "{}".to_string(),
-        };
-        std::fs::write(root.join("mustard.json"), cfg).expect("cfg");
-        std::fs::create_dir_all(root.join(".claude")).expect("claude dir");
-        std::fs::write(root.join(".claude").join(".gitignore"), SHIPPED_SEED_GITIGNORE)
-            .expect("ignore");
-        git(root, &["init"]);
-        git(root, &["config", "user.email", "t@example.com"]);
-        git(root, &["config", "user.name", "t"]);
-        git(root, &["checkout", "-b", "dev"]);
-        std::fs::write(root.join("f.txt"), "on dev").expect("seed");
-        git(root, &["add", "-A"]);
-        git(root, &["commit", "-m", "dev"]);
-        git(root, &["checkout", "-b", "release/2026-Q3"]);
-        std::fs::write(root.join("f.txt"), "on the release line").expect("seed");
-        git(root, &["add", "-A"]);
-        git(root, &["commit", "-m", "release"]);
-        git(root, &["checkout", "dev"]);
-        for branch in ["dev", "release/2026-Q3"] {
-            git(root, &["update-ref", &format!("refs/remotes/origin/{branch}"), branch]);
-        }
-        // …and now it is a CLONE: the picked base lives on the remote only.
-        git(root, &["branch", "-D", "release/2026-Q3"]);
+        crate::shared::test_fixture::repo_from_template(root, &format!("work_branch.declaring:{flow:?}"), |root| {
+            let cfg = match flow {
+                Some(flow) => format!(r#"{{"git":{{"flow":{flow}}}}}"#),
+                None => "{}".to_string(),
+            };
+            std::fs::write(root.join("mustard.json"), cfg).expect("cfg");
+            std::fs::create_dir_all(root.join(".claude")).expect("claude dir");
+            std::fs::write(root.join(".claude").join(".gitignore"), SHIPPED_SEED_GITIGNORE)
+                .expect("ignore");
+            git(root, &["init"]);
+            git(root, &["config", "user.email", "t@example.com"]);
+            git(root, &["config", "user.name", "t"]);
+            git(root, &["checkout", "-b", "dev"]);
+            std::fs::write(root.join("f.txt"), "on dev").expect("seed");
+            git(root, &["add", "-A"]);
+            git(root, &["commit", "-m", "dev"]);
+            git(root, &["checkout", "-b", "release/2026-Q3"]);
+            std::fs::write(root.join("f.txt"), "on the release line").expect("seed");
+            git(root, &["add", "-A"]);
+            git(root, &["commit", "-m", "release"]);
+            git(root, &["checkout", "dev"]);
+            for branch in ["dev", "release/2026-Q3"] {
+                git(root, &["update-ref", &format!("refs/remotes/origin/{branch}"), branch]);
+            }
+            // …and now it is a CLONE: the picked base lives on the remote only.
+            git(root, &["branch", "-D", "release/2026-Q3"]);
+        });
     }
 
 
@@ -1888,27 +1890,29 @@ mod tests {
     /// DISTINCT commit, checked out on `dev`. The distinct tips are what make
     /// "cut from `qas`" a provable claim rather than a coincidence.
     fn seed_three_tier_repo(root: &std::path::Path) {
-        std::fs::write(
-            root.join("mustard.json"),
-            r#"{"git":{"flow":{"*":"dev","dev":"qas","qas":"main"}}}"#,
-        )
-        .expect("cfg");
-        std::fs::create_dir_all(root.join(".claude")).expect("claude dir");
-        std::fs::write(root.join(".claude").join(".gitignore"), SHIPPED_SEED_GITIGNORE)
-            .expect("ignore");
-        git(root, &["init"]);
-        git(root, &["config", "user.email", "t@example.com"]);
-        git(root, &["config", "user.name", "t"]);
-        git(root, &["checkout", "-b", "main"]);
-        std::fs::write(root.join("f.txt"), "on main").expect("seed");
-        git(root, &["add", "-A"]);
-        git(root, &["commit", "-m", "main"]);
-        for (branch, body) in [("qas", "on qas"), ("dev", "on dev")] {
-            git(root, &["checkout", "-b", branch]);
-            std::fs::write(root.join("f.txt"), body).expect("seed");
+        crate::shared::test_fixture::repo_from_template(root, "work_branch.three_tier", |root| {
+            std::fs::write(
+                root.join("mustard.json"),
+                r#"{"git":{"flow":{"*":"dev","dev":"qas","qas":"main"}}}"#,
+            )
+            .expect("cfg");
+            std::fs::create_dir_all(root.join(".claude")).expect("claude dir");
+            std::fs::write(root.join(".claude").join(".gitignore"), SHIPPED_SEED_GITIGNORE)
+                .expect("ignore");
+            git(root, &["init"]);
+            git(root, &["config", "user.email", "t@example.com"]);
+            git(root, &["config", "user.name", "t"]);
+            git(root, &["checkout", "-b", "main"]);
+            std::fs::write(root.join("f.txt"), "on main").expect("seed");
             git(root, &["add", "-A"]);
-            git(root, &["commit", "-m", branch]);
-        }
+            git(root, &["commit", "-m", "main"]);
+            for (branch, body) in [("qas", "on qas"), ("dev", "on dev")] {
+                git(root, &["checkout", "-b", branch]);
+                std::fs::write(root.join("f.txt"), body).expect("seed");
+                git(root, &["add", "-A"]);
+                git(root, &["commit", "-m", branch]);
+            }
+        });
     }
 
     // -----------------------------------------------------------------------
@@ -1943,21 +1947,23 @@ mod tests {
     /// `mustard.json`, the SHIPPED `.claude/.gitignore` and a seed source file
     /// — the shape an already-installed project really has.
     fn seed_repo(root: &std::path::Path) {
-        std::fs::write(
-            root.join("mustard.json"),
-            r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#,
-        )
-        .expect("cfg");
-        let claude = root.join(".claude");
-        std::fs::create_dir_all(&claude).expect("claude dir");
-        std::fs::write(claude.join(".gitignore"), SHIPPED_SEED_GITIGNORE).expect("ignore");
-        git(root, &["init"]);
-        git(root, &["config", "user.email", "t@example.com"]);
-        git(root, &["config", "user.name", "t"]);
-        git(root, &["checkout", "-b", "dev"]);
-        std::fs::write(root.join("f.txt"), "seed").expect("seed");
-        git(root, &["add", "-A"]);
-        git(root, &["commit", "-m", "init"]);
+        crate::shared::test_fixture::repo_from_template(root, "work_branch.seed_repo", |root| {
+            std::fs::write(
+                root.join("mustard.json"),
+                r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#,
+            )
+            .expect("cfg");
+            let claude = root.join(".claude");
+            std::fs::create_dir_all(&claude).expect("claude dir");
+            std::fs::write(claude.join(".gitignore"), SHIPPED_SEED_GITIGNORE).expect("ignore");
+            git(root, &["init"]);
+            git(root, &["config", "user.email", "t@example.com"]);
+            git(root, &["config", "user.name", "t"]);
+            git(root, &["checkout", "-b", "dev"]);
+            std::fs::write(root.join("f.txt"), "seed").expect("seed");
+            git(root, &["add", "-A"]);
+            git(root, &["commit", "-m", "init"]);
+        });
     }
 
     /// The path a unit's own spec lives at — the shape the field really has.
