@@ -59,24 +59,20 @@ pub enum SpecCmd {
     /// projeto), conta hoje de novo (o dia aberto vai à página como parcial e
     /// nunca ao arquivo dos fechados) e prepara o template, os lotes, com o
     /// resumo da máquina, e a ordem do que fazer: publicar a página, se ela
-    /// ainda não tem endereço, e copiar os lotes. Recontar é apagar o arquivo
-    /// do gasto: o comando o refaz pelas conversas. Com `--republish`, prepara
-    /// a publicação nova e a cópia de todos os dias, para quem perdeu o link
-    /// da página. Com `--url`, grava o endereço que a publicação devolveu;
-    /// com `--copied`, grava a cópia preparada como feita. Funciona sem spec
-    /// aberta.
+    /// ainda não tem endereço, e copiar os lotes. A cópia preparada vale como
+    /// feita. Recontar é apagar o arquivo do gasto: o comando o refaz pelas
+    /// conversas. Com `--republish`, prepara a publicação nova e a cópia de
+    /// todos os dias, para quem perdeu o link da página. Com `--url`, grava o
+    /// endereço que a publicação devolveu. Funciona sem spec aberta.
     #[command(name = "spend")]
     #[command(display_order = 23)]
     Spend {
         /// Prepara a publicação nova da página e a cópia de todos os dias.
-        #[arg(long, conflicts_with_all = ["url", "copied"])]
+        #[arg(long, conflicts_with = "url")]
         republish: bool,
         /// Grava o endereço que a publicação da página devolveu.
-        #[arg(long, conflicts_with = "copied")]
-        url: Option<String>,
-        /// Grava a cópia preparada como feita.
         #[arg(long)]
-        copied: bool,
+        url: Option<String>,
         /// Any directory inside the repo. Defaults to the current dir.
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -89,8 +85,8 @@ pub fn dispatch(cmd: SpecCmd) {
         SpecCmd::Page { body, out, title, subtitle, kind, root } => {
             spec::page::run(&spec::page::PageOpts { root, body, out, title, subtitle, kind });
         }
-        SpecCmd::Spend { republish, url, copied, root } => {
-            spec::spend::run(&spec::spend::SpendOpts { root, republish, url, copied });
+        SpecCmd::Spend { republish, url, root } => {
+            spec::spend::run(&spec::spend::SpendOpts { root, republish, url });
         }
     }
 }

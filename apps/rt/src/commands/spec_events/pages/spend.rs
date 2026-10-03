@@ -1,29 +1,19 @@
 //! A cópia do gasto para o banco de dados da página do gasto.
 //!
-//! A página do gasto é uma só por máquina: o template dela, os documentos e
-//! os lotes moram na pasta do gasto da máquina (`io::spend::machine_dir`), e
-//! não na pasta de um projeto. A preparação segue o molde da cópia da spec
-//! ([`super::copy`]): cada documento vai num arquivo JSON próprio, com a marca
-//! da preparação no nome (`days/2026-10-01-mustard@20261002.json`), e os
-//! arquivos entram em lotes de até [`copy::BATCH_MAX`] escritas
-//! (`days-<n>.json`), que o orquestrador manda ao banco pela ferramenta
-//! `ArtifactData`, sem ler os itens. A resposta traz as escritas de cada lote
-//! prontas, em `copy.spend.writes`, com o `file_path` absoluto.
+//! A página é uma só por máquina: o template dela, os documentos e os lotes
+//! moram na pasta do gasto da máquina (`io::spend::machine_dir`), não na de um
+//! projeto. A preparação segue o molde da cópia da spec ([`super::copy`]): cada
+//! documento vai num arquivo JSON próprio e os arquivos entram em lotes de até
+//! [`copy::BATCH_MAX`] escritas, que o orquestrador manda ao banco pela
+//! ferramenta `ArtifactData`; a resposta traz as escritas de cada lote prontas,
+//! em `copy.spend.writes`, com o `file_path` absoluto.
 //!
-//! ## O que a cópia leva
-//!
-//! - as linhas dos dias fechados que a página ainda não recebeu: um dia
-//!   fechado não muda, e o `--republish` leva todas, para o banco vazio da
-//!   página nova;
-//! - as linhas de hoje, o dia aberto, marcadas como parciais, a cada cópia: a
-//!   conta de hoje cresce, e a linha se troca no banco até o dia fechar, quando
-//!   a linha fechada toma o lugar dela;
-//! - o resumo da máquina (`summary/current`), trocado a cada cópia.
-//!
-//! O banco só troca um documento que já existe quando a escrita traz a versão
-//! dele (`if_version`). O arquivo do gasto guarda a versão de cada documento,
-//! que sobe a cada cópia gravada como feita, e a preparação a põe em cada
-//! escrita; o `--republish` vai para um banco vazio e não leva versão nenhuma.
+//! A cópia leva as linhas dos dias fechados que a página ainda não recebeu (a
+//! página nova, da primeira publicação e do `--republish`, leva todas), as
+//! linhas de hoje como parciais, a cada cópia, e o resumo da máquina
+//! (`summary/current`). O banco só troca um documento que já existe quando a
+//! escrita traz a versão dele (`if_version`): o arquivo do gasto guarda a das
+//! linhas do dia aberto e a do resumo, e a preparação as põe em cada escrita.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -75,7 +65,8 @@ pub(crate) struct Prepared {
     pub writes: Vec<Vec<Value>>,
     /// O último dia fechado das linhas dos lotes; `None` sem linha fechada.
     pub through: Option<String>,
-    /// Os documentos que os lotes levam, pelo nome `coleção/doc_id`.
+    /// Os documentos que a cópia seguinte troca (as linhas do dia aberto e o
+    /// resumo), pelo nome `coleção/doc_id`.
     pub docs: Vec<String>,
     /// O caminho absoluto do template que a publicação usa.
     pub template: String,
@@ -99,11 +90,11 @@ pub(crate) fn prepare(dir: &Path, plan: &Plan<'_>, lang: Locale) -> Result<Prepa
     let mark = mark_of(&plan.summary.today.day);
     let mut writes = Vec::new();
     for row in plan.closed.iter().copied().chain(plan.open) {
-        writes.push(copy::set_in(dir, &folder, mark, DAYS, &row.doc_id(), &row.body()).map_err(io)?);
+        writes.push(copy::set_in(dir, &folder, mark, DAYS, &row.doc_id(), &json!(row)).map_err(io)?);
     }
-    writes.push(copy::set_in(dir, &folder, mark, SUMMARY_COLLECTION, SUMMARY_DOC, &plan.summary.body()).map_err(io)?);
+    writes.push(copy::set_in(dir, &folder, mark, SUMMARY_COLLECTION, SUMMARY_DOC, &json!(plan.summary)).map_err(io)?);
     copy::pin(&mut writes, Vec::new(), |name| plan.versions.get(name).map(|version| json!(version)));
-    let docs = writes.iter().map(copy::doc_name).collect();
+    let docs = writes[plan.closed.len()..].iter().map(copy::doc_name).collect();
     let (batches, sent) = copy::batches_in(dir, &folder, BATCH_NAME, &writes).map_err(io)?;
     Ok(Prepared {
         rows: plan.closed.len() + plan.open.len(),
@@ -180,24 +171,12 @@ mod tests {
     use super::*;
     use mustard_core::domain::spend::summarize;
 
-    fn rows(count: usize) -> Vec<DayRow> {
-        (0..count)
-            .map(|n| DayRow {
-                day: format!("2026-{:02}-{:02}", 1 + n / 28, 1 + n % 28),
-                project: "Loja Web".to_string(),
-                actions: 1,
-                ..DayRow::default()
-            })
-            .collect()
+    fn row(day: String, partial: bool) -> DayRow {
+        DayRow { day, project: "Loja Web".to_string(), actions: 1, partial, ..DayRow::default() }
     }
 
     /// O plano de `closed` e `open` num dia de hoje, com as `versions` dadas.
-    fn prepare_for(
-        dir: &Path,
-        closed: &[DayRow],
-        open: &[DayRow],
-        versions: &BTreeMap<String, u64>,
-    ) -> Prepared {
+    fn prepare_for(dir: &Path, closed: &[DayRow], open: &[DayRow], versions: &BTreeMap<String, u64>) -> Prepared {
         let refs: Vec<&DayRow> = closed.iter().collect();
         let summary = summarize(closed, open, "2026-10-02");
         prepare(dir, &Plan { closed: &refs, open, summary: &summary, versions, send: true }, Locale::PtBr).unwrap()
@@ -205,80 +184,51 @@ mod tests {
 
     /// Uma linha por documento, em lotes de até cinquenta escritas, cada uma
     /// com o caminho absoluto de um arquivo que existe e o corpo da linha, e
-    /// o resumo no fim; a preparação seguinte apaga os lotes da anterior, e o
-    /// template sai na pasta da máquina.
+    /// o resumo no fim. A linha de hoje vai marcada como parcial, o dia
+    /// fechado não, e a escrita de um documento que o banco já tem leva a
+    /// versão dele em `if_version`; o que o banco ainda não tem vai sem
+    /// versão. A preparação seguinte apaga os lotes da anterior, e sem nada a
+    /// levar não sobra lote.
     #[test]
-    fn a_long_copy_goes_in_batches_of_fifty_and_the_next_one_clears_the_last() {
+    fn a_copy_goes_in_batches_of_fifty_with_the_open_day_partial_and_the_versions_pinned() {
         let dir = tempfile::tempdir().unwrap();
-        let all = rows(120);
-        let prepared = prepare_for(dir.path(), &all, &[], &BTreeMap::new());
-        assert_eq!(prepared.rows, 120);
+        let closed: Vec<DayRow> =
+            (0..120).map(|n| row(format!("2026-{:02}-{:02}", 1 + n / 28, 1 + n % 28), false)).collect();
+        let open = [row("2026-10-02".into(), true)];
+        let versions: BTreeMap<String, u64> =
+            [("summary/current".to_string(), 3), ("days/2026-10-02-loja-web".to_string(), 2)].into();
+        let prepared = prepare_for(dir.path(), &closed, &open, &versions);
+        assert_eq!(prepared.rows, 121);
         let sizes: Vec<usize> = prepared.writes.iter().map(Vec::len).collect();
-        assert_eq!(sizes, [50, 50, 21], "120 lines and the summary");
+        assert_eq!(sizes, [50, 50, 22], "120 closed lines, today and the summary");
         assert_eq!(prepared.batches, ["copy/days-1.json", "copy/days-2.json", "copy/days-3.json"]);
-        let dropped = prepared.writes[2][0]["file_path"].as_str().unwrap().to_string();
-        let first = &prepared.writes[0][0];
-        assert_eq!((first["op"].as_str(), first["collection"].as_str()), (Some("set"), Some("days")));
-        assert_eq!(first["doc_id"], json!("2026-01-01-loja-web"));
-        let file = first["file_path"].as_str().unwrap();
-        assert!(Path::new(file).is_absolute() && file.contains("2026-01-01-loja-web@"), "{file}");
-        let body: Value = serde_json::from_str(&std::fs::read_to_string(file).unwrap()).unwrap();
-        assert_eq!((body["day"].as_str(), body["project"].as_str()), (Some("2026-01-01"), Some("Loja Web")));
-        let last = prepared.writes[2].last().unwrap();
-        assert_eq!((last["collection"].as_str(), last["doc_id"].as_str()), (Some("summary"), Some("current")));
         assert_eq!(prepared.through.as_deref(), Some("2026-05-08"), "the last closed day of the lines");
-        assert_eq!(prepared.docs.len(), 121);
+        assert_eq!(prepared.docs, ["days/2026-10-02-loja-web", "summary/current"], "only what the next copy replaces");
+
+        let writes: Vec<&Value> = prepared.writes.iter().flatten().collect();
+        let first = writes[0];
+        assert_eq!((first["op"].as_str(), first["collection"].as_str(), first["doc_id"].as_str()), (Some("set"), Some("days"), Some("2026-01-01-loja-web")));
+        assert!(first.get("if_version").is_none(), "the database has no such document yet");
+        let body = |write: &Value| -> Value {
+            let file = write["file_path"].as_str().unwrap();
+            assert!(Path::new(file).is_absolute() && file.contains('@'), "{file}");
+            serde_json::from_str(&std::fs::read_to_string(file).unwrap()).unwrap()
+        };
+        assert_eq!((body(first)["project"].clone(), body(first)["partial"].clone()), (json!("Loja Web"), json!(false)));
+        let (today, summary) = (writes[writes.len() - 2], writes[writes.len() - 1]);
+        assert_eq!((body(today)["partial"].clone(), today["if_version"].clone()), (json!(true), json!(2)));
+        assert_eq!((summary["doc_id"].clone(), summary["if_version"].clone()), (json!("current"), json!(3)));
         let template = std::fs::read_to_string(&prepared.template).unwrap();
         assert!(template.starts_with("<!-- mustard: layout-"), "the template is stamped: {}", &template[..40]);
 
-        let few = rows(2);
-        let again = prepare_for(dir.path(), &few, &[], &BTreeMap::new());
+        let dropped = prepared.writes[2][0]["file_path"].as_str().unwrap().to_string();
+        let again = prepare_for(dir.path(), &closed[..2], &[], &BTreeMap::new());
         assert_eq!(again.batches, ["copy/days-1.json"]);
-        assert!(!dir.path().join("copy/days-2.json").exists(), "the old batches are gone");
-        assert!(!Path::new(&dropped).exists(), "the old documents are gone");
-
+        assert!(!dir.path().join("copy/days-2.json").exists() && !Path::new(&dropped).exists(), "the old batches are gone");
         let summary = summarize(&[], &[], "2026-10-02");
-        let none = prepare(
-            dir.path(),
-            &Plan { closed: &[], open: &[], summary: &summary, versions: &BTreeMap::new(), send: false },
-            Locale::PtBr,
-        )
-        .unwrap();
+        let plan = Plan { closed: &[], open: &[], summary: &summary, versions: &BTreeMap::new(), send: false };
+        let none = prepare(dir.path(), &plan, Locale::PtBr).unwrap();
         assert_eq!((none.rows, none.batches.len(), none.through, none.docs.len()), (0, 0, None, 0));
-    }
-
-    /// A linha de hoje vai marcada como parcial, o dia fechado não, e a
-    /// escrita de um documento que o banco já tem leva a versão dele em
-    /// `if_version`: o resumo, a linha parcial de ontem que o dia fechado
-    /// troca; o documento que o banco ainda não tem vai sem versão.
-    #[test]
-    fn the_open_day_goes_as_partial_and_a_document_the_database_has_goes_with_its_version() {
-        let dir = tempfile::tempdir().unwrap();
-        let closed = vec![DayRow { day: "2026-10-01".into(), project: "loja".into(), actions: 200, ..DayRow::default() }];
-        let open = vec![DayRow { day: "2026-10-02".into(), project: "loja".into(), actions: 5, partial: true, ..DayRow::default() }];
-        let versions: BTreeMap<String, u64> = [
-            ("summary/current".to_string(), 3),
-            ("days/2026-10-01-loja".to_string(), 1),
-            ("days/2026-10-02-loja".to_string(), 2),
-        ]
-        .into();
-        let prepared = prepare_for(dir.path(), &closed, &open, &versions);
-        let writes: Vec<&Value> = prepared.writes.iter().flatten().collect();
-        let version = |doc: &str| writes.iter().find(|w| w["doc_id"] == json!(doc)).map(|w| w["if_version"].clone());
-        assert_eq!(version("current"), Some(json!(3)));
-        assert_eq!(version("2026-10-01-loja"), Some(json!(1)), "the closed day replaces the partial line it had");
-        assert_eq!(version("2026-10-02-loja"), Some(json!(2)));
-        let body = |doc: &str| {
-            let write = writes.iter().find(|w| w["doc_id"] == json!(doc)).unwrap();
-            let text = std::fs::read_to_string(write["file_path"].as_str().unwrap()).unwrap();
-            serde_json::from_str::<Value>(&text).unwrap()
-        };
-        assert_eq!(body("2026-10-02-loja")["partial"], json!(true));
-        assert_eq!(body("2026-10-01-loja")["partial"], json!(false));
-        assert_eq!(body("current")["today"]["actions"], json!(5));
-
-        let fresh = prepare_for(dir.path(), &closed, &open, &BTreeMap::new());
-        assert!(fresh.writes.iter().flatten().all(|w| w.get("if_version").is_none()), "an empty database has no version to pin");
     }
 
     fn prepared(rows: usize) -> Prepared {
@@ -294,8 +244,9 @@ mod tests {
 
     /// A ordem publica a página só quando ela ainda não tem endereço e há o
     /// que mostrar, ou quando o usuário pediu a publicação nova; copia os
-    /// lotes no endereço guardado, ou no que a publicação devolver; e fica
-    /// vazia sem nada a publicar nem a copiar.
+    /// lotes no endereço guardado, ou no que a publicação devolver, e diz como
+    /// recomeçar se um lote falhar; e fica vazia sem nada a publicar nem a
+    /// copiar.
     #[test]
     fn the_order_publishes_only_without_an_address_or_when_asked() {
         for lang in [Locale::PtBr, Locale::EnUs] {
@@ -305,7 +256,7 @@ mod tests {
             let first = order(&prepared(3), None, false, lang);
             assert_eq!(first.len(), 3, "{lang:?}: {first:?}");
             assert!(first[0].starts_with(start) && first[0].contains("/maquina/page.html"), "{lang:?}: {}", first[0]);
-            assert!(first[1].contains("copy.spend.writes") && first[1].contains("spend --copied"), "{lang:?}: {}", first[1]);
+            assert!(first[1].contains("copy.spend.writes") && first[1].contains("spend --republish"), "{lang:?}: {}", first[1]);
             assert!(first[1].contains(translate("page.copy.new_address", lang)), "{lang:?}: the address is the one the publication returns");
 
             let kept = order(&prepared(3), Some(url), false, lang);

@@ -6,9 +6,8 @@
 <title>Mustard · gasto</title>
 <style>
 /* A página do gasto do Mustard (mostarda e carvão): um template igual para
-   toda máquina, que lê do banco de dados da página uma linha por dia e por
-   projeto e mostra a parte das ações que são procuras de código, dia a dia, e
-   a tabela de cada dia. */
+   toda máquina, que lê do banco de dados da página o resumo da máquina e uma
+   linha por dia e por projeto. */
 :root{
   --paper:#FAFAF7;--surface:#FFFFFF;--ink:#2B2B29;--muted:#6B6A64;--rule:#E6E4DC;--rule-soft:#EFEDE6;
   --mustard:#E1AD01;--mustard-text:#8A6700;--mustard-soft:#FBF1CF;--mustard-line:#EFD27A;
@@ -41,11 +40,6 @@ header.top h1{font-size:32px;font-weight:650;letter-spacing:-.02em;line-height:1
 p.note{font-size:12.5px;color:var(--muted);margin:10px 0 0}
 section.block{margin:28px 0 0}
 section.block h2{font-size:15.5px;font-weight:600;margin:0 0 10px}
-svg.chart{display:block;width:100%;height:auto;background:var(--surface);border:1px solid var(--rule);border-radius:10px}
-svg.chart rect.bar{fill:var(--mustard)}
-svg.chart rect.bar:hover{fill:var(--mustard-text)}
-svg.chart line.base{stroke:var(--rule);stroke-width:1}
-svg.chart text{fill:var(--muted);font:11px var(--mono)}
 .tablewrap{overflow-x:auto;border:1px solid var(--rule);border-radius:10px;background:var(--surface)}
 table.days{border-collapse:collapse;width:100%;font-size:13.5px}
 table.days th,table.days td{padding:8px 12px;text-align:right;white-space:nowrap;border-bottom:1px solid var(--rule-soft)}
@@ -64,11 +58,10 @@ table.days tr:last-child td{border-bottom:0}
 <script type="application/json" id="mustard-catalog">{}</script>
 <script id="mustard-page">
 // O script da página do gasto. Ele lê do banco de dados da página uma linha por
-// dia e por projeto (tokens, ações, procuras de código, leituras de arquivo,
-// buscas do Mustard, respostas vazias e custo do Jev), mostra no topo o resumo
-// da máquina inteira (hoje até agora, ontem, as médias e a previsão do Jev, um
-// documento que o Mustard calcula e troca a cada cópia), a parte das ações que
-// são procuras de código em cada dia e a tabela de cada dia. A linha do dia
+// dia e por projeto (tokens, ações e procuras de código), mostra no topo o
+// resumo da máquina inteira (hoje até agora, ontem, as médias e a previsão do
+// Jev, um documento que o Mustard calcula e troca a cada cópia) e a tabela de
+// cada dia, com a parte das ações que são procuras de código. A linha do dia
 // aberto vem marcada como parcial. A página se atualiza sozinha quando uma
 // linha chega. Sem banco, ou com o banco vazio, ela diz que ainda não há dados.
 (function () {
@@ -84,8 +77,7 @@ table.days tr:last-child td{border-bottom:0}
     return s;
   }
   var DBP = CAT.db || { days: 'days', summary: 'summary/current' };
-  var LIMIT = CAT.limit || 1000, CHART_DAYS = CAT.chartDays || 60;
-  var SVG = 'http://www.w3.org/2000/svg';
+  var LIMIT = CAT.limit || 1000;
   if (CAT.lang) D.documentElement.setAttribute('lang', CAT.lang);
 
   function str(v) { return typeof v === 'string' && v ? v : null; }
@@ -108,17 +100,6 @@ table.days tr:last-child td{border-bottom:0}
       else el.setAttribute(k, v === true ? '' : String(v));
     });
     (kids || []).forEach(function (c) { if (c) el.appendChild(typeof c === 'string' ? D.createTextNode(c) : c); });
-    return el;
-  }
-  function s(tag, attrs, kids) {
-    var el = D.createElementNS(SVG, tag);
-    Object.keys(attrs || {}).forEach(function (k) {
-      var v = attrs[k];
-      if (v === null || v === undefined || v === false) return;
-      if (k === 'text') el.textContent = String(v);
-      else el.setAttribute(k, String(v));
-    });
-    (kids || []).forEach(function (c) { if (c) el.appendChild(c); });
     return el;
   }
 
@@ -154,67 +135,25 @@ table.days tr:last-child td{border-bottom:0}
       var b = d.data ? d.data() : null;
       if (!b || !str(b.day) || !str(b.project)) return;
       rows.push({ day: b.day, project: b.project, tokens: count(b.tokens), actions: count(b.actions),
-        searches: count(b.code_searches), reads: count(b.file_reads), mustard: count(b.mustard_searches),
-        empty: count(b.empty_searches), cost: count(b.jev_cost_micro_usd), partial: b.partial === true });
+        searches: count(b.code_searches), partial: b.partial === true });
     });
     return rows.sort(function (a, b) {
       if (a.day !== b.day) return a.day < b.day ? 1 : -1;
       return a.project < b.project ? -1 : a.project > b.project ? 1 : 0;
     });
   }
-  // A parte das ações que são procuras de código em cada dia, todos os
-  // projetos juntos, do dia mais velho para o mais novo.
-  function dayShares(rows) {
-    var byDay = {};
-    rows.forEach(function (r) {
-      if (r.partial) return;
-      var d = byDay[r.day] = byDay[r.day] || { day: r.day, actions: 0, searches: 0 };
-      d.actions += r.actions;
-      d.searches += r.searches;
-    });
-    return Object.keys(byDay).sort().map(function (k) { return byDay[k]; }).slice(-CHART_DAYS);
-  }
-  var CW = 1000, CH = 160, PAD = 24;
-  function chart(days) {
-    var step = CW / Math.max(days.length, 1), bw = Math.max(Math.min(step * 0.7, 28), 2);
-    var bars = days.map(function (d, i) {
-      var p = percent(d.searches, d.actions), height = Math.round((CH - PAD) * p / 100);
-      return s('rect', { class: 'bar', 'data-day': d.day, x: Math.round(i * step + (step - bw) / 2), y: CH - PAD - height,
-        width: Math.round(bw), height: height, tabindex: '0' },
-        [s('title', { text: say('page.spend.chart_point', { day: d.day, percent: p, searches: d.searches, actions: d.actions }) })]);
-    });
-    var kids = [s('line', { class: 'base', x1: 0, y1: CH - PAD, x2: CW, y2: CH - PAD })].concat(bars);
-    if (days.length) {
-      kids.push(s('text', { x: 4, y: CH - 6, text: days[0].day }));
-      kids.push(s('text', { x: CW - 4, y: CH - 6, 'text-anchor': 'end', text: days[days.length - 1].day }));
-    }
-    return h('section', { class: 'block', id: 'chart' }, [
-      h('h2', { text: t('page.spend.chart_title') }),
-      s('svg', { class: 'chart', viewBox: '0 0 ' + CW + ' ' + CH, role: 'img' }, kids)]);
-  }
   // Cada título de coluna é uma chave inteira, para o catálogo levar o texto.
   var COLS = ['page.spend.col.day', 'page.spend.col.project', 'page.spend.col.tokens', 'page.spend.col.actions',
-    'page.spend.col.searches', 'page.spend.col.share', 'page.spend.col.reads', 'page.spend.col.mustard',
-    'page.spend.col.empty', 'page.spend.col.jev_cost'];
+    'page.spend.col.searches', 'page.spend.col.share'];
   function table(rows) {
     var head = h('tr', null, COLS.map(function (c) { return h('th', { text: t(c) }); }));
     var body = rows.map(function (r) {
-      var cells = [r.partial ? r.day + ' (' + t('page.spend.summary.partial') + ')' : r.day, r.project, num(r.tokens), num(r.actions), num(r.searches), percent(r.searches, r.actions) + '%',
-        num(r.reads), num(r.mustard), num(r.empty), money(r.cost)];
+      var cells = [r.partial ? r.day + ' (' + t('page.spend.summary.partial') + ')' : r.day, r.project,
+        num(r.tokens), num(r.actions), num(r.searches), percent(r.searches, r.actions) + '%'];
       return h('tr', { 'data-day': r.day, 'data-project': r.project }, cells.map(function (c) { return h('td', { text: c }); }));
     });
     return h('section', { class: 'block' }, [
       h('div', { class: 'tablewrap' }, [h('table', { class: 'days', id: 'days' }, [h('thead', null, [head]), h('tbody', null, body)])])]);
-  }
-  // O resumo da máquina inteira, como o Mustard o calculou: cada número vem
-  // pronto no documento; a página só o escreve no jeito do idioma.
-  function figure(o) {
-    o = o || {};
-    return { day: str(o.day) || '', tokens: count(o.tokens), actions: count(o.actions) };
-  }
-  function mean(o) {
-    o = o || {};
-    return { tokens: count(o.tokens), days: count(o.days) };
   }
   function card(id, label, value, subs, badge) {
     var head = [h('p', { class: 'label', text: label })];
@@ -223,24 +162,23 @@ table.days tr:last-child td{border-bottom:0}
     subs.forEach(function (sub) { kids.push(h('p', { class: 'sub', text: sub })); });
     return h('div', { class: 'card', 'data-card': id }, kids);
   }
+  // O resumo da máquina inteira, como o Mustard o calculou: cada número vem
+  // pronto no documento; a página só o escreve no jeito do idioma.
   function summaryBlock(d) {
-    var tokens = function (n) { return num(n) + ' ' + t('page.spend.summary.tokens'); };
-    var dayActions = function (f) { return say('page.spend.summary.day_actions', { day: f.day, n: num(f.actions) }); };
-    var used = function (m) { return say('page.spend.summary.days_used', { n: m.days }); };
-    var today = figure(d.today), yesterday = figure(d.yesterday);
-    var m3 = mean(d.last_3), m7 = mean(d.last_7), mm = mean(d.month);
+    var tokens = function (n) { return num(count(n)) + ' ' + t('page.spend.summary.tokens'); };
+    var day = function (o) { return say('page.spend.summary.day_actions', { day: str((o || {}).day) || '', n: num(count((o || {}).actions)) }); };
+    var used = function (o) { return say('page.spend.summary.days_used', { n: count((o || {}).days) }); };
     var f = d.forecast || {};
-    var left = count(f.days_left);
-    var detail = function (spent, daily) { return say('page.spend.summary.forecast_detail', { spent: spent, daily: daily, left: left }); };
+    var detail = function (spent, daily) { return say('page.spend.summary.forecast_detail', { spent: spent, daily: daily, left: count(f.days_left) }); };
     var cards = [
-      card('today', t('page.spend.summary.today'), tokens(today.tokens), [dayActions(today)], t('page.spend.summary.partial')),
-      card('yesterday', t('page.spend.summary.yesterday'), tokens(yesterday.tokens), [dayActions(yesterday)]),
-      card('avg3', t('page.spend.summary.avg3'), tokens(m3.tokens), [used(m3)]),
-      card('avg7', t('page.spend.summary.avg7'), tokens(m7.tokens), [used(m7)]),
-      card('month', t('page.spend.summary.avg_month'), tokens(mm.tokens), [used(mm)]),
+      card('today', t('page.spend.summary.today'), tokens((d.today || {}).tokens), [day(d.today)], t('page.spend.summary.partial')),
+      card('yesterday', t('page.spend.summary.yesterday'), tokens((d.yesterday || {}).tokens), [day(d.yesterday)]),
+      card('avg3', t('page.spend.summary.avg3'), tokens((d.last_3 || {}).tokens), [used(d.last_3)]),
+      card('avg7', t('page.spend.summary.avg7'), tokens((d.last_7 || {}).tokens), [used(d.last_7)]),
+      card('month', t('page.spend.summary.avg_month'), tokens((d.month || {}).tokens), [used(d.month)]),
       card('forecast', t('page.spend.summary.forecast'), money(count(f.micro_usd)),
         [detail(money(count(f.spent_micro_usd)), money(count(f.daily_micro_usd))),
-         tokens(count(f.tokens)) + ' · ' + detail(num(count(f.spent_tokens)), num(count(f.daily_tokens)))])
+         tokens(f.tokens) + ' · ' + detail(num(count(f.spent_tokens)), num(count(f.daily_tokens)))])
     ];
     return h('section', { class: 'block', id: 'summary' }, [
       h('h2', { text: t('page.spend.summary.title') }),
@@ -258,7 +196,6 @@ table.days tr:last-child td{border-bottom:0}
     if (!rows.length) { noData(); return; }
     box.textContent = '';
     if (summary) box.appendChild(summaryBlock(summary));
-    box.appendChild(chart(dayShares(rows)));
     box.appendChild(table(rows));
     statusEl.hidden = true;
     done('ready');

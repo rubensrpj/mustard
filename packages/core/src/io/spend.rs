@@ -11,25 +11,22 @@
 //! dentro dele ou a cópia de onda dele. A conversa de agente que trabalhou
 //! numa cópia já apagada herda o projeto da conversa que o chamou.
 //!
-//! As buscas do Mustard que o gancho faz sozinho não estão nas conversas: a
-//! chamada `word search` fica gravada na spec do projeto, com os tokens e o
-//! custo do Jev, e entra na linha do dia dela. A busca por comando (`Bash` com
-//! `mustard-rt run map search`) está nas conversas e, quando o filtro a julga,
-//! também grava a chamada na spec: as duas contam a mesma busca, e ela entra
-//! uma vez só, com os tokens e o custo da chamada.
+//! O que o Jev gastou não está nas conversas: cada chamada `word search` fica
+//! gravada na spec do projeto, com os tokens e o custo dele, e entra na linha
+//! do dia dela.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 
 use crate::domain::config::ProjectConfig;
 use crate::domain::spec_events::calls_command;
-use crate::domain::spend::{day_of, day_of_stamp, day_start, paired_searches, DayRow, Ledger, Range, Refusal};
+use crate::domain::spend::{day_of, day_of_stamp, day_start, DayRow, Ledger, Range, Refusal};
 use crate::io::fs::lock::{read_shared, LockedFile};
-use crate::io::transcript::{MapSearch, SpendTally};
+use crate::io::transcript::SpendTally;
 use crate::io::workspace::linked_worktree_main;
 use crate::platform::error::Error;
 
@@ -158,38 +155,26 @@ fn may_hold_project(folder: &Path) -> bool {
     folder.file_name().is_none_or(|name| name != ".claude") && !flat.contains(".claude/.claude")
 }
 
+/// Os caminhos dentro de `dir`, em ordem.
+fn entries(dir: &Path) -> Vec<PathBuf> {
+    let mut found: Vec<PathBuf> = std::fs::read_dir(dir).into_iter().flatten().filter_map(Result::ok).map(|e| e.path()).collect();
+    found.sort();
+    found
+}
+
 /// Cada conversa do Claude Code em `config_dir`, com a conversa principal da
 /// sessão dela quando é a de um agente: as principais de cada projeto do
 /// Claude Code primeiro, os agentes depois.
 fn transcript_files(config_dir: &Path) -> Vec<(PathBuf, Option<PathBuf>)> {
-    let mut main = Vec::new();
-    let mut agents = Vec::new();
-    let mut folders: Vec<PathBuf> = std::fs::read_dir(config_dir.join("projects"))
-        .into_iter()
-        .flatten()
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| path.is_dir())
-        .collect();
-    folders.sort();
-    for folder in folders {
-        let mut entries: Vec<PathBuf> =
-            std::fs::read_dir(&folder).into_iter().flatten().filter_map(Result::ok).map(|e| e.path()).collect();
-        entries.sort();
-        for path in entries {
-            if path.is_file() && path.extension().is_some_and(|ext| ext == "jsonl") {
+    let jsonl = |path: &PathBuf| path.is_file() && path.extension().is_some_and(|ext| ext == "jsonl");
+    let (mut main, mut agents) = (Vec::new(), Vec::new());
+    for folder in entries(&config_dir.join("projects")).into_iter().filter(|path| path.is_dir()) {
+        for path in entries(&folder) {
+            if jsonl(&path) {
                 main.push((path, None));
             } else if path.is_dir() {
                 let owner = path.with_extension("jsonl");
-                let mut found: Vec<PathBuf> = std::fs::read_dir(path.join("subagents"))
-                    .into_iter()
-                    .flatten()
-                    .filter_map(Result::ok)
-                    .map(|e| e.path())
-                    .filter(|file| file.is_file() && file.extension().is_some_and(|ext| ext == "jsonl"))
-                    .collect();
-                found.sort();
-                agents.extend(found.into_iter().map(|file| (file, Some(owner.clone()))));
+                agents.extend(entries(&path.join("subagents")).into_iter().filter(jsonl).map(|file| (file, Some(owner.clone()))));
             }
         }
     }
@@ -241,15 +226,11 @@ fn tally_file(path: &Path, range: &Range, tally: &mut SpendTally, projects: &mut
     }
 }
 
-/// Uma chamada `word search` gravada na spec: quando a busca acabou, quanto
-/// durou, o dia dela e o que o Jev gastou.
+/// Uma chamada `word search` gravada na spec: o dia dela e o que o Jev gastou.
 struct WordSearch {
-    at: DateTime<Utc>,
-    ms: u64,
     day: String,
     tokens: u64,
     cost_micro_usd: u64,
-    empty: bool,
 }
 
 /// As chamadas `word search` gravadas nas specs da pasta `root` nos dias de
@@ -257,47 +238,16 @@ struct WordSearch {
 fn word_searches(root: &Path, range: &Range) -> Vec<WordSearch> {
     let mut found = Vec::new();
     for (_, log) in crate::io::spec_index::read_specs(root) {
-        for event in log.visible() {
-            if !calls_command(event, WORD_SEARCH) {
-                continue;
-            }
+        for event in log.visible().into_iter().filter(|event| calls_command(event, WORD_SEARCH)) {
             let Some(day) = day_of_stamp(event.at()).filter(|day| range.contains(day)) else { continue };
-            let Ok(at) = DateTime::parse_from_rfc3339(event.at()) else { continue };
             found.push(WordSearch {
-                at: at.with_timezone(&Utc),
-                ms: event.int("ms").unwrap_or(0),
                 day,
                 tokens: event.int("tokens").unwrap_or(0),
                 cost_micro_usd: event.int("cost_micro_usd").unwrap_or(0),
-                empty: event.int("returned") == Some(0),
             });
         }
     }
     found
-}
-
-/// Soma, nas linhas de `rows`, as chamadas `word search` do projeto `name`:
-/// quantas foram, os tokens e o custo do Jev e quantas voltaram vazias. Cada
-/// chamada que a busca por comando gravou (`commands`, os usos de `Bash` do
-/// projeto) já foi contada como o uso de ferramenta dela: o uso sai da conta,
-/// e a busca fica uma só.
-fn add_word_searches(rows: &mut BTreeMap<(String, String), DayRow>, name: &str, found: &[WordSearch], commands: &[&MapSearch]) {
-    for search in found {
-        let row = rows
-            .entry((search.day.clone(), name.to_string()))
-            .or_insert_with(|| DayRow { day: search.day.clone(), project: name.to_string(), ..DayRow::default() });
-        row.mustard_searches = row.mustard_searches.saturating_add(1);
-        row.jev_tokens = row.jev_tokens.saturating_add(search.tokens);
-        row.jev_cost_micro_usd = row.jev_cost_micro_usd.saturating_add(search.cost_micro_usd);
-        row.empty_searches = row.empty_searches.saturating_add(u64::from(search.empty));
-    }
-    let started: Vec<DateTime<Utc>> = commands.iter().map(|command| command.at).collect();
-    let recorded: Vec<(DateTime<Utc>, u64)> = found.iter().map(|search| (search.at, search.ms)).collect();
-    for at in paired_searches(&started, &recorded) {
-        if let Some(row) = rows.get_mut(&(commands[at].day.clone(), name.to_string())) {
-            row.mustard_searches = row.mustard_searches.saturating_sub(1);
-        }
-    }
 }
 
 /// As linhas de hoje, o dia aberto: contadas agora, nas conversas de
@@ -328,12 +278,15 @@ pub fn count(config_dir: &Path, range: &Range) -> Vec<DayRow> {
         let fallback = owner.as_deref().and_then(|owner| owner_project(owner, &mut projects));
         tally_file(&path, range, &mut tally, &mut projects, fallback.as_deref());
     }
-    let spent = tally.finish();
-    let mut rows = spent.rows;
+    let mut rows = tally.finish();
     for (name, roots) in std::mem::take(&mut projects.roots) {
-        let found: Vec<WordSearch> = roots.iter().flat_map(|root| word_searches(root, range)).collect();
-        let commands: Vec<&MapSearch> = spent.map_searches.iter().filter(|search| search.project == name).collect();
-        add_word_searches(&mut rows, &name, &found, &commands);
+        for search in roots.iter().flat_map(|root| word_searches(root, range)) {
+            let row = rows
+                .entry((search.day.clone(), name.clone()))
+                .or_insert_with(|| DayRow { day: search.day.clone(), project: name.clone(), ..DayRow::default() });
+            row.jev_tokens = row.jev_tokens.saturating_add(search.tokens);
+            row.jev_cost_micro_usd = row.jev_cost_micro_usd.saturating_add(search.cost_micro_usd);
+        }
     }
     rows.into_values().collect()
 }
@@ -382,147 +335,71 @@ mod tests {
         Range { first: first.map(str::to_string), last: last.to_string() }
     }
 
-    /// Uma conversa falsa com a mesma resposta repetida em várias linhas conta
-    /// os tokens uma vez, os da última linha, e cada uso de ferramenta uma
-    /// vez; a resposta que reaparece noutro arquivo também.
+    /// A mesma resposta repetida em várias linhas, e em outro arquivo, conta
+    /// os tokens uma vez, os da última linha, e cada uso de ferramenta uma vez;
+    /// `grep` no `Bash`, `Grep` e `Explore` são procuras de código, e
+    /// `mustard-rt` e `Read` não. Só o projeto com `mustard.json` entra, o dia
+    /// é o de -03:00 e o dia fora da faixa, hoje, não entra.
     #[test]
-    fn a_repeated_response_counts_its_tokens_once() {
+    fn a_repeated_response_counts_once_and_only_projects_with_a_config_and_days_in_range_count() {
         let dir = tempdir().unwrap();
         let config = dir.path().join("config");
         let root = project(dir.path(), "meu-projeto");
-        let first = reply("m1", "2026-10-01T15:00:00Z", &root, 100, &[("Read", json!({"file_path": "a"}))]);
-        let last = reply("m1", "2026-10-01T15:00:01Z", &root, 250, &[("Read", json!({"file_path": "a"}))]);
-        let other = reply("m2", "2026-10-01T16:00:00Z", &root, 40, &[]);
-        conversation(&config, "p", "s1", &[first.clone(), last.clone(), other]);
-        conversation(&config, "p", "s2", &[last]);
-
-        let rows = count(&config, &range(None, "2026-10-01"));
-        assert_eq!(rows.len(), 1, "{rows:?}");
-        let row = &rows[0];
-        assert_eq!((row.day.as_str(), row.project.as_str()), ("2026-10-01", "meu-projeto"));
-        assert_eq!(row.tokens, 290, "the repeated response counts the last line once, plus the other response");
-        assert_eq!((row.actions, row.file_reads, row.code_searches), (1, 1, 0));
-    }
-
-    /// `Bash` com `grep` conta como procura, com `mustard-rt` não conta e vira
-    /// busca do Mustard, e `Read` vai para as leituras e não para as procuras.
-    #[test]
-    fn grep_in_bash_is_a_search_and_mustard_rt_is_not() {
-        let dir = tempdir().unwrap();
-        let config = dir.path().join("config");
-        let root = project(dir.path(), "meu-projeto");
+        let loose = dir.path().join("sem-config");
+        fs::create_dir_all(&loose).unwrap();
         let tools = [
             ("Bash", json!({"command": "grep -rn frete src"})),
             ("Bash", json!({"command": "mustard-rt run map search \"frete\""})),
-            ("Bash", json!({"command": "mustard-rt run read request-1"})),
             ("Read", json!({"file_path": "src/a.rs"})),
             ("Grep", json!({"pattern": "x"})),
             ("Agent", json!({"subagent_type": "Explore", "prompt": "x"})),
-            ("Edit", json!({"file_path": "src/a.rs"})),
         ];
-        conversation(&config, "p", "s1", &[reply("m1", "2026-10-01T15:00:00Z", &root, 10, &tools)]);
-
-        let rows = count(&config, &range(None, "2026-10-01"));
-        let row = &rows[0];
-        assert_eq!(row.actions, 7);
-        assert_eq!(row.code_searches, 3, "grep, Grep and Explore, and not the mustard-rt calls or the Read");
-        assert_eq!(row.file_reads, 1, "the Read has its own column");
-        assert_eq!(row.mustard_searches, 1, "only the map search command");
-    }
-
-    /// Só o projeto com `mustard.json` entra, o dia é o de -03:00, e o dia de
-    /// hoje, fora da faixa, não entra.
-    #[test]
-    fn only_projects_with_a_config_and_days_in_range_count() {
-        let dir = tempdir().unwrap();
-        let config = dir.path().join("config");
-        let root = project(dir.path(), "com-config");
-        let loose = dir.path().join("sem-config");
-        fs::create_dir_all(&loose).unwrap();
+        let first = reply("m1", "2026-10-01T15:00:00Z", &root, 100, &tools);
+        let last = reply("m1", "2026-10-01T15:00:01Z", &root, 250, &tools);
         let lines = [
-            reply("a", "2026-10-02T02:30:00Z", &root, 10, &[]),
-            reply("b", "2026-10-02T04:00:00Z", &root, 20, &[]),
-            reply("c", "2026-10-01T15:00:00Z", &loose, 30, &[]),
+            first,
+            last.clone(),
+            reply("m2", "2026-10-01T16:00:00Z", &root, 40, &[]),
+            reply("m3", "2026-10-02T02:30:00Z", &root, 10, &[]),
+            reply("m4", "2026-10-02T04:00:00Z", &root, 20, &[]),
+            reply("m5", "2026-10-01T15:00:00Z", &loose, 30, &[]),
         ];
         conversation(&config, "p", "s1", &lines);
+        conversation(&config, "p", "s2", &[last]);
 
         let rows = count(&config, &range(None, "2026-10-01"));
-        let seen: Vec<(&str, &str, u64)> = rows.iter().map(|r| (r.day.as_str(), r.project.as_str(), r.tokens)).collect();
-        assert_eq!(seen, [("2026-10-01", "com-config", 10)], "02:30 UTC is still October 1st; the loose folder and today stay out");
+        assert_eq!(rows.len(), 1, "the loose folder and today stay out: {rows:?}");
+        let row = &rows[0];
+        assert_eq!((row.day.as_str(), row.project.as_str()), ("2026-10-01", "meu-projeto"));
+        assert_eq!(row.tokens, 300, "the last line of m1 once, m2, and 02:30 UTC, which is still October 1st");
+        assert_eq!((row.actions, row.code_searches), (5, 3), "grep, Grep and Explore; not the mustard-rt call or the Read");
     }
 
     /// O `word search` gravado na spec do projeto entra na linha do dia dele,
-    /// com os tokens e o custo do Jev, e a que voltou com zero é contada como
-    /// vazia.
+    /// com os tokens e o custo do Jev; outro comando e outro dia ficam fora.
     #[test]
-    fn a_word_search_with_zero_returned_counts_as_empty() {
+    fn a_word_search_adds_the_jev_tokens_and_cost_to_its_day() {
         let dir = tempdir().unwrap();
         let config = dir.path().join("config");
         let root = project(dir.path(), "meu-projeto");
         conversation(&config, "p", "s1", &[reply("m1", "2026-10-01T15:00:00Z", &root, 10, &[])]);
         let spec = root.join(".claude/spec/uma-spec");
         fs::create_dir_all(&spec).unwrap();
-        let call = |id: u64, at: &str, returned: u64, tokens: u64, cost: u64| {
+        let call = |id: u64, at: &str, command: &str, tokens: u64, cost: u64| {
             json!({"v": 1, "id": id, "code": format!("X-CALL-{id:04}"), "at": at, "type": "call", "author": "binary",
-                "command": "word search", "returned": returned, "tokens": tokens, "cost_micro_usd": cost})
+                "command": command, "tokens": tokens, "cost_micro_usd": cost})
             .to_string()
         };
-        let other = json!({"v": 1, "id": 4, "at": "2026-10-01T10:00:00-03:00", "type": "call", "author": "binary",
-            "command": "map search", "returned": 0, "tokens": 5, "cost_micro_usd": 5})
-        .to_string();
         let events = [
-            call(1, "2026-10-01T10:00:00-03:00", 2, 1000, 900),
-            call(2, "2026-10-01T11:00:00-03:00", 0, 500, 400),
-            call(3, "2026-10-02T11:00:00-03:00", 0, 700, 600),
-            other,
+            call(1, "2026-10-01T10:00:00-03:00", "word search", 1000, 900),
+            call(2, "2026-10-01T11:00:00-03:00", "word search", 500, 400),
+            call(3, "2026-10-02T11:00:00-03:00", "word search", 700, 600),
+            call(4, "2026-10-01T10:00:00-03:00", "map search", 5, 5),
         ];
         fs::write(spec.join("spec.ndjson"), events.join("\n") + "\n").unwrap();
 
         let rows = count(&config, &range(None, "2026-10-01"));
-        let row = &rows[0];
-        assert_eq!(row.mustard_searches, 2, "two word searches that day; the other command and the next day stay out");
-        assert_eq!(row.empty_searches, 1, "the one that returned zero");
-        assert_eq!((row.jev_tokens, row.jev_cost_micro_usd), (1500, 1300));
-    }
-
-    /// A busca por comando e o evento `word search` que ela grava contam a
-    /// mesma busca, uma vez, com os tokens e o custo do evento; a busca por
-    /// comando sem evento (a cravada) e o evento sem comando (o do gancho)
-    /// contam uma cada.
-    #[test]
-    fn a_search_by_command_and_its_recorded_event_count_once() {
-        let dir = tempdir().unwrap();
-        let config = dir.path().join("config");
-        let root = project(dir.path(), "meu-projeto");
-        let search = [("Bash", json!({"command": "mustard-rt run map search \"frete\""}))];
-        conversation(
-            &config,
-            "p",
-            "s1",
-            &[
-                reply("m1", "2026-10-01T15:00:00Z", &root, 10, &search),
-                reply("m2", "2026-10-01T19:30:00Z", &root, 10, &search),
-            ],
-        );
-        let spec = root.join(".claude/spec/uma-spec");
-        fs::create_dir_all(&spec).unwrap();
-        let call = |id: u64, at: &str, ms: u64, returned: u64, tokens: u64, cost: u64| {
-            json!({"v": 1, "id": id, "code": format!("X-CALL-{id:04}"), "at": at, "type": "call", "author": "binary",
-                "command": "word search", "ms": ms, "returned": returned, "tokens": tokens, "cost_micro_usd": cost})
-            .to_string()
-        };
-        let events = [
-            call(1, "2026-10-01T12:00:02-03:00", 1500, 2, 1000, 900),
-            call(2, "2026-10-01T15:00:00-03:00", 900, 0, 500, 400),
-        ];
-        fs::write(spec.join("spec.ndjson"), events.join("\n") + "\n").unwrap();
-
-        let rows = count(&config, &range(None, "2026-10-01"));
-        let row = &rows[0];
-        assert_eq!(row.actions, 2);
-        assert_eq!(row.mustard_searches, 3, "the command with its event once, the command alone, and the event alone");
-        assert_eq!(row.empty_searches, 1, "the event that returned zero");
-        assert_eq!((row.jev_tokens, row.jev_cost_micro_usd), (1500, 1300), "the tokens and the cost come from the events");
+        assert_eq!((rows[0].jev_tokens, rows[0].jev_cost_micro_usd), (1500, 1300), "{rows:?}");
     }
 
     /// A conversa de um agente que trabalhou numa cópia já apagada fica com o

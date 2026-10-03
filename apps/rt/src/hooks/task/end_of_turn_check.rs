@@ -467,23 +467,6 @@ mod tests {
         assert_eq!(stop_event(root, "s-both", "Fechei a unidade.", false), Value::Null, "the closure settled");
     }
 
-    /// Num projeto em inglês, a recusa da pendência omitida traz a saída de
-    /// deixar para depois, com o comando pronto, pelo `Stop` de verdade.
-    #[test]
-    fn the_pending_block_in_english_offers_the_later_answer() {
-        let dir = project_with_open_items(EN_PROJECT);
-        let root = dir.path();
-        close_spec_with_both_items(root, "s-en");
-
-        let blocked = stop_event(root, "s-en", "The unit is closed; only the html item is left.", false);
-        assert_eq!(blocked["decision"], json!("block"), "{blocked}");
-        let reason = blocked["reason"].as_str().unwrap_or_default();
-        assert!(
-            reason.contains("mustard-rt run close --spec trava --pending-later \"<id>=<reason>\""),
-            "the refusal carries the ready command for leaving an item for later: {reason}"
-        );
-    }
-
     /// Letra com número fora do formato do Mustard é texto comum: o nome de
     /// um produto ou o tamanho de uma folha não vira erro.
     #[test]

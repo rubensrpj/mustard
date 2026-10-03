@@ -9,7 +9,7 @@ mod model;
 use std::path::Path;
 use std::process::Command;
 
-use mustard_core::domain::project_map::{self, DeclAt, DeclRelations, ProjectMap};
+use mustard_core::domain::project_map::{DeclAt, ProjectMap};
 use serde_json::json;
 
 fn write(dir: &Path, rel: &str, body: &str) {
@@ -40,10 +40,39 @@ fn scan(dir: &Path, extra: &[&str]) -> (ProjectMap, serde_json::Value) {
     (serde_json::from_value(map).expect("o mapa se lê"), report)
 }
 
+/// O que o mapa liga a uma declaração: os donos dela (do mais interno para o
+/// mais externo, com o contrato escrito por último), os membros e as
+/// implementações.
+#[derive(Debug)]
+struct DeclRelations {
+    line: u64,
+    owners: Vec<String>,
+    members: Vec<DeclAt>,
+    implements: Vec<DeclAt>,
+    implemented_by: Vec<DeclAt>,
+}
+
+/// Cada declaração `name` de `file`, em ordem de linha, com as ligações dela.
+fn all_relations(map: &ProjectMap, file: &str, name: &str) -> Vec<DeclRelations> {
+    let module = map.modules.iter().find(|m| m.path == file).expect("o arquivo está no mapa");
+    let mut found: Vec<_> = module.declarations.iter().filter(|d| d.name == name).collect();
+    found.sort_by_key(|d| d.line);
+    found
+        .into_iter()
+        .map(|d| DeclRelations {
+            line: d.line,
+            owners: d.owner.iter().chain(&d.contract).cloned().collect(),
+            members: d.members.clone(),
+            implements: d.implements.clone(),
+            implemented_by: d.implemented_by.clone(),
+        })
+        .collect()
+}
+
 /// A única declaração `name` de `file`, com os donos, os membros e as
 /// implementações dela.
 fn relations(map: &ProjectMap, file: &str, name: &str) -> DeclRelations {
-    let mut found = project_map::relations(map, Some(file), name).expect("a declaração está no mapa");
+    let mut found = all_relations(map, file, name);
     assert_eq!(found.len(), 1, "{found:?}");
     found.remove(0)
 }
@@ -141,7 +170,7 @@ fn a_trait_impl_in_one_file_links_its_method_to_the_trait_method_in_another() {
     );
     let (map, _) = scan(dir, &[]);
 
-    let speak = project_map::relations(&map, Some("src/bichos.rs"), "falar").unwrap();
+    let speak = all_relations(&map, "src/bichos.rs", "falar");
     let (dog, cat) = (&speak[0], &speak[1]);
     assert_eq!(dog.owners, ["Cao", "Falante"], "{dog:?}");
     assert_eq!(dog.implements, [at("src/falante.rs", 2, "falar")]);

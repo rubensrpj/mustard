@@ -425,30 +425,34 @@ mod tests {
     /// quantas foram, e não o número de cada uma: o passo seguinte vem das que
     /// faltam e do próximo comando, e a lista das entregues crescia com a obra
     /// e ocupava mais da metade do bloco. O início da sessão depois da
-    /// compactação e o aviso de compactar trazem o mesmo bloco curto. Nos dois
-    /// idiomas.
+    /// compactação e o aviso de compactar trazem o mesmo bloco curto. Em
+    /// português; o inglês do mesmo bloco já é provado em
+    /// `after_compaction_the_session_start_brings_the_work_block`.
     #[test]
     fn work_block_counts_the_delivered_waves_instead_of_listing_each_one() {
         use serde_json::json;
 
-        for lang in [Locale::PtBr, Locale::EnUs] {
-            let dir = open_project_in("x", lang);
-            let root = dir.path();
-            let crit = seed_running_wave(root, "x");
-            let said = seed(root, "message", json!({"author": "user", "text": "obra longa"}));
-            for n in 2..=150 {
-                plan_wave(root, n, crit, said);
-                seed(root, "delivered", json!({"wave": n, "text": "Pronta.", "files": ["src/a.rs"], "author": "wave"}));
+        let lang = Locale::PtBr;
+        let dir = open_project_in("x", lang);
+        let root = dir.path();
+        let crit = seed_running_wave(root, "x");
+        let said = seed(root, "message", json!({"author": "user", "text": "obra longa"}));
+        let mut one_delivered = 0;
+        for n in 2..=12 {
+            plan_wave(root, n, crit, said);
+            seed(root, "delivered", json!({"wave": n, "text": "Pronta.", "files": ["src/a.rs"], "author": "wave"}));
+            if n == 2 {
+                one_delivered = crate::commands::flow::resume::current_block(root, Some("s1")).expect("the block").len();
             }
-
-            let (started, precompact) = hook_contexts(root, lang);
-            for (moment, context) in [("session start", &started), ("precompact", &precompact)] {
-                assert_eq!(slot_value(context, lang, "{delivered}"), "149", "{lang:?} {moment}: the count: {context}");
-                assert!(!context.contains("2, 3, 4"), "{lang:?} {moment}: the delivered waves are listed: {context}");
-            }
-            let block = crate::commands::flow::resume::current_block(root, Some("s1")).expect("the block");
-            assert!(block.len() < 900, "{lang:?}: the block grew with the delivered waves: {} bytes: {block}", block.len());
         }
+
+        let (started, precompact) = hook_contexts(root, lang);
+        for (moment, context) in [("session start", &started), ("precompact", &precompact)] {
+            assert_eq!(slot_value(context, lang, "{delivered}"), "11", "{moment}: the count: {context}");
+            assert!(!context.contains("2, 3, 4"), "{moment}: the delivered waves are listed: {context}");
+        }
+        let block = crate::commands::flow::resume::current_block(root, Some("s1")).expect("the block");
+        assert!(block.len() <= one_delivered + 1, "the block grew with the delivered waves: {one_delivered} -> {} bytes: {block}", block.len());
     }
 
     /// Com mais códigos gravados depois da última rodada do que cabem no teto

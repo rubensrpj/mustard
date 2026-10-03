@@ -240,13 +240,13 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              tool as a new page, passing `{capabilities}` as `capabilities`. The old one stays as it is. \
              Record the address the publication returns with `mustard-rt run spend --url <address>`."
         }
-        // Depois do último lote: a cópia feita se grava pelo comando, sem
-        // `--json`.
+        // Depois do último lote: o comando já deu a cópia como feita, e a
+        // saída de um lote que falhe é recomeçar numa página nova.
         ("page.copy.spend_record", Locale::PtBr) => {
-            "Depois de enviar todos os lotes, grave a cópia com `mustard-rt run spend --copied`."
+            "Se algum lote falhar, rode `mustard-rt run spend --republish` para enviar tudo de novo."
         }
         ("page.copy.spend_record", Locale::EnUs) => {
-            "After sending every batch, record the copy with `mustard-rt run spend --copied`."
+            "If a batch fails, run `mustard-rt run spend --republish` to send everything again."
         }
 
         // A página do gasto (`platform::page_templates`): o que ela diz
@@ -255,12 +255,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.spend.kind", Locale::EnUs) => "spend",
         ("page.spend.title", Locale::PtBr) => "Gasto por dia",
         ("page.spend.title", Locale::EnUs) => "Spend per day",
-        ("page.spend.chart_title", Locale::PtBr) => "Parte das ações que são procuras de código",
-        ("page.spend.chart_title", Locale::EnUs) => "Share of the actions that are code searches",
-        // `{day}` é o dia, `{percent}` a parte em porcentagem, `{searches}` as
-        // procuras de código e `{actions}` todas as ações do dia.
-        ("page.spend.chart_point", Locale::PtBr) => "{day}: {percent}% das ações ({searches} de {actions})",
-        ("page.spend.chart_point", Locale::EnUs) => "{day}: {percent}% of the actions ({searches} of {actions})",
         ("page.spend.col.day", Locale::PtBr) => "Dia",
         ("page.spend.col.day", Locale::EnUs) => "Day",
         ("page.spend.col.project", Locale::PtBr) => "Projeto",
@@ -272,14 +266,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.spend.col.searches", Locale::EnUs) => "Code searches",
         ("page.spend.col.share", Locale::PtBr) => "Parte das ações",
         ("page.spend.col.share", Locale::EnUs) => "Share of actions",
-        ("page.spend.col.reads", Locale::PtBr) => "Leituras de arquivo",
-        ("page.spend.col.reads", Locale::EnUs) => "File reads",
-        ("page.spend.col.mustard", Locale::PtBr) => "Buscas do Mustard",
-        ("page.spend.col.mustard", Locale::EnUs) => "Mustard searches",
-        ("page.spend.col.empty", Locale::PtBr) => "Respostas vazias",
-        ("page.spend.col.empty", Locale::EnUs) => "Empty answers",
-        ("page.spend.col.jev_cost", Locale::PtBr) => "Custo do Jev",
-        ("page.spend.col.jev_cost", Locale::EnUs) => "Jev cost",
 
         // O resumo no topo da página do gasto: a máquina inteira, todos os
         // projetos somados.
@@ -326,12 +312,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("page.spend.refusal.not_an_address", Locale::EnUs) => {
             "The text `{found}` is not the address of a published page: it starts with `https://`. Pass the \
              address the publication returned."
-        }
-        ("page.spend.refusal.nothing_prepared", Locale::PtBr) => {
-            "Nenhuma cópia do gasto foi preparada. Rode `mustard-rt run spend` antes de gravar a cópia como feita."
-        }
-        ("page.spend.refusal.nothing_prepared", Locale::EnUs) => {
-            "No copy of the spend was prepared. Run `mustard-rt run spend` before recording the copy as done."
         }
         ("page.spend.refusal.no_machine_folder", Locale::PtBr) => {
             "Não achei a pasta pessoal da máquina para guardar o gasto. Defina `MUSTARD_SPEND_DIR` com a pasta \
@@ -1177,8 +1157,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("page.rs"),
             super::PREFIXES,
-            426,
-            0xec06_ca28_0e68_e913,
+            419,
+            0x187c_93b7_c9ad_9eb5,
         );
     }
 

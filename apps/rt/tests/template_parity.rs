@@ -30,6 +30,7 @@ use std::sync::LazyLock;
 
 use clap::{Command, Subcommand};
 use regex::Regex;
+use mustard_core::domain::model::contract::Trigger;
 use mustard_core::domain::spec_state::State;
 use mustard_rt::commands::flow::resume::{next_command, step_command, NEXT_BY_PHASE};
 use mustard_rt::commands::flow::round::DONE_STEP;
@@ -1307,8 +1308,35 @@ fn reverse_every_registered_name_has_a_caller_or_a_justification() {
     assert!(back.is_empty(), "hooks that left are registered again: {back:?}");
     registered.sort_unstable();
     assert_eq!(registered, KEPT_HOOKS, "the registry holds exactly the hooks that stay");
-    let with_hook: BTreeSet<String> =
-        registry.triggers().into_iter().map(|trigger| trigger.as_event_name().to_string()).collect();
+    // The registry answers per event and tool, so each event Claude Code can
+    // send is asked with no tool and with every tool a hook names.
+    let tools = [
+        None,
+        Some("Bash"),
+        Some("Read"),
+        Some("Agent"),
+        Some("AskUserQuestion"),
+        Some(mustard_core::platform::project_seed::PAGE_DATABASE_TOOL),
+    ];
+    let with_hook: BTreeSet<String> = [
+        "PreToolUse",
+        "PostToolUse",
+        "SessionStart",
+        "SessionEnd",
+        "PreCompact",
+        "SubagentStart",
+        "SubagentStop",
+        "UserPromptSubmit",
+        "Stop",
+        "Notification",
+    ]
+    .into_iter()
+    .filter(|event| {
+        let trigger = Trigger::from_event_name(event).expect("a known event");
+        tools.iter().any(|tool| !registry.applicable(trigger, *tool).is_empty())
+    })
+    .map(str::to_string)
+    .collect();
     assert_eq!(
         manifest_events(&root),
         with_hook,

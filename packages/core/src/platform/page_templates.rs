@@ -136,7 +136,7 @@ pub const PROJECT_LAYOUT_VERSION: u32 = 4;
 
 /// A versão do layout da página do gasto, com a mesma regra de
 /// [`SPEC_LAYOUT_VERSION`].
-pub const SPEND_LAYOUT_VERSION: u32 = 1;
+pub const SPEND_LAYOUT_VERSION: u32 = 2;
 
 /// O template da página da spec, com o catálogo no idioma `lang`.
 #[must_use]
@@ -176,7 +176,6 @@ pub fn spend_page_template(lang: Locale) -> String {
         "lang": lang.as_str(),
         "db": { "days": DAYS, "summary": format!("{SUMMARY_COLLECTION}/{SUMMARY_DOC}") },
         "limit": 1000,
-        "chartDays": 60,
         "labels": texts(cited_keys(SPEND_PAGE), lang),
     });
     fill(SPEND_PAGE, &catalog, SPEND_LAYOUT_VERSION)
@@ -419,8 +418,8 @@ mod tests {
         ("spec", Locale::EnUs, 14, "4f223a40cfef922d"),
         ("project", Locale::PtBr, 4, "5ce19b21c8d05b39"),
         ("project", Locale::EnUs, 4, "2bc07fa8f52ae1bc"),
-        ("spend", Locale::PtBr, 1, "c45efb7fc2593426"),
-        ("spend", Locale::EnUs, 1, "991dad9b6459540e"),
+        ("spend", Locale::PtBr, 2, "bab718d405877ab9"),
+        ("spend", Locale::EnUs, 2, "c050630fedb4abdb"),
     ];
 
     /// Confere o carimbo `built` do molde `page` em `lang` contra a linha
@@ -1982,27 +1981,32 @@ mod tests {
     /// O banco da página do gasto de exemplo: três linhas de dois dias e dois
     /// projetos, e um documento sem projeto, que a página deixa de fora.
     fn spend_database() -> Value {
-        let row = |id: &str, day: &str, project: &str, tokens: u64, actions: u64, searches: u64, cost: u64| {
+        let row = |id: &str, day: &str, project: &str, tokens: u64, actions: u64, searches: u64| {
             json!({"id": id, "data": {"day": day, "project": project, "tokens": tokens, "actions": actions,
-                "code_searches": searches, "file_reads": 4, "mustard_searches": 3, "empty_searches": 1,
-                "jev_cost_micro_usd": cost}})
+                "code_searches": searches}})
         };
         json!({"days": [
-            row("2026-09-30-mustard", "2026-09-30", "mustard", 1_234_567, 100, 25, 1_500_000),
-            row("2026-09-30-atiz", "2026-09-30", "atiz", 500, 50, 5, 0),
-            row("2026-10-01-mustard", "2026-10-01", "mustard", 10, 0, 0, 0),
+            row("2026-09-30-mustard", "2026-09-30", "mustard", 1_234_567, 100, 25),
+            row("2026-09-30-atiz", "2026-09-30", "atiz", 500, 50, 5),
+            row("2026-10-01-mustard", "2026-10-01", "mustard", 10, 0, 0),
             {"id": "sem-projeto", "data": {"day": "2026-10-01", "tokens": 99}},
         ]})
     }
 
-    /// [`spend_database`] com o dia aberto, marcado como parcial, e o
-    /// documento do resumo da máquina, como o Mustard os copia.
-    fn spend_database_with_summary() -> Value {
-        let mut db = spend_database();
-        db["days"].as_array_mut().expect("days").push(json!({"id": "2026-10-02-mustard", "data": {
+    /// A página do gasto mostra o resumo da máquina no topo (hoje até agora,
+    /// com a marca de parcial, ontem, as três médias e a previsão do Jev em
+    /// dólares e em tokens) e uma linha por dia e por projeto, do dia mais
+    /// novo para o mais velho, com a parte das ações que são procuras de
+    /// código, tudo no jeito de cada idioma; a linha do dia aberto vem marcada
+    /// como parcial e, sem o documento do resumo, a página mostra o resto.
+    #[test]
+    fn the_spend_page_shows_the_machine_summary_and_a_row_per_day_and_project() {
+        let steps = json!([{"do": "wait"}, {"do": "scrape", "as": "page"}]);
+        let mut with_summary = spend_database();
+        with_summary["days"].as_array_mut().expect("days").push(json!({"id": "2026-10-02-mustard", "data": {
             "day": "2026-10-02", "project": "mustard", "tokens": 7_500, "actions": 400, "code_searches": 40,
-            "file_reads": 4, "mustard_searches": 3, "empty_searches": 1, "jev_cost_micro_usd": 0, "partial": true}}));
-        db["summary"] = json!([{"id": "current", "data": {
+            "partial": true}}));
+        with_summary["summary"] = json!([{"id": "current", "data": {
             "today": {"day": "2026-10-02", "tokens": 7_500, "actions": 400},
             "yesterday": {"day": "2026-10-01", "tokens": 1_234_567, "actions": 1_000},
             "last_3": {"tokens": 2_000_000, "days": 3}, "last_7": {"tokens": 1_500_000, "days": 6},
@@ -2010,80 +2014,13 @@ mod tests {
             "forecast": {"spent_micro_usd": 200_000, "spent_tokens": 7_000, "daily_micro_usd": 20_000,
                 "daily_tokens": 700, "days_left": 21, "micro_usd": 620_000, "tokens": 21_700},
             "min_actions": 100}}]);
-        db
-    }
-
-    /// A página do gasto mostra uma linha por dia e por projeto, do dia mais
-    /// novo para o mais velho, com os números no jeito de cada idioma, e um
-    /// gráfico com a parte das ações que são procuras de código em cada dia,
-    /// do mais velho para o mais novo.
-    #[test]
-    fn the_spend_page_shows_a_row_per_day_and_project_and_the_share_of_code_searches_per_day() {
-        let steps = json!([{"do": "wait"}, {"do": "scrape", "as": "page"}]);
-        let cases = [
-            (Locale::PtBr, "1.234.567", "US$ 1,5000", "US$ 0,0000"),
-            (Locale::EnUs, "1,234,567", "US$ 1.5000", "US$ 0.0000"),
-        ];
-        for (lang, tokens, cost, free) in cases {
-            let got = run("spend", &spend_page_template(lang), Some(spend_database()), steps.clone());
+        let tokens_of = |n: &str| format!("{n} tokens");
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let got = run("spend", &spend_page_template(lang), Some(with_summary.clone()), steps.clone());
             let page = &got["page"];
             assert_eq!(page["state"], json!("ready"), "{lang:?}: {page}");
             assert_eq!(page["statusHidden"], json!(true), "{lang:?}");
             assert_eq!(page["title"], json!(translate("page.spend.title", lang)), "{lang:?}");
-            let head: Vec<String> = [
-                "day", "project", "tokens", "actions", "searches", "share", "reads", "mustard", "empty", "jev_cost",
-            ]
-            .iter()
-            .map(|c| translate(&format!("page.spend.col.{c}"), lang).to_string())
-            .collect();
-            assert_eq!(page["head"], json!(head), "{lang:?}: the columns come from the catalog");
-            let cells = |day: &str, project: &str, rest: [&str; 8]| {
-                let mut all = vec![day.to_string(), project.to_string()];
-                all.extend(rest.iter().map(|c| (*c).to_string()));
-                json!({"day": day, "project": project, "cells": all})
-            };
-            assert_eq!(
-                page["rows"],
-                json!([
-                    cells("2026-10-01", "mustard", ["10", "0", "0", "0%", "4", "3", "1", free]),
-                    cells("2026-09-30", "atiz", ["500", "50", "5", "10%", "4", "3", "1", free]),
-                    cells("2026-09-30", "mustard", [tokens, "100", "25", "25%", "4", "3", "1", cost]),
-                ]),
-                "{lang:?}: a row per day and project, newest day first, the row without a project left out"
-            );
-            let point = |day: &str, percent: u64, searches: u64, actions: u64| {
-                translate("page.spend.chart_point", lang)
-                    .replace("{day}", day)
-                    .replace("{percent}", &percent.to_string())
-                    .replace("{searches}", &searches.to_string())
-                    .replace("{actions}", &actions.to_string())
-            };
-            assert_eq!(
-                page["bars"],
-                json!([
-                    {"day": "2026-09-30", "height": 27, "title": point("2026-09-30", 20, 30, 150)},
-                    {"day": "2026-10-01", "height": 0, "title": point("2026-10-01", 0, 0, 0)},
-                ]),
-                "{lang:?}: one bar per day, oldest first, the projects of the day summed"
-            );
-            assert_eq!(page["chartTitle"], json!(translate("page.spend.chart_title", lang)), "{lang:?}");
-        }
-    }
-
-    /// O topo da página do gasto traz o resumo da máquina: hoje até agora,
-    /// com a marca de parcial, ontem, as três médias e a previsão do Jev em
-    /// dólares e em tokens, no jeito de cada idioma; a linha do dia aberto vem
-    /// marcada como parcial na tabela e fora do gráfico; sem o documento do
-    /// resumo, a página mostra o resto.
-    #[test]
-    fn the_spend_page_shows_the_machine_summary_and_marks_the_open_day_as_partial() {
-        let steps = json!([{"do": "wait"}, {"do": "scrape", "as": "page"}]);
-        let tokens_of = |n: &str| format!("{n} tokens");
-        let money = |v: &str| format!("US$ {v}");
-        for lang in [Locale::PtBr, Locale::EnUs] {
-            let got = run("spend", &spend_page_template(lang), Some(spend_database_with_summary()), steps.clone());
-            let page = &got["page"];
-            assert_eq!(page["state"], json!("ready"), "{lang:?}: {page}");
             let (thousands, point) = if lang == Locale::PtBr { ('.', ',') } else { (',', '.') };
             let n = |digits: &str| {
                 let mut out = String::new();
@@ -2095,7 +2032,7 @@ mod tests {
                 }
                 out
             };
-            let usd = |v: &str| money(&v.replace('.', &point.to_string()));
+            let usd = |v: &str| format!("US$ {}", v.replace('.', &point.to_string()));
             let day_actions = |day: &str, n: &str| {
                 translate("page.spend.summary.day_actions", lang).replace("{day}", day).replace("{n}", n)
             };
@@ -2136,15 +2073,32 @@ mod tests {
                 json!(translate("page.spend.summary.note", lang).replace("{min}", "100")),
                 "{lang:?}"
             );
+            let head: Vec<String> = ["day", "project", "tokens", "actions", "searches", "share"]
+                .iter()
+                .map(|c| translate(&format!("page.spend.col.{c}"), lang).to_string())
+                .collect();
+            assert_eq!(page["head"], json!(head), "{lang:?}: the columns come from the catalog");
             let partial_label = format!("2026-10-02 ({})", translate("page.spend.summary.partial", lang));
-            assert_eq!(page["rows"][0]["cells"][0], json!(partial_label), "{lang:?}: the open day row is marked");
-            assert_eq!(page["rows"][0]["day"], json!("2026-10-02"), "{lang:?}: the row keeps the plain day");
-            let days: Vec<&str> = page["bars"].as_array().expect("bars").iter().filter_map(|b| b["day"].as_str()).collect();
-            assert_eq!(days, ["2026-09-30", "2026-10-01"], "{lang:?}: the open day is not in the chart");
+            let cells = |day: &str, project: &str, rest: [&str; 4]| {
+                let mut all = vec![day.to_string(), project.to_string()];
+                all.extend(rest.iter().map(|c| (*c).to_string()));
+                json!({"day": day.split(' ').next(), "project": project, "cells": all})
+            };
+            assert_eq!(
+                page["rows"],
+                json!([
+                    cells(&partial_label, "mustard", [&n("7500"), "400", "40", "10%"]),
+                    cells("2026-10-01", "mustard", ["10", "0", "0", "0%"]),
+                    cells("2026-09-30", "atiz", ["500", "50", "5", "10%"]),
+                    cells("2026-09-30", "mustard", [&n("1234567"), "100", "25", "25%"]),
+                ]),
+                "{lang:?}: a row per day and project, newest day first, the open day marked, the row without a project left out"
+            );
 
             let plain = run("spend", &spend_page_template(lang), Some(spend_database()), steps.clone());
             assert_eq!(plain["page"]["state"], json!("ready"), "{lang:?}");
             assert_eq!(plain["page"]["cards"], json!([]), "{lang:?}: no summary document, no cards");
+            assert_eq!(plain["page"]["rows"].as_array().map(Vec::len), Some(3), "{lang:?}");
         }
     }
 

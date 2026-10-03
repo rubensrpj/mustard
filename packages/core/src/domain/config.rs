@@ -781,12 +781,6 @@ impl ProjectConfig {
         non_blank(self.build_command.as_deref())
     }
 
-    /// `buildCommand` or [`BUILD_COMMAND_FALLBACK`].
-    #[must_use]
-    pub fn build_command_or_fallback(&self) -> String {
-        self.build_command().unwrap_or_else(|| BUILD_COMMAND_FALLBACK.to_string())
-    }
-
     /// The four close-gate commands and the prepare command, each trimmed /
     /// `None` when blank. The build placeholder that `mustard init` seeds for
     /// an unrecognised stack ([`BUILD_COMMAND_FALLBACK`]) counts as absent
@@ -1211,7 +1205,6 @@ mod tests {
         let cfg = ProjectConfig::load(dir.path());
         assert!(cfg.commands().build.is_none(), "{:?}", cfg.commands().build);
         assert_eq!(cfg.build_command(), Some(BUILD_COMMAND_FALLBACK.to_string()), "a dica continua no lugar de quem edita o mustard.json");
-        assert_eq!(cfg.build_command_or_fallback(), BUILD_COMMAND_FALLBACK);
     }
 
     /// A pasta de compilação declarada vai e volta pelo disco com o nome

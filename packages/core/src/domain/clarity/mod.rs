@@ -23,8 +23,8 @@
 //! português e do inglês ([`COMMON_WORDS_PT`], [`COMMON_WORDS_EN`], que moram
 //! em `domain::text`). Não há modelo estatístico: a contagem é determinística
 //! e só julga com prosa bastante ([`MIN_LANGUAGE_WORDS`]). Ela vale para todo
-//! projeto, qualquer que seja o tom: [`measure_language`] a faz sozinha, e
-//! [`measure`] a inclui junto das medições da escrita.
+//! projeto, qualquer que seja o tom, e [`measure`] a inclui junto das medições
+//! da escrita.
 
 use crate::domain::mustard_id;
 use crate::domain::text::{COMMON_WORDS_EN, COMMON_WORDS_PT};
@@ -336,14 +336,6 @@ fn is_stressed(c: char) -> bool {
 // ---------------------------------------------------------------------------
 // Idioma
 // ---------------------------------------------------------------------------
-
-/// Mede só o idioma de `text`: a medição que vale para todo projeto, qualquer
-/// que seja o tom. `lang` é o idioma do projeto. `None` quando a prosa está
-/// nele, é curta demais ou não tem idioma dominante.
-#[must_use]
-pub fn measure_language(text: &str, lang: Locale) -> Option<WrongLanguage> {
-    wrong_language(&prose_lines(text), lang)
-}
 
 /// O idioma dominante da prosa, quando ele não é `expected`. `None` com menos
 /// de [`MIN_LANGUAGE_WORDS`] palavras de texto corrido, sem idioma dominante ou

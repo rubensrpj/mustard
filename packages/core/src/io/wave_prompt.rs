@@ -1972,7 +1972,7 @@ mod tests {
         ]);
 
         let bank = crate::io::lessons::read(&path.join("lessons.ndjson")).unwrap().unwrap();
-        let by_text = crate::domain::lessons::matching(&bank, STATUS_BAR_TASK, &Languages::new(["pt-BR", "en-US"]));
+        let by_text = crate::domain::lessons::matching_among(&crate::domain::lessons::kept(&bank), STATUS_BAR_TASK, &Languages::new(["pt-BR", "en-US"]));
         assert!(by_text.iter().any(|hit| hit.id == 1), "pelo texto inteiro, a lição do envio entraria: {by_text:?}");
 
         let built = prompts(root, "teste", &log, Locale::PtBr, &Flight::default());

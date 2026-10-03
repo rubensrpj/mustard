@@ -439,13 +439,9 @@ function scrapeProject() {
 // por dia e por projeto, com o texto de cada célula).
 function scrapeSpend() {
   const table = document.getElementById('days');
-  const chart = document.getElementById('chart');
   return {
     state: appEl.getAttribute('data-state'), status: text(document.getElementById('status')),
     statusHidden: document.getElementById('status').hidden, title: text(one(appEl, (e) => e.tagName === 'H1')),
-    chartTitle: chart ? text(one(chart, (e) => e.tagName === 'H2')) : null,
-    bars: chart ? walk(chart, (e) => e.tagName === 'RECT').map((r) => ({ day: r.getAttribute('data-day'),
-      height: Number(r.getAttribute('height')), title: text(one(r, (e) => e.tagName === 'TITLE')) })) : [],
     cards: walk(appEl, (e) => has(e, 'card')).map((c) => ({ id: c.getAttribute('data-card'), label: text(byClass(c, 'label')),
       badge: text(byClass(c, 'badge')), value: text(byClass(c, 'value')), subs: walk(c, (e) => has(e, 'sub')).map(text) })),
     summaryNote: text(one(appEl, (e) => e.tagName === 'P' && has(e, 'note'))),

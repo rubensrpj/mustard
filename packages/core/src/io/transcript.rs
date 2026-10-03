@@ -13,9 +13,9 @@
 //! de ferramenta.
 //!
 //! O gasto de cada dia ([`SpendTally`]) usa a mesma conta, mas guarda cada
-//! resposta pelo `message.id` em qualquer arquivo e separa os usos de
-//! ferramenta por coluna — procura de código, leitura de arquivo e busca do
-//! Mustard —, no dia (fuso -03:00) e no projeto da linha.
+//! resposta pelo `message.id` em qualquer arquivo e conta os usos de
+//! ferramenta e as procuras de código no dia (fuso -03:00) e no projeto da
+//! linha.
 //!
 //! As partes puras, [`usage_of`] e a escolha do agente da onda entre os
 //! achados, não tocam o disco; as outras acham os arquivos e entregam a elas
@@ -32,7 +32,7 @@ use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::domain::spend::{classify_tool, day_of_stamp, DayRow, Range};
+use crate::domain::spend::{day_of_stamp, is_code_search, DayRow, Range};
 
 /// O consumo medido num conjunto de linhas de conversa.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -208,26 +208,6 @@ pub struct SpendTally {
     responses: HashMap<String, (SpendKey, u64)>,
     tools: HashSet<String>,
     rows: BTreeMap<SpendKey, DayRow>,
-    map_searches: Vec<MapSearch>,
-}
-
-/// O uso de `Bash` que rodou a busca do Mustard por comando: quando a resposta
-/// do modelo foi gravada e a linha do dia e do projeto onde ele foi contado.
-/// A conta das buscas junta cada uso à chamada `word search` que a mesma busca
-/// gravou na spec, para a busca contar uma vez só.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MapSearch {
-    pub at: DateTime<Utc>,
-    pub day: String,
-    pub project: String,
-}
-
-/// O que o gasto de várias conversas deu: a linha de cada dia e projeto e os
-/// usos de `Bash` que rodaram a busca do Mustard.
-#[derive(Debug, Default)]
-pub struct Spent {
-    pub rows: BTreeMap<(String, String), DayRow>,
-    pub map_searches: Vec<MapSearch>,
 }
 
 impl SpendTally {
@@ -256,7 +236,6 @@ impl SpendTally {
             }
         }
         let Some(Content::Blocks(blocks)) = message.content else { return };
-        let stamp = line.timestamp.as_deref().and_then(utc);
         for block in blocks.into_iter().filter(|block| block.kind.as_deref() == Some("tool_use")) {
             if block.id.is_some_and(|id| !self.tools.insert(id)) {
                 continue;
@@ -264,15 +243,10 @@ impl SpendTally {
             let input = block.input.as_ref();
             let command = input.and_then(|input| input.get("command")).and_then(Value::as_str);
             let subagent = input.and_then(|input| input.get("subagent_type")).and_then(Value::as_str);
-            let tool = classify_tool(block.name.as_deref().unwrap_or_default(), command, subagent);
+            let search = is_code_search(block.name.as_deref().unwrap_or_default(), command, subagent);
             let row = self.row(&key);
             row.actions = row.actions.saturating_add(1);
-            row.code_searches = row.code_searches.saturating_add(u64::from(tool.code_search));
-            row.file_reads = row.file_reads.saturating_add(u64::from(tool.file_read));
-            row.mustard_searches = row.mustard_searches.saturating_add(u64::from(tool.mustard_search));
-            if let Some(at) = stamp.filter(|_| tool.mustard_search) {
-                self.map_searches.push(MapSearch { at, day: key.0.clone(), project: key.1.clone() });
-            }
+            row.code_searches = row.code_searches.saturating_add(u64::from(search));
         }
     }
 
@@ -284,17 +258,16 @@ impl SpendTally {
     }
 
     /// As linhas, uma por dia e projeto, com os tokens de cada resposta já
-    /// somados, em ordem de dia e de projeto, e os usos de `Bash` que rodaram
-    /// a busca do Mustard. A linha sem nenhuma ação e sem nenhum token fica
-    /// de fora.
+    /// somados, em ordem de dia e de projeto. A linha sem nenhuma ação e sem
+    /// nenhum token fica de fora.
     #[must_use]
-    pub fn finish(mut self) -> Spent {
+    pub fn finish(mut self) -> BTreeMap<SpendKey, DayRow> {
         for (key, tokens) in std::mem::take(&mut self.responses).into_values() {
             let row = self.row(&key);
             row.tokens = row.tokens.saturating_add(tokens);
         }
         self.rows.retain(|_, row| row.actions > 0 || row.tokens > 0);
-        Spent { rows: self.rows, map_searches: self.map_searches }
+        self.rows
     }
 }
 

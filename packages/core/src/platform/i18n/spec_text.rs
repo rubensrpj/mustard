@@ -143,11 +143,11 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // tolerates (last AC), the compile-floor beneath the behaviour ACs above.
         //
         // It says BUILD and nothing more, because the command it is minted with is
-        // the project's build command (`ProjectConfig::build_command_or_fallback`)
-        // and nothing more. The older wording promised "and the tests" over a
-        // command that never compiled a test — a safety net reporting on a pass it
-        // never took, which is the exact defect an acceptance criterion exists to
-        // catch. A spec that wants the suite says so in a criterion of its own.
+        // the project's build command and nothing more. The older wording
+        // promised "and the tests" over a command that never compiled a test — a
+        // safety net reporting on a pass it never took, which is the exact defect
+        // an acceptance criterion exists to catch. A spec that wants the suite
+        // says so in a criterion of its own.
         ("ac.safety.build_green", Locale::PtBr) => "o build do projeto passa verde",
         ("ac.safety.build_green", Locale::EnUs) => "the project build passes green",
 

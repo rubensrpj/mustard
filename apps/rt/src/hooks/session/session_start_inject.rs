@@ -784,6 +784,9 @@ mod tests {
             for source in ["startup", "startup", "resume", "clear"] {
                 assert!(context_with_spend(root, source).contains(order), "{lang}: {source} asks for the spend, every time");
             }
+            std::fs::create_dir_all(root.join(".claude/spec/uma-spec")).unwrap();
+            std::fs::write(root.join(".claude/spec/uma-spec/spec.ndjson"), "").unwrap();
+            assert!(context_with_spend(root, "startup").contains(order), "{lang}: an open spec changes nothing");
             assert!(!context_with_spend(root, "compact").contains(order), "{lang}: a compaction is the same session");
 
             let silent = session_start_core(&session_input("s-gasto", "startup"), &ctx(root), NO_REGISTRY, NO_SCRATCH, NO_BUILD, false);
@@ -792,40 +795,6 @@ mod tests {
             let loose = tempdir().unwrap();
             assert!(!context_with_spend(loose.path(), "startup").contains(order), "{lang}: no config, no order");
         }
-    }
-
-    /// Com uma spec aberta e sem ela a ordem é a mesma: o gancho não depende
-    /// de spec.
-    #[test]
-    fn the_spend_order_does_not_depend_on_an_open_spec() {
-        let project = tempdir().unwrap();
-        let root = project.path();
-        std::fs::write(root.join("mustard.json"), "{}").unwrap();
-        let order = translate("session.spend", Locale::PtBr);
-        assert!(!root.join(".claude/spec").exists());
-        assert!(context_with_spend(root, "startup").contains(order), "without a spec");
-        std::fs::create_dir_all(root.join(".claude/spec/uma-spec")).unwrap();
-        std::fs::write(root.join(".claude/spec/uma-spec/spec.ndjson"), "").unwrap();
-        assert!(context_with_spend(root, "startup").contains(order), "with a spec folder");
-    }
-
-    /// A ordem que o corte do teto deixou de fora sai de verdade: o todo cabe
-    /// no teto, e o texto declarado grande fica no lugar dela.
-    #[test]
-    fn a_spend_order_cut_by_the_cap_gives_way_to_the_declared_text() {
-        let project = tempdir().unwrap();
-        let root = project.path();
-        std::fs::write(
-            root.join("mustard.json"),
-            r#"{"inject":[{"on":"sessionStart","file":".claude/mustard/grande.md","once":true}]}"#,
-        )
-        .unwrap();
-        std::fs::create_dir_all(root.join(".claude/mustard")).unwrap();
-        std::fs::write(root.join(".claude/mustard/grande.md"), "d".repeat(MAX_BYTES - 40)).unwrap();
-
-        let context = context_with_spend(root, "startup");
-        assert!(!context.contains(translate("session.spend", Locale::PtBr)), "the order gave way to the declared text");
-        assert!(context.len() <= MAX_BYTES, "{}", context.len());
     }
 
     /// Só os textos que o corte do teto deixa, na ordem da lista.

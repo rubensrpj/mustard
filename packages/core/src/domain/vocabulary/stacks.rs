@@ -203,12 +203,6 @@ impl StackRegistry {
         }
     }
 
-    /// The stack definitions in document order (= priority order).
-    #[must_use]
-    pub fn stacks(&self) -> &[StackDef] {
-        &self.stacks
-    }
-
     /// The declared host-language hint ([`StackDef::language`]) for the stack
     /// named `name`, or `None` when no such stack is registered or it declares
     /// no language. Case-sensitive on the registry's lowercase ids — detections
@@ -478,7 +472,7 @@ mod tests {
     fn the_signatures_found_infer_the_same_stacks_as_the_content() {
         let reg = StackRegistry::builtin().expect("built-in stack registry parses");
         let signatures: Vec<String> =
-            reg.stacks().iter().flat_map(|s| s.code_signatures.iter().cloned()).take(6).collect();
+            reg.stacks.iter().flat_map(|s| s.code_signatures.iter().cloned()).take(6).collect();
         assert!(!signatures.is_empty(), "the registry declares code signatures");
         let content = format!("header\n{}\nfooter\n", signatures.join(" then "));
         let found = code_signals(&content);
@@ -495,9 +489,9 @@ mod tests {
         let reg = StackRegistry::builtin().expect("built-in stack registry parses");
         // The base seeds at least four stacks of distinct ecosystems
         // (composer/php, pip/python, npm/javascript, nuget-dotnet/csharp).
-        assert!(reg.stacks().len() >= 4);
+        assert!(reg.stacks.len() >= 4);
         let langs: Vec<_> = reg
-            .stacks()
+            .stacks
             .iter()
             .filter_map(|s| s.language.as_deref())
             .collect();
@@ -506,7 +500,7 @@ mod tests {
         assert!(langs.contains(&"javascript"));
         assert!(langs.contains(&"csharp"));
         // Every seeded stack carries all three signal classes.
-        for s in reg.stacks() {
+        for s in &reg.stacks {
             assert!(!s.name.is_empty());
             assert!(!s.manifest_deps.is_empty(), "{} has manifest_deps", s.name);
             assert!(!s.path_markers.is_empty(), "{} has path_markers", s.name);
@@ -547,7 +541,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let reg = StackRegistry::load(DEFAULT_STACKS_NAME, tmp.path())
             .expect("default name falls back to built-in");
-        assert!(reg.stacks().len() >= 2);
+        assert!(reg.stacks.len() >= 2);
     }
 
     #[test]
@@ -575,8 +569,8 @@ manifest_deps = ["bespoke-runtime"]
 
         let reg = StackRegistry::load(DEFAULT_STACKS_NAME, tmp.path()).unwrap();
         // The override IS respected and the built-in base is fully replaced.
-        assert_eq!(reg.stacks().len(), 1);
-        assert_eq!(reg.stacks()[0].name, "bespoke");
+        assert_eq!(reg.stacks.len(), 1);
+        assert_eq!(reg.stacks[0].name, "bespoke");
     }
 
     #[test]

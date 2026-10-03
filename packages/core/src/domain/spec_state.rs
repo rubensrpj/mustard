@@ -22,12 +22,11 @@
 //! pendências) recebe os valores já lidos e se testa sem disco, com uma
 //! [`SpecState`] falsa.
 //!
-//! O resultado dos critérios ([`qa`]), o veredito das ondas ([`review`]) e os
-//! pedidos depois da última execução ([`requests_after`]) também moram aqui:
-//! toda porta que pergunta "o QA passou?" ou "a revisão reprovou?" lê a mesma
-//! resposta do mesmo arquivo.
+//! O resultado dos critérios ([`qa`]) e o veredito das ondas ([`review`])
+//! também moram aqui: toda porta que pergunta "o QA passou?" ou "a revisão
+//! reprovou?" lê a mesma resposta do mesmo arquivo.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use serde_json::Value;
 
@@ -603,65 +602,6 @@ pub fn review(log: &SpecLog) -> Review {
     }
 }
 
-/// Os pedidos (`request`) que a leitura mostra e que vieram depois do evento
-/// de número `after`, em ordem: mudanças que a última execução dos critérios
-/// não conferiu.
-#[must_use]
-pub fn requests_after(log: &SpecLog, after: u64) -> Vec<&SpecEvent> {
-    log.block(BlockQuery::Block(Block::Notes))
-        .into_iter()
-        .filter(|event| event.event_type == "request" && event.id > after)
-        .collect()
-}
-
-/// A aprovação que vale: o `state` visível mais novo, na ordem da dobra, com a
-/// fase `approved`, enquanto a dobra lê a spec aprovada. `None` numa spec que
-/// nunca foi aprovada e numa que voltou a uma fase de antes da aprovação. O
-/// leitor da aprovação do rt lê daqui; a página e o aviso de crescimento das
-/// ondas medem pela fronteira dela ([`approval_boundary`]).
-#[must_use]
-pub fn approval_event(log: &SpecLog) -> Option<&SpecEvent> {
-    if !State::from_log(log).approved {
-        return None;
-    }
-    log.block(BlockQuery::Block(Block::State))
-        .into_iter()
-        .filter(|event| event.event_type == "state" && event.str_field("phase").map(str::trim) == Some("approved"))
-        .max_by_key(|event| (original_of(log, event), event.id))
-}
-
-/// A fronteira da aprovação que vale: o número da primeira versão dela. Uma
-/// aprovação revista, como a da spec antiga que nasceu aprovada e ganhou a
-/// branch depois, continua valendo desde onde foi dada: o que veio entre ela
-/// e a revisão já é depois da aprovação. A página mede daqui.
-#[must_use]
-pub fn approval_boundary(log: &SpecLog) -> Option<u64> {
-    approval_event(log).map(|event| original_of(log, event))
-}
-
-/// Quantas ondas a leitura mostra agora, cada uma pelo número dela.
-#[must_use]
-pub fn waves_now(log: &SpecLog) -> usize {
-    log.visible()
-        .into_iter()
-        .filter(|event| event.event_type == "wave")
-        .filter_map(SpecEvent::wave)
-        .collect::<BTreeSet<u64>>()
-        .len()
-}
-
-/// Algum `state` que a leitura mostra, com a fase `phase`, foi gravado no
-/// instante `since_secs` (segundos desde a época) ou depois. A hora do evento
-/// traz o fuso e vem em segundos; uma hora que não se lê não conta.
-#[must_use]
-pub fn phase_recorded_since(log: &SpecLog, phase: &str, since_secs: i64) -> bool {
-    log.block(BlockQuery::Block(Block::State))
-        .into_iter()
-        .filter(|event| event.event_type == "state" && event.str_field("phase").map(str::trim) == Some(phase))
-        .filter_map(|event| chrono::DateTime::parse_from_rfc3339(event.at()).ok())
-        .any(|at| at.timestamp() >= since_secs)
-}
-
 /// A escada de "qual é a spec atual": a variável de ambiente, depois a spec da
 /// branch em que o checkout está, depois a spec ligada à sessão. O primeiro
 /// degrau com um nome vence; um nome em branco não conta.
@@ -1066,97 +1006,6 @@ mod tests {
         let fixed = review(&log(&[verdict(1, 2, "rejected"), verdict(2, 1, "approved"), verdict(3, 2, "approved")]));
         assert_eq!(fixed, Review { any: true, rejected: false });
         assert_eq!(fixed.word(), Some("approved"));
-    }
-
-    /// Um `state` conta a partir do instante em que foi gravado, lido com o
-    /// fuso dele; outra fase, uma hora ilegível e um `state` removido, não.
-    #[test]
-    fn a_phase_counts_from_the_instant_it_was_recorded() {
-        let closed = log(&[
-            json!({"v":1,"id":1,"at":"2026-09-13T09:00:00-03:00","type":"state","phase":"approved"}),
-            json!({"v":1,"id":2,"at":"2026-09-13T10:00:00-03:00","type":"state","phase":"closed"}),
-            json!({"v":1,"id":3,"at":"ontem","type":"state","phase":"closed"}),
-        ]);
-        // 10:00 em -03:00 é 13:00 UTC.
-        let at_13 = chrono::DateTime::parse_from_rfc3339("2026-09-13T13:00:00Z").unwrap().timestamp();
-        assert!(phase_recorded_since(&closed, "closed", at_13));
-        assert!(!phase_recorded_since(&closed, "closed", at_13 + 1), "the close came before");
-        assert!(!phase_recorded_since(&closed, "delivered", 0), "another phase does not count");
-
-        let removed = log(&[
-            json!({"v":1,"id":1,"at":"2026-09-13T10:00:00-03:00","type":"state","phase":"closed"}),
-            json!({"v":1,"id":2,"type":"remove","targets":[1],"reason":"engano"}),
-        ]);
-        assert!(!phase_recorded_since(&removed, "closed", 0), "a removed state does not count");
-    }
-
-    /// Só os pedidos gravados depois do evento dado voltam.
-    #[test]
-    fn only_the_requests_after_the_given_event_come_back() {
-        let request = |id: u64, text: &str| {
-            json!({"v":1,"id":id,"type":"request","text":text,"keys":[],"effect":"adjust_waves","origin":1})
-        };
-        let log = log(&[request(2, "antes"), criterion(3), run(4, 3, "pass"), request(5, "depois")]);
-        let after: Vec<&str> = requests_after(&log, 4).iter().filter_map(|e| e.str_field("text")).collect();
-        assert_eq!(after, ["depois"]);
-        assert_eq!(requests_after(&log, 0).len(), 2);
-    }
-
-    fn wave(id: u64, n: u64) -> Value {
-        json!({"v":1,"id":id,"type":"wave","n":n,"text":"t","criteria":[1],"done_when":"d","origin":1})
-    }
-
-    fn approve(id: u64) -> Value {
-        json!({"v":1,"id":id,"type":"state","phase":"approved",
-               "witness":{"question":"Aprovar esta spec?","answer":"Aprovar"}})
-    }
-
-    /// Uma spec que nasceu aprovada e ganhou a branch depois, pela revisão do
-    /// nascimento: a fronteira fica na primeira versão da aprovação.
-    #[test]
-    fn a_revised_approval_keeps_the_boundary_of_its_first_version() {
-        let mut revision = approve(3);
-        revision["replaces"] = json!(1);
-        revision["branch"] = json!("feature/x");
-        let lines = [approve(1), wave(2, 1), revision, wave(4, 2)];
-        assert_eq!(approval_event(&log(&lines)).map(|e| e.id), Some(3), "the revision is the approval shown");
-        assert_eq!(approval_boundary(&log(&lines)), Some(1));
-    }
-
-    /// Uma spec com o nascimento em plano, as ondas `1..=approved` e a
-    /// aprovação logo depois delas.
-    fn approved_with(approved: u64) -> Vec<Value> {
-        let mut lines = vec![json!({"v":1,"id":1,"type":"state","phase":"plan"})];
-        lines.extend((1..=approved).map(|n| wave(n + 1, n)));
-        lines.push(approve(approved + 2));
-        lines
-    }
-
-    /// A aprovação que vale é a mais nova enquanto a spec continua aprovada; a
-    /// spec que voltou ao plano não tem aprovação.
-    #[test]
-    fn the_approval_event_is_the_newest_approval_while_the_spec_stays_approved() {
-        let mut lines = approved_with(1);
-        lines.push(json!({"v":1,"id":4,"type":"state","phase":"running"}));
-        assert_eq!(approval_event(&log(&lines)).map(|e| e.id), Some(3), "running keeps the approval");
-        lines.push(json!({"v":1,"id":5,"type":"state","phase":"plan"}));
-        assert_eq!(approval_event(&log(&lines)), None, "back in plan, no approval stands");
-        lines.push(approve(6));
-        assert_eq!(approval_event(&log(&lines)).map(|e| e.id), Some(6));
-        assert_eq!(approval_event(&log(&[wave(1, 1)])), None, "a spec never approved");
-    }
-
-    /// A versão nova de uma onda não soma onda nenhuma, e a onda tirada sai
-    /// da conta.
-    #[test]
-    fn a_wave_counts_once_by_its_number() {
-        let mut lines = approved_with(4);
-        let mut revised = wave(7, 3);
-        revised["replaces"] = json!(4);
-        lines.push(revised);
-        assert_eq!(waves_now(&log(&lines)), 4);
-        lines.push(json!({"v":1,"id":8,"type":"remove","targets":[5],"reason":"sai"}));
-        assert_eq!(waves_now(&log(&lines)), 3);
     }
 
     /// Uma spec em levantamento com a conversa `talk`, cada evento com o

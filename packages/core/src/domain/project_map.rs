@@ -1419,44 +1419,6 @@ fn named_in<'m>(
     Ok(found)
 }
 
-/// O que o mapa liga a uma declaração: os donos dela, os membros quando ela é
-/// um tipo e as implementações quando ela é um método.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct DeclRelations {
-    pub file: String,
-    pub kind: String,
-    pub name: String,
-    pub line: u64,
-    /// Do mais interno para o mais externo; o contrato escrito com o dono,
-    /// como o traço do `impl Traço for Tipo`, vem por último.
-    pub owners: Vec<String>,
-    /// Num tipo, os membros, os métodos primeiro.
-    pub members: Vec<DeclAt>,
-    /// Num método, o método do contrato que ele cumpre.
-    pub implements: Vec<DeclAt>,
-    /// Num método de contrato, os métodos que o cumprem.
-    pub implemented_by: Vec<DeclAt>,
-}
-
-/// Os donos, os membros e as implementações de cada declaração chamada
-/// `name`, em ordem de caminho e de linha. Com `file`, só as desse arquivo.
-/// As recusas são as de [`users`].
-pub fn relations(map: &ProjectMap, file: Option<&str>, name: &str) -> Result<Vec<DeclRelations>, MapRefusal> {
-    Ok(named_in(map, file, name)?
-        .into_iter()
-        .map(|(m, d)| DeclRelations {
-            file: m.path.clone(),
-            kind: d.kind.clone(),
-            name: d.name.clone(),
-            line: d.line,
-            owners: d.owner.iter().chain(&d.contract).cloned().collect(),
-            members: d.members.clone(),
-            implements: d.implements.clone(),
-            implemented_by: d.implemented_by.clone(),
-        })
-        .collect())
-}
-
 /// O trecho de `text` da linha `line` à linha `end_line`, contadas a partir de
 /// 1. Sem nenhuma dessas linhas, o trecho é vazio.
 #[must_use]

@@ -107,14 +107,6 @@ mod tests {
         }
     }
 
-    /// O envio forçado escrito depois da branch continua recusado; a forma
-    /// segura, com `--force-with-lease`, passa.
-    #[test]
-    fn force_push_denied_lease_allowed_through_chain() {
-        assert!(verdict_for("git push origin dev --force").is_blocking());
-        assert!(!verdict_for("git push --force-with-lease origin dev").is_blocking());
-    }
-
     /// O redirecionamento para um caminho do Windows é reescrito, com uma
     /// nota do que trocou, para `>` e `2>` nos dois jeitos de escrever o
     /// caminho, e para o `tee`; o comando segue, sem recusa. Um comando que

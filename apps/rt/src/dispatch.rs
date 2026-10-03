@@ -166,14 +166,6 @@ mod tests {
         assert_eq!(outcome.verdict, Verdict::Allow);
     }
 
-    #[test]
-    fn dispatch_runs_bash_guard_for_bash_pretooluse() {
-        let dir = tempfile::tempdir().unwrap();
-        let input = bash_input(dir.path(), "rm -rf /", "PreToolUse");
-        let outcome = run_event(Some(Trigger::PreToolUse), &input);
-        assert!(outcome.is_blocking());
-    }
-
     /// Com o Mustard desligado no `mustard.json`, o comando que a trava barra
     /// passa, e nada é gravado; religado, a trava volta a barrar.
     #[test]

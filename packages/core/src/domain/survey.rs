@@ -452,16 +452,6 @@ pub fn open_points(log: &SpecLog) -> Vec<&SpecEvent> {
     open.into_iter().map(|p| p.shown()).collect()
 }
 
-/// Os pontos já fechados, pela mesma leitura dos pares ([`points`]): cada um
-/// pelo original ou, se ele saiu, pelo fechamento. Com [`open_points`], são
-/// todos os pontos do levantamento. Em ordem de número.
-#[must_use]
-pub fn closed_points(log: &SpecLog) -> Vec<&SpecEvent> {
-    let mut out: Vec<&SpecEvent> = points(log).into_iter().filter(|p| !p.is_open()).map(|p| p.shown()).collect();
-    out.sort_by_key(|p| p.id);
-    out
-}
-
 /// Os pontos como uma recusa os lista: o código, o número e a lacuna de cada
 /// um, separados por ponto e vírgula; `-` quando não há nenhum.
 #[must_use]

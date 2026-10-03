@@ -25,8 +25,9 @@
 //! skill.
 //!
 //! Duas buscas, só do Rust: por escopo ([`in_scope`]), pelo caminho dos
-//! arquivos, pelo subprojeto e pela skill; e por palavras ([`matching`]), com
-//! o BM25 de `domain::search` sobre o `search`, que devolve as 5 mais fortes.
+//! arquivos, pelo subprojeto e pela skill; e por palavras
+//! ([`matching_among`]), com o BM25 de `domain::search` sobre o `search`, que
+//! devolve as 5 mais fortes.
 //! O pedido de uma onda leva, de cada classe, só as lições mais ligadas às
 //! tarefas ([`related_to_tasks`]), porque uma pasta pode ter
 //! centenas delas: a mesma busca, mas sobre as palavras-chave de cada lição,
@@ -37,8 +38,7 @@
 //! subprojeto. O item combinado sem dono é escolhido para a onda pelas mesmas
 //! duas leituras ([`tied_to_wave`]): as palavras-chave dele ligadas às
 //! tarefas, ou o arquivo que ele cita e a onda mexe.
-//! Quem mostra uma lição mostra o texto original ([`shown`]), nunca o
-//! `search`.
+//! Quem mostra uma lição mostra o texto original, nunca o `search`.
 //!
 //! Uma lição nunca entra repetida: a que tem o mesmo texto de outra já
 //! guardada, depois de igualar espaços, maiúsculas e acentos
@@ -73,7 +73,7 @@ use crate::domain::project_map::{cited_paths, written_paths};
 use crate::domain::search::{self, Hit, SearchIndex};
 use crate::domain::text::fold;
 use crate::domain::spec_events::{
-    check_field, is_empty, opt, req, shown_line, Kind, Refusal, SpecEvent, SpecLog, AUTHORS,
+    check_field, is_empty, opt, req, Kind, Refusal, SpecEvent, SpecLog, AUTHORS,
     BINARY_FIELDS, DEFAULT_AUTHOR, PURGED_FIELD, REFUSED_FIELDS,
 };
 
@@ -443,16 +443,10 @@ fn path_matches(pattern: &str, file: &str) -> bool {
     file == pattern || file.strip_prefix(pattern).is_some_and(|rest| rest.starts_with('/'))
 }
 
-/// As lições vigentes cujo `search` casa as palavras do pedido, as 5 mais
-/// fortes, pelo BM25, nas línguas `languages`.
-#[must_use]
-pub fn matching(bank: &SpecLog, words: &str, languages: &Languages) -> Vec<Hit> {
-    matching_among(&kept(bank), words, languages)
-}
-
-/// A mesma busca de [`matching`], só entre `lessons`: quem já separou as
-/// lições que interessam não deixa as outras tomarem o lugar delas entre as
-/// 5 mais fortes.
+/// As lições de `lessons` cujo `search` casa as palavras do pedido, as 5 mais
+/// fortes, pelo BM25, nas línguas `languages`. Quem já separou as lições que
+/// interessam não deixa as outras tomarem o lugar delas entre as 5 mais
+/// fortes.
 #[must_use]
 pub fn matching_among(lessons: &[&SpecEvent], words: &str, languages: &Languages) -> Vec<Hit> {
     search::search(
@@ -464,8 +458,8 @@ pub fn matching_among(lessons: &[&SpecEvent], words: &str, languages: &Languages
 
 /// As lições que o pedido de uma onda leva, entre as `found`
 /// que valem para ela: de cada classe, só as 5 mais ligadas às palavras das
-/// tarefas (`words`), pela busca de [`matching`] feita sobre as palavras-chave
-/// de cada lição ([`by_keys`]), e não sobre o texto dela. A lição sem
+/// tarefas (`words`), pela busca de [`matching_among`] feita sobre as
+/// palavras-chave de cada lição ([`by_keys`]), e não sobre o texto dela. A lição sem
 /// palavra-chave em comum com as tarefas fica fora, seja qual for a classe,
 /// mesmo que o texto dela divida palavras com elas. Em ordem de número. A
 /// mesma escolha serve ao item combinado sem dono ([`tied_to_wave`]), que diz
@@ -795,16 +789,10 @@ pub fn citing_missing_paths(bank: &SpecLog, found: impl Fn(&str, Option<&str>) -
     out
 }
 
-/// A lição como é mostrada: a linha com o texto original, sem o `search`.
-#[must_use]
-pub fn shown(lesson: &SpecEvent) -> String {
-    shown_line(&lesson.fields)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::spec_events::{parse_log, render_line, stamp};
+    use crate::domain::spec_events::{parse_log, render_line, shown_line, stamp};
     use crate::platform::i18n::Locale;
     use serde_json::json;
 
@@ -888,7 +876,7 @@ mod tests {
         content.push_str(&lesson(2, json!({"class": "defect", "text": "Remover a pasta perde trabalho.", "keys": ["remover"], "applies_to": {"files": ["apps/rt/src/hooks/**"]}, "found_in": {"spec": "s"}, "replaces": 1})));
         let bank = parse_log(&content);
         assert_eq!(found(&bank, &files(&["apps/rt/src/hooks/x.rs"])), [2]);
-        assert!(matching(&bank, "apagando a pasta", &languages()).iter().all(|hit| hit.id != 1));
+        assert!(matching_among(&kept(&bank), "apagando a pasta", &languages()).iter().all(|hit| hit.id != 1));
     }
 
     /// A lição achada pelas palavras é mostrada com o texto original, e o
@@ -901,10 +889,10 @@ mod tests {
         ]
         .concat();
         let bank = parse_log(&content);
-        let hits = matching(&bank, "apagando a pasta", &languages());
+        let hits = matching_among(&kept(&bank), "apagando a pasta", &languages());
         assert_eq!(hits.first().map(|h| h.id), Some(2), "{hits:?}");
         let lesson = bank.get(2).unwrap();
-        let shown = shown(lesson);
+        let shown = shown_line(&lesson.fields);
         assert!(shown.contains("\"text\":\"Um rm -rf na pasta errada perde trabalho.\""), "{shown}");
         assert!(!shown.contains("search"), "{shown}");
         assert!(!shown.contains(lesson.str_field("search").unwrap()), "{shown}");
@@ -966,7 +954,7 @@ mod tests {
         let task = "A primeira linha da barra mostra o uso da conversa e o tempo. O teste confere a linha.";
         let ids = |words: &str| -> Vec<u64> { related_to_tasks(bank.visible(), words, &languages()).iter().map(|l| l.id).collect() };
         assert_eq!(ids(task), [2], "só a lição com palavra-chave na tarefa entra");
-        assert!(matching(&bank, task, &languages()).iter().any(|hit| hit.id == 1), "pelo texto, a lição 1 entraria");
+        assert!(matching_among(&kept(&bank), task, &languages()).iter().any(|hit| hit.id == 1), "pelo texto, a lição 1 entraria");
         assert_eq!(ids(&format!("{task} As duas gravam ao mesmo tempo.")), [2, 3], "a palavra-chave inteira entra");
     }
 

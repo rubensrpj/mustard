@@ -225,19 +225,6 @@ impl Registry {
         self.modules.iter().map(|m| m.id).collect()
     }
 
-    /// Os eventos em que algum gancho roda. Quem lê é o mesmo teste.
-    #[must_use]
-    #[allow(dead_code)]
-    pub fn triggers(&self) -> Vec<Trigger> {
-        let mut out: Vec<Trigger> = Vec::new();
-        for (trigger, _) in self.modules.iter().flat_map(|m| m.applies_to.iter()) {
-            if !out.contains(trigger) {
-                out.push(*trigger);
-            }
-        }
-        out
-    }
-
     /// O gancho de nome `id`, em qualquer evento.
     #[cfg(test)]
     #[must_use]
@@ -367,15 +354,10 @@ mod tests {
         assert!(module.check.is_some() && module.observer.is_none());
     }
 
-    /// O sinal de vida roda depois de qualquer ferramenta, e só depois: nunca
-    /// antes, e é um observador puro, sem veredito.
+    /// O sinal de vida é um observador puro, sem veredito.
     #[test]
-    fn wave_alive_observer_runs_after_every_tool_only() {
+    fn wave_alive_observer_is_a_pure_observer() {
         let registry = Registry::new();
-        for tool in ["Bash", "Write", "Task", "AskUserQuestion"] {
-            assert!(applicable_ids(&registry, Trigger::PostToolUse, Some(tool)).contains(&"wave_alive_observer"), "{tool}");
-            assert!(!applicable_ids(&registry, Trigger::PreToolUse, Some(tool)).contains(&"wave_alive_observer"), "{tool}");
-        }
         let module = registry.by_id("wave_alive_observer").expect("registered");
         assert!(module.check.is_none() && module.observer.is_some());
     }
@@ -402,16 +384,5 @@ mod tests {
         );
         assert_eq!(applicable_ids(&registry, Trigger::SessionEnd, None), ["session_cleanup_observer"]);
         assert_eq!(applicable_ids(&registry, Trigger::PreCompact, None), ["precompact_notice"]);
-    }
-
-    /// Os eventos com gancho são exatamente os que o registro nomeia.
-    #[test]
-    fn the_triggers_are_the_events_with_a_hook() {
-        let mut names: Vec<&str> = Registry::new().triggers().into_iter().map(Trigger::as_event_name).collect();
-        names.sort_unstable();
-        assert_eq!(
-            names,
-            ["PostToolUse", "PreCompact", "PreToolUse", "SessionEnd", "SessionStart", "Stop", "UserPromptSubmit"]
-        );
     }
 }

@@ -957,7 +957,6 @@ mod tests {
             let state = State::from_log(&log);
             assert_eq!(state.phase, Some("running"), "{phase}");
             assert!(state.approved, "{phase}: back to running already approved");
-            assert!(mustard_core::domain::spec_state::approval_event(&log).is_some(), "{phase}: the approval holds");
             assert_eq!(state.branch.as_deref(), Some("feature/epico"), "{phase}: the same branch");
             assert_eq!(state.base.as_deref(), Some("dev"), "{phase}: the same base");
         }

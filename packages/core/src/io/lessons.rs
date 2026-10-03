@@ -124,7 +124,7 @@ fn io_refusal(error: Error) -> Refusal {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::lessons::matching;
+    use crate::domain::lessons::{kept, matching_among};
     use crate::domain::normalize::Languages;
     use serde_json::json;
 
@@ -296,7 +296,7 @@ mod tests {
         put(&path, defect("Os testes gravam numa pasta temporária.", &["pasta"]));
         put(&path, defect("Gancho não entra em pânico.", &["gancho"]));
         let bank = read(&path).unwrap().unwrap();
-        let hits = matching(&bank, "apagando a pasta", &languages());
+        let hits = matching_among(&kept(&bank), "apagando a pasta", &languages());
         assert!(hits.len() <= crate::domain::search::TOP);
         assert!(hits.iter().any(|h| h.id == target.id), "{hits:?}");
     }
@@ -333,7 +333,7 @@ mod tests {
             .count();
         assert!(with_folder_word > top, "more lessons match than come back: {with_folder_word}");
 
-        let hits = matching(&bank, "apagando a pasta", &languages());
+        let hits = matching_among(&kept(&bank), "apagando a pasta", &languages());
         assert_eq!(hits.len(), top, "{hits:?}");
         assert!(hits.iter().any(|h| h.id == target.id), "the lesson keyed apagar is in the top five: {hits:?}");
     }

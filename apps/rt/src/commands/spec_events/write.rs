@@ -3527,7 +3527,8 @@ mod tests {
         let removed = write(root, "remove", &json!({"targets": [fourth], "reason": "sai"}).to_string());
         assert_eq!(removed["ok"], json!(true), "{removed}");
         let log = DiskSpecState::new(root).log("teste").unwrap();
-        assert_eq!(mustard_core::domain::spec_state::waves_now(&log), 3, "a onda tirada saiu");
+        let waves = log.visible().into_iter().filter(|e| e.event_type == "wave").count();
+        assert_eq!(waves, 3, "a onda tirada saiu");
         assert!(DiskSpecState::new(root).state("teste").unwrap().approved);
     }
 
@@ -3613,7 +3614,7 @@ mod tests {
         assert_eq!(born_in(&log), ["P-1"]);
         let open: Vec<String> = open_born_in(root, &log).into_iter().map(|item| item.id).collect();
         assert_eq!(open, ["P-1"], "the delivery asks about it");
-        assert_eq!(mustard_core::domain::spec_state::waves_now(&log), 0, "never a wave");
+        assert!(log.visible().into_iter().all(|e| e.event_type != "wave"), "never a wave");
     }
 
     /// O número da pendência pode vir como `P-n`, como `p-n` ou como o número

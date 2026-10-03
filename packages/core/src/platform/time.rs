@@ -116,15 +116,6 @@ pub fn parse_iso_millis(iso: &str) -> Option<i64> {
     Some(secs.saturating_mul(1000) + millis)
 }
 
-/// Difference `end - start` in milliseconds between two ISO-8601 timestamps,
-/// or `None` if either side fails to parse.
-#[must_use]
-pub fn iso_diff_ms(start_iso: &str, end_iso: &str) -> Option<i64> {
-    let start = parse_iso_millis(start_iso)?;
-    let end = parse_iso_millis(end_iso)?;
-    Some(end.saturating_sub(start))
-}
-
 /// `(year, month, day, hour, minute, second)` in UTC for a Unix-seconds count.
 /// The single decomposition primitive (replaces the per-crate
 /// `epoch_to_ymd_hms` / `epoch_secs_to_ymdhms` copies).

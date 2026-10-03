@@ -103,12 +103,6 @@ pub use domain::command_detect::{detect_commands, detect_commands_for_unit};
 // scan tool fills its blocks). See `domain/scan.rs`.
 pub use domain::scan::{read_projects, Project, Scan};
 
-// Source-language resolution — the single owner of "what language is this target
-// (a set of file paths), and can the JS/TS-family gates reason about it?".
-// Consulted by the dependency precheck and the wave size check so both loosen
-// consistently on a non-JS/TS subproject. See `domain/source_lang.rs`.
-pub use domain::source_lang::{resolve_target_languages, target_understood};
-
 // i18n — central language module for Mustard banners. See `i18n.rs`.
 //
 // Two locale types live here, doing two different jobs:
@@ -135,11 +129,6 @@ pub use io::claude_paths::{ClaudePaths, ClaudePathsError, SpecPaths, WavePaths};
 // directory that contains `mustard.json` + `.claude/`". See `workspace.rs`.
 pub use io::workspace::{mustard_checkout, workspace_root, WorkspaceError};
 
-// Vocabulary matcher — the four-layer term scanner used by the regression
-// gate. Layers are EN identifiers per the hard rule
-// (`Semantic`, `Pattern`, `Keyword`, `Noise`); the on-disk TOML keys are
-// lowercased copies of the same names.
-pub use domain::vocabulary::{
-    check_layer_promotion, Layer, PromotionVerdict, ScanHit, VocabError, VocabLayer,
-    VocabularyDoc, VocabularyMatcher,
-};
+// Vocabulary errors — the typed error of the stack registry. See
+// `domain/vocabulary/mod.rs`.
+pub use domain::vocabulary::VocabError;
