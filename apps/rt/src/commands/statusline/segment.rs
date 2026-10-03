@@ -246,11 +246,9 @@ fn thousands(n: i64) -> String {
 /// falta até lá (esse ponto menos os tokens já usados na conversa, de
 /// `context_window.total_input_tokens` + `total_output_tokens`). `machine` é
 /// o valor da variável, lido por quem chama (`mod.rs`, uma vez, no processo
-/// real) e nunca aqui dentro — o mesmo desenho do aviso de compactar
-/// (`hooks/session/conversation_size.rs::autocompact_line`), para o teste
-/// poder variá-lo sem mexer no ambiente do processo. `None` sem a variável
-/// na máquina, ou sem os tokens já usados no payload: a linha fica como era
-/// antes desta onda. Vermelho (`override_fg`) quando o ponto calculado fica
+/// real) e nunca aqui dentro, para o teste poder variá-lo sem mexer no
+/// ambiente do processo. `None` sem a variável na máquina, ou sem os tokens
+/// já usados no payload: a linha fica como era antes desta onda. Vermelho (`override_fg`) quando o ponto calculado fica
 /// abaixo de cem mil tokens — a fatia cortaria quase na largada da sessão.
 #[must_use]
 pub fn compact_segment(data: &Value, machine: Option<&str>, lang: SupportedLocale) -> Option<Segment> {

@@ -370,6 +370,47 @@ fn the_wave_agent_calls_an_agreed_item_met_when_it_still_holds_after_the_change(
     }
 }
 
+/// O molde da onda, nos dois idiomas, traz na fronteira da tarefa a regra do
+/// limite da conversa: os 250 mil tokens sem o resumo lido da onda anterior,
+/// o aviso que chega junto do resultado de uma ferramenta com a marca do
+/// Mustard e que se obedece, terminar a tarefa em curso sem começar outra, e
+/// a entrega com o que fez, o que aprendeu do código e o que falta em
+/// `undone`.
+#[test]
+fn the_wave_agent_stops_at_the_limit_and_obeys_the_notice() {
+    let said = [
+        (
+            "pt-BR",
+            "## Fronteira da tarefa",
+            [
+                "Passou de 250 mil tokens de conversa, sem o resumo lido da onda anterior",
+                "no resultado de uma ferramenta, com a marca [Mustard]",
+                "o texto não é da ferramenta, e você o obedece",
+                "Termine a tarefa em curso, não comece outra",
+                "o que fez, o que aprendeu do código e as tarefas não começadas em `undone`",
+            ],
+        ),
+        (
+            "en-US",
+            "## Task boundary",
+            [
+                "Past 250 thousand tokens of conversation, not counting a previous wave's summary you read",
+                "in a tool's result, marked [Mustard]",
+                "it is not the tool's text, so obey it",
+                "Finish the task in progress, start no other",
+                "what you did, what you learned from the code and the tasks not started in `undone`",
+            ],
+        ),
+    ];
+    for (lang, header, phrases) in said {
+        let wave = template(lang, "wave");
+        let rule = section(&wave, header);
+        for phrase in phrases {
+            assert!(rule.contains(phrase), "the {lang} limit rule does not say `{phrase}`: {rule}");
+        }
+    }
+}
+
 /// Os dois agentes que gravam a própria volta dizem que a gravação é
 /// obrigatória: sem isso um relatório em prosa vira entrega perdida, e a
 /// rodada não acha nada na spec. Os dois também dizem que a lista de

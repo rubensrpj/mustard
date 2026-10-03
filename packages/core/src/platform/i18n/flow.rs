@@ -519,30 +519,44 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("conversation_size.more", Locale::EnUs) => "and {count} more",
         ("conversation_size.precompact", Locale::PtBr) => {
             "Esta conversa vai ser compactada agora; depois do resumo, o início da sessão traz de \
-             volta, sozinho, o bloco de retomada. {block} {autocompact}"
+             volta, sozinho, o bloco de retomada. {block}"
         }
         ("conversation_size.precompact", Locale::EnUs) => {
             "This conversation is about to be compacted; after the summary, the session start \
-             brings the resume block back on its own. {block} {autocompact}"
+             brings the resume block back on its own. {block}"
         }
-        // O valor de compactação no mesmo aviso: a máquina sem valor recebe a
-        // recomendação e onde ajustá-la; a que escolheu o seu só o vê
-        // informado.
-        ("conversation_size.autocompact", Locale::PtBr) => {
-            "Valor de compactação: esta máquina não escolheu um, e o Mustard recomenda {installed}. \
-             Para usá-lo, ponha `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` em ~/.claude/settings.json com \
-             {installed} e recarregue a sessão."
+        // O aviso a quem conduz, quando a conversa principal passa de um
+        // degrau de tamanho: limpar ou compactar, com o bloco de retomada
+        // pronto para colar numa janela limpa.
+        ("conversation_size.notice", Locale::PtBr) => {
+            "[Mustard] Esta conversa passou de {tokens} mil tokens. Termine o que está em curso e \
+             limpe a conversa com `/clear` ou compacte com `/compact`. Depois de compactar, o bloco \
+             de retomada volta sozinho; numa janela limpa, cole este bloco: {block}"
         }
-        ("conversation_size.autocompact", Locale::EnUs) => {
-            "Compaction value: this machine has not chosen one, and Mustard recommends {installed}. \
-             To use it, set `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` in ~/.claude/settings.json to \
-             {installed} and reload the session."
+        ("conversation_size.notice", Locale::EnUs) => {
+            "[Mustard] This conversation passed {tokens} thousand tokens. Finish what is in progress \
+             and clear the conversation with `/clear` or compact it with `/compact`. After \
+             compacting, the resume block comes back on its own; in a clean window, paste this \
+             block: {block}"
         }
-        ("conversation_size.autocompact_set", Locale::PtBr) => {
-            "Valor de compactação: esta máquina usa {machine}, o valor escolhido nela."
+        // O aviso ao agente de onda que passou do limite da conversa, sem o
+        // resumo que ele leu: terminar a tarefa em curso e gravar o que falta.
+        ("conversation_size.wave_limit", Locale::PtBr) => {
+            "[Mustard] A sua conversa está em {now} mil tokens; sem o resumo da onda anterior, \
+             {counted} mil, acima do limite de {limit} mil. Termine a tarefa em curso, a que você \
+             está lendo ou mudando agora, com o build passando, e grave o passo dela. Não comece \
+             outra tarefa. Grave a entrega como o pedido manda. Nela, diga o que você fez e o que \
+             aprendeu do código, que poupa leitura a quem continuar. Ponha em `undone` as tarefas \
+             que você não começou. Um agente novo faz o que falta na rodada seguinte."
         }
-        ("conversation_size.autocompact_set", Locale::EnUs) => {
-            "Compaction value: this machine uses {machine}, the value chosen on it."
+        ("conversation_size.wave_limit", Locale::EnUs) => {
+            "[Mustard] Your conversation is at {now} thousand tokens; without the previous wave's \
+             summary, {counted} thousand, over the limit of {limit} thousand. Finish the task in \
+             progress, the one you are reading or changing now, with the build passing, and record \
+             its step. Do not start another task. Record the delivery as the request says. In it, \
+             say what you did and what you learned from the code, which saves reading for whoever \
+             continues. Put the tasks you did not start in `undone`. A new agent does what is left \
+             in the next round."
         }
         ("round.files_diverged", Locale::PtBr) => {
             "A cópia da onda {wave} mudou {changed} arquivo(s) e a entrega citou {declared}: ficou de \
@@ -1766,7 +1780,7 @@ mod tests {
             include_str!("flow.rs"),
             super::PREFIXES,
             212,
-            0x05f2_c4bd_e4d2_1e18,
+            0x0656_69f5_167d_2dda,
         );
     }
 
@@ -1939,9 +1953,9 @@ mod tests {
             ("conversation_size.copy", &["{wave}", "{copy}"][..]),
             ("conversation_size.replan", &["{wave}"][..]),
             ("conversation_size.more", &["{count}"][..]),
-            ("conversation_size.precompact", &["{block}", "{autocompact}"][..]),
-            ("conversation_size.autocompact", &["{installed}"][..]),
-            ("conversation_size.autocompact_set", &["{machine}"][..]),
+            ("conversation_size.precompact", &["{block}"][..]),
+            ("conversation_size.notice", &["{tokens}", "{block}"][..]),
+            ("conversation_size.wave_limit", &["{now}", "{counted}", "{limit}"][..]),
             ("round.file_unknown", &["{file}", "{wave}"][..]),
             ("round.files_diverged", &["{wave}", "{changed}", "{declared}", "{missing}"][..]),
             ("round.usage_missing", &["{wave}"][..]),

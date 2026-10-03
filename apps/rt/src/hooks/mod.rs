@@ -1,6 +1,6 @@
 //! Os ganchos do Mustard, atrás do contrato `Check` / `Observer` do núcleo.
 //!
-//! São treze, cada um num arquivo, agrupados pela família do evento:
+//! São quatorze, cada um num arquivo, agrupados pela família do evento:
 //!
 //! - `bash` — a trava de comandos (`command_guard`).
 //! - `write` — o portão de escrita (`write_gate`).
@@ -12,9 +12,12 @@
 //! - `session` — a entrada da mensagem (`prompt_entry`), o início da sessão
 //!   (`session_start_inject`), o conserto da barra de status
 //!   (`statusline_heal_observer`), a faxina do fim da sessão
-//!   (`session_cleanup_observer`) e o aviso antes de compactar
-//!   (`conversation_size::PrecompactNotice`): em toda compactação, manual ou
-//!   automática, injeta o bloco de retomada pronto para colar.
+//!   (`session_cleanup_observer`), o aviso antes de compactar
+//!   (`conversation_size::PrecompactNotice`), que em toda compactação injeta o
+//!   bloco de retomada, e o aviso de tamanho da conversa
+//!   (`conversation_size::SizeNotice`): a quem conduz, o de limpar ou
+//!   compactar, com o bloco de retomada; ao agente de onda, o de parar no
+//!   limite da conversa e gravar o que falta.
 //! - `task` — a conferência do fim da resposta (`end_of_turn_check`, com as
 //!   regras dela) e o pedido do subagente (`subagent_inject`).
 //!

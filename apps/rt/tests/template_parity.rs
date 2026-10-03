@@ -480,6 +480,7 @@ const KEPT_HOOKS: &[&str] = &[
     "prompt_entry",
     "session_cleanup_observer",
     "session_start_inject",
+    "size_notice",
     "statusline_heal_observer",
     "subagent_inject",
     "wave_alive_observer",

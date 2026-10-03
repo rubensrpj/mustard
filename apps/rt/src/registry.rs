@@ -5,19 +5,19 @@
 //! registro e não muda. Cada gancho diz os pares `(Trigger, ToolMatch)` em que
 //! roda, e uma chamada que não casa com nenhum deles nem o executa.
 //!
-//! São treze, e só eles: a trava de comandos, o portão de escrita, o pedido
+//! São quatorze, e só eles: a trava de comandos, o portão de escrita, o pedido
 //! do subagente, a testemunha da aprovação, a testemunha da cópia da página,
 //! a entrada da mensagem, o início da sessão, o conserto da barra de status,
 //! o sinal de vida da onda, a testemunha do glossário do mapa, o aviso antes
-//! de compactar, a faxina do fim da sessão e a conferência do fim da
-//! resposta.
+//! de compactar, o aviso de tamanho da conversa, a faxina do fim da sessão e
+//! a conferência do fim da resposta.
 
 use crate::hooks::bash::command_guard::CommandGuard;
 use crate::hooks::observe::approval_witness::ApprovalWitness;
 use crate::hooks::observe::copy_witness::CopyWitness;
 use crate::hooks::observe::glossary_witness::GlossaryWitness;
 use crate::hooks::observe::wave_alive_observer::WaveAliveObserver;
-use crate::hooks::session::conversation_size::PrecompactNotice;
+use crate::hooks::session::conversation_size::{PrecompactNotice, SizeNotice};
 use crate::hooks::session::prompt_entry::PromptEntry;
 use crate::hooks::session::session_cleanup_observer::SessionCleanupObserver;
 use crate::hooks::session::session_start_inject::SessionStartInject;
@@ -189,6 +189,15 @@ impl Registry {
                 check: Some(Box::new(PrecompactNotice)),
                 observer: None,
             },
+            // O aviso de tamanho da conversa, depois de cada ferramenta: a quem
+            // conduz, o de limpar ou compactar; ao agente de onda, o de parar
+            // no limite da conversa e gravar o que falta. Nunca barra.
+            Module {
+                id: "size_notice",
+                applies_to: &[(Trigger::PostToolUse, ToolMatch::Any)],
+                check: Some(Box::new(SizeNotice)),
+                observer: None,
+            },
             // A faxina do fim da sessão.
             Module {
                 id: "session_cleanup_observer",
@@ -248,9 +257,9 @@ mod tests {
         registry.applicable(trigger, tool).iter().map(|m| m.id).collect()
     }
 
-    /// O registro tem os treze ganchos que ficam, e só eles.
+    /// O registro tem os quatorze ganchos que ficam, e só eles.
     #[test]
-    fn the_registry_holds_exactly_the_thirteen_hooks() {
+    fn the_registry_holds_exactly_the_fourteen_hooks() {
         let registry = Registry::new();
         let mut ids = registry.ids();
         ids.sort_unstable();
@@ -266,6 +275,7 @@ mod tests {
                 "prompt_entry",
                 "session_cleanup_observer",
                 "session_start_inject",
+                "size_notice",
                 "statusline_heal_observer",
                 "subagent_inject",
                 "wave_alive_observer",
@@ -295,7 +305,7 @@ mod tests {
     fn the_command_guard_runs_before_bash_only() {
         let registry = Registry::new();
         assert_eq!(applicable_ids(&registry, Trigger::PreToolUse, Some("Bash")), ["command_guard"]);
-        assert_eq!(applicable_ids(&registry, Trigger::PostToolUse, Some("Bash")), ["wave_alive_observer"]);
+        assert_eq!(applicable_ids(&registry, Trigger::PostToolUse, Some("Bash")), ["wave_alive_observer", "size_notice"]);
         assert!(!applicable_ids(&registry, Trigger::PreToolUse, Some("Write")).contains(&"command_guard"));
     }
 
@@ -309,9 +319,9 @@ mod tests {
         for tool in ["Read", "Write", "Edit", "MultiEdit", "NotebookEdit", "Grep", "Glob"] {
             assert_eq!(applicable_ids(&registry, Trigger::PreToolUse, Some(tool)), ["write_gate"], "{tool}");
             let after: &[&str] = if ["Write", "Edit", "MultiEdit"].contains(&tool) {
-                &["wave_alive_observer", "glossary_witness"]
+                &["wave_alive_observer", "glossary_witness", "size_notice"]
             } else {
-                &["wave_alive_observer"]
+                &["wave_alive_observer", "size_notice"]
             };
             assert_eq!(applicable_ids(&registry, Trigger::PostToolUse, Some(tool)), after, "{tool}");
         }
@@ -331,7 +341,7 @@ mod tests {
         let registry = Registry::new();
         for tool in ["Task", "Agent"] {
             assert_eq!(applicable_ids(&registry, Trigger::PreToolUse, Some(tool)), ["subagent_inject"], "{tool}");
-            assert_eq!(applicable_ids(&registry, Trigger::PostToolUse, Some(tool)), ["wave_alive_observer"], "{tool}");
+            assert_eq!(applicable_ids(&registry, Trigger::PostToolUse, Some(tool)), ["wave_alive_observer", "size_notice"], "{tool}");
         }
         assert!(applicable_ids(&registry, Trigger::SubagentStart, None).is_empty());
         assert!(applicable_ids(&registry, Trigger::SubagentStop, None).is_empty());
@@ -346,10 +356,10 @@ mod tests {
         let registry = Registry::new();
         assert_eq!(
             applicable_ids(&registry, Trigger::PostToolUse, Some("AskUserQuestion")),
-            ["approval_witness", "wave_alive_observer"]
+            ["approval_witness", "wave_alive_observer", "size_notice"]
         );
         assert!(applicable_ids(&registry, Trigger::PreToolUse, Some("AskUserQuestion")).is_empty());
-        assert_eq!(applicable_ids(&registry, Trigger::PostToolUse, Some("ExitPlanMode")), ["wave_alive_observer"]);
+        assert_eq!(applicable_ids(&registry, Trigger::PostToolUse, Some("ExitPlanMode")), ["wave_alive_observer", "size_notice"]);
         let module = registry.by_id("approval_witness").expect("registered");
         assert!(module.check.is_some() && module.observer.is_none());
     }
@@ -360,6 +370,23 @@ mod tests {
         let registry = Registry::new();
         let module = registry.by_id("wave_alive_observer").expect("registered");
         assert!(module.check.is_none() && module.observer.is_some());
+    }
+
+    /// O aviso de tamanho roda depois de qualquer ferramenta, junto do sinal de
+    /// vida, nunca antes dela e em nenhum outro evento, e é uma trava que
+    /// devolve veredito, não um observador.
+    #[test]
+    fn size_notice_runs_after_every_tool() {
+        let registry = Registry::new();
+        for tool in ["Bash", "Write", "Task", "Grep"] {
+            assert!(applicable_ids(&registry, Trigger::PostToolUse, Some(tool)).contains(&"size_notice"), "{tool}");
+            assert!(!applicable_ids(&registry, Trigger::PreToolUse, Some(tool)).contains(&"size_notice"), "{tool}");
+        }
+        for trigger in [Trigger::UserPromptSubmit, Trigger::PreCompact, Trigger::Stop, Trigger::SessionStart] {
+            assert!(!applicable_ids(&registry, trigger, None).contains(&"size_notice"), "{trigger:?}");
+        }
+        let module = registry.by_id("size_notice").expect("registered");
+        assert!(module.check.is_some() && module.observer.is_none());
     }
 
     /// O fim da resposta é uma conferência só, um `Check` puro.
