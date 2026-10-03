@@ -17,8 +17,8 @@ use serde_json::{json, Map, Value};
 
 use super::leftovers::is_cleanup;
 use super::queue::{
-    backlog_left, backlog_left_without, backlog_population, backlog_ready, backlog_ready_without, open_sends, outgoing,
-    task_revision, waves_done, waves_in_progress,
+    backlog_left, backlog_left_without, backlog_population, backlog_ready, backlog_ready_without, covers_nothing,
+    open_sends, outgoing, task_revision, waves_done, waves_in_progress,
 };
 use super::report::backlog_return;
 use super::stops::waves_stuck;
@@ -58,6 +58,13 @@ pub(crate) type Judge<'a> = dyn Fn(&Board) -> Result<Judged, FilterError> + 'a;
 /// primeiro ([`pack_batches`](crate::shared::dag::pack_batches)). Em qualquer
 /// dos dois, a tarefa com o curinga da árvore inteira só sai sozinha, sem nada
 /// em andamento.
+///
+/// A tarefa que não cobre item nenhum ([`covers_nothing`]) fica de fora das
+/// duas montagens, como pronta e como a que espera: a onda leva os critérios
+/// que as tarefas dela cobrem, e a gravação da onda sem nenhum recusa a
+/// rodada inteira, não só ela. Ela segue no backlog sem onda, e
+/// [`backlog_uncovered`](super::queue::backlog_uncovered) a entrega à rodada,
+/// que a nomeia num aviso até uma versão dela trazer o `covers`.
 ///
 /// Só existe a onda que está rodando. A onda de lote montada e não enviada de
 /// uma rodada anterior — a que não ganhou cópia para sair, por exemplo — é
@@ -135,6 +142,10 @@ pub(crate) fn dispatch_backlog(
     let undone = unsent_batch_waves(log);
     let in_undone = |id: &u64| by_id.get(id).and_then(|task| task.wave()).is_some_and(|wave| undone.contains(&wave));
     let cleanup = |id: &u64| by_id.get(id).is_some_and(|task| is_cleanup(task));
+    // A tarefa que não cobre item nenhum não forma onda, sozinha ou de carona:
+    // a onda leva os itens que as tarefas dela cobrem como critérios, e a
+    // gravação recusa a que ficaria sem nenhum.
+    let bare = |id: &u64| by_id.get(id).is_some_and(|task| covers_nothing(task));
     let population = backlog_population(log, &done_waves);
     // A versão vigente, em `locked`, do que a leitura de entrada via.
     let in_locked = |ids: BTreeSet<u64>| -> BTreeSet<u64> {
@@ -148,7 +159,7 @@ pub(crate) fn dispatch_backlog(
     let left_on_entry = in_locked(backlog_left(on_entry));
     let waiting: Vec<u64> = backlog_left_without(log, &undone)
         .into_iter()
-        .filter(|id| (left_on_entry.contains(id) || in_undone(id)) && !order.contains(id) && !cleanup(id))
+        .filter(|id| (left_on_entry.contains(id) || in_undone(id)) && !order.contains(id) && !cleanup(id) && !bare(id))
         .collect();
     // O arquivo de cada onda do plano que ainda não terminou: em andamento,
     // por sair, mantida ou com conserto pendente.

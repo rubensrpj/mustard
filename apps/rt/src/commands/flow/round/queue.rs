@@ -691,12 +691,29 @@ fn cleanup_waits(log: &SpecLog, running: &BTreeMap<u64, u64>, left: &BTreeSet<u6
         || left.iter().filter_map(|id| log.get(*id)).any(|task| !is_cleanup(task))
 }
 
+/// `true` quando a tarefa `task` não cobre item nenhum: `covers` ausente ou
+/// vazio. A onda leva como critérios os itens que as tarefas dela cobrem, e a
+/// gravação da onda recusa a que ficaria sem nenhum; por isso a tarefa que
+/// não cobre nada não forma onda nem pega carona na de outra.
+pub(super) fn covers_nothing(task: &SpecEvent) -> bool {
+    task.ints("covers").is_empty()
+}
+
+/// As tarefas do backlog ([`backlog_left`]) que não cobrem item nenhum
+/// ([`covers_nothing`]): ficam no backlog sem onda, e a rodada as nomeia
+/// num aviso até uma versão delas trazer o `covers`.
+pub(crate) fn backlog_uncovered(log: &SpecLog) -> BTreeSet<u64> {
+    backlog_left(log).into_iter().filter(|id| log.get(*id).is_some_and(covers_nothing)).collect()
+}
+
 /// As tarefas do backlog ([`backlog_left`]) que já estão prontas — todas as
 /// dependências entregues ou aprovadas —, na ordem em que o motor do backlog
 /// as empacota. Vazia quando o backlog está vazio ou quando toda tarefa dele
 /// ainda espera uma dependência. A limpeza só entra quando nada mais resta
 /// ([`cleanup_waits`]): até lá ela não forma lote, e o próximo passo da
-/// rodada não a oferece.
+/// rodada não a oferece. A tarefa que não cobre nada ([`covers_nothing`])
+/// nunca está pronta: ela segura as que dependem dela, e a rodada que só tem
+/// ela no backlog a nomeia entre as presas, em vez de mandar rodar de novo.
 pub(crate) fn backlog_ready(log: &SpecLog) -> Vec<u64> {
     backlog_ready_without(log, &BTreeSet::new())
 }
@@ -712,6 +729,7 @@ pub(super) fn backlog_ready_without(log: &SpecLog, undone: &BTreeSet<u64>) -> Ve
         .into_iter()
         .filter(|id| left.contains(id))
         .filter(|id| !held || !log.get(*id).is_some_and(is_cleanup))
+        .filter(|id| !log.get(*id).is_some_and(covers_nothing))
         .collect()
 }
 
@@ -2765,6 +2783,82 @@ mod tests {
         assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None), Ok(vec![1, 2]), "um assunto por onda");
         assert_eq!(wave_order(root, 1), vec![first, second], "as duas do mesmo arquivo saem juntas");
         assert_eq!(wave_order(root, 2), vec![apart], "a de outro arquivo sai na sua");
+    }
+
+    /// Uma tarefa do backlog sem `covers`, gravada pelo programa, como a sobra
+    /// que uma onda sem critério deixa: o modelo não consegue gravá-la, o
+    /// programa sim. Ela vai para o arquivo `file` e depende das tarefas
+    /// `depends_on`.
+    fn uncovered_task(root: &Path, text: &str, file: &str, depends_on: &[u64]) -> u64 {
+        let draft = json!({"title": "Tarefa sem itens", "text": text, "agent": "- mexer", "files": [{"path": file}],
+            "depends_on": depends_on, "author": "wave"});
+        let draft = draft.as_object().cloned().unwrap();
+        record(root, "x", "task", draft, PhaseWriter::Binary).unwrap().written.id
+    }
+
+    /// A tarefa do backlog sem `covers` não forma onda, porque a onda leva os
+    /// critérios que as tarefas dela cobrem e a gravação recusa a que não
+    /// leva nenhum. A rodada solta a onda da tarefa que cobre, deixa a outra
+    /// no backlog sem número de onda e a nomeia num aviso — e a recusa dela
+    /// não derruba a rodada inteira.
+    #[test]
+    fn a_backlog_task_without_covers_stays_out_of_the_waves_and_the_round_names_it() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, crit) = backlog_project(root);
+        let covered = backlog_task(root, said, crit, "Mexer no código de um.", "src/a.rs");
+        let bare = uncovered_task(root, "Mexer no código de dois.", "src/b.rs", &[]);
+
+        let out = round(root, "x", None);
+        assert_eq!(out["ok"], json!(true), "a tarefa sem covers não derruba a rodada: {out}");
+        assert_eq!(waves_in(&out, "dispatch"), vec![1], "{out}");
+        assert_eq!(wave_order(root, 1), vec![covered], "a onda leva só a tarefa que cobre");
+        let log = spec_now(root);
+        assert_eq!(log.current(bare).and_then(SpecEvent::wave), None, "a tarefa sem covers segue sem onda");
+        let codes = log.codes();
+        let hint = warning_of(&out, "task-without-covers")["hint"].as_str().unwrap_or_default().to_string();
+        assert!(hint.contains(&codes[&bare]), "o aviso nomeia a tarefa: {hint}");
+        assert!(!hint.contains(&codes[&covered]), "e só a que não cobre: {hint}");
+    }
+
+    /// Sozinha no backlog, a tarefa sem `covers` não conta como pronta: a
+    /// rodada não manda rodar de novo, que daria no mesmo, e a nomeia, com a
+    /// que espera por ela, entre as presas. Sem onda formada e sem recusa.
+    #[test]
+    fn a_task_without_covers_alone_in_the_backlog_is_held_and_not_offered_again() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (_, _) = backlog_project(root);
+        let bare = uncovered_task(root, "Mexer no código de um.", "src/a.rs", &[]);
+        let after = uncovered_task(root, "Mexer no código de dois.", "src/b.rs", &[bare]);
+        assert_eq!(backlog_ready(&spec_now(root)), Vec::<u64>::new(), "nenhuma está pronta");
+
+        let out = round(root, "x", None);
+        assert_eq!(out["ok"], json!(true), "{out}");
+        assert_eq!(waves_in(&out, "dispatch"), Vec::<u64>::new(), "{out}");
+        assert!(out.get("command").is_none(), "não há o que rodar de novo: {out}");
+        let codes = spec_now(root).codes();
+        let held = format!("{}, {}", codes[&bare], codes[&after]);
+        let expected = translate("round.backlog_stuck", Locale::PtBr).replace("{tasks}", &held);
+        assert!(out["next"].as_str().unwrap_or_default().ends_with(&expected), "{out}");
+        assert!(every_line_of(root, "wave").is_empty(), "nenhuma onda foi formada: {out}");
+    }
+
+    /// A tarefa sem `covers` que espera só por uma tarefa do lote e divide
+    /// arquivo com ela não pega carona na onda: a onda prova o que as tarefas
+    /// dela cobrem, e esta não cobre nada.
+    #[test]
+    fn a_task_without_covers_waiting_on_a_batch_task_does_not_ride_in_its_wave() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, crit) = backlog_project(root);
+        let covered = backlog_task(root, said, crit, "Mexer no código de um.", "src/a.rs");
+        let bare = uncovered_task(root, "Conferir o código de um.", "src/a.rs", &[covered]);
+
+        let log = spec_now(root);
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None), Ok(vec![1]));
+        assert_eq!(wave_order(root, 1), vec![covered], "a onda leva só a tarefa que cobre");
+        assert_eq!(spec_now(root).current(bare).and_then(SpecEvent::wave), None, "a outra segue no backlog");
     }
 
     /// Uma tarefa do backlog em vários arquivos, gravada pela porta do modelo.

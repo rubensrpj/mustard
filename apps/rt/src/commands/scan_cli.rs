@@ -40,7 +40,7 @@ pub enum ScanCmd {
     },
 
     /// Ask the project map a short question: `examples` for a task
-    /// (`--file <target>` or `--task "<task>"`), `importers --file`,
+    /// (`--file <target>`), `importers --file`,
     /// `tests --file`, `slice --file --name <declaration>` (the declaration's
     /// own lines, without opening the file), `users --name <declaration>` (who
     /// uses it, as `file:line:caller`; `--file` keeps the one declared in that
@@ -94,9 +94,6 @@ pub enum ScanCmd {
         /// optional, lists the parts of that file).
         #[arg(long)]
         file: Option<String>,
-        /// The task, in words, when there is no target file (`examples`).
-        #[arg(long)]
-        task: Option<String>,
         /// The words to look for (`search`); an alias kept for the
         /// measurements of the search, hidden from the help.
         #[arg(long, hide = true)]
@@ -151,7 +148,6 @@ fn map_opts(cmd: ScanCmd) -> crate::commands::map::MapOpts {
         glob,
         kind,
         file,
-        task,
         query,
         intent,
         described,
@@ -177,7 +173,6 @@ fn map_opts(cmd: ScanCmd) -> crate::commands::map::MapOpts {
         question,
         grep,
         file,
-        task,
         query,
         intent,
         described,
@@ -221,5 +216,15 @@ mod tests {
 
         let bare = opts_of(&["search", "--query", "frete"]);
         assert_eq!((bare.described, bare.said), (None, None));
+    }
+
+    /// `examples` só recebe o alvo pelo `--file`: o texto de uma tarefa na
+    /// linha de comando não vira pasta, e a linha com o alvo segue valendo.
+    #[test]
+    fn examples_takes_the_target_by_file_and_never_a_task_text() {
+        let refused = Probe::try_parse_from(["probe", "map", "examples", "--task", "adicionar um comando run"]);
+        assert!(refused.is_err(), "a task text is no longer an option of the question");
+        let by_file = opts_of(&["examples", "--file", "apps/rt/src/commands/pay"]);
+        assert_eq!(by_file.file.as_deref(), Some("apps/rt/src/commands/pay"));
     }
 }

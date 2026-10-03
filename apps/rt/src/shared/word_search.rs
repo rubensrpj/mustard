@@ -1290,9 +1290,8 @@ pub(crate) mod fixture {
     /// resolvida, como a do despachante.
     pub(crate) fn repo_with(config: &str, files: &[(&str, &str)], mut map: serde_json::Value) -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::tempdir().expect("tempdir");
-        let resolved = std::fs::canonicalize(dir.path()).expect("resolved tempdir");
-        let root = PathBuf::from(resolved.to_string_lossy().trim_start_matches(r"\\?\").to_string());
-        let key = format!("word_search.repo_with:{config}:{files:?}");
+        let root = PathBuf::from(crate::shared::paths::on_disk(dir.path()));
+        let key =format!("word_search.repo_with:{config}:{files:?}");
         crate::shared::test_fixture::repo_from_template(&root, &key, |root| {
             std::fs::write(root.join("mustard.json"), config).expect("config");
             for (rel, text) in files {

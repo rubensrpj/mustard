@@ -1,7 +1,7 @@
 //! `map` — perguntas curtas ao mapa do projeto que o scan grava.
 //!
 //! `mustard-rt run map <pergunta>`:
-//! - `examples --file <alvo>` (ou `--task "<tarefa>"`): 2 ou 3 arquivos que
+//! - `examples --file <alvo>`: 2 ou 3 arquivos que
 //!   servem de exemplo, com o motivo de cada um e as receitas do git; a do
 //!   arquivo cujo último commit ficou fora da janela do mapa sai da história
 //!   dele lida do git na hora, e fica gravada no mapa;
@@ -133,7 +133,6 @@ pub struct MapOpts {
     /// O texto da busca (`search`), no lugar de `query` e `intent`.
     pub grep: Option<GrepSearch>,
     pub file: Option<String>,
-    pub task: Option<String>,
     pub query: Option<String>,
     /// A frase do que se procura e para quê, que só o filtro lê.
     pub intent: Option<String>,
@@ -326,7 +325,7 @@ fn answer_from(
         Question::Slice => slice(opts, root, read),
         Question::Users => users(opts, root, lang, read),
         Question::History => history(opts, root, lang, read, trace),
-        Question::Examples => examples(opts, root, lang, languages, read, trace),
+        Question::Examples => examples(opts, root, lang, read, trace),
         Question::Dump => dump(root),
         Question::Note => note(opts, root, read),
     }
@@ -763,8 +762,9 @@ fn split_uses(uses: &[UseSite]) -> (Vec<String>, BTreeMap<&[DeclAt], Vec<String>
     (proven, by_candidates)
 }
 
-/// Os exemplos para o alvo de `--file`; sem ele, para a pasta do arquivo que
-/// a busca acha para `--task`, nas línguas `languages`. A receita sai da
+/// Os exemplos para o alvo de `--file`, nas línguas `languages`. O alvo é o
+/// que quem pergunta diz: o Mustard não acha pasta pelo texto de uma tarefa.
+/// A receita sai da
 /// mesma escolha do pedido da onda ([`recipe_for`]): o disco diz se o alvo
 /// existe, e a do arquivo cujo último commit ficou fora da janela do mapa sai
 /// da história dele, lida por `trace` do git local na hora e gravada no mapa;
@@ -775,39 +775,16 @@ fn examples(
     opts: &MapOpts,
     root: &Path,
     lang: Locale,
-    languages: &Languages,
     read: &Reader<'_>,
     trace: &Trace<'_>,
 ) -> Result<Value, MapRefusal> {
     let file = opts.file.as_deref().map(str::trim).filter(|f| !f.is_empty());
-    let task = opts.task.as_deref().map(str::trim).filter(|t| !t.is_empty());
-    // A pasta que a tarefa acha sai dos nomes que cada arquivo declara; o
-    // alvo dado pelo caminho não precisa deles. Sem nenhum dos dois, só as
-    // recusas do mapa vêm antes da que diz o que falta.
-    let need = match (file, task) {
-        (None, None) => Need::Nothing,
-        (file, _) => Need::Examples { words: file.is_none() },
+    // Sem o alvo, só as recusas do mapa vêm antes da que diz o que falta.
+    let mut map = read(if file.is_some() { Need::Examples { words: false } } else { Need::Nothing })?;
+    let Some(file) = file else {
+        return Err(MapRefusal::MissingArgument { question: "examples".to_string(), flag: "--file".to_string() });
     };
-    let mut map = read(need)?;
-    let target = match (file, task) {
-        (Some(file), _) => project_map::clean_path(file),
-        (None, Some(task)) => match project_map::best_folder(&map, task, languages) {
-            Some(folder) => folder,
-            None => {
-                return Ok(json!({
-                    "ok": true,
-                    "question": "examples",
-                    "task": task,
-                    "examples": [],
-                    "recipe": null,
-                    "note": mustard_core::translate("map.no_target", lang),
-                }));
-            }
-        },
-        (None, None) => {
-            return Err(MapRefusal::MissingArgument { question: "examples".to_string(), flag: "--file".to_string() });
-        }
-    };
+    let target = project_map::clean_path(file);
     // O padrão que filtra os exemplos dá o papel pelo subprojeto também,
     // como no pedido da onda: os subprojetos vêm do terreno.
     map.projects = read(Need::Terrain).map(|terrain| terrain.projects).unwrap_or_default();
@@ -1128,7 +1105,6 @@ mod tests {
             root: root.to_path_buf(),
             question,
             file: None,
-            task: None,
             grep: None,
             query: None,
             intent: None,
@@ -1245,12 +1221,12 @@ mod tests {
     }
 
     #[test]
-    fn a_task_asking_for_examples_gets_two_or_three_from_the_same_folder_with_the_reason() {
+    fn a_folder_asking_for_examples_gets_two_or_three_from_the_same_folder_with_the_reason() {
         let dir = project_with_map();
         // O registro de teste que a receita cita existe no projeto.
         touch(dir.path(), "apps/rt/tests/run_command_surface.rs");
         let mut opts = ask(dir.path(), Question::Examples);
-        opts.task = Some("adicionar um comando run".to_string());
+        opts.file = Some("apps/rt/src/commands/pay".to_string());
         let report = answered(&opts);
         assert_eq!(report["ok"], json!(true), "{report}");
         assert_eq!(report["folder"], json!("apps/rt/src/commands/pay"));
@@ -1893,48 +1869,45 @@ mod tests {
     /// Cada pergunta, com as opções dela: as que acham, as que não acham e
     /// as que faltam.
     fn every_question(root: &Path) -> Vec<MapOpts> {
-        let with = |question: Question, file: Option<&str>, name: Option<&str>, task: Option<&str>| MapOpts {
+        let with = |question: Question, file: Option<&str>, name: Option<&str>| MapOpts {
             file: file.map(str::to_string),
             name: name.map(str::to_string),
-            task: task.map(str::to_string),
             ..ask(root, question)
         };
         vec![
             ask(root, Question::Summary),
-            with(Question::Importers, Some("packages/core/src/pay.rs"), None, None),
-            with(Question::Importers, Some("./apps/rt/src/commands/pay/read.rs"), None, None),
-            with(Question::Importers, Some("web/src/pay.ts"), None, None),
-            with(Question::Importers, Some("nao/existe.rs"), None, None),
-            with(Question::Importers, None, None, None),
-            with(Question::Tests, Some("apps/rt/src/commands/pay/write.rs"), None, None),
-            with(Question::Tests, Some("apps/rt/src/commands/pay/read.rs"), None, None),
-            with(Question::Tests, Some("nao/existe.rs"), None, None),
-            with(Question::Tests, None, None, None),
-            with(Question::Slice, Some("apps/rt/src/commands/pay/write.rs"), Some(" run "), None),
-            with(Question::Slice, Some("apps/rt/src/commands/pay/write.rs"), Some("sumiu"), None),
-            with(Question::Slice, Some("nao/existe.rs"), Some("run"), None),
-            with(Question::Slice, Some("apps/rt/src/commands/pay/write.rs"), None, None),
-            with(Question::Slice, None, Some("run"), None),
-            with(Question::Users, None, Some("run"), None),
-            with(Question::Users, Some("apps/rt/src/commands/pay/write.rs"), Some("run"), None),
-            with(Question::Users, Some("packages/core/src/pay.rs"), Some("Payment"), None),
-            with(Question::Users, Some("packages/core/src/pay.rs"), Some("run"), None),
-            with(Question::Users, Some("web/src/pay.ts"), Some("run"), None),
-            with(Question::Users, Some("nao/existe.rs"), Some("run"), None),
-            with(Question::Users, None, Some("sumiu"), None),
-            with(Question::Users, None, None, None),
-            with(Question::History, Some("apps/rt/src/commands/pay/write.rs"), Some("run"), None),
-            with(Question::History, None, Some("run"), None),
-            with(Question::History, None, Some("Payment"), None),
-            with(Question::History, None, Some("sumiu"), None),
-            with(Question::History, Some("nao/existe.rs"), Some("run"), None),
-            with(Question::History, None, None, None),
-            with(Question::Examples, Some("apps/rt/src/commands/pay/novo.rs"), None, None),
-            with(Question::Examples, Some("apps/rt/src/commands/pay/index.rs"), None, None),
-            with(Question::Examples, Some("apps/rt/src/commands/pay"), None, None),
-            with(Question::Examples, None, None, Some("adicionar um comando run")),
-            with(Question::Examples, None, None, Some("nada casa com isto")),
-            with(Question::Examples, None, None, None),
+            with(Question::Importers, Some("packages/core/src/pay.rs"), None),
+            with(Question::Importers, Some("./apps/rt/src/commands/pay/read.rs"), None),
+            with(Question::Importers, Some("web/src/pay.ts"), None),
+            with(Question::Importers, Some("nao/existe.rs"), None),
+            with(Question::Importers, None, None),
+            with(Question::Tests, Some("apps/rt/src/commands/pay/write.rs"), None),
+            with(Question::Tests, Some("apps/rt/src/commands/pay/read.rs"), None),
+            with(Question::Tests, Some("nao/existe.rs"), None),
+            with(Question::Tests, None, None),
+            with(Question::Slice, Some("apps/rt/src/commands/pay/write.rs"), Some(" run ")),
+            with(Question::Slice, Some("apps/rt/src/commands/pay/write.rs"), Some("sumiu")),
+            with(Question::Slice, Some("nao/existe.rs"), Some("run")),
+            with(Question::Slice, Some("apps/rt/src/commands/pay/write.rs"), None),
+            with(Question::Slice, None, Some("run")),
+            with(Question::Users, None, Some("run")),
+            with(Question::Users, Some("apps/rt/src/commands/pay/write.rs"), Some("run")),
+            with(Question::Users, Some("packages/core/src/pay.rs"), Some("Payment")),
+            with(Question::Users, Some("packages/core/src/pay.rs"), Some("run")),
+            with(Question::Users, Some("web/src/pay.ts"), Some("run")),
+            with(Question::Users, Some("nao/existe.rs"), Some("run")),
+            with(Question::Users, None, Some("sumiu")),
+            with(Question::Users, None, None),
+            with(Question::History, Some("apps/rt/src/commands/pay/write.rs"), Some("run")),
+            with(Question::History, None, Some("run")),
+            with(Question::History, None, Some("Payment")),
+            with(Question::History, None, Some("sumiu")),
+            with(Question::History, Some("nao/existe.rs"), Some("run")),
+            with(Question::History, None, None),
+            with(Question::Examples, Some("apps/rt/src/commands/pay/novo.rs"), None),
+            with(Question::Examples, Some("apps/rt/src/commands/pay/index.rs"), None),
+            with(Question::Examples, Some("apps/rt/src/commands/pay"), None),
+            with(Question::Examples, None, None),
         ]
     }
 
@@ -1961,7 +1934,7 @@ mod tests {
         let mut found = 0;
         for opts in every_question(dir.path()) {
             let now = answered(&opts);
-            assert_eq!(now, answered_from_the_whole_map(&opts), "{:?} {:?} {:?} {:?}", opts.question, opts.file, opts.name, opts.task);
+            assert_eq!(now, answered_from_the_whole_map(&opts), "{:?} {:?} {:?}", opts.question, opts.file, opts.name);
             found += usize::from(now["ok"] == json!(true));
         }
         assert!(found >= 12, "the questions that find something must answer: {found}");

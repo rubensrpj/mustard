@@ -30,8 +30,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::domain::ast::is_test_path;
 use crate::domain::pattern::Pattern;
-use crate::domain::normalize::{Languages, Normalizer};
-use crate::domain::search::SearchIndex;
 pub use crate::domain::search::{Found, FoundText};
 use crate::platform::i18n::{translate, Locale};
 
@@ -1468,44 +1466,6 @@ pub struct FoundItem {
     pub links: Vec<String>,
 }
 
-/// As palavras de busca de um arquivo, cada uma com as suas formas: as do
-/// caminho e as dos nomes que ele declara, pela normalização de toda busca.
-fn search_words(m: &MapModule, normalizer: &mut Normalizer) -> Vec<Vec<String>> {
-    let mut text = m.path.clone();
-    for decl in &m.declarations {
-        text.push(' ');
-        text.push_str(&decl.name);
-    }
-    normalizer.forms(&text)
-}
-
-/// Quantos achados da busca pesam na escolha da pasta.
-const FOLDER_HITS: usize = 50;
-
-/// A pasta que mais casa com as palavras de uma tarefa, nas línguas
-/// `languages`: a soma das notas dos arquivos achados, pasta a pasta, sobre
-/// os achados mais fortes. Teste e arquivo escrito por máquina não contam.
-/// `None` quando nada casa.
-#[must_use]
-pub fn best_folder(map: &ProjectMap, task: &str, languages: &Languages) -> Option<String> {
-    let mut normalizer = Normalizer::new(languages);
-    let docs: Vec<(u64, Vec<Vec<String>>)> = map
-        .modules
-        .iter()
-        .enumerate()
-        .filter(|(_, m)| is_example_material(m))
-        .map(|(i, m)| (i as u64, search_words(m, &mut normalizer)))
-        .collect();
-    let index = SearchIndex::build(docs);
-    let mut by_folder: BTreeMap<&str, u64> = BTreeMap::new();
-    for hit in index.top(&normalizer.query(task), FOLDER_HITS) {
-        if let Some(m) = map.modules.get(hit.id as usize) {
-            *by_folder.entry(folder_of(&m.path)).or_insert(0) += hit.score;
-        }
-    }
-    by_folder.into_iter().max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(a.0))).map(|(f, _)| f.to_string())
-}
-
 // ---------------------------------------------------------------------------
 // Exemplos para uma tarefa
 // ---------------------------------------------------------------------------
@@ -2213,10 +2173,8 @@ mod tests {
     }
 
     #[test]
-    fn a_task_in_a_real_sized_tree_lands_in_the_command_folder_with_its_main_imports() {
+    fn a_new_file_in_a_real_sized_tree_gets_the_main_imports_of_its_command_folder() {
         let map = real_sized_tree();
-        let folder = best_folder(&map, "adicionar um comando run", &languages()).expect("a folder matches");
-        assert!(folder.starts_with("apps/rt/src/commands/"), "the folder is summed, not the first hit: {folder}");
         let got = examples(&map, "apps/rt/src/commands/spec/novo.rs", Locale::PtBr);
         assert_eq!(
             got.main_imports.first().map(String::as_str),
@@ -2435,11 +2393,6 @@ mod tests {
         assert_eq!(tests.files, vec!["apps/rt/tests/spec_events_cli.rs".to_string()]);
         assert!(!tests.inline);
         assert!(tests_for(&map, "apps/rt/src/commands/spec_events/read.rs").unwrap().inline);
-    }
-
-    /// As línguas de um projeto com o texto em português e o código em inglês.
-    fn languages() -> Languages {
-        Languages::new(["pt-BR", "en-US"])
     }
 
     #[test]

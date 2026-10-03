@@ -87,8 +87,8 @@ pub struct DayRow {
     /// As ações que são procuras de código ([`is_code_search`]).
     #[serde(default)]
     pub code_searches: u64,
-    /// Os tokens e o custo (em milionésimos de dólar) do Jev nas chamadas
-    /// `word search` do dia.
+    /// Os tokens e o custo (em milionésimos de dólar) do Jev em todas as
+    /// chamadas do dia: a busca, a montagem da onda e a escolha dos itens.
     #[serde(default)]
     pub jev_tokens: u64,
     #[serde(default)]

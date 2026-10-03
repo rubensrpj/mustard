@@ -11,9 +11,10 @@
 //! dentro dele ou a cópia de onda dele. A conversa de agente que trabalhou
 //! numa cópia já apagada herda o projeto da conversa que o chamou.
 //!
-//! O que o Jev gastou não está nas conversas: cada chamada `word search` fica
-//! gravada na spec do projeto, com os tokens e o custo dele, e entra na linha
-//! do dia dela.
+//! O que o Jev gastou não está nas conversas: cada chamada que o usou — a
+//! busca por palavra, a do mapa, a montagem da onda, a escolha dos itens —
+//! fica gravada na spec do projeto, com os tokens e o custo dele, e entra na
+//! linha do dia dela.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::BufRead;
@@ -23,7 +24,6 @@ use std::time::SystemTime;
 use chrono::Utc;
 
 use crate::domain::config::ProjectConfig;
-use crate::domain::spec_events::calls_command;
 use crate::domain::spend::{day_of, day_of_stamp, day_start, DayRow, Ledger, Range, Refusal};
 use crate::io::fs::lock::{read_shared, LockedFile};
 use crate::io::transcript::SpendTally;
@@ -36,9 +36,6 @@ pub const DIR_ENV: &str = "MUSTARD_SPEND_DIR";
 
 /// O arquivo do gasto dentro da pasta da máquina.
 const LEDGER: &str = "ledger.json";
-
-/// O comando gravado na spec pela busca que o gancho faz sozinho.
-const WORD_SEARCH: &str = "word search";
 
 /// A pasta do gasto na máquina: `MUSTARD_SPEND_DIR`, ou `spend` ao lado das
 /// cópias de onda, em `~/.cache/mustard/`. `None` quando a pasta pessoal não
@@ -226,25 +223,27 @@ fn tally_file(path: &Path, range: &Range, tally: &mut SpendTally, projects: &mut
     }
 }
 
-/// Uma chamada `word search` gravada na spec: o dia dela e o que o Jev gastou.
-struct WordSearch {
+/// Uma chamada ao Jev gravada na spec: o dia dela e o que ele gastou.
+struct JevCall {
     day: String,
     tokens: u64,
     cost_micro_usd: u64,
 }
 
-/// As chamadas `word search` gravadas nas specs da pasta `root` nos dias de
-/// `range`.
-fn word_searches(root: &Path, range: &Range) -> Vec<WordSearch> {
+/// As chamadas ao Jev gravadas nas specs da pasta `root` nos dias de `range`:
+/// toda chamada que levou os tokens ou o custo dele, de qualquer comando. A
+/// que falhou antes de ele responder não gastou nada e não entra, e a que não
+/// o usa, como a leitura de um item, também não.
+fn jev_calls(root: &Path, range: &Range) -> Vec<JevCall> {
     let mut found = Vec::new();
     for (_, log) in crate::io::spec_index::read_specs(root) {
-        for event in log.visible().into_iter().filter(|event| calls_command(event, WORD_SEARCH)) {
+        for event in log.visible().into_iter().filter(|event| event.event_type == "call") {
+            let (tokens, cost_micro_usd) = (event.int("tokens"), event.int("cost_micro_usd"));
+            if tokens.is_none() && cost_micro_usd.is_none() {
+                continue;
+            }
             let Some(day) = day_of_stamp(event.at()).filter(|day| range.contains(day)) else { continue };
-            found.push(WordSearch {
-                day,
-                tokens: event.int("tokens").unwrap_or(0),
-                cost_micro_usd: event.int("cost_micro_usd").unwrap_or(0),
-            });
+            found.push(JevCall { day, tokens: tokens.unwrap_or(0), cost_micro_usd: cost_micro_usd.unwrap_or(0) });
         }
     }
     found
@@ -280,12 +279,12 @@ pub fn count(config_dir: &Path, range: &Range) -> Vec<DayRow> {
     }
     let mut rows = tally.finish();
     for (name, roots) in std::mem::take(&mut projects.roots) {
-        for search in roots.iter().flat_map(|root| word_searches(root, range)) {
+        for call in roots.iter().flat_map(|root| jev_calls(root, range)) {
             let row = rows
-                .entry((search.day.clone(), name.clone()))
-                .or_insert_with(|| DayRow { day: search.day.clone(), project: name.clone(), ..DayRow::default() });
-            row.jev_tokens = row.jev_tokens.saturating_add(search.tokens);
-            row.jev_cost_micro_usd = row.jev_cost_micro_usd.saturating_add(search.cost_micro_usd);
+                .entry((call.day.clone(), name.clone()))
+                .or_insert_with(|| DayRow { day: call.day.clone(), project: name.clone(), ..DayRow::default() });
+            row.jev_tokens = row.jev_tokens.saturating_add(call.tokens);
+            row.jev_cost_micro_usd = row.jev_cost_micro_usd.saturating_add(call.cost_micro_usd);
         }
     }
     rows.into_values().collect()
@@ -375,31 +374,47 @@ mod tests {
         assert_eq!((row.actions, row.code_searches), (5, 3), "grep, Grep and Explore; not the mustard-rt call or the Read");
     }
 
-    /// O `word search` gravado na spec do projeto entra na linha do dia dele,
-    /// com os tokens e o custo do Jev; outro comando e outro dia ficam fora.
+    /// Toda chamada que gastou o Jev, de qualquer comando — a busca por
+    /// palavra, a do mapa, a montagem da onda e a escolha dos itens —, entra
+    /// na linha do dia dela com os tokens e o custo; a chamada de outro dia
+    /// fora da faixa, a que falhou sem gastar e a que não usa o Jev (a leitura
+    /// de um item) ficam fora, e o dia que só tem a chamada da montagem ganha
+    /// a linha dele, sem que a leitura crie outra.
     #[test]
-    fn a_word_search_adds_the_jev_tokens_and_cost_to_its_day() {
+    fn every_call_that_billed_the_jev_adds_its_tokens_and_cost_to_its_day() {
         let dir = tempdir().unwrap();
         let config = dir.path().join("config");
         let root = project(dir.path(), "meu-projeto");
         conversation(&config, "p", "s1", &[reply("m1", "2026-10-01T15:00:00Z", &root, 10, &[])]);
         let spec = root.join(".claude/spec/uma-spec");
         fs::create_dir_all(&spec).unwrap();
-        let call = |id: u64, at: &str, command: &str, tokens: u64, cost: u64| {
-            json!({"v": 1, "id": id, "code": format!("X-CALL-{id:04}"), "at": at, "type": "call", "author": "binary",
-                "command": command, "tokens": tokens, "cost_micro_usd": cost})
-            .to_string()
+        let call = |id: u64, at: &str, command: &str, extra: Value| {
+            let mut event = json!({"v": 1, "id": id, "code": format!("X-CALL-{id:04}"), "at": at, "type": "call",
+                "author": "binary", "command": command});
+            event.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            event.to_string()
         };
+        let billed = |tokens: u64, cost: u64| json!({"filter": "jev", "tokens": tokens, "cost_micro_usd": cost});
         let events = [
-            call(1, "2026-10-01T10:00:00-03:00", "word search", 1000, 900),
-            call(2, "2026-10-01T11:00:00-03:00", "word search", 500, 400),
-            call(3, "2026-10-02T11:00:00-03:00", "word search", 700, 600),
-            call(4, "2026-10-01T10:00:00-03:00", "map search", 5, 5),
+            call(1, "2026-10-01T10:00:00-03:00", "word search", billed(1000, 900)),
+            call(2, "2026-10-01T11:00:00-03:00", "wave assembly", billed(500, 400)),
+            call(3, "2026-10-01T12:00:00-03:00", "wave items", billed(100, 50)),
+            call(4, "2026-10-01T13:00:00-03:00", "map search", billed(200, 100)),
+            call(5, "2026-10-01T14:00:00-03:00", "word search", json!({"filter": "jev:timeout"})),
+            call(6, "2026-10-02T11:00:00-03:00", "wave assembly", billed(700, 600)),
+            call(7, "2026-10-03T11:00:00-03:00", "read", json!({"request": "request-1", "item": "X-TASK-0001"})),
+            call(8, "2026-10-04T11:00:00-03:00", "word search", billed(9000, 8000)),
         ];
         fs::write(spec.join("spec.ndjson"), events.join("\n") + "\n").unwrap();
 
-        let rows = count(&config, &range(None, "2026-10-01"));
-        assert_eq!((rows[0].jev_tokens, rows[0].jev_cost_micro_usd), (1500, 1300), "{rows:?}");
+        let rows = count(&config, &range(None, "2026-10-03"));
+        let jev = |row: &DayRow| (row.day.clone(), row.jev_tokens, row.jev_cost_micro_usd);
+        let seen: Vec<_> = rows.iter().map(jev).collect();
+        assert_eq!(
+            seen,
+            [("2026-10-01".to_string(), 1800, 1450), ("2026-10-02".to_string(), 700, 600)],
+            "the four billed calls of the first day, the assembly alone on the second, and no row for the read"
+        );
     }
 
     /// A conversa de um agente que trabalhou numa cópia já apagada fica com o

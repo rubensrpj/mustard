@@ -707,7 +707,8 @@ pub enum Need<'a> {
     Declarations { file: Option<&'a str>, name: &'a str },
     /// Os exemplos para uma tarefa: cada arquivo com o tamanho, a classe, os
     /// testes e as importações, e a história. Com `words`, também os nomes
-    /// que cada arquivo declara, que a busca da pasta usa.
+    /// que cada arquivo declara, de onde o pedido da onda tira o exemplo do
+    /// padrão.
     Examples { words: bool },
     /// A história de uma declaração: as declarações com o nome, com o
     /// arquivo delas (com `file`, só as dele), a história do git, a de cada

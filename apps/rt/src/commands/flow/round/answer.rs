@@ -20,7 +20,7 @@ use super::backlog::{dispatch_backlog, Judge};
 use super::commit::git_lock;
 use super::item_choice::choose_items;
 use super::queue::{
-    backlog_left, backlog_ready, first_unfinished, max_parallel, next_waves, open_review, open_sends, orphaned_waves,
+    backlog_left, backlog_ready, backlog_uncovered, first_unfinished, max_parallel, next_waves, open_review, open_sends, orphaned_waves,
     sent_items, silent_minutes, waves_in_progress, waves_returned,
 };
 use super::report::Taken;
@@ -639,6 +639,16 @@ pub(super) fn run_entered_round(
         judge.as_ref().map(|judge| judge as &Judge<'_>),
     )
     .map_err(RoundRefusal::Refused)?;
+    // A tarefa do backlog que não cobre item nenhum não forma onda: a rodada
+    // a nomeia, porque ela fica no backlog e segura o fechamento.
+    let uncovered = backlog_uncovered(&locked);
+    if !uncovered.is_empty() {
+        let codes = locked.codes();
+        let tasks: Vec<String> =
+            uncovered.iter().map(|id| codes.get(id).cloned().unwrap_or_else(|| id.to_string())).collect();
+        let hint = translate("round.task_without_covers", lang).replace("{tasks}", &tasks.join(", "));
+        warnings.push(json!({ "reason": "task-without-covers", "hint": hint }));
+    }
     // A primeira rodada leva a spec para a execução só depois de o lote
     // passar, ainda com a trava do git presa: o lote recusado deixa a spec
     // aprovada, como estava, e a rodada seguinte entra de novo por aqui. A

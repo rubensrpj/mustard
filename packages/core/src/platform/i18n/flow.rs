@@ -1018,12 +1018,23 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              batch. The work does not close with a task in the backlog. Run the round again with `{command}`."
         }
         ("round.backlog_stuck", Locale::PtBr) => {
-            "Nada a despachar e nada em andamento, mas o backlog ainda tem as tarefas {tasks}, presas: \
-             nenhuma tem todas as dependências entregues. Mostre ao usuário o que as segura antes de fechar."
+            "Nada a despachar e nada em andamento, mas o backlog ainda tem as tarefas {tasks}, presas. \
+             Nenhuma tem todas as dependências entregues e cobre algum item. Mostre ao usuário o que as segura \
+             antes de fechar."
         }
         ("round.backlog_stuck", Locale::EnUs) => {
             "Nothing to dispatch and nothing in flight, but the backlog still holds tasks {tasks}, stuck: \
-             none has every dependency delivered. Show the user what holds them before closing."
+             none has every dependency delivered and covers an item. Show the user what holds them before closing."
+        }
+        ("round.task_without_covers", Locale::PtBr) => {
+            "As tarefas {tasks} do backlog não cobrem item nenhum (`covers`). A onda leva como critérios os \
+             itens que as tarefas dela cobrem. Por isso elas ficam sem onda, e as que dependem delas esperam. \
+             Grave uma versão de cada uma, com `replaces` e os itens em `covers`, para entrarem na montagem."
+        }
+        ("round.task_without_covers", Locale::EnUs) => {
+            "Backlog tasks {tasks} cover no item (`covers`). A wave carries the items its tasks cover as its \
+             criteria. So they stay out of the waves, and the tasks that depend on them wait. Record a version \
+             of each one, with `replaces` and the items in `covers`, so they enter the assembly."
         }
         ("round.fix_push", Locale::PtBr) => {
             "A onda de conserto está entregue e comitada na branch da obra, que continua fechada: \
@@ -1718,8 +1729,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            208,
-            0xa622_b321_e985_901e,
+            209,
+            0xfd76_ed92_cb78_b3c9,
         );
     }
 
@@ -1958,6 +1969,7 @@ mod tests {
             ("round.missing", &["{wave}"][..]),
             ("round.backlog_left", &["{tasks}", "{command}"][..]),
             ("round.backlog_stuck", &["{tasks}"][..]),
+            ("round.task_without_covers", &["{tasks}"][..]),
             ("round.fix_limit", &["{wave}", "{count}", "{max}", "{verdicts}"][..]),
             ("round.fix_limit.question", &["{wave}", "{max}"][..]),
             ("round.resume.steps", &[][..]),

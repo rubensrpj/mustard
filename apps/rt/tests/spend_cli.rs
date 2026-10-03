@@ -104,8 +104,9 @@ fn writes(answer: &Value) -> Vec<(Value, Value)> {
 
 /// A mesma resposta repetida em várias linhas conta os tokens uma vez; `Bash`
 /// com `grep` e `Grep` são procuras de código, o `map search` e o `Read` não;
-/// o custo do `word search` gravado na spec entra na linha do dia; e uma
-/// conversa aberta dentro da pasta `.claude` conta no projeto.
+/// o custo do Jev gravado na spec entra na linha do dia, o da busca por
+/// palavra e o da montagem da onda juntos; e uma conversa aberta dentro da
+/// pasta `.claude` conta no projeto.
 #[test]
 fn the_command_counts_tokens_once_and_the_code_searches_of_each_day_and_project() {
     let scene = Scene::new();
@@ -122,13 +123,14 @@ fn the_command_counts_tokens_once_and_the_code_searches_of_each_day_and_project(
         reply(&scene.project, "m1", &yesterday, 250, &tools),
         reply(&scene.project.join(".claude/spec"), "m2", &yesterday, 60, &[("Grep", json!({"pattern": "y"}))]),
     ]);
-    let call = |id: u64, tokens: u64, cost: u64| {
+    let call = |id: u64, command: &str, tokens: u64, cost: u64| {
         json!({"v": 1, "id": id, "code": format!("X-CALL-{id:04}"), "at": format!("{yesterday}T10:00:00-03:00"),
-            "type": "call", "author": "binary", "command": "word search", "tokens": tokens, "cost_micro_usd": cost})
+            "type": "call", "author": "binary", "command": command, "tokens": tokens, "cost_micro_usd": cost})
         .to_string()
     };
     std::fs::create_dir_all(&spec).unwrap();
-    std::fs::write(spec.join("spec.ndjson"), [call(1, 1000, 900), call(2, 500, 400)].join("\n") + "\n").unwrap();
+    let calls = [call(1, "word search", 1000, 900), call(2, "word search", 500, 400), call(3, "wave assembly", 200, 100)];
+    std::fs::write(spec.join("spec.ndjson"), calls.join("\n") + "\n").unwrap();
 
     let answer = scene.spend(&[]);
     assert_eq!(answer["counted"]["rows"], json!(1), "{answer}");
@@ -137,7 +139,7 @@ fn the_command_counts_tokens_once_and_the_code_searches_of_each_day_and_project(
     assert_eq!(row["tokens"], json!(310), "the repeated response counts once, with its last line");
     assert_eq!(row["actions"], json!(5), "four tools of the first response and the one inside .claude");
     assert_eq!(row["code_searches"], json!(3), "grep in Bash and the two Grep, not the map search, not the Read");
-    assert_eq!((row["jev_tokens"].clone(), row["jev_cost_micro_usd"].clone()), (json!(1500), json!(1300)));
+    assert_eq!((row["jev_tokens"].clone(), row["jev_cost_micro_usd"].clone()), (json!(1700), json!(1400)));
 }
 
 /// Um dia fechado é contado uma vez e hoje, o dia aberto, vai como parcial e
