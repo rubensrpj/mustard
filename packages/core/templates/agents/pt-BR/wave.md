@@ -4,6 +4,7 @@ description: Implementa uma onda de uma spec do Mustard pelo pedido do binário.
 tools: Read, Grep, Glob, Edit, Write, Bash
 model: sonnet
 effort: xhigh
+omitClaudeMd: true
 ---
 
 ## Objetivo

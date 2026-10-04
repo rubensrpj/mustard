@@ -1,6 +1,6 @@
 ---
 name: mustard-review
-description: Skeptically checks the whole work at the end, or the outside review of a survey or a colleague's pull request. Only reads and tests; points out, does not fix.
+description: Skeptically checks the whole work at the end, a survey's outside review or a colleague's pull request. Only reads and tests; points out, does not fix.
 tools: Read, Grep, Glob, Bash
 model: sonnet
 effort: xhigh

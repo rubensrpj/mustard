@@ -1,6 +1,6 @@
 ---
 name: mustard-review
-description: Confere com desconfiança, no fim da obra, a obra inteira, a revisão de um levantamento ou o pull request de um colega. Só lê e roda testes; aponta e não conserta.
+description: Confere com desconfiança a obra inteira no fim, a revisão de um levantamento ou o pull request de um colega. Só lê e roda testes; aponta e não conserta.
 tools: Read, Grep, Glob, Bash
 model: sonnet
 effort: xhigh
