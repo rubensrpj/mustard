@@ -956,14 +956,10 @@ pub(crate) enum DirtyPathKind {
 /// `.claude/spec/<unit>/` is the unit's work.
 const SPEC_SCRATCH_DIRS: &[&str] = &[".events", ".blobs", ".dispatch"];
 
-/// Per-spec marker files, same reasoning as [`SPEC_SCRATCH_DIRS`].
-///
-/// `.cut-base` is here for the files earlier versions left behind: nothing
-/// writes or reads it any more, but a project whose ignore rules predate it
-/// would otherwise see the leftover as a unit's work and refuse the next cut over
-/// the harness's old droppings. It is named, never a wildcard: everything else
-/// the harness drops in a unit's directory is that unit's work.
-const SPEC_SCRATCH_FILES: &[&str] = &[".memory-approved", ".cut-base"];
+/// Per-spec marker files, same reasoning as [`SPEC_SCRATCH_DIRS`]. Named, never
+/// a wildcard: everything else the harness drops in a unit's directory is that
+/// unit's work.
+const SPEC_SCRATCH_FILES: &[&str] = &[".memory-approved"];
 
 /// Classifica um caminho do `git status` nas três categorias de
 /// [`DirtyPathKind`], lendo-o sob um `.claude/` a qualquer profundidade da
@@ -2146,10 +2142,6 @@ mod tests {
             ".claude/spec/my-unit/.blobs/",
             ".claude/spec/my-unit/.dispatch/prompt.md",
             ".claude/spec/my-unit/.memory-approved",
-            // The base file earlier versions left in the unit's directory. Read
-            // as work, a refusal here would be the harness refusing over its
-            // own old droppings.
-            ".claude/spec/my-unit/.cut-base",
             // A subproject's nested `.claude/` is the same harness.
             "apps/rt/.claude/.session/sess-y/pending-work-branch",
             // Windows separators, should git or a caller ever hand them over.
@@ -2198,6 +2190,9 @@ mod tests {
             ".claude/spec/my-unit/change-log.md",
             ".claude/spec/my-unit/review/findings-apps-rt.md",
             ".claude/spec/my-unit/wave-1-rt/spec.md",
+            // Nothing in the harness writes a base file any more, so a file by
+            // that name is no longer scratch: it is the unit's to deal with.
+            ".claude/spec/my-unit/.cut-base",
             // THE case: `.claude/` entirely untracked, collapsed to one entry.
             // It stands for the scratch and the spec alike and this probe read
             // neither, so it counts — refusing costs a commit, the other

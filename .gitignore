@@ -120,10 +120,6 @@ CLAUDE.local.md
 # Relevance-gate output: approved spec-memory names (regenerable per spec)
 **/.claude/spec/*/.memory-approved
 
-# The base file earlier versions wrote in a unit's directory (harness state;
-# nothing writes or reads it any more, so a leftover must never reach a commit)
-**/.claude/spec/*/.cut-base
-
 # Python bytecode (skill-creator scripts)
 **/__pycache__/
 
