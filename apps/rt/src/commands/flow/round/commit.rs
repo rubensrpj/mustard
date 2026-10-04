@@ -838,8 +838,9 @@ pub(super) struct AfterWave {
 
 /// A conferência depois da onda, antes do commit da rodada, com o disco já
 /// juntado: as importações novas contra o padrão do projeto
-/// ([`super::imports_check`]) e os restos do que as ondas tiraram
-/// ([`super::removed_check`]). Tudo passou: nada, nem texto. Só avisos: os
+/// ([`super::imports_check`]), os restos do que as ondas tiraram
+/// ([`super::removed_check`]) e o tamanho de cada onda contra o que a tarefa
+/// pede ([`super::size_check`]). Tudo passou: nada, nem texto. Só avisos: os
 /// avisos, e a rodada segue. Algum achado que recusa: a rodada não comita,
 /// e a mensagem lista tudo de uma vez, por onda, com a rodada de conserto de
 /// cada uma — a volta que a onda grava de novo conta como uma, até
@@ -848,8 +849,9 @@ pub(super) struct AfterWave {
 /// mapeador falhando, não há com que comparar e a rodada segue.
 ///
 /// Com a conferência sem recusa, junta aos avisos uma linha de tamanho por
-/// onda ([`super::size_check`]) e a devolve também à parte, para o corpo do
-/// commit. A linha é dado da onda, e nunca um achado: não recusa nada.
+/// onda e a devolve também à parte, para o corpo do commit. A linha é dado
+/// da onda: o achado de tamanho é outro, e passa pela mesma resposta dos
+/// outros.
 pub(super) fn ensure_after_wave(
     root: &Path,
     log: &SpecLog,
@@ -860,10 +862,12 @@ pub(super) fn ensure_after_wave(
     let changed: Vec<(u64, Vec<String>)> =
         waves.iter().filter(|w| !w.files.is_empty()).map(|w| (w.wave, w.files.clone())).collect();
     let Some(maps) = after_wave_maps(root, changed, mine) else { return Ok(Default::default()) };
+    let sizes = super::size_check::measure(root, &maps);
     let mut found = super::imports_check::findings(root, &maps, log, lang);
     found.extend(super::removed_check::findings(root, &maps, lang));
+    found.extend(super::size_check::findings(root, &sizes, log, lang));
     let mut warnings = after_wave_answer(waves, &found, lang)?;
-    let sizes = super::size_check::lines(root, &maps, lang);
+    let sizes = super::size_check::lines(&sizes, lang);
     warnings.extend(sizes.iter().map(|(wave, hint)| json!({ "reason": "wave-size", "wave": wave, "hint": hint })));
     Ok((warnings, sizes))
 }
