@@ -5,6 +5,7 @@
 //! rodada não pede a revisão de onda nenhuma: quem confere o trabalho é o
 //! agente de teste dedicado que o fechamento pede, uma vez por obra.
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -14,9 +15,10 @@ use mustard_core::domain::wave_prompt::{estimate_tokens, summary_of, token_cap_m
 use mustard_core::io::spec_events as store;
 use mustard_core::io::wave_prompt::{prompts, recorded_copy, Flight};
 use mustard_core::platform::i18n::{translate, Locale};
+use mustard_core::ProjectConfig;
 use serde_json::{json, Map, Value};
 
-use super::backlog::{dispatch_backlog, Judge};
+use super::backlog::{dispatch_backlog, light_waves, Judge};
 use super::commit::git_lock;
 use super::item_choice::choose_items;
 use super::queue::{
@@ -629,7 +631,19 @@ pub(super) fn run_entered_round(
     if key_in_git && first_warning(root, session, "round.key_in_git") {
         warnings.push(json!({ "reason": "key-in-git", "hint": translate("map.round.key_in_git", lang) }));
     }
-    let judge = jev.as_ref().map(|jev| move |board: &Board| jev.judge_backlog(board));
+    // O julgamento da montagem fica guardado: depois de formadas as ondas, é
+    // ele que diz quais saem no modelo mais barato.
+    let judged_tasks = RefCell::new(None);
+    let judge = jev.as_ref().map(|jev| {
+        let judged_tasks = &judged_tasks;
+        move |board: &Board| {
+            let judged = jev.judge_backlog(board);
+            if let Ok(judged) = &judged {
+                *judged_tasks.borrow_mut() = Some(judged.tasks.clone());
+            }
+            judged
+        }
+    });
     dispatch_backlog(
         &opts.root,
         &spec,
@@ -730,13 +744,19 @@ pub(super) fn run_entered_round(
     let mut renewed_copies: BTreeMap<u64, WaveCopy> =
         renewed.iter().filter_map(|w| copies.remove(w).map(|c| (*w, c))).collect();
     let next: Vec<u64> = go.into_iter().filter(|wave| copies.contains_key(wave)).collect();
+    // A onda que o Jev julgou mecânica sai no modelo mais barato do projeto;
+    // sem julgamento, nenhuma sai, e todas levam o modelo comum.
+    let light = judged_tasks.into_inner().map(|judged| light_waves(&log, &judged)).unwrap_or_default();
+    let light_model = ProjectConfig::load(root).agent_light_model().to_string();
+    let models: BTreeMap<u64, String> =
+        next.iter().filter(|wave| light.contains(wave)).map(|wave| (*wave, light_model.clone())).collect();
     // O pedido de cada onda lista as outras em andamento, contando as órfãs,
     // que saem de novo nesta rodada, e as que saem junto com ela, e traz a
     // cópia dela e a escolha do orquestrador. A onda cuja volta ficou de fora
     // não está em andamento, como no gancho que monta o mesmo pedido.
     let orphans = orphaned_waves(&log);
     let away = running.keys().chain(orphans.keys()).chain(&next).copied().collect();
-    let flight = Flight { running: away, copies, choices };
+    let flight = Flight { running: away, copies, choices, models };
     let built = prompts(root, &spec, &log, lang, &flight);
     let mut dispatched: Vec<Value> = Vec::new();
     // O código e o número do envio de cada onda em andamento — o número é o
@@ -797,7 +817,13 @@ pub(super) fn run_entered_round(
         let written = record(&opts.root, &spec, "send", draft, PhaseWriter::Binary)
             .map_err(RoundRefusal::Refused)?;
         recorded.push(json!({ "wave": wave, "type": "send", "id": written.written.id }));
-        dispatched.push(json!({ "wave": wave, "lines": prompt.lines, "read": request_command(root, &spec, *wave), "agent": agent }));
+        dispatched.push(json!({
+            "wave": wave,
+            "lines": prompt.lines,
+            "read": request_command(root, &spec, *wave),
+            "agent": agent,
+            "model": prompt.model,
+        }));
         let code = written.written.code.clone().unwrap_or_else(|| written.written.id.to_string());
         in_flight.insert(*wave, (code, written.written.id));
     }
@@ -867,7 +893,11 @@ pub(super) fn run_entered_round(
         let written = record(&opts.root, &spec, "send", draft, PhaseWriter::Binary)
             .map_err(RoundRefusal::Refused)?;
         recorded.push(json!({ "wave": wave, "type": "send", "id": written.written.id }));
-        dispatched.push(json!({ "wave": wave, "lines": text.lines().count(), "read": request_command(root, &spec, wave), "agent": agent }));
+        let mut sent = json!({ "wave": wave, "lines": text.lines().count(), "read": request_command(root, &spec, wave), "agent": agent });
+        if let Some(model) = prior.str_field("model") {
+            sent["model"] = json!(model);
+        }
+        dispatched.push(sent);
         let code = written.written.code.clone().unwrap_or_else(|| written.written.id.to_string());
         in_flight.insert(wave, (code, written.written.id));
     }
@@ -911,7 +941,17 @@ pub(super) fn run_entered_round(
     let report_back = translate("round.report", lang);
     let mut command: Option<String> = None;
     let then = if !dispatched.is_empty() {
-        format!("{} {report_back}", translate("round.next", lang))
+        // O modelo de cada onda que sai, antes da ordem de despachar: quem
+        // despacha passa esse modelo ao agente de cada onda.
+        let models: Vec<String> = dispatched
+            .iter()
+            .filter_map(|sent| {
+                let model = sent["model"].as_str()?;
+                Some(translate("round.wave_model", lang).replace("{wave}", &sent["wave"].to_string()).replace("{model}", model))
+            })
+            .collect();
+        let models = if models.is_empty() { String::new() } else { format!("{} ", models.join(" ")) };
+        format!("{models}{} {report_back}", translate("round.next", lang))
     } else if !running.is_empty() {
         let waves: Vec<String> = running.keys().map(u64::to_string).collect();
         format!("{} {report_back}", translate("round.waiting", lang).replace("{waves}", &waves.join(", ")))

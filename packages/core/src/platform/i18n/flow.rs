@@ -1005,13 +1005,19 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("round.next", Locale::PtBr) => {
             "Despache os pedidos desta rodada: cada onda ao agente `mustard-wave` e cada revisão ao \
              agente `mustard-review`. O pedido da onda não vem nesta resposta. Mande ao agente o \
-             comando de `read`, e ele lê o próprio pedido."
+             comando de `read`, e ele lê o próprio pedido. Passe a cada agente de onda o modelo \
+             citado para ela, no parâmetro `model` da ferramenta Agent."
         }
         ("round.next", Locale::EnUs) => {
             "Dispatch this round's requests: each wave to the `mustard-wave` agent and each review \
              to the `mustard-review` agent. The wave's request is not in this answer. Send the agent \
-             the `read` command, and it reads its own request."
+             the `read` command, and it reads its own request. Pass each wave agent the model cited \
+             for it, in the `model` parameter of the Agent tool."
         }
+        // O modelo que cada onda despachada leva: a rodada o cita antes da ordem
+        // de despachar, para quem despacha passá-lo ao agente da onda.
+        ("round.wave_model", Locale::PtBr) => "Onda {wave}: modelo `{model}`.",
+        ("round.wave_model", Locale::EnUs) => "Wave {wave}: model `{model}`.",
         // O pedido de publicar e copiar a página fica por extenso só no
         // arquivo, e a resposta leva a linha curta.
         ("round.next.copy_file", Locale::PtBr) => "Leia `{path}` e siga as instruções de lá.",
@@ -1779,8 +1785,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            215,
-            0x7c92_66df_f664_4269,
+            216,
+            0x4f85_5d82_b177_c096,
         );
     }
 
@@ -2017,6 +2023,7 @@ mod tests {
             ("round.resend_gone_no_copy", &["{wave}", "{copy}"][..]),
             ("round.git_refused", &["{detail}"][..]),
             ("round.next", &[][..]),
+            ("round.wave_model", &["{wave}", "{model}"][..]),
             ("round.next.copy_file", &["{path}"][..]),
             ("round.report", &[][..]),
             ("round.waiting", &["{waves}"][..]),
