@@ -353,6 +353,19 @@ fn leading_string(tail: &mut &str, key: &str) -> Option<String> {
     Some(value.to_string())
 }
 
+/// Onde está um resumo: a entrega que uma onda gravou ao parar, com tarefas por
+/// fazer ([`SpecLog::summaries`]). O estado sai só da spec, sem marca solta.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SummaryState {
+    /// Nenhum envio o cita, ou só envio de onda que saiu do plano sem
+    /// entregar: a próxima montagem o faz base de uma onda.
+    Unused,
+    /// Um envio o cita, e a onda dele segue no plano sem entrega.
+    InUse,
+    /// A onda que o citou entregou.
+    Used,
+}
+
 impl SpecLog {
     /// O evento de número `id`, removido ou não.
     #[must_use]
@@ -516,6 +529,50 @@ impl SpecLog {
             .filter(|event| event.event_type == "delivered")
             .filter_map(SpecEvent::wave)
             .collect()
+    }
+
+    /// Os resumos da spec, em ordem de número, cada um com o estado dele
+    /// ([`SummaryState`]). Resumo é a entrega — a que a leitura mostra, já
+    /// assumida pela rodada — com `undone` não vazio: a onda parou e deixou
+    /// tarefas por fazer. Um envio o cita pelo campo `summary` (o número da
+    /// entrega, lido na versão vigente dela). Se a onda de algum envio que o
+    /// cita entregou, o resumo está usado; se ela segue no plano
+    /// ([`Self::planned_waves`]) sem entrega, está em uso; senão — ninguém o
+    /// citou, ou a onda que o citou foi cortada e saiu do plano —, não usado.
+    #[must_use]
+    pub fn summaries(&self) -> Vec<(&SpecEvent, SummaryState)> {
+        let waves = self.block(BlockQuery::Block(Block::Waves));
+        let delivered = self.delivered_waves();
+        let planned = self.planned_waves();
+        let mut citing: BTreeMap<u64, Vec<u64>> = BTreeMap::new();
+        for send in waves.iter().filter(|e| e.event_type == "send") {
+            let (Some(summary), Some(wave)) = (send.int("summary"), send.wave()) else { continue };
+            let current = self.current(summary).map_or(summary, |event| event.id);
+            citing.entry(current).or_default().push(wave);
+        }
+        waves
+            .into_iter()
+            .filter(|e| e.event_type == "delivered")
+            .filter(|e| e.fields.get("undone").and_then(Value::as_array).is_some_and(|tasks| !tasks.is_empty()))
+            .map(|summary| {
+                let by = citing.get(&summary.id).map(Vec::as_slice).unwrap_or_default();
+                let state = if by.iter().any(|wave| delivered.contains(wave)) {
+                    SummaryState::Used
+                } else if by.iter().any(|wave| planned.contains(wave)) {
+                    SummaryState::InUse
+                } else {
+                    SummaryState::Unused
+                };
+                (summary, state)
+            })
+            .collect()
+    }
+
+    /// Os resumos não usados ([`SummaryState::Unused`]), em ordem de número:
+    /// cada um é a base de uma onda da próxima montagem.
+    #[must_use]
+    pub fn unused_summaries(&self) -> Vec<&SpecEvent> {
+        self.summaries().into_iter().filter(|(_, state)| *state == SummaryState::Unused).map(|(event, _)| event).collect()
     }
 
     /// As voltas que a rodada ou o fechamento ainda não assumiu, em ordem de

@@ -45,10 +45,7 @@
 //! - [`work_kind`] — WHAT a work unit is (`feature`/`fix`/`hotfix`), the
 //!   `{kind}/{slug}` name built from it, and the project's base model derived
 //!   from `git.flow`. The crate's ONE parser of a work-branch name, in both the
-//!   current shape and the `{base}_{slug}` shape units in flight still carry —
-//!   and the one reader/writer of the base a unit was actually CUT from, which
-//!   only the unit's own record can remember once the pending marker is
-//!   consumed.
+//!   current shape and the `{base}_{slug}` shape units in flight still carry.
 
 /// A última fala do agente antes de uma chamada, lida do fim do arquivo da
 /// conversa; nunca texto do usuário.

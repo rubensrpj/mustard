@@ -48,9 +48,11 @@ use crate::platform::i18n::{translate, Locale};
 
 mod request;
 mod review;
+mod summary;
 
 pub use request::listed;
 pub use review::listed_final_review;
+pub use summary::summary_of;
 
 /// A linha dos dois idiomas do projeto, no topo de todo pedido a um agente:
 /// o dos textos que a pessoa lê e o dos nomes no código. Sai no idioma do
@@ -224,6 +226,10 @@ pub struct Material<'a> {
     pub attended: BTreeMap<u64, &'a SpecEvent>,
     /// As linhas do conserto ([`fix_lines`]); vazio fora de um conserto.
     pub fix: Vec<&'a SpecEvent>,
+    /// O resumo que a onda continua ([`summary_of`]): a entrega de uma onda
+    /// que parou, que o pedido manda ler antes de tudo, em destaque. Vazio na
+    /// onda que não continua trabalho nenhum.
+    pub summary: Option<&'a SpecEvent>,
     /// O que esta onda entregou depois da última revisão: o que o revisor
     /// confere.
     pub own_delivered: Vec<&'a SpecEvent>,

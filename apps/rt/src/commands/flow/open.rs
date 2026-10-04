@@ -1282,6 +1282,26 @@ use crate::shared::context::pending_branch::set_pending_branch;
         assert_eq!(log.events.len(), 1, "the birth is the only event");
     }
 
+    /// A base escolhida entre várias fica no registro da própria spec, e o
+    /// passo que abre o pull request a lê de lá: o nome da branch não diz a
+    /// base, e o fluxo declarado, com duas, também não.
+    #[test]
+    fn the_base_picked_at_open_reaches_the_pull_request_step() {
+        let dir = repo(DEV_MAIN);
+        let root = dir.path();
+        open(root, Some("hotfix"), Some("urgente"), Some("main"));
+        let now = state(root, "urgente");
+        assert_eq!(now.base.as_deref(), Some("main"), "the pick is in the spec's record");
+
+        let config = mustard_core::ProjectConfig::load(root);
+        let flow = crate::shared::work_kind::BaseFlow::of_at(&config.git, root);
+        assert_eq!(flow.base_of("hotfix/urgente").known(), None, "the flow alone cannot say");
+
+        let line = crate::commands::flow::resume::step_command("pr-open", "urgente", &now)
+            .expect("the record carries branch and base");
+        assert!(line.contains("--base main --head hotfix/urgente"), "{line}");
+    }
+
     /// O portão de escrita barra o código de uma spec aberta pelo `open`: ela
     /// está em levantamento, e não aprovada.
     #[test]

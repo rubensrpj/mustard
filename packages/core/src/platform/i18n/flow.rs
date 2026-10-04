@@ -481,6 +481,20 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("wave_prompt.token_cap", Locale::EnUs) => {
             "Wave {wave}'s request has {tokens} tokens, above the {cap} cap. Split the batch in two."
         }
+        // O bloco em destaque do começo do pedido da onda que continua o
+        // resumo de outra (`packages/core/src/domain/wave_prompt/summary.rs`).
+        ("wave_prompt.summary.title", Locale::PtBr) => "Trabalho já começado",
+        ("wave_prompt.summary.title", Locale::EnUs) => "Work already started",
+        ("wave_prompt.summary.read", Locale::PtBr) => {
+            "Esta onda continua o trabalho de um agente que parou no limite, e o resumo dele é {code}. \
+             Antes de qualquer outro passo, leia-o com `mustard-rt run read item-{code} {root}--spec {spec}` \
+             e faça só o que falta. A entrega é recusada sem essa leitura."
+        }
+        ("wave_prompt.summary.read", Locale::EnUs) => {
+            "This wave continues the work of an agent that stopped at the limit, and its summary is {code}. \
+             Before any other step, read it with `mustard-rt run read item-{code} {root}--spec {spec}` \
+             and do only what is left. The delivery is refused without that reading."
+        }
         // O que um agente deixou preso, encerrado no início da sessão, em
         // cada rodada e no fechamento (`apps/rt/src/commands/flow/stuck.rs`).
         ("stuck.ended", Locale::PtBr) => "Processo(s) preso(s) encerrado(s): {list}.",
@@ -1729,8 +1743,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            209,
-            0xfd76_ed92_cb78_b3c9,
+            211,
+            0x38f7_d13e_d94d_93bb,
         );
     }
 
@@ -1905,6 +1919,8 @@ mod tests {
             ("conversation_size.precompact", &["{block}"][..]),
             ("conversation_size.notice", &["{tokens}", "{block}"][..]),
             ("conversation_size.wave_limit", &["{now}", "{counted}", "{limit}"][..]),
+            ("wave_prompt.summary.title", &[][..]),
+            ("wave_prompt.summary.read", &["{code}", "{root}", "{spec}"][..]),
             ("round.file_unknown", &["{file}", "{wave}"][..]),
             ("round.files_diverged", &["{wave}", "{changed}", "{declared}", "{missing}"][..]),
             ("round.usage_missing", &["{wave}"][..]),

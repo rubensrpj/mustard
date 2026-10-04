@@ -516,7 +516,7 @@ pub(super) fn task_files(task: &SpecEvent) -> BTreeSet<String> {
 /// versão vigente dela — a mesma resolução que a gravação de uma tarefa nova
 /// já faz para conferir o `depends_on` dela, só que lida aqui, não repetida à
 /// parte por acaso: uma referência que não bate com tarefa nenhuma some.
-fn backlog_task_ref(log: &SpecLog, codes: &BTreeMap<u64, String>, value: &Value) -> Option<u64> {
+pub(super) fn backlog_task_ref(log: &SpecLog, codes: &BTreeMap<u64, String>, value: &Value) -> Option<u64> {
     let raw = match EventRef::from_value(value)? {
         EventRef::Id(id) => id,
         EventRef::Code(code) => log

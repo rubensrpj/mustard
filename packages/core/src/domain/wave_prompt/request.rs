@@ -23,6 +23,8 @@ struct TaskStep<'a> {
 /// item aparece uma vez só: o que a onda cita de mais de um jeito fica no
 /// primeiro lugar em que o pedido o mostra.
 struct Listing<'a> {
+    /// O resumo que a onda continua, o primeiro item do pedido.
+    summary: Option<&'a SpecEvent>,
     /// As linhas do conserto, quando a onda volta por reprovação.
     fix: Vec<&'a SpecEvent>,
     /// As tarefas, na ordem de execução, cada uma com o que ela atende.
@@ -37,6 +39,7 @@ impl<'a> Listing<'a> {
     fn of(material: &Material<'a>) -> Self {
         let mut seen: BTreeSet<u64> = BTreeSet::new();
         let mut fresh = |item: &SpecEvent| seen.insert(item.id);
+        let summary = material.summary.filter(|item| fresh(item));
         let fix = material.fix.iter().copied().filter(|item| fresh(item)).collect();
         let mut steps = Vec::new();
         for task in ordered_tasks(material) {
@@ -53,19 +56,20 @@ impl<'a> Listing<'a> {
         }
         let obey = material.agreed.iter().copied().filter(|item| fresh(item)).collect();
         let lessons = material.lessons.clone();
-        Self { fix, steps, obey, lessons }
+        Self { summary, fix, steps, obey, lessons }
     }
 
     /// Os itens da spec, na ordem em que o pedido os imprime.
     fn items(&self) -> impl Iterator<Item = &'a SpecEvent> + '_ {
         let steps = self.steps.iter().flat_map(|step| std::iter::once(step.task).chain(step.attended.iter().copied()));
-        self.fix.iter().copied().chain(steps).chain(self.obey.iter().copied())
+        self.summary.into_iter().chain(self.fix.iter().copied()).chain(steps).chain(self.obey.iter().copied())
     }
 }
 
 /// O que o pedido da onda lista, para a entrega conferir a leitura: o código
-/// de cada item da spec e `lesson-<número>` de cada lição, na ordem em que o
-/// pedido os imprime. É a mesma lista que o texto do pedido percorre.
+/// de cada item da spec — o resumo que a onda continua primeiro — e
+/// `lesson-<número>` de cada lição, na ordem em que o pedido os imprime. É a
+/// mesma lista que o texto do pedido percorre.
 #[must_use]
 pub fn listed(material: &Material) -> Vec<String> {
     let listing = Listing::of(material);
@@ -126,6 +130,7 @@ impl Writer<'_> {
                 .replace("{effort}", m.execution.requested_effort())
         );
         let _ = writeln!(out, "{}\n", language_line(&m.execution.language));
+        self.started(&mut out, listing.summary);
         self.delivers(&mut out);
         let _ = writeln!(out, "## {}\n", self.t("prompt.part.read"));
         self.read_example(&mut out, "prompt.read.wave", m.execution.copy.is_some());

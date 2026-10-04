@@ -53,7 +53,9 @@ pub use codes::code_after;
 pub use line::{render_line, shown_line, stamp};
 pub use message::{check_message, pr_message, MessageRefusal, MESSAGE_BODY_MAX, MESSAGE_TITLE_MAX};
 pub use purge::{purge_excerpts, purge_lines};
-pub use read::{parse_log, repair_cut_lines, Hidden, SkipReason, SkippedLine, SpecEvent, SpecLog, Step, TimeFilter};
+pub use read::{
+    parse_log, repair_cut_lines, Hidden, SkipReason, SkippedLine, SpecEvent, SpecLog, Step, SummaryState, TimeFilter,
+};
 pub use refusal::{ItemPart, Refusal, TaskDeclaration, TASK_TITLE_MAX};
 pub use search::{calls_command, found_by, refresh_search_lines, search_field};
 pub use types::{

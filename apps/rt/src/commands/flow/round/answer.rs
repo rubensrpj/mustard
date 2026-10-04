@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use mustard_core::domain::spec_events::{Block, BlockQuery, Refusal, SpecLog};
 use mustard_core::domain::spec_state::{not_closed_yet, returns_to_running, PhaseWriter, SpecState, State};
-use mustard_core::domain::wave_prompt::{estimate_tokens, token_cap_message, wave_files, WaveCopy};
+use mustard_core::domain::wave_prompt::{estimate_tokens, summary_of, token_cap_message, wave_files, WaveCopy};
 use mustard_core::io::spec_events as store;
 use mustard_core::io::wave_prompt::{prompts, recorded_copy, Flight};
 use mustard_core::platform::i18n::{translate, Locale};
@@ -779,6 +779,11 @@ pub(super) fn run_entered_round(
         // O que o pedido manda ler, item a item: a mesma lista que imprimiu
         // as linhas dele, e contra ela a entrega confere o que foi lido.
         draft.insert("read_items".into(), json!(prompt.listed));
+        // O resumo que a onda continua, que o pedido abre mandando ler: o
+        // envio o cita, e é por ele que o resumo passa a estar em uso.
+        if let Some(summary) = summary_of(&log, *wave) {
+            draft.insert("summary".into(), json!(summary.id));
+        }
         if let Some(choice) = flight.choices.get(wave) {
             draft.insert("analysis".into(), choice.to_value());
         }

@@ -22,10 +22,11 @@ use super::queue::{
 };
 use super::report::backlog_return;
 use super::stops::waves_stuck;
+use super::summary_wave::summary_waves;
 use crate::commands::spec_events::conversation::record_measured_call;
 use crate::commands::spec_events::write::{record, RecordCheck};
 use crate::commands::wave::wave_overlap_check::wave_graph;
-use crate::shared::dag::{pack_by_kind, sets_cross, touches_whole_tree, BacklogTask};
+use crate::shared::dag::{pack_by_kind, sets_cross, touches_whole_tree, BacklogTask, Reserved};
 use crate::shared::jev::{Board, BoardTask, BoardWave, Judged};
 
 /// Quem julga o backlog para a montagem: uma chamada só, com o quadro inteiro
@@ -177,6 +178,12 @@ pub(crate) fn dispatch_backlog(
     let code_of = |id: &u64| -> u64 {
         codes.get(id).and_then(|code| code.rsplit('-').next()).and_then(|number| number.parse().ok()).unwrap_or(*id)
     };
+    // Cada resumo não usado vira a base de uma onda, antes de qualquer outra;
+    // as tarefas dessas ondas ficam fora do resto da montagem, saiam elas
+    // agora ou esperem a vez: a que saísse noutra onda perderia o resumo.
+    let by_summary = summary_waves(log, &order, &population);
+    let claimed: BTreeSet<u64> = by_summary.iter().flat_map(|wave| wave.batch.tasks.iter().copied()).collect();
+    let order: Vec<u64> = order.into_iter().filter(|id| !claimed.contains(id)).collect();
     // O Jev julga o backlog pronto numa chamada só, e só quando há vaga para
     // uma onda nova: sem vaga ou sem tarefa pronta nada se pergunta.
     let judging = match judge {
@@ -198,28 +205,40 @@ pub(crate) fn dispatch_backlog(
             batches
         }
     };
+    let batches: Vec<(Batch<u64>, Option<u64>)> = by_summary
+        .into_iter()
+        .map(|wave| (wave.batch, Some(wave.summary)))
+        .chain(batches.into_iter().map(|batch| (batch, None)))
+        .collect();
     // Duas ondas com arquivo em comum nunca saem juntas: a que perde a vez
-    // fica no backlog e entra na montagem da rodada em que uma vaga abrir.
-    let mut chosen: Vec<Batch<u64>> = Vec::new();
-    for batch in batches {
+    // fica no backlog e entra na montagem da rodada em que uma vaga abrir. E
+    // a que espera, por onda aberta ou por outra desta passada, reserva os
+    // arquivos dela: nenhuma que vem depois, na ordem de prioridade, e divide
+    // arquivo com ela sai antes.
+    let mut chosen: Vec<(Batch<u64>, Option<u64>)> = Vec::new();
+    let mut reserved = Reserved::default();
+    for (batch, summary) in batches {
         if chosen.len() >= free {
             break;
         }
-        let whole_tree = touches_whole_tree(&batch.files);
-        let taken: Vec<&String> = chosen.iter().flat_map(|picked| &picked.files).collect();
-        if sets_cross(&batch.files, &busy)
-            || sets_cross(&batch.files, taken.iter().copied())
-            || (whole_tree && !(alone && chosen.is_empty()))
-        {
+        let taken: Vec<&String> = chosen.iter().flat_map(|(picked, _)| &picked.files).collect();
+        let held = sets_cross(&batch.files, &busy) || sets_cross(&batch.files, taken.iter().copied());
+        if touches_whole_tree(&batch.files) {
+            // O curinga da árvore inteira cruza com todos: só sai sozinho, sem
+            // nada em andamento. Ele não reserva nada, senão parava todo o
+            // resto atrás dele.
+            if !held && alone && chosen.is_empty() {
+                chosen.push((batch, summary));
+                break;
+            }
             continue;
         }
-        chosen.push(batch);
-        if whole_tree {
-            break;
+        if reserved.lets_out(&batch.files, held) {
+            chosen.push((batch, summary));
         }
     }
     if let Some((asked, called, answer)) = &judging {
-        let returned = chosen.iter().map(|batch| batch.tasks.len()).sum();
+        let returned = chosen.iter().filter(|(_, summary)| summary.is_none()).map(|(batch, _)| batch.tasks.len()).sum();
         record_assembly(start, spec, (*asked, returned), *called, answer);
     }
 
@@ -229,7 +248,7 @@ pub(crate) fn dispatch_backlog(
     let mut next_n = log.last_wave_number();
     let mut formed = Vec::new();
     let mut numbered: BTreeSet<u64> = BTreeSet::new();
-    for batch in &chosen {
+    for (batch, summary) in &chosen {
         next_n += 1;
         let tasks: Vec<&SpecEvent> = batch.tasks.iter().filter_map(|id| by_id.get(id).copied()).collect();
         // A tarefa nascida de uma onda cobre critério, com prova para juntar
@@ -245,7 +264,10 @@ pub(crate) fn dispatch_backlog(
             "order": batch.tasks,
             "author": "binary",
         });
-        let Value::Object(draft) = draft else { unreachable!("json! de um mapa sempre é objeto") };
+        let Value::Object(mut draft) = draft else { unreachable!("json! de um mapa sempre é objeto") };
+        if let Some(summary) = summary {
+            draft.insert("summary".into(), json!(summary));
+        }
         writes.push(("wave", draft));
         for id in &batch.tasks {
             if let Some(revised) = task_revision(log, *id, Map::from_iter([("wave".to_string(), json!(next_n))])) {

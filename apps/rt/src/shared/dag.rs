@@ -46,6 +46,10 @@
 //! ordem fixa dos tipos. O arquivo e a dependência seguem exatos, em código:
 //! quem decide que duas ondas com arquivo em comum não saem juntas é a rodada.
 //!
+//! A tarefa que não pode sair porque divide arquivo com uma onda em andamento
+//! reserva os arquivos dela ([`Reserved`]): a que vem depois na ordem de
+//! prioridade e divide arquivo com ela não toma a vaga que ela deixa livre.
+//!
 //! Dois arquivos "se cruzam" ([`files_cross`]) quando são o mesmo caminho,
 //! ou quando um deles é padrão (tem `*`, `?` ou `[`) e casa o outro. O `**`
 //! cruza com tudo: a tarefa que o declara sai sozinha no lote dela, e a
@@ -328,6 +332,35 @@ pub(crate) fn pack_batches<N: Ord + Clone>(
     batches
 }
 
+/// Os arquivos das tarefas ou lotes que esperam a vez: quem não pôde sair
+/// porque divide arquivo com uma onda em andamento reserva os arquivos dele, e
+/// nenhum que vem depois na ordem de prioridade e divide arquivo com ele sai
+/// antes. Sem a reserva, a vaga que o bloqueado deixa livre iria sempre para a
+/// tarefa que divide arquivo com ele, e ele esperaria uma onda a mais, a cada
+/// montagem.
+#[derive(Debug, Default)]
+pub(crate) struct Reserved(BTreeSet<String>);
+
+impl Reserved {
+    /// Pergunta, na ordem de prioridade, se o grupo de `files` sai. Sai o que
+    /// nada segura (`held` falso: nem onda em andamento, nem outra razão de
+    /// quem chama) e que não cruza ([`sets_cross`]) nenhum arquivo já
+    /// reservado. O que não sai entrega os arquivos dele à reserva, para que o
+    /// seguinte que o cruza também espere.
+    pub(crate) fn lets_out(&mut self, files: &BTreeSet<String>, held: bool) -> bool {
+        if !held && !sets_cross(files, &self.0) {
+            return true;
+        }
+        self.0.extend(files.iter().cloned());
+        false
+    }
+
+    /// Os arquivos reservados até aqui.
+    pub(crate) fn files(&self) -> &BTreeSet<String> {
+        &self.0
+    }
+}
+
 /// O tipo de trabalho de uma tarefa, como o Jev o diz. A ordem das variantes
 /// é a ordem em que as ondas saem: defeito primeiro, recurso novo, texto e, no
 /// fim, o que só tira ou enxuga.
@@ -399,7 +432,10 @@ const UNJUDGED: Judgement = Judgement { kind: TaskKind::Feature, confidence: 0.0
 ///    comum, sem teto de tarefas. A de tipo incerto — confiança abaixo de
 ///    [`KIND_SURE_FROM`] — vai sozinha, num lote dela. A que divide arquivo
 ///    com uma onda aberta (`busy`) ou muda o mesmo que ela ([`CLASH_FROM`])
-///    fica fora de todo lote e espera no backlog.
+///    fica fora de todo lote e espera no backlog, e reserva os arquivos dela
+///    ([`Reserved`]): as tarefas olhadas depois, na ordem dos tipos e do
+///    número, que dividem arquivo com ela esperam também, em vez de tomar a
+///    vaga que ela deixa livre.
 /// 3. Os lotes saem na ordem de [`TaskKind`] e, dentro do tipo, pelo número
 ///    (`number`) da tarefa mais baixa; as tarefas de cada lote, pelo número.
 /// 4. Cada lote recebe, no fim, as tarefas de `waiting` que esperam só por
@@ -417,16 +453,24 @@ pub(crate) fn pack_by_kind<N: Ord + Clone>(
 ) -> Vec<Batch<N>> {
     let by_id: BTreeMap<&N, &BacklogTask<N>> = tasks.iter().map(|t| (&t.id, t)).collect();
     let mut batches: Vec<Batch<N>> = Vec::new();
-    let mut together: BTreeMap<TaskKind, Batch<N>> = BTreeMap::new();
-    let mut alone: Vec<(TaskKind, Batch<N>)> = Vec::new();
+    let mut candidates: Vec<(&N, &BacklogTask<N>, Judgement)> = Vec::new();
     for id in order {
         let Some(task) = by_id.get(id).copied() else { continue };
         if touches_whole_tree(&task.files) {
             batches.push(Batch { tasks: vec![id.clone()], files: task.files.clone() });
             continue;
         }
-        let verdict = judged.get(id).copied().unwrap_or(UNJUDGED);
-        if sets_cross(&task.files, busy) || verdict.clash >= CLASH_FROM {
+        candidates.push((id, task, judged.get(id).copied().unwrap_or(UNJUDGED)));
+    }
+    // A prioridade de saída é a dos lotes: o tipo e, dentro dele, o número. É
+    // nessa ordem que o bloqueado reserva os arquivos dele.
+    candidates.sort_by_key(|(id, _, verdict)| (verdict.kind, number(id), (*id).clone()));
+    let mut reserved = Reserved::default();
+    let mut together: BTreeMap<TaskKind, Batch<N>> = BTreeMap::new();
+    let mut alone: Vec<(TaskKind, Batch<N>)> = Vec::new();
+    for (id, task, verdict) in candidates {
+        let held = sets_cross(&task.files, busy) || verdict.clash >= CLASH_FROM;
+        if !reserved.lets_out(&task.files, held) {
             continue;
         }
         let single = || Batch { tasks: vec![id.clone()], files: task.files.clone() };
@@ -444,7 +488,8 @@ pub(crate) fn pack_by_kind<N: Ord + Clone>(
     }
     groups.sort_by_key(|(kind, group)| (*kind, group.tasks.iter().map(number).min()));
     batches.extend(groups.into_iter().map(|(_, group)| group));
-    chain_dependents(tasks, &mut batches, waiting, busy);
+    let blocked: BTreeSet<String> = busy.union(reserved.files()).cloned().collect();
+    chain_dependents(tasks, &mut batches, waiting, &blocked);
     batches
 }
 

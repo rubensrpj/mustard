@@ -133,10 +133,11 @@ pub(crate) fn delete_with(start: &Path, unit: &str, remote: bool) -> Value {
     // lista é vazia, e a branch que o próprio remoto chama de padrão passava a
     // contar como unidade de alguém.
     if flow.has_unit_record(&branch) && !on_integration_base(&main, &branch, &cfg) {
-        // The unit's OWN record answers where to go back to; `origin/HEAD` is
-        // the last resort, so nothing here spells a branch name of its own.
+        // What the flow and the branch name establish answers where to go back
+        // to; `origin/HEAD` is the last resort, so nothing here spells a branch
+        // name of its own.
         // Same three sources, same order, as the refusal of the pull request
-        // list: the unit's own record, then the DECLARED primary base when the
+        // list: the unit's own base, then the DECLARED primary base when the
         // project states one — naming `origin/HEAD` there sends a unit that
         // integrates into `dev` off to `main` — and only then the remote's own
         // default.

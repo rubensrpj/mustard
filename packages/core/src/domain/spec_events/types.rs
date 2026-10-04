@@ -621,6 +621,10 @@ pub const TYPES: &[TypeSpec] = &[
             // pedido leva, uma linha por item; sem ela, os itens saem na
             // ordem do arquivo.
             opt("order", Kind::Ints),
+            // O resumo que esta onda continua: o número da entrega de uma onda
+            // que parou, com o que ela deixou por fazer. Só a onda que o
+            // backlog formou a partir dele o traz; o envio dela o repete.
+            opt("summary", Kind::Int),
         ],
     ),
     ty(
@@ -741,6 +745,10 @@ pub const TYPES: &[TypeSpec] = &[
             // O envio anterior, pelo número ou pelo código: só num reenvio,
             // da onda pausada ou da órfã de um Claude Code que fechou.
             opt("resends", Kind::Ref),
+            // O resumo que o pedido manda ler antes de tudo: o número da
+            // entrega de uma onda que parou. Enquanto a onda deste envio não
+            // entrega, o resumo está em uso; entregue a onda, está usado.
+            opt("summary", Kind::Int),
             // O processo do Claude Code que mandou este envio — o número e a
             // hora de início que `/proc` contava então, para um número
             // reaproveitado não enganar. Sem o par, num envio de versão

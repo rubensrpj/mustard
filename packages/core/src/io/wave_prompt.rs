@@ -573,7 +573,8 @@ pub struct RequestItems<'a> {
 /// O envio, a entrega e os passos da própria onda ficam de fora: são o
 /// registro de um pedido, não parte dele. A entrega que a reprovação julgou
 /// fica, porque o conserto a cita ([`wave_prompt::fix_lines`]); a entrega das
-/// ondas de que esta depende também. O item combinado que uma versão nova
+/// ondas de que esta depende também, e o resumo que a onda continua
+/// ([`wave_prompt::summary_of`]). O item combinado que uma versão nova
 /// substituiu não entra, mesmo que a escolha o tenha posto: a escolha só vale
 /// dentro dos candidatos de agora ([`wave_prompt::Choice::within`]), e a versão
 /// antiga já não é candidata.
@@ -596,7 +597,8 @@ pub fn request_items<'a>(
             _ => true,
         })
         .collect();
-    for item in attended.values() {
+    // O resumo que a onda continua é o primeiro item que o pedido manda ler.
+    for item in attended.values().copied().chain(wave_prompt::summary_of(log, wave)) {
         if !items.iter().any(|had| had.id == item.id) {
             items.push(item);
         }
@@ -859,6 +861,7 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
         attended,
         // A linha do conserto que a análise tirou do pedido sai também daqui.
         fix: wave_prompt::fix_lines(log, wave).into_iter().filter(|line| read.iter().any(|e| e.id == line.id)).collect(),
+        summary: wave_prompt::summary_of(log, wave),
         // O que a própria onda entregou é o que o revisor confere, e o
         // pedido da onda não o lista.
         own_delivered: Vec::new(),

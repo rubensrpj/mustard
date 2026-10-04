@@ -129,6 +129,7 @@ mod removed_check;
 mod report;
 mod slots;
 mod stops;
+mod summary_wave;
 mod usage;
 
 /// O código de mudança que um texto traz: a testemunha dos gestos o lê no

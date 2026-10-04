@@ -982,19 +982,17 @@ fn settle(start: &Path, unit: Option<&str>, ask_about_others: bool) -> Value {
             // Whether the refusal was reached with FRESH refs or stale ones, said
             // out loud. The two are different situations with different next
             // moves, and only one of them is the operator's to solve: offline,
-            // the measurement never really ran, and telling them to write the
-            // base down by hand would freeze a note the repository can prove on
-            // its own the moment the network is back.
+            // the measurement never really ran, and the merge the repository can
+            // prove on its own may simply not have arrived yet.
             "fetched": fetched,
             "hint": if fetched {
-                "unidade sem base registrada, e o trabalho não está contido em exatamente uma \
-                 base — nem o registro do corte nem a medição responderam. O ritual de saída \
-                 não escolhe por você"
+                "o fluxo declara mais de uma base, o nome da unidade não diz qual, e o trabalho \
+                 não está contido em exatamente uma base — a medição não respondeu. O ritual de \
+                 saída não escolhe por você"
             } else {
                 "não foi possível buscar do remoto, então a medição não rodou: as referências \
                  locais podem estar atrasadas em relação a um merge recém-feito. Reconecte e \
-                 repita ANTES de gravar a base à mão — um registro escrito agora envelhece, a \
-                 medição não"
+                 repita"
             },
         });
     }
@@ -1376,9 +1374,9 @@ mod tests {
     #[test]
     fn base_of_branch_reads_the_prefix_and_tolerates_worktree_prefix() {
         let flow = settle_flow();
-        // The base no longer follows from the unit's KIND — it is recorded at
-        // the cut. With several bases declared and nothing recorded, the prefix
-        // answers nothing, and both kinds read the same way.
+        // The base no longer follows from the unit's KIND — it is the operator's
+        // answer, kept in the spec's record. With several bases declared the
+        // prefix answers nothing, and both kinds read the same way.
         assert_eq!(flow.base_of("fix/fix-thing").known(), None);
         assert_eq!(flow.base_of("hotfix/login").known(), None);
         // …and a unit still in flight keeps being read by its prefix.
@@ -2151,8 +2149,8 @@ mod tests {
     /// The base is MEASURED against fresh refs, so a unit merged seconds ago
     /// settles instead of being declared ambiguous.
     ///
-    /// Two bases and no cut record leave the base underivable from the name, so
-    /// the resolution falls to the containment measurement — and a measurement
+    /// Two bases leave the base underivable from the name, so the resolution
+    /// falls to the containment measurement — and a measurement
     /// is only as fresh as the refs it reads. The fetch used to run AFTER this
     /// refusal, so `branch --contains` asked remote-tracking refs that predated
     /// the merge. Measured in the field, 2026-09-07: a unit merged through the
@@ -2192,8 +2190,8 @@ mod tests {
         git(&main, &["branch", "main"]);
         git(&main, &["push", "-u", "origin", "main"]);
 
-        // The unit: a `{kind}/{slug}` branch with a unit RECORD but no
-        // `.cut-base` — the shape a hand-cut branch leaves behind.
+        // The unit: a `{kind}/{slug}` branch with a unit RECORD and nothing that
+        // names its base — the shape a hand-cut branch leaves behind.
         git(&main, &["checkout", "-b", "fix/stale"]);
         std::fs::create_dir_all(main.join(".claude").join("spec").join("stale"))
             .expect("unit record");
@@ -2285,6 +2283,10 @@ mod tests {
         assert_eq!(v["ok"], json!(false), "{v}");
         assert_eq!(v["reason"], json!("ambiguous-base"), "{v}");
         assert!(v["hint"].as_str().is_some_and(|h| !h.is_empty()), "the refusal still explains itself: {v}");
+        assert!(
+            v["hint"].as_str().is_some_and(|h| !h.contains("registr")),
+            "no record of the base exists to be missing or to be written: {v}",
+        );
         assert!(!v.to_string().contains("work-unit-open"), "the refusal names no cut command: {v}");
     }
 

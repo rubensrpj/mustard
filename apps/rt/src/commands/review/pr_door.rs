@@ -408,13 +408,11 @@ pub(crate) fn list_at(root: &Path) -> PrListReport {
     // recém-instalado — que não declara fluxo nenhum — respondia aqui o
     // contrário do que responde lá.
     if flow.has_unit_record(&branch) && !on_integration_base(&repo, &branch, &config) {
-        // Name the base rather than the rule. The unit's OWN record answers
-        // first — it is a measurement of where the branch really came from —
-        // and the remote's own default (`origin/HEAD`) is the last resort, so
-        // the refusal ends with something the operator can type without this
-        // module ever spelling a branch name of its own.
-        // Three sources, in the order their authority runs out. The unit's own
-        // record is a measurement of where this branch really came from. Next,
+        // Name the base rather than the rule, so the refusal ends with something
+        // the operator can type without this module ever spelling a branch name
+        // of its own.
+        // Three sources, in the order their authority runs out. What the flow
+        // and the branch name establish for the unit comes first. Next,
         // when — and only when — the project DECLARES a flow, its primary base
         // is the project's own stated answer: naming `origin/HEAD` there sent a
         // unit that integrates into `dev` off to `main`, a regression measured
@@ -429,7 +427,7 @@ pub(crate) fn list_at(root: &Path) -> PrListReport {
         let lang = config.language().text_or_default();
         let hint = match &target {
             Some(base) => said("pr.list_from_unit", lang, &[("{base}", base)]),
-            // Nothing recorded the base and git named no default: say what to
+            // Nothing established the base and git named no default: say what to
             // do without inventing a branch nobody measured.
             None => said("pr.list_from_unit_no_base", lang, &[]),
         };
