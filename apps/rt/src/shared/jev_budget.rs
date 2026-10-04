@@ -2,7 +2,7 @@
 //! processo. É a porta de toda chamada ao serviço: o filtro só manda o pedido
 //! depois de [`Budget::reserve`], e a reserva que passa do que sobra recusa o
 //! pedido com [`FilterError::OverBudget`]. Quem chamou segue como seguiria sem
-//! chave.
+//! chave, e a recusa fica marcada ([`Budget::refused`]) para o aviso.
 //!
 //! O que sobra se lê do disco uma vez, ao abrir ([`Budget::open`]): o teto do
 //! `mustard.json` menos o gasto do mês nas specs do projeto e no arquivo do
@@ -12,6 +12,7 @@
 //! gravado, depois: o teto se segura pelo gasto que já está gravado.
 
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use mustard_core::domain::map_filter::FilterError;
@@ -19,10 +20,11 @@ use mustard_core::io::{jev_gate, spend};
 use mustard_core::ProjectConfig;
 
 /// O que sobra do teto do mês, em milionésimos de dólar, dividido entre as
-/// cópias do mesmo filtro.
+/// cópias do mesmo filtro, e se ele já recusou uma chamada.
 #[derive(Debug, Clone)]
 pub struct Budget {
     left: Arc<Mutex<u64>>,
+    refused: Arc<AtomicBool>,
 }
 
 impl Budget {
@@ -37,7 +39,7 @@ impl Budget {
     /// O teto com `left_micro_usd` ainda por gastar.
     #[must_use]
     pub fn of(left_micro_usd: u64) -> Self {
-        Self { left: Arc::new(Mutex::new(left_micro_usd)) }
+        Self { left: Arc::new(Mutex::new(left_micro_usd)), refused: Arc::new(AtomicBool::new(false)) }
     }
 
     /// Se o teto já acabou: nada mais sobra para uma chamada.
@@ -54,10 +56,18 @@ impl Budget {
     pub fn reserve(&self, micro_usd: u64) -> Result<(), FilterError> {
         let mut left = self.left.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if micro_usd > *left {
+            self.refused.store(true, Ordering::Relaxed);
             return Err(FilterError::OverBudget);
         }
         *left -= micro_usd;
         Ok(())
+    }
+
+    /// Se o teto já recusou uma chamada que passaria do que sobra: o Jev
+    /// ficou de fora dela, e quem chamou seguiu sem ele.
+    #[must_use]
+    pub fn refused(&self) -> bool {
+        self.refused.load(Ordering::Relaxed)
     }
 
     fn left(&self) -> u64 {

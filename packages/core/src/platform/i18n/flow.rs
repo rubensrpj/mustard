@@ -1108,6 +1108,19 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              criteria. So they stay out of the waves, and the tasks that depend on them wait. Record a version \
              of each one, with `replaces` and the items in `covers`, so they enter the assembly."
         }
+        // O aviso da rodada: o teto de gasto do mês segurou o Jev, e a rodada
+        // seguiu sem ele.
+        ("round.jev_over_budget", Locale::PtBr) => {
+            "O teto de gasto do mês segurou o Jev nesta rodada, porque o gasto do mês mais a chamada passaria \
+             dele. Sem o Jev, a rodada monta as ondas pelos arquivos de cada tarefa, e o pedido leva os itens de \
+             sempre. O teto é jev.monthly_budget_usd no mustard.json, com 10 dólares quando ele não diz."
+        }
+        ("round.jev_over_budget", Locale::EnUs) => {
+            "The monthly budget held the Jev back in this round, because the spend of the month plus the call \
+             would pass it. Without the Jev, the round builds the waves from the files of each task, and the \
+             request carries the usual items. The budget is jev.monthly_budget_usd in mustard.json, 10 dollars \
+             when it says nothing."
+        }
         ("round.fix_push", Locale::PtBr) => {
             "A onda de conserto está entregue e comitada na branch da obra, que continua fechada: \
              empurre o conserto para o servidor com `{command}`."
@@ -1801,8 +1814,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            217,
-            0x8a61_ae3e_ac4b_fae5,
+            218,
+            0xdbdc_dece_5cfa_6f89,
         );
     }
 
@@ -2050,6 +2063,7 @@ mod tests {
             ("round.backlog_left", &["{tasks}", "{command}"][..]),
             ("round.backlog_stuck", &["{tasks}"][..]),
             ("round.task_without_covers", &["{tasks}"][..]),
+            ("round.jev_over_budget", &[][..]),
             ("round.fix_limit", &["{wave}", "{count}", "{max}", "{verdicts}"][..]),
             ("round.fix_limit.question", &["{wave}", "{max}"][..]),
             ("round.resume.steps", &[][..]),

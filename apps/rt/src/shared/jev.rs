@@ -53,7 +53,8 @@
 //! ele antes de sair ([`JevFilter::send_all`], via [`Budget::reserve`]): a que
 //! passaria do que sobra não sai e volta [`FilterError::OverBudget`], e quem
 //! chamou segue como seguiria sem chave — a busca só com o mapa, a montagem
-//! pelos arquivos e o pedido com o padrão.
+//! pelos arquivos e o pedido com o padrão. A busca e a rodada avisam do teto
+//! uma vez por sessão; a rodada sabe dele por [`WavesJev::held_by_budget`].
 //!
 //! O endereço do serviço é o de [`JEV_URL`], e só a variável [`URL_ENV`] no
 //! ambiente de quem roda o programa o troca: o teste do programa inteiro
@@ -241,6 +242,13 @@ impl JevFilter {
     pub fn new(key: JevKey, budget: Budget) -> Self {
         let url = std::env::var(URL_ENV).ok().map(|url| url.trim().to_string()).filter(|url| !url.is_empty());
         Self { budget: Some(budget), ..Self::at(key, url.as_deref().unwrap_or(JEV_URL)) }
+    }
+
+    /// Se o teto do mês já recusou uma chamada deste filtro, ou de uma cópia
+    /// dele.
+    #[must_use]
+    pub fn held_by_budget(&self) -> bool {
+        self.budget.as_ref().is_some_and(Budget::refused)
     }
 
     fn at(key: JevKey, endpoint: &str) -> Self {
@@ -878,6 +886,19 @@ pub struct WavesJev {
     /// não vale, o Jev não entra e a rodada monta a onda pelos arquivos. Com
     /// a chave do ambiente, o Jev entra e não há o que avisar aqui.
     pub key_in_git: bool,
+    /// O teto de gasto do mês já estava gasto na montagem: o projeto tem
+    /// chave, mas o Jev não entra, e a rodada monta a onda como sempre.
+    pub over_budget: bool,
+}
+
+impl WavesJev {
+    /// Se o teto de gasto do mês segurou o Jev na rodada: já gasto na
+    /// montagem, ou a recusa de uma chamada do filtro que passaria do que
+    /// sobra. Nos dois casos a rodada seguiu sem ele.
+    #[must_use]
+    pub fn held_by_budget(&self) -> bool {
+        self.over_budget || self.filter.as_ref().is_some_and(JevFilter::held_by_budget)
+    }
 }
 
 /// O Jev que julga o backlog para a montagem das ondas do projeto em `root`:
@@ -901,7 +922,8 @@ pub fn for_waves(root: &Path) -> WavesJev {
 /// [`for_waves`] com `config`, com `env` no lugar do valor de
 /// [`jev_gate::KEY_ENV`] e com o arquivo do gasto em `ledger_dir`: o teste não
 /// depende do ambiente de quem o roda. O teto do mês já gasto vale como sem
-/// chave: sem filtro, e a rodada monta a onda como sempre.
+/// chave: sem filtro, e a rodada monta a onda como sempre, com o aviso de
+/// [`WavesJev::over_budget`].
 fn waves_filter(root: &Path, config: &ProjectConfig, env: Option<String>, ledger_dir: Option<&Path>) -> WavesJev {
     if !jev_gate::setting_allows(config.search_filter()) {
         return WavesJev::default();
@@ -910,11 +932,11 @@ fn waves_filter(root: &Path, config: &ProjectConfig, env: Option<String>, ledger
         Ok(loaded) => {
             let budget = Budget::open(root, config, ledger_dir);
             if budget.is_spent() {
-                return WavesJev::default();
+                return WavesJev { over_budget: true, ..WavesJev::default() };
             }
-            WavesJev { filter: Some(JevFilter::new(loaded.key, budget)), key_in_git: false }
+            WavesJev { filter: Some(JevFilter::new(loaded.key, budget)), ..WavesJev::default() }
         }
-        Err(error) => WavesJev { filter: None, key_in_git: error == FilterError::KeyInGit },
+        Err(error) => WavesJev { key_in_git: error == FilterError::KeyInGit, ..WavesJev::default() },
     }
 }
 
@@ -2628,7 +2650,8 @@ mod tests {
     /// Abaixo do teto as três chamadas saem — a busca, a montagem e a escolha
     /// dos itens —; passando do que sobra no mês nenhuma sai, e o serviço não
     /// recebe pedido nenhum; e o que sobra se gasta a cada chamada do mesmo
-    /// processo, a estimativa de cada uma contra o que restou.
+    /// processo, a estimativa de cada uma contra o que restou. A montagem das
+    /// ondas sabe que o teto segurou o Jev só depois da chamada recusada.
     #[test]
     fn the_calls_go_out_only_while_the_estimate_fits_what_is_left_of_the_month() {
         let start = |left: u64| {
@@ -2647,12 +2670,17 @@ mod tests {
         let items = ItemsBoard { tasks: vec![board_task(5, &["a.rs"])], items: vec![board_item(11)] };
         let search = request(vec![candidate(1), candidate(2)]);
 
+        let held = |filter: &JevFilter| WavesJev { filter: Some(filter.clone()), ..WavesJev::default() }.held_by_budget();
+
         let (service, filter) = start(10_000_000);
         assert!(filter.filter(&search).is_ok() && filter.judge_backlog(&board()).is_ok() && filter.judge_items(&items).is_ok());
         assert_eq!(service.received().len(), 3, "below the budget each call reached the service");
+        assert!(!held(&filter), "no call was refused");
 
         let (service, filter) = start(1);
+        assert!(!held(&filter), "nothing is held before a call");
         assert_eq!(filter.filter(&search).unwrap_err(), FilterError::OverBudget);
+        assert!(held(&filter), "the refused call holds the Jev");
         assert_eq!(filter.judge_backlog(&board()).unwrap_err(), FilterError::OverBudget);
         assert_eq!(filter.judge_items(&items).unwrap_err(), FilterError::OverBudget);
         assert!(service.received().is_empty(), "nothing went to the service: {:?}", service.received());

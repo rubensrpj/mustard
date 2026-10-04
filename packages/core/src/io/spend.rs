@@ -279,7 +279,7 @@ fn spec_month_micro_usd(root: &Path, month: &str) -> u64 {
         .into_iter()
         .filter(|(_, path)| {
             let changed = std::fs::metadata(path).and_then(|meta| meta.modified()).ok();
-            !floor.is_some_and(|floor| changed.is_some_and(|at| at < floor))
+            floor.is_none_or(|floor| changed.is_none_or(|at| at >= floor))
         })
         .filter_map(|(_, path)| read_shared(&path).ok())
         .map(|text| {

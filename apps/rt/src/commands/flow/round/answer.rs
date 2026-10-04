@@ -29,7 +29,7 @@ use super::stops::{stopped_waves, waves_stuck};
 use super::usage::Caller;
 use super::{can_run, RoundOpts, DONE_STEP};
 use crate::commands::spec_events::write::record;
-use crate::shared::jev::{Board, WavesJev};
+use crate::shared::jev::Board;
 use crate::shared::search_door::first_warning;
 use crate::shared::spec_state::{checkout, DiskSpecState};
 
@@ -625,11 +625,12 @@ pub(super) fn run_entered_round(
     let locked = store::read(&path)
         .map_err(RoundRefusal::Refused)?
         .ok_or_else(|| RoundRefusal::Refused(Refusal::NoSpecFile { spec: spec.clone() }))?;
-    let WavesJev { filter: jev, key_in_git } = crate::shared::jev::for_waves(root);
-    if key_in_git && first_warning(root, session, "round.key_in_git") {
+    let waves_jev = crate::shared::jev::for_waves(root);
+    if waves_jev.key_in_git && first_warning(root, session, "round.key_in_git") {
         warnings.push(json!({ "reason": "key-in-git", "hint": translate("map.round.key_in_git", lang) }));
     }
-    let judge = jev.as_ref().map(|jev| move |board: &Board| jev.judge_backlog(board));
+    let jev = waves_jev.filter.as_ref();
+    let judge = jev.map(|jev| move |board: &Board| jev.judge_backlog(board));
     dispatch_backlog(
         &opts.root,
         &spec,
@@ -705,7 +706,13 @@ pub(super) fn run_entered_round(
     // por onda, o item do projeto todo, o dos arquivos dela e o sem ligação
     // com ela, e a onda sai nesta mesma rodada, sem esperar quem conduz. Sem
     // Jev, ou com a chamada falhando, o pedido leva o padrão.
-    let choices = choose_items(&opts.root, &spec, &log, &ready, jev.as_ref());
+    let choices = choose_items(&opts.root, &spec, &log, &ready, jev);
+    // Depois da última chamada ao Jev: o teto de gasto do mês que o segurou,
+    // já gasto na montagem ou recusando uma chamada, sai num aviso, uma vez
+    // por sessão, como na busca.
+    if waves_jev.held_by_budget() && first_warning(root, session, "round.jev_over_budget") {
+        warnings.push(json!({ "reason": "jev-over-budget", "hint": translate("round.jev_over_budget", lang) }));
+    }
     let go = ready;
     // A onda a reenviar cuja cópia gravada outra onda também segura não volta
     // a ela: sai numa vaga livre, como a onda nova, e antes dela, porque já
@@ -1545,6 +1552,43 @@ mod tests {
             assert_eq!(out["ok"], json!(true), "{name}: {out}");
             assert!(key_in_git_warnings(&out).is_empty(), "{name}: {out}");
         }
+    }
+
+    /// O teto de gasto do mês já gasto segura o Jev: a rodada monta as ondas
+    /// sem ele e avisa, uma vez só na sessão, no idioma do projeto; outra
+    /// sessão ouve de novo. Abaixo do teto, nenhum aviso.
+    #[test]
+    fn the_round_warns_once_per_session_when_the_month_budget_holds_the_jev() {
+        let budget_warnings = |out: &Value| -> Vec<Value> {
+            let all = out["warnings"].as_array().cloned().unwrap_or_default();
+            all.into_iter().filter(|w| w["reason"] == json!("jev-over-budget")).collect()
+        };
+        // A chave mora num `mustard.json` que o git não guarda: com ela, só o
+        // teto segura o Jev.
+        let work = |root: &Path, config: &str| {
+            work_with_the_project_file(root, config);
+            git_at(root, &["rm", "--cached", "-q", "mustard.json"]);
+        };
+        for (language, lang) in [("pt-BR", Locale::PtBr), ("en-US", Locale::EnUs)] {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            work(root, &format!(r#"{{"language": {{"text": "{language}"}}, "jev": {{"key": "k", "monthly_budget_usd": 0}}}}"#));
+            let out = round_in_session(root, Some("sessao-1"));
+            assert_eq!(out["dispatch"].as_array().map(Vec::len), Some(1), "{language}: the round goes on: {out}");
+            let hints: Vec<Value> = budget_warnings(&out).into_iter().map(|w| w["hint"].clone()).collect();
+            assert_eq!(hints, vec![json!(translate("round.jev_over_budget", lang))], "{language}: {out}");
+            let again = round_in_session(root, Some("sessao-1"));
+            assert!(budget_warnings(&again).is_empty(), "{language}: one warning per session: {again}");
+            let other = round_in_session(root, Some("sessao-2"));
+            assert_eq!(budget_warnings(&other).len(), 1, "{language}: another session warns: {other}");
+        }
+
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        work(root, r#"{"jev": {"key": "k", "monthly_budget_usd": 5}}"#);
+        let out = round_in_session(root, Some("sessao-1"));
+        assert_eq!(out["dispatch"].as_array().map(Vec::len), Some(1), "{out}");
+        assert!(budget_warnings(&out).is_empty(), "below the budget: {out}");
     }
 
     /// Uma spec aprovada sem onda nenhuma, com `src/a.rs` e `src/b.rs` no
