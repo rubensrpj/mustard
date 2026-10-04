@@ -3159,4 +3159,29 @@ mod tests {
         assert_eq!(built[0].bad_skills[0].1.reason(), "skill-missing-path");
         assert!(built[0].bad_skills[0].1.message(Locale::PtBr).contains("somar"));
     }
+
+    /// A onda que continua o resumo de uma onda que parou o lista pelo código,
+    /// em primeiro lugar, na lista de leitura da entrega e no bloco do começo
+    /// do pedido; o texto do resumo não entra, e a onda que não o continua
+    /// não o lista.
+    #[test]
+    fn the_wave_that_continues_a_summary_lists_it_first_and_the_text_never_enters() {
+        let dir = tempdir().unwrap();
+        let log = log_of(&[
+            ("wave", json!({"n": 1, "text": "Uma.", "criteria": [], "done_when": "passa"})),
+            ("task", json!({"wave": 1, "text": "Somar o dia.", "files": [{"path": "src/a.rs"}]})),
+            ("delivered", json!({"wave": 1, "text": "Parei no meio da soma.", "undone": ["MSTD-TASK-0002"]})),
+            ("wave", json!({"n": 2, "text": "Duas.", "criteria": [], "done_when": "passa", "summary": 3})),
+            ("task", json!({"wave": 2, "text": "Mostrar o total.", "files": [{"path": "src/b.rs"}]})),
+        ]);
+        let code = log.codes()[&3].clone();
+        let built = prompts(dir.path(), "teste", &log, Locale::PtBr, &Flight::default());
+        let (first, second) = (&built[0], &built[1]);
+        assert_eq!((first.wave, second.wave), (1, 2));
+
+        assert_eq!(second.listed.first(), Some(&code), "{:?}", second.listed);
+        assert!(second.text.contains(&format!("run read item-{code} --spec teste")), "{}", second.text);
+        assert!(!second.text.contains("Parei no meio da soma."), "{}", second.text);
+        assert!(!first.listed.contains(&code), "the wave that continues nothing does not list it: {:?}", first.listed);
+    }
 }

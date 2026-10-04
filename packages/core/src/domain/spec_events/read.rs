@@ -1165,4 +1165,97 @@ mod tests {
         assert_eq!(repair_cut_lines(&repaired, &again_log), None, "nothing else to repair");
         assert_eq!(repair_cut_lines("", &parse_log("")), None);
     }
+
+    /// A spec em que a onda 1 parou e deixou a tarefa por fazer: o resumo é a
+    /// entrega 3. `rest` são as linhas que vêm depois, uma por linha.
+    fn stopped_wave_log(rest: &[&str]) -> SpecLog {
+        let head = [
+            r#"{"v":1,"id":1,"at":"t","type":"wave","n":1,"text":"Uma.","author":"binary"}"#,
+            r#"{"v":1,"id":2,"at":"t","type":"task","wave":1,"text":"Mexer."}"#,
+            r#"{"v":1,"id":3,"at":"t","type":"delivered","wave":1,"text":"Parei.","undone":["MSTD-TASK-0002"]}"#,
+        ];
+        parse_log(&head.iter().chain(rest).map(|line| format!("{line}\n")).collect::<String>())
+    }
+
+    /// Cada resumo da spec, pelo número da entrega, com o estado dele.
+    fn the_summary(log: &SpecLog) -> Vec<(u64, SummaryState)> {
+        log.summaries().into_iter().map(|(event, state)| (event.id, state)).collect()
+    }
+
+    /// O resumo nasce não usado e passa por três estados só pela spec: nenhum
+    /// envio o cita (não usado); um envio o cita e a onda dele segue sem
+    /// entrega (em uso); a onda dele entregou (usado). O resumo não usado é
+    /// o que a próxima montagem toma como base.
+    #[test]
+    fn a_summary_is_unused_then_in_use_then_used_by_the_wave_that_cites_it() {
+        let wave_two = [
+            r#"{"v":1,"id":4,"at":"t","type":"wave","n":2,"text":"Duas.","author":"binary","summary":3}"#,
+            r#"{"v":1,"id":5,"at":"t","type":"task","wave":2,"text":"Mexer de novo."}"#,
+        ];
+        let sent = r#"{"v":1,"id":6,"at":"t","type":"send","wave":2,"text":"Pedido.","summary":3}"#;
+        let delivered = r#"{"v":1,"id":7,"at":"t","type":"delivered","wave":2,"text":"Saiu."}"#;
+
+        let before = stopped_wave_log(&[]);
+        assert_eq!(the_summary(&before), [(3, SummaryState::Unused)]);
+        assert_eq!(before.unused_summaries().iter().map(|e| e.id).collect::<Vec<_>>(), [3]);
+
+        let formed = stopped_wave_log(&wave_two);
+        assert_eq!(the_summary(&formed), [(3, SummaryState::Unused)], "a onda formada e não enviada não o usa");
+
+        let in_use = stopped_wave_log(&[wave_two[0], wave_two[1], sent]);
+        assert_eq!(the_summary(&in_use), [(3, SummaryState::InUse)]);
+        assert!(in_use.unused_summaries().is_empty(), "o resumo em uso não é base de outra onda");
+
+        let used = stopped_wave_log(&[wave_two[0], wave_two[1], sent, delivered]);
+        assert_eq!(the_summary(&used), [(3, SummaryState::Used)]);
+        assert!(used.unused_summaries().is_empty());
+    }
+
+    /// A onda que entrega sem parar deixa o resumo lido usado e não cria
+    /// resumo novo: a entrega sem tarefa por fazer não é resumo.
+    #[test]
+    fn a_wave_that_delivers_everything_leaves_the_summary_used_and_makes_no_new_one() {
+        let log = stopped_wave_log(&[
+            r#"{"v":1,"id":4,"at":"t","type":"wave","n":2,"text":"Duas.","author":"binary","summary":3}"#,
+            r#"{"v":1,"id":5,"at":"t","type":"task","wave":2,"text":"Mexer de novo."}"#,
+            r#"{"v":1,"id":6,"at":"t","type":"send","wave":2,"text":"Pedido.","summary":3}"#,
+            r#"{"v":1,"id":7,"at":"t","type":"delivered","wave":2,"text":"Saiu.","undone":[]}"#,
+        ]);
+        assert_eq!(the_summary(&log), [(3, SummaryState::Used)]);
+    }
+
+    /// A onda que para de novo deixa o resumo que leu usado, e o dela nasce
+    /// não usado: quem continua lê o último resumo, nunca uma pilha deles.
+    #[test]
+    fn a_wave_that_stops_leaves_the_read_summary_used_and_its_own_unused() {
+        let log = stopped_wave_log(&[
+            r#"{"v":1,"id":4,"at":"t","type":"wave","n":2,"text":"Duas.","author":"binary","summary":3}"#,
+            r#"{"v":1,"id":5,"at":"t","type":"task","wave":2,"text":"Mexer de novo."}"#,
+            r#"{"v":1,"id":6,"at":"t","type":"send","wave":2,"text":"Pedido.","summary":3}"#,
+            r#"{"v":1,"id":7,"at":"t","type":"delivered","wave":2,"text":"Parei.","undone":["MSTD-TASK-0005"]}"#,
+        ]);
+        assert_eq!(the_summary(&log), [(3, SummaryState::Used), (7, SummaryState::Unused)]);
+        assert_eq!(log.unused_summaries().iter().map(|e| e.id).collect::<Vec<_>>(), [7]);
+    }
+
+    /// A onda cortada, que o binário formou e ficou sem tarefa — a rodada
+    /// devolveu as tarefas dela ao backlog antes de entregar —, sai do plano,
+    /// e o resumo que o envio dela citava volta a não usado.
+    #[test]
+    fn a_cut_wave_gives_its_summary_back_as_unused() {
+        let log = stopped_wave_log(&[
+            r#"{"v":1,"id":4,"at":"t","type":"wave","n":2,"text":"Duas.","author":"binary","summary":3}"#,
+            r#"{"v":1,"id":5,"at":"t","type":"task","wave":2,"text":"Mexer de novo."}"#,
+            r#"{"v":1,"id":6,"at":"t","type":"send","wave":2,"text":"Pedido.","summary":3}"#,
+        ]);
+        assert_eq!(the_summary(&log), [(3, SummaryState::InUse)]);
+
+        let cut = stopped_wave_log(&[
+            r#"{"v":1,"id":4,"at":"t","type":"wave","n":2,"text":"Duas.","author":"binary","summary":3}"#,
+            r#"{"v":1,"id":5,"at":"t","type":"task","wave":2,"text":"Mexer de novo."}"#,
+            r#"{"v":1,"id":6,"at":"t","type":"send","wave":2,"text":"Pedido.","summary":3}"#,
+            r#"{"v":1,"id":7,"at":"t","type":"task","text":"Mexer de novo.","replaces":5}"#,
+        ]);
+        assert_eq!(the_summary(&cut), [(3, SummaryState::Unused)]);
+    }
 }

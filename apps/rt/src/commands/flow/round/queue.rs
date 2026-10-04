@@ -765,7 +765,7 @@ pub(crate) fn wave_states(log: &SpecLog) -> mustard_core::view::document::WaveSt
 /// O cenário da volta com tarefa não feita, que os testes da entrega também
 /// usam.
 #[cfg(test)]
-pub(super) use tests::{return_with_an_undone_task, task_now, UndoneReturn};
+pub(super) use tests::{backlog_project, backlog_task_on, return_with_an_undone_task, spec_now, task_now, wave_order, UndoneReturn};
 
 #[cfg(test)]
 mod tests {
@@ -2413,7 +2413,7 @@ mod tests {
     /// Um projeto com `src/a.rs` e `src/b.rs` no git e uma spec aprovada sem
     /// onda nenhuma: as tarefas vão para o backlog. Devolve o número da fala
     /// do usuário e o do critério, que as tarefas citam.
-    fn backlog_project(root: &Path) -> (u64, u64) {
+    pub(crate) fn backlog_project(root: &Path) -> (u64, u64) {
         backlog_project_with(root, |_| {})
     }
 
@@ -2722,12 +2722,12 @@ mod tests {
     }
 
     /// A spec `x` como está no arquivo agora.
-    fn spec_now(root: &Path) -> SpecLog {
+    pub(crate) fn spec_now(root: &Path) -> SpecLog {
         store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap()
     }
 
     /// A ordem gravada na onda `n` da spec `x`.
-    fn wave_order(root: &Path, n: u64) -> Vec<u64> {
+    pub(crate) fn wave_order(root: &Path, n: u64) -> Vec<u64> {
         let log = spec_now(root);
         let wave = log.visible().into_iter().find(|e| e.event_type == "wave" && e.wave() == Some(n));
         wave.map(|w| w.ints("order")).unwrap_or_default()
@@ -2862,7 +2862,7 @@ mod tests {
     }
 
     /// Uma tarefa do backlog em vários arquivos, gravada pela porta do modelo.
-    fn backlog_task_on(root: &Path, said: u64, crit: u64, text: &str, files: &[&str]) -> u64 {
+    pub(crate) fn backlog_task_on(root: &Path, said: u64, crit: u64, text: &str, files: &[&str]) -> u64 {
         let files: Vec<Value> = files.iter().map(|file| json!({ "path": file })).collect();
         id_of(&write(root, "x", "task", json!({"text": text, "files": files, "depends_on": [],
             "covers": [crit], "origin": said})))

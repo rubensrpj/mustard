@@ -971,6 +971,60 @@ mod tests {
         assert_eq!(batch_tasks(&without), vec![vec![1, 3, 4]], "{without:?}");
     }
 
+    /// A tarefa A (defeito) presa por uma onda em andamento reserva os
+    /// arquivos dela: a B (defeito, número maior) que divide arquivo com A
+    /// não toma a vaga, e a C, sem arquivo em comum com A nem com a onda,
+    /// sai. Sem a onda em andamento, A e B saem juntas, como antes.
+    #[test]
+    fn a_blocked_task_keeps_a_later_task_that_shares_its_file_from_taking_its_turn() {
+        let tasks = [
+            task(1, &[], &["a.rs", "open.rs"], false),
+            task(2, &[], &["a.rs"], false),
+            task(3, &[], &["c.rs"], false),
+        ];
+        let sure = judged_as(TaskKind::Defect, 0.9, 0.0);
+        let judged = [(1, sure), (2, sure), (3, sure)];
+        let busy = BTreeSet::from(["open.rs".to_string()]);
+        assert_eq!(packed_by_kind(&tasks, &judged, &busy), vec![vec![3]], "A espera a onda, B espera A, C sai");
+        assert_eq!(packed_by_kind(&tasks, &judged, &BTreeSet::new()), vec![vec![1, 2, 3]], "sem bloqueio saem as três");
+    }
+
+    /// A reserva segue a prioridade de saída, o tipo antes do número: a
+    /// tarefa de defeito que divide arquivo com a de recurso bloqueada vem
+    /// primeiro e sai; a de recurso com número maior que a bloqueada espera.
+    #[test]
+    fn the_reservation_follows_the_priority_of_the_kinds() {
+        let tasks = [
+            task(1, &[], &["a.rs", "open.rs"], false),
+            task(2, &[], &["a.rs"], false),
+            task(3, &[], &["a.rs"], false),
+        ];
+        let judged = [
+            (1, judged_as(TaskKind::Feature, 0.9, 0.0)),
+            (2, judged_as(TaskKind::Defect, 0.9, 0.0)),
+            (3, judged_as(TaskKind::Feature, 0.9, 0.0)),
+        ];
+        let busy = BTreeSet::from(["open.rs".to_string()]);
+        assert_eq!(packed_by_kind(&tasks, &judged, &busy), vec![vec![2]]);
+    }
+
+    /// A tarefa que espera só por uma do lote e divide arquivo com ele não
+    /// entra no lote por um arquivo que o bloqueado reserva.
+    #[test]
+    fn a_waiting_task_does_not_join_a_batch_through_a_reserved_file() {
+        let tasks = [
+            task(1, &[], &["a.rs", "open.rs"], false),
+            task(3, &[], &["c.rs"], false),
+            task(4, &[3], &["c.rs", "a.rs"], false),
+            task(5, &[3], &["c.rs"], false),
+        ];
+        let sure = judged_as(TaskKind::Defect, 0.9, 0.0);
+        let judged: BTreeMap<u32, Judgement> = [(1, sure), (3, sure)].into_iter().collect();
+        let busy = BTreeSet::from(["open.rs".to_string()]);
+        let batches = pack_by_kind(&tasks, &[1, 3], &[4, 5], &busy, &judged, &|id| u64::from(*id));
+        assert_eq!(batch_tasks(&batches), vec![vec![3, 5]], "a 4 cruza a reserva da 1 e a 5 entra: {batches:?}");
+    }
+
     // O backlog inteiro, com dependência e arquivo compartilhado, despachada
     // de verdade — não só pela função pura — mora agora em
     // `apps/rt/tests/round_dispatch.rs`: o critério fala em despacho pelo
