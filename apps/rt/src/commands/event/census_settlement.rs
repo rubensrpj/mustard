@@ -10,8 +10,7 @@
 //!    census artefacts (the tool's own output), the operator's work. Measured by
 //!    [`checkout_work`], EXACTLY ONCE per settlement, and carried from there.
 //! 2. **Where the checkout stands** ([`CheckoutPosition`]) — the branch the tree
-//!    sits on, the branch about to be cut (none at the explicit open) and the
-//!    resolved base.
+//!    sits on, the branch about to be cut and the base it is cut from.
 //!
 //! One answer, of two shapes ([`CensusSettlement`]):
 //!
@@ -52,28 +51,26 @@
 //! | dirty         | position                              | row |
 //! |---------------|---------------------------------------|-----|
 //! | any           | (vcs opted out)                       | Proceed, nothing measured |
-//! | `Holds`/`Unproven` | another unit's branch, cutting   | **Refuse** — work would travel |
-//! | `Holds`/`Unproven` | the base, protected, cutting     | fall through: their work rides into the unit, by design (the first unit cuts off the base in place) |
-//! | `Holds`/`Unproven` | any, not cutting                 | fall through: nothing moves |
+//! | `Holds`/`Unproven` | another unit's branch            | **Refuse** — work would travel |
+//! | `Holds`/`Unproven` | the base, protected              | fall through: their work rides into the unit, by design (the first unit cuts off the base in place) |
 //! | `ProvenClean`/`CensusOnly` | any                      | fall through: nothing of anyone's can travel |
 //! | `Holds`       | the base, the advance overwrites THEIR paths | **Refuse** — names their files, prescribes the stash; nothing touched |
 //! | `CensusOnly`/`Holds` | the base, the advance overwrites census paths | set those paths aside — stashed, never discarded — then advance |
-//! | any (fell through) | base known, `origin` answers, base cannot be advanced | **Refuse** — stale base, git's words; what was set aside is put back first, index state included |
+//! | any (fell through) | `origin` answers, base cannot be advanced | **Refuse** — stale base, git's words; what was set aside is put back first, index state included |
 //! | (set aside)   | the base, advanced                    | account for each path: miner output → `origin`'s stands; authored mold → kept BESIDE `origin`'s; then drop the stash |
 //! | any           | anything else                         | Proceed |
 //!
 //! Every row that touches the tree has a rollback: the set-aside is the only
 //! one, and its rollback is the put-back on the refusal row that follows it.
 //!
-//! ## Why this is ONE function and not a condition at each door
+//! ## Why this is ONE function and not a condition at the door
 //!
-//! Two doors take this decision: the explicit open and
-//! the cut that follows the spec's approval. While each carried a condition of its own, the next
-//! review always found the door that had missed one, or that took the steps in
-//! another order. So the doors stopped deciding AND stopped acting: a door
-//! states where the checkout stands and obeys the answer, and the base refresh
-//! happens HERE, once, in the order this body states. The doors differ only in
-//! the position they state: the explicit open cuts nothing (no target).
+//! The explicit open takes this decision. While each door carried a condition
+//! of its own, the next review always found the one that had missed a
+//! condition, or that took the steps in another order. So the door stopped
+//! deciding AND stopped acting: it states where the checkout stands and obeys
+//! the answer, and the base refresh happens HERE, once, in the order this body
+//! states.
 //!
 //! ## Fail-open where nothing was measured
 //!
@@ -99,34 +96,24 @@ pub(crate) struct CheckoutPosition<'a> {
     /// probe that did not answer. Used both to judge whose work the tree holds
     /// and to drive the git steps.
     current: Option<&'a str>,
-    /// The branch about to be cut, when one is. `None` at a door that cuts
-    /// nothing — the explicit open — where no work can ride anywhere and so
-    /// nothing in the TREE is ever refused.
-    target: Option<&'a str>,
-    /// The base this open or cut resolved to. `None` when the door could not
-    /// establish it: a base nobody knows cannot be refreshed, and nothing is
-    /// going to move from it either.
-    base: Option<&'a str>,
+    /// The branch about to be cut.
+    target: &'a str,
+    /// The base the branch is cut from, and the one this settlement refreshes.
+    base: &'a str,
 }
 
 impl<'a> CheckoutPosition<'a> {
     /// The ordinary position: where the tree sits, what is about to be cut (if
     /// anything), and the base that was resolved for it.
-    pub(crate) fn at(
-        current: Option<&'a str>,
-        target: Option<&'a str>,
-        base: Option<&'a str>,
-    ) -> Self {
+    pub(crate) fn at(current: Option<&'a str>, target: &'a str, base: &'a str) -> Self {
         Self { current, target, base }
     }
 
     /// `true` when taking this checkout would carry work that is not this
     /// unit's onto the branch about to be cut — the plain `git checkout -b`
     /// this settlement stands in front of moves everything uncommitted with it.
-    ///
-    /// `false` wherever nothing is going to be checked out (no target).
     fn would_carry_work_off(&self, root: &Path, config: &ProjectConfig) -> bool {
-        self.target.is_some_and(|target| holds_other_work(root, self.current, target, config))
+        holds_other_work(root, self.current, self.target, config)
     }
 }
 
@@ -135,8 +122,8 @@ impl<'a> CheckoutPosition<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CensusSettlement {
     /// Do NOT proceed. Something is in the way of this move, and the refusal
-    /// carries the measured paths and the cause so each door can say the same
-    /// sentence in its own shape ([`BusyCheckout::reason`]).
+    /// carries the measured paths and the cause so the door can say what is in
+    /// the way and what unblocks it ([`BusyCheckout::reason`]).
     ///
     /// A refusal for the TREE (another unit's work that would travel) happens
     /// before any fetch: the tree is left exactly as it was found. A refusal
@@ -216,7 +203,7 @@ pub(crate) fn settle(
     //    then answers `Unproven`, which authorises nothing.
     let toplevel = toplevel_of(root);
     let root: &Path = toplevel.as_deref().unwrap_or(root);
-    let base = position.base.map(str::trim).filter(|b| !b.is_empty());
+    let base = position.base;
 
     // 1. WHAT IS DIRTY — measured here and NOWHERE else in this settlement.
     let work = checkout_work(root);
@@ -236,18 +223,16 @@ pub(crate) fn settle(
     if let Some(cause) = refusal {
         return CensusSettlement::Refuse(BusyCheckout {
             current: position.current.unwrap_or("HEAD").to_string(),
-            target: position.target.unwrap_or_default().to_string(),
+            target: position.target.to_string(),
             work,
             cause,
         });
     }
 
     // 3–5. THE BASE — fetched, with the tool's own output moved out of the
-    //      advance's way where it stands in it, and fast-forwarded. A base
-    //      nobody established cannot be refreshed; offline, nothing can be
-    //      measured and the local base is taken as before.
-    if let Some(base) = base
-        && fetch_origin(root) {
+    //      advance's way where it stands in it, and fast-forwarded. Offline,
+    //      nothing can be measured and the local base is taken as before.
+    if fetch_origin(root) {
             let mut aside = CensusSetAside::none();
             // 4. SET ASIDE — only on the base, only the paths the advance
             //    overwrites, and only when the advance IS a fast-forward (a
@@ -264,7 +249,7 @@ pub(crate) fn settle(
                 if !blocking.is_empty() {
                     return CensusSettlement::Refuse(BusyCheckout {
                         current: position.current.unwrap_or("HEAD").to_string(),
-                        target: position.target.unwrap_or_default().to_string(),
+                        target: position.target.to_string(),
                         work,
                         cause: RefusalCause::BaseBlockedByWork {
                             base: base.to_string(),
@@ -276,7 +261,7 @@ pub(crate) fn settle(
                 aside = CensusSetAside::push(root, base, &overwritten);
                 if !aside.paths().is_empty() {
                     eprintln!(
-                        "base-gate: census output set aside (stashed) so '{base}' can advance \
+                        "open: census output set aside (stashed) so '{base}' can advance \
                          to origin/{base} — {}",
                         aside.paths().join(", ")
                     );
@@ -289,7 +274,7 @@ pub(crate) fn settle(
                     aside.put_back(root);
                     return CensusSettlement::Refuse(BusyCheckout {
                         current: position.current.unwrap_or("HEAD").to_string(),
-                        target: position.target.unwrap_or_default().to_string(),
+                        target: position.target.to_string(),
                         work,
                         cause: RefusalCause::BaseStale { base, error },
                     });
@@ -298,14 +283,14 @@ pub(crate) fn settle(
                     let report = aside.settle_after_advance(root);
                     if !report.origin_kept.is_empty() {
                         eprintln!(
-                            "base-gate: miner output rewritten on origin/{base} — origin's \
+                            "open: miner output rewritten on origin/{base} — origin's \
                              version stands, the local one was regenerable: {}",
                             report.origin_kept.join(", ")
                         );
                     }
                     for (path, sibling) in &report.kept_both {
                         eprintln!(
-                            "base-gate: authored mold {path} was rewritten on origin/{base} \
+                            "open: authored mold {path} was rewritten on origin/{base} \
                              too — origin's text is at {path}, the text found here is kept \
                              at {sibling}; both survive, reconcile them by hand"
                         );
@@ -320,6 +305,7 @@ pub(crate) fn settle(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::event::work_branch::checkout_work_branch;
     use crate::commands::git_settle::git_out;
     use mustard_core::io::project_map;
     use std::process::Command;
@@ -332,21 +318,22 @@ mod tests {
         root: &Path,
         current: Option<&str>,
         target: &str,
-        base: Option<&str>,
+        base: &str,
         config: &ProjectConfig,
     ) -> CensusSettlement {
-        settle(root, CheckoutPosition::at(current, Some(target), base), config)
+        settle(root, CheckoutPosition::at(current, target, base), config)
     }
 
-    /// …e como a porta EXPLÍCITA de abertura a faz: sem alvo, porque ali
-    /// nada é checado out e portanto nada pode viajar.
-    fn settle_open(
-        root: &Path,
-        current: Option<&str>,
-        base: Option<&str>,
-        config: &ProjectConfig,
-    ) -> CensusSettlement {
-        settle(root, CheckoutPosition::at(current, None, base), config)
+    /// Os dois passos da abertura: a pergunta inteira e, quando ela deixa
+    /// passar, o corte da branch nova a partir da base, onde o checkout está.
+    fn settle_and_cut(root: &Path, target: &str, base: &str) -> CensusSettlement {
+        let current = mustard_core::current_branch(root);
+        let config = ProjectConfig::load(root);
+        let settled = settle_cut(root, current.as_deref(), target, base, &config);
+        if settled == CensusSettlement::Proceed {
+            checkout_work_branch(root, target, base).expect("o corte da branch");
+        }
+        settled
     }
 
     /// Run a git command in `root`, asserting success — test scaffolding only.
@@ -443,14 +430,11 @@ mod tests {
     /// criado. O censo não é trabalho de ninguém e não entra no git: ele segue
     /// sujo para a branch nova, sem ser gravado.
     ///
-    /// Medido pela porta REAL (`cut_pending_work_branch`).
+    /// Medido pelos dois passos da abertura: a pergunta e o corte.
     #[test]
     fn a_census_only_dirty_tree_is_cut_without_a_commit() {
-        use crate::commands::event::work_branch::{cut_pending_work_branch, CutOutcome};
-
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        let root_s = root.to_string_lossy().to_string();
         // Escrito ANTES do `git init` da fixture, para entrar no commit inicial:
         // um `mustard.json` solto seria trabalho do operador na árvore.
         std::fs::write(
@@ -467,16 +451,14 @@ mod tests {
 
         let commits_before = git_out(root, &["rev-list", "--count", "HEAD"]).expect("count");
 
-        // A porta real, e só ela: nada disso é trabalho de ninguém, então o
-        // corte acontece de verdade.
-        let sid = "sess-census-only-open";
-        crate::shared::context::pending_branch::set_pending_branch(&root_s, sid, "dev_second", None);
-        let outcome = cut_pending_work_branch(root, sid);
+        // Nada disso é trabalho de ninguém, então o corte acontece de verdade.
+        let settled = settle_and_cut(root, "dev_second", "dev");
         assert_eq!(
-            outcome,
-            CutOutcome::Cut("dev_second".to_string()),
-            "a abertura ordinária não é recusada: {outcome:?}",
+            settled,
+            CensusSettlement::Proceed,
+            "a abertura ordinária não é recusada: {settled:?}",
         );
+        assert_eq!(mustard_core::current_branch(root).as_deref(), Some("dev_second"));
         assert_eq!(
             git_out(root, &["rev-list", "--count", "HEAD"]).expect("count"),
             commits_before,
@@ -501,8 +483,6 @@ mod tests {
     /// `a_census_in_the_way_of_the_advance_is_set_aside_and_nothing_is_committed`.
     #[test]
     fn the_base_advances_under_a_census_only_tree_without_a_commit() {
-        use crate::commands::event::work_branch::{cut_pending_work_branch, CutOutcome};
-
         let tmp = tempfile::tempdir().unwrap();
         // A árvore e o `origin` vivem LADO A LADO: um repositório DENTRO da
         // árvore seria trabalho não versionado do operador, e o corte seria
@@ -510,7 +490,6 @@ mod tests {
         let root = tmp.path().join("work");
         std::fs::create_dir_all(&root).unwrap();
         let root = root.as_path();
-        let root_s = root.to_string_lossy().to_string();
         let origin = tmp.path().join("origin.git");
         let origin_s = origin.to_string_lossy().to_string();
         std::fs::write(
@@ -539,14 +518,8 @@ mod tests {
         leftover_enrichment(root);
         assert_ne!(porcelain(root), "", "a passagem de enriquecimento sujou a árvore");
 
-        let sid = "sess-stale-base";
-        crate::shared::context::pending_branch::set_pending_branch(&root_s, sid, "dev_second", None);
-        let outcome = cut_pending_work_branch(root, sid);
-        assert_eq!(
-            outcome,
-            CutOutcome::Cut("dev_second".to_string()),
-            "o corte tem de acontecer: {outcome:?}",
-        );
+        let settled = settle_and_cut(root, "dev_second", "dev");
+        assert_eq!(settled, CensusSettlement::Proceed, "o corte tem de acontecer: {settled:?}");
 
         assert_eq!(
             git_out(root, &["rev-parse", "dev"]).expect("dev"),
@@ -556,58 +529,6 @@ mod tests {
         assert!(
             matches!(checkout_work(root), CheckoutWork::CensusOnly(_)),
             "e o censo segue sujo, sem ser gravado",
-        );
-    }
-
-    /// Um corte RECUSADO por base desconhecida não deixa nada para trás. Com
-    /// vários candidatos declarados e nada dizendo de qual base a emergência
-    /// saiu, o corte devolve `BaseUnknown` e não toca no git: nenhum commit,
-    /// nenhuma branch, a árvore como estava.
-    #[test]
-    fn a_cut_denied_for_an_unknown_base_touches_nothing() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        let root_s = root.to_string_lossy().to_string();
-        // Dois candidatos declarados e nenhum registro: `hotfix/…` não tem base
-        // derivável, então a resolução responde `Ambiguous`.
-        std::fs::write(
-            root.join("mustard.json"),
-            r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#,
-        )
-        .unwrap();
-        repo_tracking_the_census(root);
-
-        remine(root);
-        leftover_enrichment(root);
-        assert_ne!(porcelain(root), "", "a passagem de enriquecimento sujou a árvore");
-        let head_before = git_out(root, &["rev-parse", "HEAD"]).expect("HEAD");
-
-        let sid = "sess-base-unknown";
-        crate::shared::context::pending_branch::set_pending_branch(&root_s, sid, "hotfix/urgente", None);
-        // Amostrado DEPOIS do marcador, que também escreve na árvore: o que
-        // este teste mede é o que o corte faz, não o que o marcador fez.
-        let dirty_before = porcelain(root);
-        let outcome = crate::commands::event::work_branch::cut_pending_work_branch(root, sid);
-        assert!(
-            matches!(
-                outcome,
-                crate::commands::event::work_branch::CutOutcome::BaseUnknown { .. }
-            ),
-            "a base não foi estabelecida, então nada é cortado: {outcome:?}",
-        );
-        assert_eq!(
-            git_out(root, &["rev-parse", "HEAD"]).expect("HEAD"),
-            head_before,
-            "e nenhum commit fica para trás de um corte que não houve",
-        );
-        assert_eq!(
-            porcelain(root),
-            dirty_before,
-            "a árvore fica exatamente como estava, para o corte que vier de fato",
-        );
-        assert!(
-            git_out(root, &["rev-parse", "--verify", "hotfix/urgente"]).is_none(),
-            "e nenhuma branch foi criada",
         );
     }
 
@@ -639,7 +560,7 @@ mod tests {
         );
         let dirty_before = porcelain(root);
         for current in [Some("dev"), Some("HEAD"), None] {
-            let settled = settle_cut(root, current, "dev_second", Some("dev"), &config);
+            let settled = settle_cut(root, current, "dev_second", "dev", &config);
             assert_eq!(
                 settled,
                 CensusSettlement::Proceed,
@@ -694,13 +615,10 @@ mod tests {
     /// resto do censo segue sujo, sem ser gravado.
     #[test]
     fn a_census_in_the_way_of_the_advance_is_set_aside_and_nothing_is_committed() {
-        use crate::commands::event::work_branch::{cut_pending_work_branch, CutOutcome};
-
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("work");
         std::fs::create_dir_all(&root).unwrap();
         let root = root.as_path();
-        let root_s = root.to_string_lossy().to_string();
         let (ahead, origins_census) = origin_ahead_touching_the_census(root);
 
         // A máquina B com o censo sujo — o modelo INCLUSIVE, que é o arquivo
@@ -712,10 +630,8 @@ mod tests {
             "precondição: só o censo está sujo",
         );
 
-        let sid = "sess-census-in-the-way";
-        crate::shared::context::pending_branch::set_pending_branch(&root_s, sid, "dev_second", None);
-        let outcome = cut_pending_work_branch(root, sid);
-        assert_eq!(outcome, CutOutcome::Cut("dev_second".to_string()), "{outcome:?}");
+        let settled = settle_and_cut(root, "dev_second", "dev");
+        assert_eq!(settled, CensusSettlement::Proceed, "{settled:?}");
 
         assert!(
             git_out(root, &["rev-list", "dev"]).expect("rev-list").contains(&ahead),
@@ -758,7 +674,7 @@ mod tests {
         let head_before = git_out(root, &["rev-parse", "HEAD"]).expect("HEAD");
         let dirty_before = porcelain(root);
 
-        let settled = settle_cut(root, Some("dev"), "dev_second", Some("dev"), &flow_config());
+        let settled = settle_cut(root, Some("dev"), "dev_second", "dev", &flow_config());
         let CensusSettlement::Refuse(busy) = settled else {
             panic!("uma base que não avança não recebe corte nem commit: {settled:?}");
         };
@@ -814,7 +730,7 @@ mod tests {
             config.git.declared_bases().contains("main"),
             "a fixture precisa de uma base pré-selecionada que NÃO é a desta abertura",
         );
-        let _ = settle_open(root, Some("dev"), Some("dev"), &config);
+        let _ = settle_cut(root, Some("dev"), "dev_second", "dev", &config);
         assert!(
             git_out(root, &["rev-list", "dev"]).expect("rev-list").contains(&ahead),
             "a base desta abertura avançou",
@@ -878,7 +794,7 @@ mod tests {
         let head_before = git_out(root, &["rev-parse", "HEAD"]).expect("HEAD");
 
         let CensusSettlement::Refuse(busy) =
-            settle_cut(root, Some("dev_first"), "dev_second", Some("dev"), &flow_config())
+            settle_cut(root, Some("dev_first"), "dev_second", "dev", &flow_config())
         else {
             panic!("a edição à mão do operador recusa o corte");
         };
@@ -937,7 +853,7 @@ mod tests {
             root,
             Some("feature/outra-unidade"),
             "dev_second",
-            Some("dev"),
+            "dev",
             &flow_config(),
         );
         let CensusSettlement::Refuse(busy) = settled else {
@@ -991,7 +907,7 @@ mod tests {
         let dirty_before = porcelain(root);
         let head_before = git_out(root, &["rev-parse", "HEAD"]).expect("HEAD");
 
-        let settled = settle_cut(root, Some("dev"), "dev_second", Some("dev"), &flow_config());
+        let settled = settle_cut(root, Some("dev"), "dev_second", "dev", &flow_config());
         let CensusSettlement::Refuse(busy) = settled else {
             panic!("o avanço barrado pelo rascunho recusa: {settled:?}");
         };
@@ -1029,13 +945,10 @@ mod tests {
     /// do mesmo jeito. O stash guarda os dois estados.
     #[test]
     fn a_staged_census_change_is_set_aside_and_the_base_advances() {
-        use crate::commands::event::work_branch::{cut_pending_work_branch, CutOutcome};
-
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("work");
         std::fs::create_dir_all(&root).unwrap();
         let root = root.as_path();
-        let root_s = root.to_string_lossy().to_string();
         let (ahead, origins_census) = origin_ahead_touching_the_census(root);
 
         remine(root);
@@ -1047,10 +960,8 @@ mod tests {
             porcelain(root)
         );
 
-        let sid = "sess-staged-census";
-        crate::shared::context::pending_branch::set_pending_branch(&root_s, sid, "dev_second", None);
-        let outcome = cut_pending_work_branch(root, sid);
-        assert_eq!(outcome, CutOutcome::Cut("dev_second".to_string()), "{outcome:?}");
+        let settled = settle_and_cut(root, "dev_second", "dev");
+        assert_eq!(settled, CensusSettlement::Proceed, "{settled:?}");
         assert!(
             git_out(root, &["rev-list", "dev"]).expect("rev-list").contains(&ahead),
             "a base avançou apesar do censo encenado",
@@ -1115,7 +1026,7 @@ mod tests {
             "precondição: o molde `source: scan` é censo",
         );
 
-        let settled = settle_open(root, Some("dev"), Some("dev"), &flow_config());
+        let settled = settle_cut(root, Some("dev"), "dev_second", "dev", &flow_config());
         assert!(
             !matches!(settled, CensusSettlement::Refuse(_)),
             "o molde no caminho não prende a base: {settled:?}",
@@ -1191,7 +1102,7 @@ mod tests {
         assert_eq!(theirs, vec!["theirs.txt".to_string()]);
         assert!(census.iter().any(|p| p.ends_with(project_map::MAP_FILE_NAME)), "{census:?}");
 
-        let settled = settle_cut(root, Some("main"), "feature/first", Some("main"), &config);
+        let settled = settle_cut(root, Some("main"), "feature/first", "main", &config);
         assert!(
             !matches!(settled, CensusSettlement::Refuse(_)),
             "o censo ao lado do trabalho deles não prende a base: {settled:?}",
@@ -1234,7 +1145,7 @@ mod tests {
         let dirty_before = porcelain(root);
         let head_before = git_out(root, &["rev-parse", "HEAD"]).expect("HEAD");
 
-        let settled = settle_cut(root, Some("main"), "feature/first", Some("main"), &config);
+        let settled = settle_cut(root, Some("main"), "feature/first", "main", &config);
         let CensusSettlement::Refuse(busy) = settled else {
             panic!("o arquivo deles no caminho recusa: {settled:?}");
         };
@@ -1273,7 +1184,7 @@ mod tests {
         let head_before = git_out(root, &["rev-parse", "HEAD"]).expect("HEAD");
 
         let CensusSettlement::Refuse(busy) =
-            settle_cut(root, Some("dev_first"), "dev_second", Some("dev"), &flow_config())
+            settle_cut(root, Some("dev_first"), "dev_second", "dev", &flow_config())
         else {
             panic!("o trabalho do operador ainda recusa o corte");
         };
@@ -1288,7 +1199,7 @@ mod tests {
         assert_eq!(
             git_out(root, &["rev-parse", "HEAD"]).expect("HEAD"),
             head_before,
-            "com trabalho do operador na árvore o portão não commita nada",
+            "com trabalho do operador na árvore a abertura não commita nada",
         );
         assert!(
             porcelain(root).contains("theirs.txt"),

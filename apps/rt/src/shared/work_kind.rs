@@ -107,84 +107,6 @@ pub(crate) fn forget_remote_names(root: &Path) {
     }
 }
 
-/// `true` when `base` is a branch the remote STILL has — and `true` as well
-/// when its existence could NOT be measured.
-///
-/// The question the pending marker's recorded base is asked
-/// ([`crate::commands::event::work_branch::recorded_or_derived_base`]).
-///
-/// **What it measures, and what it used to.** The test used to be membership in
-/// `git.flow`'s declared set, which refuses a base the operator really picked
-/// out of the real catalogue for the sole reason that a file written at install
-/// time does not list it. Existence is the fact the protection was always
-/// after: a base that no longer exists cannot be cut from, and one that exists
-/// can — whoever declared it.
-///
-/// **Why unmeasured obeys.** A recorded base is a MEASUREMENT of a person's
-/// answer, taken against the real catalogue when the marker was written.
-/// Dropping it because the probe stayed silent — no git, no remote, a clone
-/// whose refs were never fetched — refuses a real choice on the strength of a
-/// source that said nothing, which is the very defect the membership test was.
-/// An empty answer
-/// counts as silence too: a repository with no remote-tracking refs cannot
-/// testify about the remote, the same reading
-/// [`crate::commands::event::work_branch::resolve_kind_base`] takes of an empty
-/// catalogue and the candidate listing reports as `measured: false`.
-/// **Local heads count too, and leaving them out re-created the defect.** The
-/// cut that accepts the pick
-/// ([`crate::commands::event::work_branch::checkout_work_branch`]) reads it
-/// as `refs/heads/<b>` OR `refs/remotes/origin/<b>` — a base that was never
-/// pushed is a real branch someone can cut from. This probe read only the
-/// remote-tracking side, so such a pick was accepted by the cut and then
-/// DISCARDED here. Two halves of one question measuring different things is the
-/// shape this whole unit exists to remove, so they ask the same thing: does this
-/// branch still exist, anywhere this repository can see?
-// Sem chamador na produção: só o portão de base, guardado por decisão do
-// usuário até ele decidir se o portão volta, pergunta se a base gravada no
-// marcador ainda existe.
-#[cfg(test)]
-pub(crate) fn base_still_on_remote(root: &Path, base: &str) -> bool {
-    if with_remote_names(root, |names| names_obey(names, base)) {
-        return true;
-    }
-    // **A local head counts only if it was NEVER pushed.** Two very different
-    // branches look identical in the remote-tracking catalogue — both absent:
-    //
-    //   never pushed          a real branch, living only on this machine
-    //   deleted upstream      merged and retired; cutting from it is the
-    //                         "base that no longer exists" this probe exists
-    //                         to refuse
-    //
-    // `git fetch --prune` prunes remote-tracking refs, never local heads, so a
-    // plain "does refs/heads/<base> exist?" obeys the retired branch and
-    // reopens exactly the retired base this guard forbids. The upstream
-    // configuration separates
-    // them and is measured, not guessed: a branch that was pushed carries
-    // `branch.<name>.remote`, and one that never left this machine does not.
-    // Absent upstream ⇒ never pushed ⇒ a real local base, obey. Upstream set
-    // but gone from the catalogue ⇒ retired upstream ⇒ ignore.
-    local_head_exists(root, base) && !has_upstream(root, base)
-}
-
-/// `true` when `refs/heads/<branch>` resolves in `root`.
-#[cfg(test)]
-fn local_head_exists(root: &Path, branch: &str) -> bool {
-    git::run(root, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")]).ok
-}
-
-/// `true` when `branch` has an upstream configured — the durable mark that it
-/// was pushed at least once, and therefore that its absence from the
-/// remote-tracking catalogue means RETIRED rather than never-published.
-///
-/// `false` on any failure, which is the safe reading for the only caller: an
-/// unanswerable probe must not turn a local base into a retired one and drop a
-/// base the operator really picked.
-#[cfg(test)]
-fn has_upstream(root: &Path, branch: &str) -> bool {
-    let probe = git::run(root, &["config", "--get", &format!("branch.{branch}.remote")]);
-    probe.ok && !probe.stdout.is_empty()
-}
-
 /// Hand `read` the MEMOISED remote branch names of `root`, measuring them on
 /// the first call. The inner `None` is the probe's own "could not measure" and
 /// is passed through untouched — folding it into an empty set is what turns an
@@ -205,17 +127,6 @@ fn with_remote_names<T>(root: &Path, read: impl FnOnce(Option<&BTreeSet<String>>
         memo.insert(key, names);
     }
     answer
-}
-
-/// The reading of one probe result: measured and naming `base` → obey;
-/// measured and NOT naming it → drop; unmeasured (`None`, or an empty listing)
-/// → obey. See [`base_still_on_remote`], which is where the reasoning lives.
-#[cfg(test)]
-fn names_obey(names: Option<&BTreeSet<String>>, base: &str) -> bool {
-    match names {
-        Some(names) if !names.is_empty() => names.contains(base),
-        _ => true,
-    }
 }
 
 /// What a work unit IS — the closed set the branch prefix names.
@@ -267,9 +178,8 @@ impl WorkKind {
 
     /// The branch name for one unit — `{kind}/{slug}`.
     ///
-    /// The ONE spelling of the join, so the builder
-    /// ([`crate::commands::event::work_branch::compute_work_branch`]) and every
-    /// parser here cannot drift into two shapes of the same name. It does NOT
+    /// The ONE spelling of the join, so the builder (the explicit open) and
+    /// every parser here cannot drift into two shapes of the same name. It does NOT
     /// sanitise: making a valid git ref out of a slug is the builder's job, and
     /// doing it twice would let one caller's name differ from another's.
     pub(crate) fn branch_name(&self, slug: &str) -> String {

@@ -20,9 +20,11 @@
 //!   anterior que ele leu, recebe o aviso para terminar a tarefa em curso e
 //!   gravar o que falta, e o lembrete a cada [`WAVE_REMINDER_EVERY`] tokens a
 //!   mais. O resumo é o salto do tamanho entre a resposta que chama
-//!   `run read delivered-<n>` e a resposta seguinte, somado quando o agente lê
-//!   mais de um; sem resumo lido, conta a conversa inteira. O agente de onda
-//!   nunca recebe o aviso de quem conduz, e quem conduz nunca recebe o da onda.
+//!   `run read delivered-<n>` ou `run read item-<código da entrega>` — o
+//!   comando que o pedido da onda manda — e a resposta seguinte, somado quando
+//!   o agente lê mais de um; sem resumo lido, conta a conversa inteira. O
+//!   agente de onda nunca recebe o aviso de quem conduz, e quem conduz nunca
+//!   recebe o da onda.
 //!
 //! O tamanho é a soma de `input_tokens`, `cache_read_input_tokens` e
 //! `cache_creation_input_tokens` do último uso gravado na conversa. A de quem
@@ -35,6 +37,8 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
+use mustard_core::domain::mustard_id;
+use mustard_core::domain::spec_events::type_spec;
 use mustard_core::domain::wave_prompt::is_wave_title;
 use mustard_core::io::transcript::heading_of;
 use mustard_core::platform::error::Error;
@@ -213,7 +217,9 @@ struct WaveContext {
 }
 
 /// Se o bloco de conteúdo é uma chamada do terminal que lê o resumo de uma
-/// onda entregue (`run read delivered-<n>`).
+/// onda entregue: `run read delivered-<n>`, ou `run read item-<código>` com o
+/// código de uma entrega — a leitura de um item de outro tipo (tarefa, regra,
+/// decisão) não é resumo.
 fn reads_summary(block: &Value) -> bool {
     block.get("type").and_then(Value::as_str) == Some("tool_use")
         && block.get("name").and_then(Value::as_str) == Some("Bash")
@@ -221,7 +227,18 @@ fn reads_summary(block: &Value) -> bool {
             .get("input")
             .and_then(|input| input.get("command"))
             .and_then(Value::as_str)
-            .is_some_and(|command| command.contains("run read delivered-"))
+            .is_some_and(reads_delivery)
+}
+
+/// Se o comando `command` lê uma entrega: `run read delivered-<n>`, ou
+/// `run read item-<código>` em que o código é de uma entrega.
+fn reads_delivery(command: &str) -> bool {
+    let delivery = type_spec("delivered").map(|spec| spec.code);
+    command.contains("run read delivered-")
+        || command.split("run read item-").skip(1).any(|rest| {
+            let code = rest.split(|c: char| c.is_whitespace() || matches!(c, '\'' | '"' | ';' | '&' | '|')).next();
+            code.and_then(mustard_id::parse).is_some_and(|(kind, _)| Some(kind) == delivery)
+        })
 }
 
 /// O texto da primeira mensagem do usuário numa linha da conversa: corrido,
@@ -245,7 +262,7 @@ fn user_text(line: &Value) -> Option<String> {
 /// A leitura da conversa do agente em `path`: `None` quando ela não abre com
 /// o título de um pedido de onda no idioma `lang` (um agente qualquer), ou
 /// quando ainda não tem nenhum uso gravado. O resumo pesa o salto do tamanho
-/// entre a resposta que chama `run read delivered-<n>` e a resposta seguinte.
+/// entre a resposta que o lê (veja [`reads_summary`]) e a resposta seguinte.
 fn wave_context(path: &Path, lang: Locale) -> Option<WaveContext> {
     use std::io::BufRead;
 
@@ -491,7 +508,8 @@ mod tests {
 
     /// Uma resposta do agente com o contexto somando `tokens`, e a ação que
     /// ela pede: nenhuma, a leitura do pedido pelo terminal, a leitura do
-    /// resumo de uma onda entregue, ou uma edição.
+    /// resumo de uma onda entregue (pelo número da onda ou pelo código da
+    /// entrega), a leitura de um item de tarefa, ou uma edição.
     fn agent_reply(tokens: u64, action: Option<&str>) -> String {
         let mut content = vec![serde_json::json!({"type": "text", "text": "certo"})];
         match action {
@@ -499,6 +517,10 @@ mod tests {
                 "input": {"command": "/x/mustard-rt run read request-1 --root /r --spec x"}})),
             Some("summary") => content.push(serde_json::json!({"type": "tool_use", "id": "t", "name": "Bash",
                 "input": {"command": "/x/mustard-rt run read delivered-5 --root /r --spec x"}})),
+            Some("summary_item") => content.push(serde_json::json!({"type": "tool_use", "id": "t", "name": "Bash",
+                "input": {"command": "/x/mustard-rt run read item-MSTD-DELIV-0004 --root /r --spec x"}})),
+            Some("task_item") => content.push(serde_json::json!({"type": "tool_use", "id": "t", "name": "Bash",
+                "input": {"command": "/x/mustard-rt run read item-MSTD-TASK-0001 --root /r --spec x"}})),
             Some("edit") => content.push(serde_json::json!({"type": "tool_use", "id": "t", "name": "Edit",
                 "input": {"file_path": "/r/a.rs"}})),
             _ => {}
@@ -622,6 +644,51 @@ mod tests {
         let replies = vec![agent_reply(30_000, Some("read")), agent_reply(280_000, Some("edit"))];
         write_agent(root, &wave_request(Locale::PtBr), &replies);
         assert!(injected(&call).is_some(), "reading the request is not reading a summary: the whole size counts");
+    }
+
+    /// O resumo que o pedido manda ler pelo código da entrega
+    /// (`run read item-<código>`) sai da conta do mesmo jeito que o lido pelo
+    /// número da onda: com um resumo de 100 mil, 350.000 de conversa contam
+    /// 250.000 e não avisam, e 350.001 avisam. Os dois jeitos de ler somam os
+    /// saltos (60 mil e 50 mil: 360.000 não avisam, 360.001 avisam). Ler o
+    /// item de uma tarefa não tira nada: 280.000 de conversa avisam inteiros.
+    #[test]
+    fn the_summary_read_by_its_item_code_comes_off_the_count() {
+        let dir = open_project_in("x", Locale::PtBr);
+        let root = dir.path();
+        let call = agent_after_tool(root);
+        let mut replies = vec![agent_reply(40_000, Some("summary_item")), agent_reply(140_000, Some("edit"))];
+        let mut at = |tokens: u64| {
+            replies.push(agent_reply(tokens, Some("edit")));
+            write_agent(root, &wave_request(Locale::PtBr), &replies);
+            injected(&call)
+        };
+        assert_eq!(at(350_000), None, "350,000 less a 100,000 summary is exactly the limit");
+        let warned = at(350_001).expect("one token over the limit without the summary warns");
+        assert!(warned.contains("350 mil") && warned.contains("250 mil"), "the size and the limit are told: {warned}");
+
+        let dir = open_project_in("x", Locale::PtBr);
+        let root = dir.path();
+        let call = agent_after_tool(root);
+        let mut replies = vec![
+            agent_reply(40_000, Some("summary")),
+            agent_reply(100_000, Some("summary_item")),
+            agent_reply(150_000, Some("edit")),
+        ];
+        let mut at = |tokens: u64| {
+            replies.push(agent_reply(tokens, Some("edit")));
+            write_agent(root, &wave_request(Locale::PtBr), &replies);
+            injected(&call)
+        };
+        assert_eq!(at(360_000), None, "a summary by number and one by code, 60,000 and 50,000, come off");
+        assert!(at(360_001).is_some(), "and one more token warns");
+
+        let dir = open_project_in("x", Locale::PtBr);
+        let root = dir.path();
+        let call = agent_after_tool(root);
+        let replies = vec![agent_reply(30_000, Some("task_item")), agent_reply(280_000, Some("edit"))];
+        write_agent(root, &wave_request(Locale::PtBr), &replies);
+        assert!(injected(&call).is_some(), "reading a task item is not reading a summary: the whole size counts");
     }
 
     /// O aviso do limite fica calado onde não é de uma onda: na sessão

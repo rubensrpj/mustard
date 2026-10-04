@@ -81,7 +81,7 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
 
         // Work-branch refusal — the checkout holds another unit's branch with
         // uncommitted files, so cutting the second unit here would carry them
-        // off. Said by the drafting cut, in the project's language.
+        // off. Said by the explicit open, in the project's language.
         // `{current}`/`{target}`/`{paths}`/`{more}` are interpolated by
         // `work_branch::BusyCheckout::reason`.
         //
@@ -162,25 +162,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              and nothing touched. Stash that work (`git stash push -- <paths>`), bring '{base}' \
              up to date (`git pull --ff-only origin {base}`), take it back (`git stash pop`) \
              and try again."
-        }
-
-        // Work-branch BASE UNKNOWN — an emergency unit whose base nothing ever
-        // recorded, in a project declaring several it could have been cut from.
-        // Nothing is cut, and the operator is told: the harness used to take the
-        // outermost candidate and mention it on stderr, which a PreToolUse hook
-        // says to nobody (it exits 0). `{target}`/`{candidates}` are
-        // interpolated by the drafting cut.
-        ("workbranch.base.unknown", Locale::PtBr) => {
-            "Não dá para saber de qual base '{target}' deve sair. Este projeto declara várias \
-             candidatas ({candidates}), e nada registrou a escolha, então a branch não foi criada. \
-             Reabra a unidade com a base explícita (`--base`). Chutar aqui aponta o trabalho para \
-             uma base que ninguém escolheu."
-        }
-        ("workbranch.base.unknown", Locale::EnUs) => {
-            "There is no telling which base '{target}' should be cut from. This project declares \
-             several candidates ({candidates}), and nothing recorded the choice, so the branch was \
-             not created. Re-open the unit with an explicit base (`--base`). Guessing here aims the \
-             work at a base nobody chose."
         }
 
         // The write gate: one message per rule, in the language of
@@ -574,8 +555,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("gates.rs"),
             super::PREFIXES,
-            72,
-            0x9512_a5d1_5d1e_2732,
+            71,
+            0x8e59_1182_3aae_d2d6,
         );
     }
 

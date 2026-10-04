@@ -231,7 +231,6 @@ fn session_spec_marker(project_dir_path: &str, session_id: &str) -> Option<PathB
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shared::context::pending_branch::{pending_branch_for, set_pending_branch};
     use tempfile::tempdir;
 
     // -----------------------------------------------------------------------
@@ -296,9 +295,6 @@ mod tests {
             spec_for_session(project, "otel-unattached").is_none(),
             "no binding may live under a placeholder session id",
         );
-        // ...and the sibling pending-branch marker refuses the same way.
-        set_pending_branch(project, "otel-unattached", "dev_x", None);
-        assert!(pending_branch_for(project, "otel-unattached").is_none());
 
         // Written under the session the hooks read, the binding round-trips —
         // the reader keyed on the harness-provided id finds the spec.

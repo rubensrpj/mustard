@@ -568,7 +568,7 @@ fn open_with(opts: &OpenOpts, refresh: impl FnOnce(&Path) -> Result<ScanReport, 
 
     // O checkout: a mesma pergunta do corte da branch, que também atualiza a
     // base pelo `origin`.
-    let position = CheckoutPosition::at(current.as_deref(), Some(target.as_str()), Some(base.as_str()));
+    let position = CheckoutPosition::at(current.as_deref(), &target, &base);
     if let CensusSettlement::Refuse(busy) = settle(&root, position, &config) {
         return refuse(OpenRefusal::Busy(busy));
     }
@@ -613,13 +613,10 @@ fn open_with(opts: &OpenOpts, refresh: impl FnOnce(&Path) -> Result<ScanReport, 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::event::work_branch::{
-        cut_pending_work_branch, slug_of_work_branch, CutOutcome,
-    };
+    use crate::commands::event::work_branch::slug_of_work_branch;
     use crate::commands::spec_events::write::{seed_at, WriteOpts};
     use crate::hooks::write::write_gate::WriteGate;
     use crate::shared::context::checkout::spec_of_checkout_branch;
-use crate::shared::context::pending_branch::set_pending_branch;
     use crate::shared::spec_state::active_spec;
     use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
     use tempfile::tempdir;
@@ -944,27 +941,6 @@ use crate::shared::context::pending_branch::set_pending_branch;
         assert_eq!(head(root), "feature/outra");
         assert!(!spec_dir(root, "x").exists());
         assert_eq!(branches(root), vec!["dev".to_string(), "feature/outra".to_string(), "main".to_string()]);
-    }
-
-    /// O `open` e o corte antigo da branch recusam o mesmo checkout ocupado,
-    /// pelos mesmos caminhos: nenhuma proteção do corte se perde.
-    #[test]
-    fn open_and_the_old_cut_refuse_the_same_busy_checkout() {
-        let dir = repo(DEV_MAIN);
-        let root = dir.path();
-        git(root, &["checkout", "-q", "-b", "feature/outra"]);
-        std::fs::write(root.join("src").join("main.rs"), "fn main() { todo!() }\n").unwrap();
-        std::fs::write(root.join("src").join("novo.rs"), "fn novo() {}\n").unwrap();
-
-        set_pending_branch(&root.to_string_lossy(), "sess-lado", "feature/x", Some("dev"));
-        let CutOutcome::Refused(busy) = cut_pending_work_branch(root, "sess-lado") else {
-            panic!("the old cut refuses the busy checkout");
-        };
-        let report = open(root, Some("feature"), Some("x"), Some("dev"));
-        assert_eq!(report["reason"], json!("tree-holds-work"), "{report}");
-        let paths = named_paths(&busy).expect("the cut measured the paths");
-        assert!(report["hint"].as_str().unwrap().contains(&paths), "{report} vs {paths}");
-        assert_eq!(head(root), "feature/outra");
     }
 
     /// Aberta de um worktree, a branch nasce no worktree, e a spec, no
