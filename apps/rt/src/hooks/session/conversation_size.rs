@@ -52,7 +52,7 @@ pub(crate) const CONDUCTOR_STEP: u64 = 200_000;
 
 /// O tamanho que a conversa do agente de onda pode ter, em tokens, sem contar
 /// o resumo da onda anterior que ele leu: passou, o aviso chega.
-pub(crate) const WAVE_LIMIT: u64 = 250_000;
+pub(crate) const WAVE_LIMIT: u64 = 180_000;
 
 /// De quantos em quantos tokens a mais, depois do aviso, o agente de onda o
 /// recebe de novo.
@@ -562,9 +562,9 @@ mod tests {
         format!("{}\n\nO pedido.", mustard_core::domain::wave_prompt::wave_title("x", 1, lang))
     }
 
-    /// O agente de onda é avisado uma vez ao passar de 250 mil tokens de
-    /// conversa, e de novo a cada 20 mil a mais: 250.000 exatos não avisam e
-    /// 250.001 avisam; a chamada seguinte com o mesmo tamanho (outra
+    /// O agente de onda é avisado uma vez ao passar de 180 mil tokens de
+    /// conversa, e de novo a cada 20 mil a mais: 180.000 exatos não avisam e
+    /// 180.001 avisam; a chamada seguinte com o mesmo tamanho (outra
     /// ferramenta da mesma resposta) e 19.999 a mais não repetem; 20.000 a
     /// mais repetem. O texto traz a marca do Mustard, o tamanho, o valor sem
     /// o resumo e o limite. Sem resumo lido, conta a conversa inteira — a
@@ -582,23 +582,24 @@ mod tests {
                 injected(&call)
             };
 
-            assert_eq!(at(250_000), None, "{lang:?}: exactly the limit does not warn");
-            let first = at(250_001).unwrap_or_else(|| panic!("{lang:?}: over the limit warns"));
+            let limit = if lang == Locale::EnUs { "limit of 180 thousand" } else { "limite de 180 mil" };
+            assert_eq!(at(180_000), None, "{lang:?}: exactly the limit does not warn");
+            let first = at(180_001).unwrap_or_else(|| panic!("{lang:?}: over the limit warns"));
             assert!(first.starts_with("[Mustard]"), "{lang:?}: the mark comes first: {first}");
-            assert!(first.contains("`undone`") && first.contains("250"), "{lang:?}: {first}");
-            assert_eq!(at(250_001), None, "{lang:?}: the same size does not repeat");
-            assert_eq!(at(270_000), None, "{lang:?}: 19,999 more does not repeat");
-            let again = at(270_001).unwrap_or_else(|| panic!("{lang:?}: 20,000 more warns again"));
-            assert!(again.contains("270"), "{lang:?}: the size now is told: {again}");
-            assert_eq!(at(280_000), None, "{lang:?}: the reminders count from the last warning");
-            assert!(at(290_001).is_some(), "{lang:?}: and again 20,000 later");
+            assert!(first.contains("`undone`") && first.contains(limit), "{lang:?}: {first}");
+            assert_eq!(at(180_001), None, "{lang:?}: the same size does not repeat");
+            assert_eq!(at(200_000), None, "{lang:?}: 19,999 more does not repeat");
+            let again = at(200_001).unwrap_or_else(|| panic!("{lang:?}: 20,000 more warns again"));
+            assert!(again.contains("200"), "{lang:?}: the size now is told: {again}");
+            assert_eq!(at(210_000), None, "{lang:?}: the reminders count from the last warning");
+            assert!(at(220_001).is_some(), "{lang:?}: and again 20,000 later");
         }
     }
 
     /// O resumo da onda anterior que o agente leu sai da conta: o salto do
     /// tamanho entre a resposta que chama `run read delivered-<n>` e a
-    /// seguinte. Com um resumo de 100 mil, 350.000 de conversa contam 250.000
-    /// e não avisam, e 350.001 avisam, dizendo o tamanho, o valor sem o resumo
+    /// seguinte. Com um resumo de 100 mil, 280.000 de conversa contam 180.000
+    /// e não avisam, e 280.001 avisam, dizendo o tamanho, o valor sem o resumo
     /// e o limite. Dois resumos somam os dois saltos. Ler o pedido
     /// (`run read request-<n>`) não tira nada, e o crescimento depois do
     /// salto conta inteiro.
@@ -613,12 +614,12 @@ mod tests {
             write_agent(root, &wave_request(Locale::PtBr), &replies);
             injected(&call)
         };
-        assert_eq!(at(350_000), None, "350,000 less a 100,000 summary is exactly the limit");
-        let warned = at(350_001).expect("one token over the limit without the summary warns");
-        assert!(warned.contains("350 mil"), "the size is told: {warned}");
-        let again = at(400_000).expect("20,000 more warns again");
+        assert_eq!(at(280_000), None, "280,000 less a 100,000 summary is exactly the limit");
+        let warned = at(280_001).expect("one token over the limit without the summary warns");
+        assert!(warned.contains("280 mil"), "the size is told: {warned}");
+        let again = at(330_000).expect("20,000 more warns again");
         assert!(
-            again.contains("400 mil") && again.contains("300 mil") && again.contains("250 mil"),
+            again.contains("330 mil") && again.contains("230 mil") && again.contains("limite de 180 mil"),
             "the size, the value without the summary and the limit are told apart: {again}"
         );
 
@@ -635,23 +636,23 @@ mod tests {
             write_agent(root, &wave_request(Locale::PtBr), &replies);
             injected(&call)
         };
-        assert_eq!(at(360_000), None, "two summaries, 60,000 and 50,000, come off: 250,000 left");
-        assert!(at(360_001).is_some(), "and one more token warns");
+        assert_eq!(at(290_000), None, "two summaries, 60,000 and 50,000, come off: 180,000 left");
+        assert!(at(290_001).is_some(), "and one more token warns");
 
         let dir = open_project_in("x", Locale::PtBr);
         let root = dir.path();
         let call = agent_after_tool(root);
-        let replies = vec![agent_reply(30_000, Some("read")), agent_reply(280_000, Some("edit"))];
+        let replies = vec![agent_reply(30_000, Some("read")), agent_reply(230_000, Some("edit"))];
         write_agent(root, &wave_request(Locale::PtBr), &replies);
         assert!(injected(&call).is_some(), "reading the request is not reading a summary: the whole size counts");
     }
 
     /// O resumo que o pedido manda ler pelo código da entrega
     /// (`run read item-<código>`) sai da conta do mesmo jeito que o lido pelo
-    /// número da onda: com um resumo de 100 mil, 350.000 de conversa contam
-    /// 250.000 e não avisam, e 350.001 avisam. Os dois jeitos de ler somam os
-    /// saltos (60 mil e 50 mil: 360.000 não avisam, 360.001 avisam). Ler o
-    /// item de uma tarefa não tira nada: 280.000 de conversa avisam inteiros.
+    /// número da onda: com um resumo de 100 mil, 280.000 de conversa contam
+    /// 180.000 e não avisam, e 280.001 avisam. Os dois jeitos de ler somam os
+    /// saltos (60 mil e 50 mil: 290.000 não avisam, 290.001 avisam). Ler o
+    /// item de uma tarefa não tira nada: 230.000 de conversa avisam inteiros.
     #[test]
     fn the_summary_read_by_its_item_code_comes_off_the_count() {
         let dir = open_project_in("x", Locale::PtBr);
@@ -663,9 +664,12 @@ mod tests {
             write_agent(root, &wave_request(Locale::PtBr), &replies);
             injected(&call)
         };
-        assert_eq!(at(350_000), None, "350,000 less a 100,000 summary is exactly the limit");
-        let warned = at(350_001).expect("one token over the limit without the summary warns");
-        assert!(warned.contains("350 mil") && warned.contains("250 mil"), "the size and the limit are told: {warned}");
+        assert_eq!(at(280_000), None, "280,000 less a 100,000 summary is exactly the limit");
+        let warned = at(280_001).expect("one token over the limit without the summary warns");
+        assert!(
+            warned.contains("280 mil") && warned.contains("limite de 180 mil"),
+            "the size and the limit are told: {warned}"
+        );
 
         let dir = open_project_in("x", Locale::PtBr);
         let root = dir.path();
@@ -680,13 +684,13 @@ mod tests {
             write_agent(root, &wave_request(Locale::PtBr), &replies);
             injected(&call)
         };
-        assert_eq!(at(360_000), None, "a summary by number and one by code, 60,000 and 50,000, come off");
-        assert!(at(360_001).is_some(), "and one more token warns");
+        assert_eq!(at(290_000), None, "a summary by number and one by code, 60,000 and 50,000, come off");
+        assert!(at(290_001).is_some(), "and one more token warns");
 
         let dir = open_project_in("x", Locale::PtBr);
         let root = dir.path();
         let call = agent_after_tool(root);
-        let replies = vec![agent_reply(30_000, Some("task_item")), agent_reply(280_000, Some("edit"))];
+        let replies = vec![agent_reply(30_000, Some("task_item")), agent_reply(230_000, Some("edit"))];
         write_agent(root, &wave_request(Locale::PtBr), &replies);
         assert!(injected(&call).is_some(), "reading a task item is not reading a summary: the whole size counts");
     }
