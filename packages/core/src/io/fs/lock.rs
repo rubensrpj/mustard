@@ -110,7 +110,9 @@ impl LockedFile {
         self.file.seek(SeekFrom::Start(0))?;
         self.file.write_all(contents)?;
         self.file.set_len(contents.len() as u64)?;
-        self.file.sync_all()?;
+        if super::disk_sync() {
+            self.file.sync_all()?;
+        }
         Ok(())
     }
 }
@@ -139,7 +141,10 @@ impl Appendable for File {
     }
 
     fn sync(&mut self) -> std::io::Result<()> {
-        self.sync_data()
+        if super::disk_sync() {
+            self.sync_data()?;
+        }
+        Ok(())
     }
 }
 

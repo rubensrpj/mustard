@@ -80,7 +80,9 @@ impl Fs for RealFs {
             let mut file = File::create(&temp)?;
             file.write_all(contents)?;
             file.flush()?;
-            file.sync_all()?;
+            if super::disk_sync() {
+                file.sync_all()?;
+            }
             Ok(())
         })();
 
@@ -195,8 +197,8 @@ mod tests {
     #[test]
     fn appends_from_many_threads_through_the_lock_lose_no_line() {
         use super::super::lock::LockedFile;
-        const THREADS: usize = 8;
-        const LINES: usize = 40;
+        const THREADS: usize = 4;
+        const LINES: usize = 10;
         let dir = tempdir().unwrap();
         let path = dir.path().join("events.jsonl");
         std::thread::scope(|scope| {

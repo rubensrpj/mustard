@@ -168,6 +168,23 @@ pub trait Fs {
     fn remove_dir(&self, path: &Path) -> Result<()>;
 }
 
+/// Se a gravação espera o disco confirmar que guardou: sempre, a menos que
+/// `MUSTARD_DISK_SYNC` valha `off`. A espera existe para não perder linha da
+/// spec se a máquina cair; os testes a desligam, porque a pasta deles é
+/// apagada no fim e a confirmação só os deixa lentos, muito mais no Windows.
+/// A variável é lida a cada gravação, sem guardar o valor.
+#[must_use]
+pub fn disk_sync() -> bool {
+    disk_sync_for(std::env::var("MUSTARD_DISK_SYNC").ok().as_deref())
+}
+
+/// A decisão de [`disk_sync`] sobre o valor da variável, separada da leitura
+/// do ambiente para o teste não mexer na variável de um processo com testes
+/// em paralelo.
+fn disk_sync_for(value: Option<&str>) -> bool {
+    value != Some("off")
+}
+
 /// The process-wide default [`Fs`] backing the module-level free functions.
 ///
 /// `RealFs` is zero-sized and stateless, so a `const` instance is free and
@@ -314,4 +331,17 @@ pub fn files_over_code_line_cap(gate: &Path) -> std::result::Result<Vec<(PathBuf
         }
     }
     Ok(over)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::disk_sync_for;
+
+    #[test]
+    fn the_disk_sync_is_off_only_when_the_variable_says_off() {
+        assert!(!disk_sync_for(Some("off")), "off turns the confirmation off");
+        assert!(disk_sync_for(None), "without the variable the disk confirms every write");
+        assert!(disk_sync_for(Some("on")));
+        assert!(disk_sync_for(Some("")), "any other value keeps the confirmation");
+    }
 }

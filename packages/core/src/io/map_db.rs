@@ -141,6 +141,9 @@ impl MapDb {
         let mut conn = Connection::open(path)?;
         // A espera vem antes de tudo: até trocar o diário pede a trava.
         conn.busy_timeout(wait)?;
+        if !crate::io::fs::disk_sync() {
+            conn.pragma_update(None, "synchronous", "OFF")?;
+        }
         // Um mapa em outro diário passa ao `WAL`, que fica gravado no arquivo:
         // as aberturas seguintes não pedem trava nenhuma. O disco que não
         // guarda o `WAL` (memória compartilhada que ele não dá) deixa o mapa
@@ -552,5 +555,15 @@ mod tests {
         assert!(beside().len() > 1, "while a connection is open the log of the writes is beside the map: {:?}", beside());
         drop(reader);
         assert_eq!(beside(), vec![MAP_FILE_NAME], "the last one to close joins the log to the map and deletes it");
+    }
+
+    /// O mapa só deixa de esperar o disco confirmar cada gravação quando
+    /// `disk_sync` diz que não precisa: o nível `OFF` do SQLite é o 0.
+    #[test]
+    fn the_map_skips_the_disk_confirmation_exactly_when_the_disk_sync_is_off() {
+        let dir = tempdir().unwrap();
+        let db = MapDb::open(&map_in(dir.path()), dir.path(), &[NOTES_V1]).unwrap();
+        let level: i64 = db.conn().pragma_query_value(None, "synchronous", |row| row.get(0)).unwrap();
+        assert_eq!(level == 0, !crate::io::fs::disk_sync(), "synchronous level {level}");
     }
 }

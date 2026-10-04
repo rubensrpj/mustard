@@ -38,9 +38,9 @@ fn search(model: &std::path::Path, languages: &Languages) -> usize {
 }
 
 /// A gravação de uma conexão que pega a trava de escrita inteira (a mais
-/// forte que o SQLite dá) e só a solta quando a busca acabou ou passados
-/// `hold`. Diz se soltou porque a busca acabou.
-fn hold_the_write(model: std::path::PathBuf, hold: Duration, searched: Arc<AtomicBool>, held: mpsc::Sender<()>) -> bool {
+/// forte que o SQLite dá) e só a solta quando `released` diz que sim ou
+/// passados `hold`. Diz se soltou porque `released` disse.
+fn hold_the_write(model: std::path::PathBuf, hold: Duration, released: impl Fn() -> bool, held: mpsc::Sender<()>) -> bool {
     let mut writer = Connection::open(model).unwrap();
     writer.busy_timeout(Duration::from_secs(5)).unwrap();
     let tx = writer.transaction_with_behavior(rusqlite::TransactionBehavior::Exclusive).unwrap();
@@ -49,12 +49,12 @@ fn hold_the_write(model: std::path::PathBuf, hold: Duration, searched: Arc<Atomi
     // Quem não espera o aviso deixa o outro lado do canal fechar.
     let _ = held.send(());
     let until = Instant::now() + hold;
-    while !searched.load(Ordering::SeqCst) && Instant::now() < until {
+    while !released() && Instant::now() < until {
         std::thread::sleep(Duration::from_millis(5));
     }
-    let searched_in_time = searched.load(Ordering::SeqCst);
+    let released_in_time = released();
     tx.commit().unwrap();
-    searched_in_time
+    released_in_time
 }
 
 #[test]
@@ -66,7 +66,7 @@ fn a_search_answers_while_another_connection_holds_the_write_and_does_not_wait_f
     let (held, holding) = mpsc::channel();
     let writer = {
         let (model, searched) = (model.clone(), Arc::clone(&searched));
-        std::thread::spawn(move || hold_the_write(model, Duration::from_secs(4), searched, held))
+        std::thread::spawn(move || hold_the_write(model, Duration::from_secs(4), || searched.load(Ordering::SeqCst), held))
     };
     holding.recv().unwrap();
     let started = Instant::now();
@@ -79,34 +79,36 @@ fn a_search_answers_while_another_connection_holds_the_write_and_does_not_wait_f
     assert!(took < Duration::from_secs(2), "the search did not wait for the write: {took:?}");
 }
 
+/// Gravações uma atrás da outra, e a busca perguntando sem parar no meio
+/// delas: enquanto uma pega a trava, enquanto a segura e enquanto solta. Cada
+/// gravação só solta depois de a busca responder `ANSWERS_PER_WRITE` vezes por
+/// cima dela. A prova conta respostas, não tempo: a máquina lenta só alonga o
+/// teste.
 #[test]
-fn a_search_held_for_two_hundred_milliseconds_by_a_write_never_fails() {
+fn a_search_never_fails_across_writes_that_hold_the_lock_back_to_back() {
+    const WRITES: usize = 3;
+    const ANSWERS_PER_WRITE: usize = 2;
     let (_dir, model, languages) = saved_map();
-    let searched = Arc::new(AtomicBool::new(false));
-    // Uma gravação atrás da outra, cada uma segurando a trava por 200 ms, e a
-    // busca perguntando sem parar no meio delas.
-    let writer = {
-        let (model, searched) = (model.clone(), Arc::clone(&searched));
-        std::thread::spawn(move || {
-            let mut writes = 0;
-            while !searched.load(Ordering::SeqCst) {
-                let (held, _) = mpsc::channel();
-                let never = Arc::new(AtomicBool::new(false));
-                hold_the_write(model.clone(), Duration::from_millis(200), never, held);
-                writes += 1;
-            }
-            writes
-        })
-    };
-    let until = Instant::now() + Duration::from_secs(1);
-    let mut asked = 0;
-    while Instant::now() < until {
-        assert_eq!(search(&model, &languages), 1);
-        asked += 1;
+    let ask = || assert_eq!(search(&model, &languages), 1);
+    for _ in 0..WRITES {
+        let searched = Arc::new(AtomicBool::new(false));
+        let (held, holding) = mpsc::channel();
+        let writer = {
+            let (model, searched) = (model.clone(), Arc::clone(&searched));
+            std::thread::spawn(move || hold_the_write(model, Duration::from_secs(4), || searched.load(Ordering::SeqCst), held))
+        };
+        while matches!(holding.try_recv(), Err(mpsc::TryRecvError::Empty)) {
+            ask();
+        }
+        for _ in 0..ANSWERS_PER_WRITE {
+            ask();
+        }
+        searched.store(true, Ordering::SeqCst);
+        while !writer.is_finished() {
+            ask();
+        }
+        assert!(writer.join().unwrap(), "the answers came while the write still held the lock");
     }
-    searched.store(true, Ordering::SeqCst);
-    let writes = writer.join().unwrap();
-    assert!(asked >= 3 && writes >= 2, "the search asked {asked} times across {writes} writes");
 }
 
 /// A busca que precisa refazer o índice, porque ele foi feito em outras
@@ -117,10 +119,9 @@ fn a_search_that_has_to_redo_the_index_waits_for_the_write_that_holds_the_lock()
     let (_dir, model, _) = saved_map();
     let other_languages = Languages::new(["pt-BR"]);
     let (held, holding) = mpsc::channel();
-    let never = Arc::new(AtomicBool::new(false));
     let writer = {
         let model = model.clone();
-        std::thread::spawn(move || hold_the_write(model, Duration::from_millis(200), never, held))
+        std::thread::spawn(move || hold_the_write(model, Duration::from_millis(200), || false, held))
     };
     holding.recv().unwrap();
     let started = Instant::now();

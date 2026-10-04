@@ -9,6 +9,7 @@ pub mod spec_events;
 pub mod spec_index;
 pub mod lessons;
 pub mod project_map;
+mod map_listing;
 pub mod map_db;
 pub mod map_fill;
 pub mod map_format;

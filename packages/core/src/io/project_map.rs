@@ -28,8 +28,10 @@ use crate::domain::project_map::{
     MapRefusal, MapSkeleton, ProjectMap, PullComment, PullOfCommit, PullText, Pulls,
 };
 use crate::domain::normalize::Languages;
-use crate::io::map_db::{self, Block, Kind, MapDb, MAP_DIR};
+use crate::io::map_db::{self, Block, Kind, MapDb};
 pub use crate::io::map_db::{model_path, MAP_FILE, MAP_FILE_NAME};
+pub use crate::io::map_listing::{base_of, listing, Base, Listing};
+use crate::io::map_listing::inside_work_tree;
 use crate::io::{map_fill, map_format, map_glossary, map_revision, map_search};
 use crate::platform::error::{Error, Result};
 
@@ -1452,176 +1454,6 @@ fn example_modules(conn: &Connection, words: bool) -> Result<Vec<MapModule>> {
 // O conteúdo do projeto, pelo git
 // ---------------------------------------------------------------------------
 
-/// Quantos caminhos vão numa chamada só ao git que calcula blobs.
-const HASH_BATCH: usize = 256;
-
-/// O modo que o índice do git dá a um submódulo.
-const SUBMODULE_MODE: &str = "160000";
-
-/// Cada arquivo do projeto como está agora, pelo git: o commit do checkout e
-/// o id do blob do conteúdo de cada arquivo, pelo caminho relativo à pasta
-/// lida. O arquivo comitado e intocado vem do índice; o mudado, o novo e o
-/// que só está no índice vêm do mesmo cálculo sobre o conteúdo de agora. O
-/// próprio mapa e o diário dele ficam de fora: senão cada gravação dele
-/// mudaria a listagem.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Listing {
-    /// O commit do checkout; vazio num repositório sem commit.
-    pub head: String,
-    /// O blob de cada arquivo, pelo caminho.
-    pub blobs: BTreeMap<String, String>,
-    /// Os caminhos que o índice do git guarda, com os dos submódulos
-    /// iniciados: só o que foi adicionado ao git, sem o arquivo novo que
-    /// ninguém adicionou.
-    pub indexed: BTreeSet<String>,
-    /// A branch de partida do projeto e o commit da ponta dela.
-    pub base: Base,
-}
-
-/// A branch de partida que o projeto declara no `mustard.json` e o commit da
-/// ponta dela, de onde vem a história do git que o mapa guarda.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Base {
-    /// O nome declarado; vazio quando o projeto não declara nenhum.
-    pub name: String,
-    /// O commit da ponta: a do servidor (`origin/<nome>`) quando o clone a
-    /// tem, senão a local; vazio quando nenhuma das duas existe.
-    pub tip: String,
-}
-
-impl Listing {
-    /// Uma marca curta e estável de todos os pares caminho e blob: duas
-    /// listagens com a mesma marca têm os mesmos arquivos com os mesmos
-    /// conteúdos.
-    #[must_use]
-    pub fn digest(&self) -> String {
-        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-        for (path, blob) in &self.blobs {
-            for byte in path.bytes().chain([0]).chain(blob.bytes()).chain([0]) {
-                hash ^= u64::from(byte);
-                hash = hash.wrapping_mul(0x0100_0000_01b3);
-            }
-        }
-        format!("{hash:016x}-{}", self.blobs.len())
-    }
-}
-
-/// O git em `root`, com os caminhos escritos como são; `None` quando ele
-/// falha ou falta.
-fn git_out(root: &Path, args: &[&str]) -> Option<String> {
-    let mut full = vec!["-c", "core.quotePath=false"];
-    full.extend(args);
-    let run = crate::platform::git::run(root, &full);
-    run.ok.then_some(run.stdout)
-}
-
-/// O conteúdo do projeto em `root` agora, pelo git. `None` fora do git.
-#[must_use]
-pub fn listing(root: &Path) -> Option<Listing> {
-    let own = [MAP_FILE_NAME, MAP_JOURNAL_FILE_NAME, MAP_WAL_FILE_NAME, MAP_SHARED_FILE_NAME]
-        .map(|name| format!("{MAP_DIR}/{name}"));
-    let (blobs, indexed) = blobs_under(root, &own)?;
-    let head = git_out(root, &["rev-parse", "--verify", "-q", "HEAD"]).map(|out| out.trim().to_string()).unwrap_or_default();
-    Some(Listing { head, blobs, indexed, base: base_of(root) })
-}
-
-/// A branch de partida do projeto em `root`, pela configuração dele, com a
-/// ponta que o clone tem: a do servidor antes da local, numa chamada só ao
-/// git. O projeto que não declara nenhuma parte da branch padrão do servidor
-/// (`refs/remotes/origin/HEAD`) e, sem servidor, da branch em que o checkout
-/// está; só se lê o git, nada se grava. Sem declaração, sem servidor e com o
-/// checkout solto de branch, não há base.
-#[must_use]
-pub fn base_of(root: &Path) -> Base {
-    let Some(name) = crate::domain::config::ProjectConfig::load(root).git.primary_base().or_else(|| default_branch(root)) else {
-        return Base::default();
-    };
-    let (remote, local) = (format!("refs/remotes/origin/{name}"), format!("refs/heads/{name}"));
-    let refs = git_out(root, &["for-each-ref", "--format=%(objectname) %(refname)", &remote, &local]).unwrap_or_default();
-    let tip_of = |wanted: &str| {
-        refs.lines().find_map(|line| line.split_once(' ').filter(|(_, name)| *name == wanted).map(|(tip, _)| tip.to_string()))
-    };
-    let tip = tip_of(&remote).or_else(|| tip_of(&local)).unwrap_or_default();
-    Base { name, tip }
-}
-
-/// A branch de partida de um projeto que não declara nenhuma: a que o
-/// servidor aponta como padrão, ou, sem servidor, a do checkout. `None` com o
-/// checkout solto de branch.
-fn default_branch(root: &Path) -> Option<String> {
-    let of = |args: &[&str], prefix: &str| {
-        let out = git_out(root, args)?;
-        out.trim().strip_prefix(prefix).filter(|name| !name.is_empty()).map(str::to_string)
-    };
-    of(&["symbolic-ref", "-q", "refs/remotes/origin/HEAD"], "refs/remotes/origin/")
-        .or_else(|| of(&["symbolic-ref", "-q", "HEAD"], "refs/heads/"))
-}
-
-/// O blob de cada arquivo sob `root`, com os de dentro dos submódulos
-/// iniciados, pelo caminho relativo a `root`, fora os caminhos `skip`, que
-/// nem se calculam; e os caminhos que o índice do git guarda, da mesma
-/// leitura do índice.
-fn blobs_under(root: &Path, skip: &[String]) -> Option<(BTreeMap<String, String>, BTreeSet<String>)> {
-    let staged = git_out(root, &["ls-files", "-s", "-z"])?;
-    let mut blobs = BTreeMap::new();
-    let mut indexed = BTreeSet::new();
-    let mut nested = Vec::new();
-    for entry in staged.split('\0') {
-        let Some((meta, path)) = entry.split_once('\t') else { continue };
-        let mut parts = meta.split(' ');
-        let (Some(mode), Some(blob)) = (parts.next(), parts.next()) else { continue };
-        if mode == SUBMODULE_MODE {
-            nested.push(path.to_string());
-        } else if !skip.iter().any(|own| own == path) {
-            blobs.insert(path.to_string(), blob.to_string());
-            indexed.insert(path.to_string());
-        }
-    }
-    let prefix = git_out(root, &["rev-parse", "--show-prefix"])?.trim().to_string();
-    let status = git_out(root, &["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", "."])?;
-    let mut fresh = Vec::new();
-    let mut fields = status.split('\0');
-    while let Some(entry) = fields.next() {
-        if entry.len() < 4 {
-            continue;
-        }
-        let (code, path) = entry.split_at(3);
-        // A troca de nome e a cópia trazem o caminho antigo no campo seguinte.
-        if code[..2].contains(['R', 'C']) {
-            let _ = fields.next();
-        }
-        // Os caminhos da situação partem do topo do repositório.
-        let Some(rel) = path.strip_prefix(prefix.as_str()) else { continue };
-        if skip.iter().any(|own| own == rel) {
-            blobs.remove(rel);
-        } else if root.join(rel).is_file() {
-            fresh.push(rel.to_string());
-        } else {
-            blobs.remove(rel);
-        }
-    }
-    for batch in fresh.chunks(HASH_BATCH) {
-        let mut args = vec!["hash-object", "--"];
-        args.extend(batch.iter().map(String::as_str));
-        let hashed = git_out(root, &args)?;
-        for (path, blob) in batch.iter().zip(hashed.lines()) {
-            blobs.insert(path.clone(), blob.trim().to_string());
-        }
-    }
-    for sub in nested {
-        let dir = root.join(&sub);
-        if !dir.join(".git").exists() {
-            continue;
-        }
-        let (inner, inner_indexed) = blobs_under(&dir, &[]).unwrap_or_default();
-        for (path, blob) in inner {
-            blobs.insert(format!("{sub}/{path}"), blob);
-        }
-        indexed.extend(inner_indexed.into_iter().map(|path| format!("{sub}/{path}")));
-    }
-    Some((blobs, indexed))
-}
-
 /// O mapa de `root` ficou atrás do conteúdo de agora: o commit do checkout,
 /// a branch de partida, a ponta dela ou algum arquivo mudou desde a passada
 /// que o gravou; um bloco que ela grava voltou vazio numa troca de formato
@@ -1650,12 +1482,6 @@ pub fn is_behind(root: &Path, scan_format: &dyn Fn() -> Option<String>) -> bool 
         || base != now.base
         || map_fill::unfilled(&db, &BLOCKS).is_ok_and(|blocks| !blocks.is_empty())
         || map_format::written_by_another(&db, scan_format).unwrap_or(false)
-}
-
-/// `true` quando `root` está dentro da árvore de trabalho de um repositório
-/// git, a condição para o mapa se ler do projeto.
-fn inside_work_tree(root: &Path) -> bool {
-    git_out(root, &["rev-parse", "--is-inside-work-tree"]).is_some_and(|out| out.trim() == "true")
 }
 
 /// O banco em `model`, que já tem de existir: sem o arquivo, a recusa de
@@ -2345,6 +2171,7 @@ fn quoted(name: &str) -> String {
 mod tests {
     use super::*;
     use crate::domain::project_map::{DeclAt, MapModule, MapState};
+    use crate::io::map_db::MAP_DIR;
     use serde_json::json;
     use tempfile::tempdir;
 
@@ -2412,58 +2239,6 @@ mod tests {
         assert_eq!(read_at(&model_path(&root)).unwrap().state.head, "abc123");
     }
 
-    /// A base do mapa é a que o projeto declara; sem declaração, a que o
-    /// servidor aponta como padrão; sem servidor, a do checkout; o checkout
-    /// solto de branch, sem servidor, não tem base. O git só é lido: nem a
-    /// configuração dele nem a do projeto ganham uma linha.
-    #[test]
-    fn the_base_of_the_map_is_the_declared_one_then_the_default_of_the_server_then_the_checkout() {
-        let dir = tempdir().unwrap();
-        let repo = dir.path();
-        let git = |args: &[&str]| -> String {
-            let out = std::process::Command::new("git")
-                .args(["-c", "user.email=t@example.com", "-c", "user.name=t", "-c", "commit.gpgsign=false"])
-                .args(args)
-                .current_dir(repo)
-                .output()
-                .unwrap();
-            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
-            String::from_utf8_lossy(&out.stdout).trim().to_string()
-        };
-        git(&["init", "-q", "-b", "trunk"]);
-        std::fs::write(repo.join("a.txt"), "a\n").unwrap();
-        git(&["add", "-A"]);
-        git(&["commit", "-q", "-m", "first"]);
-        let first = git(&["rev-parse", "HEAD"]);
-        std::fs::write(repo.join("a.txt"), "b\n").unwrap();
-        git(&["commit", "-q", "-am", "second"]);
-        let second = git(&["rev-parse", "HEAD"]);
-        git(&["branch", "develop", &first]);
-        let config_before = std::fs::read_to_string(repo.join(".git/config")).unwrap();
-        let named = |base: Base| (base.name, base.tip);
-
-        assert_eq!(named(base_of(repo)), ("trunk".into(), second.clone()), "no declaration, no server: the branch of the checkout");
-
-        git(&["update-ref", "refs/remotes/origin/main", &first]);
-        git(&["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]);
-        assert_eq!(
-            named(base_of(repo)),
-            ("main".into(), first.clone()),
-            "no declaration: the default branch of the server, at the tip the server has"
-        );
-
-        std::fs::write(repo.join("mustard.json"), r#"{"git": {"flow": {"*": "develop"}}}"#).unwrap();
-        assert_eq!(named(base_of(repo)), ("develop".into(), first.clone()), "the declared base wins over the server default");
-        std::fs::remove_file(repo.join("mustard.json")).unwrap();
-
-        git(&["symbolic-ref", "--delete", "refs/remotes/origin/HEAD"]);
-        git(&["checkout", "-q", "--detach"]);
-        assert_eq!(named(base_of(repo)), (String::new(), String::new()), "a loose checkout with no server has no base");
-
-        assert_eq!(std::fs::read_to_string(repo.join(".git/config")).unwrap(), config_before, "the git configuration was only read");
-        assert!(!repo.join("mustard.json").exists(), "the project configuration was only read");
-    }
-
     /// O nome do arquivo e o caminho saem do mesmo texto, e o diário, o
     /// registro de gravações e a memória compartilhada são o nome do mapa com
     /// o fim que o SQLite dá.
@@ -2474,57 +2249,6 @@ mod tests {
         assert_eq!(MAP_JOURNAL_FILE_NAME, format!("{MAP_FILE_NAME}-journal"));
         assert_eq!(MAP_WAL_FILE_NAME, format!("{MAP_FILE_NAME}-wal"));
         assert_eq!(MAP_SHARED_FILE_NAME, format!("{MAP_FILE_NAME}-shm"));
-    }
-
-    /// A listagem dá, pelo caminho relativo à pasta lida, o blob do que cada
-    /// arquivo guarda agora: o do índice para o intocado, o do conteúdo para
-    /// o editado e para o novo, nada para o apagado; o próprio mapa e os
-    /// arquivos que o SQLite põe ao lado dele ficam de fora, e a marca muda
-    /// com o conteúdo.
-    #[test]
-    fn the_listing_gives_the_blob_of_what_each_file_holds_now() {
-        let dir = tempdir().unwrap();
-        let repo = dir.path();
-        let git = |args: &[&str]| -> String {
-            let out = std::process::Command::new("git")
-                .args(["-c", "user.email=t@example.com", "-c", "user.name=t", "-c", "commit.gpgsign=false"])
-                .args(args)
-                .current_dir(repo)
-                .output()
-                .unwrap();
-            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
-            String::from_utf8_lossy(&out.stdout).trim().to_string()
-        };
-        git(&["init", "-q"]);
-        std::fs::create_dir_all(repo.join("sub")).unwrap();
-        std::fs::write(repo.join("top.txt"), "fora\n").unwrap();
-        std::fs::write(repo.join("sub/a.txt"), "a\n").unwrap();
-        std::fs::write(repo.join("sub/gone.txt"), "g\n").unwrap();
-        git(&["add", "-A"]);
-        git(&["commit", "-q", "-m", "first"]);
-        let root = repo.join("sub");
-
-        let first = listing(&root).expect("dentro do git");
-        assert_eq!(first.head, git(&["rev-parse", "HEAD"]));
-        assert_eq!(first.blobs.keys().collect::<Vec<_>>(), ["a.txt", "gone.txt"], "só o que mora na pasta lida");
-        assert_eq!(first.blobs["a.txt"], git(&["hash-object", "sub/a.txt"]));
-
-        std::fs::write(root.join("a.txt"), "a mudado\n").unwrap();
-        std::fs::write(root.join("new.txt"), "novo\n").unwrap();
-        std::fs::remove_file(root.join("gone.txt")).unwrap();
-        std::fs::create_dir_all(root.join(MAP_DIR)).unwrap();
-        std::fs::write(root.join(MAP_DIR).join(MAP_FILE_NAME), "mapa").unwrap();
-        for beside in [MAP_JOURNAL_FILE_NAME, MAP_WAL_FILE_NAME, MAP_SHARED_FILE_NAME] {
-            std::fs::write(root.join(MAP_DIR).join(beside), "ao lado").unwrap();
-        }
-        let now = listing(&root).expect("dentro do git");
-        assert_eq!(now.blobs.keys().collect::<Vec<_>>(), ["a.txt", "new.txt"]);
-        assert_eq!(now.blobs["a.txt"], git(&["hash-object", "sub/a.txt"]));
-        assert_eq!(now.blobs["new.txt"], git(&["hash-object", "sub/new.txt"]));
-        assert_ne!(now.digest(), first.digest());
-        assert_eq!(now.digest(), listing(&root).unwrap().digest(), "a mesma listagem, a mesma marca");
-
-        assert_eq!(listing(tempdir().unwrap().path()), None, "fora do git não há listagem");
     }
 
     /// Um mapa como o scan o grava: uma chave de cada jeito de guardar, em

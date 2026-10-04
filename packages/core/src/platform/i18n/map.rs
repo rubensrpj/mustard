@@ -125,12 +125,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("map.skill_too_long", Locale::EnUs) => {
             "The skill has {lines} lines, and the limit is {max}. Cut what does not help the task."
         }
-        ("map.no_target", Locale::PtBr) => {
-            "Nenhum arquivo do mapa casa com a tarefa. Diga o arquivo que ela cria ou muda com `--file`."
-        }
-        ("map.no_target", Locale::EnUs) => {
-            "No file in the map matches the task. Name the file it creates or changes with `--file`."
-        }
         ("map.no_examples", Locale::PtBr) => "Nenhum arquivo da pasta `{folder}` serve de exemplo.",
         ("map.no_examples", Locale::EnUs) => "No file in the folder `{folder}` serves as an example.",
         ("map.why.same_folder", Locale::PtBr) => "na mesma pasta",
@@ -469,8 +463,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("map.rs"),
             super::PREFIXES,
-            80,
-            0x1125_3d7f_13ab_e155,
+            79,
+            0xfff0_0d3f_6d2d_5166,
         );
     }
 
@@ -725,7 +719,6 @@ mod tests {
             ("map.missing_argument", &["{question}", "{flag}"][..]),
             ("map.skill_missing_path", &["{paths}"][..]),
             ("map.skill_too_long", &["{lines}", "{max}"][..]),
-            ("map.no_target", &[][..]),
             ("map.no_examples", &["{folder}"][..]),
             ("map.why.same_folder", &[][..]),
             ("map.why.near_folder", &[][..]),

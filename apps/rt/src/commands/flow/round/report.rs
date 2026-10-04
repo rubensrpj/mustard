@@ -3045,26 +3045,6 @@ mod tests {
         assert_eq!(wrote["ok"], json!(true), "the review sent before the list is not refused: {wrote}");
     }
 
-    /// O item combinado que a entrega marca `met:false` sem dizer o que falta
-    /// vira a tarefa do backlog com o texto do próprio item, o de reserva.
-    #[test]
-    fn an_unmet_agreed_item_without_text_becomes_a_task_with_the_items_own_text() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        sent_with_a_decision(root);
-        let answered = json!([{"item": "MSTD-DEC-0001", "met": false}]);
-        let wrote = returned(root, json!({"wave": 1, "text": "A onda 1 saiu.", "agreed": answered}));
-        assert_eq!(wrote["ok"], json!(true), "{wrote}");
-        let took = round(root, "x", None);
-        assert_eq!(took["ok"], json!(true), "{took}");
-
-        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-        let tasks: Vec<&SpecEvent> =
-            log.visible().into_iter().filter(|e| e.event_type == "task" && e.wave().is_none()).collect();
-        assert_eq!(tasks.len(), 1, "one task, for the item not met: {tasks:?}");
-        assert_eq!(tasks[0].str_field("text"), Some("A soma arredonda para baixo."), "{tasks:?}");
-    }
-
     /// As tarefas vigentes da spec `x` que cobrem a primeira decisão dela, em
     /// qualquer versão, pelo texto de cada uma.
     fn tasks_covering_the_decision(root: &Path) -> Vec<String> {
@@ -3092,33 +3072,21 @@ mod tests {
         assert_eq!(write(root, "x", "task", body)["ok"], json!(true));
     }
 
-    /// A volta da onda 1 com a decisão não cumprida, e a rodada que a assume.
-    fn returned_unmet_and_taken(root: &Path) {
-        let answered = json!([{"item": "MSTD-DEC-0001", "met": false, "text": "Falta arredondar para baixo."}]);
+    /// A volta da onda 1 com `answered` no lugar dos itens combinados, e a
+    /// rodada que a assume.
+    fn returned_and_taken(root: &Path, answered: Value) {
         let wrote = returned(root, json!({"wave": 1, "text": "A onda 1 saiu.", "agreed": answered}));
         assert_eq!(wrote["ok"], json!(true), "{wrote}");
         let took = round(root, "x", None);
         assert_eq!(took["ok"], json!(true), "{took}");
     }
 
-    /// O item combinado que a volta não cumpriu, já coberto por uma tarefa
-    /// do backlog, não ganha outra tarefa: a do backlog segue sozinha, e a
-    /// entrega grava o item como veio, não cumprido e com o texto da onda.
-    #[test]
-    fn an_unmet_item_a_backlog_task_covers_gets_no_new_task() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let said = sent_with_a_decision(root);
-        let decision = current_id(root, "MSTD-DEC-0001");
-        backlog_task_covering(root, decision, said);
-        returned_unmet_and_taken(root);
-
-        let covering = tasks_covering_the_decision(root);
-        assert_eq!(covering, vec!["A tarefa do backlog que já cobre a decisão."], "no repeated task: {covering:?}");
-        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-        let official = log.visible().into_iter().find(|e| e.event_type == "delivered" && e.wave() == Some(1)).unwrap();
-        let expected = json!([{"item": decision, "met": false, "text": "Falta arredondar para baixo."}]);
-        assert_eq!(official.fields["agreed"], expected, "the item stays in the delivery: {:?}", official.fields);
+    /// A volta da onda 1 com a decisão não cumprida, e a rodada que a assume.
+    fn returned_unmet_and_taken(root: &Path) {
+        returned_and_taken(
+            root,
+            json!([{"item": "MSTD-DEC-0001", "met": false, "text": "Falta arredondar para baixo."}]),
+        );
     }
 
     /// A spec `x` com a onda 1 sobre `src/a.rs` e duas regras do projeto
@@ -3240,20 +3208,36 @@ mod tests {
         assert_eq!(covering, expected, "the delivered task covers nothing now: {covering:?}");
     }
 
-    /// O item que a volta não cumpriu e que nenhuma tarefa cobre ganha a
-    /// tarefa no backlog, com o texto da onda.
+    /// O item que a volta não cumpriu e que nenhuma tarefa cobre ganha uma
+    /// tarefa no backlog, e só uma: com o texto da onda quando ela diz o que
+    /// falta, e com o texto do próprio item quando ela não diz.
     #[test]
     fn an_unmet_item_no_task_covers_gets_a_new_task() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        sent_with_a_decision(root);
-        returned_unmet_and_taken(root);
-        let covering = tasks_covering_the_decision(root);
-        assert_eq!(covering, vec!["Falta arredondar para baixo."], "{covering:?}");
+        for (said, expected) in [
+            (Some("Falta arredondar para baixo."), "Falta arredondar para baixo."),
+            (None, "A soma arredonda para baixo."),
+        ] {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            sent_with_a_decision(root);
+            let mut item = json!({"item": "MSTD-DEC-0001", "met": false});
+            if let Some(text) = said {
+                item["text"] = json!(text);
+            }
+            returned_and_taken(root, json!([item]));
+
+            assert_eq!(tasks_covering_the_decision(root), vec![expected], "{said:?}");
+            let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+            let new_tasks = log.visible().into_iter().filter(|e| e.event_type == "task" && e.wave().is_none()).count();
+            assert_eq!(new_tasks, 1, "one task, for the item not met: {said:?}");
+        }
     }
 
     /// A tarefa do backlog que cobre uma versão antiga do item cobre também a
-    /// de agora: a cobertura se lê pelo código, não pelo número do evento.
+    /// de agora: a cobertura se lê pelo código, não pelo número do evento. O
+    /// item que a volta não cumpriu, já coberto por ela, não ganha outra
+    /// tarefa, e a entrega o grava como veio, não cumprido e com o texto da
+    /// onda.
     #[test]
     fn a_backlog_task_on_an_older_version_of_the_item_still_covers_it() {
         let dir = tempdir().unwrap();
@@ -3269,6 +3253,10 @@ mod tests {
 
         let covering = tasks_covering_the_decision(root);
         assert_eq!(covering, vec!["A tarefa do backlog que já cobre a decisão."], "no repeated task: {covering:?}");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let official = log.visible().into_iter().find(|e| e.event_type == "delivered" && e.wave() == Some(1)).unwrap();
+        let expected = json!([{"item": current_id(root, "MSTD-DEC-0001"), "met": false, "text": "Falta arredondar para baixo."}]);
+        assert_eq!(official.fields["agreed"], expected, "the item stays in the delivery: {:?}", official.fields);
     }
 
     /// A tarefa da própria onda que volta não conta como cobertura: a
@@ -4071,45 +4059,6 @@ fn main() { sum_by_the_new_name(); }
         assert_eq!(delivered_count(root), 0, "nada da entrega foi gravado: {out}");
     }
 
-    /// A prova que não executa por estar mal-escrita — um comando do cargo
-    /// com vários nomes de teste em sequência, sem o separador `--`, que o
-    /// cargo recusa antes de rodar teste nenhum — recusa na volta da mesma
-    /// onda, e não só horas depois no fechamento: o texto traz o critério, o
-    /// comando inteiro e a saída de erro do cargo.
-    #[test]
-    fn badly_written_proof_is_refused_on_the_wave_return() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
-        std::fs::write(
-            root.join("Cargo.toml"),
-            "[package]\nname = \"prova\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[workspace]\n",
-        )
-        .unwrap();
-        std::fs::create_dir_all(root.join("src")).unwrap();
-        std::fs::write(root.join("src/lib.rs"), "pub fn sum(a: u32, b: u32) -> u32 { a + b }\n").unwrap();
-        git_at(root, &["add", "-A"]);
-        git_at(root, &["commit", "-q", "-m", "cargo"]);
-        round(root, "x", None);
-
-        // Um comando de teste com quatro nomes em sequência, sem o `--`: o
-        // cargo recusa o argumento antes de rodar teste nenhum.
-        let bad = "cargo test soma_1 soma_2 soma_3 soma_4";
-        let code = reprove_wave_criterion(root, 1, bad);
-        let head_before = git_text(root, &["rev-parse", "HEAD"]);
-
-        let out = round(root, "x", Some(&delivered(root, 1, "A soma saiu.", &["src/a.rs"])));
-        assert_eq!(out["ok"], json!(false), "{out}");
-        assert_eq!(out["reason"], json!("round-criterion-proof-failed"), "{out}");
-        let hint = out["hint"].as_str().unwrap_or_default();
-        assert!(hint.contains(&code), "a recusa nomeia o critério: {hint}");
-        assert!(hint.contains(bad), "a recusa nomeia o comando inteiro: {hint}");
-        assert!(hint.contains("unexpected argument") || hint.contains("soma_2"), "a saída de erro vem inteira: {hint}");
-
-        assert_eq!(git_text(root, &["rev-parse", "HEAD"]), head_before, "nada foi comitado: {out}");
-        assert_eq!(delivered_count(root), 0, "nada da entrega foi gravado: {out}");
-    }
-
     /// As linhas do arquivo da spec `x`: a gravação recusada não escreve
     /// nenhuma.
     fn spec_lines(root: &Path) -> usize {
@@ -4398,38 +4347,12 @@ fn main() { sum_by_the_new_name(); }
         assert_eq!(with_usage["ok"], json!(true), "{with_usage}");
     }
 
-    /// A linha da entrega colada no relatório é recusada com o texto
-    /// combinado, junto de qualquer outra linha, e nada é gravado nem
-    /// comitado: a entrega mora na spec.
+    /// A linha da entrega e a do veredito coladas no relatório são recusadas
+    /// com o texto combinado, junto de qualquer outra linha, e nada é gravado
+    /// nem comitado: a entrega e o veredito moram na spec, e é o agente
+    /// quem os grava. O fechamento recusa a linha do veredito do mesmo jeito.
     #[test]
-    fn delivery_line_in_the_report_is_refused() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
-        round(root, "x", None);
-        std::fs::write(root.join("src/a.rs"), "fn one() {}\n// A soma saiu.\n").unwrap();
-        let (head, before) = (git_text(root, &["rev-parse", "HEAD"]), spec_lines(root));
-
-        let pasted = line("DELIVERED", json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"],
-            "commit": "a soma sai"}));
-        let usage = line("USAGE", json!({"wave": 1}));
-        let refused = round(root, "x", Some(&format!("{pasted}\n{usage}")));
-        assert_eq!(refused["reason"], json!("round-return-line"), "{refused}");
-        assert_eq!(
-            refused["hint"],
-            json!("A entrega e o veredito moram na spec: o agente os grava com mustard-rt run write. O relatório \
-                   leva só as linhas `USAGE` e `PAUSED`."),
-            "{refused}"
-        );
-        assert_eq!((git_text(root, &["rev-parse", "HEAD"]), spec_lines(root)), (head, before), "{refused}");
-    }
-
-    /// A linha do veredito colada no relatório é recusada com o texto
-    /// combinado, na rodada e no fechamento, junto de qualquer outra linha, e
-    /// nada é gravado nem comitado: o veredito mora na spec, e é o revisor
-    /// quem o grava.
-    #[test]
-    fn verdict_line_in_the_report_is_refused() {
+    fn a_delivery_or_verdict_line_in_the_report_is_refused() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
@@ -4438,22 +4361,26 @@ fn main() { sum_by_the_new_name(); }
         seed_review(root);
         let (head, before) = (git_text(root, &["rev-parse", "HEAD"]), spec_lines(root));
 
-        let pasted = line("VERDICT", json!({"final": true, "result": "approved", "text": "Sem achados."}));
+        let verdict_line = line("VERDICT", json!({"final": true, "result": "approved", "text": "Sem achados."}));
         let usage = line("USAGE", json!({"wave": 1}));
         let expected = json!("A entrega e o veredito moram na spec: o agente os grava com mustard-rt run write. O \
                               relatório leva só as linhas `USAGE` e `PAUSED`.");
-        let refused = round(root, "x", Some(&format!("{pasted}\n{usage}")));
-        assert_eq!(refused["reason"], json!("round-return-line"), "{refused}");
-        assert_eq!(refused["hint"], expected, "{refused}");
+        let delivery_line = line("DELIVERED", json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"],
+            "commit": "a soma sai"}));
+        for pasted in [&delivery_line, &verdict_line] {
+            let refused = round(root, "x", Some(&format!("{pasted}\n{usage}")));
+            assert_eq!(refused["reason"], json!("round-return-line"), "{pasted}: {refused}");
+            assert_eq!(refused["hint"], expected, "{pasted}: {refused}");
+        }
         let closing = crate::commands::flow::close::close_at(&crate::commands::flow::close::CloseOpts {
             root: root.to_path_buf(),
             spec: Some("x".into()),
-            report: Some(pasted),
+            report: Some(verdict_line),
             ..Default::default()
         });
         assert_eq!(closing["reason"], json!("round-return-line"), "{closing}");
         assert_eq!(closing["hint"], expected, "{closing}");
-        assert_eq!((git_text(root, &["rev-parse", "HEAD"]), spec_lines(root)), (head, before), "{refused}");
+        assert_eq!((git_text(root, &["rev-parse", "HEAD"]), spec_lines(root)), (head, before), "nothing was written or committed");
     }
 
     /// Toda sobra da volta assumida vai ao backlog da spec, sem onda e sem
@@ -4757,37 +4684,95 @@ fn main() { sum_by_the_new_name(); }
         log.codes()[&task.id].clone()
     }
 
-    /// O item combinado que só a tarefa não feita cobria não vira tarefa
-    /// nova: a própria tarefa, de volta ao backlog, segue cobrindo o item, e
-    /// a entrega guarda a resposta como veio, não cumprida.
+    /// A tarefa que a onda não fez volta ao backlog depois do aceite da
+    /// mudança de plano. O item combinado que só ela cobria não vira tarefa
+    /// nova: a própria tarefa segue cobrindo o item, e a entrega guarda a
+    /// resposta como veio, não cumprida. A página acompanha: a cópia leva a
+    /// versão nova dela sem onda, e a onda entregue aparece aprovada só com a
+    /// tarefa que fez. A versão da tarefa traz a mudança aceita na parte do
+    /// agente, com o título e a parte do usuário como estavam; a pergunta da
+    /// mudança já dizia qual tarefa voltaria à fila, e a resposta da rodada
+    /// que assume a volta avisa, pelo código, que ela voltou ao backlog.
     #[test]
-    fn an_unmet_item_of_a_task_the_wave_did_not_do_gets_no_new_task() {
+    fn a_task_the_wave_did_not_do_goes_back_to_the_backlog_with_the_accepted_change() {
         if std::env::var_os("MUSTARD_ACTIVE_SPEC").is_some() {
             return;
         }
         let dir = tempdir().unwrap();
         let root = dir.path();
-        let UndoneReturn { b, b_decision, .. } = return_with_an_undone_task(root);
+        let UndoneReturn { a, b, b_decision, change, stopped, accepted, .. } = return_with_an_undone_task(root);
 
-        let log = spec_x(root);
-        let codes = log.codes();
-        let covering: Vec<String> = log
-            .visible()
-            .into_iter()
-            .filter(|e| e.event_type == "task")
-            .filter(|task| task.ints("covers").iter().any(|id| codes.get(id) == Some(&b_decision)))
-            .map(|task| codes[&task.id].clone())
-            .collect();
-        assert_eq!(covering, vec![b.clone()], "só a própria tarefa cobre o item dela");
-        let official = log.visible().into_iter().find(|e| e.event_type == "delivered" && e.wave() == Some(1)).unwrap();
-        let unmet: Vec<&Value> = official.fields["agreed"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter(|item| item["met"] == json!(false))
-            .collect();
-        assert_eq!(unmet.len(), 1, "{:?}", official.fields);
-        assert_eq!(official.fields["undone"], json!([b]), "a entrega diz o que não fez: {:?}", official.fields);
+        // O item que só a tarefa não feita cobria não ganha tarefa nova.
+        {
+            let log = spec_x(root);
+            let codes = log.codes();
+            let covering: Vec<String> = log
+                .visible()
+                .into_iter()
+                .filter(|e| e.event_type == "task")
+                .filter(|task| task.ints("covers").iter().any(|id| codes.get(id) == Some(&b_decision)))
+                .map(|task| codes[&task.id].clone())
+                .collect();
+            assert_eq!(covering, vec![b.clone()], "só a própria tarefa cobre o item dela");
+            let official =
+                log.visible().into_iter().find(|e| e.event_type == "delivered" && e.wave() == Some(1)).unwrap();
+            let unmet: Vec<&Value> = official.fields["agreed"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|item| item["met"] == json!(false))
+                .collect();
+            assert_eq!(unmet.len(), 1, "{:?}", official.fields);
+            assert_eq!(official.fields["undone"], json!([b]), "a entrega diz o que não fez: {:?}", official.fields);
+        }
+
+        // A página mostra a tarefa sem onda, e a onda entregue só com A.
+        {
+            let bodies = crate::commands::spec_events::pages::copy::sent(root, &accepted, "spec");
+            let rows: Vec<Value> = bodies
+                .iter()
+                .filter(|w| w["op"] == json!("set"))
+                .flat_map(|w| w["body"]["items"].as_array().cloned().unwrap_or_default())
+                .collect();
+            let replaced: BTreeSet<u64> = rows
+                .iter()
+                .flat_map(|row| match &row["replaces"] {
+                    Value::Array(ids) => ids.iter().filter_map(Value::as_u64).collect(),
+                    other => other.as_u64().into_iter().collect::<Vec<_>>(),
+                })
+                .collect();
+            let tasks: Vec<&Value> = rows
+                .iter()
+                .filter(|row| row["type"] == json!("task"))
+                .filter(|row| row["id"].as_u64().is_some_and(|id| !replaced.contains(&id)))
+                .collect();
+            let in_one: Vec<&Value> = tasks.iter().filter(|row| row["wave"] == json!(1)).map(|row| &row["code"]).collect();
+            assert_eq!(in_one, vec![&json!(a)], "a onda entregue fica só com A: {tasks:?}");
+            let row_b = tasks.iter().find(|row| row["code"] == json!(b)).expect("a linha de B");
+            assert!(row_b.get("wave").is_none(), "B vai sem onda: {row_b}");
+            let computed = bodies.iter().find(|w| w["collection"] == json!("computed")).expect("the computed item");
+            assert_eq!(computed["body"]["waves"]["1"], json!("approved"), "{computed}");
+        }
+
+        // A versão devolvida leva a mudança aceita, e a rodada avisa.
+        {
+            let asked = stopped["hint"].as_str().unwrap_or_default();
+            assert!(asked.contains(&b), "a pergunta da mudança diz que B volta à fila: {asked}");
+            let now = task_now(root, &b);
+            let log = spec_x(root);
+            let before = now.replaced().first().and_then(|id| log.get(*id)).expect("a versão de antes");
+            let line = translate("round.returned_change", Locale::PtBr).replace("{wave}", "1").replace("{change}", &change);
+            let agent = now.str_field("agent").unwrap_or_default();
+            assert!(agent.contains(&line), "a mudança aceita na parte do agente: {agent}");
+            assert!(agent.starts_with(before.str_field("agent").unwrap_or_default()), "o resto fica: {agent}");
+            assert_eq!((now.str_field("title"), now.str_field("text")), (before.str_field("title"), before.str_field("text")));
+
+            let warnings = accepted["warnings"].as_array().cloned().unwrap_or_default();
+            let warned = warnings.iter().find(|w| w["reason"] == json!("tasks-returned")).expect("o aviso da volta");
+            assert_eq!((&warned["wave"], &warned["tasks"]), (&json!(1), &json!([b])), "{warned}");
+            let hint = translate("round.tasks_returned", Locale::PtBr).replace("{wave}", "1").replace("{tasks}", &b);
+            assert_eq!(warned["hint"], json!(hint), "{warned}");
+        }
     }
 
     /// A entrega que muda o plano sem dizer quais tarefas não fez é
@@ -4824,75 +4809,6 @@ fn main() { sum_by_the_new_name(); }
 
         let wrote = returned(root, json!({"wave": 1, "text": "Parei.", "replan": "Dividir a onda.", "undone": [own]}));
         assert_eq!(wrote["ok"], json!(true), "{wrote}");
-    }
-
-    /// A página acompanha a tarefa que voltou ao backlog: depois do aceite,
-    /// a cópia leva a versão nova dela sem onda, e a onda entregue aparece
-    /// aprovada só com a tarefa que fez.
-    #[test]
-    fn the_page_shows_the_task_the_wave_did_not_do_out_of_the_approved_wave() {
-        if std::env::var_os("MUSTARD_ACTIVE_SPEC").is_some() {
-            return;
-        }
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let UndoneReturn { a, b, accepted, .. } = return_with_an_undone_task(root);
-
-        let bodies = crate::commands::spec_events::pages::copy::sent(root, &accepted, "spec");
-        let rows: Vec<Value> = bodies
-            .iter()
-            .filter(|w| w["op"] == json!("set"))
-            .flat_map(|w| w["body"]["items"].as_array().cloned().unwrap_or_default())
-            .collect();
-        let replaced: BTreeSet<u64> = rows
-            .iter()
-            .flat_map(|row| match &row["replaces"] {
-                Value::Array(ids) => ids.iter().filter_map(Value::as_u64).collect(),
-                other => other.as_u64().into_iter().collect::<Vec<_>>(),
-            })
-            .collect();
-        let tasks: Vec<&Value> = rows
-            .iter()
-            .filter(|row| row["type"] == json!("task"))
-            .filter(|row| row["id"].as_u64().is_some_and(|id| !replaced.contains(&id)))
-            .collect();
-        let in_one: Vec<&Value> = tasks.iter().filter(|row| row["wave"] == json!(1)).map(|row| &row["code"]).collect();
-        assert_eq!(in_one, vec![&json!(a)], "a onda entregue fica só com A: {tasks:?}");
-        let row_b = tasks.iter().find(|row| row["code"] == json!(b)).expect("a linha de B");
-        assert!(row_b.get("wave").is_none(), "B vai sem onda: {row_b}");
-        let computed = bodies.iter().find(|w| w["collection"] == json!("computed")).expect("the computed item");
-        assert_eq!(computed["body"]["waves"]["1"], json!("approved"), "{computed}");
-    }
-
-    /// A versão da tarefa devolvida traz a mudança aceita na parte do
-    /// agente, com o título e a parte do usuário como estavam; a pergunta da
-    /// mudança já dizia qual tarefa voltaria à fila, e a resposta da rodada
-    /// que assume a volta avisa, pelo código, que ela voltou ao backlog.
-    #[test]
-    fn the_returned_task_carries_the_accepted_change_and_the_round_warns_about_it() {
-        if std::env::var_os("MUSTARD_ACTIVE_SPEC").is_some() {
-            return;
-        }
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let UndoneReturn { b, change, stopped, accepted, .. } = return_with_an_undone_task(root);
-
-        let asked = stopped["hint"].as_str().unwrap_or_default();
-        assert!(asked.contains(&b), "a pergunta da mudança diz que B volta à fila: {asked}");
-        let now = task_now(root, &b);
-        let log = spec_x(root);
-        let before = now.replaced().first().and_then(|id| log.get(*id)).expect("a versão de antes");
-        let line = translate("round.returned_change", Locale::PtBr).replace("{wave}", "1").replace("{change}", &change);
-        let agent = now.str_field("agent").unwrap_or_default();
-        assert!(agent.contains(&line), "a mudança aceita na parte do agente: {agent}");
-        assert!(agent.starts_with(before.str_field("agent").unwrap_or_default()), "o resto fica: {agent}");
-        assert_eq!((now.str_field("title"), now.str_field("text")), (before.str_field("title"), before.str_field("text")));
-
-        let warnings = accepted["warnings"].as_array().cloned().unwrap_or_default();
-        let warned = warnings.iter().find(|w| w["reason"] == json!("tasks-returned")).expect("o aviso da volta");
-        assert_eq!((&warned["wave"], &warned["tasks"]), (&json!(1), &json!([b])), "{warned}");
-        let hint = translate("round.tasks_returned", Locale::PtBr).replace("{wave}", "1").replace("{tasks}", &b);
-        assert_eq!(warned["hint"], json!(hint), "{warned}");
     }
 
     /// Grava, como a rodada grava, a versão do envio mais novo da onda `wave`

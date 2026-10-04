@@ -7,7 +7,23 @@
 # git do Windows traz nela troca o fim de linha dos arquivos que o teste
 # compara, e o resultado passaria a depender da máquina. Nada é escrito em
 # `.git/config`, e a identidade vem de cada teste.
+#
+# Os testes gravam sem esperar o disco confirmar: a pasta deles é apagada no
+# fim, e a confirmação de cada gravação custa caro no servidor do Windows.
+# O programa instalado nunca lê este arquivo e continua esperando.
+#
+# O git dos testes também não roda a limpeza automática (`maintenance.auto` e
+# `gc.auto`): ela abriria mais um processo a cada commit de teste, e abrir o
+# git custa 30 milissegundos no Windows. A configuração vai pelo ambiente, não
+# pelo `.git/config`. Não ponha identidade aqui: esconderia no computador de
+# quem programa a falta de identidade que o servidor mostra.
 [env]
 MUSTARD_COPIES_DIR = { value = "target/testes-copias", relative = true }
 MUSTARD_BUILD_DIR = { value = "target/testes-build", relative = true }
 GIT_CONFIG_NOSYSTEM = "1"
+MUSTARD_DISK_SYNC = "off"
+GIT_CONFIG_COUNT = "2"
+GIT_CONFIG_KEY_0 = "maintenance.auto"
+GIT_CONFIG_VALUE_0 = "false"
+GIT_CONFIG_KEY_1 = "gc.auto"
+GIT_CONFIG_VALUE_1 = "0"

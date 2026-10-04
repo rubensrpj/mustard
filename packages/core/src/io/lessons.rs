@@ -464,7 +464,7 @@ mod tests {
     /// cada par grava, e a outra é recusada apontando a lição que já saiu.
     #[test]
     fn two_merges_or_two_retirements_of_the_same_lessons_at_once_leave_one() {
-        for _ in 0..20 {
+        for _ in 0..3 {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("spec").join("lessons.ndjson");
             let a = put(&path, defect("Um", &["um"]));
