@@ -462,10 +462,6 @@ impl Language {
 /// do Sonnet. A instalação o grava em `agents.model` quando o campo falta.
 pub const DEFAULT_AGENT_MODEL: &str = "sonnet";
 
-/// O modelo dos agentes de uma onda mecânica — a que só tira, renomeia, move
-/// ou corrige texto — quando o `mustard.json` não declara `agents.light_model`.
-pub const DEFAULT_AGENT_LIGHT_MODEL: &str = "haiku";
-
 /// O esforço dos agentes do Mustard quando o `mustard.json` não declara
 /// nenhum. A instalação o grava em `agents.effort` quando o campo falta.
 pub const DEFAULT_AGENT_EFFORT: &str = "xhigh";
@@ -486,11 +482,6 @@ pub struct AgentsConfig {
     /// de um modelo. Lido só por [`ProjectConfig::agent_model`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<Value>,
-    /// O modelo mais barato, para a onda que o Jev julga mecânica: um apelido
-    /// ou o nome inteiro de um modelo. Lido só por
-    /// [`ProjectConfig::agent_light_model`].
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub light_model: Option<Value>,
     /// O esforço dos agentes, um dos [`AGENT_EFFORTS`]. Lido só por
     /// [`ProjectConfig::agent_effort`].
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -503,7 +494,7 @@ pub struct AgentsConfig {
 impl AgentsConfig {
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.model.is_none() && self.light_model.is_none() && self.effort.is_none() && self.extra.is_empty()
+        self.model.is_none() && self.effort.is_none() && self.extra.is_empty()
     }
 }
 
@@ -994,16 +985,6 @@ impl ProjectConfig {
     pub fn agent_model(&self) -> &str {
         let declared = self.agents.model.as_ref().and_then(Value::as_str).map(str::trim);
         declared.filter(|model| is_model_name(model)).unwrap_or(DEFAULT_AGENT_MODEL)
-    }
-
-    /// O modelo da onda mecânica: o de `agents.light_model`, sem espaço em
-    /// volta, ou [`DEFAULT_AGENT_LIGHT_MODEL`] quando o campo falta, está em
-    /// branco, não é texto ou não tem cara de modelo (as mesmas letras de
-    /// [`ProjectConfig::agent_model`]).
-    #[must_use]
-    pub fn agent_light_model(&self) -> &str {
-        let declared = self.agents.light_model.as_ref().and_then(Value::as_str).map(str::trim);
-        declared.filter(|model| is_model_name(model)).unwrap_or(DEFAULT_AGENT_LIGHT_MODEL)
     }
 
     /// Escreve [`DEFAULT_AGENT_MODEL`] em `agents.model` quando o campo falta,
@@ -1775,32 +1756,6 @@ mod tests {
             assert!(!cfg.unreadable, "{agents} must not make the file unreadable");
             assert_eq!(cfg.agent_model(), model, "{agents}");
         }
-    }
-
-    /// O modelo da onda mecânica é o de `agents.light_model`, sem espaço em
-    /// volta; sem o campo, em branco, sem ser texto ou com algo que um
-    /// cabeçalho de agente não aceita, vale `haiku`. O modelo comum não muda.
-    #[test]
-    fn the_light_model_is_the_declared_one_or_haiku() {
-        let dir = tempdir().unwrap();
-        assert_eq!(ProjectConfig::load(dir.path()).agent_light_model(), "haiku");
-        assert_eq!(DEFAULT_AGENT_LIGHT_MODEL, "haiku");
-
-        let path = dir.path().join("mustard.json");
-        for (agents, light) in [
-            (r#"{"model":"opus","light_model":"sonnet"}"#, "sonnet"),
-            (r#"{"light_model":"  claude-haiku-5 "}"#, "claude-haiku-5"),
-            (r#"{"light_model":""}"#, "haiku"),
-            (r#"{"light_model":7}"#, "haiku"),
-            (r#"{"light_model":"haiku\neffort: low"}"#, "haiku"),
-            (r#"{"model":"opus"}"#, "haiku"),
-        ] {
-            std::fs::write(&path, format!(r#"{{"agents":{agents}}}"#)).unwrap();
-            let cfg = ProjectConfig::load(dir.path());
-            assert_eq!(cfg.agent_light_model(), light, "{agents}");
-        }
-        std::fs::write(&path, r#"{"agents":{"model":"opus","light_model":"haiku"}}"#).unwrap();
-        assert_eq!(ProjectConfig::load(dir.path()).agent_model(), "opus", "the common model is untouched");
     }
 
     /// A seção `agents` volta ao arquivo como veio, chaves desconhecidas

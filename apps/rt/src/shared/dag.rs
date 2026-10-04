@@ -434,11 +434,6 @@ pub(crate) const KIND_SURE_FROM: f64 = 0.5;
 /// qual ela espera, mesmo sem arquivo em comum com a onda.
 pub(crate) const CLASH_FROM: f64 = 0.5;
 
-/// A chance de sim, a partir da qual a tarefa conta como mecânica: só tira,
-/// renomeia, move ou corrige texto, sem decidir como algo funciona. A onda é
-/// mecânica quando todas as tarefas dela passam desta chance.
-pub(crate) const MECHANICAL_FROM: f64 = 0.7;
-
 /// O que o Jev julgou de uma tarefa do backlog.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct Judgement {
@@ -448,8 +443,6 @@ pub(crate) struct Judgement {
     /// A maior chance, entre as ondas em andamento, de a tarefa mudar o mesmo
     /// que ela, de 0 a 1.
     pub(crate) clash: f64,
-    /// A chance de a tarefa ser mecânica, de 0 a 1 ([`MECHANICAL_FROM`]).
-    pub(crate) mechanical: f64,
     /// A nota de tamanho da tarefa, de 0 (um lugar pequeno) a 3 (muitos
     /// arquivos em várias áreas): quanto código o agente lê e muda
     /// ([`task_size`]).
@@ -457,12 +450,6 @@ pub(crate) struct Judgement {
 }
 
 impl Judgement {
-    /// `true` quando a chance de a tarefa ser mecânica chega a
-    /// [`MECHANICAL_FROM`].
-    pub(crate) fn is_mechanical(&self) -> bool {
-        self.mechanical >= MECHANICAL_FROM
-    }
-
     /// Quantos tokens a conversa do agente cresce ao fazer a tarefa, pela nota
     /// de tamanho ([`task_size::growth_tokens`]).
     pub(crate) fn growth_tokens(&self) -> u64 {
@@ -471,9 +458,8 @@ impl Judgement {
 }
 
 /// O julgamento da tarefa que o Jev não julgou: tipo incerto, que vai sozinha,
-/// nunca mecânica, e do maior tamanho, que é o que se supõe do que não se mediu.
-const UNJUDGED: Judgement =
-    Judgement { kind: TaskKind::Feature, confidence: 0.0, clash: 0.0, mechanical: 0.0, size: 3.0 };
+/// e do maior tamanho, que é o que se supõe do que não se mediu.
+const UNJUDGED: Judgement = Judgement { kind: TaskKind::Feature, confidence: 0.0, clash: 0.0, size: 3.0 };
 
 /// Agrupa `order` (a saída de [`ready_tasks`]) em lotes de despacho pelo tipo
 /// de trabalho que o Jev julgou (`judged`), um tipo por lote, na ordem em que
@@ -938,7 +924,7 @@ mod tests {
     /// O julgamento do Jev de uma tarefa: o tipo, a confiança nele e a chance
     /// de mudar o mesmo que uma onda em andamento.
     fn judged_as(kind: TaskKind, confidence: f64, clash: f64) -> Judgement {
-        Judgement { kind, confidence, clash, mechanical: 0.0, size: 0.0 }
+        Judgement { kind, confidence, clash, size: 0.0 }
     }
 
     /// O teto de um agente que chega a 180 mil tokens: o limite menos os 40 mil

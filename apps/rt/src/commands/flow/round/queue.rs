@@ -783,7 +783,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
-    use crate::commands::flow::round::backlog::{dispatch_backlog, light_waves};
+    use crate::commands::flow::round::backlog::dispatch_backlog;
     use crate::commands::flow::round::tests::*;
     use crate::commands::spec_events::write::record;
 
@@ -3068,23 +3068,13 @@ mod tests {
     fn judging(
         kind_of: impl Fn(u64) -> crate::shared::dag::TaskKind,
     ) -> impl Fn(&crate::shared::jev::Board) -> Result<crate::shared::jev::Judged, mustard_core::domain::map_filter::FilterError> {
-        judging_with(kind_of, |_| 0.0)
+        judging_sized(kind_of, |_| 0.0)
     }
 
-    /// O Jev de mentira de [`judging`], que também dá a cada tarefa a chance
-    /// de ser mecânica que `mechanical_of` diz, pelo número dela.
-    fn judging_with(
-        kind_of: impl Fn(u64) -> crate::shared::dag::TaskKind,
-        mechanical_of: impl Fn(u64) -> f64,
-    ) -> impl Fn(&crate::shared::jev::Board) -> Result<crate::shared::jev::Judged, mustard_core::domain::map_filter::FilterError> {
-        judging_sized(kind_of, mechanical_of, |_| 0.0)
-    }
-
-    /// O Jev de mentira de [`judging_with`], que também dá a cada tarefa a nota
+    /// O Jev de mentira de [`judging`], que também dá a cada tarefa a nota
     /// de tamanho, de 0 a 3, que `size_of` diz, pelo número dela.
     fn judging_sized(
         kind_of: impl Fn(u64) -> crate::shared::dag::TaskKind,
-        mechanical_of: impl Fn(u64) -> f64,
         size_of: impl Fn(u64) -> f64,
     ) -> impl Fn(&crate::shared::jev::Board) -> Result<crate::shared::jev::Judged, mustard_core::domain::map_filter::FilterError> {
         move |board| {
@@ -3096,7 +3086,6 @@ mod tests {
                         kind: kind_of(task.id),
                         confidence: 0.9,
                         clash: 0.0,
-                        mechanical: mechanical_of(task.id),
                         size: size_of(task.id),
                     };
                     (task.id, judgement)
@@ -3104,75 +3093,6 @@ mod tests {
                 .collect();
             Ok(crate::shared::jev::Judged { tasks, usage: mustard_core::domain::map_filter::FilterUsage::default() })
         }
-    }
-
-    /// O julgamento que dá a cada tarefa de `ids` o tipo de recurso e a chance
-    /// de ser mecânica que `mechanical_of` diz.
-    fn judged_as(
-        ids: &[u64],
-        mechanical_of: impl Fn(u64) -> f64,
-    ) -> std::collections::BTreeMap<u64, crate::shared::dag::Judgement> {
-        ids.iter()
-            .map(|id| {
-                let judgement = crate::shared::dag::Judgement {
-                    kind: crate::shared::dag::TaskKind::RemoveUnused,
-                    confidence: 0.9,
-                    clash: 0.0,
-                    mechanical: mechanical_of(*id),
-                    size: 0.0,
-                };
-                (*id, judgement)
-            })
-            .collect()
-    }
-
-    /// A onda em que toda tarefa o Jev julga mecânica (a partir de 0,7) é
-    /// mecânica; basta uma tarefa abaixo disso, ou que o Jev não julgou, para
-    /// a onda toda ficar no modelo do projeto.
-    #[test]
-    fn a_wave_is_mechanical_only_when_every_task_of_it_is() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let (said, crit) = backlog_project(root);
-        let one = backlog_task_on(root, said, crit, "Tirar a constante sem uso.", &["src/a.rs"]);
-        let two = backlog_task_on(root, said, crit, "Renomear o campo velho.", &["src/b.rs"]);
-
-        let judge = judging_with(|_| crate::shared::dag::TaskKind::RemoveUnused, |_| 0.7);
-        let log = spec_now(root);
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), Some(&judge)), Ok(vec![1]));
-        assert_eq!(wave_order(root, 1), vec![one, two], "as duas saem na mesma onda");
-
-        let log = spec_now(root);
-        let all = judged_as(&[one, two], |_| 0.7);
-        assert_eq!(light_waves(&log, &all), BTreeSet::from([1]), "0,7 já é mecânica");
-        let almost = judged_as(&[one, two], |id| if id == two { 0.69 } else { 0.95 });
-        assert_eq!(light_waves(&log, &almost), BTreeSet::new(), "a de 0,69 segura a onda no modelo do projeto");
-        let unjudged = judged_as(&[one], |_| 0.95);
-        assert_eq!(light_waves(&log, &unjudged), BTreeSet::new(), "a tarefa que o Jev não julgou nunca é mecânica");
-    }
-
-    /// A onda que continua um resumo não usado nunca é mecânica, ainda que o
-    /// Jev julgue mecânica a tarefa que o resumo deixou: ela segue no modelo
-    /// do projeto.
-    #[test]
-    fn a_wave_that_continues_a_summary_is_never_mechanical() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let (said, crit) = backlog_project(root);
-        let task = backlog_task_on(root, said, crit, "Tirar a constante sem uso.", &["src/a.rs"]);
-        let codes = spec_now(root).codes();
-        crate::shared::spec_state::seed_event(
-            root,
-            "x",
-            "delivered",
-            json!({"wave": 7, "text": "Parei no limite.", "files": [], "undone": [&codes[&task]]}),
-        );
-
-        let log = spec_now(root);
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None), Ok(vec![1]));
-        let log = spec_now(root);
-        assert!(log.visible().into_iter().any(|e| e.event_type == "wave" && e.int("summary").is_some()), "a onda leva o resumo");
-        assert_eq!(light_waves(&log, &judged_as(&[task], |_| 0.95)), BTreeSet::new());
     }
 
     /// Três tarefas do mesmo tipo e do maior tamanho (125 mil tokens cada) não
@@ -3187,7 +3107,7 @@ mod tests {
         let two = backlog_task_on(root, said, crit, "Mexer no código de dois.", &["src/b.rs"]);
         let three = backlog_task_on(root, said, crit, "Mexer no código de três.", &["src/c.rs"]);
 
-        let judge = judging_sized(|_| TaskKind::Feature, |_| 0.0, |_| 3.0);
+        let judge = judging_sized(|_| TaskKind::Feature, |_| 3.0);
         let log = spec_now(root);
         assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), Some(&judge)), Ok(vec![1, 2, 3]));
         assert_eq!(wave_order(root, 1), vec![one]);
@@ -3208,7 +3128,7 @@ mod tests {
         let two = backlog_task_on(root, said, crit, "Mexer no código de dois.", &["src/b.rs"]);
         let three = backlog_task_on(root, said, crit, "Mexer no código de três.", &["src/c.rs"]);
 
-        let judge = judging_sized(|_| TaskKind::Feature, |_| 0.0, |_| 1.0);
+        let judge = judging_sized(|_| TaskKind::Feature, |_| 1.0);
         let log = spec_now(root);
         assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), Some(&judge)), Ok(vec![1, 2]));
         assert_eq!(wave_order(root, 1), vec![one, two], "65 mil mais 65 mil cabem");
@@ -3227,7 +3147,7 @@ mod tests {
         let one = backlog_task_on(root, said, crit, "Mexer no código de um.", &["src/a.rs"]);
         let two = backlog_task_on(root, said, crit, "Mexer no código de dois.", &["src/b.rs"]);
 
-        let judge = judging_sized(|_| TaskKind::Feature, |_| 0.0, |_| 3.0);
+        let judge = judging_sized(|_| TaskKind::Feature, |_| 3.0);
         let log = spec_now(root);
         assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), Some(&judge)), Ok(vec![1]));
         assert_eq!(wave_order(root, 1), vec![one]);
@@ -3251,11 +3171,11 @@ mod tests {
         let one = backlog_task_on(root, said, crit, "Mexer na primeira.", &["src/a.rs", "src/b.rs", "src/c.rs"]);
         let two = backlog_task_on(root, said, crit, "Mexer na segunda.", &["src/d.rs", "src/e.rs", "src/f.rs"]);
 
-        let big = judging_sized(|_| TaskKind::Feature, |_| 0.0, |_| 3.0);
+        let big = judging_sized(|_| TaskKind::Feature, |_| 3.0);
         let log = spec_now(root);
         assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), Some(&big)), Ok(vec![]), "dois lotes de três");
 
-        let small = judging_sized(|_| TaskKind::Feature, |_| 0.0, |_| 0.0);
+        let small = judging_sized(|_| TaskKind::Feature, |_| 0.0);
         let log = spec_now(root);
         assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), Some(&small)), Ok(vec![2]));
         assert_eq!(wave_order(root, 2), vec![one, two], "um lote de seis arquivos sai");

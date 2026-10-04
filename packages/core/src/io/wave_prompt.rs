@@ -110,11 +110,6 @@ pub struct Flight {
     /// A escolha do orquestrador antes do envio de cada onda que sai agora.
     /// A de uma onda que já saiu vem do envio gravado dela.
     pub choices: BTreeMap<u64, Choice>,
-    /// O modelo pedido para cada onda que sai agora quando não é o comum dos
-    /// agentes: a onda que o Jev julgou mecânica leva o modelo mais barato do
-    /// projeto. A onda que não está aqui leva o modelo comum, e a que já saiu
-    /// leva o do envio gravado dela.
-    pub models: BTreeMap<u64, String>,
 }
 
 /// Os pedidos de todas as ondas do plano, em ordem de número, com as ondas
@@ -896,8 +891,8 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
     // O nome do agente, o mesmo em toda onda, de uma tarefa ou de várias: o
     // molde com esse nome mora no projeto, e o envio grava só o nome.
     let agent = "wave".to_string();
-    let model = material.execution.requested_model().to_string();
-    let effort = material.execution.requested_effort().to_string();
+    let model = context.base.requested_model().to_string();
+    let effort = context.base.requested_effort().to_string();
     let listed = wave_prompt::listed(&material);
     WavePrompt { wave, agent, model, effort, text, lines, listed, bad_skills, stale_skills, bad_settings: Vec::new() }
 }
@@ -920,10 +915,7 @@ fn execution(context: &Context, wave: u64) -> Execution {
     // A linha do tamanho é da onda que está fora ou que sai agora, e só ela
     // lê o git.
     let wave_median = flight.running.contains(&wave).then(|| wave_size::median_added(context.root, context.lang)).flatten();
-    // A onda que a rodada pediu em outro modelo — a mecânica, no mais barato —
-    // diz esse modelo no pedido, e o envio o grava. Sem ele, vale o comum.
-    let model = flight.models.get(&wave).cloned().unwrap_or_else(|| context.base.model.clone());
-    Execution { running, copy, wave_median, model, ..context.base.clone() }
+    Execution { running, copy, wave_median, ..context.base.clone() }
 }
 
 /// As skills que as tarefas de uma onda nomeiam, em ordem de nome.

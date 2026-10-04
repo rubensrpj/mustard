@@ -568,25 +568,14 @@ impl FakeJev {
         kind_of: impl Fn(usize) -> (&'static str, f64) + Send + Sync + 'static,
         clash_of: impl Fn(u64, usize) -> f64 + Send + Sync + 'static,
     ) -> Self {
-        Self::judging_mechanical(kind_of, clash_of, |_| 0.0)
+        Self::judging_sized(kind_of, clash_of, |_| 0.0)
     }
 
     /// O Jev de [`FakeJev::judging`], que também responde a cada pergunta de
-    /// onda mecânica com `mechanical_of(posição)`.
-    fn judging_mechanical(
-        kind_of: impl Fn(usize) -> (&'static str, f64) + Send + Sync + 'static,
-        clash_of: impl Fn(u64, usize) -> f64 + Send + Sync + 'static,
-        mechanical_of: impl Fn(usize) -> f64 + Send + Sync + 'static,
-    ) -> Self {
-        Self::judging_sized(kind_of, clash_of, mechanical_of, |_| 0.0)
-    }
-
-    /// O Jev de [`FakeJev::judging_mechanical`], que também responde a cada
-    /// pergunta de tamanho com a nota `size_of(posição)`, de 0 a 3.
+    /// tamanho com a nota `size_of(posição)`, de 0 a 3.
     fn judging_sized(
         kind_of: impl Fn(usize) -> (&'static str, f64) + Send + Sync + 'static,
         clash_of: impl Fn(u64, usize) -> f64 + Send + Sync + 'static,
-        mechanical_of: impl Fn(usize) -> f64 + Send + Sync + 'static,
         size_of: impl Fn(usize) -> f64 + Send + Sync + 'static,
     ) -> Self {
         Self::start(move |asked| {
@@ -600,8 +589,6 @@ impl FakeJev {
                 if let Some(task) = key.strip_prefix("tipo_t") {
                     let (kind, confidence) = kind_of(position(task));
                     answers.insert(key.clone(), json!({"type": "choice", "choice": kind, "confidence": confidence}));
-                } else if let Some(task) = key.strip_prefix("mec_t") {
-                    answers.insert(key.clone(), json!({"type": "noul", "noul": mechanical_of(position(task))}));
                 } else if let Some(task) = key.strip_prefix("tam_t") {
                     answers.insert(key.clone(), json!({"type": "score", "score": size_of(position(task))}));
                 } else if let Some((wave, task)) = key.strip_prefix("blk_w").and_then(|rest| rest.split_once("_t")) {
@@ -671,7 +658,7 @@ fn tasks_of_one_kind_share_a_wave_without_a_file_in_common_and_the_call_is_recor
     let asked = jev.requests();
     assert_eq!(asked.len(), 1, "o backlog inteiro vai numa chamada só");
     assert_eq!(asked[0]["model"], json!("jev-1.13.0"));
-    assert_eq!(asked[0]["questions"].as_object().unwrap().len(), 9, "o tipo, a onda mecânica e o tamanho por tarefa: {}", asked[0]);
+    assert_eq!(asked[0]["questions"].as_object().unwrap().len(), 6, "o tipo e o tamanho por tarefa: {}", asked[0]);
     let calls = assembly_calls(&project);
     assert_eq!(calls.len(), 1, "{calls:?}");
     let call = &calls[0];
@@ -683,20 +670,15 @@ fn tasks_of_one_kind_share_a_wave_without_a_file_in_common_and_the_call_is_recor
     assert_eq!((call["requests"].clone(), call["candidates"].clone(), call["returned"].clone()), (json!(1), json!(3), json!(3)));
 }
 
-/// A onda que o Jev julga mecânica sai com o modelo leve do projeto, e a que
-/// tem uma tarefa que não é, com o do projeto: o envio grava o modelo de cada
-/// uma, a resposta do despacho o traz, e o texto do próximo passo cita o de
-/// cada onda e manda passá-lo ao agente.
+/// Toda onda sai no modelo do projeto, com o Jev ligado ou não, e ainda que o
+/// `mustard.json` traga a chave `light_model` de antes: o envio grava o modelo
+/// do projeto, a resposta do despacho e o texto do próximo passo não citam
+/// modelo nenhum, o pedido da onda diz o do projeto, e o Jev não pergunta
+/// mais se a tarefa é mecânica.
 #[test]
-fn each_dispatched_wave_carries_its_model_in_the_send_the_dispatch_and_the_next_step() {
-    // As duas do tipo feature, mecânicas ou não: a posição 2 é o desenho.
-    let jev = FakeJev::judging_mechanical(
-        |position| if position == 0 { ("defect", 0.9) } else { ("feature", 0.9) },
-        |_, _| 0.0,
-        |position| if position == 2 { 0.3 } else { 0.9 },
-    );
+fn every_wave_goes_out_on_the_project_model_and_the_jev_is_not_asked_about_it() {
+    let jev = FakeJev::judging(|position| if position == 0 { ("defect", 0.9) } else { ("feature", 0.9) }, |_, _| 0.0);
     let (project, _, _, tasks) = judged_project(&[&["a.rs"], &["c.rs"], &["d.rs"]], &jev);
-    // Os dois modelos vêm do `mustard.json`: o comum e o da onda mecânica.
     let config_path = project.root.join("mustard.json");
     let mut config: Value = serde_json::from_str(&std::fs::read_to_string(&config_path).expect("config")).expect("json");
     config["agents"] = json!({"model": "opus", "light_model": "claude-haiku-5"});
@@ -706,34 +688,26 @@ fn each_dispatched_wave_carries_its_model_in_the_send_the_dispatch_and_the_next_
 
     assert_eq!(batch_orders(&project), vec![vec![tasks[0]], vec![tasks[1], tasks[2]]], "{out}");
     let log = project.log();
-    let model_of = |event: &str, wave: u64| {
-        log.visible()
-            .into_iter()
-            .find(|e| e.event_type == event && e.wave() == Some(wave))
-            .and_then(|e| e.str_field("model").map(str::to_string))
-    };
-    assert_eq!(model_of("send", 1).as_deref(), Some("claude-haiku-5"), "a onda mecânica vai no modelo leve: {out}");
-    assert_eq!(model_of("send", 2).as_deref(), Some("opus"), "a de desenho vai no modelo do projeto: {out}");
+    for wave in [1, 2] {
+        let send = log.visible().into_iter().find(|e| e.event_type == "send" && e.wave() == Some(wave)).expect("the send");
+        assert_eq!(send.str_field("model"), Some("opus"), "a onda {wave} vai no modelo do projeto: {out}");
+        let prompt = send.str_field("text").expect("the request");
+        assert!(prompt.contains("Modelo desta onda: opus."), "o pedido diz o modelo do projeto: {prompt}");
+    }
     let dispatch = out["dispatch"].as_array().expect("the dispatch");
-    let shown: Vec<(u64, &str)> =
-        dispatch.iter().map(|sent| (sent["wave"].as_u64().unwrap(), sent["model"].as_str().unwrap())).collect();
-    assert_eq!(shown, vec![(1, "claude-haiku-5"), (2, "opus")], "{out}");
+    assert_eq!(dispatch.len(), 2, "{out}");
+    assert!(dispatch.iter().all(|sent| sent.get("model").is_none()), "o despacho não traz modelo por onda: {out}");
     let next = out["next"].as_str().expect("the next step");
-    assert!(next.contains("Onda 1: modelo `claude-haiku-5`.") && next.contains("Onda 2: modelo `opus`."), "{next}");
-    assert!(next.contains("parâmetro `model` da ferramenta Agent"), "{next}");
-    let prompt = log
-        .visible()
-        .into_iter()
-        .find(|e| e.event_type == "send" && e.wave() == Some(1))
-        .and_then(|e| e.str_field("text").map(str::to_string))
-        .expect("the request");
-    assert!(prompt.contains("Modelo desta onda: claude-haiku-5."), "o pedido diz o modelo que a onda leva: {prompt}");
+    assert!(!next.contains("modelo") && !next.contains("`model`"), "o próximo passo não cita modelo: {next}");
+    for asked in jev.requests() {
+        let questions = asked["questions"].as_object().expect("the questions");
+        assert!(questions.keys().all(|key| !key.starts_with("mec_")), "o Jev não é perguntado sobre onda mecânica: {asked}");
+    }
 }
 
-/// Sem chave do Jev nenhuma onda leva modelo próprio: o envio grava o do
-/// projeto, e o texto do próximo passo o cita.
+/// Sem chave do Jev a onda também sai no modelo do projeto, e o envio o grava.
 #[test]
-fn without_a_key_every_wave_goes_out_on_the_project_model() {
+fn without_a_key_the_wave_goes_out_on_the_project_model() {
     let (project, _, _, _) = backlog_project(&[&["a.rs"]]);
 
     let out = project.run(&["round", "--spec", SPEC]);
@@ -741,8 +715,7 @@ fn without_a_key_every_wave_goes_out_on_the_project_model() {
     let log = project.log();
     let send = log.visible().into_iter().find(|e| e.event_type == "send" && e.wave() == Some(1)).expect("the send");
     assert_eq!(send.str_field("model"), Some("sonnet"), "{out}");
-    assert_eq!(out["dispatch"][0]["model"], json!("sonnet"), "{out}");
-    assert!(out["next"].as_str().is_some_and(|next| next.contains("Onda 1: modelo `sonnet`.")), "{out}");
+    assert!(out["dispatch"][0].get("model").is_none(), "{out}");
 }
 
 /// Duas tarefas de tipos diferentes que dividem um arquivo nunca saem juntas,
@@ -808,7 +781,7 @@ fn a_high_clash_with_the_wave_in_progress_holds_a_task_that_shares_no_file_with_
     project.jev = Some(strict.url.clone());
     project.run(&["round", "--spec", SPEC]);
     assert_eq!(wave_of(&project, held), None, "o choque de 0,8 segura a tarefa que não divide arquivo");
-    assert_eq!(strict.requests()[0]["questions"].as_object().unwrap().len(), 4, "tipo, onda mecânica, tamanho e bloqueio da tarefa");
+    assert_eq!(strict.requests()[0]["questions"].as_object().unwrap().len(), 3, "tipo, tamanho e bloqueio da tarefa");
 
     let loose = FakeJev::judging(|_| ("feature", 0.9), |_, _| 0.1);
     project.jev = Some(loose.url.clone());
@@ -821,13 +794,13 @@ fn a_high_clash_with_the_wave_in_progress_holds_a_task_that_shares_no_file_with_
 /// nível 1 (65 mil), em duas, as duas primeiras juntas (130 mil).
 #[test]
 fn the_wave_closes_at_the_size_budget_the_jev_estimated() {
-    let biggest = FakeJev::judging_sized(|_| ("feature", 0.9), |_, _| 0.0, |_| 0.0, |_| 3.0);
+    let biggest = FakeJev::judging_sized(|_| ("feature", 0.9), |_, _| 0.0, |_| 3.0);
     let (project, _, _, tasks) = judged_project(&[&["a.rs"], &["c.rs"], &["d.rs"]], &biggest);
     project.run(&["round", "--spec", SPEC]);
     assert_eq!(batch_orders(&project), vec![vec![tasks[0]], vec![tasks[1]], vec![tasks[2]]], "nível 3: uma por onda");
     assert_eq!(biggest.requests().len(), 1, "o tamanho vem na mesma chamada do tipo");
 
-    let small = FakeJev::judging_sized(|_| ("feature", 0.9), |_, _| 0.0, |_| 0.0, |_| 1.0);
+    let small = FakeJev::judging_sized(|_| ("feature", 0.9), |_, _| 0.0, |_| 1.0);
     let (project, _, _, tasks) = judged_project(&[&["a.rs"], &["c.rs"], &["d.rs"]], &small);
     project.run(&["round", "--spec", SPEC]);
     assert_eq!(batch_orders(&project), vec![vec![tasks[0], tasks[1]], vec![tasks[2]]], "nível 1: 130 mil cabem, 195 mil não");
@@ -849,7 +822,7 @@ fn without_a_key_or_with_a_refused_call_the_size_does_not_split_the_wave() {
     refused.run(&["round", "--spec", SPEC]);
     assert_eq!(batch_orders(&refused), vec![tasks.clone()], "chamada recusada");
 
-    let biggest = FakeJev::judging_sized(|_| ("feature", 0.9), |_, _| 0.0, |_| 0.0, |_| 3.0);
+    let biggest = FakeJev::judging_sized(|_| ("feature", 0.9), |_, _| 0.0, |_| 3.0);
     let (judged, _, _, tasks) = judged_project(&same, &biggest);
     judged.run(&["round", "--spec", SPEC]);
     assert_eq!(batch_orders(&judged), vec![vec![tasks[0]]], "com o Jev, o nível 3 separa as três");
@@ -890,8 +863,6 @@ fn judging_items(chance_of: impl Fn(&str) -> f64 + Send + Sync + 'static) -> Fak
         for key in questions.keys() {
             if key.starts_with("tipo_") {
                 answers.insert(key.clone(), json!({"type": "choice", "choice": "feature", "confidence": 0.9}));
-            } else if key.starts_with("mec_") {
-                answers.insert(key.clone(), json!({"type": "noul", "noul": 0.0}));
             } else if key.starts_with("tam_") {
                 answers.insert(key.clone(), json!({"type": "score", "score": 0.0}));
             } else {

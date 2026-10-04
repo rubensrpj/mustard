@@ -27,7 +27,7 @@ use crate::commands::spec_events::conversation::record_measured_call;
 use crate::commands::spec_events::write::{record, RecordCheck};
 use crate::commands::wave::wave_overlap_check::wave_graph;
 use crate::hooks::session::conversation_size::WAVE_LIMIT;
-use crate::shared::dag::{pack_by_kind, sets_cross, touches_whole_tree, BacklogTask, Judgement, Reserved};
+use crate::shared::dag::{pack_by_kind, sets_cross, touches_whole_tree, BacklogTask, Reserved};
 use crate::shared::jev::{Board, BoardTask, BoardWave, Judged};
 use crate::shared::task_size::wave_budget;
 
@@ -87,10 +87,6 @@ pub(crate) type Judge<'a> = dyn Fn(&Board) -> Result<Judged, FilterError> + 'a;
 /// desfeita: cada tarefa dela volta ao backlog ([`backlog_return`]) e entra na
 /// montagem junto das outras, e a que cai num assunto montado agora ganha uma
 /// versão só, com o número da onda nova.
-///
-/// O modelo de cada onda não sai daqui: [`light_waves`] diz, do julgamento do
-/// Jev, quais das ondas montadas são mecânicas, e a rodada pede a elas o
-/// modelo mais barato do projeto.
 ///
 /// Cada onda grava o evento de onda, com autor binário: os critérios são a
 /// união do que as tarefas dela cobrem (`covers`), o pronta-quando é a prova
@@ -317,28 +313,6 @@ pub(crate) fn dispatch_backlog(
         record(start, spec, event_type, draft, PhaseWriter::Binary)?;
     }
     Ok(formed)
-}
-
-/// As ondas de lote de `log` que o Jev julgou mecânicas (`judged`, o
-/// julgamento da montagem, pelo número que cada tarefa tinha ao ser julgada,
-/// o mesmo que o campo `order` da onda guarda): as que têm tarefa e em que
-/// toda tarefa só tira, renomeia, move ou corrige texto
-/// ([`Judgement::is_mechanical`]). A que continua um resumo fica de fora, e a
-/// que tem tarefa que o Jev não julgou também: na dúvida, a onda segue no
-/// modelo do projeto. Sem julgamento (sem chave, ou a chamada falhando) a
-/// rodada nem chama esta função.
-pub(crate) fn light_waves(log: &SpecLog, judged: &BTreeMap<u64, Judgement>) -> BTreeSet<u64> {
-    let planned = log.planned_waves();
-    log.block(BlockQuery::Block(Block::Waves))
-        .into_iter()
-        .filter(|e| e.event_type == "wave" && e.int("summary").is_none())
-        .filter_map(|wave| {
-            let n = wave.wave().filter(|n| planned.contains(n))?;
-            let order = wave.ints("order");
-            (!order.is_empty() && order.iter().all(|id| judged.get(id).is_some_and(Judgement::is_mechanical)))
-                .then_some(n)
-        })
-        .collect()
 }
 
 /// O quadro que o Jev recebe: as ondas do plano ainda abertas

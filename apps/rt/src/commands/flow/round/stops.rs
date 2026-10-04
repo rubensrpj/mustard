@@ -1037,10 +1037,7 @@ mod tests {
             .replace("{count}", "3")
             .replace("{max}", &MAX_FIX_ROUNDS.to_string())
             .replace("{verdicts}", &names.join(", "));
-        // A onda 5 sai agora: o próximo passo cita o modelo dela antes da ordem de despachar.
-        let model = translate("round.wave_model", Locale::PtBr).replace("{wave}", "5").replace("{model}", "sonnet");
-        let rest =
-            format!("{model} {} {}", translate("round.next", Locale::PtBr), translate("round.report", Locale::PtBr));
+        let rest = format!("{} {}", translate("round.next", Locale::PtBr), translate("round.report", Locale::PtBr));
         assert!(out["next"].as_str().unwrap_or_default().ends_with(&format!("{asked} {rest}")), "{out}");
 
         // O usuário tira do plano a onda 1 e a 5, que estava em andamento.
