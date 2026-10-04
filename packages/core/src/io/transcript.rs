@@ -348,6 +348,43 @@ pub fn wave_agent_file(session_dir: &Path, title: &str, sent: &str) -> Option<Pa
     })
 }
 
+/// Todos os pedaços da conversa do agente cujo arquivo é `file`
+/// (`<pasta do projeto>/<sessão>/subagents/agent-<id>.jsonl`): o arquivo de
+/// mesmo nome na pasta `subagents/` de cada sessão da mesma pasta do projeto,
+/// do mais antigo ao mais novo pelo primeiro carimbo; o pedaço sem carimbo vem
+/// por último. Cada `/clear` de quem conduz abre uma sessão nova, e a
+/// plataforma segue gravando o agente num arquivo novo de mesmo nome na pasta
+/// dela. A pasta de outro projeto nunca entra. Vazio quando `file` não está
+/// numa pasta `subagents/` ou nenhum pedaço existe.
+#[must_use]
+pub fn agent_pieces(file: &Path) -> Vec<PathBuf> {
+    let Some(name) = file.file_name() else { return Vec::new() };
+    let Some(session) = file.parent().filter(|dir| dir.file_name().is_some_and(|dir| dir == "subagents")).and_then(Path::parent)
+    else {
+        return Vec::new();
+    };
+    let Some(project) = session.parent() else { return Vec::new() };
+    let mut pieces: Vec<(Option<DateTime<Utc>>, PathBuf)> = std::fs::read_dir(project)
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path().join("subagents").join(name))
+        .filter(|path| path.is_file())
+        .map(|path| (first_stamp(&path), path))
+        .collect();
+    pieces.sort_by(|(a, pa), (b, pb)| (a.is_none(), a).cmp(&(b.is_none(), b)).then_with(|| pa.cmp(pb)));
+    pieces.into_iter().map(|(_, path)| path).collect()
+}
+
+/// O primeiro carimbo do arquivo em `path`. Lê só até achá-lo: ele vem na
+/// primeira linha da plataforma.
+fn first_stamp(path: &Path) -> Option<DateTime<Utc>> {
+    let file = std::fs::File::open(path).ok()?;
+    std::io::BufReader::new(file).lines().map_while(Result::ok).find_map(|text| {
+        serde_json::from_str::<Line>(&text).ok()?.timestamp.as_deref().and_then(utc)
+    })
+}
+
 /// Entre os agentes `openings` — cada um com o caminho do arquivo, a primeira
 /// linha do pedido e o primeiro instante —, o que recebeu o pedido `title`
 /// enviado em `sent`: a primeira linha igual ao título e o começo não antes do
@@ -621,6 +658,35 @@ mod tests {
         assert_eq!(main.tokens, 110 + 10, "{main:?}");
         assert_eq!(main.steps, 2, "{main:?}");
         assert_eq!(main.model.as_deref(), Some(MODEL));
+    }
+
+    /// A conversa de um agente que atravessou dois `/clear` de quem conduz
+    /// tem três pedaços, um na pasta de cada sessão do projeto, e vem do mais
+    /// antigo ao mais novo pelo primeiro carimbo, não pelo nome da sessão,
+    /// achada a partir de qualquer um deles. O pedaço de mesmo nome na pasta
+    /// de outro projeto, o arquivo de outro agente e o `.meta.json` não
+    /// entram; um arquivo fora de uma pasta `subagents/` não tem pedaços.
+    #[test]
+    fn the_pieces_of_an_agent_come_from_every_session_of_its_project_oldest_first() {
+        let config = tempfile::tempdir().unwrap();
+        let projects = config.path().join("projects");
+        let piece = |project: &str, session: &str, at: &str| {
+            let path = projects.join(project).join(session).join("subagents").join("agent-a1.jsonl");
+            write(&path, &[response("r", at, "feat/obra", true, [1, 0, 0, 0], &thinking())]);
+            path
+        };
+        let oldest = piece("-obra", "sessao-c", "2026-01-10T21:00:00.000Z");
+        let middle = piece("-obra", "sessao-a", "2026-01-10T21:10:00.000Z");
+        let newest = piece("-obra", "sessao-b", "2026-01-10T21:20:00.000Z");
+        piece("-outra", "sessao-d", "2026-01-10T20:00:00.000Z");
+        let agents = projects.join("-obra").join("sessao-a").join("subagents");
+        write(&agents.join("agent-a2.jsonl"), &[response("x", "2026-01-10T20:00:00.000Z", "feat/obra", true, [1, 0, 0, 0], &thinking())]);
+        std::fs::write(agents.join("agent-a1.meta.json"), "{}").unwrap();
+
+        let all = vec![oldest.clone(), middle, newest.clone()];
+        assert_eq!(agent_pieces(&newest), all);
+        assert_eq!(agent_pieces(&oldest), all, "any piece finds the whole conversation");
+        assert_eq!(agent_pieces(&projects.join("-obra").join("agent-a1.jsonl")), Vec::<PathBuf>::new());
     }
 
     /// A sessão é só o nome de um arquivo: o nome que sobe de pasta, desce

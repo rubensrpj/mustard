@@ -493,6 +493,10 @@ pub fn final_review_commit(root: &Path, log: &SpecLog) -> Option<String> {
 ///
 /// Junto do texto vem a lista dos itens que ele lista ([`FinalReview::listed`]),
 /// para o fechamento gravá-la no envio e o veredito conferir a leitura.
+///
+/// Só lê o disco, nunca grava: o fechamento grava o envio com o que ela
+/// devolve, e a leitura `request-review-preview` imprime o mesmo texto sem
+/// gravar nada, para o usuário ver o pedido real antes de ele valer.
 #[must_use]
 pub fn final_review(root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> FinalReview {
     let planned = log.planned_waves();

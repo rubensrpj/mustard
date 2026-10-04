@@ -31,7 +31,10 @@ pub enum SpecEventsCmd {
     /// exact request recorded when wave `n` went out: the agent reads its own
     /// request this way. `request-review` does the same for the final
     /// review, which has no wave: the close answer hands the reviewer this
-    /// command instead of the request. `delivered-<n>` reads the wave's
+    /// command instead of the request. `request-review-preview` prints, as
+    /// plain text, the final review request the close would build now,
+    /// recording nothing: the user sees the real request before it counts.
+    /// `delivered-<n>` reads the wave's
     /// current delivery (the one the round took over, else the agent's own),
     /// keeping only the agreed items not met. `backlog` lists the tasks not yet delivered,
     /// each with its code, current version, wave, file count and the pending
@@ -56,7 +59,8 @@ pub enum SpecEventsCmd {
     #[command(display_order = 8)]
     Read {
         /// The block to read, e.g. `state`, `wave-list`, `wave-2`, `dispatch-2`,
-        /// `request-2`, `request-review`, `delivered-2`, `backlog`, `calls` or
+        /// `request-2`, `request-review`, `request-review-preview`,
+        /// `delivered-2`, `backlog`, `calls` or
         /// `item-MSTD-TASK-0003`.
         block: String,
         /// The spec whose file is read. Without it, the current spec: the

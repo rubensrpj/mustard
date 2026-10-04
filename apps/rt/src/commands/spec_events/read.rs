@@ -53,6 +53,10 @@
 //!   onda, igual byte a byte: é por ele que o agente lê o próprio pedido.
 //!   `request-review` faz o mesmo com o último envio do revisor final, que
 //!   não tem onda: o fechamento manda o revisor ler o pedido por ele.
+//!   `request-review-preview` devolve, também em texto puro, o pedido que o
+//!   fechamento daria ao revisor final agora, pela mesma montagem dele
+//!   ([`final_review`]), sem gravar envio nem leitura: é por ele que o
+//!   usuário vê o pedido real antes de ele valer.
 //!
 //! `calls` soma as chamadas de cada comando, uma linha por comando: quantas,
 //! as falhas por motivo, a mediana, o p90 e o pior do tempo da chamada e do
@@ -108,7 +112,7 @@ use mustard_core::domain::spec_events::{
 };
 use mustard_core::domain::spec_state::SpecState;
 use mustard_core::io::spec_events as store;
-use mustard_core::io::wave_prompt::{lesson_bank, request_items};
+use mustard_core::io::wave_prompt::{final_review, lesson_bank, request_items};
 use mustard_core::platform::i18n::Locale;
 use mustard_core::ClaudePaths;
 use serde_json::{json, Map, Value};
@@ -180,6 +184,7 @@ pub(crate) fn read_for(opts: &ReadOpts, session: Option<&str>, from: &Path) -> R
     let events: Vec<String> = match reading {
         ReadQuery::Request(wave) => return Ok(request_text(&log, wave)),
         ReadQuery::ReviewRequest => return Ok(review_request_text(&log)),
+        ReadQuery::ReviewPreview => return Ok(final_review(&project.root, &spec, &log, lang).text),
         ReadQuery::Dispatch(wave) => {
             let (lines, listed) =
                 dispatch_lines(&project.root, &log, wave, term, &codes, &project.languages, item_view);
@@ -717,11 +722,16 @@ pub(crate) fn read_by_command(command: &str) -> String {
 }
 
 /// Run `read` and print the block; exit 1 on a refusal. The recorded request
-/// of a wave, or of the final review, prints byte for byte, with no newline
-/// added.
+/// of a wave, or of the final review, and the final review request the close
+/// would build now print byte for byte, with no newline added.
 pub fn run(opts: &ReadOpts) {
     match read_at(opts) {
-        Ok(text) if matches!(ReadQuery::parse(&opts.block), Some(ReadQuery::Request(_) | ReadQuery::ReviewRequest)) => {
+        Ok(text)
+            if matches!(
+                ReadQuery::parse(&opts.block),
+                Some(ReadQuery::Request(_) | ReadQuery::ReviewRequest | ReadQuery::ReviewPreview)
+            ) =>
+        {
             print!("{text}");
         }
         Ok(report) => println!("{report}"),

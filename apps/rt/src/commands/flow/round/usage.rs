@@ -91,14 +91,21 @@ pub(super) fn measure_usage<'u>(
 /// o agente cujo pedido abre com a primeira linha do texto do envio que
 /// despachou a onda e que começou depois dele, procurado na pasta da sessão
 /// (`session`) e, quando ela não o tem — a onda saiu antes de um `/clear` —,
-/// nas das outras sessões do mesmo projeto. `None` quando o arquivo não é
-/// achado ou não se lê.
+/// nas das outras sessões do mesmo projeto. A conversa do agente que
+/// atravessou um `/clear` soma todos os pedaços dela
+/// ([`transcript::agent_pieces`]); a linha repetida entre dois pedaços conta
+/// uma vez, como toda resposta e todo uso de ferramenta. `None` quando o
+/// arquivo não é achado ou nenhum pedaço se lê.
 fn wave_usage(log: &SpecLog, session: &Path, wave: u64) -> Option<transcript::Usage> {
     let sent = log.get(dispatched_at(log, wave)?)?;
     let title = sent.str_field("text")?.lines().next()?;
     let file = transcript::wave_agent_file(session, title, sent.at())?;
-    let bytes = std::fs::read(file).ok()?;
-    Some(transcript::usage_of(String::from_utf8_lossy(&bytes).lines()))
+    let texts: Vec<String> = transcript::agent_pieces(&file)
+        .iter()
+        .filter_map(|piece| std::fs::read(piece).ok())
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+        .collect();
+    (!texts.is_empty()).then(|| transcript::usage_of(texts.iter().flat_map(|text| text.lines())))
 }
 
 /// O consumo da conversa principal: as linhas dela no ramo da spec, desde o
@@ -237,5 +244,47 @@ pub(super) mod tests {
         assert_eq!(revised.int("tokens"), Some(1_142), "{revised:?}");
         assert_eq!(revised.int("steps"), Some(1), "{revised:?}");
         assert_eq!(revised.str_field("model_used"), Some(MODEL), "{revised:?}");
+    }
+
+    /// A onda atravessou dois `/clear` de quem conduz, e a conversa do agente
+    /// ficou em três pedaços, um na pasta de cada sessão: o pedido e a
+    /// resposta `r1` na sessão antiga, `r2` na do meio e, na nova, `r2` de
+    /// novo — a linha que a plataforma repete na troca — e `r3`. A rodada
+    /// grava a conversa inteira, cada resposta e cada uso de ferramenta uma
+    /// vez.
+    #[test]
+    fn the_round_sums_every_piece_of_the_wave_agent_once() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        let prompt = request_at(&round(root, "x", None), 0);
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let sent = log.visible().into_iter().find(|e| e.event_type == "send" && e.wave() == Some(1)).unwrap().at().to_string();
+
+        let platform = tempdir().unwrap();
+        let config = platform.path();
+        let at = |millis| instant(&sent, millis);
+        let answer = |millis, id: &str, usage, tools: &[&str]| answer_line(&at(millis), "feature/x", true, id, usage, tools);
+        let second = answer(60_000, "r2", [3, 0, 2_000, 50], &["t2", "t3"]);
+        for (name, start) in [("antiga", -1_000), ("meio", 50_000), ("nova", 100_000)] {
+            session(config, "-tmp-obra", name, &at(start));
+        }
+        let piece = |name: &str| format!("{name}/subagents/agent-onda.jsonl");
+        let first = answer(300, "r1", [2, 100, 1_000, 40], &["t1"]);
+        platform_file(config, "-tmp-obra", &piece("antiga"), &[request_line(&at(200), &prompt), first]);
+        platform_file(config, "-tmp-obra", &piece("meio"), &[second.clone()]);
+        platform_file(config, "-tmp-obra", &piece("nova"), &[second, answer(120_000, "r3", [4, 0, 3_000, 60], &["t4"])]);
+
+        std::fs::write(root.join("src/a.rs"), "fn one() {}\n// A soma saiu.\n").unwrap();
+        let delivery = json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"], "commit": "a onda 1 saiu"});
+        assert_eq!(returned(root, delivery)["ok"], json!(true));
+        let opts = RoundOpts { root: root.to_path_buf(), spec: Some("x".to_string()), report: Some(line("USAGE", json!({"wave": 1}))) };
+        assert_eq!(round_in(&opts, Caller { session: Some("nova"), config_dir: Some(config) })["ok"], json!(true));
+
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let revised = log.visible().into_iter().find(|e| e.event_type == "send" && e.wave() == Some(1)).unwrap();
+        // r1 = 1.142, r2 = 2.053 e r3 = 3.064, cada uma uma vez; t1 a t4.
+        assert_eq!(revised.int("tokens"), Some(1_142 + 2_053 + 3_064), "{revised:?}");
+        assert_eq!(revised.int("steps"), Some(4), "{revised:?}");
     }
 }

@@ -34,7 +34,11 @@
 //! O tamanho é a soma de `input_tokens`, `cache_read_input_tokens` e
 //! `cache_creation_input_tokens` do último uso gravado na conversa. A de quem
 //! conduz é a de `transcript_path`; a do subagente fica em
-//! `<transcript_path sem .jsonl>/subagents/agent-<id>.jsonl`. Sem arquivo
+//! `<transcript_path sem .jsonl>/subagents/agent-<id>.jsonl` e, quando quem
+//! conduz limpou a conversa no meio da onda, em pedaços de mesmo nome nas
+//! pastas das sessões anteriores: o agente de onda é reconhecido pelo começo
+//! do pedaço mais antigo, e o aviso e a folga ficam guardados pelo agente,
+//! não pela sessão. Sem arquivo
 //! legível, sem uso gravado ou sem spec para retomar, nada acontece:
 //! [`Verdict::Allow`], porque sem tamanho conhecido não há como decidir.
 
@@ -45,7 +49,7 @@ use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verd
 use mustard_core::domain::mustard_id;
 use mustard_core::domain::spec_events::type_spec;
 use mustard_core::domain::wave_prompt::is_wave_title;
-use mustard_core::io::transcript::heading_of;
+use mustard_core::io::transcript::{agent_pieces, heading_of};
 use mustard_core::platform::error::Error;
 use mustard_core::platform::i18n::Locale;
 use mustard_core::{translate, ClaudePaths};
@@ -171,14 +175,24 @@ fn last_context(path: &Path) -> Option<u64> {
     }
 }
 
+/// Se `text` serve de nome na pasta de estado: não vazio, só letras e
+/// números ASCII, `-` e `_`.
+fn is_plain(text: &str) -> bool {
+    !text.is_empty() && text.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+/// A pasta de estado `.claude/.session/` do projeto `root`.
+fn state_dir(root: &Path) -> Option<PathBuf> {
+    Some(ClaudePaths::for_project(root).ok()?.claude_dir().join(".session"))
+}
+
 /// O arquivo de estado `name` da sessão `session`, em `.claude/.session/` do
 /// projeto `root`. `None` sem sessão de verdade: sem onde guardar o que já
 /// foi avisado.
 fn mark_path(root: &Path, session: Option<&str>, name: &str) -> Option<PathBuf> {
-    let plain = |text: &str| !text.is_empty() && text.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
-    let session = session.map(str::trim).filter(|session| plain(session) && *session != "unknown")?;
-    plain(name).then_some(())?;
-    Some(ClaudePaths::for_project(root).ok()?.claude_dir().join(".session").join(session).join(name))
+    let session = session.map(str::trim).filter(|session| is_plain(session) && *session != "unknown")?;
+    is_plain(name).then_some(())?;
+    Some(state_dir(root)?.join(session).join(name))
 }
 
 /// O número guardado em `path`, ou `None` sem arquivo ou com texto que não é
@@ -278,48 +292,61 @@ fn user_text(line: &Value) -> Option<String> {
     }
 }
 
-/// A leitura da conversa do agente em `path`: `None` quando ela não abre com
-/// o título de um pedido de onda no idioma `lang` (um agente qualquer), ou
-/// quando ainda não tem nenhum uso gravado. O resumo pesa o salto do tamanho
-/// entre a resposta que o lê (veja [`reads_summary`]) e a resposta seguinte.
-fn wave_context(path: &Path, lang: Locale) -> Option<WaveContext> {
+/// Se a conversa em `path` abre com o título de um pedido de onda no idioma
+/// `lang`: a primeira mensagem do usuário nela é a que vale.
+fn opens_a_wave(path: &Path, lang: Locale) -> bool {
     use std::io::BufRead;
 
-    let file = std::fs::File::open(path).ok()?;
-    let mut opened = false;
-    let (mut now, mut summary, mut before) = (None, 0_u64, None::<u64>);
-    for line in std::io::BufReader::new(file).lines() {
-        let Ok(line) = line else { break };
-        if !opened {
-            let Ok(value) = serde_json::from_str::<Value>(&line) else { continue };
-            let Some(first) = user_text(&value) else { continue };
-            if !is_wave_title(heading_of(&first), lang) {
-                return None;
+    let Ok(file) = std::fs::File::open(path) else { return false };
+    std::io::BufReader::new(file)
+        .lines()
+        .map_while(Result::ok)
+        .find_map(|line| user_text(&serde_json::from_str::<Value>(&line).ok()?))
+        .is_some_and(|first| is_wave_title(heading_of(&first), lang))
+}
+
+/// A leitura da conversa do agente, nos pedaços `pieces`, do mais antigo ao
+/// mais novo ([`agent_pieces`]): `None` quando o mais antigo não abre com o
+/// título de um pedido de onda no idioma `lang` (um agente qualquer), ou
+/// quando ainda não há nenhum uso gravado. O tamanho de agora é o último uso,
+/// o do pedaço da sessão atual, que é o mais novo. O resumo pesa o salto do
+/// tamanho entre a resposta que o lê (veja [`reads_summary`]) e a resposta
+/// seguinte — a linha seguinte com o mesmo `message.id` é da mesma resposta
+/// —, também quando o resumo foi lido num pedaço anterior.
+fn wave_context(pieces: &[PathBuf], lang: Locale) -> Option<WaveContext> {
+    use std::io::BufRead;
+
+    if !opens_a_wave(pieces.first()?, lang) {
+        return None;
+    }
+    let (mut now, mut summary, mut before) = (None, 0_u64, None::<(Option<String>, u64)>);
+    for piece in pieces {
+        let Ok(file) = std::fs::File::open(piece) else { continue };
+        for line in std::io::BufReader::new(file).lines().map_while(Result::ok) {
+            let Some((value, usage)) = usage_of_line(&line) else { continue };
+            let context = context_of(&usage);
+            now = Some(context);
+            let message = value.get("message");
+            let id = message.and_then(|message| message.get("id")).and_then(Value::as_str).map(str::to_owned);
+            if let Some((_, read_at)) = before.take_if(|(read_id, _)| id.is_none() || *read_id != id) {
+                summary += context.saturating_sub(read_at);
             }
-            opened = true;
-            continue;
-        }
-        let Some((value, usage)) = usage_of_line(&line) else { continue };
-        let context = context_of(&usage);
-        now = Some(context);
-        if let Some(read_at) = before.take() {
-            summary += context.saturating_sub(read_at);
-        }
-        let reads = value
-            .get("message")
-            .and_then(|message| message.get("content"))
-            .and_then(Value::as_array)
-            .is_some_and(|blocks| blocks.iter().any(reads_summary));
-        if reads {
-            before = Some(context);
+            let reads = message
+                .and_then(|message| message.get("content"))
+                .and_then(Value::as_array)
+                .is_some_and(|blocks| blocks.iter().any(reads_summary));
+            if reads {
+                before = Some((id, context));
+            }
         }
     }
     Some(WaveContext { now: now?, summary })
 }
 
-/// A conversa do subagente de `input`, no arquivo que o Claude Code guarda
-/// numa pasta `subagents/` ao lado da conversa principal. `None` fora de um
-/// subagente ou sem o caminho da conversa principal.
+/// O pedaço da conversa do subagente de `input` na sessão atual, no arquivo
+/// que o Claude Code guarda numa pasta `subagents/` ao lado da conversa
+/// principal. `None` fora de um subagente ou sem o caminho da conversa
+/// principal.
 fn agent_transcript(input: &HookInput) -> Option<PathBuf> {
     let transcript = input.transcript_path()?;
     let name = input.subagent_transcript_name()?;
@@ -329,16 +356,19 @@ fn agent_transcript(input: &HookInput) -> Option<PathBuf> {
 
 /// Os dois arquivos de estado do agente de onda de `input`: o tamanho da
 /// conversa quando o aviso do limite chegou, que só existe depois dele, e
-/// quantas chamadas o agente fez desde então. `None` sem sessão de verdade
-/// ou fora de um subagente.
+/// quantas chamadas o agente fez desde então. Ficam pelo nome do agente,
+/// direto em `.claude/.session/`, fora da pasta de qualquer sessão: o
+/// `/clear` de quem conduz troca a sessão no meio da onda, e o aviso dado
+/// antes dele não se repete nem a folga recomeça. `None` fora de um
+/// subagente.
 fn wave_marks(root: &Path, input: &HookInput) -> Option<(PathBuf, PathBuf)> {
     let name = input.subagent_transcript_name()?;
     let agent = name.trim_end_matches(".jsonl");
-    let session = input.session_id.as_deref();
-    Some((
-        mark_path(root, session, &format!("size-limit-{agent}"))?,
-        mark_path(root, session, &format!("size-calls-{agent}"))?,
-    ))
+    let mark = |kind: &str| {
+        let name = format!("size-{kind}-{agent}");
+        Some(state_dir(root)?.join(is_plain(&name).then_some(name)?))
+    };
+    Some((mark("limit")?, mark("calls")?))
 }
 
 /// O aviso ao agente de onda que passou do limite: a conversa do subagente de
@@ -347,7 +377,7 @@ fn wave_marks(root: &Path, input: &HookInput) -> Option<(PathBuf, PathBuf)> {
 /// as chamadas seguintes só gastam a folga, sem repetir o aviso. `None` fora
 /// de uma onda, até o limite e depois do aviso.
 fn wave_limit_text(input: &HookInput, root: &Path, lang: Locale) -> Option<String> {
-    let context = wave_context(&agent_transcript(input)?, lang)?;
+    let context = wave_context(&agent_pieces(&agent_transcript(input)?), lang)?;
     let counted = context.now.saturating_sub(context.summary);
     if counted <= WAVE_LIMIT {
         return None;
@@ -433,7 +463,7 @@ fn wave_stop_reason(input: &HookInput, root: &Path, ctx: &Ctx) -> Option<String>
     }
     let (limit, calls) = wave_marks(root, input)?;
     let warned_at = read_mark(&limit)?;
-    let now = last_context(&agent_transcript(input)?)?;
+    let now = agent_pieces(&agent_transcript(input)?).iter().rev().find_map(|piece| last_context(piece))?;
     if read_mark(&calls).unwrap_or(0) < WAVE_GRACE_CALLS && now < warned_at + WAVE_GRACE_TOKENS {
         return None;
     }
@@ -805,6 +835,102 @@ mod tests {
         assert!(injected(&call).is_some(), "reading a task item is not reading a summary: the whole size counts");
     }
 
+    /// O resumo pedido junto com outra ferramenta, na mesma resposta, sai da
+    /// conta: as duas chamadas ficam em duas linhas com o mesmo
+    /// `message.id`, e o salto é o da resposta seguinte, não o da linha
+    /// seguinte. Com um resumo de 100 mil, 250.000 de conversa não avisam e
+    /// 250.001 avisam.
+    #[test]
+    fn the_summary_read_alongside_another_tool_comes_off_the_count() {
+        let dir = open_project_in("x", Locale::PtBr);
+        let root = dir.path();
+        let with_id = |tokens, action, id: &str| {
+            let mut reply: Value = serde_json::from_str(&agent_reply(tokens, Some(action))).unwrap();
+            reply["message"]["id"] = id.into();
+            reply.to_string()
+        };
+        let mut replies = vec![with_id(40_000, "summary", "r1"), with_id(40_000, "edit", "r1"), with_id(140_000, "edit", "r2")];
+        assert_eq!(agent_grows(root, &mut replies, 250_000, Locale::PtBr), None, "the 100,000 summary comes off");
+        assert!(agent_grows(root, &mut replies, 250_001, Locale::PtBr).is_some(), "and one more token warns");
+    }
+
+    /// O pedaço da conversa do agente `a1` na sessão `u`, que um `/clear` de
+    /// quem conduz abriu depois da sessão `t` de [`write_agent`]: abre com um
+    /// resultado de ferramenta e traz uma resposta por tamanho de `sizes`.
+    /// Devolve a chamada de ferramenta do agente nessa sessão, depois dela.
+    fn agent_after_clear(root: &Path, sizes: &[u64]) -> HookInput {
+        let dir = root.join("u").join("subagents");
+        std::fs::create_dir_all(&dir).unwrap();
+        let opening = serde_json::json!({"type": "user", "isSidechain": true,
+            "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t", "content": "ok"}]}});
+        let mut text = format!("{opening}\n");
+        for size in sizes {
+            text.push_str(&agent_reply(*size, Some("edit")));
+            text.push('\n');
+        }
+        std::fs::write(dir.join("agent-a1.jsonl"), text).unwrap();
+        let transcript = root.join("u.jsonl");
+        conductor_transcript_of(&transcript, 50_000);
+        HookInput { session_id: Some("s2".to_string()), agent_id: Some("a1".to_string()), ..conductor_after_tool(root, &transcript) }
+    }
+
+    /// A conversa do agente de onda atravessou um `/clear` de quem conduz: o
+    /// pedaço da sessão antiga abre com o título do pedido e traz o resumo de
+    /// 100 mil que o agente leu; o da sessão atual abre com um resultado de
+    /// ferramenta. Com o resumo fora da conta, 240.000 no pedaço atual não
+    /// avisam e 260.000 avisam, uma vez; 275.000, os 15 mil da folga, recusam.
+    #[test]
+    fn a_wave_agent_split_by_a_clear_is_warned_once_and_refused_after_the_grace() {
+        let dir = open_project_in("x", Locale::PtBr);
+        let root = dir.path();
+        write_agent(root, &wave_request(Locale::PtBr), &[agent_reply(40_000, Some("summary")), agent_reply(140_000, Some("edit"))]);
+        let refused_after = |sizes: &[u64]| {
+            let call = HookInput {
+                hook_event_name: Some("PreToolUse".to_string()),
+                tool_name: Some("Read".to_string()),
+                tool_input: serde_json::json!({"file_path": root.join("a.rs").to_string_lossy()}),
+                ..agent_after_clear(root, sizes)
+            };
+            matches!(crate::dispatch::run_event(Some(Trigger::PreToolUse), &call).verdict, Verdict::Deny { .. })
+        };
+        assert_eq!(injected(&agent_after_clear(root, &[240_000])), None, "240,000 less the 100,000 summary is under the limit");
+        let warned = injected(&agent_after_clear(root, &[240_000, 260_000]));
+        assert!(warned.is_some_and(|text| text.starts_with("[Mustard]") && text.contains("160 mil")), "over the limit warns");
+        assert_eq!(injected(&agent_after_clear(root, &[240_000, 260_000])), None, "the warning comes once");
+        assert!(!refused_after(&[240_000, 260_000]), "inside the grace");
+        assert_eq!(injected(&agent_after_clear(root, &[240_000, 260_000, 275_000])), None);
+        assert!(refused_after(&[240_000, 260_000, 275_000]), "15,000 tokens after the warning end the grace");
+    }
+
+    /// O aviso dado antes do `/clear` de quem conduz não se repete depois
+    /// dele, e a folga segue contando: avisado na sessão antiga, o agente faz
+    /// três chamadas ali e cinco na sessão nova, e a oitava acaba a folga.
+    #[test]
+    fn the_warning_before_a_clear_is_not_repeated_after_it_and_the_grace_keeps_counting() {
+        let dir = open_project_in("x", Locale::PtBr);
+        let root = dir.path();
+        write_agent(root, &wave_request(Locale::PtBr), &[agent_reply(30_000, Some("read")), agent_reply(160_000, Some("edit"))]);
+        assert!(injected(&agent_after_tool(root)).is_some(), "the warning, before the clear");
+        for _ in 1..=3 {
+            assert_eq!(injected(&agent_after_tool(root)), None);
+        }
+        let refused_after = || {
+            let call = HookInput {
+                hook_event_name: Some("PreToolUse".to_string()),
+                tool_name: Some("Read".to_string()),
+                tool_input: serde_json::json!({"file_path": root.join("a.rs").to_string_lossy()}),
+                ..agent_after_clear(root, &[161_000])
+            };
+            matches!(crate::dispatch::run_event(Some(Trigger::PreToolUse), &call).verdict, Verdict::Deny { .. })
+        };
+        for call in 4..=7 {
+            assert_eq!(injected(&agent_after_clear(root, &[161_000])), None, "call {call}: the warning is not repeated");
+            assert!(!refused_after(), "call {call} is inside the grace");
+        }
+        assert_eq!(injected(&agent_after_clear(root, &[161_000])), None);
+        assert!(refused_after(), "the eighth call, counted across the clear, ends the grace");
+    }
+
     /// O motivo com que o gancho de antes da ferramenta recusa a chamada de
     /// `tool` do subagente `a1`, pelo despachante e pelo registro. `None`
     /// quando a chamada passa, com ou sem o prazo que a trava de comandos
@@ -1000,7 +1126,8 @@ mod tests {
     /// O aviso do limite fica calado onde não é de uma onda: na sessão
     /// principal, que só tem o aviso de quem conduz (e abaixo do degrau dele,
     /// nada), num subagente cujo primeiro texto não é o título de um pedido de
-    /// onda — por maior que a conversa dele esteja —, e num pedido de onda no
+    /// onda — por maior que a conversa dele esteja, também quando um `/clear`
+    /// de quem conduz a repartiu em dois pedaços —, e num pedido de onda no
     /// idioma que o projeto não usa.
     #[test]
     fn the_limit_notice_is_quiet_outside_a_wave() {
@@ -1017,6 +1144,8 @@ mod tests {
             write_agent(root, opening, &replies);
             assert_eq!(injected(&agent_after_tool(root)), None, "{opening:?} is not a wave request");
         }
+        write_agent(root, "Explore o repositório e conte os arquivos.", &replies);
+        assert_eq!(injected(&agent_after_clear(root, &[200_000, 300_000])), None, "a plain agent split by a clear is not warned");
         write_agent(root, &wave_request(Locale::PtBr), &replies);
         assert!(injected(&agent_after_tool(root)).is_some(), "the same conversation, opened by a wave request, warns");
     }

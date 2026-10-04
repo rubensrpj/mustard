@@ -1373,6 +1373,32 @@ mod tests {
         out
     }
 
+    /// O pedido que o fechamento daria ao revisor final sai antes de valer
+    /// pela leitura `request-review-preview`, sem gravar nada na spec: nem
+    /// envio, nem leitura. O texto é o mesmo que o fechamento grava no envio
+    /// logo depois.
+    #[test]
+    fn the_review_preview_prints_the_request_the_close_records_and_records_nothing() {
+        use crate::commands::spec_events::read::{read_for, ReadOpts};
+
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        ready_to_close(root, "x", &["git --version"]);
+        let path = store::spec_file(root, "x").unwrap();
+        let before = std::fs::read(&path).unwrap();
+
+        let opts =
+            ReadOpts { root: root.to_path_buf(), spec: Some("x".into()), block: "request-review-preview".into(), term: None };
+        let preview = read_for(&opts, None, root).unwrap_or_else(|refused| panic!("{refused}"));
+        assert!(preview.lines().any(|line| line.starts_with("- ") && line.contains("MSTD-")), "{preview}");
+        assert_eq!(std::fs::read(&path).unwrap(), before, "the preview records nothing");
+
+        let asked =
+            close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None, ..Default::default() }, None);
+        assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+        assert_eq!(review_prompt(&asked), preview, "the close records the request the preview printed");
+    }
+
     /// O pedido do agente de revisão final vira evento de envio no
     /// spec.ndjson antes de sair para quem despacha: o texto inteiro, o
     /// papel de revisão, o modelo e o esforço — pela mesma porta que já grava o pedido
