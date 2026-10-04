@@ -1,6 +1,6 @@
 //! Os ganchos do Mustard, atrás do contrato `Check` / `Observer` do núcleo.
 //!
-//! São quatorze, cada um num arquivo, agrupados pela família do evento:
+//! São quinze, cada um num arquivo, agrupados pela família do evento:
 //!
 //! - `bash` — a trava de comandos (`command_guard`).
 //! - `write` — o portão de escrita (`write_gate`).
@@ -17,7 +17,9 @@
 //!   bloco de retomada, e o aviso de tamanho da conversa
 //!   (`conversation_size::SizeNotice`): a quem conduz, o de limpar ou
 //!   compactar, com o bloco de retomada; ao agente de onda, o de parar no
-//!   limite da conversa e gravar o que falta.
+//!   limite da conversa e gravar o que falta; e o aviso de releitura
+//!   (`reread::RereadGuard`), que diz ao agente de onda, antes da leitura, que
+//!   as linhas que ele pede de novo e que não mudaram estão acima na conversa.
 //! - `task` — a conferência do fim da resposta (`end_of_turn_check`, com as
 //!   regras dela) e o pedido do subagente (`subagent_inject`).
 //!

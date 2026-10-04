@@ -130,7 +130,7 @@ fn usage_of_line(line: &str) -> Option<(Value, Value)> {
 /// O tamanho da conversa em `path`: o último uso gravado nela. Lê só o fim do
 /// arquivo e, se ali não houver uso, a janela cresce até o arquivo inteiro.
 /// `None` sem arquivo legível ou sem nenhum uso gravado.
-fn last_context(path: &Path) -> Option<u64> {
+pub(super) fn last_context(path: &Path) -> Option<u64> {
     let mut file = std::fs::File::open(path).ok()?;
     let len = file.metadata().ok()?.len();
     let mut window = TAIL_BYTES;
@@ -155,7 +155,7 @@ fn last_context(path: &Path) -> Option<u64> {
 /// O arquivo de estado `name` da sessão `session`, em `.claude/.session/` do
 /// projeto `root`. `None` sem sessão de verdade: sem onde guardar o que já
 /// foi avisado.
-fn mark_path(root: &Path, session: Option<&str>, name: &str) -> Option<PathBuf> {
+pub(super) fn mark_path(root: &Path, session: Option<&str>, name: &str) -> Option<PathBuf> {
     let plain = |text: &str| !text.is_empty() && text.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
     let session = session.map(str::trim).filter(|session| plain(session) && *session != "unknown")?;
     plain(name).then_some(())?;
@@ -244,7 +244,7 @@ fn reads_delivery(command: &str) -> bool {
 /// O texto da primeira mensagem do usuário numa linha da conversa: corrido,
 /// ou o dos blocos de texto juntos. `None` quando a linha não é uma mensagem
 /// do usuário.
-fn user_text(line: &Value) -> Option<String> {
+pub(super) fn user_text(line: &Value) -> Option<String> {
     let message = line.get("message")?;
     let role = message.get("role").and_then(Value::as_str).or_else(|| line.get("type").and_then(Value::as_str));
     if role != Some("user") {
@@ -298,15 +298,22 @@ fn wave_context(path: &Path, lang: Locale) -> Option<WaveContext> {
     Some(WaveContext { now: now?, summary })
 }
 
+/// O arquivo da conversa do subagente de `input`: `subagents/agent-<id>.jsonl`
+/// ao lado da conversa principal. `None` fora de um subagente.
+pub(super) fn agent_transcript(input: &HookInput) -> Option<PathBuf> {
+    let transcript = input.transcript_path()?;
+    let name = input.subagent_transcript_name()?;
+    let session_dir = transcript.strip_suffix(".jsonl").unwrap_or(transcript);
+    Some(Path::new(session_dir).join("subagents").join(name))
+}
+
 /// O aviso ao agente de onda que passou do limite: a conversa do subagente de
 /// `input`, sem o resumo que ele leu, passou de [`WAVE_LIMIT`] tokens. Avisa
 /// uma vez e lembra a cada [`WAVE_REMINDER_EVERY`] tokens a mais que o último
 /// aviso. `None` fora de uma onda, até o limite e entre dois lembretes.
 fn wave_limit_text(input: &HookInput, root: &Path, lang: Locale) -> Option<String> {
-    let transcript = input.transcript_path()?;
     let name = input.subagent_transcript_name()?;
-    let session_dir = transcript.strip_suffix(".jsonl").unwrap_or(transcript);
-    let context = wave_context(&Path::new(session_dir).join("subagents").join(&name), lang)?;
+    let context = wave_context(&agent_transcript(input)?, lang)?;
     let counted = context.now.saturating_sub(context.summary);
     if counted <= WAVE_LIMIT {
         return None;
