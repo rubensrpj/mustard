@@ -720,6 +720,12 @@ pub struct PullOfCommit {
     pub pr: u32,
 }
 
+/// A última linha do trecho de teste que cobre o arquivo inteiro, o do arquivo
+/// que um módulo declara como teste: o trecho começa na linha 1 e termina aqui,
+/// além de qualquer arquivo. Ele diz o que é do teste, e não onde os testes
+/// começam.
+pub const WHOLE_FILE_END: u64 = u32::MAX as u64;
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MapModule {
@@ -736,7 +742,9 @@ pub struct MapModule {
     /// O arquivo traz os próprios testes.
     pub has_tests: bool,
     /// As linhas, da primeira à última, de cada trecho de teste escrito
-    /// dentro do arquivo, como o scan o reconhece.
+    /// dentro do arquivo, como o scan o reconhece. O arquivo que um módulo
+    /// declara como teste traz um trecho que vai da linha 1 a
+    /// [`WHOLE_FILE_END`].
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub test_lines: Vec<(u64, u64)>,
     /// As rotas do servidor registradas no arquivo, com as chamadas da tela
@@ -1333,11 +1341,14 @@ pub struct FileParts {
 
 /// As partes de `file`: cada declaração que não é dado de outra
 /// ([`MEMBER_KINDS`]) e que começa fora dos trechos de teste, e a primeira
-/// linha do primeiro trecho de teste. Recusa [`MapRefusal::UnknownFile`]
-/// quando o arquivo não está no mapa.
+/// linha do primeiro trecho de teste. O arquivo que é todo de teste
+/// ([`WHOLE_FILE_END`]) lista as partes dele como o arquivo de teste que o
+/// nome diz, e não tem linha em que os testes começam. Recusa
+/// [`MapRefusal::UnknownFile`] quando o arquivo não está no mapa.
 pub fn parts(map: &ProjectMap, file: &str) -> Result<FileParts, MapRefusal> {
     let module = map.known(file)?;
-    let in_tests = |line: u64| module.test_lines.iter().any(|&(from, to)| from <= line && line <= to);
+    let blocks: Vec<(u64, u64)> = module.test_lines.iter().copied().filter(|&(_, to)| to != WHOLE_FILE_END).collect();
+    let in_tests = |line: u64| blocks.iter().any(|&(from, to)| from <= line && line <= to);
     let mut parts: Vec<FilePart> = module
         .declarations
         .iter()
@@ -1345,7 +1356,7 @@ pub fn parts(map: &ProjectMap, file: &str) -> Result<FileParts, MapRefusal> {
         .map(|d| FilePart { kind: d.kind.clone(), name: d.name.clone(), line: d.line, end_line: d.end_line.max(d.line) })
         .collect();
     parts.sort_by_key(|part| part.line);
-    let tests_line = module.test_lines.iter().map(|&(from, _)| from).min();
+    let tests_line = blocks.iter().map(|&(from, _)| from).min();
     Ok(FileParts { file: module.path.clone(), parts, tests_line })
 }
 
@@ -2585,5 +2596,25 @@ mod tests {
         assert_eq!(seen, [("struct", "Alpha", 3, 10), ("method", "run", 12, 20), ("function", "tail", 25, 25)]);
         assert_eq!(found.tests_line, Some(40));
         assert!(matches!(parts(&map, "src/b.rs"), Err(MapRefusal::UnknownFile { .. })));
+    }
+
+    /// O arquivo que um módulo declara como teste traz o trecho do arquivo
+    /// inteiro, e as partes dele seguem na lista: sem elas a leitura inteira
+    /// recusada não diria onde ler. O trecho de teste escrito dentro dele
+    /// segue dizendo onde os testes começam.
+    #[test]
+    fn the_parts_of_a_file_that_is_all_test_are_listed() {
+        let whole = format!("[[1,{WHOLE_FILE_END}],[40,60]]");
+        let map: ProjectMap = serde_json::from_str(&format!(
+            r#"{{"modules":[{{"path":"src/a/helpers.rs","test_lines":{whole},"declarations":[
+                {{"kind":"function","name":"searched","line":3,"end_line":9}},
+                {{"kind":"function","name":"a_test","line":45,"end_line":50}}
+            ]}}]}}"#
+        ))
+        .unwrap();
+        let found = parts(&map, "src/a/helpers.rs").unwrap();
+        let seen: Vec<(&str, u64)> = found.parts.iter().map(|p| (p.name.as_str(), p.line)).collect();
+        assert_eq!(seen, [("searched", 3)]);
+        assert_eq!(found.tests_line, Some(40));
     }
 }

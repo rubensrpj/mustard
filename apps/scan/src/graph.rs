@@ -72,6 +72,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 mod member;
 mod reach;
+pub(crate) mod test_module;
 mod value;
 
 /// Catalog cap for `top_fan_in`: a bounded list (~a few KB of model) ordered

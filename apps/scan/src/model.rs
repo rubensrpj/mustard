@@ -230,6 +230,13 @@ pub struct Module {
     /// não relê o arquivo saiba o mesmo.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub test_lines: Vec<(usize, usize)>,
+    /// Os nomes dos módulos sem corpo que o arquivo declara como teste. O
+    /// arquivo que cada um nomeia é todo de teste, e a passada que lê o
+    /// projeto inteiro o marca em [`Module::test_lines`] com
+    /// [`DECLARED_TEST_LINES`]. Guardados com o módulo, para que a passada que
+    /// não relê o arquivo marque os mesmos. Written only when there is one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub test_modules: Vec<String>,
     /// As linhas, da primeira à última, de cada módulo com corpo escrito
     /// dentro do arquivo, o trecho de teste incluído. O caminho escrito dentro
     /// de N deles que começa pelo `parent_alias` da língua sai primeiro desses
@@ -666,6 +673,12 @@ pub struct Handoff {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from: Option<OpenPrefix>,
 }
+
+/// O trecho de teste que o arquivo declarado como teste por um módulo traz em
+/// [`Module::test_lines`]: da linha 1 até além do fim do arquivo. A passada que
+/// relê o projeto o tira do que toma do mapa anterior e o põe de novo, pelos
+/// módulos que ainda declaram o arquivo.
+pub const DECLARED_TEST_LINES: (usize, usize) = (1, mustard_core::domain::project_map::WHOLE_FILE_END as usize);
 
 /// O método da rota que atende qualquer método HTTP.
 pub const ANY_METHOD: &str = "*";

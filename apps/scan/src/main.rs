@@ -448,6 +448,7 @@ fn read_modules(root: &Path, reuse: Option<&ingest::Reuse>, listing: Option<&Lis
             kept.deps.clear();
             kept.test_deps.clear();
             kept.tests.clear();
+            kept.test_lines.retain(|&range| range != model::DECLARED_TEST_LINES);
             Some(*kept)
         }
         ingest::Walked::Fresh(sf) => {
@@ -492,6 +493,7 @@ fn read_modules(root: &Path, reuse: Option<&ingest::Reuse>, listing: Option<&Lis
                 test_imports: extracted.test_imports,
                 test_deps: Vec::new(),
                 test_lines: extracted.test_lines,
+                test_modules: extracted.test_modules,
                 module_lines: extracted.module_lines,
                 import_lines: extracted.import_lines,
                 call_paths: extracted.call_paths,
@@ -558,6 +560,9 @@ fn read_modules(root: &Path, reuse: Option<&ingest::Reuse>, listing: Option<&Lis
     for (m, found) in modules.iter_mut().zip(test_deps) {
         m.test_deps = found;
     }
+    // Os arquivos que um módulo declara como teste são todo trecho de teste,
+    // refeito do projeto inteiro em toda passada, como as dependências acima.
+    graph::test_module::mark_declared(&mut modules);
     Ok(Read { ing, modules, projects, aliases, graph, route_rules })
 }
 

@@ -1551,6 +1551,18 @@ mod tests {
     }
 
     #[test]
+    fn a_new_helper_in_a_file_the_map_holds_as_all_test_is_not_unused() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        // O arquivo que um módulo declara como teste traz o trecho do arquivo
+        // inteiro: a função de apoio que só os testes dele chamam é do teste.
+        let mut file = module("src/a.rs", &[("run_sum", 1, &[]), ("seed_value", 3, &[])]);
+        file["test_lines"] = json!([[1, mustard_core::domain::project_map::WHOLE_FILE_END]]);
+        project(root, &[("src/a.rs", LOOSE_TEST_ITEMS)], &base_with_run_sum_only());
+        silent(&back(root, json!({"modules": [file]})));
+    }
+
+    #[test]
     fn a_new_function_outside_the_test_lines_of_the_map_is_unused_whatever_the_text_above_it_says() {
         let dir = tempdir().unwrap();
         let root = dir.path();

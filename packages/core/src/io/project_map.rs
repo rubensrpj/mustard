@@ -266,11 +266,11 @@ pub const CENSUS: MapBlock = block!("census", version 5, {
 /// Os arquivos: o que a passada que não relê um arquivo toma do mapa para
 /// ele, fora as declarações e as ligações, e o blob do git do conteúdo que
 /// ela leu.
-pub const FILES: MapBlock = block!("files", version 2, {
+pub const FILES: MapBlock = block!("files", version 3, {
     "files" at Place::Files => [
         "path" Text, "blob" Text, "language" Text, "loc" Int, "file_class" Text, "marker" Text, "has_tests" Flag,
         "namespaces" Json, "imports" Json, "global_imports" Json, "test_imports" Json,
-        "test_lines" Json, "module_lines" Json, "import_lines" Json, "signals" Json
+        "test_lines" Json, "test_modules" Json, "module_lines" Json, "import_lines" Json, "signals" Json
     ]
 });
 

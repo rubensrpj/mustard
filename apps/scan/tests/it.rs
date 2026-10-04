@@ -16,6 +16,7 @@ mod body_text;
 mod constant_objects;
 mod dart_mining_e2e;
 mod declaration_detail;
+mod declared_test_module;
 mod engine_is_language_blind;
 mod fixed_texts;
 mod full_read_is_byte_stable;

@@ -53,6 +53,9 @@ pub(crate) struct Extracted {
     pub test_imports: Vec<String>,
     /// As linhas, da primeira à última, de cada trecho de teste do arquivo.
     pub test_lines: Vec<(usize, usize)>,
+    /// Os nomes dos módulos sem corpo que o arquivo declara como teste
+    /// (`@test_module`): o arquivo de cada um é todo de teste.
+    pub test_modules: Vec<String>,
     /// As linhas, da primeira à última, de cada módulo com corpo escrito
     /// dentro do arquivo (`@inner_module`).
     pub module_lines: Vec<(usize, usize)>,
@@ -481,6 +484,9 @@ enum CapKind {
     /// ele mesmo de teste, onde a chamada que ela faz segue sendo uso do que
     /// chama, porque é ela que mostra quem testa cada declaração.
     TestUnit,
+    /// O nome de um módulo sem corpo que o arquivo declara como teste: o
+    /// arquivo que ele nomeia é todo de teste.
+    TestModule,
     /// Um módulo com corpo escrito dentro do arquivo: o caminho escrito nele
     /// que começa pelo `parent_alias` da língua sai dele antes de subir pasta.
     InnerModule,
@@ -538,6 +544,7 @@ fn classify(cap: &str) -> CapKind {
         "doc" => CapKind::Doc,
         "test_block" => CapKind::TestBlock,
         "test_unit" => CapKind::TestUnit,
+        "test_module" => CapKind::TestModule,
         "inner_module" => CapKind::InnerModule,
         "local" => CapKind::Local,
         "text" => CapKind::Text { plain: false },
@@ -886,6 +893,11 @@ impl Analyzer {
                             out.test_lines.push((node.start_position().row + 1, node.end_position().row + 1));
                         }
                     }
+                    CapKind::TestModule => {
+                        if let Ok(name) = node.utf8_text(bytes) {
+                            out.test_modules.push(name.trim().to_string());
+                        }
+                    }
                     CapKind::InnerModule => {
                         out.module_lines.push((node.start_position().row + 1, node.end_position().row + 1));
                     }
@@ -1178,6 +1190,8 @@ impl Analyzer {
             .collect();
         out.unbound_heads = unbound.into_iter().map(str::to_string).collect();
         out.test_lines = merged_ranges(out.test_lines);
+        out.test_modules.sort();
+        out.test_modules.dedup();
         out.module_lines.sort();
         out.module_lines.dedup();
         out.namespaces.sort();

@@ -180,6 +180,20 @@
   (#match? @_marker "(?s)^#\\[\\s*cfg\\(\\s*(test|(all|any)\\(\\s*(.*,\\s*)?test\\s*[,)].*)\\s*\\)\\s*\\]$")
   (#eq? @_attr "path"))
 
+; O `mod x;` sem corpo com a mesma marca de teste, em qualquer ponto da fila de
+; atributos colada a ele: o arquivo que ele nomeia é todo de teste. Só o nome
+; sai daqui, e o grafo acha o arquivo. O `mod` com `#[path = "..."]` na fila
+; mora no arquivo que o atributo nomeia, e não no do nome dele: não entra.
+((attribute_item)* @_queue
+  .
+  (attribute_item) @_marker
+  .
+  (attribute_item)* @_queue
+  .
+  (mod_item name: (identifier) @test_module !body)
+  (#match? @_marker "(?s)^#\\[\\s*cfg\\(\\s*(test|(all|any)\\(\\s*(.*,\\s*)?test\\s*[,)].*)\\s*\\)\\s*\\]$")
+  (#not-match? @_queue "^#\\[\\s*path\\b"))
+
 (struct_item name: (type_identifier) @name) @definition.struct
 (enum_item name: (type_identifier) @name) @definition.enum
 (trait_item name: (type_identifier) @name) @definition.trait
