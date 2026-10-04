@@ -21,14 +21,16 @@
 //! **A escolha dos itens do pedido.** Antes de criar a cópia de uma onda
 //! pronta, a rodada olha os itens combinados que o pedido dela não leva nem
 //! tira por conta própria (`item_choice`): os do projeto todo, sem a marca de
-//! toda onda, e os sem ligação com ela. Com algum, uma chamada ao Jev por onda
+//! toda onda, os ligados aos arquivos que as tarefas dela mexem e os sem
+//! ligação com ela. Com algum, uma chamada ao Jev por onda
 //! diz, por item, se ele governa algo que as tarefas dela mudam ou testam; a
 //! onda sai na mesma rodada, sem parada de quem conduz. Os itens que as tarefas
 //! da onda fazem, os de toda onda (`every_wave`), os de que a onda é dona e as
 //! lições vão sempre, sem chamada. O envio gravado leva os itens que ficaram e,
 //! à parte, no campo `analysis`, o que saiu e o que entrou, cada um com a
 //! chance que o Jev deu. Sem chave, ou com a chamada falhando, o pedido leva o
-//! padrão: o projeto todo vai, e o sem ligação fica fora.
+//! padrão: o projeto todo e os dos arquivos da onda vão, e o sem ligação fica
+//! fora.
 //!
 //! **A entrega mora na spec, e a rodada a assume.** O agente de onda grava a
 //! própria entrega com `mustard-rt run write delivered`, e só com o envio da

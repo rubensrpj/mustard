@@ -1,13 +1,17 @@
 //! A escolha dos itens do pedido de cada onda que sai. Os itens que o pedido
 //! não leva nem tira por conta própria passam pelo Jev, uma chamada por onda:
 //! para cada item, ele diz se o item governa algo que as tarefas da onda mudam
-//! ou testam. O código decide pelas chances (`Choice::by_chances`): o item do
-//! projeto todo sai quando o Jev dá a ele menos de 20% de chance de servir, e
-//! o item sem ligação com a onda só entra quando o Jev tem alta certeza — 85%
-//! de chance ou mais — de que serve.
+//! ou testam. O código decide pelas chances (`Choice::by_chances`): o item que
+//! o pedido leva por padrão — o do projeto todo e o dos arquivos que as
+//! tarefas da onda mexem — sai quando o Jev dá a ele menos de 20% de chance de
+//! servir, e o item sem ligação com a onda só entra quando o Jev tem alta
+//! certeza — 85% de chance ou mais — de que serve. O item que uma tarefa da
+//! onda faz, o de que a onda é dona e o de toda onda vão sempre, sem passar
+//! pelo Jev.
 //! A onda não espera ninguém: sai na mesma rodada. Sem Jev — sem chave ou
 //! desligado — ou com a chamada falhando, nenhuma escolha se grava, e o pedido
-//! leva o padrão: o projeto todo vai, e o sem ligação fica fora.
+//! leva o padrão: o projeto todo e os dos arquivos da onda vão, e o sem
+//! ligação fica fora.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -97,7 +101,8 @@ fn choose_with(
 }
 
 /// O quadro da onda `wave`: as tarefas dela e os candidatos (`found`), cada um
-/// com o título e o texto, sem dono, arquivo nem onda.
+/// com o título e o texto, sem dono, arquivo nem onda: o Jev julga o item
+/// ligado aos arquivos da onda como o do projeto todo.
 fn board_of(log: &SpecLog, wave: u64, found: &Candidates<'_>) -> ItemsBoard {
     let tasks = log
         .block(BlockQuery::Wave(wave))
@@ -110,7 +115,7 @@ fn board_of(log: &SpecLog, wave: u64, found: &Candidates<'_>) -> ItemsBoard {
         title: item_title(item).unwrap_or_default(),
         text: item.str_field("text").unwrap_or_default().to_string(),
     };
-    let mut items: Vec<BoardItem> = found.project.iter().chain(&found.unlinked).map(shown).collect();
+    let mut items: Vec<BoardItem> = found.carried.iter().chain(&found.unlinked).map(shown).collect();
     items.sort_by_key(|item| item.id);
     ItemsBoard { tasks, items }
 }

@@ -276,14 +276,15 @@ mod tests {
     }
 
     /// O molde de onda, nos dois idiomas, não pede mais um relatório pelo
-    /// tamanho: a entrega vai gravada na spec pela ferramenta, a última
-    /// mensagem só diz que gravou, e todo o detalhe do trabalho vai no campo
-    /// de texto da entrega. Ele não ensina mais a linha colada.
+    /// tamanho: a entrega vai gravada na spec pela ferramenta, e todo o
+    /// detalhe do trabalho vai no campo de texto da entrega. A ordem de a
+    /// última mensagem só dizer que gravou mora no pedido. Ele não ensina mais
+    /// a linha colada.
     #[test]
     fn the_wave_template_records_the_delivery_without_a_report_by_size() {
-        for (text, size_report, recorded, last_message) in [
-            (Locale::PtBr, "entre mil e dois mil tokens", "`run write delivered --json", "a última mensagem só diz que gravou"),
-            (Locale::EnUs, "between one and two thousand tokens", "`run write delivered --json", "the last message only says it did"),
+        for (text, size_report, recorded) in [
+            (Locale::PtBr, "entre mil e dois mil tokens", "`run write delivered --json"),
+            (Locale::EnUs, "between one and two thousand tokens", "`run write delivered --json"),
         ] {
             for (name, body) in agent_texts(text) {
                 if name != "wave" {
@@ -292,7 +293,6 @@ mod tests {
                 let lower = body.to_lowercase();
                 assert!(!lower.contains(size_report), "the {text} `{name}` agent still asks for a report by size: {body}");
                 assert!(body.contains(recorded), "the {text} `{name}` agent does not record the delivery: {body}");
-                assert!(lower.contains(last_message), "the {text} `{name}` agent does not say what the last message holds: {body}");
                 assert!(body.contains("`text`"), "the {text} `{name}` agent does not send the work's detail to the delivery's text: {body}");
                 assert!(!body.contains("<DELIVERED>"), "the {text} `{name}` agent still teaches the pasted line: {body}");
             }

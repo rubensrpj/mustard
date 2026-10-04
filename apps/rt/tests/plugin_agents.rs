@@ -325,7 +325,7 @@ fn the_wave_agent_never_uses_the_git_stash() {
         let wave = std::fs::read_to_string(root.join(".claude/agents/mustard/wave.md")).unwrap();
         let guard = wave
             .lines()
-            .find(|l| l.contains("Nunca comite") || l.contains("Never commit"))
+            .find(|l| l.contains("`git add`"))
             .unwrap_or_else(|| panic!("the {lang} wave agent lost its git guard line"));
         assert!(guard.contains(phrase), "the {lang} wave agent does not forbid the stash: {guard}");
     }
@@ -726,6 +726,65 @@ fn boundary_says_to_remove_what_the_change_left_unused() {
     }
 }
 
+/// Os moldes dizem o limite do que entra. O agente de onda põe só o que tem
+/// uso fora de teste, um teste por comportamento e nenhum código que só serve
+/// a medição, e a tarefa que só tira código, junta testes ou muda
+/// configuração se prova pela suíte, sem teste novo. O revisor tem por Maior
+/// o teste repetido, o código de laboratório no programa instalado e a onda
+/// acima da mediana de linhas do pedido sem justificativa na entrega.
+#[test]
+fn templates_state_the_size_limit_and_when_no_new_test_is_needed() {
+    for (lang, tools, boundary, severity, wave_said, review_said) in [
+        (
+            "pt-BR",
+            "## Orientação sobre ferramentas",
+            "## Fronteira da tarefa",
+            "## Gravidade",
+            [
+                "Critério que muda comportamento ganha um teste",
+                "Tarefa que só tira código, junta testes ou muda configuração prova pela suíte",
+                "sem teste novo nem leitor de configuração",
+                "tem uso fora de teste; um teste por comportamento, sem repetir outro",
+                "nada de código só de medição",
+            ],
+            [
+                "repete outro teste",
+                "código só de laboratório no programa instalado",
+                "passa da mediana de linhas do pedido sem justificativa na entrega",
+            ],
+        ),
+        (
+            "en-US",
+            "## Tool guidance",
+            "## Task boundary",
+            "## Severity",
+            [
+                "A criterion that changes behavior gets a test",
+                "A task that only removes code, merges tests or changes configuration is proved by the suite",
+                "no new test and no configuration reader",
+                "has a use outside tests; one test per behavior, never repeating another",
+                "no measurement-only code",
+            ],
+            [
+                "repeats another test",
+                "laboratory-only code in the installed program",
+                "passes the line median of its request without a reason in the delivery",
+            ],
+        ),
+    ] {
+        let wave = template(lang, "wave");
+        let said = section(&wave, tools).to_string() + section(&wave, boundary);
+        for phrase in wave_said {
+            assert!(said.contains(phrase), "the {lang} wave agent does not say `{phrase}`:{said}");
+        }
+        let review = template(lang, "review");
+        let major = section(&review, severity);
+        for phrase in review_said {
+            assert!(major.contains(phrase), "the {lang} reviewer does not call `{phrase}` major:{major}");
+        }
+    }
+}
+
 /// Todo comando de compilação ou de teste leva o teto de dez minutos do
 /// terminal, e o que pode passar disso roda por pacote, um por comando: a
 /// frase mora na mesma linha que proíbe o segundo plano, nos dois moldes que
@@ -992,8 +1051,8 @@ fn the_wave_and_review_agents_carry_the_project_wide_execution_rules() {
 
 /// Nenhum texto de agente manda criar cópia do projeto por conta própria —
 /// nem os dois que o projeto recebe, em cada idioma, nem as instruções fixas
-/// que o binário monta no pedido da onda e da revisão —; os de onda e de
-/// revisão mandam trabalhar na cópia separada que o pedido indica. O pedido
+/// que o binário monta no pedido da onda e da revisão —; a ordem de nunca
+/// criar outra mora no pedido, que traz a cópia de cada um. O pedido
 /// que a rodada monta,
 /// pelo binário, mesmo num projeto que o mapa marca como Rust, traz a vaga
 /// que ela preparou — cada onda na sua — e nenhuma pasta de compilação: o que
@@ -1012,15 +1071,9 @@ fn no_agent_text_creates_a_copy_on_its_own_and_the_request_names_the_slot_withou
                 assert!(!body.contains(forbidden), "{what} still says `{forbidden}`");
             }
         }
-        let said: [&str; 2] = if text == Locale::PtBr {
-            ["cópia separada que o pedido indica", "Nunca crie cópia por conta própria"]
-        } else {
-            ["separate copy the request names", "Never create a copy on your own"]
-        };
-        for name in ["wave", "review"] {
-            for line in said {
-                assert!(template(lang, name).contains(line), "the {lang} `{name}` agent does not say `{line}`");
-            }
+        let said = if text == Locale::PtBr { "nunca crie outra" } else { "never create another" };
+        for key in ["prompt.execution.copy", "prompt.review.copy"] {
+            assert!(translate(key, text).contains(said), "the {lang} `{key}` does not say `{said}`");
         }
         // O revisor prova de ponta a ponta, pelo caminho que o usuário usa,
         // além dos testes. O molde vai a todo projeto: instalar o Mustard é a

@@ -335,6 +335,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("prompt.part.execution", Locale::EnUs) => "Execution rules",
         ("prompt.execution.build", Locale::PtBr) => "Compile com `{command}`.",
         ("prompt.execution.build", Locale::EnUs) => "Build with `{command}`.",
+        ("prompt.execution.median", Locale::PtBr) => {
+            "A mediana das entregas deste projeto é de {median} linhas postas; passar dela pede \
+             justificativa na entrega (Fronteira da tarefa)."
+        }
+        ("prompt.execution.median", Locale::EnUs) => {
+            "The median delivery of this project puts {median} lines; going past it needs a reason \
+             in the delivery (Task boundary)."
+        }
         ("prompt.execution.running", Locale::PtBr) => {
             "Ondas em andamento, cada uma na sua cópia. O arquivo que você dividir com elas é \
              juntado na volta; o trecho que conflitar para a rodada até ser resolvido."
@@ -466,11 +474,11 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("prompt.review.copy", Locale::PtBr) => {
             "Revise na cópia separada `{copy}`, nunca no repositório principal `{root}`: o fechamento \
-             já a criou no commit `{commit}`; rode tudo dentro dela."
+             já a criou no commit `{commit}`; rode tudo dentro dela e nunca crie outra."
         }
         ("prompt.review.copy", Locale::EnUs) => {
             "Review in the separate copy `{copy}`, never in the main repository `{root}`: the close \
-             already created it at commit `{commit}`; run everything inside it."
+             already created it at commit `{commit}`; run everything inside it and never create another."
         }
         // Os arquivos locais que o git ignora não vêm com a cópia: o
         // fechamento os copia para ela, e o revisor copia de novo, pelo
@@ -527,8 +535,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("prompt.rs"),
             super::PREFIXES,
-            91,
-            0xdbe6_d990_a943_861b,
+            92,
+            0x9fcd_eea3_11ab_3f3c,
         );
     }
 

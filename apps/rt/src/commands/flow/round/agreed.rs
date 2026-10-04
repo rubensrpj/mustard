@@ -62,12 +62,13 @@ pub(super) fn covered_codes(log: &SpecLog, returning: &BTreeSet<u64>) -> BTreeSe
         .collect()
 }
 
-/// Os códigos dos itens do projeto todo que a análise da onda `wave` tirou do
-/// pedido dela: a escolha gravada no envio que a despachou, lida sobre a spec
-/// como estava nele ([`as_dispatched`]) e reduzida aos candidatos de então,
-/// a mesma que monta o pedido ([`agreed_prompt::dispatch_items`]). O pedido
-/// não levou esses itens: a entrega não é cobrada por eles, e a resposta que
-/// der a algum deles não cria tarefa.
+/// Os códigos dos itens que a análise da onda `wave` tirou do pedido dela, o
+/// do projeto todo e o dos arquivos da onda: a escolha gravada no envio que
+/// a despachou, lida sobre a spec como estava nele ([`as_dispatched`]) e
+/// reduzida aos candidatos de então, a mesma que monta o pedido
+/// ([`agreed_prompt::dispatch_items`]). O pedido não levou esses itens: a
+/// entrega não é cobrada por eles, e a resposta que der a algum deles não
+/// cria tarefa.
 pub(super) fn removed_by_analysis(log: &SpecLog, wave: u64) -> BTreeSet<String> {
     let then = as_dispatched(log, wave);
     let Some(choice) = agreed_prompt::recorded_choice(&then, wave) else { return BTreeSet::new() };

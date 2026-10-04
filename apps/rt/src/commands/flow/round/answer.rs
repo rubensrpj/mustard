@@ -702,9 +702,9 @@ pub(super) fn run_entered_round(
         }
     };
     // A escolha dos itens do pedido, antes da cópia: o Jev julga, uma chamada
-    // por onda, o item do projeto todo e o sem ligação com ela, e a onda sai
-    // nesta mesma rodada, sem esperar quem conduz. Sem Jev, ou com a chamada
-    // falhando, o pedido leva o padrão.
+    // por onda, o item do projeto todo, o dos arquivos dela e o sem ligação
+    // com ela, e a onda sai nesta mesma rodada, sem esperar quem conduz. Sem
+    // Jev, ou com a chamada falhando, o pedido leva o padrão.
     let choices = choose_items(&opts.root, &spec, &log, &ready, jev.as_ref());
     let go = ready;
     // A onda a reenviar cuja cópia gravada outra onda também segura não volta

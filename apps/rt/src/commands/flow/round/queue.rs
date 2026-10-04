@@ -1950,6 +1950,97 @@ mod tests {
         assert_eq!((call["candidates"].clone(), call["returned"].clone()), (json!(4), json!(2)), "{call:?}");
     }
 
+    /// A spec aprovada do item ligado aos arquivos da onda: uma onda que mexe
+    /// em `src/a.rs`, com duas regras que dizem esse arquivo, uma regra que a
+    /// tarefa faz, uma decisão de que a onda é dona e uma regra de toda onda,
+    /// as três últimas também com o arquivo. Devolve o número de cada item,
+    /// pelo código.
+    fn with_items_of_the_files_of_the_wave(root: &Path) -> BTreeMap<String, u64> {
+        approved_with(root, "x", &[(1, &["src/a.rs"], &[])], |said| {
+            let files = json!({"files": ["src/a.rs"]});
+            let rule = |text: &str, extra: Value| {
+                let mut body = json!({"title": text, "text": text, "example": "e", "keys": ["k"],
+                    "applies_to": files, "origin": said});
+                body.as_object_mut().unwrap().extend(extra.as_object().cloned().unwrap_or_default());
+                id_of(&write(root, "x", "rule", body))
+            };
+            rule("Dos arquivos: a tabela tem chave.", json!({}));
+            rule("Dos arquivos: a coluna tem tipo.", json!({}));
+            let done = rule("Dos arquivos e da tarefa: o índice é único.", json!({}));
+            rule("Dos arquivos e de toda onda: a tabela tem dono.", json!({"every_wave": true}));
+            write(root, "x", "decision", json!({"title": "Dos arquivos e da onda um: a coluna é texto.",
+                "text": "Dos arquivos e da onda um: a coluna é texto.", "keys": ["k"], "why": "w",
+                "waves": [1], "applies_to": files, "origin": said}));
+            write(root, "x", "task", json!({"wave": 1, "text": "Criar o índice da tabela.",
+                "files": [{"path": "src/a.rs"}], "depends_on": [], "covers": [done], "origin": said}));
+        });
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        log.codes().into_iter().map(|(id, code)| (code, id)).collect()
+    }
+
+    /// O Jev julga o item ligado aos arquivos da onda como o do projeto todo:
+    /// com a chance abaixo de 0,2 ele sai do pedido, e com a de 0,2 fica. O
+    /// que a tarefa faz, o de que a onda é dona e o de toda onda vão com a
+    /// chance 0 e nem entram na pergunta. O envio grava o que saiu.
+    #[test]
+    fn the_jev_takes_a_file_linked_item_out_below_02_and_never_asks_about_the_ones_that_always_go() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let ids = with_items_of_the_files_of_the_wave(root);
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let spy = std::sync::Arc::clone(&seen);
+        let by_id = ids.clone();
+        let _jev = crate::commands::flow::round::item_choice::fake::answering(move |board| {
+            spy.lock().unwrap().push(board.items.iter().map(|item| item.id).collect::<Vec<_>>());
+            let mut chances: BTreeMap<u64, f64> = board.items.iter().map(|item| (item.id, 0.0)).collect();
+            chances.insert(by_id["MSTD-RULE-0001"], 0.19);
+            chances.insert(by_id["MSTD-RULE-0002"], 0.2);
+            chances
+        });
+
+        let out = round(root, "x", None);
+
+        assert_eq!(waves_in(&out, "dispatch"), vec![1], "{out}");
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![vec![ids["MSTD-RULE-0001"], ids["MSTD-RULE-0002"]]],
+            "only the two file-linked items nobody else carries are asked about"
+        );
+        let prompt = request_at(&out, 0);
+        assert!(!prompt.contains("MSTD-RULE-0001"), "a chance of 0.19 takes it out: {prompt}");
+        for code in ["MSTD-RULE-0002", "MSTD-RULE-0003", "MSTD-RULE-0004", "MSTD-DEC-0001"] {
+            assert!(prompt.contains(code), "{code} goes: {prompt}");
+        }
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let sent = log.visible().into_iter().find(|e| e.event_type == "send" && e.wave() == Some(1)).unwrap();
+        assert_eq!(sent.fields["analysis"], json!({
+            "judged": [ids["MSTD-RULE-0001"], ids["MSTD-RULE-0002"]],
+            "removed": [{"item": ids["MSTD-RULE-0001"], "why": "Jev p=0.19"}],
+            "added": [],
+            "judged_lessons": [], "removed_lessons": [],
+        }));
+    }
+
+    /// Sem Jev, o pedido leva os itens ligados aos arquivos da onda como
+    /// sempre levou, e o envio não grava escolha.
+    #[test]
+    fn without_the_jev_the_file_linked_items_go_in_the_request() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        with_items_of_the_files_of_the_wave(root);
+
+        let out = round(root, "x", None);
+
+        assert_eq!(waves_in(&out, "dispatch"), vec![1], "{out}");
+        let prompt = request_at(&out, 0);
+        for code in ["MSTD-RULE-0001", "MSTD-RULE-0002", "MSTD-RULE-0003", "MSTD-RULE-0004", "MSTD-DEC-0001"] {
+            assert!(prompt.contains(code), "{code} goes: {prompt}");
+        }
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let sent = log.visible().into_iter().find(|e| e.event_type == "send" && e.wave() == Some(1)).unwrap();
+        assert!(sent.fields.get("analysis").is_none(), "nobody judged: {:?}", sent.fields);
+    }
+
     /// O item de toda onda vai no pedido ainda que o Jev dê a ele a chance
     /// mais baixa, e nem entra na pergunta; o do projeto todo sem a marca, com
     /// a mesma chance, sai.
