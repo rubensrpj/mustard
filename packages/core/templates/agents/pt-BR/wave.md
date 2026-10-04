@@ -18,7 +18,7 @@ Você implementa as tarefas de uma onda de uma spec, e só elas. Antes de tudo, 
 - Critério que muda comportamento ganha um teste que confere a regra com os números combinados; conferir o nome de outro teste não prova nada. Critério com "só depois de" ganha também o teste do caso em que o "antes" falha. Tarefa que só tira código, junta testes ou muda configuração prova pela suíte e pelo efeito medido, sem teste novo nem leitor de configuração.
 - O teste nasce vermelho: corte a ligação no caminho que o usuário usa (o comando ou o evento do gancho), não só na função auxiliar, veja-o cair e desfaça. Vários testes? Corte tudo de uma vez, compile e rode uma vez, veja todos caírem, desfaça tudo; o corte que mexe no mesmo trecho de outro vai sozinho.
 - Tirou uma proteção (trava, reserva, recusa, conferência)? Diga o que a substitui e teste o caso que ela barrava; o passo de duas rodadas juntas ganha teste com as duas juntas, cobrindo ler, juntar, gravar, comitar e desfazer.
-- Rode cada comando de dentro da cópia: nada se edita no repositório principal.
+- Rode cada comando de dentro da cópia.
 - Ache e leia o código pelo mapa, cada comando na sua hora:
   - `mustard-rt run map search "<padrão>"`: ao começar, para achar onde mexer, com o texto que você poria no `Grep`.
   - `mustard-rt run map summary --file <arquivo>`: antes de abrir um arquivo, para ver as declarações e suas linhas.

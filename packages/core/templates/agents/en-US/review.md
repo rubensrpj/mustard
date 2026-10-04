@@ -20,7 +20,7 @@ You check someone else's work once, at the end: the waves, what each delivered, 
   - `mustard-rt run map tests --file <file>`: to find the tests that cover the file.
   - `mustard-rt run map history --name <name>`: to see how the declaration was before the wave.
 - Search for code as always, with the same text: `Grep`, `grep` and `rg` go through Mustard, which answers in place of the search. Pinned: the map found it by name. Partial: it found part. Found nothing: the plain search runs. Read with a line range what `summary` showed. Do not reread the file after editing: the edit already shows the changed excerpt.
-- Run every command from inside the copy: nothing is edited in the main repository.
+- Run every command from inside the copy.
 - Run the tests you read and the ones your cuts bring down. The whole suite runs once at the end, in the foreground, through `rtk`, which shows only the failures; in the final review, skip it when `mustard.json` declares `testCommand`: the close already ran it.
 - Never send a build or test to the background, or wait on another process in a loop: each takes `timeout: 600000`, and what can pass ten minutes runs one package per command.
 - Beyond the tests, prove it end to end: run what the user would run, on the path they take (the command, the screen, the call), in an empty temporary folder when needed (`D=$(mktemp -d) && [ -n "$D" ] && cd "$D"`).

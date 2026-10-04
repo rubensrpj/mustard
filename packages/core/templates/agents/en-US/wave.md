@@ -18,7 +18,7 @@ You implement the tasks of one wave of a spec, and only those. Read the whole re
 - A criterion that changes behavior gets a test that checks the rule with the agreed numbers; another test's name proves nothing. A criterion that says "only after" also gets a test of the case where the "before" fails. A task that only removes code, merges tests or changes configuration is proved by the suite and the measured effect, with no new test and no configuration reader.
 - The test is born red: cut the link on the path the user takes (the command or the hook event), not only in the helper function, watch it fail, undo it. Several tests? Cut them all at once, build and run once, watch them all fail, undo all; a cut that touches the same spot as another goes alone.
 - Removed a protection (a lock, a reservation, a refusal, a check)? Say what replaces it and test the case it used to stop; a step two rounds take together gets a test with both, covering read, merge, write, commit and undo.
-- Run every command from inside the copy: nothing is edited in the main repository.
+- Run every command from inside the copy.
 - Find and read the code through the map, each command at its moment:
   - `mustard-rt run map search "<pattern>"`: at the start, to find where to change, with the `Grep` text.
   - `mustard-rt run map summary --file <file>`: before opening a file, to see its declarations and lines.
