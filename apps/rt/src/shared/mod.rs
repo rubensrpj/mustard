@@ -59,8 +59,9 @@ pub mod context;
 /// One topological level assignment for the whole crate — see the module docs
 /// for why there used to be two, and what they disagreed about. Also the
 /// backlog: the same peel over a task graph instead of a wave graph, plus
-/// readiness, packing into dispatch batches under a work cap (tasks and
-/// files), and the waiting task that joins the batch it depends on.
+/// readiness, packing into dispatch batches (by file, or by kind of work up
+/// to the size the agent can take), and the waiting task that joins the batch
+/// it depends on.
 pub mod dag;
 /// O programa compilado da branch do Mustard: se está em dia com o commit e a
 /// compilação dele, em primeiro e em segundo plano.
@@ -83,6 +84,9 @@ pub mod prompt;
 /// O texto do catálogo com as vagas preenchidas.
 pub mod say;
 pub mod spec_state;
+/// O tamanho que a montagem espera de cada tarefa do backlog, em tokens de
+/// conversa do agente, e o teto de cada onda.
+pub mod task_size;
 // Test-only: cloning git fixture scenery instead of rebuilding it per test.
 #[cfg(test)]
 pub mod test_fixture;

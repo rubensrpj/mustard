@@ -578,6 +578,17 @@ impl FakeJev {
         clash_of: impl Fn(u64, usize) -> f64 + Send + Sync + 'static,
         mechanical_of: impl Fn(usize) -> f64 + Send + Sync + 'static,
     ) -> Self {
+        Self::judging_sized(kind_of, clash_of, mechanical_of, |_| 0.0)
+    }
+
+    /// O Jev de [`FakeJev::judging_mechanical`], que também responde a cada
+    /// pergunta de tamanho com a nota `size_of(posição)`, de 0 a 3.
+    fn judging_sized(
+        kind_of: impl Fn(usize) -> (&'static str, f64) + Send + Sync + 'static,
+        clash_of: impl Fn(u64, usize) -> f64 + Send + Sync + 'static,
+        mechanical_of: impl Fn(usize) -> f64 + Send + Sync + 'static,
+        size_of: impl Fn(usize) -> f64 + Send + Sync + 'static,
+    ) -> Self {
         Self::start(move |asked| {
             let keys: Vec<&String> = asked["questions"].as_object().expect("the questions").keys().collect();
             let mut tasks: Vec<u64> =
@@ -591,6 +602,8 @@ impl FakeJev {
                     answers.insert(key.clone(), json!({"type": "choice", "choice": kind, "confidence": confidence}));
                 } else if let Some(task) = key.strip_prefix("mec_t") {
                     answers.insert(key.clone(), json!({"type": "noul", "noul": mechanical_of(position(task))}));
+                } else if let Some(task) = key.strip_prefix("tam_t") {
+                    answers.insert(key.clone(), json!({"type": "score", "score": size_of(position(task))}));
                 } else if let Some((wave, task)) = key.strip_prefix("blk_w").and_then(|rest| rest.split_once("_t")) {
                     let chance = clash_of(wave.parse().expect("a wave"), position(task));
                     answers.insert(key.clone(), json!({"type": "noul", "noul": chance}));
@@ -658,7 +671,7 @@ fn tasks_of_one_kind_share_a_wave_without_a_file_in_common_and_the_call_is_recor
     let asked = jev.requests();
     assert_eq!(asked.len(), 1, "o backlog inteiro vai numa chamada só");
     assert_eq!(asked[0]["model"], json!("jev-1.13.0"));
-    assert_eq!(asked[0]["questions"].as_object().unwrap().len(), 6, "o tipo e a onda mecânica por tarefa: {}", asked[0]);
+    assert_eq!(asked[0]["questions"].as_object().unwrap().len(), 9, "o tipo, a onda mecânica e o tamanho por tarefa: {}", asked[0]);
     let calls = assembly_calls(&project);
     assert_eq!(calls.len(), 1, "{calls:?}");
     let call = &calls[0];
@@ -795,12 +808,51 @@ fn a_high_clash_with_the_wave_in_progress_holds_a_task_that_shares_no_file_with_
     project.jev = Some(strict.url.clone());
     project.run(&["round", "--spec", SPEC]);
     assert_eq!(wave_of(&project, held), None, "o choque de 0,8 segura a tarefa que não divide arquivo");
-    assert_eq!(strict.requests()[0]["questions"].as_object().unwrap().len(), 3, "tipo, onda mecânica e bloqueio da tarefa");
+    assert_eq!(strict.requests()[0]["questions"].as_object().unwrap().len(), 4, "tipo, onda mecânica, tamanho e bloqueio da tarefa");
 
     let loose = FakeJev::judging(|_| ("feature", 0.9), |_, _| 0.1);
     project.jev = Some(loose.url.clone());
     project.run(&["round", "--spec", SPEC]);
     assert!(wave_of(&project, held).is_some(), "com o choque de 0,1 a tarefa sai");
+}
+
+/// A montagem fecha a onda no teto de tamanho que o Jev estimou: três tarefas do
+/// mesmo tipo e de nível 3 (125 mil tokens cada) saem em três ondas, e três de
+/// nível 1 (65 mil), em duas, as duas primeiras juntas (130 mil).
+#[test]
+fn the_wave_closes_at_the_size_budget_the_jev_estimated() {
+    let biggest = FakeJev::judging_sized(|_| ("feature", 0.9), |_, _| 0.0, |_| 0.0, |_| 3.0);
+    let (project, _, _, tasks) = judged_project(&[&["a.rs"], &["c.rs"], &["d.rs"]], &biggest);
+    project.run(&["round", "--spec", SPEC]);
+    assert_eq!(batch_orders(&project), vec![vec![tasks[0]], vec![tasks[1]], vec![tasks[2]]], "nível 3: uma por onda");
+    assert_eq!(biggest.requests().len(), 1, "o tamanho vem na mesma chamada do tipo");
+
+    let small = FakeJev::judging_sized(|_| ("feature", 0.9), |_, _| 0.0, |_| 0.0, |_| 1.0);
+    let (project, _, _, tasks) = judged_project(&[&["a.rs"], &["c.rs"], &["d.rs"]], &small);
+    project.run(&["round", "--spec", SPEC]);
+    assert_eq!(batch_orders(&project), vec![vec![tasks[0], tasks[1]], vec![tasks[2]]], "nível 1: 130 mil cabem, 195 mil não");
+}
+
+/// Sem chave, ou com a chamada recusada, o tamanho não entra: três tarefas do
+/// mesmo arquivo saem numa onda só, como sempre. Com o Jev dizendo nível 3 para
+/// elas, a montagem as separa, e só a primeira sai, porque as outras dividem o
+/// arquivo com ela.
+#[test]
+fn without_a_key_or_with_a_refused_call_the_size_does_not_split_the_wave() {
+    let same: [&[&str]; 3] = [&["a.rs"], &["a.rs"], &["a.rs"]];
+    let (project, _, _, tasks) = backlog_project(&same);
+    project.run(&["round", "--spec", SPEC]);
+    assert_eq!(batch_orders(&project), vec![tasks.clone()], "sem chave");
+
+    let refusing = FakeJev::start(|_| (401, json!({})));
+    let (refused, _, _, tasks) = judged_project(&same, &refusing);
+    refused.run(&["round", "--spec", SPEC]);
+    assert_eq!(batch_orders(&refused), vec![tasks.clone()], "chamada recusada");
+
+    let biggest = FakeJev::judging_sized(|_| ("feature", 0.9), |_, _| 0.0, |_| 0.0, |_| 3.0);
+    let (judged, _, _, tasks) = judged_project(&same, &biggest);
+    judged.run(&["round", "--spec", SPEC]);
+    assert_eq!(batch_orders(&judged), vec![vec![tasks[0]]], "com o Jev, o nível 3 separa as três");
 }
 
 /// Sem chave a montagem é a de hoje — por arquivo, nenhuma chamada —, e com
@@ -840,6 +892,8 @@ fn judging_items(chance_of: impl Fn(&str) -> f64 + Send + Sync + 'static) -> Fak
                 answers.insert(key.clone(), json!({"type": "choice", "choice": "feature", "confidence": 0.9}));
             } else if key.starts_with("mec_") {
                 answers.insert(key.clone(), json!({"type": "noul", "noul": 0.0}));
+            } else if key.starts_with("tam_") {
+                answers.insert(key.clone(), json!({"type": "score", "score": 0.0}));
             } else {
                 let title = asked["state"]["items"][key]["title"].as_str().unwrap_or_default();
                 answers.insert(key.clone(), json!({"type": "noul", "noul": chance_of(title)}));

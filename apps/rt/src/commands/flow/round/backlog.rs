@@ -26,13 +26,16 @@ use super::summary_wave::summary_waves;
 use crate::commands::spec_events::conversation::record_measured_call;
 use crate::commands::spec_events::write::{record, RecordCheck};
 use crate::commands::wave::wave_overlap_check::wave_graph;
+use crate::hooks::session::conversation_size::WAVE_LIMIT;
 use crate::shared::dag::{pack_by_kind, sets_cross, touches_whole_tree, BacklogTask, Judgement, Reserved};
 use crate::shared::jev::{Board, BoardTask, BoardWave, Judged};
+use crate::shared::task_size::wave_budget;
 
 /// Quem julga o backlog para a montagem: uma chamada só, com o quadro inteiro
-/// ([`Board`]), que volta com o tipo de trabalho de cada tarefa e o quanto ela
-/// pode mudar o mesmo que uma onda em andamento ([`Judged`]). A chamada que
-/// falha deixa a montagem pelo arquivo, como sem o julgamento.
+/// ([`Board`]), que volta com o tipo de trabalho de cada tarefa, o tamanho
+/// dela e o quanto ela pode mudar o mesmo que uma onda em andamento
+/// ([`Judged`]). A chamada que falha deixa a montagem pelo arquivo, como sem o
+/// julgamento.
 pub(crate) type Judge<'a> = dyn Fn(&Board) -> Result<Judged, FilterError> + 'a;
 
 /// Monta as ondas que saem nesta rodada, olhando o backlog inteiro
@@ -45,14 +48,17 @@ pub(crate) type Judge<'a> = dyn Fn(&Board) -> Result<Judged, FilterError> + 'a;
 ///
 /// O assunto vem do Jev (`judge`), numa chamada só por montagem, feita só
 /// quando há vaga livre e tarefa pronta: o quadro leva as ondas em andamento
-/// e o backlog pronto, e a resposta diz o tipo de trabalho de cada tarefa e o
-/// quanto ela muda o mesmo que cada onda em andamento. A onda junta as
-/// tarefas do mesmo tipo, tenham ou não arquivo em comum; a de tipo incerto
-/// sai sozinha, e a que muda o mesmo que uma onda aberta espera no backlog.
-/// As ondas saem na ordem fixa dos tipos — defeito primeiro, limpeza no fim —
-/// e, dentro do tipo, pelo número ([`pack_by_kind`]). Duas ondas com arquivo
-/// em comum nunca saem juntas, de tipos diferentes ou não: a que perde a vez
-/// fica no backlog. A chamada grava um evento `call` com os tokens, o custo e
+/// e o backlog pronto, e a resposta diz o tipo de trabalho de cada tarefa, o
+/// tamanho dela e o quanto ela muda o mesmo que cada onda em andamento. A onda
+/// junta as tarefas do mesmo tipo, tenham ou não arquivo em comum, até a soma
+/// do tamanho delas chegar ao que um agente faz antes do limite da conversa
+/// dele (`WAVE_LIMIT`, menos o começo da conversa; [`wave_budget`]): o que
+/// passa disso fecha a onda e vai para outra, e a tarefa que sozinha passa do
+/// teto sai sozinha. A de tipo incerto sai sozinha, e a que muda o mesmo que
+/// uma onda aberta espera no backlog. As ondas saem na ordem fixa dos tipos —
+/// defeito primeiro, limpeza no fim — e, dentro do tipo, pelo número
+/// ([`pack_by_kind`]). Duas ondas com arquivo em comum nunca saem juntas, de
+/// tipos diferentes ou não: a que perde a vez fica no backlog. A chamada grava um evento `call` com os tokens, o custo e
 /// o modelo, como a busca. Sem `judge` (sem chave, ou o Jev desligado), ou com
 /// a chamada falhando, o assunto é o arquivo: as tarefas que dividem arquivo,
 /// direto ou por uma corrente de outras, e a de código mais baixo sai
@@ -208,7 +214,9 @@ pub(crate) fn dispatch_backlog(
         _ => None,
     };
     let batches = match &judging {
-        Some((_, _, Ok(judged))) => pack_by_kind(&population, &order, &waiting, &busy, &judged.tasks, &code_of),
+        Some((_, _, Ok(judged))) => {
+            pack_by_kind(&population, &order, &waiting, &busy, &judged.tasks, &code_of, wave_budget(WAVE_LIMIT))
+        }
         _ => {
             let mut batches =
                 if order.is_empty() { Vec::new() } else { pack_batches(&population, &order, &waiting, &busy) };

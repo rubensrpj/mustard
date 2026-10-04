@@ -42,9 +42,11 @@
 //!
 //! Com o julgamento do Jev sobre o backlog ([`Judgement`]), o assunto do lote
 //! é o tipo de trabalho ([`TaskKind`]) e não o arquivo: [`pack_by_kind`] junta
-//! as tarefas do mesmo tipo, mesmo sem arquivo em comum, e põe as ondas na
-//! ordem fixa dos tipos. O arquivo e a dependência seguem exatos, em código:
-//! quem decide que duas ondas com arquivo em comum não saem juntas é a rodada.
+//! as tarefas do mesmo tipo, mesmo sem arquivo em comum, até a soma do tamanho
+//! que o Jev estimou para elas chegar ao teto do agente
+//! ([`crate::shared::task_size`]), e põe as ondas na ordem fixa dos tipos. O
+//! arquivo e a dependência seguem exatos, em código: quem decide que duas
+//! ondas com arquivo em comum não saem juntas é a rodada.
 //!
 //! A tarefa que não pode sair porque divide arquivo com uma onda em andamento
 //! reserva os arquivos dela ([`Reserved`]): a que vem depois na ordem de
@@ -62,6 +64,8 @@
 //! rodada nunca a solta junto de outra onda.
 
 use std::collections::{BTreeMap, BTreeSet};
+
+use super::task_size;
 
 /// The level assignment for one dependency graph, plus the nodes on a loop.
 #[derive(Debug, PartialEq, Eq)]
@@ -446,6 +450,10 @@ pub(crate) struct Judgement {
     pub(crate) clash: f64,
     /// A chance de a tarefa ser mecânica, de 0 a 1 ([`MECHANICAL_FROM`]).
     pub(crate) mechanical: f64,
+    /// A nota de tamanho da tarefa, de 0 (um lugar pequeno) a 3 (muitos
+    /// arquivos em várias áreas): quanto código o agente lê e muda
+    /// ([`task_size`]).
+    pub(crate) size: f64,
 }
 
 impl Judgement {
@@ -454,11 +462,18 @@ impl Judgement {
     pub(crate) fn is_mechanical(&self) -> bool {
         self.mechanical >= MECHANICAL_FROM
     }
+
+    /// Quantos tokens a conversa do agente cresce ao fazer a tarefa, pela nota
+    /// de tamanho ([`task_size::growth_tokens`]).
+    pub(crate) fn growth_tokens(&self) -> u64 {
+        task_size::growth_tokens(self.size)
+    }
 }
 
 /// O julgamento da tarefa que o Jev não julgou: tipo incerto, que vai sozinha,
-/// e nunca mecânica.
-const UNJUDGED: Judgement = Judgement { kind: TaskKind::Feature, confidence: 0.0, clash: 0.0, mechanical: 0.0 };
+/// nunca mecânica, e do maior tamanho, que é o que se supõe do que não se mediu.
+const UNJUDGED: Judgement =
+    Judgement { kind: TaskKind::Feature, confidence: 0.0, clash: 0.0, mechanical: 0.0, size: 3.0 };
 
 /// Agrupa `order` (a saída de [`ready_tasks`]) em lotes de despacho pelo tipo
 /// de trabalho que o Jev julgou (`judged`), um tipo por lote, na ordem em que
@@ -467,20 +482,25 @@ const UNJUDGED: Judgement = Judgement { kind: TaskKind::Feature, confidence: 0.0
 /// 1. A tarefa com o curinga da árvore inteira vem antes de tudo, cada uma no
 ///    seu lote, sem nenhuma outra dentro, como em [`pack_batches`].
 /// 2. As tarefas do mesmo tipo vão no mesmo lote, tenham ou não arquivo em
-///    comum, sem teto de tarefas. A de tipo incerto — confiança abaixo de
-///    [`KIND_SURE_FROM`] — vai sozinha, num lote dela. A que divide arquivo
-///    com uma onda aberta (`busy`) ou muda o mesmo que ela ([`CLASH_FROM`])
-///    fica fora de todo lote e espera no backlog, e reserva os arquivos dela
-///    ([`Reserved`]): as tarefas olhadas depois, na ordem dos tipos e do
-///    número, que dividem arquivo com ela esperam também, em vez de tomar a
-///    vaga que ela deixa livre.
+///    comum, na ordem do tipo e do número, até a soma do que a conversa do
+///    agente cresce com elas ([`Judgement::growth_tokens`]) chegar a `budget`:
+///    a tarefa que faria a soma passar dele fecha o lote e abre o seguinte do
+///    mesmo tipo, e o que não cabe nas vagas desta rodada sai nas outras. A
+///    tarefa que sozinha passa de `budget` vai num lote só dela. A de tipo
+///    incerto — confiança abaixo de [`KIND_SURE_FROM`] — vai sozinha, num lote
+///    dela. A que divide arquivo com uma onda aberta (`busy`) ou muda o mesmo
+///    que ela ([`CLASH_FROM`]) fica fora de todo lote e espera no backlog, e
+///    reserva os arquivos dela ([`Reserved`]): as tarefas olhadas depois, na
+///    ordem dos tipos e do número, que dividem arquivo com ela esperam também,
+///    em vez de tomar a vaga que ela deixa livre.
 /// 3. Os lotes saem na ordem de [`TaskKind`] e, dentro do tipo, pelo número
 ///    (`number`) da tarefa mais baixa; as tarefas de cada lote, pelo número.
 /// 4. Cada lote recebe, no fim, as tarefas de `waiting` que esperam só por
-///    ele ([`chain_dependents`]).
+///    ele ([`chain_dependents`]). Elas não foram julgadas e não entram na
+///    soma.
 ///
-/// Dois lotes de tipos diferentes podem dividir arquivo: quem solta só deixa
-/// sair, juntos, os que não se cruzam.
+/// Dois lotes podem dividir arquivo, do mesmo tipo ou de tipos diferentes:
+/// quem solta só deixa sair, juntos, os que não se cruzam.
 pub(crate) fn pack_by_kind<N: Ord + Clone>(
     tasks: &[BacklogTask<N>],
     order: &[N],
@@ -488,6 +508,7 @@ pub(crate) fn pack_by_kind<N: Ord + Clone>(
     busy: &BTreeSet<String>,
     judged: &BTreeMap<N, Judgement>,
     number: &dyn Fn(&N) -> u64,
+    budget: u64,
 ) -> Vec<Batch<N>> {
     let by_id: BTreeMap<&N, &BacklogTask<N>> = tasks.iter().map(|t| (&t.id, t)).collect();
     let mut batches: Vec<Batch<N>> = Vec::new();
@@ -504,7 +525,9 @@ pub(crate) fn pack_by_kind<N: Ord + Clone>(
     // nessa ordem que o bloqueado reserva os arquivos dele.
     candidates.sort_by_key(|(id, _, verdict)| (verdict.kind, number(id), (*id).clone()));
     let mut reserved = Reserved::default();
-    let mut together: BTreeMap<TaskKind, Batch<N>> = BTreeMap::new();
+    // Os lotes de cada tipo, com a soma do tamanho das tarefas de cada um; só o
+    // último de cada tipo está aberto.
+    let mut together: BTreeMap<TaskKind, Vec<(Batch<N>, u64)>> = BTreeMap::new();
     let mut alone: Vec<(TaskKind, Batch<N>)> = Vec::new();
     for (id, task, verdict) in candidates {
         let held = sets_cross(&task.files, busy) || verdict.clash >= CLASH_FROM;
@@ -516,11 +539,22 @@ pub(crate) fn pack_by_kind<N: Ord + Clone>(
             alone.push((verdict.kind, single()));
             continue;
         }
-        let batch = together.entry(verdict.kind).or_insert_with(|| Batch { tasks: Vec::new(), files: BTreeSet::new() });
-        batch.tasks.push(id.clone());
-        batch.files.extend(task.files.iter().cloned());
+        let growth = verdict.growth_tokens();
+        let of_kind = together.entry(verdict.kind).or_default();
+        match of_kind.last_mut() {
+            Some((batch, sum)) if *sum + growth <= budget => {
+                batch.tasks.push(id.clone());
+                batch.files.extend(task.files.iter().cloned());
+                *sum += growth;
+            }
+            _ => of_kind.push((single(), growth)),
+        }
     }
-    let mut groups: Vec<(TaskKind, Batch<N>)> = together.into_iter().chain(alone).collect();
+    let mut groups: Vec<(TaskKind, Batch<N>)> = together
+        .into_iter()
+        .flat_map(|(kind, of_kind)| of_kind.into_iter().map(move |(batch, _)| (kind, batch)))
+        .chain(alone)
+        .collect();
     for (_, group) in &mut groups {
         group.tasks.sort_by_key(|id| (number(id), id.clone()));
     }
@@ -904,15 +938,19 @@ mod tests {
     /// O julgamento do Jev de uma tarefa: o tipo, a confiança nele e a chance
     /// de mudar o mesmo que uma onda em andamento.
     fn judged_as(kind: TaskKind, confidence: f64, clash: f64) -> Judgement {
-        Judgement { kind, confidence, clash, mechanical: 0.0 }
+        Judgement { kind, confidence, clash, mechanical: 0.0, size: 0.0 }
     }
+
+    /// O teto de um agente que chega a 180 mil tokens: o limite menos os 40 mil
+    /// do começo.
+    const BUDGET: u64 = 140_000;
 
     /// Os lotes por tipo de `tasks`, todas prontas, com o julgamento de cada
     /// uma; o número da tarefa é o próprio id.
     fn packed_by_kind(tasks: &[BacklogTask<u32>], judged: &[(u32, Judgement)], busy: &BTreeSet<String>) -> Vec<Vec<u32>> {
         let order: Vec<u32> = tasks.iter().map(|t| t.id).collect();
         let judged: BTreeMap<u32, Judgement> = judged.iter().copied().collect();
-        let batches = pack_by_kind(tasks, &order, &[], busy, &judged, &|id| u64::from(*id));
+        let batches = pack_by_kind(tasks, &order, &[], busy, &judged, &|id| u64::from(*id), BUDGET);
         batch_tasks(&batches)
     }
 
@@ -955,7 +993,7 @@ mod tests {
         let mut order: Vec<u32> = (1..=6).collect();
         order.reverse();
         let judged_map: BTreeMap<u32, Judgement> = judged.iter().copied().collect();
-        let batches = pack_by_kind(&tasks, &order, &[], &BTreeSet::new(), &judged_map, &|id| u64::from(*id));
+        let batches = pack_by_kind(&tasks, &order, &[], &BTreeSet::new(), &judged_map, &|id| u64::from(*id), BUDGET);
         assert_eq!(batch_tasks(&batches), vec![vec![5], vec![3, 6], vec![4], vec![2], vec![1]], "{batches:?}");
     }
 
@@ -1003,9 +1041,9 @@ mod tests {
         let judged: BTreeMap<u32, Judgement> =
             [(1, sure(TaskKind::Feature)), (2, sure(TaskKind::Defect)), (3, sure(TaskKind::Feature))].into_iter().collect();
         let number = |id: &u32| u64::from(*id);
-        let with_wildcard = pack_by_kind(&tasks, &[1, 2, 3], &[4], &BTreeSet::new(), &judged, &number);
+        let with_wildcard = pack_by_kind(&tasks, &[1, 2, 3], &[4], &BTreeSet::new(), &judged, &number, BUDGET);
         assert_eq!(batch_tasks(&with_wildcard), vec![vec![2], vec![1, 3]], "{with_wildcard:?}");
-        let without = pack_by_kind(&tasks, &[1, 3], &[4], &BTreeSet::new(), &judged, &number);
+        let without = pack_by_kind(&tasks, &[1, 3], &[4], &BTreeSet::new(), &judged, &number, BUDGET);
         assert_eq!(batch_tasks(&without), vec![vec![1, 3, 4]], "{without:?}");
     }
 
@@ -1059,7 +1097,7 @@ mod tests {
         let sure = judged_as(TaskKind::Defect, 0.9, 0.0);
         let judged: BTreeMap<u32, Judgement> = [(1, sure), (3, sure)].into_iter().collect();
         let busy = BTreeSet::from(["open.rs".to_string()]);
-        let batches = pack_by_kind(&tasks, &[1, 3], &[4, 5], &busy, &judged, &|id| u64::from(*id));
+        let batches = pack_by_kind(&tasks, &[1, 3], &[4, 5], &busy, &judged, &|id| u64::from(*id), BUDGET);
         assert_eq!(batch_tasks(&batches), vec![vec![3, 5]], "a 4 cruza a reserva da 1 e a 5 entra: {batches:?}");
     }
 
@@ -1095,10 +1133,80 @@ mod tests {
             (3, judged_as(TaskKind::Defect, 0.9, 0.0)),
         ]);
 
-        let batches = pack_by_kind(&tasks, &[1, 2, 3], &[], &BTreeSet::new(), &judged, &|id| u64::from(*id));
+        let batches = pack_by_kind(&tasks, &[1, 2, 3], &[], &BTreeSet::new(), &judged, &|id| u64::from(*id), BUDGET);
 
         assert_eq!(batch_tasks(&batches), vec![vec![3], vec![1, 2]]);
         assert!(batches[0].waits_to_grow(), "dois arquivos esperam");
         assert!(!batches[1].waits_to_grow(), "seis arquivos saem");
+    }
+
+    /// Uma tarefa certa do tipo `kind` e do tamanho `size` (a nota de 0 a 3).
+    fn sized(kind: TaskKind, size: f64) -> Judgement {
+        Judgement { size, ..judged_as(kind, 0.9, 0.0) }
+    }
+
+    /// Os lotes de `count` tarefas sem arquivo, do tipo e do tamanho que
+    /// `judge` diz para o número de cada uma, com o teto `budget`.
+    fn packed_within(count: u32, judge: impl Fn(u32) -> Judgement, budget: u64) -> Vec<Vec<u32>> {
+        let tasks: Vec<BacklogTask<u32>> = (1..=count).map(|n| task(n, &[], &[], false)).collect();
+        let order: Vec<u32> = (1..=count).collect();
+        let judged: BTreeMap<u32, Judgement> = order.iter().map(|n| (*n, judge(*n))).collect();
+        let batches = pack_by_kind(&tasks, &order, &[], &BTreeSet::new(), &judged, &|id| u64::from(*id), budget);
+        batch_tasks(&batches)
+    }
+
+    /// As tarefas pequenas do mesmo tipo vão juntas até a soma chegar a 140 mil
+    /// tokens: 65 mil, 35 mil e 35 mil fazem 135 mil e cabem; a quarta, de 35
+    /// mil, passaria de 140 mil e abre outro lote, que leva também as de
+    /// depois.
+    #[test]
+    fn small_tasks_of_one_kind_go_together_up_to_the_budget() {
+        let sizes = [1.0, 0.0, 0.0, 0.0, 0.0];
+        let batches = packed_within(5, |n| sized(TaskKind::Feature, sizes[n as usize - 1]), BUDGET);
+        assert_eq!(batches, vec![vec![1, 2, 3], vec![4, 5]]);
+    }
+
+    /// A soma que chega a 140 mil tokens exatos ainda cabe: quatro tarefas de
+    /// 35 mil formam um lote, e a quinta já abre outro.
+    #[test]
+    fn a_sum_that_reaches_the_budget_exactly_still_fits() {
+        let batches = packed_within(5, |_| sized(TaskKind::Feature, 0.0), BUDGET);
+        assert_eq!(batches, vec![vec![1, 2, 3, 4], vec![5]]);
+    }
+
+    /// Três tarefas do maior tamanho (125 mil tokens cada) não cabem juntas, nem
+    /// duas: cada uma sai no lote dela.
+    #[test]
+    fn three_tasks_of_the_biggest_size_do_not_fit_in_one_batch() {
+        let batches = packed_within(3, |_| sized(TaskKind::Feature, 3.0), BUDGET);
+        assert_eq!(batches, vec![vec![1], vec![2], vec![3]]);
+    }
+
+    /// A tarefa que sozinha passa do teto sai no lote dela, sem levar nem
+    /// receber outra; as pequenas de antes e de depois se juntam entre si.
+    #[test]
+    fn a_task_bigger_than_the_budget_on_its_own_goes_alone() {
+        let sizes = [0.0, 3.0, 0.0, 0.0];
+        let batches = packed_within(4, |n| sized(TaskKind::Feature, sizes[n as usize - 1]), 100_000);
+        assert_eq!(batches, vec![vec![1], vec![2], vec![3, 4]]);
+    }
+
+    /// Cada tipo soma o seu: três tarefas de defeito do maior tamanho não
+    /// tomam o lugar da de recurso, que sai no lote do tipo dela.
+    #[test]
+    fn each_kind_adds_up_its_own_tasks() {
+        let kinds = [TaskKind::Defect, TaskKind::Defect, TaskKind::Feature, TaskKind::Defect];
+        let batches = packed_within(4, |n| sized(kinds[n as usize - 1], if n == 3 { 0.0 } else { 3.0 }), BUDGET);
+        assert_eq!(batches, vec![vec![1], vec![2], vec![4], vec![3]]);
+    }
+
+    /// O tamanho separa duas tarefas do mesmo tipo ainda que dividam o arquivo:
+    /// sem a conta, o arquivo em comum as manteria juntas.
+    #[test]
+    fn two_batches_of_one_kind_may_share_a_file() {
+        let tasks = [task(1, &[], &["a.rs"], false), task(2, &[], &["a.rs"], false)];
+        let judged = [(1, sized(TaskKind::Feature, 3.0)), (2, sized(TaskKind::Feature, 3.0))];
+        let batches = packed_by_kind(&tasks, &judged, &BTreeSet::new());
+        assert_eq!(batches, vec![vec![1], vec![2]]);
     }
 }

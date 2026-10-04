@@ -72,6 +72,7 @@ use serde_json::{Map, Value, json};
 use crate::shared::dag::{Judgement, TaskKind};
 use crate::shared::paths::sensitive_pattern;
 use crate::shared::secret::without_secrets;
+use crate::shared::task_size;
 
 // ---------------------------------------------------------------------------
 // O serviço
@@ -896,11 +897,13 @@ impl JevFilter {
     /// ondas em andamento e o backlog inteiro, e todas as perguntas vão
     /// juntas — `tipo_<t>`, uma escolha de tipo de trabalho por tarefa,
     /// `mec_<t>`, um sim ou não por tarefa: ela só tira, renomeia, move ou
-    /// corrige texto, sem decidir como algo funciona? — e `blk_<w>_<t>`, um
-    /// sim ou não por tarefa e onda em andamento: as duas mudam a mesma coisa?
-    /// Cada tipo vem com a confiança do Jev nele, cada tarefa com a chance de
-    /// ser mecânica e com a maior chance de bloqueio entre as ondas. Falta de
-    /// uma resposta é resposta ilegível.
+    /// corrige texto, sem decidir como algo funciona?, `tam_<t>`, uma nota de
+    /// 0 a 3 por tarefa: quanto código o agente lê e muda para fazê-la? — e
+    /// `blk_<w>_<t>`, um sim ou não por tarefa e onda em andamento: as duas
+    /// mudam a mesma coisa? Cada tipo vem com a confiança do Jev nele, cada
+    /// tarefa com a chance de ser mecânica, com a nota de tamanho
+    /// ([`task_size`]) e com a maior chance de bloqueio entre as ondas. Falta
+    /// de uma resposta é resposta ilegível.
     ///
     /// # Errors
     /// O quadro que passa do que o serviço aceita, a falha do serviço e a
@@ -994,6 +997,7 @@ fn board_parts(board: &Board) -> (Value, Map<String, Value>) {
                 ),
             }),
         );
+        questions.insert(format!("tam_{key}"), task_size::question(&key));
         for wave in &board.running {
             let wave = wave_key(wave.n);
             questions.insert(
@@ -1011,9 +1015,10 @@ fn board_parts(board: &Board) -> (Value, Map<String, Value>) {
 }
 
 /// O julgamento de cada tarefa do backlog de `board`, lido do documento
-/// `doc`: o tipo e a confiança nele, a chance de ser mecânica e a maior chance
-/// de bloqueio entre as ondas em andamento. Falta de uma resposta, tipo que
-/// não existe ou número que não é número é resposta ilegível.
+/// `doc`: o tipo e a confiança nele, a chance de ser mecânica, a nota de
+/// tamanho e a maior chance de bloqueio entre as ondas em andamento. Falta de
+/// uma resposta, tipo que não existe ou número que não é número é resposta
+/// ilegível.
 fn read_judgements(doc: &Value, board: &Board) -> Result<BTreeMap<u64, Judgement>, FilterError> {
     let answers = doc
         .get("answers")
@@ -1038,6 +1043,11 @@ fn read_judgements(doc: &Value, board: &Board) -> Result<BTreeMap<u64, Judgement
             .and_then(|answer| answer.get("noul"))
             .and_then(Value::as_f64)
             .ok_or_else(|| missing(asked_mechanical.clone()))?;
+        let asked_size = format!("tam_{key}");
+        let size = answers
+            .get(&asked_size)
+            .and_then(task_size::level_in)
+            .ok_or_else(|| missing(asked_size.clone()))?;
         let mut clash = 0.0_f64;
         for wave in &board.running {
             let asked = format!("blk_{}_{key}", wave_key(wave.n));
@@ -1048,7 +1058,7 @@ fn read_judgements(doc: &Value, board: &Board) -> Result<BTreeMap<u64, Judgement
                 .ok_or_else(|| missing(asked.clone()))?;
             clash = clash.max(chance);
         }
-        judged.insert(task.id, Judgement { kind: kind_of, confidence, clash, mechanical });
+        judged.insert(task.id, Judgement { kind: kind_of, confidence, clash, mechanical, size });
     }
     Ok(judged)
 }
@@ -2376,7 +2386,8 @@ mod tests {
     }
 
     /// A resposta do serviço ao quadro `board()`: a tarefa 11 é um defeito
-    /// certo e a 12 um recurso incerto que muda o mesmo que a onda 7.
+    /// certo, de tamanho 2,4, e a 12 um recurso incerto, de tamanho 0,6, que
+    /// muda o mesmo que a onda 7.
     fn judged_answer() -> Value {
         json!({
             "model": "jev-1.13.0",
@@ -2385,6 +2396,8 @@ mod tests {
                 "tipo_t12": {"type": "choice", "choice": "feature", "confidence": 0.41},
                 "mec_t11": {"type": "noul", "noul": 0.85},
                 "mec_t12": {"type": "noul", "noul": 0.2},
+                "tam_t11": {"type": "score", "score": 2.4, "confidence": 0.8},
+                "tam_t12": {"type": "score", "score": 0.6, "confidence": 0.7},
                 "blk_w7_t11": {"type": "noul", "noul": 0.1},
                 "blk_w7_t12": {"type": "noul", "noul": 0.68},
             },
@@ -2394,8 +2407,8 @@ mod tests {
 
     /// O backlog inteiro vai numa chamada só, com o modelo fixo, o estado
     /// com a definição, a onda em andamento e o backlog, e as perguntas de
-    /// tipo e de bloqueio juntas; a resposta vira o julgamento de cada
-    /// tarefa, com os tokens, o custo e o modelo.
+    /// tipo, de onda mecânica, de tamanho e de bloqueio juntas; a resposta vira
+    /// o julgamento de cada tarefa, com os tokens, o custo e o modelo.
     #[test]
     fn the_whole_backlog_is_judged_in_one_request_with_every_question() {
         let service = FakeService::start(|_, _| Reply::json(200, &judged_answer()));
@@ -2407,7 +2420,17 @@ mod tests {
         assert_eq!(body["model"], json!(JEV_MODEL));
         let mut asked: Vec<&str> = body["questions"].as_object().unwrap().keys().map(String::as_str).collect();
         asked.sort_unstable();
-        assert_eq!(asked, vec!["blk_w7_t11", "blk_w7_t12", "mec_t11", "mec_t12", "tipo_t11", "tipo_t12"]);
+        assert_eq!(
+            asked,
+            vec!["blk_w7_t11", "blk_w7_t12", "mec_t11", "mec_t12", "tam_t11", "tam_t12", "tipo_t11", "tipo_t12"]
+        );
+        let size = &body["questions"]["tam_t11"];
+        assert_eq!(size["type"], json!("score"));
+        assert!(size["instructions"]["question"].as_str().unwrap().contains("`backlog.t11`"), "{size}");
+        assert_eq!(
+            size["criteria"],
+            json!(["One small place", "Two or three files", "Many files in one area", "Many files across several areas"])
+        );
         let mechanical = body["questions"]["mec_t11"]["instructions"].as_str().unwrap();
         assert!(mechanical.contains("`backlog.t11`") && mechanical.contains("remove, rename, move or fix text"), "{mechanical}");
         let state = &body["state"];
@@ -2417,9 +2440,10 @@ mod tests {
         assert_eq!(state["backlog"]["t11"]["text"], json!("Text of task 11."));
         assert_eq!(body["questions"]["tipo_t11"]["criteria"].as_object().unwrap().len(), 5);
 
-        assert_eq!(judged.tasks[&11], Judgement { kind: TaskKind::Defect, confidence: 0.9, clash: 0.1, mechanical: 0.85 });
-        assert_eq!(judged.tasks[&12], Judgement { kind: TaskKind::Feature, confidence: 0.41, clash: 0.68, mechanical: 0.2 });
+        assert_eq!(judged.tasks[&11], Judgement { kind: TaskKind::Defect, confidence: 0.9, clash: 0.1, mechanical: 0.85, size: 2.4 });
+        assert_eq!(judged.tasks[&12], Judgement { kind: TaskKind::Feature, confidence: 0.41, clash: 0.68, mechanical: 0.2, size: 0.6 });
         assert!(judged.tasks[&11].is_mechanical() && !judged.tasks[&12].is_mechanical());
+        assert_eq!((judged.tasks[&11].growth_tokens(), judged.tasks[&12].growth_tokens()), (107_000, 53_000));
         assert_eq!(
             (judged.usage.input_tokens, judged.usage.cost_micro_usd, judged.usage.requests, judged.usage.model.as_str()),
             (2000, 84, 1, "jev-1.13.0")
@@ -2427,26 +2451,29 @@ mod tests {
     }
 
     /// Sem onda em andamento não há pergunta de bloqueio, e a tarefa fica sem
-    /// choque; a falta de uma resposta, um tipo que não existe e a confiança
-    /// ausente são resposta ilegível, e o serviço que recusa é falha.
+    /// choque; a falta de uma resposta, um tipo que não existe, a confiança
+    /// ausente e a nota de tamanho que não é nota são resposta ilegível, e o
+    /// serviço que recusa é falha.
     #[test]
     fn an_answer_that_misses_a_question_or_a_kind_is_unreadable_and_a_refusal_is_a_failure() {
         let no_wave = Board { running: Vec::new(), backlog: vec![board_task(11, &["a.rs"])] };
         let service = FakeService::start(|_, _| {
             Reply::json(
                 200,
-                &json!({"answers": {"tipo_t11": {"choice": "defect", "confidence": 0.8}, "mec_t11": {"noul": 0.1}}, "usage": {"input_tokens": 10}}),
+                &json!({"answers": {"tipo_t11": {"choice": "defect", "confidence": 0.8}, "mec_t11": {"noul": 0.1}, "tam_t11": {"score": 1.0}}, "usage": {"input_tokens": 10}}),
             )
         });
         let judged = service.filter().judge_backlog(&no_wave).unwrap();
         assert_eq!(judged.tasks[&11].clash, 0.0);
-        assert_eq!(service.received()[0].body["questions"].as_object().unwrap().len(), 2);
+        assert_eq!(service.received()[0].body["questions"].as_object().unwrap().len(), 3);
 
         for (name, answer) in [
-            ("a missing blk", json!({"tipo_t11": {"choice": "defect", "confidence": 0.9}, "tipo_t12": {"choice": "defect", "confidence": 0.9}, "mec_t11": {"noul": 0.1}, "mec_t12": {"noul": 0.1}, "blk_w7_t11": {"noul": 0.1}})),
-            ("an unknown kind", json!({"tipo_t11": {"choice": "chore", "confidence": 0.9}, "tipo_t12": {"choice": "defect", "confidence": 0.9}, "mec_t11": {"noul": 0.1}, "mec_t12": {"noul": 0.1}, "blk_w7_t11": {"noul": 0.1}, "blk_w7_t12": {"noul": 0.1}})),
-            ("no confidence", json!({"tipo_t11": {"choice": "defect"}, "tipo_t12": {"choice": "defect", "confidence": 0.9}, "mec_t11": {"noul": 0.1}, "mec_t12": {"noul": 0.1}, "blk_w7_t11": {"noul": 0.1}, "blk_w7_t12": {"noul": 0.1}})),
-            ("a missing mec", json!({"tipo_t11": {"choice": "defect", "confidence": 0.9}, "tipo_t12": {"choice": "defect", "confidence": 0.9}, "mec_t11": {"noul": 0.1}, "blk_w7_t11": {"noul": 0.1}, "blk_w7_t12": {"noul": 0.1}})),
+            ("a missing blk", json!({"tipo_t11": {"choice": "defect", "confidence": 0.9}, "tipo_t12": {"choice": "defect", "confidence": 0.9}, "mec_t11": {"noul": 0.1}, "mec_t12": {"noul": 0.1}, "tam_t11": {"score": 1.0}, "tam_t12": {"score": 1.0}, "blk_w7_t11": {"noul": 0.1}})),
+            ("an unknown kind", json!({"tipo_t11": {"choice": "chore", "confidence": 0.9}, "tipo_t12": {"choice": "defect", "confidence": 0.9}, "mec_t11": {"noul": 0.1}, "mec_t12": {"noul": 0.1}, "tam_t11": {"score": 1.0}, "tam_t12": {"score": 1.0}, "blk_w7_t11": {"noul": 0.1}, "blk_w7_t12": {"noul": 0.1}})),
+            ("no confidence", json!({"tipo_t11": {"choice": "defect"}, "tipo_t12": {"choice": "defect", "confidence": 0.9}, "mec_t11": {"noul": 0.1}, "mec_t12": {"noul": 0.1}, "tam_t11": {"score": 1.0}, "tam_t12": {"score": 1.0}, "blk_w7_t11": {"noul": 0.1}, "blk_w7_t12": {"noul": 0.1}})),
+            ("a missing mec", json!({"tipo_t11": {"choice": "defect", "confidence": 0.9}, "tipo_t12": {"choice": "defect", "confidence": 0.9}, "mec_t11": {"noul": 0.1}, "tam_t11": {"score": 1.0}, "tam_t12": {"score": 1.0}, "blk_w7_t11": {"noul": 0.1}, "blk_w7_t12": {"noul": 0.1}})),
+            ("a missing tam", json!({"tipo_t11": {"choice": "defect", "confidence": 0.9}, "tipo_t12": {"choice": "defect", "confidence": 0.9}, "mec_t11": {"noul": 0.1}, "mec_t12": {"noul": 0.1}, "tam_t11": {"score": 1.0}, "blk_w7_t11": {"noul": 0.1}, "blk_w7_t12": {"noul": 0.1}})),
+            ("a tam that is not a score", json!({"tipo_t11": {"choice": "defect", "confidence": 0.9}, "tipo_t12": {"choice": "defect", "confidence": 0.9}, "mec_t11": {"noul": 0.1}, "mec_t12": {"noul": 0.1}, "tam_t11": {"score": 1.0}, "tam_t12": {"noul": 0.4}, "blk_w7_t11": {"noul": 0.1}, "blk_w7_t12": {"noul": 0.1}})),
         ] {
             let service = FakeService::start(move |_, _| Reply::json(200, &json!({"answers": answer.clone()})));
             let error = service.filter().judge_backlog(&board()).unwrap_err();

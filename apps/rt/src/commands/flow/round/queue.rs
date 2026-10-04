@@ -3077,6 +3077,16 @@ mod tests {
         kind_of: impl Fn(u64) -> crate::shared::dag::TaskKind,
         mechanical_of: impl Fn(u64) -> f64,
     ) -> impl Fn(&crate::shared::jev::Board) -> Result<crate::shared::jev::Judged, mustard_core::domain::map_filter::FilterError> {
+        judging_sized(kind_of, mechanical_of, |_| 0.0)
+    }
+
+    /// O Jev de mentira de [`judging_with`], que também dá a cada tarefa a nota
+    /// de tamanho, de 0 a 3, que `size_of` diz, pelo número dela.
+    fn judging_sized(
+        kind_of: impl Fn(u64) -> crate::shared::dag::TaskKind,
+        mechanical_of: impl Fn(u64) -> f64,
+        size_of: impl Fn(u64) -> f64,
+    ) -> impl Fn(&crate::shared::jev::Board) -> Result<crate::shared::jev::Judged, mustard_core::domain::map_filter::FilterError> {
         move |board| {
             let tasks = board
                 .backlog
@@ -3087,6 +3097,7 @@ mod tests {
                         confidence: 0.9,
                         clash: 0.0,
                         mechanical: mechanical_of(task.id),
+                        size: size_of(task.id),
                     };
                     (task.id, judgement)
                 })
@@ -3108,6 +3119,7 @@ mod tests {
                     confidence: 0.9,
                     clash: 0.0,
                     mechanical: mechanical_of(*id),
+                    size: 0.0,
                 };
                 (*id, judgement)
             })
@@ -3161,6 +3173,92 @@ mod tests {
         let log = spec_now(root);
         assert!(log.visible().into_iter().any(|e| e.event_type == "wave" && e.int("summary").is_some()), "a onda leva o resumo");
         assert_eq!(light_waves(&log, &judged_as(&[task], |_| 0.95)), BTreeSet::new());
+    }
+
+    /// Três tarefas do mesmo tipo e do maior tamanho (125 mil tokens cada) não
+    /// cabem numa onda só, nem duas delas: saem três ondas, uma por tarefa.
+    #[test]
+    fn three_tasks_of_the_biggest_size_leave_in_three_waves() {
+        use crate::shared::dag::TaskKind;
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, crit) = backlog_project(root);
+        let one = backlog_task_on(root, said, crit, "Mexer no código de um.", &["src/a.rs"]);
+        let two = backlog_task_on(root, said, crit, "Mexer no código de dois.", &["src/b.rs"]);
+        let three = backlog_task_on(root, said, crit, "Mexer no código de três.", &["src/c.rs"]);
+
+        let judge = judging_sized(|_| TaskKind::Feature, |_| 0.0, |_| 3.0);
+        let log = spec_now(root);
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), Some(&judge)), Ok(vec![1, 2, 3]));
+        assert_eq!(wave_order(root, 1), vec![one]);
+        assert_eq!(wave_order(root, 2), vec![two]);
+        assert_eq!(wave_order(root, 3), vec![three]);
+    }
+
+    /// As tarefas pequenas do mesmo tipo vão juntas até 140 mil tokens: duas de
+    /// 65 mil (130 mil) saem juntas, e a terceira, que passaria do teto, sai na
+    /// onda seguinte, quando há vaga.
+    #[test]
+    fn tasks_of_one_kind_fill_a_wave_up_to_the_budget_and_the_rest_goes_to_the_next() {
+        use crate::shared::dag::TaskKind;
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, crit) = backlog_project(root);
+        let one = backlog_task_on(root, said, crit, "Mexer no código de um.", &["src/a.rs"]);
+        let two = backlog_task_on(root, said, crit, "Mexer no código de dois.", &["src/b.rs"]);
+        let three = backlog_task_on(root, said, crit, "Mexer no código de três.", &["src/c.rs"]);
+
+        let judge = judging_sized(|_| TaskKind::Feature, |_| 0.0, |_| 1.0);
+        let log = spec_now(root);
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), Some(&judge)), Ok(vec![1, 2]));
+        assert_eq!(wave_order(root, 1), vec![one, two], "65 mil mais 65 mil cabem");
+        assert_eq!(wave_order(root, 2), vec![three], "a terceira passaria de 140 mil");
+    }
+
+    /// Com vaga para uma onda só, a que passou do teto fica no backlog, sem
+    /// onda, e entra na montagem da rodada em que uma vaga abrir.
+    #[test]
+    fn the_task_that_does_not_fit_stays_in_the_backlog_until_a_slot_opens() {
+        use crate::shared::dag::TaskKind;
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, crit) = backlog_project(root);
+        std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":1}"#).unwrap();
+        let one = backlog_task_on(root, said, crit, "Mexer no código de um.", &["src/a.rs"]);
+        let two = backlog_task_on(root, said, crit, "Mexer no código de dois.", &["src/b.rs"]);
+
+        let judge = judging_sized(|_| TaskKind::Feature, |_| 0.0, |_| 3.0);
+        let log = spec_now(root);
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), Some(&judge)), Ok(vec![1]));
+        assert_eq!(wave_order(root, 1), vec![one]);
+        assert_eq!(spec_now(root).current(two).and_then(SpecEvent::wave), None, "a segunda espera no backlog");
+    }
+
+    /// A espera de seis arquivos continua: duas tarefas do mesmo tipo de três
+    /// arquivos cada somam seis num lote só e saem ao lado de outra onda; do
+    /// maior tamanho elas não cabem juntas, e cada lote, de três arquivos,
+    /// espera.
+    #[test]
+    fn the_wait_for_six_files_holds_the_batches_the_size_budget_split() {
+        use crate::shared::dag::TaskKind;
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, crit) = backlog_project(root);
+        backlog_task_on(root, said, crit, "Mexer na parte grande.", &SIX_FILES);
+        let log = spec_now(root);
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None), Ok(vec![1]));
+        seed_running(root, 1);
+        let one = backlog_task_on(root, said, crit, "Mexer na primeira.", &["src/a.rs", "src/b.rs", "src/c.rs"]);
+        let two = backlog_task_on(root, said, crit, "Mexer na segunda.", &["src/d.rs", "src/e.rs", "src/f.rs"]);
+
+        let big = judging_sized(|_| TaskKind::Feature, |_| 0.0, |_| 3.0);
+        let log = spec_now(root);
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), Some(&big)), Ok(vec![]), "dois lotes de três");
+
+        let small = judging_sized(|_| TaskKind::Feature, |_| 0.0, |_| 0.0);
+        let log = spec_now(root);
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), Some(&small)), Ok(vec![2]));
+        assert_eq!(wave_order(root, 2), vec![one, two], "um lote de seis arquivos sai");
     }
 
     /// O grupo de três arquivos não sai enquanto outra onda está em andamento:
