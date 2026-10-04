@@ -220,8 +220,10 @@ pub struct Module {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub test_imports: Vec<String>,
     /// Os arquivos do projeto que o trecho de teste deste importa, resolvidos
-    /// como os de `deps` e guardados à parte: dizem o que o teste cobre. O
-    /// próprio arquivo não entra.
+    /// como os de `deps` e guardados à parte: dizem o que o teste cobre. No
+    /// arquivo que um módulo declara como teste, são os imports dele todos
+    /// ([`Module::test_side_imports`]), e `deps` fica vazio. O próprio arquivo
+    /// não entra.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub test_deps: Vec<String>,
     /// As linhas, da primeira à última, de cada trecho de teste do arquivo. A
@@ -687,6 +689,23 @@ impl Module {
     /// A linha cai num trecho de teste do arquivo ([`Module::test_lines`]).
     pub fn is_test_line(&self, line: usize) -> bool {
         self.test_lines.iter().any(|&(first, last)| (first..=last).contains(&line))
+    }
+
+    /// O arquivo inteiro é de teste porque um módulo o declara como tal: ele
+    /// traz o trecho [`DECLARED_TEST_LINES`] em [`Module::test_lines`].
+    pub fn is_declared_test(&self) -> bool {
+        self.test_lines.contains(&DECLARED_TEST_LINES)
+    }
+
+    /// Os imports que o teste do arquivo escreve: os dos trechos de teste
+    /// ([`Module::test_imports`]) e, no arquivo que é todo de teste, também os
+    /// de [`Module::imports`]. O arquivo guarda `imports` como o escreveu, e o
+    /// que o módulo declara como teste se refaz em toda passada: o arquivo
+    /// que deixa de ser declarado, sem ser relido, volta a ter os imports dele
+    /// como dependência.
+    pub fn test_side_imports(&self) -> impl Iterator<Item = &String> {
+        let whole_file: &[String] = if self.is_declared_test() { &self.imports } else { &[] };
+        whole_file.iter().chain(&self.test_imports)
     }
 
     /// Em quantos módulos escritos dentro do arquivo

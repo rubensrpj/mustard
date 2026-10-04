@@ -113,6 +113,11 @@ fn scc_depth(c: usize, succ: &[HashSet<usize>], memo: &mut [Option<usize>]) -> u
 /// dependencies of each file (`Module::deps`) both read it, so the two can
 /// never see a different graph. Output sorted → byte-stable. Nothing switches
 /// on a language name.
+///
+/// O arquivo que um módulo declara como teste ([`Module::is_declared_test`])
+/// não escreve aresta: o que ele importa é do teste, como o que o trecho de
+/// teste escrito dentro de um arquivo importa, e vai para
+/// [`resolve_test_deps`]. A marca tem de estar posta nos módulos antes.
 pub fn resolve_edges(modules: &[Module], projects: &Projects, aliases: &PathAliases) -> Vec<(usize, usize, u64)> {
     let mut pos: HashMap<&str, usize> = HashMap::with_capacity(modules.len());
     for (i, m) in modules.iter().enumerate() {
@@ -122,7 +127,7 @@ pub fn resolve_edges(modules: &[Module], projects: &Projects, aliases: &PathAlia
 
     // The strongest evidence per (src, dst) pair wins; re-imports never inflate.
     let mut edge_w: HashMap<(usize, usize), u64> = HashMap::new();
-    for (src, m) in modules.iter().enumerate() {
+    for (src, m) in modules.iter().enumerate().filter(|(_, m)| !m.is_declared_test()) {
         for imp in &m.imports {
             for nested in m.import_depths(imp, false) {
                 // Cada ramo de um import em grupo pesa como o import que ele
@@ -145,13 +150,14 @@ pub fn resolve_edges(modules: &[Module], projects: &Projects, aliases: &PathAlia
     edges
 }
 
-/// Os arquivos do projeto que o trecho de teste de cada módulo importa
-/// (`Module::test_imports`), pela mesma resolução dos imports do corpo, na
-/// ordem de `modules`. Guardados à parte: nenhum é aresta do grafo nem entra
-/// em `deps`. O trecho de teste é um dos módulos escritos dentro do arquivo
+/// Os arquivos do projeto que o teste de cada módulo importa
+/// ([`Module::test_side_imports`]: os do trecho de teste e, no arquivo todo de
+/// teste, os dele todos), pela mesma resolução dos imports do corpo, na ordem
+/// de `modules`. Guardados à parte: nenhum é aresta do grafo nem entra em
+/// `deps`. O trecho de teste é um dos módulos escritos dentro do arquivo
 /// (`Module::module_lines`), e o próprio arquivo não conta.
 pub fn resolve_test_deps(modules: &[Module], projects: &Projects, aliases: &PathAliases) -> Vec<Vec<String>> {
-    if modules.iter().all(|m| m.test_imports.is_empty()) {
+    if modules.iter().all(|m| m.test_side_imports().next().is_none()) {
         return vec![Vec::new(); modules.len()];
     }
     let resolver = Resolver::new(modules, projects, aliases);
@@ -159,8 +165,7 @@ pub fn resolve_test_deps(modules: &[Module], projects: &Projects, aliases: &Path
         .iter()
         .map(|m| {
             let found: BTreeSet<String> = m
-                .test_imports
-                .iter()
+                .test_side_imports()
                 .flat_map(|imp| {
                     m.import_depths(imp, true).into_iter().flat_map(|nested| resolver.resolve_through(imp, m, nested))
                 })

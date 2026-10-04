@@ -537,6 +537,12 @@ fn read_modules(root: &Path, reuse: Option<&ingest::Reuse>, listing: Option<&Lis
         }
     }
 
+    // Os arquivos que um módulo declara como teste são todo trecho de teste,
+    // refeito do projeto inteiro em toda passada, como as dependências abaixo.
+    // A marca vem antes da resolução: o que um arquivo todo de teste importa é
+    // do teste e fica fora do grafo e de `deps`, como o import do trecho de
+    // teste escrito dentro do arquivo.
+    graph::test_module::mark_declared(&mut modules);
     let projects = graph::Projects::of(&ing.manifests);
     let aliases = path_aliases::PathAliases::load(&ing.root, &ing.walk_paths);
     let graph = graph::build(&modules, &projects, &aliases);
@@ -560,9 +566,6 @@ fn read_modules(root: &Path, reuse: Option<&ingest::Reuse>, listing: Option<&Lis
     for (m, found) in modules.iter_mut().zip(test_deps) {
         m.test_deps = found;
     }
-    // Os arquivos que um módulo declara como teste são todo trecho de teste,
-    // refeito do projeto inteiro em toda passada, como as dependências acima.
-    graph::test_module::mark_declared(&mut modules);
     Ok(Read { ing, modules, projects, aliases, graph, route_rules })
 }
 

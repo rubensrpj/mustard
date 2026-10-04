@@ -2,7 +2,9 @@
 //! calls or cites something the file declares by a proven link, or a test that
 //! keeps changing together with it in git. A file that carries its own tests
 //! (an inline marker from the core's test-file data, `test-files.toml`) says
-//! so on its own, and covers what its test block imports.
+//! so on its own, and covers what its test block imports. A file that a module
+//! declares as test (`Module::is_declared_test`) is a test file whatever its
+//! path says: it covers what it imports and gets no tests of its own.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -31,6 +33,12 @@ enum Link {
     History,
 }
 
+/// `true` when the file is a test: its path says so, or a module declares it
+/// as test.
+fn is_test_file(module: &Module) -> bool {
+    is_test_path(&module.path) || module.is_declared_test()
+}
+
 /// Fill `tests` on every module from the resolved imports (`deps` of a test
 /// file, `test_deps` of any file), the proven uses and the history. Test files
 /// themselves get none.
@@ -41,7 +49,7 @@ enum Link {
 /// das declarações já gravou em cada declaração, refeitos do projeto inteiro
 /// em toda passada; o uso suspeito não conta.
 pub(crate) fn assign(modules: &mut [Module], history: &History) {
-    let tests: BTreeSet<String> = modules.iter().filter(|m| is_test_path(&m.path)).map(|m| m.path.clone()).collect();
+    let tests: BTreeSet<String> = modules.iter().filter(|m| is_test_file(m)).map(|m| m.path.clone()).collect();
     let mut found: BTreeMap<String, BTreeMap<String, Link>> = BTreeMap::new();
     for test in modules.iter().filter(|m| tests.contains(&m.path)) {
         for dep in test.deps.iter().filter(|d| !tests.contains(*d)) {
@@ -101,7 +109,7 @@ fn ranked(file: &str, links: BTreeMap<String, Link>) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Decl, DeclAt, UseSite};
+    use crate::model::{Decl, DeclAt, UseSite, DECLARED_TEST_LINES};
     use mustard_core::domain::project_map::RawCommit;
 
     fn module(path: &str, deps: &[&str]) -> Module {
@@ -134,6 +142,44 @@ mod tests {
 
     fn use_at(file: &str, candidates: Vec<DeclAt>) -> UseSite {
         UseSite { file: file.to_string(), line: 6, from: "t".to_string(), candidates }
+    }
+
+    /// Um arquivo que um módulo declara como teste, com o que ele importa em
+    /// `test_deps`, onde o mapa o guarda.
+    fn declared_test(path: &str, test_deps: &[&str]) -> Module {
+        Module {
+            test_lines: vec![DECLARED_TEST_LINES],
+            test_deps: test_deps.iter().map(|d| (*d).to_string()).collect(),
+            ..module(path, &[])
+        }
+    }
+
+    #[test]
+    fn a_file_a_module_declares_as_test_covers_what_it_imports_and_gets_no_tests() {
+        // `src/helpers.rs` importa `src/a.rs` e `src/inner.rs`, que é de teste
+        // também: o de teste não ganha teste, nem o de outro arquivo de teste.
+        let mut modules = vec![
+            module("src/a.rs", &[]),
+            declared_test("src/helpers.rs", &["src/a.rs", "src/inner.rs"]),
+            declared_test("src/inner.rs", &["src/a.rs"]),
+        ];
+        assign(&mut modules, &History::from_raw(Vec::new()));
+        assert_eq!(modules[0].tests, vec!["src/helpers.rs".to_string(), "src/inner.rs".to_string()]);
+        assert!(modules[1].tests.is_empty(), "{:?}", modules[1].tests);
+        assert!(modules[2].tests.is_empty(), "{:?}", modules[2].tests);
+    }
+
+    #[test]
+    fn a_file_a_module_declares_as_test_covers_the_file_it_keeps_changing_with() {
+        let mut modules = vec![module("src/b.rs", &[]), declared_test("src/b_helpers.rs", &[])];
+        let history = History::from_raw(vec![
+            commit("1", &["src/b.rs", "src/b_helpers.rs"]),
+            commit("2", &["src/b.rs", "src/b_helpers.rs"]),
+            commit("3", &["src/b.rs"]),
+        ]);
+        assign(&mut modules, &history);
+        assert_eq!(modules[0].tests, vec!["src/b_helpers.rs".to_string()]);
+        assert!(modules[1].tests.is_empty(), "{:?}", modules[1].tests);
     }
 
     #[test]

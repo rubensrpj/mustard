@@ -64,6 +64,20 @@ fn project(dir: &Path) {
     write(dir, "src/after.rs", "pub fn after() {}\n");
 }
 
+/// O projeto de teste num repositório git com o primeiro commit feito, para a
+/// passada que só relê o que mudou.
+fn committed_project(name: &str) -> tempfile::TempDir {
+    let temp = project_dir(name);
+    let dir = temp.path();
+    git(dir, &["init", "-q"]);
+    let exclude = mustard_core::footprint_rules().join("\n") + "\n";
+    std::fs::write(dir.join(".git").join("info").join("exclude"), exclude).unwrap();
+    project(dir);
+    git(dir, &["add", "-A"]);
+    git(dir, &["commit", "-q", "-m", "primeiro"]);
+    temp
+}
+
 fn module<'a>(v: &'a Value, path: &str) -> &'a Value {
     v["modules"]
         .as_array()
@@ -95,6 +109,12 @@ fn used_by(v: &Value, path: &str, name: &str) -> Vec<String> {
         .find(|d| d["name"] == name)
         .unwrap_or_else(|| panic!("{name} está em {path}"));
     decl["used_by"].as_array().map(|a| a.iter().map(|s| s.as_str().unwrap().to_string()).collect()).unwrap_or_default()
+}
+
+/// O `src/lib.rs` sem a marca de teste nos módulos `helpers` e `combined`.
+fn undeclared(lib: &str) -> String {
+    lib.replace("#[cfg(test)]\nmod helpers;", "mod helpers;")
+        .replace("#[cfg(all(test, unix))]\n#[allow(dead_code)]\nmod combined;", "mod combined;")
 }
 
 /// O arquivo que o módulo marcado como teste nomeia, e o que mora na pasta
@@ -142,26 +162,27 @@ fn a_call_written_in_a_declared_test_file_is_not_a_use_of_the_function() {
 
 /// A passada que lê só o que mudou sabe o mesmo que a que lê tudo: o arquivo
 /// que o pai passa a declarar como teste, sem ser relido, ganha o trecho; o
-/// que deixa de ser declarado, perde.
+/// que deixa de ser declarado, perde. O arquivo que deixa de ser declarado e
+/// passa a depender de arquivos do projeto é relido, como todo arquivo que
+/// ganha dependência; o que não importa nada (`src/combined.rs`) fica como
+/// estava e perde o trecho sem ser relido.
 #[test]
 fn a_pass_that_keeps_the_file_marks_it_by_what_its_parent_declares_now() {
-    let temp = project_dir("declared-test-reuse");
+    let temp = committed_project("declared-test-reuse");
     let dir = temp.path();
-    git(dir, &["init", "-q"]);
-    let exclude = mustard_core::footprint_rules().join("\n") + "\n";
-    std::fs::write(dir.join(".git").join("info").join("exclude"), exclude).unwrap();
-    project(dir);
-    git(dir, &["add", "-A"]);
-    git(dir, &["commit", "-q", "-m", "primeiro"]);
     let (first, report) = scan(dir);
     assert_eq!(report["full"], Value::Bool(true), "{report}");
     assert!(is_whole_test(&first, "src/helpers.rs"));
 
-    write(dir, "src/lib.rs", &LIB.replace("#[cfg(test)]\nmod helpers;", "mod helpers;"));
+    write(dir, "src/lib.rs", &undeclared(LIB));
     git(dir, &["commit", "-q", "-am", "segundo"]);
     let (second, report) = scan(dir);
-    assert_eq!(report["read"], serde_json::json!(["src/lib.rs"]), "só o pai é relido: {report}");
-    for path in ["src/helpers.rs", "src/helpers/inner.rs"] {
+    assert_eq!(
+        report["read"],
+        serde_json::json!(["src/helpers.rs", "src/helpers/inner.rs", "src/lib.rs"]),
+        "o pai e os que ganham dependência são relidos; `src/combined.rs` não: {report}"
+    );
+    for path in ["src/helpers.rs", "src/helpers/inner.rs", "src/combined.rs"] {
         assert!(!is_whole_test(&second, path), "{path}: {:?}", test_lines(&second, path));
     }
 
@@ -169,8 +190,87 @@ fn a_pass_that_keeps_the_file_marks_it_by_what_its_parent_declares_now() {
     git(dir, &["commit", "-q", "-am", "terceiro"]);
     let (third, report) = scan(dir);
     assert_eq!(report["read"], serde_json::json!(["src/lib.rs"]), "só o pai é relido: {report}");
-    for path in ["src/helpers.rs", "src/helpers/inner.rs"] {
+    for path in ["src/helpers.rs", "src/helpers/inner.rs", "src/combined.rs"] {
         assert!(is_whole_test(&third, path), "{path}: {:?}", test_lines(&third, path));
     }
     assert_eq!(test_lines(&third, "src/helpers.rs"), test_lines(&first, "src/helpers.rs"));
+}
+
+/// A lista de textos que o mapa guarda em `key` do arquivo `path`.
+fn strings(v: &Value, path: &str, key: &str) -> Vec<String> {
+    module(v, path)[key].as_array().map(|a| a.iter().map(|s| s.as_str().unwrap().to_string()).collect()).unwrap_or_default()
+}
+
+/// O que o arquivo todo de teste importa, pelo `use` ou pelo caminho de uma
+/// chamada, não é dependência dele: fica em `test_deps`, e o arquivo que ele
+/// importa o lista entre os testes que o cobrem. O arquivo de teste não ganha
+/// teste, nem o que o outro importa.
+#[test]
+fn what_a_declared_test_file_imports_is_covered_by_it_and_not_a_dependency_of_it() {
+    let temp = project_dir("declared-test-deps");
+    project(temp.path());
+    let (v, _) = scan(temp.path());
+    for path in ["src/helpers.rs", "src/helpers/inner.rs"] {
+        assert_eq!(strings(&v, path, "deps"), Vec::<String>::new(), "{path}: o import do teste não é dependência");
+        assert_eq!(strings(&v, path, "tests"), Vec::<String>::new(), "{path}: o teste não ganha teste");
+    }
+    for path in ["src/helpers.rs", "src/helpers/inner.rs"] {
+        assert_eq!(strings(&v, path, "test_deps"), vec!["src/real.rs"], "{path}");
+    }
+    assert_eq!(strings(&v, "src/real.rs", "tests"), vec!["src/helpers.rs", "src/helpers/inner.rs"]);
+    for path in ["src/plain.rs", "src/gated.rs"] {
+        assert_eq!(strings(&v, path, "tests"), Vec::<String>::new(), "{path}: nenhum teste o importa");
+    }
+}
+
+/// Sem o módulo marcado, o mesmo arquivo importa como código: `use` e caminho
+/// de chamada são dependência, e ninguém o lista como teste.
+#[test]
+fn the_same_file_without_the_declaration_keeps_its_imports_as_dependencies() {
+    let temp = project_dir("declared-test-deps-off");
+    project(temp.path());
+    write(temp.path(), "src/lib.rs", &LIB.replace("#[cfg(test)]\nmod helpers;", "mod helpers;"));
+    let (v, _) = scan(temp.path());
+    for path in ["src/helpers.rs", "src/helpers/inner.rs"] {
+        assert_eq!(strings(&v, path, "deps"), vec!["src/real.rs"], "{path}");
+        assert_eq!(strings(&v, path, "test_deps"), Vec::<String>::new(), "{path}");
+    }
+    assert_eq!(strings(&v, "src/real.rs", "tests"), Vec::<String>::new());
+}
+
+/// O arquivo guarda os imports como os escreveu, e a passada que não o relê
+/// sabe o mesmo que a que lê tudo: o que o pai deixa de declarar como teste
+/// volta a ter os imports como dependência e deixa de cobrir o que importa; o
+/// que o pai passa a declarar de novo, sem ser relido, fica como estava na
+/// primeira passada.
+#[test]
+fn a_pass_that_keeps_the_file_sorts_its_imports_by_what_its_parent_declares_now() {
+    let temp = committed_project("declared-test-deps-reuse");
+    let dir = temp.path();
+    let (first, report) = scan(dir);
+    assert_eq!(report["full"], Value::Bool(true), "{report}");
+    for path in ["src/helpers.rs", "src/helpers/inner.rs"] {
+        assert_eq!(strings(&first, path, "deps"), Vec::<String>::new(), "{path}");
+        assert_eq!(strings(&first, path, "test_deps"), vec!["src/real.rs"], "{path}");
+    }
+    assert_eq!(strings(&first, "src/real.rs", "tests"), vec!["src/helpers.rs", "src/helpers/inner.rs"]);
+
+    write(dir, "src/lib.rs", &undeclared(LIB));
+    git(dir, &["commit", "-q", "-am", "segundo"]);
+    let (second, _) = scan(dir);
+    for path in ["src/helpers.rs", "src/helpers/inner.rs"] {
+        assert_eq!(strings(&second, path, "deps"), vec!["src/real.rs"], "{path}");
+        assert_eq!(strings(&second, path, "test_deps"), Vec::<String>::new(), "{path}");
+    }
+    assert_eq!(strings(&second, "src/real.rs", "tests"), Vec::<String>::new());
+
+    write(dir, "src/lib.rs", LIB);
+    git(dir, &["commit", "-q", "-am", "terceiro"]);
+    let (third, report) = scan(dir);
+    assert_eq!(report["read"], serde_json::json!(["src/lib.rs"]), "só o pai é relido: {report}");
+    for path in ["src/helpers.rs", "src/helpers/inner.rs", "src/real.rs"] {
+        for key in ["deps", "test_deps", "tests"] {
+            assert_eq!(strings(&third, path, key), strings(&first, path, key), "{path} {key}");
+        }
+    }
 }

@@ -3,8 +3,8 @@
 //! todo de teste, como o módulo de teste escrito dentro do arquivo é: o mapa o
 //! guarda como um trecho de teste que vai da linha 1 ao fim
 //! ([`DECLARED_TEST_LINES`]), e quem lê o trecho trata o que o arquivo declara,
-//! chama e cita como do teste. O que mora na pasta do módulo, os módulos dele,
-//! também é de teste.
+//! chama, cita e importa como do teste. O que mora na pasta do módulo, os
+//! módulos dele, também é de teste.
 //!
 //! O arquivo de um módulo se acha pela pasta dos módulos de quem o declara
 //! ([`inner_folder`]), a mesma regra que liga o caminho sem apelido ao módulo
@@ -27,7 +27,7 @@ use crate::model::{Module, DECLARED_TEST_LINES};
 pub(crate) fn mark_declared(modules: &mut [Module]) {
     let declared = declared_files(modules);
     for module in modules.iter_mut().filter(|m| declared.contains(&m.path)) {
-        if !module.test_lines.contains(&DECLARED_TEST_LINES) {
+        if !module.is_declared_test() {
             module.test_lines.insert(0, DECLARED_TEST_LINES);
         }
     }
