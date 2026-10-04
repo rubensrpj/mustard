@@ -33,6 +33,9 @@ use crate::domain::pattern::Pattern;
 pub use crate::domain::search::{Found, FoundText};
 use crate::platform::i18n::{translate, Locale};
 
+mod example_material;
+use example_material::is_example_material;
+
 /// Um commit que muda mais arquivos do que isto não conta para "muda junto":
 /// é formatação, renomeação em massa ou importação, e ligaria tudo a tudo.
 pub const CO_CHANGE_MAX_FILES: usize = 30;
@@ -808,7 +811,8 @@ pub const QUALITY_TOP_PERCENT: usize = 5;
 
 /// Os cortes de "grande" e de "repetido" de um projeto: o valor do primeiro
 /// arquivo logo abaixo dos [`QUALITY_TOP_PERCENT`] de cima, entre os escritos
-/// à mão que não são teste. Passa do corte só quem tem mais do que ele: o
+/// à mão que não são teste, pelo caminho ou por um módulo que o declare.
+/// Passa do corte só quem tem mais do que ele: o
 /// empate com o resto nunca conta, e o projeto com menos de 20 arquivos não
 /// tem nenhum acima.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1232,12 +1236,6 @@ impl ProjectMap {
     fn known(&self, file: &str) -> Result<&MapModule, MapRefusal> {
         self.module(file).ok_or_else(|| MapRefusal::UnknownFile { file: clean_path(file) })
     }
-}
-
-/// `true` para o arquivo de teste e para o escrito por máquina: nenhum dos
-/// dois serve de exemplo.
-fn is_example_material(m: &MapModule) -> bool {
-    m.file_class.is_empty() && !is_test_path(&m.path)
 }
 
 // ---------------------------------------------------------------------------

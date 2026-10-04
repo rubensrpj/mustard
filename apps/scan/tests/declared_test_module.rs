@@ -274,3 +274,66 @@ fn a_pass_that_keeps_the_file_sorts_its_imports_by_what_its_parent_declares_now(
         }
     }
 }
+
+/// A medida de qualidade que o mapa guarda do arquivo `path`; `None` quando o
+/// scan não o mediu.
+fn quality<'a>(v: &'a Value, path: &str) -> Option<&'a Value> {
+    module(v, path).get("quality")
+}
+
+/// O arquivo que o módulo marcado como teste nomeia, e o que mora na pasta
+/// dele, ficam sem medida de qualidade, como o arquivo de teste pelo caminho;
+/// o código do projeto segue medido.
+#[test]
+fn a_declared_test_file_is_left_without_quality_measures() {
+    let temp = project_dir("declared-test-quality");
+    project(temp.path());
+    let (v, _) = scan(temp.path());
+    for path in ["src/helpers.rs", "src/helpers/inner.rs", "src/combined.rs"] {
+        assert_eq!(quality(&v, path), None, "{path}");
+    }
+    assert_eq!(quality(&v, "src/real.rs").map(|q| q["size"].clone()), Some(serde_json::json!(3)));
+}
+
+/// Sem o módulo marcado, o mesmo arquivo é medido como o código do projeto: as
+/// linhas escritas e os imports contam.
+#[test]
+fn the_same_file_without_the_declaration_is_measured() {
+    let temp = project_dir("declared-test-quality-off");
+    project(temp.path());
+    write(temp.path(), "src/lib.rs", &undeclared(LIB));
+    let (v, _) = scan(temp.path());
+    for (path, size, imports) in [("src/helpers.rs", 5, 1), ("src/helpers/inner.rs", 3, 1), ("src/combined.rs", 1, 0)] {
+        let measured = quality(&v, path).unwrap_or_else(|| panic!("{path} é medido"));
+        assert_eq!(measured["size"], serde_json::json!(size), "{path}: {measured}");
+        assert_eq!(measured["imports"], serde_json::json!(imports), "{path}: {measured}");
+    }
+}
+
+/// A passada que lê só o que mudou mede pelo que o pai declara agora: o
+/// arquivo que o pai deixa de declarar ganha medida, e o que passa a declarar
+/// de novo, sem ser relido, a perde.
+#[test]
+fn a_pass_that_keeps_the_file_measures_it_by_what_its_parent_declares_now() {
+    let temp = committed_project("declared-test-quality-reuse");
+    let dir = temp.path();
+    let (first, _) = scan(dir);
+    for path in ["src/helpers.rs", "src/helpers/inner.rs", "src/combined.rs"] {
+        assert_eq!(quality(&first, path), None, "{path}");
+    }
+
+    write(dir, "src/lib.rs", &undeclared(LIB));
+    git(dir, &["commit", "-q", "-am", "segundo"]);
+    let (second, _) = scan(dir);
+    for path in ["src/helpers.rs", "src/helpers/inner.rs", "src/combined.rs"] {
+        assert!(quality(&second, path).is_some(), "{path} deixa de ser declarado e passa a ser medido");
+    }
+
+    write(dir, "src/lib.rs", LIB);
+    git(dir, &["commit", "-q", "-am", "terceiro"]);
+    let (third, report) = scan(dir);
+    assert_eq!(report["read"], serde_json::json!(["src/lib.rs"]), "só o pai é relido: {report}");
+    for path in ["src/helpers.rs", "src/helpers/inner.rs", "src/combined.rs"] {
+        assert_eq!(quality(&third, path), None, "{path}");
+    }
+}

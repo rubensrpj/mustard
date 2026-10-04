@@ -33,11 +33,16 @@ struct Read {
 }
 
 /// Mede cada arquivo de `modules`, lido de `root`, e grava as medidas nele.
-/// O arquivo escrito por máquina, o de teste e o que não se lê ficam sem
-/// medida.
+/// O arquivo escrito por máquina, o de teste (pelo caminho ou declarado por um
+/// módulo) e o que não se lê ficam sem medida. A marca do arquivo declarado
+/// como teste tem de estar posta nos módulos antes.
 pub(crate) fn measure(root: &Path, modules: &mut [Module]) {
-    let measured: Vec<usize> =
-        (0..modules.len()).filter(|&at| modules[at].file_class.is_empty() && !is_test_path(&modules[at].path)).collect();
+    let measured: Vec<usize> = (0..modules.len())
+        .filter(|&at| {
+            let module = &modules[at];
+            module.file_class.is_empty() && !is_test_path(&module.path) && !module.is_declared_test()
+        })
+        .collect();
     let reads: Vec<Option<Read>> = {
         let items: Vec<&Module> = measured.iter().map(|&at| &modules[at]).collect();
         in_parallel(items, |module| read(root, module))
