@@ -8,6 +8,12 @@
 //! filtro com a chave chamando as funções daqui, e nenhuma outra regra liga o
 //! filtro.
 //!
+//! Uma terceira coisa vale antes de toda chamada: o gasto do Jev no mês tem
+//! um teto, `jev.monthly_budget_usd` no `mustard.json`, com
+//! [`DEFAULT_MONTHLY_BUDGET_USD`] quando ele não diz. O que sobra do teto sai
+//! de [`left_in_month`]; a chamada que custaria mais que isso não sai, e quem
+//! chamou segue como seguiria sem chave.
+//!
 //! Nenhum erro, aviso ou texto de depuração leva a chave.
 
 use std::fmt;
@@ -15,6 +21,7 @@ use std::path::Path;
 
 use crate::domain::config::{FilterSetting, ProjectConfig};
 use crate::domain::map_filter::FilterError;
+use crate::io::spend;
 
 /// A variável de ambiente da chave do Jev; vence o `mustard.json`.
 pub const KEY_ENV: &str = "TYPESAFE_API_KEY";
@@ -54,6 +61,27 @@ impl fmt::Debug for FoundKey {
 #[must_use]
 pub fn setting_allows(setting: FilterSetting) -> bool {
     matches!(setting, FilterSetting::Absent | FilterSetting::Jev)
+}
+
+/// O teto de gasto do Jev por mês, em dólares, quando o `mustard.json` não
+/// diz outro: o que vale a pena gastar com ele, sem passar do plano.
+pub const DEFAULT_MONTHLY_BUDGET_USD: f64 = 10.0;
+
+/// O teto do mês em milionésimos de dólar: `jev.monthly_budget_usd` do
+/// `mustard.json`; ausente ou inválido, [`DEFAULT_MONTHLY_BUDGET_USD`].
+#[must_use]
+pub fn monthly_budget_micro_usd(config: &ProjectConfig) -> u64 {
+    let usd = config.jev_monthly_budget_usd().unwrap_or(DEFAULT_MONTHLY_BUDGET_USD);
+    (usd * 1_000_000.0).round() as u64
+}
+
+/// O que sobra do teto no mês `month` (`AAAA-MM`), em milionésimos de dólar:
+/// o teto de `config` menos o gasto do mês nas specs do projeto de `root` e
+/// no arquivo do gasto da máquina em `ledger_dir` ([`spend::jev_month_micro_usd`]).
+/// Zero quando o gasto já passou dele.
+#[must_use]
+pub fn left_in_month(root: &Path, config: &ProjectConfig, ledger_dir: Option<&Path>, month: &str) -> u64 {
+    monthly_budget_micro_usd(config).saturating_sub(spend::jev_month_micro_usd(root, ledger_dir, month))
 }
 
 /// A chave do projeto em `root`: `env` (o valor de [`KEY_ENV`], que quem
@@ -131,5 +159,35 @@ mod tests {
     fn the_debug_text_of_a_key_never_carries_it() {
         let found = key_from(Some("sk-secret-value".to_string()), None, || false).unwrap();
         assert!(!format!("{found:?}").contains("sk-secret-value"), "{found:?}");
+    }
+
+    /// O teto do mês é o do `mustard.json` em dólares, com fração, e o padrão
+    /// de 10 dólares quando ele falta ou é texto, negativo ou nulo; o que sobra
+    /// dele soma o gasto do mês pedido e nunca passa de zero para baixo.
+    #[test]
+    fn the_monthly_budget_is_the_file_value_or_ten_dollars_and_never_goes_below_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        let budget = |text: &str| {
+            std::fs::write(dir.path().join("mustard.json"), text).unwrap();
+            ProjectConfig::load(dir.path())
+        };
+        assert_eq!(monthly_budget_micro_usd(&budget("{}")), 10_000_000);
+        assert_eq!(monthly_budget_micro_usd(&budget(r#"{"jev": {"monthly_budget_usd": 7.5}}"#)), 7_500_000);
+        assert_eq!(monthly_budget_micro_usd(&budget(r#"{"jev": {"monthly_budget_usd": 0}}"#)), 0);
+        for invalid in [r#""x""#, "-3", "null"] {
+            let text = format!(r#"{{"jev": {{"monthly_budget_usd": {invalid}}}}}"#);
+            assert_eq!(monthly_budget_micro_usd(&budget(&text)), 10_000_000, "{invalid} falls back to the default");
+        }
+        assert_eq!(monthly_budget_micro_usd(&budget(r#"{"jev": {"key": "k"}}"#)), 10_000_000);
+
+        let spec = dir.path().join(".claude/spec/uma");
+        std::fs::create_dir_all(&spec).unwrap();
+        let call = r#"{"v":1,"id":1,"code":"X-CALL-0001","at":"2026-10-02T10:00:00-03:00","type":"call","command":"map search","tokens":9,"cost_micro_usd":4000000}"#;
+        std::fs::write(spec.join("spec.ndjson"), format!("{call}\n")).unwrap();
+        let ten = budget("{}");
+        assert_eq!(left_in_month(dir.path(), &ten, None, "2026-10"), 6_000_000);
+        assert_eq!(left_in_month(dir.path(), &ten, None, "2026-09"), 10_000_000, "the other month has none of it");
+        let two = budget(r#"{"jev": {"monthly_budget_usd": 2}}"#);
+        assert_eq!(left_in_month(dir.path(), &two, None, "2026-10"), 0);
     }
 }

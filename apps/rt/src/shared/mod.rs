@@ -67,6 +67,8 @@ pub mod dag;
 /// compilação dele, em primeiro e em segundo plano.
 pub mod development_build;
 pub mod jev;
+/// O que sobra do teto de gasto do Jev no mês, a porta de toda chamada a ele.
+pub mod jev_budget;
 pub mod paths;
 /// A procura de segredo no texto, a mesma da página da spec, do expurgo e do
 /// envio a serviço de fora.

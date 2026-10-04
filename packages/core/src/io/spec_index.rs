@@ -355,21 +355,27 @@ pub fn today() -> String {
     chrono::Local::now().format("%Y-%m-%d").to_string()
 }
 
-/// O arquivo de eventos de cada spec viva do projeto `root`, lido com a trava
-/// compartilhada, em ordem de nome. A pasta sem arquivo de eventos (o formato
-/// antigo), a spec descartada e o arquivo que não se lê ficam de fora.
+/// O arquivo de eventos de cada spec viva do projeto `root`, em ordem de nome,
+/// sem lê-lo. A pasta sem arquivo de eventos (o formato antigo) e a spec
+/// descartada ficam de fora.
 #[must_use]
-pub fn read_specs(root: &Path) -> Vec<(String, SpecLog)> {
+pub fn live_spec_files(root: &Path) -> Vec<(String, PathBuf)> {
     let Ok(paths) = ClaudePaths::for_project(root) else {
         return Vec::new();
     };
     let Ok(listing) = list_specs(&paths) else {
         return Vec::new();
     };
-    listing
-        .specs
+    listing.specs.into_iter().filter(|(_, events)| !is_archived(&paths, events)).collect()
+}
+
+/// O arquivo de eventos de cada spec viva do projeto `root`, lido com a trava
+/// compartilhada, em ordem de nome. A pasta sem arquivo de eventos (o formato
+/// antigo), a spec descartada e o arquivo que não se lê ficam de fora.
+#[must_use]
+pub fn read_specs(root: &Path) -> Vec<(String, SpecLog)> {
+    live_spec_files(root)
         .into_iter()
-        .filter(|(_, events)| !is_archived(&paths, events))
         .filter_map(|(name, events)| read_shared(&events).ok().map(|content| (name, model::parse_log(&content))))
         .collect()
 }

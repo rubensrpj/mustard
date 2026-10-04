@@ -195,7 +195,8 @@ fn average(days: &[&DayTotal], window: usize) -> Average {
 }
 
 /// O mês de um dia: `AAAA-MM`.
-fn month_of(day: &str) -> &str {
+#[must_use]
+pub fn month_of(day: &str) -> &str {
     day.get(..7).unwrap_or(day)
 }
 

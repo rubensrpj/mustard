@@ -424,6 +424,15 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "The search goes on without a filter, because its key is missing. Put the key in jev.key in mustard.json \
              or in the `TYPESAFE_API_KEY` variable. To not use the filter, set search.filter to none."
         }
+        ("map.search.over_budget", Locale::PtBr) => {
+            "O Jev ficou de fora desta busca, porque o gasto do mês mais esta chamada passaria do teto. A resposta \
+             veio só do mapa. O teto é jev.monthly_budget_usd no mustard.json, com 10 dólares quando ele não diz."
+        }
+        ("map.search.over_budget", Locale::EnUs) => {
+            "The Jev was left out of this search, because the spend of the month plus this call would pass the \
+             budget. The answer came from the map alone. The budget is jev.monthly_budget_usd in mustard.json, 10 \
+             dollars when it says nothing."
+        }
         ("map.search.key_in_git", Locale::PtBr) => {
             "A chave em jev.key não vale, porque o git guarda o mustard.json. Tire o arquivo do git e troque a \
              chave, porque quem lê o repositório pode tê-la visto."
@@ -463,8 +472,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("map.rs"),
             super::PREFIXES,
-            79,
-            0xfff0_0d3f_6d2d_5166,
+            80,
+            0xa303_82da_ef73_da54,
         );
     }
 
@@ -521,6 +530,7 @@ mod tests {
                 "map.search.bad_filter",
                 "map.search.missing_key",
                 "map.search.key_in_git",
+                "map.search.over_budget",
                 "map.round.key_in_git",
                 "scan.bad_max_same_name",
             ] {
@@ -783,6 +793,7 @@ mod tests {
             ("map.search.bad_filter", &[][..]),
             ("map.search.missing_key", &[][..]),
             ("map.search.key_in_git", &[][..]),
+            ("map.search.over_budget", &[][..]),
             ("map.round.key_in_git", &[][..]),
             ("scan.bad_max_same_name", &["scan.max_same_name", "{value}", "{default}"][..]),
             ("doctor.scan_output.visible", &["{paths}"][..]),

@@ -927,8 +927,8 @@ mod tests {
         Judgement { kind, confidence, clash, size: 0.0 }
     }
 
-    /// O teto de um agente que chega a 180 mil tokens: o limite menos os 40 mil
-    /// do começo.
+    /// O teto da soma dos tamanhos das tarefas de um lote nestes testes, em
+    /// tokens; o teto de verdade vem do limite do agente de onda.
     const BUDGET: u64 = 140_000;
 
     /// Os lotes por tipo de `tasks`, todas prontas, com o julgamento de cada

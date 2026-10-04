@@ -252,6 +252,9 @@ impl ScanConfig {
 /// dele em toda leitura do arquivo: um nome só para as duas.
 pub const JEV_KEY_FIELD: &str = "key";
 
+/// O nome do campo do teto de gasto do mês dentro da seção `jev`, em dólares.
+pub const JEV_BUDGET_FIELD: &str = "monthly_budget_usd";
+
 /// A seção `jev` do `mustard.json`: a chave do serviço que dá nota aos
 /// candidatos da busca por assunto, em `jev.key`. É segredo: o `Debug` não a
 /// escreve, e a serialização do tipo não a leva. Só a gravação do próprio
@@ -271,6 +274,14 @@ impl JevConfig {
     #[must_use]
     pub fn key(&self) -> Option<&str> {
         self.raw.as_ref()?.get(JEV_KEY_FIELD)?.as_str().map(str::trim).filter(|key| !key.is_empty())
+    }
+
+    /// O teto de gasto do mês escrito em `jev.monthly_budget_usd`, em dólares;
+    /// `None` quando falta ou não é um número de zero para cima. Zero vale: é
+    /// o Jev desligado.
+    #[must_use]
+    pub fn monthly_budget_usd(&self) -> Option<f64> {
+        self.raw.as_ref()?.get(JEV_BUDGET_FIELD)?.as_f64().filter(|usd| usd.is_finite() && *usd >= 0.0)
     }
 }
 
@@ -889,6 +900,14 @@ impl ProjectConfig {
     #[must_use]
     pub fn jev_key(&self) -> Option<&str> {
         self.jev.key()
+    }
+
+    /// `jev.monthly_budget_usd`: quanto o Jev pode gastar por mês, em dólares;
+    /// `None` quando falta ou não é um número de zero para cima, e quem lê usa
+    /// o padrão dele.
+    #[must_use]
+    pub fn jev_monthly_budget_usd(&self) -> Option<f64> {
+        self.jev.monthly_budget_usd()
     }
 
     /// `scan.max_same_name`: o teto do nome comum que vale, e se o valor

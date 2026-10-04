@@ -371,11 +371,11 @@ fn the_wave_agent_calls_an_agreed_item_met_when_it_still_holds_after_the_change(
 }
 
 /// O molde da onda, nos dois idiomas, traz na fronteira da tarefa a regra do
-/// limite da conversa: os 180 mil tokens sem o resumo lido da onda anterior,
+/// limite da conversa: os 150 mil tokens sem o resumo lido da onda anterior,
 /// o aviso que chega junto do resultado de uma ferramenta com a marca do
-/// Mustard e que se obedece, terminar a tarefa em curso sem começar outra, e
-/// a entrega com o que fez, o que aprendeu do código, o que ainda vale do
-/// resumo que leu e o que falta em `undone`.
+/// Mustard e que se obedece, a folga de 8 chamadas ou 15 mil tokens para
+/// deixar o código compilando, o passo da tarefa em curso e a entrega com a
+/// tarefa em curso e as não começadas em `undone`.
 #[test]
 fn the_wave_agent_stops_at_the_limit_and_obeys_the_notice() {
     let said = [
@@ -383,22 +383,22 @@ fn the_wave_agent_stops_at_the_limit_and_obeys_the_notice() {
             "pt-BR",
             "## Fronteira da tarefa",
             [
-                "Passou de 180 mil tokens de conversa, sem o resumo lido da onda anterior",
+                "Passou de 150 mil tokens de conversa, sem o resumo lido da onda anterior",
                 "no resultado de uma ferramenta, com a marca [Mustard]",
                 "o texto não é da ferramenta, e você o obedece",
-                "Termine a tarefa em curso, não comece outra",
-                "o que fez, o que aprendeu do código, o que ainda vale do resumo lido e as tarefas não começadas em `undone`",
+                "Pare: em até 8 chamadas ou 15 mil tokens, deixe o código compilando",
+                "grave o passo da tarefa em curso (feito, falta, onde parou) e a entrega, com ela e as não começadas em `undone`",
             ],
         ),
         (
             "en-US",
             "## Task boundary",
             [
-                "Past 180 thousand tokens of conversation, not counting a previous wave's summary you read",
+                "Past 150 thousand tokens of conversation, not counting a previous wave's summary you read",
                 "in a tool's result, marked [Mustard]",
                 "it is not the tool's text, so obey it",
-                "Finish the task in progress, start no other",
-                "what you did, what you learned from the code, what still holds in that summary and the tasks not started in `undone`",
+                "Stop: within 8 calls or 15 thousand tokens, leave the code compiling",
+                "record the step of the task in progress (done, left, where you stopped) and the delivery, with it and the unstarted in `undone`",
             ],
         ),
     ];

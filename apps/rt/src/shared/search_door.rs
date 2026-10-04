@@ -14,9 +14,10 @@
 //! 3. o filtro diz não achei, e nada volta; ou diz que algum candidato serve, e
 //!    voltam todas as peças que passam do corte relativo, sem teto de
 //!    quantidade;
-//! 4. sem filtro (desligado, sem chave), sem candidato ou com o filtro
-//!    falhando, quem chamou responde só com a triagem, e o aviso do motivo
-//!    sai uma vez por sessão ([`chosen_filter`], [`failure_warning`]).
+//! 4. sem filtro (desligado, sem chave, com o teto de gasto do mês já gasto),
+//!    sem candidato ou com o filtro falhando (a chamada que passaria do teto
+//!    do mês inclusive), quem chamou responde só com a triagem, e o aviso do
+//!    motivo sai uma vez por sessão ([`chosen_filter`], [`failure_warning`]).
 //!
 //! A porta devolve tipos ([`Outcome`], [`Piece`]); quem chamou monta o texto:
 //! o JSON da busca por assunto, em `commands::map`, ou a resposta por função
@@ -44,6 +45,7 @@ use serde_json::{json, Map, Value};
 
 use crate::shared::code_route::in_search;
 use crate::shared::config_key::{NameFilter, Walk};
+use crate::shared::jev_budget::Budget;
 use crate::shared::triage_view;
 
 /// Os números da busca com filtro, com o padrão no lugar do ausente e do
@@ -210,16 +212,29 @@ pub(crate) type Assemble<'a> = dyn Fn(&Path, &ProjectConfig) -> Result<Assembled
 /// A montagem de verdade: o Jev, com a chave do ambiente ou do
 /// `mustard.json` do projeto.
 pub(crate) fn jev(root: &Path, config: &ProjectConfig) -> Result<Assembled, FilterError> {
-    assembled(root, config, std::env::var(KEY_ENV).ok())
+    let ledger = mustard_core::io::spend::machine_dir();
+    assembled(root, config, std::env::var(KEY_ENV).ok(), ledger.as_deref())
 }
 
 /// A montagem do Jev como em [`jev`], com `env` no lugar do valor de
-/// [`KEY_ENV`]: o teste não depende do ambiente de quem o roda.
-pub(crate) fn assembled(root: &Path, config: &ProjectConfig, env: Option<String>) -> Result<Assembled, FilterError> {
+/// [`KEY_ENV`] e o arquivo do gasto em `ledger_dir`: o teste não depende do
+/// ambiente de quem o roda. O teto do mês já gasto recusa a montagem com
+/// [`FilterError::OverBudget`], como a chave que falta: o resto do que sobra
+/// se segura em cada chamada do filtro.
+pub(crate) fn assembled(
+    root: &Path,
+    config: &ProjectConfig,
+    env: Option<String>,
+    ledger_dir: Option<&Path>,
+) -> Result<Assembled, FilterError> {
     let loaded = crate::shared::jev::key_in(root, config, env)?;
+    let budget = Budget::open(root, config, ledger_dir);
+    if budget.is_spent() {
+        return Err(FilterError::OverBudget);
+    }
     Ok(Assembled {
         name: "jev",
-        filter: Box::new(crate::shared::jev::JevFilter::new(loaded.key)),
+        filter: Box::new(crate::shared::jev::JevFilter::new(loaded.key, budget)),
         warning: loaded.warning,
     })
 }
@@ -279,12 +294,13 @@ pub(crate) fn chosen_filter(
     assembled
 }
 
-/// O aviso da chave do filtro, uma vez por sessão para cada motivo: a chave
-/// que falta, ou a do `mustard.json` que o git guarda. Nenhum dos dois leva
-/// a chave.
+/// O aviso de por que o filtro não entrou, uma vez por sessão para cada
+/// motivo: a chave que falta, a do `mustard.json` que o git guarda ou o teto
+/// de gasto do mês. Nenhum deles leva a chave.
 fn key_warning(root: &Path, session: Option<&str>, error: &FilterError, lang: Locale, warnings: &mut Vec<String>) {
     let key = match error {
         FilterError::KeyInGit => "map.search.key_in_git",
+        FilterError::OverBudget => "map.search.over_budget",
         _ => "map.search.missing_key",
     };
     if first_warning(root, session, &format!("search.{}", error.reason())) {
@@ -292,7 +308,9 @@ fn key_warning(root: &Path, session: Option<&str>, error: &FilterError, lang: Lo
     }
 }
 
-/// O aviso da falha do filtro, com o motivo, uma vez por sessão.
+/// O aviso da falha do filtro, com o motivo, uma vez por sessão. O teto de
+/// gasto do mês tem o aviso dele, o mesmo de quando o filtro nem entrou, e
+/// sai uma vez só por sessão, venha de onde vier.
 pub(crate) fn failure_warning(
     root: &Path,
     session: Option<&str>,
@@ -300,6 +318,10 @@ pub(crate) fn failure_warning(
     error: &FilterError,
     warnings: &mut Vec<String>,
 ) {
+    if *error == FilterError::OverBudget {
+        key_warning(root, session, error, lang, warnings);
+        return;
+    }
     if first_warning(root, session, "search.filter_failed") {
         let reason = translate(&format!("map.search.reason.{}", error.reason()), lang);
         warnings.push(translate("map.search.filter_failed", lang).replace("{reason}", reason));
@@ -407,4 +429,108 @@ fn pieces(
             })
         })
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use mustard_core::domain::spend::DayRow;
+    use mustard_core::io::spend;
+
+    use super::*;
+
+    /// Com sobra no mês, a montagem entrega o filtro; sem sobra, recusa com o
+    /// teto, e o gasto de outro mês não conta. O gasto vem das specs do projeto
+    /// e dos outros projetos do arquivo do gasto da máquina; o padrão do teto é
+    /// de 10 dólares, e o teto que não vale (texto, negativo) cai nele.
+    #[test]
+    fn the_filter_is_built_only_while_the_month_has_budget_left() {
+        // Um projeto com o `mustard.json` `config` e, quando `call_cost` vem,
+        // uma chamada ao Jev de hoje com esse custo gravada na spec dele.
+        let project = |config: &str, call_cost: Option<u64>| {
+            let root = tempfile::tempdir().unwrap();
+            std::fs::write(root.path().join("mustard.json"), config).unwrap();
+            if let Some(cost) = call_cost {
+                let spec = root.path().join(".claude/spec/uma-spec");
+                std::fs::create_dir_all(&spec).unwrap();
+                let at = format!("{}T12:00:00-03:00", spend::today());
+                let event = json!({"v": 1, "id": 1, "code": "X-CALL-0001", "at": at, "type": "call", "author": "binary",
+                    "command": "map search", "filter": "jev", "tokens": 1000, "cost_micro_usd": cost});
+                std::fs::write(spec.join("spec.ndjson"), format!("{event}\n")).unwrap();
+            }
+            root
+        };
+        let built = |root: &tempfile::TempDir, ledger_dir: Option<&Path>| {
+            let config = ProjectConfig::load(root.path());
+            assembled(root.path(), &config, Some("from-env".to_string()), ledger_dir)
+        };
+        // O arquivo do gasto da máquina com `rows` (dia, projeto, custo do Jev).
+        let ledger = |rows: &[(String, &str, u64)]| {
+            let dir = tempfile::tempdir().unwrap();
+            spend::update(dir.path(), |ledger| {
+                for (day, project, cost) in rows {
+                    ledger.rows.push(DayRow {
+                        day: day.clone(),
+                        project: project.to_string(),
+                        jev_cost_micro_usd: *cost,
+                        ..DayRow::default()
+                    });
+                }
+            })
+            .unwrap();
+            dir
+        };
+        let first_day = format!("{}-01", spend::this_month());
+
+        // O padrão de 10 dólares: 9,99 de gasto deixa sobra, 10 não; o teto que
+        // não vale cai no padrão.
+        assert!(built(&project("{}", Some(9_990_000)), None).is_ok(), "below the default budget");
+        assert_eq!(built(&project("{}", Some(10_000_000)), None).err(), Some(FilterError::OverBudget));
+        for invalid in [r#""2""#, "-2"] {
+            let config = format!(r#"{{"jev": {{"monthly_budget_usd": {invalid}}}}}"#);
+            assert_eq!(built(&project(&config, Some(10_000_000)), None).err(), Some(FilterError::OverBudget), "{invalid}");
+        }
+
+        // O teto do `mustard.json` vale no lugar do padrão.
+        let low = r#"{"jev": {"monthly_budget_usd": 2}}"#;
+        assert!(built(&project(low, Some(1_000_000)), None).is_ok());
+        assert_eq!(built(&project(low, Some(2_000_000)), None).err(), Some(FilterError::OverBudget));
+
+        // Os outros projetos da máquina gastam do mesmo teto; o mês passado e
+        // o próprio projeto no arquivo não contam.
+        let root = project("{}", None);
+        let own = root.path().file_name().unwrap().to_str().unwrap().to_string();
+        let elsewhere = ledger(&[
+            (first_day.clone(), "outro", 9_000_000),
+            ("2000-01-15".to_string(), "outro", 50_000_000),
+            (first_day.clone(), own.as_str(), 50_000_000),
+        ]);
+        assert!(built(&root, Some(elsewhere.path())).is_ok(), "9 dollars elsewhere this month, 50 in an old month and in its own rows");
+        let more = ledger(&[(first_day, "outro", 10_000_000)]);
+        assert_eq!(built(&root, Some(more.path())).err(), Some(FilterError::OverBudget));
+    }
+
+    /// O mês gasto vale como sem chave: o filtro não entra e o aviso do teto
+    /// sai uma vez por sessão — na montagem e na falha da chamada que passaria
+    /// do teto, juntas —, e sem sessão sai sempre.
+    #[test]
+    fn the_budget_warning_comes_once_per_session() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("mustard.json"), r#"{"jev": {"monthly_budget_usd": 0}}"#).unwrap();
+        let config = ProjectConfig::load(root.path());
+        let assemble = |at: &Path, config: &ProjectConfig| assembled(at, config, Some("from-env".to_string()), None);
+        let mut warnings = Vec::new();
+        let chose = |session: Option<&str>, warnings: &mut Vec<String>| {
+            chosen_filter(root.path(), session, Locale::PtBr, &config, &assemble, warnings).is_none()
+        };
+
+        assert!(chose(Some("s1"), &mut warnings), "no filter once the month is spent");
+        assert_eq!(warnings, vec![translate("map.search.over_budget", Locale::PtBr).to_string()]);
+        assert!(chose(Some("s1"), &mut warnings));
+        failure_warning(root.path(), Some("s1"), Locale::PtBr, &FilterError::OverBudget, &mut warnings);
+        assert_eq!(warnings.len(), 1, "the same session hears it once, from either place");
+        assert!(chose(Some("s2"), &mut warnings));
+        assert_eq!(warnings.len(), 2, "a new session hears it again");
+        assert!(chose(None, &mut warnings) && chose(None, &mut warnings));
+        assert_eq!(warnings.len(), 4, "without a session it always comes");
+    }
 }

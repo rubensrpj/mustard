@@ -49,6 +49,12 @@
 //! chave ([`for_waves`]) ou com a chamada falhando, ela monta a onda como
 //! sempre.
 //!
+//! O gasto do mês tem teto (`jev.monthly_budget_usd`), e toda chamada passa por
+//! ele antes de sair ([`JevFilter::send_all`], via [`Budget::reserve`]): a que
+//! passaria do que sobra não sai e volta [`FilterError::OverBudget`], e quem
+//! chamou segue como seguiria sem chave — a busca só com o mapa, a montagem
+//! pelos arquivos e o pedido com o padrão.
+//!
 //! O endereço do serviço é o de [`JEV_URL`], e só a variável [`URL_ENV`] no
 //! ambiente de quem roda o programa o troca: o teste do programa inteiro
 //! aponta para um serviço de mentira.
@@ -69,6 +75,7 @@ use mustard_core::ProjectConfig;
 use serde_json::{Map, Value, json};
 
 use crate::shared::dag::{Judgement, TaskKind};
+use crate::shared::jev_budget::Budget;
 use crate::shared::paths::sensitive_pattern;
 use crate::shared::secret::without_secrets;
 use crate::shared::task_size;
@@ -221,15 +228,19 @@ pub struct JevFilter {
     key: JevKey,
     endpoint: String,
     timeouts: Timeouts,
+    /// O que sobra do teto do mês; sem ele, só nos testes, nada segura a
+    /// chamada.
+    budget: Option<Budget>,
 }
 
 impl JevFilter {
     /// O filtro com a chave do projeto, no endereço do serviço: o de
-    /// [`JEV_URL`], ou o que [`URL_ENV`] diz.
+    /// [`JEV_URL`], ou o que [`URL_ENV`] diz. Toda chamada dele desconta de
+    /// `budget`.
     #[must_use]
-    pub fn new(key: JevKey) -> Self {
+    pub fn new(key: JevKey, budget: Budget) -> Self {
         let url = std::env::var(URL_ENV).ok().map(|url| url.trim().to_string()).filter(|url| !url.is_empty());
-        Self::at(key, url.as_deref().unwrap_or(JEV_URL))
+        Self { budget: Some(budget), ..Self::at(key, url.as_deref().unwrap_or(JEV_URL)) }
     }
 
     fn at(key: JevKey, endpoint: &str) -> Self {
@@ -237,6 +248,7 @@ impl JevFilter {
             key,
             endpoint: endpoint.to_string(),
             timeouts: Timeouts { connect: CONNECT_TIMEOUT, response: RESPONSE_TIMEOUT },
+            budget: None,
         }
     }
 
@@ -285,8 +297,14 @@ impl JevFilter {
     /// Todos os pedidos de `payloads` ao mesmo tempo, cada um na sua linha de
     /// execução e todos até `deadline`. Os documentos voltam na ordem dos
     /// pedidos; a falha de um deles é a falha de todos, e vale a do primeiro
-    /// na ordem.
+    /// na ordem. É a porta de toda chamada ao serviço: o custo estimado de
+    /// todos os pedidos juntos se reserva no teto do mês antes de o primeiro
+    /// sair, e, passando do que sobra, nenhum sai.
     fn send_all(&self, payloads: &[String], deadline: Instant) -> Result<Vec<Value>, FilterError> {
+        if let Some(budget) = &self.budget {
+            let estimate = payloads.iter().map(|payload| cost_micro_usd(estimated_tokens(payload))).sum();
+            budget.reserve(estimate)?;
+        }
         std::thread::scope(|scope| {
             let running: Vec<_> =
                 payloads.iter().map(|payload| scope.spawn(move || self.send(payload, deadline))).collect();
@@ -874,19 +892,28 @@ pub struct WavesJev {
 pub fn for_waves(root: &Path) -> WavesJev {
     let config = ProjectConfig::load(root);
     if cfg!(test) {
-        return WavesJev { filter: None, ..waves_filter(root, &config, None) };
+        return WavesJev { filter: None, ..waves_filter(root, &config, None, None) };
     }
-    waves_filter(root, &config, std::env::var(jev_gate::KEY_ENV).ok())
+    let ledger = mustard_core::io::spend::machine_dir();
+    waves_filter(root, &config, std::env::var(jev_gate::KEY_ENV).ok(), ledger.as_deref())
 }
 
-/// [`for_waves`] com `config` e com `env` no lugar do valor de
-/// [`jev_gate::KEY_ENV`]: o teste não depende do ambiente de quem o roda.
-fn waves_filter(root: &Path, config: &ProjectConfig, env: Option<String>) -> WavesJev {
+/// [`for_waves`] com `config`, com `env` no lugar do valor de
+/// [`jev_gate::KEY_ENV`] e com o arquivo do gasto em `ledger_dir`: o teste não
+/// depende do ambiente de quem o roda. O teto do mês já gasto vale como sem
+/// chave: sem filtro, e a rodada monta a onda como sempre.
+fn waves_filter(root: &Path, config: &ProjectConfig, env: Option<String>, ledger_dir: Option<&Path>) -> WavesJev {
     if !jev_gate::setting_allows(config.search_filter()) {
         return WavesJev::default();
     }
     match key_in(root, config, env) {
-        Ok(loaded) => WavesJev { filter: Some(JevFilter::new(loaded.key)), key_in_git: false },
+        Ok(loaded) => {
+            let budget = Budget::open(root, config, ledger_dir);
+            if budget.is_spent() {
+                return WavesJev::default();
+            }
+            WavesJev { filter: Some(JevFilter::new(loaded.key, budget)), key_in_git: false }
+        }
         Err(error) => WavesJev { filter: None, key_in_git: error == FilterError::KeyInGit },
     }
 }
@@ -908,7 +935,11 @@ impl JevFilter {
     pub(crate) fn judge_backlog(&self, board: &Board) -> Result<Judged, FilterError> {
         let started = Instant::now();
         let payload = board_payload(board)?;
-        let doc = self.send(&payload, started + self.timeouts.response)?;
+        let doc = self
+            .send_all(std::slice::from_ref(&payload), started + self.timeouts.response)?
+            .into_iter()
+            .next()
+            .ok_or_else(|| FilterError::Unreadable("no answer".to_string()))?;
         let tasks = read_judgements(&doc, board)?;
         let input_tokens = doc.pointer("/usage/input_tokens").and_then(Value::as_u64).unwrap_or(0);
         Ok(Judged {
@@ -2302,12 +2333,12 @@ mod tests {
                 None,
                 Locale::PtBr,
                 &loaded,
-                &|at, config| crate::shared::search_door::assembled(at, config, env.clone()),
+                &|at, config| crate::shared::search_door::assembled(at, config, env.clone(), None),
                 &mut warnings,
             );
 
             assert_eq!(searched.is_some(), expected, "the search: {name}");
-            assert_eq!(waves_filter(root.path(), &loaded, env.clone()).filter.is_some(), expected, "the wave assembly: {name}");
+            assert_eq!(waves_filter(root.path(), &loaded, env.clone(), None).filter.is_some(), expected, "the wave assembly: {name}");
         }
     }
 
@@ -2337,7 +2368,7 @@ mod tests {
                 assert!(mustard_core::platform::git::run(root.path(), &["init", "-q"]).ok);
                 assert!(mustard_core::platform::git::run(root.path(), &["add", "mustard.json"]).ok);
             }
-            let waves = waves_filter(root.path(), &ProjectConfig::load(root.path()), env.map(str::to_string));
+            let waves = waves_filter(root.path(), &ProjectConfig::load(root.path()), env.map(str::to_string), None);
             assert_eq!(waves.filter.is_some(), filter, "the filter: {name}");
             assert_eq!(waves.key_in_git, flagged, "the git flag: {name}");
         }
@@ -2590,5 +2621,60 @@ mod tests {
         let sent = service.received()[0].body.to_string();
         assert!(!sent.contains("S3nh4F0rte2024") && !sent.contains(&key[..12]), "secrets never leave: {sent}");
         assert!(sent.contains("Fix the login."), "the rest of the text still goes");
+    }
+
+    // -- o teto de gasto do mês ----------------------------------------------
+
+    /// Abaixo do teto as três chamadas saem — a busca, a montagem e a escolha
+    /// dos itens —; passando do que sobra no mês nenhuma sai, e o serviço não
+    /// recebe pedido nenhum; e o que sobra se gasta a cada chamada do mesmo
+    /// processo, a estimativa de cada uma contra o que restou.
+    #[test]
+    fn the_calls_go_out_only_while_the_estimate_fits_what_is_left_of_the_month() {
+        let start = |left: u64| {
+            let service = FakeService::start(|_, body| {
+                if body["questions"].get("i11").is_some() {
+                    chances_answer(body, |_| 0.5)
+                } else if body["questions"].get("tipo_t11").is_some() {
+                    Reply::json(200, &judged_answer())
+                } else {
+                    Reply::json(200, &sure_answer(body))
+                }
+            });
+            let filter = JevFilter { budget: Some(Budget::of(left)), ..service.filter() };
+            (service, filter)
+        };
+        let items = ItemsBoard { tasks: vec![board_task(5, &["a.rs"])], items: vec![board_item(11)] };
+        let search = request(vec![candidate(1), candidate(2)]);
+
+        let (service, filter) = start(10_000_000);
+        assert!(filter.filter(&search).is_ok() && filter.judge_backlog(&board()).is_ok() && filter.judge_items(&items).is_ok());
+        assert_eq!(service.received().len(), 3, "below the budget each call reached the service");
+
+        let (service, filter) = start(1);
+        assert_eq!(filter.filter(&search).unwrap_err(), FilterError::OverBudget);
+        assert_eq!(filter.judge_backlog(&board()).unwrap_err(), FilterError::OverBudget);
+        assert_eq!(filter.judge_items(&items).unwrap_err(), FilterError::OverBudget);
+        assert!(service.received().is_empty(), "nothing went to the service: {:?}", service.received());
+
+        let one = cost_micro_usd(estimated_tokens(&board_payload(&board()).unwrap()));
+        let (service, filter) = start(one + one / 2);
+        assert!(filter.judge_backlog(&board()).is_ok());
+        assert_eq!(filter.judge_backlog(&board()).unwrap_err(), FilterError::OverBudget, "the first call took its estimate");
+        assert_eq!(service.received().len(), 1, "only the first call went out");
+    }
+
+    /// O teto já gasto vale como sem chave na montagem das ondas: sem filtro e
+    /// sem aviso de chave. Com sobra, o filtro entra.
+    #[test]
+    fn the_wave_assembly_has_no_filter_once_the_month_is_spent() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("mustard.json"), r#"{"jev": {"monthly_budget_usd": 0}}"#).unwrap();
+        let spent = waves_filter(root.path(), &ProjectConfig::load(root.path()), Some("from-env".to_string()), None);
+        assert!(spent.filter.is_none() && !spent.key_in_git);
+
+        std::fs::write(root.path().join("mustard.json"), r#"{"jev": {"monthly_budget_usd": 5}}"#).unwrap();
+        let open = waves_filter(root.path(), &ProjectConfig::load(root.path()), Some("from-env".to_string()), None);
+        assert!(open.filter.is_some());
     }
 }

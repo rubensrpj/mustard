@@ -564,24 +564,46 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              block: {block}"
         }
         // O aviso ao agente de onda que passou do limite da conversa, sem o
-        // resumo que ele leu: terminar a tarefa em curso e gravar o que falta.
+        // resumo que ele leu: parar, com a folga para deixar o código
+        // compilando e gravar o passo e a entrega.
         ("conversation_size.wave_limit", Locale::PtBr) => {
             "[Mustard] A sua conversa está em {now} mil tokens; sem o resumo da onda anterior, \
-             {counted} mil, acima do limite de {limit} mil. Termine a tarefa em curso, a que você \
-             está lendo ou mudando agora, com o build passando, e grave o passo dela. Não comece \
-             outra tarefa. Grave a entrega como o pedido manda. Nela, diga o que você fez e o que \
-             aprendeu do código, que poupa leitura a quem continuar. Ponha em `undone` as tarefas \
-             que você não começou. Um agente novo faz o que falta na rodada seguinte."
+             {counted} mil, acima do limite de {limit} mil. Pare. Você tem no máximo {calls} \
+             chamadas ou {grace} mil tokens para deixar o código compilando; só compile, sem rodar \
+             a suíte. Depois grave o passo da tarefa em curso: o que foi feito nela, o que falta e \
+             onde você parou. Grave a entrega como o pedido manda. Nela, diga o que você aprendeu do \
+             código, que poupa leitura a quem continuar. Ponha em `undone` a tarefa em curso e as \
+             que você não começou. Passada a folga, o Mustard recusa toda ferramenta, menos `run \
+             write` na spec e o comando de compilar. Um agente novo continua pelo resumo."
         }
         ("conversation_size.wave_limit", Locale::EnUs) => {
             "[Mustard] Your conversation is at {now} thousand tokens; without the previous wave's \
-             summary, {counted} thousand, over the limit of {limit} thousand. Finish the task in \
-             progress, the one you are reading or changing now, with the build passing, and record \
-             its step. Do not start another task. Record the delivery as the request says. In it, \
-             say what you did and what you learned from the code, which saves reading for whoever \
-             continues. Put the tasks you did not start in `undone`. A new agent does what is left \
-             in the next round."
+             summary, {counted} thousand, over the limit of {limit} thousand. Stop. You have at most \
+             {calls} calls or {grace} thousand tokens to leave the code compiling; only compile, \
+             without running the suite. Then record the step of the task in progress: what was done \
+             in it, what is left and where you stopped. Record the delivery as the request says. In \
+             it, say what you learned from the code, which saves reading for whoever continues. Put \
+             the task in progress and the ones you did not start in `undone`. After the grace, \
+             Mustard refuses every tool except `run write` on the spec and the build command. A new \
+             agent continues from the summary."
         }
+        // A recusa ao agente de onda que gastou a folga depois do limite.
+        ("conversation_size.wave_stop", Locale::PtBr) => {
+            "[Mustard] Passou a folga depois do limite de {limit} mil tokens. Só passam `mustard-rt \
+             run write`{build}. Grave agora o passo da tarefa em curso, com o que foi feito, o que \
+             falta e onde você parou. Grave a entrega, com a tarefa em curso e as não começadas em \
+             `undone`, e pare."
+        }
+        ("conversation_size.wave_stop", Locale::EnUs) => {
+            "[Mustard] The grace after the limit of {limit} thousand tokens is spent. Only `mustard-rt \
+             run write`{build} pass. Record now the step of the task in progress, with what was \
+             done, what is left and where you stopped. Record the delivery, with the task in \
+             progress and the ones not started in `undone`, and stop."
+        }
+        // O que a recusa acrescenta quando o projeto declara o comando de
+        // compilar.
+        ("conversation_size.wave_stop_build", Locale::PtBr) => " e `{command}`",
+        ("conversation_size.wave_stop_build", Locale::EnUs) => " and `{command}`",
         ("round.files_diverged", Locale::PtBr) => {
             "A cópia da onda {wave} mudou {changed} arquivo(s) e a entrega citou {declared}: ficou de \
              fora {missing}. Todos entraram no commit mesmo assim."
@@ -1779,8 +1801,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            215,
-            0x7c92_66df_f664_4269,
+            217,
+            0x8a61_ae3e_ac4b_fae5,
         );
     }
 
@@ -1954,7 +1976,9 @@ mod tests {
             ("conversation_size.more", &["{count}"][..]),
             ("conversation_size.precompact", &["{block}"][..]),
             ("conversation_size.notice", &["{tokens}", "{block}"][..]),
-            ("conversation_size.wave_limit", &["{now}", "{counted}", "{limit}"][..]),
+            ("conversation_size.wave_limit", &["{now}", "{counted}", "{limit}", "{calls}", "{grace}"][..]),
+            ("conversation_size.wave_stop", &["{limit}", "{build}"][..]),
+            ("conversation_size.wave_stop_build", &["{command}"][..]),
             ("wave_prompt.summary.title", &[][..]),
             ("wave_prompt.summary.read", &["{code}", "{root}", "{spec}"][..]),
             ("wave_prompt.task_changed", &["{commits}", "{files}"][..]),

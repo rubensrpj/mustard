@@ -3115,8 +3115,8 @@ mod tests {
         assert_eq!(wave_order(root, 3), vec![three]);
     }
 
-    /// As tarefas pequenas do mesmo tipo vão juntas até 140 mil tokens: duas de
-    /// 65 mil (130 mil) saem juntas, e a terceira, que passaria do teto, sai na
+    /// As tarefas pequenas do mesmo tipo vão juntas até 110 mil tokens: duas de
+    /// 50 mil (100 mil) saem juntas, e a terceira, que passaria do teto, sai na
     /// onda seguinte, quando há vaga.
     #[test]
     fn tasks_of_one_kind_fill_a_wave_up_to_the_budget_and_the_rest_goes_to_the_next() {
@@ -3128,11 +3128,11 @@ mod tests {
         let two = backlog_task_on(root, said, crit, "Mexer no código de dois.", &["src/b.rs"]);
         let three = backlog_task_on(root, said, crit, "Mexer no código de três.", &["src/c.rs"]);
 
-        let judge = judging_sized(|_| TaskKind::Feature, |_| 1.0);
+        let judge = judging_sized(|_| TaskKind::Feature, |_| 0.5);
         let log = spec_now(root);
         assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), Some(&judge)), Ok(vec![1, 2]));
-        assert_eq!(wave_order(root, 1), vec![one, two], "65 mil mais 65 mil cabem");
-        assert_eq!(wave_order(root, 2), vec![three], "a terceira passaria de 140 mil");
+        assert_eq!(wave_order(root, 1), vec![one, two], "50 mil mais 50 mil cabem");
+        assert_eq!(wave_order(root, 2), vec![three], "a terceira passaria de 110 mil");
     }
 
     /// Com vaga para uma onda só, a que passou do teto fica no backlog, sem

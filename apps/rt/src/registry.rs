@@ -9,7 +9,8 @@
 //! do subagente, a testemunha da aprovação, a testemunha da cópia da página,
 //! a entrada da mensagem, o início da sessão, o conserto da barra de status,
 //! o sinal de vida da onda, a testemunha do glossário do mapa, o aviso antes
-//! de compactar, o aviso de tamanho da conversa, a faxina do fim da sessão e
+//! de compactar, o aviso de tamanho da conversa, que também recusa o agente
+//! de onda que gastou a folga depois do limite, a faxina do fim da sessão e
 //! a conferência do fim da resposta.
 
 use crate::hooks::bash::command_guard::CommandGuard;
@@ -189,12 +190,14 @@ impl Registry {
                 check: Some(Box::new(PrecompactNotice)),
                 observer: None,
             },
-            // O aviso de tamanho da conversa, depois de cada ferramenta: a quem
-            // conduz, o de limpar ou compactar; ao agente de onda, o de parar
-            // no limite da conversa e gravar o que falta. Nunca barra.
+            // O tamanho da conversa nos dois lados de cada ferramenta. Depois
+            // dela: a quem conduz, o aviso de limpar ou compactar; ao agente
+            // de onda, o de parar no limite. Antes dela: só o agente de onda
+            // que gastou a folga depois desse aviso é recusado, menos para
+            // gravar na spec e compilar.
             Module {
                 id: "size_notice",
-                applies_to: &[(Trigger::PostToolUse, ToolMatch::Any)],
+                applies_to: &[(Trigger::PostToolUse, ToolMatch::Any), (Trigger::PreToolUse, ToolMatch::Any)],
                 check: Some(Box::new(SizeNotice)),
                 observer: None,
             },
@@ -298,26 +301,27 @@ mod tests {
         assert!(!ToolMatch::Named("Bash").matches(Some("bash")));
     }
 
-    /// A trava de comandos roda só no `PreToolUse` do Bash; o sinal de vida
-    /// da onda, que roda depois de toda ferramenta, continua no
-    /// `PostToolUse`.
+    /// A trava de comandos roda só no `PreToolUse` do Bash, e o aviso de
+    /// tamanho depois dela; o sinal de vida da onda, que roda depois de toda
+    /// ferramenta, continua no `PostToolUse`.
     #[test]
     fn the_command_guard_runs_before_bash_only() {
         let registry = Registry::new();
-        assert_eq!(applicable_ids(&registry, Trigger::PreToolUse, Some("Bash")), ["command_guard"]);
+        assert_eq!(applicable_ids(&registry, Trigger::PreToolUse, Some("Bash")), ["command_guard", "size_notice"]);
         assert_eq!(applicable_ids(&registry, Trigger::PostToolUse, Some("Bash")), ["wave_alive_observer", "size_notice"]);
         assert!(!applicable_ids(&registry, Trigger::PreToolUse, Some("Write")).contains(&"command_guard"));
     }
 
     /// O portão de escrita roda antes das cinco ferramentas de arquivo e das
-    /// duas buscas (por palavra e por nome), e só delas; o sinal de vida da
+    /// duas buscas (por palavra e por nome), e só delas, com o aviso de
+    /// tamanho depois dele; o sinal de vida da
     /// onda segue rodando depois de cada uma, e a testemunha do glossário, só
     /// depois das três que editam texto: a leitura nunca ensina.
     #[test]
     fn the_write_gate_runs_on_the_file_tools_and_the_searches() {
         let registry = Registry::new();
         for tool in ["Read", "Write", "Edit", "MultiEdit", "NotebookEdit", "Grep", "Glob"] {
-            assert_eq!(applicable_ids(&registry, Trigger::PreToolUse, Some(tool)), ["write_gate"], "{tool}");
+            assert_eq!(applicable_ids(&registry, Trigger::PreToolUse, Some(tool)), ["write_gate", "size_notice"], "{tool}");
             let after: &[&str] = if ["Write", "Edit", "MultiEdit"].contains(&tool) {
                 &["wave_alive_observer", "glossary_witness", "size_notice"]
             } else {
@@ -334,18 +338,19 @@ mod tests {
         assert!(module.check.is_some() && module.observer.is_none());
     }
 
-    /// O pedido do subagente roda no despacho de um agente, e o início e o
-    /// fim de subagente não têm gancho nenhum.
+    /// O pedido do subagente roda no despacho de um agente, com o aviso de
+    /// tamanho depois dele, e o início e o fim de subagente não têm gancho
+    /// nenhum.
     #[test]
     fn the_agent_dispatch_runs_only_the_subagent_inject() {
         let registry = Registry::new();
         for tool in ["Task", "Agent"] {
-            assert_eq!(applicable_ids(&registry, Trigger::PreToolUse, Some(tool)), ["subagent_inject"], "{tool}");
+            assert_eq!(applicable_ids(&registry, Trigger::PreToolUse, Some(tool)), ["subagent_inject", "size_notice"], "{tool}");
             assert_eq!(applicable_ids(&registry, Trigger::PostToolUse, Some(tool)), ["wave_alive_observer", "size_notice"], "{tool}");
         }
         assert!(applicable_ids(&registry, Trigger::SubagentStart, None).is_empty());
         assert!(applicable_ids(&registry, Trigger::SubagentStop, None).is_empty());
-        assert!(applicable_ids(&registry, Trigger::PreToolUse, Some("Skill")).is_empty());
+        assert_eq!(applicable_ids(&registry, Trigger::PreToolUse, Some("Skill")), ["size_notice"]);
     }
 
     /// A testemunha roda só depois da pergunta com opções, e é uma trava que
@@ -358,7 +363,7 @@ mod tests {
             applicable_ids(&registry, Trigger::PostToolUse, Some("AskUserQuestion")),
             ["approval_witness", "wave_alive_observer", "size_notice"]
         );
-        assert!(applicable_ids(&registry, Trigger::PreToolUse, Some("AskUserQuestion")).is_empty());
+        assert_eq!(applicable_ids(&registry, Trigger::PreToolUse, Some("AskUserQuestion")), ["size_notice"]);
         assert_eq!(applicable_ids(&registry, Trigger::PostToolUse, Some("ExitPlanMode")), ["wave_alive_observer", "size_notice"]);
         let module = registry.by_id("approval_witness").expect("registered");
         assert!(module.check.is_some() && module.observer.is_none());
@@ -372,15 +377,16 @@ mod tests {
         assert!(module.check.is_none() && module.observer.is_some());
     }
 
-    /// O aviso de tamanho roda depois de qualquer ferramenta, junto do sinal de
-    /// vida, nunca antes dela e em nenhum outro evento, e é uma trava que
-    /// devolve veredito, não um observador.
+    /// O aviso de tamanho roda nos dois lados de qualquer ferramenta — depois
+    /// dela, junto do sinal de vida, para avisar, e antes dela, para recusar o
+    /// agente de onda que gastou a folga — e em nenhum outro evento, e é uma
+    /// trava que devolve veredito, não um observador.
     #[test]
     fn size_notice_runs_after_every_tool() {
         let registry = Registry::new();
         for tool in ["Bash", "Write", "Task", "Grep"] {
             assert!(applicable_ids(&registry, Trigger::PostToolUse, Some(tool)).contains(&"size_notice"), "{tool}");
-            assert!(!applicable_ids(&registry, Trigger::PreToolUse, Some(tool)).contains(&"size_notice"), "{tool}");
+            assert!(applicable_ids(&registry, Trigger::PreToolUse, Some(tool)).contains(&"size_notice"), "{tool}");
         }
         for trigger in [Trigger::UserPromptSubmit, Trigger::PreCompact, Trigger::Stop, Trigger::SessionStart] {
             assert!(!applicable_ids(&registry, trigger, None).contains(&"size_notice"), "{trigger:?}");

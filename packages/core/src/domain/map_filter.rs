@@ -171,6 +171,10 @@ pub enum FilterError {
     /// O pedido passaria do limite do serviço e não foi mandado.
     #[error("request too large: about {estimated_tokens} tokens")]
     TooLarge { estimated_tokens: u64 },
+    /// O gasto do mês mais o pedido passaria do teto de gasto do serviço, e
+    /// o pedido não foi mandado.
+    #[error("the spend of the month would pass the budget")]
+    OverBudget,
 }
 
 impl FilterError {
@@ -189,6 +193,7 @@ impl FilterError {
             Self::Timeout => "timeout",
             Self::Unreadable(_) => "unreadable",
             Self::TooLarge { .. } => "too_large",
+            Self::OverBudget => "over_budget",
         }
     }
 }

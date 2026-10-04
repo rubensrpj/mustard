@@ -17,7 +17,8 @@
 //!   bloco de retomada, e o aviso de tamanho da conversa
 //!   (`conversation_size::SizeNotice`): a quem conduz, o de limpar ou
 //!   compactar, com o bloco de retomada; ao agente de onda, o de parar no
-//!   limite da conversa e gravar o que falta.
+//!   limite da conversa, e a recusa de toda ferramenta, menos gravar na spec
+//!   e compilar, depois da folga que o aviso dá.
 //! - `task` — a conferência do fim da resposta (`end_of_turn_check`, com as
 //!   regras dela) e o pedido do subagente (`subagent_inject`).
 //!

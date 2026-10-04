@@ -24,7 +24,7 @@ use std::time::SystemTime;
 use chrono::Utc;
 
 use crate::domain::config::ProjectConfig;
-use crate::domain::spend::{day_of, day_of_stamp, day_start, DayRow, Ledger, Range, Refusal};
+use crate::domain::spend::{day_of, day_of_stamp, day_start, month_of, DayRow, Ledger, Range, Refusal};
 use crate::io::fs::lock::{read_shared, LockedFile};
 use crate::io::transcript::SpendTally;
 use crate::io::workspace::linked_worktree_main;
@@ -58,6 +58,12 @@ pub fn ledger_path(dir: &Path) -> PathBuf {
 #[must_use]
 pub fn today() -> String {
     day_of(Utc::now())
+}
+
+/// O mês de hoje, `AAAA-MM`, no fuso do gasto.
+#[must_use]
+pub fn this_month() -> String {
+    month_of(&today()).to_string()
 }
 
 /// O arquivo do gasto da pasta `dir`. Sem arquivo, o vazio: nada foi contado
@@ -247,6 +253,62 @@ fn jev_calls(root: &Path, range: &Range) -> Vec<JevCall> {
         }
     }
     found
+}
+
+/// O custo que a linha `line` de uma spec grava, com o dia dela: só o evento
+/// `call` que traz `cost_micro_usd`. A linha que não cita os dois nem chega a
+/// ser lida como JSON, e são quase todas: uma spec longa passa de dezenas de
+/// megabytes, e quem pergunta o gasto do mês não pode relê-la inteira.
+fn call_cost(line: &str) -> Option<(String, u64)> {
+    if !line.contains("\"type\":\"call\"") || !line.contains("\"cost_micro_usd\"") {
+        return None;
+    }
+    let event: serde_json::Value = serde_json::from_str(line).ok()?;
+    if event.get("type")?.as_str()? != "call" {
+        return None;
+    }
+    Some((day_of_stamp(event.get("at")?.as_str()?)?, event.get("cost_micro_usd")?.as_u64()?))
+}
+
+/// O que as chamadas ao Jev gravadas nas specs vivas de `root` custaram no mês
+/// `month`, em milionésimos de dólar. A spec que não mudou desde o começo do
+/// mês não tem chamada dele e nem chega a ser aberta.
+fn spec_month_micro_usd(root: &Path, month: &str) -> u64 {
+    let floor = day_start(&format!("{month}-01")).map(SystemTime::from);
+    crate::io::spec_index::live_spec_files(root)
+        .into_iter()
+        .filter(|(_, path)| {
+            let changed = std::fs::metadata(path).and_then(|meta| meta.modified()).ok();
+            !floor.is_some_and(|floor| changed.is_some_and(|at| at < floor))
+        })
+        .filter_map(|(_, path)| read_shared(&path).ok())
+        .map(|text| {
+            text.lines()
+                .filter_map(call_cost)
+                .filter(|(day, _)| month_of(day) == month)
+                .fold(0, |sum: u64, (_, cost)| sum.saturating_add(cost))
+        })
+        .fold(0, u64::saturating_add)
+}
+
+/// O que o Jev custou no mês `month` (`AAAA-MM`, no fuso do gasto), em
+/// milionésimos de dólar: as chamadas gravadas nas specs do projeto de `root`,
+/// de qualquer comando, e, vindo do arquivo do gasto da máquina em
+/// `ledger_dir`, quando há, o que os outros projetos dela gastaram nos dias
+/// que ele já fechou. As linhas do próprio projeto no arquivo ficam de fora:
+/// as specs trazem o mesmo gasto, e até hoje.
+#[must_use]
+pub fn jev_month_micro_usd(root: &Path, ledger_dir: Option<&Path>, month: &str) -> u64 {
+    let home = linked_worktree_main(root).unwrap_or_else(|| root.to_path_buf());
+    let own = home.file_name().map(|name| name.to_string_lossy().into_owned());
+    let elsewhere = ledger_dir.and_then(|dir| load(dir).ok()).map_or(0, |ledger| {
+        ledger
+            .rows
+            .iter()
+            .filter(|row| month_of(&row.day) == month && Some(&row.project) != own.as_ref())
+            .fold(0, |sum: u64, row| sum.saturating_add(row.jev_cost_micro_usd))
+    });
+    spec_month_micro_usd(&home, month).saturating_add(elsewhere)
 }
 
 /// As linhas de hoje, o dia aberto: contadas agora, nas conversas de
@@ -454,5 +516,88 @@ mod tests {
         assert_eq!(refused.reason(), "unreadable-ledger");
         assert_eq!(update(&folder, |_| ()).unwrap_err().reason(), "unreadable-ledger");
         assert_eq!(fs::read_to_string(ledger_path(&folder)).unwrap(), "{ não é json", "the refusal leaves the file alone");
+    }
+
+    /// O gasto do Jev no mês soma só as chamadas dele: as do mês pedido, de
+    /// qualquer comando e de qualquer spec do projeto; as de outro mês, as que
+    /// não gastaram, a leitura de um item e o texto que só cita o custo ficam
+    /// de fora, a spec que não mudou desde o começo do mês nem se abre, e o
+    /// painel de gasto soma o mesmo mês pelo mesmo número. Dos outros projetos
+    /// da máquina entra o que o arquivo do gasto já fechou no mês pedido; as
+    /// linhas do próprio projeto, que as specs dele já trazem, e as de outro
+    /// mês ficam de fora, e um arquivo ilegível vale como ausente.
+    #[test]
+    fn the_month_of_jev_spend_counts_only_that_months_billed_calls_and_matches_the_panel() {
+        let dir = tempdir().unwrap();
+        let config = dir.path().join("config");
+        let root = project(dir.path(), "meu-projeto");
+        conversation(&config, "p", "s1", &[reply("m1", "2026-10-01T15:00:00Z", &root, 10, &[])]);
+        let write = |spec: &str, events: &[String]| {
+            let folder = root.join(".claude/spec").join(spec);
+            fs::create_dir_all(&folder).unwrap();
+            fs::write(folder.join("spec.ndjson"), events.join("\n") + "\n").unwrap();
+            folder.join("spec.ndjson")
+        };
+        let call = |id: u64, at: &str, command: &str, extra: Value| {
+            let mut event = json!({"v": 1, "id": id, "code": format!("X-CALL-{id:04}"), "at": at, "type": "call",
+                "author": "binary", "command": command});
+            event.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            event.to_string()
+        };
+        let billed = |cost: u64| json!({"filter": "jev", "tokens": 1000, "cost_micro_usd": cost});
+        let note = json!({"v": 1, "id": 9, "code": "X-NOTE-0009", "at": "2026-10-02T10:00:00-03:00", "type": "decision",
+            "text": "o campo \"type\":\"call\" traz \"cost_micro_usd\": 777"})
+        .to_string();
+        write(
+            "uma",
+            &[
+                call(1, "2026-09-30T23:30:00-03:00", "word search", billed(5_000)),
+                call(2, "2026-10-01T00:30:00-03:00", "word search", billed(900)),
+                call(3, "2026-10-02T11:00:00-03:00", "wave assembly", billed(400)),
+                call(4, "2026-10-03T11:00:00-03:00", "word search", json!({"filter": "jev:timeout"})),
+                call(5, "2026-10-03T12:00:00-03:00", "read", json!({"item": "X-TASK-0001"})),
+                note,
+            ],
+        );
+        write("outra", &[call(1, "2026-10-04T09:00:00-03:00", "wave items", billed(50))]);
+        let old = write("velha", &[call(1, "2026-10-05T09:00:00-03:00", "map search", billed(60_000))]);
+        let long_ago = SystemTime::now() - std::time::Duration::from_secs(40 * 24 * 3600);
+        fs::File::options().write(true).open(&old).unwrap().set_modified(long_ago).unwrap();
+
+        // O mês de outubro vem sem o fim de setembro, sem o que não gastou e
+        // sem a spec que ninguém mexe desde antes do mês.
+        let october = jev_month_micro_usd(&root, None, "2026-10");
+        assert_eq!(october, 900 + 400 + 50, "{october}");
+        assert_eq!(jev_month_micro_usd(&root, None, "2026-09"), 5_000, "the earlier month keeps its own call");
+        assert_eq!(jev_month_micro_usd(&root, None, "2026-08"), 0);
+
+        // O painel soma o mesmo mês pelo mesmo número (menos a spec que a
+        // leitura leve nem abre).
+        let rows = count(&config, &range(Some("2026-10-01"), "2026-10-31"));
+        let panel: u64 = rows.iter().map(|row| row.jev_cost_micro_usd).sum();
+        assert_eq!(panel, october + 60_000, "the panel also reads the file nobody touched");
+
+        // Os outros projetos da máquina gastam do mesmo teto; o próprio
+        // projeto no arquivo não conta duas vezes, e o mês passado, só no dele.
+        let machine = dir.path().join("spend");
+        let row = |day: &str, project: &str, cost: u64| DayRow {
+            day: day.to_string(),
+            project: project.to_string(),
+            jev_cost_micro_usd: cost,
+            ..DayRow::default()
+        };
+        update(&machine, |ledger| {
+            ledger.rows = vec![
+                row("2026-10-01", "outro", 700),
+                row("2026-10-02", "terceiro", 30),
+                row("2026-10-02", "meu-projeto", 9_999),
+                row("2026-09-30", "outro", 8_888),
+            ];
+        })
+        .unwrap();
+        assert_eq!(jev_month_micro_usd(&root, Some(&machine), "2026-10"), october + 730);
+        assert_eq!(jev_month_micro_usd(&root, Some(&machine), "2026-09"), 5_000 + 8_888);
+        fs::write(ledger_path(&machine), "{ não é json").unwrap();
+        assert_eq!(jev_month_micro_usd(&root, Some(&machine), "2026-10"), october, "an unreadable file counts as absent");
     }
 }

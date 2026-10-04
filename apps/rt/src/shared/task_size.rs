@@ -99,17 +99,17 @@ mod tests {
         assert_eq!(growth_tokens(f64::NAN), 125_000);
     }
 
-    /// O teto de um agente que pode ir a 180 mil tokens é 140 mil: os 40 mil
+    /// O teto de um agente que pode ir a 150 mil tokens é 110 mil: os 40 mil
     /// do começo da conversa ficam de fora, e nenhum limite menor que eles dá
     /// teto negativo.
     #[test]
     fn the_budget_is_the_limit_minus_what_the_conversation_weighs_at_the_start() {
-        assert_eq!(wave_budget(180_000), 140_000);
+        assert_eq!(wave_budget(150_000), 110_000);
         assert_eq!(wave_budget(30_000), 0);
         assert_eq!(
             wave_budget(crate::hooks::session::conversation_size::WAVE_LIMIT),
-            140_000,
-            "o limite do agente de onda mudou: a tabela precisa de nova conta"
+            110_000,
+            "o limite do agente de onda mudou: o teto da montagem muda junto"
         );
     }
 
