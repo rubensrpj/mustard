@@ -275,7 +275,7 @@ fn two_processes_closing_a_wave_at_once_leave_both_items_in_the_copy() {
                 .cloned()
                 .unwrap_or_default()
                 .into_iter()
-                .filter(|w| w["reason"] != json!("usage-missing"))
+                .filter(|w| !matches!(w["reason"].as_str(), Some("usage-missing" | "wave-size")))
                 .count();
             assert_eq!(warned, 0, "{}", String::from_utf8_lossy(&out.stdout));
         }
@@ -686,7 +686,7 @@ fn a_wave_that_still_builds_commits_the_undeclared_file_and_one_that_breaks_the_
         .cloned()
         .unwrap_or_default()
         .into_iter()
-        .filter(|w| w["reason"] != json!("usage-missing"))
+        .filter(|w| !matches!(w["reason"].as_str(), Some("usage-missing" | "wave-size")))
         .collect();
     assert_eq!(json!(warned), json!([{"reason": "files-diverged", "wave": 1, "hint": hint}]), "{body}");
 

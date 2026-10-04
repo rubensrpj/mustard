@@ -5,8 +5,9 @@
 
 //! A onda cuja tarefa teve o arquivo mudado por um commit depois do texto
 //! sai na mesma rodada, como qualquer outra: a rodada não para a onda nem
-//! pede a quem conduz a conferência da tarefa no código. Prova pelo binário de
-//! verdade, num repositório temporário, nos dois idiomas.
+//! pede a quem conduz a conferência da tarefa no código, e o pedido que o
+//! agente lê traz, sob a tarefa, o commit e o arquivo que mudaram. Prova pelo
+//! binário de verdade, num repositório temporário, nos dois idiomas.
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -21,7 +22,7 @@ const SPEC: &str = "conferir";
 const SESSION: &str = "s-conferir";
 const GOAL: &str = "Somar dois números no programa.";
 
-fn git(root: &Path, args: &[&str], date: Option<&str>) {
+fn git(root: &Path, args: &[&str], date: Option<&str>) -> String {
     let mut command = Command::new("git");
     command.args(args).current_dir(root);
     if let Some(date) = date {
@@ -29,6 +30,7 @@ fn git(root: &Path, args: &[&str], date: Option<&str>) {
     }
     let out = command.output().expect("git");
     assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
 /// O repositório de teste: `main` e `dev`, parado em `dev`, com o Mustard
@@ -222,6 +224,7 @@ fn a_task_whose_file_changed_after_its_text_leaves_in_the_first_round_without_a_
         git(&project.root, &["add", "src/main.rs"], None);
         let date = format!("@{} +0000", written + 1);
         git(&project.root, &["commit", "-q", "-m", "a soma muda"], Some(&date));
+        let hash = git(&project.root, &["rev-parse", "--short", "HEAD"], None);
 
         let out = project.run(&["round", "--spec", SPEC]);
 
@@ -235,5 +238,11 @@ fn a_task_whose_file_changed_after_its_text_leaves_in_the_first_round_without_a_
         let log = project.log();
         let placed = log.visible().into_iter().find(|e| e.event_type == "task").expect("the task").clone();
         assert_eq!(placed.wave(), Some(1), "{language}: {placed:?}");
+
+        // O pedido que o agente lê leva, sob a tarefa, o commit e o arquivo que mudaram.
+        let read = project.command(&["run", "read", "request-1", "--spec", SPEC], "");
+        let request = String::from_utf8_lossy(&read.stdout).to_string();
+        let warning = translate("wave_prompt.task_changed", lang).replace("{commits}", &hash).replace("{files}", "`src/main.rs`");
+        assert!(request.contains(&format!("\n   - {warning}\n")), "{language}: {request}");
     }
 }

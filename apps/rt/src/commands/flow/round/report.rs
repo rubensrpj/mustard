@@ -30,6 +30,7 @@ use super::copy_check::check_against_copies;
 use super::agreed::{covered_codes, removed_by_analysis, request_agreed, settle_agreed};
 use super::leftovers::{leftover_tasks, leftovers_of, Leftover};
 use super::read_check::{request_name, unread_items};
+use super::size_check::in_body;
 use super::queue::{backlog_wave, open_review, open_sends, waves_in_progress};
 use super::stops::{hold_waiting_changes, plan_changed_alone, tasks_returned, undone_of, undone_returns, HeldReturn};
 use super::usage::{measure_usage, Caller, Usage};
@@ -309,7 +310,9 @@ fn take_returns(
     // de outra volta o disco ao que era e nada é comitado; o que só avisa
     // segue nos avisos.
     let after = message.is_some().then(|| ensure_builds(root).and_then(|()| ensure_after_wave(root, log, &report.waves, mine, lang)));
-    warnings.extend(after.transpose().inspect_err(|_| drop(write_joined(root, &joined, false)))?.unwrap_or_default());
+    let (found, sizes) = after.transpose().inspect_err(|_| drop(write_joined(root, &joined, false)))?.unwrap_or_default();
+    warnings.extend(found);
+    let message = in_body(message, &sizes);
     // A prova de cada critério que as ondas deste relatório cobrem roda antes
     // do commit, uma de cada vez: a que não executa ou não passa recusa com o
     // código do critério, o comando inteiro e a saída de erro, e nada é
@@ -1550,9 +1553,9 @@ mod tests {
             assert_eq!(back["ok"], json!(true), "{lang:?}: {back}");
             let (subject, body) = last_commit(root);
             let (title, summary) = if lang == Locale::PtBr {
-                ("feat(onda-1): a soma sai", "- onda 1: a soma sai")
+                ("feat(onda-1): a soma sai", "- onda 1: a soma sai\n\n- onda 1: +2 -1, 0 testes, 1 arquivos")
             } else {
-                ("feat(wave-1): the sum ships", "- wave 1: the sum ships")
+                ("feat(wave-1): the sum ships", "- wave 1: the sum ships\n\n- wave 1: +2 -1, 0 tests, 1 files")
             };
             assert_eq!(subject, title, "{lang:?}");
             assert_eq!(body, summary, "{lang:?}");
@@ -2017,7 +2020,7 @@ mod tests {
             .cloned()
             .unwrap_or_default()
             .into_iter()
-            .filter(|w| w["reason"] != json!("usage-missing"))
+            .filter(|w| !matches!(w["reason"].as_str(), Some("usage-missing" | "wave-size")))
             .collect();
         assert!(warned.is_empty(), "{went}");
         // A onda 2 já tem pedido aberto: a rodada não despacha nada de novo,
@@ -2257,7 +2260,7 @@ mod tests {
             .cloned()
             .unwrap_or_default()
             .into_iter()
-            .filter(|w| w["reason"] != json!("usage-missing"))
+            .filter(|w| !matches!(w["reason"].as_str(), Some("usage-missing" | "wave-size")))
             .collect();
         assert_eq!(json!(warned), json!([{"reason": "round-merge-conflict", "wave": 1, "hint": expected}]), "{out}");
         // O agente da onda segurada já terminou: ela não está em andamento, e
@@ -2424,7 +2427,7 @@ mod tests {
         assert!(!waves_to_redo(&log).contains(&1), "wave 1's fix already delivered: {out}");
         let (subject, body) = last_commit(root);
         assert_eq!(subject, "fix(onda-2): o commit sai do resumo");
-        assert_eq!(body, "- onda 2: o commit sai do resumo (conserta: onda 1)");
+        assert_eq!(body, "- onda 2: o commit sai do resumo (conserta: onda 1)\n\n- onda 2: +2 -1, 0 testes, 1 arquivos");
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let visible = log.visible();
         let fixed_delivery = visible.iter().rfind(|e| e.event_type == "delivered" && e.wave() == Some(1)).unwrap();
@@ -2560,7 +2563,7 @@ mod tests {
             .cloned()
             .unwrap_or_default()
             .into_iter()
-            .filter(|w| w["reason"] != json!("usage-missing"))
+            .filter(|w| !matches!(w["reason"].as_str(), Some("usage-missing" | "wave-size")))
             .collect();
         assert_eq!(json!(rest), json!([{"reason": "proof-ran-no-test", "hint": expected}]), "{out}");
     }
@@ -2592,7 +2595,7 @@ mod tests {
                 .cloned()
                 .unwrap_or_default()
                 .into_iter()
-                .filter(|w| w["reason"] != json!("usage-missing"))
+                .filter(|w| !matches!(w["reason"].as_str(), Some("usage-missing" | "wave-size")))
                 .collect()
         };
 

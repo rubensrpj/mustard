@@ -229,6 +229,7 @@ impl Writer<'_> {
             let files: Vec<String> = paths.iter().map(|path| format!("`{path}`")).collect();
             let _ = writeln!(out, "{pad}- {}", self.t(key).replace("{files}", &files.join(", ")));
         }
+        self.changed_since_text(out, &code, pad);
         if let Some((_, reads)) = m.task_reads.iter().find(|(task, _)| *task == code) {
             let hints: Vec<String> = reads.iter().map(|file| self.read_hint(file)).collect();
             let _ = writeln!(out, "{pad}- {}", self.t("prompt.step.read_before").replace("{hints}", &hints.join(", ")));

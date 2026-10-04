@@ -127,6 +127,7 @@ mod queue;
 mod read_check;
 mod removed_check;
 mod report;
+mod size_check;
 mod slots;
 mod stops;
 mod summary_wave;

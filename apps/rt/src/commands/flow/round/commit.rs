@@ -562,7 +562,7 @@ pub(super) fn unknown_file(root: &Path, log: &SpecLog, waves: &[WaveReport]) -> 
 /// O repositório que guarda o arquivo `file` na pasta `dir` — o principal, ou
 /// a cópia dele, ou o submódulo que o guarda ali — e o caminho do arquivo
 /// dentro desse repositório.
-fn repo_of(dir: &Path, subs: &[String], file: &str) -> (PathBuf, String) {
+pub(super) fn repo_of(dir: &Path, subs: &[String], file: &str) -> (PathBuf, String) {
     match submodule_holding(subs, file) {
         Some((sub, inner)) => (dir.join(sub), inner),
         None => (dir.to_path_buf(), file.to_string()),
@@ -846,19 +846,26 @@ pub(super) struct AfterWave {
 /// [`super::stops::MAX_FIX_ROUNDS`]. A onda que já passou por todas vira
 /// pergunta ao usuário. Sem mapa da base, com o mapa sem arquivos, ou com o
 /// mapeador falhando, não há com que comparar e a rodada segue.
+///
+/// Com a conferência sem recusa, junta aos avisos uma linha de tamanho por
+/// onda ([`super::size_check`]) e a devolve também à parte, para o corpo do
+/// commit. A linha é dado da onda, e nunca um achado: não recusa nada.
 pub(super) fn ensure_after_wave(
     root: &Path,
     log: &SpecLog,
     waves: &[WaveReport],
     mine: &dyn Fn(&Path, &Path) -> mustard_core::platform::error::Result<ScanReport>,
     lang: Locale,
-) -> Result<Vec<Value>, RoundRefusal> {
+) -> Result<(Vec<Value>, Vec<(u64, String)>), RoundRefusal> {
     let changed: Vec<(u64, Vec<String>)> =
         waves.iter().filter(|w| !w.files.is_empty()).map(|w| (w.wave, w.files.clone())).collect();
-    let Some(maps) = after_wave_maps(root, changed, mine) else { return Ok(Vec::new()) };
+    let Some(maps) = after_wave_maps(root, changed, mine) else { return Ok(Default::default()) };
     let mut found = super::imports_check::findings(root, &maps, log, lang);
     found.extend(super::removed_check::findings(root, &maps, lang));
-    after_wave_answer(waves, &found, lang)
+    let mut warnings = after_wave_answer(waves, &found, lang)?;
+    let sizes = super::size_check::lines(root, &maps, lang);
+    warnings.extend(sizes.iter().map(|(wave, hint)| json!({ "reason": "wave-size", "wave": wave, "hint": hint })));
+    Ok((warnings, sizes))
 }
 
 /// Os dois mapas da conferência depois da onda: o da base, lido do mapa do
@@ -1575,7 +1582,7 @@ mod tests {
             .cloned()
             .unwrap_or_default()
             .into_iter()
-            .filter(|w| w["reason"] != json!("usage-missing"))
+            .filter(|w| !matches!(w["reason"].as_str(), Some("usage-missing" | "wave-size")))
             .collect();
         assert_eq!(json!(warned), json!([{"reason": "files-diverged", "wave": 2, "hint": hint}]), "{out}");
     }

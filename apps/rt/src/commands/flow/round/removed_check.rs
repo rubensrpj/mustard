@@ -365,7 +365,7 @@ fn word_starts<'a>(line: &'a str, name: &'a str) -> impl Iterator<Item = usize> 
 /// é o de `Nota`, ainda que os dois morem no mesmo arquivo: quem tinha uso na
 /// base é a peça de mesmo dono, e uma peça nova, ou sem uso antes, não vira
 /// órfã por causa da homônima de outro tipo.
-fn same_piece(before: &MapDecl, now: &MapDecl) -> bool {
+pub(super) fn same_piece(before: &MapDecl, now: &MapDecl) -> bool {
     before.name == now.name && before.kind == now.kind && before.owner.first() == now.owner.first()
 }
 
@@ -378,7 +378,7 @@ fn from_program(map: &ProjectMap, site: &UseSite) -> bool {
 
 /// A linha `line` cai dentro de um trecho de teste do arquivo `module`, pelas
 /// linhas que o mapa guarda de cada um.
-fn in_test_lines(module: &MapModule, line: u64) -> bool {
+pub(super) fn in_test_lines(module: &MapModule, line: u64) -> bool {
     module.test_lines.iter().any(|&(first, last)| (first..=last).contains(&line))
 }
 

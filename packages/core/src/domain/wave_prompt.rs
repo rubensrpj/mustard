@@ -46,10 +46,12 @@ use crate::domain::spec_index::{cut, title_of};
 use crate::domain::spec_state::State;
 use crate::platform::i18n::{translate, Locale};
 
+mod changed;
 mod request;
 mod review;
 mod summary;
 
+pub use changed::TaskChange;
 pub use request::listed;
 pub use review::listed_final_review;
 pub use summary::summary_of;
@@ -263,6 +265,10 @@ pub struct Material<'a> {
     /// git e os exemplos que seguem as regras ([`pattern_block`]). A tarefa
     /// sem nada disso fica de fora.
     pub task_patterns: BTreeMap<String, TaskPattern>,
+    /// O que mudou nos arquivos de cada tarefa depois do texto dela, pelo
+    /// código da tarefa ([`TaskChange`]): a linha sob a tarefa manda
+    /// conferir no código antes de mudar. A tarefa sem mudança fica de fora.
+    pub task_changes: BTreeMap<String, TaskChange>,
 }
 
 /// O teto, em caracteres, do bloco do padrão sob uma tarefa

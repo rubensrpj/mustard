@@ -495,6 +495,18 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              Before any other step, read it with `mustard-rt run read item-{code} {root}--spec {spec}` \
              and do only what is left. The delivery is refused without that reading."
         }
+        // A linha sob a tarefa cujo arquivo mudou no git depois do texto dela
+        // (`packages/core/src/domain/wave_prompt/changed.rs`).
+        ("wave_prompt.task_changed", Locale::PtBr) => {
+            "O git mudou o arquivo desta tarefa depois que o texto dela foi escrito (commits: {commits}; \
+             arquivos: {files}). Confira no código antes de mudar. Se o que ela pede já está feito, diga \
+             na entrega que já estava feita e não mude nada."
+        }
+        ("wave_prompt.task_changed", Locale::EnUs) => {
+            "Git changed this task's file after its text was written (commits: {commits}; files: {files}). \
+             Check the code before changing anything. If what it asks is already done, say in the delivery \
+             that it was already done and change nothing."
+        }
         // O que um agente deixou preso, encerrado no início da sessão, em
         // cada rodada e no fechamento (`apps/rt/src/commands/flow/stuck.rs`).
         ("stuck.ended", Locale::PtBr) => "Processo(s) preso(s) encerrado(s): {list}.",
@@ -764,6 +776,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("round.commit.line", Locale::EnUs) => "- wave {wave}: {summary}",
         ("round.commit.fixes", Locale::PtBr) => "(conserta: onda {waves})",
         ("round.commit.fixes", Locale::EnUs) => "(fixes: wave {waves})",
+        ("round.size.line", Locale::PtBr) => "onda {wave}: +{added} -{removed}, {tests} testes, {files} arquivos",
+        ("round.size.line", Locale::EnUs) => "wave {wave}: +{added} -{removed}, {tests} tests, {files} files",
         ("round.not_approved", Locale::PtBr) => {
             "A spec está na fase {phase} e ainda não foi aprovada: nenhuma onda sai antes do sim do usuário."
         }
@@ -1743,8 +1757,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            211,
-            0x38f7_d13e_d94d_93bb,
+            213,
+            0xeace_8b54_58c9_c97d,
         );
     }
 
@@ -1921,6 +1935,7 @@ mod tests {
             ("conversation_size.wave_limit", &["{now}", "{counted}", "{limit}"][..]),
             ("wave_prompt.summary.title", &[][..]),
             ("wave_prompt.summary.read", &["{code}", "{root}", "{spec}"][..]),
+            ("wave_prompt.task_changed", &["{commits}", "{files}"][..]),
             ("round.file_unknown", &["{file}", "{wave}"][..]),
             ("round.files_diverged", &["{wave}", "{changed}", "{declared}", "{missing}"][..]),
             ("round.usage_missing", &["{wave}"][..]),
@@ -1952,6 +1967,7 @@ mod tests {
             ("round.commit.scope.many", &["{waves}"][..]),
             ("round.commit.line", &["{wave}", "{summary}"][..]),
             ("round.commit.fixes", &["{waves}"][..]),
+            ("round.size.line", &["{wave}", "{added}", "{removed}", "{tests}", "{files}"][..]),
             ("round.not_approved", &["{phase}"][..]),
             ("round.closed", &["{spec}", "{phase}"][..]),
             ("round.finished", &["{spec}", "{phase}"][..]),

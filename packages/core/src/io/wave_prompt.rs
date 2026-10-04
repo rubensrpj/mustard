@@ -40,6 +40,8 @@ use crate::domain::wave_prompt::{
 use crate::io::project_map::{MapReader, Need};
 use crate::platform::i18n::Locale;
 
+mod changed;
+
 /// O pedido do revisor final, como o disco o entrega.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FinalReview {
@@ -832,6 +834,13 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
     // de fora — a linha continua como hoje, sem inventar nada.
     let file_tests = task_file_tests(map, &of_type("task"));
     let task_patterns = task_patterns(map, log, &of_type("task"), &codes, lang);
+    // O aviso de arquivo mudado depois do texto sai só na onda que está fora
+    // ou sai agora: as outras montagens do pedido não leem o git por tarefa.
+    let task_changes = if context.flight.running.contains(&wave) {
+        changed::since_text(root, log, &of_type("task"), &codes)
+    } else {
+        BTreeMap::new()
+    };
 
     let mut skills = Vec::new();
     let mut bad_skills = Vec::new();
@@ -874,6 +883,7 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
         since_verdict: Vec::new(),
         codes,
         task_patterns,
+        task_changes,
     };
     let text = wave_prompt::write(&material, lang);
     let lines = wave_prompt::count_lines(&text);
