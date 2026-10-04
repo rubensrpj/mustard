@@ -60,6 +60,15 @@ pub(crate) type Judge<'a> = dyn Fn(&Board) -> Result<Judged, FilterError> + 'a;
 /// dos dois, a tarefa com o curinga da árvore inteira só sai sozinha, sem nada
 /// em andamento.
 ///
+/// A onda pequena espera juntar trabalho: o lote com menos de
+/// [`MIN_WAVE_FILES`](crate::shared::dag::MIN_WAVE_FILES) arquivos declarados
+/// não sai enquanto houver onda em andamento ([`waves_in_progress`]). Sai
+/// quando chega a esse tamanho — com as tarefas do mesmo tipo que o Jev juntou
+/// nele — ou quando nada roda. A onda que continua um resumo não usado e a
+/// tarefa do curinga da árvore inteira não esperam. O lote que espera reserva
+/// os arquivos dele, como a tarefa bloqueada: a que vem depois e os divide
+/// também espera.
+///
 /// A tarefa que não cobre item nenhum ([`covers_nothing`]) fica de fora das
 /// duas montagens, como pronta e como a que espera: a onda leva os critérios
 /// que as tarefas dela cobrem, e a gravação da onda sem nenhum recusa a
@@ -233,7 +242,10 @@ pub(crate) fn dispatch_backlog(
             }
             continue;
         }
-        if reserved.lets_out(&batch.files, held) {
+        // A onda pequena espera enquanto outra roda, salvo a que continua um
+        // resumo. Ela reserva os arquivos como a bloqueada.
+        let waits = summary.is_none() && !running.is_empty() && batch.waits_to_grow();
+        if reserved.lets_out(&batch.files, held || waits) {
             chosen.push((batch, summary));
         }
     }

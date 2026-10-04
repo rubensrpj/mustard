@@ -493,7 +493,7 @@ fn task_with_a_wildcard_goes_out_alone_and_the_pattern_joins_the_file_it_matches
     assert_eq!(out, vec![joined]);
 
     let inside = seed_backlog_task(&project, crit, said, &["src/b.rs"]);
-    let docs = ["docs/1.md", "docs/2.md", "docs/3.md", "docs/4.md", "docs/5.md"];
+    let docs = ["docs/1.md", "docs/2.md", "docs/3.md", "docs/4.md", "docs/5.md", "docs/6.md"];
     let outside = seed_backlog_task(&project, crit, said, &docs);
     let (_, out) = dispatch_ready(&project);
     let outside_wave = wave_of(&project, outside).expect("docs vira onda");
@@ -707,19 +707,20 @@ fn a_task_of_an_uncertain_kind_goes_alone() {
     assert!(orders.contains(&vec![by_number[1], by_number[2]]), "as certas, juntas: {orders:?}");
 }
 
-/// Uma tarefa que não declara arquivo nenhum e que o Jev diz mudar o mesmo
-/// que a onda em andamento espera no backlog; com a chance baixa, sai.
+/// Uma tarefa de seis arquivos que nenhuma onda em andamento declara, e que o
+/// Jev diz mudar o mesmo que a onda em andamento, espera no backlog; com a
+/// chance baixa, sai.
 #[test]
-fn a_high_clash_with_the_wave_in_progress_holds_a_task_that_declares_no_file() {
+fn a_high_clash_with_the_wave_in_progress_holds_a_task_that_shares_no_file_with_it() {
     let (mut project, crit, said, tasks) = backlog_project(&[&["a.rs"]]);
     let (_, out) = dispatch_ready(&project);
     assert_eq!(out, vec![wave_of(&project, tasks[0]).expect("a primeira onda")], "a onda de a.rs sai e fica no ar");
-    let held = seed_backlog_task(&project, crit, said, &[]);
+    let held = seed_backlog_task(&project, crit, said, &["x1.rs", "x2.rs", "x3.rs", "x4.rs", "x5.rs", "x6.rs"]);
 
     let strict = FakeJev::judging(|_| ("feature", 0.9), |_, _| 0.8);
     project.jev = Some(strict.url.clone());
     project.run(&["round", "--spec", SPEC]);
-    assert_eq!(wave_of(&project, held), None, "o choque de 0,8 segura a tarefa sem arquivo");
+    assert_eq!(wave_of(&project, held), None, "o choque de 0,8 segura a tarefa que não divide arquivo");
     assert_eq!(strict.requests()[0]["questions"].as_object().unwrap().len(), 2, "tipo e bloqueio da tarefa");
 
     let loose = FakeJev::judging(|_| ("feature", 0.9), |_, _| 0.1);

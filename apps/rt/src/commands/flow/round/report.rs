@@ -1629,11 +1629,14 @@ mod tests {
         let log = store::read(&path).unwrap().unwrap();
         let crit = log.visible().into_iter().find(|e| e.event_type == "criterion").unwrap().id;
         let said = log.visible().into_iter().find(|e| e.event_type == "message").unwrap().id;
+        // A tarefa um declara seis arquivos: o lote tem o tamanho com que sai
+        // ao lado da onda 1, que segue em andamento.
         let t1 = write(
             root,
             "x",
             "task",
-            json!({"text": "Tarefa um.", "files": [{"path": "src/b.rs"}], "depends_on": [],
+            json!({"text": "Tarefa um.", "files": [{"path": "src/b.rs"}, {"path": "src/c.rs"}, {"path": "src/d.rs"},
+                {"path": "src/e.rs"}, {"path": "src/f.rs"}, {"path": "src/g.rs"}], "depends_on": [],
                 "covers": [crit], "origin": said}),
         );
         let t2 = write(
@@ -1722,12 +1725,13 @@ mod tests {
 
         // Entregues a 1 e a 3, a obra está pronta: a rodada manda fechar, e o
         // fechamento, pela mesma leitura, não cobra a onda vazia.
-        for file in ["src/b.rs", "src/c.rs", "src/d.rs"] {
+        let batch_files = ["src/b.rs", "src/c.rs", "src/d.rs", "src/e.rs", "src/f.rs", "src/g.rs"];
+        for file in batch_files {
             std::fs::write(root.join(file), "fn one() {}\n").unwrap();
         }
         let first = round(root, "x", Some(&delivered(root, 1, "Saiu.", &["src/a.rs"])));
         assert_eq!(first["ok"], json!(true), "{first}");
-        let done = round(root, "x", Some(&delivered(root, 3, "Saiu.", &["src/b.rs", "src/c.rs", "src/d.rs"])));
+        let done = round(root, "x", Some(&delivered(root, 3, "Saiu.", &batch_files)));
         let closing = store::read(&path).unwrap().unwrap();
         assert_eq!(
             (done["command"].as_str(), crate::commands::flow::close::finished_refusal(&closing)),

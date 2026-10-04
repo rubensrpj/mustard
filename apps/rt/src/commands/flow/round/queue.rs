@@ -765,7 +765,10 @@ pub(crate) fn wave_states(log: &SpecLog) -> mustard_core::view::document::WaveSt
 /// O cenário da volta com tarefa não feita, que os testes da entrega também
 /// usam.
 #[cfg(test)]
-pub(super) use tests::{backlog_project, backlog_task_on, return_with_an_undone_task, spec_now, task_now, wave_order, UndoneReturn};
+pub(super) use tests::{
+    backlog_project, backlog_task_on, return_with_an_undone_task, seed_running, spec_now, task_now, wave_order,
+    UndoneReturn, SIX_FILES,
+};
 
 #[cfg(test)]
 mod tests {
@@ -1884,8 +1887,8 @@ mod tests {
     }
 
     /// O Jev, numa chamada por onda, tira do pedido a regra do projeto todo
-    /// só com a chance até 0,05 e põe o item sem ligação só com a chance a
-    /// partir de 0,7, e a onda sai na mesma rodada. A chamada leva as tarefas
+    /// só com a chance abaixo de 0,2 e põe o item sem ligação só com a chance
+    /// a partir de 0,85, e a onda sai na mesma rodada. A chamada leva as tarefas
     /// da onda e só os itens que o pedido não leva nem tira por conta própria:
     /// nem o que a tarefa faz, nem o de que a onda é dona. O envio grava o
     /// que entrou e o que saiu, cada um com a chance, e a chamada fica gravada
@@ -1902,10 +1905,11 @@ mod tests {
             spy.lock().unwrap().push(board.clone());
             let chance = |code: &str| by_id[code];
             BTreeMap::from([
-                (chance("MSTD-RULE-0001"), 0.5),
-                (chance("MSTD-RULE-0002"), 0.04),
-                (chance("MSTD-DEC-0001"), 0.9),
-                (chance("MSTD-DEC-0002"), 0.6),
+                (chance("MSTD-RULE-0001"), 0.2),
+                (chance("MSTD-RULE-0002"), 0.19),
+                (chance("MSTD-DEC-0001"), 0.85),
+                (chance("MSTD-DEC-0002"), 0.84),
+                (chance("MSTD-RULE-0003"), 0.0),
             ])
         });
 
@@ -1921,7 +1925,9 @@ mod tests {
         assert_eq!(asked, candidates, "only what the request neither carries nor drops by itself");
         assert!(boards[0].tasks.iter().any(|task| task.text == "Criar o índice da tabela."), "the tasks of the wave go in the state");
         let prompt = request_at(&out, 0);
-        assert!(prompt.contains("MSTD-RULE-0001") && prompt.contains("MSTD-DEC-0001") && prompt.contains("MSTD-DEC-0003"), "{prompt}");
+        for code in ["MSTD-RULE-0001", "MSTD-DEC-0001", "MSTD-DEC-0003", "MSTD-RULE-0003"] {
+            assert!(prompt.contains(code), "{code} goes in whatever the chance: {prompt}");
+        }
         for code in ["MSTD-RULE-0002", "MSTD-DEC-0002"] {
             assert!(!prompt.contains(code), "{code}: {prompt}");
         }
@@ -1929,8 +1935,8 @@ mod tests {
         let sent = log.visible().into_iter().find(|e| e.event_type == "send" && e.wave() == Some(1)).unwrap();
         assert_eq!(sent.fields["analysis"], json!({
             "judged": candidates,
-            "removed": [{"item": ids["MSTD-RULE-0002"], "why": "Jev p=0.04"}],
-            "added": [{"item": ids["MSTD-DEC-0001"], "why": "Jev p=0.90"}],
+            "removed": [{"item": ids["MSTD-RULE-0002"], "why": "Jev p=0.19"}],
+            "added": [{"item": ids["MSTD-DEC-0001"], "why": "Jev p=0.85"}],
             "judged_lessons": [], "removed_lessons": [],
         }));
         let calls = item_calls(root);
@@ -2862,6 +2868,20 @@ mod tests {
     }
 
     /// Uma tarefa do backlog em vários arquivos, gravada pela porta do modelo.
+    /// Seis arquivos declarados: o tamanho com que um lote sai ao lado de
+    /// outra onda em andamento.
+    pub(crate) const SIX_FILES: [&str; 6] =
+        ["lib/1.rs", "lib/2.rs", "lib/3.rs", "lib/4.rs", "lib/5.rs", "lib/6.rs"];
+
+    /// Um pedido aberto da onda `n`, com o processo deste teste por trás: a
+    /// onda está em andamento.
+    pub(crate) fn seed_running(root: &Path, n: u64) {
+        let (claude_pid, claude_started) = crate::commands::flow::stuck::sender_process();
+        crate::shared::spec_state::seed_event(root, "x", "send", json!({"wave": n, "role": "wave",
+            "text": "pedido", "lines": 1, "chars": 6, "items": [1], "mustard": "0", "author": "binary",
+            "claude_pid": claude_pid, "claude_started": claude_started}));
+    }
+
     pub(crate) fn backlog_task_on(root: &Path, said: u64, crit: u64, text: &str, files: &[&str]) -> u64 {
         let files: Vec<Value> = files.iter().map(|file| json!({ "path": file })).collect();
         id_of(&write(root, "x", "task", json!({"text": text, "files": files, "depends_on": [],
@@ -2906,7 +2926,7 @@ mod tests {
         std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":2}"#).unwrap();
         backlog_task(root, said, crit, "Mexer no código de um.", "src/a.rs");
         backlog_task(root, said, crit, "Mexer no código de dois.", "src/b.rs");
-        let three = backlog_task(root, said, crit, "Mexer no código de três.", "src/c.rs");
+        let three = backlog_task_on(root, said, crit, "Mexer no código de três.", &SIX_FILES);
         assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1, 2]);
 
         let out = round(root, "x", Some(&delivered(root, 1, "Saiu.", &["src/a.rs"])));
@@ -2950,6 +2970,109 @@ mod tests {
         let log = spec_now(root);
         assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None), Ok(vec![1]), "uma onda só");
         assert_eq!(wave_order(root, 1), tasks, "a onda 1 leva as sete tarefas");
+    }
+
+    /// O Jev de mentira da montagem: dá a cada tarefa do backlog o tipo que
+    /// `kind_of` diz, pelo número da tarefa, com confiança alta.
+    fn judging(
+        kind_of: impl Fn(u64) -> crate::shared::dag::TaskKind,
+    ) -> impl Fn(&crate::shared::jev::Board) -> Result<crate::shared::jev::Judged, mustard_core::domain::map_filter::FilterError> {
+        move |board| {
+            let tasks = board
+                .backlog
+                .iter()
+                .map(|task| {
+                    (task.id, crate::shared::dag::Judgement { kind: kind_of(task.id), confidence: 0.9, clash: 0.0 })
+                })
+                .collect();
+            Ok(crate::shared::jev::Judged { tasks, usage: mustard_core::domain::map_filter::FilterUsage::default() })
+        }
+    }
+
+    /// O grupo de três arquivos não sai enquanto outra onda está em andamento:
+    /// fica no backlog, sem onda, e nenhuma onda nova nasce.
+    #[test]
+    fn a_group_of_three_files_does_not_leave_while_another_wave_runs() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, crit) = backlog_project(root);
+        backlog_task_on(root, said, crit, "Mexer na parte grande.", &SIX_FILES);
+        let log = spec_now(root);
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None), Ok(vec![1]), "seis arquivos saem");
+        seed_running(root, 1);
+        let small = backlog_task_on(root, said, crit, "Mexer na parte pequena.", &["src/a.rs", "src/b.rs", "src/c.rs"]);
+
+        let log = spec_now(root);
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None), Ok(vec![]), "o de três espera");
+        assert_eq!(spec_now(root).current(small).and_then(SpecEvent::wave), None, "e segue no backlog, sem onda");
+    }
+
+    /// O mesmo grupo de três arquivos sai quando nenhuma onda está em
+    /// andamento.
+    #[test]
+    fn the_same_group_of_three_files_leaves_when_nothing_runs() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, crit) = backlog_project(root);
+        let small = backlog_task_on(root, said, crit, "Mexer na parte pequena.", &["src/a.rs", "src/b.rs", "src/c.rs"]);
+
+        let log = spec_now(root);
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None), Ok(vec![1]));
+        assert_eq!(wave_order(root, 1), vec![small]);
+    }
+
+    /// Dois grupos do mesmo tipo que somam seis arquivos saem juntos, numa onda
+    /// só, ao lado de outra em andamento; de tipos diferentes eles não somam, e
+    /// nenhum dos dois sai.
+    #[test]
+    fn two_groups_of_one_kind_that_add_up_to_six_files_leave_together_while_another_wave_runs() {
+        use crate::shared::dag::TaskKind;
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, crit) = backlog_project(root);
+        backlog_task_on(root, said, crit, "Mexer na parte grande.", &SIX_FILES);
+        let log = spec_now(root);
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None), Ok(vec![1]));
+        seed_running(root, 1);
+        let one = backlog_task_on(root, said, crit, "Mexer na primeira.", &["src/a.rs", "src/b.rs", "src/c.rs"]);
+        let two = backlog_task_on(root, said, crit, "Mexer na segunda.", &["src/d.rs", "src/e.rs", "src/f.rs"]);
+
+        let apart = judging(|id| if id == one { TaskKind::Defect } else { TaskKind::Feature });
+        let log = spec_now(root);
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), Some(&apart)), Ok(vec![]), "tipos diferentes");
+
+        let together = judging(|_| TaskKind::Feature);
+        let log = spec_now(root);
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), Some(&together)), Ok(vec![2]));
+        assert_eq!(wave_order(root, 2), vec![one, two], "as duas, do mesmo tipo, numa onda só");
+    }
+
+    /// O grupo pequeno que espera reserva os arquivos dele: o grupo de seis
+    /// arquivos que vem depois e divide um deles também espera, em vez de
+    /// tomar a vez.
+    #[test]
+    fn a_waiting_small_group_keeps_a_later_group_that_shares_its_files_from_leaving() {
+        use crate::shared::dag::TaskKind;
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, crit) = backlog_project(root);
+        backlog_task_on(root, said, crit, "Mexer na parte grande.", &SIX_FILES);
+        let log = spec_now(root);
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None), Ok(vec![1]));
+        seed_running(root, 1);
+        let small = backlog_task_on(root, said, crit, "Mexer na parte pequena.", &["src/a.rs", "src/b.rs"]);
+        let later = backlog_task_on(
+            root,
+            said,
+            crit,
+            "Mexer na parte seguinte.",
+            &["src/a.rs", "doc/1.md", "doc/2.md", "doc/3.md", "doc/4.md", "doc/5.md"],
+        );
+
+        let judge = judging(|id| if id == small { TaskKind::Defect } else { TaskKind::Feature });
+        let log = spec_now(root);
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), Some(&judge)), Ok(vec![]));
+        assert_eq!(spec_now(root).current(later).and_then(SpecEvent::wave), None, "o de seis espera atrás do reservado");
     }
 
     /// A tarefa com o curinga da árvore inteira cruza com todas: sai sozinha,

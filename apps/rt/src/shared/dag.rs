@@ -50,6 +50,12 @@
 //! reserva os arquivos dela ([`Reserved`]): a que vem depois na ordem de
 //! prioridade e divide arquivo com ela não toma a vaga que ela deixa livre.
 //!
+//! O lote pequeno — menos de [`MIN_WAVE_FILES`] arquivos declarados — espera
+//! juntar trabalho antes de sair ([`Batch::waits_to_grow`]): [`pack_by_kind`]
+//! já põe no mesmo lote as tarefas do mesmo tipo, e quem solta o lote só o deixa
+//! sair pequeno quando nada roda. Os arquivos de um lote que espera ficam
+//! reservados como os de uma tarefa bloqueada.
+//!
 //! Dois arquivos "se cruzam" ([`files_cross`]) quando são o mesmo caminho,
 //! ou quando um deles é padrão (tem `*`, `?` ou `[`) e casa o outro. O `**`
 //! cruza com tudo: a tarefa que o declara sai sozinha no lote dela, e a
@@ -184,6 +190,22 @@ pub(crate) struct BacklogTask<N> {
 pub(crate) struct Batch<N> {
     pub(crate) tasks: Vec<N>,
     pub(crate) files: BTreeSet<String>,
+}
+
+/// Quantos arquivos declarados um lote precisa ter para sair enquanto outra
+/// onda roda. Toda onda paga um custo fixo para ler o pedido e entender o
+/// código, e em onda pequena esse custo pesa mais por arquivo: o lote com menos
+/// arquivos espera juntar trabalho do mesmo tipo ou a hora em que nada roda.
+pub(crate) const MIN_WAVE_FILES: usize = 6;
+
+impl<N> Batch<N> {
+    /// `true` quando o lote declara menos de [`MIN_WAVE_FILES`] arquivos e, por
+    /// isso, espera enquanto outra onda roda. O lote do curinga da árvore
+    /// inteira nunca espera: ele sai sozinho, e quem o segura é a rodada, por
+    /// haver onda em andamento.
+    pub(crate) fn waits_to_grow(&self) -> bool {
+        !touches_whole_tree(&self.files) && self.files.len() < MIN_WAVE_FILES
+    }
 }
 
 /// As tarefas prontas — todas as dependências entregues ou aprovadas —, na
@@ -1030,4 +1052,37 @@ mod tests {
     // `apps/rt/tests/round_dispatch.rs`: o critério fala em despacho pelo
     // binário, num repositório temporário, e não em chamar `pack_batches`
     // duas vezes.
+
+    /// O lote com menos de seis arquivos declarados espera; com seis, sai; o do
+    /// curinga da árvore inteira nunca espera, tenha o tamanho que tiver.
+    #[test]
+    fn a_batch_under_six_declared_files_waits_to_grow_and_the_wildcard_never_does() {
+        let batch = |files: &[&str]| Batch { tasks: vec![1u32], files: files.iter().map(|f| (*f).to_string()).collect() };
+        assert!(batch(&["a", "b", "c", "d", "e"]).waits_to_grow());
+        assert!(!batch(&["a", "b", "c", "d", "e", "f"]).waits_to_grow());
+        assert!(!batch(&["**"]).waits_to_grow());
+    }
+
+    /// Duas tarefas de três arquivos do mesmo tipo formam um lote de seis, que
+    /// não espera; a de outro tipo, com dois arquivos, fica no lote dela, que
+    /// espera.
+    #[test]
+    fn two_tasks_of_one_kind_with_three_files_each_form_a_batch_that_does_not_wait() {
+        let tasks = [
+            task_with(1, &[], &own_files("a", 3)),
+            task_with(2, &[], &own_files("b", 3)),
+            task_with(3, &[], &own_files("c", 2)),
+        ];
+        let judged = BTreeMap::from([
+            (1, judged_as(TaskKind::Feature, 0.9, 0.0)),
+            (2, judged_as(TaskKind::Feature, 0.9, 0.0)),
+            (3, judged_as(TaskKind::Defect, 0.9, 0.0)),
+        ]);
+
+        let batches = pack_by_kind(&tasks, &[1, 2, 3], &[], &BTreeSet::new(), &judged, &|id| u64::from(*id));
+
+        assert_eq!(batch_tasks(&batches), vec![vec![3], vec![1, 2]]);
+        assert!(batches[0].waits_to_grow(), "dois arquivos esperam");
+        assert!(!batches[1].waits_to_grow(), "seis arquivos saem");
+    }
 }

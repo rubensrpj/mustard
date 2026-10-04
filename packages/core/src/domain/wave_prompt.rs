@@ -751,14 +751,15 @@ pub fn all_agreed(log: &SpecLog) -> Vec<&SpecEvent> {
 // ---------------------------------------------------------------------------
 
 /// A chance de sim, dada pelo Jev à pergunta "este item governa algo que a
-/// tarefa muda ou testa?", até a qual o item do projeto todo sai do pedido: só
-/// quando o Jev tem quase certeza de que ele não serve.
-pub const PROJECT_LEAVES_AT_OR_BELOW: f64 = 0.05;
+/// tarefa muda ou testa?", abaixo da qual o item do projeto todo sai do
+/// pedido: com menos de 20% de chance de servir, ele é leitura a mais para o
+/// agente. Com a chance igual a esta, ou acima, o item fica.
+pub const PROJECT_LEAVES_BELOW: f64 = 0.2;
 
 /// A chance de sim, na mesma pergunta, a partir da qual o item sem ligação
-/// com a onda entra no pedido: só quando o Jev tem boa certeza de que ele
+/// com a onda entra no pedido: só quando o Jev tem alta certeza de que ele
 /// serve.
-pub const UNLINKED_ENTERS_AT_OR_ABOVE: f64 = 0.7;
+pub const UNLINKED_ENTERS_AT_OR_ABOVE: f64 = 0.85;
 
 /// Os candidatos que o Jev julga antes de uma onda sair. Ficam fora dos dois
 /// grupos, porque vão sempre e sem escolha: os itens que as tarefas da onda
@@ -847,7 +848,7 @@ pub struct Choice {
 impl Choice {
     /// A escolha pelas chances de sim que o Jev deu a cada candidato
     /// (`chances`, pelo número do item): o item do projeto todo sai com a
-    /// chance até [`PROJECT_LEAVES_AT_OR_BELOW`], e o sem ligação entra com a
+    /// chance abaixo de [`PROJECT_LEAVES_BELOW`], e o sem ligação entra com a
     /// chance a partir de [`UNLINKED_ENTERS_AT_OR_ABOVE`]; o motivo de cada um
     /// é a chance. O candidato sem chance não foi julgado e fica como estava.
     #[must_use]
@@ -859,7 +860,7 @@ impl Choice {
             .iter()
             .filter_map(|item| {
                 let chance = *chances.get(&item.id)?;
-                (chance <= PROJECT_LEAVES_AT_OR_BELOW).then(|| (item.id, why(chance)))
+                (chance < PROJECT_LEAVES_BELOW).then(|| (item.id, why(chance)))
             })
             .collect();
         let added = found
@@ -2191,35 +2192,45 @@ mod tests {
         assert_eq!(owners(&log).get(&4), None, "a marca falsa não dá dono");
     }
 
-    /// O Jev tira do pedido o item do projeto todo só com a chance de sim até
-    /// 0,05, e põe o item sem ligação só com a chance a partir de 0,7; entre
-    /// os dois limites, e sem resposta, o pedido segue o padrão. O motivo de
-    /// cada mudança é a chance.
+    /// O Jev tira do pedido o item do projeto todo só com a chance de sim
+    /// abaixo de 0,2, e põe o item sem ligação só com a chance a partir de
+    /// 0,85; com a chance de 0,2 o item do projeto fica, e com a de 0,84 ou a
+    /// de 0,7 o sem ligação continua fora. Sem resposta, o pedido segue o
+    /// padrão. O motivo de cada mudança é a chance.
     #[test]
-    fn the_chances_of_the_jev_take_a_project_item_out_only_at_005_and_put_an_unlinked_one_in_only_at_07() {
+    fn the_chances_of_the_jev_take_a_project_item_out_below_02_and_put_an_unlinked_one_in_from_085() {
         let log = log(&[
             ("rule", json!({"text": "Projeto 1", "keys": ["a"], "example": "e", "applies_to": {"files": ["**"]}})),
             ("rule", json!({"text": "Projeto 2", "keys": ["b"], "example": "e", "applies_to": {"files": ["**"]}})),
             ("rule", json!({"text": "Projeto 3", "keys": ["c"], "example": "e", "applies_to": {"files": ["**"]}})),
             ("rule", json!({"text": "Projeto 4", "keys": ["d"], "example": "e", "applies_to": {"files": ["**"]}})),
-            ("rule", json!({"text": "Sem ligação 5", "keys": ["e"], "example": "e"})),
+            ("rule", json!({"text": "Projeto 5", "keys": ["e"], "example": "e", "applies_to": {"files": ["**"]}})),
             ("rule", json!({"text": "Sem ligação 6", "keys": ["f"], "example": "e"})),
             ("rule", json!({"text": "Sem ligação 7", "keys": ["g"], "example": "e"})),
+            ("rule", json!({"text": "Sem ligação 8", "keys": ["h"], "example": "e"})),
+            ("rule", json!({"text": "Sem ligação 9", "keys": ["i"], "example": "e"})),
             ("wave", json!({"n": 1, "text": "Código", "criteria": [], "done_when": "pronto"})),
             ("task", json!({"wave": 1, "text": "Mexer", "files": [{"path": "src/a.rs"}]})),
         ]);
         let found = candidates(&log, 1);
-        let chances = BTreeMap::from([(1, 0.05), (2, 0.06), (3, 0.0), (5, 0.7), (6, 0.69)]);
+        let chances = BTreeMap::from([(1, 0.19), (2, 0.2), (3, 0.0), (4, 0.05), (6, 0.85), (7, 0.84), (8, 0.7)]);
 
         let choice = Choice::by_chances(&found, &chances);
 
-        assert_eq!(choice.removed, vec![(1, "Jev p=0.05".to_string()), (3, "Jev p=0.00".to_string())]);
-        assert_eq!(choice.added, vec![(5, "Jev p=0.70".to_string())]);
-        assert_eq!(choice.judged, BTreeSet::from([1, 2, 3, 5, 6]), "o item sem resposta (4 e 7) não foi julgado");
+        assert_eq!(
+            choice.removed,
+            vec![(1, "Jev p=0.19".to_string()), (3, "Jev p=0.00".to_string()), (4, "Jev p=0.05".to_string())]
+        );
+        assert_eq!(choice.added, vec![(6, "Jev p=0.85".to_string())]);
+        assert_eq!(
+            choice.judged,
+            BTreeSet::from([1, 2, 3, 4, 6, 7, 8]),
+            "o item sem resposta (5 e 9) não foi julgado"
+        );
         assert!(choice.judged_lessons.is_empty() && choice.removed_lessons.is_empty(), "as lições vão sempre");
         let carried: Vec<u64> =
-            dispatch_items(&log, 1, Some(&choice)).iter().map(|e| e.id).filter(|id| *id <= 7).collect();
-        assert_eq!(carried, [2, 4, 5], "o pedido leva o que o Jev não tirou e o que ele pôs, em ordem");
+            dispatch_items(&log, 1, Some(&choice)).iter().map(|e| e.id).filter(|id| *id <= 9).collect();
+        assert_eq!(carried, [2, 5, 6], "o pedido leva o que o Jev não tirou e o que ele pôs, em ordem");
         let again = Choice::from_value(&choice.to_value()).expect("o campo gravado se lê");
         assert_eq!(again, choice);
     }

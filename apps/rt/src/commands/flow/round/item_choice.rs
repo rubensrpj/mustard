@@ -2,8 +2,9 @@
 //! não leva nem tira por conta própria passam pelo Jev, uma chamada por onda:
 //! para cada item, ele diz se o item governa algo que as tarefas da onda mudam
 //! ou testam. O código decide pelas chances (`Choice::by_chances`): o item do
-//! projeto todo só sai quando o Jev tem quase certeza de que ele não serve, e
-//! o item sem ligação com a onda só entra quando tem boa certeza de que serve.
+//! projeto todo sai quando o Jev dá a ele menos de 20% de chance de servir, e
+//! o item sem ligação com a onda só entra quando o Jev tem alta certeza — 85%
+//! de chance ou mais — de que serve.
 //! A onda não espera ninguém: sai na mesma rodada. Sem Jev — sem chave ou
 //! desligado — ou com a chamada falhando, nenhuma escolha se grava, e o pedido
 //! leva o padrão: o projeto todo vai, e o sem ligação fica fora.

@@ -85,7 +85,9 @@ mod tests {
 
     use super::super::agreed::request_agreed;
     use super::super::backlog::dispatch_backlog;
-    use super::super::queue::{backlog_project, backlog_task_on, max_parallel, open_sends, spec_now, wave_order};
+    use super::super::queue::{
+        backlog_project, backlog_task_on, max_parallel, open_sends, seed_running, spec_now, wave_order, SIX_FILES,
+    };
     use super::super::read_check::{request_name, unread_items};
     use super::super::tests::{returned_unread, round, seed_read, seed_send, waves_in};
     use crate::commands::spec_events::read::{read_for, ReadOpts};
@@ -183,6 +185,27 @@ mod tests {
         assert_eq!(wave_order(root, 2), vec![apart], "só a que não divide arquivo sai");
         assert_eq!(spec_now(root).current(chained).and_then(|task| task.wave()), None, "a que divide espera a vez");
         assert_eq!(spec_now(root).current(left).and_then(|task| task.wave()), None, "o resumo espera a onda em andamento");
+    }
+
+    /// A onda que continua um resumo não usado sai mesmo pequena, com outra
+    /// onda em andamento; a outra tarefa pequena, sem resumo, espera.
+    #[test]
+    fn a_summary_wave_leaves_small_while_another_wave_runs_and_a_small_one_without_a_summary_waits() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, crit) = backlog_project(root);
+        backlog_task_on(root, said, crit, "Mexer na parte grande.", &SIX_FILES);
+        let log = spec_now(root);
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None), Ok(vec![1]));
+        seed_running(root, 1);
+        let left = backlog_task_on(root, said, crit, "Mexer no código de dois.", &["src/b.rs"]);
+        let other = backlog_task_on(root, said, crit, "Mexer no código de três.", &["src/c.rs"]);
+        stopped_with(root, &[left]);
+
+        let log = spec_now(root);
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None), Ok(vec![2]));
+        assert_eq!(wave_order(root, 2), vec![left], "o resumo sai pequeno");
+        assert_eq!(spec_now(root).current(other).and_then(|task| task.wave()), None, "a sem resumo espera");
     }
 
     /// A entrega da onda que continua um resumo é recusada, com o código dele,
