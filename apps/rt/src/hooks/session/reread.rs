@@ -372,7 +372,11 @@ mod tests {
 
         /// Reescreve `notes.txt` com o texto que `text` dá a cada linha.
         fn write_notes(&self, text: impl Fn(u32) -> String) {
-            let body: String = (1..=100).map(|line| format!("{}\n", text(line))).collect();
+            use std::fmt::Write as _;
+            let mut body = String::new();
+            for line in 1..=100 {
+                writeln!(body, "{}", text(line)).unwrap();
+            }
             std::fs::write(self.root().join("notes.txt"), body).unwrap();
         }
 

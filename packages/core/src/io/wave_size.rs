@@ -44,7 +44,7 @@ pub fn median_added(root: &Path, lang: Locale) -> Option<u64> {
     }
     added.sort_unstable();
     let middle = added.len() / 2;
-    Some((added[middle] + added[(added.len() - 1) / 2]) / 2)
+    Some(u64::midpoint(added[middle], added[(added.len() - 1) / 2]))
 }
 
 #[cfg(test)]

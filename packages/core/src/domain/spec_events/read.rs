@@ -1174,7 +1174,7 @@ mod tests {
             r#"{"v":1,"id":2,"at":"t","type":"task","wave":1,"text":"Mexer."}"#,
             r#"{"v":1,"id":3,"at":"t","type":"delivered","wave":1,"text":"Parei.","undone":["MSTD-TASK-0002"]}"#,
         ];
-        parse_log(&head.iter().chain(rest).map(|line| format!("{line}\n")).collect::<String>())
+        parse_log(&head.iter().chain(rest).flat_map(|line| [*line, "\n"]).collect::<String>())
     }
 
     /// Cada resumo da spec, pelo número da entrega, com o estado dele.

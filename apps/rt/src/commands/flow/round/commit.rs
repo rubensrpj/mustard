@@ -836,6 +836,10 @@ pub(super) struct AfterWave {
     pub(super) changed: Vec<(u64, Vec<String>)>,
 }
 
+/// O que a conferência depois da onda devolve sem recusa: os avisos da
+/// rodada e, à parte, a linha de tamanho de cada onda, pelo número dela.
+type AfterWaveChecks = (Vec<Value>, Vec<(u64, String)>);
+
 /// A conferência depois da onda, antes do commit da rodada, com o disco já
 /// juntado: as importações novas contra o padrão do projeto
 /// ([`super::imports_check`]), os restos do que as ondas tiraram
@@ -858,7 +862,7 @@ pub(super) fn ensure_after_wave(
     waves: &[WaveReport],
     mine: &dyn Fn(&Path, &Path) -> mustard_core::platform::error::Result<ScanReport>,
     lang: Locale,
-) -> Result<(Vec<Value>, Vec<(u64, String)>), RoundRefusal> {
+) -> Result<AfterWaveChecks, RoundRefusal> {
     let changed: Vec<(u64, Vec<String>)> =
         waves.iter().filter(|w| !w.files.is_empty()).map(|w| (w.wave, w.files.clone())).collect();
     let Some(maps) = after_wave_maps(root, changed, mine) else { return Ok(Default::default()) };

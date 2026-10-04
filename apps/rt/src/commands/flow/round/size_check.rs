@@ -198,9 +198,8 @@ fn text_lines(path: &Path) -> u64 {
     if bytes.contains(&0) {
         return 0;
     }
-    let breaks = bytes.iter().filter(|byte| **byte == b'\n').count();
-    let open_last = usize::from(bytes.last().is_some_and(|byte| *byte != b'\n'));
-    u64::try_from(breaks + open_last).unwrap_or(0)
+    // Cada trecho que acaba em quebra é uma linha, e o último, sem quebra, também.
+    u64::try_from(bytes.split_inclusive(|byte| *byte == b'\n').count()).unwrap_or(0)
 }
 
 /// Os testes novos dos arquivos `files`: o que o mapa de depois traz num
@@ -355,6 +354,27 @@ mod tests {
     }
 
     #[test]
+    fn a_text_file_counts_its_lines_with_or_without_the_last_break() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let cases: [(&[u8], u64); 7] = [
+            (b"", 0),
+            (b"\n", 1),
+            (b"a", 1),
+            (b"a\n", 1),
+            (b"a\nb", 2),
+            (b"a\n\n\nb\n", 4),
+            (b"a\0b\n", 0),
+        ];
+        for (at, (bytes, lines)) in cases.into_iter().enumerate() {
+            let path = root.join(format!("f{at}"));
+            std::fs::write(&path, bytes).unwrap();
+            assert_eq!(text_lines(&path), lines, "{bytes:?}");
+        }
+        assert_eq!(text_lines(&root.join("missing")), 0);
+    }
+
+    #[test]
     fn a_message_that_would_not_fit_with_the_lines_keeps_the_body_it_had() {
         let body = "- onda 1: resumo\n".repeat(235);
         let message = Some(("feat(onda-1): resumo".to_string(), body.trim().to_string()));
@@ -364,7 +384,11 @@ mod tests {
     }
     /// O arquivo de `path` com `count` linhas que começam por `prefix`.
     fn write_lines(root: &Path, path: &str, prefix: &str, count: usize) {
-        let text: String = (0..count).map(|n| format!("{prefix}{n}\n")).collect();
+        use std::fmt::Write as _;
+        let mut text = String::new();
+        for n in 0..count {
+            writeln!(text, "{prefix}{n}").unwrap();
+        }
         std::fs::write(root.join(path), text).unwrap();
     }
 
