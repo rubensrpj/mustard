@@ -140,10 +140,6 @@ impl Fs for RealFs {
             Err(e) => Err(Error::from(e)),
         }
     }
-
-    fn remove_dir(&self, path: &Path) -> Result<()> {
-        fs::remove_dir(path).map_err(|e| map_io(path, e))
-    }
 }
 
 #[cfg(test)]
@@ -289,23 +285,5 @@ mod tests {
         let dir = tempdir().unwrap();
         // Calling remove_dir_all on a path that never existed must succeed.
         fs().remove_dir_all(&dir.path().join("does_not_exist")).unwrap();
-    }
-
-    #[test]
-    fn remove_dir_removes_empty_dir() {
-        let dir = tempdir().unwrap();
-        let empty = dir.path().join("empty");
-        fs().create_dir_all(&empty).unwrap();
-        fs().remove_dir(&empty).unwrap();
-        assert!(!fs().exists(&empty));
-    }
-
-    #[test]
-    fn remove_dir_missing_is_not_found() {
-        let dir = tempdir().unwrap();
-        match fs().remove_dir(&dir.path().join("ghost")) {
-            Err(Error::NotFound(_)) => {}
-            other => panic!("expected NotFound, got {other:?}"),
-        }
     }
 }

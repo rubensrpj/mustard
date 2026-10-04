@@ -157,15 +157,6 @@ pub trait Fs {
     /// [`Error::Io`](crate::platform::error::Error::Io) if any entry beneath `path` cannot
     /// be removed.
     fn remove_dir_all(&self, path: &Path) -> Result<()>;
-
-    /// Remove an empty directory at `path`.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::NotFound`](crate::platform::error::Error::NotFound) when `path` does not
-    /// exist; [`Error::Io`](crate::platform::error::Error::Io) if the directory is
-    /// non-empty or another OS error occurs.
-    fn remove_dir(&self, path: &Path) -> Result<()>;
 }
 
 /// Se a gravação espera o disco confirmar que guardou: sempre, a menos que
@@ -286,17 +277,6 @@ pub fn modified(path: impl AsRef<Path>) -> Result<SystemTime> {
 /// [`Error::Io`](crate::platform::error::Error::Io) on failure.
 pub fn remove_dir_all(path: impl AsRef<Path>) -> Result<()> {
     DEFAULT.remove_dir_all(path.as_ref())
-}
-
-/// Remove an empty directory at `path` via the default real filesystem. See
-/// [`Fs::remove_dir`].
-///
-/// # Errors
-///
-/// [`Error::NotFound`](crate::platform::error::Error::NotFound) on absence, else
-/// [`Error::Io`](crate::platform::error::Error::Io).
-pub fn remove_dir(path: impl AsRef<Path>) -> Result<()> {
-    DEFAULT.remove_dir(path.as_ref())
 }
 
 /// Os arquivos de um módulo dividido em partes que passam do teto de linhas

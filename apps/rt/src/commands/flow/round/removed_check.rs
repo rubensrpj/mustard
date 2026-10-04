@@ -18,8 +18,11 @@
 //!     (nenhum uso dela aponta para o arquivo): a linha de código não conta,
 //!     porque o nome ali é outra coisa, como uma variável local que o mapa
 //!     não guarda, e um uso de verdade o mapa da base teria ligado; a linha de
-//!     comentário só conta com a citação qualificada (`modulo::nome`,
-//!     `modulo.nome`), nunca com o nome sozinho, ainda que entre crases.
+//!     comentário só conta com a citação qualificada que termina no nome
+//!     (`modulo::nome`, `modulo.nome`), nunca com o nome sozinho, ainda que
+//!     entre crases, nem com o nome no começo do caminho de outra coisa
+//!     (`nome.campo`, `nome::outro`): ali o nome é o dono de um campo ou de um
+//!     módulo, e não a peça tirada.
 //!   - O arquivo que usava a declaração, ou que a onda criou e está no mapa de
 //!     depois: a linha de código conta; a de comentário conta quando o nome
 //!     nela não é palavra da prosa ([`prose_comment`]): entre crases, ligado a
@@ -30,11 +33,13 @@
 //!   - O documento e o molde (`.md`, `.txt`, `.rst`, `.adoc`, a pasta de
 //!     moldes), que o mapa não tem: o mesmo teste da prosa, sem a exigência de
 //!     ser comentário ([`prose_document`]); a palavra solta, mesmo toda em
-//!     maiúsculas, não conta.
+//!     maiúsculas, não conta, e o nome dentro de um marcador de molde
+//!     (`{{VERSION}}`) também não ([`in_marker`]).
 //!   - O outro arquivo que o mapa não tem (script de instalação, fluxo de
 //!     integração, configuração, instalador): só conta a citação qualificada
-//!     por `::` (`mustard_cli::NOME`, `Tipo::nome`), porque ali a palavra é
-//!     variável do próprio arquivo (`$NOME`).
+//!     por `::` que termina no nome (`mustard_cli::NOME`, `Tipo::nome`),
+//!     porque ali a palavra é variável do próprio arquivo (`$NOME`); o nome
+//!     dentro de um marcador de molde não conta.
 //! - Órfão: a declaração que tinha uso fora de teste no mapa da base, e cujo
 //!   último uso a onda tirou, e ficou sem nenhum. A de antes é a de mesmo
 //!   nome, tipo e dono ([`same_piece`]): o campo de mesmo nome de outro tipo
@@ -383,12 +388,14 @@ fn in_test_lines(module: &MapModule, line: u64) -> bool {
 ///
 /// - O arquivo que o mapa não tem, nem o de antes nem o de depois: o documento
 ///   e o molde seguem a prosa ([`prose_document`]); o script, o fluxo de
-///   integração e a configuração só contam com a citação qualificada por `::`,
-///   porque ali o nome é variável do próprio arquivo.
+///   integração e a configuração só contam com a citação qualificada por `::`
+///   que termina no nome, porque ali o nome é variável do próprio arquivo. Em
+///   todos o nome dentro de um marcador de molde não conta ([`in_marker`]).
 /// - O arquivo do mapa da base que nele não usava nenhuma das declarações
 ///   tiradas: a linha de código é outra coisa, como uma variável local que o
 ///   mapa não guarda (um uso de verdade o mapa da base teria ligado), e a de
-///   comentário só conta com a citação qualificada, além do teste da prosa.
+///   comentário só conta com a citação qualificada que termina no nome, além
+///   do teste da prosa.
 /// - O arquivo que usava a declaração, ou que a onda criou e o mapa de depois
 ///   tem: a linha de código conta, e a de comentário passa pelo teste da
 ///   prosa ([`prose_comment`]).
@@ -401,7 +408,8 @@ fn other_thing(maps: &AfterWave, removed: &[&MapDecl], name: &str, file: &str, t
     }
     let in_base = maps.base.module(file).is_some();
     if !in_base && maps.after.module(file).is_none() {
-        return if is_document(file) { prose_document(name, text) } else { !linked_by(name, text, scoped) };
+        let own_use = |before: &str, after: &str| scoped(before, after) && !in_marker(before, after);
+        return if is_document(file) { prose_document(name, text) } else { !linked_by(name, text, own_use) };
     }
     let used = removed.iter().any(|decl| decl.used_by.iter().any(|site| site.file == file));
     if in_base && !used {
@@ -427,11 +435,13 @@ fn linked_by(name: &str, text: &str, link: impl Fn(&str, &str) -> bool) -> bool 
 }
 
 /// O nome, com `before` antes dele na linha e `after` depois, está qualificado
-/// por `::`: `modulo::nome`, `Tipo::nome`, `nome::novo`. Fora da linguagem que
-/// escreve assim, o `.` não serve: num script ele separa a extensão
-/// (`$NOME.tar.gz`) ou o campo (`env.NOME`).
+/// por `::` e termina o caminho: `modulo::nome`, `Tipo::nome`. O nome no
+/// começo (`nome::novo`) ou no meio (`a::nome::novo`) do caminho é dono de
+/// outra coisa, e não a peça tirada. Fora da linguagem que escreve assim, o `.`
+/// não serve: num script ele separa a extensão (`$NOME.tar.gz`) ou o campo
+/// (`env.NOME`).
 fn scoped(before: &str, after: &str) -> bool {
-    before.ends_with("::") || after.starts_with("::")
+    before.ends_with("::") && !after.starts_with("::")
 }
 
 /// O nome de `decl`, declarada em `module`, aparece como palavra inteira
@@ -489,8 +499,9 @@ fn shout_word(name: &str) -> bool {
 
 /// A linha de comentário `text` só tem `name` como palavra da prosa: nenhuma
 /// ocorrência dele está entre crases, e nenhuma tem grafia de identificador
-/// ([`unusual_spelling`]) ou liga a um caminho (`Modo::nome`, `modo.nome`,
-/// mas não o ponto final da frase). O nome em maiúsculas curto ([`shout_word`])
+/// ([`unusual_spelling`]) ou termina um caminho (`Modo::nome`, `modo.nome`,
+/// mas não o ponto final da frase nem o começo `nome.campo`). O nome em
+/// maiúsculas curto ([`shout_word`])
 /// só conta entre crases. A linha de código não é prosa: o uso dela segue
 /// contando.
 fn prose_comment(name: &str, text: &str) -> bool {
@@ -506,11 +517,14 @@ fn prose_comment(name: &str, text: &str) -> bool {
 /// comentário (todo o texto do documento é prosa) e com a grafia de
 /// identificador ([`identifier_spelling`]) no lugar da grafia incomum: a
 /// palavra solta toda em maiúsculas (`VERSION`) é palavra da prosa, e só conta
-/// entre crases ou ligada a caminho.
+/// entre crases ou no fim de um caminho. O nome dentro de um marcador de molde
+/// ([`in_marker`]) não conta, ainda que entre crases: é o espaço que o molde
+/// preenche.
 fn prose_document(name: &str, text: &str) -> bool {
     !word_starts(text, name).any(|at| {
         let (before, after) = (&text[..at], &text[at + name.len()..]);
-        in_ticks(before) || (!shout_word(name) && (identifier_spelling(name) || path_linked(before, after)))
+        !in_marker(before, after)
+            && (in_ticks(before) || (!shout_word(name) && (identifier_spelling(name) || path_linked(before, after))))
     })
 }
 
@@ -520,17 +534,27 @@ fn in_ticks(before: &str) -> bool {
     before.matches('`').count() % 2 == 1
 }
 
-/// O nome, com `before` antes dele na linha e `after` depois, está ligado a
-/// um caminho: `Modo::nome`, `modo.nome`, `nome::novo`, `nome.campo`. O ponto
-/// que fecha a frase não liga.
+/// O nome, com `before` antes dele na linha e `after` depois, está dentro de
+/// um marcador de molde, o espaço a preencher entre chaves duplas
+/// (`Mustard_{{VERSION}}_x64`, `{{ VERSION }}`): o último `{{` de `before` não
+/// fechou, e o `}}` que o fecha vem em `after`. O marcador não é uso do nome:
+/// a palavra ali é o que o molde preenche.
+fn in_marker(before: &str, after: &str) -> bool {
+    before.rfind("{{").is_some_and(|open| !before[open..].contains("}}")) && after.contains("}}")
+}
+
+/// O nome, com `before` antes dele na linha e `after` depois, termina um
+/// caminho: `Modo::nome`, `modo.nome`. O ponto que fecha a frase não liga. O
+/// nome que o caminho segue depois dele (`nome.campo`, `nome::novo`,
+/// `a.nome.campo`) é dono de um campo ou de um módulo, e não a peça tirada.
 fn path_linked(before: &str, after: &str) -> bool {
     let reached = before.ends_with("::")
         || before
             .strip_suffix('.')
             .and_then(|head| head.chars().next_back())
             .is_some_and(|c| is_word_char(c) || c == ')' || c == ']');
-    let leads = after.starts_with("::") || after.strip_prefix('.').is_some_and(|rest| rest.starts_with(is_word_char));
-    reached || leads
+    let goes_on = after.starts_with("::") || after.strip_prefix('.').is_some_and(|rest| rest.starts_with(is_word_char));
+    reached && !goes_on
 }
 
 /// Os arquivos que as ondas de `maps` criaram e o git ainda não rastreia,
@@ -811,6 +835,90 @@ mod tests {
     }
 
     #[test]
+    fn a_name_inside_a_mold_marker_is_not_a_leftover_in_a_document_a_mold_or_a_script() {
+        let files = [
+            ("src/b.rs", "fn outra() {}\n"),
+            ("src/c.rs", "fn caller() {}\n"),
+            ("packaging/installer/RELEASE-BODY.md", "| Windows | **`Mustard_{{VERSION}}_x64-setup.exe`** |\n"),
+            ("packages/core/templates/pages/notes.html", "<p>Download `Mustard-{{ VERSION }}.pkg`</p>\n"),
+            ("packaging/notes.sh", "echo {{mustard_cli::VERSION}}\n"),
+        ];
+        assert_eq!(leftovers_after_removing("VERSION", &[], &files), "");
+    }
+
+    #[test]
+    fn a_name_written_as_code_beside_a_mold_marker_still_counts_only_where_it_stands_alone() {
+        let files = [
+            ("src/b.rs", "fn outra() {}\n"),
+            ("src/c.rs", "fn caller() {}\n"),
+            ("docs/both.md", "Bump `VERSION` and fill {{VERSION}}.\n"),
+            ("docs/marker.md", "Fill `Mustard_{{VERSION}}_x64.exe`.\n"),
+            ("packaging/mixed.sh", "echo {{VERSION}} mustard_cli::VERSION\n"),
+        ];
+        let hint = leftovers_after_removing("VERSION", &[], &files);
+        assert!(hint.contains("`docs/both.md` linha 1 ainda cita `VERSION`"), "{hint}");
+        assert!(hint.contains("`packaging/mixed.sh` linha 1 ainda cita `VERSION`"), "{hint}");
+        assert!(!hint.contains("docs/marker.md"), "{hint}");
+    }
+
+    #[test]
+    fn a_marker_opens_before_the_name_and_closes_after_it() {
+        // (o que vem antes, o que vem depois, o nome está dentro de um marcador)
+        let cases = [
+            ("Mustard_{{", "}}_x64", true),
+            ("{{ ", " }}", true),
+            ("{{{", "}}}", true),
+            ("`{{mustard_cli::", "}}`", true),
+            ("Bump ", " first", false),
+            ("{{ other }} ", " later", false),
+            ("{{ ", " but never closed", false),
+            ("never opened ", " }}", false),
+            ("println!(\"{{ {} }}\", ", ")", false),
+        ];
+        for (before, after, inside) in cases {
+            assert_eq!(in_marker(before, after), inside, "{before:?} ... {after:?}");
+        }
+    }
+
+    #[test]
+    fn a_citation_qualified_in_a_comment_counts_only_when_the_removed_name_ends_the_path() {
+        let files = [
+            (
+                "src/b.rs",
+                "fn outra() {}\n// the origin of a lesson is `found_in.spec` when the branch is empty\n// and `found_in::spec` reads the same\n// a.found_in.spec chains one more field\n",
+            ),
+            (
+                "src/c.rs",
+                "fn caller() {}\n// the example of the test calls map_search::found_in by hand\n// and x.found_in gives the same answer.\n",
+            ),
+        ];
+        let hint = leftovers_after_removing("found_in", &[], &files);
+        assert!(hint.contains("`src/c.rs` linha 2 ainda cita `found_in`, que a onda tirou de `src/a.rs`"), "{hint}");
+        assert!(hint.contains("`src/c.rs` linha 3 ainda cita `found_in`, que a onda tirou de `src/a.rs`"), "{hint}");
+        assert!(!hint.contains("`src/b.rs`"), "{hint}");
+    }
+
+    #[test]
+    fn a_qualified_citation_counts_only_when_the_name_ends_the_path() {
+        // (nome, linha, a citação qualificada conta)
+        let cases = [
+            ("found_in", "// map_search::found_in", true),
+            ("found_in", "// x.found_in", true),
+            ("found_in", "// call x.found_in(a) here", true),
+            ("found_in", "// see x.found_in.", true),
+            ("found_in", "// found_in.spec", false),
+            ("found_in", "// found_in::x", false),
+            ("found_in", "// a.found_in.spec", false),
+            ("found_in", "// a::found_in::x", false),
+            ("found_in", "// the found_in of it", false),
+        ];
+        for (name, text, counts) in cases {
+            assert_eq!(linked_by(name, text, path_linked), counts, "{name} em {text:?}");
+            assert_eq!(linked_by(name, text, scoped), counts && text.contains("::"), "{name} em {text:?}");
+        }
+    }
+
+    #[test]
     fn a_document_counts_the_removed_name_between_backticks_and_not_as_a_loose_word() {
         let files = [
             ("src/b.rs", "fn outra() {}\n"),
@@ -846,7 +954,10 @@ mod tests {
             ("VERSION", "Bump the VERSION.", true),
             ("VERSION", "Bump `VERSION` first", false),
             ("VERSION", "Bump the mustard_cli::VERSION const", false),
-            ("VERSION", "Read the VERSION.txt file", false),
+            ("VERSION", "Read the VERSION.txt file", true),
+            ("VERSION", "Read the main.VERSION file", false),
+            ("VERSION", "Bump `Mustard_{{VERSION}}_x64.exe` first", true),
+            ("VERSION", "Bump `VERSION` and `Mustard_{{VERSION}}_x64.exe`", false),
             ("OFF", "The Mode::OFF state", true),
             ("OFF", "The `OFF` state", false),
             ("old_total", "Call old_total(x) to sum", false),
@@ -950,9 +1061,12 @@ mod tests {
             ("Dockerfile", "// see Dockerfile.", true),
             ("Dockerfile", "// see ...Dockerfile", true),
             ("Dockerfile", "// see `Dockerfile`", false),
-            ("Dockerfile", "// see Dockerfile.dev", false),
+            ("Dockerfile", "// see Dockerfile.dev", true),
             ("Dockerfile", "// see build.Dockerfile", false),
-            ("Dockerfile", "// see Dockerfile::run", false),
+            ("Dockerfile", "// see build.Dockerfile.dev", true),
+            ("Dockerfile", "// see Dockerfile::run", true),
+            ("Dockerfile", "// see base::Dockerfile::run", true),
+            ("Dockerfile", "// see base::Dockerfile", false),
         ];
         for (name, text, prose) in cases {
             assert_eq!(prose_comment(name, text), prose, "{name} em {text:?}");
