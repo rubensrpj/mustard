@@ -71,7 +71,7 @@ pub(super) fn ranked_files_near(
 
 /// Os arquivos da busca por palavras, na ordem da nota: primeiro os que o
 /// pedaço do nome acha, depois os das palavras.
-pub(super) fn ranked_in(
+fn ranked_in(
     conn: &Connection,
     query: &str,
     languages: &Languages,

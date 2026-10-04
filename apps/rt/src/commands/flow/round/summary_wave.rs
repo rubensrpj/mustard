@@ -79,12 +79,16 @@ fn left_by(log: &SpecLog, summary: &SpecEvent, codes: &BTreeMap<u64, String>) ->
 mod tests {
     use std::path::Path;
 
+    use mustard_core::platform::i18n::{translate, Locale};
     use serde_json::json;
     use tempfile::tempdir;
 
+    use super::super::agreed::request_agreed;
     use super::super::backlog::dispatch_backlog;
-    use super::super::queue::{backlog_project, backlog_task_on, max_parallel, spec_now, wave_order};
-    use super::super::tests::seed_send;
+    use super::super::queue::{backlog_project, backlog_task_on, max_parallel, open_sends, spec_now, wave_order};
+    use super::super::read_check::{request_name, unread_items};
+    use super::super::tests::{returned_unread, round, seed_read, seed_send, waves_in};
+    use crate::commands::spec_events::read::{read_for, ReadOpts};
     use crate::shared::spec_state::seed_event;
 
     /// A entrega de uma onda que parou e deixou por fazer as tarefas `left`,
@@ -179,5 +183,45 @@ mod tests {
         assert_eq!(wave_order(root, 2), vec![apart], "só a que não divide arquivo sai");
         assert_eq!(spec_now(root).current(chained).and_then(|task| task.wave()), None, "a que divide espera a vez");
         assert_eq!(spec_now(root).current(left).and_then(|task| task.wave()), None, "o resumo espera a onda em andamento");
+    }
+
+    /// A entrega da onda que continua um resumo é recusada, com o código dele,
+    /// enquanto ele não foi lido de dentro da cópia, ainda que todo o resto do
+    /// pedido tenha sido lido; lido o resumo pelo comando de verdade, a mesma
+    /// entrega grava.
+    #[test]
+    fn a_delivery_is_refused_until_the_summary_the_wave_continues_is_read() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, crit) = backlog_project(root);
+        let left = backlog_task_on(root, said, crit, "Mexer no código de dois.", &["src/b.rs"]);
+        let summary = stopped_with(root, &[left]);
+        let code = spec_now(root).codes()[&summary].clone();
+
+        let sent = round(root, "x", None);
+        assert_eq!(waves_in(&sent, "dispatch"), vec![1], "{sent}");
+        let log = spec_now(root);
+        let open = open_sends(&log)[&1];
+        let request = request_name(Some(1));
+        let listed = unread_items(&log, open, &request);
+        assert_eq!(listed.first(), Some(&code), "the request lists the summary first: {listed:?}");
+        for item in listed.iter().filter(|item| **item != code) {
+            seed_read(root, "x", &request, item);
+        }
+        let agreed: Vec<_> = request_agreed(&log, 1).iter().map(|item| json!({"item": item.id, "met": true})).collect();
+        let delivery = json!({"wave": 1, "text": "A onda 1 saiu.", "agreed": agreed});
+
+        let refused = returned_unread(root, delivery.clone());
+        assert_eq!(refused["reason"], json!("delivery-read-missing"), "{refused}");
+        let expected = translate("spec_events.delivery_read_missing", Locale::PtBr)
+            .replace("{wave}", "1")
+            .replace("{missing}", &code);
+        assert_eq!(refused["hint"], json!(expected), "only the summary is missing: {refused}");
+
+        let copy = log.get(open).and_then(|send| send.str_field("copy")).expect("the copy of the wave").to_string();
+        let opts = ReadOpts { root: root.to_path_buf(), spec: Some("x".into()), block: format!("item-{code}"), term: None };
+        read_for(&opts, None, Path::new(&copy)).unwrap_or_else(|refused| panic!("{code}: {refused}"));
+        let wrote = returned_unread(root, delivery);
+        assert_eq!(wrote["ok"], json!(true), "the same delivery passes once the summary is read: {wrote}");
     }
 }

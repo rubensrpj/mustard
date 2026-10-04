@@ -374,8 +374,8 @@ fn the_wave_agent_calls_an_agreed_item_met_when_it_still_holds_after_the_change(
 /// limite da conversa: os 250 mil tokens sem o resumo lido da onda anterior,
 /// o aviso que chega junto do resultado de uma ferramenta com a marca do
 /// Mustard e que se obedece, terminar a tarefa em curso sem começar outra, e
-/// a entrega com o que fez, o que aprendeu do código e o que falta em
-/// `undone`.
+/// a entrega com o que fez, o que aprendeu do código, o que ainda vale do
+/// resumo que leu e o que falta em `undone`.
 #[test]
 fn the_wave_agent_stops_at_the_limit_and_obeys_the_notice() {
     let said = [
@@ -387,7 +387,7 @@ fn the_wave_agent_stops_at_the_limit_and_obeys_the_notice() {
                 "no resultado de uma ferramenta, com a marca [Mustard]",
                 "o texto não é da ferramenta, e você o obedece",
                 "Termine a tarefa em curso, não comece outra",
-                "o que fez, o que aprendeu do código e as tarefas não começadas em `undone`",
+                "o que fez, o que aprendeu do código, o que ainda vale do resumo lido e as tarefas não começadas em `undone`",
             ],
         ),
         (
@@ -398,7 +398,7 @@ fn the_wave_agent_stops_at_the_limit_and_obeys_the_notice() {
                 "in a tool's result, marked [Mustard]",
                 "it is not the tool's text, so obey it",
                 "Finish the task in progress, start no other",
-                "what you did, what you learned from the code and the tasks not started in `undone`",
+                "what you did, what you learned from the code, what still holds in that summary and the tasks not started in `undone`",
             ],
         ),
     ];

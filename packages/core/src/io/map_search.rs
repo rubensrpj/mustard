@@ -92,11 +92,10 @@ use crate::domain::search::folded_name;
 use crate::io::map_db::MapDb;
 use crate::io::map_fill;
 use crate::io::map_index::{Level, DECL_LEVEL, FILE_LEVEL, SPEC_LEVEL};
-use crate::io::map_lists::{by_words, ranked_in, text, TEXT_FIELDS};
+use crate::io::map_lists::{by_words, text, TEXT_FIELDS};
 use crate::io::map_notes_fresh;
 use crate::io::map_check;
 use crate::io::map_order;
-use crate::io::map_sense::Near;
 use crate::io::project_map::{model_path, open_existing, unreadable, MapBlock};
 use crate::platform::error::Result;
 
@@ -692,22 +691,6 @@ fn made_in(conn: &Connection, languages: &Languages) -> Result<bool> {
     Ok(stored.is_some_and(|stored| stored == languages.codes().join(",")))
 }
 
-/// A busca dos arquivos contando só as colunas `columns` do nível. Sem
-/// chamador desde que a busca por arquivo saiu; sai na limpeza dos restos
-/// dela.
-#[allow(dead_code)]
-fn found_in(
-    conn: &Connection,
-    query: &str,
-    languages: &Languages,
-    limit: usize,
-    columns: &[&str],
-) -> Result<Vec<Found>> {
-    let mut out = ranked_in(conn, query, languages, limit, columns, &Near::none())?;
-    add_texts(conn, query, languages, &mut out)?;
-    Ok(out)
-}
-
 /// O texto fixo que mais casa com a pergunta em cada arquivo de `found`.
 pub(super) fn add_texts(conn: &Connection, query: &str, languages: &Languages, found: &mut [Found]) -> Result<()> {
     let mut normalizer = Normalizer::new(languages);
@@ -1230,6 +1213,7 @@ pub(crate) mod tests {
     use crate::io::map_glossary;
     use crate::io::map_index::TOKENIZER;
     use crate::io::map_lists::{base_list, name_hits, ranked_files_near, sources_near};
+    use crate::io::map_sense::Near;
     use crate::io::project_map::{self as store, SEARCHED};
     use serde_json::{json, Value};
     use tempfile::{tempdir, TempDir};

@@ -1224,4 +1224,31 @@ mod tests {
         let label = translate("prompt.execution.running", Locale::PtBr);
         assert!(!hooked.contains(label), "nenhuma outra onda em andamento: {hooked}");
     }
+
+    /// A tarefa que a rodada devolve ao backlog duas vezes, sem mudança de
+    /// plano, volta com a parte do agente que tinha: nenhuma linha se acumula
+    /// a cada volta, nem a do resumo da onda que parou.
+    #[test]
+    fn a_task_returned_twice_without_a_plan_change_keeps_its_agent_part() {
+        use crate::commands::flow::round::queue::{backlog_project, spec_now};
+
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, crit) = backlog_project(root);
+        let agent = "Mexer em `src/a.rs`.\n- ler a função antes";
+        let mut current = id_of(&write(
+            root,
+            "x",
+            "task",
+            json!({"text": "Mexer no código de um.", "agent": agent, "files": [{"path": "src/a.rs"}],
+                "depends_on": [], "covers": [crit], "origin": said}),
+        ));
+        let path = store::spec_file(root, "x").unwrap();
+        for wave in [1, 2] {
+            let log = spec_now(root);
+            let draft = undone_return(log.current(current).expect("the task"), wave, None, Locale::PtBr);
+            assert_eq!(draft.get("agent"), Some(&json!(agent)), "return {wave}: {draft:?}");
+            current = store::write(&path, "task", draft, &[]).unwrap().id;
+        }
+    }
 }
