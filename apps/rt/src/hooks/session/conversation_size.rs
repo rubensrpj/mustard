@@ -22,8 +22,9 @@
 //!   parar, e com ele começa a folga: [`WAVE_GRACE_CALLS`] chamadas ou
 //!   [`WAVE_GRACE_TOKENS`] tokens a mais, o que vier primeiro, para deixar o
 //!   código compilando e gravar o passo e a entrega. Passada a folga, o gancho
-//!   de antes da ferramenta recusa tudo, menos `run write` e o comando de
-//!   compilar do projeto. O resumo é o salto do tamanho entre a resposta que
+//!   de antes da ferramenta recusa tudo, menos `run read` e `run write` na
+//!   spec e o comando de compilar do projeto, cada um sem outro comando na
+//!   mesma linha. O resumo é o salto do tamanho entre a resposta que
 //!   chama `run read delivered-<n>` ou `run read item-<código da entrega>` —
 //!   o comando que o pedido da onda manda — e a resposta seguinte, somado
 //!   quando o agente lê mais de um; sem resumo lido, conta a conversa inteira.
@@ -49,6 +50,8 @@ use mustard_core::platform::error::Error;
 use mustard_core::platform::i18n::Locale;
 use mustard_core::{translate, ClaudePaths};
 use serde_json::Value;
+
+use crate::hooks::bash::lex::{segments, Segment};
 
 /// O degrau de tamanho da conversa de quem conduz, em tokens: a cada degrau
 /// novo, um aviso.
@@ -369,58 +372,60 @@ fn wave_limit_text(input: &HookInput, root: &Path, lang: Locale) -> Option<Strin
     )
 }
 
-/// O comando `command` sem os `cd <pasta> &&` que o abrem: o agente de onda
-/// roda tudo de dentro da cópia, e o que importa é o que vem depois. Vazio
-/// quando o comando é só o `cd`.
-fn after_cd(mut command: &str) -> &str {
-    loop {
-        command = command.trim_start();
-        let Some(rest) = command.strip_prefix("cd ") else { return command };
-        let Some(at) = rest.find(['&', ';', '\n']) else { return "" };
-        command = rest[at..].trim_start_matches(['&', ';', '\n', ' ', '\t']);
-    }
+/// O nome do programa de `segment`, como foi escrito, sem a pasta e sem o
+/// `.exe`: `$HOME/.cargo/bin/cargo` é `cargo`.
+fn program_name(segment: &Segment) -> &str {
+    let name = segment.program.raw_unquoted().rsplit(['/', '\\']).next().unwrap_or_default();
+    name.strip_suffix(".exe").unwrap_or(name)
 }
 
-/// Se `command` grava na spec: abre com o `mustard-rt` (pelo caminho ou pelo
-/// nome) seguido de `run write`.
-fn runs_write(command: &str) -> bool {
-    let mut words = command.split_whitespace();
-    let program = words.next().map(|word| word.trim_matches(['\'', '"']));
-    let program = program.and_then(|word| word.rsplit(['/', '\\']).next());
-    program.is_some_and(|name| name.trim_end_matches(".exe") == "mustard-rt")
-        && words.next() == Some("run")
-        && words.next() == Some("write")
+/// Se `segment` lê ou grava na spec: o `mustard-rt` seguido de `run read` ou
+/// `run write`.
+fn uses_the_spec(segment: &Segment) -> bool {
+    let args: Vec<&str> = segment.args.iter().take(2).map(|word| word.text.as_str()).collect();
+    program_name(segment) == "mustard-rt" && matches!(args[..], ["run", "read" | "write"])
 }
 
-/// Se `command` é o comando de compilar do projeto, `build`, sozinho: abre
-/// com as palavras dele, com ou sem `rtk` na frente, e não encadeia outro
-/// comando depois — compilar e rodar a suíte na mesma linha não passa. O que
-/// vai a um `|` (como `tail`) passa.
-fn runs_build(command: &str, build: &str) -> bool {
-    let words = |text: &'_ str| -> Vec<String> {
-        text.split_whitespace().skip_while(|word| *word == "rtk").map(str::to_string).collect()
-    };
-    let (asked, wanted) = (words(command), words(build));
-    !wanted.is_empty()
-        && asked.starts_with(&wanted)
-        && !["&&", "||", ";", "\n"].iter().any(|chain| command.contains(chain))
+/// Se `segment` é o comando de compilar do projeto, `build`: o mesmo
+/// programa, pelo nome ou pelo caminho, com os argumentos dele no começo. As
+/// variáveis e o `rtk` da frente não contam.
+fn runs_build(segment: &Segment, build: &Segment) -> bool {
+    !program_name(build).is_empty()
+        && program_name(segment) == program_name(build)
+        && segment.args.len() >= build.args.len()
+        && segment.args.iter().zip(&build.args).all(|(asked, wanted)| asked.text == wanted.text)
+}
+
+/// Se `segment` só corta a saída que recebe: `tail` ou `head` sem arquivo,
+/// só com opções e números.
+fn trims_the_output(segment: &Segment) -> bool {
+    matches!(program_name(segment), "tail" | "head")
+        && segment.args.iter().all(|arg| arg.text.starts_with('-') || arg.text.chars().all(|c| c.is_ascii_digit()))
 }
 
 /// Se o agente de onda ainda pode fazer a chamada `input` depois da folga:
-/// só o terminal, e só para gravar na spec ou compilar com `build`.
+/// só o terminal, com um comando só além dos `cd` — ler ou gravar na spec, ou
+/// compilar com `build`, cuja saída pode ir a um `tail` ou `head`. O comando
+/// é lido como o shell o lê: outro comando na mesma linha, encadeado (`&&`,
+/// `;`, `|`, nova linha) ou escondido numa palavra (`$(…)`, crase), recusa.
 fn passes_after_the_grace(input: &HookInput, build: Option<&str>) -> bool {
     if input.tool_name.as_deref() != Some("Bash") {
         return false;
     }
     let Some(command) = input.tool_input.get("command").and_then(Value::as_str) else { return false };
-    let command = after_cd(command);
-    runs_write(command) || build.is_some_and(|build| runs_build(command, build))
+    let mut run = segments(command).into_iter().filter(|segment| program_name(segment) != "cd");
+    let Some(main) = run.next() else { return false };
+    if uses_the_spec(&main) {
+        return run.next().is_none();
+    }
+    let build = build.and_then(|build| segments(build).into_iter().next());
+    build.is_some_and(|build| runs_build(&main, &build)) && run.all(|segment| trims_the_output(&segment))
 }
 
 /// A recusa ao agente de onda que gastou a folga: avisado do limite, ele já
 /// fez [`WAVE_GRACE_CALLS`] chamadas ou a conversa cresceu [`WAVE_GRACE_TOKENS`]
-/// tokens desde o aviso, e a chamada `input` não é gravar na spec nem o
-/// comando de compilar do projeto ([`passes_after_the_grace`]). `None` fora de
+/// tokens desde o aviso, e a chamada `input` não é ler ou gravar na spec nem
+/// o comando de compilar do projeto ([`passes_after_the_grace`]). `None` fora de
 /// um agente de onda avisado, durante a folga e para o que passa.
 fn wave_stop_reason(input: &HookInput, root: &Path, ctx: &Ctx) -> Option<String> {
     if !input.is_subagent() {
@@ -849,9 +854,9 @@ mod tests {
             }
             let reason = read().unwrap_or_else(|| panic!("{lang:?}: the ninth call is refused"));
             let (limit, only) = if lang == Locale::EnUs {
-                ("150 thousand", "Only `mustard-rt run write` and `cargo build` pass")
+                ("150 thousand", "Only reading and writing the spec (`mustard-rt run read` and `run write`) and `cargo build` pass")
             } else {
-                ("150 mil", "Só passam `mustard-rt run write` e `cargo build`")
+                ("150 mil", "Só passam ler e gravar na spec (`mustard-rt run read` e `run write`) e `cargo build`")
             };
             assert!(reason.starts_with("[Mustard]") && reason.contains(limit) && reason.contains(only), "{lang:?}: {reason}");
             assert!(reason.contains("`undone`"), "{lang:?}: the delivery is told: {reason}");
@@ -868,16 +873,18 @@ mod tests {
         }
     }
 
-    /// Passada a folga, só o terminal passa, e só para gravar na spec
-    /// (`mustard-rt run write`, pelo caminho ou pelo nome, de dentro da cópia
-    /// ou não) e para o comando de compilar do projeto (com `rtk` na frente ou
-    /// com saída ligada a um `tail`). Todo o resto é recusado: as outras
-    /// ferramentas, a suíte, compilar e rodar a suíte na mesma linha, ler a
-    /// spec e o terminal comum. E só vale para o agente de onda que gastou a
-    /// folga: o que ainda não foi avisado, quem conduz (mesmo com 450 mil
-    /// tokens) e o subagente que não é de onda nunca são recusados.
+    /// Passada a folga, só o terminal passa, e só para ler ou gravar na spec
+    /// (`mustard-rt run read` e `run write`, pelo caminho ou pelo nome, de
+    /// dentro da cópia ou não) — ler o item do pedido que faltou deixa a
+    /// entrega passar na conferência de leitura — e para o comando de
+    /// compilar do projeto (com `rtk` na frente, com o programa pelo caminho
+    /// completo, com variáveis na frente ou com a saída ligada a um `tail`).
+    /// Todo o resto é recusado: as outras ferramentas, a suíte, o terminal
+    /// comum. E só vale para o agente de onda que gastou a folga: o que ainda
+    /// não foi avisado, quem conduz (mesmo com 450 mil tokens) e o subagente
+    /// que não é de onda nunca são recusados.
     #[test]
-    fn after_the_grace_only_the_spec_write_and_the_build_pass_and_only_for_that_wave_agent() {
+    fn after_the_grace_only_the_spec_commands_and_the_build_pass_and_only_for_that_wave_agent() {
         use serde_json::json;
         let dir = open_project_in("x", Locale::PtBr);
         let root = dir.path();
@@ -890,20 +897,26 @@ mod tests {
             "/x/mustard-rt run write step --root /r --spec x --json '{\"text\":\"a && b; c\"}'",
             "mustard-rt run write delivered --json '{}'",
             "cd /copy && /x/mustard-rt run write delivered --root /r --spec x --json '{}'",
+            "/x/mustard-rt run read item-MSTD-TASK-0001 --root /r --spec x",
+            "cd /copy && mustard-rt run read request-1 --root /r --spec x",
             "cargo build",
             "cargo build -j 4",
             "rtk cargo build",
             "cd /copy && cargo build -j 4 2>&1 | tail -20",
+            "$HOME/.cargo/bin/cargo build",
+            "/home/u/.cargo/bin/cargo build -j 4 2>&1 | tail -n 30",
+            "PATH=\"$HOME/.cargo/bin:$PATH\" cargo build",
+            "cd /copy && CARGO_TARGET_DIR=/t rtk cargo build",
         ] {
             assert_eq!(bash(command), None, "{command} passes after the grace");
         }
         for command in [
             "cargo test --locked -p mustard-rt",
-            "cargo build && cargo test",
-            "cargo build; cargo test",
+            "$HOME/.cargo/bin/cargo test",
+            "PATH=/p cargo clippy",
             "cargo clippy",
             "ls",
-            "/x/mustard-rt run read item-MSTD-TASK-0001 --root /r --spec x",
+            "/x/mustard-rt run map search a",
             "echo mustard-rt run write",
             "cd /copy",
         ] {
@@ -942,6 +955,46 @@ mod tests {
             assert_eq!(injected(&agent_after_tool(root)), None, "another kind of agent is not warned");
         }
         assert_eq!(refused(root, "Read", json!({"file_path": root.join("a.rs").to_string_lossy()})), None);
+    }
+
+    /// Passada a folga, o comando que passa sozinho é recusado quando outro
+    /// vem na mesma linha: encadeado depois dele (`&&`, `||`, `;`, nova
+    /// linha), recebendo a saída dele por `|` (fora o `tail` ou `head` sem
+    /// arquivo depois de compilar) ou escondido numa palavra (`$(…)`, crase),
+    /// inclusive na pasta de um `cd`. O mesmo texto dentro de aspas simples,
+    /// como no `--json` de uma gravação, é só texto.
+    #[test]
+    fn after_the_grace_another_command_on_the_same_line_is_refused() {
+        use serde_json::json;
+        let dir = open_project_in("x", Locale::PtBr);
+        let root = dir.path();
+        let mut replies = vec![agent_reply(30_000, Some("read")), agent_reply(80_000, Some("edit"))];
+        assert!(agent_grows(root, &mut replies, 400_000, Locale::PtBr).is_some(), "the warning");
+        assert_eq!(agent_grows(root, &mut replies, 700_000, Locale::PtBr), None, "the grace is far gone");
+
+        let bash = |command: &str| refused(root, "Bash", json!({"command": command}));
+        assert_eq!(bash("mustard-rt run write step --json '{\"text\":\"a && b; c | d $(e) `f`\"}'"), None);
+        for command in [
+            "mustard-rt run write step --json {} && cargo test --workspace",
+            "mustard-rt run write step --json {} || cargo test",
+            "mustard-rt run write step --json {}; cargo test",
+            "mustard-rt run write step --json {}\ncargo test",
+            "mustard-rt run write step --json {} | sh",
+            "mustard-rt run write step --json \"$(cargo test)\"",
+            "mustard-rt run write step --json `cargo test`",
+            "/x/mustard-rt run read request-1 --root /r --spec x && cargo test",
+            "mustard-rt run read request-1 | head -5",
+            "cd $(cargo test) && mustard-rt run write step --json {}",
+            "cargo build && cargo test",
+            "cargo build; cargo test",
+            "$HOME/.cargo/bin/cargo build && cargo test",
+            "PATH=/p cargo build $(cargo test)",
+            "cargo build | xargs cargo test",
+            "cargo build 2>&1 | tail -20 src/a.rs",
+        ] {
+            let reason = bash(command).unwrap_or_else(|| panic!("{command} is refused after the grace"));
+            assert!(reason.starts_with("[Mustard]"), "{command}: {reason}");
+        }
     }
 
     /// O aviso do limite fica calado onde não é de uma onda: na sessão

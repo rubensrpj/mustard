@@ -2692,6 +2692,34 @@ mod tests {
         assert_eq!(service.received().len(), 1, "only the first call went out");
     }
 
+    /// A busca dividida em vários pedidos reserva a estimativa de todos antes
+    /// de o primeiro sair: faltando um milionésimo para o último, nenhum chega
+    /// ao serviço; com a soma exata, todos saem, e nada mais sobra no mês.
+    #[test]
+    fn a_divided_search_reserves_every_request_before_the_first_goes_out() {
+        let (_project, asked) = big_request(150, 40);
+        let context = Context::of(&asked);
+        let batches = divide(&asked, &context).unwrap();
+        assert!(batches.len() >= 2, "the search is divided: {}", batches.len());
+        let all: u64 =
+            batches.iter().map(|batch| cost_micro_usd(estimated_tokens(&payload(batch, &context).unwrap()))).sum();
+        let start = |left: u64| {
+            let service = FakeService::start(|_, body| Reply::json(200, &sure_answer(body)));
+            let budget = Budget::of(left);
+            let filter = JevFilter { budget: Some(budget.clone()), ..service.filter() };
+            (service, filter, budget)
+        };
+
+        let (service, filter, _) = start(all - 1);
+        assert_eq!(filter.filter(&asked).unwrap_err(), FilterError::OverBudget);
+        assert!(service.received().is_empty(), "no part went out: {}", service.received().len());
+
+        let (service, filter, budget) = start(all);
+        assert!(filter.filter(&asked).is_ok());
+        assert_eq!(service.received().len(), batches.len(), "every part went out");
+        assert!(budget.is_spent(), "the reservation took the whole estimate");
+    }
+
     /// O teto já gasto vale como sem chave na montagem das ondas: sem filtro e
     /// sem aviso de chave. Com sobra, o filtro entra.
     #[test]

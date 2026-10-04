@@ -547,14 +547,14 @@ mod tests {
         }
     }
 
-    /// O agente de onda é instalado sem os arquivos de instrução da conversa
-    /// principal, nos dois idiomas: o Claude Code põe na conversa de todo
+    /// Os agentes de onda e de revisão são instalados sem os arquivos de
+    /// instrução da conversa principal, nos dois idiomas: o Claude Code põe na conversa de todo
     /// agente o `MEMORY.md` do projeto junto dos `CLAUDE.md`, cerca de 7 mil
     /// tokens relidos a cada passo, e só a chave `omitClaudeMd` do cabeçalho
     /// tira os dois. O agente de onda lê tudo o que precisa do pedido; o de
-    /// revisão não leva a chave, porque os `CLAUDE.md` do projeto trazem
-    /// instruções que o revisor segue. Trocar o modelo e o esforço declarados
-    /// não mexe na chave.
+    /// revisão também leva a chave e recebe as regras do projeto dentro do
+    /// pedido, sem a memória escrita para quem conduz a obra. Trocar o modelo
+    /// e o esforço declarados não mexe na chave.
     #[test]
     fn the_wave_agent_is_installed_without_the_instruction_files_of_the_main_conversation() {
         for text in [Locale::PtBr, Locale::EnUs] {
@@ -563,7 +563,7 @@ mod tests {
             std_fs::write(root.join("mustard.json"), format!(r#"{{"language":{{"text":"{}"}}}}"#, text.as_str()))
                 .unwrap();
             upsert_project(root, Some("9.9.9"), InstallMode::Shared).unwrap();
-            assert_eq!(installed_agent_header(root, "omitClaudeMd"), ["true", ""], "the {text} install");
+            assert_eq!(installed_agent_header(root, "omitClaudeMd"), ["true", "true"], "the {text} install");
 
             std_fs::write(
                 root.join("mustard.json"),
@@ -575,7 +575,7 @@ mod tests {
             .unwrap();
             upsert_project(root, Some("9.9.9"), InstallMode::Shared).unwrap();
             assert_eq!(installed_agent_models(root), ["opus", "opus"], "the {text} model change");
-            assert_eq!(installed_agent_header(root, "omitClaudeMd"), ["true", ""], "the {text} reinstall");
+            assert_eq!(installed_agent_header(root, "omitClaudeMd"), ["true", "true"], "the {text} reinstall");
         }
     }
 

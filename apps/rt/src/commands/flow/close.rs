@@ -1502,6 +1502,30 @@ mod tests {
         assert_eq!(sent.str_field("effort"), Some("medium"), "o envio segue o esforço da configuração: {sent:?}");
     }
 
+    /// Com o `CLAUDE.md` na raiz do projeto, o pedido da revisão final que o
+    /// fechamento grava — o que o revisor lê pelo comando da resposta — fecha
+    /// com a seção das regras do projeto, com o texto dele inteiro, uma vez:
+    /// o revisor é instalado sem os arquivos de instrução e só as recebe por
+    /// aqui.
+    #[test]
+    fn the_final_review_request_ends_with_the_project_rules_of_the_root() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        ready_to_close(root, "x", &["git --version"]);
+        let rules = "# Regras\n\n- O instalador nunca grava na configuração do git.\n- A prova instala numa pasta vazia.";
+        std::fs::write(root.join("CLAUDE.md"), format!("\n{rules}\n\n")).unwrap();
+        git_at(root, &["add", "-A"]);
+        git_at(root, &["commit", "-q", "-m", "regras do projeto"]);
+
+        let asked =
+            close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None, ..Default::default() }, None);
+        let prompt = review_prompt(&asked);
+        let lang = spec_events::project(root).lang;
+        let section = mustard_core::domain::wave_prompt::project_rules_section(rules, lang);
+        assert!(prompt.ends_with(&format!("\n\n{section}\n")), "{prompt}");
+        assert_eq!(prompt.matches("configuração do git").count(), 1, "{prompt}");
+    }
+
     /// O fechamento confere os agentes do projeto antes de pedir a revisão:
     /// o revisor com o texto de outra versão volta ao que a instalação
     /// escreveria, e a resposta que pede a revisão o nomeia. O agente de onda,

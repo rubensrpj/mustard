@@ -521,6 +521,15 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Undo every cut before recording your verdict: the next close refuses to start on `{copy}` \
              with changes, and deletes the copy itself when the work closes."
         }
+        // As regras do projeto, no fim de todo pedido ao revisor.
+        ("prompt.part.project_rules", Locale::PtBr) => "Regras do projeto",
+        ("prompt.part.project_rules", Locale::EnUs) => "Project rules",
+        ("prompt.project_rules.source", Locale::PtBr) => {
+            "O texto do `CLAUDE.md` da raiz do projeto. Siga-o nesta revisão."
+        }
+        ("prompt.project_rules.source", Locale::EnUs) => {
+            "The text of the `CLAUDE.md` at the project root. Follow it in this review."
+        }
         _ => return None,
     })
 }
@@ -535,8 +544,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("prompt.rs"),
             super::PREFIXES,
-            92,
-            0x9fcd_eea3_11ab_3f3c,
+            94,
+            0xe636_a93e_7bd4_aed4,
         );
     }
 

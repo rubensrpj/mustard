@@ -26,7 +26,7 @@ const REDIRECT_OPERATORS: &[&str] =
 /// One word of a command: `text` is what the program receives (no quotes, no
 /// escaping backslash); `raw` is the word as it was written.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub(super) struct Word {
+pub(crate) struct Word {
     pub text: String,
     pub raw: String,
 }
@@ -55,14 +55,14 @@ impl Word {
 /// One redirect (`>`, `>>`, `2>`, `&>`, `<`, `>&`, `<<`, `<<<`, …) and its
 /// target. For a heredoc the target is the delimiter.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct Redirect {
+pub(crate) struct Redirect {
     pub op: String,
     pub target: Word,
 }
 
 /// One simple command of the line, split the way the terminal splits it.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub(super) struct Segment {
+pub(crate) struct Segment {
     /// The program, after the `NAME=value` assignments, the structure words
     /// and the wrappers (`rtk`, `sudo`, `env`, `command`, `exec`, `nohup`,
     /// `time`, `nice`, `timeout`, `xargs`). Empty when the command only
@@ -97,7 +97,7 @@ impl Segment {
 /// of a body whose delimiter has no quote (`<<EOF`), which the terminal runs;
 /// `<<'EOF'` keeps the whole body as text. The reader walks the text once,
 /// never panics, and stops descending past [`MAX_DEPTH`] levels.
-pub(super) fn segments(cmd: &str) -> Vec<Segment> {
+pub(crate) fn segments(cmd: &str) -> Vec<Segment> {
     read_line(cmd, 0)
 }
 

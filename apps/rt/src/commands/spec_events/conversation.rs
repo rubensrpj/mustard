@@ -7,8 +7,10 @@
 //! passa pela mesma gravação do `run write`, com o autor de cada um.
 //!
 //! Só se grava numa spec atual, que tem arquivo de eventos e ainda não
-//! terminou: sem ela, nada é gravado. Nenhuma gravação daqui falha para quem
-//! chama — uma recusa ou um erro de disco vira "nada gravado".
+//! terminou: sem ela, nada é gravado, menos o custo da chamada que usou o
+//! Jev, que vai para o arquivo das chamadas soltas da máquina e segue
+//! contando no teto do mês. Nenhuma gravação daqui falha para quem chama —
+//! uma recusa ou um erro de disco vira "nada gravado".
 //!
 //! A mensagem, com a testemunha quando há, e a resposta são gravadas já sem
 //! segredo: cada trecho com cara de chave, token ou senha sai como "…", a
@@ -21,6 +23,7 @@ use std::time::Instant;
 
 use mustard_core::domain::spec_state::{last_user_message, PhaseWriter, SpecState, State};
 use mustard_core::domain::survey;
+use mustard_core::io::spend;
 use serde_json::{json, Map, Value};
 
 use crate::shared::secret::without_secrets;
@@ -188,7 +191,32 @@ pub(crate) fn record_call(root: &Path, command: &str, named: Option<&str>, start
 /// mapa grava o filtro, o tempo dele, os tokens e o custo. A busca por
 /// palavra, que é parte compartilhada e não alcança este módulo, recebe esta
 /// função de quem monta a cena dela (`crate::shared::word_search::Record`).
+/// A chamada que usou o Jev e não ficou numa spec, por não haver uma ou pela
+/// gravação recusada, deixa os tokens e o custo dele no arquivo das chamadas
+/// soltas da máquina, e o gasto dela entra no teto do mês do mesmo jeito.
 pub(crate) fn record_measured_call(
+    root: &Path,
+    command: &str,
+    named: Option<&str>,
+    session: Option<&str>,
+    started: Instant,
+    report: &Value,
+    measured: Map<String, Value>,
+) -> Option<u64> {
+    let tokens = measured.get("tokens").and_then(Value::as_u64);
+    let cost = measured.get("cost_micro_usd").and_then(Value::as_u64);
+    let recorded = record_in_call_spec(root, command, named, session, started, report, measured);
+    let billed = tokens.is_some() || cost.is_some();
+    if let (None, true, Some(dir)) = (recorded, billed, spend::machine_dir()) {
+        let _ = spend::record_loose_call(&dir, root, tokens.unwrap_or(0), cost.unwrap_or(0));
+    }
+    recorded
+}
+
+/// A gravação de [`record_measured_call`] na spec do relatório, na que a
+/// chamada nomeou ou na atual; `None` sem nenhuma delas ou com a gravação
+/// recusada.
+fn record_in_call_spec(
     root: &Path,
     command: &str,
     named: Option<&str>,

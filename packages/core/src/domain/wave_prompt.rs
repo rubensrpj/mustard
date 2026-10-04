@@ -49,11 +49,13 @@ use crate::platform::i18n::{translate, Locale};
 mod changed;
 mod request;
 mod review;
+mod rules;
 mod summary;
 
 pub use changed::TaskChange;
 pub use request::listed;
 pub use review::listed_final_review;
+pub use rules::{carries_project_rules, project_rules_section};
 pub use summary::summary_of;
 
 /// A linha dos dois idiomas do projeto, no topo de todo pedido a um agente:
@@ -272,6 +274,10 @@ pub struct Material<'a> {
     /// código da tarefa ([`TaskChange`]): a linha sob a tarefa manda
     /// conferir no código antes de mudar. A tarefa sem mudança fica de fora.
     pub task_changes: BTreeMap<String, TaskChange>,
+    /// O texto do `CLAUDE.md` da raiz do projeto, que só o pedido da revisão
+    /// final leva, numa seção no fim ([`project_rules_section`]). `None` sem o
+    /// arquivo ou com ele vazio.
+    pub project_rules: Option<String>,
 }
 
 /// O teto, em caracteres, do bloco do padrão sob uma tarefa

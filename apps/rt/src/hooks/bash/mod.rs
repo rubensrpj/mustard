@@ -1,5 +1,5 @@
 pub mod command_guard;
-mod lex;
+pub(crate) mod lex;
 mod reading;
 mod safety;
 pub(crate) mod waiting;

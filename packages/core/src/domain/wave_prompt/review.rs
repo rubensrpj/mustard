@@ -9,7 +9,7 @@
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
-use super::{code_of, language_line, Material, Writer};
+use super::{code_of, language_line, project_rules_section, Material, Writer};
 use crate::domain::spec_events::SpecEvent;
 
 /// Tudo o que o pedido do revisor lista, na ordem em que o imprime: cada
@@ -62,7 +62,8 @@ impl Writer<'_> {
     /// emendas gravadas para elas, o que cada uma entregou, os critérios e os
     /// commits que já entraram na branch. Por fim, como revisar numa cópia
     /// separada. O veredito que reprovou aparece uma vez só, na parte do que
-    /// mudou.
+    /// mudou. Com as regras do projeto no material, a seção delas fecha o
+    /// pedido.
     pub(super) fn final_review_text(&self) -> String {
         let m = self.material;
         let listing = ReviewListing::of(m);
@@ -82,6 +83,9 @@ impl Writer<'_> {
         self.review_execution(&mut out);
         while out.ends_with("\n\n") {
             out.pop();
+        }
+        if let Some(rules) = &m.project_rules {
+            let _ = writeln!(out, "\n{}", project_rules_section(rules, self.lang));
         }
         out
     }

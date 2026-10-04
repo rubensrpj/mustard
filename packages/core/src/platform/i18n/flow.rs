@@ -574,7 +574,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              onde você parou. Grave a entrega como o pedido manda. Nela, diga o que você aprendeu do \
              código, que poupa leitura a quem continuar. Ponha em `undone` a tarefa em curso e as \
              que você não começou. Passada a folga, o Mustard recusa toda ferramenta, menos `run \
-             write` na spec e o comando de compilar. Um agente novo continua pelo resumo."
+             read` e `run write` na spec e o comando de compilar, cada um sozinho na linha. Um \
+             agente novo continua pelo resumo."
         }
         ("conversation_size.wave_limit", Locale::EnUs) => {
             "[Mustard] Your conversation is at {now} thousand tokens; without the previous wave's \
@@ -584,21 +585,23 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              in it, what is left and where you stopped. Record the delivery as the request says. In \
              it, say what you learned from the code, which saves reading for whoever continues. Put \
              the task in progress and the ones you did not start in `undone`. After the grace, \
-             Mustard refuses every tool except `run write` on the spec and the build command. A new \
-             agent continues from the summary."
+             Mustard refuses every tool except `run read` and `run write` on the spec and the build \
+             command, each alone on its line. A new agent continues from the summary."
         }
         // A recusa ao agente de onda que gastou a folga depois do limite.
         ("conversation_size.wave_stop", Locale::PtBr) => {
-            "[Mustard] Passou a folga depois do limite de {limit} mil tokens. Só passam `mustard-rt \
-             run write`{build}. Grave agora o passo da tarefa em curso, com o que foi feito, o que \
-             falta e onde você parou. Grave a entrega, com a tarefa em curso e as não começadas em \
-             `undone`, e pare."
+            "[Mustard] Passou a folga depois do limite de {limit} mil tokens. Só passam ler e gravar \
+             na spec (`mustard-rt run read` e `run write`){build}, cada um sozinho na linha, sem \
+             `&&`, `;`, `|` nem `$(…)`. Grave agora o passo da tarefa em curso, com o que foi \
+             feito, o que falta e onde você parou. Grave a entrega, com a tarefa em curso e as não \
+             começadas em `undone`, e pare."
         }
         ("conversation_size.wave_stop", Locale::EnUs) => {
-            "[Mustard] The grace after the limit of {limit} thousand tokens is spent. Only `mustard-rt \
-             run write`{build} pass. Record now the step of the task in progress, with what was \
-             done, what is left and where you stopped. Record the delivery, with the task in \
-             progress and the ones not started in `undone`, and stop."
+            "[Mustard] The grace after the limit of {limit} thousand tokens is spent. Only reading and \
+             writing the spec (`mustard-rt run read` and `run write`){build} pass, each alone on its \
+             line, with no `&&`, `;`, `|` or `$(…)`. Record now the step of the task in progress, \
+             with what was done, what is left and where you stopped. Record the delivery, with the \
+             task in progress and the ones not started in `undone`, and stop."
         }
         // O que a recusa acrescenta quando o projeto declara o comando de
         // compilar.
@@ -1835,7 +1838,7 @@ mod tests {
             include_str!("flow.rs"),
             super::PREFIXES,
             220,
-            0x933a_bd44_b9cd_7375,
+            0x8a53_ab14_6959_1f58,
         );
     }
 

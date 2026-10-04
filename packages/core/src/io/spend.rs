@@ -14,7 +14,9 @@
 //! O que o Jev gastou não está nas conversas: cada chamada que o usou — a
 //! busca por palavra, a do mapa, a montagem da onda, a escolha dos itens —
 //! fica gravada na spec do projeto, com os tokens e o custo dele, e entra na
-//! linha do dia dela.
+//! linha do dia dela. A chamada feita sem spec onde ficar vai para o arquivo
+//! das chamadas soltas, na mesma pasta da máquina ([`record_loose_call`]), e
+//! entra na linha do dia do projeto dela do mesmo jeito.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::BufRead;
@@ -22,6 +24,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use chrono::Utc;
+use serde::{Deserialize, Serialize};
 
 use crate::domain::config::ProjectConfig;
 use crate::domain::spend::{day_of, day_of_stamp, day_start, month_of, DayRow, Ledger, Range, Refusal};
@@ -36,6 +39,11 @@ pub const DIR_ENV: &str = "MUSTARD_SPEND_DIR";
 
 /// O arquivo do gasto dentro da pasta da máquina.
 const LEDGER: &str = "ledger.json";
+
+/// O arquivo das chamadas ao Jev que não acharam spec onde ficar, dentro da
+/// pasta da máquina: uma linha por chamada. Ao contrário do [`LEDGER`], ele
+/// não se refaz das conversas, e apagá-lo perde esse gasto.
+const LOOSE_CALLS: &str = "jev-calls.ndjson";
 
 /// A pasta do gasto na máquina: `MUSTARD_SPEND_DIR`, ou `spend` ao lado das
 /// cópias de onda, em `~/.cache/mustard/`. `None` quando a pasta pessoal não
@@ -229,6 +237,61 @@ fn tally_file(path: &Path, range: &Range, tally: &mut SpendTally, projects: &mut
     }
 }
 
+/// Uma linha do arquivo das chamadas soltas: o projeto, o carimbo, os
+/// tokens e o custo do Jev.
+#[derive(Serialize, Deserialize)]
+struct LooseCall {
+    project: String,
+    at: String,
+    #[serde(default)]
+    tokens: u64,
+    #[serde(default)]
+    cost_micro_usd: u64,
+}
+
+/// Grava, no arquivo das chamadas soltas da pasta da máquina `dir`, a chamada
+/// ao Jev do projeto de `root` que não achou spec onde ficar, com os tokens e
+/// o custo dela e o carimbo de agora. Sem isso o gasto dela sumiria da soma
+/// do mês e do painel.
+///
+/// # Errors
+///
+/// [`Refusal::Io`] quando a trava ou a gravação falham.
+pub fn record_loose_call(dir: &Path, root: &Path, tokens: u64, cost_micro_usd: u64) -> Result<(), Refusal> {
+    let project = project_name(root).unwrap_or_default();
+    append_loose(dir, &LooseCall { project, at: Utc::now().to_rfc3339(), tokens, cost_micro_usd })
+}
+
+fn append_loose(dir: &Path, call: &LooseCall) -> Result<(), Refusal> {
+    let line = serde_json::to_string(call).map_err(|e| Refusal::Io { detail: e.to_string() })?;
+    let io = |e: Error| Refusal::Io { detail: e.to_string() };
+    LockedFile::exclusive(&dir.join(LOOSE_CALLS)).map_err(io)?.append_line(&line).map_err(io)
+}
+
+/// As chamadas soltas gravadas na pasta da máquina `dir`, cada uma com o
+/// projeto dela. A linha que não se lê fica de fora; sem arquivo, nenhuma.
+fn loose_calls(dir: &Path) -> Vec<(String, JevCall)> {
+    let text = read_shared(&dir.join(LOOSE_CALLS)).unwrap_or_default();
+    text.lines()
+        .filter_map(|line| serde_json::from_str::<LooseCall>(line).ok())
+        .filter_map(|call| {
+            let day = day_of_stamp(&call.at)?;
+            Some((call.project, JevCall { day, tokens: call.tokens, cost_micro_usd: call.cost_micro_usd }))
+        })
+        .collect()
+}
+
+/// O nome do projeto de `root`, o mesmo que o painel dá: o da pasta do
+/// checkout principal, também quando `root` é a cópia de onda dele.
+fn project_name(root: &Path) -> Option<String> {
+    project_home(root).file_name().map(|name| name.to_string_lossy().into_owned())
+}
+
+/// O checkout principal de `root`, ou ele mesmo quando não é cópia de onda.
+fn project_home(root: &Path) -> PathBuf {
+    linked_worktree_main(root).unwrap_or_else(|| root.to_path_buf())
+}
+
 /// Uma chamada ao Jev gravada na spec: o dia dela e o que ele gastou.
 struct JevCall {
     day: String,
@@ -293,14 +356,15 @@ fn spec_month_micro_usd(root: &Path, month: &str) -> u64 {
 
 /// O que o Jev custou no mês `month` (`AAAA-MM`, no fuso do gasto), em
 /// milionésimos de dólar: as chamadas gravadas nas specs do projeto de `root`,
-/// de qualquer comando, e, vindo do arquivo do gasto da máquina em
-/// `ledger_dir`, quando há, o que os outros projetos dela gastaram nos dias
-/// que ele já fechou. As linhas do próprio projeto no arquivo ficam de fora:
-/// as specs trazem o mesmo gasto, e até hoje.
+/// de qualquer comando, e, vindo da pasta da máquina em `ledger_dir`, quando
+/// há, as chamadas soltas do projeto e o que os outros projetos dela gastaram
+/// nos dias que o arquivo do gasto já fechou. As linhas do próprio projeto no
+/// arquivo ficam de fora: as specs e as chamadas soltas trazem o mesmo gasto,
+/// e até hoje.
 #[must_use]
 pub fn jev_month_micro_usd(root: &Path, ledger_dir: Option<&Path>, month: &str) -> u64 {
-    let home = linked_worktree_main(root).unwrap_or_else(|| root.to_path_buf());
-    let own = home.file_name().map(|name| name.to_string_lossy().into_owned());
+    let home = project_home(root);
+    let own = project_name(root);
     let elsewhere = ledger_dir.and_then(|dir| load(dir).ok()).map_or(0, |ledger| {
         ledger
             .rows
@@ -308,26 +372,34 @@ pub fn jev_month_micro_usd(root: &Path, ledger_dir: Option<&Path>, month: &str) 
             .filter(|row| month_of(&row.day) == month && Some(&row.project) != own.as_ref())
             .fold(0, |sum: u64, row| sum.saturating_add(row.jev_cost_micro_usd))
     });
-    spec_month_micro_usd(&home, month).saturating_add(elsewhere)
+    let loose = ledger_dir.map_or(0, |dir| {
+        loose_calls(dir)
+            .into_iter()
+            .filter(|(project, call)| Some(project) == own.as_ref() && month_of(&call.day) == month)
+            .fold(0, |sum: u64, (_, call)| sum.saturating_add(call.cost_micro_usd))
+    });
+    spec_month_micro_usd(&home, month).saturating_add(elsewhere).saturating_add(loose)
 }
 
 /// As linhas de hoje, o dia aberto: contadas agora, nas conversas de
-/// `config_dir`, e marcadas como parciais. Hoje nunca vai para o arquivo dos
-/// dias fechados; a conta se refaz a cada pedido.
+/// `config_dir` e nas chamadas soltas da pasta da máquina `ledger_dir`, e
+/// marcadas como parciais. Hoje nunca vai para o arquivo dos dias fechados; a
+/// conta se refaz a cada pedido.
 #[must_use]
-pub fn count_open(config_dir: &Path, today: &str) -> Vec<DayRow> {
+pub fn count_open(config_dir: &Path, ledger_dir: Option<&Path>, today: &str) -> Vec<DayRow> {
     let range = Range { first: Some(today.to_string()), last: today.to_string() };
-    count(config_dir, &range).into_iter().map(|row| DayRow { partial: true, ..row }).collect()
+    count(config_dir, ledger_dir, &range).into_iter().map(|row| DayRow { partial: true, ..row }).collect()
 }
 
 /// A linha de cada dia e projeto de `range`, contada nas conversas de
-/// `config_dir` (a pasta de configuração do Claude Code) e nas specs dos
-/// projetos que elas citam, em ordem de dia e de projeto.
+/// `config_dir` (a pasta de configuração do Claude Code), nas specs dos
+/// projetos que elas citam e nas chamadas soltas da pasta da máquina
+/// `ledger_dir`, quando há, em ordem de dia e de projeto.
 ///
 /// O arquivo que não mudou desde o começo da faixa não tem linha dela e nem
 /// chega a ser aberto.
 #[must_use]
-pub fn count(config_dir: &Path, range: &Range) -> Vec<DayRow> {
+pub fn count(config_dir: &Path, ledger_dir: Option<&Path>, range: &Range) -> Vec<DayRow> {
     let floor = range.first.as_deref().and_then(day_start).map(SystemTime::from);
     let mut projects = Projects::default();
     let mut tally = SpendTally::default();
@@ -340,14 +412,16 @@ pub fn count(config_dir: &Path, range: &Range) -> Vec<DayRow> {
         tally_file(&path, range, &mut tally, &mut projects, fallback.as_deref());
     }
     let mut rows = tally.finish();
-    for (name, roots) in std::mem::take(&mut projects.roots) {
-        for call in roots.iter().flat_map(|root| jev_calls(root, range)) {
-            let row = rows
-                .entry((call.day.clone(), name.clone()))
-                .or_insert_with(|| DayRow { day: call.day.clone(), project: name.clone(), ..DayRow::default() });
-            row.jev_tokens = row.jev_tokens.saturating_add(call.tokens);
-            row.jev_cost_micro_usd = row.jev_cost_micro_usd.saturating_add(call.cost_micro_usd);
-        }
+    let in_specs = std::mem::take(&mut projects.roots).into_iter().flat_map(|(name, roots)| {
+        roots.iter().flat_map(|root| jev_calls(root, range)).map(|call| (name.clone(), call)).collect::<Vec<_>>()
+    });
+    let loose = ledger_dir.map(loose_calls).unwrap_or_default().into_iter().filter(|(_, call)| range.contains(&call.day));
+    for (name, call) in in_specs.chain(loose) {
+        let row = rows
+            .entry((call.day.clone(), name.clone()))
+            .or_insert_with(|| DayRow { day: call.day.clone(), project: name.clone(), ..DayRow::default() });
+        row.jev_tokens = row.jev_tokens.saturating_add(call.tokens);
+        row.jev_cost_micro_usd = row.jev_cost_micro_usd.saturating_add(call.cost_micro_usd);
     }
     rows.into_values().collect()
 }
@@ -428,7 +502,7 @@ mod tests {
         conversation(&config, "p", "s1", &lines);
         conversation(&config, "p", "s2", &[last]);
 
-        let rows = count(&config, &range(None, "2026-10-01"));
+        let rows = count(&config, None, &range(None, "2026-10-01"));
         assert_eq!(rows.len(), 1, "the loose folder and today stay out: {rows:?}");
         let row = &rows[0];
         assert_eq!((row.day.as_str(), row.project.as_str()), ("2026-10-01", "meu-projeto"));
@@ -469,7 +543,7 @@ mod tests {
         ];
         fs::write(spec.join("spec.ndjson"), events.join("\n") + "\n").unwrap();
 
-        let rows = count(&config, &range(None, "2026-10-03"));
+        let rows = count(&config, None, &range(None, "2026-10-03"));
         let jev = |row: &DayRow| (row.day.clone(), row.jev_tokens, row.jev_cost_micro_usd);
         let seen: Vec<_> = rows.iter().map(jev).collect();
         assert_eq!(
@@ -492,7 +566,7 @@ mod tests {
         fs::create_dir_all(&agents).unwrap();
         fs::write(agents.join("agent-1.jsonl"), reply("m9", "2026-10-01T15:05:00Z", &gone, 90, &[])).unwrap();
 
-        let rows = count(&config, &range(None, "2026-10-01"));
+        let rows = count(&config, None, &range(None, "2026-10-01"));
         assert_eq!(rows.len(), 1, "{rows:?}");
         assert_eq!((rows[0].project.as_str(), rows[0].tokens), ("meu-projeto", 100));
     }
@@ -525,7 +599,9 @@ mod tests {
     /// painel de gasto soma o mesmo mês pelo mesmo número. Dos outros projetos
     /// da máquina entra o que o arquivo do gasto já fechou no mês pedido; as
     /// linhas do próprio projeto, que as specs dele já trazem, e as de outro
-    /// mês ficam de fora, e um arquivo ilegível vale como ausente.
+    /// mês ficam de fora, e um arquivo ilegível vale como ausente. As chamadas
+    /// feitas sem spec entram no mês do projeto delas e no painel, cada uma
+    /// no seu mês, e a linha que não se lê fica de fora.
     #[test]
     fn the_month_of_jev_spend_counts_only_that_months_billed_calls_and_matches_the_panel() {
         let dir = tempdir().unwrap();
@@ -561,8 +637,8 @@ mod tests {
         );
         write("outra", &[call(1, "2026-10-04T09:00:00-03:00", "wave items", billed(50))]);
         let old = write("velha", &[call(1, "2026-10-05T09:00:00-03:00", "map search", billed(60_000))]);
-        let long_ago = SystemTime::now() - std::time::Duration::from_secs(40 * 24 * 3600);
-        fs::File::options().write(true).open(&old).unwrap().set_modified(long_ago).unwrap();
+        let before_october = SystemTime::from(day_start("2026-09-15").unwrap());
+        fs::File::options().write(true).open(&old).unwrap().set_modified(before_october).unwrap();
 
         // O mês de outubro vem sem o fim de setembro, sem o que não gastou e
         // sem a spec que ninguém mexe desde antes do mês.
@@ -573,7 +649,7 @@ mod tests {
 
         // O painel soma o mesmo mês pelo mesmo número (menos a spec que a
         // leitura leve nem abre).
-        let rows = count(&config, &range(Some("2026-10-01"), "2026-10-31"));
+        let rows = count(&config, None, &range(Some("2026-10-01"), "2026-10-31"));
         let panel: u64 = rows.iter().map(|row| row.jev_cost_micro_usd).sum();
         assert_eq!(panel, october + 60_000, "the panel also reads the file nobody touched");
 
@@ -597,7 +673,26 @@ mod tests {
         .unwrap();
         assert_eq!(jev_month_micro_usd(&root, Some(&machine), "2026-10"), october + 730);
         assert_eq!(jev_month_micro_usd(&root, Some(&machine), "2026-09"), 5_000 + 8_888);
+
+        // As chamadas sem spec: a do próprio projeto entra no mês dela e no
+        // painel; a de outro projeto entra no painel, e no teto só pelo
+        // arquivo do gasto, quando o dia dela fechar.
+        let loose = |project: &str, at: &str, cost: u64| {
+            let call = LooseCall { project: project.to_string(), at: at.to_string(), tokens: 10, cost_micro_usd: cost };
+            append_loose(&machine, &call).unwrap();
+        };
+        loose("meu-projeto", "2026-10-03T10:00:00-03:00", 2_000);
+        loose("meu-projeto", "2026-09-30T23:59:00-03:00", 3_000);
+        loose("outro", "2026-10-03T10:00:00-03:00", 4_000);
+        let mut file = fs::File::options().append(true).open(machine.join(LOOSE_CALLS)).unwrap();
+        std::io::Write::write_all(&mut file, b"{ \"cost_micro_usd\": 50000 }\n").unwrap();
+        assert_eq!(jev_month_micro_usd(&root, Some(&machine), "2026-10"), october + 730 + 2_000);
+        assert_eq!(jev_month_micro_usd(&root, Some(&machine), "2026-09"), 5_000 + 8_888 + 3_000);
+        let rows = count(&config, Some(&machine), &range(Some("2026-10-01"), "2026-10-31"));
+        let panel_of = |project: &str| rows.iter().filter(|row| row.project == project).map(|row| row.jev_cost_micro_usd).sum::<u64>();
+        assert_eq!((panel_of("meu-projeto"), panel_of("outro")), (october + 60_000 + 2_000, 4_000));
+
         fs::write(ledger_path(&machine), "{ não é json").unwrap();
-        assert_eq!(jev_month_micro_usd(&root, Some(&machine), "2026-10"), october, "an unreadable file counts as absent");
+        assert_eq!(jev_month_micro_usd(&root, Some(&machine), "2026-10"), october + 2_000, "an unreadable file counts as absent");
     }
 }

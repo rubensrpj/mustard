@@ -17,7 +17,11 @@
 //! dos dois idiomas do projeto, lida da configuração: é assim que os
 //! consertos e as revisões cujo texto o orquestrador escreve recebem o idioma
 //! dos nomes. O texto que já traz a linha, como o pedido da rodada,
-//! passa como veio. O despacho de uma onda também: ele abre com o título do
+//! passa como veio. O despacho ao `mustard-review` que o orquestrador
+//! escreve — a revisão do levantamento e a do pull request — ganha no fim as
+//! regras do projeto, o texto do `CLAUDE.md` da raiz, porque o revisor é
+//! instalado sem ele; o que manda ler o pedido da revisão final não ganha,
+//! porque esse pedido já as traz. O despacho de uma onda também: ele abre com o título do
 //! pedido dela, e é por esse título, na primeira linha da conversa do agente,
 //! que a rodada acha o agente e soma o gasto da onda; a linha na frente o
 //! empurraria para baixo, e o pedido que o agente lê pelo comando do despacho
@@ -32,10 +36,10 @@ use std::path::Path;
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::domain::spec_events::Refusal;
 use mustard_core::domain::spec_state::State;
-use mustard_core::domain::wave_prompt::{is_wave_title, language_line};
+use mustard_core::domain::wave_prompt::{carries_project_rules, is_wave_title, language_line, project_rules_section};
 use mustard_core::io::spec_events as store;
 use mustard_core::io::transcript::heading_of;
-use mustard_core::io::wave_prompt::{prompts, Flight};
+use mustard_core::io::wave_prompt::{project_rules, prompts, Flight};
 use mustard_core::platform::error::Error;
 use mustard_core::platform::i18n::Locale;
 use mustard_core::{ProjectConfig, AGENT_NAMES};
@@ -153,7 +157,8 @@ fn explore(input: &HookInput, ctx: &Ctx) -> Verdict {
 /// O despacho sem bilhete: a um agente do Mustard, num projeto com
 /// `mustard.json`, o texto ganha no topo a linha dos idiomas, salvo quando já
 /// a traz ou quando é o despacho de uma onda, que abre com o título do pedido
-/// dela e nada pode vir antes; o resto passa como veio.
+/// dela e nada pode vir antes. O despacho ao revisor ganha também, no fim, as
+/// regras do projeto ([`review_rules`]). O resto passa como veio.
 fn without_ticket(input: &HookInput, ctx: &Ctx) -> Verdict {
     let root = ctx.project_dir_or_cwd(input);
     if !to_mustard_agent(input) || !ProjectConfig::exists(Path::new(&root)) {
@@ -165,10 +170,28 @@ fn without_ticket(input: &HookInput, ctx: &Ctx) -> Verdict {
         return Verdict::Allow;
     }
     let line = language_line(&language);
-    if prompt.contains(&line) {
+    let mut text = if prompt.contains(&line) { prompt.to_string() } else { format!("{line}\n\n{prompt}") };
+    if let Some(rules) = review_rules(input, Path::new(&root), prompt, language.text_or_default()) {
+        text = format!("{}\n\n{rules}", text.trim_end());
+    }
+    if text == prompt {
         return Verdict::Allow;
     }
-    with_prompt(input, format!("{line}\n\n{prompt}"))
+    with_prompt(input, text)
+}
+
+/// As regras do projeto que o despacho ao revisor ganha no fim, quando o
+/// texto é do orquestrador — a revisão do levantamento e a do pull request:
+/// o revisor é instalado sem os `CLAUDE.md`, e o pedido que ele recebe é o
+/// único caminho delas. Nada ao agente de onda, ao texto que já traz a seção
+/// e ao que manda ler o pedido gravado da revisão final, que já a traz; nada
+/// também sem o `CLAUDE.md` na raiz ou com ele vazio.
+fn review_rules(input: &HookInput, root: &Path, prompt: &str, lang: Locale) -> Option<String> {
+    let to_reviewer = input.tool_input.get("subagent_type").and_then(Value::as_str) == Some("mustard-review");
+    if !to_reviewer || prompt.contains("run read request-review") || carries_project_rules(prompt, lang) {
+        return None;
+    }
+    project_rules(root).map(|rules| project_rules_section(&rules, lang))
 }
 
 impl Check for SubagentInject {
@@ -420,6 +443,38 @@ mod tests {
 
         let ticket = rewritten(dispatch_to(root, "mustard-wave", "MUSTARD-WAVE: x 1"));
         assert_eq!(ticket, round);
+    }
+
+    /// O despacho que o orquestrador escreve ao revisor — a revisão do
+    /// levantamento, a do pull request — ganha no fim as regras do projeto, o
+    /// texto do `CLAUDE.md` da raiz; sem o arquivo, sai como antes, só com a
+    /// linha dos idiomas. Não as ganham: o texto que já traz a seção, o
+    /// despacho que manda ler o pedido gravado da revisão final, que já as
+    /// traz, o conserto ao agente de onda e o pedido da onda.
+    #[test]
+    fn a_review_dispatch_written_by_the_conductor_ends_with_the_project_rules() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        planned(root, 1);
+        approve(root);
+        std::fs::write(root.join("mustard.json"), r#"{"language":{"code":"pt-BR"}}"#).unwrap();
+        let line = translate("prompt.languages", Locale::PtBr).replace("{text}", "pt-BR").replace("{code}", "pt-BR");
+        let survey = "Confira o levantamento inteiro da spec x.";
+        assert_eq!(rewritten(dispatch_to(root, "mustard-review", survey)), format!("{line}\n\n{survey}"), "no file");
+
+        let rules = "# Regras\n\n- O instalador nunca grava na configuração do git.";
+        std::fs::write(root.join("CLAUDE.md"), format!("{rules}\n")).unwrap();
+        let review = rewritten(dispatch_to(root, "mustard-review", survey));
+        let section = format!("## Regras do projeto\n\n{}\n\n{rules}", translate("prompt.project_rules.source", Locale::PtBr));
+        assert_eq!(review, format!("{line}\n\n{survey}\n\n{section}"));
+        assert_eq!(dispatch_to(root, "mustard-review", &review), Verdict::Allow, "the section is never repeated");
+
+        let final_review = format!("{line}\n\nmustard-rt run read request-review --root /r --spec x");
+        assert_eq!(dispatch_to(root, "mustard-review", &final_review), Verdict::Allow, "the recorded request has them");
+        let fix = rewritten(dispatch_to(root, "mustard-wave", "Conserte o teste da soma."));
+        assert_eq!(fix, format!("{line}\n\nConserte o teste da soma."));
+        let wave = rewritten(dispatch_to(root, "mustard-wave", "MUSTARD-WAVE: x 1"));
+        assert!(!wave.contains("configuração do git") && wave == assembled(root), "{wave}");
     }
 
     /// O despacho de uma onda — o texto que abre com o título do pedido dela e

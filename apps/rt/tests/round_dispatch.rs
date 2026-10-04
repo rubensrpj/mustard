@@ -100,6 +100,7 @@ impl Project {
             .env_remove("MUSTARD_ACTIVE_SPEC")
             .env_remove("TYPESAFE_API_KEY")
             .env_remove("MUSTARD_JEV_URL")
+            .env_remove("MUSTARD_SPEND_DIR")
             .env_remove("MUSTARD_SESSION_ID")
             .env_remove("CLAUDE_SESSION_ID")
             .env_remove("CLAUDE_CODE_SESSION_ID")
@@ -968,4 +969,101 @@ fn without_a_key_the_wave_leaves_in_the_same_round_with_the_default_items() {
     assert!(prompt.contains(&project_code) && !prompt.contains(&other_code), "{prompt}");
     assert!(sent.fields.get("analysis").is_none(), "{:?}", sent.fields);
     assert!(item_calls(&project).is_empty(), "no key, no call");
+}
+
+// ---------------------------------------------------------------------------
+// O teto do mês do Jev, de ponta a ponta
+// ---------------------------------------------------------------------------
+
+/// Um Jev de mentira que responde à busca: cada candidato com chance de 0,9,
+/// a existência também, e `input_tokens` tokens de entrada cobrados.
+fn answering_searches(input_tokens: u64) -> FakeJev {
+    FakeJev::start(move |asked| {
+        let ids = asked["questions"]["where"]["criteria"].as_object().map(|criteria| criteria.keys().cloned().collect::<Vec<_>>());
+        let chances: serde_json::Map<String, Value> = ids.unwrap_or_default().into_iter().map(|id| (id, json!(0.9))).collect();
+        let answers = json!({"where": {"type": "choice", "choice": "c000", "probabilities": chances},
+            "exists": {"type": "noul", "noul": 0.9}});
+        (200, json!({"model": "jev-1.13.0", "answers": answers, "usage": {"input_tokens": input_tokens, "output_tokens": 0}}))
+    })
+}
+
+/// Grava o mapa do projeto em dia, com as duas funções de `src/main.rs`: a
+/// busca lê o mapa sem passar pelo scan.
+fn mapped(project: &Project) {
+    let root = &project.root;
+    std::fs::write(
+        root.join("src/main.rs"),
+        "fn main() {\n    println!(\"{}\", greeting());\n}\n\nfn greeting() -> &'static str {\n    \"oi\"\n}\n",
+    )
+    .expect("code");
+    git(root, &["commit", "-q", "-am", "saudação"]);
+    let blob = Command::new("git").args(["hash-object", "--", "src/main.rs"]).current_dir(root).output().expect("git");
+    let now = mustard_core::io::project_map::listing(root).expect("inside git");
+    let map = json!({
+        "state": {"head": now.head, "listing": now.digest(), "base": now.base.name, "base_tip": now.base.tip},
+        "modules": [{
+            "path": "src/main.rs", "language": "rust", "loc": 7,
+            "blob": String::from_utf8_lossy(&blob.stdout).trim(),
+            "declarations": [
+                {"kind": "function", "name": "main", "line": 1, "end_line": 3, "signature": "fn main()",
+                 "body_comment": "imprime a saudação do programa"},
+                {"kind": "function", "name": "greeting", "line": 5, "end_line": 7, "signature": "fn greeting() -> &'static str",
+                 "body_comment": "o texto da saudação"}
+            ]
+        }]
+    });
+    mustard_core::io::project_map::write_text(root, &map.to_string()).expect("the map");
+}
+
+/// A busca feita sem spec deixa o custo do Jev no arquivo da máquina, e ele
+/// conta no teto do mês: a primeira busca custa 10,08 dólares, mais que o
+/// teto padrão de 10, e a segunda responde só com o mapa, com o aviso do
+/// teto, sem pedido nenhum ao serviço.
+#[test]
+fn a_search_without_a_spec_spends_from_the_month_and_the_spent_month_answers_from_the_map_alone() {
+    let jev = answering_searches(240_000_000);
+    let mut project = Project::new();
+    project.jev = Some(jev.url.clone());
+    mapped(&project);
+    let root = project.root.to_string_lossy().to_string();
+    let search = || project.run(&["map", "search", "--query", "texto da saudação", "--root", &root]);
+
+    let first = search();
+    assert_eq!(first["filter"], json!("jev"), "the month had budget left: {first}");
+    assert_eq!(jev.all_requests().len(), 1);
+
+    let second = search();
+    assert!(second.get("filter").is_none() && second.get("pieces").is_none(), "{second}");
+    assert!(second["files"].as_array().is_some_and(|files| !files.is_empty()), "the map answers: {second}");
+    assert_eq!(second["warnings"], json!([translate("map.search.over_budget", Locale::PtBr)]), "{second}");
+    assert_eq!(jev.all_requests().len(), 1, "the spent month sent nothing more to the service");
+}
+
+/// Com o mês já gasto por uma chamada gravada de 10 dólares, o teto padrão, a
+/// rodada não pergunta nada ao Jev, que juntaria as três tarefas e levaria a
+/// regra de outro arquivo: a montagem é a por arquivo, o pedido leva os itens
+/// do padrão, e a rodada avisa que o teto segurou o Jev.
+#[test]
+fn once_the_month_is_spent_the_round_assembles_and_picks_the_items_without_the_jev() {
+    let jev = judging_items(|_| 0.9);
+    let files: [&[&str]; 3] = [&["a.rs"], &["a.rs", "b.rs"], &["c.rs"]];
+    let (project, _, said, tasks) = judged_project(&files, &jev);
+    let (project_code, other_code) = two_rules(&project, said);
+    project.seed(
+        "call",
+        &json!({"author": "binary", "command": "map search", "ms": 900, "result": "ok", "filter": "jev", "tokens": 238_095_238,
+            "cost_micro_usd": 10_000_000}),
+    );
+
+    let out = project.run(&["round", "--spec", SPEC]);
+
+    assert!(jev.all_requests().is_empty(), "nothing reached the service: {:?}", jev.all_requests());
+    assert_eq!(batch_orders(&project), vec![vec![tasks[0], tasks[1]], vec![tasks[2]]], "the assembly by file");
+    let log = project.log();
+    let sent = log.visible().into_iter().find(|e| e.event_type == "send" && e.wave() == Some(1)).expect("the send");
+    let prompt = sent.str_field("text").expect("the request");
+    assert!(prompt.contains(&project_code) && !prompt.contains(&other_code), "the default items: {prompt}");
+    assert!(sent.fields.get("analysis").is_none(), "{:?}", sent.fields);
+    let reasons: Vec<&Value> = out["warnings"].as_array().into_iter().flatten().map(|warning| &warning["reason"]).collect();
+    assert_eq!(reasons, [&json!("jev-over-budget")], "{out}");
 }

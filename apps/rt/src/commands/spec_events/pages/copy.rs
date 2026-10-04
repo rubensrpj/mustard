@@ -37,7 +37,9 @@
 //! número do último item do arquivo, o mesmo `last` do registro da cópia. É
 //! por ela que a volta de um lote de outra preparação não casa com o registro
 //! de agora. Cada lote (`spec-<n>.json`) é a lista `writes` de uma chamada da
-//! ferramenta do banco, com até [`BATCH_MAX`] escritas. A resposta traz as
+//! ferramenta do banco, com até [`BATCH_MAX`] escritas e até
+//! [`batches::BATCH_MAX_BYTES`] bytes somando os documentos: o banco recusa
+//! a chamada grande demais ([`batches_in`]). A resposta traz as
 //! escritas de cada lote prontas, em `copy.<página>.writes`, com o
 //! `file_path` absoluto: a conversa as manda sem ler arquivo nenhum. A cópia
 //! feita vira um registro `copy` na spec, com o número até onde a cópia foi:
@@ -49,9 +51,9 @@
 //! página do projeto.
 //!
 //! A página do gasto da máquina ([`super::spend`]) usa os mesmos passos de
-//! preparação — o documento em arquivo, o lote de até [`BATCH_MAX`] escritas e
-//! o caminho absoluto —, pelas funções que recebem a pasta onde gravar
-//! ([`set_in`] e [`batches_in`]), em vez da pasta de uma spec.
+//! preparação — o documento em arquivo, o lote dividido pela quantidade e
+//! pelo tamanho e o caminho absoluto —, pelas funções que recebem a pasta
+//! onde gravar ([`set_in`] e [`batches_in`]), em vez da pasta de uma spec.
 //!
 //! ## A versão de cada documento
 //!
@@ -171,6 +173,9 @@ pub(crate) const SPEC_RECORD: &str = "record.json";
 
 /// Quantas escritas cabem numa chamada da ferramenta do banco.
 pub(crate) const BATCH_MAX: usize = 50;
+
+mod batches;
+pub(crate) use batches::batches_in;
 
 /// Os registros internos, que a cópia não leva: o texto que um gancho colocou
 /// na conversa, a chamada de um comando e o aviso de um gancho.
@@ -1148,31 +1153,11 @@ pub(crate) fn set_in(
     Ok(json!({ "op": "set", "collection": collection, "doc_id": doc_id, "file_path": relative(root, &path) }))
 }
 
-/// Grava as escritas em lotes de até [`BATCH_MAX`], `<nome>-1.json`,
-/// `<nome>-2.json`…, uma escrita por linha, e devolve os caminhos e as
-/// escritas de cada lote, como foram gravadas.
+/// Grava as escritas da spec em lotes ([`batches_in`]), `<nome>-1.json`,
+/// `<nome>-2.json`…, e devolve os caminhos e as escritas de cada lote, como
+/// foram gravadas.
 fn batches(place: &Place, name: &str, writes: &[Value]) -> Result<(Vec<String>, Vec<Vec<Value>>), Refusal> {
     batches_in(place.root, &place.folder, name, writes)
-}
-
-/// [`batches`] sem a spec: os lotes vão para `folder`, e o caminho de cada um
-/// sai relativo a `root`.
-pub(crate) fn batches_in(
-    root: &Path,
-    folder: &Path,
-    name: &str,
-    writes: &[Value],
-) -> Result<(Vec<String>, Vec<Vec<Value>>), Refusal> {
-    let mut files = Vec::new();
-    let mut sent = Vec::new();
-    for (n, chunk) in writes.chunks(BATCH_MAX).enumerate() {
-        let path = folder.join(format!("{name}-{}.json", n + 1));
-        let lines: Vec<String> = chunk.iter().map(Value::to_string).collect();
-        write(&path, &format!("[\n{}\n]\n", lines.join(",\n")))?;
-        files.push(relative(root, &path));
-        sent.push(chunk.to_vec());
-    }
-    Ok((files, sent))
 }
 
 /// As escritas de cada lote de `sent` como a resposta as mostra: o

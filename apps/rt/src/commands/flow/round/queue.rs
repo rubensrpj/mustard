@@ -3135,6 +3135,26 @@ mod tests {
         assert_eq!(wave_order(root, 2), vec![three], "a terceira passaria de 110 mil");
     }
 
+    /// O teto da montagem acompanha o limite do agente de onda: 150 mil menos
+    /// os 40 mil do começo, 110 mil. Duas tarefas do mesmo tipo de nota 1
+    /// (65 mil cada, 130 mil juntas) passam dele e saem em duas ondas; o teto
+    /// de 140 mil da decisão antiga as juntaria numa só.
+    #[test]
+    fn two_tasks_of_level_one_pass_the_budget_the_wave_limit_leaves_and_leave_in_two_waves() {
+        use crate::shared::dag::TaskKind;
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, crit) = backlog_project(root);
+        let one = backlog_task_on(root, said, crit, "Mexer no código de um.", &["src/a.rs"]);
+        let two = backlog_task_on(root, said, crit, "Mexer no código de dois.", &["src/b.rs"]);
+
+        let judge = judging_sized(|_| TaskKind::Feature, |_| 1.0);
+        let log = spec_now(root);
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), Some(&judge)), Ok(vec![1, 2]));
+        assert_eq!(wave_order(root, 1), vec![one], "130 mil passam de 110 mil");
+        assert_eq!(wave_order(root, 2), vec![two]);
+    }
+
     /// Com vaga para uma onda só, a que passou do teto fica no backlog, sem
     /// onda, e entra na montagem da rodada em que uma vaga abrir.
     #[test]
