@@ -36,10 +36,3 @@ pub(crate) mod manifest_dir;
 pub(crate) mod executable;
 
 pub use commands::init::{InitOptions, init};
-
-/// The version stamped into `mustard.json` by `init`.
-///
-/// Sourced from this crate's `Cargo.toml` at compile time so the package
-/// version is the single source of truth — no `package.json` lookup, no
-/// runtime file read.
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
