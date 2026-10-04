@@ -69,8 +69,8 @@ pub mod settings;
 pub use cleanup::{CleanupDone, CleanupPlan, PendingList};
 pub use files::{
     default_inject_entries, harness_text_paths, harness_texts, migrate_inject_declarations,
-    project_page_template_path, same_declared_path, seed_gitignore, seed_harness_texts,
-    session_map_declared_path,
+    project_page_template_path, refresh_agent_texts, same_declared_path, seed_gitignore,
+    seed_harness_texts, session_map_declared_path,
 };
 pub use footprint::{
     carries_private_marks, detect_install_mode, footprint, footprint_pathspecs, footprint_rules,

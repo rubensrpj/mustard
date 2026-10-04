@@ -497,7 +497,34 @@ pub(super) fn run_round_with_mine(
     mine: &dyn Fn(&Path, &Path) -> mustard_core::platform::error::Result<mustard_core::domain::scan::ScanReport>,
 ) -> Result<Value, RoundRefusal> {
     let entry = enter_round(opts, root, caller.session)?;
-    run_entered_round(opts, root, lang, caller, mine, entry)
+    // Os agentes do projeto voltam ao texto deste programa no começo da
+    // rodada, e não na hora do despacho: o Claude Code leva alguns segundos
+    // para reler o arquivo, e o agente aberto logo depois da troca ainda
+    // roda o texto antigo.
+    let refreshed = agents_refreshed(root, lang);
+    let mut out = run_entered_round(opts, root, lang, caller, mine, entry)?;
+    if let Some((reason, hint)) = refreshed {
+        crate::commands::spec_events::pages::push_warning(&mut out, reason, &hint);
+    }
+    Ok(out)
+}
+
+/// Regrava os agentes do Mustard no projeto em `root` que diferem do texto
+/// deste programa, e devolve o aviso da resposta: o motivo e a frase em
+/// `lang`, que nomeia os arquivos regravados, ou o erro que impediu a
+/// regravação. Sem nada regravado, nada a dizer. É a mesma conferência na
+/// rodada e no fechamento, antes de cada um despachar um agente.
+pub(crate) fn agents_refreshed(root: &Path, lang: Locale) -> Option<(&'static str, String)> {
+    match mustard_core::refresh_agent_texts(root) {
+        Ok(files) if files.is_empty() => None,
+        Ok(files) => {
+            Some(("agents-refreshed", translate("round.agents_refreshed", lang).replace("{files}", &files.join(", "))))
+        }
+        Err(error) => Some((
+            "agents-not-refreshed",
+            translate("round.agents_not_refreshed", lang).replace("{detail}", &error.to_string()),
+        )),
+    }
 }
 
 /// O que a rodada leu ao entrar, antes de assumir qualquer volta e de pegar
@@ -1166,6 +1193,83 @@ mod tests {
             Some("pr_open"),
             "a obra não foi reaberta"
         );
+    }
+
+    /// A pasta dos agentes do Mustard no projeto em `root`, já criada, com o
+    /// `mustard.json` que escolhe o modelo e o esforço deles.
+    fn agents_folder(root: &Path) -> std::path::PathBuf {
+        std::fs::write(root.join("mustard.json"), br#"{"agents":{"model":"sonnet","effort":"low"}}"#).unwrap();
+        let folder = root.join(".claude/agents/mustard");
+        std::fs::create_dir_all(&folder).unwrap();
+        folder
+    }
+
+    /// Os avisos da resposta `out` com o motivo `reason`.
+    fn warnings_of(out: &Value, reason: &str) -> Vec<Value> {
+        let all = out["warnings"].as_array().cloned().unwrap_or_default();
+        all.into_iter().filter(|w| w["reason"] == json!(reason)).collect()
+    }
+
+    /// A rodada confere os agentes do projeto antes de despachar: o arquivo
+    /// com o texto de outra versão volta ao que a instalação escreveria, com
+    /// o modelo e o esforço do `mustard.json`, e a resposta o nomeia. O
+    /// arquivo já igual não é regravado, nem citado no aviso.
+    #[test]
+    fn the_round_rewrites_the_stale_agent_file_and_names_it() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        let folder = agents_folder(root);
+        std::fs::write(folder.join("wave.md"), "---\nname: mustard-wave\nmodel: opus\n---\nO texto antigo.\n").unwrap();
+        std::fs::write(folder.join("review.md"), shipped_agent(root, "review")).unwrap();
+        let long_ago = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000);
+        std::fs::File::options().write(true).open(folder.join("review.md")).unwrap().set_modified(long_ago).unwrap();
+
+        let out = round(root, "x", None);
+        assert_eq!(out["ok"], json!(true), "{out}");
+        assert_eq!(out["dispatch"].as_array().map(Vec::len), Some(1), "{out}");
+
+        let wave = std::fs::read_to_string(folder.join("wave.md")).unwrap();
+        assert_eq!(wave, shipped_agent(root, "wave"));
+        assert!(wave.contains("\nmodel: sonnet\n") && wave.contains("\neffort: low\n"), "{wave}");
+        let review = std::fs::metadata(folder.join("review.md")).unwrap().modified().unwrap();
+        assert_eq!(review, long_ago, "o agente igual foi regravado");
+        let said = warnings_of(&out, "agents-refreshed");
+        assert_eq!(said.len(), 1, "{out}");
+        let hint = said[0]["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains(".claude/agents/mustard/wave.md") && !hint.contains("review.md"), "{hint}");
+    }
+
+    /// O projeto sem a pasta dos agentes do Mustard não a ganha da rodada, e
+    /// a resposta não fala de agente nenhum.
+    #[test]
+    fn the_round_creates_no_agents_folder_in_a_project_without_it() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+
+        let out = round(root, "x", None);
+        assert_eq!(out["ok"], json!(true), "{out}");
+        assert!(!root.join(".claude/agents").exists(), "a rodada criou a pasta dos agentes");
+        assert!(warnings_of(&out, "agents-refreshed").is_empty(), "{out}");
+    }
+
+    /// O agente que não pode ser regravado não segura a rodada: ela despacha
+    /// do mesmo jeito, e a resposta diz que o agente pode estar com o texto
+    /// de outra versão, com o erro.
+    #[test]
+    fn an_agent_that_cannot_be_rewritten_is_reported_and_the_round_goes_on() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        let folder = agents_folder(root);
+        std::fs::create_dir_all(folder.join("wave.md")).unwrap();
+        std::fs::write(folder.join("wave.md/dentro"), "uma pasta no lugar do agente").unwrap();
+
+        let out = round(root, "x", None);
+        assert_eq!(out["ok"], json!(true), "{out}");
+        assert_eq!(out["dispatch"].as_array().map(Vec::len), Some(1), "{out}");
+        assert_eq!(warnings_of(&out, "agents-not-refreshed").len(), 1, "{out}");
     }
 
     /// A obra aprovada `x`, com a onda 1 entregue e fechada; com `pr`, também

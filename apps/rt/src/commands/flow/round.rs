@@ -150,7 +150,7 @@ use serde_json::Value;
 use crate::commands::spec_events;
 use crate::shared::spec_state::session_from_env;
 
-pub(crate) use answer::{read_command, RoundRefusal};
+pub(crate) use answer::{agents_refreshed, read_command, RoundRefusal};
 pub(crate) use queue::{backlog_left, open_review, open_sends, tasks_left, wave_states, waves_in_progress, waves_pending_fix};
 #[cfg(test)]
 pub(crate) use slots::copies_leave_with_the_test;
@@ -161,7 +161,7 @@ pub(crate) use slots::{
 };
 pub(crate) use read_check::request_name;
 #[cfg(test)]
-pub(crate) use tests::{read_request, read_review, seed_read};
+pub(crate) use tests::{read_request, read_review, seed_read, shipped_agent};
 pub(crate) use report::{check_return, check_verdict_return, take_report};
 pub(crate) use usage::Caller;
 
@@ -311,6 +311,17 @@ mod tests {
         before(said);
         crate::shared::spec_state::approve_in(&root.join(".claude").join("spec").join(spec));
         copies_leave_with_the_test(root);
+    }
+
+    /// O texto que a instalação escreveria agora no agente `name` do projeto
+    /// em `root`, no idioma e com o modelo e o esforço do `mustard.json` dele.
+    pub(crate) fn shipped_agent(root: &Path, name: &str) -> String {
+        let config = mustard_core::ProjectConfig::load(root);
+        let rel = format!("agents/mustard/{name}.md");
+        mustard_core::harness_texts(config.language().text_or_default(), config.agent_settings())
+            .into_iter()
+            .find_map(|(path, body)| (path == rel).then_some(body))
+            .unwrap_or_else(|| panic!("a instalação não escreve o agente {name}"))
     }
 
     /// O mapa do projeto em `root`, como o scan o grava, com uma parte só, na

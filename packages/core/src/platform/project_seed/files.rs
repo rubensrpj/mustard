@@ -52,12 +52,48 @@ pub fn harness_texts(text: Locale, agents: AgentSettings<'_>) -> Vec<(String, St
         (format!("{PAGES_DIR}/{SPEC_PAGE_NAME}"), spec_page_template(text)),
         (format!("{PAGES_DIR}/{PROJECT_PAGE_NAME}"), project_page_template(text)),
     ];
-    out.extend(
-        agent_texts(text)
-            .into_iter()
-            .map(|(name, body)| (format!("{AGENTS_DIR}/{name}.md"), with_agent_settings(body, agents))),
-    );
+    out.extend(agent_files(text, agents));
     out
+}
+
+/// Os dois agentes do Mustard como a instalação os escreve, a partir de
+/// `.claude/`: `(caminho, corpo)`, no idioma `text` e com o `model:` e o
+/// `effort:` de `agents` no cabeçalho.
+fn agent_files(text: Locale, agents: AgentSettings<'_>) -> impl Iterator<Item = (String, String)> + '_ {
+    agent_texts(text)
+        .into_iter()
+        .map(move |(name, body)| (format!("{AGENTS_DIR}/{name}.md"), with_agent_settings(body, agents)))
+}
+
+/// Regrava, em `.claude/agents/mustard/` do projeto em `root`, o agente cujo
+/// arquivo difere do texto que a instalação escreveria agora: o deste
+/// programa, no `language.text` do projeto e com o `agents.model` e o
+/// `agents.effort` dele. O Claude Code lê esse arquivo ao abrir o agente, e
+/// sem isto o texto ficava o da última instalação, por mais que o programa
+/// mudasse.
+///
+/// Só os dois agentes: nenhum outro arquivo do projeto é tocado, e o projeto
+/// sem a pasta dos agentes não ganha a pasta. O arquivo igual fica como
+/// está, sem ser regravado; o que falta na pasta é escrito.
+///
+/// Devolve o caminho, a partir da raiz do projeto, de cada arquivo regravado.
+///
+/// # Errors
+///
+/// O erro de disco ao gravar o arquivo de um agente.
+pub fn refresh_agent_texts(root: &Path) -> Result<Vec<String>> {
+    let claude_dir = root.join(".claude");
+    if !claude_dir.join(AGENTS_DIR).is_dir() {
+        return Ok(Vec::new());
+    }
+    let config = ProjectConfig::load(root);
+    let mut rewritten = Vec::new();
+    for (rel, body) in agent_files(config.language().text_or_default(), config.agent_settings()) {
+        if seed_static_file(&claude_dir.join(&rel), &body, true)? != SeedOutcome::Preserved {
+            rewritten.push(format!(".claude/{rel}"));
+        }
+    }
+    Ok(rewritten)
 }
 
 /// Os caminhos, a partir de `.claude/`, de todo texto que [`harness_texts`]

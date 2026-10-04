@@ -42,7 +42,7 @@ pub(crate) mod manifest_dir;
 pub use platform::project_seed::{
     carries_private_marks, default_inject_entries, detect_install_mode, footprint,
     footprint_pathspecs, footprint_rules, harness_text_paths, harness_texts, is_written_footprint,
-    migrate_inject_declarations, output_style_for, retire_planted_plugin_enablement,
+    migrate_inject_declarations, output_style_for, refresh_agent_texts, retire_planted_plugin_enablement,
     seed_gitignore, seed_harness_texts, seed_settings, session_map_declared_path,
     upsert_project, CleanupDone, CleanupPlan, FootprintEntry, InstallMode, SeedOutcome, Switches,
     UpsertReport, CLAUDE_LOCAL_MD, CLAUDE_MD, PRIVATE_MARKS, RTK_HOOK_COMMAND,

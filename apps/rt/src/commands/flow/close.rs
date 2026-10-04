@@ -266,6 +266,12 @@ fn run_close(
         return Err(CloseRefusal::NotRunning { phase });
     }
 
+    // Os agentes do projeto voltam ao texto deste programa no começo do
+    // fechamento, bem antes do envio da revisão: o Claude Code leva alguns
+    // segundos para reler o arquivo, e o revisor aberto logo depois da troca
+    // ainda rodaria o texto antigo.
+    let agents_hint = crate::commands::flow::round::agents_refreshed(root, lang);
+
     // Nada fica preso: todo processo que um agente deixou rodando — um laço
     // de espera, ou um comando na cópia de uma onda já apagada — é encerrado
     // no fechamento, e a resposta diz qual. A busca espera a trava do passo
@@ -383,6 +389,9 @@ fn run_close(
             let hint = crate::commands::flow::round::code_kept_hint(kept, lang);
             spec_events::pages::push_warning(&mut out, "code-kept", &hint);
         }
+        if let Some((reason, hint)) = &agents_hint {
+            spec_events::pages::push_warning(&mut out, reason, hint);
+        }
         return Ok(out);
     }
 
@@ -427,6 +436,9 @@ fn run_close(
     });
     if let Some(hint) = &stuck_hint {
         spec_events::pages::push_warning(&mut out, "stuck-ended", hint);
+    }
+    if let Some((reason, hint)) = &agents_hint {
+        spec_events::pages::push_warning(&mut out, reason, hint);
     }
     for (reason, hint) in removal_warnings(&removal, lang) {
         spec_events::pages::push_warning(&mut out, reason, &hint);
@@ -1488,6 +1500,32 @@ mod tests {
         assert_eq!(sent.str_field("role"), Some("review"), "{sent:?}");
         assert_eq!(sent.str_field("model"), Some("opus"), "o envio segue o modelo da configuração: {sent:?}");
         assert_eq!(sent.str_field("effort"), Some("medium"), "o envio segue o esforço da configuração: {sent:?}");
+    }
+
+    /// O fechamento confere os agentes do projeto antes de pedir a revisão:
+    /// o revisor com o texto de outra versão volta ao que a instalação
+    /// escreveria, e a resposta que pede a revisão o nomeia. O agente de onda,
+    /// já igual, não entra no aviso.
+    #[test]
+    fn closing_rewrites_the_stale_review_agent_before_asking_for_the_review() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        ready_to_close(root, "x", &["git --version"]);
+        let folder = root.join(".claude/agents/mustard");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("wave.md"), crate::commands::flow::round::shipped_agent(root, "wave")).unwrap();
+        std::fs::write(folder.join("review.md"), "---\nname: mustard-review\n---\nO revisor antigo.\n").unwrap();
+
+        let asked =
+            close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None, ..Default::default() }, None);
+        assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+        let review = std::fs::read_to_string(folder.join("review.md")).unwrap();
+        assert_eq!(review, crate::commands::flow::round::shipped_agent(root, "review"));
+        let warnings = asked["warnings"].as_array().cloned().unwrap_or_default();
+        let said: Vec<&Value> = warnings.iter().filter(|w| w["reason"] == json!("agents-refreshed")).collect();
+        assert_eq!(said.len(), 1, "{asked}");
+        let hint = said[0]["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains(".claude/agents/mustard/review.md") && !hint.contains("wave.md"), "{hint}");
     }
 
     /// O revisor grava o veredito, e o fechamento o assume sem relatório. A

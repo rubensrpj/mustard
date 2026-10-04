@@ -1121,6 +1121,26 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              request carries the usual items. The budget is jev.monthly_budget_usd in mustard.json, 10 dollars \
              when it says nothing."
         }
+        // O aviso da rodada e do fechamento: os agentes do projeto estavam
+        // com outro texto e voltaram ao deste programa, ou não puderam voltar.
+        ("round.agents_refreshed", Locale::PtBr) => {
+            "Os agentes {files} estavam com um texto diferente do deste Mustard e foram regravados. \
+             O Claude Code leva alguns segundos para reler o arquivo."
+        }
+        ("round.agents_refreshed", Locale::EnUs) => {
+            "The agents {files} had a text different from this Mustard's and were rewritten. \
+             Claude Code takes a few seconds to read the file again."
+        }
+        ("round.agents_not_refreshed", Locale::PtBr) => {
+            "Os agentes em .claude/agents/mustard/ não puderam ser conferidos nem regravados: {detail}. \
+             O agente abre com o texto que estiver lá, que pode ser de outra versão. \
+             Rode `mustard-rt run upsert` para regravá-los."
+        }
+        ("round.agents_not_refreshed", Locale::EnUs) => {
+            "The agents in .claude/agents/mustard/ could not be checked or rewritten: {detail}. \
+             The agent opens with the text that is there, which may be from another version. \
+             Run `mustard-rt run upsert` to rewrite them."
+        }
         ("round.fix_push", Locale::PtBr) => {
             "A onda de conserto está entregue e comitada na branch da obra, que continua fechada: \
              empurre o conserto para o servidor com `{command}`."
@@ -1814,8 +1834,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            218,
-            0xdbdc_dece_5cfa_6f89,
+            220,
+            0x933a_bd44_b9cd_7375,
         );
     }
 
@@ -2064,6 +2084,8 @@ mod tests {
             ("round.backlog_stuck", &["{tasks}"][..]),
             ("round.task_without_covers", &["{tasks}"][..]),
             ("round.jev_over_budget", &[][..]),
+            ("round.agents_refreshed", &["{files}"][..]),
+            ("round.agents_not_refreshed", &["{detail}"][..]),
             ("round.fix_limit", &["{wave}", "{count}", "{max}", "{verdicts}"][..]),
             ("round.fix_limit.question", &["{wave}", "{max}"][..]),
             ("round.resume.steps", &[][..]),
