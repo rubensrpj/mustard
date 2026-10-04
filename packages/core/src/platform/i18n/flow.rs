@@ -582,19 +582,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              continues. Put the tasks you did not start in `undone`. A new agent does what is left \
              in the next round."
         }
-        // O aviso ao agente de onda que pede de novo linhas que leu há pouco
-        // e que não mudaram: elas estão acima, na conversa.
-        ("conversation_size.reread", Locale::PtBr) => {
-            "[Mustard] Você já leu as linhas {from} a {to} de {file} há cerca de {ago} mil tokens, e \
-             elas não mudaram desde então. O texto delas está acima, na sua conversa: use-o em vez de \
-             ler de novo. Só se não o achar lá, repita o mesmo pedido e a leitura passa."
-        }
-        ("conversation_size.reread", Locale::EnUs) => {
-            "[Mustard] You already read lines {from} to {to} of {file} about {ago} thousand tokens ago, \
-             and they have not changed since. Their text is above, in your conversation: use it instead \
-             of reading again. Only if you cannot find it there, repeat the same request and the read \
-             goes through."
-        }
         ("round.files_diverged", Locale::PtBr) => {
             "A cópia da onda {wave} mudou {changed} arquivo(s) e a entrega citou {declared}: ficou de \
              fora {missing}. Todos entraram no commit mesmo assim."
@@ -1792,8 +1779,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            216,
-            0x2dd0_b6dc_c6da_4b76,
+            215,
+            0x7c92_66df_f664_4269,
         );
     }
 

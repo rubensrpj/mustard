@@ -5,12 +5,12 @@
 //! registro e não muda. Cada gancho diz os pares `(Trigger, ToolMatch)` em que
 //! roda, e uma chamada que não casa com nenhum deles nem o executa.
 //!
-//! São quinze, e só eles: a trava de comandos, o portão de escrita, o aviso de
-//! releitura, o pedido do subagente, a testemunha da aprovação, a testemunha
-//! da cópia da página, a entrada da mensagem, o início da sessão, o conserto
-//! da barra de status, o sinal de vida da onda, a testemunha do glossário do
-//! mapa, o aviso antes de compactar, o aviso de tamanho da conversa, a faxina
-//! do fim da sessão e a conferência do fim da resposta.
+//! São quatorze, e só eles: a trava de comandos, o portão de escrita, o pedido
+//! do subagente, a testemunha da aprovação, a testemunha da cópia da página,
+//! a entrada da mensagem, o início da sessão, o conserto da barra de status,
+//! o sinal de vida da onda, a testemunha do glossário do mapa, o aviso antes
+//! de compactar, o aviso de tamanho da conversa, a faxina do fim da sessão e
+//! a conferência do fim da resposta.
 
 use crate::hooks::bash::command_guard::CommandGuard;
 use crate::hooks::observe::approval_witness::ApprovalWitness;
@@ -19,7 +19,6 @@ use crate::hooks::observe::glossary_witness::GlossaryWitness;
 use crate::hooks::observe::wave_alive_observer::WaveAliveObserver;
 use crate::hooks::session::conversation_size::{PrecompactNotice, SizeNotice};
 use crate::hooks::session::prompt_entry::PromptEntry;
-use crate::hooks::session::reread::RereadGuard;
 use crate::hooks::session::session_cleanup_observer::SessionCleanupObserver;
 use crate::hooks::session::session_start_inject::SessionStartInject;
 use crate::hooks::session::statusline_heal_observer::StatuslineHealObserver;
@@ -81,10 +80,6 @@ const FILE_TOOLS: &[&str] = &["Read", "Write", "Edit", "MultiEdit", "NotebookEdi
 /// glossário do mapa.
 const EDIT_TOOLS: &[&str] = &["Edit", "Write", "MultiEdit"];
 
-/// As ferramentas que leem arquivo e que o aviso de releitura confere: a
-/// leitura (`Read`) e o terminal, onde o `cat` e o `sed -n` leem.
-const READ_TOOLS: &[&str] = &["Read", "Bash"];
-
 /// As ferramentas que despacham um subagente.
 const AGENT_TOOLS: &[&str] = &["Task", "Agent"];
 
@@ -117,19 +112,6 @@ impl Registry {
                 applies_to: &[(Trigger::PreToolUse, ToolMatch::OneOf(FILE_TOOLS))],
                 check: Some(Box::new(WriteGate)),
                 observer: None,
-            },
-            // O aviso de releitura: ao agente de onda que pede de novo linhas
-            // que leu há pouco e que não mudaram, antes da leitura, responde
-            // que elas estão acima na conversa; depois da leitura, anota o
-            // que ela trouxe.
-            Module {
-                id: "reread_guard",
-                applies_to: &[
-                    (Trigger::PreToolUse, ToolMatch::OneOf(READ_TOOLS)),
-                    (Trigger::PostToolUse, ToolMatch::OneOf(READ_TOOLS)),
-                ],
-                check: Some(Box::new(RereadGuard)),
-                observer: Some(Box::new(RereadGuard)),
             },
             // O pedido do subagente, no despacho de um agente: troca o bilhete
             // da onda pelo pedido montado, ou barra com o motivo.
@@ -275,9 +257,9 @@ mod tests {
         registry.applicable(trigger, tool).iter().map(|m| m.id).collect()
     }
 
-    /// O registro tem os quinze ganchos que ficam, e só eles.
+    /// O registro tem os quatorze ganchos que ficam, e só eles.
     #[test]
-    fn the_registry_holds_exactly_the_fifteen_hooks() {
+    fn the_registry_holds_exactly_the_fourteen_hooks() {
         let registry = Registry::new();
         let mut ids = registry.ids();
         ids.sort_unstable();
@@ -291,7 +273,6 @@ mod tests {
                 "glossary_witness",
                 "precompact_notice",
                 "prompt_entry",
-                "reread_guard",
                 "session_cleanup_observer",
                 "session_start_inject",
                 "size_notice",
@@ -317,59 +298,28 @@ mod tests {
         assert!(!ToolMatch::Named("Bash").matches(Some("bash")));
     }
 
-    /// A trava de comandos roda só no `PreToolUse` do Bash, junto do aviso de
-    /// releitura; o sinal de vida da onda, que roda depois de toda ferramenta,
-    /// continua no `PostToolUse`.
+    /// A trava de comandos roda só no `PreToolUse` do Bash; o sinal de vida
+    /// da onda, que roda depois de toda ferramenta, continua no
+    /// `PostToolUse`.
     #[test]
     fn the_command_guard_runs_before_bash_only() {
         let registry = Registry::new();
-        assert_eq!(applicable_ids(&registry, Trigger::PreToolUse, Some("Bash")), ["command_guard", "reread_guard"]);
-        assert_eq!(
-            applicable_ids(&registry, Trigger::PostToolUse, Some("Bash")),
-            ["reread_guard", "wave_alive_observer", "size_notice"]
-        );
+        assert_eq!(applicable_ids(&registry, Trigger::PreToolUse, Some("Bash")), ["command_guard"]);
+        assert_eq!(applicable_ids(&registry, Trigger::PostToolUse, Some("Bash")), ["wave_alive_observer", "size_notice"]);
         assert!(!applicable_ids(&registry, Trigger::PreToolUse, Some("Write")).contains(&"command_guard"));
-    }
-
-    /// O aviso de releitura confere a leitura e o terminal antes da
-    /// ferramenta, anota o que ela trouxe depois dela, e não roda em mais
-    /// nenhuma ferramenta nem evento; é uma trava e um observador ao mesmo
-    /// tempo.
-    #[test]
-    fn the_reread_guard_runs_on_read_and_bash_before_and_after() {
-        let registry = Registry::new();
-        for tool in ["Read", "Bash"] {
-            for trigger in [Trigger::PreToolUse, Trigger::PostToolUse] {
-                assert!(applicable_ids(&registry, trigger, Some(tool)).contains(&"reread_guard"), "{trigger:?} {tool}");
-            }
-        }
-        for tool in ["Write", "Edit", "Grep", "Glob", "Task", "Agent", "AskUserQuestion"] {
-            for trigger in [Trigger::PreToolUse, Trigger::PostToolUse] {
-                assert!(!applicable_ids(&registry, trigger, Some(tool)).contains(&"reread_guard"), "{trigger:?} {tool}");
-            }
-        }
-        for trigger in [Trigger::UserPromptSubmit, Trigger::PreCompact, Trigger::Stop, Trigger::SessionStart] {
-            assert!(!applicable_ids(&registry, trigger, None).contains(&"reread_guard"), "{trigger:?}");
-        }
-        let module = registry.by_id("reread_guard").expect("registered");
-        assert!(module.check.is_some() && module.observer.is_some());
     }
 
     /// O portão de escrita roda antes das cinco ferramentas de arquivo e das
     /// duas buscas (por palavra e por nome), e só delas; o sinal de vida da
     /// onda segue rodando depois de cada uma, e a testemunha do glossário, só
-    /// depois das três que editam texto: a leitura nunca ensina. A leitura
-    /// (`Read`) ganha o aviso de releitura, antes e depois.
+    /// depois das três que editam texto: a leitura nunca ensina.
     #[test]
     fn the_write_gate_runs_on_the_file_tools_and_the_searches() {
         let registry = Registry::new();
         for tool in ["Read", "Write", "Edit", "MultiEdit", "NotebookEdit", "Grep", "Glob"] {
-            let before: &[&str] = if tool == "Read" { &["write_gate", "reread_guard"] } else { &["write_gate"] };
-            assert_eq!(applicable_ids(&registry, Trigger::PreToolUse, Some(tool)), before, "{tool}");
+            assert_eq!(applicable_ids(&registry, Trigger::PreToolUse, Some(tool)), ["write_gate"], "{tool}");
             let after: &[&str] = if ["Write", "Edit", "MultiEdit"].contains(&tool) {
                 &["wave_alive_observer", "glossary_witness", "size_notice"]
-            } else if tool == "Read" {
-                &["reread_guard", "wave_alive_observer", "size_notice"]
             } else {
                 &["wave_alive_observer", "size_notice"]
             };

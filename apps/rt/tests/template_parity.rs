@@ -504,7 +504,6 @@ const KEPT_HOOKS: &[&str] = &[
     "glossary_witness",
     "precompact_notice",
     "prompt_entry",
-    "reread_guard",
     "session_cleanup_observer",
     "session_start_inject",
     "size_notice",
