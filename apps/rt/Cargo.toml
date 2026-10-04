@@ -7,6 +7,7 @@ description = "Mustard enforcement runtime: a single binary that replaces the pe
 license = "MIT"
 publish = false
 build = "build.rs"
+autotests = false
 
 [[bin]]
 name = "mustard-rt"
@@ -27,6 +28,11 @@ test = false
 [lib]
 name = "mustard_rt"
 path = "src/lib.rs"
+
+# Todos os testes de integração num programa só (`tests/it.rs`).
+[[test]]
+name = "it"
+path = "tests/it.rs"
 
 # Dependency versions live in the workspace `[workspace.dependencies]` table
 # (root Cargo.toml); each crate references them with `{ workspace = true }`.

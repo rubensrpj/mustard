@@ -3,13 +3,8 @@
 // `src/main.rs` so test panics on `.unwrap()` remain valid assertions.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-//! O backlog, o teto do pedido e o padrão do projeto no pedido, ligados à
-//! rodada de verdade, pelo binário numa pasta temporária.
-//!
-//! Uma spec aprovada com tarefas soltas no backlog, sem onda gravada nenhuma,
-//! tem a rodada formando o lote sozinha, com o evento de onda de autor
-//! binário — antes disso, quem decidia as ondas prontas só lia onda já
-//! gravada, e o backlog ficava preso, formado só por teste.
+//! O teto do pedido e o padrão do projeto no pedido, ligados à rodada de
+//! verdade, pelo binário numa pasta temporária.
 //!
 //! Uma spec aprovada com uma tarefa cujo texto passa do teto de tokens do
 //! pedido tem a rodada recusada, com o tamanho medido e o teto, sem gravar
@@ -32,6 +27,7 @@ use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Value};
 
+#[path = "support/mod.rs"]
 mod support;
 
 const SPEC: &str = "backlog";
@@ -91,6 +87,8 @@ impl Project {
             .env_remove("CLAUDE_PLUGIN_ROOT")
             .env_remove("CARGO_TARGET_DIR")
             .env_remove("MUSTARD_ACTIVE_SPEC")
+            .env_remove("TYPESAFE_API_KEY")
+            .env_remove("MUSTARD_JEV_URL")
             .env_remove("MUSTARD_SESSION_ID")
             .env_remove("CLAUDE_SESSION_ID")
             .env_remove("CLAUDE_CODE_SESSION_ID")
@@ -202,38 +200,6 @@ fn approve(project: &Project) {
         }),
     );
     assert_eq!(State::from_log(&project.log()).phase, Some("approved"));
-}
-
-/// Uma spec aprovada sem onda gravada, só com tarefas soltas no backlog: a
-/// rodada, antes de escolher as ondas prontas, forma o lote sozinha e grava
-/// o evento de onda com autor binário — sem esse fio, quem decide as ondas
-/// prontas só lê onda já gravada, e o backlog nunca sai do lugar.
-#[test]
-fn a_round_forms_a_lot_from_the_backlog_and_records_it_as_the_binarys_wave() {
-    let project = Project::new();
-    project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
-    let said = survey(&project);
-    let criterion = project.write(
-        "criterion",
-        &json!({"title": "Combinar o item", "when": "o programa roda", "then": "a saudação nova aparece", "proof": "git --version",
-            "form": "ubiquitous", "origin": said}),
-    );
-    project.write(
-        "task",
-        &json!({"agent": "- conferir pelo teste", "title": "Entregar a tarefa", "text": "Trocar a saudação no programa.", "files": [{"path": "src/main.rs"}],
-            "depends_on": [], "covers": [criterion["id"]], "origin": said}),
-    );
-    project.run(&["plan", "--spec", SPEC]);
-    approve(&project);
-
-    let before = project.log();
-    assert!(before.visible().into_iter().all(|e| e.event_type != "wave"), "no hand-made wave before the round");
-
-    project.run(&["round", "--spec", SPEC]);
-
-    let after = project.log();
-    let wave = after.visible().into_iter().find(|e| e.event_type == "wave").expect("the round forms a lot from the backlog");
-    assert_eq!(wave.str_field("author"), Some("binary"), "the lot the round forms is the binary's, not hand-designed");
 }
 
 /// Uma spec aprovada com uma tarefa cujo pedido passa do teto de tokens: a

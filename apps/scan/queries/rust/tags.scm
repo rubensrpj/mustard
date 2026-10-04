@@ -97,8 +97,7 @@
 ; O trecho começa no primeiro atributo da fila colada ao item, porque é aí
 ; que o mapa começa a declaração dele, e vai até o fim do item. O módulo fica
 ; de fora: o mapa não o guarda como declaração, e a marca dele não faz parte
-; do trecho. A função com `#[test]` solta não entra: o arquivo de teste a
-; escreve, e a chamada que ela faz segue sendo uso do que chama.
+; do trecho.
 ((attribute_item)* @test_block
   .
   (attribute_item) @_marker @test_block
@@ -120,6 +119,21 @@
     (extern_crate_declaration)
   ] @test_block
   (#match? @_marker "(?s)^#\\[\\s*cfg\\(\\s*(test|(all|any)\\(\\s*(.*,\\s*)?test\\s*[,)].*)\\s*\\)\\s*\\]$"))
+
+; A função com `#[test]` solta, fora de um módulo de teste: é teste, e não
+; programa, com os atributos colados a ela e o mesmo trecho do item solto de
+; cima. A chamada que ela faz não é uso do que chama, e a declaração dela não
+; é código sem uso. No arquivo que é ele mesmo de teste (`@test_unit`, e não
+; `@test_block`) a chamada segue sendo uso: é ela que mostra quem testa cada
+; declaração.
+((attribute_item)* @test_unit
+  .
+  (attribute_item) @_marker @test_unit
+  .
+  (attribute_item)* @test_unit
+  .
+  (function_item) @test_unit
+  (#match? @_marker "^#\\[\\s*test\\s*\\]$"))
 
 ; Todo módulo com corpo escrito dentro do arquivo, o de teste incluído: o
 ; `super` escrito dentro de N deles sai primeiro desses N módulos, e só depois

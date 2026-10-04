@@ -438,7 +438,7 @@ mod tests {
         let calls = || -> Vec<String> {
             let text = std::fs::read_to_string(&log).unwrap_or_default();
             let words: Vec<String> =
-                text.lines().map(|line| line.split(' ').filter(|word| !word.starts_with('-') && *word != "core.quotePath=false").next().unwrap_or("").to_string()).collect();
+                text.lines().map(|line| line.split(' ').find(|word| !word.starts_with('-') && *word != "core.quotePath=false").unwrap_or("").to_string()).collect();
             let _ = std::fs::write(&log, "");
             words
         };

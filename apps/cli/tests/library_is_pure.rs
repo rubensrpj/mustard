@@ -166,7 +166,7 @@ fn a_library_init_touches_nothing_outside_the_project() {
     // it and re-adding a handful puts the code under measurement in a world no
     // real caller lives in — an act gated on `TERM` was invisible that way.
     let out = Command::new(std::env::current_exe().expect("current exe"))
-        .args(["--exact", "library_probe_child", "--nocapture"])
+        .args(["--exact", "library_is_pure::library_probe_child", "--nocapture"])
         .env(PROBE_ENV, work)
         .env("PATH", &bin)
         .env("HOME", &home)

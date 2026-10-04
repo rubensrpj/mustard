@@ -266,73 +266,11 @@ fn doctor_does_not_ask_for_a_flow_that_the_installer_no_longer_writes() {
          grant",
     );
 
-    // --- 2. O que entrou no lugar é a medição, RODADA e não lida -------------
-    //
-    // Esta metade já grepou o `doctor.rs` atrás do nome da função e da chamada
-    // que ela faz — a prática que o próprio critério proíbe pelo nome, e pelo
-    // motivo que cinco rodadas de revisão mostraram: uma busca no texto do
-    // código prova que a linha existe, nunca que o comportamento vale. Então a
-    // conferência é EXECUTADA contra um projeto de verdade na forma que o
-    // instalador deixa (sem `git.flow` escrito) e o que se afirma é a SAÍDA
-    // dela.
-    let dir = tempfile::tempdir().expect("tempdir");
-    let root = dir.path();
-    let git = |args: &[&str]| {
-        std::process::Command::new("git")
-            .arg("-C")
-            .arg(root)
-            .args(args)
-            .output()
-            .expect("git")
-    };
-    // Um origin de verdade: o projeto precisa estar na forma que o instalador
-    // deixa, com remoto e sem `git.flow`.
-    let upstream = dir.path().join("upstream.git");
-    std::process::Command::new("git")
-        .args(["init", "-q", "--bare"])
-        .arg(&upstream)
-        .output()
-        .expect("bare origin");
-    git(&["init", "."]);
-    git(&["config", "user.email", "t@t"]);
-    git(&["config", "user.name", "t"]);
-    git(&["checkout", "-b", "producao"]);
-    std::fs::write(root.join("mustard.json"), r#"{"git":{"provider":"github"}}"#).expect("cfg");
-    git(&["add", "-A"]);
-    git(&["commit", "-m", "seed"]);
-    git(&["remote", "add", "origin", &upstream.to_string_lossy()]);
-    git(&["push", "-q", "-u", "origin", "producao"]);
-    git(&["remote", "set-head", "origin", "producao"]);
-
-    // `doctor` has no `--root`: it reads the project from the working directory,
-    // so the test must STAND in the temp project rather than name it.
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
-        .args(["run", "doctor", "--check", "branch-protection"])
-        .current_dir(root)
-        .output()
-        .expect("doctor runs");
-    let said = format!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert!(
-        out.status.success(),
-        "`doctor --check branch-protection` does not run — the name the operator is \
-         told to type is not the name the binary answers to: {said}",
-    );
-    // Sem `git.flow`, nada fica protegido — nem aqui nem no servidor — e o
-    // diagnóstico precisa dizer isso. Ficar calado deixaria o operador
-    // acreditando numa proteção que não existe: a instalação não escreve fluxo
-    // nenhum, e a proteção passou a sair só do que o projeto declara.
-    assert!(
-        said.contains("git.flow"),
-        "o diagnóstico não diz que a falta do `git.flow` deixa tudo desprotegido: {said}",
-    );
-    assert!(
-        said.contains("mustard init"),
-        "e não diz como declarar as bases: {said}",
-    );
+    // --- 2. O que entrou no lugar é provado em `commands/doctor` -------------
+    // `missing_flow_becomes_a_warning_because_nothing_is_protected` roda o aviso
+    // sem `git.flow` (nomeia o `git.flow` e manda rodar `mustard init`), e
+    // `contract_checks_remain_accepted` prova que `--check branch-protection`
+    // é aceito pelo parser.
 
     // --- 3. The installer really writes no flow -----------------------------
     // Without this half the assertions above outlive their reason: they are

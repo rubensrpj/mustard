@@ -5,6 +5,7 @@ edition = "2024"
 description = "Map a codebase (files, declarations, links, history and stacks) into a rich, language-agnostic model. Framework- and language-agnostic. (Mustard's scan engine.)"
 license = "MIT"
 build = "build.rs"
+autotests = false
 
 # Every `grammar_*` alias below IS used, but never from a file under `src/`: the
 # only reference is the `grammar` column of `languages.toml`, which `build.rs`
@@ -32,6 +33,11 @@ ignored-paths = ["tests/fixtures/**/*.rs"]
 [[bin]]
 name = "scan"
 path = "src/main.rs"
+
+# Todos os testes de integração num programa só (`tests/it.rs`).
+[[test]]
+name = "it"
+path = "tests/it.rs"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }

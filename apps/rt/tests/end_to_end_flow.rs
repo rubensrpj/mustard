@@ -45,6 +45,7 @@ use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Value};
 
+#[path = "support/mod.rs"]
 mod support;
 #[path = "support/executable.rs"]
 mod executable;
@@ -422,6 +423,8 @@ impl Project {
             .env_remove("CLAUDE_PLUGIN_ROOT")
             .env_remove("CARGO_TARGET_DIR")
             .env_remove("MUSTARD_ACTIVE_SPEC")
+            .env_remove("TYPESAFE_API_KEY")
+            .env_remove("MUSTARD_JEV_URL")
             .env_remove("MUSTARD_SESSION_ID")
             .env_remove("CLAUDE_SESSION_ID")
             .env_remove("CLAUDE_CODE_SESSION_ID")
@@ -682,6 +685,16 @@ fn a_test_spec_runs_end_to_end_one_call_per_step_and_leaves_three_files() {
     let asked = project.run(&["close", "--spec", SPEC]);
     assert_eq!(asked["phase"], json!("running"), "{asked}");
     assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+    // O pedido de verdade que o binário monta para o revisor usa o nome de
+    // mercado dos termos, sem sobra do nome antigo.
+    let log = project.log();
+    let review = log.visible().into_iter().rfind(|e| e.event_type == "send" && e.str_field("role") == Some("review")).expect("the review send");
+    let request = review.str_field("text").unwrap_or_default();
+    assert!(request.contains("## Requisitos acordados"), "o pedido da revisão usa o nome de mercado: {request}");
+    assert!(
+        !request.contains("Combinado") && !request.contains("## Prova") && !request.contains("## Revisão final"),
+        "o pedido da revisão não guarda um nome antigo: {request}"
+    );
 
     // O revisor grava o veredito aprovado; o fechamento o assume e fecha.
     let verdict = json!({"final": true, "result": "approved", "text": "A saudação mudou.",
@@ -722,43 +735,11 @@ fn a_test_spec_runs_end_to_end_one_call_per_step_and_leaves_three_files() {
         .collect();
     names.sort();
     assert_eq!(names, ["copy", "spec.ndjson"], "the spec folder ends with the events and the copy, and no page");
-}
 
-/// O fluxo inteiro, da abertura ao pull request, não grava onda pela linha de
-/// comando: o plano leva só o critério e a tarefa, e a onda que sai nasce da
-/// rodada, pelo backlog. No fim, toda linha de onda do arquivo da spec — lida
-/// crua, com as versões antigas e as removidas — tem autor binário, e há ao
-/// menos uma, para a conferência não passar num arquivo sem onda.
-#[test]
-fn whole_flow_does_not_write_a_wave_on_the_command_line() {
-    let project = Project::new();
-    project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
-    survey(&project);
-    plan(&project);
-    approve(&project);
-
-    let first = first_round(&project);
-    assert_eq!(first["dispatch"].as_array().map(Vec::len), Some(1), "{first}");
-    let log = project.log();
-    let sent = log.visible().into_iter().rfind(|e| e.event_type == "send").expect("the send");
-    let copy = PathBuf::from(sent.str_field("copy").expect("the copy"));
-    std::fs::write(copy.join("src/main.rs"), "fn main() {\n    println!(\"olá\");\n}\n").expect("the change");
-    let delivered = json!({"wave": 1, "text": "A saudação virou olá.", "files": ["src/main.rs"],
-        "commit": "a saudação vira olá", "agreed": agreed_all_met(&project)});
-    project.read_request(1);
-    project.run(&["write", "delivered", "--spec", SPEC, "--json", &delivered.to_string()]);
-    project.run(&["round", "--spec", SPEC]);
-    project.run(&["close", "--spec", SPEC]);
-    let verdict = json!({"final": true, "result": "approved", "text": "A saudação mudou.",
-        "agreed": agreed_all_met(&project)});
-    project.read_review();
-    project.run(&["write", "verdict", "--spec", SPEC, "--json", &verdict.to_string()]);
-    let closed = project.run(&["close", "--spec", SPEC]);
-    let pr_line = closed["command"].as_str().expect("the pr-open line").to_string();
-    let argv: Vec<&str> = pr_line.split_whitespace().skip(2).collect();
-    project.run(&argv);
-    assert_eq!(State::from_log(&project.log()).phase, Some("pr_open"));
-
+    // O fluxo inteiro não grava onda pela linha de comando: toda linha de onda
+    // do arquivo da spec — lida crua, com as versões antigas e as removidas —
+    // tem autor binário, e há ao menos uma, para a conferência não passar num
+    // arquivo sem onda.
     let path = store::spec_file(&project.root, SPEC).expect("spec file");
     let content = std::fs::read_to_string(&path).expect("the spec file");
     let waves: Vec<Value> = content
@@ -936,9 +917,9 @@ fn amending_an_old_criterion_does_not_require_a_form() {
 
 /// Os três termos internos usam o nome de mercado, nos dois idiomas: o que
 /// era "combinado" vira "requisitos acordados", o que era "prova" vira
-/// "verificação", e o que era "revisão final" vira "aceitação" — sem sobra do
-/// nome antigo no texto impresso, inclusive no pedido de verdade que o
-/// binário monta para o agente da onda.
+/// "verificação", e o que era "revisão final" vira "aceitação". O pedido de
+/// verdade que o binário monta para o revisor é conferido no teste do fluxo de
+/// ponta a ponta.
 #[test]
 fn three_terms_use_the_market_name() {
     let expected = [
@@ -953,23 +934,6 @@ fn three_terms_use_the_market_name() {
     ];
     for (locale, key, expected_text) in expected {
         assert_eq!(translate(key, locale), expected_text, "{key} ({locale:?}) usa o nome de mercado");
-    }
-
-    let project = Project::new();
-    project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
-    survey(&project);
-    plan(&project);
-    approve(&project);
-    first_round(&project);
-    let log = project.log();
-    let sent = log.visible().into_iter().rfind(|e| e.event_type == "send").expect("the send");
-    let text = sent.str_field("text").unwrap_or_default();
-    assert!(!text.contains("Combinado"), "o pedido enviado não guarda o nome antigo: {text}");
-    if text.contains("## ") {
-        assert!(
-            !text.contains("## Prova") && !text.contains("## Revisão final"),
-            "nenhum cabeçalho do pedido guarda um nome antigo: {text}"
-        );
     }
 }
 

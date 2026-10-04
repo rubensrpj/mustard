@@ -250,10 +250,15 @@ fn a_test_survey_goes_through_every_point_and_the_plan_is_refused_while_one_is_o
 
 /// A tarefa gravada pela porta do binário sem uma das três declarações
 /// obrigatórias (o que ela faz, os arquivos que toca, de quais tarefas
-/// depende) é recusada nomeando exatamente a que faltou, e nada entra no
-/// arquivo da spec; com as três, a gravação passa.
+/// depende) é recusada nomeando só a que faltou, e nada entra no arquivo da
+/// spec; um texto em branco vale como texto faltando; com as três, sem número
+/// de onda e sem nota, a gravação passa.
 #[test]
-fn a_task_missing_one_of_the_three_declarations_is_refused_naming_it_and_writes_nothing() {
+fn a_task_missing_a_declaration_is_refused_naming_only_it_and_writes_nothing() {
+    const TEXT: &str = "o que ela faz";
+    const FILES: &str = "os arquivos que toca";
+    const DEPENDS: &str = "de quais tarefas depende";
+
     let dir = repo();
     let root = dir.path();
     let opened = rt(root, &["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
@@ -264,121 +269,46 @@ fn a_task_missing_one_of_the_three_declarations_is_refused_naming_it_and_writes_
     let path = store::spec_file(root, SPEC).expect("the spec's file");
     let lines_before = std::fs::read_to_string(&path).expect("the spec file").lines().count();
 
-    // Falta só `depends_on`: a recusa nomeia só ela.
-    let out = rt(
-        root,
-        &[
-            "write",
-            "task",
-            "--spec",
-            SPEC,
-            "--json",
-            &json!({"agent": "- conferir pelo teste", "title": "Entregar a tarefa", "text": "Somar dois números.", "files": [], "covers": [crit], "origin": said}).to_string(),
-        ],
-    );
-    let refused = report(&out);
-    assert_eq!(refused["reason"], json!("task-declaration-missing"), "{refused}");
-    let hint = refused["hint"].as_str().unwrap_or_default();
-    assert!(hint.contains("de quais tarefas depende"), "{hint}");
-    assert!(!hint.contains("o que ela faz") && !hint.contains("os arquivos que toca"), "{hint}");
-    assert_eq!(
-        std::fs::read_to_string(&path).expect("the spec file").lines().count(),
-        lines_before,
-        "nothing was written"
-    );
+    let complete = json!({"agent": "- conferir pelo teste", "title": "Entregar a tarefa", "text": "Somar dois números.", "files": [], "depends_on": [], "covers": [crit], "origin": said});
+    let without = |keys: &[&str]| {
+        let mut task = complete.clone();
+        for key in keys {
+            task.as_object_mut().unwrap().remove(*key);
+        }
+        task
+    };
+    // O que falta, a tarefa com isso faltando e as declarações que a recusa nomeia.
+    let mut blank = complete.clone();
+    blank["text"] = json!("   ");
+    let cases: [(&str, Value, &[&str]); 4] = [
+        ("depends_on", without(&["depends_on"]), &[DEPENDS]),
+        ("files and depends_on", without(&["files", "depends_on"]), &[FILES, DEPENDS]),
+        ("text", without(&["text"]), &[TEXT]),
+        ("a blank text", blank, &[TEXT]),
+    ];
+    for (missing, task, named) in &cases {
+        let out = rt(root, &["write", "task", "--spec", SPEC, "--json", &task.to_string()]);
+        let refused = report(&out);
+        assert_eq!(refused["reason"], json!("task-declaration-missing"), "{missing}: {refused}");
+        let hint = refused["hint"].as_str().unwrap_or_default();
+        for declaration in [TEXT, FILES, DEPENDS] {
+            assert_eq!(
+                hint.contains(declaration),
+                named.contains(&declaration),
+                "missing {missing}: the refusal names exactly what is missing: {hint}"
+            );
+        }
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("the spec file").lines().count(),
+            lines_before,
+            "missing {missing}: nothing was written"
+        );
+    }
 
-    // Faltam `files` e `depends_on`: a recusa nomeia as duas, sem citar `text`.
-    let out = rt(
-        root,
-        &[
-            "write",
-            "task",
-            "--spec",
-            SPEC,
-            "--json",
-            &json!({"agent": "- conferir pelo teste", "title": "Entregar a tarefa", "text": "Somar dois números.", "covers": [crit], "origin": said}).to_string(),
-        ],
-    );
-    let refused = report(&out);
-    assert_eq!(refused["reason"], json!("task-declaration-missing"), "{refused}");
-    let hint = refused["hint"].as_str().unwrap_or_default();
-    assert!(hint.contains("os arquivos que toca") && hint.contains("de quais tarefas depende"), "{hint}");
-    assert!(!hint.contains("o que ela faz"), "{hint}");
-    assert_eq!(
-        std::fs::read_to_string(&path).expect("the spec file").lines().count(),
-        lines_before,
-        "nothing was written"
-    );
-
-    // Com as três, a gravação passa.
-    let written = write(
-        root,
-        "task",
-        &json!({"agent": "- conferir pelo teste", "title": "Entregar a tarefa", "text": "Somar dois números.", "files": [], "depends_on": [], "covers": [crit], "origin": said}),
-    );
+    let written = write(root, "task", &complete);
+    assert_eq!(written["ok"], json!(true), "{written}");
     assert!(written.get("id").is_some(), "{written}");
     assert_eq!(std::fs::read_to_string(&path).expect("the spec file").lines().count(), lines_before + 1);
-}
-
-/// A tarefa gravada pela porta do binário sem o texto (o que ela faz), com o
-/// título, o agente, os arquivos, as dependências, os itens cobertos e a
-/// origem certos, é recusada nomeando só o texto, e nada entra no arquivo da
-/// spec; com o texto, a gravação passa.
-#[test]
-fn a_task_without_its_text_is_refused_naming_it_and_writes_nothing() {
-    let dir = repo();
-    let root = dir.path();
-    let opened = rt(root, &["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
-    assert_eq!(opened.status.code(), Some(0), "{}", String::from_utf8_lossy(&opened.stdout));
-    let said = user_says(root, GOAL);
-    let crit = criterion(root, said);
-    let path = store::spec_file(root, SPEC).expect("the spec's file");
-    let lines_before = std::fs::read_to_string(&path).expect("the spec file").lines().count();
-
-    let out = rt(
-        root,
-        &[
-            "write",
-            "task",
-            "--spec",
-            SPEC,
-            "--json",
-            &json!({"agent": "- conferir pelo teste", "title": "Entregar a tarefa", "files": [], "depends_on": [], "covers": [crit], "origin": said}).to_string(),
-        ],
-    );
-    let refused = report(&out);
-    assert_eq!(refused["reason"], json!("task-declaration-missing"), "{refused}");
-    let hint = refused["hint"].as_str().unwrap_or_default();
-    assert!(hint.contains("o que ela faz"), "{hint}");
-    assert!(
-        !hint.contains("os arquivos que toca") && !hint.contains("de quais tarefas depende"),
-        "só o texto falta: {hint}"
-    );
-    assert_eq!(
-        std::fs::read_to_string(&path).expect("the spec file").lines().count(),
-        lines_before,
-        "nothing was written"
-    );
-
-    let blank = rt(
-        root,
-        &[
-            "write",
-            "task",
-            "--spec",
-            SPEC,
-            "--json",
-            &json!({"agent": "- conferir pelo teste", "title": "Entregar a tarefa", "text": "   ", "files": [], "depends_on": [], "covers": [crit], "origin": said}).to_string(),
-        ],
-    );
-    assert_eq!(report(&blank)["reason"], json!("task-declaration-missing"), "a blank text is a missing text");
-
-    let written = write(
-        root,
-        "task",
-        &json!({"agent": "- conferir pelo teste", "title": "Entregar a tarefa", "text": "Somar dois números.", "files": [], "depends_on": [], "covers": [crit], "origin": said}),
-    );
-    assert!(written.get("id").is_some(), "{written}");
 }
 
 /// A pergunta feita no meio de um ponto aberto, pelo gancho da entrada, leva
@@ -442,25 +372,6 @@ fn a_question_said_during_an_open_point_is_not_left_loose_at_the_end() {
     let late = hook_says(root, home.path(), "E agora?");
     let log = store::read(&path).expect("a readable file").expect("the spec has its file");
     assert_eq!(log.get(late).and_then(|m| m.int("during")), None, "with every point closed nothing is carried");
-}
-
-/// A tarefa gravada só com texto, arquivos e dependências, sem número de
-/// onda e sem nota, é aceita.
-#[test]
-fn task_without_a_wave_number_is_written() {
-    let dir = repo();
-    let root = dir.path();
-    rt(root, &["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
-    let said = user_says(root, GOAL);
-    let crit = criterion(root, said);
-
-    let written = write(
-        root,
-        "task",
-        &json!({"agent": "- conferir pelo teste", "title": "Entregar a tarefa", "text": "Somar dois números.", "files": [], "depends_on": [], "covers": [crit], "origin": said}),
-    );
-    assert_eq!(written["ok"], json!(true), "{written}");
-    assert!(written.get("id").is_some(), "{written}");
 }
 
 /// Duas tarefas que passam a depender uma da outra, em círculo, são

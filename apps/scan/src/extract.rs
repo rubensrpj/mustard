@@ -31,6 +31,7 @@
 use crate::markup::Markup;
 use crate::model::{CallSite, Decl, Route, RouteCall, RouteLinks, Text, RECEIVER, TEXT_ERROR, TEXT_LOG, TEXT_PLAIN};
 use crate::routes::{self, RouteRule};
+use mustard_core::domain::ast::is_test_path;
 use mustard_core::domain::project_map::outer_declarations;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
@@ -475,6 +476,11 @@ enum CapKind {
     /// Um trecho de teste escrito dentro do arquivo: o que se importa nele é
     /// do teste, e o que se chama ou se cita nele não é uso do código.
     TestBlock,
+    /// Uma unidade de teste que a língua marca na própria declaração, solta no
+    /// arquivo: vale como [`CapKind::TestBlock`], a não ser no arquivo que é
+    /// ele mesmo de teste, onde a chamada que ela faz segue sendo uso do que
+    /// chama, porque é ela que mostra quem testa cada declaração.
+    TestUnit,
     /// Um módulo com corpo escrito dentro do arquivo: o caminho escrito nele
     /// que começa pelo `parent_alias` da língua sai dele antes de subir pasta.
     InnerModule,
@@ -531,6 +537,7 @@ fn classify(cap: &str) -> CapKind {
         "value" => CapKind::Value,
         "doc" => CapKind::Doc,
         "test_block" => CapKind::TestBlock,
+        "test_unit" => CapKind::TestUnit,
         "inner_module" => CapKind::InnerModule,
         "local" => CapKind::Local,
         "text" => CapKind::Text { plain: false },
@@ -714,6 +721,7 @@ impl Analyzer {
         // separador escrito num comentário não liga um nome ao que vem antes.
         let walked = if self.declarations_only { Walked { comments: Vec::new(), leaves: Vec::new() } } else { Walked::of(root) };
         let comments: Spans = walked.comments.iter().map(|c| (c.start_byte(), c.end_byte())).collect();
+        let test_file = is_test_path(project.path);
         let mut matches = cursor.matches(&self.query, root, bytes);
         while let Some(m) = matches.next() {
             let mut def: Option<(Node, &str)> = None;
@@ -868,9 +876,15 @@ impl Analyzer {
                                 into.push(n);
                             }
                     }
-                    CapKind::TestBlock => {
-                        test_blocks.insert((node.start_byte(), node.end_byte()));
-                        out.test_lines.push((node.start_position().row + 1, node.end_position().row + 1));
+                    CapKind::TestBlock | CapKind::TestUnit => {
+                        // A unidade de teste solta no arquivo de teste não é
+                        // trecho de teste dele: tudo ali já é teste, e a
+                        // chamada que ela faz fica em quem usa o que chama.
+                        let loose = matches!(self.cap_kinds[cap.index as usize], CapKind::TestUnit);
+                        if !(loose && test_file) {
+                            test_blocks.insert((node.start_byte(), node.end_byte()));
+                            out.test_lines.push((node.start_position().row + 1, node.end_position().row + 1));
+                        }
                     }
                     CapKind::InnerModule => {
                         out.module_lines.push((node.start_position().row + 1, node.end_position().row + 1));

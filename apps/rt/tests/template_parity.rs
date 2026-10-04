@@ -326,8 +326,34 @@ fn has_argv_caller(root: &Path, name: &str) -> bool {
 
 #[test]
 fn forward_every_instructed_run_name_is_registered() {
-    let root = repo_root();
+    // The walk below is only as good as its extractor, and an extractor that
+    // silently stops matching turns it green-and-blind. Pin the three spellings
+    // it must catch and the placeholder shapes it must skip.
+    let found = extract_run_names(
+        "run `mustard-rt run resume` first.\n\
+         On Windows: `mustard-rt.exe run doctor`.\n\
+         Packaging uses `$RtExe run upsert`.\n\
+         Shapes teach nothing: `mustard-rt run <name>`, `mustard-rt run {kind}`, \
+         `mustard-rt run $Cmd`.\n",
+    );
+    assert_eq!(
+        found,
+        vec!["resume", "doctor", "upsert"],
+        "all three invocation spellings must be caught and every placeholder skipped",
+    );
     let registered: BTreeSet<String> = surface_names().into_iter().collect();
+    for name in &found {
+        assert!(registered.contains(name), "{name} should be a real command");
+    }
+    // A command absorbed into another still reads as a name, which is what makes
+    // the walk fail when a surface keeps naming it.
+    assert_eq!(
+        extract_run_names("`mustard-rt run wave-scaffold` (the shipped defect)"),
+        vec!["wave-scaffold"],
+    );
+    assert!(!registered.contains("wave-scaffold"));
+
+    let root = repo_root();
     let mut offenders = Vec::new();
     for file in forward_corpus(&root) {
         let text = read_lossy(&file);

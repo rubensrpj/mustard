@@ -7,6 +7,7 @@ description = "Mustard command line — thin bootstrap that seeds the .claude/ h
 license = "MIT"
 publish = false
 build = "build.rs"
+autotests = false
 
 # The binary the user runs (`mustard init`, `mustard update`, …).
 [[bin]]
@@ -19,6 +20,11 @@ path = "src/main.rs"
 [lib]
 name = "mustard_cli"
 path = "src/lib.rs"
+
+# Todos os testes de integração num programa só (`tests/it.rs`).
+[[test]]
+name = "it"
+path = "tests/it.rs"
 
 # Versions come from the workspace `[workspace.dependencies]` table — single
 # source of truth (root Cargo.toml).

@@ -6,6 +6,12 @@ rust-version = "1.89"
 description = "Shared foundation crate for the Mustard hook/script/CLI Rust migration: event model, hook contract, and pipeline-state types."
 license = "MIT"
 publish = false
+autotests = false
+
+# Todos os testes de integração num programa só (`tests/it.rs`).
+[[test]]
+name = "it"
+path = "tests/it.rs"
 
 # Dependency versions are declared once in the workspace `[workspace.dependencies]`
 # table (root Cargo.toml); each crate references them with `{ workspace = true }`.

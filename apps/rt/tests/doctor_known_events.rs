@@ -14,10 +14,10 @@
 //! derivação desfeita, ou um leitor que deixa de enxergar uma forma que o
 //! manifesto usa, vira falha de teste e não um FAIL calado em campo.
 //!
-//! Lives in `tests/` rather than in-file because the acceptance criterion runs
-//! `cargo test -p mustard-rt known_events_match_shipped_hooks -- --exact`, and
-//! libtest matches `--exact` against the FULL test path — which equals the bare
-//! function name only at the root of an integration-test binary.
+//! libtest matches `--exact` against the FULL test path, which in the package's
+//! single integration program is
+//! `doctor_known_events::known_events_match_shipped_hooks`: a criterion that
+//! runs this test with `--exact` cites that whole path.
 
 #[path = "support/manifest_dir.rs"]
 mod manifest_dir;

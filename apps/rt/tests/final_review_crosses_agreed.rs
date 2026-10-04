@@ -19,6 +19,7 @@ use mustard_core::domain::spec_events::{SpecEvent, SpecLog};
 use mustard_core::io::spec_events as store;
 use serde_json::{json, Value};
 
+#[path = "support/mod.rs"]
 mod support;
 
 const SPEC: &str = "revisao";
@@ -79,6 +80,8 @@ impl Project {
             .env_remove("CLAUDE_PLUGIN_ROOT")
             .env_remove("CARGO_TARGET_DIR")
             .env_remove("MUSTARD_ACTIVE_SPEC")
+            .env_remove("TYPESAFE_API_KEY")
+            .env_remove("MUSTARD_JEV_URL")
             .env_remove("MUSTARD_SESSION_ID")
             .env_remove("CLAUDE_SESSION_ID")
             .env_remove("CLAUDE_CODE_SESSION_ID")

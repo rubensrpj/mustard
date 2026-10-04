@@ -13,8 +13,6 @@
 //! descrição passa de 1.536 caracteres e é cortada no meio da frase na lista
 //! de comandos.
 
-#[path = "support/manifest_dir.rs"]
-mod manifest_dir;
 #[path = "support/prose_budget.rs"]
 mod prose_budget;
 

@@ -14,11 +14,20 @@ use std::process::{Command, Output, Stdio};
 
 use serde_json::{json, Value};
 
+#[path = "support/mod.rs"]
 mod support;
 
 fn rt(root: &Path, args: &[&str]) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_mustard-rt"));
-    cmd.arg("run").args(args).arg("--root").arg(root).current_dir(root);
+    // O ambiente de quem roda a suíte não chega ao serviço do Jev: a rodada o
+    // chamaria de verdade.
+    cmd.arg("run")
+        .args(args)
+        .arg("--root")
+        .arg(root)
+        .current_dir(root)
+        .env_remove("TYPESAFE_API_KEY")
+        .env_remove("MUSTARD_JEV_URL");
     cmd
 }
 

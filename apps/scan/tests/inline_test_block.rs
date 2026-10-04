@@ -9,6 +9,10 @@
 //! `use`, chama `src/regra.rs` pelo caminho completo e chama `somar`, a mesma
 //! função que o corpo chama. A leitura que reaproveita o arquivo sem relê-lo
 //! sabe o mesmo que a leitura inteira.
+//!
+//! A função de teste escrita solta no arquivo do programa, fora de módulo de
+//! teste, também é trecho de teste; no arquivo que é ele mesmo de teste, a
+//! chamada dela segue sendo uso de quem ela chama.
 
 #[path = "support/model.rs"]
 mod model;
@@ -342,4 +346,115 @@ fn a_condition_that_does_not_mean_test_is_not_a_test_block() {
     assert_eq!(prod.get("test_lines"), None, "{prod}");
     assert_eq!(list(&prod["deps"]), vec!["src/x.rs".to_string()], "{prod}");
     assert_eq!(list(&prod["test_deps"]), Vec::<String>::new(), "{prod}");
+}
+
+/// O arquivo do programa com `total` chamando `somar` (linha 4), duas funções
+/// de teste soltas, fora de módulo de teste (a primeira com um comentário em
+/// cima e outro atributo depois da marca, linhas 12 a 18; a segunda, linhas
+/// 20 a 24), e `doubled`, que só tem outro atributo e chama `somar` na linha
+/// 28. Cada teste chama `somar`, e cada um chama um arquivo diferente pelo
+/// caminho completo.
+const LOOSE_TESTS: &str = "use crate::taxa::juros;\n\n\
+                           pub fn total() -> u32 {\n    somar(juros(), 2)\n}\n\n\
+                           pub fn somar(a: u32, b: u32) -> u32 {\n    a + b\n}\n\n\
+                           /// Soma dois.\n#[test]\n#[should_panic]\n\
+                           fn adds_the_two() {\n    let tres = somar(1, 2);\n    \
+                           let dez = crate::regra::limite();\n    assert_eq!(tres + dez, 13);\n}\n\n\
+                           #[test]\nfn adds_again() {\n    let cem = crate::medida::metro();\n    \
+                           assert_eq!(somar(cem, 1), 101);\n}\n\n\
+                           #[inline]\npub fn doubled(a: u32) -> u32 {\n    somar(a, a)\n}\n";
+
+/// O arquivo de teste (`src/conta_test.rs`), que escreve a mesma função de
+/// teste solta e chama `somar` na linha 5.
+const TEST_FILE: &str = "use crate::conta::somar;\n\n\
+                         #[test]\nfn adds_in_the_test_file() {\n    assert_eq!(somar(1, 2), 3);\n}\n";
+
+/// Monta o projeto das funções de teste soltas e devolve o mapa dele.
+fn loose_tests_map(label: &str) -> Value {
+    let temp = project_dir(label);
+    write(temp.path(), "Cargo.toml", "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n");
+    write(temp.path(), "src/lib.rs", "pub mod conta;\npub mod conta_test;\npub mod medida;\npub mod regra;\npub mod taxa;\n");
+    write(temp.path(), "src/conta.rs", LOOSE_TESTS);
+    write(temp.path(), "src/conta_test.rs", TEST_FILE);
+    for (rel, fun) in [("medida", "metro"), ("regra", "limite"), ("taxa", "juros")] {
+        write(temp.path(), &format!("src/{rel}.rs"), &format!("pub fn {fun}() -> u32 {{\n    1\n}}\n"));
+    }
+    scan(temp.path()).0
+}
+
+/// As linhas dos trechos de teste de `path`, como o mapa grava.
+fn test_lines(v: &Value, path: &str) -> Vec<(u64, u64)> {
+    module(v, path)["test_lines"]
+        .as_array()
+        .map(|a| a.iter().map(|r| (r[0].as_u64().unwrap(), r[1].as_u64().unwrap())).collect())
+        .unwrap_or_default()
+}
+
+/// Quem usa `somar`, em ordem, sem a ordem em que o mapa a grava.
+fn somar_used_by(v: &Value) -> Vec<String> {
+    let mut sites = used_by(v, "src/conta.rs", "somar");
+    sites.sort();
+    sites
+}
+
+/// A função com `#[test]` solta no arquivo do programa é trecho de teste, com
+/// o comentário de cima fora e os atributos colados dentro: as duas ganham as
+/// linhas delas, a declaração de cada uma cai dentro do trecho e as do
+/// programa (`total`, `somar`, `doubled`) ficam de fora, mesmo `doubled`, que
+/// só tem outro atributo.
+#[test]
+fn a_loose_test_function_in_a_program_file_is_a_test_block() {
+    let v = loose_tests_map("loose-lines");
+    let ranges = test_lines(&v, "src/conta.rs");
+    assert_eq!(ranges, vec![(12, 18), (20, 24)], "{}", module(&v, "src/conta.rs"));
+    let in_tests = |line: u64| ranges.iter().any(|&(first, last)| (first..=last).contains(&line));
+    for decl in module(&v, "src/conta.rs")["declarations"].as_array().unwrap() {
+        let (name, line) = (decl["name"].as_str().unwrap(), decl["line"].as_u64().unwrap());
+        assert_eq!(in_tests(line), name.starts_with("adds"), "{name} na linha {line}");
+    }
+}
+
+/// A chamada escrita na função de teste solta não é uso de `somar`: só as do
+/// corpo (`total`, na linha 4, e `doubled`, na 28) e a do arquivo de teste
+/// ficam.
+#[test]
+fn a_call_inside_a_loose_test_function_is_not_a_use_of_the_function() {
+    let v = loose_tests_map("loose-calls");
+    assert_eq!(
+        somar_used_by(&v),
+        vec![
+            "src/conta.rs:28:doubled".to_string(),
+            "src/conta.rs:4:total".to_string(),
+            "src/conta_test.rs:5:adds_in_the_test_file".to_string(),
+        ]
+    );
+}
+
+/// O caminho completo escrito na função de teste solta não é dependência do
+/// arquivo, e o arquivo que ele nomeia o lista entre os testes que o cobrem.
+#[test]
+fn a_path_written_in_a_loose_test_function_is_a_test_dependency() {
+    let v = loose_tests_map("loose-deps");
+    assert_eq!(list(&module(&v, "src/conta.rs")["deps"]), vec!["src/taxa.rs".to_string()]);
+    assert_eq!(
+        list(&module(&v, "src/conta.rs")["test_deps"]),
+        vec!["src/medida.rs".to_string(), "src/regra.rs".to_string()]
+    );
+    for covered in ["src/medida.rs", "src/regra.rs"] {
+        assert_eq!(list(&module(&v, covered)["tests"]), vec!["src/conta.rs".to_string()], "{covered}");
+    }
+}
+
+/// No arquivo que é ele mesmo de teste, a função com `#[test]` não é trecho
+/// de teste do arquivo: nenhuma linha dele vai para os trechos, e a chamada
+/// dela segue em quem usa `somar`, que é o que mostra quem a testa.
+#[test]
+fn a_loose_test_function_in_a_test_file_keeps_its_call_among_the_uses() {
+    let v = loose_tests_map("loose-test-file");
+    assert_eq!(module(&v, "src/conta_test.rs").get("test_lines"), None, "{}", module(&v, "src/conta_test.rs"));
+    assert!(
+        somar_used_by(&v).contains(&"src/conta_test.rs:5:adds_in_the_test_file".to_string()),
+        "{:?}",
+        somar_used_by(&v)
+    );
 }

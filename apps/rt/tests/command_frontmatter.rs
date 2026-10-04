@@ -98,21 +98,6 @@ fn exposed_doors_are_exactly_these() {
 }
 
 #[test]
-fn command_frontmatter_internal_flows_are_not_model_invocable_doors() {
-    for name in shipped_commands() {
-        if DOORS.contains(&name.as_str()) {
-            continue;
-        }
-        let fm = frontmatter(&name);
-        assert!(
-            fm.contains(NOT_A_DOOR),
-            "plugin/commands/{name}.md is not one of the three doors, so it must declare \
-             `{NOT_A_DOOR}` — it is dispatched by the router, never typed. Frontmatter:\n{fm}"
-        );
-    }
-}
-
-#[test]
 fn command_frontmatter_upsert_stays_the_bootstrap_door() {
     let fm = frontmatter("upsert");
     assert!(

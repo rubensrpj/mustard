@@ -13,11 +13,13 @@
 //!
 //! O que cada teste prende:
 //!
-//! 1. a tabela do próximo passo só nomeia comandos que a superfície publica;
-//! 2. a resposta de verdade do `resume` traz a fase, o passo em palavras e o
+//! 1. a resposta de verdade do `resume` traz a fase, o passo em palavras e o
 //!    comando — os três campos, numa spec recém-aberta;
-//! 3. a porta que o usuário tem manda repassar o campo `command` e proíbe
+//! 2. a porta que o usuário tem manda repassar o campo `command` e proíbe
 //!    escolher o passo por conta própria.
+//!
+//! Que a tabela do próximo passo só nomeia comandos publicados, e que a porta
+//! não manda rodar comando que saiu, é a conferência de `template_parity.rs`.
 
 #[path = "support/manifest_dir.rs"]
 mod manifest_dir;
@@ -31,19 +33,6 @@ use mustard_rt::commands::flow::resume::NEXT_BY_PHASE;
 /// A raiz do repositório, a partir deste crate (`apps/rt`).
 fn repo_root() -> PathBuf {
     manifest_dir::manifest_dir().join("../..")
-}
-
-/// Os nomes que o `run --help` publica, lidos do mesmo retrato que a catraca
-/// da superfície lê — nunca uma segunda lista.
-fn published_names() -> Vec<String> {
-    let path = repo_root().join("apps/rt/tests/fixtures/run-surface.txt");
-    fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("o retrato da superfície não abriu: {e}"))
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .map(str::to_string)
-        .collect()
 }
 
 /// Um repositório com `main` e `dev`, as bases declaradas, parado em `dev`.
@@ -86,28 +75,6 @@ fn run(dir: &Path, args: &[&str]) -> serde_json::Value {
     serde_json::from_str(&raw_output).unwrap_or_else(|e| {
         panic!("a resposta de {args:?} não é JSON ({e}): {raw_output}{}", String::from_utf8_lossy(&out.stderr))
     })
-}
-
-/// Cada comando que a tabela do próximo passo nomeia é um comando publicado.
-///
-/// É esta tabela que dá chamador a cada passo do fluxo: nenhum texto diz a
-/// ordem. Um nome errado aqui não quebra a compilação — o passo seguinte
-/// simplesmente morre num erro de parser, na mão de quem obedeceu a resposta.
-#[test]
-fn next_step_only_names_a_published_command() {
-    let published = published_names();
-    let mut orphans = Vec::new();
-    for (phase, command) in NEXT_BY_PHASE {
-        if !published.contains(&(*command).to_string()) {
-            orphans.push(format!("a fase `{phase}` manda rodar `{command}`, que não é publicado"));
-        }
-    }
-    assert!(
-        orphans.is_empty(),
-        "o campo de próximo passo aponta comando que a superfície não tem:\n{}",
-        orphans.join("\n")
-    );
-    assert!(!NEXT_BY_PHASE.is_empty(), "a tabela do próximo passo está vazia");
 }
 
 /// A resposta de verdade traz os três campos, e o comando que ela nomeia é o
@@ -163,9 +130,5 @@ fn door_passes_the_field_on_and_does_not_choose_the_step() {
     assert!(
         prose.contains("Never decide the next step yourself"),
         "a porta não proíbe escolher o passo por conta própria"
-    );
-    assert!(
-        !prose.contains("mustard-rt run qa-run"),
-        "a porta ainda manda rodar um comando que saiu"
     );
 }

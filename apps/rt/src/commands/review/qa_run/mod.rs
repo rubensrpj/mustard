@@ -199,8 +199,8 @@ fn graded(out: AcResult, proof: Option<(&str, &Path)>) -> ProofRun {
 /// onda criou ainda não foi registrado. O que o git ignora fica de fora — a
 /// pasta de compilação guarda os nomes dos testes que já existiram. A pasta
 /// das specs também fica de fora, porque é nela que o próprio comando está
-/// gravado. O nome de arquivo conta porque um alvo de teste inteiro, como o
-/// de `cargo test --test nome_do_alvo`, é o nome do arquivo dele.
+/// gravado. O nome de arquivo conta porque o módulo de um arquivo de `tests/`,
+/// que o filtro `cargo test nome_do_arquivo` casa, tem o nome dele.
 ///
 /// Onde o git não responde — raiz sem repositório, programa ausente —, nada
 /// é recusado: sem a lista de arquivos não há como dizer que falta um teste.
@@ -460,7 +460,7 @@ mod tests {
     /// A prova verde que cita um nome ausente de todo arquivo do projeto não
     /// passa, e leva o nome que faltou; a que cita só nomes presentes passa.
     /// Conta o arquivo que o git guarda, o novo que ele não ignora e o nome
-    /// de arquivo, como o de um alvo de teste inteiro. Não conta o que o git
+    /// de arquivo, como o de um módulo de teste inteiro. Não conta o que o git
     /// ignora nem a pasta das specs, onde o próprio comando está gravado. O
     /// comando do fluxo que não é prova não faz essa busca, e sem
     /// repositório não há recusa.

@@ -30,6 +30,7 @@ use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Value};
 
+#[path = "support/mod.rs"]
 mod support;
 
 const SPEC: &str = "backlog-lotes";

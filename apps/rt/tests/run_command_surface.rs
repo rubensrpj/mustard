@@ -11,10 +11,9 @@
 //! com o texto que a falha imprime — nada de manter a mesma lista em dois
 //! lugares.
 //!
-//! O arquivo também lê as superfícies de instrução ENTREGUES (`plugin/**`): a
-//! árvore do clap sozinha não pega um texto que promete um comando que o leitor
-//! não vai achar, e uma instrução errada falha tão em silêncio quanto um
-//! registro perdido.
+//! O texto entregue que promete um comando que o leitor não vai achar é
+//! conferido por `template_parity.rs`, que lê `plugin/**` e os moldes contra
+//! a árvore do clap.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -32,14 +31,6 @@ use mustard_rt::commands::RunCmd;
 /// O retrato da superfície, relativo à raiz do repositório.
 const SURFACE_SNAPSHOT: &str = "apps/rt/tests/fixtures/run-surface.txt";
 
-/// Instruction surfaces SHIPPED to the reader, relative to the repo root, with
-/// the file extension each one is scanned through (`None` = every file).
-///
-/// `plugin/**/*.md` is what the agent loads at runtime (commands, refs, agent
-/// prompts). Each entry is ASSERTED to exist and to yield files — a surface that
-/// silently disappears would turn this guard into a green no-op.
-const DOC_SURFACES: &[(&str, Option<&str>)] = &[("plugin", Some("md"))];
-
 /// The repo root, resolved from this crate (`apps/rt`) so the scan does not
 /// depend on the directory the test runner happens to start in.
 fn repo_root() -> PathBuf {
@@ -52,84 +43,6 @@ fn snapshot_names() -> Vec<String> {
     let text = fs::read_to_string(&path)
         .unwrap_or_else(|_| panic!("o retrato da superfície não abriu: {}", path.display()));
     text.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect()
-}
-
-/// Recursively collect files under `dir` in a deterministic (sorted) order,
-/// keeping only `ext` when it is set. An unreadable directory yields nothing.
-fn collect_files(dir: &Path, ext: Option<&str>, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
-    };
-    let mut entries: Vec<_> = entries.flatten().collect();
-    entries.sort_by_key(std::fs::DirEntry::file_name);
-    for entry in entries {
-        let path = entry.path();
-        if path.is_dir() {
-            let name = entry.file_name();
-            if name == "node_modules" || name == "target" || name == ".git" {
-                continue;
-            }
-            collect_files(&path, ext, out);
-        } else if ext
-            .is_none_or(|want| path.extension().and_then(|e| e.to_str()).is_some_and(|e| e == want))
-        {
-            out.push(path);
-        }
-    }
-}
-
-/// Every `mustard-rt run <name>` token in `text`, in order of appearance.
-///
-/// All three invocation spellings are recognised — the same set
-/// `template_parity`'s `CALLER_PREFIXES` feeds to its `extract_run_names`.
-/// Recognising only the bare one
-/// would let a Windows-flavoured hint (`mustard-rt.exe run …`) or a packaging
-/// script (`$RtExe run …`) name a dead command and still pass.
-///
-/// A token runs to the first byte outside `[a-z0-9-]`, which drops the trailing
-/// backtick / period / paren that normally closes the instruction in prose.
-/// Placeholders are SKIPPED rather than reported: an explicit `<`, `{`, `$` or
-/// backtick start teaches a shape, not a command, and any other non-token byte
-/// (the `…` elision in `scan.md`) yields an empty token.
-fn documented_run_tokens(text: &str) -> Vec<String> {
-    const PREFIXES: &[&str] = &["mustard-rt run ", "mustard-rt.exe run ", "$RtExe run "];
-    const PLACEHOLDER_STARTS: &[u8] = b"<{$`";
-
-    let bytes = text.as_bytes();
-    let mut out = Vec::new();
-    // One cursor per spelling: each advances independently through the text, and
-    // the run with the smallest next hit is consumed, so the tokens stay in order
-    // of appearance no matter which spelling produced them.
-    let mut cursors = vec![0usize; PREFIXES.len()];
-    while let Some((which, pos)) = PREFIXES
-        .iter()
-        .enumerate()
-        .filter_map(|(i, p)| text[cursors[i]..].find(p).map(|off| (i, cursors[i] + off)))
-        .min_by_key(|(_, pos)| *pos)
-    {
-        let start = pos + PREFIXES[which].len();
-        cursors[which] = start;
-        // Every other cursor must clear this hit too, else the same region is
-        // re-scanned forever by the spellings that did not match here.
-        for (i, c) in cursors.iter_mut().enumerate() {
-            if i != which && *c <= pos {
-                *c = start;
-            }
-        }
-        if start >= bytes.len() || PLACEHOLDER_STARTS.contains(&bytes[start]) {
-            continue;
-        }
-        let mut end = start;
-        while end < bytes.len()
-            && (bytes[end].is_ascii_lowercase() || bytes[end].is_ascii_digit() || bytes[end] == b'-')
-        {
-            end += 1;
-        }
-        if end > start {
-            out.push(text[start..end].to_string());
-        }
-    }
-    out
 }
 
 /// The `run` subcommand tree as clap materialises it.
@@ -172,89 +85,6 @@ fn no_command_shares_the_place_of_another_in_the_help() {
     let mut unique = slots.clone();
     unique.dedup();
     assert_eq!(slots, unique, "dois comandos declaram o mesmo `display_order`");
-}
-
-/// Every `mustard-rt run <name>` a SHIPPED instruction surface tells the reader
-/// (or an agent) to type must be a name the CLI actually publishes.
-///
-/// Field defect: a command that was absorbed into another
-/// still had a shipped hint telling the reader to run it.
-/// Nothing broke at build time — the command simply does not exist, so an
-/// obedient agent burns a call on a clap error. `template_parity` runs the same
-/// forward check over the template/plugin/packaging corpus; this one walks the
-/// plugin tree as the reader's own instruction surface.
-#[test]
-fn every_documented_run_command_exists() {
-    let root = repo_root();
-    let published = snapshot_names();
-    let mut offenders = Vec::new();
-
-    for (rel, ext) in DOC_SURFACES {
-        let dir = root.join(rel);
-        // Assert the surface instead of skipping it (the idiom `template_parity`
-        // already uses): a moved or renamed directory would otherwise make this
-        // guard pass while scanning nothing — a dead guard reads exactly like a
-        // clean one, which is the failure mode the whole test exists to prevent.
-        assert!(dir.is_dir(), "declared instruction surface `{rel}` is missing — update DOC_SURFACES");
-        let mut files = Vec::new();
-        collect_files(&dir, *ext, &mut files);
-        assert!(
-            !files.is_empty(),
-            "instruction surface `{rel}` yielded 0 files — the guard would pass vacuously"
-        );
-        for file in files {
-            let Ok(text) = fs::read_to_string(&file) else {
-                continue;
-            };
-            for name in documented_run_tokens(&text) {
-                if !published.contains(&name) {
-                    let shown = file.strip_prefix(&root).unwrap_or(&file);
-                    offenders.push(format!("{} -> `mustard-rt run {name}`", shown.display()));
-                }
-            }
-        }
-    }
-
-    assert!(
-        offenders.is_empty(),
-        "shipped instructions name `mustard-rt run` commands the CLI does not \
-         publish — the call dies on a clap error at runtime, and the reader has \
-         no way to tell. Fix the surface or register the command:\n{}",
-        offenders.join("\n")
-    );
-}
-
-/// The guard above is only as good as its tokenizer, and a tokenizer that
-/// silently stops matching turns the whole test green-and-blind. Pin the three
-/// spellings it must catch and the placeholder shapes it must ignore.
-#[test]
-fn documented_run_tokens_catches_every_spelling_and_skips_placeholders() {
-    let found = documented_run_tokens(
-        "run `mustard-rt run resume` first.\n\
-         On Windows: `mustard-rt.exe run doctor`.\n\
-         Packaging uses `$RtExe run upsert`.\n\
-         Shapes teach nothing: `mustard-rt run <name>`, `mustard-rt run {kind}`, \
-         `mustard-rt run $Cmd`.\n",
-    );
-    assert_eq!(
-        found,
-        vec!["resume", "doctor", "upsert"],
-        "all three invocation spellings must be caught, in order, and every \
-         placeholder skipped",
-    );
-    // Every name it caught here is real — the guard flags exactly the ones that
-    // are not.
-    let published = snapshot_names();
-    for name in &found {
-        assert!(published.contains(name), "{name} should be a real command");
-    }
-    assert_eq!(
-        documented_run_tokens("`mustard-rt run wave-scaffold` (the shipped defect)"),
-        vec!["wave-scaffold"],
-        "the absorbed command must still be recognised as a name — that is what \
-         makes the guard fail when a surface names it",
-    );
-    assert!(!published.contains(&"wave-scaffold".to_string()));
 }
 
 /// Quem vai mexer numa função pergunta ao mapa quem a usa, pelo comando que a
