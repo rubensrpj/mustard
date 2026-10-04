@@ -16,16 +16,17 @@
 //! - O arquivo apagado não põe nada e não tem teste: só tira.
 //! - Crescimento: postas menos tiradas, para que a troca de nomes, que põe e
 //!   tira o mesmo, nunca conte. Recusa a onda que cresce mais que o piso e
-//!   mais que o múltiplo da mediana de linhas postas pelas ondas que a rodada
-//!   já comitou, e a que traz mais testes novos que o piso e que o permitido
-//!   por critério ou regra coberto. Sem histórico bastante o projeto não tem
-//!   régua, e fica só a linha.
+//!   mais que o múltiplo da mediana de linhas postas pelos commits da rodada
+//!   (a mesma que o pedido da onda cita, de `wave_size`), e a que traz mais
+//!   testes novos que o piso e que o permitido por critério ou regra coberto.
+//!   Sem histórico bastante o projeto não tem régua, e fica só a linha.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use mustard_core::domain::ast::is_test_path;
 use mustard_core::domain::spec_events::SpecLog;
+use mustard_core::io::wave_size;
 use mustard_core::platform::i18n::{translate, Locale};
 
 use super::commit::{check_commit_text, git, repo_of, AfterWave, Finding};
@@ -36,14 +37,6 @@ use crate::commands::git_settle::submodules_of;
 /// teste: o que se executa. O tipo, o campo e a constante que o teste declara
 /// são dele, mas não são um teste.
 const TEST_KINDS: &[&str] = &["function", "method"];
-
-/// Quantos commits da rodada, os mais novos, formam o histórico de onde sai a
-/// mediana de linhas postas por onda.
-const HISTORY_COMMITS: usize = 30;
-
-/// Com menos commits que isso no histórico o projeto ainda não tem régua: a
-/// mediana de três ondas é acaso, e recusar por ela seria chute.
-const HISTORY_MIN: usize = 10;
 
 /// Quantas medianas de linhas postas o código de uma onda pode crescer. A
 /// onda que só passa de uma mediana é uma onda grande normal; três é a que o
@@ -118,7 +111,7 @@ pub(super) fn findings(root: &Path, sizes: &[Size], log: &SpecLog, lang: Locale)
     if !sizes.iter().any(|size| size.growth() > GROWTH_FLOOR || size.tests > TESTS_FLOOR) {
         return Vec::new();
     }
-    let Some(median) = median_added(root) else { return Vec::new() };
+    let Some(median) = wave_size::median_added(root, lang) else { return Vec::new() };
     let limit = GROWTH_FLOOR.max(GROWTH_MEDIANS * median);
     let mut out = Vec::new();
     for size in sizes {
@@ -159,52 +152,6 @@ fn covered_count(log: &SpecLog, wave: u64) -> usize {
         .filter_map(|id| log.current(id));
     covered.extend(cited.filter(|e| matches!(e.event_type.as_str(), "criterion" | "rule")).map(|e| e.id));
     covered.len()
-}
-
-/// A mediana de linhas postas por onda nos últimos commits da rodada no
-/// repositório em `root`; `None` com menos de [`HISTORY_MIN`] commits. O
-/// commit que leva várias ondas conta uma vez, com as linhas divididas entre
-/// elas. É a mesma conta da linha de tamanho: toda linha posta nos arquivos
-/// do commit, de teste ou não.
-fn median_added(root: &Path) -> Option<u64> {
-    let scopes = scope_prefixes();
-    let pattern = format!(r"--grep=^(feat|fix)\(({})[0-9]", scopes.join("|"));
-    let max = format!("--max-count={HISTORY_COMMITS}");
-    let log = git(root, &["log", "--no-renames", "--numstat", "--format=%x00%s", "--extended-regexp", &pattern, &max]).ok()?;
-    let mut per_wave: Vec<u64> = log
-        .split('\0')
-        .skip(1)
-        .map(|commit| {
-            let mut lines = commit.lines();
-            let title = lines.next().unwrap_or_default();
-            let added: u64 = lines.filter_map(|line| line.split('\t').next()?.parse::<u64>().ok()).sum();
-            added / waves_in(title, &scopes)
-        })
-        .collect();
-    per_wave.sort_unstable();
-    (per_wave.len() >= HISTORY_MIN).then(|| per_wave[per_wave.len() / 2])
-}
-
-/// O começo do escopo do título de um commit da rodada, nos dois idiomas, no
-/// singular e no plural: `onda-`, `ondas-`, `wave-` e `waves-`. Saem do
-/// mesmo texto que monta o título.
-fn scope_prefixes() -> Vec<String> {
-    let keys = ["round.commit.scope.one", "round.commit.scope.many"];
-    [Locale::PtBr, Locale::EnUs]
-        .into_iter()
-        .flat_map(|lang| keys.map(|key| translate(key, lang).trim_end_matches("{waves}").to_string()))
-        .collect()
-}
-
-/// Quantas ondas o título `title` de um commit da rodada leva: as que o
-/// escopo cita (`ondas-1-2`) mais as que ele só conta (`+9`); uma, quando o
-/// escopo não se lê.
-fn waves_in(title: &str, scopes: &[String]) -> u64 {
-    let scope = title.split_once('(').and_then(|(_, rest)| rest.split_once(')')).map_or("", |(scope, _)| scope);
-    let rest = scopes.iter().find_map(|prefix| scope.strip_prefix(prefix.as_str())).unwrap_or_default();
-    let (listed, counted) = rest.split_once('+').unwrap_or((rest, "0"));
-    let cited = listed.split('-').filter(|number| !number.is_empty()).count();
-    (u64::try_from(cited).unwrap_or(1) + counted.parse::<u64>().unwrap_or(0)).max(1)
 }
 
 /// A mensagem de commit com as linhas de tamanho no fim do corpo, uma por
@@ -421,11 +368,19 @@ mod tests {
         std::fs::write(root.join(path), text).unwrap();
     }
 
+    /// [`grown_with`] com `history` commits de uma onda cada, que põem `median`
+    /// linhas.
+    fn grown(root: &Path, history: usize, median: usize, before: usize, rules: usize) {
+        let commits: Vec<(String, usize)> = (0..history).map(|n| (format!("onda-{}", 100 + n), median)).collect();
+        grown_with(root, &commits, before, rules);
+    }
+
     /// Um projeto com a onda 1 mudando `src/big.rs`, que tem `before` linhas no
     /// commit; a tarefa da onda cobre `rules` regras além do critério que a onda
-    /// aponta; e `history` commits de ondas antigas, que põem `median` linhas
-    /// por onda, no mapa da base com o `src/big.rs` dentro.
-    fn grown(root: &Path, history: usize, median: usize, before: usize, rules: usize) {
+    /// aponta; e um commit de onda antiga por item de `history`, do mais velho
+    /// ao mais novo, com o escopo e as linhas que põe, no mapa da base com o
+    /// `src/big.rs` dentro.
+    fn grown_with(root: &Path, history: &[(String, usize)], before: usize, rules: usize) {
         approved_with(root, "x", &[], |said| {
             let log = mustard_core::io::spec_events::read(&mustard_core::io::spec_events::spec_file(root, "x").unwrap())
                 .unwrap()
@@ -446,13 +401,9 @@ mod tests {
         write_lines(root, "src/big.rs", "old", before);
         git_at(root, &["add", "-A", "--", ".", ":(exclude).claude"]);
         git_at(root, &["commit", "-q", "-m", "arquivos"]);
-        for n in 0..history {
-            // Os commits se alternam: o de uma onda põe `median` linhas, e o de
-            // duas põe o dobro, de modo que toda onda do histórico põe `median`.
-            let (scope, lines) =
-                if n % 2 == 0 { (format!("onda-{}", 100 + n), median) } else { (format!("ondas-{}-{}", 100 + n, 200 + n), 2 * median) };
+        for (n, (scope, lines)) in history.iter().enumerate() {
             std::fs::create_dir_all(root.join("history")).unwrap();
-            write_lines(root, &format!("history/w{n}.txt"), "x", lines);
+            write_lines(root, &format!("history/w{n}.txt"), "x", *lines);
             git_at(root, &["add", "--", "history"]);
             git_at(root, &["commit", "-q", "-m", &format!("feat({scope}): onda antiga")]);
         }
@@ -596,16 +547,23 @@ mod tests {
     }
 
     #[test]
-    fn a_commit_title_counts_the_waves_it_cites_and_the_ones_it_only_counts() {
-        let scopes = scope_prefixes();
-        for (title, waves) in [
-            ("feat(onda-433): tamanho", 1),
-            ("fix(wave-7): size", 1),
-            ("feat(ondas-1-2): dois", 2),
-            ("feat(ondas-1-2+9): onze", 11),
-            ("feat(sem escopo): um", 1),
-        ] {
-            assert_eq!(waves_in(title, &scopes), waves, "{title}");
+    fn the_limit_uses_the_median_of_commits_that_the_wave_request_cites() {
+        // Seis commits de uma onda com 300 linhas e seis de duas ondas com 600:
+        // cada commit é uma entrega, a mediana é a média dos dois do meio, 450,
+        // a mesma que o pedido da onda cita, e o limite é três vezes ela.
+        let commits: Vec<(String, usize)> =
+            (0..12).map(|n| if n % 2 == 0 { (format!("onda-{}", 100 + n), 300) } else { (format!("ondas-{}-{}", 100 + n, 200 + n), 600) }).collect();
+        for (added, over) in [(1350, false), (1351, true)] {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            grown_with(root, &commits, 0, 0);
+            assert_eq!(mustard_core::io::wave_size::median_added(root, Locale::PtBr), Some(450));
+            let out = back_with(root, added, 0);
+            assert_eq!(refused(&out), over, "+{added}: {out}");
+            if over {
+                let hint = out["hint"].as_str().unwrap_or_default();
+                assert!(hint.contains("O limite é 1350, o maior entre 600 e três vezes a mediana de 450 linhas postas por onda."), "{hint}");
+            }
         }
     }
 }
