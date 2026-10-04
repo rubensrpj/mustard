@@ -68,8 +68,9 @@
 //!   trecho de teste de um arquivo do programa, cujo texto não cita nenhuma
 //!   outra declaração chamável do programa sai na mesma mensagem como teste
 //!   sem uso, quando o achado dela recusa: o teste só existe por ela. A
-//!   declaração com atributo ou decorador de teste em cima ([`test_gated`]) é
-//!   do teste e não entra.
+//!   declaração escrita num trecho de teste do arquivo, o módulo ou o item
+//!   solto marcado como teste, que o scan guarda pelas linhas, é do teste e
+//!   não entra, como no órfão.
 
 use std::cell::LazyCell;
 use std::collections::BTreeSet;
@@ -211,7 +212,7 @@ fn never_used(
     called: &BTreeSet<&str>,
 ) -> Vec<Finding> {
     let Some((wave, _)) = maps.changed.iter().find(|(_, files)| files.contains(&module.path)) else { return Vec::new() };
-    if test_gated(root, module, decl) || member_read_remains(root, maps, module, decl, &[]) {
+    if member_read_remains(root, maps, module, decl, &[]) {
         return Vec::new();
     }
     let cites = cited(root, &decl.name, created);
@@ -289,24 +290,6 @@ fn span_around(maps: &AfterWave, file: &str, line: u64) -> Option<(u64, u64)> {
         .filter(|d| matches!(d.kind.as_str(), "function" | "method") && d.line <= line && line <= d.end_line.max(d.line))
         .min_by_key(|d| d.end_line.max(d.line) - d.line)?;
     Some((around.line, around.end_line.max(around.line)))
-}
-
-/// A declaração `decl` de `module` é código só do teste, ainda que o mapa a
-/// guarde como do programa: um atributo ou um decorador colado em cima dela
-/// cita teste (`#[cfg(test)]`, `#[cfg(all(test, unix))]`, `#[test]`,
-/// `[TestMethod]`, `@Test`). O scan só reconhece como trecho de teste o módulo
-/// com o atributo `#[cfg(test)]` exato, e a função de apoio ou o teste escrito
-/// fora dele chegaria aqui como código novo sem uso.
-fn test_gated(root: &Path, module: &MapModule, decl: &MapDecl) -> bool {
-    let Ok(text) = std::fs::read_to_string(root.join(&module.path)) else { return false };
-    let above = usize::try_from(decl.line.saturating_sub(1)).unwrap_or(0);
-    let lines: Vec<&str> = text.lines().take(above).collect();
-    lines
-        .iter()
-        .rev()
-        .map(|line| line.trim_start())
-        .take_while(|line| ["#[", "#![", "@", "[", "//"].iter().any(|start| line.starts_with(start)))
-        .any(|line| !line.starts_with("//") && line.to_lowercase().contains("test"))
 }
 
 /// Os tipos de declaração que se leem depois do objeto, sem chamada:
@@ -1436,16 +1419,36 @@ mod tests {
         assert!(!hint.contains("é um teste que só chama"), "the name may be a use, so no test is called useless: {hint}");
     }
 
+    /// O arquivo de `src/a.rs` com a função de apoio solta marcada com
+    /// `#[cfg(test)]` (linhas 2 e 3) e o teste solto com `#[test]` e um
+    /// comentário em cima (linhas 5 e 6), com a função do programa na linha 1.
+    const LOOSE_TEST_ITEMS: &str = "fn run_sum() {}\n#[cfg(test)]\nfn seed_value() {}\n/// Um teste.\n#[test]\nfn sums_it() {}\n";
+
     #[test]
-    fn a_new_helper_or_test_gated_to_tests_is_not_unused() {
+    fn a_new_helper_or_test_inside_the_test_lines_of_the_map_is_not_unused() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        // O scan só guarda como trecho de teste o módulo com `#[cfg(test)]`
-        // exato: o apoio e o teste com o atributo em cima chegam como código.
-        let text = "fn run_sum() {}\n#[cfg(test)]\nfn seed_value() {}\n/// Um teste.\n#[test]\nfn sums_it() {}\n";
-        let after = json!({"modules": [module("src/a.rs", &[("run_sum", 1, &[]), ("seed_value", 3, &[]), ("sums_it", 6, &[])])]});
-        project(root, &[("src/a.rs", text)], &base_with_run_sum_only());
-        silent(&back(root, after));
+        // O scan guarda a função de apoio e o teste soltos como trecho de
+        // teste, a partir da primeira marca em cima de cada um.
+        let mut file = module("src/a.rs", &[("run_sum", 1, &[]), ("seed_value", 2, &[]), ("sums_it", 5, &[])]);
+        file["test_lines"] = json!([[2, 3], [5, 6]]);
+        project(root, &[("src/a.rs", LOOSE_TEST_ITEMS)], &base_with_run_sum_only());
+        silent(&back(root, json!({"modules": [file]})));
+    }
+
+    #[test]
+    fn a_new_function_outside_the_test_lines_of_the_map_is_unused_whatever_the_text_above_it_says() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        // Quem diz o que é teste é o mapa: a função com `#[cfg(test)]` escrito
+        // logo acima dela que o mapa não guarda como trecho de teste é código
+        // novo sem uso, e o texto do arquivo não a livra.
+        let after = json!({"modules": [module("src/a.rs", &[("run_sum", 1, &[]), ("seed_value", 3, &[])])]});
+        project(root, &[("src/a.rs", LOOSE_TEST_ITEMS)], &base_with_run_sum_only());
+        let out = back(root, after);
+        assert_eq!(out["reason"], json!("round-after-wave"), "{out}");
+        let hint = out["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains("`seed_value` em `src/a.rs` linha 3 é código novo sem uso fora de teste"), "{hint}");
     }
 
     #[test]

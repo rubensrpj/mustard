@@ -1275,14 +1275,15 @@ fn a_star_import_that_writes_only_the_module_puts_the_language_name_it_declares_
 /// arquivo é dependência de quem escreve o `mod`, e a chamada do que ele
 /// declara, sozinha ou pelo nome do módulo, liga provada, mesmo com outro
 /// arquivo que declara o mesmo nome. O atributo vale em qualquer ponto da
-/// fila de atributos colada ao `mod`, e o `#[cfg(test)]` também; um item
-/// que não é atributo no meio corta a fila.
+/// fila de atributos colada ao `mod`, e o `#[cfg(test)]` também, sozinho ou
+/// com outra condição (`all(test, unix)`); um item que não é atributo no meio
+/// corta a fila.
 const RUST_PATH_MODULE: &[(&str, &str)] = &[
     ("Cargo.toml", "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n"),
     (
         "src/lib.rs",
         "pub mod leitor;\npub mod terceiro;\npub mod quarto;\npub mod quinto;\npub mod sexto;\npub mod setimo;\n\
-         pub mod oitavo;\n\n#[cfg(test)]\n#[path = \"../tests/support/medida.rs\"]\nmod medida;\n",
+         pub mod oitavo;\npub mod nono;\n\n#[cfg(test)]\n#[path = \"../tests/support/medida.rs\"]\nmod medida;\n",
     ),
     ("src/leitor.rs", "#[path = \"../tests/support/outra.rs\"]\nmod outra;\n"),
     ("src/terceiro.rs", "#[path = \"../tests/support/outra.rs\"]\n#[cfg(test)]\nmod outra;\n"),
@@ -1291,6 +1292,7 @@ const RUST_PATH_MODULE: &[(&str, &str)] = &[
     ("src/sexto.rs", "#[cfg(test)]\n#[allow(dead_code)]\n#[path = \"../tests/support/outra.rs\"]\nmod outra;\n"),
     ("src/setimo.rs", "#[path = \"../tests/support/outra.rs\"]\n#[allow(dead_code)]\nconst X: u8 = 0;\nmod outra;\n"),
     ("src/oitavo.rs", "#[cfg(test)]\nconst Y: u8 = 0;\n#[path = \"../tests/support/outra.rs\"]\nmod outra;\n"),
+    ("src/nono.rs", "#[cfg(all(test, unix))]\n#[path = \"../tests/support/outra.rs\"]\nmod outra;\n"),
     ("tests/support/medida.rs", "pub fn prose_budget() {}\n"),
     ("tests/support/outra.rs", "pub fn prose_budget() {}\n"),
     (
@@ -1313,10 +1315,10 @@ fn a_module_with_a_path_attribute_reaches_the_file_it_names() {
     // Outro atributo no meio da fila não corta o `path`, nem o `#[cfg(test)]`
     // escrito antes ou depois dele. Um item que não é atributo corta: o
     // `path` dele não chega ao `mod`, e o `#[cfg(test)]` dele não é do `mod`.
-    // Os cinco lado a lado, para que um desvio mostre todos de uma vez.
+    // Os seis lado a lado, para que um desvio mostre todos de uma vez.
     let other = || vec!["tests/support/outra.rs".to_string()];
     let none = Vec::<String>::new;
-    let queues: Vec<_> = ["src/quarto.rs", "src/quinto.rs", "src/sexto.rs", "src/setimo.rs", "src/oitavo.rs"]
+    let queues: Vec<_> = ["src/quarto.rs", "src/quinto.rs", "src/sexto.rs", "src/setimo.rs", "src/oitavo.rs", "src/nono.rs"]
         .into_iter()
         .map(|file| (file, deps_of(&v, file), list_of(&v, file, "test_deps")))
         .collect();
@@ -1328,6 +1330,7 @@ fn a_module_with_a_path_attribute_reaches_the_file_it_names() {
             ("src/sexto.rs", none(), other()),
             ("src/setimo.rs", none(), none()),
             ("src/oitavo.rs", other(), none()),
+            ("src/nono.rs", none(), other()),
         ]
     );
     for site in ["tests/orcamento.rs:8:mede", "tests/orcamento.rs:9:mede"] {

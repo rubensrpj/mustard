@@ -236,3 +236,110 @@ fn an_item_that_is_not_an_attribute_between_them_cuts_the_queue() {
     let (deps, test_deps, _) = deps_and_test_deps("queue-cut", "src/cortado.rs");
     assert_eq!((deps, test_deps), (vec!["src/x.rs".to_string()], Vec::<String>::new()));
 }
+
+/// O arquivo que escreve cada forma de trecho de teste que não é o módulo
+/// com `#[cfg(test)]` exato: o módulo com `all(test, ..)`, o com `any(test,
+/// ..)`, o `use`, a função e o tipo soltos com `#[cfg(test)]` (o tipo com
+/// outro atributo antes da marca e outro depois, a função com `test` depois
+/// de outra condição) e o módulo de teste comum com funções de teste dentro.
+/// Cada um importa um arquivo diferente.
+const TEST_FORMS: &str = "use crate::taxa::juros;\n\
+\n\
+pub fn total() -> u32 {\n    juros()\n}\n\
+\n\
+#[cfg(all(test, unix))]\n\
+mod with_all {\n    use crate::medida;\n}\n\
+\n\
+#[cfg(any(test, feature = \"testing\"))]\n\
+mod with_any {\n    use crate::regra;\n}\n\
+\n\
+#[cfg(test)]\n\
+use crate::pronta::sample;\n\
+\n\
+#[cfg(test)]\n\
+fn seed_value() -> u32 {\n    sample()\n}\n\
+\n\
+#[allow(dead_code)]\n\
+#[cfg(test)]\n\
+#[derive(Debug)]\n\
+struct Seed {\n    value: u32,\n}\n\
+\n\
+#[cfg(all(unix, test))]\n\
+fn sums_it() {\n    seed_value();\n}\n\
+\n\
+#[cfg(test)]\n\
+mod tests {\n    #[test]\n    fn one() {}\n\n    #[test]\n    fn two() {}\n}\n";
+
+/// Cada marca de teste que o módulo escrito com outra condição, ou o item
+/// solto, usa para valer como trecho de teste, e as que não valem: a que
+/// nega o teste (`not(test)`), a que cita `test` só como texto
+/// (`feature = "test"`) e a que o põe só dentro de uma negação.
+const NOT_TEST_FORMS: &str = "#[cfg(not(test))]\n\
+mod prod {\n    use crate::x::y;\n}\n\
+\n\
+#[cfg(feature = \"test\")]\n\
+mod lab {\n    use crate::x::y;\n}\n\
+\n\
+#[cfg(all(feature = \"test\", unix))]\n\
+fn gated() {}\n\
+\n\
+#[cfg(all(not(test), unix))]\n\
+fn other() {}\n\
+\n\
+#[cfg(any(unix, not(test)))]\n\
+fn either() {}\n";
+
+fn forms_project(label: &str, name: &str, body: &str) -> (Value, Value) {
+    let temp = project_dir(label);
+    write(temp.path(), "Cargo.toml", "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n");
+    let lib = format!("pub mod {name};\npub mod medida;\npub mod pronta;\npub mod regra;\npub mod taxa;\npub mod x;\n");
+    write(temp.path(), "src/lib.rs", &lib);
+    write(temp.path(), &format!("src/{name}.rs"), body);
+    for (rel, fun) in [("medida", "metro"), ("pronta", "sample"), ("regra", "limite"), ("taxa", "juros"), ("x", "y")] {
+        write(temp.path(), &format!("src/{rel}.rs"), &format!("pub fn {fun}() -> u32 {{\n    1\n}}\n"));
+    }
+    scan(temp.path())
+}
+
+/// O módulo com `all(test, ..)` ou `any(test, ..)`, o `use`, a função e o
+/// tipo soltos com `#[cfg(test)]` são trecho de teste: as linhas deles vão
+/// para `test_lines` (a do módulo sem o atributo em cima, a do item solto com
+/// a fila de atributos) e o que importam fica nas dependências de teste. O
+/// módulo de teste com funções de teste dentro dá um trecho só, o do módulo.
+#[test]
+fn every_form_of_test_code_is_a_test_block() {
+    let (v, _) = forms_project("test-forms", "forms", TEST_FORMS);
+    let forms = module(&v, "src/forms.rs");
+    let ranges: Vec<(u64, u64)> = forms["test_lines"]
+        .as_array()
+        .map(|a| a.iter().map(|r| (r[0].as_u64().unwrap(), r[1].as_u64().unwrap())).collect())
+        .unwrap_or_default();
+    assert_eq!(ranges, vec![(8, 10), (13, 15), (17, 18), (20, 23), (25, 30), (32, 35), (38, 44)], "{forms}");
+    assert_eq!(list(&forms["deps"]), vec!["src/taxa.rs".to_string()], "só o import do corpo é dependência");
+    assert_eq!(
+        list(&forms["test_deps"]),
+        vec!["src/medida.rs".to_string(), "src/pronta.rs".to_string(), "src/regra.rs".to_string()],
+        "o que o teste importa fica à parte"
+    );
+    assert_eq!(used_by(&v, "src/forms.rs", "seed_value"), Vec::<String>::new(), "a chamada do teste não é uso");
+    // A declaração começa na primeira marca da fila de atributos, e é essa
+    // linha que o mapa guarda; ela cai dentro do trecho de teste, e a do corpo
+    // não.
+    let in_tests = |line: u64| ranges.iter().any(|&(first, last)| (first..=last).contains(&line));
+    for decl in forms["declarations"].as_array().unwrap() {
+        let (name, line) = (decl["name"].as_str().unwrap(), decl["line"].as_u64().unwrap());
+        assert_eq!(in_tests(line), name != "total", "{name} na linha {line}: {forms}");
+    }
+}
+
+/// A condição que nega o teste, a que cita `test` só como texto e a que o põe
+/// só dentro de uma negação não fazem trecho de teste: o código é do
+/// programa, e o import dele é dependência.
+#[test]
+fn a_condition_that_does_not_mean_test_is_not_a_test_block() {
+    let (v, _) = forms_project("test-forms-not", "prod", NOT_TEST_FORMS);
+    let prod = module(&v, "src/prod.rs");
+    assert_eq!(prod.get("test_lines"), None, "{prod}");
+    assert_eq!(list(&prod["deps"]), vec!["src/x.rs".to_string()], "{prod}");
+    assert_eq!(list(&prod["test_deps"]), Vec::<String>::new(), "{prod}");
+}

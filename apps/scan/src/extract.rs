@@ -1163,8 +1163,7 @@ impl Analyzer {
             .filter(|head| is_identifier(head) && !bound.contains(head))
             .collect();
         out.unbound_heads = unbound.into_iter().map(str::to_string).collect();
-        out.test_lines.sort();
-        out.test_lines.dedup();
+        out.test_lines = merged_ranges(out.test_lines);
         out.module_lines.sort();
         out.module_lines.dedup();
         out.namespaces.sort();
@@ -1547,6 +1546,23 @@ impl WrittenText {
 /// fica só com a primeira.
 fn rows_of(first: usize, last: usize) -> std::ops::Range<usize> {
     first.saturating_sub(1)..last.max(first)
+}
+
+/// Os trechos de linhas `ranges`, da primeira à última, em ordem e sem
+/// repetição: o que um contém, ou o que começa na linha logo depois do fim de
+/// outro, passa a ser um trecho só. Os atributos colados a um item de teste
+/// ficam no trecho dele, e o item de teste escrito dentro de outro não ganha
+/// trecho próprio.
+fn merged_ranges(mut ranges: Vec<(usize, usize)>) -> Vec<(usize, usize)> {
+    ranges.sort_unstable();
+    let mut out: Vec<(usize, usize)> = Vec::new();
+    for (first, last) in ranges {
+        match out.last_mut() {
+            Some(open) if first <= open.1.saturating_add(1) => open.1 = open.1.max(last),
+            _ => out.push((first, last)),
+        }
+    }
+    out
 }
 
 /// Drop the punctuation a comment is written with, line by line, and leave the

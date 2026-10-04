@@ -77,17 +77,49 @@
 ; variante de um enum (`Piece::Block`); os dois últimos trechos valem.
 (struct_pattern type: (_) @member.of (field_pattern name: (_) @member))
 
-; O módulo marcado como teste: o atributo `#[cfg(test)]` em qualquer ponto da
-; fila de atributos colada ao `mod`, com outros no meio (`#[allow(dead_code)]`);
-; um item que não é atributo entre a marca e o `mod` corta a fila. O que se
-; importa, se chama e se cita dentro dele é do teste, e não uso do código do
-; arquivo.
+; O módulo marcado como teste: o atributo que o põe só na compilação de teste
+; em qualquer ponto da fila de atributos colada ao `mod`, com outros no meio
+; (`#[allow(dead_code)]`); um item que não é atributo entre a marca e o `mod`
+; corta a fila. A marca é `#[cfg(test)]` e o `cfg` que pede o teste junto de
+; outra condição (`all(test, unix)`, `any(test, feature = "x")`); o que só cita
+; `test` dentro de uma negação (`not(test)`) ou como texto (`feature =
+; "test"`) não é marca. O que se importa, se chama e se cita dentro dele é do
+; teste, e não uso do código do arquivo.
 ((attribute_item) @_marker
   .
   (attribute_item)*
   .
   (mod_item) @test_block
-  (#eq? @_marker "#[cfg(test)]"))
+  (#match? @_marker "(?s)^#\\[\\s*cfg\\(\\s*(test|(all|any)\\(\\s*(.*,\\s*)?test\\s*[,)].*)\\s*\\)\\s*\\]$"))
+
+; O item solto marcado como teste: a função de apoio, o `use`, o tipo ou a
+; constante escrito fora de um módulo de teste, com a mesma marca do módulo.
+; O trecho começa no primeiro atributo da fila colada ao item, porque é aí
+; que o mapa começa a declaração dele, e vai até o fim do item. O módulo fica
+; de fora: o mapa não o guarda como declaração, e a marca dele não faz parte
+; do trecho. A função com `#[test]` solta não entra: o arquivo de teste a
+; escreve, e a chamada que ela faz segue sendo uso do que chama.
+((attribute_item)* @test_block
+  .
+  (attribute_item) @_marker @test_block
+  .
+  (attribute_item)* @test_block
+  .
+  [
+    (function_item)
+    (struct_item)
+    (enum_item)
+    (union_item)
+    (impl_item)
+    (trait_item)
+    (type_item)
+    (const_item)
+    (static_item)
+    (use_declaration)
+    (macro_definition)
+    (extern_crate_declaration)
+  ] @test_block
+  (#match? @_marker "(?s)^#\\[\\s*cfg\\(\\s*(test|(all|any)\\(\\s*(.*,\\s*)?test\\s*[,)].*)\\s*\\)\\s*\\]$"))
 
 ; Todo módulo com corpo escrito dentro do arquivo, o de teste incluído: o
 ; `super` escrito dentro de N deles sai primeiro desses N módulos, e só depois
@@ -107,8 +139,8 @@
   (mod_item !body)
   (#eq? @_attr "path"))
 
-; O mesmo `mod` com `#[cfg(test)]` em qualquer ponto da mesma fila, antes ou
-; depois do `path`, é do teste: o atributo do caminho é trecho de teste, e o
+; O mesmo `mod` com uma marca de teste (a do módulo, de cima) em qualquer ponto
+; da mesma fila, antes ou depois do `path`, é do teste: o atributo do caminho é trecho de teste, e o
 ; arquivo que ele nomeia, import do teste, e não do arquivo. O import que o
 ; padrão de cima também acha cai dentro desse trecho e fica só do teste.
 ((attribute_item) @_marker
@@ -120,7 +152,7 @@
   (attribute_item)*
   .
   (mod_item !body)
-  (#eq? @_marker "#[cfg(test)]")
+  (#match? @_marker "(?s)^#\\[\\s*cfg\\(\\s*(test|(all|any)\\(\\s*(.*,\\s*)?test\\s*[,)].*)\\s*\\)\\s*\\]$")
   (#eq? @_attr "path"))
 ((attribute_item (attribute (identifier) @_attr value: (string_literal (string_content) @import))) @test_block
   .
@@ -131,7 +163,7 @@
   (attribute_item)*
   .
   (mod_item !body)
-  (#eq? @_marker "#[cfg(test)]")
+  (#match? @_marker "(?s)^#\\[\\s*cfg\\(\\s*(test|(all|any)\\(\\s*(.*,\\s*)?test\\s*[,)].*)\\s*\\)\\s*\\]$")
   (#eq? @_attr "path"))
 
 (struct_item name: (type_identifier) @name) @definition.struct
