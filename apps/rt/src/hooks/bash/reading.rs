@@ -57,7 +57,7 @@ use crate::shared::config_key::{self, NameFilter, Walk, CONFIG_FILE};
 use crate::shared::word_search::{self, Dialect, Reply};
 
 /// Os programas que mostram o texto de um arquivo.
-const READERS: &[&str] = &[
+pub(crate) const READERS: &[&str] = &[
     "cat", "tac", "nl", "head", "tail", "less", "more", "bat", "grep", "egrep", "fgrep", "rg", "jq", "sed", "awk",
     "cut", "sort", "strings", "xxd", "od", "base64",
 ];
@@ -306,7 +306,7 @@ fn config_refusal(segment: &Segment, cwd: &Path, lang: mustard_core::platform::i
 }
 
 /// Uma busca de texto do terminal em pastas.
-struct TextSearch {
+pub(crate) struct TextSearch {
     /// Os padrões escritos na linha, um por `-e` ou o primeiro argumento sem
     /// opção; vazio quando lidos de arquivo.
     patterns: Vec<String>,
@@ -318,7 +318,7 @@ struct TextSearch {
     /// não acompanha (`-v`, `-x`, `-L`, `-U`, um filtro de tipo ou de pasta
     /// que ela não lê): a busca passa.
     unsupported: bool,
-    paths: Vec<String>,
+    pub(crate) paths: Vec<String>,
     /// Os filtros de nome de arquivo, de entrada e de saída, na ordem da
     /// linha: a busca de palavra e a da chave os leem.
     filters: Vec<NameFilter>,
@@ -348,7 +348,7 @@ fn git_grep_args(args: &[Word]) -> Option<&[Word]> {
 
 /// A busca que `segment` faz, quando é um `grep` recursivo, um `rg` ou um
 /// `git grep`. `None` em todo o resto: outro programa, `grep` sem recursão.
-fn text_search(segment: &Segment) -> Option<TextSearch> {
+pub(crate) fn text_search(segment: &Segment) -> Option<TextSearch> {
     let mut words: &[Word] = &segment.args;
     let (short_value, long_value, rg, git) = match segment.name() {
         "grep" | "egrep" | "fgrep" => (GREP_SHORT_VALUE, GREP_LONG_VALUE, false, false),

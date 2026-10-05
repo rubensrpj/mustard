@@ -1,6 +1,6 @@
 //! A medição do uso real: a tabela do gasto antes e depois da marca de uma
-//! versão, a frase do veredito e quantas buscas o Mustard respondeu, como o
-//! comando `measure` as responde.
+//! versão, a frase do veredito e a tabela de cada 100 buscas que o Mustard
+//! respondeu, com a frase dela, como o comando `measure` as responde.
 //!
 //! Uma parte do catálogo de textos: quem lê chama `translate`, a porta do
 //! catálogo, e nunca esta parte direto. Chave nova com um começo que esta
@@ -73,9 +73,30 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("measure.millions", Locale::EnUs) => "{n} million",
         ("measure.thousands", Locale::PtBr) => "{n} mil",
         ("measure.thousands", Locale::EnUs) => "{n} thousand",
-        // Quantas buscas o Mustard respondeu desde a marca.
-        ("measure.searches", Locale::PtBr) => "Buscas que o Mustard respondeu desde a marca: {count}.",
-        ("measure.searches", Locale::EnUs) => "Searches Mustard answered since the mark: {count}.",
+        // A tabela da busca: o que o Claude fez depois da resposta, de cada
+        // 100 buscas na taxa, e a frase de quantas são e se o número vale.
+        ("measure.search_head", Locale::PtBr) => "Depois da resposta do Mustard, o Claude...",
+        ("measure.search_head", Locale::EnUs) => "After Mustard's answer, Claude...",
+        ("measure.per_hundred", Locale::PtBr) => "de cada 100 buscas",
+        ("measure.per_hundred", Locale::EnUs) => "out of every 100 searches",
+        ("measure.used", Locale::PtBr) => "abriu um arquivo que o Mustard listou",
+        ("measure.used", Locale::EnUs) => "opened a file Mustard listed",
+        ("measure.opened_other", Locale::PtBr) => "abriu um arquivo fora da lista",
+        ("measure.opened_other", Locale::EnUs) => "opened a file outside the list",
+        ("measure.searched_again", Locale::PtBr) => "buscou de novo",
+        ("measure.searched_again", Locale::EnUs) => "searched again",
+        ("measure.searches", Locale::PtBr) => "{count} buscas respondidas, de {first} a {last}.",
+        ("measure.searches", Locale::EnUs) => "{count} answered searches, from {first} to {last}.",
+        ("measure.searches_hold", Locale::PtBr) => "O número vale: passou do mínimo de {min}.",
+        ("measure.searches_hold", Locale::EnUs) => "The number holds: it passed the minimum of {min}.",
+        ("measure.searches_missing", Locale::PtBr) => {
+            "Ainda não dá para dizer: faltam {missing} para o mínimo de {min}."
+        }
+        ("measure.searches_missing", Locale::EnUs) => {
+            "Too early to tell: {missing} more are needed to reach the minimum of {min}."
+        }
+        ("measure.no_searches", Locale::PtBr) => "Nenhuma busca respondida desde a marca.",
+        ("measure.no_searches", Locale::EnUs) => "No answered searches since the mark.",
         ("measure.and", Locale::PtBr) => "e",
         ("measure.and", Locale::EnUs) => "and",
         _ => return None,

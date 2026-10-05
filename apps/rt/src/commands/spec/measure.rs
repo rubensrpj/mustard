@@ -8,10 +8,11 @@
 //! `mustard_core::io::spend` dá ao projeto, pela mesma soma da página do
 //! gasto, só das conversas abertas na pasta do projeto e nas cópias de onda
 //! dele. O comando só lê: não grava nada e não chama o Jev. Em `text`, no
-//! idioma do projeto, saem a tabela do gasto, a frase do veredito e quantas
-//! buscas o Mustard respondeu desde a marca, lidas das mesmas conversas
-//! ([`searches`]); com `--lines`, sai uma linha JSON por busca respondida no
-//! lugar da resposta.
+//! idioma do projeto, saem a tabela do gasto, a frase do veredito e a tabela
+//! do que o Claude fez com cada 100 buscas que o Mustard respondeu desde a
+//! marca, lidas das mesmas conversas ([`searches`]), com a frase de quantas
+//! buscas são e se o número vale; com `--lines`, sai uma linha JSON por busca
+//! respondida no lugar da resposta.
 
 mod searches;
 
@@ -73,7 +74,6 @@ fn measure_at(opts: &MeasureOpts, config: Option<&Path>, today: &str) -> (Value,
     let rows = config.map(|config| store::project_days(config, &opts.root, &range)).unwrap_or_default();
     let measured = measure(&rows, at, today);
     let found = config.map(|config| searches::answered(config, &opts.root, at)).unwrap_or_default();
-    let answered = fill("measure.searches", lang, &[("{count}", grouped(found.len() as u64, lang))]);
     let report = json!({
         "ok": true,
         "project": name,
@@ -82,7 +82,12 @@ fn measure_at(opts: &MeasureOpts, config: Option<&Path>, today: &str) -> (Value,
         "after": measured.after,
         "verdict": measured.verdict,
         "searches": searches::tally(&found),
-        "text": format!("{}\n\n{}\n\n{answered}", table(&measured, lang), sentence(&measured, lang)),
+        "text": format!(
+            "{}\n\n{}\n\n{}",
+            table(&measured, lang),
+            sentence(&measured, lang),
+            searches::report(&found, lang)
+        ),
     });
     (report, found)
 }

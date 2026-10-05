@@ -76,6 +76,9 @@ pub(crate) struct Segment {
     /// the program, in order: `while pgrep x` is `["while"]`, `do sleep 1` is
     /// `["do"]`. A wrapper or an assignment in between is skipped, not kept.
     pub leading: Vec<String>,
+    /// `true` when the command hands its output to the next one through a
+    /// pipe (`|` or `|&`).
+    pub piped: bool,
 }
 
 impl Segment {
@@ -122,6 +125,7 @@ struct Pending {
     words: Vec<Word>,
     redirects: Vec<Redirect>,
     inner: Vec<Segment>,
+    piped: bool,
 }
 
 /// What a `${…}` or `$((…))` is, which tells where it closes.
@@ -194,9 +198,11 @@ impl Reader {
                 '&' if self.peek(1) == Some('>') => self.redirect(&mut cur, String::new(), close, depth),
                 '&' | '|' => {
                     self.advance(1);
-                    if matches!(self.peek(0), Some('&' | '|')) {
+                    let second = self.peek(0).filter(|next| matches!(next, '&' | '|'));
+                    if second.is_some() {
                         self.advance(1);
                     }
+                    cur.piped = c == '|' && second != Some('|');
                     finish(&mut cur, &mut out, depth);
                 }
                 '<' | '>' if self.peek(1) != Some('(') => {
@@ -542,9 +548,9 @@ fn heredoc_commands(body: &str, depth: usize) -> Vec<Segment> {
 /// Close the command being read: resolve its program and push it, followed by
 /// the commands found inside it.
 fn finish(cur: &mut Pending, out: &mut Vec<Segment>, depth: usize) {
-    let Pending { words, redirects, inner } = std::mem::take(cur);
+    let Pending { words, redirects, inner, piped } = std::mem::take(cur);
     if !words.is_empty() || !redirects.is_empty() {
-        let segment = simple_command(words, redirects);
+        let segment = Segment { piped, ..simple_command(words, redirects) };
         let nested = run_by(&segment, depth);
         out.push(segment);
         out.extend(inner);
@@ -568,7 +574,7 @@ fn simple_command(words: Vec<Word>, redirects: Vec<Redirect>) -> Segment {
         .collect();
     let mut rest = words.into_iter().skip(start);
     let program = rest.next().unwrap_or_default();
-    Segment { program, args: rest.collect(), redirects, leading }
+    Segment { program, args: rest.collect(), redirects, leading, piped: false }
 }
 
 /// Where the command really starts: past the structure words, a function

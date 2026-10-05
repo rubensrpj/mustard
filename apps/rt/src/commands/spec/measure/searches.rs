@@ -1,5 +1,5 @@
 //! As buscas que o Mustard respondeu no projeto, lidas das conversas do
-//! Claude Code desde a marca.
+//! Claude Code desde a marca, e o que o Claude fez depois de cada uma.
 //!
 //! A unidade é uma chamada `Grep`, ou `Bash` com `grep`, `rg` ou `git grep`,
 //! que teve resposta do gancho. A cravada vai no lugar da busca: é a recusa
@@ -8,7 +8,10 @@
 //! A resposta se reconhece pelo catálogo de textos, nos dois idiomas, e a
 //! que diz que o mapa não achou ou não responde não entra. De cada busca
 //! respondida ficam os arquivos que a resposta lista e as três chamadas
-//! seguintes da mesma conversa, para dizer depois o que o Claude fez com ela.
+//! seguintes da mesma conversa. A primeira delas que abre arquivo ou busca dá
+//! o desfecho: aproveitou (abriu um arquivo da lista), abriu outro ou buscou
+//! de novo; sem nenhuma, seguiu. A busca que falhou e a que seguiu ficam fora
+//! da taxa, que só vale com [`MIN_SEARCHES`] buscas.
 
 use std::collections::HashMap;
 use std::io::BufRead;
@@ -16,19 +19,41 @@ use std::path::Path;
 use std::time::SystemTime;
 
 use chrono::{DateTime, Utc};
+use mustard_core::domain::spend::day_of_stamp;
 use mustard_core::io::spend::project_conversations;
 use mustard_core::platform::i18n::{translate, Locale};
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use crate::hooks::bash::lex::segments;
+use super::{day_list, fill, grouped};
+use crate::hooks::bash::lex::{segments, Segment};
+use crate::hooks::bash::reading::{text_search, READERS};
 
 /// O trecho com que o Claude Code abre, na primeira linha do resultado, o
 /// texto da recusa de um gancho.
 const HOOK_REFUSAL: &str = "hook error: ";
 
-/// O resultado que o Claude Code dá à chamada que terminou sem saída.
-const NO_OUTPUT: [&str; 3] = ["(Bash completed with no output)", "No matches found", "No files found"];
+/// O resultado que o Claude Code dá à chamada de terminal que terminou sem
+/// saída.
+const NO_OUTPUT: &str = "(Bash completed with no output)";
+
+/// Os trechos com que o Claude Code diz, no começo do resultado, que a
+/// chamada foi barrada pela permissão ou interrompida.
+const STOPPED: [&str; 3] = ["Permission to use", "The user doesn't want to proceed", "Request interrupted"];
+
+/// Até quantos caracteres do começo do resultado vale o aviso de chamada
+/// barrada.
+const STOPPED_HEAD: usize = 400;
+
+/// O aviso do zsh que recusa um curinga sem aspas que não casou com nada,
+/// seguido da palavra recusada.
+const NO_MATCH: &str = "no matches found: ";
+
+/// Os programas que rodam um script escrito na própria linha.
+const SCRIPTERS: [&str; 5] = ["python", "python3", "perl", "node", "ruby"];
+
+/// Quantas buscas na taxa o número pede para valer.
+const MIN_SEARCHES: usize = 200;
 
 /// Quantas chamadas seguintes de cada busca ficam guardadas.
 const NEXT_CALLS: usize = 3;
@@ -55,10 +80,33 @@ const CLASSES: [(Class, &str); 3] = [
     (Class::PartialUnsure, "map.answer.partial_unsure"),
 ];
 
+/// O que o Claude fez depois da resposta, pelas chamadas seguintes.
+#[derive(Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum Outcome {
+    /// Abriu um arquivo que a resposta listou.
+    Used,
+    /// Abriu um arquivo fora da lista, ou qualquer um quando ela não lista.
+    OpenedOther,
+    /// Buscou de novo antes de abrir arquivo.
+    SearchedAgain,
+    /// Nenhuma das chamadas seguintes abriu arquivo nem buscou.
+    MovedOn,
+}
+
+/// O que uma chamada faz: abre arquivos (relativos à pasta da busca), busca,
+/// ou nenhum dos dois.
+enum Action {
+    Open(Vec<String>),
+    Search,
+    Neutral,
+}
+
 /// Uma busca respondida: a chamada, a conversa (o arquivo dela dentro da
 /// pasta das conversas), o instante, a classe e os arquivos da resposta, se
-/// a busca deu erro ou nenhuma saída, a pasta em que rodou e as chamadas
-/// seguintes, com o nome da ferramenta e a entrada.
+/// a busca falhou, a pasta em que rodou, as chamadas seguintes, com o nome da
+/// ferramenta e a entrada, o desfecho e, quando aproveitou, a melhor posição
+/// na lista dos arquivos abertos, contada de um.
 #[derive(Serialize)]
 pub(super) struct Answered {
     tool_use_id: String,
@@ -69,6 +117,8 @@ pub(super) struct Answered {
     failed: bool,
     cwd: String,
     next: Vec<Value>,
+    outcome: Outcome,
+    position: Option<usize>,
 }
 
 /// Uma chamada de ferramenta da conversa, com o instante e a pasta da linha.
@@ -93,17 +143,67 @@ pub(super) fn answered(config: &Path, root: &Path, since: DateTime<Utc>) -> Vec<
     found
 }
 
-/// A contagem de `found`: as respondidas, as de cada classe e as que deram
-/// erro ou nenhuma saída.
+/// A contagem de `found`: as respondidas, as de cada classe, as que
+/// falharam e, das outras, as da taxa, as de cada desfecho e as que seguiram.
 pub(super) fn tally(found: &[Answered]) -> Value {
     let count = |class: Class| found.iter().filter(|search| search.class == class).count();
+    let ended = |outcome: Outcome| found.iter().filter(|search| !search.failed && search.outcome == outcome).count();
+    let rate = [Outcome::Used, Outcome::OpenedOther, Outcome::SearchedAgain].map(ended);
     json!({
         "answered": found.len(),
         "pinned": count(Class::Pinned),
         "partial": count(Class::Partial),
         "partial_unsure": count(Class::PartialUnsure),
         "failed": found.iter().filter(|search| search.failed).count(),
+        "in_rate": rate.iter().sum::<usize>(),
+        "used": rate[0],
+        "opened_other": rate[1],
+        "searched_again": rate[2],
+        "moved_on": ended(Outcome::MovedOn),
     })
+}
+
+/// A tabela de cada 100 buscas na taxa de `found`, em `lang`, com a linha
+/// mais fraca (a maior das duas perdas) em negrito, e a frase: quantas
+/// buscas, de que dia a que dia, e se o número vale ou quanto falta. Sem
+/// busca na taxa, só a frase.
+pub(super) fn report(found: &[Answered], lang: Locale) -> String {
+    let rated: Vec<&Answered> =
+        found.iter().filter(|search| !search.failed && search.outcome != Outcome::MovedOn).collect();
+    let min = ("{min}", MIN_SEARCHES.to_string());
+    let verdict = match MIN_SEARCHES.saturating_sub(rated.len()) {
+        0 => fill("measure.searches_hold", lang, &[min]),
+        missing => fill("measure.searches_missing", lang, &[("{missing}", missing.to_string()), min]),
+    };
+    let days: Vec<String> = rated.iter().filter_map(|search| day_of_stamp(&search.at)).collect();
+    let (Some(first), Some(last)) = (days.iter().min(), days.iter().max()) else {
+        return format!("{} {verdict}", translate("measure.no_searches", lang));
+    };
+    let count = |outcome: Outcome| rated.iter().filter(|search| search.outcome == outcome).count();
+    let weakest = if count(Outcome::SearchedAgain) > count(Outcome::OpenedOther) {
+        Outcome::SearchedAgain
+    } else {
+        Outcome::OpenedOther
+    };
+    let rows = [
+        (Outcome::Used, "measure.used"),
+        (Outcome::OpenedOther, "measure.opened_other"),
+        (Outcome::SearchedAgain, "measure.searched_again"),
+    ];
+    let lines: String = rows
+        .iter()
+        .map(|&(outcome, key)| {
+            let (label, share) = (translate(key, lang), (count(outcome) * 100 + rated.len() / 2) / rated.len());
+            if outcome == weakest { format!("\n| **{label}** | **{share}** |") } else { format!("\n| {label} | {share} |") }
+        })
+        .collect();
+    let head = [translate("measure.search_head", lang), translate("measure.per_hundred", lang)];
+    let span = [
+        ("{count}", grouped(rated.len() as u64, lang)),
+        ("{first}", day_list(std::slice::from_ref(first), lang)),
+        ("{last}", day_list(std::slice::from_ref(last), lang)),
+    ];
+    format!("| {} | {} |\n|---|---:|{lines}\n\n{} {verdict}", head[0], head[1], fill("measure.searches", lang, &span))
 }
 
 /// Põe em `found` as buscas respondidas desde `since` da conversa `path`,
@@ -149,17 +249,21 @@ fn read(path: &Path, name: &str, since: DateTime<Utc>, found: &mut Vec<Answered>
         let instead = refusal.and_then(|(_, said)| class_of(said).map(|class| (class, said.to_string(), true)));
         let beside = || notes.get(&call.id)?.iter().find_map(|said| Some((class_of(said)?, said.clone(), false)));
         let Some((class, said, refused)) = instead.or_else(beside) else { continue };
-        let shown = output.lines().map(str::trim).any(|line| !line.is_empty() && !NO_OUTPUT.contains(&line));
-        let next = calls.iter().skip(index + 1).take(NEXT_CALLS);
+        let files = listed(&said);
+        let next: Vec<&Call> = calls.iter().skip(index + 1).take(NEXT_CALLS).collect();
+        let (outcome, position) = outcome(&files, &call.cwd, &next);
         found.push(Answered {
             tool_use_id: call.id.clone(),
             conversation: name.to_string(),
             at: call.at.clone(),
             class,
-            files: listed(&said),
-            failed: !refused && (error || !shown),
+            files,
+            // A recusa de outro gancho também tira a busca da taxa.
+            failed: !refused && (refusal.is_some() || failed(call, &output)),
             cwd: call.cwd.clone(),
-            next: next.map(|call| json!({ "tool": call.name, "input": call.input })).collect(),
+            next: next.iter().map(|call| json!({ "tool": call.name, "input": call.input })).collect(),
+            outcome,
+            position,
         });
     }
 }
@@ -176,13 +280,241 @@ fn result_text(content: &Value) -> String {
 /// Se `call` é uma busca por texto: a ferramenta `Grep`, ou um comando de
 /// terminal com `grep`, `egrep`, `fgrep`, `rg` ou `git grep`.
 fn is_search(call: &Call) -> bool {
-    let grep = |name: &str| matches!(name, "grep" | "egrep" | "fgrep" | "rg");
     match call.name.as_str() {
         "Grep" => true,
-        "Bash" => segments(call.input["command"].as_str().unwrap_or_default()).iter().any(|segment| {
-            grep(segment.name()) || (segment.name() == "git" && segment.args.iter().any(|word| word.text == "grep"))
-        }),
+        "Bash" => segments(call.input["command"].as_str().unwrap_or_default()).iter().any(greps),
         _ => false,
+    }
+}
+
+/// Se o comando `segment` é `grep`, `egrep`, `fgrep`, `rg` ou `git grep`.
+fn greps(segment: &Segment) -> bool {
+    matches!(segment.name(), "grep" | "egrep" | "fgrep" | "rg")
+        || (segment.name() == "git" && segment.args.iter().any(|word| word.text == "grep"))
+}
+
+/// Se a busca `call`, que o gancho não recusou, falhou com o resultado
+/// `output`: a chamada foi barrada pela permissão ou interrompida; o zsh
+/// recusou o curinga sem aspas de uma palavra da busca (o resto da linha
+/// roda); ou nenhuma linha da saída é de arquivo, mesmo com texto de outros
+/// comandos. A busca que passa a saída por um cano ou não mostra o nome do
+/// arquivo vale com qualquer texto.
+fn failed(call: &Call, output: &str) -> bool {
+    let command = call.input["command"].as_str().unwrap_or_default();
+    let searches: Vec<Segment> =
+        if call.name == "Bash" { segments(command).into_iter().filter(greps).collect() } else { Vec::new() };
+    let ours = |word: &str| searches.iter().flat_map(|search| &search.args).any(|arg| arg.text == word || arg.raw == word);
+    let head: String = output.chars().take(STOPPED_HEAD).collect();
+    if STOPPED.iter().any(|said| head.contains(said))
+        || output.split(NO_MATCH).skip(1).filter_map(|rest| rest.split_whitespace().next()).any(ours)
+    {
+        return true;
+    }
+    if output.lines().any(file_line) {
+        return false;
+    }
+    let rest: Vec<&str> = output.lines().filter(|line| !line.contains(NO_MATCH)).collect();
+    let bare = searches.iter().any(|search| search.piped || hides_names(search));
+    !bare || matches!(rest.join("\n").trim(), "" | NO_OUTPUT)
+}
+
+/// Se a busca `search` mostra as linhas sem o nome do arquivo: `-h` ou
+/// `--no-filename` no `grep`, `-I` ou `--no-filename` no `rg`.
+fn hides_names(search: &Segment) -> bool {
+    let rg = search.name() == "rg";
+    search.args.iter().map(|word| word.text.as_str()).any(|arg| {
+        arg == "--no-filename" || if rg { arg == "-I" } else { !arg.starts_with("--") && arg.starts_with('-') && arg.contains('h') }
+    })
+}
+
+/// Se a linha `line` da saída abre com um caminho de arquivo, como o `grep`
+/// e o `rg` mostram (`caminho:linha:`, `caminho:` ou só o caminho). O nome
+/// sem pasta só vale seguido de `:`, e a contagem zero (`caminho:0`) não vale.
+fn file_line(line: &str) -> bool {
+    let (path, after) = line.split_at(line.find(|c: char| c == ':' || c.is_whitespace()).unwrap_or(line.len()));
+    path_like(path) && has_extension(path) && after != ":0" && (path.contains('/') || after.starts_with(':'))
+}
+
+/// Se `text` só tem caracteres de caminho.
+fn path_like(text: &str) -> bool {
+    !text.is_empty() && text.chars().all(|c| c.is_alphanumeric() || "_@.+-[]/\\~".contains(c))
+}
+
+/// Se o último trecho de `path` tem nome e uma extensão de uma a oito letras
+/// ou algarismos.
+fn has_extension(path: &str) -> bool {
+    let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
+    name.rsplit_once('.').is_some_and(|(stem, extension)| {
+        stem.ends_with(|c: char| c.is_alphanumeric() || c == '_' || c == ']')
+            && (1..=8).contains(&extension.len())
+            && extension.chars().all(|c| c.is_ascii_alphanumeric())
+    })
+}
+
+/// Se `path`, a partir da pasta `dir`, é um arquivo: o que existe no disco
+/// como arquivo ou, fora do disco, o caminho com extensão. Pasta nunca é.
+fn file_like(path: &str, dir: &str) -> bool {
+    let full = (!dir.is_empty()).then(|| Path::new(dir).join(path));
+    path_like(path)
+        && match full {
+            Some(full) if full.is_dir() => false,
+            Some(full) if full.is_file() => true,
+            _ => has_extension(path),
+        }
+}
+
+/// O desfecho da busca que listou `listed` e rodou em `cwd`, pelas chamadas
+/// `next`: a primeira que abre arquivo ou busca decide; aproveitou leva a
+/// melhor posição na lista dos arquivos abertos, contada de um.
+fn outcome(listed: &[String], cwd: &str, next: &[&Call]) -> (Outcome, Option<usize>) {
+    let listed: Vec<String> = listed.iter().map(|path| joined(path, "")).collect();
+    for call in next {
+        match action(call, cwd) {
+            Action::Search => return (Outcome::SearchedAgain, None),
+            Action::Open(files) => {
+                let best = files.iter().filter_map(|file| listed.iter().position(|known| known == file)).min();
+                return best.map_or((Outcome::OpenedOther, None), |at| (Outcome::Used, Some(at + 1)));
+            }
+            Action::Neutral => {}
+        }
+    }
+    (Outcome::MovedOn, None)
+}
+
+/// O que a chamada `call` faz, com os arquivos abertos relativos a `base`, a
+/// pasta da busca. Ler e editar abrem; `Grep`, `Glob` e o agente `Explore`
+/// buscam, menos o `Grep` num arquivo só, que o abre.
+fn action(call: &Call, base: &str) -> Action {
+    let field = |key: &str| call.input[key].as_str().unwrap_or_default();
+    let open = |path: &str| {
+        if path.is_empty() { Action::Neutral } else { Action::Open(vec![relative(path, &call.cwd, base)]) }
+    };
+    match call.name.as_str() {
+        "Read" | "Edit" => open(field("file_path")),
+        "NotebookEdit" => open(call.input["notebook_path"].as_str().unwrap_or(field("file_path"))),
+        "Grep" if file_like(field("path"), &call.cwd) => open(field("path")),
+        "Grep" | "Glob" => Action::Search,
+        "Task" | "Agent" if field("subagent_type") == "Explore" => Action::Search,
+        "Bash" => terminal(field("command"), &call.cwd, base),
+        _ => Action::Neutral,
+    }
+}
+
+/// O que a linha de terminal `command`, rodada em `cwd`, faz: o primeiro
+/// comando que abre ou busca decide o tipo, e todo arquivo aberto antes da
+/// primeira busca conta. Segue os `cd` da linha.
+fn terminal(command: &str, cwd: &str, base: &str) -> Action {
+    let mut dir = cwd.to_string();
+    let mut opened = Vec::new();
+    for segment in segments(command) {
+        if segment.name() == "cd" {
+            if let Some(to) = segment.args.first().filter(|to| !to.text.starts_with('-')) {
+                dir = joined(&to.text, &dir);
+            }
+            continue;
+        }
+        match opens(&segment, command, &dir) {
+            Some(files) => opened.extend(files.iter().map(|file| relative(file, &dir, base))),
+            None if opened.is_empty() => return Action::Search,
+            None => break,
+        }
+    }
+    if opened.is_empty() { Action::Neutral } else { Action::Open(opened) }
+}
+
+/// Os arquivos que o comando `segment` da linha `command`, rodado em `dir`,
+/// abre (nenhum quando não abre nem busca); `None` quando busca. Abrem: o
+/// programa que mostra arquivo com arquivo nomeado, a busca de texto só em
+/// arquivos, o `sed -i` e o `perl -i`, o resumo e o trecho do mapa, e o
+/// script escrito na linha, por texto entre aspas que seja um caminho.
+/// Buscam: a busca de texto em pasta, `find`, `fd` e as outras perguntas do
+/// mapa.
+fn opens(segment: &Segment, command: &str, dir: &str) -> Option<Vec<String>> {
+    let name = segment.name();
+    let words: Vec<&str> = segment.args.iter().map(|word| word.text.as_str()).collect();
+    let files = |texts: &[&str]| -> Vec<String> {
+        texts.iter().filter(|text| !text.starts_with('-') && file_like(text, dir)).map(|text| (*text).to_string()).collect()
+    };
+    if let Some(search) = text_search(segment) {
+        let named = !search.paths.is_empty() && search.paths.iter().all(|path| file_like(path, dir));
+        return named.then_some(search.paths);
+    }
+    match (name, words.as_slice()) {
+        ("find" | "fd", _) => None,
+        ("mustard-rt", ["run", "map", question, rest @ ..]) => {
+            let after = rest.iter().position(|word| *word == "--file").and_then(|at| rest.get(at + 1)).copied();
+            let file = after.or_else(|| rest.iter().find_map(|word| word.strip_prefix("--file=")));
+            match (*question, file) {
+                ("summary" | "slice", Some(file)) => Some(vec![file.to_string()]),
+                _ => None,
+            }
+        }
+        _ if READERS.contains(&name) || (name == "perl" && words.iter().any(|word| word.starts_with("-i"))) => {
+            Some(files(&words))
+        }
+        _ if SCRIPTERS.contains(&name) => {
+            let texts = scripts(segment, command);
+            Some(files(&texts.iter().flat_map(|text| quoted(text)).collect::<Vec<_>>()))
+        }
+        _ => Some(Vec::new()),
+    }
+}
+
+/// Os scripts que o comando `segment` da linha `command` traz escritos: o
+/// texto depois de `-c` ou `-e`, e o corpo do heredoc, lido do texto cru da
+/// linha.
+fn scripts(segment: &Segment, command: &str) -> Vec<String> {
+    let pairs = segment.args.windows(2).filter(|pair| matches!(pair[0].text.as_str(), "-c" | "-e"));
+    let mut texts: Vec<String> = pairs.map(|pair| pair[1].text.clone()).collect();
+    let heredoc = |op: &str| matches!(op.trim_start_matches(|c: char| c.is_ascii_digit()), "<<" | "<<-");
+    for redirect in segment.redirects.iter().filter(|redirect| heredoc(&redirect.op)) {
+        let delimiter = redirect.target.text.as_str();
+        let body = command.lines().skip_while(|line| !line.contains("<<")).skip(1);
+        texts.push(body.take_while(|line| line.trim() != delimiter).collect::<Vec<_>>().join("\n"));
+    }
+    texts
+}
+
+/// Os textos entre aspas, simples ou duplas, de `script`.
+fn quoted(script: &str) -> Vec<&str> {
+    let mut found = Vec::new();
+    let mut rest = script;
+    while let Some(at) = rest.find(['\'', '"']) {
+        let quote = if rest[at..].starts_with('"') { '"' } else { '\'' };
+        let Some((inside, after)) = rest[at + 1..].split_once(quote) else { break };
+        found.push(inside);
+        rest = after;
+    }
+    found
+}
+
+/// `path`, a partir de `dir` quando é relativo, com a barra normal e sem os
+/// trechos `.` e `..`.
+fn joined(path: &str, dir: &str) -> String {
+    let path = path.replace('\\', "/");
+    let absolute = path.starts_with('/') || path.get(1..3) == Some(":/");
+    let full = if absolute || dir.is_empty() { path } else { format!("{}/{path}", dir.replace('\\', "/")) };
+    let mut parts: Vec<&str> = Vec::new();
+    for (at, part) in full.split('/').enumerate() {
+        match part {
+            "." => {}
+            "" if at > 0 => {}
+            ".." if parts.last().is_some_and(|last| !last.is_empty() && *last != "..") => {
+                parts.pop();
+            }
+            _ => parts.push(part),
+        }
+    }
+    parts.join("/")
+}
+
+/// `path`, aberto em `dir`, relativo a `base`, a pasta da busca, quando cai
+/// dentro dela.
+fn relative(path: &str, dir: &str, base: &str) -> String {
+    let (full, base) = (joined(path, dir), joined(base, ""));
+    match full.strip_prefix(&format!("{base}/")) {
+        Some(inside) if !base.is_empty() => inside.to_string(),
+        _ => full,
     }
 }
 
