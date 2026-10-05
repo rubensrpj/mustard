@@ -371,6 +371,51 @@ pub(super) mod tests {
         assert_eq!(hook_message(root, &transcript, "onda1", asked), Verdict::Allow, "the old section never goes back");
     }
 
+    /// Os trechos de conserto na pasta de despacho da spec, pelo nome, e o
+    /// nome do trecho da volta pendente da onda 1.
+    fn fixes_kept(root: &Path) -> (Vec<String>, Option<String>) {
+        let log = mustard_core::io::spec_events::read(&mustard_core::io::spec_events::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let pending = crate::commands::flow::round::fix_file(root, "x", &log, 1);
+        let name = |path: &Path| path.file_name().unwrap().to_string_lossy().into_owned();
+        let folder = root.join(".claude/spec/x/.dispatch");
+        let mut names: Vec<String> =
+            std::fs::read_dir(folder).map(|entries| entries.flatten().map(|e| name(&e.path())).collect()).unwrap_or_default();
+        names.sort();
+        (names, pending.as_deref().map(name))
+    }
+
+    /// A volta nova recusada de novo tira da pasta de despacho o trecho da
+    /// volta velha: fica só o da volta pendente.
+    #[test]
+    fn a_new_refused_return_drops_the_fix_of_the_old_one() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        project(root, SERVICE, None, &two_roles(24, 1, &[]));
+        let against = two_roles(24, 1, &[(SERVICE, CONTROLLER)]);
+        assert_eq!(back(root, against.clone())["reason"], json!("round-after-wave"));
+        let (first, old) = fixes_kept(root);
+        assert_eq!(first, old.clone().into_iter().collect::<Vec<_>>(), "the first fix");
+        assert_eq!(back(root, against)["reason"], json!("round-after-wave"));
+        let (kept, pending) = fixes_kept(root);
+        assert_ne!(pending, old, "the new return has its own fix");
+        assert_eq!(kept, pending.into_iter().collect::<Vec<_>>(), "only the pending return's fix stays");
+    }
+
+    /// A rodada que comita a volta consertada tira o trecho dela da pasta de
+    /// despacho, e a pasta vazia sai junto.
+    #[test]
+    fn the_committed_return_leaves_no_fix_behind() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let clean = two_roles(24, 1, &[]);
+        project(root, SERVICE, None, &clean);
+        assert_eq!(back(root, two_roles(24, 1, &[(SERVICE, CONTROLLER)]))["reason"], json!("round-after-wave"));
+        assert_eq!(fixes_kept(root).0.len(), 1, "the fix for the agent");
+        let out = back(root, clean);
+        assert_eq!(out["ok"], json!(true), "{out}");
+        assert!(!root.join(".claude/spec/x/.dispatch").exists(), "{:?}", fixes_kept(root));
+    }
+
     #[test]
     fn the_same_import_passes_when_the_task_releases_the_pair() {
         let dir = tempdir().unwrap();

@@ -416,6 +416,9 @@ fn run_close(
     // revisor cortou para ver a prova cair não é trabalho de ninguém. A que
     // não sai vira aviso, e a obra fecha do mesmo jeito.
     let removal = crate::commands::flow::round::remove_spec_copies(root, &spec, Some(&log));
+    // Nenhuma onda volta mais para conserto: os trechos que a conferência
+    // depois da onda deixou para o agente saem da pasta da spec.
+    crate::commands::flow::round::sweep_fixes(root, &spec, None);
     // Por último, a pasta de compilação que o projeto declarou descartável
     // sai da pasta principal: ela só cresce, e a próxima obra a refaz uma vez.
     let build_output = remove_build_output(root, lang);
@@ -1804,6 +1807,11 @@ mod tests {
         assert_eq!(asked["criteria"].as_array().map(Vec::len), Some(3), "os três critérios rodaram: {asked}");
         assert_eq!(asked["review"]["final"], json!(true), "a de uma onda só também pede o agente de teste: {asked}");
 
+        // O trecho de conserto que uma recusa deixou para o agente da onda
+        // não fica na pasta da spec fechada.
+        let dispatch = root.join(".claude/spec/x/.dispatch");
+        std::fs::create_dir_all(&dispatch).unwrap();
+        std::fs::write(dispatch.join("fix-1-9.md"), "Onda 1, rodada de conserto 1 de 2:").unwrap();
         let out = close(root, "x");
         assert_eq!(out["ok"], json!(true), "{out}");
         assert_eq!(out["phase"], json!("closed"), "{out}");

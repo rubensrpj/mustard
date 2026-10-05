@@ -653,6 +653,9 @@ pub(super) fn run_entered_round(
     let locked = store::read(&path)
         .map_err(RoundRefusal::Refused)?
         .ok_or_else(|| RoundRefusal::Refused(Refusal::NoSpecFile { spec: spec.clone() }))?;
+    // Com a trava presa e a spec relida, sai da pasta de despacho o trecho de
+    // conserto da onda que a rodada comitou ou que voltou de novo.
+    sweep_fixes(root, &spec, Some(&locked));
     // O commit que uma rodada anterior fez e não chegou a anotar, porque caiu
     // logo depois dele, é anotado agora, antes de qualquer despacho: sem ele
     // o fechamento recusa a obra.
@@ -1064,15 +1067,48 @@ pub(crate) fn wave_dispatch(root: &Path, spec: &str, wave: u64, lang: Locale) ->
 /// uma volta velha nunca chega ao agente. Nada sem volta pendente da onda.
 pub(crate) fn fix_file(root: &Path, spec: &str, log: &SpecLog, wave: u64) -> Option<PathBuf> {
     let back = log.unassumed_returns().into_iter().filter(|e| e.event_type == "delivered" && e.wave() == Some(wave)).map(|e| e.id).max()?;
-    let dir = store::spec_file(root, spec).ok()?.parent()?.join(".dispatch");
-    Some(dir.join(format!("fix-{wave}-{back}.md")))
+    Some(fixes_dir(root, spec)?.join(format!("fix-{wave}-{back}.md")))
+}
+
+/// A pasta de despacho da spec, onde moram os trechos de conserto.
+fn fixes_dir(root: &Path, spec: &str) -> Option<PathBuf> {
+    Some(store::spec_file(root, spec).ok()?.parent()?.join(".dispatch"))
+}
+
+/// A onda do trecho de conserto `path`, pelo nome que [`fix_file`] dá a ele;
+/// nada para outro arquivo da pasta.
+fn fix_wave(path: &Path) -> Option<u64> {
+    let name = path.file_name()?.to_str()?.strip_prefix("fix-")?.strip_suffix(".md")?;
+    let (wave, back) = name.split_once('-')?;
+    back.parse::<u64>().ok().and(wave.parse().ok())
+}
+
+/// Apaga da pasta de despacho da spec cada trecho de conserto que não é mais
+/// o da volta pendente da onda dele ([`fix_file`], pela leitura `log`): o da
+/// volta velha, que a entrega nova trocou, e o da onda que a rodada já
+/// comitou. Sem leitura, como no fechamento, todos saem. A pasta vazia sai
+/// junto; o arquivo que não sai fica para a próxima varredura. Quem chama
+/// segura a trava do passo do git e leu `log` sob ela: a rodada ao mesmo
+/// tempo nunca grava um trecho mais novo que esta leitura.
+pub(crate) fn sweep_fixes(root: &Path, spec: &str, log: Option<&SpecLog>) {
+    let Some(dir) = fixes_dir(root, spec) else { return };
+    let Ok(entries) = std::fs::read_dir(&dir) else { return };
+    for path in entries.flatten().map(|entry| entry.path()) {
+        let Some(wave) = fix_wave(&path) else { continue };
+        if log.and_then(|log| fix_file(root, spec, log, wave)).as_ref() != Some(&path) {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+    let _ = std::fs::remove_dir(&dir);
 }
 
 /// Grava, para cada onda que a conferência depois da onda recusou, o trecho
 /// dela no arquivo da volta recusada ([`fix_file`]), onde o gancho da
-/// mensagem ao agente da onda o lê. Outra recusa não grava nada; a falha de
-/// gravação deixa a mensagem do condutor passar como veio.
+/// mensagem ao agente da onda o lê. Antes, toda recusa varre os trechos que
+/// ficaram velhos ([`sweep_fixes`]); outra recusa não grava nada, e a falha
+/// de gravação deixa a mensagem do condutor passar como veio.
 pub(super) fn keep_fixes(root: &Path, spec: &str, log: &SpecLog, refused: &RoundRefusal) {
+    sweep_fixes(root, spec, Some(log));
     let RoundRefusal::AfterWave { fixes, .. } = refused else { return };
     for (wave, section) in fixes {
         let Some(file) = fix_file(root, spec, log, *wave) else { continue };

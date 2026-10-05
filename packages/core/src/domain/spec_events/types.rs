@@ -803,7 +803,8 @@ pub const TYPES: &[TypeSpec] = &[
             // como a do veredito final (`item`, `met`): o item que não vem
             // cumprido vira tarefa no backlog quando a rodada assume a volta,
             // se nenhuma tarefa ainda por entregar já o cobre e se a análise
-            // da onda não o tirou do pedido.
+            // da onda não o tirou do pedido; com tarefa em `undone`, ele entra
+            // na versão dela que volta ao backlog.
             opt("agreed", Kind::Objects),
             RETURNED,
         ],

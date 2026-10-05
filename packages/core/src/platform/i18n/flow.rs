@@ -935,6 +935,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("round.returned_change", Locale::PtBr) => "Mudança de plano aceita na volta da onda {wave}: {change}",
         ("round.returned_change", Locale::EnUs) => "Plan change accepted when wave {wave} came back: {change}",
+        ("round.unmet_joined", Locale::PtBr) => "Item não cumprido na volta da onda {wave} — {code}: {text}",
+        ("round.unmet_joined", Locale::EnUs) => "Item not met when wave {wave} came back — {code}: {text}",
         ("round.leftover_joined", Locale::PtBr) => concat!(
             "Sobra da onda {wave}, nos mesmos arquivos — {title}: {detail} (Pelo mapa: ",
             map_commands_pt!(),
@@ -1837,8 +1839,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("flow.rs"),
             super::PREFIXES,
-            220,
-            0x8a53_ab14_6959_1f58,
+            221,
+            0x7714_2e42_baf3_a9c4,
         );
     }
 
@@ -2065,6 +2067,7 @@ mod tests {
             ("round.replan_needs_undone", &["{wave}", "{tasks}"][..]),
             ("round.undone_not_in_wave", &["{wave}", "{code}", "{tasks}"][..]),
             ("round.returned_change", &["{wave}", "{change}"][..]),
+            ("round.unmet_joined", &["{wave}", "{code}", "{text}"][..]),
             ("round.leftover_joined", &["{wave}", "{title}", "{detail}"][..]),
             ("round.tasks_returned", &["{wave}", "{tasks}"][..]),
             ("round.held_return", &["{wave}", "{hint}"][..]),

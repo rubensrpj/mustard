@@ -335,7 +335,8 @@ fn the_wave_agent_never_uses_the_git_stash() {
 /// item combinado que nenhuma tarefa da onda faz e que só vale para os
 /// arquivos dela: que ele continua valendo depois da mudança. O `met:false`
 /// fica para a mudança que o quebra e para a tarefa que o faz e ficou por
-/// fazer, e o item não cumprido segue virando tarefa no backlog.
+/// fazer, e o item não cumprido segue virando tarefa no backlog, ou entra na
+/// tarefa que a onda deixou por fazer.
 #[test]
 fn the_wave_agent_calls_an_agreed_item_met_when_it_still_holds_after_the_change() {
     let said = [
@@ -346,6 +347,7 @@ fn the_wave_agent_calls_an_agreed_item_met_when_it_still_holds_after_the_change(
                 "`met:true` quer dizer que ele continua valendo depois da sua mudança",
                 "`met:false` só quando a mudança o quebra ou quando a tarefa que o faz ficou por fazer",
                 "vira tarefa no backlog",
+                "ou entra na de `undone`",
             ],
         ),
         (
@@ -355,6 +357,7 @@ fn the_wave_agent_calls_an_agreed_item_met_when_it_still_holds_after_the_change(
                 "`met:true` means it still holds after your change",
                 "`met:false` only when the change undoes it or when the task that does it was not done",
                 "becomes a backlog task",
+                "or joins the one in `undone`",
             ],
         ),
     ];

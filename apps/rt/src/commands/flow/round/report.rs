@@ -27,7 +27,7 @@ use super::commit::{
     write_joined, UNMADE_SHA,
 };
 use super::copy_check::check_against_copies;
-use super::agreed::{covered_codes, removed_by_analysis, request_agreed, settle_agreed};
+use super::agreed::{covered_codes, join_unmet, removed_by_analysis, request_agreed, settle_agreed};
 use super::leftovers::{leftover_tasks, leftovers_of, Leftover};
 use super::read_check::{request_name, unread_items};
 use super::rehearsal::{rehearse, Recording, Rehearsed};
@@ -975,7 +975,8 @@ pub(super) fn own_copy_relative(log: &SpecLog, wave: u64, file: &str) -> String 
 /// arquivos já estão numa tarefa aberta vira uma linha nela
 /// ([`leftover_tasks`]). A tarefa que a
 /// onda não fez volta ao backlog antes das entregas, com a mudança aceita
-/// anotada no idioma `lang`.
+/// anotada no idioma `lang`, e leva o item combinado que a onda não cumpriu
+/// ([`join_unmet`]), que então não vira tarefa nova.
 fn check_reports(
     start: &Path,
     root: &Path,
@@ -1011,9 +1012,13 @@ fn check_reports(
         agreed_tasks.into_iter().map(|task| rehearse(&mut check, "task", task)).collect::<Result<Vec<_>, _>>()?;
     // A tarefa que a onda não fez volta ao backlog, sem a onda que a levou,
     // antes das entregas: a leitura das tarefas ainda por entregar já a vê
-    // solta, e o item combinado que só ela cobre não vira tarefa nova.
+    // solta, e o item combinado que só ela cobre não vira tarefa nova. O
+    // item que a onda não cumpriu entra nessa mesma versão, e também não
+    // vira tarefa nova.
+    let mut returned = undone_returns(check.log(), &report.waves, lang);
+    join_unmet(check.log(), &report.waves, &mut returned, lang)?;
     let mut undone_tasks = Vec::new();
-    for (wave, task) in undone_returns(check.log(), &report.waves, lang) {
+    for (wave, task) in returned {
         undone_tasks.push((wave, rehearse(&mut check, "task", task)?));
     }
     // A entrega oficial de cada onda aponta em `replaces` todas as voltas
@@ -1048,7 +1053,8 @@ fn check_reports(
             }
             // A resposta pelo combinado do pedido fica na entrega oficial,
             // com cada item pelo número; o item não cumprido vira tarefa,
-            // a menos que uma tarefa ainda por entregar já o cubra ou que a
+            // a menos que uma tarefa ainda por entregar já o cubra — a que a
+            // onda deixou por fazer, que o recebeu, inclusive — ou que a
             // análise da onda o tenha tirado do pedido. As da
             // onda que volta e das que o conserto dela fecha não contam: a
             // entrega as fecha agora. A falta de resposta já foi recusada
@@ -3249,6 +3255,118 @@ mod tests {
             let new_tasks = log.visible().into_iter().filter(|e| e.event_type == "task" && e.wave().is_none()).count();
             assert_eq!(new_tasks, 1, "one task, for the item not met: {said:?}");
         }
+    }
+
+    /// A volta da onda 1, que deixou a tarefa dela por fazer e não cumpriu a
+    /// decisão, e a rodada que a assume. Devolve o código da tarefa.
+    fn returned_with_the_task_undone(root: &Path) -> String {
+        sent_with_a_decision(root);
+        let task = task_code_of_wave(root, 1);
+        let unmet = json!([{"item": "MSTD-DEC-0001", "met": false, "text": "Falta arredondar para baixo."}]);
+        let wrote = returned(root, json!({"wave": 1, "text": "Parei no limite.", "undone": [task], "agreed": unmet}));
+        assert_eq!(wrote["ok"], json!(true), "{wrote}");
+        let took = round(root, "x", None);
+        assert_eq!(took["ok"], json!(true), "{took}");
+        task
+    }
+
+    /// A linha que a tarefa devolvida ganha na parte do agente pelo item
+    /// `code` que a volta da onda 1 não cumpriu, com o que falta.
+    fn unmet_line(code: &str, text: &str) -> String {
+        translate("round.unmet_joined", Locale::PtBr).replace("{wave}", "1").replace("{code}", code).replace("{text}", text)
+    }
+
+    /// O item que a volta não cumpriu e que a tarefa deixada por fazer não
+    /// cobria entra nessa tarefa, que volta ao backlog cobrindo o item e com
+    /// o que falta na parte do agente: nenhuma tarefa nova nasce, e o backlog
+    /// fica com uma tarefa só para o trabalho. A entrega guarda a resposta.
+    #[test]
+    fn an_unmet_item_joins_the_task_the_return_left_undone() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let task = returned_with_the_task_undone(root);
+
+        assert_eq!(tasks_covering_the_decision(root), vec!["Tarefa da onda 1."], "no new task for the item");
+        let log = spec_x(root);
+        let backlog: Vec<&SpecEvent> =
+            log.visible().into_iter().filter(|e| e.event_type == "task" && e.wave().is_none()).collect();
+        assert_eq!(backlog.len(), 1, "one task for the work: {backlog:?}");
+        let back = task_now(root, &task);
+        let agent = back.str_field("agent").unwrap_or_default();
+        assert!(agent.contains(&unmet_line("MSTD-DEC-0001", "Falta arredondar para baixo.")), "{agent}");
+        let official = log.visible().into_iter().find(|e| e.event_type == "delivered" && e.wave() == Some(1)).unwrap();
+        assert_eq!(official.fields["agreed"][0]["met"], json!(false), "{:?}", official.fields);
+    }
+
+    /// A tarefa devolvida que recebeu o item não cumprido sai na onda
+    /// seguinte com a linha do resumo da volta que a devolveu e com o item
+    /// entre o que ela atende.
+    #[test]
+    fn the_returned_task_with_the_unmet_item_leaves_with_the_summary_line() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        returned_with_the_task_undone(root);
+        let log = spec_x(root);
+        let summary = log.visible().into_iter().find(|e| e.event_type == "delivered" && e.wave() == Some(1)).unwrap();
+        let code = log.codes()[&summary.id].clone();
+
+        let next = round(root, "x", None);
+        assert_eq!(waves_in(&next, "dispatch"), vec![2], "{next}");
+        let prompt = request_at(&next, 0);
+        let read = translate("wave_prompt.summary.read", Locale::PtBr).replace("{code}", &code);
+        let opening = read.split("{root}").next().unwrap_or_default();
+        assert!(prompt.contains(opening), "the request opens with the summary: {prompt}");
+        let attends = translate("prompt.step.attends", Locale::PtBr).replace("{item}", "");
+        assert!(
+            prompt.lines().any(|line| line.contains(attends.trim()) && line.contains("MSTD-DEC-0001")),
+            "the task attends the item: {prompt}"
+        );
+    }
+
+    /// Com mais de uma tarefa deixada por fazer, o item não cumprido vai à
+    /// que nasceu dele, a ligação do pedido; o item sem ligação vai à
+    /// primeira da lista da volta, ainda que outra tenha número menor.
+    #[test]
+    fn an_unmet_item_goes_to_the_undone_task_born_of_it_or_to_the_first_one_listed() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved_with(root, "x", &[(1, &["src/a.rs"], &[])], |said| {
+            let decision = |text: &str| {
+                id_of(&write(root, "x", "decision", json!({"text": text, "why": "w", "waves": [1], "keys": ["k"],
+                    "origin": said})))
+            };
+            let (_, second) = (decision("A soma arredonda para baixo."), decision("A lista vazia soma zero."));
+            for (text, origin) in [("Tarefa solta.", said), ("Tarefa da lista vazia.", second)] {
+                let task = json!({"wave": 1, "text": text, "files": [{"path": "src/a.rs"}], "depends_on": [],
+                    "origin": origin});
+                assert_eq!(write(root, "x", "task", task)["ok"], json!(true));
+            }
+        });
+        assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1]);
+        let log = spec_x(root);
+        let code_of = |text: &str| {
+            let task = log.visible().into_iter().find(|e| e.event_type == "task" && e.str_field("text") == Some(text));
+            log.codes()[&task.unwrap().id].clone()
+        };
+        let (planned, loose, born) = (code_of("Tarefa da onda 1."), code_of("Tarefa solta."), code_of("Tarefa da lista vazia."));
+        let unmet = json!([{"item": "MSTD-DEC-0001", "met": false, "text": "Falta arredondar."},
+            {"item": "MSTD-DEC-0002", "met": false, "text": "Falta a lista vazia."}]);
+        let body = json!({"wave": 1, "text": "Parei.", "undone": [&loose, &planned, &born], "agreed": unmet});
+        assert_eq!(returned(root, body)["ok"], json!(true));
+        assert_eq!(round(root, "x", None)["ok"], json!(true));
+
+        let log = spec_x(root);
+        let codes = log.codes();
+        let covered = |task: &str| -> Vec<String> {
+            task_now(root, task).ints("covers").iter().map(|id| codes[id].clone()).collect()
+        };
+        assert_eq!(covered(&loose), vec!["MSTD-DEC-0001"], "the item with no link goes to the first listed");
+        assert_eq!(covered(&born), vec!["MSTD-DEC-0002"], "the item goes to the task born of it");
+        assert!(covered(&planned).is_empty(), "the other task gains nothing");
+        let agent = task_now(root, &born).str_field("agent").unwrap_or_default().to_string();
+        assert_eq!(agent, unmet_line("MSTD-DEC-0002", "Falta a lista vazia."));
+        let backlog = log.visible().into_iter().filter(|e| e.event_type == "task" && e.wave().is_none()).count();
+        assert_eq!(backlog, 3, "no new task");
     }
 
     /// A tarefa do backlog que cobre uma versão antiga do item cobre também a
