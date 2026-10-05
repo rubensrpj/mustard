@@ -128,6 +128,7 @@ mod leftovers;
 mod lost_commit;
 mod queue;
 mod read_check;
+mod rehearsal;
 mod removed_check;
 mod report;
 mod size_check;

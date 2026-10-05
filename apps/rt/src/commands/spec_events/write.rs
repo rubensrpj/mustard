@@ -1179,12 +1179,13 @@ impl RecordCheck {
         self.dry.log()
     }
 
-    /// Confere a gravação que [`record`] faria com estes campos.
+    /// Confere a gravação que [`record`] faria com estes campos e devolve o
+    /// número que o ensaio deu ao evento.
     ///
     /// # Errors
     ///
     /// A recusa que a gravação daria.
-    pub(crate) fn record(&mut self, event_type: &str, draft: Map<String, Value>) -> Result<(), Refusal> {
+    pub(crate) fn record(&mut self, event_type: &str, draft: Map<String, Value>) -> Result<u64, Refusal> {
         task_declared(event_type, &draft, false)?;
         let (carried, replaces) = phase_carried(event_type, &draft);
         let (name, by) = (&self.name, self.by);

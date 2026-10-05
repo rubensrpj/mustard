@@ -419,6 +419,8 @@ impl<'a> DryRun<'a> {
 
     /// Confere a gravação de um evento do tipo `event_type` com os campos de
     /// `draft`, como [`write_guarded`] a conferiria, e passa a contar com ela.
+    /// Devolve o número que o ensaio deu ao evento: a gravação de verdade
+    /// pode dar outro, quando outra entra no arquivo no meio.
     ///
     /// # Errors
     ///
@@ -428,7 +430,7 @@ impl<'a> DryRun<'a> {
         event_type: &str,
         draft: Map<String, Value>,
         guard: impl FnOnce(&SpecLog, &SpecLog) -> Result<(), Refusal>,
-    ) -> Result<(), Refusal> {
+    ) -> Result<u64, Refusal> {
         let Prepared { event, asked, .. } = prepare(event_type, draft, &self.cite_roots)?;
         let repaired = repaired_base(&self.content, &self.log);
         let (base_content, base_log) = repaired.as_ref().map_or((&self.content, &self.log), |(c, l)| (c, l));
@@ -436,7 +438,7 @@ impl<'a> DryRun<'a> {
         guard(base_log, &staged.after)?;
         self.content = staged.next;
         self.log = staged.after;
-        Ok(())
+        Ok(staged.id)
     }
 }
 

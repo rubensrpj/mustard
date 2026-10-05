@@ -30,6 +30,7 @@ use super::copy_check::check_against_copies;
 use super::agreed::{covered_codes, removed_by_analysis, request_agreed, settle_agreed};
 use super::leftovers::{leftover_tasks, leftovers_of, Leftover};
 use super::read_check::{request_name, unread_items};
+use super::rehearsal::{rehearse, Recording, Rehearsed};
 use super::size_check::in_body;
 use super::queue::{backlog_wave, open_review, open_sends, waves_in_progress};
 use super::stops::{hold_waiting_changes, plan_changed_alone, tasks_returned, undone_of, undone_returns, HeldReturn};
@@ -918,12 +919,13 @@ type RecordedReport = (Vec<Value>, Vec<(String, String)>);
 /// O que [`check_reports`] conferiu e [`record_reports`] grava: cada veredito
 /// e cada entregou já montado, com a onda, o número de cada critério com
 /// prova nova, com o comando, e a versão nova de cada envio com consumo
-/// medido.
+/// medido. Cada veredito, tarefa, entregou e envio leva o número que o
+/// ensaio deu a ele.
 struct CheckedReport {
     /// A onda de cada veredito, quando ele aponta uma: a aprovação do agente
     /// de teste dedicado, na obra sem onda nenhuma, não aponta.
-    verdicts: Vec<(Option<u64>, Map<String, Value>)>,
-    deliveries: Vec<(u64, Map<String, Value>)>,
+    verdicts: Vec<(Option<u64>, Rehearsed)>,
+    deliveries: Vec<(u64, Rehearsed)>,
     proofs: Vec<(u64, String)>,
     /// Cada prova como a onda a mandou, antes de juntar as do mesmo critério:
     /// a onda, o código do critério e o comando. A resposta da rodada mostra,
@@ -931,17 +933,17 @@ struct CheckedReport {
     sent_proofs: Vec<(u64, String, String)>,
     /// A versão nova do envio de cada onda cujo consumo a rodada mediu: o
     /// modelo usado, os passos, os tokens ou o consumo de quem despacha.
-    sends: Vec<(u64, Map<String, Value>)>,
+    sends: Vec<(u64, Rehearsed)>,
     /// Uma tarefa nova no backlog por item combinado que a revisão final
     /// marcou `met:false`: sem onda, para a rodada seguinte formar o lote.
-    agreed_tasks: Vec<Map<String, Value>>,
+    agreed_tasks: Vec<Rehearsed>,
     /// A versão nova de cada tarefa que a onda não fez, com a onda que a
     /// devolveu: sem a onda que a levou, de volta ao backlog.
-    undone_tasks: Vec<(u64, Map<String, Value>)>,
+    undone_tasks: Vec<(u64, Rehearsed)>,
     /// Uma tarefa nova no backlog por item combinado que a entrega de uma
     /// onda marcou `met:false` e por sobra, com a onda que a apontou: também
     /// sem onda própria, para a rodada seguinte formar o lote.
-    wave_tasks: Vec<(u64, Map<String, Value>)>,
+    wave_tasks: Vec<(u64, Rehearsed)>,
 }
 
 /// O caminho como a rodada grava `file` da onda `wave`: quando é o caminho
@@ -997,18 +999,16 @@ fn check_reports(
             draft.insert("replaces".into(), returns);
         }
         draft.insert("author".into(), json!("review"));
-        check.record("verdict", draft.clone())?;
-        verdicts.push((wave, draft));
+        verdicts.push((wave, rehearse(&mut check, "verdict", draft)?));
     }
-    for task in &agreed_tasks {
-        check.record("task", task.clone())?;
-    }
+    let agreed_tasks =
+        agreed_tasks.into_iter().map(|task| rehearse(&mut check, "task", task)).collect::<Result<Vec<_>, _>>()?;
     // A tarefa que a onda não fez volta ao backlog, sem a onda que a levou,
     // antes das entregas: a leitura das tarefas ainda por entregar já a vê
     // solta, e o item combinado que só ela cobre não vira tarefa nova.
-    let undone_tasks = undone_returns(check.log(), &report.waves, lang);
-    for (_, task) in &undone_tasks {
-        check.record("task", task.clone())?;
+    let mut undone_tasks = Vec::new();
+    for (wave, task) in undone_returns(check.log(), &report.waves, lang) {
+        undone_tasks.push((wave, rehearse(&mut check, "task", task)?));
     }
     // A entrega oficial de cada onda aponta em `replaces` todas as voltas
     // dela desde o envio que a despachou: nenhuma volta velha fica esperando
@@ -1059,16 +1059,19 @@ fn check_reports(
                 wave_tasks.extend(tasks.into_iter().map(|task| (wave, task)));
             }
             draft.insert("author".into(), json!("wave"));
-            check.record("delivered", draft.clone())?;
-            deliveries.push((wave, draft));
+            deliveries.push((wave, rehearse(&mut check, "delivered", draft)?));
         }
     }
     let found: Vec<(u64, &Leftover)> =
         report.waves.iter().flat_map(|wave| wave.leftovers.iter().map(move |leftover| (wave.wave, leftover))).collect();
+    // A sobra que entra numa tarefa que voltou ao backlog nesta rodada aponta
+    // o número que o ensaio deu à volta: a gravação de verdade o troca pelo
+    // dela.
     wave_tasks.extend(leftover_tasks(root, check.log(), &found, lang));
-    for (_, task) in &wave_tasks {
-        check.record("task", task.clone())?;
-    }
+    let wave_tasks = wave_tasks
+        .into_iter()
+        .map(|(wave, task)| Ok((wave, rehearse(&mut check, "task", task)?)))
+        .collect::<Result<Vec<_>, Refusal>>()?;
     // O consumo, que só se sabe na volta: quando a rodada mede algum dos
     // cinco campos, o envio da onda ganha uma versão nova com eles, sem
     // remontar o resto do que foi enviado — também na onda que uma rodada
@@ -1081,8 +1084,7 @@ fn check_reports(
             continue;
         }
         if let Some(draft) = super::queue::send_revision(check.log(), wave, extra) {
-            check.record("send", draft.clone())?;
-            sends.push((wave, draft));
+            sends.push((wave, rehearse(&mut check, "send", draft)?));
         }
     }
     // Mais de uma prova para o mesmo critério não vira uma versão por prova,
@@ -1153,7 +1155,10 @@ fn criterion_version(log: &SpecLog, id: u64, proof: &str) -> Option<CriterionVer
 /// entregou de cada onda, a tarefa de cada item combinado que ela não cumpriu
 /// e de cada sobra, e a versão nova de cada critério com prova nova. A
 /// entrada da tarefa que uma sobra fez ganhar versão nova leva o número da
-/// versão que ela substitui. Devolve o que foi gravado e, de cada prova nova, o código do critério e o
+/// versão que ela substitui. O `replaces` que aponta um evento do ensaio
+/// aponta o número que a gravação de verdade deu a ele ([`Recording`]): uma
+/// gravação alheia entre o ensaio e esta, durante o commit, faz o número
+/// andar. Devolve o que foi gravado e, de cada prova nova, o código do critério e o
 /// comando. A entrada de cada entregou leva o texto, os arquivos e as provas
 /// que a própria onda mandou: quem conduz a obra confere a entrega pela
 /// resposta da rodada, sem ir ler a spec.
@@ -1162,47 +1167,47 @@ fn record_reports(start: &Path, spec: &str, checked: CheckedReport) -> Result<Re
         checked;
     let path = store::spec_file(&crate::commands::spec_events::project(start).root, spec)?;
     let read = || store::read(&path)?.ok_or_else(|| Refusal::NoSpecFile { spec: spec.to_string() });
+    let mut recording = Recording::new(start, spec);
     let mut recorded = Vec::new();
-    for (wave, draft) in verdicts {
-        let written = record(start, spec, "verdict", draft, PhaseWriter::Binary)?;
-        let mut entry = json!({ "type": "verdict", "id": written.written.id });
+    for (wave, verdict) in verdicts {
+        let (id, _) = recording.record("verdict", verdict)?;
+        let mut entry = json!({ "type": "verdict", "id": id });
         if let Some(wave) = wave {
             entry["wave"] = json!(wave);
         }
         recorded.push(entry);
     }
-    for draft in agreed_tasks {
-        let written = record(start, spec, "task", draft, PhaseWriter::Binary)?;
-        recorded.push(json!({ "type": "task", "id": written.written.id }));
+    for task in agreed_tasks {
+        let (id, _) = recording.record("task", task)?;
+        recorded.push(json!({ "type": "task", "id": id }));
     }
-    for (wave, draft) in undone_tasks {
-        let written = record(start, spec, "task", draft, PhaseWriter::Binary)?;
-        recorded.push(json!({ "wave": wave, "type": "task", "id": written.written.id }));
+    for (wave, task) in undone_tasks {
+        let (id, _) = recording.record("task", task)?;
+        recorded.push(json!({ "wave": wave, "type": "task", "id": id }));
     }
-    for (wave, draft) in deliveries {
-        let text = draft.get("text").cloned().unwrap_or_default();
-        let files = draft.get("files").cloned().unwrap_or_else(|| json!([]));
+    for (wave, delivered) in deliveries {
+        let text = delivered.draft.get("text").cloned().unwrap_or_default();
+        let files = delivered.draft.get("files").cloned().unwrap_or_else(|| json!([]));
         let own: Vec<Value> = sent_proofs
             .iter()
             .filter(|(from, _, _)| *from == wave)
             .map(|(_, criterion, proof)| json!({ "criterion": criterion, "proof": proof }))
             .collect();
-        let written = record(start, spec, "delivered", draft, PhaseWriter::Binary)?;
-        recorded.push(json!({ "wave": wave, "type": "delivered", "id": written.written.id, "text": text,
+        let (id, _) = recording.record("delivered", delivered)?;
+        recorded.push(json!({ "wave": wave, "type": "delivered", "id": id, "text": text,
             "files": files, "proofs": own }));
     }
-    for (wave, draft) in wave_tasks {
-        let replaces = draft.get("replaces").cloned();
-        let written = record(start, spec, "task", draft, PhaseWriter::Binary)?;
-        let mut entry = json!({ "wave": wave, "type": "task", "id": written.written.id });
+    for (wave, task) in wave_tasks {
+        let (id, replaces) = recording.record("task", task)?;
+        let mut entry = json!({ "wave": wave, "type": "task", "id": id });
         if let Some(replaces) = replaces {
             entry["replaces"] = replaces;
         }
         recorded.push(entry);
     }
-    for (wave, draft) in sends {
-        let written = record(start, spec, "send", draft, PhaseWriter::Binary)?;
-        recorded.push(json!({ "wave": wave, "type": "send", "id": written.written.id }));
+    for (wave, send) in sends {
+        let (id, _) = recording.record("send", send)?;
+        recorded.push(json!({ "wave": wave, "type": "send", "id": id }));
     }
     let mut ran = Vec::new();
     for (id, proof) in proofs {
