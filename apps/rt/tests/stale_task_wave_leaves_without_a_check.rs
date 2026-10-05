@@ -142,10 +142,8 @@ fn survey(project: &Project) {
     assert!(!points.is_empty(), "{grilled}");
     let mut current = Value::Null;
     for point in &points {
-        let mut open = point.clone();
-        open["status"] = json!("open");
-        open["facts"] = json!([{"text": "A soma mora no programa.", "source": "src/main.rs:2"}]);
-        current = project.write("point", &open)["point"].clone();
+        let facts = json!([{"text": "A soma mora no programa.", "source": "src/main.rs:2"}]);
+        current = project.write("point", &json!({"replaces": point["id"], "facts": facts}))["point"].clone();
     }
     for point in &points {
         let code = current["code"].as_str().expect("the open point").to_string();

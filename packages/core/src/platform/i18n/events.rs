@@ -359,10 +359,10 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              `replaces` e `facts`, ou feche-o como `not_applicable`, com o motivo. Nada foi gravado."
         }
         ("spec_events.point_without_facts", Locale::EnUs) => {
-            "Point {code} has no fact, and a point without facts does not close with an answer \
-             (`result`). Add the facts you checked in the code or in the conversation in a new version \
-             of it, with only `replaces` and `facts`, or close it as `not_applicable`, with the reason. \
-             Nothing was written."
+            "Point {code} has no fact, so it does not close with an answer (`result`). Add the facts \
+             you checked in the code or in the conversation. Write them in a new version of the \
+             point, with only `replaces` and `facts`. Or close it as `not_applicable`, with the \
+             reason. Nothing was written."
         }
         ("spec_events.open_point_removed", Locale::PtBr) => {
             "O ponto {code} está aberto e não sai com `remove`: feche-o com um ponto que o aponte em \
@@ -947,8 +947,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("events.rs"),
             super::PREFIXES,
-            121,
-            0x191f_f282_7de1_35ce,
+            122,
+            0x80c6_4bf5_ceda_a70a,
         );
     }
 

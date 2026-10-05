@@ -173,8 +173,8 @@ fn user_says(project: &Project, text: &str) -> u64 {
     said.id
 }
 
-/// O levantamento inteiro: o objetivo, o `grill` e cada ponto gravado,
-/// respondido e fechado.
+/// O levantamento inteiro: o objetivo, o `grill`, que grava os pontos, e
+/// cada ponto com os fatos somados, respondido e fechado.
 fn survey(project: &Project) -> u64 {
     let said = user_says(project, GOAL);
     project.write("context", &json!({"title": "Combinar o item", "agent": "- conferir pelo teste", "text": GOAL, "origin": said}));
@@ -183,10 +183,8 @@ fn survey(project: &Project) -> u64 {
     assert!(!points.is_empty(), "{grilled}");
     let mut current = Value::Null;
     for point in &points {
-        let mut open = point.clone();
-        open["status"] = json!("open");
-        open["facts"] = json!([{"text": "A saudação mora no programa.", "source": "src/main.rs:2"}]);
-        current = project.write("point", &open)["point"].clone();
+        let facts = json!([{"text": "A saudação mora no programa.", "source": "src/main.rs:2"}]);
+        current = project.write("point", &json!({"replaces": point["id"], "facts": facts}))["point"].clone();
     }
     for point in &points {
         let code = current["code"].as_str().expect("the open point").to_string();

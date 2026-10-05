@@ -196,7 +196,7 @@ mod tests {
             include_str!("survey.rs"),
             super::PREFIXES,
             36,
-            0x16bb_40ca_9e79_7a06,
+            0x5ee2_903d_9be1_454b,
         );
     }
 

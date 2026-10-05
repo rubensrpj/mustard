@@ -168,22 +168,20 @@ fn a_test_survey_goes_through_every_point_and_the_plan_is_refused_while_one_is_o
     let said = user_says(root, GOAL);
     write(root, "context", &json!({"title": "Combinar o item", "agent": "- conferir pelo teste", "text": GOAL, "origin": said}));
 
+    // Duas falas que chegam sem ponto aberto e sem registro que as aponte.
+    let loose = [user_says(root, "E o painel?"), user_says(root, "E o aviso por e-mail?")];
+
     let grilled = rt(root, &["grill", "--kinds", "feature", "--spec", SPEC]);
     assert_eq!(grilled.status.code(), Some(0), "{}", String::from_utf8_lossy(&grilled.stdout));
     let items = report(&grilled)["points"].as_array().cloned().expect("the point list");
     assert_eq!(items.len(), 9, "{items:?}");
 
-    // Duas falas que chegam sem ponto aberto e sem registro que as aponte.
-    let loose = [user_says(root, "E o painel?"), user_says(root, "E o aviso por e-mail?")];
-
-    // A lista gravada como o assistente grava: a última gravação devolve o
-    // primeiro ponto.
+    // O `grill` gravou os pontos; o assistente soma os fatos a cada um, e a
+    // última gravação devolve o primeiro ponto.
     let mut last = Value::Null;
     for item in &items {
-        let mut point = item.clone();
-        point["status"] = json!("open");
-        point["facts"] = json!([{"text": "O merge começa no arquivo de entrada.", "source": "src/main.rs:2"}]);
-        last = write(root, "point", &point);
+        let facts = json!([{"text": "O merge começa no arquivo de entrada.", "source": "src/main.rs:2"}]);
+        last = write(root, "point", &json!({"replaces": item["id"], "facts": facts}));
     }
     let mut current = last["point"].clone();
     assert_eq!(current["gap"], items[0]["gap"], "{last}");
@@ -324,19 +322,16 @@ fn a_question_said_during_an_open_point_is_not_left_loose_at_the_end() {
     assert_eq!(opened.status.code(), Some(0), "{}", String::from_utf8_lossy(&opened.stdout));
     let said = user_says(root, GOAL);
     write(root, "context", &json!({"title": "Combinar o item", "agent": "- conferir pelo teste", "text": GOAL, "origin": said}));
+    let before_points = hook_says(root, home.path(), "E o painel?");
+
     let items = report(&rt(root, &["grill", "--kinds", "feature", "--spec", SPEC]))["points"]
         .as_array()
         .cloned()
         .expect("the point list");
-
-    let before_points = hook_says(root, home.path(), "E o painel?");
-
     let mut last = Value::Null;
     for item in &items {
-        let mut point = item.clone();
-        point["status"] = json!("open");
-        point["facts"] = json!([{"text": "O merge começa no arquivo de entrada.", "source": "src/main.rs:2"}]);
-        last = write(root, "point", &point);
+        let facts = json!([{"text": "O merge começa no arquivo de entrada.", "source": "src/main.rs:2"}]);
+        last = write(root, "point", &json!({"replaces": item["id"], "facts": facts}));
     }
     let mut current = last["point"].clone();
     let first_open = current["id"].as_u64().expect("the first open point");

@@ -49,20 +49,22 @@ pub enum FlowCmd {
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
-    /// Conduz o levantamento de uma spec: grava o tipo de trabalho e monta a
+    /// Conduz o levantamento de uma spec: grava o tipo de trabalho, monta a
     /// lista de pontos — as lacunas de cada tipo (juntas sem repetir num
     /// pedido misto), as lições e as specs anteriores que casam com o
     /// objetivo, e até três mensagens antigas do usuário como lembretes
-    /// dentro desses pontos. O assistente grava cada ponto com `write point`;
-    /// rodar o grill de novo com os mesmos tipos não grava nada e devolve o
-    /// primeiro ponto aberto.
+    /// dentro desses pontos — e grava cada ponto que falta, aberto, com os
+    /// fatos que a lista traz. O assistente só soma os fatos que conferiu, com
+    /// `write point` levando `replaces` e `facts`. Rodar o grill de novo não
+    /// grava nada e devolve o primeiro ponto aberto.
     #[command(display_order = 1)]
     Grill {
         /// A spec levantada. Sem ela, a spec atual.
         #[arg(long)]
         spec: Option<String>,
         /// O tipo de trabalho, separado por vírgula: `feature`, `fix`,
-        /// `refactor`.
+        /// `refactor`. Sem ele, vale o tipo já gravado e, na primeira vez, o
+        /// do começo da branch da spec (`fix/x` dá `fix`).
         #[arg(long)]
         kinds: Option<String>,
         /// Um pedido que cabe numa frase: todos os pontos num bloco só,

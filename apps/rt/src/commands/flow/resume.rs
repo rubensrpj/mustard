@@ -414,12 +414,40 @@ mod tests {
         assert_eq!(out["command"], json!("mustard-rt run grill --spec x"), "{out}");
         assert_eq!(out["next"], json!(translate("resume.next.survey", Locale::PtBr)), "{out}");
         assert!(!out.to_string().contains("http"), "nenhum endereço entra na resposta: {out}");
+        // A linha roda como veio: com o objetivo gravado, o `grill` sem o tipo
+        // usa o da branch e não é recusado.
+        let seed = |event_type: &str, body: Value| crate::shared::spec_state::seed_event(root, "x", event_type, body);
+        let said = seed("message", json!({"author": "user", "text": "Travar o merge."}));
+        seed("context", json!({"text": "Travar o merge.", "origin": said}));
+        let grilled = run_grill_line(root, out["command"].as_str().unwrap_or_default());
+        assert_eq!(grilled["ok"], json!(true), "{grilled}");
+        assert_eq!(grilled["kinds"], json!(["feature"]), "{grilled}");
 
         crate::shared::spec_state::approve_in(&root.join(".claude").join("spec").join("x"));
         let out = resume(root, "x");
         assert_eq!(out["phase"], json!("approved"), "{out}");
         assert_eq!(out["command"], json!("mustard-rt run round --spec x"), "{out}");
         resume_line_after_clear();
+    }
+
+    /// Roda a linha do `grill` que a retomada devolve pelo parser do binário,
+    /// na pasta `root`, e devolve a resposta dele.
+    fn run_grill_line(root: &Path, line: &str) -> Value {
+        use crate::commands::{flow::cli::FlowCmd, RunCmd};
+        #[derive(clap::Parser)]
+        struct Harness {
+            #[command(subcommand)]
+            cmd: RunCmd,
+        }
+        let root_arg = root.to_string_lossy().into_owned();
+        let argv = ["run"].into_iter().chain(line.split_whitespace().skip(2)).chain(["--root", &root_arg]);
+        let Ok(Harness { cmd: RunCmd::Flow(FlowCmd::Grill { spec, kinds, condensed, root }) }) =
+            clap::Parser::try_parse_from(argv)
+        else {
+            panic!("not the grill: {line}");
+        };
+        let opts = crate::commands::flow::grill::GrillOpts { root, spec, kinds, condensed };
+        crate::commands::flow::grill::grill_for(&opts, None)
     }
 
     /// A linha de retomada, no início da sessão depois de `/clear` e no

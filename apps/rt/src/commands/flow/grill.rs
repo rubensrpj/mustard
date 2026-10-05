@@ -21,8 +21,9 @@
 //! cabe numa frase, todos os pontos vão para um bloco só.
 //!
 //! O `grill` grava cada item da lista que ainda não tem ponto como ponto
-//! aberto, com o autor `binary`, os fatos que a lista já traz e os lembretes.
-//! O ponto pode nascer sem fato; o assistente soma os fatos que conferiu numa
+//! aberto, com o autor `binary`, os fatos que a lista já traz e os lembretes;
+//! o fato do mapa que cita um arquivo que não existe mais fica de fora, e o
+//! ponto é gravado assim mesmo. O ponto pode nascer sem fato; o assistente soma os fatos que conferiu numa
 //! versão nova só com `replaces` e `facts`, e o ponto sem fato não fecha com
 //! resposta. Cada item da resposta traz o número, o código e a situação do
 //! ponto que o registra. A resposta devolve em `next` o primeiro ponto aberto
@@ -43,12 +44,14 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use mustard_core::domain::citation::{self, Finding};
 use mustard_core::domain::spec_events::{
     found_by, Block, BlockQuery, Kind, Refusal, SpecEvent, SpecLog, WORK_KINDS,
 };
 use mustard_core::domain::normalize::Languages;
 use mustard_core::domain::spec_state::{PhaseWriter, SpecState, State};
 use mustard_core::domain::survey::{self, Sources};
+use mustard_core::io::citation::DiskWorld;
 use mustard_core::io::{lessons, project_map, spec_events as store, spec_index};
 use mustard_core::platform::i18n::{translate, Locale};
 use mustard_core::ClaudePaths;
@@ -195,7 +198,7 @@ pub(crate) fn grill_for(opts: &GrillOpts, session: Option<&str>) -> Value {
     let prior = spec_index::read_specs(&project.root);
     let map = |need: project_map::Need<'_>| project_map::read_for(&project.root, need);
     let condensed = opts.condensed || survey::condensed(&log);
-    let list = survey::build(&Sources {
+    let mut list = survey::build(&Sources {
         kinds: &kinds,
         goal: &goal_text,
         goal_agent: &goal_agent,
@@ -209,9 +212,11 @@ pub(crate) fn grill_for(opts: &GrillOpts, session: Option<&str>) -> Value {
         lang,
         languages: &project.languages,
     });
+    drop_stale_facts(&mut list, &opts.root, &project.root);
 
-    // Os pontos que faltam são gravados aqui, abertos e sem fato, com os
-    // lembretes; o assistente soma os fatos antes de mostrar cada um.
+    // Os pontos que faltam são gravados aqui, abertos, com os fatos que a
+    // lista traz e os lembretes; o assistente soma os fatos que conferiu antes
+    // de mostrar cada um.
     let missing = survey::missing(&log, &list);
     for item in &missing {
         if let Err(refusal) = record_point(&opts.root, &spec, item, origin) {
@@ -362,6 +367,17 @@ fn record_work_type(
     record(start, spec, "work_type", draft, PhaseWriter::Binary).map(|recorded| recorded.written.id)
 }
 
+/// Tira da lista o fato que cita um arquivo que não existe, ou uma linha que
+/// passa do fim dele, pela mesma conferência que recusaria a gravação do
+/// ponto: o mapa velho, que ainda cita o arquivo apagado, não para o
+/// levantamento. O ponto pode ficar sem fato nenhum, e os outros fatos ficam.
+fn drop_stale_facts(list: &mut [survey::Proposed], start: &Path, root: &Path) {
+    let world = DiskWorld::new(store::citation_roots(start, root), None);
+    for item in list {
+        item.facts.retain(|fact| !citation::check(&world, &fact.source, "").iter().any(Finding::is_refusal));
+    }
+}
+
 /// Grava um item da lista como ponto aberto, com o autor `binary` e a
 /// mensagem do objetivo como origem, pela mesma gravação do `run write`.
 fn record_point(start: &Path, spec: &str, item: &survey::Proposed, origin: Option<u64>) -> Result<u64, Refusal> {
@@ -509,32 +525,12 @@ mod tests {
     fn the_dependents_gap_reads_its_map_parts_even_when_another_column_is_broken() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        std::fs::write(root.join("mustard.json"), b"{}").unwrap();
-        mustard_core::io::project_map::write_text(
-            root,
-            r#"{"modules": [
-                {"path": "src/a.rs", "tests": "um texto no lugar da lista",
-                 "declarations": [{"kind": "function", "name": "record_birth", "line": 3}]},
-                {"path": "src/b.rs", "deps": ["src/a.rs"]}]}"#,
-        )
-        .unwrap();
+        let map = r#"{"modules": [
+            {"path": "src/a.rs", "tests": "um texto no lugar da lista",
+             "declarations": [{"kind": "function", "name": "record_birth", "line": 3}]},
+            {"path": "src/b.rs", "deps": ["src/a.rs"]}]}"#;
+        let report = refactor_with_map(root, map, "- Tirar `record_birth` do fluxo.");
         assert!(project_map::read(root).is_err(), "the whole map refuses the broken column");
-        assert_eq!(record_open(root, "x", "feature/x", "dev"), Ok(true));
-        let goal = "Tirar o registro de nascimento do fluxo.";
-        let said = id_of(&write(root, Some("x"), "message", json!({"author": "user", "text": goal})));
-        id_of(&write(
-            root,
-            Some("x"),
-            "context",
-            json!({
-                "title": "Tirar o registro de nascimento",
-                "text": goal,
-                "agent": "- Tirar `record_birth` do fluxo.",
-                "origin": said,
-            }),
-        ));
-
-        let report = grill(root, "x", Some("refactor"), false);
         let sources: Vec<&str> = report["points"]
             .as_array()
             .into_iter()
@@ -543,6 +539,45 @@ mod tests {
             .filter_map(|fact| fact["source"].as_str())
             .collect();
         assert_eq!(sources, ["src/a.rs:3", "mustard-rt run map importers --file src/a.rs"], "{report}");
+    }
+
+    /// Uma spec de refatoração com o mapa `map`, o arquivo `src/a.rs` com três
+    /// linhas e o objetivo que cita os nomes na parte do agente `agent`. Devolve
+    /// a resposta do `grill`.
+    fn refactor_with_map(root: &Path, map: &str, agent: &str) -> Value {
+        std::fs::write(root.join("mustard.json"), b"{}").unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src").join("a.rs"), "fn a() {}\n\nfn record_birth() {}\n").unwrap();
+        mustard_core::io::project_map::write_text(root, map).unwrap();
+        assert_eq!(record_open(root, "x", "feature/x", "dev"), Ok(true));
+        let goal = "Tirar o registro de nascimento do fluxo.";
+        let said = id_of(&write(root, Some("x"), "message", json!({"author": "user", "text": goal})));
+        let context = json!({"title": "Tirar o registro de nascimento", "text": goal, "agent": agent, "origin": said});
+        id_of(&write(root, Some("x"), "context", context));
+        grill(root, "x", Some("refactor"), false)
+    }
+
+    /// O mapa velho ainda declara um nome num arquivo que foi apagado: o
+    /// ponto de quem depende é gravado sem o fato desse arquivo, com os fatos
+    /// do arquivo que existe, e o `grill` não recusa.
+    #[test]
+    fn a_map_fact_citing_a_deleted_file_is_left_out_of_the_recorded_point() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let map = r#"{"modules": [
+            {"path": "src/a.rs", "declarations": [{"kind": "function", "name": "record_birth", "line": 3}]},
+            {"path": "src/gone.rs", "declarations": [{"kind": "function", "name": "drop_birth", "line": 2}]},
+            {"path": "src/b.rs", "deps": ["src/a.rs"]}]}"#;
+        let report = refactor_with_map(root, map, "- Tirar `record_birth` e `drop_birth` do fluxo.");
+        assert_eq!(report["ok"], json!(true), "{report}");
+        let points = recorded_points(root, "x");
+        let dependents = points
+            .iter()
+            .find(|p| p.str_field("gap") == Some(survey::GapKey::Dependents.label(Locale::PtBr)))
+            .expect("the dependents point is recorded");
+        let sources: Vec<&str> =
+            dependents.fields["facts"].as_array().unwrap().iter().filter_map(|fact| fact["source"].as_str()).collect();
+        assert_eq!(sources, ["src/a.rs:3", "mustard-rt run map importers --file src/a.rs"], "{dependents:?}");
     }
 
     /// O `grill` não escreve página nem prepara cópia: o levantamento não é
@@ -666,6 +701,9 @@ mod tests {
         assert_eq!(first["next"]["gap"], json!("O sintoma"));
         assert_eq!(events(root, "x"), bytes, "nothing was written");
 
+        // Noutro projeto, para a spec `x` não casar como spec anterior.
+        let other = tempdir().unwrap();
+        let root = other.path();
         let said = surveyed(root, "manual");
         assert!(record_work_type(root, "manual", &["fix"], Some(said), None).is_ok());
         for key in survey::gaps(&["fix"]) {
@@ -991,6 +1029,9 @@ mod tests {
         assert_eq!(reminders, [&json!({"spec": "antiga", "message": 5, "text": "O merge com pendência aberta passou sem aviso."})]);
         let recorded = recorded_points(root, "x");
         let point = recorded.iter().find(|p| p.str_field("from") == Some("prior_spec")).expect("the prior spec point");
+        assert_eq!(point.fields["facts"], prior["facts"], "the point keeps the facts of the list");
+        let reminded = items(&report).iter().find(|item| item.get("reminders").is_some()).unwrap();
+        let point = recorded.iter().find(|p| p.str_field("gap") == reminded["gap"].as_str()).expect("the reminded point");
         assert_eq!(point.fields["reminders"], json!(reminders), "the point keeps its reminders");
     }
 
@@ -1108,16 +1149,17 @@ mod tests {
         let said = surveyed(root, "x");
         let listed = grill(root, "x", Some("fix"), false);
         let ids: Vec<u64> = items(&listed).iter().map(|item| item["id"].as_u64().unwrap()).collect();
+        // O fato com o segredo vem na versão em que o assistente o soma.
+        let fact = json!({"text": GOAL, "source": format!("mensagem {said}")});
+        let version = id_of(&write(root, Some("x"), "point", json!({"replaces": ids[0], "facts": [fact]})));
         for (item, id) in items(&listed).iter().zip(&ids) {
             let closing = json!({"block": item["block"], "gap": item["gap"], "from": "gap", "status": "not_applicable",
                 "closes": id, "reason": "O fato tinha um segredo.", "origin": said});
             assert_eq!(write(root, Some("x"), "point", closing)["ok"], json!(true));
         }
-        let log = mustard_core::domain::spec_events::parse_log(&events(root, "x"));
-        let excerpt = log.get(ids[0]).unwrap().fields["facts"][0]["text"].clone();
         let purged = write(root, Some("x"), "purge",
-            json!({"targets": [ids[0]], "reason": "client_data", "excerpt": excerpt, "origin": said}));
-        assert_eq!(purged["purged"], json!([ids[0]]), "{purged}");
+            json!({"targets": [version], "reason": "client_data", "excerpt": GOAL, "origin": said}));
+        assert_eq!(purged["purged"], json!([version]), "{purged}");
 
         let after = grill(root, "x", Some("fix"), false);
         assert!(items(&after).iter().all(|item| item["status"] == json!("closed")), "{after}");
@@ -1137,7 +1179,8 @@ mod tests {
     /// fechado e depois expurgado no trecho, fechado e depois removido, e as
     /// duas coisas juntas: a lacuna segue coberta e o ponto conta como
     /// fechado. O fechamento grava a lacuna do original, e o `grill` mostra o
-    /// número do original enquanto ele existe — o expurgo não o tira — e,
+    /// número da versão vigente do original enquanto ele existe — o expurgo
+    /// não o tira — e,
     /// depois que ele sai, o do fechamento.
     #[test]
     fn a_closed_point_counts_the_same_on_survey_points_grill_write_and_passage() {
@@ -1164,14 +1207,18 @@ mod tests {
 
             let first = &items(&listed)[0];
             let gap = first["gap"].as_str().unwrap();
+            // O fato a expurgar vem na versão em que o assistente o soma, que
+            // passa a ser o original vigente.
+            let fact = json!({"text": GOAL, "source": format!("mensagem {said}")});
+            let version = (leaves == Some("purge"))
+                .then(|| id_of(&write(root, Some("x"), "point", json!({"replaces": ids[0], "facts": [fact]}))));
             let mut last = close(first, ids[0], if reworded { "Outro texto na lacuna" } else { gap });
             let closing = id_of(&last);
             let log = mustard_core::domain::spec_events::parse_log(&events(root, "x"));
             assert_eq!(log.get(closing).and_then(|e| e.str_field("gap")), Some(gap), "{case}: the closing carries the gap");
             if let Some(kind) = leaves {
-                let body = if kind == "purge" {
-                    let fact = log.get(ids[0]).unwrap().fields["facts"][0]["text"].clone();
-                    json!({"targets": [ids[0]], "reason": "client_data", "excerpt": fact})
+                let body = if let Some(version) = version {
+                    json!({"targets": [version], "reason": "client_data", "excerpt": GOAL})
                 } else {
                     json!({"targets": [ids[0]], "reason": "O fato tinha um segredo."})
                 };
@@ -1186,7 +1233,7 @@ mod tests {
             }
             let after = grill(root, "x", Some("fix"), false);
             assert_eq!(items(&after)[0]["status"], json!("closed"), "{case}: {after}");
-            let shown = if leaves == Some("remove") { closing } else { ids[0] };
+            let shown = if leaves == Some("remove") { closing } else { version.unwrap_or(ids[0]) };
             assert_eq!(items(&after)[0]["id"], json!(shown), "{case}: {after}");
             let open = items(&after).iter().filter(|item| item["status"] == json!("open")).count();
             assert_eq!(open, ids.len() - 1, "{case}: {after}");
