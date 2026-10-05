@@ -12,7 +12,7 @@ All work that changes a file follows one flow: survey, plan, approval, waves, re
 
 - Present one point at a time, in the order of explaining from the response style.
 - Check the code and the git history before stating or proposing: what looks dead may have a user, and what left may have left on purpose.
-- Record each answer at once with `mustard-rt run write <type>`.
+- Record each answer at once with `mustard-rt run answer`.
 
 ## While the spec is open
 

@@ -481,19 +481,24 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("wave_prompt.token_cap", Locale::EnUs) => {
             "Wave {wave}'s request has {tokens} tokens, above the {cap} cap. Split the batch in two."
         }
-        // O bloco em destaque do começo do pedido da onda que continua o
-        // resumo de outra (`packages/core/src/domain/wave_prompt/summary.rs`).
+        // O bloco em destaque do começo do pedido que leva tarefas que
+        // voltaram com o resumo de um agente que encheu a conversa
+        // (`packages/core/src/domain/wave_prompt/summary.rs`).
         ("wave_prompt.summary.title", Locale::PtBr) => "Trabalho já começado",
         ("wave_prompt.summary.title", Locale::EnUs) => "Work already started",
         ("wave_prompt.summary.read", Locale::PtBr) => {
-            "Esta onda continua o trabalho de um agente que parou no limite, e o resumo dele é {code}. \
-             Antes de qualquer outro passo, leia-o com `mustard-rt run read item-{code} {root}--spec {spec}` \
-             e faça só o que falta. A entrega é recusada sem essa leitura."
+            "Estas tarefas voltaram de um agente que encheu a conversa, e o resumo dele é {code}. \
+             Antes de qualquer outro passo, leia-o com `mustard-rt run read item-{code} {root}--spec {spec}`. \
+             A entrega é recusada sem essa leitura. O que o resumo dá como feito e decidido vale: não \
+             confira de novo nem refaça a escolha. Se você também entregar antes do fim, o seu resumo \
+             substitui este."
         }
         ("wave_prompt.summary.read", Locale::EnUs) => {
-            "This wave continues the work of an agent that stopped at the limit, and its summary is {code}. \
-             Before any other step, read it with `mustard-rt run read item-{code} {root}--spec {spec}` \
-             and do only what is left. The delivery is refused without that reading."
+            "These tasks came back from an agent whose conversation filled up, and its summary is {code}. \
+             Before any other step, read it with `mustard-rt run read item-{code} {root}--spec {spec}`. \
+             The delivery is refused without that reading. What the summary gives as done and decided \
+             holds: do not check it again or redo the choice. If you also deliver before the end, your \
+             summary replaces this one."
         }
         // A linha sob a tarefa cujo arquivo mudou no git depois do texto dela
         // (`packages/core/src/domain/wave_prompt/changed.rs`).
@@ -577,19 +582,34 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              largest task took {largest} thousand. Go on to the next task."
         }
         // A mesma medida quando outra tarefa não cabe: a ordem de entregar,
-        // que fecha a trava.
+        // que fecha a trava, e como escrever o resumo, em cinco blocos fixos.
+        // O texto da entrega é o único lugar do resumo.
         ("conversation_size.wave_deliver", Locale::PtBr) => {
             "[Mustard] Fim de tarefa com a conversa em {now} mil tokens; sem o resumo da onda \
              anterior, {counted} mil. O limite é {limit} mil, e a maior tarefa gastou {largest} \
-             mil: outra não cabe. Entregue agora, com as tarefas não começadas em `undone`. Daqui \
-             em diante, só passam ler e gravar na spec e o comando de compilar."
+             mil: outra não cabe. Grave a entrega, com as tarefas não começadas em `undone`. O texto \
+             dela é o resumo, e um agente novo continua só por ele. Escreva cinco blocos, nesta \
+             ordem. Estado: se compila, cada teste que rodou, com o comando e o resultado, e o que \
+             não rodou. Feito: cada tarefa concluída numa frase. Decidido: cada escolha que vale \
+             para as tarefas que sobram, com o motivo, sem alternativa aberta. Fatos: o que você \
+             descobriu e o próximo vai precisar, com a fonte e o comando que confere. Dúvidas: o que \
+             você não sabe; sem nenhuma, escreva \"nenhuma\". Se você continuou outro resumo, o seu \
+             o substitui: traga dele o que ainda vale. Daqui em diante, só passam ler e gravar na \
+             spec e o comando de compilar."
         }
         ("conversation_size.wave_deliver", Locale::EnUs) => {
             "[Mustard] Task finished with the conversation at {now} thousand tokens; without the \
              previous wave's summary, {counted} thousand. The limit is {limit} thousand, and the \
-             largest task took {largest} thousand: another does not fit. Deliver now, with the tasks \
-             not started in `undone`. From here on, only reading and writing the spec and the build \
-             command pass."
+             largest task took {largest} thousand: another does not fit. Record the delivery, with \
+             the tasks not started in `undone`. Its text is the summary, and a new agent continues \
+             from it alone. Write five blocks, in this order. State: whether it builds, each test \
+             that ran, with the command and the result, and what did not run. Done: each finished \
+             task in one sentence. Decided: each choice that holds for the remaining tasks, with the \
+             reason, with no open alternative. Facts: what you found out and the next one will \
+             need, with the source and the command that checks it. Doubts: what you do not know; \
+             with none, write \"none\". If you continued another summary, yours replaces it: bring \
+             from it what still holds. From here on, only reading and writing the spec and the \
+             build command pass."
         }
         // A recusa ao agente de onda depois da ordem de entregar.
         ("conversation_size.wave_locked", Locale::PtBr) => {
@@ -1827,7 +1847,7 @@ mod tests {
             include_str!("flow.rs"),
             super::PREFIXES,
             221,
-            0x2daa_d498_52f4_e6a8,
+            0x9042_f928_ac9d_2325,
         );
     }
 

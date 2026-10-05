@@ -308,7 +308,7 @@ fn check_wave_dependencies(log: &SpecLog, event: &Map<String, Value>) -> Result<
 
 /// A versão vigente da tarefa que `value` aponta, pelo número de qualquer
 /// versão ou pelo código; `None` quando não aponta tarefa vigente nenhuma.
-fn current_task<'a>(log: &'a SpecLog, codes: &BTreeMap<u64, String>, value: &Value) -> Option<&'a SpecEvent> {
+pub(super) fn current_task<'a>(log: &'a SpecLog, codes: &BTreeMap<u64, String>, value: &Value) -> Option<&'a SpecEvent> {
     let id = match EventRef::from_value(value)? {
         EventRef::Id(id) => id,
         EventRef::Code(code) => log.events.iter().filter(|e| codes.get(&e.id) == Some(&code)).map(|e| e.id).next_back()?,

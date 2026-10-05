@@ -1,5 +1,5 @@
-//! O levantamento: as recusas e os passos do grill e o rótulo de cada lacuna
-//! por tipo de trabalho.
+//! O levantamento: as recusas e os passos do grill, as recusas da resposta de
+//! um ponto e o rótulo de cada lacuna por tipo de trabalho.
 //!
 //! Uma parte do catálogo de textos: quem lê chama `translate`, a porta do
 //! catálogo, e nunca esta parte direto. Chave nova com um começo que esta
@@ -57,22 +57,58 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "The work type is written by `mustard-rt run grill`, which builds the point list with \
              it. Nothing was written."
         }
+        ("survey.answer_options", Locale::PtBr) => {
+            "Diga a resposta do ponto num item novo, com `--type` e `--json`, ou em itens já \
+             gravados, com `--result`. Os dois podem vir juntos. O ponto que não se aplica fecha com \
+             `--not-applicable` e `--reason`. Nada foi gravado."
+        }
+        ("survey.answer_options", Locale::EnUs) => {
+            "Give the answer to the point as a new item, with `--type` and `--json`, or as recorded \
+             items, with `--result`. Both can come together. A point that does not apply closes with \
+             `--not-applicable` and `--reason`. Nothing was written."
+        }
+        ("survey.answer_not_applicable_mixed", Locale::PtBr) => {
+            "O ponto fecha com a resposta ou como não se aplica, nunca com os dois: tire o \
+             `--not-applicable` ou a resposta. Nada foi gravado."
+        }
+        ("survey.answer_not_applicable_mixed", Locale::EnUs) => {
+            "The point closes with an answer or as not applicable, never both: drop \
+             `--not-applicable` or the answer. Nothing was written."
+        }
+        ("survey.answer_no_open_point", Locale::PtBr) => {
+            "A spec {spec} não tem ponto aberto no levantamento: não há o que responder. Nada foi \
+             gravado."
+        }
+        ("survey.answer_no_open_point", Locale::EnUs) => {
+            "Spec {spec} has no open point in the survey: there is nothing to answer. Nothing was \
+             written."
+        }
         ("survey.present_point", Locale::PtBr) => {
-            "Apresente o ponto {code}, e só ele, na ordem de explicar do estilo de resposta. Grave \
-             cada resposta na hora e feche o ponto com `closes`: {id}."
+            "Apresente o ponto {code}, e só ele, na ordem de explicar do estilo de resposta. Com a \
+             resposta do usuário, grave o item e feche o ponto num comando só: `mustard-rt run \
+             answer --point {id} --type <tipo> --json '{…}'`. A resposta já gravada vai em \
+             `--result`, e o ponto que não se aplica fecha com `--not-applicable` e `--reason`."
         }
         ("survey.present_point", Locale::EnUs) => {
             "Present point {code}, and only it, in the order of explaining from the response style. \
-             Record each answer right away and close the point with `closes`: {id}."
+             With the user's answer, record the item and close the point in one command: \
+             `mustard-rt run answer --point {id} --type <type> --json '{…}'`. An answer already \
+             recorded goes in `--result`, and a point that does not apply closes with \
+             `--not-applicable` and `--reason`."
         }
         ("survey.present_all", Locale::PtBr) => {
-            "Pedido pequeno: preencha todas as lacunas de `points` a partir do pedido e do código, \
-             mostre tudo de uma vez e peça um sim só. Com o sim, grave as respostas e feche cada \
-             ponto."
+            "Pedido pequeno: os pontos abertos estão em `points`. Antes do sim, preencha cada lacuna \
+             a partir do pedido e do código, mostre tudo de uma vez e peça um sim só. Com o sim, \
+             grave a resposta de cada ponto com `mustard-rt run answer --point <número> --type \
+             <tipo> --json '{…}'`. Cada resposta fecha o ponto. Ela devolve em `points` o código, o \
+             número e a lacuna de cada ponto ainda aberto, e em `point` o próximo inteiro."
         }
         ("survey.present_all", Locale::EnUs) => {
-            "Small request: fill every gap in `points` from the request and the code, show it all \
-             at once and ask for a single yes. With the yes, record the answers and close each point."
+            "Small request: the open points are in `points`. Before the yes, fill every gap from the \
+             request and the code, show it all at once and ask for a single yes. With the yes, \
+             record the answer to each point with `mustard-rt run answer --point <number> --type \
+             <type> --json '{…}'`. Each answer closes the point. It returns in `points` the code, \
+             the number and the gap of each point still open, and in `point` the next one in full."
         }
         ("survey.touched", Locale::PtBr) => {
             "A spec voltou ao levantamento por: {reason}. {count} itens já gravados são tocados por \
@@ -195,8 +231,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("survey.rs"),
             super::PREFIXES,
-            36,
-            0x5ee2_903d_9be1_454b,
+            39,
+            0x9a8c_0a85_2e33_7dce,
         );
     }
 
@@ -219,6 +255,9 @@ mod tests {
             ("reopen.fix_not_red".into(), &["{spec}", "{phase}"][..]),
             ("reopen.merge_unchecked".into(), &["{spec}", "{reason}"][..]),
             ("reopen.draft_failed".into(), &["{spec}", "{reason}"][..]),
+            ("survey.answer_options".into(), &[][..]),
+            ("survey.answer_not_applicable_mixed".into(), &[][..]),
+            ("survey.answer_no_open_point".into(), &["{spec}"][..]),
             ("survey.present_point".into(), &["{code}", "{id}"][..]),
             ("survey.present_all".into(), &[][..]),
             ("survey.rerun_grill".into(), &["{spec}"][..]),

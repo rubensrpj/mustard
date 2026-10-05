@@ -246,6 +246,92 @@ fn a_test_survey_goes_through_every_point_and_the_plan_is_refused_while_one_is_o
     assert_eq!(phase(root), Some("plan"));
 }
 
+/// O levantamento inteiro sai com uma chamada de `run answer` por ponto: a
+/// resposta num item novo, sem `--point` e sem `origin`, fecha o primeiro
+/// ponto aberto e aponta a última fala do usuário; a resposta pelo item já
+/// gravado e o "não se aplica" com o motivo fecham o ponto apontado; cada
+/// chamada devolve o próximo ponto. O ponto que já fechou é recusado com
+/// saída 1, e nada além da chamada é gravado.
+#[test]
+fn a_survey_is_answered_with_one_answer_call_per_point() {
+    let dir = repo();
+    let root = dir.path();
+    let opened = rt(root, &["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    assert_eq!(opened.status.code(), Some(0), "{}", String::from_utf8_lossy(&opened.stdout));
+    let said = user_says(root, GOAL);
+    write(root, "context", &json!({"title": "Combinar o item", "agent": "- conferir pelo teste", "text": GOAL, "origin": said}));
+    let items = report(&rt(root, &["grill", "--kinds", "feature", "--spec", SPEC]))["points"]
+        .as_array()
+        .cloned()
+        .expect("the point list");
+    let mut current = Value::Null;
+    for item in &items {
+        let facts = json!([{"text": "O merge começa no arquivo de entrada.", "source": "src/main.rs:2"}]);
+        current = write(root, "point", &json!({"replaces": item["id"], "facts": facts}))["point"].clone();
+    }
+    let reply = user_says(root, "Vale a mesma regra para todos os pontos.");
+    let decision = json!({"title": "Combinar o item", "agent": "- conferir pelo teste", "text": "O usuário respondeu ao ponto.",
+        "keys": ["levantamento"], "why": "o usuário respondeu"})
+    .to_string();
+    let path = store::spec_file(root, SPEC).expect("the spec's file");
+    // O que a spec guarda além do registro de cada chamada, que toda chamada
+    // de um passo do fluxo grava, recusada ou não.
+    let recorded = || -> Vec<u64> {
+        let log = store::read(&path).expect("a readable file").expect("the spec has its file");
+        log.events.iter().filter(|e| e.event_type != "call").map(|e| e.id).collect()
+    };
+
+    let (mut first_item, mut first_id) = (String::new(), 0);
+    for (i, item) in items.iter().enumerate() {
+        let point = current["id"].as_u64().expect("the next point");
+        let code = current["code"].as_str().expect("the point's code").to_string();
+        assert_eq!(current["gap"], item["gap"], "{current}");
+        let shown = point.to_string();
+        let args: Vec<&str> = match i {
+            0 => vec!["answer", "--spec", SPEC, "--type", "decision", "--json", &decision],
+            1 => vec!["answer", "--spec", SPEC, "--point", &code, "--result", &first_item],
+            2 => vec!["answer", "--spec", SPEC, "--point", &shown, "--not-applicable", "--reason", "Não se aplica."],
+            _ => vec!["answer", "--spec", SPEC, "--point", &code, "--type", "decision", "--json", &decision],
+        };
+        let out = rt(root, &args);
+        let answered = report(&out);
+        assert_eq!(out.status.code(), Some(0), "answer {i}: {answered}");
+        assert_eq!(answered["closed"]["closes"], json!(point), "{answered}");
+        let log = store::read(&path).expect("a readable file").expect("the spec has its file");
+        match i {
+            0 => {
+                first_id = id(&answered);
+                assert_eq!(log.get(first_id).and_then(|e| e.int("origin")), Some(reply), "{answered}");
+                assert_eq!(answered["closed"]["origin"], json!(reply), "{answered}");
+                first_item = answered["code"].as_str().expect("the item's code").to_string();
+            }
+            1 => assert_eq!(answered["closed"]["result"], json!([first_id]), "{answered}"),
+            2 => {
+                assert!(answered.get("id").is_none(), "no item: {answered}");
+                assert_eq!(answered["closed"]["status"], json!("not_applicable"), "{answered}");
+                assert_eq!(answered["closed"]["reason"], json!("Não se aplica."), "{answered}");
+                let before = recorded();
+                let again = rt(root, &["answer", "--spec", SPEC, "--point", &shown, "--result", &first_item]);
+                assert_eq!(again.status.code(), Some(1), "a closed point is refused with exit 1");
+                assert_eq!(report(&again)["reason"], json!("point-not-open"));
+                assert_eq!(recorded(), before, "a refusal writes no item and no point");
+            }
+            _ => {}
+        }
+        current = answered["point"].clone();
+        match items.get(i + 1) {
+            Some(next) => {
+                assert_eq!(current["gap"], next["gap"], "the answer returns the next point: {answered}");
+                let step = format!("mustard-rt run answer --point {}", current["id"]);
+                let said = answered["next"].as_str().unwrap_or_default();
+                assert!(said.contains(&step), "the next step gives the call that answers the next point: {said}");
+            }
+            None => assert!(current.is_null() && answered.get("unrouted").is_some(), "the end of the survey: {answered}"),
+        }
+    }
+    assert!(to_plan(root).is_ok(), "with every point closed the passage goes");
+}
+
 /// A tarefa gravada pela porta do binário sem uma das três declarações
 /// obrigatórias (o que ela faz, os arquivos que toca, de quais tarefas
 /// depende) é recusada nomeando só a que faltou, e nada entra no arquivo da

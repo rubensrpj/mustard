@@ -814,9 +814,12 @@ mod tests {
     /// maior tarefa. Começando em 30 mil, a tarefa que termina em 60 mil
     /// gastou 30 mil, e com 90 mil até o limite a ordem é seguir, sem
     /// recusa nenhuma. A que termina em 200 mil passou do limite: a ordem é
-    /// entregar, com as não começadas em `undone`, e a chamada seguinte que
-    /// não lê nem grava na spec, a suíte inclusive, é recusada, com o motivo
-    /// na língua do projeto e o que ainda passa. Nos dois idiomas.
+    /// gravar a entrega, com as não começadas em `undone`, e escrever nela o
+    /// resumo em cinco blocos, nesta ordem — estado, feito, decidido, fatos e
+    /// dúvidas —, o novo no lugar do que o agente continuou; a chamada
+    /// seguinte que não lê nem grava na spec, a suíte inclusive, é recusada,
+    /// com o motivo na língua do projeto e o que ainda passa. Nos dois
+    /// idiomas.
     #[test]
     fn a_finished_task_is_told_to_go_on_under_the_limit_and_to_deliver_over_it() {
         use serde_json::json;
@@ -828,17 +831,22 @@ mod tests {
             let (go_on, deliver, numbers, only) = if lang == Locale::EnUs {
                 (
                     "Go on to the next task.",
-                    "Deliver now, with the tasks not started in `undone`.",
+                    "Record the delivery, with the tasks not started in `undone`.",
                     "60 thousand. The limit is 150 thousand, and the largest task took 30 thousand.",
                     "Only reading and writing the spec (`mustard-rt run read` and `run write`) and `cargo build` pass",
                 )
             } else {
                 (
                     "Siga para a próxima tarefa.",
-                    "Entregue agora, com as tarefas não começadas em `undone`.",
+                    "Grave a entrega, com as tarefas não começadas em `undone`.",
                     "60 mil. O limite é 150 mil, e a maior tarefa gastou 30 mil.",
                     "Só passam ler e gravar na spec (`mustard-rt run read` e `run write`) e `cargo build`",
                 )
+            };
+            let (blocks, replaces) = if lang == Locale::EnUs {
+                (["State:", "Done:", "Decided:", "Facts:", "Doubts:"], "If you continued another summary, yours replaces it")
+            } else {
+                (["Estado:", "Feito:", "Decidido:", "Fatos:", "Dúvidas:"], "Se você continuou outro resumo, o seu o substitui")
             };
             let mut replies = vec![agent_reply(30_000, Some("read"))];
 
@@ -849,6 +857,11 @@ mod tests {
 
             let last = agent_finishes(root, &mut replies, 200_000, lang).unwrap_or_else(|| panic!("{lang:?}: the task end reads"));
             assert!(last.starts_with("[Mustard]") && last.contains(deliver) && !last.contains(go_on), "{lang:?}: {last}");
+            let at: Vec<usize> =
+                blocks.iter().map(|block| last.find(block).unwrap_or_else(|| panic!("{lang:?}: no `{block}`: {last}"))).collect();
+            assert!(at.windows(2).all(|pair| pair[0] < pair[1]), "{lang:?}: the five blocks, in order: {last}");
+            assert!(last.contains(replaces), "{lang:?}: the new summary replaces the one continued: {last}");
+            assert!(blocks.iter().all(|block| !first.contains(block)), "{lang:?}: going on asks for no summary: {first}");
             for reason in [read(), suite()] {
                 let reason = reason.unwrap_or_else(|| panic!("{lang:?}: after the order to deliver, the call is refused"));
                 assert!(reason.starts_with("[Mustard]") && reason.contains(only), "{lang:?}: {reason}");
@@ -870,7 +883,7 @@ mod tests {
         let root = dir.path();
         let read = || refused(root, "Read", serde_json::json!({"file_path": root.join("a.rs").to_string_lossy()}));
         let mut replies = vec![agent_reply(30_000, Some("read"))];
-        for (tokens, order, locked) in [(80_000, "Siga", false), (100_000, "Siga", false), (101_000, "Entregue agora", true)] {
+        for (tokens, order, locked) in [(80_000, "Siga", false), (100_000, "Siga", false), (101_000, "Grave a entrega", true)] {
             let reading = agent_finishes(root, &mut replies, tokens, Locale::PtBr).expect("the task end reads");
             assert!(reading.contains("a maior tarefa gastou 50 mil") && reading.contains(order), "{tokens}: {reading}");
             assert_eq!(read().is_some(), locked, "{tokens}: the lock");
@@ -910,7 +923,7 @@ mod tests {
             assert_eq!(refused(root, tool, input), None, "mid-task over the limit, {tool} passes");
         }
         let last = injected(&finishing(agent_after_tool(root))).expect("the task end reads");
-        assert!(last.contains("158 mil") && last.contains("Entregue agora"), "{last}");
+        assert!(last.contains("158 mil") && last.contains("Grave a entrega"), "{last}");
     }
 
     /// O resumo da onda anterior que o agente leu sai da conta do fim de
@@ -984,7 +997,7 @@ mod tests {
         let root = dir.path();
         let mut replies = vec![agent_reply(40_000, Some("summary")), agent_reply(140_000, Some("edit"))];
         let order = agent_finishes(root, &mut replies, 260_000, Locale::PtBr).expect("the task end reads");
-        assert!(order.contains("160 mil") && order.contains("Entregue agora"), "{order}");
+        assert!(order.contains("160 mil") && order.contains("Grave a entrega"), "{order}");
 
         let read = HookInput {
             hook_event_name: Some("PreToolUse".to_string()),
@@ -1033,7 +1046,7 @@ mod tests {
         let root = dir.path();
         let mut replies = vec![agent_reply(30_000, Some("read"))];
         let order = agent_finishes(root, &mut replies, 400_000, Locale::PtBr).expect("the task end reads");
-        assert!(order.contains("Entregue agora"), "the order to deliver: {order}");
+        assert!(order.contains("Grave a entrega"), "the order to deliver: {order}");
 
         let bash = |command: &str| refused(root, "Bash", json!({"command": command}));
         for command in [
@@ -1104,7 +1117,7 @@ mod tests {
         let root = dir.path();
         let mut replies = vec![agent_reply(30_000, Some("read"))];
         let order = agent_finishes(root, &mut replies, 400_000, Locale::PtBr).expect("the task end reads");
-        assert!(order.contains("Entregue agora"), "the order to deliver: {order}");
+        assert!(order.contains("Grave a entrega"), "the order to deliver: {order}");
 
         let bash = |command: &str| refused(root, "Bash", json!({"command": command}));
         assert_eq!(bash("mustard-rt run write step --json '{\"text\":\"a && b; c | d $(e) `f`\"}'"), None);
@@ -1175,7 +1188,7 @@ mod tests {
         seed_running_wave(root, "x");
         let mut replies = vec![agent_reply(30_000, Some("read"))];
         let order = agent_finishes(root, &mut replies, 400_000, Locale::PtBr).expect("the task end reads");
-        assert!(order.contains("Entregue agora"), "the order to deliver: {order}");
+        assert!(order.contains("Grave a entrega"), "the order to deliver: {order}");
         let file = root.join("a.rs").to_string_lossy().into_owned();
         let calls = || {
             [

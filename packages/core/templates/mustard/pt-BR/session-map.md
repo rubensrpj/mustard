@@ -12,7 +12,7 @@ Todo trabalho que muda arquivo segue um fluxo só: levantamento, plano, aprovaç
 
 - Apresente um ponto por vez, na ordem de explicar do estilo de resposta.
 - Confira no código e no histórico do git antes de afirmar ou propor: o que parece morto pode ter quem o use, e o que saiu pode ter saído de propósito.
-- Grave cada resposta na hora com `mustard-rt run write <tipo>`.
+- Grave cada resposta na hora com `mustard-rt run answer`.
 
 ## Durante a spec
 

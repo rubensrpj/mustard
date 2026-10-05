@@ -70,7 +70,7 @@ pub(crate) type Judge<'a> = dyn Fn(&Board) -> Result<Judged, FilterError> + 'a;
 /// [`MIN_WAVE_FILES`](crate::shared::dag::MIN_WAVE_FILES) arquivos declarados
 /// não sai enquanto houver onda em andamento ([`waves_in_progress`]). Sai
 /// quando chega a esse tamanho — com as tarefas do mesmo tipo que o Jev juntou
-/// nele — ou quando nada roda. A onda que continua um resumo não usado e a
+/// nele — ou quando nada roda. A onda que continua um resumo que vale e a
 /// tarefa do curinga da árvore inteira não esperam. O lote que espera reserva
 /// os arquivos dele, como a tarefa bloqueada: a que vem depois e os divide
 /// também espera.
@@ -193,7 +193,7 @@ pub(crate) fn dispatch_backlog(
     let code_of = |id: &u64| -> u64 {
         codes.get(id).and_then(|code| code.rsplit('-').next()).and_then(|number| number.parse().ok()).unwrap_or(*id)
     };
-    // Cada resumo não usado vira a base de uma onda, antes de qualquer outra;
+    // Cada resumo que ainda vale vira a base de uma onda, antes de qualquer outra;
     // as tarefas dessas ondas ficam fora do resto da montagem, saiam elas
     // agora ou esperem a vez: a que saísse noutra onda perderia o resumo.
     let by_summary = summary_waves(log, &order, &population);
