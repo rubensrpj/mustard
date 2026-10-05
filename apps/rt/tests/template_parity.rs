@@ -66,6 +66,11 @@ const FLAG_WHITELIST: &[(&str, &str, &str)] = &[
         "said",
         "hidden option of the search measurement: the terminal hook fills the last speech of the agent by itself",
     ),
+    (
+        "measure",
+        "lines",
+        "check by hand of the search table: one JSON line per answered search; the command only relays the text",
+    ),
 ];
 
 /// Caller spellings that precede a `run <name>` instruction in product files.

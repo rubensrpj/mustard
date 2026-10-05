@@ -113,8 +113,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("measure.rs"),
             super::PREFIXES,
-            19,
-            0x014c_4014_c005_fa6b,
+            27,
+            0x82f7_9484_f401_f6a4,
         );
     }
 }

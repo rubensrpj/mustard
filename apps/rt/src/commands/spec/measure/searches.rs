@@ -49,6 +49,10 @@ const STOPPED_HEAD: usize = 400;
 /// seguido da palavra recusada.
 const NO_MATCH: &str = "no matches found: ";
 
+/// Os programas que, ao fim de um cano, juntam as linhas da busca numa saída
+/// sem o nome do arquivo.
+const AGGREGATORS: [&str; 9] = ["wc", "sort", "uniq", "awk", "tr", "paste", "jq", "python3", "xargs"];
+
 /// Os programas que rodam um script escrito na própria linha.
 const SCRIPTERS: [&str; 5] = ["python", "python3", "perl", "node", "ruby"];
 
@@ -104,9 +108,10 @@ enum Action {
 
 /// Uma busca respondida: a chamada, a conversa (o arquivo dela dentro da
 /// pasta das conversas), o instante, a classe e os arquivos da resposta, se
-/// a busca falhou, a pasta em que rodou, as chamadas seguintes, com o nome da
-/// ferramenta e a entrada, o desfecho e, quando aproveitou, a melhor posição
-/// na lista dos arquivos abertos, contada de um.
+/// a busca falhou, a pasta da conversa, a raiz contra a qual os caminhos se
+/// comparam, as chamadas seguintes, com o nome da ferramenta e a entrada, o
+/// desfecho e, quando aproveitou, a melhor posição na lista dos arquivos
+/// abertos, contada de um.
 #[derive(Serialize)]
 pub(super) struct Answered {
     tool_use_id: String,
@@ -116,6 +121,7 @@ pub(super) struct Answered {
     files: Vec<String>,
     failed: bool,
     cwd: String,
+    root: String,
     next: Vec<Value>,
     outcome: Outcome,
     position: Option<usize>,
@@ -251,7 +257,8 @@ fn read(path: &Path, name: &str, since: DateTime<Utc>, found: &mut Vec<Answered>
         let Some((class, said, refused)) = instead.or_else(beside) else { continue };
         let files = listed(&said);
         let next: Vec<&Call> = calls.iter().skip(index + 1).take(NEXT_CALLS).collect();
-        let (outcome, position) = outcome(&files, &call.cwd, &next);
+        let root = root_of(call);
+        let (outcome, position) = outcome(&files, &root, &next);
         found.push(Answered {
             tool_use_id: call.id.clone(),
             conversation: name.to_string(),
@@ -261,6 +268,7 @@ fn read(path: &Path, name: &str, since: DateTime<Utc>, found: &mut Vec<Answered>
             // A recusa de outro gancho também tira a busca da taxa.
             failed: !refused && (refusal.is_some() || failed(call, &output)),
             cwd: call.cwd.clone(),
+            root,
             next: next.iter().map(|call| json!({ "tool": call.name, "input": call.input })).collect(),
             outcome,
             position,
@@ -297,13 +305,17 @@ fn greps(segment: &Segment) -> bool {
 /// `output`: a chamada foi barrada pela permissão ou interrompida; o zsh
 /// recusou o curinga sem aspas de uma palavra da busca (o resto da linha
 /// roda); ou nenhuma linha da saída é de arquivo, mesmo com texto de outros
-/// comandos. A busca que passa a saída por um cano ou não mostra o nome do
-/// arquivo vale com qualquer texto.
+/// comandos. A busca que passa a saída por um cano a um programa que junta
+/// as linhas ([`AGGREGATORS`]) ou não mostra o nome do arquivo vale com
+/// qualquer texto. Na linha com várias buscas, a respondida
+/// é a última busca em pasta, porque a nota do gancho que fica é a dela.
 fn failed(call: &Call, output: &str) -> bool {
-    let command = call.input["command"].as_str().unwrap_or_default();
-    let searches: Vec<Segment> =
-        if call.name == "Bash" { segments(command).into_iter().filter(greps).collect() } else { Vec::new() };
-    let ours = |word: &str| searches.iter().flat_map(|search| &search.args).any(|arg| arg.text == word || arg.raw == word);
+    let line = if call.name == "Bash" { segments(call.input["command"].as_str().unwrap_or_default()) } else { Vec::new() };
+    let searches: Vec<usize> = match line.iter().rposition(|segment| text_search(segment).is_some()) {
+        Some(at) => vec![at],
+        None => (0..line.len()).filter(|&at| greps(&line[at])).collect(),
+    };
+    let ours = |word: &str| searches.iter().flat_map(|&at| &line[at].args).any(|arg| arg.text == word || arg.raw == word);
     let head: String = output.chars().take(STOPPED_HEAD).collect();
     if STOPPED.iter().any(|said| head.contains(said))
         || output.split(NO_MATCH).skip(1).filter_map(|rest| rest.split_whitespace().next()).any(ours)
@@ -314,7 +326,11 @@ fn failed(call: &Call, output: &str) -> bool {
         return false;
     }
     let rest: Vec<&str> = output.lines().filter(|line| !line.contains(NO_MATCH)).collect();
-    let bare = searches.iter().any(|search| search.piped || hides_names(search));
+    let joins = |at: usize| {
+        let mut fed = line[at + 1..].iter().scan(line[at].piped, |piped, next| std::mem::replace(piped, next.piped).then(|| next.name()));
+        fed.any(|name| AGGREGATORS.contains(&name))
+    };
+    let bare = searches.iter().any(|&at| joins(at) || hides_names(&line[at]));
     !bare || matches!(rest.join("\n").trim(), "" | NO_OUTPUT)
 }
 
@@ -363,13 +379,36 @@ fn file_like(path: &str, dir: &str) -> bool {
         }
 }
 
-/// O desfecho da busca que listou `listed` e rodou em `cwd`, pelas chamadas
-/// `next`: a primeira que abre arquivo ou busca decide; aproveitou leva a
-/// melhor posição na lista dos arquivos abertos, contada de um.
-fn outcome(listed: &[String], cwd: &str, next: &[&Call]) -> (Outcome, Option<usize>) {
+/// A raiz da pasta em que a busca `call` rodou de verdade: a pasta da
+/// conversa, seguida pelos `cd` da linha antes da primeira busca, e dali para
+/// cima a primeira pasta com `.git`; sem ela, a própria pasta. A lista do mapa
+/// é relativa a essa raiz.
+fn root_of(call: &Call) -> String {
+    let mut dir = joined(&call.cwd, "");
+    if call.name == "Bash" {
+        let line = segments(call.input["command"].as_str().unwrap_or_default());
+        for segment in line.iter().take_while(|segment| !greps(segment)) {
+            dir = moved(segment, &dir).unwrap_or(dir);
+        }
+    }
+    let up = Path::new(&dir).ancestors().find(|up| !dir.is_empty() && up.join(".git").exists());
+    up.map_or_else(|| dir.clone(), |up| joined(&up.to_string_lossy(), ""))
+}
+
+/// A pasta para onde o comando `segment`, rodado em `dir`, muda, quando é um
+/// `cd` para uma pasta nomeada.
+fn moved(segment: &Segment, dir: &str) -> Option<String> {
+    let to = segment.args.first().filter(|to| segment.name() == "cd" && !to.text.starts_with('-'))?;
+    Some(joined(&to.text, dir))
+}
+
+/// O desfecho da busca que listou `listed`, relativos à raiz `root`, pelas
+/// chamadas `next`: a primeira que abre arquivo ou busca decide; aproveitou
+/// leva a melhor posição na lista dos arquivos abertos, contada de um.
+fn outcome(listed: &[String], root: &str, next: &[&Call]) -> (Outcome, Option<usize>) {
     let listed: Vec<String> = listed.iter().map(|path| joined(path, "")).collect();
     for call in next {
-        match action(call, cwd) {
+        match action(call, root) {
             Action::Search => return (Outcome::SearchedAgain, None),
             Action::Open(files) => {
                 let best = files.iter().filter_map(|file| listed.iter().position(|known| known == file)).min();
@@ -382,7 +421,7 @@ fn outcome(listed: &[String], cwd: &str, next: &[&Call]) -> (Outcome, Option<usi
 }
 
 /// O que a chamada `call` faz, com os arquivos abertos relativos a `base`, a
-/// pasta da busca. Ler e editar abrem; `Grep`, `Glob` e o agente `Explore`
+/// raiz da busca. Ler e editar abrem; `Grep`, `Glob` e o agente `Explore`
 /// buscam, menos o `Grep` num arquivo só, que o abre.
 fn action(call: &Call, base: &str) -> Action {
     let field = |key: &str| call.input[key].as_str().unwrap_or_default();
@@ -408,9 +447,7 @@ fn terminal(command: &str, cwd: &str, base: &str) -> Action {
     let mut opened = Vec::new();
     for segment in segments(command) {
         if segment.name() == "cd" {
-            if let Some(to) = segment.args.first().filter(|to| !to.text.starts_with('-')) {
-                dir = joined(&to.text, &dir);
-            }
+            dir = moved(&segment, &dir).unwrap_or(dir);
             continue;
         }
         match opens(&segment, command, &dir) {
@@ -508,7 +545,7 @@ fn joined(path: &str, dir: &str) -> String {
     parts.join("/")
 }
 
-/// `path`, aberto em `dir`, relativo a `base`, a pasta da busca, quando cai
+/// `path`, aberto em `dir`, relativo a `base`, a raiz da busca, quando cai
 /// dentro dela.
 fn relative(path: &str, dir: &str, base: &str) -> String {
     let (full, base) = (joined(path, dir), joined(base, ""));
