@@ -471,6 +471,23 @@ pub fn project_days(config_dir: &Path, root: &Path, range: &Range) -> Vec<DayRow
     rows.map(|row| DayRow { project: name.clone().unwrap_or_default(), ..row }).collect()
 }
 
+/// As conversas do projeto de `root` em `config_dir` mudadas desde `since`:
+/// as sessões e os agentes abertos nele e nas cópias de onda dele, com o
+/// projeto pela pasta inteira, como em [`project_days`]. Cada conversa é do
+/// projeto da primeira linha com uma pasta de projeto; a de agente sem
+/// nenhuma herda o da conversa que a chamou.
+#[must_use]
+pub fn project_conversations(config_dir: &Path, root: &Path, since: SystemTime) -> Vec<PathBuf> {
+    let Some(key) = project_place(root).map(|place| place.to_string_lossy().into_owned()) else { return Vec::new() };
+    let mut projects = Projects { by_place: true, ..Projects::default() };
+    let changed = |path: &PathBuf| std::fs::metadata(path).and_then(|meta| meta.modified()).is_ok_and(|at| at >= since);
+    let mut owned = |(path, owner): &(PathBuf, Option<PathBuf>)| {
+        let found = owner_project(path, &mut projects).or_else(|| owner_project(owner.as_deref()?, &mut projects));
+        found.as_deref() == Some(key.as_str())
+    };
+    transcript_files(config_dir).into_iter().filter(|file| changed(&file.0) && owned(file)).map(|(path, _)| path).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;

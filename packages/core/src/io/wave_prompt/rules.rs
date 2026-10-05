@@ -297,7 +297,12 @@ mod tests {
             (".claude/rules/notas.txt", "- Fora."),
             ("web/CLAUDE.local.md", "- Pessoal da web."),
         ];
-        let cases: [(&str, &[(&str, &str)], &[&str], &[(&str, &str)]); 6] = [
+        /// Um arquivo da tabela: o caminho e o texto.
+        type Written<'a> = (&'a str, &'a str);
+        /// Uma linha da tabela: o nome do caso, os arquivos do projeto, os
+        /// arquivos mexidos e o que a leitura devolve.
+        type Case<'a> = (&'a str, &'a [Written<'a>], &'a [&'a str], &'a [Written<'a>]);
+        let cases: [Case<'_>; 6] = [
             ("no rules file", &[("src/lib.rs", "")], &["src/lib.rs"], &[]),
             ("a blank file", &[("CLAUDE.md", " \n\n\t\n")], &["src/lib.rs"], &[]),
             ("the root alone", &[root_crlf], &["src/lib.rs"], &[("CLAUDE.md", "# Regras\r\n\r\n- Nunca grave no git.")]),

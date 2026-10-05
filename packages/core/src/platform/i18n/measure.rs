@@ -1,5 +1,6 @@
 //! A medição do uso real: a tabela do gasto antes e depois da marca de uma
-//! versão e a frase do veredito, como o comando `measure` as responde.
+//! versão, a frase do veredito e quantas buscas o Mustard respondeu, como o
+//! comando `measure` as responde.
 //!
 //! Uma parte do catálogo de textos: quem lê chama `translate`, a porta do
 //! catálogo, e nunca esta parte direto. Chave nova com um começo que esta
@@ -72,6 +73,9 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("measure.millions", Locale::EnUs) => "{n} million",
         ("measure.thousands", Locale::PtBr) => "{n} mil",
         ("measure.thousands", Locale::EnUs) => "{n} thousand",
+        // Quantas buscas o Mustard respondeu desde a marca.
+        ("measure.searches", Locale::PtBr) => "Buscas que o Mustard respondeu desde a marca: {count}.",
+        ("measure.searches", Locale::EnUs) => "Searches Mustard answered since the mark: {count}.",
         ("measure.and", Locale::PtBr) => "e",
         ("measure.and", Locale::EnUs) => "and",
         _ => return None,
@@ -88,8 +92,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("measure.rs"),
             super::PREFIXES,
-            18,
-            0xe4f6_c8ce_67c7_8ee7,
+            19,
+            0x014c_4014_c005_fa6b,
         );
     }
 }

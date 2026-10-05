@@ -83,7 +83,8 @@ pub enum SpecCmd {
     /// A marca é a primeira sessão de cada compilação do Mustard no projeto,
     /// gravada pelo início da sessão. Compara os dias contados (fechados, com
     /// 100 ações ou mais) dos dois lados, pela mesma conta da página do gasto,
-    /// e diz o veredito numa frase. Só lê: não grava nada e não chama o Jev.
+    /// e diz o veredito numa frase, com quantas buscas o Mustard respondeu
+    /// desde a marca. Só lê: não grava nada e não chama o Jev.
     #[command(name = "measure")]
     #[command(display_order = 24)]
     Measure {
@@ -91,6 +92,10 @@ pub enum SpecCmd {
         /// marca do projeto.
         #[arg(long)]
         since: Option<String>,
+        /// Uma linha JSON por busca que o Mustard respondeu desde a marca, no
+        /// lugar da resposta.
+        #[arg(long)]
+        lines: bool,
         /// Any directory inside the repo. Defaults to the current dir.
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -106,7 +111,9 @@ pub fn dispatch(cmd: SpecCmd) {
         SpecCmd::Spend { republish, url, root } => {
             spec::spend::run(&spec::spend::SpendOpts { root, republish, url });
         }
-        SpecCmd::Measure { since, root } => spec::measure::run(&spec::measure::MeasureOpts { root, since }),
+        SpecCmd::Measure { since, lines, root } => {
+            spec::measure::run(&spec::measure::MeasureOpts { root, since, lines });
+        }
     }
 }
 
